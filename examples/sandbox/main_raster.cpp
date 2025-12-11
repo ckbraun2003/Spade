@@ -2,29 +2,16 @@
 #include <vector>
 #include <chrono>
 #include <cmath>
-#include <windows.h>
-#include <psapi.h>
-
-// Add GLM extensions
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/constants.hpp>
-#include <glm/gtx/quaternion.hpp>
 
 #include <Spade/Spade.hpp>
+#include <glm/gtc/constants.hpp>
 
 using namespace Spade;
 
-// Helper for Memory
-static SIZE_T GetMemoryUsage() {
-    PROCESS_MEMORY_COUNTERS_EX pmc;
-    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
-        return pmc.PrivateUsage;
-    }
-    return 0;
-} 
-
 int main() {
     try {
+// ...
+// ... (Top of file remains)
         Engine engine;
         engine.SetupEngineWindow(1280, 720, "Spade Engine - SSBO Renderer");
         std::cout << "Initializing Engine..." << std::endl;
@@ -36,17 +23,13 @@ int main() {
 
         // --- Create Camera ---
         Entity camera = engine.CreateCameraEntity("MainCamera");
-        camera.AddComponent<Camera>(); 
-        // Disable default input
-        if(auto* input = camera.GetComponent<CameraInputComponent>()) {
-            input->isActive = false;
-        }
-        camera.GetComponent<Transform>()->position = {0.0f, 10.0f, 15.0f};
+        camera.AddComponent<Camera>(); // Default FOV 45
+        camera.GetComponent<Transform>()->position = {0.0f, 2.0f, 5.0f};
 
         // --- Create Entities ---
         std::cout << "Creating Entities..." << std::endl;
-
-        std::vector<Entity> animatedCubes;
+        // --- Create Entities ---
+        std::cout << "Creating Entities (Raster Grid)..." << std::endl;
 
         // 1. Cube Grid
         int gridSize = 50;
@@ -65,14 +48,13 @@ int main() {
                 auto* mesh = ent.AddComponent<MeshComponent>();
                 mesh->meshID = rm.GetMeshID("Cube");
                 
+                // RASTER MATERIAL
                 auto* mat = ent.AddComponent<MaterialComponent>();
                 mat->materialID = rm.GetMaterialID("DefaultMaterial");
                 // Gradient colors
                 float r = (float)x / gridSize;
                 float g = (float)z / gridSize;
                 mat->colorOverride = {r, g, 1.0f - r, 1.0f}; 
-                
-                animatedCubes.push_back(ent);
             }
         }
         
@@ -86,15 +68,35 @@ int main() {
             auto* mesh = ent.AddComponent<MeshComponent>();
             mesh->meshID = rm.GetMeshID("Quad"); 
             
+            // RASTER MATERIAL
+            auto* mat = ent.AddComponent<MaterialComponent>();
+            mat->materialID = rm.GetMaterialID("DefaultMaterial");
+            mat->colorOverride = {0.2f, 0.2f, 0.2f, 1.0f};
+            
             std::cout << "Created Floor." << std::endl;
+        }
+
+        // 3. Sun (Light Source)
+        {
+            Entity ent = engine.CreateEmptyEntity("Sun");
+            ent.GetComponent<Transform>()->position = {0.0f, 20.0f, 0.0f};
+            ent.GetComponent<Transform>()->scale = {10.0f, 10.0f, 10.0f};
+            
+            auto* mesh = ent.AddComponent<MeshComponent>();
+            mesh->meshID = rm.GetMeshID("Sphere");
+            
+            auto* mat = ent.AddComponent<MaterialComponent>();
+            mat->materialID = rm.GetMaterialID("DefaultMaterial");
+            mat->colorOverride = {1.0f, 1.0f, 0.8f, 1.0f};
+            mat->emission = 5.0f; // Very bright
+            
+            std::cout << "Created Sun." << std::endl;
         }
 
         std::cout << "Entities properties set." << std::endl;
 
         // --- Main Loop ---
         float lastTime = 0.0f;
-        int frames = 0;
-        float fpsTimer = 0.0f;
         
         std::cout << "Entering Main Loop..." << std::endl;
         while (engine.IsRunning()) {
@@ -102,48 +104,12 @@ int main() {
             float deltaTime = time - lastTime;
             lastTime = time;
 
-            // Update FPS
-            frames++;
-            fpsTimer += deltaTime;
-            if (fpsTimer >= 1.0f) {
-                SIZE_T memory = GetMemoryUsage();
-                double mbs = memory / 1024.0 / 1024.0;
-                
-                std::cout << "FPS: " << frames << " (" << (1000.0f / frames) << " ms) | Mem: " << mbs << " MB" << std::endl;
-                frames = 0;
-                fpsTimer = 0.0f;
-            }
-
-            // 1. Orbital Camera Logic
-            float radius = 50.0f;
-            float camSpeed = 0.3f;
-            float camX = sin(time * camSpeed) * radius;
-            float camZ = cos(time * camSpeed) * radius;
-            Transform* camTrans = camera.GetComponent<Transform>();
-            camTrans->position = glm::vec3(camX, 15.0f, camZ);
+            // --- Input Handling ---
             
-            // Look at center
-            glm::vec3 target = glm::vec3(0.0f, 0.0f, 0.0f);
-            glm::mat4 view = glm::lookAt(camTrans->position, target, glm::vec3(0.0f, 1.0f, 0.0f));
-            camTrans->rotation = glm::quat_cast(glm::inverse(view));
-
-            // 2. Wave Physics (Animation)
-            for (auto& ent : animatedCubes) {
-                Transform* t = ent.GetComponent<Transform>();
-                // Wave based on position
-                float waveHeight = 2.0f;
-                float waveSpeed = 2.0f;
-                float frequency = 0.5f;
-                float y = sin(time * waveSpeed + t->position.x * frequency + t->position.z * frequency) * waveHeight;
-                t->position.y = y;
-            }
-
-            // --- Engine Updates ---
-            // --- Engine Updates ---
-            // Systems are now handled internally
+            // --- Engine Logic (Systems) ---
             engine.Update(deltaTime);
             
-            // Render
+            // --- Rendering ---
             glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 

@@ -11,6 +11,8 @@ layout(std140, binding = 0) uniform PerFrame {
 struct ObjectData {
     mat4 model;
     vec4 color;
+    float emission; // New
+    float padding[3];
 };
 
 layout(std430, binding = 1) buffer ObjectBuffer {
@@ -21,10 +23,12 @@ uniform uint u_ObjectIndex;
 
 out vec3 Normal;
 out vec4 Color;
+out float Emission;
 
 void main() {
     ObjectData data = objects[u_ObjectIndex];
     gl_Position = projection * view * data.model * vec4(aPos, 1.0);
     Normal = mat3(transpose(inverse(data.model))) * aNormal;
     Color = data.color;
+    Emission = data.emission;
 }

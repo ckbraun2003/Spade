@@ -15,6 +15,10 @@
 #include "Spade/Core/Rendering.hpp"
 #include "Spade/Core/Physics.hpp"
 
+#include "Spade/Systems/ScriptSystem.hpp"
+#include "Spade/Systems/CameraSystem.hpp"
+#include "Spade/Systems/InteractionSystem.hpp"
+
 namespace Spade {
 
   class Engine
@@ -29,14 +33,13 @@ namespace Spade {
 
     // Game Loop API
     bool IsRunning() const;
-    void Update();
+    void Update(float deltaTime);
     void RenderFrame();
     float GetTime() const;
 
     // Systems
-    void UpdateScripts(float deltaTime);
-    void UpdateCameraSystem(float deltaTime);
-    void UpdateInteractionSystem(float deltaTime);
+    // Decoupled into their own classes
+
 
     // Input API
     bool IsKeyPressed(int key) const;
@@ -80,6 +83,11 @@ namespace Spade {
     Universe m_Universe;
     Rendering m_Rendering;
     Physics m_Physics;
+    
+    // Logic Systems
+    ScriptSystem m_ScriptSystem;
+    CameraSystem m_CameraSystem;
+    InteractionSystem m_InteractionSystem;
 
   };
 

@@ -1,0 +1,127 @@
+#version 430
+layout(local_size_x = 16, local_size_y = 16) in;
+
+
+
+struct RayPayload {
+    vec3 origin;
+    vec3 direction;
+    vec3 throughput;
+    uint rayActive;
+};
+
+struct HitInfo {
+    float t;
+    int instanceIndex;
+    int primitiveIndex; 
+    uint materialIndex;
+    vec3 normal;
+};
+
+struct RayTracingMaterial {
+    vec4 color;
+    float emission;
+    float roughness;
+    float metallic;
+    float padding;
+};
+
+// SSBOs
+layout(std430, binding = 2) buffer RayBuffer { RayPayload rays[]; };
+layout(std430, binding = 3) buffer HitBuffer { HitInfo hits[]; };
+layout(std430, binding = 6) buffer MaterialBuffer { RayTracingMaterial materials[]; };
+
+// Image
+// Image
+layout(binding = 0, rgba32f) uniform image2D imgOutput;
+
+uniform uint u_FrameCount;
+
+// Random
+uint seed = 0;
+uint pcg_hash() {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+float rnd() {
+    seed = pcg_hash();
+    return float(seed) / 4294967296.0;
+}
+
+// Cosine Weighted Hemispheres
+vec3 SampleHemisphere(vec3 n) {
+    float z = rnd() * 2.0 - 1.0;
+    float a = rnd() * 2.0 * 3.14159;
+    
+    // Simplistic Uniform Sphere
+    vec3 v = vec3(sin(a)*cos(a), sin(a)*sin(a), cos(a)); // Placeholder
+    
+    // Better: Cosine Weighted
+    float r1 = rnd();
+    float r2 = rnd();
+    float theta = acos(sqrt(1.0 - r1));
+    float phi = 2.0 * 3.14159 * r2;
+    
+    vec3 ls = vec3(sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta));
+    // Tangent Space to World Space transform skipped for brevity (Need TBN)
+    // Simple hack: add random vector to normal and normalize
+    return normalize(n + vec3(rnd()-0.5, rnd()-0.5, rnd()-0.5));
+}
+
+void main() {
+    ivec2 dims = imageSize(imgOutput);
+    uint idx = gl_GlobalInvocationID.y * dims.x + gl_GlobalInvocationID.x;
+    
+    if(gl_GlobalInvocationID.x >= dims.x || gl_GlobalInvocationID.y >= dims.y) return;
+
+    RayPayload ray = rays[idx];
+    
+    if (ray.rayActive == 0) return;
+    
+    HitInfo hit = hits[idx];
+    
+    // Pixel coord for output
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    seed = idx + u_FrameCount * 719393u; // Varies per frame!
+
+    // Miss
+    if (hit.primitiveIndex == -1) {
+        // Sky Color
+        vec3 sky = vec3(0.05, 0.05, 0.08); // Dark Blue
+        vec4 oldColor = imageLoad(imgOutput, pixel);
+        imageStore(imgOutput, pixel, oldColor + vec4(sky * ray.throughput, 1.0));
+        
+        rays[idx].rayActive = 0; // Terminate
+        return;
+    }
+
+    // Hit
+    RayTracingMaterial mat = materials[hit.materialIndex];
+    
+    vec3 hitPos = ray.origin + ray.direction * hit.t;
+    vec3 N = normalize(hit.normal);
+    
+    // Emission
+    // If the material emits light, add it to the image and stop tracing?
+    // Standard PT: Add Emission * Throughput.
+    // If it's a light source, we usually don't bounce off it (unless glossy/diffuse light). 
+    // Simplest: if Emission > 1.0, treat as light.
+    
+    if(mat.emission > 0.0) {
+        vec4 oldColor = imageLoad(imgOutput, pixel);
+        imageStore(imgOutput, pixel, oldColor + vec4(vec3(mat.emission) * mat.color.rgb * ray.throughput, 1.0));
+        rays[idx].rayActive = 0; 
+        return;
+    }
+
+    // Lambertian Scatter
+    ray.origin = hitPos + N * 0.001;
+    ray.direction = SampleHemisphere(N);
+    ray.throughput *= mat.color.rgb; // Simple Albedo
+    
+    // Russian Roulette? (Optional optimization)
+    
+    // Write back
+    rays[idx] = ray;
+}

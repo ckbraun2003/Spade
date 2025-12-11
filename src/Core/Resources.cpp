@@ -74,6 +74,10 @@ namespace Spade {
     }
 
     void MeshResource::Upload(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices) {
+        // Store CPU copy for Ray Tracing
+        this->vertices = vertices;
+        this->indices = indices;
+
         indexCount = static_cast<unsigned int>(indices.size());
 
         if (VAO == 0) glGenVertexArrays(1, &VAO);

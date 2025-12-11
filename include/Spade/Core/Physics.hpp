@@ -13,26 +13,6 @@
 
 namespace Spade {
 
-    struct Ray {
-        glm::vec3 origin;
-        glm::vec3 direction;
-    };
-
-    struct BoundingSphere {
-        glm::vec3 center;
-        float radius;
-    };
-
-    struct BoundingBox {
-        glm::vec3 min;
-        glm::vec3 max;
-    };
-
-    struct Plane {
-        glm::vec3 point;
-        glm::vec3 normal;
-    };
-
     // Intersection Helpers
     inline bool RayIntersectSphere(const Ray& ray, const BoundingSphere& sphere, float& t) {
         glm::vec3 oc = ray.origin - sphere.center;

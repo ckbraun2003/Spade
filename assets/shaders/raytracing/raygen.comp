@@ -1,0 +1,66 @@
+#version 430
+layout(local_size_x = 16, local_size_y = 16) in;
+
+struct Ray {
+    vec3 origin;
+    vec3 direction;
+};
+
+// Camera UBO
+layout(std140, binding = 0) uniform Camera {
+    mat4 view;
+    mat4 projection;
+    mat4 viewInverse; 
+    mat4 projInverse; 
+};
+
+// Output Image
+layout(binding = 0, rgba32f) uniform image2D imgOutput;
+
+uniform uint u_FrameCount;
+uniform uint u_Reset;
+
+struct RayPayload {
+    vec3 origin;
+    vec3 direction;
+    vec3 throughput;
+    uint rayActive;
+};
+
+layout(std430, binding = 2) buffer RayBuffer {
+    RayPayload rays[];
+};
+
+void main() {
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dims = imageSize(imgOutput);
+
+    if(pixel_coords.x >= dims.x || pixel_coords.y >= dims.y) return;
+    
+    // Clear/Reset Logic
+    if(u_Reset == 1) {
+        imageStore(imgOutput, pixel_coords, vec4(0.0));
+    }
+
+    // Convert pixel to UV [-1, 1]
+    vec2 uv = vec2(pixel_coords) / vec2(dims);
+    uv = uv * 2.0 - 1.0; 
+
+    // Unproject
+    vec4 target = projInverse * vec4(uv.x, uv.y, 1.0, 1.0);
+    vec3 rayDirView = normalize(target.xyz / target.w);
+    
+    // Transform to World Space
+    vec3 rayDirWorld = (viewInverse * vec4(rayDirView, 0.0)).xyz;
+    rayDirWorld = normalize(rayDirWorld);
+    
+    vec3 rayOriginWorld = (viewInverse * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+
+    // Store in Ray Buffer
+    uint rayIdx = pixel_coords.y * dims.x + pixel_coords.x;
+    
+    rays[rayIdx].origin = rayOriginWorld;
+    rays[rayIdx].direction = rayDirWorld;
+    rays[rayIdx].throughput = vec3(1.0);
+    rays[rayIdx].rayActive = 1;
+}

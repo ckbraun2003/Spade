@@ -6,6 +6,7 @@
 #include <memory>
 #include <glm/glm.hpp>
 #include <glad/glad.h>
+#include "Spade/Core/Primitives.hpp"
 
 namespace Spade {
 
@@ -20,12 +21,25 @@ namespace Spade {
         virtual ~Resource() = default;
     };
 
+    // --- Shape Types ---
+    enum class ShapeType {
+        Mesh,
+        AnalyticSphere,
+        AnalyticBox
+    };
+
     // --- Mesh Resource ---
     struct MeshResource : public Resource {
+        ShapeType type = ShapeType::Mesh; // Default to mesh
+        
         unsigned int VAO = 0;
         unsigned int VBO = 0;
         unsigned int EBO = 0;
         unsigned int indexCount = 0;
+        
+        // CPU Side Data (Kept for RayTracing/Collision)
+        std::vector<struct Vertex> vertices;
+        std::vector<unsigned int> indices;
 
         ~MeshResource();
         void Upload(const std::vector<struct Vertex>& vertices, const std::vector<unsigned int>& indices);

@@ -48,6 +48,7 @@ namespace Spade {
   struct MaterialComponent {
       ResourceID materialID = INVALID_RESOURCE_ID;
       glm::vec4 colorOverride = {1.0f, 1.0f, 1.0f, 1.0f}; 
+      float emission = 0.0f;
   };
 
   struct Camera {
@@ -66,6 +67,14 @@ namespace Spade {
 
   struct NativeScriptComponent {
       std::function<void(Entity, float)> OnUpdate;
+  };
+
+  struct RayTracingMaterial {
+      glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
+      float emission = 0.0f;
+      float roughness = 0.5f;
+      float metallic = 0.0f;
+      float padding = 0.0f;
   };
 
 }

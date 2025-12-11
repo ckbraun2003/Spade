@@ -37,42 +37,74 @@ namespace Spade {
   template<typename T>
   class ComponentPool : public IComponentPool {
   public:
+      // Dense Data
       std::vector<T> m_Data;
-      std::unordered_map<EntityID, size_t> m_EntityToIndex;
-      std::unordered_map<size_t, EntityID> m_IndexToEntity;
+      
+      // Dense Index -> EntityID (for reverse lookup during iteration)
+      std::vector<EntityID> m_IndexToEntity;
+
+      // Sparse EntityID -> Index (Direct Lookup)
+      // If m_EntityToIndex[entityID] == INVALID_INDEX, it has no component.
+      // We reserve enough space for max entities.
+      std::vector<size_t> m_EntityToIndex;
+      
+      static constexpr size_t INVALID_INDEX = 0xFFFFFFFF;
+
+      ComponentPool() {
+          // Reserve space for a reasonable amount of entities to avoid reallocs
+          // In a production engine, this would be a Page allocator or huge reserve.
+          m_EntityToIndex.resize(10000, INVALID_INDEX); 
+      }
 
       T& Add(EntityID entity, T component) {
+          if (Has(entity)) {
+              // Replace existing
+              m_Data[m_EntityToIndex[entity]] = std::move(component);
+              return m_Data[m_EntityToIndex[entity]];
+          }
+
+          // Ensure Sparse Array is big enough
+          if (entity >= m_EntityToIndex.size()) {
+              m_EntityToIndex.resize(entity + 1000, INVALID_INDEX);
+          }
+
           size_t index = m_Data.size();
           m_Data.push_back(std::move(component));
+          m_IndexToEntity.push_back(entity);
           m_EntityToIndex[entity] = index;
-          m_IndexToEntity[index] = entity;
+          
           return m_Data.back();
       }
 
       void Remove(EntityID entity) override {
-          if (m_EntityToIndex.find(entity) == m_EntityToIndex.end()) return;
+          if (!Has(entity)) return;
 
           size_t indexToRemove = m_EntityToIndex[entity];
           size_t lastIndex = m_Data.size() - 1;
           EntityID lastEntity = m_IndexToEntity[lastIndex];
 
-          // Swap-and-pop
-          std::swap(m_Data[indexToRemove], m_Data[lastIndex]);
-
-          // Update lookup
-          m_EntityToIndex[lastEntity] = indexToRemove;
+          // Swap-and-pop Dense Data
+          m_Data[indexToRemove] = std::move(m_Data[lastIndex]);
           m_IndexToEntity[indexToRemove] = lastEntity;
 
-          m_EntityToIndex.erase(entity);
-          m_IndexToEntity.erase(lastIndex);
+          // Update Sparse Map
+          m_EntityToIndex[lastEntity] = indexToRemove;
+          m_EntityToIndex[entity] = INVALID_INDEX;
 
           m_Data.pop_back();
+          m_IndexToEntity.pop_back();
       }
 
       T* Get(EntityID entity) {
-          auto it = m_EntityToIndex.find(entity);
-          if (it == m_EntityToIndex.end()) return nullptr;
-          return &m_Data[it->second];
+          if (entity >= m_EntityToIndex.size()) return nullptr;
+          size_t index = m_EntityToIndex[entity];
+          if (index == INVALID_INDEX) return nullptr;
+          return &m_Data[index];
+      }
+      
+      bool Has(EntityID entity) const {
+          if (entity >= m_EntityToIndex.size()) return false;
+          return m_EntityToIndex[entity] != INVALID_INDEX;
       }
   };
 
@@ -89,9 +121,10 @@ namespace Spade {
           return static_cast<ComponentPool<T>&>(*m_Pools[id]);
       }
       
-      // Central registry for "Alive" entities if needed, or just ID counter
       EntityID m_NextEntityID = 0;
       EntityID CreateEntityID() { return m_NextEntityID++; }
+      
+      // Clear function?
   };
 
   class Entity : public Object {
@@ -111,7 +144,6 @@ namespace Spade {
       template<typename T>
       T* AddComponent(T component = T()) {
           if (!IsValid()) return nullptr;
-          // Note: component argument is by value/move
           return &m_Universe->GetPool<T>().Add(m_Id, std::move(component));
       }
 
@@ -119,6 +151,12 @@ namespace Spade {
       T* GetComponent() {
           if (!IsValid()) return nullptr;
           return m_Universe->GetPool<T>().Get(m_Id);
+      }
+      
+      template<typename T>
+      bool HasComponent() {
+           if (!IsValid()) return false;
+           return m_Universe->GetPool<T>().Has(m_Id);
       }
   };
 

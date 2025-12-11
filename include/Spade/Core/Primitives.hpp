@@ -33,4 +33,24 @@ namespace Spade {
   MeshData GenerateCube(float size = 1.0f);
   MeshData GenerateQuad(float size = 1.0f);
 
+  struct Ray {
+    glm::vec3 origin;
+    glm::vec3 direction;
+  };
+
+  struct BoundingSphere {
+    glm::vec3 center;
+    float radius;
+  };
+
+  struct BoundingBox {
+    glm::vec3 min;
+    glm::vec3 max;
+  };
+
+  struct Plane {
+    glm::vec3 point;
+    glm::vec3 normal;
+  };
+
 }
