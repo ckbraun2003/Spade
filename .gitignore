@@ -1,0 +1,26 @@
+# CMake
+cmake-build-debug/
+cmake-build-release/
+build/
+bin/
+lib/
+CMakeCache.txt
+CMakeFiles/
+*.cmake
+Makefile
+
+# IDEs
+.idea/
+.vscode/
+*.sln
+*.vcxproj
+*.vcxproj.user
+*.filters
+.vs/
+x64/
+Debug/
+Release/
+
+# OS
+.DS_Store
+Thumbs.db
