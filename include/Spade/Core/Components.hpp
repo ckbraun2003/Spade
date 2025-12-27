@@ -11,70 +11,72 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "Spade/Core/Resources.hpp"
+#include "Spade/Core/Primitives.hpp"
+#include "Spade/Core/Enums.hpp"
 
 namespace Spade {
 
-  struct Transform {
-    glm::vec3 position = {0.0f, 0.0f, 0.0f};
-    glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // Identity
-    glm::vec3 scale = {1.0f, 1.0f, 1.0f};
-    
-    // Matrix generation helper
-    glm::mat4 GetMatrix() const {
-        glm::mat4 mat = glm::mat4(1.0f);
-        mat = glm::translate(mat, position);
-        mat *= glm::toMat4(rotation);
-        mat = glm::scale(mat, scale);
-        return mat;
-    }
+  struct TransformComponent {
+    // Primitve Data
+    Transform transform;
 
-    glm::vec3 GetForward() const {
-        return glm::rotate(rotation, glm::vec3(0.0f, 0.0f, -1.0f));
-    }
+    // Component Data
+    glm::mat4 model = glm::mat4(1.0f);
     
-    glm::vec3 GetRight() const {
-        return glm::rotate(rotation, glm::vec3(1.0f, 0.0f, 0.0f));
-    }
-    
-    glm::vec3 GetUp() const {
-        return glm::rotate(rotation, glm::vec3(0.0f, 1.0f, 0.0f));
-    }
+    // Helper functions
+    glm::mat4 GetModel() const;
+    glm::vec3 GetForward() const;
+    glm::vec3 GetRight() const;
+    glm::vec3 GetUp() const;
   };
 
   struct MeshComponent {
-    ResourceID meshID = INVALID_RESOURCE_ID;
+    Mesh mesh;
+
+    BufferID VAO = 0;
+    BufferID VBO = 0;
+    BufferID EBO = 0;
+
+    ~MeshComponent();
+  };
+
+  struct BoundingComponent {
+    Sphere sphere;
+    BoundingBox boundingBox;
+
+    bool isSphere = false;
   };
 
   struct MaterialComponent {
-      ResourceID materialID = INVALID_RESOURCE_ID;
-      glm::vec4 colorOverride = {1.0f, 1.0f, 1.0f, 1.0f}; 
-      float emission = 0.0f;
+    Material material;
   };
 
-  struct Camera {
-      float fov = 45.0f;
-      float nearPlane = 0.1f;
-      float farPlane = 100.0f;
+  struct CameraComponent {
+    Camera camera;
+
+    float fov = 45.0f;
+    float nearPlane = 0.1f;
+    float farPlane = 1000.0f;
+
+    bool isActive = true;
+
+    BufferID m_UBO = 0;
+
+    ~CameraComponent();
   };
 
-  struct CameraInputComponent {
-      float speed = 5.0f;
-      float sensitivity = 0.1f;
-      bool isActive = true;
-      glm::vec2 lastMouse = {0.0f, 0.0f};
-      bool firstMouse = true;
+  struct MovementComponent {
+    Movement movement;
+
   };
 
-  struct NativeScriptComponent {
-      std::function<void(Entity, float)> OnUpdate;
-  };
+  struct InputComponent {
+    glm::vec3 front = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 up = glm::vec3(0.0f, 1.0f,  0.0f);
+    float speed = 1.0f;
 
-  struct RayTracingMaterial {
-      glm::vec4 color = {1.0f, 1.0f, 1.0f, 1.0f};
-      float emission = 0.0f;
-      float roughness = 0.5f;
-      float metallic = 0.0f;
-      float padding = 0.0f;
+    std::unordered_map<int, Input> bindings;
+
   };
 
 }

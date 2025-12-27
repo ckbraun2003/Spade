@@ -1,8 +1,8 @@
 add_library(Spade STATIC)
 
 # Define source and include directories for Spade
-target_include_directories(Spade PUBLIC 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+target_include_directories(Spade PUBLIC
+        ../include
 )
 
 # Collect sources (globbing for simplicity in early stage, though explicit is better for larger projects)
@@ -13,9 +13,10 @@ file(GLOB_RECURSE SPADE_SOURCES CONFIGURE_DEPENDS
 target_sources(Spade PRIVATE ${SPADE_SOURCES})
 
 # Link dependencies
-target_link_libraries(Spade PUBLIC 
+target_link_libraries(Spade PUBLIC
     glfw
     glm
     imgui
     glad
+    Psapi
 )

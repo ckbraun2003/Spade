@@ -4,118 +4,118 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <format>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+
 #include <glm/glm.hpp>
 #include <glad/glad.h>
+
 #include "Spade/Core/Primitives.hpp"
+
+#ifndef GL_SHADER_STORAGE_BUFFER
+#define GL_SHADER_STORAGE_BUFFER 0x90D2
+#endif
+
+// --- Manual GL Compute Loader ---
+#ifndef GL_COMPUTE_SHADER
+#define GL_COMPUTE_SHADER 0x91B9
+#endif
+#ifndef GL_SHADER_STORAGE_BARRIER_BIT
+#define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000
+#endif
+#ifndef GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
+#define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
+#endif
+#ifndef GL_RGBA32F
+#define GL_RGBA32F 0x8814
+#endif
+#ifndef GL_WRITE_ONLY
+#define GL_WRITE_ONLY 0x88B9
+#endif
+#ifndef GL_READ_WRITE
+#define GL_READ_WRITE 0x88BA
+#endif
 
 namespace Spade {
 
-    // --- ID Types ---
-    using ResourceID = unsigned int;
-    const ResourceID INVALID_RESOURCE_ID = 0;
+  using BufferID = GLuint;
+  using ProgramID = GLuint;
 
-    // --- Base Resource ---
-    struct Resource {
-        ResourceID id = INVALID_RESOURCE_ID;
-        std::string name;
-        virtual ~Resource() = default;
+  class Resources
+  {
+  public:
+
+
+
+    // Buffer Creation
+    static BufferID CreateVertexArrayObject();
+    static BufferID CreateBuffer();
+
+    // Buffer Uploading
+    static void UploadVertexBufferObject(const std::vector<Vertex>& vertices, const BufferID& VBO);
+    static void UploadElementBufferObject(const std::vector<unsigned int>& indices, const BufferID& EBO);
+
+    template <typename T>
+    static void UploadShaderStorageBufferObject(const std::vector<T>& data, const BufferID& SSBO) {
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, SSBO);
+      glBufferData(GL_SHADER_STORAGE_BUFFER, data.size() * sizeof(T), data.data(), GL_DYNAMIC_DRAW);
     };
 
-    // --- Shape Types ---
-    enum class ShapeType {
-        Mesh,
-        AnalyticSphere,
-        AnalyticBox
+    template <typename T>
+    static void UploadUniformBufferObject(const T& object, const BufferID& UBO) {
+      glBindBuffer(GL_UNIFORM_BUFFER, UBO);
+      glBufferData(GL_UNIFORM_BUFFER, sizeof(T), &object, GL_STATIC_DRAW);
     };
 
-    // --- Mesh Resource ---
-    struct MeshResource : public Resource {
-        ShapeType type = ShapeType::Mesh; // Default to mesh
-        
-        unsigned int VAO = 0;
-        unsigned int VBO = 0;
-        unsigned int EBO = 0;
-        unsigned int indexCount = 0;
-        
-        // CPU Side Data (Kept for RayTracing/Collision)
-        std::vector<struct Vertex> vertices;
-        std::vector<unsigned int> indices;
+    // Buffer Updating
+    static void UpdateVertexBufferObject(const std::vector<Vertex>& vertices, const BufferID& VBO);
+    static void UpdateElementBufferObject(const std::vector<unsigned int>& indices, const BufferID& EBO);
 
-        ~MeshResource();
-        void Upload(const std::vector<struct Vertex>& vertices, const std::vector<unsigned int>& indices);
+    template <typename T>
+    static void UpdateShaderStorageBufferObject(const std::vector<T>& objects, const BufferID& SSBO) {
+      glBindBuffer(GL_SHADER_STORAGE_BUFFER, SSBO);
+      glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, objects.size() * sizeof(T), &objects.data());
     };
 
-    // --- Shader Resource ---
-    struct ShaderResource : public Resource {
-        unsigned int programID = 0;
-
-        ~ShaderResource();
-        void Load(const std::string& vertexSrc, const std::string& fragmentSrc);
-        void LoadFiles(const std::string& vertexPath, const std::string& fragmentPath);
-        void Use() const;
-        
-        // Helper to get location
-        int GetUniformLocation(const std::string& name) const;
+    template <typename T>
+    static void UpdateUniformBufferObject(const T& object, const BufferID& UBO) {
+      glBindBuffer(GL_UNIFORM_BUFFER, UBO);
+      glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(T), &object);
     };
 
-    // --- Material Resource ---
-    struct MaterialResource : public Resource {
-        ResourceID shaderID = INVALID_RESOURCE_ID;
-        
-        // Pipeline State
-        bool depthTest = true;
-        bool backfaceCulling = true;
-        bool blending = false;
+    // Uniform Setting
+    static void SetUniformUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value);}
 
-        // Default Properties (can be extended with a robust Uniform variant system later)
-        glm::vec4 baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
-        float data1 = 0.0f; // placeholder for roughness/metallic etc
-        
-        void ApplyState() const;
-    };
 
-    // --- Resource Manager ---
-    class ResourceManager {
+    // Buffer Binding
+    static void BindVertexBufferObject(const BufferID& bufferID) { glBindBuffer(GL_ARRAY_BUFFER, bufferID); }
+    static void BindElementBufferObject(const BufferID& bufferID) { glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bufferID); }
+    static void BindUniformBufferObject(const BufferID& bufferID) { glBindBuffer(GL_UNIFORM_BUFFER, bufferID); }
+    static void BindUniformToLocation(const int location, const BufferID& UBO) { glBindBufferBase(GL_UNIFORM_BUFFER, location, UBO); }
+    static void BindShaderStorageToLocation(const int location, const BufferID& SSBO) { glBindBufferBase(GL_SHADER_STORAGE_BUFFER, location, SSBO); }
+    static void BindShaderStorageBufferObject(const BufferID& bufferID) { glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferID); }
+    static void BindVertexArrayObject(const BufferID& bufferID) { glBindVertexArray(bufferID); }
+
+    // Buffer Unbinding
+    static void UnbindVertexArrayObject() { glBindVertexArray(0); }
+
+    // Shader Loading
+    static std::string LoadShaderFile(const std::string& fileName);
+    static unsigned int CreateVertexShader(const std::string& vertexShaderStream);
+    static unsigned int CreateFragmentShader(const std::string& fragmentShaderStream);
+    static ProgramID CreateShaderProgram(const std::string& vertexShaderFile, const std::string& fragmentShaderFile);
+    static void UseShaderProgram(const ProgramID& programID) { glUseProgram(programID); }
+
+  private:
+
+    class ResourcesException : public std::runtime_error
+    {
     public:
-        static ResourceManager& Get();
-
-        // Explicitly delete copy constructor and assignment operator for singleton pattern
-        ResourceManager(const ResourceManager&) = delete;
-        ResourceManager& operator=(const ResourceManager&) = delete;
-        
-        // Explicit shutdown to clear GL resources before Context destruction
-        void Shutdown(); 
-
-        // Generic Get/System
-        template<typename T>
-        T* GetResource(ResourceID id);
-
-        // Specific Creators
-        ResourceID CreateMesh(const std::string& name);
-        ResourceID CreateShader(const std::string& name);
-        ResourceID CreateMaterial(const std::string& name);
-
-        // Get by Name
-        ResourceID GetMeshID(const std::string& name);
-        ResourceID GetShaderID(const std::string& name);
-        ResourceID GetMaterialID(const std::string& name);
-
-    private:
-        ResourceManager() = default;
-        
-        ResourceID m_NextID = 1;
-
-        std::unordered_map<ResourceID, std::unique_ptr<Resource>> m_Resources;
-        std::unordered_map<std::string, ResourceID> m_NameMap;
+      explicit ResourcesException(const std::string& message);
     };
 
-    // Template Implementation
-    template<typename T>
-    T* ResourceManager::GetResource(ResourceID id) {
-        auto it = m_Resources.find(id);
-        if (it != m_Resources.end()) {
-            return dynamic_cast<T*>(it->second.get());
-        }
-        return nullptr;
-    }
+  };
+
 }

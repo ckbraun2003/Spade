@@ -3,29 +3,42 @@
 #include <memory>
 #include <string>
 #include <atomic>
+#include <typeinfo>
 #include <vector>
 #include <unordered_map>
 
-#include "Spade/Core/Primitives.hpp"
-
 namespace Spade {
 
-  // --- Type IDs ---
+  // Type IDS
   using ComponentTypeID = std::size_t;
   using EntityID = unsigned int;
   static const EntityID INVALID_ENTITY_ID = 0xFFFFFFFF;
 
+  // Basic parent object
+  class Object {
+  public:
+
+    Object(const std::string& name = "")
+      : m_Name(name)
+    { }
+
+    // Getters and Setters
+    [[nodiscard]] const std::string& GetName() const { return m_Name; }
+    void SetName(const std::string& name) { m_Name = name; }
+
+  private:
+    std::string m_Name;
+
+  };
+
   namespace Internal {
-      inline ComponentTypeID GetUniqueComponentID() {
-          static std::atomic<ComponentTypeID> lastID{0};
-          return lastID++;
-      }
+      ComponentTypeID GetUniqueComponentID();
   }
 
   template<typename T>
-  inline ComponentTypeID GetComponentTypeID() {
-      static ComponentTypeID typeID = Internal::GetUniqueComponentID();
-      return typeID;
+    inline ComponentTypeID GetComponentTypeID() {
+    static ComponentTypeID typeID = typeid(T).hash_code();
+    return typeID;
   }
 
   class IComponentPool {

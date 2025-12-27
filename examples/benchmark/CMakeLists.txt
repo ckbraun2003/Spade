@@ -1,7 +1,8 @@
-set(TARGET_NAME Benchmark)
+add_executable(Benchmark_SingleCubeNoMove SingleCubeNoMove.cpp)
+target_link_libraries(Benchmark_SingleCubeNoMove PRIVATE Spade)
 
-add_executable(${TARGET_NAME} main.cpp)
+add_executable(Benchmark_SingleCubeCameraMove SingleCubeCameraMove.cpp)
+target_link_libraries(Benchmark_SingleCubeCameraMove PRIVATE Spade)
 
-target_link_libraries(${TARGET_NAME} PRIVATE Spade)
-
-# Copy assets if needed (nothing specific yet)
+add_executable(Benchmark_CubeGridNoMove CubeGridNoMove.cpp)
+target_link_libraries(Benchmark_CubeGridNoMove PRIVATE Spade)
