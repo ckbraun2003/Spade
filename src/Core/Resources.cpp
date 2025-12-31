@@ -85,7 +85,47 @@ namespace Spade {
     return fragment;
   }
 
-  ProgramID Resources::CreateShaderProgram(const std::string &vertexShaderFile, const std::string &fragmentShaderFile) {
+  unsigned int Resources::CreateComputeShader(const std::string& computeShaderStream) {
+    const char* computeShaderCode = computeShaderStream.c_str();
+    int success;
+    char infoLog[512];
+
+    // Vertex Shader
+    unsigned int compute = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(compute, 1, &computeShaderCode, NULL);
+    glCompileShader(compute);
+    glGetShaderiv(compute, GL_COMPILE_STATUS, &success);
+    if(!success) {
+      glGetShaderInfoLog(compute, 512, NULL, infoLog);
+      throw ResourcesException(std::format("ERROR::SHADER::COMPUTE::COMPILATION_FAILED\n{}", infoLog));
+    };
+
+    return compute;
+  }
+
+  ProgramID Resources::CreateComputeProgram(const std::string &computeShaderFile) {
+    int success;
+    char infoLog[512];
+
+    unsigned int compute = CreateVertexShader(LoadShaderFile(computeShaderFile));
+
+    // Program ID
+    ProgramID programID = glCreateProgram();
+    glAttachShader(programID, compute);
+    glLinkProgram(programID);
+    glGetProgramiv(programID, GL_LINK_STATUS, &success);
+    if(!success) {
+      glGetProgramInfoLog(programID, 512, NULL, infoLog);
+      throw ResourcesException(std::format("ERROR::SHADER::PROGRAM::LINKING_FAILED\n{}", infoLog));
+    }
+
+    glDeleteShader(compute);
+
+    return programID;
+  }
+
+
+  ProgramID Resources::CreateRenderProgram(const std::string &vertexShaderFile, const std::string &fragmentShaderFile) {
     int success;
     char infoLog[512];
 

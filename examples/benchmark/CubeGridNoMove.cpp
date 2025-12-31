@@ -21,9 +21,20 @@ int main() {
   EntityID cameraID = universe.CreateEntityID();
   Entity camera = Entity(cameraID, &universe);
   camera.AddComponent<TransformComponent>();
-  camera.GetComponent<TransformComponent>()->transform.position = {0.0f, 15.0f, 120.0f};
+  camera.GetComponent<TransformComponent>()->transform.position = {0.0f, 1.0f, 20.0f};
 
   camera.AddComponent<CameraComponent>();
+
+  EntityID cubeID = universe.CreateEntityID();
+  Entity cube = Entity(cubeID, &universe);
+
+  cube.AddComponent<TransformComponent>();
+  cube.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
+  cube.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
+  cube.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
+
+  cube.AddComponent<MeshComponent>();
+  cube.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
 
   // 1. Cube Grid
   int gridSize = 50;
@@ -31,42 +42,33 @@ int main() {
   float offset = (gridSize * spacing) / 2.0f;
 
   for (int x = 0; x < gridSize; ++x) {
-    for (int z = 0; z < gridSize; ++z) {
-      EntityID cubeID = universe.CreateEntityID();
-      Entity cube = Entity(cubeID, &universe);
-      cube.AddComponent<TransformComponent>();
-      cube.GetComponent<TransformComponent>()->transform.position = {
-        (x * spacing) - offset,
-        0.0f,
-        (z * spacing) - offset
-      };
-      cube.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
-      cube.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
+    for (int y = 0; y < gridSize; ++y) {
+      for (int z = 0; z < gridSize; ++z) {
+        Transform transform;
+        transform.position = {
+          (x * spacing) - offset,
+          (y * spacing) - offset,
+          (z * spacing) - offset
+        };
+        transform.rotation = {1.0, 0.0, 0.0, 0.0};
+        transform.scale = {1.0, 1.0, 1.0};
 
-      cube.AddComponent<MeshComponent>();
-      cube.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
-
-      cube.AddComponent<MaterialComponent>();
-      cube.GetComponent<MaterialComponent>()->material.color = {
-        float(x) / float(gridSize - 1),
-        0.0f,
-        float(z) / float(gridSize - 1),
-        0.0f
-      };
+        cube.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
+      }
     }
   }
 
   // Setup Window
   engine.SetupEngineWindow(1920, 1080, "Spade");
 
-  engine.InitializeUniverse(universe);
-
+  engine.LoadMeshBuffers(universe);
+  engine.LoadMeshBuffers(universe);
+  engine.LoadCameraBuffer(universe);
 
   // Begin Engine Loop
   while (engine.IsRunning()) {
     // FPS / MEMORY counter
     std::cout << "FPS: " << engine.GetFPS() << " | Mem: " << engine.GetMemory() << " MB" << std::endl;
-
 
     engine.DrawScene(universe);
   }

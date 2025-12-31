@@ -21,7 +21,7 @@ int main() {
   EntityID cameraID = universe.CreateEntityID();
   Entity camera = Entity(cameraID, &universe);
   camera.AddComponent<TransformComponent>();
-  camera.GetComponent<TransformComponent>()->transform.position = {0.0, 1.0, 5.0};
+  camera.GetComponent<TransformComponent>()->transform.position = {0.0f, 1.0f, 20.0f};
 
   camera.AddComponent<CameraComponent>();
 
@@ -33,7 +33,6 @@ int main() {
   camera.GetComponent<InputComponent>()->bindings[GLFW_KEY_A] = MoveLeft;
   camera.GetComponent<InputComponent>()->bindings[GLFW_KEY_D] = MoveRight;
 
-  // Create Cube
   EntityID cubeID = universe.CreateEntityID();
   Entity cube = Entity(cubeID, &universe);
 
@@ -45,12 +44,27 @@ int main() {
   cube.AddComponent<MeshComponent>();
   cube.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
 
-  Transform transform;
-  transform.position = {0.0, 0.0, 0.0};
-  transform.rotation = {1.0, 0.0, 0.0, 0.0};
-  transform.scale = {1.0, 1.0, 1.0};
+  // 1. Cube Grid
+  int gridSize = 10;
+  float spacing = 2.0f;
+  float offset = (gridSize * spacing) / 2.0f;
 
-  cube.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
+  for (int x = 0; x < gridSize; ++x) {
+    for (int y = 0; y < gridSize; ++y) {
+      for (int z = 0; z < gridSize; ++z) {
+        Transform transform;
+        transform.position = {
+          (x * spacing) - offset,
+          (y * spacing) - offset,
+          (z * spacing) - offset
+        };
+        transform.rotation = {1.0, 0.0, 0.0, 0.0};
+        transform.scale = {1.0, 1.0, 1.0};
+
+        cube.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
+      }
+    }
+  }
 
   // Setup Window
   engine.SetupEngineWindow(1920, 1080, "Spade");
@@ -64,13 +78,9 @@ int main() {
     // FPS / MEMORY counter
     std::cout << "FPS: " << engine.GetFPS() << " | Mem: " << engine.GetMemory() << " MB" << std::endl;
 
-
-    // Process Input
     engine.ProcessInput(universe);
 
-    // Draw meshes
     engine.DrawScene(universe);
-
   }
 
   return 0;

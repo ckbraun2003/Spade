@@ -118,25 +118,18 @@ namespace Spade {
     float padding2;
   };
 
+  struct Motion {
+    glm::vec3 velocity = {0.0, 0.0, 0.0};
+    float mass = 1;
+    glm::vec3 acceleration = {0.0, 0.0, 0.0};
+    float padding;
+  };
+
   struct Camera {
     glm::mat4 view;
     glm::mat4 projection;
     glm::mat4 viewInverse;
     glm::mat4 projInverse;
-  };
-
-  struct Movement {
-    glm::vec3 front;
-    glm::vec3 up;
-
-    float mass;
-    glm::vec3 velocity;
-    glm::vec3 acceleration;
-  };
-
-  struct RenderTable {
-    unsigned int transformIndex;
-    unsigned int materialIndex;
   };
 
   Mesh GenerateQuad(float size);

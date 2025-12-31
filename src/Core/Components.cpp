@@ -28,14 +28,4 @@ namespace Spade {
     if (EBO) glDeleteBuffers(1, &EBO);
   }
 
-  CameraComponent::~CameraComponent() {
-    if (m_UBO) glDeleteBuffers(1, &m_UBO);
-  }
-
-  void BasicMovement(Transform& transform, Movement& movement, float deltaTime) {
-
-    transform.position += movement.velocity * deltaTime;
-
-  }
-
 }

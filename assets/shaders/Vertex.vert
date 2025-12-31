@@ -16,24 +16,20 @@ struct Transform {
     vec3 scale;
 };
 
-struct RenderTable {
-    uint transformIndex;
-    uint materialIndex;
-};
-
 layout(std140, binding = 0) uniform CameraData {
     Camera camera;
 };
 
-layout(location = 1) uniform uint u_RenderTableIndex;
-
-layout(std430, binding = 2) buffer RenderTableData {
-    RenderTable renderTables[];
+layout(std430, binding = 1) buffer EntityTransformData {
+    Transform entityTransforms[];
 };
 
-layout(std430, binding = 3) buffer TransformData {
-    Transform transforms[];
+layout(std430, binding = 2) buffer InstanceTransformData {
+    Transform instanceTransforms[];
 };
+
+layout(location = 5) uniform uint entityTransformIndex;
+layout(location = 6) uniform uint instanceTransformStartIndex;
 
 // Helper: Convert Quaternion (x,y,z,w) to Rotation Matrix
 mat4 quatToMat4(vec4 q) {
@@ -73,18 +69,27 @@ mat4 BuildModelMatrix(vec3 position, vec4 rotation, vec3 scale) {
 
 out vec3 vNormal;
 out vec3 vWorlPosition;
-out flat uint vMaterialIndex;
 
 void main() {
     vNormal = aNormal;
 
-    RenderTable renderTable = renderTables[u_RenderTableIndex];
-    Transform transform = transforms[renderTable.transformIndex];
+    // 1. Get per-instance transform
+    Transform entityTransform = entityTransforms[entityTransformIndex];
 
-    mat4 model = BuildModelMatrix(transform.position, transform.rotation, transform.scale);
+    Transform instanceTransform = instanceTransforms[gl_InstanceID + instanceTransformStartIndex];
+
+    // 2. Build per-instance model matrix
+    mat4 instanceModel = BuildModelMatrix(instanceTransform.position, instanceTransform.rotation, instanceTransform.scale);
+
+    // 3. Build per-entity model matrix
+    mat4 entityModel = BuildModelMatrix(entityTransform.position, entityTransform.rotation, entityTransform.scale);
+
+    // 4. Combine them
+    mat4 model = entityModel * instanceModel;
+
+    // 5. Compute world position
     vWorlPosition = vec3(model * vec4(aPos, 1.0));
 
+    // 6. Final clip-space position
     gl_Position = camera.projection * camera.view * model * vec4(aPos, 1.0);
-
-    vMaterialIndex = renderTable.materialIndex;
 }

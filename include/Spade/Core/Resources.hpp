@@ -76,7 +76,7 @@ namespace Spade {
     template <typename T>
     static void UpdateShaderStorageBufferObject(const std::vector<T>& objects, const BufferID& SSBO) {
       glBindBuffer(GL_SHADER_STORAGE_BUFFER, SSBO);
-      glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, objects.size() * sizeof(T), &objects.data());
+      glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, objects.size() * sizeof(T), objects.data());
     };
 
     template <typename T>
@@ -86,8 +86,8 @@ namespace Spade {
     };
 
     // Uniform Setting
-    static void SetUniformUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value);}
-
+    static void SetUniformUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value); }
+    static void SetUniformFloat(const int location, const float value) { glUniform1f(location, value); }
 
     // Buffer Binding
     static void BindVertexBufferObject(const BufferID& bufferID) { glBindBuffer(GL_ARRAY_BUFFER, bufferID); }
@@ -105,8 +105,11 @@ namespace Spade {
     static std::string LoadShaderFile(const std::string& fileName);
     static unsigned int CreateVertexShader(const std::string& vertexShaderStream);
     static unsigned int CreateFragmentShader(const std::string& fragmentShaderStream);
-    static ProgramID CreateShaderProgram(const std::string& vertexShaderFile, const std::string& fragmentShaderFile);
-    static void UseShaderProgram(const ProgramID& programID) { glUseProgram(programID); }
+    static unsigned int CreateComputeShader(const std::string& computeShaderStream);
+
+    static ProgramID CreateComputeProgram(const std::string& computeShaderStream);
+    static ProgramID CreateRenderProgram(const std::string& vertexShaderFile, const std::string& fragmentShaderFile);
+    static void UseProgram(const ProgramID& programID) { glUseProgram(programID); }
 
   private:
 

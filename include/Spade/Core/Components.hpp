@@ -30,8 +30,18 @@ namespace Spade {
     glm::vec3 GetUp() const;
   };
 
+  struct MotionComponent {
+    Motion motion;
+  };
+
   struct MeshComponent {
     Mesh mesh;
+
+    std::vector<Transform> instanceTransforms;
+    std::vector<Motion> instanceMotions;
+
+    unsigned int entityTransformIndex = 0;
+    unsigned int instanceTransformStartIndex = 0;
 
     BufferID VAO = 0;
     BufferID VBO = 0;
@@ -54,20 +64,11 @@ namespace Spade {
   struct CameraComponent {
     Camera camera;
 
-    float fov = 45.0f;
+    float fov = 90.0f;
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
 
     bool isActive = true;
-
-    BufferID m_UBO = 0;
-
-    ~CameraComponent();
-  };
-
-  struct MovementComponent {
-    Movement movement;
-
   };
 
   struct InputComponent {
