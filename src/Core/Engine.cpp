@@ -178,7 +178,7 @@ namespace Spade {
 
   }
 
-  void Engine::UpdatePhysics(Universe &universe) {
+  void Engine::UpdateMotion(Universe &universe) {
     if (m_ComputeProgram == 0) {
       m_ComputeProgram = Resources::CreateComputeProgram("assets/shaders/Compute.comp");
     }
@@ -354,6 +354,12 @@ namespace Spade {
     m_WindowSize = { (float)width, (float)height };
 
     glEnable(GL_DEPTH_TEST);
+
+    if(glDispatchCompute) return;
+    glTexStorage2D = (MY_PFNGLTEXSTORAGE2DPROC)glfwGetProcAddress("glTexStorage2D");
+    glBindImageTexture = (MY_PFNGLBINDIMAGETEXTUREPROC)glfwGetProcAddress("glBindImageTexture");
+    glDispatchCompute = (MY_PFNGLDISPATCHCOMPUTEPROC)glfwGetProcAddress("glDispatchCompute");
+    glMemoryBarrier = (MY_PFNGLMEMORYBARRIERPROC)glfwGetProcAddress("glMemoryBarrier");
   }
 
   void Engine::UpdateStatistics() {

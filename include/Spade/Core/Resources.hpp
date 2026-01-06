@@ -11,6 +11,7 @@
 
 #include <glm/glm.hpp>
 #include <glad/glad.h>
+#include <GLFW/glfw3.h>
 
 #include "Spade/Core/Primitives.hpp"
 
@@ -37,6 +38,17 @@
 #ifndef GL_READ_WRITE
 #define GL_READ_WRITE 0x88BA
 #endif
+
+// Typedefs (suffixed to avoid collision if glad has them but hides them)
+typedef void (APIENTRY *MY_PFNGLTEXSTORAGE2DPROC) (GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
+typedef void (APIENTRY *MY_PFNGLBINDIMAGETEXTUREPROC) (GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format);
+typedef void (APIENTRY *MY_PFNGLDISPATCHCOMPUTEPROC) (GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z);
+typedef void (APIENTRY *MY_PFNGLMEMORYBARRIERPROC) (GLbitfield barriers);
+
+static MY_PFNGLTEXSTORAGE2DPROC glTexStorage2D = nullptr;
+static MY_PFNGLBINDIMAGETEXTUREPROC glBindImageTexture = nullptr;
+static MY_PFNGLDISPATCHCOMPUTEPROC glDispatchCompute = nullptr;
+static MY_PFNGLMEMORYBARRIERPROC glMemoryBarrier = nullptr;
 
 namespace Spade {
 

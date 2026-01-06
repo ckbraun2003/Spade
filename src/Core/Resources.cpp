@@ -107,7 +107,7 @@ namespace Spade {
     int success;
     char infoLog[512];
 
-    unsigned int compute = CreateVertexShader(LoadShaderFile(computeShaderFile));
+    unsigned int compute = CreateComputeShader(LoadShaderFile(computeShaderFile));
 
     // Program ID
     ProgramID programID = glCreateProgram();

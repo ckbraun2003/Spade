@@ -9,3 +9,6 @@ target_link_libraries(Benchmark_CubeGridNoMove PRIVATE Spade)
 
 add_executable(Benchmark_CubeGridCameraMove CubeGridCameraMove.cpp)
 target_link_libraries(Benchmark_CubeGridCameraMove PRIVATE Spade)
+
+add_executable(Benchmark_CubeGridCubeMove CubeGridCubeMove.cpp)
+target_link_libraries(Benchmark_CubeGridCubeMove PRIVATE Spade)

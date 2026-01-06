@@ -29,7 +29,7 @@ namespace Spade {
     void LoadMeshBuffers(Universe& universe);
 
     // Physics
-    void UpdatePhysics(Universe& universe);
+    void UpdateMotion(Universe& universe);
 
     // Draw
     void DrawScene(Universe& universe);
@@ -75,7 +75,7 @@ namespace Spade {
     unsigned int m_TotalFrames = 0;
 
     // Camera (--Cache--)
-    CameraComponent m_ActiveCamera;
+    CameraComponent m_ActiveCamera{};
 
     // Shader
     ProgramID m_ShaderProgram = 0;

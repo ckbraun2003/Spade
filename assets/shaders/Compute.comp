@@ -35,5 +35,19 @@ layout(location = 6) uniform uint instanceTransformStartIndex;
 layout(location = 7) uniform float deltaTime;
 
 void main() {
+    // Get Transform
+    Transform entityTransform = entityTransforms[entityTransformIndex];
 
+    Transform instanceTransform = instanceTransforms[gl_GlobalInvocationID.x + instanceTransformStartIndex];
+
+    // Get Motion
+    Motion entityMotion = entityMotions[entityTransformIndex];
+
+    Motion instanceMotion = instanceMotions[gl_GlobalInvocationID.x + instanceTransformStartIndex];
+
+    entityTransform.position += entityMotion.velocity;
+    instanceTransform.position += instanceMotion.velocity + entityMotion.velocity;
+
+    entityTransforms[entityTransformIndex] = entityTransform;
+    instanceTransforms[gl_GlobalInvocationID.x + instanceTransformStartIndex] = instanceTransform;
 }

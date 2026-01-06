@@ -42,6 +42,11 @@ int main() {
   cube.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
   cube.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
 
+  cube.AddComponent<MotionComponent>();
+  cube.GetComponent<MotionComponent>()->motion.velocity = {0.0f, 0.0f, 0.0f};
+  cube.GetComponent<MotionComponent>()->motion.acceleration = {0.0f, 0.0f, 0.0f};
+  cube.GetComponent<MotionComponent>()->motion.mass = 1.0;
+
   cube.AddComponent<MeshComponent>();
   cube.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
 
@@ -50,12 +55,17 @@ int main() {
   transform.rotation = {1.0, 0.0, 0.0, 0.0};
   transform.scale = {1.0, 1.0, 1.0};
 
+  Motion motion;
+  motion.velocity = {0.0f, 0.0f, 0.001f};
+  motion.mass = 1.0;
+  motion.acceleration = {0.0f, 0.0f, 0.0f};
+
   cube.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
+  cube.GetComponent<MeshComponent>()->instanceMotions.push_back(motion);
 
   // Setup Window
   engine.SetupEngineWindow(1920, 1080, "Spade");
 
-  engine.LoadMeshBuffers(universe);
   engine.LoadMeshBuffers(universe);
   engine.LoadCameraBuffer(universe);
 
@@ -67,6 +77,9 @@ int main() {
 
     // Process Input
     engine.ProcessInput(universe);
+
+    // Update Motion
+    engine.UpdateMotion(universe);
 
     // Draw meshes
     engine.DrawScene(universe);
