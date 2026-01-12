@@ -4,17 +4,16 @@ namespace Spade {
 
   Engine::~Engine() {
     glDeleteBuffers(1, &m_SSBO_InstanceTransforms);
-    glDeleteBuffers(1, &m_SSBO_EntityTransforms);
+    glDeleteBuffers(1, &m_SSBO_InstanceMaterials);
     glDeleteBuffers(1, &m_SSBO_InstanceMotions);
-    glDeleteBuffers(1, &m_SSBO_EntityMotions);
-
-    glDeleteBuffers(1, &m_UBO_EntityTransformIndex);
-    glDeleteBuffers(1, &m_UBO_InstanceTransformStartIndex);
+    glDeleteBuffers(1, &m_SSBO_InstanceToEntityIndex);
 
     glDeleteBuffers(1, &m_UBO_Camera);
 
     glDeleteProgram(m_ShaderProgram);
-    glDeleteProgram(m_ComputeProgram);
+    glDeleteProgram(m_MotionProgram);
+    glDeleteProgram(m_CollisionProgram);
+    glDeleteProgram(m_GravityProgram);
 
     glfwDestroyWindow(m_GLFWwindow);
     glfwTerminate();
@@ -26,14 +25,14 @@ namespace Spade {
 
     for (size_t c = 0; c < cameraPool.m_Data.size(); ++c) {
       CameraComponent& cameraComponent = cameraPool.m_Data[c];
-      const EntityID entityID = transformPool.m_IndexToEntity[c];
+      const EntityID entityID = cameraPool.m_IndexToEntity[c];
 
       TransformComponent* transformComponent = transformPool.Get(entityID);
 
       if (cameraComponent.isActive) {
 
-        m_ActiveCamera.camera.projection = glm::perspective(glm::radians(m_ActiveCamera.fov),
-          ((float)m_WindowSize.x / (float)m_WindowSize.y), m_ActiveCamera.nearPlane, m_ActiveCamera.farPlane);
+        m_ActiveCamera.camera.projection = glm::perspective(glm::radians(cameraComponent.fov),
+          ((float)m_WindowSize.x / (float)m_WindowSize.y), cameraComponent.nearPlane, cameraComponent.farPlane);
         m_ActiveCamera.camera.view = glm::inverse(transformComponent->GetModel());
         m_ActiveCamera.camera.viewInverse = m_ActiveCamera.camera.view;
         m_ActiveCamera.camera.projInverse = glm::inverse(m_ActiveCamera.camera.projection);
@@ -53,42 +52,29 @@ namespace Spade {
 
   }
 
-  void Engine::LoadMeshBuffers(Universe &universe) {
-    // Establish and reserve storage vectors
-    std::vector<Transform> entityTransforms;
-    std::vector<Transform> instanceTransforms;
+  void Engine::LoadInstanceBuffers(Universe &universe) {
 
-    std::vector<Motion> entityMotions;
-    std::vector<Motion> instanceMotions;
-
-    unsigned int entityTransformsSize = 0;
-    unsigned int entityTransformIndex = 0;
-
-    unsigned int instanceTransformsSize = 0;
-    unsigned int instanceTransformStartIndex = 0;
+    m_InstanceTransforms.clear();
+    m_InstanceMotions.clear();
+    m_InstanceMaterials.clear();
+    m_InstanceToEntityIndex.clear();
 
     auto& meshPool = universe.GetPool<MeshComponent>();
-    auto& transformPool = universe.GetPool<TransformComponent>();
-    auto& motionPool = universe.GetPool<MotionComponent>();
+
+    unsigned int bufferSize = 0;
 
     for(auto & meshComponent : meshPool.m_Data) {
-      ++entityTransformsSize;
-      instanceTransformsSize+= meshComponent.instanceTransforms.size();
+      bufferSize+= meshComponent.instanceTransforms.size();
     }
 
-    entityTransforms.reserve(entityTransformsSize);
-    instanceTransforms.reserve(instanceTransformsSize);
-
-    entityMotions.reserve(entityTransformsSize);
-    instanceMotions.reserve(instanceTransformsSize);
+    m_InstanceTransforms.reserve(bufferSize);
+    m_InstanceMotions.reserve(bufferSize);
+    m_InstanceMaterials.reserve(bufferSize);
+    m_InstanceToEntityIndex.reserve(bufferSize);
 
     // Loop through each mesh
     for(size_t i = 0; i < meshPool.m_Data.size(); ++i) {
       MeshComponent& meshComponent = meshPool.m_Data[i];
-      const EntityID entityID = meshPool.m_IndexToEntity[i];
-
-      TransformComponent* transformComponent = transformPool.Get(entityID);
-      MotionComponent* motionComponent = motionPool.Get(entityID);
 
       // Load Vertex Buffer info
       if (meshComponent.VAO == 0) {
@@ -113,94 +99,83 @@ namespace Spade {
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoords));
       }
 
-      // Set mesh indices
-      meshComponent.entityTransformIndex = entityTransformIndex;
-      meshComponent.instanceTransformStartIndex = instanceTransformStartIndex;
-
-      entityTransforms.insert(entityTransforms.end(), transformComponent->transform);
-      instanceTransforms.insert(instanceTransforms.end(), meshComponent.instanceTransforms.begin(), meshComponent.instanceTransforms.end());
-
-      entityMotions.insert(entityMotions.end(), motionComponent->motion);
-      instanceMotions.insert(instanceMotions.end(), meshComponent.instanceMotions.begin(), meshComponent.instanceMotions.end());
-
-      ++entityTransformIndex;
-      instanceTransformStartIndex+=meshComponent.instanceTransforms.size();
-    }
-
-    if (m_SSBO_EntityTransforms == 0) {
-      m_SSBO_EntityTransforms = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<Transform>(entityTransforms, m_SSBO_EntityTransforms);
-      Resources::BindShaderStorageToLocation(1, m_SSBO_EntityTransforms);
+      meshComponent.instanceStartIndex = m_InstanceToEntityIndex.size();
+      // Insert Values into buffers
+      m_InstanceTransforms.insert(m_InstanceTransforms.end(), meshComponent.instanceTransforms.begin(), meshComponent.instanceTransforms.end());
+      m_InstanceMotions.insert(m_InstanceMotions.end(), meshComponent.instanceMotions.begin(), meshComponent.instanceMotions.end());
+      m_InstanceMaterials.insert(m_InstanceMaterials.end(), meshComponent.instanceMaterials.begin(), meshComponent.instanceMaterials.end());
+      m_InstanceToEntityIndex.insert(m_InstanceToEntityIndex.end(), meshComponent.instanceTransforms.size(), i);
     }
 
 
     if (m_SSBO_InstanceTransforms == 0) {
       m_SSBO_InstanceTransforms = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadShaderStorageBufferObject<Transform>(instanceTransforms, m_SSBO_InstanceTransforms);
-      Resources::BindShaderStorageToLocation(2, m_SSBO_InstanceTransforms);
+      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_InstanceTransforms);
+      Resources::BindShaderStorageToLocation(5, m_SSBO_InstanceTransforms);
     }
-
-    if (m_SSBO_EntityMotions == 0) {
-      m_SSBO_EntityMotions = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<Motion>(entityMotions, m_SSBO_EntityMotions);
-      Resources::BindShaderStorageToLocation(3, m_SSBO_EntityMotions);
-    }
-
 
     if (m_SSBO_InstanceMotions == 0) {
       m_SSBO_InstanceMotions = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadShaderStorageBufferObject<Motion>(instanceMotions, m_SSBO_InstanceMotions);
-      Resources::BindShaderStorageToLocation(4, m_SSBO_InstanceMotions);
+      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_InstanceMotions);
+      Resources::BindShaderStorageToLocation(6, m_SSBO_InstanceMotions);
     }
 
-    if (m_UBO_EntityTransformIndex == 0) {
-      m_UBO_EntityTransformIndex = Resources::CreateBuffer();
+    if (m_SSBO_InstanceMaterials == 0) {
+      m_SSBO_InstanceMaterials = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadUniformBufferObject<unsigned int>(0, m_UBO_EntityTransformIndex);
-      Resources::BindUniformToLocation(5, m_UBO_EntityTransformIndex);
+      Resources::UploadShaderStorageBufferObject<Material>(m_InstanceMaterials, m_SSBO_InstanceMaterials);
+      Resources::BindShaderStorageToLocation(7, m_SSBO_InstanceMaterials);
     }
 
-    if (m_UBO_InstanceTransformStartIndex == 0) {
-      m_UBO_InstanceTransformStartIndex = Resources::CreateBuffer();
+    if (m_SSBO_InstanceToEntityIndex == 0) {
+      m_SSBO_InstanceToEntityIndex = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadUniformBufferObject<unsigned int>(0, m_UBO_InstanceTransformStartIndex);
-      Resources::BindUniformToLocation(6, m_UBO_InstanceTransformStartIndex);
+      Resources::UploadShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_SSBO_InstanceToEntityIndex);
+      Resources::BindShaderStorageToLocation(8, m_SSBO_InstanceToEntityIndex);
     }
 
-    Resources::UpdateShaderStorageBufferObject<Transform>(entityTransforms, m_SSBO_EntityTransforms);
-    Resources::UpdateShaderStorageBufferObject<Transform>(instanceTransforms, m_SSBO_InstanceTransforms);
-    Resources::UpdateShaderStorageBufferObject<Motion>(entityMotions, m_SSBO_EntityMotions);
-    Resources::UpdateShaderStorageBufferObject<Motion>(instanceMotions, m_SSBO_InstanceMotions);
-
+    Resources::UpdateShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_InstanceTransforms);
+    Resources::UpdateShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_InstanceMotions);
+    Resources::UpdateShaderStorageBufferObject<Material>(m_InstanceMaterials, m_SSBO_InstanceMaterials);
+    Resources::UpdateShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_SSBO_InstanceToEntityIndex);
   }
 
-  void Engine::UpdateMotion(Universe &universe) {
-    if (m_ComputeProgram == 0) {
-      m_ComputeProgram = Resources::CreateComputeProgram("assets/shaders/Compute.comp");
+
+  void Engine::EnableMotion() {
+    if (m_MotionProgram == 0) {
+      m_MotionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]Motion.comp");
     }
 
-    auto& meshPool = universe.GetPool<MeshComponent>();
+    GLuint groups = (m_InstanceMotions.size() + 255) / 256;
 
-    for(auto& meshComponent : meshPool.m_Data) {
-      Resources::UseProgram(m_ComputeProgram);
+    Resources::UseProgram(m_MotionProgram);
+    Resources::SetUniformFloat(4, m_DeltaTime);
 
-      Resources::SetUniformUnsignedInt(5, meshComponent.entityTransformIndex);
-      Resources::SetUniformUnsignedInt(6, meshComponent.instanceTransformStartIndex);
-      Resources::SetUniformFloat(7, m_DeltaTime);
-
-      GLuint groups = (meshComponent.instanceMotions.size() + 15) / 16;
-
-      glDispatchCompute(groups, 1, 1);
-
-    }
-
+    glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
+  void Engine::EnableGravity(float gravity) {
+    if (m_GravityProgram == 0) {
+      m_GravityProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GlobalGravity.comp");
+    }
+
+    GLuint groups = (m_InstanceMotions.size() + 255) / 256;
+
+    Resources::UseProgram(m_GravityProgram);
+    Resources::SetUniformFloat(4, m_DeltaTime);
+    Resources::SetUniformFloat(14, gravity);
+
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  }
+
+  void Engine::EnableCollision(float bounds) {
+
+  }
 
   void Engine::DrawScene(Universe &universe) {
     UpdateStatistics();
@@ -217,8 +192,7 @@ namespace Spade {
     for(auto& meshComponent : meshPool.m_Data) {
       Resources::UseProgram(m_ShaderProgram);
 
-      Resources::SetUniformUnsignedInt(5, meshComponent.entityTransformIndex);
-      Resources::SetUniformUnsignedInt(6, meshComponent.instanceTransformStartIndex);
+      Resources::SetUniformUnsignedInt(3, meshComponent.instanceStartIndex);
 
       Resources::BindVertexArrayObject(meshComponent.VAO);
       glDrawElementsInstanced(GL_TRIANGLES, meshComponent.mesh.indices.size(), GL_UNSIGNED_INT, 0, meshComponent.instanceTransforms.size());
@@ -388,8 +362,6 @@ namespace Spade {
   bool Engine::IsKeyPressed(int key) {
     return glfwGetKey(m_GLFWwindow, key) == GLFW_PRESS;
   }
-
-
 
   Engine::EngineException::EngineException(const std::string &message) : runtime_error(message) {}
 }

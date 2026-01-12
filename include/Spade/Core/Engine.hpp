@@ -26,12 +26,16 @@ namespace Spade {
     ~Engine();
 
     void LoadCameraBuffer(Universe& universe);
-    void LoadMeshBuffers(Universe& universe);
+    void LoadInstanceBuffers(Universe& universe);
 
-    // Physics
-    void UpdateMotion(Universe& universe);
+    // Physics Systems
+    void EnableGravity(float gravity);
+    void EnableMotion();
+    void EnableCollision(float bounds);
 
-    // Draw
+    // Render Systems
+
+    // Main functions
     void DrawScene(Universe& universe);
 
     // Input Handling
@@ -74,22 +78,28 @@ namespace Spade {
     float m_FPS = 0.0f;
     unsigned int m_TotalFrames = 0;
 
-    // Camera (--Cache--)
+    // --Cache--
+    std::vector<Transform> m_InstanceTransforms;
+    std::vector<Motion> m_InstanceMotions;
+    std::vector<Material> m_InstanceMaterials;
+    std::vector<unsigned int> m_InstanceToEntityIndex;
+
     CameraComponent m_ActiveCamera{};
 
     // Shader
     ProgramID m_ShaderProgram = 0;
-    ProgramID m_ComputeProgram = 0;
+    ProgramID m_MotionProgram = 0;
+    ProgramID m_CollisionProgram = 0;
+    ProgramID m_GravityProgram = 0;
+
+    // Buffers
+    BufferID m_SSBO_InstanceTransforms = 0;
+    BufferID m_SSBO_InstanceMotions = 0;
+    BufferID m_SSBO_InstanceMaterials = 0;
+    BufferID m_SSBO_InstanceToEntityIndex = 0;
+
     BufferID m_UBO_Camera = 0;
 
-    BufferID m_SSBO_EntityTransforms = 0;
-    BufferID m_SSBO_InstanceTransforms = 0;
-
-    BufferID m_SSBO_EntityMotions = 0;
-    BufferID m_SSBO_InstanceMotions = 0;
-
-    BufferID m_UBO_EntityTransformIndex = 0;
-    BufferID m_UBO_InstanceTransformStartIndex = 0;
 
     class EngineException : public std::runtime_error
     {

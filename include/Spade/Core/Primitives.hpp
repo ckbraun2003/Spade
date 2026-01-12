@@ -89,7 +89,7 @@ namespace Spade {
   };
 
   struct Material {
-    glm::vec4 color = {0.0, 0.0, 0.0, 0.0};
+    glm::vec4 color = {1.0, 1.0, 1.0, 1.0};
     float emission = 0.0;
     float roughness = 0.0;
     float metallic = 0.0;
@@ -101,13 +101,10 @@ namespace Spade {
     Vertex vertexB;
     Vertex vertexC;
 
-    Material material;
   };
 
   struct Sphere {
-    glm::vec3 center;
     float radius;
-    Material material;
   };
 
   struct Transform {

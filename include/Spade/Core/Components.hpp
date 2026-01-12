@@ -39,9 +39,9 @@ namespace Spade {
 
     std::vector<Transform> instanceTransforms;
     std::vector<Motion> instanceMotions;
+    std::vector<Material> instanceMaterials;
 
-    unsigned int entityTransformIndex = 0;
-    unsigned int instanceTransformStartIndex = 0;
+    unsigned int instanceStartIndex = 0;
 
     BufferID VAO = 0;
     BufferID VBO = 0;

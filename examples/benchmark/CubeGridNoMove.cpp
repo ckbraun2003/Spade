@@ -66,7 +66,7 @@ int main() {
   // Setup Window
   engine.SetupEngineWindow(1920, 1080, "Spade");
 
-  engine.LoadMeshBuffers(universe);
+  engine.LoadInstanceBuffers(universe);
   engine.LoadCameraBuffer(universe);
 
   // Begin Engine Loop

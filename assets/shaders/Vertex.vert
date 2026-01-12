@@ -20,16 +20,12 @@ layout(std140, binding = 0) uniform CameraData {
     Camera camera;
 };
 
-layout(std430, binding = 1) buffer EntityTransformData {
-    Transform entityTransforms[];
-};
-
-layout(std430, binding = 2) buffer InstanceTransformData {
+layout(std430, binding = 5) buffer InstanceTransformData {
     Transform instanceTransforms[];
 };
 
-layout(location = 5) uniform uint entityTransformIndex;
-layout(location = 6) uniform uint instanceTransformStartIndex;
+layout(location = 3) uniform uint InstanceStartIndex;
+flat out uint v_GlobalInstanceIndex;
 
 // Helper: Convert Quaternion (x,y,z,w) to Rotation Matrix
 mat4 quatToMat4(vec4 q) {
@@ -67,29 +63,13 @@ mat4 BuildModelMatrix(vec3 position, vec4 rotation, vec3 scale) {
     return T * R * S;
 }
 
-out vec3 vNormal;
-out vec3 vWorlPosition;
-
 void main() {
-    vNormal = aNormal;
+    uint index = gl_InstanceID + InstanceStartIndex;
 
-    // 1. Get per-instance transform
-    Transform entityTransform = entityTransforms[entityTransformIndex];
+    Transform instanceTransform = instanceTransforms[index];
 
-    Transform instanceTransform = instanceTransforms[gl_InstanceID + instanceTransformStartIndex];
+    mat4 model = BuildModelMatrix(instanceTransform.position, instanceTransform.rotation, instanceTransform.scale);
 
-    // 2. Build per-instance model matrix
-    mat4 instanceModel = BuildModelMatrix(instanceTransform.position, instanceTransform.rotation, instanceTransform.scale);
-
-    // 3. Build per-entity model matrix
-    mat4 entityModel = BuildModelMatrix(entityTransform.position, entityTransform.rotation, entityTransform.scale);
-
-    // 4. Combine them
-    mat4 model = entityModel * instanceModel;
-
-    // 5. Compute world position
-    vWorlPosition = vec3(model * vec4(aPos, 1.0));
-
-    // 6. Final clip-space position
     gl_Position = camera.projection * camera.view * model * vec4(aPos, 1.0);
+    v_GlobalInstanceIndex = index;
 }

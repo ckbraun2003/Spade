@@ -1,0 +1,40 @@
+#version 430 core
+
+layout(local_size_x = 256) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+};
+
+layout(std430, binding = 5) buffer InstanceTransformData {
+    Transform instanceTransforms[];
+};
+
+layout(std430, binding = 6) buffer InstanceMotionData {
+    Motion instanceMotions[];
+};
+
+layout(location = 4) uniform float deltaTime;
+
+void main() {
+    if (gl_GlobalInvocationID.x >= instanceMotions.length()) return;
+
+    uint currentIndex = gl_GlobalInvocationID.x;
+
+    Transform instanceTransform = instanceTransforms[currentIndex];
+    Motion instanceMotion = instanceMotions[currentIndex];
+
+    instanceMotion.velocity += instanceMotion.acceleration * (deltaTime * deltaTime);
+    instanceTransform.position += instanceMotion.velocity * deltaTime;
+
+    instanceTransforms[currentIndex] = instanceTransform;
+    instanceMotions[currentIndex] = instanceMotion;
+}
