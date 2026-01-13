@@ -1,0 +1,170 @@
+#version 430 core
+
+layout(local_size_x = 64) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+};
+
+struct HashPair {
+    uint hash;
+    uint instanceIndex;
+};
+
+struct Bound {
+    float size;
+    bool isSphere;
+    float bounciness;
+    float friction;
+};
+
+layout(std430, binding = 5) buffer InstanceTransformData {
+    Transform instanceTransforms[];
+};
+
+layout(std430, binding = 6) buffer InstanceMotionData {
+    Motion instanceMotions[];
+};
+
+layout(std430, binding = 8) buffer InstanceToEntityIndexData {
+    uint instanceToEntityIndex[];
+};
+
+layout(std430, binding = 4) buffer EntityBoundsData {
+    Bound entityBounds[];
+};
+
+layout(location = 4) uniform float deltaTime;
+layout(location = 15) uniform float globalBounds;
+
+void main() {
+    if (gl_GlobalInvocationID.x >= instanceMotions.length()) return;
+
+    uint index = gl_GlobalInvocationID.x;
+
+    vec3 myPos = instanceTransforms[index].position;
+    Bound myBound = entityBounds[instanceToEntityIndex[index]];
+
+    vec3 myVel = instanceMotions[index].velocity;
+    float myMass = instanceMotions[index].mass;
+
+// --- Brute Force Neighbor Collision (Direct Access) ---
+    // No Hash/Sort needed.
+    uint numInstances = instanceTransforms.length();
+    
+    // Check all other particles
+    for (uint k = 0; k < numInstances; ++k) {
+        // Optimization: Don't check self
+        if (k == index) continue;
+
+        vec3 otherPos = instanceTransforms[k].position;
+        // Assuming uniform bounds or fetch. If we have 2500, fetching is fine.
+        Bound otherBound = entityBounds[instanceToEntityIndex[k]];
+
+        float combinedRadius = (myBound.size + otherBound.size) / 2.0;
+        vec3 diff = myPos - otherPos;
+        float distSq = dot(diff, diff);
+
+        if (distSq < combinedRadius * combinedRadius && distSq > 0.000001) {
+            float dist = sqrt(distSq);
+            vec3 normal = diff / dist;
+
+            // Penetration Resolution
+            float penetration = combinedRadius - dist;
+            
+            // Slop: Ignore tiny overlaps
+            if (penetration < 0.001f) continue;
+
+            // Resolve 50% of the penetration (Parallel PBD standard)
+            vec3 correction = normal * (penetration * 0.5f);
+            myPos += correction;
+            
+            // Velocity Resolution (Reflection)
+            vec3 otherVel = instanceMotions[k].velocity;
+            float otherMass = instanceMotions[k].mass;
+
+            vec3 relVel = myVel - otherVel;
+            float velAlongNormal = dot(relVel, normal);
+
+            // Only resolve if moving towards each other
+            if (velAlongNormal < 0.0) {
+                float restitution = min(myBound.bounciness, otherBound.bounciness);
+
+                // Resting Contact Threshold to stop jitter
+                if (abs(velAlongNormal) < 0.5) {
+                    restitution = 0.0;
+                }
+                
+                float j = -(1.0 + restitution) * velAlongNormal;
+                j /= (1.0 / myMass + 1.0 / otherMass);
+
+                vec3 impulse = j * normal;
+                myVel += impulse / myMass;
+
+                // --- Friction ---
+                vec3 tangent = relVel - (velAlongNormal * normal);
+                float tangentLen = length(tangent);
+
+                if (tangentLen > 0.0001) {
+                    tangent /= tangentLen;
+                    
+                    float friction = sqrt(myBound.friction * otherBound.friction);
+                    float jTarget = -dot(relVel, tangent);
+                    jTarget /= (1.0 / myMass + 1.0 / otherMass);
+
+                    vec3 frictionImpulse;
+                    if (abs(jTarget) < j * friction) {
+                        frictionImpulse = jTarget * tangent;
+                    } else {
+                        frictionImpulse = -j * friction * tangent;
+                    }
+                    myVel += frictionImpulse / myMass;
+                }
+            }
+        }
+    }
+
+    // --- Global Bounds Check ---
+    // myBound.size is Diameter (0.2). Radius is 0.1.
+    // We want Center to be within [ -Bounds+Radius, Bounds-Radius ]
+    float limit = globalBounds - (myBound.size * 0.5f);
+    
+    // Check X
+    if (myPos.x < -limit) {
+        myPos.x = -limit;
+        if (myVel.x < 0) myVel.x *= -myBound.bounciness;
+    } else if (myPos.x > limit) {
+        myPos.x = limit;
+        if (myVel.x > 0) myVel.x *= -myBound.bounciness;
+    }
+
+    // Check Y
+    if (myPos.y < -limit) {
+        myPos.y = -limit;
+        if (myVel.y < 0) myVel.y *= -myBound.bounciness;
+    } else if (myPos.y > limit) {
+        myPos.y = limit;
+        if (myVel.y > 0) myVel.y *= -myBound.bounciness;
+    }
+
+    // Check Z
+    if (myPos.z < -limit) {
+        myPos.z = -limit;
+        if (myVel.z < 0) myVel.z *= -myBound.bounciness;
+    } else if (myPos.z > limit) {
+        myPos.z = limit;
+        if (myVel.z > 0) myVel.z *= -myBound.bounciness;
+    }
+
+    // Write back
+    instanceTransforms[index].position = myPos;
+    instanceMotions[index].velocity = myVel;
+}

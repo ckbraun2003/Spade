@@ -80,14 +80,6 @@ namespace Spade {
     std::vector<unsigned int> indices;
   };
 
-  struct BoundingBox {
-    unsigned int startTriangleIndex;
-    unsigned int size;
-    glm::vec3 center;
-    glm::vec3 minimum;
-    glm::vec3 maximum;
-  };
-
   struct Material {
     glm::vec4 color = {1.0, 1.0, 1.0, 1.0};
     float emission = 0.0;
@@ -103,8 +95,11 @@ namespace Spade {
 
   };
 
-  struct Sphere {
-    float radius;
+  struct Bound {
+    float size;
+    bool isSphere = true;
+    float bounciness = 0.0f;
+    float friction = 0.0f;
   };
 
   struct Transform {
@@ -127,6 +122,11 @@ namespace Spade {
     glm::mat4 projection;
     glm::mat4 viewInverse;
     glm::mat4 projInverse;
+  };
+
+  struct HashPair {
+    unsigned int hash;
+    unsigned int instanceIndex;
   };
 
   Mesh GenerateQuad(float size);

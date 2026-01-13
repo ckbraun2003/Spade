@@ -98,8 +98,9 @@ namespace Spade {
     };
 
     // Uniform Setting
-    static void SetUniformUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value); }
-    static void SetUniformFloat(const int location, const float value) { glUniform1f(location, value); }
+    static void SetLocationUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value); }
+    static void SetLocationFloat(const int location, const float value) { glUniform1f(location, value); }
+    static GLuint GetUniformLocation(ProgramID programID, const GLchar *name) { return glGetUniformLocation(programID, name); }
 
     // Buffer Binding
     static void BindVertexBufferObject(const BufferID& bufferID) { glBindBuffer(GL_ARRAY_BUFFER, bufferID); }

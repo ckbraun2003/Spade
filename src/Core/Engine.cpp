@@ -8,18 +8,21 @@ namespace Spade {
     glDeleteBuffers(1, &m_SSBO_InstanceMotions);
     glDeleteBuffers(1, &m_SSBO_InstanceToEntityIndex);
 
+    glDeleteBuffers(1, &m_SSBO_EntityBounds);
+
     glDeleteBuffers(1, &m_UBO_Camera);
 
     glDeleteProgram(m_ShaderProgram);
     glDeleteProgram(m_MotionProgram);
     glDeleteProgram(m_CollisionProgram);
     glDeleteProgram(m_GravityProgram);
+    glDeleteProgram(m_CollisionProgram);
 
     glfwDestroyWindow(m_GLFWwindow);
     glfwTerminate();
   }
 
-  void Engine::LoadCameraBuffer(Universe &universe) {
+  void Engine::LoadCameraBuffers(Universe &universe) {
     auto& cameraPool = universe.GetPool<CameraComponent>();
     auto& transformPool = universe.GetPool<TransformComponent>();
 
@@ -142,44 +145,87 @@ namespace Spade {
     Resources::UpdateShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_SSBO_InstanceToEntityIndex);
   }
 
+  void Engine::LoadCollisionBuffers(Universe &universe) {
+    
+    auto& meshPool = universe.GetPool<MeshComponent>();
+    auto& boundingPool = universe.GetPool<BoundingComponent>();
 
-  void Engine::EnableMotion() {
+    std::vector<Bound> bounds;
+
+    // Loop through each mesh
+    for(size_t i = 0; i < meshPool.m_Data.size(); ++i) {
+      MeshComponent& meshComponent = meshPool.m_Data[i];
+      const EntityID entityID = meshPool.m_IndexToEntity[i];
+
+      BoundingComponent* boundingComponent = boundingPool.Get(entityID);
+      bounds.push_back(boundingComponent->bound);
+    }
+
+    if (m_SSBO_EntityBounds == 0) {
+      m_SSBO_EntityBounds = Resources::CreateBuffer();
+      // Allocate once
+      Resources::UploadShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
+      Resources::BindShaderStorageToLocation(4, m_SSBO_EntityBounds);
+    }
+
+    Resources::UpdateShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
+    }
+
+
+  void Engine::EnableMotion(float deltaTime) {
+    if (m_InstanceMotions.empty()) return;
+
     if (m_MotionProgram == 0) {
       m_MotionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]Motion.comp");
     }
 
-    GLuint groups = (m_InstanceMotions.size() + 255) / 256;
+    GLuint groups = (m_InstanceMotions.size() + 63) / 64;
 
     Resources::UseProgram(m_MotionProgram);
-    Resources::SetUniformFloat(4, m_DeltaTime);
+    Resources::SetLocationFloat(4, deltaTime);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableGravity(float gravity) {
+  void Engine::EnableGravity(float globalGravity, float deltaTime) {
+    if (m_InstanceMotions.empty()) return;
+
     if (m_GravityProgram == 0) {
       m_GravityProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GlobalGravity.comp");
     }
 
-    GLuint groups = (m_InstanceMotions.size() + 255) / 256;
+    GLuint groups = (m_InstanceMotions.size() + 63) / 64;
 
     Resources::UseProgram(m_GravityProgram);
-    Resources::SetUniformFloat(4, m_DeltaTime);
-    Resources::SetUniformFloat(14, gravity);
+    Resources::SetLocationFloat(4, deltaTime);
+    Resources::SetLocationFloat(14, globalGravity);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
   }
 
-  void Engine::EnableCollision(float bounds) {
+  void Engine::EnableCollision(float globalBounds, float deltaTime) {
+    if (m_InstanceTransforms.empty()) return;
 
+    if (m_CollisionProgram == 0) {
+        // Only CollisionResolve is needed for Brute Force
+        m_CollisionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BruteForceCollision.comp");
+    }
+
+    size_t numInstances = m_InstanceTransforms.size();
+
+    // 4. Resolve Collisions (Direct Brute Force)
+    Resources::UseProgram(m_CollisionProgram);
+    Resources::SetLocationFloat(4, deltaTime);
+    Resources::SetLocationFloat(15, globalBounds);
+
+    GLuint groups = (numInstances + 63) / 64;
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
   void Engine::DrawScene(Universe &universe) {
-    UpdateStatistics();
-
     if (m_ShaderProgram == 0) {
       m_ShaderProgram = Resources::CreateRenderProgram("assets/shaders/Vertex.vert", "assets/shaders/Fragment.frag");
     }
@@ -192,17 +238,18 @@ namespace Spade {
     for(auto& meshComponent : meshPool.m_Data) {
       Resources::UseProgram(m_ShaderProgram);
 
-      Resources::SetUniformUnsignedInt(3, meshComponent.instanceStartIndex);
+      Resources::SetLocationUnsignedInt(3, meshComponent.instanceStartIndex);
 
       Resources::BindVertexArrayObject(meshComponent.VAO);
       glDrawElementsInstanced(GL_TRIANGLES, meshComponent.mesh.indices.size(), GL_UNSIGNED_INT, 0, meshComponent.instanceTransforms.size());
 
       Resources::UnbindVertexArrayObject();
-
     }
 
     glfwSwapBuffers(m_GLFWwindow);
     glfwPollEvents();
+
+    UpdateStatistics();
 
   }
 
@@ -251,7 +298,7 @@ namespace Spade {
               break;
 
           }
-          LoadCameraBuffer(universe);
+          LoadCameraBuffers(universe);
         }
       }
     }
@@ -341,6 +388,10 @@ namespace Spade {
     m_CurrentTime = GetTime();
     m_DeltaTime = m_CurrentTime - m_LastTime;
     m_LastTime = m_CurrentTime;
+
+    // Cap DeltaTime to prevent physics explosions during lag spikes
+    // 0.05f = 20 FPS. If framerate drops below this, simulation slows down instead of exploding.
+    if (m_DeltaTime > 0.05f) m_DeltaTime = 0.05f;
 
     m_FPSTimer += m_DeltaTime;
     m_FrameCounter++;

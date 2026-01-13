@@ -25,13 +25,14 @@ namespace Spade {
 
     ~Engine();
 
-    void LoadCameraBuffer(Universe& universe);
+    void LoadCameraBuffers(Universe& universe);
     void LoadInstanceBuffers(Universe& universe);
+    void LoadCollisionBuffers(Universe& universe);
 
     // Physics Systems
-    void EnableGravity(float gravity);
-    void EnableMotion();
-    void EnableCollision(float bounds);
+    void EnableGravity(float gravity, float deltaTime);
+    void EnableMotion(float deltaTime);
+    void EnableCollision(float bounds, float deltaTime);
 
     // Render Systems
 
@@ -45,6 +46,7 @@ namespace Spade {
     // Engine API Functions
     [[nodiscard]] bool IsRunning() const;
     [[nodiscard]] float GetTime() const;
+    [[nodiscard]] float GetDeltaTime() const { return m_DeltaTime; }
     [[nodiscard]] float GetFPS() const { return m_FPS; }
     [[nodiscard]] float GetMemory() const { return m_Memory; }
     [[nodiscard]] bool IsKeyPressed(int key) const;
@@ -97,6 +99,8 @@ namespace Spade {
     BufferID m_SSBO_InstanceMotions = 0;
     BufferID m_SSBO_InstanceMaterials = 0;
     BufferID m_SSBO_InstanceToEntityIndex = 0;
+
+    BufferID m_SSBO_EntityBounds = 0;
 
     BufferID m_UBO_Camera = 0;
 

@@ -22,9 +22,12 @@ int main() {
   EntityID cameraID = universe.CreateEntityID();
   Entity camera = Entity(cameraID, &universe);
   camera.AddComponent<TransformComponent>();
-  camera.GetComponent<TransformComponent>()->transform.position = {0.0, 1.0, 10.0};
+  camera.GetComponent<TransformComponent>()->transform.position = {0.0, -1.0, 5.0};
 
   camera.AddComponent<CameraComponent>();
+  camera.GetComponent<CameraComponent>()->fov = 90.0;
+  camera.GetComponent<CameraComponent>()->nearPlane = 0.01;
+  camera.GetComponent<CameraComponent>()->farPlane = 1000;
 
   camera.AddComponent<InputComponent>();
   camera.GetComponent<InputComponent>()->speed = 5.0f;
@@ -39,25 +42,29 @@ int main() {
   EntityID meshID = universe.CreateEntityID();
   Entity mesh = Entity(meshID, &universe);
 
-  mesh.AddComponent<TransformComponent>();
-  mesh.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
-  mesh.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
-  mesh.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
-
-  mesh.AddComponent<MotionComponent>();
-  mesh.GetComponent<MotionComponent>()->motion.velocity = {0.0f, 0.0f, 0.0f};
-  mesh.GetComponent<MotionComponent>()->motion.acceleration = {0.0f, 0.0f, 0.0f};
-  mesh.GetComponent<MotionComponent>()->motion.mass = 1.0;
+  // mesh.AddComponent<TransformComponent>();
+  // mesh.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
+  // mesh.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
+  // mesh.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
+  //
+  // mesh.AddComponent<MotionComponent>();
+  // mesh.GetComponent<MotionComponent>()->motion.velocity = {0.0f, 0.0f, 0.0f};
+  // mesh.GetComponent<MotionComponent>()->motion.acceleration = {0.0f, 0.0f, 0.0f};
+  // mesh.GetComponent<MotionComponent>()->motion.mass = 1.0;
 
   mesh.AddComponent<BoundingComponent>();
-  mesh.GetComponent<BoundingComponent>()->sphere.radius = 0.1;
+  mesh.GetComponent<BoundingComponent>()->bound.size = 0.2;
+  mesh.GetComponent<BoundingComponent>()->bound.isSphere = true;
+  mesh.GetComponent<BoundingComponent>()->bound.bounciness = 0.3;
+  mesh.GetComponent<BoundingComponent>()->bound.friction = 0.7;
 
   mesh.AddComponent<MeshComponent>();
   mesh.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.1, 16, 16);
+  //mesh.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
 
   // Spawn 100 Spheres in a Grid (10x10)
   int gridSize = 10;
-  float spacing = 0.25f;
+  float spacing = 0.2;
   float startOffset = -((gridSize - 1) * spacing) / 2.0f;
 
   for (int x = 0; x < gridSize; ++x) {
@@ -75,10 +82,11 @@ int main() {
         Motion motion;
         // Random velocity to create collisions
         motion.velocity = {
-          (float)(rand() % 100 - 50) / 1000.0f,
-          (float)(rand() % 100 - 50) / 1000.0f,
-          (float)(rand() % 100 - 50) / 1000.0f
+          (float)(rand() % 100 - 50) / 10.0f,
+          (float)(rand() % 100 - 50) / 10.0f,
+          (float)(rand() % 100 - 50) / 10.0f
         };
+        //motion.velocity = {0.0, 0.0, 0.0};
         motion.mass = 1.0;
         motion.acceleration = {0.0f, 0.0f, 0.0f};
 
@@ -97,10 +105,13 @@ int main() {
 
   // Setup Window
   engine.SetupEngineWindow(1920, 1080, "Spade");
-  engine.SetGlobalBounds(5.0f);
 
   engine.LoadInstanceBuffers(universe);
-  engine.LoadCameraBuffer(universe);
+  engine.LoadCameraBuffers(universe);
+  engine.LoadCollisionBuffers(universe);
+
+  unsigned int substeps = 1;
+  float bounds = (float)gridSize * spacing;
 
   // Begin Engine Loop
   while (engine.IsRunning()) {
@@ -111,9 +122,15 @@ int main() {
     // Process Input
     engine.ProcessInput(universe);
 
+    float deltaTime = engine.GetDeltaTime();
+    float substepTime = deltaTime / (float)substeps;
+
     // Update Motion
-    //engine.EnableGravity(0.1f);
-    engine.EnableMotion();
+    for (int i = 0; i < substeps; ++i) {
+      engine.EnableGravity(10.0f, substepTime);
+      engine.EnableMotion(substepTime);
+      engine.EnableCollision(bounds, substepTime);
+    }
 
     // Draw meshes
     engine.DrawScene(universe);

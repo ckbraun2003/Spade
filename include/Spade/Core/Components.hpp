@@ -51,10 +51,7 @@ namespace Spade {
   };
 
   struct BoundingComponent {
-    Sphere sphere;
-    BoundingBox boundingBox;
-
-    bool isSphere = false;
+    Bound bound;
   };
 
   struct MaterialComponent {
