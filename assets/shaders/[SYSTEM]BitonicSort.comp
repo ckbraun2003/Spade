@@ -1,0 +1,40 @@
+#version 430
+
+layout(local_size_x = 64) in;
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+layout(location = 0) uniform uint j;
+layout(location = 1) uniform uint k;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint ixj = i ^ j;
+
+    if (ixj > i) {
+        GridPair p_i = gridPairs[i];
+        GridPair p_ixj = gridPairs[ixj];
+
+        // Sort by CellID
+        bool swap = false;
+        if ((i & k) == 0) {
+            // Ascending
+            if (p_i.cellID > p_ixj.cellID) swap = true;
+        } else {
+            // Descending
+            if (p_i.cellID < p_ixj.cellID) swap = true;
+        }
+
+        if (swap) {
+            gridPairs[i] = p_ixj;
+            gridPairs[ixj] = p_i;
+        }
+    }
+}

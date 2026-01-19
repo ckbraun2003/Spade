@@ -7,8 +7,13 @@ namespace Spade {
     glDeleteBuffers(1, &m_SSBO_InstanceMaterials);
     glDeleteBuffers(1, &m_SSBO_InstanceMotions);
     glDeleteBuffers(1, &m_SSBO_InstanceToEntityIndex);
-
+    
     glDeleteBuffers(1, &m_SSBO_EntityBounds);
+
+    glDeleteBuffers(1, &m_SSBO_GridHead);
+    glDeleteBuffers(1, &m_SSBO_GridPairs);
+    glDeleteBuffers(1, &m_SSBO_SortedTransforms);
+    glDeleteBuffers(1, &m_SSBO_SortedMotions);
 
     glDeleteBuffers(1, &m_UBO_Camera);
 
@@ -16,7 +21,14 @@ namespace Spade {
     glDeleteProgram(m_MotionProgram);
     glDeleteProgram(m_CollisionProgram);
     glDeleteProgram(m_GravityProgram);
-    glDeleteProgram(m_CollisionProgram);
+
+    glDeleteProgram(m_GridClearProgram);
+    glDeleteProgram(m_GridBuildProgram);
+    glDeleteProgram(m_GridCollisionProgram);
+    glDeleteProgram(m_BitonicSortProgram);
+    glDeleteProgram(m_GridOffsetsProgram);
+    glDeleteProgram(m_GridReorderProgram);
+    glDeleteProgram(m_GridScatterProgram);
 
     glfwDestroyWindow(m_GLFWwindow);
     glfwTerminate();
@@ -171,7 +183,6 @@ namespace Spade {
     Resources::UpdateShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
     }
 
-
   void Engine::EnableMotion(float deltaTime) {
     if (m_InstanceMotions.empty()) return;
 
@@ -223,6 +234,134 @@ namespace Spade {
     GLuint groups = (numInstances + 63) / 64;
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  }
+
+  void Engine::EnableGridCollision(float globalBounds, float cellSize, float deltaTime) {
+    if (m_InstanceTransforms.empty()) return;
+
+    // 1. Initialize Shaders
+    if (m_GridClearProgram == 0) {
+      m_GridClearProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridClear.comp");
+      m_GridBuildProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridBuild.comp");
+      m_GridCollisionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridCollision.comp");
+      
+      m_BitonicSortProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BitonicSort.comp");
+      m_GridOffsetsProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridOffsets.comp");
+      m_GridReorderProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridReorder.comp");
+      m_GridScatterProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridScatter.comp");
+    }
+
+    size_t numInstances = m_InstanceTransforms.size();
+
+    // Calculate Next Power of Two for Bitonic Sort
+    size_t sortedSize = 1;
+    while(sortedSize < numInstances) sortedSize <<= 1;
+    
+    GLuint groups = (numInstances + 63) / 64;
+    GLuint setSizeGroups = (sortedSize + 63) / 64;
+
+    // 2. Setup Grid Dimensions
+    int cellsPerAxis = (int)ceil((globalBounds * 2.0f) / cellSize);
+    glm::ivec3 gridDim = glm::ivec3(cellsPerAxis);
+    int totalCells = gridDim.x * gridDim.y * gridDim.z;
+
+    // 3. Initialize Buffers
+    if (m_SSBO_GridHead == 0) {
+      m_SSBO_GridHead = Resources::CreateBuffer();
+      std::vector<int> emptyGrid(totalCells, -1);
+      Resources::UploadShaderStorageBufferObject<int>(emptyGrid, m_SSBO_GridHead);
+      Resources::BindShaderStorageToLocation(9, m_SSBO_GridHead);
+    }
+    
+    if (m_SSBO_GridPairs == 0) {
+      m_SSBO_GridPairs = Resources::CreateBuffer();
+      // Initialize with MAX_UINT so padding sorts to the end
+      std::vector<GridPair> pairs(sortedSize, { 0xFFFFFFFF, 0xFFFFFFFF });
+      Resources::UploadShaderStorageBufferObject<GridPair>(pairs, m_SSBO_GridPairs);
+      Resources::BindShaderStorageToLocation(10, m_SSBO_GridPairs);
+    }
+
+    if (m_SSBO_SortedTransforms == 0) {
+      m_SSBO_SortedTransforms = Resources::CreateBuffer();
+      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_SortedTransforms); 
+      Resources::BindShaderStorageToLocation(11, m_SSBO_SortedTransforms);
+    }
+    
+    if (m_SSBO_SortedMotions == 0) {
+      m_SSBO_SortedMotions = Resources::CreateBuffer();
+      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_SortedMotions);
+      Resources::BindShaderStorageToLocation(12, m_SSBO_SortedMotions);
+    }
+
+    // 4. Clear Grid (Head)
+    {
+      Resources::UseProgram(m_GridClearProgram);
+      Resources::SetLocationInt(11, totalCells); 
+      glDispatchCompute((totalCells + 63) / 64, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // 5. Build Key-Value Pairs
+    {
+      Resources::UseProgram(m_GridBuildProgram);
+      Resources::SetLocationFloat(15, globalBounds);
+      Resources::SetLocationFloat(16, cellSize);
+      Resources::SetLocationIntVec3(17, gridDim);
+      Resources::SetLocationUnsignedInt(18, numInstances);
+      glDispatchCompute(groups, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // 6. Bitonic Sort (Iterative Dispatch)
+    {
+      Resources::UseProgram(m_BitonicSortProgram);
+      // k = block width (2, 4, 8, ... N)
+      // j = comparison distance (k/2, k/4, ... 1)
+      for (unsigned int k = 2; k <= sortedSize; k <<= 1) {
+        for (unsigned int j = k >> 1; j > 0; j >>= 1) {
+          Resources::SetLocationUnsignedInt(0, j);
+          Resources::SetLocationUnsignedInt(1, k);
+          glDispatchCompute(setSizeGroups, 1, 1);
+          glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        }
+      }
+    }
+    
+    // 7. Find Offsets (Populate GridHead)
+    {
+      Resources::UseProgram(m_GridOffsetsProgram);
+      Resources::SetLocationUnsignedInt(18, numInstances); // Only process valid particles
+      glDispatchCompute(groups, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // 8. Reorder (Gather)
+    {
+      Resources::UseProgram(m_GridReorderProgram);
+      Resources::SetLocationUnsignedInt(18, numInstances);
+      glDispatchCompute(groups, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    // 9. Solve Collision (on Sorted Data)
+    {
+      Resources::UseProgram(m_GridCollisionProgram);
+      Resources::SetLocationFloat(4, deltaTime);
+      Resources::SetLocationFloat(15, globalBounds);
+      Resources::SetLocationFloat(16, cellSize);
+      Resources::SetLocationIntVec3(17, gridDim);
+      Resources::SetLocationUnsignedInt(18, numInstances);
+      glDispatchCompute(groups, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+    
+    // 10. Scatter (Write Back)
+    {
+      Resources::UseProgram(m_GridScatterProgram);
+      Resources::SetLocationUnsignedInt(18, numInstances);
+      glDispatchCompute(groups, 1, 1);
+      glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    }
   }
 
   void Engine::DrawScene(Universe &universe) {

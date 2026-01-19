@@ -1,0 +1,38 @@
+#version 430
+
+layout(local_size_x = 64) in;
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+layout(std430, binding = 9) buffer GridHead {
+    int gridHead[];
+};
+
+layout(location = 18) uniform uint numInstances;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numInstances) return;
+
+    uint cell = gridPairs[i].cellID;
+    
+    // Bounds check for safety (should be clamped by Build, but padding is MAX_UINT)
+    if (cell == 0xFFFFFFFF) return;
+
+    // If I am the first one, OR my predecessor is different
+    if (i == 0) {
+        gridHead[cell] = int(i);
+    } else {
+        uint prevCell = gridPairs[i - 1].cellID;
+        if (cell != prevCell) {
+            gridHead[cell] = int(i);
+        }
+    }
+}

@@ -1,0 +1,206 @@
+#version 430
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+};
+
+struct Bound {
+    float size;
+    bool isSphere;
+    float bounciness;
+    float friction;
+};
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+layout(std430, binding = 11) buffer SortedTransforms {
+    Transform sortedTransforms[];
+};
+layout(std430, binding = 12) buffer SortedMotions {
+    Motion sortedMotions[];
+};
+layout(std430, binding = 4) buffer EntityBounds {
+    Bound entityBounds[];
+};
+layout(std430, binding = 8) buffer InstanceToEntityIndex {
+    uint instanceToEntityIndex[];
+};
+
+layout(std430, binding = 9) buffer GridHead {
+    int gridHead[];
+};
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+layout(location = 4) uniform float deltaTime;
+layout(location = 15) uniform float globalBounds;
+layout(location = 16) uniform float cellSize;
+layout(location = 17) uniform ivec3 gridDim;
+layout(location = 18) uniform uint numInstances;
+
+int GetGridIndex(vec3 pos) {
+    vec3 offsetPos = pos + vec3(globalBounds);
+    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+    cell = clamp(cell, ivec3(0), gridDim - ivec3(1));
+    return cell.z * (gridDim.x * gridDim.y) + cell.y * gridDim.x + cell.x;
+}
+
+ivec3 GetGridCell(vec3 pos) {
+    vec3 offsetPos = pos + vec3(globalBounds);
+    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+    return clamp(cell, ivec3(0), gridDim - ivec3(1));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numInstances) return;
+
+    vec3 myPos = sortedTransforms[i].position;
+    vec3 myVel = sortedMotions[i].velocity;
+    float myMass = sortedMotions[i].mass;
+    
+    // Bounds are NOT sorted, we must index them by OriginalID -> EntityID
+    uint myOriginalID = gridPairs[i].instanceID;
+    uint myEntityID = instanceToEntityIndex[myOriginalID];
+    Bound myBound = entityBounds[myEntityID];
+
+    // Assuming Sphere for this grid test (size = diameter)
+    float myRadius = myBound.size * 0.5;
+
+    ivec3 myCell = GetGridCell(myPos);
+
+    // Neighbor Search
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                
+                ivec3 neighbor = myCell + ivec3(x, y, z);
+                
+                // Boundary check
+                if (neighbor.x < 0 || neighbor.x >= gridDim.x ||
+                    neighbor.y < 0 || neighbor.y >= gridDim.y ||
+                    neighbor.z < 0 || neighbor.z >= gridDim.z) continue;
+
+                int neighborIndex = neighbor.z * (gridDim.x * gridDim.y) + neighbor.y * gridDim.x + neighbor.x;
+                int startIndex = gridHead[neighborIndex];
+
+                if (startIndex != -1) {
+                    // Linear Scan of the neighbor cell
+                    for (uint k = uint(startIndex); k < numInstances; ++k) {
+                        
+                        // Optimization: Check if we left the cell (Sorted property)
+                        if (gridPairs[k].cellID != uint(neighborIndex)) break;
+
+                        if (i == k) continue; // Skip self
+
+                        vec3 otherPos = sortedTransforms[k].position;
+                        uint otherOriginalID = gridPairs[k].instanceID;
+                        uint otherEntityID = instanceToEntityIndex[otherOriginalID];
+                        Bound otherBound = entityBounds[otherEntityID];
+                        float otherRadius = otherBound.size * 0.5;
+                        
+                        // Collision Logic (Sphere-Sphere)
+                        vec3 dir = myPos - otherPos;
+                        float distSq = dot(dir, dir);
+                        float minParams = myRadius + otherRadius;
+
+                        if (distSq < minParams * minParams && distSq > 0.000001) {
+                            float dist = sqrt(distSq);
+                            vec3 normal = dir / dist;
+                            float penetration = minParams - dist;
+
+                            // Position Correction (50% each)
+                            vec3 correction = normal * (penetration * 0.5);
+                            myPos += correction;
+                            
+                            // Velocity Reflection
+                            vec3 otherVel = sortedMotions[k].velocity;
+                            float otherMass = sortedMotions[k].mass;
+                            
+                            vec3 relVel = myVel - otherVel;
+                            float velAlongNormal = dot(relVel, normal);
+
+                            if (velAlongNormal < 0) {
+                                float restitution = min(myBound.bounciness, otherBound.bounciness);
+                                if (abs(velAlongNormal) < 0.5) restitution = 0.0; // Resting threshold
+
+                                float j = -(1.0 + restitution) * velAlongNormal;
+                                j /= (1.0/myMass + 1.0/otherMass);
+                                
+                                vec3 impulse = j * normal;
+                                myVel += impulse / myMass;
+
+                                // Friction (Simple)
+                                vec3 tangent = relVel - (velAlongNormal * normal);
+                                float tangentLen = length(tangent);
+                                if (tangentLen > 0.0001) {
+                                    tangent /= tangentLen;
+                                    float friction = sqrt(myBound.friction * otherBound.friction);
+                                    float jTangent = -dot(relVel, tangent);
+                                    jTangent /= (1.0/myMass + 1.0/otherMass);
+                                    
+                                    vec3 fImpulse;
+                                    if (abs(jTangent) < j * friction) fImpulse = jTangent * tangent;
+                                    else fImpulse = -j * friction * tangent;
+                                    
+                                    myVel += fImpulse / myMass;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // World Boundary Collision (Box)
+    float limit = globalBounds - myRadius;
+
+    // Y Floor
+    if (myPos.y < -limit) {
+        myPos.y = -limit;
+        if (myVel.y < 0) myVel.y *= -myBound.bounciness;
+        // Simple floor friction
+        myVel.x *= 0.99;
+        myVel.z *= 0.99;
+    } else if (myPos.y > limit) {
+         myPos.y = limit;
+         if (myVel.y > 0) myVel.y *= -myBound.bounciness;
+    }
+
+    // X Walls
+    if (myPos.x < -limit) {
+        myPos.x = -limit;
+        if (myVel.x < 0) myVel.x *= -myBound.bounciness;
+    } else if (myPos.x > limit) {
+        myPos.x = limit;
+        if (myVel.x > 0) myVel.x *= -myBound.bounciness;
+    }
+
+    // Z Walls
+    if (myPos.z < -limit) {
+        myPos.z = -limit;
+        if (myVel.z < 0) myVel.z *= -myBound.bounciness;
+    } else if (myPos.z > limit) {
+        myPos.z = limit;
+        if (myVel.z > 0) myVel.z *= -myBound.bounciness;
+    }
+
+    // Write Back
+    sortedTransforms[i].position = myPos;
+    sortedMotions[i].velocity = myVel;
+}

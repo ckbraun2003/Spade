@@ -1,0 +1,53 @@
+#version 430
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+};
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+layout(std430, binding = 5) buffer InstanceTransforms {
+    Transform instanceTransforms[];
+};
+layout(std430, binding = 6) buffer InstanceMotions {
+    Motion instanceMotions[];
+};
+
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+layout(std430, binding = 11) buffer SortedTransforms {
+    Transform sortedTransforms[];
+};
+layout(std430, binding = 12) buffer SortedMotions {
+    Motion sortedMotions[];
+};
+
+layout(location = 18) uniform uint numInstances;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numInstances) return;
+
+    uint originalIdx = gridPairs[i].instanceID;
+    
+    // Safety
+    if (originalIdx >= numInstances) return;
+
+    instanceTransforms[originalIdx] = sortedTransforms[i];
+    instanceMotions[originalIdx] = sortedMotions[i];
+}

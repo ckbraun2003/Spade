@@ -102,6 +102,11 @@ namespace Spade {
     float friction = 0.0f;
   };
 
+  struct GridPair { 
+    unsigned int cellID; 
+    unsigned int instanceID; 
+  };
+
   struct Transform {
     glm::vec3 position = {0.0, 0.0, 0.0};
     float padding;

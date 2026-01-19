@@ -1,27 +1,28 @@
 # Spade Engine
 
-Spade is a high-performance C++ simulation engine built on an Entity-Component-System (ECS) architecture. It is designed for building complex simulations with efficient rendering and physics.
+Spade is a high-performance, hybrid CPU/GPU simulation engine built on a Data-Oriented **Entity-Component-System (ECS)** architecture. It leverages Compute Shaders for massive parallel physics simulations and Instanced Rendering to display thousands of objects efficiently.
 
-## System Overview
+## Core Architecture
 
-The engine moves away from traditional Object-Oriented Programming (OOP) inheritance hierarchies in favor of a Data-Oriented Design (DOD). This is achieved through an **ECS (Entity Component System)** architecture:
+Spade moves away from traditional OOP hierarchies in favor of direct backing data structures that map 1:1 to GPU buffers.
 
-*   **Universe**: The container for all data. It manages entities and component pools.
-*   **Entity**: A simple ID that represents an object in the world. It has no data itself, only an ID.
-*   **Component**: Pure data structures (structs) that hold state (e.g., Position, Velocity, Mesh).
-*   **Systems**: Logic that operates on entities with specific components (e.g., `UpdateMotion` operates on entities with `Transform` and `Motion`).
+-   **Hybrid ECS**: 
+    -   **CPU**: Manages high-level logic, inputs, and component pools (`Universe`, `Component`).
+    -   **GPU**: Executes heavy physics and collision logic via **Compute Shaders** and **SSBOs** (Shader Storage Buffer Objects).
+-   **Instanced Rendering**: All entities sharing a mesh are rendered in a single draw call using `glDrawElementsInstanced`.
+-   **Spatial Hashing Collision**: Implements a GPU-based **Sorted Grid** algorithm (Bitonic Sort) to achieve `O(N)` average-case complexity for collisions, allowing for tens of thousands of interacting particles.
 
 ## Getting Started
 
 ### Prerequisites
 
 *   C++17 or later
-*   CMake
-*   OpenGL 4.6 support
-*   Dependencies (Usually managed via vendor/submodules):
-    *   GLFW
-    *   GLAD
-    *   GLM
+*   CMake 3.10+
+*   OpenGL 4.6 support (Required for Compute Shaders and SSBOs)
+*   Dependencies (Vendored):
+    -   GLFW (Windowing)
+    -   GLAD (OpenGL Loading)
+    -   GLM (Mathematics)
 
 ### Building and Running
 
@@ -43,10 +44,11 @@ The engine moves away from traditional Object-Oriented Programming (OOP) inherit
 
 ## Usage Example
 
-Here is a basic example of how to set up a simulation with a camera and a moving cube:
+The following example demonstrates how to set up a massive particle simulation with the Spade engine.
 
 ```cpp
 #include <Spade/Spade.hpp>
+#include <iostream>
 
 using namespace Spade;
 
@@ -58,55 +60,88 @@ int main() {
     EntityID camID = universe.CreateEntityID();
     Entity camera(camID, &universe);
     
-    // Add components to camera
-    camera.AddComponent<TransformComponent>()->transform.position = {0.0, 1.0, 5.0};
-    camera.AddComponent<CameraComponent>();
+    // Configure Camera
+    camera.AddComponent<TransformComponent>()->transform.position = {0.0, 5.0, 15.0};
+    camera.AddComponent<CameraComponent>()->fov = 60.0;
     
-    // basic WASD input
+    // Add Input for flying around
     auto* input = camera.AddComponent<InputComponent>();
+    input->speed = 10.0f;
     input->bindings[GLFW_KEY_W] = MoveForward;
     input->bindings[GLFW_KEY_S] = MoveBackward;
+    input->bindings[GLFW_KEY_A] = MoveLeft;
+    input->bindings[GLFW_KEY_D] = MoveRight;
 
-    // 2. Create a Cube Entity
-    EntityID cubeID = universe.CreateEntityID();
-    Entity cube(cubeID, &universe);
+    // 2. Create the Particle System Entity
+    // In Spade, one Entity can hold thousands of instances of a mesh.
+    EntityID particlesID = universe.CreateEntityID();
+    Entity particles(particlesID, &universe);
 
-    // Position and Scale
-    cube.AddComponent<TransformComponent>();
-    
-    // Physics properties
-    auto* motion = cube.AddComponent<MotionComponent>();
-    motion->motion.velocity = {0.0f, 0.0f, 0.0f};
-    motion->motion.mass = 1.0;
+    // Add Collision Bounds (Shared by all instances in this mesh)
+    auto* boundsComp = particles.AddComponent<BoundingComponent>();
+    boundsComp->bound.size = 0.5f;        // Diameter
+    boundsComp->bound.isSphere = true;
+    boundsComp->bound.bounciness = 0.8f;
+    boundsComp->bound.friction = 0.5f;
 
-    // Visual Mesh
-    auto* mesh = cube.AddComponent<MeshComponent>();
-    mesh->mesh = GenerateCube(1.0);
+    // Add Mesh and Instances
+    auto* meshComp = particles.AddComponent<MeshComponent>();
+    meshComp->mesh = GenerateSphere(0.25f, 16, 16); // Radius = size/2
 
-    // CRITICAL: You must add at least one instance for the mesh to render
-    Transform instanceTransform;
-    instanceTransform.position = {0.0, 0.0, 0.0}; // Offset from entity if needed
-    instanceTransform.rotation = {1.0, 0.0, 0.0, 0.0};
-    instanceTransform.scale = {1.0, 1.0, 1.0};
-    
-    Motion instanceMotion; // Needed if using physics on instances
-    instanceMotion.velocity = {0.0f, 0.0f, 0.0f};
+    // Spawn 1000 Particles
+    for (int i = 0; i < 1000; ++i) {
+        Transform t;
+        t.position = { (float)(rand()%10 - 5), (float)(rand()%10 + 5), (float)(rand()%10 - 5) };
+        t.rotation = { 1.0, 0.0, 0.0, 0.0 };
+        t.scale = { 1.0, 1.0, 1.0 };
+        
+        Motion m;
+        m.velocity = { 0.0, 0.0, 0.0 };
+        m.mass = 1.0;
+        m.acceleration = { 0.0, 0.0, 0.0 };
+        
+        Material mat;
+        mat.color = { (float)rand()/RAND_MAX, (float)rand()/RAND_MAX, (float)rand()/RAND_MAX, 1.0 };
 
-    mesh->instanceTransforms.push_back(instanceTransform);
-    mesh->instanceMotions.push_back(instanceMotion);
+        meshComp->instanceTransforms.push_back(t);
+        meshComp->instanceMotions.push_back(m);
+        meshComp->instanceMaterials.push_back(mat);
+    }
 
     // 3. Setup Window
-    engine.SetupEngineWindow(1920, 1080, "My Simulation");
+    engine.SetupEngineWindow(1280, 720, "Spade Sandbox");
 
-    // 4. Upload initial data to GPU
-    engine.LoadMeshBuffers(universe);
-    engine.LoadCameraBuffer(universe);
+    // 4. Upload Data to GPU (SSBOs)
+    engine.LoadInstanceBuffers(universe); // Upload Transforms, Motions, Materials
+    engine.LoadCameraBuffers(universe);   // Upload Camera Uniforms
+    engine.LoadCollisionBuffers(universe); // Upload Bounding Data
+
+    // Simulation Parameters
+    float bounds = 20.0f;    // World size
+    float cellSize = 1.0f;   // Grid cell size (should be > largest particle)
+    int substeps = 4;        // Physics accuracy
 
     // 5. Main Loop
     while (engine.IsRunning()) {
-        engine.ProcessInput(universe); // Handle keyboard/mouse
-        engine.UpdateMotion(universe); // Physics step
-        engine.DrawScene(universe);    // Render
+        engine.UpdateStatistics(); // Calculate DeltaTime/FPS
+        std::cout << "FPS: " << engine.GetFPS() << std::endl;
+
+        engine.ProcessInput(universe);
+
+        float dt = engine.GetDeltaTime();
+        float stepTime = dt / substeps;
+
+        // Physics Sub-stepping
+        for(int i=0; i<substeps; ++i) {
+            engine.EnableGravity(9.8f, stepTime);
+            engine.EnableMotion(stepTime);
+            
+            // Choose ONE collision system:
+            // engine.EnableCollision(bounds, stepTime); // Brute Force (Slow, O(N^2))
+            engine.EnableGridCollision(bounds, cellSize, stepTime); // Sorted Grid (Fast, O(N))
+        }
+
+        engine.DrawScene(universe);
     }
 
     return 0;
@@ -115,40 +150,42 @@ int main() {
 
 ## API Reference
 
-### Engine Class
-The `Engine` class manages the core application loop, windowing, and systems execution.
+### `Spade::Engine`
 
-*   `SetupEngineWindow(width, height, title)`: Initializes the window and OpenGL context.
-*   `IsRunning()`: Returns true if the window is open and the engine is running.
-*   `ProcessInput(Universe&)`: Handles user input and updates entities with `InputComponent`.
-*   `UpdateMotion(Universe&)`: Applies physics (velocity, acceleration) to entities with `TransformComponent` and `MotionComponent`.
-*   `DrawScene(Universe&)`: Renders all active entities with `MeshComponent` using the active `CameraComponent`.
-*   `LoadMeshBuffers(Universe&)`: Uploads static mesh data to the GPU (call before loop).
-*   `LoadCameraBuffer(Universe&)`: Uploads initial camera data (call before loop).
-*   `GetFPS()`, `GetMemory()`: Returns current performance stats.
+The main controller for the simulation.
 
-### Universe & Entity
-*   `Universe`: Owning container. Call `CreateEntityID()` to get a new logical object.
-*   `Entity`: Wrapper around an ID and Universe pointer for easier API access.
-    *   `AddComponent<T>()`: Adds component `T` to the entity. Returns pointer to the new component.
-    *   `GetComponent<T>()`: Returns pointer to existing component or `nullptr`.
-    *   `HasComponent<T>()`: Returns boolean.
+#### Setup & Buffer Loading
+*   `SetupEngineWindow(width, height, title)`: Creates the GLFW window and context.
+*   `LoadInstanceBuffers(Universe&)`: Flattens and uploads `MeshComponent` instance vectors (`Transform`, `Motion`, `Material`) to GPU SSBOs. Call this after spawning entities.
+*   `LoadCollisionBuffers(Universe&)`: Uploads `BoundingComponent` data.
+*   `LoadCameraBuffers(Universe&)`: Uploads active camera data.
 
-### Components
-Components are pure data structs found in `Spade/Core/Components.hpp`.
+#### Physics pipeline
+*   `EnableGravity(gravity, deltaTime)`: Applies downward acceleration to all instances with motion.
+*   `EnableMotion(deltaTime)`: Integrates Velocity -> Position.
+*   `EnableGridCollision(globalBounds, cellSize, deltaTime)`: Runs the **Spatial Hashing** pipeline.
+    *   `globalBounds`: Half-extent of the simulation box (e.g., 20.0 = -20 to +20).
+    *   `cellSize`: Size of grid cells. Must be larger than the largest object diameter.
+*   `EnableCollision(globalBounds, deltaTime)`: Runs the legacy Brute Force collision (O(N^2)).
 
-| Component | Description | key Members |
-| :--- | :--- | :--- |
-| **TransformComponent** | World position/rotation | `transform.position`, `transform.rotation`, `transform.scale` |
-| **MotionComponent** | Physics properties | `motion.velocity`, `motion.acceleration`, `motion.mass` |
-| **MeshComponent** | Visual geometry | `mesh` (Vertex data), instances support |
-| **CameraComponent** | Viewing parameters | `fov`, `nearPlane`, `farPlane` |
-| **InputComponent** | Input mapping | `bindings` (Map Key -> Action), `speed` |
-| **MaterialComponent** | Rendering material | `material.color`, `material.roughness`, `material.metallic` |
-| **BoundingComponent** | Collision bounds | `sphere`, `boundingBox` |
+#### Rendering & Input
+*   `ProcessInput(Universe&)`: Updates entities with `InputComponent`.
+*   `DrawScene(Universe&)`: Performs the instanced draw calls for all meshes.
+*   `IsRunning()`: Checks window close flag.
+*   `GetFPS()`: Live Frames Per Second.
+*   `GetDeltaTime()`: Time elapsed since last frame (capped for stability).
 
-### Primitives
-Helper functions in `Spade/Core/Primitives.hpp` to generate standard meshes.
-*   `GenerateCube(size)`
-*   `GenerateSphere(radius, sectors, stacks)`
-*   `GenerateQuad(size)`
+### Components (`Spade/Core/Components.hpp`)
+
+*   **MeshComponent**: Holds the **vectors** of instances (`instanceTransforms`, `instanceMotions`, `instanceMaterials`).
+*   **BoundingComponent**: Defines physical properties (`size`, `friction`, `bounciness`) shared by all instances of the entity.
+*   **CameraComponent**: Defines FOV and planes.
+*   **InputComponent**: Defines keybindings and movement speed.
+
+### Data Structures (`Spade/Core/Primitives.hpp`)
+
+Data structures are manually padded to match GLSL `std430` alignment.
+
+-   `Transform`: `vec3` pos, `quat` rot, `vec3` scale.
+-   `Motion`: `vec3` vel, `float` mass, `vec3` accel.
+-   `Material`: `vec4` color, `float` metallic/roughness/emission.

@@ -14,11 +14,6 @@ struct Motion {
     vec3 acceleration;
 };
 
-struct HashPair {
-    uint hash;
-    uint instanceIndex;
-};
-
 struct Bound {
     float size;
     bool isSphere;

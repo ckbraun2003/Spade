@@ -33,6 +33,7 @@ namespace Spade {
     void EnableGravity(float gravity, float deltaTime);
     void EnableMotion(float deltaTime);
     void EnableCollision(float bounds, float deltaTime);
+    void EnableGridCollision(float bounds, float cellSize, float deltaTime);
 
     // Render Systems
 
@@ -93,6 +94,16 @@ namespace Spade {
     ProgramID m_MotionProgram = 0;
     ProgramID m_CollisionProgram = 0;
     ProgramID m_GravityProgram = 0;
+    
+    ProgramID m_GridClearProgram = 0;
+    ProgramID m_GridBuildProgram = 0;
+    ProgramID m_GridCollisionProgram = 0;
+    
+    // Sorted Grid Programs
+    ProgramID m_BitonicSortProgram = 0;
+    ProgramID m_GridOffsetsProgram = 0;
+    ProgramID m_GridReorderProgram = 0;
+    ProgramID m_GridScatterProgram = 0;
 
     // Buffers
     BufferID m_SSBO_InstanceTransforms = 0;
@@ -101,6 +112,13 @@ namespace Spade {
     BufferID m_SSBO_InstanceToEntityIndex = 0;
 
     BufferID m_SSBO_EntityBounds = 0;
+    
+    // Grid Buffers
+    BufferID m_SSBO_GridHead = 0;
+    BufferID m_SSBO_GridPairs = 0;
+    BufferID m_SSBO_SortedTransforms = 0;
+    BufferID m_SSBO_SortedMotions = 0;
+    
 
     BufferID m_UBO_Camera = 0;
 
