@@ -6,6 +6,7 @@ struct Motion {
     vec3 velocity;
     float mass;
     vec3 acceleration;
+    float density;
 };
 
 layout(std430, binding = 6) buffer InstanceMotionData {

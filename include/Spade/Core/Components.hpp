@@ -58,6 +58,10 @@ namespace Spade {
     Material material;
   };
 
+  struct FluidComponent {
+    FluidMaterial fluidMaterial;
+  };
+
   struct CameraComponent {
     Camera camera;
 

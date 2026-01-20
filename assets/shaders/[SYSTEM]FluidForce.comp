@@ -1,0 +1,197 @@
+#version 430 core
+
+layout(local_size_x = 64) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+    float density;
+};
+
+struct FluidMaterial {
+    float restDensity;
+    float viscosity;
+    float stiffness;
+    uint isActive;
+};
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+// --- Buffers ---
+layout(std430, binding = 11) buffer SortedTransforms {
+    Transform sortedTransforms[];
+};
+layout(std430, binding = 12) buffer SortedMotions {
+    Motion sortedMotions[];
+};
+layout(std430, binding = 6) buffer InstanceMotions {
+    Motion instanceMotions[];
+};
+layout(std430, binding = 8) buffer InstanceToEntityIndex {
+    uint instanceToEntityIndex[];
+};
+layout(std430, binding = 14) buffer EntityFluidMaterials {
+    FluidMaterial entityFluidMaterials[];
+};
+
+layout(std430, binding = 9) buffer GridHead {
+    int gridHead[];
+};
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+// --- Uniforms ---
+layout(location = 4) uniform float deltaTime;
+layout(location = 15) uniform float globalBounds;
+layout(location = 16) uniform float cellSize;
+layout(location = 17) uniform ivec3 gridDim;
+layout(location = 18) uniform uint numInstances;
+
+
+// --- Kernels ---
+// Spiky Gradient: -45 / (pi * h^6) * (h - r)^2 * normalize(r)
+vec3 SpikyGradient(vec3 r, float h) {
+    float rLen = length(r);
+    if (rLen <= 0.0 || rLen >= h) return vec3(0.0);
+    
+    float diff = h - rLen;
+    float coef = -45.0 / (3.14159 * pow(h, 6));
+    
+    return coef * diff * diff * (r / rLen);
+}
+
+// Viscosity Laplacian: 45 / (pi * h^6) * (h - r)
+float ViscosityLaplacian(float rLen, float h) {
+    if (rLen <= 0.0 || rLen >= h) return 0.0;
+    return (45.0 / (3.14159 * pow(h, 6))) * (h - rLen);
+}
+
+// --- Helper ---
+ivec3 GetGridCell(vec3 pos) {
+    vec3 offsetPos = pos + vec3(globalBounds);
+    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+    return clamp(cell, ivec3(0), gridDim - ivec3(1));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numInstances) return;
+
+    uint myOriginalID = gridPairs[i].instanceID;
+    FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[myOriginalID]];
+
+    // IF INACTIVE (Solid), SKIP
+    if (myMat.isActive == 0) return;
+
+    vec3 myPos = sortedTransforms[i].position;
+    vec3 myVel = sortedMotions[i].velocity;
+    float myDensity = sortedMotions[i].density;
+    float myPressure = myMat.stiffness * (myDensity - myMat.restDensity);
+    
+    // Clamp Negative Pressure (No Tension)
+    if (myPressure < 0.0) myPressure = 0.0;
+
+    float h = cellSize;
+    float h2 = h * h;
+
+    vec3 pressureForce = vec3(0.0);
+    vec3 viscosityForce = vec3(0.0);
+
+    ivec3 myCell = GetGridCell(myPos);
+
+    // Neighbor Search
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                
+                ivec3 neighbor = myCell + ivec3(x, y, z);
+                
+                if (neighbor.x < 0 || neighbor.x >= gridDim.x ||
+                    neighbor.y < 0 || neighbor.y >= gridDim.y ||
+                    neighbor.z < 0 || neighbor.z >= gridDim.z) continue;
+
+                int neighborIndex = neighbor.z * (gridDim.x * gridDim.y) + neighbor.y * gridDim.x + neighbor.x;
+                int startIndex = gridHead[neighborIndex];
+
+                if (startIndex != -1) {
+                    for (uint k = uint(startIndex); k < numInstances; ++k) {
+                        
+                        if (gridPairs[k].cellID != uint(neighborIndex)) break;
+                        if (i == k) continue;
+
+                        vec3 otherPos = sortedTransforms[k].position;
+                        vec3 diff = myPos - otherPos;
+                        float r2 = dot(diff, diff);
+
+                        if (r2 < h2 && r2 > 0.000001) {
+                            
+                            float dist = sqrt(r2);
+                            float otherDensity = sortedMotions[k].density;
+                            // Avoid div by zero
+                            if (otherDensity < 1.0) otherDensity = 1.0; 
+                            
+                            uint otherOriginalID = gridPairs[k].instanceID;
+                            FluidMaterial otherMat = entityFluidMaterials[instanceToEntityIndex[otherOriginalID]];
+                            
+                            // Assuming neighbor is also Fluid or Solid.
+                            // If Solid (active=0), we treat it as a boundary.
+                            float otherMass = sortedMotions[k].mass;
+                            
+                            if (otherMat.isActive == 1) {
+                                // FLUID-FLUID Interaction
+                                float otherPressure = otherMat.stiffness * (otherDensity - otherMat.restDensity);
+                                if (otherPressure < 0.0) otherPressure = 0.0;
+
+                                // Pressure Force
+                                // Fp = - mass * (Pi + Pj)/(2 * rho_j) * gradW
+                                vec3 gradW = SpikyGradient(diff, h);
+                                float pTerm = (myPressure + otherPressure) / (2.0 * otherDensity);
+                                pressureForce -= otherMass * pTerm * gradW;
+                                
+                                // Viscosity Force
+                                // Fv = mu * mass * (vj - vi) / rho_j * lapW
+                                vec3 velDiff = sortedMotions[k].velocity - myVel;
+                                float lapW = ViscosityLaplacian(dist, h);
+                                viscosityForce += myMat.viscosity * otherMass * (velDiff / otherDensity) * lapW;
+                                
+                            } else {
+                                // SOLID INTERACTION (One-way coupling)
+                                // Treat solid as having high pressure? Or just use Collision resolution?
+                                // Since we have GridCollision enabled for Solid-Fluid, 
+                                // we can rely on that for "Hard" non-penetration.
+                                // But Soft repulsion (Pressure) helps stability.
+                                // Approximation: Treat solid as a dense static fluid particle.
+                                
+                                // vec3 gradW = SpikyGradient(diff, h);
+                                // pressureForce -= otherMass * (myPressure / otherDensity) * gradW; // Push away
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply Forces (F = ma -> a = F/m)
+    // We update acceleration directly. 
+    // Since mass cancels out in SPH derivation usually (F/rho), we just add F_total / Rho.
+    
+    vec3 force = pressureForce + viscosityForce;
+    if (myDensity > 0.001) {
+        //sortedMotions[i].acceleration += force / myDensity;
+        
+        // Write DIRECTLY to original instance to ensure it persists for Integration
+        instanceMotions[gridPairs[i].instanceID].acceleration += force / myDensity;
+    }
+}

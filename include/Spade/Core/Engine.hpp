@@ -28,17 +28,21 @@ namespace Spade {
     void LoadCameraBuffers(Universe& universe);
     void LoadInstanceBuffers(Universe& universe);
     void LoadCollisionBuffers(Universe& universe);
+    void LoadFluidBuffers(Universe& universe);
 
     // Physics Systems
     void EnableGravity(float gravity, float deltaTime);
     void EnableMotion(float deltaTime);
+
     void EnableCollision(float bounds, float deltaTime);
     void EnableGridCollision(float bounds, float cellSize, float deltaTime);
+
+    void EnableSPHFluid(float bounds, float cellSize, float deltaTime);
 
     // Render Systems
 
     // Main functions
-    void DrawScene(Universe& universe);
+    void DrawScene(Universe& universe, const std::string& fragmentShaderFile);
 
     // Input Handling
     void ProcessInput(Universe &universe);
@@ -98,6 +102,10 @@ namespace Spade {
     ProgramID m_GridClearProgram = 0;
     ProgramID m_GridBuildProgram = 0;
     ProgramID m_GridCollisionProgram = 0;
+
+    // Fluid Programs
+    ProgramID m_FluidDensityProgram = 0;
+    ProgramID m_FluidForceProgram = 0;
     
     // Sorted Grid Programs
     ProgramID m_BitonicSortProgram = 0;
@@ -112,6 +120,7 @@ namespace Spade {
     BufferID m_SSBO_InstanceToEntityIndex = 0;
 
     BufferID m_SSBO_EntityBounds = 0;
+    BufferID m_SSBO_EntityFluidMaterials = 0;
     
     // Grid Buffers
     BufferID m_SSBO_GridHead = 0;

@@ -97,9 +97,10 @@ namespace Spade {
 
   struct Bound {
     float size;
-    bool isSphere = true;
+    unsigned int isSphere = 1;
     float bounciness = 0.0f;
     float friction = 0.0f;
+    unsigned int active = 1;
   };
 
   struct GridPair { 
@@ -119,7 +120,14 @@ namespace Spade {
     glm::vec3 velocity = {0.0, 0.0, 0.0};
     float mass = 1;
     glm::vec3 acceleration = {0.0, 0.0, 0.0};
-    float padding;
+    float density = 0.0f;
+  };
+    
+  struct FluidMaterial {
+    float restDensity = 20.0f;
+    float viscosity = 3.0f;
+    float stiffness = 500.0f;
+    unsigned int active = 1;
   };
 
   struct Camera {

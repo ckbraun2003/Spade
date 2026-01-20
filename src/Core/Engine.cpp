@@ -9,6 +9,7 @@ namespace Spade {
     glDeleteBuffers(1, &m_SSBO_InstanceToEntityIndex);
     
     glDeleteBuffers(1, &m_SSBO_EntityBounds);
+    glDeleteBuffers(1, &m_SSBO_EntityFluidMaterials);
 
     glDeleteBuffers(1, &m_SSBO_GridHead);
     glDeleteBuffers(1, &m_SSBO_GridPairs);
@@ -29,6 +30,9 @@ namespace Spade {
     glDeleteProgram(m_GridOffsetsProgram);
     glDeleteProgram(m_GridReorderProgram);
     glDeleteProgram(m_GridScatterProgram);
+
+    glDeleteProgram(m_FluidDensityProgram);
+    glDeleteProgram(m_FluidForceProgram);
 
     glfwDestroyWindow(m_GLFWwindow);
     glfwTerminate();
@@ -73,7 +77,7 @@ namespace Spade {
     m_InstanceMotions.clear();
     m_InstanceMaterials.clear();
     m_InstanceToEntityIndex.clear();
-
+    
     auto& meshPool = universe.GetPool<MeshComponent>();
 
     unsigned int bufferSize = 0;
@@ -183,6 +187,32 @@ namespace Spade {
     Resources::UpdateShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
     }
 
+  void Engine::LoadFluidBuffers(Universe &universe) {
+
+    auto& meshPool = universe.GetPool<MeshComponent>();
+    auto& fluidPool = universe.GetPool<FluidComponent>();
+
+    std::vector<FluidMaterial> fluids;
+
+    // Loop through each mesh
+    for(size_t i = 0; i < meshPool.m_Data.size(); ++i) {
+      MeshComponent& meshComponent = meshPool.m_Data[i];
+      const EntityID entityID = meshPool.m_IndexToEntity[i];
+
+      FluidComponent* fluidComponent = fluidPool.Get(entityID);
+      fluids.push_back(fluidComponent->fluidMaterial);
+    }
+
+    if (m_SSBO_EntityFluidMaterials == 0) {
+      m_SSBO_EntityFluidMaterials = Resources::CreateBuffer();
+      // Allocate once
+      Resources::UploadShaderStorageBufferObject<FluidMaterial>(fluids, m_SSBO_EntityFluidMaterials);
+      Resources::BindShaderStorageToLocation(13, m_SSBO_EntityFluidMaterials);
+    }
+
+    Resources::UpdateShaderStorageBufferObject<FluidMaterial>(fluids, m_SSBO_EntityFluidMaterials);
+  }
+
   void Engine::EnableMotion(float deltaTime) {
     if (m_InstanceMotions.empty()) return;
 
@@ -225,13 +255,55 @@ namespace Spade {
     }
 
     size_t numInstances = m_InstanceTransforms.size();
+    GLuint groups = (numInstances + 63) / 64;
 
     // 4. Resolve Collisions (Direct Brute Force)
     Resources::UseProgram(m_CollisionProgram);
     Resources::SetLocationFloat(4, deltaTime);
     Resources::SetLocationFloat(15, globalBounds);
 
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  }
+  
+  void Engine::EnableSPHFluid(float globalBounds, float cellSize, float deltaTime) {
+    if (m_InstanceTransforms.empty()) return;
+    
+    // 1. Initialize Shaders
+    if (m_FluidDensityProgram == 0) {
+        m_FluidDensityProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidDensity.comp");
+        m_FluidForceProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidForce.comp");
+    }
+    
+    size_t numInstances = m_InstanceTransforms.size();
     GLuint groups = (numInstances + 63) / 64;
+
+    // Calculate Grid Dim (Same as GridCollision)
+    int cellsPerAxis = (int)ceil((globalBounds * 2.0f) / cellSize);
+    glm::ivec3 gridDim = glm::ivec3(cellsPerAxis);
+    
+    // 2. Compute Density (SPH)
+    Resources::UseProgram(m_FluidDensityProgram);
+    
+    // Set Grid Uniforms (MUST matched GridCollision locations)
+    Resources::SetLocationFloat(15, globalBounds);
+    Resources::SetLocationFloat(16, cellSize);
+    Resources::SetLocationIntVec3(17, gridDim);
+    Resources::SetLocationUnsignedInt(18, numInstances);
+    
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    
+    // 3. Compute Forces (SPH)
+    Resources::UseProgram(m_FluidForceProgram);
+    Resources::SetLocationFloat(4, deltaTime);
+    
+    // Set Grid Uniforms for Force Shader too!
+    Resources::SetLocationFloat(15, globalBounds);
+    Resources::SetLocationFloat(16, cellSize);
+    Resources::SetLocationIntVec3(17, gridDim);
+    Resources::SetLocationUnsignedInt(18, numInstances);
+    
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
@@ -364,9 +436,9 @@ namespace Spade {
     }
   }
 
-  void Engine::DrawScene(Universe &universe) {
+  void Engine::DrawScene(Universe &universe, const std::string& fragmentShaderFile = "assets/shaders/[FRAGMENT]Color.frag") {
     if (m_ShaderProgram == 0) {
-      m_ShaderProgram = Resources::CreateRenderProgram("assets/shaders/Vertex.vert", "assets/shaders/Fragment.frag");
+      m_ShaderProgram = Resources::CreateRenderProgram("assets/shaders/Vertex.vert", fragmentShaderFile);
     }
 
     glClearColor(0.2f, 0.2f, 0.2f, 1.0f);

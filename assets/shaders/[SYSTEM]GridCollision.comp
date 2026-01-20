@@ -1,6 +1,6 @@
 #version 430
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(local_size_x = 64) in;
 
 struct Transform {
     vec3 position;
@@ -12,13 +12,22 @@ struct Motion {
     vec3 velocity;
     float mass;
     vec3 acceleration;
+    float density;
 };
 
 struct Bound {
     float size;
-    bool isSphere;
+    uint isSphere;
     float bounciness;
     float friction;
+    uint isActive;
+};
+
+struct FluidMaterial {
+    float restDensity;
+    float viscosity;
+    float stiffness;
+    uint isActive;
 };
 
 struct GridPair {
@@ -45,6 +54,11 @@ layout(std430, binding = 9) buffer GridHead {
 layout(std430, binding = 10) buffer GridPairs {
     GridPair gridPairs[];
 };
+
+layout(std430, binding = 13) buffer EntityFluidMaterials {
+    FluidMaterial entityFluidMaterials[];
+};
+
 
 layout(location = 4) uniform float deltaTime;
 layout(location = 15) uniform float globalBounds;
@@ -75,13 +89,48 @@ void main() {
     
     // Bounds are NOT sorted, we must index them by OriginalID -> EntityID
     uint myOriginalID = gridPairs[i].instanceID;
-    uint myEntityID = instanceToEntityIndex[myOriginalID];
-    Bound myBound = entityBounds[myEntityID];
+    Bound myBound = entityBounds[instanceToEntityIndex[myOriginalID]];
+    if (myBound.isActive == 0) return;
 
     // Assuming Sphere for this grid test (size = diameter)
     float myRadius = myBound.size * 0.5;
 
     ivec3 myCell = GetGridCell(myPos);
+
+    // World Boundary Collision (Box)
+    float limit = globalBounds - myRadius;
+
+    // Y Floor
+    if (myPos.y < -limit) {
+        myPos.y = -limit;
+        if (myVel.y < 0) myVel.y *= -myBound.bounciness;
+    } else if (myPos.y > limit) {
+        myPos.y = limit;
+        if (myVel.y > 0) myVel.y *= -myBound.bounciness;
+    }
+
+    // X Walls
+    if (myPos.x < -limit) {
+        myPos.x = -limit;
+        if (myVel.x < 0) myVel.x *= -myBound.bounciness;
+    } else if (myPos.x > limit) {
+        myPos.x = limit;
+        if (myVel.x > 0) myVel.x *= -myBound.bounciness;
+    }
+
+    // Z Walls
+    if (myPos.z < -limit) {
+        myPos.z = -limit;
+        if (myVel.z < 0) myVel.z *= -myBound.bounciness;
+    } else if (myPos.z > limit) {
+        myPos.z = limit;
+        if (myVel.z > 0) myVel.z *= -myBound.bounciness;
+    }
+
+    vec3 totalCorrection = vec3(0.0);
+    float numCorrections = 0.0;
+    
+    vec3 totalVelocityChange = vec3(0.0);
 
     // Neighbor Search
     for (int z = -1; z <= 1; ++z) {
@@ -109,9 +158,15 @@ void main() {
 
                         vec3 otherPos = sortedTransforms[k].position;
                         uint otherOriginalID = gridPairs[k].instanceID;
-                        uint otherEntityID = instanceToEntityIndex[otherOriginalID];
-                        Bound otherBound = entityBounds[otherEntityID];
+                        Bound otherBound = entityBounds[instanceToEntityIndex[otherOriginalID]];
                         float otherRadius = otherBound.size * 0.5;
+
+                        // Check Fluid Status
+                        FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[myOriginalID]];
+                        FluidMaterial otherMat = entityFluidMaterials[instanceToEntityIndex[otherOriginalID]];
+
+                        // If BOTH are fluid, skip Hard Collision (Let SPH handle it)
+                        if (myMat.isActive == 1 && otherMat.isActive == 1) continue;
                         
                         // Collision Logic (Sphere-Sphere)
                         vec3 dir = myPos - otherPos;
@@ -123,9 +178,10 @@ void main() {
                             vec3 normal = dir / dist;
                             float penetration = minParams - dist;
 
-                            // Position Correction (50% each)
-                            vec3 correction = normal * (penetration * 0.5);
-                            myPos += correction;
+                            // Position Correction (Accumulate)
+                            vec3 correction = normal * penetration;
+                            totalCorrection += correction;
+                            numCorrections += 1.0;
                             
                             // Velocity Reflection
                             vec3 otherVel = sortedMotions[k].velocity;
@@ -142,7 +198,7 @@ void main() {
                                 j /= (1.0/myMass + 1.0/otherMass);
                                 
                                 vec3 impulse = j * normal;
-                                myVel += impulse / myMass;
+                                totalVelocityChange += impulse / myMass;
 
                                 // Friction (Simple)
                                 vec3 tangent = relVel - (velAlongNormal * normal);
@@ -157,7 +213,7 @@ void main() {
                                     if (abs(jTangent) < j * friction) fImpulse = jTangent * tangent;
                                     else fImpulse = -j * friction * tangent;
                                     
-                                    myVel += fImpulse / myMass;
+                                    totalVelocityChange += fImpulse / myMass;
                                 }
                             }
                         }
@@ -167,38 +223,22 @@ void main() {
         }
     }
 
-    // World Boundary Collision (Box)
-    float limit = globalBounds - myRadius;
-
-    // Y Floor
-    if (myPos.y < -limit) {
-        myPos.y = -limit;
-        if (myVel.y < 0) myVel.y *= -myBound.bounciness;
-        // Simple floor friction
-        myVel.x *= 0.99;
-        myVel.z *= 0.99;
-    } else if (myPos.y > limit) {
-         myPos.y = limit;
-         if (myVel.y > 0) myVel.y *= -myBound.bounciness;
+    // Apply Accumulated Position Correction
+    if (numCorrections > 0.0) {
+        myPos += totalCorrection / numCorrections;
+    }
+    
+    // Apply Accumulated Velocity Change (Averaged)
+    if (numCorrections > 0.0) {
+        myVel += totalVelocityChange / numCorrections;
     }
 
-    // X Walls
-    if (myPos.x < -limit) {
-        myPos.x = -limit;
-        if (myVel.x < 0) myVel.x *= -myBound.bounciness;
-    } else if (myPos.x > limit) {
-        myPos.x = limit;
-        if (myVel.x > 0) myVel.x *= -myBound.bounciness;
-    }
-
-    // Z Walls
-    if (myPos.z < -limit) {
-        myPos.z = -limit;
-        if (myVel.z < 0) myVel.z *= -myBound.bounciness;
-    } else if (myPos.z > limit) {
-        myPos.z = limit;
-        if (myVel.z > 0) myVel.z *= -myBound.bounciness;
-    }
+    // Nan/Inf Safety & Final Clamp
+    if (isnan(myPos.x) || isinf(myPos.x)) myPos = vec3(0.0);
+    
+    // Hard Clamp to Global Bounds (Safety Net)
+    float safetyLimit = globalBounds - myRadius;
+    myPos = clamp(myPos, vec3(-safetyLimit), vec3(safetyLimit));
 
     // Write Back
     sortedTransforms[i].position = myPos;

@@ -25,6 +25,8 @@ layout(std430, binding = 5) buffer InstanceTransformData {
 };
 
 layout(location = 3) uniform uint InstanceStartIndex;
+
+out vec3 v_Normal;
 flat out uint v_GlobalInstanceIndex;
 
 // Helper: Convert Quaternion (x,y,z,w) to Rotation Matrix
@@ -71,5 +73,7 @@ void main() {
     mat4 model = BuildModelMatrix(instanceTransform.position, instanceTransform.rotation, instanceTransform.scale);
 
     gl_Position = camera.projection * camera.view * model * vec4(aPos, 1.0);
+
+    v_Normal = mat3(transpose(inverse(model))) * aNormal;
     v_GlobalInstanceIndex = index;
 }

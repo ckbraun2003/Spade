@@ -12,6 +12,7 @@ struct Motion {
     vec3 velocity;
     float mass;
     vec3 acceleration;
+    float density;
 };
 
 struct GridPair {

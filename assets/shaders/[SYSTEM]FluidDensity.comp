@@ -1,0 +1,145 @@
+#version 430 core
+
+layout(local_size_x = 64) in;
+
+// --- Structs ---
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+    float density;
+};
+
+struct FluidMaterial {
+    float restDensity;
+    float viscosity;
+    float stiffness;
+    uint isActive;
+};
+
+struct GridPair {
+    uint cellID;
+    uint instanceID;
+};
+
+// --- Buffers ---
+layout(std430, binding = 11) buffer SortedTransforms {
+    Transform sortedTransforms[];
+};
+layout(std430, binding = 12) buffer SortedMotions {
+    Motion sortedMotions[];
+};
+layout(std430, binding = 8) buffer InstanceToEntityIndex {
+    uint instanceToEntityIndex[];
+};
+layout(std430, binding = 14) buffer EntityFluidMaterials {
+    FluidMaterial entityFluidMaterials[];
+};
+
+layout(std430, binding = 9) buffer GridHead {
+    int gridHead[];
+};
+layout(std430, binding = 10) buffer GridPairs {
+    GridPair gridPairs[];
+};
+
+// --- Uniforms ---
+layout(location = 15) uniform float globalBounds;
+layout(location = 16) uniform float cellSize;
+layout(location = 17) uniform ivec3 gridDim;
+layout(location = 18) uniform uint numInstances;
+
+// --- SPH Kernels (Poly6) ---
+// W(r, h) = (315 / (64 * pi * h^9)) * (h^2 - r^2)^3
+float Poly6(float r2, float h) {
+    float h2 = h * h;
+    if (r2 < 0 || r2 > h2) return 0.0;
+    float diff = h2 - r2;
+    return (315.0 / (64.0 * 3.14159 * pow(h, 9))) * diff * diff * diff;
+}
+
+// --- Helper: Grid Index ---
+ivec3 GetGridCell(vec3 pos) {
+    vec3 offsetPos = pos + vec3(globalBounds);
+    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+    return clamp(cell, ivec3(0), gridDim - ivec3(1));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= numInstances) return;
+
+    // Check Active Flag using Original ID
+    uint myOriginalID = gridPairs[i].instanceID;
+    FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[myOriginalID]];
+    
+    // IF INACTIVE (Solid), SKIP DENSITY CALCULATION
+    if (myMat.isActive == 0) {
+        // Solids don't have simulated density
+        sortedMotions[i].density = 0.0; 
+        return;
+    }
+
+    vec3 myPos = sortedTransforms[i].position;
+    
+    // Smoothing Radius (h) - usually cell Size
+    float h = cellSize; 
+    float h2 = h * h;
+
+    float density = 0.0;
+
+    ivec3 myCell = GetGridCell(myPos);
+
+    // Neighbor Search (3x3x3)
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                
+                ivec3 neighbor = myCell + ivec3(x, y, z);
+                
+                // Boundary check
+                if (neighbor.x < 0 || neighbor.x >= gridDim.x ||
+                    neighbor.y < 0 || neighbor.y >= gridDim.y ||
+                    neighbor.z < 0 || neighbor.z >= gridDim.z) continue;
+
+                int neighborIndex = neighbor.z * (gridDim.x * gridDim.y) + neighbor.y * gridDim.x + neighbor.x;
+                int startIndex = gridHead[neighborIndex];
+
+                if (startIndex != -1) {
+                    for (uint k = uint(startIndex); k < numInstances; ++k) {
+                        
+                        if (gridPairs[k].cellID != uint(neighborIndex)) break;
+
+                        vec3 otherPos = sortedTransforms[k].position;
+                        vec3 diff = myPos - otherPos;
+                        float r2 = dot(diff, diff);
+
+                        if (r2 < h2) {
+                            // Determine Mass (assume 1.0 for now, or read from Motion)
+                            float mass = sortedMotions[k].mass;
+                            
+                            // Check if Neighbor is Solid (Boundary handling)
+                            // Ideally, solids contribute to density to prevent compression against walls
+                            // But usually handled by "Boundary Particles" or Ghost Density.
+                            // For simplicity: Treat all neighbors as mass=1 contributors.
+                            
+                            density += mass * Poly6(r2, h);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Avoid Zero Density (Vacuum)
+    if (density < myMat.restDensity) density = myMat.restDensity;
+
+    // Write Back
+    sortedMotions[i].density = density;
+}
