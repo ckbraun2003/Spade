@@ -3,6 +3,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <random>
+#include <cmath>
 #include <functional>
 
 #include <glm/glm.hpp>
@@ -48,6 +50,15 @@ namespace Spade {
     BufferID EBO = 0;
 
     ~MeshComponent();
+
+    void SpawnInstancesInSphere(float radius, glm::vec3 center, int count);
+    void SpawnInstancesInCube(float size, glm::vec3 center, int count);
+    void SetVelocity(glm::vec3 velocity);
+    void SetColor(glm::vec4 color);
+    void SetMass(float mass);
+
+    void RandomizeVelocity();
+    void RandomizeColor();
   };
 
   struct BoundingComponent {

@@ -38,7 +38,7 @@ layout(std430, binding = 12) buffer SortedMotions {
 layout(std430, binding = 8) buffer InstanceToEntityIndex {
     uint instanceToEntityIndex[];
 };
-layout(std430, binding = 14) buffer EntityFluidMaterials {
+layout(std430, binding = 13) buffer EntityFluidMaterials {
     FluidMaterial entityFluidMaterials[];
 };
 
@@ -52,7 +52,7 @@ layout(std430, binding = 10) buffer GridPairs {
 // --- Uniforms ---
 layout(location = 15) uniform float globalBounds;
 layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform ivec3 gridDim;
+layout(location = 17) uniform uint hashTableSize; // Hash Size
 layout(location = 18) uniform uint numInstances;
 
 // --- SPH Kernels (Poly6) ---
@@ -65,8 +65,21 @@ float Poly6(float r2, float h) {
 }
 
 // --- Helper: Grid Index ---
+uint GetHash(ivec3 cell) {
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+
+    uint n = (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+    return n % hashTableSize;
+}
+
 ivec3 GetGridCell(vec3 pos) {
     vec3 offsetPos = pos + vec3(globalBounds);
+    
+    // Implicit Grid Dim (Match previous implementation)
+    ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
+
     ivec3 cell = ivec3(floor(offsetPos / cellSize));
     return clamp(cell, ivec3(0), gridDim - ivec3(1));
 }
@@ -75,61 +88,50 @@ void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= numInstances) return;
 
-    // Check Active Flag using Original ID
-    uint myOriginalID = gridPairs[i].instanceID;
-    FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[myOriginalID]];
-    
-    // IF INACTIVE (Solid), SKIP DENSITY CALCULATION
+    vec3 myPos = sortedTransforms[i].position;
+    FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[gridPairs[i].instanceID]];
+
     if (myMat.isActive == 0) {
-        // Solids don't have simulated density
-        sortedMotions[i].density = 0.0; 
+        //sortedMotions[i].density = 0.0; // Keep existing or zero?
         return;
     }
 
-    vec3 myPos = sortedTransforms[i].position;
-    
-    // Smoothing Radius (h) - usually cell Size
-    float h = cellSize; 
-    float h2 = h * h;
-
     float density = 0.0;
+    float mass = sortedMotions[i].mass;
+    float h = cellSize; // Smoothing Radius
+    float h2 = h * h;
+    
+    // Self-Density
+    density += mass * Poly6(0.0, h);
 
+    // Neighbor Search
     ivec3 myCell = GetGridCell(myPos);
 
-    // Neighbor Search (3x3x3)
     for (int z = -1; z <= 1; ++z) {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 
+                // No Boundary Check!
                 ivec3 neighbor = myCell + ivec3(x, y, z);
                 
-                // Boundary check
-                if (neighbor.x < 0 || neighbor.x >= gridDim.x ||
-                    neighbor.y < 0 || neighbor.y >= gridDim.y ||
-                    neighbor.z < 0 || neighbor.z >= gridDim.z) continue;
-
-                int neighborIndex = neighbor.z * (gridDim.x * gridDim.y) + neighbor.y * gridDim.x + neighbor.x;
-                int startIndex = gridHead[neighborIndex];
-
+                uint neighborHash = GetHash(neighbor);
+                int startIndex = gridHead[neighborHash];
+                
                 if (startIndex != -1) {
                     for (uint k = uint(startIndex); k < numInstances; ++k) {
                         
-                        if (gridPairs[k].cellID != uint(neighborIndex)) break;
+                        // Optimization: Break on Hash Mismatch
+                        if (gridPairs[k].cellID != neighborHash) break;
+                        
+                        if (i == k) continue;
 
                         vec3 otherPos = sortedTransforms[k].position;
-                        vec3 diff = myPos - otherPos;
-                        float r2 = dot(diff, diff);
+                        vec3 r = myPos - otherPos;
+                        float r2 = dot(r, r);
 
                         if (r2 < h2) {
-                            // Determine Mass (assume 1.0 for now, or read from Motion)
-                            float mass = sortedMotions[k].mass;
-                            
-                            // Check if Neighbor is Solid (Boundary handling)
-                            // Ideally, solids contribute to density to prevent compression against walls
-                            // But usually handled by "Boundary Particles" or Ghost Density.
-                            // For simplicity: Treat all neighbors as mass=1 contributors.
-                            
-                            density += mass * Poly6(r2, h);
+                            float otherMass = sortedMotions[k].mass;
+                            density += otherMass * Poly6(r2, h);
                         }
                     }
                 }

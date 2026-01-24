@@ -1,0 +1,74 @@
+#version 430 core
+
+layout(local_size_x = 64) in;
+
+struct Transform {
+    vec3 position;
+    vec4 rotation;
+    vec3 scale;
+};
+
+struct Motion {
+    vec3 velocity;
+    float mass;
+    vec3 acceleration;
+    float density;
+};
+
+layout(std430, binding = 5) buffer InstanceTransformData {
+    Transform instanceTransforms[];
+};
+
+layout(std430, binding = 6) buffer InstanceMotionData {
+    Motion instanceMotions[];
+};
+
+layout(location = 4) uniform float deltaTime;
+layout(location = 20) uniform float gravityConstant;
+
+void main() {
+    if (gl_GlobalInvocationID.x >= instanceMotions.length()) return;
+
+    uint currentIndex = gl_GlobalInvocationID.x;
+
+    Transform instanceTransform = instanceTransforms[currentIndex];
+    Motion instanceMotion = instanceMotions[currentIndex];
+
+    uint numInstances = instanceTransforms.length();
+
+    vec3 forceOfGravity = vec3(0.0f);
+
+    for (int i = 0; i < numInstances; ++i) {
+        if (i == currentIndex) continue;
+
+        Transform currentTransform = instanceTransforms[i];
+        Motion currentMotion = instanceMotions[i];
+        
+        // 1. Get Displacement Vector
+        vec3 difference = currentTransform.position - instanceTransform.position;
+
+        // 2. Get DistanceSquared (Avoid sqrt for performance where possible, but need dist for unit vector)
+        float distSq = dot(difference, difference);
+
+        // 3. Newton's Law: F = G * m1 * m2 / r^2
+        // We calculate magnitude first
+        float forceMagnitude = gravityConstant * (instanceMotion.mass * currentMotion.mass) / (distSq);
+
+        // 4. Apply Direction (Unit Vector)
+        // Unit Vector = difference / distance
+        // Force Vector = forceMagnitude * (difference / distance)
+        vec3 forceVector = forceMagnitude * normalize(difference);
+
+        forceOfGravity += forceVector;
+
+    }
+
+    instanceMotion.acceleration += forceOfGravity / instanceMotion.mass;
+    
+    // Safety: Prevent NaN propagation
+    if (isnan(instanceMotion.acceleration.x) || isinf(instanceMotion.acceleration.x)) {
+        instanceMotion.acceleration = vec3(0.0);
+    }
+
+    instanceMotions[currentIndex].acceleration = instanceMotion.acceleration;
+}

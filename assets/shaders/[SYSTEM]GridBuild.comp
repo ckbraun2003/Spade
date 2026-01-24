@@ -23,14 +23,16 @@ layout(std430, binding = 10) buffer GridPairs {
 
 layout(location = 15) uniform float globalBounds;
 layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform ivec3 gridDim;
+layout(location = 17) uniform uint hashTableSize; // Hash Size
 layout(location = 18) uniform uint numInstances;
 
-int GetGridIndex(vec3 pos) {
-    vec3 offsetPos = pos + vec3(globalBounds);
-    ivec3 cell = ivec3(floor(offsetPos / cellSize));
-    cell = clamp(cell, ivec3(0), gridDim - ivec3(1));
-    return cell.z * (gridDim.x * gridDim.y) + cell.y * gridDim.x + cell.x;
+uint GetHash(ivec3 cell) {
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+
+    uint n = (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+    return n % hashTableSize;
 }
 
 void main() {
@@ -38,7 +40,17 @@ void main() {
     if (index >= numInstances) return;
 
     vec3 pos = instanceTransforms[index].position;
-    uint cellIndex = uint(GetGridIndex(pos));
+
+    // Unbounded
+    vec3 offsetPos = pos + vec3(globalBounds);
+    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+
+    // Implicit Grid Dim (Match previous implementation)
+    ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
+    cell = clamp(cell, ivec3(0), gridDim - ivec3(1));
+    
+    // Hash
+    uint cellIndex = GetHash(cell);
 
     gridPairs[index].cellID = cellIndex;
     gridPairs[index].instanceID = index;

@@ -63,19 +63,26 @@ layout(std430, binding = 13) buffer EntityFluidMaterials {
 layout(location = 4) uniform float deltaTime;
 layout(location = 15) uniform float globalBounds;
 layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform ivec3 gridDim;
+layout(location = 17) uniform uint hashTableSize; // Changed from ivec3 gridDim to uint hashTableSize
 layout(location = 18) uniform uint numInstances;
 
-int GetGridIndex(vec3 pos) {
-    vec3 offsetPos = pos + vec3(globalBounds);
-    ivec3 cell = ivec3(floor(offsetPos / cellSize));
-    cell = clamp(cell, ivec3(0), gridDim - ivec3(1));
-    return cell.z * (gridDim.x * gridDim.y) + cell.y * gridDim.x + cell.x;
+// --- Helper: Grid Index ---
+uint GetHash(ivec3 cell) {
+    const uint p1 = 73856093u;
+    const uint p2 = 19349663u;
+    const uint p3 = 83492791u;
+
+    uint n = (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+    return n % hashTableSize;
 }
 
 ivec3 GetGridCell(vec3 pos) {
     vec3 offsetPos = pos + vec3(globalBounds);
-    ivec3 cell = ivec3(floor(offsetPos / cellSize));
+
+    // Implicit Grid Dim (Match previous implementation)
+    ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
+
+    ivec3 cell = ivec3(floor(offsetPos / cellSize)); // Removed clamp
     return clamp(cell, ivec3(0), gridDim - ivec3(1));
 }
 
@@ -86,16 +93,13 @@ void main() {
     vec3 myPos = sortedTransforms[i].position;
     vec3 myVel = sortedMotions[i].velocity;
     float myMass = sortedMotions[i].mass;
-    
+
     // Bounds are NOT sorted, we must index them by OriginalID -> EntityID
     uint myOriginalID = gridPairs[i].instanceID;
     Bound myBound = entityBounds[instanceToEntityIndex[myOriginalID]];
     if (myBound.isActive == 0) return;
 
-    // Assuming Sphere for this grid test (size = diameter)
     float myRadius = myBound.size * 0.5;
-
-    ivec3 myCell = GetGridCell(myPos);
 
     // World Boundary Collision (Box)
     float limit = globalBounds - myRadius;
@@ -129,30 +133,27 @@ void main() {
 
     vec3 totalCorrection = vec3(0.0);
     float numCorrections = 0.0;
-    
+
     vec3 totalVelocityChange = vec3(0.0);
+
+    ivec3 myCell = GetGridCell(myPos);
 
     // Neighbor Search
     for (int z = -1; z <= 1; ++z) {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                
-                ivec3 neighbor = myCell + ivec3(x, y, z);
-                
-                // Boundary check
-                if (neighbor.x < 0 || neighbor.x >= gridDim.x ||
-                    neighbor.y < 0 || neighbor.y >= gridDim.y ||
-                    neighbor.z < 0 || neighbor.z >= gridDim.z) continue;
 
-                int neighborIndex = neighbor.z * (gridDim.x * gridDim.y) + neighbor.y * gridDim.x + neighbor.x;
-                int startIndex = gridHead[neighborIndex];
+                ivec3 neighbor = myCell + ivec3(x, y, z);
+
+                uint neighborHash = GetHash(neighbor);
+                int startIndex = gridHead[neighborHash];
 
                 if (startIndex != -1) {
                     // Linear Scan of the neighbor cell
                     for (uint k = uint(startIndex); k < numInstances; ++k) {
-                        
+
                         // Optimization: Check if we left the cell (Sorted property)
-                        if (gridPairs[k].cellID != uint(neighborIndex)) break;
+                        if (gridPairs[k].cellID != neighborHash) break;
 
                         if (i == k) continue; // Skip self
 
@@ -167,7 +168,7 @@ void main() {
 
                         // If BOTH are fluid, skip Hard Collision (Let SPH handle it)
                         if (myMat.isActive == 1 && otherMat.isActive == 1) continue;
-                        
+
                         // Collision Logic (Sphere-Sphere)
                         vec3 dir = myPos - otherPos;
                         float distSq = dot(dir, dir);
@@ -182,11 +183,11 @@ void main() {
                             vec3 correction = normal * penetration;
                             totalCorrection += correction;
                             numCorrections += 1.0;
-                            
+
                             // Velocity Reflection
                             vec3 otherVel = sortedMotions[k].velocity;
                             float otherMass = sortedMotions[k].mass;
-                            
+
                             vec3 relVel = myVel - otherVel;
                             float velAlongNormal = dot(relVel, normal);
 
@@ -196,7 +197,7 @@ void main() {
 
                                 float j = -(1.0 + restitution) * velAlongNormal;
                                 j /= (1.0/myMass + 1.0/otherMass);
-                                
+
                                 vec3 impulse = j * normal;
                                 totalVelocityChange += impulse / myMass;
 
@@ -208,11 +209,11 @@ void main() {
                                     float friction = sqrt(myBound.friction * otherBound.friction);
                                     float jTangent = -dot(relVel, tangent);
                                     jTangent /= (1.0/myMass + 1.0/otherMass);
-                                    
+
                                     vec3 fImpulse;
                                     if (abs(jTangent) < j * friction) fImpulse = jTangent * tangent;
                                     else fImpulse = -j * friction * tangent;
-                                    
+
                                     totalVelocityChange += fImpulse / myMass;
                                 }
                             }
@@ -227,7 +228,7 @@ void main() {
     if (numCorrections > 0.0) {
         myPos += totalCorrection / numCorrections;
     }
-    
+
     // Apply Accumulated Velocity Change (Averaged)
     if (numCorrections > 0.0) {
         myVel += totalVelocityChange / numCorrections;
@@ -235,7 +236,7 @@ void main() {
 
     // Nan/Inf Safety & Final Clamp
     if (isnan(myPos.x) || isinf(myPos.x)) myPos = vec3(0.0);
-    
+
     // Hard Clamp to Global Bounds (Safety Net)
     float safetyLimit = globalBounds - myRadius;
     myPos = clamp(myPos, vec3(-safetyLimit), vec3(safetyLimit));

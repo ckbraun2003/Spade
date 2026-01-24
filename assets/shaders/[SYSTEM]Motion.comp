@@ -34,8 +34,6 @@ void main() {
     Motion instanceMotion = instanceMotions[currentIndex];
 
     instanceMotion.velocity += instanceMotion.acceleration * deltaTime;
-    // Air resistance / Drag
-    instanceMotion.velocity *= 0.998f; 
     instanceTransform.position += instanceMotion.velocity * deltaTime;
 
     // Reset acceleration (forces) for next frame

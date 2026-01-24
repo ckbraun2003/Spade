@@ -34,10 +34,12 @@ namespace Spade {
     void EnableGravity(float gravity, float deltaTime);
     void EnableMotion(float deltaTime);
 
-    void EnableCollision(float bounds, float deltaTime);
+    void EnableBruteForceCollision(float bounds, float deltaTime);
     void EnableGridCollision(float bounds, float cellSize, float deltaTime);
 
-    void EnableSPHFluid(float bounds, float cellSize, float deltaTime);
+    void EnableSPHFluid(float globalBounds, float cellSize, float deltaTime);
+
+    void EnableBruteForceNewtonianGravity(float gravityConstant, float deltaTime);
 
     // Render Systems
 
@@ -69,6 +71,8 @@ namespace Spade {
 
     bool IsKeyPressed(int key);
 
+    void BuildGrid(float globalBounds, float cellSize);
+
     // Window Variables
     std::string m_WindowTitle;
     glm::vec2 m_WindowSize = {800.0, 600.0};
@@ -77,7 +81,7 @@ namespace Spade {
     // Frame Statistics
     float m_LastTime = 0.0f;
     float m_CurrentTime = 0.0f;
-    float m_DeltaTime = 0.0f;
+    float m_DeltaTime = 0.016f;
     float m_FPSTimer = 0.0f;
     float m_Memory = 0.0f;
     unsigned int m_FrameCounter = 0;
@@ -106,6 +110,8 @@ namespace Spade {
     // Fluid Programs
     ProgramID m_FluidDensityProgram = 0;
     ProgramID m_FluidForceProgram = 0;
+
+    ProgramID m_NewtonianGravityProgram = 0;
     
     // Sorted Grid Programs
     ProgramID m_BitonicSortProgram = 0;

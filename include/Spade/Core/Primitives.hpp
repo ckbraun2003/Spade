@@ -124,8 +124,8 @@ namespace Spade {
   };
     
   struct FluidMaterial {
-    float restDensity = 20.0f;
-    float viscosity = 3.0f;
+    float restDensity = 1.0f;
+    float viscosity = 0.05f;
     float stiffness = 500.0f;
     unsigned int active = 1;
   };

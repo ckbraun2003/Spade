@@ -38,122 +38,37 @@ int main() {
   camera.GetComponent<InputComponent>()->bindings[GLFW_KEY_D] = MoveRight;
 
   // Create Particles
-  EntityID meshID = universe.CreateEntityID();
-  Entity mesh = Entity(meshID, &universe);
+  EntityID planetID = universe.CreateEntityID();
+  Entity planets = Entity(planetID, &universe);
 
-  mesh.AddComponent<TransformComponent>();
-  mesh.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
-  mesh.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
-  mesh.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
+  planets.AddComponent<TransformComponent>();
+  planets.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
+  planets.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
+  planets.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
 
-  mesh.AddComponent<BoundingComponent>();
-  mesh.GetComponent<BoundingComponent>()->bound.size = 0.2;
-  mesh.GetComponent<BoundingComponent>()->bound.isSphere = true;
-  mesh.GetComponent<BoundingComponent>()->bound.bounciness = 0.0;
-  mesh.GetComponent<BoundingComponent>()->bound.friction = 0.0;
-  mesh.GetComponent<BoundingComponent>()->bound.active = true;
+  planets.AddComponent<BoundingComponent>();
+  planets.GetComponent<BoundingComponent>()->bound.size = 0.2;
+  planets.GetComponent<BoundingComponent>()->bound.isSphere = true;
+  planets.GetComponent<BoundingComponent>()->bound.bounciness = 0.0;
+  planets.GetComponent<BoundingComponent>()->bound.friction = 0.0;
+  planets.GetComponent<BoundingComponent>()->bound.active = true;
 
-  mesh.AddComponent<MeshComponent>();
-  mesh.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.1, 16, 16);
-  //mesh.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
+  planets.AddComponent<FluidComponent>();
+  planets.GetComponent<FluidComponent>()->fluidMaterial.restDensity = 1.0;
+  planets.GetComponent<FluidComponent>()->fluidMaterial.viscosity = 0.05;
+  planets.GetComponent<FluidComponent>()->fluidMaterial.stiffness = 500.0;
+  planets.GetComponent<FluidComponent>()->fluidMaterial.active = true;
 
-  mesh.AddComponent<FluidComponent>();
-  mesh.GetComponent<FluidComponent>()->fluidMaterial.restDensity = 1;
-  mesh.GetComponent<FluidComponent>()->fluidMaterial.viscosity = 0.05;
-  mesh.GetComponent<FluidComponent>()->fluidMaterial.stiffness = 500;
-  mesh.GetComponent<FluidComponent>()->fluidMaterial.active = true;
+  planets.AddComponent<MeshComponent>();
+  planets.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.1, 16, 16);
+  planets.GetComponent<MeshComponent>()->SpawnInstancesInSphere(5.0, {0.0, 0.0, 0.0}, 10000);
+  planets.GetComponent<MeshComponent>()->SetMass(0.01);
+  planets.GetComponent<MeshComponent>()->RandomizeVelocity();
+  planets.GetComponent<MeshComponent>()->RandomizeColor();
 
-  // // Create Sphere
-  // EntityID sphereID = universe.CreateEntityID();
-  // Entity sphere = Entity(sphereID, &universe);
-  //
-  // sphere.AddComponent<TransformComponent>();
-  // sphere.GetComponent<TransformComponent>()->transform.position = {0.0f, 0.0f, 0.0f};
-  // sphere.GetComponent<TransformComponent>()->transform.rotation = {1.0, 0.0, 0.0, 0.0};
-  // sphere.GetComponent<TransformComponent>()->transform.scale = {1.0, 1.0, 1.0};
-  //
-  // sphere.AddComponent<BoundingComponent>();
-  // sphere.GetComponent<BoundingComponent>()->bound.size = 1.0;
-  // sphere.GetComponent<BoundingComponent>()->bound.isSphere = true;
-  // sphere.GetComponent<BoundingComponent>()->bound.bounciness = 0.0;
-  // sphere.GetComponent<BoundingComponent>()->bound.friction = 0.0;
-  // sphere.GetComponent<BoundingComponent>()->bound.active = true;
-  //
-  // sphere.AddComponent<MeshComponent>();
-  // sphere.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.5, 16, 16);
-  // //mesh.GetComponent<MeshComponent>()->mesh = GenerateCube(1.0);
-  //
-  // sphere.AddComponent<FluidComponent>();
-  // sphere.GetComponent<FluidComponent>()->fluidMaterial.restDensity = 1;
-  // sphere.GetComponent<FluidComponent>()->fluidMaterial.viscosity = 0.05;
-  // sphere.GetComponent<FluidComponent>()->fluidMaterial.stiffness = 500;
-  // sphere.GetComponent<FluidComponent>()->fluidMaterial.active = false;
-  //
-  // {
-  //   Transform transform;
-  //   transform.position = {0.0, 0.0, 0.0};
-  //   transform.rotation = {1.0, 0.0, 0.0, 0.0};
-  //   transform.scale = {1.0, 1.0, 1.0};
-  //
-  //   Motion motion;
-  //   motion.velocity = {0.0, 0.0, 0.0};
-  //   motion.mass = 1.0;
-  //   motion.acceleration = {0.0f, 0.0f, 0.0f};
-  //
-  //   Material material;
-  //   material.color = {0.0f, 0.2f, 0.7f, 1.0f};
-  //
-  //   sphere.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
-  //   sphere.GetComponent<MeshComponent>()->instanceMotions.push_back(motion);
-  //   sphere.GetComponent<MeshComponent>()->instanceMaterials.push_back(material);
-  // }
-
-  // Spawn Spheres in a Grid
-  int gridSize = 30;
-  float spacing = 0.25;
-  float startOffset = -((gridSize - 1) * spacing) * 0.5f;
-
-  for (int x = 0; x < gridSize; ++x) {
-    for (int y = 0; y < gridSize; ++y) {
-      for (int z = 0; z < gridSize; ++z) {
-        Transform transform;
-        transform.position = {
-          startOffset + x * spacing,
-          startOffset + y * spacing,
-          startOffset + z * spacing
-        };
-        transform.rotation = {1.0, 0.0, 0.0, 0.0};
-        transform.scale = {1.0, 1.0, 1.0};
-
-        Motion motion;
-        // Random velocity to create collisions
-        motion.velocity = {
-          (float)(rand() % 100 - 50) / 100.0f,
-          (float)(rand() % 100 - 50) / 100.0f,
-          (float)(rand() % 100 - 50) / 100.0f
-        };
-        //motion.velocity = {0.0, 0.0, 0.0};
-        motion.mass = 0.01;
-        motion.acceleration = {0.0f, 0.0f, 0.0f};
-
-        Material material;
-        material.color = {
-          (float)rand() / (float)RAND_MAX,
-          (float)rand() / (float)RAND_MAX,
-          (float)rand() / (float)RAND_MAX,
-          1.0};
-        //material.color = {0.0f, 0.2f, 0.7f, 1.0f};
-
-        mesh.GetComponent<MeshComponent>()->instanceTransforms.push_back(transform);
-        mesh.GetComponent<MeshComponent>()->instanceMotions.push_back(motion);
-        mesh.GetComponent<MeshComponent>()->instanceMaterials.push_back(material);
-      }
-    }
-  }
 
   unsigned int substeps = 10;
-  float bounds = float(gridSize) * spacing;
-  float cellSize = 0.25f;
+  float bounds = 7.5;
 
   camera.GetComponent<TransformComponent>()->transform.position = {0.0, -(bounds * 0.5), bounds};
 
@@ -178,12 +93,11 @@ int main() {
 
     // Update Motion
     for (int i = 0; i < substeps; ++i) {
-      engine.EnableGravity(10.0f, substepTime);
+      engine.EnableGravity(10.0, substepTime);
 
-      //engine.EnableCollision(bounds, substepTime);
-      engine.EnableGridCollision(bounds, cellSize, substepTime);
-
-      engine.EnableSPHFluid(bounds, cellSize, substepTime);
+      engine.EnableSPHFluid(bounds, 0.25, substepTime);
+      //engine.EnableBruteForceCollision(bounds, substepTime);
+      engine.EnableGridCollision(bounds, 0.25, substepTime);
 
       engine.EnableMotion(substepTime);
     }

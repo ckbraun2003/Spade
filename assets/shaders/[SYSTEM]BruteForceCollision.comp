@@ -23,6 +23,13 @@ struct Bound {
     uint isActive;
 };
 
+struct FluidMaterial {
+    float restDensity;
+    float viscosity;
+    float stiffness;
+    uint isActive;
+};
+
 layout(std430, binding = 5) buffer InstanceTransformData {
     Transform instanceTransforms[];
 };
@@ -37,6 +44,10 @@ layout(std430, binding = 8) buffer InstanceToEntityIndexData {
 
 layout(std430, binding = 4) buffer EntityBoundsData {
     Bound entityBounds[];
+};
+
+layout(std430, binding = 13) buffer EntityFluidMaterials {
+    FluidMaterial entityFluidMaterials[];
 };
 
 layout(location = 4) uniform float deltaTime;
@@ -54,12 +65,12 @@ void main() {
     vec3 myVel = instanceMotions[index].velocity;
     float myMass = instanceMotions[index].mass;
 
-// --- Brute Force Neighbor Collision (Direct Access) ---
+    // --- Brute Force Neighbor Collision (Direct Access) ---
     uint numInstances = instanceTransforms.length();
-    
+
     vec3 totalCorrection = vec3(0.0);
     float numCorrections = 0.0;
-    
+
     vec3 totalVelocityChange = vec3(0.0);
 
     // --- Global Bounds Check ---
@@ -91,7 +102,7 @@ void main() {
         myPos.z = limit;
         if (myVel.z > 0) myVel.z *= -myBound.bounciness;
     }
-    
+
     // Check all other particles
     for (uint k = 0; k < numInstances; ++k) {
         // Optimization: Don't check self
@@ -100,6 +111,14 @@ void main() {
         vec3 otherPos = instanceTransforms[k].position;
         // Assuming uniform bounds or fetch. If we have 2500, fetching is fine.
         Bound otherBound = entityBounds[instanceToEntityIndex[k]];
+
+        // Check Fluid Status
+        FluidMaterial myMat = entityFluidMaterials[instanceToEntityIndex[index]];
+        FluidMaterial otherMat = entityFluidMaterials[instanceToEntityIndex[k]];
+
+        // If BOTH are fluid, skip Hard Collision (Let SPH handle it)
+        if (myMat.isActive == 1 && otherMat.isActive == 1) continue;
+
 
         float combinedRadius = (myBound.size + otherBound.size) / 2.0;
         vec3 diff = myPos - otherPos;
@@ -116,7 +135,7 @@ void main() {
             vec3 correction = normal * penetration;
             totalCorrection += correction;
             numCorrections += 1.0f;
-            
+
             // Velocity Resolution (Reflection)
             vec3 otherVel = instanceMotions[k].velocity;
             float otherMass = instanceMotions[k].mass;
@@ -132,7 +151,7 @@ void main() {
                 if (abs(velAlongNormal) < 0.5) {
                     restitution = 0.0;
                 }
-                
+
                 float j = -(1.0 + restitution) * velAlongNormal;
                 j /= (1.0 / myMass + 1.0 / otherMass);
 
@@ -145,7 +164,7 @@ void main() {
 
                 if (tangentLen > 0.0001) {
                     tangent /= tangentLen;
-                    
+
                     float friction = sqrt(myBound.friction * otherBound.friction);
                     float jTarget = -dot(relVel, tangent);
                     jTarget /= (1.0 / myMass + 1.0 / otherMass);
@@ -168,7 +187,7 @@ void main() {
     if (numCorrections > 0.0) {
         myPos += totalCorrection / numCorrections;
     }
-    
+
     // Apply Accumulated Velocity Change (Averaged)
     if (numCorrections > 0.0) {
         myVel += totalVelocityChange / numCorrections;
