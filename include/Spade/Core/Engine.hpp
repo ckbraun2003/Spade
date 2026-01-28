@@ -2,6 +2,7 @@
 
 #include <string>
 #include <stdexcept>
+#include <unordered_map>
 #include <tuple>
 #include <memory>
 
@@ -42,24 +43,30 @@ namespace Spade {
     void EnableBruteForceNewtonianGravity(float gravityConstant, float deltaTime);
 
     // Render Systems
+    void RenderWireframe();
+    void RenderColor();
+    void RenderVelocity();
+    void RenderShader(const std::string& name, const std::string& fragmentShaderFile, const std::string& geometryShaderFile = "");
 
     // Main functions
-    void DrawScene(Universe& universe, const std::string& fragmentShaderFile);
+    void DrawScene(Universe& universe, glm::vec4 clearColor = {0.0, 0.0, 0.0, 1.0});
 
     // Input Handling
     void ProcessInput(Universe &universe);
 
 
     // Engine API Functions
-    [[nodiscard]] bool IsRunning() const;
+    [[nodiscard]] bool IsRunning() const { return !glfwWindowShouldClose(m_GLFWwindow); }
     [[nodiscard]] float GetTime() const;
     [[nodiscard]] float GetDeltaTime() const { return m_DeltaTime; }
     [[nodiscard]] float GetFPS() const { return m_FPS; }
     [[nodiscard]] float GetMemory() const { return m_Memory; }
-    [[nodiscard]] bool IsKeyPressed(int key) const;
+    [[nodiscard]] bool IsKeyPressed(int key) const { return glfwGetKey(m_GLFWwindow, key) == GLFW_PRESS; }
+    [[nodiscard]] bool IsPlaying() const { return m_IsPlaying; }
     [[nodiscard]] bool IsMouseButtonPressed(int button) const;
     [[nodiscard]] glm::vec2 GetMousePosition() const;
-    void SetMouseCursorMode(bool trapped);
+
+    void SetMouseCursorMode();
     void SetupEngineWindow(int width, int height, const std::string& title);
 
   private:
@@ -69,8 +76,6 @@ namespace Spade {
     void SaveRenderToFile(const std::string& fileName);
     void UpdateStatistics();
 
-    bool IsKeyPressed(int key);
-
     void BuildGrid(float globalBounds, float cellSize);
 
     // Window Variables
@@ -79,6 +84,8 @@ namespace Spade {
     GLFWwindow* m_GLFWwindow = nullptr;
 
     // Frame Statistics
+    bool m_IsPlaying = false;
+    bool m_CursorTrapped = false;
     float m_LastTime = 0.0f;
     float m_CurrentTime = 0.0f;
     float m_DeltaTime = 0.016f;
@@ -98,26 +105,10 @@ namespace Spade {
     CameraComponent m_ActiveCamera{};
 
     // Shader
-    ProgramID m_ShaderProgram = 0;
-    ProgramID m_MotionProgram = 0;
-    ProgramID m_CollisionProgram = 0;
-    ProgramID m_GravityProgram = 0;
-    
-    ProgramID m_GridClearProgram = 0;
-    ProgramID m_GridBuildProgram = 0;
-    ProgramID m_GridCollisionProgram = 0;
+    std::unordered_map<std::string, ProgramID> m_ShaderPrograms;
+    std::unordered_map<std::string, BufferID> m_BufferObjects;
 
-    // Fluid Programs
-    ProgramID m_FluidDensityProgram = 0;
-    ProgramID m_FluidForceProgram = 0;
-
-    ProgramID m_NewtonianGravityProgram = 0;
-    
-    // Sorted Grid Programs
-    ProgramID m_BitonicSortProgram = 0;
-    ProgramID m_GridOffsetsProgram = 0;
-    ProgramID m_GridReorderProgram = 0;
-    ProgramID m_GridScatterProgram = 0;
+    ProgramID m_ActiveProgram = 0;
 
     // Buffers
     BufferID m_SSBO_InstanceTransforms = 0;

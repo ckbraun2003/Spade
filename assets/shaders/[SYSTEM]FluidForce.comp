@@ -52,11 +52,10 @@ layout(std430, binding = 10) buffer GridPairs {
 };
 
 // --- Uniforms ---
-layout(location = 4) uniform float deltaTime;
-layout(location = 15) uniform float globalBounds;
-layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform uint hashTableSize; // Hash Size
-layout(location = 18) uniform uint numInstances;
+uniform float globalBounds;
+uniform float cellSize;
+uniform uint hashTableSize; // Hash Size
+uniform uint numInstances;
 
 // --- SPH Kernels ---
 // Spiky Gradient: -45 / (pi * h^6) * (h - r)^2 * normalize(r)

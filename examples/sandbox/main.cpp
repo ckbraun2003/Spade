@@ -55,20 +55,20 @@ int main() {
 
   planets.AddComponent<FluidComponent>();
   planets.GetComponent<FluidComponent>()->fluidMaterial.restDensity = 1.0;
-  planets.GetComponent<FluidComponent>()->fluidMaterial.viscosity = 0.05;
+  planets.GetComponent<FluidComponent>()->fluidMaterial.viscosity = 0.5;
   planets.GetComponent<FluidComponent>()->fluidMaterial.stiffness = 500.0;
   planets.GetComponent<FluidComponent>()->fluidMaterial.active = true;
 
   planets.AddComponent<MeshComponent>();
   planets.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.1, 16, 16);
-  planets.GetComponent<MeshComponent>()->SpawnInstancesInSphere(5.0, {0.0, 0.0, 0.0}, 10000);
+  planets.GetComponent<MeshComponent>()->SpawnInstancesInCube(10.0, {3.0, 1.0, -3.0}, 10000);
   planets.GetComponent<MeshComponent>()->SetMass(0.01);
   planets.GetComponent<MeshComponent>()->RandomizeVelocity();
   planets.GetComponent<MeshComponent>()->RandomizeColor();
 
 
   unsigned int substeps = 10;
-  float bounds = 7.5;
+  float bounds = 10.0;
 
   camera.GetComponent<TransformComponent>()->transform.position = {0.0, -(bounds * 0.5), bounds};
 
@@ -88,22 +88,24 @@ int main() {
     // Process Input
     engine.ProcessInput(universe);
 
-    float deltaTime = engine.GetDeltaTime();
-    float substepTime = deltaTime / (float)substeps;
+    if (engine.IsPlaying()) {
+      float deltaTime = engine.GetDeltaTime();
+      float substepTime = deltaTime / (float)substeps;
 
-    // Update Motion
-    for (int i = 0; i < substeps; ++i) {
-      engine.EnableGravity(10.0, substepTime);
+      // Update Motion
+      for (int i = 0; i < substeps; ++i) {
+        engine.EnableGravity(10.0, substepTime);
 
-      engine.EnableSPHFluid(bounds, 0.25, substepTime);
-      //engine.EnableBruteForceCollision(bounds, substepTime);
-      engine.EnableGridCollision(bounds, 0.25, substepTime);
+        engine.EnableSPHFluid(bounds, 0.25, substepTime);
+        engine.EnableGridCollision(bounds, 0.25, substepTime);
 
-      engine.EnableMotion(substepTime);
+        engine.EnableMotion(substepTime);
+      }
     }
 
     // Draw meshes
-    engine.DrawScene(universe, "assets/shaders/[FRAGMENT]Color.frag");
+    engine.RenderColor();
+    engine.DrawScene(universe);
 
   }
 

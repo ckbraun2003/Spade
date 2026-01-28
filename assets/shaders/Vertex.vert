@@ -24,7 +24,12 @@ layout(std430, binding = 5) buffer InstanceTransformData {
     Transform instanceTransforms[];
 };
 
-layout(location = 3) uniform uint InstanceStartIndex;
+uniform uint instanceStartIndex;
+
+out VS_OUT {
+    vec3 normal;
+    uint instanceIndex;
+} vs_out;
 
 out vec3 v_Normal;
 flat out uint v_GlobalInstanceIndex;
@@ -66,7 +71,7 @@ mat4 BuildModelMatrix(vec3 position, vec4 rotation, vec3 scale) {
 }
 
 void main() {
-    uint index = gl_InstanceID + InstanceStartIndex;
+    uint index = gl_InstanceID + instanceStartIndex;
 
     Transform instanceTransform = instanceTransforms[index];
 
@@ -76,4 +81,7 @@ void main() {
 
     v_Normal = mat3(transpose(inverse(model))) * aNormal;
     v_GlobalInstanceIndex = index;
+
+    vs_out.normal = v_Normal;
+    vs_out.instanceIndex = index;
 }

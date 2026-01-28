@@ -50,10 +50,10 @@ layout(std430, binding = 10) buffer GridPairs {
 };
 
 // --- Uniforms ---
-layout(location = 15) uniform float globalBounds;
-layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform uint hashTableSize; // Hash Size
-layout(location = 18) uniform uint numInstances;
+uniform float globalBounds;
+uniform float cellSize;
+uniform uint hashTableSize; // Hash Size
+uniform uint numInstances;
 
 // --- SPH Kernels (Poly6) ---
 // W(r, h) = (315 / (64 * pi * h^9)) * (h^2 - r^2)^3

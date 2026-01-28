@@ -2,6 +2,8 @@
 
 namespace Spade {
 
+  std::unordered_map<std::string, ProgramID> Resources::m_ProgramCache;
+
   BufferID Resources::CreateBuffer() {
     BufferID buffer;
     glGenBuffers(1, &buffer);
@@ -67,6 +69,25 @@ namespace Spade {
     return vertex;
   }
 
+  unsigned int Resources::CreateGeometryShader(const std::string &geometryShaderStream) {
+    const char* geometryShaderCode = geometryShaderStream.c_str();
+    int success;
+    char infoLog[512];
+
+    // Vertex Shader
+    unsigned int geometry = glCreateShader(GL_GEOMETRY_SHADER);
+    glShaderSource(geometry, 1, &geometryShaderCode, NULL);
+    glCompileShader(geometry);
+    glGetShaderiv(geometry, GL_COMPILE_STATUS, &success);
+    if(!success) {
+      glGetShaderInfoLog(geometry, 512, NULL, infoLog);
+      throw ResourcesException(std::format("ERROR::SHADER::GEOMETRY::COMPILATION_FAILED\n{}", infoLog));
+    };
+
+    return geometry;
+  }
+
+
   unsigned int Resources::CreateFragmentShader(const std::string& fragmentShaderStream) {
     const char* fragmentShaderCode = fragmentShaderStream.c_str();
     int success;
@@ -125,7 +146,7 @@ namespace Spade {
   }
 
 
-  ProgramID Resources::CreateRenderProgram(const std::string &vertexShaderFile, const std::string &fragmentShaderFile) {
+  ProgramID Resources::CreateRenderProgram(const std::string &vertexShaderFile, const std::string &fragmentShaderFile, const std::string &geometryShaderFile) {
     int success;
     char infoLog[512];
 
@@ -136,6 +157,16 @@ namespace Spade {
     ProgramID programID = glCreateProgram();
     glAttachShader(programID, vertex);
     glAttachShader(programID, fragment);
+
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+
+    if (!geometryShaderFile.empty()) {
+      unsigned int geometry = CreateGeometryShader(LoadShaderFile(geometryShaderFile));
+      glAttachShader(programID, geometry);
+      glDeleteShader(geometry);
+    }
+
     glLinkProgram(programID);
     glGetProgramiv(programID, GL_LINK_STATUS, &success);
     if(!success) {
@@ -143,12 +174,13 @@ namespace Spade {
       throw ResourcesException(std::format("ERROR::SHADER::PROGRAM::LINKING_FAILED\n{}", infoLog));
     }
 
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
-
     return programID;
   }
 
+  void Resources::ClearRenderBuffer(const glm::vec4 color) {
+    glClearColor(color.r, color.g, color.b, color.a);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  }
   Resources::ResourcesException::ResourcesException(const std::string &message) : runtime_error(message) {}
 
 }

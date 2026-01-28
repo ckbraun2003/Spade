@@ -21,10 +21,10 @@ layout(std430, binding = 10) buffer GridPairs {
     GridPair gridPairs[];
 };
 
-layout(location = 15) uniform float globalBounds;
-layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform uint hashTableSize; // Hash Size
-layout(location = 18) uniform uint numInstances;
+uniform float globalBounds;
+uniform float cellSize;
+uniform uint hashTableSize; // Hash Size
+uniform uint numInstances;
 
 uint GetHash(ivec3 cell) {
     const uint p1 = 73856093u;

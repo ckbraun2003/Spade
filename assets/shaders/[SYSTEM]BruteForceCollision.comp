@@ -30,6 +30,10 @@ struct FluidMaterial {
     uint isActive;
 };
 
+layout(std430, binding = 4) buffer EntityBoundsData {
+    Bound entityBounds[];
+};
+
 layout(std430, binding = 5) buffer InstanceTransformData {
     Transform instanceTransforms[];
 };
@@ -42,16 +46,11 @@ layout(std430, binding = 8) buffer InstanceToEntityIndexData {
     uint instanceToEntityIndex[];
 };
 
-layout(std430, binding = 4) buffer EntityBoundsData {
-    Bound entityBounds[];
-};
-
 layout(std430, binding = 13) buffer EntityFluidMaterials {
     FluidMaterial entityFluidMaterials[];
 };
 
-layout(location = 4) uniform float deltaTime;
-layout(location = 15) uniform float globalBounds;
+uniform float globalBounds;
 
 void main() {
     if (gl_GlobalInvocationID.x >= instanceMotions.length()) return;

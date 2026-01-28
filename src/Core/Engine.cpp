@@ -1,37 +1,19 @@
 #include "Spade/Core/Engine.hpp"
 
+#include <ranges>
+
 namespace Spade {
 
   Engine::~Engine() {
-    glDeleteBuffers(1, &m_SSBO_InstanceTransforms);
-    glDeleteBuffers(1, &m_SSBO_InstanceMaterials);
-    glDeleteBuffers(1, &m_SSBO_InstanceMotions);
-    glDeleteBuffers(1, &m_SSBO_InstanceToEntityIndex);
-    
-    glDeleteBuffers(1, &m_SSBO_EntityBounds);
-    glDeleteBuffers(1, &m_SSBO_EntityFluidMaterials);
+    // Delete Programs
+    for (const auto &id: m_ShaderPrograms | std::views::values) {
+      glDeleteProgram(id);
+    }
 
-    glDeleteBuffers(1, &m_SSBO_GridHead);
-    glDeleteBuffers(1, &m_SSBO_GridPairs);
-    glDeleteBuffers(1, &m_SSBO_SortedTransforms);
-    glDeleteBuffers(1, &m_SSBO_SortedMotions);
-
-    glDeleteBuffers(1, &m_UBO_Camera);
-
-    glDeleteProgram(m_ShaderProgram);
-    glDeleteProgram(m_MotionProgram);
-    glDeleteProgram(m_CollisionProgram);
-    glDeleteProgram(m_GridCollisionProgram);
-    glDeleteProgram(m_GravityProgram);
-    glDeleteProgram(m_FluidDensityProgram);
-    glDeleteProgram(m_FluidForceProgram);
-
-    glDeleteProgram(m_GridClearProgram);
-    glDeleteProgram(m_GridBuildProgram);
-    glDeleteProgram(m_BitonicSortProgram);
-    glDeleteProgram(m_GridOffsetsProgram);
-    glDeleteProgram(m_GridReorderProgram);
-    glDeleteProgram(m_GridScatterProgram);
+    // Delete Buffers
+    for (const auto& id : m_BufferObjects | std::views::values) {
+      glDeleteBuffers(1, &id);
+    }
 
     glfwDestroyWindow(m_GLFWwindow);
     glfwTerminate();
@@ -215,14 +197,14 @@ namespace Spade {
   void Engine::EnableMotion(float deltaTime) {
     if (m_InstanceMotions.empty()) return;
 
-    if (m_MotionProgram == 0) {
-      m_MotionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]Motion.comp");
+    if (!m_ShaderPrograms.contains("Motion")) {
+      m_ShaderPrograms["Motion"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]Motion.comp");
     }
 
     GLuint groups = (m_InstanceMotions.size() + 63) / 64;
 
-    Resources::UseProgram(m_MotionProgram);
-    Resources::SetLocationFloat(4, deltaTime);
+    Resources::UseProgram(m_ShaderPrograms["Motion"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["Motion"], "deltaTime", deltaTime);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -231,35 +213,15 @@ namespace Spade {
   void Engine::EnableGravity(float globalGravity, float deltaTime) {
     if (m_InstanceMotions.empty()) return;
 
-    if (m_GravityProgram == 0) {
-      m_GravityProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GlobalGravity.comp");
+    if (!m_ShaderPrograms.contains("Gravity")) {
+      m_ShaderPrograms["Gravity"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GlobalGravity.comp");
     }
 
     GLuint groups = (m_InstanceMotions.size() + 63) / 64;
 
-    Resources::UseProgram(m_GravityProgram);
-    Resources::SetLocationFloat(4, deltaTime);
-    Resources::SetLocationFloat(14, globalGravity);
-
-    glDispatchCompute(groups, 1, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-  }
-
-  void Engine::EnableBruteForceCollision(float globalBounds, float deltaTime) {
-    if (m_InstanceTransforms.empty()) return;
-
-    if (m_CollisionProgram == 0) {
-        // Only CollisionResolve is needed for Brute Force
-        m_CollisionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BruteForceCollision.comp");
-    }
-
-    size_t numInstances = m_InstanceTransforms.size();
-    GLuint groups = (numInstances + 63) / 64;
-
-    // 4. Resolve Collisions (Direct Brute Force)
-    Resources::UseProgram(m_CollisionProgram);
-    Resources::SetLocationFloat(4, deltaTime);
-    Resources::SetLocationFloat(15, globalBounds);
+    Resources::UseProgram( m_ShaderPrograms["Gravity"]);
+    Resources::SetUniformFloat( m_ShaderPrograms["Gravity"], "deltaTime", deltaTime);
+    Resources::SetUniformFloat( m_ShaderPrograms["Gravity"], "globalGravity", globalGravity);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -269,14 +231,14 @@ namespace Spade {
     if (m_InstanceTransforms.empty()) return;
 
     // 1. Initialize Shaders
-    if (m_GridClearProgram == 0) {
-      m_GridClearProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridClear.comp");
-      m_GridBuildProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridBuild.comp");
+    if (!m_ShaderPrograms.contains("GridBuild")) {
+      m_ShaderPrograms["GridClear"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridClear.comp");
+      m_ShaderPrograms["GridBuild"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridBuild.comp");
 
-      m_BitonicSortProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BitonicSort.comp");
-      m_GridOffsetsProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridOffsets.comp");
-      m_GridReorderProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridReorder.comp");
-      m_GridScatterProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridScatter.comp");
+      m_ShaderPrograms["BitonicSort"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BitonicSort.comp");
+      m_ShaderPrograms["GridOffset"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridOffsets.comp");
+      m_ShaderPrograms["GridReorder"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridReorder.comp");
+      m_ShaderPrograms["GridScatter"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridScatter.comp");
     }
 
     size_t numInstances = m_InstanceTransforms.size();
@@ -321,30 +283,30 @@ namespace Spade {
     }
 
     // 1. Clear Grid (Head)
-    Resources::UseProgram(m_GridClearProgram);
-    Resources::SetLocationInt(11, hashTableSize);
+    Resources::UseProgram(m_ShaderPrograms["GridClear"]);
+    Resources::SetUniformInt(m_ShaderPrograms["GridClear"], "totalCells", hashTableSize);
     glDispatchCompute((hashTableSize + 63) / 64, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
 
     // 2. Build Key-Value Pairs
-    Resources::UseProgram(m_GridBuildProgram);
-    Resources::SetLocationFloat(15, globalBounds);
-    Resources::SetLocationFloat(16, cellSize);
-    Resources::SetLocationUnsignedInt(17, hashTableSize); // Hash Table Size
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["GridBuild"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["GridBuild"], "globalBounds", globalBounds);
+    Resources::SetUniformFloat(m_ShaderPrograms["GridBuild"], "cellSize", cellSize);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridBuild"], "hashTableSize", hashTableSize); // Hash Table Size
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridBuild"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
 
     // 3. Bitonic Sort (Iterative Dispatch)
-    Resources::UseProgram(m_BitonicSortProgram);
+    Resources::UseProgram(m_ShaderPrograms["BitonicSort"]);
     // k = block width (2, 4, 8, ... N)
     // j = comparison distance (k/2, k/4, ... 1)
     for (unsigned int k = 2; k <= sortedSize; k <<= 1) {
       for (unsigned int j = k >> 1; j > 0; j >>= 1) {
-        Resources::SetLocationUnsignedInt(0, j);
-        Resources::SetLocationUnsignedInt(1, k);
+        Resources::SetUniformUnsignedInt(m_ShaderPrograms["BitonicSort"], "j", j);
+        Resources::SetUniformUnsignedInt(m_ShaderPrograms["BitonicSort"], "k", k);
         glDispatchCompute(setSizeGroups, 1, 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
       }
@@ -352,15 +314,15 @@ namespace Spade {
 
 
     // 4. Find Offsets (Populate GridHead)
-    Resources::UseProgram(m_GridOffsetsProgram);
-    Resources::SetLocationUnsignedInt(18, numInstances); // Only process valid particles
+    Resources::UseProgram(m_ShaderPrograms["GridOffset"]);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridOffset"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
 
     // 5. Reorder (Gather)
-    Resources::UseProgram(m_GridReorderProgram);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["GridReorder"]);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridReorder"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
@@ -370,9 +332,9 @@ namespace Spade {
     if (m_InstanceTransforms.empty()) return;
 
     // 1. Initialize Shaders
-    if (m_FluidDensityProgram == 0) {
-      m_FluidDensityProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidDensity.comp");
-      m_FluidForceProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidForce.comp");
+    if (!m_ShaderPrograms.contains("SPHFluidDensity")) {
+      m_ShaderPrograms["SPHFluidDensity"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidDensity.comp");
+      m_ShaderPrograms["SPHFluidForce"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]FluidForce.comp");
     }
 
     BuildGrid(globalBounds, cellSize);
@@ -382,29 +344,47 @@ namespace Spade {
     GLuint groups = (numInstances + 63) / 64;
 
     // Compute Density (SPH)
-    Resources::UseProgram(m_FluidDensityProgram);
-    Resources::SetLocationFloat(15, globalBounds);
-    Resources::SetLocationFloat(16, cellSize);
-    Resources::SetLocationUnsignedInt(17, hashTableSize);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["SPHFluidDensity"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["SPHFluidDensity"], "globalBounds", globalBounds);
+    Resources::SetUniformFloat(m_ShaderPrograms["SPHFluidDensity"], "cellSize", cellSize);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["SPHFluidDensity"], "hashTableSize", hashTableSize); // Hash Table Size
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["SPHFluidDensity"], "numInstances", numInstances);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     // Compute Forces (SPH)
-    Resources::UseProgram(m_FluidForceProgram);
-    Resources::SetLocationFloat(4, deltaTime);
-    Resources::SetLocationFloat(15, globalBounds);
-    Resources::SetLocationFloat(16, cellSize);
-    Resources::SetLocationUnsignedInt(17, hashTableSize);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["SPHFluidForce"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["SPHFluidForce"], "globalBounds", globalBounds);
+    Resources::SetUniformFloat(m_ShaderPrograms["SPHFluidForce"], "cellSize", cellSize);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["SPHFluidForce"], "hashTableSize", hashTableSize); // Hash Table Size
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["SPHFluidForce"], "numInstances", numInstances);
 
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     // Scatter (Write Back)
-    Resources::UseProgram(m_GridScatterProgram);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["GridScatter"]);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridScatter"], "numInstances", numInstances);
+    glDispatchCompute(groups, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+  }
+
+  void Engine::EnableBruteForceCollision(float globalBounds, float deltaTime) {
+    if (m_InstanceTransforms.empty()) return;
+
+    if (!m_ShaderPrograms.contains("BruteForceCollision")) {
+      // Only CollisionResolve is needed for Brute Force
+      m_ShaderPrograms["BruteForceCollision"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]BruteForceCollision.comp");
+    }
+
+    size_t numInstances = m_InstanceTransforms.size();
+    GLuint groups = (numInstances + 63) / 64;
+
+    // 4. Resolve Collisions (Direct Brute Force)
+    Resources::UseProgram(m_ShaderPrograms["BruteForceCollision"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["BruteForceCollision"], "globalBounds", globalBounds);
+
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
@@ -412,8 +392,8 @@ namespace Spade {
   void Engine::EnableGridCollision(float globalBounds, float cellSize, float deltaTime) {
     if (m_InstanceTransforms.empty()) return;
 
-    if (m_GridCollisionProgram == 0) {
-      m_GridCollisionProgram = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridCollision.comp");
+    if (!m_ShaderPrograms.contains("GridCollision")) {
+      m_ShaderPrograms["GridCollision"] = Resources::CreateComputeProgram("assets/shaders/[SYSTEM]GridCollision.comp");
     }
 
     BuildGrid(globalBounds, cellSize);
@@ -423,36 +403,59 @@ namespace Spade {
     GLuint groups = (numInstances + 63) / 64;
 
     // Solve Collision (on Sorted Data)
-    Resources::UseProgram(m_GridCollisionProgram);
-    Resources::SetLocationFloat(4, deltaTime);
-    Resources::SetLocationFloat(15, globalBounds);
-    Resources::SetLocationFloat(16, cellSize);
-    Resources::SetLocationUnsignedInt(17, hashTableSize);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["GridCollision"]);
+    Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "deltaTime", deltaTime);
+    Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "globalBounds", globalBounds);
+    Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "cellSize", cellSize);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridCollision"], "hashTableSize", hashTableSize); // Hash Table Size
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridCollision"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
     
     // Scatter (Write Back)
-    Resources::UseProgram(m_GridScatterProgram);
-    Resources::SetLocationUnsignedInt(18, numInstances);
+    Resources::UseProgram(m_ShaderPrograms["GridScatter"]);
+    Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridScatter"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::DrawScene(Universe &universe, const std::string& fragmentShaderFile = "assets/shaders/[FRAGMENT]Color.frag") {
-    if (m_ShaderProgram == 0) {
-      m_ShaderProgram = Resources::CreateRenderProgram("assets/shaders/Vertex.vert", fragmentShaderFile);
+  void Engine::EnableBruteForceNewtonianGravity(float gravityConstant, float deltaTime) {
+    return;
+  }
+
+
+  void Engine::RenderWireframe() {
+    RenderShader("Color", "assets/shaders/[FRAGMENT]Wireframe.frag", "assets/shaders/[GEOMETRY]Barycentric.geom");
+  }
+
+  void Engine::RenderColor() {
+    RenderShader("Color", "assets/shaders/[FRAGMENT]Color.frag");
+  }
+
+  void Engine::RenderVelocity() {
+    RenderShader("Velocity", "assets/shaders/[FRAGMENT]Velocity.frag");
+  }
+
+  void Engine::RenderShader(const std::string& name, const std::string& fragmentShaderFile, const std::string& geometryShaderFile) {
+    if (!m_ShaderPrograms.contains(name)) {
+      m_ShaderPrograms[name] = Resources::CreateRenderProgram(
+      "assets/shaders/Vertex.vert",
+      fragmentShaderFile,
+      geometryShaderFile);
     }
 
-    glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    m_ActiveProgram = m_ShaderPrograms[name];
+  }
+
+
+  void Engine::DrawScene(Universe &universe, glm::vec4 clearColor) {
+    Resources::ClearRenderBuffer(clearColor);
 
     auto& meshPool = universe.GetPool<MeshComponent>();
 
     for(auto& meshComponent : meshPool.m_Data) {
-      Resources::UseProgram(m_ShaderProgram);
-
-      Resources::SetLocationUnsignedInt(3, meshComponent.instanceStartIndex);
+      Resources::UseProgram(m_ActiveProgram);
+      Resources::SetUniformUnsignedInt(m_ActiveProgram, "instanceStartIndex", meshComponent.instanceStartIndex);
 
       Resources::BindVertexArrayObject(meshComponent.VAO);
       glDrawElementsInstanced(GL_TRIANGLES, meshComponent.mesh.indices.size(), GL_UNSIGNED_INT, 0, meshComponent.instanceTransforms.size());
@@ -470,6 +473,17 @@ namespace Spade {
   void Engine::ProcessInput(Universe& universe) {
     if (IsKeyPressed(GLFW_KEY_ESCAPE)) {
       glfwSetWindowShouldClose(m_GLFWwindow, GLFW_TRUE);
+      return;
+    }
+
+    if (IsKeyPressed(GLFW_KEY_M)) {
+      m_IsPlaying = !m_IsPlaying;
+      return;
+    }
+
+    if (IsKeyPressed(GLFW_KEY_C)) {
+      m_CursorTrapped = !m_CursorTrapped;
+      SetMouseCursorMode();
       return;
     }
 
@@ -524,11 +538,6 @@ namespace Spade {
     SetupGLFWandGLADWindow(width, height, title);
   }
 
-
-  bool Engine::IsRunning() const {
-      return !glfwWindowShouldClose(m_GLFWwindow);
-  }
-
   float Engine::GetTime() const {
       return (float)glfwGetTime();
   }
@@ -543,16 +552,14 @@ namespace Spade {
       return { (float)x, (float)y };
   }
 
-  void Engine::SetMouseCursorMode(bool trapped) {
-      if (trapped) {
+  void Engine::SetMouseCursorMode() {
+      if (m_CursorTrapped) {
           glfwSetInputMode(m_GLFWwindow, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
       } else {
           glfwSetInputMode(m_GLFWwindow, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
       }
   }
 
-
-  // --- Private ---
   void Engine::SetupGLFWandGLADWindow(const int& width, const int& height, const std::string& title) {
 
     glfwInit();
@@ -618,11 +625,6 @@ namespace Spade {
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
       m_Memory = pmc.PrivateUsage / 1024.0f / 1024.0f;
     }
-  }
-  
-  // Private non-const version
-  bool Engine::IsKeyPressed(int key) {
-    return glfwGetKey(m_GLFWwindow, key) == GLFW_PRESS;
   }
 
   Engine::EngineException::EngineException(const std::string &message) : runtime_error(message) {}

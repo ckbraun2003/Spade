@@ -11,8 +11,8 @@ layout(std430, binding = 10) buffer GridPairs {
     GridPair gridPairs[];
 };
 
-layout(location = 0) uniform uint j;
-layout(location = 1) uniform uint k;
+uniform uint j;
+uniform uint k;
 
 void main() {
     uint i = gl_GlobalInvocationID.x;

@@ -98,13 +98,21 @@ namespace Spade {
     };
 
     // Uniform Setting
+    static GLuint GetUniformLocation(ProgramID programID, const GLchar *name) { return glGetUniformLocation(programID, name); }
+
     static void SetLocationInt(const int location, const int value) { glUniform1i(location, value); }
     static void SetLocationUnsignedInt(const int location, const unsigned int value) { glUniform1ui(location, value); }
     static void SetLocationFloat(const int location, const float value) { glUniform1f(location, value); }
     static void SetLocationFloatVec3(const int location, const glm::vec3& value) { glUniform3f(location, value.x, value.y, value.z); }
     static void SetLocationIntVec3(const int location, const glm::ivec3& value) { glUniform3i(location, value.x, value.y, value.z); }
     static void SetLocationFloatVec4(const int location, const glm::vec4& value) { glUniform4f(location, value.x, value.y, value.z, value.w); }
-    static GLuint GetUniformLocation(ProgramID programID, const GLchar *name) { return glGetUniformLocation(programID, name); }
+
+    static void SetUniformInt(ProgramID programID, const GLchar *name, const int value) { SetLocationInt(GetUniformLocation(programID, name), value); }
+    static void SetUniformUnsignedInt(ProgramID programID, const GLchar *name, const unsigned int value) { SetLocationUnsignedInt(GetUniformLocation(programID, name), value); }
+    static void SetUniformFloat(ProgramID programID, const GLchar *name, const float value) { SetLocationFloat(GetUniformLocation(programID, name), value); }
+    static void SetUniformFloatVec3(ProgramID programID, const GLchar *name, const glm::vec3& value) { SetLocationFloatVec3(GetUniformLocation(programID, name), value); }
+    static void SetUniformIntVec3(ProgramID programID, const GLchar *name, const glm::ivec3& value) { SetLocationIntVec3(GetUniformLocation(programID, name), value); }
+    static void SetUniformFloatVec4(ProgramID programID, const GLchar *name, const glm::vec4& value) { SetLocationFloatVec4(GetUniformLocation(programID, name), value); }
 
     // Buffer Binding
     static void BindVertexBufferObject(const BufferID& bufferID) { glBindBuffer(GL_ARRAY_BUFFER, bufferID); }
@@ -121,14 +129,19 @@ namespace Spade {
     // Shader Loading
     static std::string LoadShaderFile(const std::string& fileName);
     static unsigned int CreateVertexShader(const std::string& vertexShaderStream);
+    static unsigned int CreateGeometryShader(const std::string& geometryShaderStream);
     static unsigned int CreateFragmentShader(const std::string& fragmentShaderStream);
     static unsigned int CreateComputeShader(const std::string& computeShaderStream);
 
     static ProgramID CreateComputeProgram(const std::string& computeShaderStream);
-    static ProgramID CreateRenderProgram(const std::string& vertexShaderFile, const std::string& fragmentShaderFile);
+    static ProgramID CreateRenderProgram(const std::string& vertexShaderFile, const std::string& fragmentShaderFile, const std::string &geometryShaderFile = "");
     static void UseProgram(const ProgramID& programID) { glUseProgram(programID); }
 
+    static void ClearRenderBuffer(const glm::vec4 color = {0.0, 0.0, 0.0, 1.0});
+
   private:
+
+    static std::unordered_map<std::string, ProgramID> m_ProgramCache;
 
     class ResourcesException : public std::runtime_error
     {

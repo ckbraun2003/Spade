@@ -35,12 +35,7 @@ struct GridPair {
     uint instanceID;
 };
 
-layout(std430, binding = 11) buffer SortedTransforms {
-    Transform sortedTransforms[];
-};
-layout(std430, binding = 12) buffer SortedMotions {
-    Motion sortedMotions[];
-};
+
 layout(std430, binding = 4) buffer EntityBounds {
     Bound entityBounds[];
 };
@@ -55,16 +50,23 @@ layout(std430, binding = 10) buffer GridPairs {
     GridPair gridPairs[];
 };
 
+layout(std430, binding = 11) buffer SortedTransforms {
+    Transform sortedTransforms[];
+};
+layout(std430, binding = 12) buffer SortedMotions {
+    Motion sortedMotions[];
+};
+
 layout(std430, binding = 13) buffer EntityFluidMaterials {
     FluidMaterial entityFluidMaterials[];
 };
 
 
-layout(location = 4) uniform float deltaTime;
-layout(location = 15) uniform float globalBounds;
-layout(location = 16) uniform float cellSize;
-layout(location = 17) uniform uint hashTableSize; // Changed from ivec3 gridDim to uint hashTableSize
-layout(location = 18) uniform uint numInstances;
+uniform float deltaTime;
+uniform float globalBounds;
+uniform float cellSize;
+uniform uint hashTableSize;
+uniform uint numInstances;
 
 // --- Helper: Grid Index ---
 uint GetHash(ivec3 cell) {
