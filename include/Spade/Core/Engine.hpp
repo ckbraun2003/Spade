@@ -31,16 +31,18 @@ namespace Spade {
     void LoadCollisionBuffers(Universe& universe);
     void LoadFluidBuffers(Universe& universe);
 
+    void LoadGridBuffers();
+
     // Physics Systems
-    void EnableGravity(float gravity, float deltaTime);
+    void EnableGravity(float gravity);
     void EnableMotion(float deltaTime);
 
-    void EnableBruteForceCollision(float bounds, float deltaTime);
-    void EnableGridCollision(float bounds, float cellSize, float deltaTime);
+    void EnableBruteForceCollision(float bounds);
+    void EnableGridCollision(float bounds, float cellSize);
 
-    void EnableSPHFluid(float globalBounds, float cellSize, float deltaTime);
+    void EnableSPHFluid(float globalBounds, float cellSize);
 
-    void EnableBruteForceNewtonianGravity(float gravityConstant, float deltaTime);
+    void EnableBruteForceNewtonianGravity(float gravityConstant);
 
     // Render Systems
     void RenderWireframe();
@@ -109,25 +111,6 @@ namespace Spade {
     std::unordered_map<std::string, BufferID> m_BufferObjects;
 
     ProgramID m_ActiveProgram = 0;
-
-    // Buffers
-    BufferID m_SSBO_InstanceTransforms = 0;
-    BufferID m_SSBO_InstanceMotions = 0;
-    BufferID m_SSBO_InstanceMaterials = 0;
-    BufferID m_SSBO_InstanceToEntityIndex = 0;
-
-    BufferID m_SSBO_EntityBounds = 0;
-    BufferID m_SSBO_EntityFluidMaterials = 0;
-    
-    // Grid Buffers
-    BufferID m_SSBO_GridHead = 0;
-    BufferID m_SSBO_GridPairs = 0;
-    BufferID m_SSBO_SortedTransforms = 0;
-    BufferID m_SSBO_SortedMotions = 0;
-    
-
-    BufferID m_UBO_Camera = 0;
-
 
     class EngineException : public std::runtime_error
     {

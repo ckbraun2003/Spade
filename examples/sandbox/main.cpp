@@ -61,7 +61,7 @@ int main() {
 
   planets.AddComponent<MeshComponent>();
   planets.GetComponent<MeshComponent>()->mesh = GenerateSphere(0.1, 16, 16);
-  planets.GetComponent<MeshComponent>()->SpawnInstancesInCube(10.0, {3.0, 1.0, -3.0}, 10000);
+  planets.GetComponent<MeshComponent>()->SpawnInstancesInCube(10.0, {3.0, 1.0, -3.0}, 50000);
   planets.GetComponent<MeshComponent>()->SetMass(0.01);
   planets.GetComponent<MeshComponent>()->RandomizeVelocity();
   planets.GetComponent<MeshComponent>()->RandomizeColor();
@@ -79,6 +79,7 @@ int main() {
   engine.LoadCameraBuffers(universe);
   engine.LoadCollisionBuffers(universe);
   engine.LoadFluidBuffers(universe);
+  engine.LoadGridBuffers();
 
   // Begin Engine Loop
   while (engine.IsRunning()) {
@@ -94,10 +95,10 @@ int main() {
 
       // Update Motion
       for (int i = 0; i < substeps; ++i) {
-        engine.EnableGravity(10.0, substepTime);
+        engine.EnableGravity(10.0);
 
-        engine.EnableSPHFluid(bounds, 0.25, substepTime);
-        engine.EnableGridCollision(bounds, 0.25, substepTime);
+        engine.EnableSPHFluid(bounds, 0.25);
+        engine.EnableGridCollision(bounds, 0.25);
 
         engine.EnableMotion(substepTime);
       }

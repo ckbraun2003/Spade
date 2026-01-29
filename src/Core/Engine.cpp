@@ -40,15 +40,15 @@ namespace Spade {
       }
     }
 
-    if (m_UBO_Camera == 0) {
-      m_UBO_Camera = Resources::CreateBuffer();
+    if (!m_BufferObjects.contains("Camera")) {
+      m_BufferObjects["Camera"] = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadUniformBufferObject<Camera>(m_ActiveCamera.camera, m_UBO_Camera);
-      Resources::BindUniformToLocation(0, m_UBO_Camera);
+      Resources::UploadUniformBufferObject<Camera>(m_ActiveCamera.camera, m_BufferObjects["Camera"]);
+      Resources::BindUniformToLocation(0, m_BufferObjects["Camera"]);
+    } else {
+      // Update Camera Data
+      Resources::UpdateUniformBufferObject<Camera>(m_ActiveCamera.camera, m_BufferObjects["Camera"]);
     }
-
-    // Update Camera Data
-    Resources::UpdateUniformBufferObject<Camera>(m_ActiveCamera.camera, m_UBO_Camera);
 
   }
 
@@ -108,38 +108,31 @@ namespace Spade {
     }
 
 
-    if (m_SSBO_InstanceTransforms == 0) {
-      m_SSBO_InstanceTransforms = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_InstanceTransforms);
-      Resources::BindShaderStorageToLocation(5, m_SSBO_InstanceTransforms);
-    }
+    if (!m_BufferObjects.contains("InstanceTransform")) {
+      m_BufferObjects["InstanceTransform"] = Resources::CreateBuffer();
+      m_BufferObjects["InstanceMotion"] = Resources::CreateBuffer();
+      m_BufferObjects["InstanceMaterial"] = Resources::CreateBuffer();
+      m_BufferObjects["InstanceToEntityIndex"] = Resources::CreateBuffer();
 
-    if (m_SSBO_InstanceMotions == 0) {
-      m_SSBO_InstanceMotions = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_InstanceMotions);
-      Resources::BindShaderStorageToLocation(6, m_SSBO_InstanceMotions);
-    }
+      // Upload
+      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_BufferObjects["InstanceTransform"]);
+      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_BufferObjects["InstanceMotion"]);
+      Resources::UploadShaderStorageBufferObject<Material>(m_InstanceMaterials, m_BufferObjects["InstanceMaterial"]);
+      Resources::UploadShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_BufferObjects["InstanceToEntityIndex"]);
 
-    if (m_SSBO_InstanceMaterials == 0) {
-      m_SSBO_InstanceMaterials = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<Material>(m_InstanceMaterials, m_SSBO_InstanceMaterials);
-      Resources::BindShaderStorageToLocation(7, m_SSBO_InstanceMaterials);
-    }
+      // Bind
+      Resources::BindShaderStorageToLocation(5, m_BufferObjects["InstanceTransform"]);
+      Resources::BindShaderStorageToLocation(6, m_BufferObjects["InstanceMotion"]);
+      Resources::BindShaderStorageToLocation(7, m_BufferObjects["InstanceMaterial"]);
+      Resources::BindShaderStorageToLocation(8, m_BufferObjects["InstanceToEntityIndex"]);
+    } else {
+      // Update
 
-    if (m_SSBO_InstanceToEntityIndex == 0) {
-      m_SSBO_InstanceToEntityIndex = Resources::CreateBuffer();
-      // Allocate once
-      Resources::UploadShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_SSBO_InstanceToEntityIndex);
-      Resources::BindShaderStorageToLocation(8, m_SSBO_InstanceToEntityIndex);
+      Resources::UpdateShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_BufferObjects["InstanceTransform"]);
+      Resources::UpdateShaderStorageBufferObject<Motion>(m_InstanceMotions, m_BufferObjects["InstanceMotion"]);
+      Resources::UpdateShaderStorageBufferObject<Material>(m_InstanceMaterials, m_BufferObjects["InstanceMaterial"]);
+      Resources::UpdateShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_BufferObjects["InstanceToEntityIndex"]);
     }
-
-    Resources::UpdateShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_InstanceTransforms);
-    Resources::UpdateShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_InstanceMotions);
-    Resources::UpdateShaderStorageBufferObject<Material>(m_InstanceMaterials, m_SSBO_InstanceMaterials);
-    Resources::UpdateShaderStorageBufferObject<unsigned int>(m_InstanceToEntityIndex, m_SSBO_InstanceToEntityIndex);
   }
 
   void Engine::LoadCollisionBuffers(Universe &universe) {
@@ -154,19 +147,19 @@ namespace Spade {
       MeshComponent& meshComponent = meshPool.m_Data[i];
       const EntityID entityID = meshPool.m_IndexToEntity[i];
 
-      BoundingComponent* boundingComponent = boundingPool.Get(entityID);
+      const BoundingComponent* boundingComponent = boundingPool.Get(entityID);
       bounds.push_back(boundingComponent->bound);
     }
 
-    if (m_SSBO_EntityBounds == 0) {
-      m_SSBO_EntityBounds = Resources::CreateBuffer();
+    if (!m_BufferObjects.contains("EntityBound")) {
+      m_BufferObjects["EntityBound"] = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
-      Resources::BindShaderStorageToLocation(4, m_SSBO_EntityBounds);
+      Resources::UploadShaderStorageBufferObject<Bound>(bounds, m_BufferObjects["EntityBound"]);
+      Resources::BindShaderStorageToLocation(4, m_BufferObjects["EntityBound"]);
+    } else {
+      Resources::UpdateShaderStorageBufferObject<Bound>(bounds, m_BufferObjects["EntityBound"]);
     }
-
-    Resources::UpdateShaderStorageBufferObject<Bound>(bounds, m_SSBO_EntityBounds);
-    }
+  }
 
   void Engine::LoadFluidBuffers(Universe &universe) {
 
@@ -180,18 +173,55 @@ namespace Spade {
       MeshComponent& meshComponent = meshPool.m_Data[i];
       const EntityID entityID = meshPool.m_IndexToEntity[i];
 
-      FluidComponent* fluidComponent = fluidPool.Get(entityID);
+      const FluidComponent* fluidComponent = fluidPool.Get(entityID);
       fluids.push_back(fluidComponent->fluidMaterial);
     }
 
-    if (m_SSBO_EntityFluidMaterials == 0) {
-      m_SSBO_EntityFluidMaterials = Resources::CreateBuffer();
+    if (!m_BufferObjects.contains("EntityFluidMaterial")) {
+      m_BufferObjects["EntityFluidMaterial"] = Resources::CreateBuffer();
       // Allocate once
-      Resources::UploadShaderStorageBufferObject<FluidMaterial>(fluids, m_SSBO_EntityFluidMaterials);
-      Resources::BindShaderStorageToLocation(13, m_SSBO_EntityFluidMaterials);
+      Resources::UploadShaderStorageBufferObject<FluidMaterial>(fluids, m_BufferObjects["EntityFluidMaterial"]);
+      Resources::BindShaderStorageToLocation(13, m_BufferObjects["EntityFluidMaterial"]);
+    } else {
+      Resources::UpdateShaderStorageBufferObject<FluidMaterial>(fluids, m_BufferObjects["EntityFluidMaterial"]);
     }
+  }
 
-    Resources::UpdateShaderStorageBufferObject<FluidMaterial>(fluids, m_SSBO_EntityFluidMaterials);
+  void Engine::LoadGridBuffers() {
+
+    // Calculate Next Power of Two for Bitonic Sort
+    size_t sortedSize = 1;
+    while(sortedSize < m_InstanceTransforms.size()) sortedSize <<= 1;
+
+    // Spatial Hash Table Size (Fixed)
+    const unsigned int hashTableSize = 1 << 21;
+
+    // Allocate fixed size hash table
+    std::vector<int> emptyGrid(hashTableSize, -1);
+    std::vector<GridPair> pairs(sortedSize, { 0xFFFFFFFF, 0xFFFFFFFF });
+
+    // 3. Initialize Buffers
+    if (!m_BufferObjects.contains("GridHead")) {
+      m_BufferObjects["GridHead"] = Resources::CreateBuffer();
+      m_BufferObjects["GridPair"] = Resources::CreateBuffer();
+      m_BufferObjects["SortedTransform"] = Resources::CreateBuffer();
+      m_BufferObjects["SortedMotion"] = Resources::CreateBuffer();
+
+      Resources::UploadShaderStorageBufferObject<int>(emptyGrid, m_BufferObjects["GridHead"]);
+      Resources::UploadShaderStorageBufferObject<GridPair>(pairs, m_BufferObjects["GridPair"]);
+      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_BufferObjects["SortedTransform"]);
+      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_BufferObjects["SortedMotion"]);
+
+      Resources::BindShaderStorageToLocation(9, m_BufferObjects["GridHead"]);
+      Resources::BindShaderStorageToLocation(10, m_BufferObjects["GridPair"]);
+      Resources::BindShaderStorageToLocation(11, m_BufferObjects["SortedTransform"]);
+      Resources::BindShaderStorageToLocation(12, m_BufferObjects["SortedMotion"]);
+    } else {
+      Resources::UpdateShaderStorageBufferObject<int>(emptyGrid, m_BufferObjects["GridHead"]);
+      Resources::UpdateShaderStorageBufferObject<GridPair>(pairs,m_BufferObjects["GridPair"]);
+      Resources::UpdateShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_BufferObjects["SortedTransform"]);
+      Resources::UpdateShaderStorageBufferObject<Motion>(m_InstanceMotions, m_BufferObjects["SortedMotion"]);
+    }
   }
 
   void Engine::EnableMotion(float deltaTime) {
@@ -210,7 +240,7 @@ namespace Spade {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableGravity(float globalGravity, float deltaTime) {
+  void Engine::EnableGravity(float globalGravity) {
     if (m_InstanceMotions.empty()) return;
 
     if (!m_ShaderPrograms.contains("Gravity")) {
@@ -220,7 +250,6 @@ namespace Spade {
     GLuint groups = (m_InstanceMotions.size() + 63) / 64;
 
     Resources::UseProgram( m_ShaderPrograms["Gravity"]);
-    Resources::SetUniformFloat( m_ShaderPrograms["Gravity"], "deltaTime", deltaTime);
     Resources::SetUniformFloat( m_ShaderPrograms["Gravity"], "globalGravity", globalGravity);
 
     glDispatchCompute(groups, 1, 1);
@@ -243,44 +272,14 @@ namespace Spade {
 
     size_t numInstances = m_InstanceTransforms.size();
 
-    // Calculate Next Power of Two for Bitonic Sort
     size_t sortedSize = 1;
     while(sortedSize < numInstances) sortedSize <<= 1;
-
-    GLuint groups = (numInstances + 63) / 64;
-    GLuint setSizeGroups = (sortedSize + 63) / 64;
 
     // Spatial Hash Table Size (Fixed)
     const unsigned int hashTableSize = 1 << 21;
 
-    // 3. Initialize Buffers
-    if (m_SSBO_GridHead == 0) {
-      m_SSBO_GridHead = Resources::CreateBuffer();
-      // Allocate fixed size hash table
-      std::vector<int> emptyGrid(hashTableSize, -1);
-      Resources::UploadShaderStorageBufferObject<int>(emptyGrid, m_SSBO_GridHead);
-      Resources::BindShaderStorageToLocation(9, m_SSBO_GridHead);
-    }
-
-    if (m_SSBO_GridPairs == 0) {
-      m_SSBO_GridPairs = Resources::CreateBuffer();
-      // Initialize with MAX_UINT so padding sorts to the end
-      std::vector<GridPair> pairs(sortedSize, { 0xFFFFFFFF, 0xFFFFFFFF });
-      Resources::UploadShaderStorageBufferObject<GridPair>(pairs, m_SSBO_GridPairs);
-      Resources::BindShaderStorageToLocation(10, m_SSBO_GridPairs);
-    }
-
-    if (m_SSBO_SortedTransforms == 0) {
-      m_SSBO_SortedTransforms = Resources::CreateBuffer();
-      Resources::UploadShaderStorageBufferObject<Transform>(m_InstanceTransforms, m_SSBO_SortedTransforms);
-      Resources::BindShaderStorageToLocation(11, m_SSBO_SortedTransforms);
-    }
-
-    if (m_SSBO_SortedMotions == 0) {
-      m_SSBO_SortedMotions = Resources::CreateBuffer();
-      Resources::UploadShaderStorageBufferObject<Motion>(m_InstanceMotions, m_SSBO_SortedMotions);
-      Resources::BindShaderStorageToLocation(12, m_SSBO_SortedMotions);
-    }
+    GLuint groups = (numInstances + 63) / 64;
+    GLuint setSizeGroups = (sortedSize + 63) / 64;
 
     // 1. Clear Grid (Head)
     Resources::UseProgram(m_ShaderPrograms["GridClear"]);
@@ -328,7 +327,7 @@ namespace Spade {
 
   }
 
-  void Engine::EnableSPHFluid(float globalBounds, float cellSize, float deltaTime) {
+  void Engine::EnableSPHFluid(float globalBounds, float cellSize) {
     if (m_InstanceTransforms.empty()) return;
 
     // 1. Initialize Shaders
@@ -370,7 +369,7 @@ namespace Spade {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableBruteForceCollision(float globalBounds, float deltaTime) {
+  void Engine::EnableBruteForceCollision(float globalBounds) {
     if (m_InstanceTransforms.empty()) return;
 
     if (!m_ShaderPrograms.contains("BruteForceCollision")) {
@@ -389,7 +388,7 @@ namespace Spade {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableGridCollision(float globalBounds, float cellSize, float deltaTime) {
+  void Engine::EnableGridCollision(float globalBounds, float cellSize) {
     if (m_InstanceTransforms.empty()) return;
 
     if (!m_ShaderPrograms.contains("GridCollision")) {
@@ -404,7 +403,6 @@ namespace Spade {
 
     // Solve Collision (on Sorted Data)
     Resources::UseProgram(m_ShaderPrograms["GridCollision"]);
-    Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "deltaTime", deltaTime);
     Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "globalBounds", globalBounds);
     Resources::SetUniformFloat(m_ShaderPrograms["GridCollision"], "cellSize", cellSize);
     Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridCollision"], "hashTableSize", hashTableSize); // Hash Table Size
@@ -419,7 +417,7 @@ namespace Spade {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableBruteForceNewtonianGravity(float gravityConstant, float deltaTime) {
+  void Engine::EnableBruteForceNewtonianGravity(float gravityConstant) {
     return;
   }
 

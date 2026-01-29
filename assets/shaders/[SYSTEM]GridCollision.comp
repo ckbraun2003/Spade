@@ -62,7 +62,6 @@ layout(std430, binding = 13) buffer EntityFluidMaterials {
 };
 
 
-uniform float deltaTime;
 uniform float globalBounds;
 uniform float cellSize;
 uniform uint hashTableSize;
