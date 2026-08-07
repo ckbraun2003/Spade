@@ -52,7 +52,7 @@ namespace Spade {
   public:
       // Dense Data
       std::vector<T> m_Data;
-      
+
       // Dense Index -> EntityID (for reverse lookup during iteration)
       std::vector<EntityID> m_IndexToEntity;
 
@@ -60,13 +60,13 @@ namespace Spade {
       // If m_EntityToIndex[entityID] == INVALID_INDEX, it has no component.
       // We reserve enough space for max entities.
       std::vector<size_t> m_EntityToIndex;
-      
+
       static constexpr size_t INVALID_INDEX = 0xFFFFFFFF;
 
       ComponentPool() {
           // Reserve space for a reasonable amount of entities to avoid reallocs
           // In a production engine, this would be a Page allocator or huge reserve.
-          m_EntityToIndex.resize(10000, INVALID_INDEX); 
+          m_EntityToIndex.resize(10000, INVALID_INDEX);
       }
 
       T& Add(EntityID entity, T component) {
@@ -85,7 +85,7 @@ namespace Spade {
           m_Data.push_back(std::move(component));
           m_IndexToEntity.push_back(entity);
           m_EntityToIndex[entity] = index;
-          
+
           return m_Data.back();
       }
 
@@ -114,7 +114,7 @@ namespace Spade {
           if (index == INVALID_INDEX) return nullptr;
           return &m_Data[index];
       }
-      
+
       bool Has(EntityID entity) const {
           if (entity >= m_EntityToIndex.size()) return false;
           return m_EntityToIndex[entity] != INVALID_INDEX;
@@ -133,10 +133,10 @@ namespace Spade {
           }
           return static_cast<ComponentPool<T>&>(*m_Pools[id]);
       }
-      
+
       EntityID m_NextEntityID = 0;
       EntityID CreateEntityID() { return m_NextEntityID++; }
-      
+
       // Clear function?
   };
 
@@ -165,7 +165,7 @@ namespace Spade {
           if (!IsValid()) return nullptr;
           return m_Universe->GetPool<T>().Get(m_Id);
       }
-      
+
       template<typename T>
       bool HasComponent() {
            if (!IsValid()) return false;

@@ -76,7 +76,7 @@ uint GetHash(ivec3 cell) {
 
 ivec3 GetGridCell(vec3 pos) {
     vec3 offsetPos = pos + vec3(globalBounds);
-    
+
     // Implicit Grid Dim (Match previous implementation)
     ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
 
@@ -100,7 +100,7 @@ void main() {
     float mass = sortedMotions[i].mass;
     float h = cellSize; // Smoothing Radius
     float h2 = h * h;
-    
+
     // Self-Density
     density += mass * Poly6(0.0, h);
 
@@ -110,19 +110,19 @@ void main() {
     for (int z = -1; z <= 1; ++z) {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                
+
                 // No Boundary Check!
                 ivec3 neighbor = myCell + ivec3(x, y, z);
-                
+
                 uint neighborHash = GetHash(neighbor);
                 int startIndex = gridHead[neighborHash];
-                
+
                 if (startIndex != -1) {
                     for (uint k = uint(startIndex); k < numInstances; ++k) {
-                        
+
                         // Optimization: Break on Hash Mismatch
                         if (gridPairs[k].cellID != neighborHash) break;
-                        
+
                         if (i == k) continue;
 
                         vec3 otherPos = sortedTransforms[k].position;
@@ -138,7 +138,7 @@ void main() {
             }
         }
     }
-    
+
     // Avoid Zero Density (Vacuum)
     if (density < myMat.restDensity) density = myMat.restDensity;
 

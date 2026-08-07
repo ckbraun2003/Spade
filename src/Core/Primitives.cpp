@@ -28,7 +28,7 @@ namespace Spade {
             // vertex position (x, y, z)
             x = xy * cosf(sectorAngle);             // r * cos(u) * cos(v)
             y = xy * sinf(sectorAngle);             // r * cos(u) * sin(v)
-            
+
             // normalized vertex normal (nx, ny, nz)
             nx = x * lengthInv;
             ny = y * lengthInv;
@@ -77,7 +77,7 @@ namespace Spade {
       mesh.vertices.push_back({{ half, -half,  half}, {0,0,1}, {1,0}});
       mesh.vertices.push_back({{ half,  half,  half}, {0,0,1}, {1,1}});
       mesh.vertices.push_back({{-half,  half,  half}, {0,0,1}, {0,1}});
-      
+
       // Face Normal -Z
       mesh.vertices.push_back({{ half, -half, -half}, {0,0,-1}, {0,0}});
       mesh.vertices.push_back({{-half, -half, -half}, {0,0,-1}, {1,0}});
@@ -114,16 +114,16 @@ namespace Spade {
           mesh.indices.push_back(offset + 0);
           mesh.indices.push_back(offset + 1);
           mesh.indices.push_back(offset + 2);
-          
+
           mesh.indices.push_back(offset + 2);
           mesh.indices.push_back(offset + 3);
           mesh.indices.push_back(offset + 0);
-          
+
           offset += 4;
       }
       return mesh;
   }
-  
+
   Mesh GenerateQuad(float size) {
       Mesh mesh;
       float half = size * 0.5f;
@@ -132,9 +132,9 @@ namespace Spade {
       mesh.vertices.push_back({{ half, -half, 0}, {0,0,1}, {1,0}});
       mesh.vertices.push_back({{ half,  half, 0}, {0,0,1}, {1,1}});
       mesh.vertices.push_back({{-half,  half, 0}, {0,0,1}, {0,1}});
-      
+
       mesh.indices = {0, 1, 2, 2, 3, 0};
-      
+
       return mesh;
   }
 

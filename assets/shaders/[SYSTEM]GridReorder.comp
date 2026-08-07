@@ -45,7 +45,7 @@ void main() {
     if (i >= numInstances) return;
 
     uint originalIdx = gridPairs[i].instanceID;
-    
+
     // Safety for padding
     if (originalIdx >= numInstances) return;
 

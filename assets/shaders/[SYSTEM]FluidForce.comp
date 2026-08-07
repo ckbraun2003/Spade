@@ -87,10 +87,10 @@ uint GetHash(ivec3 cell) {
 
 ivec3 GetGridCell(vec3 pos) {
     vec3 offsetPos = pos + vec3(globalBounds);
-    
+
     // Implicit Grid Dim (Match previous implementation)
     ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
-    
+
     ivec3 cell = ivec3(floor(offsetPos / cellSize));
     return clamp(cell, ivec3(0), gridDim - ivec3(1));
 }

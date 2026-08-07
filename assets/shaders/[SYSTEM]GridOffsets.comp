@@ -22,7 +22,7 @@ void main() {
     if (i >= numInstances) return;
 
     uint cell = gridPairs[i].cellID;
-    
+
     // Bounds check for safety (should be clamped by Build, but padding is MAX_UINT)
     if (cell == 0xFFFFFFFF) return;
 

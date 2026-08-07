@@ -42,7 +42,7 @@ void main() {
 
         Transform currentTransform = instanceTransforms[i];
         Motion currentMotion = instanceMotions[i];
-        
+
         // 1. Get Displacement Vector
         vec3 difference = currentTransform.position - instanceTransform.position;
 
@@ -63,7 +63,7 @@ void main() {
     }
 
     instanceMotion.acceleration += forceOfGravity / instanceMotion.mass;
-    
+
     // Safety: Prevent NaN propagation
     if (isnan(instanceMotion.acceleration.x) || isinf(instanceMotion.acceleration.x)) {
         instanceMotion.acceleration = vec3(0.0);

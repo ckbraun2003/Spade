@@ -48,7 +48,7 @@ void main() {
     // Implicit Grid Dim (Match previous implementation)
     ivec3 gridDim = ivec3(floor((globalBounds * 2.0) / cellSize));
     cell = clamp(cell, ivec3(0), gridDim - ivec3(1));
-    
+
     // Hash
     uint cellIndex = GetHash(cell);
 

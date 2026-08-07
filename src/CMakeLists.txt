@@ -7,7 +7,7 @@ target_include_directories(Spade PUBLIC
 
 # Collect sources (globbing for simplicity in early stage, though explicit is better for larger projects)
 file(GLOB_RECURSE SPADE_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp" 
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
 )
 target_sources(Spade PRIVATE ${SPADE_SOURCES})

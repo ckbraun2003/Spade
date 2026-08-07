@@ -58,7 +58,7 @@ namespace Spade {
     m_InstanceMotions.clear();
     m_InstanceMaterials.clear();
     m_InstanceToEntityIndex.clear();
-    
+
     auto& meshPool = universe.GetPool<MeshComponent>();
 
     unsigned int bufferSize = 0;
@@ -136,7 +136,7 @@ namespace Spade {
   }
 
   void Engine::LoadCollisionBuffers(Universe &universe) {
-    
+
     auto& meshPool = universe.GetPool<MeshComponent>();
     auto& boundingPool = universe.GetPool<BoundingComponent>();
 
@@ -255,7 +255,7 @@ namespace Spade {
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
-  
+
   void Engine::BuildGrid(float globalBounds, float cellSize) {
     if (m_InstanceTransforms.empty()) return;
 
@@ -409,7 +409,7 @@ namespace Spade {
     Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridCollision"], "numInstances", numInstances);
     glDispatchCompute(groups, 1, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-    
+
     // Scatter (Write Back)
     Resources::UseProgram(m_ShaderPrograms["GridScatter"]);
     Resources::SetUniformUnsignedInt(m_ShaderPrograms["GridScatter"], "numInstances", numInstances);

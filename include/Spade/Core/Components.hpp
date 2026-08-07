@@ -24,7 +24,7 @@ namespace Spade {
 
     // Component Data
     glm::mat4 model = glm::mat4(1.0f);
-    
+
     // Helper functions
     glm::mat4 GetModel() const;
     glm::vec3 GetForward() const;

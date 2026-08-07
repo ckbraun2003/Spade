@@ -103,9 +103,9 @@ namespace Spade {
     unsigned int active = 1;
   };
 
-  struct GridPair { 
-    unsigned int cellID; 
-    unsigned int instanceID; 
+  struct GridPair {
+    unsigned int cellID;
+    unsigned int instanceID;
   };
 
   struct Transform {
@@ -122,7 +122,7 @@ namespace Spade {
     glm::vec3 acceleration = {0.0, 0.0, 0.0};
     float density = 0.0f;
   };
-    
+
   struct FluidMaterial {
     float restDensity = 1.0f;
     float viscosity = 0.05f;
