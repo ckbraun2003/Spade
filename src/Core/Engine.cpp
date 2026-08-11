@@ -417,11 +417,6 @@ namespace Spade {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
   }
 
-  void Engine::EnableBruteForceNewtonianGravity(float gravityConstant) {
-    return;
-  }
-
-
   void Engine::RenderWireframe() {
     RenderShader("Color", "assets/shaders/[FRAGMENT]Wireframe.frag", "assets/shaders/[GEOMETRY]Barycentric.geom");
   }

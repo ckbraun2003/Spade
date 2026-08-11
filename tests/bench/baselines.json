@@ -1,0 +1,173 @@
+{
+  "_meta": {
+    "policy": "Reference numbers only -- nothing in CI reads or diffs against this file. Manual comparison until S6 (Slang layout migration + perf-gate tooling); see spade/tests/bench/bench_core.cpp's and bench_sim.cpp's header comments for the full policy. Re-seed by hand (spade_bench --benchmark_format=json) when the comparison basis meaningfully changes (box, compiler, or a deliberate perf-affecting change worth re-baselining against) -- do not treat routine run-to-run noise as a reason to update this file.",
+    "seeded_on": "2026-08-10",
+    "seeded_by": "Task 21 (close-out bench sweep, spade/s1-s4 plan): bench_sim.cpp added (BM_StepPlainBodies, BM_StepQuadWorlds), and BM_IntegrateOrientation re-measured alongside them in this same run (it could have been recorded alone via --benchmark_filter=BM_IntegrateOrientation; it was not, only because this run's purpose was seeding the two new benchmarks and re-measuring the existing one cost nothing extra). This box now has THREE recorded observations of BM_IntegrateOrientation's cpu_time: 27.9 ns (SDD ledger, S3 stage gate, 2026-08-09), 73.4375 ns (seeded at commit 76aa0d4, 2026-08-09), and 100.4 ns (this run, 2026-08-10) -- a >3.5x spread across three same-box, same-preset runs, which means this microbenchmark's run-to-run variance is too wide for its own recorded numbers to serve as a regression basis at this precision; see the bench spread-policy ticket (design-specs/kat-open-agendas.md's T21 section) rather than reading any pairwise delta here as a finding.",
+    "box": "DESKTOP-N7QJD3C, Windows, MSVC 19.44.35217.0, msvc-ninja-release preset (spade/CMakePresets.json)",
+    "command": "spade/build-ninja/release/bin/spade_bench.exe --benchmark_format=json",
+    "note": "context/benchmarks below are the unmodified output of that command. world_substeps_per_sec is not a manual addition to this file -- it is a custom benchmark::Counter BM_StepQuadWorlds itself computes and emits as part of its normal --benchmark_format=json output (see bench_sim.cpp), so it is genuinely part of 'the output of that command', not an edit to it. This file is not hand-edited beyond adding this _meta block.",
+    "spec_comparison": "engine design spec §12 rate-envelope targets (design-specs/kat-spade-engine-design.html; quoting closely, not claiming byte-for-byte verbatim -- the source is HTML markup, this is a transliteration of its text): 'single world >= 10 kHz substeps CPU for a quadrotor-class scene ... batched headless >= 64 worlds x 1 kHz faster than real time on the dev GPU. Misses trigger design review, not silent acceptance.' Both CPU-measurable targets are HIT on this run, on TWO timing bases. CPU-time basis (google-benchmark's default -- neither BM_StepQuadWorlds nor BM_StepPlainBodies calls ->UseRealTime(), so items_per_second/world_substeps_per_sec below are computed from cpu_time, not wall-clock real_time): BM_StepQuadWorlds/1's items_per_second (296,218 substeps/sec, single world, quad+IMU scene) clears the 10 kHz floor by ~30x; BM_StepQuadWorlds/64's world_substeps_per_sec (176,223 world-substeps/sec) clears the 64,000 (64 worlds x 1 kHz) floor by ~2.75x. That basis is the right one for the FIRST target (it says 'CPU substeps' explicitly) but the SECOND target's own phrasing -- 'faster than real time' -- is inherently a wall-clock claim, so the honest comparison recomputes on real_time instead: BM_StepQuadWorlds/1 clears the 10 kHz floor by ~28.6x (286,342 substeps/sec from real_time = 174,609.67 ns/iter), and BM_StepQuadWorlds/64 clears the 64,000 floor by ~2.80x (179,148 world-substeps/sec from real_time = 17,862,367.57 ns/iter) -- both targets HOLD on the wall-clock basis too, with a lower but still comfortable margin on the batched target. The spec phrases the batched target 'on the dev GPU' -- this run is the CPU reference twin (v2 has no GPU backend before S6), so it is a strong signal, not the literal target measurement; that one first becomes possible at S6. The third §12 target (viewport: 1 world + few vehicles, 1 kHz physics + 60 fps render concurrently) is not applicable to a headless bench with no renderer. BM_StepPlainBodies is not a §12 target scene (no vehicle, no IMU) -- it exists to show step-loop throughput scaling with body count alone; see bench_sim.cpp's header comment for why its three points are not directly comparable to each other (different dynamical regimes, not a regression signal). steps/sec == substeps/sec throughout this file: every Simulation is created with substeps = 1 (see bench_sim.cpp), so items_per_second is reported in substeps/sec directly and needs no conversion."
+  },
+  "context": {
+    "date": "2026-08-10T14:33:06-04:00",
+    "host_name": "DESKTOP-N7QJD3C",
+    "executable": "C:\\Users\\ckbra\\Desktop\\KAT\\spade\\build-ninja\\release\\bin\\spade_bench.exe",
+    "num_cpus": 8,
+    "mhz_per_cpu": 1498,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 49152,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 524288,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 6291456,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [],
+    "library_version": "v1.9.1",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_IntegrateOrientation",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_IntegrateOrientation",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 7466667,
+      "real_time": 1.0041590176665638e+02,
+      "cpu_time": 1.0044642408721322e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_StepPlainBodies/10",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_StepPlainBodies/10",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1120,
+      "real_time": 6.3319848214372806e+05,
+      "cpu_time": 6.2779017857142852e+05,
+      "time_unit": "ns",
+      "items_per_second": 7.9644444444444438e+04
+    },
+    {
+      "name": "BM_StepPlainBodies/100",
+      "family_index": 1,
+      "per_family_instance_index": 1,
+      "run_name": "BM_StepPlainBodies/100",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 75,
+      "real_time": 8.9535133333023023e+06,
+      "cpu_time": 8.9583333333333340e+06,
+      "time_unit": "ns",
+      "items_per_second": 5.5813953488372090e+03
+    },
+    {
+      "name": "BM_StepPlainBodies/1000",
+      "family_index": 1,
+      "per_family_instance_index": 2,
+      "run_name": "BM_StepPlainBodies/1000",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 5,
+      "real_time": 1.4047272000025260e+08,
+      "cpu_time": 1.3125000000000000e+08,
+      "time_unit": "ns",
+      "items_per_second": 3.8095238095238096e+02
+    },
+    {
+      "name": "BM_StepQuadWorlds/1",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_StepQuadWorlds/1",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4073,
+      "real_time": 1.7460967345798208e+05,
+      "cpu_time": 1.6879450036827891e+05,
+      "time_unit": "ns",
+      "items_per_second": 2.9621818181818182e+05,
+      "world_substeps_per_sec": 2.9621818181818182e+05
+    },
+    {
+      "name": "BM_StepQuadWorlds/4",
+      "family_index": 2,
+      "per_family_instance_index": 1,
+      "run_name": "BM_StepQuadWorlds/4",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 896,
+      "real_time": 6.7625133928978746e+05,
+      "cpu_time": 6.6266741071428568e+05,
+      "time_unit": "ns",
+      "items_per_second": 7.5452631578947374e+04,
+      "world_substeps_per_sec": 3.0181052631578950e+05
+    },
+    {
+      "name": "BM_StepQuadWorlds/16",
+      "family_index": 2,
+      "per_family_instance_index": 2,
+      "run_name": "BM_StepQuadWorlds/16",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 236,
+      "real_time": 2.8222932203604262e+06,
+      "cpu_time": 2.8469279661016949e+06,
+      "time_unit": "ns",
+      "items_per_second": 1.7562790697674420e+04,
+      "world_substeps_per_sec": 2.8100465116279072e+05
+    },
+    {
+      "name": "BM_StepQuadWorlds/64",
+      "family_index": 2,
+      "per_family_instance_index": 3,
+      "run_name": "BM_StepQuadWorlds/64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 37,
+      "real_time": 1.7862367567628294e+07,
+      "cpu_time": 1.8158783783783782e+07,
+      "time_unit": "ns",
+      "items_per_second": 2.7534883720930234e+03,
+      "world_substeps_per_sec": 1.7622325581395350e+05
+    }
+  ]
+}

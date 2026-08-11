@@ -141,8 +141,6 @@ namespace Spade {
 
   private:
 
-    static std::unordered_map<std::string, ProgramID> m_ProgramCache;
-
     class ResourcesException : public std::runtime_error
     {
     public:

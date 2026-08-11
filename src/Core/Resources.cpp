@@ -2,8 +2,6 @@
 
 namespace Spade {
 
-  std::unordered_map<std::string, ProgramID> Resources::m_ProgramCache;
-
   BufferID Resources::CreateBuffer() {
     BufferID buffer;
     glGenBuffers(1, &buffer);

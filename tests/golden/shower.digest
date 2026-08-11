@@ -1,0 +1,96 @@
+# spade determinism corpus v0 -- scenario: shower
+#
+# 100 spheres dropped into an SDF bowl (a radius-4 sphere minus a radius-3.8
+# sphere offset 0.4 m upward) and left to pile. 400 steps of 2 ms at 2
+# substeps. Both collision passes run hot and the pile resolves Gauss-Seidel,
+# so this is the scenario that would expose an ordering dependence in the
+# sorted-grid sweep or in the neighbour walk.
+#
+# WHAT THIS FILE IS. The 64-bit FNV-1a digest of every registered state byte at
+# the end of the scenario, as defined by engine/testing/replay.hpp's
+# state_digest(): the tick, then each registered array's name, element size,
+# world count, per-world capacity and payload, folded in the state registry's
+# walk order. The scenario itself is built in code by
+# tests/test_determinism.cpp (shower_scenario()) -- there is no world file involved
+# (S5 owns those), so this digest and that function are the whole definition.
+#
+# WHEN IT CHANGES. Any change to a pinned op order (integrator, contacts, grid
+# sweep, Dryden coefficients), to the rng construction, to a state layout
+# offset, to the pass schedule's order or contents, to the array registration
+# order or names, or to the scenario's own parameters. Every one of those is a
+# deliberate, reviewable act; NONE of them is a drive-by. Regenerating this
+# file without recording why in this header defeats the point of committing it.
+## REGENERATED 2026-08-11 -- the platform-libm parity fix (PR #5, spade-linux).
+#
+# WHY. Every digest in this corpus moved, and the reason is that until now they
+# were not digests of THE ENGINE -- they were digests of the engine PLUS
+# whichever C runtime's libm happened to generate them.
+#
+# rng::Stream::next_gauss() built its Box-Muller pair with std::log, std::cos
+# and std::sin. IEEE 754 mandates correct rounding for +, -, *, / and sqrt and
+# mandates NOTHING for those three, so the MSVC CRT and glibc -- both excellent,
+# both well under one ulp -- disagree by one ulp on roughly one argument in a
+# hundred. Every OTHER operation in the engine is an IEEE-mandated one, which is
+# exactly what makes the pinned op orders meaningful; these three were the sole
+# exception, and this corpus silently recorded the MSVC answer to them.
+#
+# HOW IT SURFACED, AND WHY ONLY ONE SCENARIO SURFACED IT. The first Linux/gcc-13
+# CI run on this branch failed `bounce` ALONE. Instrumented per-array, per-tick
+# digests localized it exactly: of the sixteen registered arrays, ONLY "dryden"
+# differed, and it differed at TICK 0 -- inside dryden_init(), before a single
+# substep of physics had run. "bodies" was bit-identical on both platforms for
+# all 901 ticks, so no trajectory ever diverged at all.
+#
+# The entire divergence was two ulps, both in dryden_init's five draws:
+#
+#     cos(0x3FA9EA7E)   MSVC 0x3E76B74D   glibc 0x3E76B74E   -> bounce w1 Dryden w0
+#     sin(0x3F8A17F6)   MSVC 0x3F61A49F   glibc 0x3F61A49E   -> bounce w3 Dryden u
+#
+# bounce carries FOUR Dryden streams (its restitution ladder's four worlds) to
+# the other scenarios' one, one and two, so it simply had the most init draws
+# exposed: eight world-inits exist across the corpus, and two of bounce's four
+# landed on a disputed argument. The other three scenarios passed on gcc by
+# LUCK, not by contract. Their per-SUBSTEP draws differ between the platforms
+# too, but the Dryden filter's noise gain (l ~ 7e-3 on the longitudinal channel,
+# ~1.4e-7 on the transverse position-like state) attenuates a one-ulp
+# perturbation of a draw to far below one ulp of the state it lands in, so those
+# absorb. An INIT draw lands in the state raw, unattenuated -- which is why the
+# divergence is at tick 0 and nowhere after it.
+#
+# THE FIX. core/fp32_math.hpp -- log32/sin32/cos32, built exclusively from
+# IEEE-mandated operations over pinned groupings and compiled exactly once, into
+# spade_core under -ffp-contract=off. next_gauss() now calls those. std::sqrt is
+# deliberately KEPT: IEEE mandates correct rounding for it, so it is already
+# bit-identical everywhere and replacing it would trade a guarantee for a
+# polynomial.
+#
+# WHY THIS MOVED ALL FOUR DIGESTS AND NOT ONLY bounce's. The new primitives are
+# ~1 ulp accurate -- tests/test_fp32_math.cpp proves that EXHAUSTIVELY, over all
+# 2^24 arguments next_float() can produce and all 2^24 Box-Muller angles, not by
+# sampling -- which is the same quality as the libms they replace but not the
+# same BITS. Every gaussian in every scenario therefore changes in its last bit
+# or two, and every digest moves with it. That is the expected consequence of
+# removing a platform dependency, NOT a physics change: no pass, no op order, no
+# state layout, no schedule position, and no part of the rng CONSTRUCTION (draw
+# counts, draw order, the clamp, the sin-first convention) was touched. The
+# corpus's physical-sanity test (CorpusScenariosProduceFiniteAndPhysicallySane-
+# States) and all 359 other tests pass unchanged on both platforms.
+#
+# WHAT IS DIFFERENT ABOUT THIS REGENERATION. Every previous one recorded a value
+# THIS BOX produces. This one records a value BOTH PLATFORMS produce: the digest
+# below is verified green on spade-windows (MSVC 19.44) and spade-linux
+# (gcc-13) in the same CI run. That is the property this corpus was always meant
+# to have and, until this commit, never actually had.
+#
+#   previous digest  0x65c5b9ad6b7092e4   (Task 18, generated 2026-08-10) -- an MSVC-libm value#
+# PROVENANCE
+#   generated  2026-08-11 (platform-libm parity fix; first generated at Task 16)
+#   branch     spade/s1-s4, on top of 8c2543c
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#   cross-check gcc-13, Release, -ffp-contract=off (spade-linux CI job) produces
+#              this same value -- the first digest in this corpus's history
+#              pinned by two independent toolchains rather than one
+#   presets    msvc-ninja-release AND msvc-ninja-debug produce this same value
+#              (checked before committing -- the digest is a property of the
+#              engine, not of the optimizer)
+0x6b773b313e06dd38

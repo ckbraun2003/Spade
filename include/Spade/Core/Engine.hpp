@@ -42,8 +42,6 @@ namespace Spade {
 
     void EnableSPHFluid(float globalBounds, float cellSize);
 
-    void EnableBruteForceNewtonianGravity(float gravityConstant);
-
     // Render Systems
     void RenderWireframe();
     void RenderColor();
@@ -75,7 +73,6 @@ namespace Spade {
 
     void SetupGLFWandGLADWindow(const int& width, const int& height, const std::string& title);
 
-    void SaveRenderToFile(const std::string& fileName);
     void UpdateStatistics();
 
     void BuildGrid(float globalBounds, float cellSize);

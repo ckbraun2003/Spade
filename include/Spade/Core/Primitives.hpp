@@ -88,13 +88,6 @@ namespace Spade {
     float padding;
   };
 
-  struct Triangle {
-    Vertex vertexA;
-    Vertex vertexB;
-    Vertex vertexC;
-
-  };
-
   struct Bound {
     float size;
     unsigned int isSphere = 1;
@@ -135,11 +128,6 @@ namespace Spade {
     glm::mat4 projection;
     glm::mat4 viewInverse;
     glm::mat4 projInverse;
-  };
-
-  struct HashPair {
-    unsigned int hash;
-    unsigned int instanceIndex;
   };
 
   Mesh GenerateQuad(float size);
