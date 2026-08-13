@@ -1,0 +1,179 @@
+# spadeConfig.cmake -- generated from this file by configure_package_config_file
+# (spade/engine/CMakeLists.txt, next to the existing install(EXPORT spadeTargets
+# ...)). This is what makes `find_package(spade CONFIG REQUIRED)` work for an
+# out-of-tree consumer at all: install(EXPORT) only emits spadeTargets.cmake --
+# the raw target definitions -- and CMake's config mode looks for a file named
+# exactly spade<Version>Config.cmake / spadeConfig.cmake, not for an export file
+# by name. spade/tests/consumer/ is this repo's own out-of-tree consumer, kept
+# in-tree only so CI can build+run it against a scratch `cmake --install` prefix
+# (see .github/workflows/spade.yml); the kat monorepo is the real one.
+#
+# ------------------------------------------------------------------------------
+# THE GLM GAP, AND WHY THIS FILE'S JOB IS A DIAGNOSTIC, NOT MAGIC.
+#
+# spade::core's public headers (core/math_ops.hpp) expose glm::vec3/quat/mat3 in
+# their own signatures, and every module above it (world/state/physics/sim/
+# vehicles) carries that dependency transitively -- a consumer including ANY
+# installed Spade header needs glm's headers on its include path. Spade's own
+# build gets glm by FetchContent-vendoring it (spade/vendor/CMakeLists.txt,
+# pinned to tag 1.0.1), but every link to it in engine/CMakeLists.txt is wrapped
+# in $<BUILD_INTERFACE:...> (see spade_core's glm-link comment there for the
+# full reasoning): install(EXPORT) refuses an export set whose members require a
+# target that is not itself installed/exported, and glm -- header-only,
+# vendored, never installed -- is exactly such a target. The practical
+# consequence: spadeTargets.cmake does NOT reference glm::glm at all. CMake will
+# happily find_package(spade) and define every spade::* target with glm nowhere
+# in sight, and the first a consumer would otherwise hear about the gap is a raw
+# "glm/vec3.hpp: No such file or directory" from their OWN compiler, pointing at
+# nothing in Spade.
+#
+# This file closes that gap with an explicit, actionable check instead of
+# leaving it to be discovered that way. It first tries find_package(glm) itself,
+# quietly -- glm may not even be find_package-able on a bare runner (it ships no
+# glmConfig.cmake outside a packaging setup), so this is EXPECTED to often do
+# nothing, and that is fine, it is a courtesy attempt, not the mechanism this
+# file depends on. If glm::glm still does not exist afterwards, find_package(spade)
+# fails loudly with instructions instead of quietly succeeding and leaving the
+# consumer to debug a missing-header error with no context back to Spade at all.
+#
+# IT IS DELIBERATELY NOT MAGIC: this file does not fetch or vendor glm on the
+# consumer's behalf -- that would mean two copies of glm (this one and whatever
+# the consumer's own build already manages) with no guarantee they agree.
+# spade/tests/consumer/CMakeLists.txt is the worked example of the obligation
+# this message describes: it FetchContents the SAME pinned tag Spade vendors
+# (spade/vendor/CMakeLists.txt's GIT_TAG 1.0.1) before its own
+# find_package(spade) call.
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# THE YAML-CPP GAP -- SAME SHAPE AS GLM'S ABOVE, DIFFERENT CONSEQUENCE, AND A
+# DIFFERENT CLOSING MECHANISM (integration follow-up to S5 Task 5's world-file
+# reader/writer, surfaced by Task 5's opus review and adjudicated here).
+#
+# world/world_file.hpp's world_to_yaml()/world_from_yaml()/save_world_file()/
+# load_world_file() (S5 Task 5) parse and emit YAML through yaml-cpp, and
+# spade_world links it PRIVATE, $<BUILD_INTERFACE:...>-only (spade/engine/
+# CMakeLists.txt's spade_world yaml-cpp-link comment) for the identical
+# install(EXPORT) reason glm is genex-wrapped: yaml-cpp is a FetchContent
+# target (add_subdirectory + add_library, not an IMPORTED find_package
+# target) in no export set, and install(EXPORT) rejects any reference to it
+# that is not fully hidden behind $<BUILD_INTERFACE:...>/
+# $<BUILD_LOCAL_INTERFACE:...> -- VERIFIED EMPIRICALLY that this holds even
+# for a same-named entry wrapped in $<INSTALL_INTERFACE:...> (that engine/
+# CMakeLists.txt comment records the full finding). That means, unlike a
+# textbook external dependency, yaml-cpp::yaml-cpp's presence CANNOT be
+# recorded in spadeTargets.cmake's own INTERFACE_LINK_LIBRARIES at all -- this
+# file is where the closure actually has to happen instead, see the
+# set_property() call below the target checks.
+#
+# WHY THIS IS NOT A COPY OF THE GLM CHECK ABOVE, DESPITE THE SAME SHAPE: glm
+# is HEADER-ONLY, so a missing glm::glm is a COMPILE-time gap that hits every
+# consumer of any installed Spade header, unconditionally -- gating on it
+# unconditionally is simply correct. yaml-cpp is a COMPILED ARCHIVE: a
+# consumer that never calls into world_file.hpp never pulls world_file.obj
+# out of spade_world.lib (a static archive only extracts the .obj members
+# that resolve an otherwise-undefined symbol) and therefore never needs
+# yaml-cpp's symbols at all. Gating find_package(spade) unconditionally on
+# yaml-cpp::yaml-cpp is therefore STRICTER than every consumer strictly
+# needs -- and it is still the right call, deliberately: spadeConfig.cmake
+# cannot see, at configure time, whether the CONSUMER's own translation units
+# will end up calling world_file.hpp's functions (that is a fact about their
+# source, not this file's), so the choice is between (a) checking here,
+# unconditionally, with a clear message naming exactly what to do, or
+# (b) checking nowhere, and letting a consumer who DOES need it discover the
+# gap as a bare CMake generate-time "target yaml-cpp::yaml-cpp was not found"
+# error with no context back to Spade -- the same unhelpful failure mode this
+# whole file exists to avoid. (a) costs a consumer who never touches world
+# files one extra FetchContent block they did not strictly need; (b) costs a
+# consumer who DOES touch world files a confusing failure with no path
+# forward. That trade is the right one, and it is why this check mirrors the
+# glm check's unconditional shape despite the different underlying reason.
+# ------------------------------------------------------------------------------
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# QUIET, not REQUIRED, and called directly rather than via find_dependency():
+# find_dependency() would propagate this config file's own REQUIRED-ness
+# (find_package(spade ... REQUIRED)) straight into find_package(glm ...
+# REQUIRED), which aborts immediately with CMake's own generic "could not find
+# a package configuration file for glm" error the moment glm is not
+# find_package-able -- the WRONG diagnostic (it names glm's find_package-ability,
+# not Spade's actual obligation) and it fires before the explicit, clearer check
+# below ever runs. Calling find_package directly, quietly, and letting it simply
+# not define glm::glm on failure is what lets that later check be the one that
+# speaks.
+find_package(glm QUIET CONFIG)
+
+# Same QUIET-direct-call reasoning as glm above, not find_dependency(): a
+# propagated REQUIRED would abort with CMake's generic "could not find a
+# package configuration file for yaml-cpp" the moment it's not
+# find_package-able, before the explicit check below (which names Spade's
+# actual obligation, not yaml-cpp's find_package-ability) ever runs.
+find_package(yaml-cpp QUIET CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/spadeTargets.cmake")
+
+if(NOT TARGET glm::glm)
+    message(FATAL_ERROR
+"spadeConfig.cmake: glm::glm was not found.\n"
+"Every installed Spade header (spade::core and everything linked above it) "
+"exposes glm/vec3.hpp, glm/gtc/quaternion.hpp etc. in its own public "
+"signatures, but glm is vendored via FetchContent in Spade's own build and is "
+"deliberately NOT part of this package's installed export set (glm is "
+"header-only and BUILD_INTERFACE-only there -- see "
+"spade/engine/CMakeLists.txt's spade_core glm-link comment). "
+"find_package(spade) cannot provide it for you.\n"
+"Fetch the SAME pinned tag Spade itself vendors (spade/vendor/CMakeLists.txt) "
+"before calling find_package(spade), e.g.:\n"
+"    include(FetchContent)\n"
+"    FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 1.0.1)\n"
+"    FetchContent_MakeAvailable(glm)\n"
+"or find_package(glm) a compatible install from your own environment instead. "
+"spade/tests/consumer/CMakeLists.txt is a worked example.")
+endif()
+
+if(NOT TARGET yaml-cpp::yaml-cpp)
+    message(FATAL_ERROR
+"spadeConfig.cmake: yaml-cpp::yaml-cpp was not found.\n"
+"spade::world's world_file.hpp API (world_to_yaml()/world_from_yaml()/"
+"save_world_file()/load_world_file(), the versioned YAML world-file "
+"reader/writer -- S5 Task 5) links yaml-cpp's COMPILED archive, not just "
+"its headers -- and like glm above, yaml-cpp is vendored via FetchContent "
+"in Spade's own build and is NOT part of this package's installed export "
+"set (see spade/engine/CMakeLists.txt's spade_world yaml-cpp-link comment). "
+"If your program calls into world_file.hpp -- directly, or transitively "
+"through anything that does -- your FINAL LINK needs yaml-cpp's symbols and "
+"find_package(spade) cannot supply them for you. (If it does not, this "
+"check still ran -- see this file's yaml-cpp comment block above for why "
+"that is the deliberate, conservative choice.)\n"
+"Fetch the SAME pinned tag Spade itself vendors (spade/vendor/CMakeLists.txt, "
+"GIT_TAG 0.8.0) before calling find_package(spade), e.g.:\n"
+"    include(FetchContent)\n"
+"    FetchContent_Declare(yaml-cpp GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG 0.8.0)\n"
+"    FetchContent_MakeAvailable(yaml-cpp)\n"
+"or find_package(yaml-cpp) a compatible install from your own environment "
+"instead. spade/tests/consumer/CMakeLists.txt is a worked example.")
+endif()
+
+# THE ACTUAL CLOSURE: wire the now-confirmed-present yaml-cpp::yaml-cpp onto
+# spade::world's link interface, HERE, in the CONSUMER's own CMake run --
+# not at spade_world's own target_link_libraries call in engine/CMakeLists.txt,
+# where install(EXPORT)'s export-set validation would reject it outright (see
+# that file's spade_world yaml-cpp-link comment for the full, empirically
+# verified finding: $<INSTALL_INTERFACE:...> does not exempt a same-named
+# non-IMPORTED target from that check). spade::world here is the IMPORTED
+# target spadeTargets.cmake just defined (include() above) -- a target that
+# exists ONLY in the consumer's own CMake run, so appending to its
+# INTERFACE_LINK_LIBRARIES touches nothing Spade's own build ever validates.
+# The observable effect is exactly what a working install-interface entry
+# would have produced: any consumer linking spade::sim (or anything above
+# spade::world) transitively pulls yaml-cpp::yaml-cpp onto its final link
+# line, which is what actually resolves world_file.obj's yaml-cpp symbols
+# when (and only when) something in the link closure calls into
+# world/world_file.hpp. See spade/tests/consumer/main.cpp for the worked
+# example that calls the loader and proves this closure end to end.
+set_property(TARGET spade::world APPEND PROPERTY INTERFACE_LINK_LIBRARIES yaml-cpp::yaml-cpp)
+
+check_required_components(spade)

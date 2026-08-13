@@ -10,6 +10,7 @@
 #include "bridge.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <stdexcept>
@@ -338,7 +339,31 @@ namespace {
     ring_pose.position = glm::vec3(0.0f, 1.8f, 0.0f);
     // Default torus hole axis is local +Y (world/sdf.hpp); rotate it onto
     // world +Z so a body flying along Z passes through the ring.
-    ring_pose.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    //
+    // SPELLED AS THE EXACT QUATERNION (sqrt(1/2), sqrt(1/2), 0, 0), NOT
+    // glm::angleAxis(radians(90), +X) (S5 T9 ticket A -- unifies this with
+    // tests/test_world_file.cpp's gate_world(), which committed
+    // tests/golden/worlds/gate.world.yaml with this exact spelling and left
+    // this call site as a ticketed follow-up; see that file's
+    // GateWorldHasTheGateAssemblysStructure comment for the original
+    // divergence). std::sqrt is IEEE-754-mandated correctly rounded;
+    // std::sin/std::cos (what glm::angleAxis calls) are libm and merely
+    // LIKELY to agree across compilers -- on this box the two spellings
+    // happened to land bit-identical, but "happened to" is not a contract.
+    //
+    // THIS IS NOT A DETERMINISM FIX, and it would be dishonest to imply
+    // otherwise: spade_viewer is a SPADE_BUILD_V1-gated TOOL, not a library
+    // linked into spade_tests, and this function's output is render-only --
+    // it never touches registered state or the digest (global-constraints.md's
+    // bit-portability rule governs what feeds those, and this is not on that
+    // path). What this spelling change buys is ONE SOURCE OF TRUTH for "what
+    // does the gate's ring rotation mean": before this change there were two
+    // independent transcriptions of the same authored pose (this file's and
+    // gate_world()'s), free to drift apart the moment either one was touched
+    // without the other; after it, both read the identical quaternion
+    // literal, so there is nothing left TO drift.
+    const float h = std::sqrt(0.5f);
+    ring_pose.rotation = glm::quat(h, h, 0.0f, 0.0f);
 
     const glm::vec3 post_half(0.15f, 1.5f, 0.15f);
     spade::SdfPose left_post;

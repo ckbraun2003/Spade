@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 
 #include <iterator>
+#include <limits>
 #include <string>
 #include <type_traits>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
 #include "core/ids.hpp"
 #include "core/time.hpp"
+#include "core/validate.hpp"
 
 namespace {
 
@@ -165,4 +170,75 @@ TEST(Tick, OrderingIsByValue) {
     EXPECT_GT(b, a);
     EXPECT_GE(b, b);
     EXPECT_EQ(a, spade::Tick{.value = 1});
+}
+
+// ---------------------------------------------------------------------------
+// finite() -- the core/validate.hpp overload set consolidated (this task)
+// from five previously file-local copies. Each case checks a normal value is
+// finite, then re-checks with inf, -inf and NaN planted in the overload's
+// WORST position -- the last component the implementation's short-circuit
+// `&&` chain evaluates, i.e. the one a bug in an earlier component's check
+// could not accidentally cover for.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr float kInf = std::numeric_limits<float>::infinity();
+constexpr float kNegInf = -std::numeric_limits<float>::infinity();
+constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
+}  // namespace
+
+TEST(Finite, FloatNormalIsFinite) { EXPECT_TRUE(spade::finite(1.5f)); }
+
+TEST(Finite, FloatNonFiniteIsNotFinite) {
+    EXPECT_FALSE(spade::finite(kInf));
+    EXPECT_FALSE(spade::finite(kNegInf));
+    EXPECT_FALSE(spade::finite(kNan));
+}
+
+TEST(Finite, Vec3NormalIsFinite) { EXPECT_TRUE(spade::finite(glm::vec3(1.0f, 2.0f, 3.0f))); }
+
+TEST(Finite, Vec3WorstPositionCatchesNonFinite) {
+    // z is the last component finite(vec3) checks.
+    EXPECT_FALSE(spade::finite(glm::vec3(1.0f, 2.0f, kInf)));
+    EXPECT_FALSE(spade::finite(glm::vec3(1.0f, 2.0f, kNegInf)));
+    EXPECT_FALSE(spade::finite(glm::vec3(1.0f, 2.0f, kNan)));
+}
+
+TEST(Finite, Vec4NormalIsFinite) {
+    EXPECT_TRUE(spade::finite(glm::vec4(1.0f, 2.0f, 3.0f, 4.0f)));
+}
+
+TEST(Finite, Vec4WorstPositionCatchesNonFinite) {
+    // w is the last component finite(vec4) checks.
+    EXPECT_FALSE(spade::finite(glm::vec4(1.0f, 2.0f, 3.0f, kInf)));
+    EXPECT_FALSE(spade::finite(glm::vec4(1.0f, 2.0f, 3.0f, kNegInf)));
+    EXPECT_FALSE(spade::finite(glm::vec4(1.0f, 2.0f, 3.0f, kNan)));
+}
+
+TEST(Finite, QuatNormalIsFinite) { EXPECT_TRUE(spade::finite(glm::quat(1.0f, 0.0f, 0.0f, 0.0f))); }
+
+TEST(Finite, QuatWorstPositionCatchesNonFinite) {
+    // z is the last component finite(quat) checks (order: w, x, y, z).
+    EXPECT_FALSE(spade::finite(glm::quat(1.0f, 0.0f, 0.0f, kInf)));
+    EXPECT_FALSE(spade::finite(glm::quat(1.0f, 0.0f, 0.0f, kNegInf)));
+    EXPECT_FALSE(spade::finite(glm::quat(1.0f, 0.0f, 0.0f, kNan)));
+}
+
+TEST(Finite, Mat4NormalIsFinite) { EXPECT_TRUE(spade::finite(glm::mat4(1.0f))); }
+
+TEST(Finite, Mat4WorstPositionCatchesNonFinite) {
+    // Last column (m[3]), last component (w) -- the last value finite(mat4)'s
+    // finite(m[0]) && finite(m[1]) && finite(m[2]) && finite(m[3]) chain
+    // reaches.
+    glm::mat4 m_inf(1.0f);
+    m_inf[3].w = kInf;
+    EXPECT_FALSE(spade::finite(m_inf));
+
+    glm::mat4 m_neg_inf(1.0f);
+    m_neg_inf[3].w = kNegInf;
+    EXPECT_FALSE(spade::finite(m_neg_inf));
+
+    glm::mat4 m_nan(1.0f);
+    m_nan[3].w = kNan;
+    EXPECT_FALSE(spade::finite(m_nan));
 }

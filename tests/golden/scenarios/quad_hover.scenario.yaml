@@ -1,0 +1,163 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements`),
+# and an UNKNOWN key is an ERROR at every level rather than a warning -- a
+# reader of this version must never silently drop a field a later version
+# added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: quad_hover -- the corpus's first VEHICLE scenario, and S5's fifth.
+# Two worlds from one world file, one quadrotor in each, spawned in exact hover
+# trim, flying a three-step collective script. 900 steps of 2 ms at 2 substeps
+# (1.8 s of flight).
+#
+# WHAT IT COVERS THAT THE OTHER FOUR DO NOT
+#
+#   * THE WHOLE VEHICLE PATH. A registered ModelType, a composed spawn (one
+#     body + four rotor rows + one drag body + one IMU mount from one
+#     description), the RotorElement pass with its RPM lag, momentum-theory
+#     inflow and SDF-sampled ground effect, and the IMU synthesis writing a
+#     sample into its ring every substep. None of that is in the four migrated
+#     scenarios, all of which are bare bodies.
+#   * TWO-WORLD VEHICLE ISOLATION (ticket T18-M3). The two worlds differ only in
+#     their rng roots, so a leak between them -- a rotor row addressed by global
+#     rather than world-local slot, say -- shows up as world 0's per-world digest
+#     depending on whether world 1 exists. The test asserts it does not.
+#   * vehicle_ref_at() THROUGH A RESTORE (ticket T18-M2). The input script
+#     re-derives its VehicleRef from the state at every command rather than
+#     holding the one spawn() returned, so the run can be snapshotted mid-script
+#     at tick 450, restored into a FRESH Simulation, and finished -- landing on
+#     the uninterrupted run's digest. That is the test the new API exists for.
+#
+# THE WORLD HAS NO SDF GEOMETRY AT ALL, deliberately: an empty program evaluates
+# to kSdfEmptyDistance, so the ground-effect factor is exactly 1 and
+# hover_command()'s trim is exact rather than approximate. Contacts are
+# configured and unreachable. The other four scenarios cover contact physics.
+#
+# `rotor_omega: hover` is vehicles::hover_command(params) -- the common shaft
+# speed at which these four rotors produce exactly this airframe's weight. It is
+# the model's own function of its own parameters, so retuning the airframe
+# retunes the trim; the tick-0 command below is that same number written out,
+# and the test asserts the two agree bit for bit.
+#
+# THE TWO WORLDS DO NOT FLY THE SAME TRAJECTORY, and that is the design rather
+# than a surprise. Moderate turbulence at the default reference airspeed is a
+# NEAR-CONSTANT GUST BIAS over an episode this short, not a buffet (tau_w = 10 s;
+# see sim/world_set.hpp's note), so each world flies in essentially ONE draw of
+# its own seed: world 0 drew a sink and ends BELOW its spawn altitude, world 1
+# drew a mild updraft and ends above it, on identical commands. A hover trim is
+# exact in still air, and this air is not still. That divergence is precisely
+# what makes the pair a usable world-isolation test.
+#
+# PROVENANCE OF `expected_digest`
+#   NEW at S5 Task 7 -- the only digest this task generates rather than carries.
+#   Seeded by the runner that the same commit's bridging test proves equivalent
+#   to the S1-S4 builder corpus, and CROSS-CHECKED on gcc-13 Linux CI before the
+#   commit was final (draft PR, closed unmerged; the run id is in the task
+#   report). msvc-ninja-release and msvc-ninja-debug agree.
+#   generated  2026-08-12
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "quad_hover"
+world: "../worlds/quad_hover.world.yaml"
+
+# Two instances of ONE world file, identical but for their rng roots -- which
+# is what makes the world-isolation assertion meaningful.
+instances:
+  - seed: 0xC0FFEE0DAD
+    contacts: {restitution_e: 0, friction_mu: 0, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.150000006}
+    grid: {cell_size: 0.5}
+    turbulence: moderate
+  - seed: 0xC0FFEE0DAE
+    contacts: {restitution_e: 0, friction_mu: 0, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.150000006}
+    grid: {cell_size: 0.5}
+    turbulence: moderate
+
+step: {dt_ns: 2000000, substeps: 2, steps: 900}
+
+# A 1 kg quadrotor with 12 cm props on 15 cm arms -- roughly a 5-inch racing
+# frame, and deliberately a real set of numbers rather than round ones. The
+# three principal moments are distinct (and Iy is the largest, as it is for a
+# flat airframe), so an X/Z axis swap cannot pass unnoticed.
+models:
+  - quadrotor:
+      name:            "quad_hover"
+      param_schema_id: 1
+      visual_ref:      "meshes/quad_hover"
+      mass:            1
+      inertia_diag:    [0.0120000001, 0.0209999997, 0.0160000008]
+      arm_length:      0.150000006
+      rotor_height:    0.0199999996
+      proxy_radius:    0.150000006
+      # k_T = 1e-5 N s^2 gives a hover shaft speed of sqrt(mg / 4 k_T);
+      # k_Q = 1.6e-7 N m s^2 is a torque/thrust ratio of 16 mm, the right
+      # order for a prop this size.
+      rotors:
+        - {tau: 0.0199999996, radius: 0.119999997, thrust_coeff: 9.99999975e-06, torque_coeff: 1.59999999e-07}
+        - {tau: 0.0199999996, radius: 0.119999997, thrust_coeff: 9.99999975e-06, torque_coeff: 1.59999999e-07}
+        - {tau: 0.0199999996, radius: 0.119999997, thrust_coeff: 9.99999975e-06, torque_coeff: 1.59999999e-07}
+        - {tau: 0.0199999996, radius: 0.119999997, thrust_coeff: 9.99999975e-06, torque_coeff: 1.59999999e-07}
+      # +-+-, in index order: diagonally opposite rotors co-rotate, so the
+      # collective is yaw-neutral and the diagonal differential is not.
+      spin_dirs:       [1, -1, 1, -1]
+      drag:
+        - {mode: quadratic, area: 0.0199999996, coeffs: [0.899999976, 0, 0], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
+      imu:
+        {mount_pos: [0, 0, 0], mount_orient: [1, 0, 0, 0], rate_divider: 1,
+         sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+
+# One vehicle per world, at 50 m, level, at rest, IN TRIM.
+spawns:
+  - world: 0
+    vehicle:
+      model:       0
+      pos:         [0, 50, 0]
+      orient:      [1, 0, 0, 0]
+      vel:         [0, 0, 0]
+      omega_body:  [0, 0, 0]
+      rotor_omega: hover
+  - world: 1
+    vehicle:
+      model:       0
+      pos:         [0, 50, 0]
+      orient:      [1, 0, 0, 0]
+      vel:         [0, 0, 0]
+      omega_body:  [0, 0, 0]
+      rotor_omega: hover
+
+# The collective script: hold trim, step up 10%, step down to 90% of trim.
+# Both vehicles fly the same commands, so their trajectories differ only by
+# the turbulence their own seeds draw.
+inputs:
+  - {tick:   0, rotor_commands: {vehicle: 0, omega: [495.14267, 495.14267, 495.14267, 495.14267]}}
+  - {tick:   0, rotor_commands: {vehicle: 1, omega: [495.14267, 495.14267, 495.14267, 495.14267]}}
+  - {tick: 300, rotor_commands: {vehicle: 0, omega: [544.656921, 544.656921, 544.656921, 544.656921]}}
+  - {tick: 300, rotor_commands: {vehicle: 1, omega: [544.656921, 544.656921, 544.656921, 544.656921]}}
+  - {tick: 600, rotor_commands: {vehicle: 0, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
+  - {tick: 600, rotor_commands: {vehicle: 1, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
+
+expected_digest: "0xf11be12c1c16b612"

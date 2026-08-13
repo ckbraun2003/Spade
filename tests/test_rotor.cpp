@@ -11,6 +11,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/fp32_math.hpp"
 #include "core/time.hpp"
 #include "physics/integrator.hpp"
 #include "state/arenas.hpp"
@@ -747,19 +748,50 @@ TEST(RotorElement, LagAlphaMatchesTheExactCoefficientAcrossTheSeriesThreshold) {
     // that claim CHECKED rather than asserted (task review round 1, 2026-08-09).
     //
     // This file switches at 0.25; world/medium.cpp's IDENTICAL series switches
-    // at 0.125. Both lie below the x = 0.314 crossover at which the truncated
-    // series stops being the more accurate branch, so at BOTH points BOTH
-    // branches land within a whisker of the double reference -- which is
-    // exactly what "either threshold would have been correct" means. If a
-    // future change pushed either threshold past the crossover, the
-    // closed-form column below is the one that would start to win, and this is
-    // where that shows up instead of in a golden digest.
-    EXPECT_LT(spade::vehicles::kRotorLagSeriesThreshold, 0.314f)
-        << "the series must still be the better branch where this file hands over";
+    // at 0.125. Both lie below the crossover at which the truncated series
+    // stops being the more accurate branch, so at BOTH points BOTH branches
+    // land within a whisker of the double reference -- which is exactly what
+    // "either threshold would have been correct" means. If a future change
+    // pushed either threshold past the crossover, the closed-form column below
+    // is the one that would start to win, and this is where that shows up
+    // instead of in a golden digest.
+    //
+    // THE CROSSOVER WAS RE-DERIVED AT S5 TASK 1, when the closed-form branch
+    // stopped calling std::exp and started calling fp32_math's exp32, and then
+    // CORRECTED in that task's review round 1. The two steps point opposite
+    // ways, so both are recorded:
+    //
+    //   * THE ANALYTIC MODEL (rotor.cpp) compares the series' truncation
+    //     x^7/5040 against the exponential's absolute error E, giving
+    //     x* = (5040 E)^(1/7). With E over [0.5, 1.5] ulp that is a band
+    //     [0.2843, 0.3326] rather than the single 0.314 the std::exp-era
+    //     comment quoted.
+    //   * THAT MODEL IS OPTIMISTIC ABOUT THE SERIES. It omits the series' own
+    //     Horner rounding -- six multiply-adds' worth -- while charging the
+    //     closed form its full error. Measuring BOTH branches as the engine
+    //     spells them against a double -expm1 reference, the real crossover is
+    //     x = 0.260 on the mean and 0.275 on the worst case: BELOW the model
+    //     band's lower edge.
+    //
+    // THE GUARD THEREFORE ANCHORS ON THE MEASUREMENT, 0.260, not on the model.
+    // Anchoring at 0.2843 would have green-lit a future threshold of, say,
+    // 0.28 -- where the closed form is in fact the better branch, i.e. where
+    // this assertion's own stated meaning would be false.
+    //
+    // 0.25 < 0.260 still holds, so no constant moves. But the margin is 4%,
+    // not the 14% the model implied, and rotor.cpp's tabulation puts the
+    // advantage at 0.25 at 1.37x rather than 4x. This threshold is nearer
+    // optimal than anyone intended, which is worth knowing before it is nudged.
+    EXPECT_LT(spade::vehicles::kRotorLagSeriesThreshold, 0.260f)
+        << "the series must still be the MEASURED better branch where this file hands "
+           "over -- not merely the better branch under the truncation-only model";
     for (const double x : {0.125, 0.25}) {
         const double reference = lag_alpha_ref(x);
         const double from_impl = spade::vehicles::rotor_lag_alpha(static_cast<float>(x), 1.0f);
-        const double from_closed_form = 1.0f - std::exp(-static_cast<float>(x));
+        // The closed-form branch AS THIS ENGINE SPELLS IT -- exp32, not a
+        // libm. Comparing against std::exp here would check a branch the
+        // engine no longer has.
+        const double from_closed_form = 1.0f - spade::math::exp32(-static_cast<float>(x));
         EXPECT_LE(std::abs(from_impl - reference) / reference, 2e-6) << "series/impl at x = " << x;
         EXPECT_LE(std::abs(from_closed_form - reference) / reference, 2e-6) << "closed form at x = " << x;
     }

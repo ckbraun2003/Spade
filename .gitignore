@@ -7,6 +7,12 @@ lib/
 CMakeCache.txt
 CMakeFiles/
 *.cmake
+# Exception (S5 T9 ticket B): a genuine, committed CMake HELPER SCRIPT, not a
+# build-tree-generated artifact -- *.cmake above exists for the latter
+# (CMake's own generated Find*.cmake/config files live under build-ninja/,
+# already excluded by build/ above; this blanket pattern is broader than it
+# needs to be, but narrowing it further is out of this ticket's scope).
+!tests/AppendSpadeLabels.cmake
 Makefile
 
 # IDEs

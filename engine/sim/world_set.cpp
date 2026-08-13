@@ -1,26 +1,24 @@
 #include "sim/world_set.hpp"
 
 #include <algorithm>
-#include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <limits>
+#include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "core/rng.hpp"
+#include "core/validate.hpp"
 #include "sensors/rings.hpp"
+#include "state/snapshot.hpp"
 
 namespace spade {
 namespace {
 
 [[nodiscard]] Error invalid(std::string context) {
     return Error{Code::invalid_argument, std::move(context)};
-}
-
-[[nodiscard]] bool finite(float v) noexcept { return std::isfinite(v); }
-
-[[nodiscard]] bool finite(const glm::vec3& v) noexcept {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
 // "v is in [lo, hi]", spelled so a NaN FAILS rather than comparing false on
@@ -109,6 +107,85 @@ template <class T>
     return std::memcmp(&a, &b, sizeof(T)) == 0;
 }
 
+// ---------------------------------------------------------------------------
+// config_hash's fold primitives.
+//
+// THE MIXING FUNCTION IS state/snapshot.hpp's fnv1a64(), reused rather than
+// re-derived -- the same primitive the snapshot schema hash and the replay
+// digest (engine/testing/replay.hpp) fold with, seeded so a fold chains. There
+// is deliberately no third FNV implementation in this tree; core/rng.hpp's
+// fnv1a64(string_view) is the same construction over the same constants but
+// takes no seed, so it cannot chain and is not what this needs.
+// ---------------------------------------------------------------------------
+
+// Folds an object's byte representation. Only ever instantiated for scalars and
+// for the parameter records whose "no implicit padding" asserts appear below.
+template <class T>
+[[nodiscard]] uint64_t fold_value(uint64_t seed, const T& value) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>, "config_hash folds byte representations");
+    std::byte bytes[sizeof(T)];
+    std::memcpy(bytes, &value, sizeof(T));
+    return fnv1a64(std::span<const std::byte>(bytes, sizeof(T)), seed);
+}
+
+[[nodiscard]] uint64_t fold_bytes(uint64_t seed, std::span<const std::byte> bytes) noexcept {
+    return fnv1a64(bytes, seed);
+}
+
+// A length-prefixed run of trivially-copyable elements: the count first, then
+// the raw bytes. The prefix is what makes the boundary between one run and
+// whatever follows it unambiguous (see the fold-order contract in the header).
+template <class T>
+[[nodiscard]] uint64_t fold_run(uint64_t seed, const std::vector<T>& items) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>, "config_hash folds byte representations");
+    seed = fold_value(seed, static_cast<uint64_t>(items.size()));
+    if (items.empty()) return seed;
+    return fold_bytes(seed, std::as_bytes(std::span<const T>(items.data(), items.size())));
+}
+
+// ---------------------------------------------------------------------------
+// THE PRECONDITION OF EVERY RAW-BYTE FOLD ABOVE, re-asserted at the point of
+// use rather than trusted from a distance: each of these five records has NO
+// IMPLICIT PADDING -- every byte of it belongs to a named field, so its byte
+// image is a function of its field values alone.
+//
+// Each type carries this same assert in its own header (physics/contacts.hpp,
+// physics/grid.hpp, world/medium.hpp) or is asserted here for the first time
+// (world/sdf.hpp pins SdfNode's and SdfTransform's SIZE but has never pinned
+// the named-byte sum). Restating them here means that a future field added to
+// any of the five breaks THIS file's build, at the fold that depends on the
+// property, instead of silently folding indeterminate bytes into a hash whose
+// whole job is to be reproducible.
+//
+// SdfNode::_pad and SdfTransform::_pad are EXPLICIT lanes with zero
+// initializers, not compiler padding -- every construction site in the tree
+// value-initializes the aggregate (world/builder.cpp's `SdfNode node{}` /
+// `SdfTransform t{}`), so those bytes are deterministically zero and folding
+// them is a fold of a known constant, not of garbage.
+// ---------------------------------------------------------------------------
+static_assert(sizeof(SdfNode::kind) + sizeof(SdfNode::op) + sizeof(SdfNode::transform) +
+                      sizeof(SdfNode::_pad) + sizeof(SdfNode::params) ==
+                  sizeof(SdfNode),
+              "SdfNode has implicit padding: config_hash cannot fold its bytes");
+static_assert(sizeof(SdfTransform::world_to_local) + sizeof(SdfTransform::scale) +
+                      sizeof(SdfTransform::_pad) ==
+                  sizeof(SdfTransform),
+              "SdfTransform has implicit padding: config_hash cannot fold its bytes");
+static_assert(std::is_trivially_copyable_v<SdfNode> && std::is_trivially_copyable_v<SdfTransform>,
+              "config_hash folds SDF program bytes");
+static_assert(8 * sizeof(float) == sizeof(DrydenParams),
+              "DrydenParams has implicit padding: config_hash cannot fold its bytes");
+static_assert(sizeof(physics::ContactParams::restitution_e) + sizeof(physics::ContactParams::friction_mu) +
+                      sizeof(physics::ContactParams::baumgarte_beta) + sizeof(physics::ContactParams::slop) +
+                      sizeof(physics::ContactParams::proxy_radius) + sizeof(physics::ContactParams::_r0) +
+                      sizeof(physics::ContactParams::_r1) + sizeof(physics::ContactParams::_r2) ==
+                  sizeof(physics::ContactParams),
+              "ContactParams has implicit padding: config_hash cannot fold its bytes");
+static_assert(sizeof(physics::GridParams::cell_size) + sizeof(physics::GridParams::_r0) +
+                      sizeof(physics::GridParams::_r1) + sizeof(physics::GridParams::_r2) ==
+                  sizeof(physics::GridParams),
+              "GridParams has implicit padding: config_hash cannot fold its bytes");
+
 }  // namespace
 
 WorldSetDesc replicate(const WorldInstanceDesc& prototype, uint32_t count, uint64_t scene_seed) {
@@ -120,6 +197,20 @@ WorldSetDesc replicate(const WorldInstanceDesc& prototype, uint32_t count, uint6
         set.worlds.push_back(std::move(instance));
     }
     return set;
+}
+
+Result<WorldSetDesc> world_set_from(const WorldRef& ref, uint32_t count, uint64_t scene_seed,
+                                    const WorldInstanceDesc& instance_prototype) {
+    if (count == 0) {
+        return std::unexpected(invalid("world_set_from: count must be > 0"));
+    }
+    const Result<WorldDesc> world = resolve_world(ref);
+    if (!world) {
+        return std::unexpected(world.error());
+    }
+    WorldInstanceDesc prototype = instance_prototype;
+    prototype.world = *world;
+    return replicate(prototype, count, scene_seed);
 }
 
 Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
@@ -212,6 +303,146 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
     }
 
     return layout;
+}
+
+// FIELD-SET GUARD (S5 final-review fix wave, I6). config_hash's fold above
+// and world_set.hpp's "WHAT IT DELIBERATELY DOES NOT COVER" list are together
+// meant to account for EVERY field WorldDesc carries -- but nothing enforced
+// that until now, which is exactly how visual_refs (T5) went undocumented in
+// both places. sizeof(WorldDesc) changes whenever a field is added, removed,
+// or changes type, so pinning it here forces the next such change to touch
+// this line -- and, per the message, to answer the actual question: does the
+// new field belong in the fold, or in the header's exclusion list, and why.
+//
+// TWO MEASURED LITERALS, NOT ONE, DISCOVERED THE HARD WAY: a first attempt at
+// this guard used a single literal (184) and passed msvc-ninja-release but
+// FAILED msvc-ninja-debug with an actual size of 224. The 40-byte gap is
+// MSVC's debug C++ runtime (/MDd, this program's msvc-ninja-debug preset):
+// it gives every std::string/std::vector an extra _Container_proxy pointer
+// for iterator debugging, 8 bytes per container, and WorldDesc holds exactly
+// five (name, sdf.nodes, sdf.transforms, spawns, visual_refs) -- 5 * 8 = 40,
+// 184 + 40 = 224, which is what msvc-ninja-debug measured. This is the SAME
+// compiler and target, not a cross-platform difference, so it is guarded on
+// the macro that actually causes it (_ITERATOR_DEBUG_LEVEL, MSVC STL's own
+// name for the setting) rather than on _DEBUG or NDEBUG, which would guard
+// on the usual correlate instead of the cause.
+//
+// THE CROSS-PLATFORM QUESTION THIS DOES NOT ANSWER, FLAGGED RATHER THAN
+// ASSUMED: this program's CI never builds Debug at all
+// (.github/workflows/spade.yml pins -DCMAKE_BUILD_TYPE=Release on both the
+// Windows and Linux/gcc-13 jobs), so only the 184-byte, non-debug-iterator
+// shape ever needs to agree across the two CI platforms -- and libstdc++'s
+// std::string/std::vector are also 32 and 24 bytes on a 64-bit target with
+// no debug-iterator inflation of their own unless a build explicitly defines
+// _GLIBCXX_DEBUG, which this program's CI does not, so 184 is EXPECTED to
+// hold on gcc-13 Release too. That expectation is NOT verified locally --
+// this box has no gcc-13 toolchain -- and is flagged in this task's report
+// as the one build this literal has not been cross-checked on; if the
+// gcc-13 CI job's build ever disagrees, the fix is a third guarded branch
+// here, not a loosening of the assert.
+#if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
+static_assert(sizeof(WorldDesc) == 224,
+              "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
+              "classify the new/changed field into config_hash's fold above, or into "
+              "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
+              "with its own reason, then update this literal (and the non-debug-iterator one "
+              "below) to the new sizeof(WorldDesc)");
+#else
+static_assert(sizeof(WorldDesc) == 184,
+              "WorldDesc's field set changed -- classify the new/changed field into "
+              "config_hash's fold above, or into world_set.hpp's documented "
+              "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "
+              "then update this literal (and the debug-iterator one above) to the new "
+              "sizeof(WorldDesc)");
+#endif
+
+// ---------------------------------------------------------------------------
+// config_hash -- the fold order pinned in the header, executed.
+//
+// TAKES A DESC, NOT A VALIDATED LAYOUT, and derives the four capacity maxima
+// itself. Two reasons, both deliberate: it can then be called before (or
+// without) validate_world_set(), and there is no WorldSetLayout object it could
+// fall out of step with. The maxima are strictly redundant -- they are a pure
+// function of the per-world capacities folded below -- and are folded anyway,
+// as a prefix, because they are the SHAPE the arenas are allocated to and a
+// reader comparing two hashes by hand wants the shape stated before the
+// contents. Note the fourth: WorldSetLayout carries no contacts maximum
+// (contacts are not an arena array in v1), so this is the one capacity the
+// layout does not derive and this function does.
+//
+// NOT noexcept BY ACCIDENT: it allocates nothing, throws nothing, and reads
+// only the desc.
+// ---------------------------------------------------------------------------
+uint64_t config_hash(const WorldSetDesc& desc) noexcept {
+    uint64_t seed = kFnv1a64Offset;
+
+    seed = fold_value(seed, static_cast<uint64_t>(desc.worlds.size()));
+
+    uint32_t max_bodies = 0;
+    uint32_t max_elements = 0;
+    uint32_t max_sensors = 0;
+    uint32_t max_contacts = 0;
+    for (const WorldInstanceDesc& instance : desc.worlds) {
+        const Capacities& caps = instance.world.capacities;
+        max_bodies = std::max(max_bodies, caps.bodies);
+        max_elements = std::max(max_elements, caps.force_elements);
+        max_sensors = std::max(max_sensors, caps.sensors);
+        max_contacts = std::max(max_contacts, caps.contacts);
+    }
+    seed = fold_value(seed, max_bodies);
+    seed = fold_value(seed, max_elements);
+    seed = fold_value(seed, max_sensors);
+    seed = fold_value(seed, max_contacts);
+
+    // WORLDS IN INDEX ORDER. World index is world identity everywhere
+    // downstream (see WorldSetDesc), so two sets holding the same worlds in a
+    // different order are different sets and must hash differently -- which an
+    // ordered fold gives for free and an order-insensitive one (a sum, an xor)
+    // would destroy.
+    for (const WorldInstanceDesc& instance : desc.worlds) {
+        const WorldDesc& world = instance.world;
+
+        seed = fold_value(seed, static_cast<uint64_t>(world.name.size()));
+        if (!world.name.empty()) {
+            seed = fold_bytes(seed, std::as_bytes(std::span<const char>(world.name.data(), world.name.size())));
+        }
+
+        seed = fold_run(seed, world.sdf.nodes);
+        seed = fold_run(seed, world.sdf.transforms);
+
+        // FIELD-WISE, in Environment's declaration order. Environment is an
+        // AUTHORING struct (world/builder.hpp), not a std430 record: it carries
+        // no layout battery, so nothing pins the absence of implicit padding in
+        // it the way the five records asserted above pin theirs, and a
+        // byte-wise fold would be resting on an unstated assumption. The fold
+        // names the fields instead. Same for Capacities below.
+        const Environment& env = world.environment;
+        seed = fold_value(seed, env.gravity.x);
+        seed = fold_value(seed, env.gravity.y);
+        seed = fold_value(seed, env.gravity.z);
+        seed = fold_value(seed, env.wind.x);
+        seed = fold_value(seed, env.wind.y);
+        seed = fold_value(seed, env.wind.z);
+        seed = fold_value(seed, env.air_density);
+        seed = fold_value(seed, env.temperature_k);
+        seed = fold_value(seed, env.seed);
+
+        const Capacities& caps = world.capacities;
+        seed = fold_value(seed, caps.bodies);
+        seed = fold_value(seed, caps.force_elements);
+        seed = fold_value(seed, caps.sensors);
+        seed = fold_value(seed, caps.contacts);
+
+        // The INSTANCE seed -- the world's actual rng root (WorldParams::seed),
+        // not env.seed's authoring default.
+        seed = fold_value(seed, instance.seed);
+
+        seed = fold_value(seed, instance.turbulence);
+        seed = fold_value(seed, instance.contacts);
+        seed = fold_value(seed, instance.grid);
+    }
+
+    return seed;
 }
 
 }  // namespace spade

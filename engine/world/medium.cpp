@@ -1,6 +1,8 @@
 #include "world/medium.hpp"
 
-#include <cmath>
+#include <cmath>  // std::sqrt (IEEE-mandated) and std::isfinite; no transcendental left
+
+#include "core/fp32_math.hpp"
 
 namespace spade {
 
@@ -22,9 +24,16 @@ MediumSample ConstantMedium::sample(const WorldParams& params, glm::vec3 /*pos*/
 // PARITY. Everything below is fp32, and the op order is the CPU<->GPU parity
 // contract in the same sense integrator.cpp's is (P1/P2, D11). The Slang
 // mirror must perform the same operations, in the same order, with the same
-// groupings and the same series thresholds. fp32 exp/sqrt are not bit-identical
-// across implementations (core/rng.hpp says the same about its gaussians), so
-// parity here is a tolerance claim; DRAW COUNTS and op order are exact.
+// groupings and the same series thresholds.
+//
+// AND, SINCE S5 TASK 1, PARITY HERE IS AN EXACT CLAIM RATHER THAN A TOLERANCE
+// ONE. The exponential below is core/fp32_math.hpp's exp32, built from
+// IEEE-mandated operations only, and std::sqrt is correctly rounded by
+// mandate -- so every operation in this file is one the standard pins, and
+// two conforming implementations must agree on all of them bit for bit. The
+// Slang mirror inherits that the moment it mirrors exp32 rather than calling
+// HLSL's own exp() intrinsic, which is specified to a relative tolerance and
+// would put this file straight back where it started.
 // ===========================================================================
 
 namespace {
@@ -45,9 +54,23 @@ namespace {
 // ---------------------------------------------------------------------------
 
 // 1 - exp(-x), for x >= 0. Cancels for small x (the answer is x, the operands
-// are both ~1). Series 6 terms; at the 0.125 threshold the truncation is
-// x^7/5040 ~ 1e-10 absolute against a value of 0.117, i.e. ~1e-9 relative,
-// while the closed form there is already down to ~5e-7 relative.
+// are both ~1). Series 6 terms.
+//
+// AT THE 0.125 THRESHOLD, with BOTH branches measured as this file spells them
+// against a double -expm1 reference: series 6.7e-8 relative worst case, closed
+// form 2.9e-7, so the series is 4.3x better (6.0x on the mean). That is the
+// like-for-like comparison; an earlier revision of this note quoted the
+// series' TRUNCATION (8e-10) against the closed form's TOTAL error, which
+// overstated the margin by two orders of magnitude and was not a comparison of
+// two comparable things.
+//
+// The measured crossover -- where that advantage reaches 1 -- is x = 0.260 on
+// the mean and 0.275 on the worst case, so 0.125 sits comfortably clear of it.
+//
+// vehicles/rotor.cpp's note on its own copy of this kernel carries the full
+// error model, the reason the model overstates the series' case, and the
+// measurement that supersedes it. It also explains why THIS file's threshold is
+// 0.125 while that one's is 0.25, and why neither should be "fixed" to match.
 float one_minus_exp_neg(float x) noexcept {
     if (x < 0.125f) {
         // x - x^2/2 + x^3/6 - x^4/24 + x^5/120 - x^6/720
@@ -56,7 +79,7 @@ float one_minus_exp_neg(float x) noexcept {
                          x * (1.0f / 6.0f -
                               x * (1.0f / 24.0f - x * (1.0f / 120.0f - x * (1.0f / 720.0f))))));
     }
-    return 1.0f - std::exp(-x);
+    return 1.0f - math::exp32(-x);
 }
 
 // Q00(t) = 1 - exp(-2t) (1 + 2t + 2t^2). Leading term (4/3) t^3: the
@@ -73,7 +96,7 @@ float dryden_q00(float t) noexcept {
                           t * (8.0f / 9.0f -
                                t * (8.0f / 21.0f - t * (2.0f / 15.0f - t * (16.0f / 405.0f)))))));
     }
-    const float e2 = std::exp(-2.0f * t);
+    const float e2 = math::exp32(-2.0f * t);
     return 1.0f - e2 * (1.0f + 2.0f * t + 2.0f * t * t);
 }
 
@@ -93,7 +116,7 @@ float dryden_q11(float t) noexcept {
                                         t * (88.0f / 45.0f -
                                              t * (232.0f / 315.0f - t * (74.0f / 315.0f))))))));
     }
-    const float e2 = std::exp(-2.0f * t);
+    const float e2 = math::exp32(-2.0f * t);
     return 1.0f - e2 * (1.0f - 2.0f * t + 2.0f * t * t);
 }
 
@@ -192,7 +215,7 @@ DrydenFirstOrderCoeffs dryden_first_order_coeffs(float theta_in) noexcept {
     const float theta = clamped_theta(theta_in);
 
     DrydenFirstOrderCoeffs c;
-    c.phi = std::exp(-theta);
+    c.phi = math::exp32(-theta);
     // 1 - phi^2 = 1 - exp(-2 theta), evaluated WITHOUT forming phi*phi: the
     // subtraction 1 - phi^2 loses ~log10(1/(2 theta)) digits, and this is the
     // scalar channel's entire variance normalization.
@@ -202,7 +225,7 @@ DrydenFirstOrderCoeffs dryden_first_order_coeffs(float theta_in) noexcept {
 
 DrydenSecondOrderCoeffs dryden_second_order_coeffs(float theta_in) noexcept {
     const float theta = clamped_theta(theta_in);
-    const float e = std::exp(-theta);
+    const float e = math::exp32(-theta);
 
     DrydenSecondOrderCoeffs c;
     // Phi = exp(-theta) [[1 + theta, theta], [-theta, 1 - theta]] -- exact,

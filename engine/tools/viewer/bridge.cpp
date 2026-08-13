@@ -18,6 +18,26 @@
 // the rest of the tool (main.cpp, scenes.cpp) sees.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// <windows.h> FIRST, DELIBERATELY -- AHEAD OF EVERYTHING ELSE IN THIS FILE,
+// INCLUDING bridge.hpp (S5 T9 /WX ticket). v1's Spade/Core/Engine.hpp
+// (spade/include/**, FROZEN -- not editable) includes <glad/glad.h> BEFORE
+// its own <windows.h>, and minwindef.h's APIENTRY definition then collides
+// with glad.h's own -- warning C4005 "macro redefinition", fatal under /WX
+// (engine/CMakeLists.txt's spade_viewer target comment has the fuller
+// history). The fix does not require touching the frozen v1 header: glad.h
+// guards its own definition (`#if defined(_WIN32) && !defined(APIENTRY) &&
+// ...`), so if <windows.h> has ALREADY defined APIENTRY (via minwindef.h) by
+// the time glad.h runs -- which is what including it here, before anything
+// that reaches glad.h transitively, guarantees -- glad.h's guard skips its
+// own definition and there is nothing left to collide.
+//
+// OUTCOME: this alone WAS sufficient. bridge.cpp now compiles clean under
+// the target's full /W4 /WX, and engine/CMakeLists.txt's spade_viewer block
+// no longer carries a source-level /WX- override for this file at all (S5
+// T9's report has the literal before/after build output).
+#include <windows.h>
+
 #include "bridge.hpp"
 
 #include <cmath>
@@ -411,8 +431,8 @@ Viewer::Impl::Impl(Scene s) : scene(std::move(s)) {
 
     // --- v1: mesh entities ---------------------------------------------------
     // ALL THREE MeshComponent insertions happen before ANY pointer into that
-    // pool is read. ComponentPool<T>::m_Data (ecs/pool.hpp) is a plain
-    // std::vector<T>; a later AddComponent<MeshComponent>() can reallocate it
+    // pool is read. ComponentPool<T>::m_Data (v1, Spade/Core/Objects.hpp) is a
+    // plain std::vector<T>; a later AddComponent<MeshComponent>() can reallocate it
     // and invalidate a pointer obtained from an earlier one -- there are
     // three MeshComponent-bearing entities (static boxes, static spheres,
     // dynamic bodies), all added here, none ever added again afterward, so

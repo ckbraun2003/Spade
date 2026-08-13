@@ -577,4 +577,34 @@ Result<void> restore(ArenaSet& arenas, const SnapshotBlob& blob) {
     return {};
 }
 
+// ---------------------------------------------------------------------------
+// find_section
+// ---------------------------------------------------------------------------
+
+Result<BlobSection> find_section(const SnapshotBlob& blob, std::string_view name) {
+    // THE WHOLE TABLE IS PARSED, not scanned to the first hit and abandoned.
+    // parse_sections() is what proves every declared length lies inside the
+    // buffer, and a section that happens to sit before a truncated one is not a
+    // section this function should hand out -- a caller reading it would be
+    // reading from a blob restore() is about to reject anyway.
+    Result<std::vector<Section>> sections = parse_sections(blob);
+    if (!sections) return std::unexpected(sections.error());
+
+    for (const Section& section : *sections) {
+        if (section.name != name) continue;
+        return BlobSection{
+            .elem_size = section.elem_size,
+            .world_count = section.world_count,
+            .capacity_per_world = section.capacity_per_world,
+            .payload = std::span<const std::byte>(section.payload, section.payload_bytes),
+        };
+    }
+    // FIRST match would be ambiguous if a blob could carry two sections of one
+    // name -- it cannot: a blob is written from a StateRegistry, which rejects
+    // duplicate names. A hand-crafted blob that carries two is rejected by
+    // restore()'s name-by-name match against the registry, so nothing that
+    // reaches a caller of this function can have been ambiguous.
+    return std::unexpected(Error{Code::not_found, "blob has no section named '" + std::string(name) + "'"});
+}
+
 }  // namespace spade

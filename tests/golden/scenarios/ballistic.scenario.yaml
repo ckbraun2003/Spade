@@ -1,0 +1,319 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements`),
+# and an UNKNOWN key is an ERROR at every level rather than a warning -- a
+# reader of this version must never silently drop a field a later version
+# added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: ballistic -- one body in an empty world (no SDF geometry at all),
+# under gravity, a quadratic drag element reading a moderate-turbulence Dryden
+# medium, and a scripted per-tick wrench. 200 steps of 5 ms at 5 substeps (1 ms
+# substep). The purest determinism case: no contact can clamp a divergence away,
+# so the Dryden stream, the drag law and the integrator are all naked here.
+#
+# THE 200-ENTRY INPUT SCRIPT below is the tabulated form of what the S1-S4
+# builder called scripted_force(tick, 0):
+#
+#     a = float((tick + i) % 7) - 3      force = (a * 0.05, 0, b * 0.05)
+#     b = float((tick * 3 + i) % 5) - 2
+#
+# -- deliberately transcendental-free and deliberately independent of the WORLD
+# index, so that a batching-invariance comparison cannot be confounded by the
+# script. Written out rather than expressed, because a data format that carried
+# a formula would be a language.
+#
+# PROVENANCE OF `expected_digest`
+#   Value carried VERBATIM from tests/golden/ballistic.digest -- CONTAINER
+#   CHANGE ONLY. S5 Task 7 retires the .digest files into this field; the number
+#   below is byte-for-byte the one that file held, NOT a regeneration, and the
+#   bridging test in tests/test_determinism.cpp
+#   (GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus) is the
+#   committed proof that the data scenario and the builder lambda it replaced
+#   produce the same digest.
+#
+#   The narrative that file carried, preserved:
+#
+#   * REGENERATED 2026-08-11 -- the platform-libm parity fix (PR #5). Until then
+#     these were not digests of THE ENGINE but of the engine PLUS whichever C
+#     runtime's libm generated them: rng::Stream::next_gauss() built its
+#     Box-Muller pair with std::log/cos/sin, for which IEEE mandates nothing, and
+#     MSVC's CRT and glibc disagree by one ulp on roughly one argument in a
+#     hundred. core/fp32_math.hpp's log32/sin32/cos32 -- built exclusively from
+#     IEEE-mandated operations, exhaustively verified to <=1 ulp -- replaced them.
+#     That moved every digest in the corpus (same quality, different bits), which
+#     is the expected consequence of removing a platform dependency, not a
+#     physics change. The resulting value is verified green on spade-windows
+#     (MSVC 19.44) and spade-linux (gcc-13) in the same CI run: the property this
+#     corpus was always meant to have and, until that commit, never had.
+#       previous digest 0x9cc4be8c415e0d68 (Task 18, 2026-08-10) -- an MSVC value
+#
+#   * REGENERATED 2026-08-11 -- S5 Task 3: replay_config joins the walk (M-1).
+#     state_digest() folds EVERY registered array, so registering a new one moves
+#     every digest by construction. replay_config is registered LAST, so the new
+#     digest is the OLD digest with its two trailing walk entries folded on top --
+#     CHECKED, not assumed, by a temporary test that seeded the fold with each
+#     scenario's previous value and folded only the suffix:
+#       ballistic: old=0xc1ee6cfa86946e99 old+suffix=0x234f74d4c3c53563 actual=0x234f74d4c3c53563 match=YES
+#     The "registered last" premise is pinned by ReplayConfig.OccupiesItsPinnedWalkPosition.
+#       previous digest 0xc1ee6cfa86946e99 (S1-S4 close-out, 2026-08-11)
+#
+#   generated  2026-08-11 (Task 3 regeneration; first generated at Task 16)
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#   cross-check gcc-13 Release -ffp-contract=off (spade-linux CI) produces this
+#              same value; msvc-ninja-release AND msvc-ninja-debug agree
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "ballistic"
+world: "../worlds/ballistic.world.yaml"
+
+# One world: no geometry, moderate turbulence, contacts configured but
+# unreachable (nothing to hit).
+instances:
+  - seed: 0xB0117571C0FFEE
+    contacts: {restitution_e: 0, friction_mu: 0, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.5}
+    turbulence: moderate
+
+step: {dt_ns: 5000000, substeps: 5, steps: 200}
+
+# One body, plus the quadratic drag element that makes it read the medium.
+spawns:
+  - world: 0
+    body:
+      pos:              [0, 100, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [3, 0, -2]
+      omega_body:       [0.300000012, -0.100000001, 0.200000003]
+      mass:             0.899999976
+      inv_inertia_diag: [120, 90, 110]
+      drag_elements:
+        - {mode: quadratic, area: 0.0500000007, coeffs: [1.10000002, 0, 0], local_pos: [0, 0.0199999996, 0], local_orient: [1, 0, 0, 0]}
+
+# scripted_force(tick, 0), tabulated. See the header.
+inputs:
+  - {tick:   0, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:   1, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:   2, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:   3, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:   4, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:   5, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:   6, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:   7, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:   8, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:   9, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  10, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  11, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  12, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  13, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  14, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  15, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  16, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  17, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  18, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  19, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  20, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  21, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  22, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  23, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  24, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  25, wrench: {body: 0, force: [0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  26, wrench: {body: 0, force: [0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  27, wrench: {body: 0, force: [0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  28, wrench: {body: 0, force: [-0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  29, wrench: {body: 0, force: [-0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  30, wrench: {body: 0, force: [-0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  31, wrench: {body: 0, force: [0, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  32, wrench: {body: 0, force: [0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  33, wrench: {body: 0, force: [0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  34, wrench: {body: 0, force: [0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  35, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  36, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  37, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  38, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  39, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  40, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  41, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  42, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  43, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  44, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  45, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  46, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  47, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  48, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  49, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  50, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  51, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  52, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  53, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  54, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  55, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  56, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  57, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  58, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  59, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  60, wrench: {body: 0, force: [0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  61, wrench: {body: 0, force: [0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  62, wrench: {body: 0, force: [0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  63, wrench: {body: 0, force: [-0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  64, wrench: {body: 0, force: [-0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  65, wrench: {body: 0, force: [-0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  66, wrench: {body: 0, force: [0, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  67, wrench: {body: 0, force: [0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  68, wrench: {body: 0, force: [0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  69, wrench: {body: 0, force: [0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  70, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  71, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  72, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  73, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  74, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  75, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  76, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  77, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  78, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  79, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  80, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  81, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  82, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  83, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  84, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  85, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  86, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  87, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  88, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  89, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  90, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  91, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  92, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  93, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  94, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+  - {tick:  95, wrench: {body: 0, force: [0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick:  96, wrench: {body: 0, force: [0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  97, wrench: {body: 0, force: [0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick:  98, wrench: {body: 0, force: [-0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick:  99, wrench: {body: 0, force: [-0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 100, wrench: {body: 0, force: [-0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 101, wrench: {body: 0, force: [0, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 102, wrench: {body: 0, force: [0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 103, wrench: {body: 0, force: [0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 104, wrench: {body: 0, force: [0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 105, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 106, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 107, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 108, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 109, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 110, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 111, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 112, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 113, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 114, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 115, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 116, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 117, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 118, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 119, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 120, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 121, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 122, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 123, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 124, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 125, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 126, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 127, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 128, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 129, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 130, wrench: {body: 0, force: [0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 131, wrench: {body: 0, force: [0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 132, wrench: {body: 0, force: [0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 133, wrench: {body: 0, force: [-0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 134, wrench: {body: 0, force: [-0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 135, wrench: {body: 0, force: [-0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 136, wrench: {body: 0, force: [0, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 137, wrench: {body: 0, force: [0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 138, wrench: {body: 0, force: [0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 139, wrench: {body: 0, force: [0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 140, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 141, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 142, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 143, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 144, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 145, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 146, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 147, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 148, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 149, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 150, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 151, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 152, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 153, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 154, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 155, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 156, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 157, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 158, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 159, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 160, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 161, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 162, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 163, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 164, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 165, wrench: {body: 0, force: [0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 166, wrench: {body: 0, force: [0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 167, wrench: {body: 0, force: [0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 168, wrench: {body: 0, force: [-0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 169, wrench: {body: 0, force: [-0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 170, wrench: {body: 0, force: [-0.0500000007, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 171, wrench: {body: 0, force: [0, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 172, wrench: {body: 0, force: [0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 173, wrench: {body: 0, force: [0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 174, wrench: {body: 0, force: [0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 175, wrench: {body: 0, force: [-0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 176, wrench: {body: 0, force: [-0.100000001, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 177, wrench: {body: 0, force: [-0.0500000007, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 178, wrench: {body: 0, force: [0, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 179, wrench: {body: 0, force: [0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 180, wrench: {body: 0, force: [0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 181, wrench: {body: 0, force: [0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 182, wrench: {body: 0, force: [-0.150000006, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 183, wrench: {body: 0, force: [-0.100000001, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 184, wrench: {body: 0, force: [-0.0500000007, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 185, wrench: {body: 0, force: [0, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 186, wrench: {body: 0, force: [0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 187, wrench: {body: 0, force: [0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 188, wrench: {body: 0, force: [0.150000006, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 189, wrench: {body: 0, force: [-0.150000006, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 190, wrench: {body: 0, force: [-0.100000001, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 191, wrench: {body: 0, force: [-0.0500000007, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 192, wrench: {body: 0, force: [0, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 193, wrench: {body: 0, force: [0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 194, wrench: {body: 0, force: [0.100000001, 0, 0], torque: [0, 0, 0]}}
+  - {tick: 195, wrench: {body: 0, force: [0.150000006, 0, -0.100000001], torque: [0, 0, 0]}}
+  - {tick: 196, wrench: {body: 0, force: [-0.150000006, 0, 0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 197, wrench: {body: 0, force: [-0.100000001, 0, -0.0500000007], torque: [0, 0, 0]}}
+  - {tick: 198, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
+  - {tick: 199, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
+
+expected_digest: "0x234f74d4c3c53563"

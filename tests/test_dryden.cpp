@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -428,6 +429,141 @@ TEST(DrydenCoefficients, StationaryCovarianceIsPreservedByOneStep) {
         EXPECT_NEAR(m00, 1.0, 1e-5) << "theta=" << theta;
         EXPECT_NEAR(m11, 1.0, 1e-5) << "theta=" << theta;
         EXPECT_NEAR(m01, 0.0, 1e-5) << "theta=" << theta;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The ASSEMBLED fp32 recursion, closed on itself for 1e5 steps.
+//
+// THE T16 CARRY (deferred at Task 16 for want of a home; landed at S5 Task 1,
+// which is the change that made it worth having -- the coefficients below are
+// now built on fp32_math's exp32 rather than on the platform's libm, so this
+// test is what pins the CLOSED-LOOP behaviour of the new kernel).
+//
+// WHAT IT ADDS OVER StationaryCovarianceIsPreservedByOneStep ABOVE. That test
+// evaluates Phi Phi^T + L L^T ONCE, and it does the evaluation IN DOUBLE from
+// fp32 coefficients -- so it measures the coefficients, not the recursion. It
+// cannot see the thing a filter designer actually worries about: whether the
+// residual, whatever its size, ACCUMULATES when the map is iterated in fp32,
+// or whether the contraction absorbs it. Those are opposite outcomes and only
+// one of them is safe.
+//
+// The recursion is the covariance propagation the state update implies:
+//
+//     Sigma <- Phi Sigma Phi^T + L L^T,   Sigma_0 = I (the stationary value)
+//
+// carried in fp32, in the same operand order advance_pair() forms the state
+// update, with Sigma kept symmetric by construction (three numbers, not four).
+// ---------------------------------------------------------------------------
+TEST(DrydenCoefficients, TheAssembledFp32RecursionStaysAtItsStationaryValueOverAHundredThousandSteps) {
+    struct Drift {
+        double diag = 0.0;  // worst |Sigma_ii - 1|
+        double off = 0.0;   // worst |Sigma_01|
+        // Set at the FIRST iteration on which the recursion stopped being a
+        // covariance at all. Reported rather than asserted inside the loop:
+        // gtest's ASSERT_* returns from its enclosing function, which a lambda
+        // returning a value cannot do, and 1e5 EXPECT_* per step ratio would
+        // bury the one line that matters.
+        bool broke = false;
+        int broke_at = 0;
+    };
+
+    // 1e5 substeps: 100 s at a 1 kHz substep, i.e. 2500 correlation times at
+    // the faster of the two step ratios below. Long enough that an
+    // accumulating residual would have accumulated.
+    constexpr int kIterations = 100'000;
+
+    const auto iterate = [](double theta) {
+        const spade::DrydenSecondOrderCoeffs c =
+            spade::dryden_second_order_coeffs(static_cast<float>(theta));
+        float s00 = 1.0f, s01 = 0.0f, s11 = 1.0f;
+        Drift worst;
+        for (int i = 0; i < kIterations; ++i) {
+            // M = Phi Sigma, then Sigma' = M Phi^T + L L^T. Both halves formed
+            // from the OLD Sigma before either is written back, exactly as
+            // advance_pair() forms both new states from the old pair.
+            const float m00 = c.phi00 * s00 + c.phi01 * s01;
+            const float m01 = c.phi00 * s01 + c.phi01 * s11;
+            const float m10 = c.phi10 * s00 + c.phi11 * s01;
+            const float m11 = c.phi10 * s01 + c.phi11 * s11;
+            s00 = m00 * c.phi00 + m01 * c.phi01 + c.l00 * c.l00;
+            s01 = m00 * c.phi10 + m01 * c.phi11 + c.l00 * c.l10;
+            s11 = m10 * c.phi10 + m11 * c.phi11 + c.l10 * c.l10 + c.l11 * c.l11;
+
+            if (!worst.broke && !(std::isfinite(s00) && std::isfinite(s01) && std::isfinite(s11) &&
+                                  s00 > 0.0f && s11 > 0.0f)) {
+                worst.broke = true;
+                worst.broke_at = i;
+            }
+
+            worst.diag = std::max({worst.diag, std::abs(static_cast<double>(s00) - 1.0),
+                                   std::abs(static_cast<double>(s11) - 1.0)});
+            worst.off = std::max(worst.off, std::abs(static_cast<double>(s01)));
+        }
+        return worst;
+    };
+
+    // ---- the deferral's own two operating points, and its own band ---------
+    //
+    // theta = h/tau for a 1 kHz substep against a 20 ms and a 40 ms time
+    // constant. 1.4e-4 is the T16 reviewer's independently derived band; what
+    // the recursion actually does is three decades better, which is the
+    // interesting part -- the contraction does not merely fail to amplify the
+    // fp32 residual, it holds the state at the residual's own scale.
+    for (const double theta : {1e-3 / 20e-3, 1e-3 / 40e-3}) {
+        const Drift worst = iterate(theta);
+        EXPECT_FALSE(worst.broke) << "stopped being a covariance at iteration " << worst.broke_at
+                                  << ", theta=" << theta;
+        EXPECT_LT(worst.diag, 1.4e-4) << "diagonal drift at theta=" << theta;
+        EXPECT_LT(worst.off, 1.4e-4) << "off-diagonal drift at theta=" << theta;
+        std::printf("assembled fp32 recursion, theta=%.4g, %d steps: |diag-1| <= %.3e, |off| <= %.3e\n",
+                    theta, kIterations, worst.diag, worst.off);
+    }
+
+    // ---- and the whole sweep, under the band the mechanism predicts --------
+    //
+    // 1.4e-4 is NOT a universal constant, and a test that pinned only the two
+    // points above would leave a reader believing it is. THE MECHANISM, and
+    // therefore the shape of the real bound:
+    //
+    // The map is affine with linear part Sigma -> Phi Sigma Phi^T, whose
+    // spectral radius is exp(-2 theta). Its fp32 fixed point is displaced from
+    // I by the per-step residual of Phi Phi^T + L L^T - I divided by
+    // (1 - exp(-2 theta)) ~ 2 theta. The residual is a ROUNDING -- zero at
+    // some step ratios, an ulp or two at others -- so the displacement is
+    // ~u/(2 theta), i.e. it GROWS as the substep gets fine relative to the
+    // correlation time.
+    //
+    // That is worth stating plainly because the engine's own default
+    // configuration lives at the growing end: DrydenParams' defaults
+    // (L_u = 200 m, V = 5 m/s -> tau_u = 40 s) at a 1 kHz substep give
+    // theta = 2.5e-5, where this recursion drifts by 1.2e-3 -- an order of
+    // magnitude OUTSIDE the 1.4e-4 band asserted above, and entirely expected.
+    //
+    // It is a BIAS IN THE STATIONARY VARIANCE, not an instability: bounded at
+    // every theta, decaying with theta, and 1.2e-3 of a unit variance is 0.06%
+    // of a gust sigma -- far under the 10% the statistical tests below assert
+    // and immeasurably under the fidelity of a Dryden model in the first place.
+    // What would be alarming is unbounded growth, and the bound below is what
+    // rules that out.
+    // THE CONSTANT 4 WAS MEASURED, NOT CHOSEN. Review round 1 asked whether ~2
+    // would do -- tighter, hence more able to detect. Measuring every step ratio
+    // in the sweep says it would not: at theta = 3e-4 the observed drift is
+    // 4.2379e-4 against a 2u(1/theta + 1) band of 3.975e-4, so a factor of two
+    // fails on a CORRECT engine. At 4 the worst observed ratio of drift to band
+    // is 0.53 (same theta), i.e. this assertion still detects any drift above
+    // about 1.9x today's, which is the detection it exists for. Tighter than
+    // that turns it into a change-detector on the coefficients, and this file's
+    // own posture (see q00_reference_tolerance above) is that a tolerance states
+    // what can be CLAIMED, not what the implementation happens to hit.
+    constexpr double kUlp = 5.9604644775390625e-08;  // 2^-24
+    for (const double theta : kThetaSweep) {
+        const Drift worst = iterate(theta);
+        const double band = 4.0 * kUlp * (1.0 / theta + 1.0);
+        EXPECT_FALSE(worst.broke) << "stopped being a covariance at iteration " << worst.broke_at
+                                  << ", theta=" << theta;
+        EXPECT_LT(worst.diag, band) << "diagonal drift at theta=" << theta;
+        EXPECT_LT(worst.off, band) << "off-diagonal drift at theta=" << theta;
     }
 }
 

@@ -1,6 +1,6 @@
 #include "core/math_ops.hpp"
 
-#include <cmath>
+#include "core/fp32_math.hpp"
 
 namespace spade::math {
 
@@ -24,8 +24,23 @@ glm::quat integrate_orientation(glm::quat q, glm::vec3 omega_body, float dt) noe
         cos_half = 1.0f - 0.5f * half_angle_sq;
         sinc_half = 1.0f - half_angle_sq / 6.0f;
     } else {
-        cos_half = std::cos(half_angle);
-        sinc_half = std::sin(half_angle) / half_angle;
+        // cos32/sin32, NOT std::cos/std::sin: IEEE mandates correct rounding
+        // for neither, so a libm here would make every orientation in the
+        // engine a function of which C runtime built it (fp32_math.hpp's
+        // opening note is the whole argument, and the golden determinism
+        // corpus is where it was caught the first time).
+        //
+        // THE ACCURACY DOMAIN IS SATISFIED BY CONSTRUCTION HERE, which is the
+        // one thing a reader should check rather than assume. sin32/cos32 are
+        // <= 1 ulp for |x| <= kMaxAccurateAngle == 100 rad; this call site
+        // passes HALF the angle swept in ONE SUBSTEP. 100 rad of half-angle is
+        // 200 rad in a substep -- about 32 revolutions of the airframe in a
+        // single dt/substeps, four orders of magnitude past anything a
+        // physical vehicle or a stable integrator produces. Outside the domain
+        // the pair stays total and stays bit-portable (fp32_math.hpp), so even
+        // that absurd case degrades in accuracy only, never in determinism.
+        cos_half = cos32(half_angle);
+        sinc_half = sin32(half_angle) / half_angle;
     }
 
     const glm::quat delta{cos_half, sinc_half * half_dt_omega};

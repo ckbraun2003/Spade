@@ -19,9 +19,7 @@ namespace spade {
 //
 // `name` is the array's stable identity. It is what a snapshot blob stores;
 // nothing persistent may key on an array's position in the walk or on a
-// runtime-assigned id, for the same reason ecs/registry.hpp forbids
-// serializing a raw ComponentId -- those are per-process facts, names are
-// not.
+// runtime-assigned id -- both are per-process facts, names are not.
 //
 // `data` is deliberately a mutable pointer even though for_each_array hands
 // out a CONST RegisteredArray&: snapshot SAVE reads through it, snapshot
@@ -46,10 +44,9 @@ struct RegisteredArray {
 };
 
 // ---------------------------------------------------------------------------
-// The registered-arrays walker. NOT the ECS entity registry (ecs/registry.hpp
-// -- that one owns entity identity and components); this one owns the answer
-// to "what is all of the authoritative state?", which is the question a
-// snapshot has to get exactly right.
+// The registered-arrays walker: it owns the answer to "what is all of the
+// authoritative state?", which is the question a snapshot has to get exactly
+// right.
 //
 // THE "NO UNREGISTERED STATE" INVARIANT, stated precisely:
 //   * ArenaSet has exactly one way to obtain storage -- register_array() --

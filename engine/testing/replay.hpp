@@ -59,27 +59,42 @@
 // std430 state images whose float layout is already a host/ABI fact.
 //
 // ---------------------------------------------------------------------------
-// PER-WORLD DIGESTS, AND THE ONE NORMALIZATION THEY APPLY
+// PER-WORLD DIGESTS, AND THE TWO NORMALIZATIONS THEY APPLY
 //
 // world_digest(sim, w) folds only world w's partition of each array. It is what
 // makes BATCHING INVARIANCE checkable: "a world's trajectory does not depend on
 // what else is in the world set, or on where in the set it sits".
 //
-// That claim forces exactly one normalization, and it is worth being explicit
-// about rather than hiding. Every per-world array's contents are independent of
-// the world's INDEX -- WorldParams carries no index, BodyState carries none,
-// DragBodyRow::body_slot is world-local, DrydenState is seeded from the world's
-// own seed -- with one exception: the slot->world MAP stores the world id
-// itself, so world 2 of a four-world set stores 2 where the same world run
-// alone stores 0. That is a fact about the world's ADDRESS, not about its
-// state.
+// That claim forces exactly two normalizations, and both are worth being
+// explicit about rather than hiding. Every per-world array's contents are
+// independent of the world's INDEX -- WorldParams carries no index, BodyState
+// carries none, DragBodyRow::body_slot is world-local, DrydenState is seeded
+// from the world's own seed -- with two exceptions:
 //
-// So a per-world digest folds those arrays' LIVENESS rather than their values:
-// each entry contributes 1 if the slot is allocated and 0 if it is free. The
-// information that matters (which slots hold bodies) is preserved exactly; the
-// information that is purely positional is dropped. state_digest(), which
-// covers the whole set and has no such comparison to support, folds the raw
-// bytes.
+//   1. THE SLOT->WORLD MAPS store the world id itself, so world 2 of a
+//      four-world set stores 2 where the same world run alone stores 0. That is
+//      a fact about the world's ADDRESS, not about its state. A per-world
+//      digest therefore folds those arrays' LIVENESS rather than their values:
+//      each entry contributes 1 if the slot is allocated and 0 if it is free.
+//      The information that matters (which slots hold bodies) is preserved
+//      exactly; the information that is purely positional is dropped.
+//
+//   2. replay_config (sim/simulation.hpp, ticket M-1) is a WHOLE-SET identity
+//      stored once per world: its config_hash covers the entire WorldSetDesc --
+//      every world in it, and the world count. So the same world run alone and
+//      run inside a four-world set legitimately hold DIFFERENT bytes there,
+//      because they are in different sets, which is the one thing a batching-
+//      invariance comparison must not be sensitive to. It is SKIPPED entirely
+//      rather than normalized: unlike a slot->world map it carries no per-world
+//      information at all, so there is nothing left to fold once the set-wide
+//      part is removed. (Its slot->world map is NOT skipped -- the array is
+//      direct-indexed, so that map is uniformly "free" in every world of every
+//      set, and folds identically on both sides by construction.)
+//
+// state_digest(), which covers the whole set and has no such comparison to
+// support, applies NEITHER normalization and folds the raw bytes of everything
+// -- including replay_config, which is exactly how a golden digest comes to
+// pin the configuration a scenario ran under.
 //
 // ---------------------------------------------------------------------------
 // A SCENARIO is a world set builder plus a per-tick input script plus a step
@@ -149,6 +164,11 @@ template <class T>
     seed = detail::fold_value(seed, sim.tick().value);
     sim.arenas().registry().for_each_array([&seed, world](const RegisteredArray& array) {
         if (world >= array.world_count) return;
+        // Normalization 2: a whole-set identity is not this world's state. See
+        // the header note -- folding it would make every batching-invariance
+        // comparison in the suite fail for a reason that has nothing to do with
+        // the physics they exist to check.
+        if (array.name == kReplayConfigArray) return;
         seed = detail::fold_name(seed, array.name);
         seed = detail::fold_value(seed, array.elem_size);
         seed = detail::fold_value(seed, array.capacity_per_world);
@@ -178,9 +198,18 @@ template <class T>
 // ---------------------------------------------------------------------------
 // A scenario: a reproducible description of a run.
 //
-// `build` constructs the world set (no world file -- S5 owns that; a scenario
-// builds its worlds with WorldBuilder in code). `setup` runs once, after
-// create(), for the initial spawns. `input` runs once per step, BEFORE that
+// `build` constructs the world set -- from either of two producers,
+// depending on how the Scenario was made. A hand-built Scenario (this file's
+// own callers in tests/test_determinism.cpp and tests/test_m1b_bar.cpp)
+// builds its worlds with WorldBuilder in code, no world file involved. A
+// Scenario loaded from the golden corpus (testing/scenario_file.hpp's
+// load_scenario_file(), S5 Task 7) instead builds `build` as a closure over
+// worlds already resolved from a world file via load_world_file() -- the
+// corpus scenario names the world file, load_scenario_file() reads it once at
+// load time, and `build` just returns the result. Either way this struct only
+// ever sees the finished WorldSetDesc; it has no opinion on which producer
+// built it. `setup` runs once, after create(), for the initial spawns.
+// `input` runs once per step, BEFORE that
 // step, and is handed the tick that is about to be executed -- which is what
 // makes an input script REPLAYABLE from an arbitrary resume point: replaying
 // ticks [k, N) applies exactly the inputs the uninterrupted run applied there.

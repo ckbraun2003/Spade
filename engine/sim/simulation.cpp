@@ -3,12 +3,15 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
 
 #include <glm/geometric.hpp>
 
+#include "core/rng.hpp"
+#include "core/validate.hpp"
 #include "physics/integrator.hpp"
 #include "world/sdf.hpp"
 
@@ -27,19 +30,28 @@ namespace {
     return Error{Code::internal, std::move(context)};
 }
 
-[[nodiscard]] bool finite(float v) noexcept { return std::isfinite(v); }
-
-[[nodiscard]] bool finite(const glm::vec3& v) noexcept {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+// A 64-bit identity, for an error message. Hex because that is how config
+// hashes and digests are written everywhere else in this tree
+// (the golden corpus's expected_digest, the schema hash) -- a decimal one would
+// be ungreppable against them. Hand-rolled rather than via <format>/ostringstream:
+// this is one call site on an error path, and neither of those belongs in an
+// engine TU that otherwise allocates nothing but the message itself.
+[[nodiscard]] std::string hex64(uint64_t value) {
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string out = "0x";
+    out.reserve(18);
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        out += kDigits[(value >> shift) & 0xFu];
+    }
+    return out;
 }
 
-[[nodiscard]] bool finite(const glm::quat& q) noexcept {
-    return std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
-}
-
-// The eight array names are the snapshot blob's stable identities (a blob keys
+// The array names are the snapshot blob's stable identities (a blob keys
 // entries by name, never by walk position), so they are spelled once, here, and
-// changing one invalidates every recorded blob and every committed digest.
+// changing one invalidates every recorded blob and every committed digest. The
+// ninth, "replay_config", is spelled in sim/simulation.hpp instead
+// (kReplayConfigArray) because callers outside this file key on it -- see the
+// note at that constant.
 constexpr const char* kWorldParamsArray = "world_params";
 constexpr const char* kBodiesArray = "bodies";
 constexpr const char* kBodyGenerationArray = "body_generation";
@@ -116,8 +128,8 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
     // each array's name, element size and extents in registration order, and
-    // restore() rejects a blob whose hash differs -- so reordering these five
-    // calls, or renaming an array, invalidates every recorded snapshot and
+    // restore() rejects a blob whose hash differs -- so reordering the calls
+    // below, or renaming an array, invalidates every recorded snapshot and
     // every committed digest. That is the intended cost of a layout change; it
     // is not a thing to do casually.
     //
@@ -127,7 +139,8 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // APPEND-ONLY, ENFORCED BY CONVENTION HERE (no compile-time or runtime
     // check forbids inserting mid-list -- this comment is the guard). A new
     // array belongs AFTER every call below it, never between two existing
-    // ones: tests/golden/*.digest's own headers carry a structural argument
+    // ones: the golden scenarios' own provenance headers
+    // (tests/golden/scenarios/*.scenario.yaml) carry a structural argument
     // ("rotors registered LAST -> pure walk suffix") that a future reader
     // can re-verify by reading THIS function's call order directly --
     // inserting a registration mid-list would silently invalidate that
@@ -218,6 +231,47 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (!rotors_id) return std::unexpected(rotors_id.error());
     sim.rotors_id_ = *rotors_id;
 
+    // THE RUN'S IDENTITY (ticket M-1): (dt_ns, substeps, config_hash), as
+    // registered state so that it rides every blob and restore() can refuse a
+    // blob produced under a different one. See ReplayConfig in
+    // sim/simulation.hpp for what problem that solves; see restore() below for
+    // the check itself.
+    //
+    // REGISTERED HERE, AT WALK POSITION 16, AND THAT POSITION IS WHAT IS
+    // PINNED. The committed goldens' provenance blocks argue that this array
+    // joined the walk as a pure SUFFIX -- every earlier array kept its position,
+    // so every earlier digest is the new one's prefix -- and that argument
+    // survives exactly as long as nothing is registered at or before this call.
+    //
+    // The rule is therefore about POSITION, not about being LAST. A tenth array
+    // APPENDED BELOW this one is the sanctioned move: every existing entry keeps
+    // its index, the corpus regenerates once for the new suffix, and this
+    // paragraph stays true. Registering it ABOVE this one -- or anywhere among
+    // the nine -- shifts every later entry and invalidates the continuation
+    // argument for all four digests at once, which is a different and much more
+    // expensive act. ReplayConfig.OccupiesItsPinnedWalkPosition
+    // (tests/test_determinism.cpp) enforces precisely that and nothing more: it
+    // asserts this array's INDEX, so appending below is silent and only an
+    // insertion at or before it can fail.
+    //
+    // ONE ROW PER WORLD, holding the same set-wide record N times, and that
+    // deserves a word because it is a real cost (32 bytes and one map entry per
+    // world) paid for a real reason. ArenaSet is the ONLY door to registered
+    // storage (state/arenas.hpp), and it partitions every array it registers by
+    // world -- there is no "one global row" shape. The alternative is a
+    // non-arena registration of a Simulation MEMBER, which the state registry
+    // does support (state/registry.hpp) and which is unusable here: the
+    // registry would cache a pointer INTO this object, and this object is moved
+    // out of create() by value. Duplicating a constant is the cheap, safe
+    // version of that trade; every row is written identically below, a test
+    // pins that they stay identical, and restore()'s cross-check compares the
+    // WHOLE array's bytes rather than row 0 -- so the duplication is checked,
+    // not merely assumed.
+    Result<ArrayId<ReplayConfig>> replay_config_id =
+        sim.arenas_.register_array<ReplayConfig>(std::string(kReplayConfigArray), 1);
+    if (!replay_config_id) return std::unexpected(replay_config_id.error());
+    sim.replay_config_id_ = *replay_config_id;
+
     // -----------------------------------------------------------------------
     // Seed the per-world rows.
     // -----------------------------------------------------------------------
@@ -256,6 +310,36 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         dryden_init((*dryden)[w], row);
     }
 
+    // -----------------------------------------------------------------------
+    // The run's identity, written ONCE and never again by anything in this
+    // engine. Read the ReplayConfig doc comment in the header for why a
+    // constant lives in the state arenas at all.
+    //
+    // config_hash() is computed from the DESC, here, at the only moment the
+    // desc is in scope: Simulation does not retain it (WorldConfig is a lossy
+    // projection of it, by design), so this is the one and only chance to take
+    // its identity. Which also means the hash covers the CREATING desc for the
+    // life of the object -- reseed() rewrites WorldParams::seed rows without
+    // touching the desc, so it deliberately does not touch this row either.
+    // See sim/world_set.hpp's fold-order contract.
+    // -----------------------------------------------------------------------
+    Result<std::span<ReplayConfig>> replay_config = sim.arenas_.array(sim.replay_config_id_);
+    if (!replay_config) return std::unexpected(replay_config.error());
+    const uint64_t hash = config_hash(desc);
+    for (uint32_t w = 0; w < layout->world_count; ++w) {
+        // FIELD-WISE, like every other arena write in this file. ReplayConfig
+        // has no implicit padding (the battery in the header pins that), so a
+        // whole-object assignment would in fact be safe here -- but the
+        // discipline is uniform on purpose: the day a field is added, the safe
+        // form is already the form in use.
+        ReplayConfig& row = (*replay_config)[w];
+        row.dt_ns = dt_ns;
+        row.substeps = substeps;
+        row._pad = 0;
+        row.config_hash = hash;
+        row._reserved0 = 0;
+    }
+
     sim.views_.resize(layout->world_count);
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
@@ -274,17 +358,17 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
 // views
 // ---------------------------------------------------------------------------
 //
-// FOUR ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params and
-// dryden (one row per world, indexed by world id -- they have no lifecycle, so
-// alloc_slot/free_slot would be ceremony around a constant), body_generation
-// (one row per BODY slot, indexed by that slot -- it must SURVIVE its slot
-// being freed, and free_slot zero-fills, which would erase the very counter it
-// exists to preserve), and imu_ring (kRingDepth rows per SENSOR slot, indexed
-// by that slot -- its lifetime IS its sensor's, so a second alloc/free
-// lifecycle would only be a thing to keep in step; clear_imu_ring() does the
-// zeroing the sensor's own free_slot does for the row).
+// FIVE ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params,
+// dryden and replay_config (one row per world, indexed by world id -- they have
+// no lifecycle, so alloc_slot/free_slot would be ceremony around a constant),
+// body_generation (one row per BODY slot, indexed by that slot -- it must
+// SURVIVE its slot being freed, and free_slot zero-fills, which would erase the
+// very counter it exists to preserve), and imu_ring (kRingDepth rows per SENSOR
+// slot, indexed by that slot -- its lifetime IS its sensor's, so a second
+// alloc/free lifecycle would only be a thing to keep in step; clear_imu_ring()
+// does the zeroing the sensor's own free_slot does for the row).
 //
-// The consequence is that those four arrays' slot->world maps stay uniformly
+// The consequence is that those five arrays' slot->world maps stay uniformly
 // kInvalidWorld. They are still carried by the registry walk, still snapshotted
 // and still resynced on restore -- an all-free map resyncs to an all-free set,
 // which is consistent -- and they cost four bytes a slot for the uniformity of
@@ -1389,12 +1473,170 @@ Result<SnapshotBlob> Simulation::snapshot() const {
     return save(arenas_, tick_);
 }
 
+// ---------------------------------------------------------------------------
+// The pre-apply configuration cross-check (ticket M-1).
+//
+// RUNS BEFORE ANY ARENA BYTE IS WRITTEN, which is what keeps restore()
+// all-or-nothing: it reads the blob and this object's own registered row, and
+// writes nothing. On rejection the tree is untouched, and a digest taken before
+// the failed call equals one taken after it (test_determinism.cpp pins exactly
+// that).
+//
+// IT ONLY EVER ADDS A REJECTION, AND NEVER MASKS ONE. Every way this function
+// can fail to find something to compare -- a schema that already disagrees, no
+// such section, a wrong element size, no rows -- is a blob spade::restore() is
+// about to reject anyway on schema grounds (the schema hash covers array names,
+// element sizes and extents), so all of those FALL THROUGH deliberately rather
+// than inventing an error of their own. That keeps the state layer's own, more
+// precise diagnostics reachable instead of burying them under a config message,
+// and it means the ONLY blob this function can reject is one that the state
+// layer would have accepted.
+//
+// THE COMPARISON SOURCE IS THE LIVE REGISTERED ROW, not dt_ns_/substeps_. The
+// row is the only home config_hash has -- Simulation does not retain the desc
+// -- so taking two of the three values from one place and the third from
+// another would be exactly the second source of truth WorldConfig's "NO seed
+// MEMBER" note forbids. That the row still agrees with dt_ns_/substeps_ is an
+// induction, not a hope: create() writes both from the same two arguments, and
+// the only other write to the row is the restore this function has just proven
+// carries identical values. The internal check below is that induction's
+// tripwire -- if it ever fires, something wrote arena bytes behind Simulation's
+// back (the registry-level spade::restore() overload takes a CONST registry and
+// can be called on arenas().registry() by anyone), and continuing would compare
+// a corrupted authority against a blob.
+//
+// THE TRIPWIRE REACHES TWO OF THE THREE FIELDS, AND THAT IS ALL IT CAN REACH.
+// dt_ns and substeps have a second, independent copy in this object to be
+// checked against; config_hash does not -- the row IS its only home, by design
+// (there is no desc to recompute it from). So a bypass that corrupted ONLY
+// config_hash is undetectable here, and the check would then compare a blob
+// against a corrupted authority and reject a sound pairing. That is the
+// residual cost of having one source of truth, stated rather than papered over:
+// the alternative -- caching the hash in a member -- would trade an
+// undetectable corruption for a second value that can silently disagree with
+// the registered one on every restore.
+// ---------------------------------------------------------------------------
+Result<void> Simulation::check_replay_config(const SnapshotBlob& blob) const {
+    const Result<std::span<const ReplayConfig>> live = arenas_.array(replay_config_id_);
+    if (!live) return std::unexpected(live.error());
+    if (live->empty()) {
+        return std::unexpected(internal("restore: this simulation has no replay_config row"));
+    }
+    const ReplayConfig& mine = (*live)[0];
+
+    if (mine.dt_ns != dt_ns_ || mine.substeps != substeps_) {
+        return std::unexpected(internal(
+            "restore: the registered replay_config row (dt_ns " + std::to_string(mine.dt_ns) + ", substeps " +
+            std::to_string(mine.substeps) + ") disagrees with this simulation's step decomposition (dt_ns " +
+            std::to_string(dt_ns_) + ", substeps " + std::to_string(substeps_) +
+            "); arena bytes were written behind Simulation's back"));
+    }
+
+    // A SHAPE MISMATCH IS NOT THIS CHECK'S TO REPORT. A blob from a set with a
+    // different capacity has a different schema hash AND a different
+    // config_hash (capacities are folded into both), and of the two verdicts
+    // the state layer's is the more specific one -- "array 'bodies': shape 2x5
+    // in the blob, 2x4 in the registry" tells a caller what to fix; "you paired
+    // the wrong blob" does not. So whenever the schema already disagrees, this
+    // function stands down and lets spade::restore() speak. What is left is
+    // exactly the case this check exists for and the schema hash is blind to:
+    // SAME SHAPE, DIFFERENT PHYSICS.
+    if (blob.schema_hash() != schema_hash(arenas_.registry())) {
+        return {};
+    }
+
+    const Result<BlobSection> section = find_section(blob, kReplayConfigArray);
+    if (!section) {
+        // not_found (no such section) or io_error (the blob does not parse).
+        // Both are spade::restore()'s to report, in its own words.
+        return {};
+    }
+    if (section->elem_size != sizeof(ReplayConfig) || section->payload.size() < sizeof(ReplayConfig)) {
+        return {};  // a shape spade::restore() will reject; see above.
+    }
+
+    // ---------------------------------------------------------------------
+    // THE ACCEPT TEST IS THE WHOLE PAYLOAD, BYTE FOR BYTE -- not the three
+    // named fields, and not row 0 alone.
+    //
+    // The three fields are 24 of the 32 bytes of ONE row, and restore() is
+    // about to overwrite ALL of them, in every world. Accepting on a
+    // field-wise comparison would mean restoring the remainder on trust: the
+    // two reserved lanes today, a fourth field the day `_reserved0` becomes
+    // real, and every world's row above index 0. Comparing the bytes closes
+    // all three at once and needs no maintenance when a field is added -- the
+    // opposite of a comment promising that a future author will remember to
+    // grow a loop here.
+    //
+    // The length equality is checked first rather than assumed from the schema
+    // hash agreeing: a hash is never trusted for correctness in this tree
+    // (state/snapshot.cpp's match_registry says so), and a length mismatch is a
+    // shape fault that belongs to spade::restore().
+    // ---------------------------------------------------------------------
+    const std::span<const std::byte> mine_bytes = std::as_bytes(*live);
+    if (section->payload.size() != mine_bytes.size()) {
+        return {};  // a shape spade::restore() will reject; see above.
+    }
+    if (std::memcmp(section->payload.data(), mine_bytes.data(), mine_bytes.size()) == 0) {
+        return {};
+    }
+
+    // Past here the payloads DIFFER and the blob is refused. Everything below
+    // exists only to say WHY in the caller's terms, so it reads row 0's three
+    // named fields -- the ones a caller can act on. memcpy, never a
+    // reinterpret_cast: blob sections are tightly packed, so a payload can
+    // start at any offset (state/snapshot.hpp).
+    ReplayConfig theirs{};
+    std::memcpy(&theirs, section->payload.data(), sizeof(ReplayConfig));
+
+    std::string diverged;
+    const auto note = [&diverged](const std::string& text) {
+        if (!diverged.empty()) diverged += ", ";
+        diverged += text;
+    };
+    if (theirs.dt_ns != mine.dt_ns) {
+        note("dt_ns (blob " + std::to_string(theirs.dt_ns) + ", this simulation " + std::to_string(mine.dt_ns) + ")");
+    }
+    if (theirs.substeps != mine.substeps) {
+        note("substeps (blob " + std::to_string(theirs.substeps) + ", this simulation " +
+             std::to_string(mine.substeps) + ")");
+    }
+    if (theirs.config_hash != mine.config_hash) {
+        note("config_hash (blob " + hex64(theirs.config_hash) + ", this simulation " + hex64(mine.config_hash) + ")");
+    }
+    // The bytes differ somewhere the three named fields do not reach: a
+    // reserved lane, or a row above index 0. Refused all the same -- the whole
+    // record is the identity -- but named honestly rather than reported as a
+    // field divergence that a caller would go looking for and not find.
+    if (diverged.empty()) {
+        diverged = "the replay_config bytes differ outside (dt_ns, substeps, config_hash) -- a "
+                   "reserved lane or a row above world 0";
+    }
+
+    // "COULD", not "would": for the one pairing whose only difference is the
+    // per-world seeds, the replay would in fact be identical (seeds are
+    // registered state and arrive with the blob) -- config_hash covers the
+    // creating desc's seeds, so that pairing is refused fail-closed. The
+    // diagnostic has to stay true of every case it prints on.
+    return std::unexpected(invalid("restore: blob was produced under a different (dt_ns, substeps, "
+                                   "config_hash) -- restoring it here could replay different physics. "
+                                   "Diverged: " +
+                                   diverged));
+}
+
 Result<void> Simulation::restore(const SnapshotBlob& blob) {
     if (blob.world_count() != layout_.world_count) {
         return std::unexpected(Error{Code::schema_mismatch,
                                      "restore: blob describes " + std::to_string(blob.world_count()) +
                                          " worlds, this simulation has " +
                                          std::to_string(layout_.world_count)});
+    }
+
+    // BEFORE the restore, never after: see check_replay_config() above. This is
+    // the only path from a Simulation into spade::restore(), so there is no
+    // second door a blob could come through unchecked.
+    if (Result<void> config = check_replay_config(blob); !config) {
+        return config;
     }
 
     // THE ArenaSet OVERLOAD, never the registry-level one: the latter leaves the
@@ -1419,6 +1661,69 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     scratch_.runs.clear();
 
     return rebuild_views();
+}
+
+// ---------------------------------------------------------------------------
+// reseed
+// ---------------------------------------------------------------------------
+//
+// See the doc comment in simulation.hpp for the full argument -- in particular
+// for WHY the three writes below are the complete list. The short form: the
+// world seed is read at exactly three sites in the engine, and this function is
+// the mirror image of all three.
+// ---------------------------------------------------------------------------
+
+Result<void> Simulation::reseed(uint64_t scene_seed) {
+    if (!queue_.empty()) {
+        return std::unexpected(invalid("reseed: the structural queue is not empty; a pending op "
+                                       "carries its own seeding, so the result would depend on how "
+                                       "the two interleave. Call step() or flush_structural() "
+                                       "first."));
+    }
+
+    Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
+    if (!params) return std::unexpected(params.error());
+    Result<std::span<DrydenState>> dryden = arenas_.array(dryden_id_);
+    if (!dryden) return std::unexpected(dryden.error());
+    Result<std::span<sensors::ImuSensorRow>> sensors_rows = arenas_.array(imu_id_);
+    if (!sensors_rows) return std::unexpected(sensors_rows.error());
+    // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's contents --
+    // the same discipline free_imu_sensors_of() states and for the same reason:
+    // a free row is zero-filled, and writing a fresh stream into one would break
+    // the engine-wide "a freed slot reads as zeroes" invariant and put sixteen
+    // non-zero bytes into every subsequent snapshot of a slot nothing owns.
+    Result<std::span<const uint32_t>> sensor_map = arenas_.slot_to_world(imu_id_);
+    if (!sensor_map) return std::unexpected(sensor_map.error());
+
+    // Worlds in INDEX order, and each world's sensors in ascending slot order.
+    // Nothing here depends on the iteration order (each write is a pure function
+    // of the new world seed and the slot index), but the engine's determinism
+    // posture is that an ordered walk is the only kind there is.
+    for (uint32_t w = 0; w < layout_.world_count; ++w) {
+        WorldParams& row = (*params)[w];
+
+        // replicate()'s formula, verbatim (sim/world_set.cpp's replicate()).
+        // Written field-wise into the registered row, which is the world's
+        // sole rng authority -- there is no cached copy anywhere to keep in
+        // step.
+        row.seed = rng::splitmix64(scene_seed ^ rng::fnv1a64(kWorldSeedDomainTag) ^ uint64_t{w});
+
+        // AFTER the seed write, exactly as create() does it: dryden_init reads
+        // row.seed and re-places the filter on its stationary distribution.
+        dryden_init((*dryden)[w], row);
+
+        const uint32_t begin = w * layout_.sensor_capacity;
+        const uint32_t end = begin + layout_.sensor_capacity;
+        for (uint32_t slot = begin; slot < end; ++slot) {
+            if ((*sensor_map)[slot] != w) continue;
+            // ONLY `noise`. The bias states, the divider phase, the ring cursor
+            // and the ring itself are HISTORY and stay exactly as they are --
+            // see the header: a reseed changes the future draws, not the past.
+            (*sensors_rows)[slot].noise = sensors::imu_noise_stream(row.seed, slot - begin);
+        }
+    }
+
+    return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -1475,6 +1780,90 @@ Result<BodyRef> Simulation::body_ref_at(uint32_t world_index, uint32_t local_slo
         return std::unexpected(missing("body_ref_at: slot's despawn is already queued"));
     }
     return BodyRef{world_index, slot, generation};
+}
+
+Result<VehicleRef> Simulation::vehicle_ref_at(uint32_t world_index, uint32_t vehicle_ordinal) const {
+    const Result<uint32_t> world = checked_world(world_index);
+    if (!world) return std::unexpected(world.error());
+
+    const Result<std::span<const uint32_t>> body_map = arenas_.slot_to_world(bodies_id_);
+    if (!body_map) return std::unexpected(body_map.error());
+    const Result<std::span<const uint32_t>> generations = arenas_.array(body_gen_id_);
+    if (!generations) return std::unexpected(generations.error());
+    const Result<std::span<const uint32_t>> rotor_map = arenas_.slot_to_world(rotors_id_);
+    if (!rotor_map) return std::unexpected(rotor_map.error());
+    const Result<std::span<const vehicles::RotorRow>> rotor_rows = arenas_.array(rotors_id_);
+    if (!rotor_rows) return std::unexpected(rotor_rows.error());
+    const Result<std::span<const uint32_t>> sensor_map = arenas_.slot_to_world(imu_id_);
+    if (!sensor_map) return std::unexpected(sensor_map.error());
+    const Result<std::span<const sensors::ImuSensorRow>> sensor_rows = arenas_.array(imu_id_);
+    if (!sensor_rows) return std::unexpected(sensor_rows.error());
+
+    const uint32_t element_begin = world_index * layout_.element_capacity;
+    const uint32_t sensor_begin = world_index * layout_.sensor_capacity;
+
+    uint32_t seen = 0;
+    for (uint32_t local = 0; local < layout_.body_capacity; ++local) {
+        const uint32_t body_slot = world_index * layout_.body_capacity + local;
+        if ((*body_map)[body_slot] != world_index) continue;
+        const uint32_t generation = (*generations)[body_slot];
+        // Parity, exactly as body_ref_at applies it: an even generation means
+        // the release is queued, so this vehicle is already dead and is not
+        // counted. See the renumbering note in the header.
+        if ((generation & 1u) == 0u) continue;
+
+        // The rotor rows this body owns, in ascending slot order. A row's
+        // body_slot is written at RESERVATION time (see spawn(vehicle)), so a
+        // spawned-but-unflushed vehicle is discoverable here -- which mirrors
+        // body_ref_at handing back a ref for a body whose init is still
+        // queued, and leaves the "not yet flushed" verdict to the call the
+        // caller then makes (set_rotor_commands reports it by name).
+        VehicleRef ref;
+        uint32_t rotor_count = 0;
+        for (uint32_t i = 0; i < layout_.element_capacity; ++i) {
+            const uint32_t slot = element_begin + i;
+            if ((*rotor_map)[slot] != world_index) continue;
+            if ((*rotor_rows)[slot].body_slot != local) continue;
+            if (rotor_count >= vehicles::kMaxModelRotors) {
+                return std::unexpected(internal(
+                    "vehicle_ref_at: body owns more rotors than a model type may declare"));
+            }
+            ref.rotor_slots[rotor_count] = slot;
+            ++rotor_count;
+        }
+        // No rotors, no vehicle. See the header: a rotor row naming this body
+        // is the only evidence in the STATE that it was manufactured from a
+        // model type.
+        if (rotor_count == 0) continue;
+        if (seen != vehicle_ordinal) {
+            ++seen;
+            continue;
+        }
+
+        uint32_t imu_count = 0;
+        for (uint32_t i = 0; i < layout_.sensor_capacity; ++i) {
+            const uint32_t slot = sensor_begin + i;
+            if ((*sensor_map)[slot] != world_index) continue;
+            if ((*sensor_rows)[slot].body_slot != local) continue;
+            if (imu_count >= vehicles::kMaxModelImuMounts) {
+                return std::unexpected(internal(
+                    "vehicle_ref_at: body owns more IMU sensors than a model type may declare"));
+            }
+            ref.imu_sensors[imu_count] = ImuSensorRef{world_index, slot};
+            ++imu_count;
+        }
+
+        ref.body = BodyRef{world_index, body_slot, generation};
+        // ref.model stays null -- there is no ModelTypeId anywhere in the
+        // state to read it back from. See the header.
+        ref.rotor_count = rotor_count;
+        ref.imu_count = imu_count;
+        return ref;
+    }
+
+    return std::unexpected(missing("vehicle_ref_at: world " + std::to_string(world_index) +
+                                   " holds fewer than " + std::to_string(vehicle_ordinal + 1) +
+                                   " live vehicles"));
 }
 
 // ---------------------------------------------------------------------------

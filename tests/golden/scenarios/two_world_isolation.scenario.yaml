@@ -1,0 +1,167 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements`),
+# and an UNKNOWN key is an ERROR at every level rather than a warning -- a
+# reader of this version must never silently drop a field a later version
+# added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: two_world_isolation -- two worlds at OVERLAPPING COORDINATES. World
+# 0 holds a dense eight-body cluster around (0, 1, 0); world 1 holds two bodies
+# at coordinates INSIDE that cluster. 300 steps of 2 ms at 2 substeps.
+#
+# If the broad phase leaked across worlds -- a hash collision, a range check off
+# by one -- world 1's pair would be shoved by neighbours it cannot see. The
+# uniform-material path, so the sweep really is one batched call over both
+# worlds.
+#
+# PROVENANCE OF `expected_digest`
+#   Value carried VERBATIM from tests/golden/two_world_isolation.digest --
+#   CONTAINER CHANGE ONLY (S5 Task 7 retires the .digest files into this field).
+#   Not a regeneration; the bridging test in tests/test_determinism.cpp is the
+#   committed proof that this data scenario and the builder lambda it replaced
+#   produce the same digest.
+#
+#   * REGENERATED 2026-08-11 -- the platform-libm parity fix (PR #5). Every
+#     digest in the corpus moved when next_gauss() stopped calling libm; see
+#     bounce's header for the two-ulp divergence that surfaced it and
+#     core/fp32_math.hpp for the fix.
+#
+#   * REGENERATED 2026-08-11 -- S5 Task 3: replay_config joins the walk (M-1).
+#     Suffix continuation, checked rather than assumed:
+#       two_world_isolation: old=0xb786bbc01616cd4d old+suffix=0xaab013d47c0eba42 actual=0xaab013d47c0eba42 match=YES
+#       previous digest 0xb786bbc01616cd4d (S1-S4 close-out, 2026-08-11)
+#
+#   generated  2026-08-11 (Task 3 regeneration; first generated at Task 16)
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#   cross-check gcc-13 Release -ffp-contract=off (spade-linux CI) produces this
+#              same value; msvc-ninja-release AND msvc-ninja-debug agree
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "two_world_isolation"
+world: "../worlds/two_world_isolation.world.yaml"
+
+# Two instances of ONE world file, identical in everything but their seeds --
+# so the set is UNIFORM and the dynamic sweep takes its batched form.
+instances:
+  - seed: 0x1501A7E0
+    contacts: {restitution_e: 0.400000006, friction_mu: 0.200000003, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.119999997}
+    grid: {cell_size: 0.239999995}
+    turbulence: moderate
+  - seed: 0x1501A7E1
+    contacts: {restitution_e: 0.400000006, friction_mu: 0.200000003, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.119999997}
+    grid: {cell_size: 0.239999995}
+    turbulence: moderate
+
+step: {dt_ns: 2000000, substeps: 2, steps: 300}
+
+# World 0: a tight 2x2x2 cluster around (0, 1, 0).
+# World 1: two bodies AT THE SAME COORDINATES as two of that cluster.
+spawns:
+  - world: 0
+    body:
+      pos:              [0, 1, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0.200000003, 1, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0, 1, 0.200000003]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0.200000003, 1, 0.200000003]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0, 1.20000005, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0.200000003, 1.20000005, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0, 1.20000005, 0.200000003]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 0
+    body:
+      pos:              [0.200000003, 1.20000005, 0.200000003]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 1
+    body:
+      pos:              [0, 1, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+  - world: 1
+    body:
+      pos:              [0.200000003, 1, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.5
+      inv_inertia_diag: [200, 200, 200]
+
+inputs: []
+
+expected_digest: "0xaab013d47c0eba42"

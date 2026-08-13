@@ -737,3 +737,86 @@ TEST(SnapshotFile, FilesystemFailuresAreIoErrors) {
     EXPECT_EQ(garbage.error().code, spade::Code::io_error);
     remove_quietly(junk);
 }
+
+// ---------------------------------------------------------------------------
+// find_section: reading ONE named section of a blob without restoring it.
+//
+// Its reason to exist is that a caller above this layer (Simulation::restore,
+// which must read the `replay_config` row BEFORE it decides to restore at all)
+// would otherwise write a second walk over the section table -- duplicating
+// this file's whole trust boundary in a layer that has no business owning it.
+// So the burden here is that it is the SAME parse: it must accept exactly the
+// blobs restore() accepts and refuse exactly the ones restore() refuses.
+//
+// NOTE the name shadowing: this file already has an anonymous-namespace
+// BlobSection/find_section pair -- a deliberately independent reader of the
+// format, used by the corruption tests. Every reference below to the ENGINE's
+// is qualified, and the two are compared against each other on purpose.
+// ---------------------------------------------------------------------------
+
+TEST(SnapshotFindSection, ReturnsTheExtentsAndBytesOfANamedArray) {
+    Sim source;
+    churn(source);
+    const auto blob = spade::save(source.arenas, spade::Tick{77});
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+
+    const std::vector<BlobSection> independent = blob_sections(*blob);
+    ASSERT_FALSE(independent.empty());
+
+    // Every section the independent reader sees, the engine's finder must find
+    // -- with the same payload, at the same place.
+    for (const BlobSection& expected : independent) {
+        const auto found = spade::find_section(*blob, expected.name);
+        ASSERT_TRUE(found.has_value()) << expected.name << ": " << found.error().context;
+        EXPECT_EQ(found->payload.size(), expected.payload_bytes) << expected.name;
+        EXPECT_EQ(found->payload.data(), blob->bytes().data() + expected.payload_offset) << expected.name;
+        EXPECT_EQ(static_cast<std::size_t>(found->elem_size) * found->world_count * found->capacity_per_world,
+                  expected.payload_bytes)
+            << expected.name << ": declared shape must agree with the payload length";
+    }
+
+    // The extents are the registry's, field for field.
+    const spade::RegisteredArray* registered = source.arenas.registry().find("bodies");
+    ASSERT_NE(registered, nullptr);
+    const auto bodies = spade::find_section(*blob, "bodies");
+    ASSERT_TRUE(bodies.has_value()) << bodies.error().context;
+    EXPECT_EQ(bodies->elem_size, registered->elem_size);
+    EXPECT_EQ(bodies->world_count, registered->world_count);
+    EXPECT_EQ(bodies->capacity_per_world, registered->capacity_per_world);
+    ASSERT_EQ(bodies->payload.size(), registered->byte_size());
+    EXPECT_EQ(std::memcmp(bodies->payload.data(), registered->data, bodies->payload.size()), 0)
+        << "the located payload must be the array's bytes";
+}
+
+TEST(SnapshotFindSection, ReportsAMissingNameAndAMalformedBlobDifferently) {
+    Sim source;
+    const auto blob = spade::save(source.arenas, spade::Tick{1});
+    ASSERT_TRUE(blob.has_value());
+
+    // Present, absent, and near-miss names. A section name is matched whole:
+    // "bodie" and "bodiess" are not "bodies".
+    EXPECT_TRUE(spade::find_section(*blob, "bodies").has_value());
+    for (const char* absent : {"", "bodie", "bodiess", "replay_config"}) {
+        const auto missing = spade::find_section(*blob, absent);
+        ASSERT_FALSE(missing.has_value()) << "'" << absent << "'";
+        EXPECT_EQ(missing.error().code, spade::Code::not_found) << "'" << absent << "'";
+    }
+
+    // A TRUNCATED blob is io_error, not "not found" -- the same verdict
+    // restore() reaches on the same bytes, which is the point of sharing one
+    // parser. Truncating inside the last section's payload leaves the FIRST
+    // section perfectly readable, so a finder that scanned to its first hit and
+    // stopped would happily hand out a section from a blob that does not parse.
+    std::vector<std::byte> raw(blob->bytes().begin(), blob->bytes().end() - 1);
+    const auto truncated = spade::SnapshotBlob::from_bytes(std::move(raw));
+    ASSERT_TRUE(truncated.has_value());
+    const auto found = spade::find_section(*truncated, "bodies");
+    ASSERT_FALSE(found.has_value());
+    EXPECT_EQ(found.error().code, spade::Code::io_error);
+
+    Sim target;
+    const auto rejected = spade::restore(target.arenas, *truncated);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_EQ(rejected.error().code, found.error().code)
+        << "find_section and restore must agree about whether a blob parses";
+}

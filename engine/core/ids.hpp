@@ -10,8 +10,10 @@ namespace spade {
 // recycled compares unequal to (and is thus stale relative to) a fresh
 // handle issued for the same index -- that comparison IS the invalidation
 // check; there is no separate "is this handle still alive" query here
-// because that requires a live registry (Task 5's spade_ecs), which this
-// header does not depend on.
+// because that would require a live registry tracking every issued handle's
+// current generation, and this header is deliberately dependency-free (no
+// registry type named or included) so any resource kind can reuse Handle<Tag>
+// without pulling one in.
 //
 // Tag is a phantom type: it only exists to keep handles for different
 // resource kinds (bodies, worlds, ...) from being interchangeable at the

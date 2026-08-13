@@ -1,5 +1,6 @@
-# Spade v2 engine tree. Modules live one-per-subdirectory (core/ now; ecs/,
-# state/, ... in later tasks), each its own CMake target so dronesim can
+# Spade v2 engine tree. Modules live one-per-subdirectory (core/, state/,
+# world/, physics/, sim/, sensors/, vehicles/ -- see README.md's module map
+# for the full, current list), each its own CMake target so dronesim can
 # depend on exactly what it needs via add_subdirectory or find_package(spade).
 
 # ------------------------------------------------------------------------------
@@ -24,7 +25,8 @@ target_compile_options(spade_warnings INTERFACE
 # to FAST contraction (-ffp-contract=fast) even under -Wall -Wextra -Wpedantic
 # -Werror, silently letting the optimizer fuse a*b+c into one rounding step
 # where the pinned op order says two. That is exactly the kind of last-bit
-# divergence the golden digest corpus (tests/golden/*.digest) exists to catch,
+# divergence the golden digest corpus (tests/golden/scenarios/*.scenario.yaml)
+# exists to catch,
 # and until .github/workflows/spade.yml's Linux job runs for the first time
 # at this task's PR, it has never actually been tested on a non-MSVC
 # compiler -- see this task's report for that disposition.
@@ -99,6 +101,19 @@ add_library(spade_core STATIC
     core/fp32_math.cpp
 )
 add_library(spade::core ALIAS spade_core)
+
+# EXPORT_NAME (Task 8): install(EXPORT spadeTargets ... NAMESPACE spade::)
+# further down this file names each exported target after its RAW CMake target
+# (spade_core), not this ALIAS -- an ALIAS is purely in-tree and install(EXPORT)
+# does not see it. Without this property the installed, out-of-tree target
+# would be spade::spade_core, not spade::core, silently breaking every
+# find_package(spade) consumer's target_link_libraries(... spade::core) call
+# (this exact gap is what spade/tests/consumer/'s out-of-tree smoke caught).
+# Setting EXPORT_NAME here makes the exported name match this in-tree alias
+# exactly, so one name works both in-tree and installed. Same on every other
+# exported target below (spade_world/state/physics/sim/vehicles) -- see this
+# comment, not repeated at each site.
+set_target_properties(spade_core PROPERTIES EXPORT_NAME core)
 
 target_include_directories(spade_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -179,8 +194,10 @@ add_library(spade_world STATIC
     world/sdf.cpp
     world/builder.cpp
     world/medium.cpp
+    world/world_file.cpp
 )
 add_library(spade::world ALIAS spade_world)
+set_target_properties(spade_world PROPERTIES EXPORT_NAME world)
 
 # PUBLIC spade::state (Task 8): world/medium.hpp's sample() takes a
 # spade::WorldParams -- the RUNTIME per-world row from state/layout.hpp, not
@@ -189,12 +206,68 @@ add_library(spade::world ALIAS spade_world)
 # this file; that is fine, CMake resolves link items at generate time.
 # The direction (world -> state, never state -> world) is deliberate: state
 # knows nothing about worlds.
+#
+# yaml-cpp (S5 Task 5): world/world_file.cpp's parser only. PRIVATE and
+# $<BUILD_INTERFACE:...>-wrapped, and the two choices answer different
+# questions.
+#   PRIVATE, because world/world_file.hpp's surface is paths, std::string and
+#   WorldDesc -- no yaml-cpp type crosses it, so no consumer needs its headers.
+#   $<BUILD_INTERFACE:...>, for the same install(EXPORT) reason as glm above:
+#   yaml-cpp is a FetchContent target in no export set, and a STATIC library
+#   records even its PRIVATE links into the interface as $<LINK_ONLY:...>, so
+#   an unwrapped entry would fail generation outright.
+# THE ONE PLACE THIS DIFFERS FROM glm: yaml-cpp is a compiled archive, not a
+# header-only one, so an OUT-OF-TREE consumer that links the INSTALLED
+# spade_world.lib and calls world_from_yaml() does need yaml-cpp's objects on
+# its final link line -- and $<BUILD_INTERFACE:...> deliberately does not put
+# them there. In-tree consumers (spade_tests, spade_viewer, dronesim via
+# add_subdirectory -- everything that exists today) are unaffected: the genex
+# is live for them.
+#
+# THE INSTALLED-CONSUMER GAP THIS LEAVES, AND WHY IT IS NOT CLOSED HERE (S5
+# Task 5/8 integration follow-up, surfaced by Task 5's opus review). The
+# obvious-looking fix -- add a SECOND, $<INSTALL_INTERFACE:yaml-cpp::yaml-cpp>
+# entry beside the one above, so the exported spadeTargets.cmake records the
+# name for a consumer to resolve -- DOES NOT WORK, and this is recorded here
+# because it is exactly the fix a future reader will also reach for first.
+# Verified empirically (this integration follow-up's own build failed with
+# it) and confirmed against CMake's own documented behaviour (CMake Discourse,
+# a Kitware maintainer, on this exact scenario): install(EXPORT) resolves ANY
+# name appearing in an exported target's INTERFACE_LINK_LIBRARIES -- INCLUDING
+# one that only appears via $<INSTALL_INTERFACE:...> -- against every target
+# CMake knows about in THIS project, genex or not, and rejects it if that name
+# resolves to a real (non-IMPORTED) target not in any export set. Since
+# yaml-cpp::yaml-cpp genuinely IS such a target here (FetchContent, i.e.
+# add_subdirectory + add_library, not find_package), the $<INSTALL_INTERFACE:>
+# wrapper does not exempt it -- only $<BUILD_INTERFACE:...>/
+# $<BUILD_LOCAL_INTERFACE:...>, which HIDE it from the installed interface
+# entirely, do. (The documented workaround for "FetchContent dependency
+# leaking into an install export" is literally to wrap it in
+# $<BUILD_INTERFACE:...>, the opposite direction from what would be needed
+# here.) The rejected install(TARGETS yaml-cpp) alternative (making yaml-cpp
+# itself installable/exportable, avoiding this whole problem) was already
+# ruled out for this program (third-party redistribution, SBOM/version-clash
+# surface).
+#
+# THE ACTUAL FIX therefore lives one layer up, in the CONSUMER's own CMake run
+# rather than in this export: spade/cmake/spadeConfig.cmake.in, AFTER
+# confirming yaml-cpp::yaml-cpp exists (its own explicit check, mirroring
+# glm's), does `set_property(TARGET spade::world APPEND PROPERTY
+# INTERFACE_LINK_LIBRARIES yaml-cpp::yaml-cpp)` -- legal precisely because
+# that runs inside find_package(spade)'s OWN config-processing, on an already
+# fully-formed IMPORTED target, entirely outside Spade's own install(EXPORT)
+# validation. The observable effect for a consumer is identical to what a
+# working install-interface entry would have produced: linking spade::sim (or
+# anything above spade::world) pulls yaml-cpp::yaml-cpp onto their final link
+# line transitively. spade/tests/consumer/ is the worked example that calls
+# the loader and proves the closure.
 target_link_libraries(spade_world
     PUBLIC
         spade::core
         spade::state
         $<BUILD_INTERFACE:glm::glm>
     PRIVATE
+        $<BUILD_INTERFACE:yaml-cpp::yaml-cpp>
         $<BUILD_LOCAL_INTERFACE:spade_warnings>
         $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
 )
@@ -230,6 +303,7 @@ add_library(spade_state STATIC
     state/snapshot.cpp
 )
 add_library(spade::state ALIAS spade_state)
+set_target_properties(spade_state PROPERTIES EXPORT_NAME state)
 
 target_include_directories(spade_state PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -300,6 +374,7 @@ add_library(spade_physics STATIC
     physics/forces.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
+set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)
 
 target_include_directories(spade_physics PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -364,10 +439,14 @@ install(DIRECTORY physics/ DESTINATION include/physics FILES_MATCHING PATTERN "*
 # body_flags). A spade_sensors target would be a library with exactly one
 # consumer in the same directory.
 #
-# NOT LISTED HERE: engine/testing/replay.hpp. It is header-only TEST SUPPORT
-# (the determinism digest and the scenario harness), included by spade/tests/
-# only, and deliberately absent from every target and every install rule -- a
-# consumer of the installed package has no business with it.
+# NOT LISTED HERE: engine/testing/. It holds header-only TEST SUPPORT --
+# replay.hpp (the determinism digest and the scenario harness) and, since S5
+# Task 7, scenario_file.hpp (the scenario-file loader) -- included by
+# spade/tests/ only, and deliberately absent from every target and every
+# install rule. Note that every install(DIRECTORY ...) above names ONE module
+# directory (core/, world/, state/, physics/, sim/, sensors/, vehicles/), so
+# nothing sweeps testing/ by accident; adding a header there ships nothing.
+# A consumer of the installed package has no business with any of it.
 #
 # $<BUILD_LOCAL_INTERFACE:...> on the warnings link, not plain PRIVATE -- see the
 # long note on spade_core's warnings link above.
@@ -379,6 +458,7 @@ add_library(spade_sim STATIC
     sim/world_set.cpp
 )
 add_library(spade::sim ALIAS spade_sim)
+set_target_properties(spade_sim PROPERTIES EXPORT_NAME sim)
 
 target_include_directories(spade_sim PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -449,6 +529,7 @@ add_library(spade_vehicles STATIC
     vehicles/quadrotor.cpp
 )
 add_library(spade::vehicles ALIAS spade_vehicles)
+set_target_properties(spade_vehicles PROPERTIES EXPORT_NAME vehicles)
 
 target_include_directories(spade_vehicles PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
@@ -474,6 +555,47 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 install(EXPORT spadeTargets
     FILE spadeTargets.cmake
     NAMESPACE spade::
+    DESTINATION lib/cmake/spade
+)
+
+# ------------------------------------------------------------------------------
+# spadeConfig.cmake / spadeConfigVersion.cmake (Task 8: the kat build wiring) --
+# what makes `find_package(spade CONFIG REQUIRED)` work for an OUT-OF-TREE
+# consumer (spade/tests/consumer/, .github/workflows/spade.yml's install+consume
+# CI step). install(EXPORT) above only emits spadeTargets.cmake, the raw target
+# definitions; CMake's config mode looks for a file named spadeConfig.cmake (or
+# spade<Version>Config.cmake) to find its way TO that file at all, and for a
+# spadeConfigVersion.cmake to perform the compatibility check a versioned
+# find_package(spade) call makes.
+#
+# configure_package_config_file, not a hand-rolled @PACKAGE_INIT@ substitution:
+# it is what defines PACKAGE_PREFIX_DIR and opens the PACKAGE_INIT block
+# ../cmake/spadeConfig.cmake.in starts with, which is what keeps every path
+# inside that file relocatable to wherever a consumer's CMAKE_PREFIX_PATH
+# happens to point rather than baked in as THIS build's absolute prefix.
+#
+# SameMajorVersion, version ${PROJECT_VERSION} (project(Spade VERSION 0.2.0),
+# spade/CMakeLists.txt): any 0.x.y request is accepted -- the same "no
+# stability promise yet" posture 0.x carries everywhere else in this tree --
+# and a 1.0.0 request would be rejected once the project actually reaches 1.0.
+# ------------------------------------------------------------------------------
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    ${PROJECT_SOURCE_DIR}/cmake/spadeConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/spadeConfig.cmake
+    INSTALL_DESTINATION lib/cmake/spade
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/spadeConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/spadeConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/spadeConfigVersion.cmake
     DESTINATION lib/cmake/spade
 )
 
@@ -527,7 +649,9 @@ target_link_libraries(spade_viewer PRIVATE
 # own /WX), not a warning-level drop, so bridge.cpp's warnings still print
 # during a build, they simply do not fail it.
 target_link_libraries(spade_viewer PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings>)
-set_source_files_properties(tools/viewer/bridge.cpp PROPERTIES
-    COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/WX->;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-error>"
-)
+# S5 T9 /WX ticket: the /WX- override that used to sit here is REMOVED --
+# bridge.cpp now includes <windows.h> before anything that reaches glad.h
+# transitively (see bridge.cpp's own file-top comment for the mechanism), and
+# that alone lets bridge.cpp survive full /W4 /WX like every other v2 TU in
+# this target. Literal before/after build output is in this task's report.
 endif()

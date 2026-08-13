@@ -85,10 +85,51 @@ struct WorldDesc {
     Environment environment{};
     Capacities capacities{};
 
+    // RENDER-ONLY references (mesh/material ids the presentation layer
+    // resolves). Physics never reads these -- no pass, no digest, no snapshot
+    // touches them -- and the only thing validation asks is that each one is
+    // non-empty. They live here rather than in a parallel side table because
+    // the world file is one document: a world's visuals travel with the world
+    // that owns them, and a loader that dropped them would not round-trip.
+    std::vector<std::string> visual_refs;
+
     // Spawn names are unique in a validated WorldDesc, so this is unambiguous.
     // Returns nullptr when there is no such spawn point.
     [[nodiscard]] const SpawnPoint* find_spawn(std::string_view spawn_name) const noexcept;
 };
+
+// ---------------------------------------------------------------------------
+// THE ONE VALIDATION. Everything that can produce a WorldDesc runs exactly
+// this function -- WorldBuilder::build() (construct, then validate, then move
+// out) and the YAML loader (world/world_file.hpp: parse, then validate). The
+// engine design's "parse -> same validation -> WorldDesc" is a fact about this
+// call, not a promise two code paths make separately and drift apart on.
+//
+// A THIRD call site exists for the same reason: world/world_ref.hpp's
+// resolve_world() accepts a WorldRef whose desc alternative may hold a
+// WorldDesc that reached the caller some OTHER way -- a test fixture, a
+// generated scene, a hand-assembled aggregate -- and did not necessarily
+// pass through either producer above. resolve_world() validates that copy
+// itself (S5 final-review fix wave, I5) before handing it on, which is what
+// keeps "one validation" true for every WorldDesc an engine consumer can
+// actually reach through the sanctioned WorldRef path, not only the two that
+// build one from scratch.
+//
+// On success returns the SDF program's peak evaluation-stack depth, exactly as
+// SdfProgram::validate() does (0 for a program with no nodes).
+//
+// Codes:
+//   invalid_argument  -- capacity == 0, unnamed/duplicate spawn point,
+//                        non-finite or non-unit spawn pose, non-finite
+//                        environment, empty visual reference, malformed SDF
+//                        postfix, bad node parameters
+//   capacity_exceeded -- SDF program deeper than kMaxSdfDepth
+//
+// It does NOT normalize anything. A loader that re-normalized a spawn
+// quaternion would perturb its last bit and break the file's round trip; the
+// builder normalizes at authoring time instead, and this only checks.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<uint32_t> validate_world_desc(const WorldDesc& desc);
 
 // ---------------------------------------------------------------------------
 // WorldBuilder
@@ -103,6 +144,10 @@ public:
     WorldBuilder& capacities(const Capacities& caps);
     WorldBuilder& spawn(std::string spawn_name, glm::vec3 position,
                         glm::quat orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+
+    // A render-only reference carried with the world (WorldDesc::visual_refs).
+    // Rejected empty; otherwise opaque to the engine.
+    WorldBuilder& visual(std::string ref);
 
     // --- SDF primitives (each pushes one node) -----------------------------
     // `normal` is normalized here; the plane is the half-space dot(p,n) <= offset.
@@ -122,11 +167,10 @@ public:
     WorldBuilder& smooth_union(float k);
 
     // --- product -----------------------------------------------------------
-    // Validates and returns the world. Codes:
-    //   invalid_argument  -- unnamed/duplicate spawn point, capacity == 0,
-    //                        non-finite environment, degenerate pose, malformed
-    //                        SDF postfix, bad node parameters
-    //   capacity_exceeded -- SDF program deeper than kMaxSdfDepth
+    // Construct, then validate_world_desc(), then hand the world over. The
+    // first recorded authoring error (if any) is reported ahead of validation,
+    // because it names the offending CALL, which a check on the finished
+    // product no longer can. See validate_world_desc() above for the codes.
     [[nodiscard]] Result<WorldDesc> build() const;
 
 private:

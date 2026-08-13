@@ -1,0 +1,23 @@
+# The golden corpus is BYTE-EXACT TEST DATA, not ordinary text.
+#
+#   *.world.yaml     tests/test_world_file.cpp compares each one against a
+#                    fresh spade::world_to_yaml() emission, which always writes
+#                    LF.
+#   *.scenario.yaml  tests/test_determinism.cpp loads each one and runs it
+#                    against the digest the file itself carries. Line endings
+#                    do not reach a digest, but these files are authored,
+#                    reviewed and diffed alongside the world files they name,
+#                    and one corpus with two line-ending rules is a trap.
+#
+# This repository's root .gitattributes sets `* text=auto`, and this box has
+# core.autocrlf=true, so without the lines below a checkout would rewrite these
+# files with CRLF endings and the world-file comparisons would fail on Windows
+# while passing on Linux CI. eol=lf (rather than -text) keeps the files
+# diffable and reviewable -- they exist to be read.
+#
+# ONE FILE FOR THE WHOLE CORPUS, at its root: S5 Task 7 consolidated the
+# worlds-local .gitattributes here when the scenarios subdirectory joined, so
+# that a future golden/<something>/ inherits the rule instead of needing to
+# remember it. `git check-attr text eol -- <path>` is how to confirm coverage.
+*.world.yaml text eol=lf
+*.scenario.yaml text eol=lf

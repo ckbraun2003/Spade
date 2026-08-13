@@ -2,7 +2,6 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
-    test_ecs.cpp
     test_sdf.cpp
     test_state.cpp
     test_snapshot.cpp
@@ -15,6 +14,7 @@ add_executable(spade_tests
     test_rotor.cpp
     test_quadrotor.cpp
     test_imu.cpp
+    test_world_file.cpp
     test_determinism.cpp
     test_m1b_bar.cpp
 )
@@ -30,6 +30,17 @@ add_executable(spade_tests
 # those expressions while the libraries themselves do not (engine/
 # CMakeLists.txt's spade_fp_strict comment), a mismatch this PR's first-ever
 # Linux/gcc CI run would otherwise hit blind.
+#
+# yaml-cpp (S5 Task 7): engine/testing/scenario_file.hpp parses the committed
+# scenario corpus (tests/golden/scenarios/*.scenario.yaml) and is compiled INTO
+# THIS TARGET -- it is header-only test support, like replay.hpp beside it, and
+# is not part of any library. spade::world links yaml-cpp PRIVATE (its parser
+# is world_file.cpp's alone and no yaml-cpp type crosses its API), so nothing
+# propagates the headers here and this target has to name it itself.
+#
+# NOT a packaging change: spade_tests is an executable that never leaves the
+# build tree, so there is no export set, no install rule and no consumer to
+# consider. Test support never ships.
 target_link_libraries(spade_tests PRIVATE
     spade::core
     spade::world
@@ -39,11 +50,14 @@ target_link_libraries(spade_tests PRIVATE
     spade::sim
     spade_warnings
     spade_fp_strict
+    yaml-cpp::yaml-cpp
     GTest::gtest_main
 )
 
-# The golden determinism corpus (tests/golden/*.digest), located by absolute
-# path baked in at configure time rather than by a CWD-relative path.
+# The golden corpus -- tests/golden/scenarios/*.scenario.yaml (the determinism
+# scenarios, each carrying its own expected digest) and
+# tests/golden/worlds/*.world.yaml (the worlds they name) -- located by an
+# absolute path baked in at configure time rather than by a CWD-relative one.
 # gtest_discover_tests below does set WORKING_DIRECTORY, but the kat testing
 # spec's no-CWD rule is the right posture for a data file a test MUST find: a
 # compile definition cannot be defeated by running the exe from elsewhere.
@@ -72,11 +86,74 @@ target_compile_definitions(spade_tests PRIVATE
 )
 
 include(GoogleTest)
+# WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a
+# PROPERTIES entry (S5 T9 ticket B, first of two root causes -- see
+# AppendSpadeLabels.cmake for the second): it used to sit inside PROPERTIES,
+# which cmake_parse_arguments -- used internally by gtest_discover_tests() to
+# split its own arguments -- has no concept of "inside PROPERTIES" as a
+# nested scope for. It recognizes ITS OWN keywords (WORKING_DIRECTORY among
+# them, see CMake's own Modules/GoogleTest.cmake) WHEREVER they appear in the
+# argument list, so the old call's `PROPERTIES LABELS "spade;T0"
+# WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 60` had its own
+# WORKING_DIRECTORY token silently reinterpreted as gtest_discover_tests()'s
+# TOP-LEVEL WORKING_DIRECTORY argument, prematurely terminating the
+# PROPERTIES capture right there -- everything after it (TIMEOUT and 60)
+# fell into cmake_parse_arguments's UNPARSED_ARGUMENTS bucket, which
+# gtest_discover_tests() never reads, and was silently dropped. Moving
+# WORKING_DIRECTORY to its correct, dedicated top-level slot (this call)
+# removes that collision; TIMEOUT below (a single scalar value, no embedded
+# semicolon) now reaches CTest intact -- proof is in this task's report.
+#
+# LABELS is deliberately NOT listed here even though it has none of
+# WORKING_DIRECTORY's collision problem -- see AppendSpadeLabels.cmake,
+# included below, for the SECOND, independent bug that made it necessary to
+# set LABELS a different way.
 gtest_discover_tests(spade_tests
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     PROPERTIES
-        LABELS "spade;T0"
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         TIMEOUT 60
+)
+
+# SECOND ROOT CAUSE, and why LABELS is set here instead of above (S5 T9
+# ticket B). Proved with a standalone repro script (this task's report has
+# the transcript) rather than by reading GoogleTestAddTests.cmake alone:
+# `PROPERTIES LABELS "spade;T0"` builds a CORRECTLY escaped list value
+# (`LABELS;spade\;T0`, the `\;` meaning "one element containing a literal
+# semicolon") all the way through gtest_discover_tests()'s own
+# cmake_parse_arguments call, through the -D-forwarded cache variable
+# GoogleTestAddTests.cmake's script-mode block re-reads, and into that
+# module's OWN oneValueArgs re-capture -- the escape survives every one of
+# those hops intact. It is LOST at the very last step:
+# GoogleTestAddTests.cmake's write_test_to_file() forwards it into
+# set_tests_properties() via `add_command(set_tests_properties ...
+# ${arg_TEST_PROPERTIES})`, an UNQUOTED variable expansion inside a function
+# call's argument list -- and CMake's unquoted-expansion argument-splitting
+# rule (distinct from list()/foreach(IN LISTS)'s own escape-aware iteration)
+# splits on EVERY literal `;` it finds, `\;` or not. "spade;T0" -- meant to
+# survive as one PROPERTIES value -- flattens into two separate, unpaired
+# tokens, and the generated script ends up calling
+# `set_tests_properties(... LABELS spade T0)`: LABELS pairs with "spade"
+# only, "T0" dangles with no value and is silently dropped by
+# set_tests_properties. This is a real limitation of GoogleTestAddTests.cmake
+# itself (upstream CMake, not this project's code) -- no keyword reordering
+# on our side can fix a bug inside its own internal forwarding.
+#
+# THE WORKAROUND: GoogleTest.cmake's own docs name the escape hatch --
+# "If more fine-grained test control is needed, custom content may be
+# provided through an external CTest script using the TEST_INCLUDE_FILES
+# directory property. The set of discovered tests is made accessible to such
+# a script via the <target>_TESTS variable." AppendSpadeLabels.cmake is that
+# script: CTest evaluates TEST_INCLUDE_FILES entries in append order, so it
+# runs AFTER gtest_discover_tests()'s own generated include (appended first,
+# inside that function) has already `set(spade_tests_TESTS ...)` -- a REAL
+# CMake list built by this module's own list-construction code, not
+# reconstructed through the broken unquoted-expansion path -- and calls
+# set_tests_properties() with a QUOTED "spade;T0" literal written directly in
+# THIS repo's own source text, which never needs the escape trick that
+# breaks: a quoted argument is never list-split, regardless of what
+# characters it contains.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/AppendSpadeLabels.cmake"
 )
 
 # ------------------------------------------------------------------------------

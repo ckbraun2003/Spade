@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -68,13 +69,25 @@ namespace spade {
 class ArenaSet;
 
 // ---------------------------------------------------------------------------
-// FNV-1a, 64-bit. The schema hash's mixing function -- chosen for being short
-// enough to re-implement from this header in a debugger or a Python tool, not
-// for cryptographic strength (nothing here defends against a crafted
-// collision; restore() re-checks every field the hash covers anyway).
+// FNV-1a, 64-bit. Chosen for being short enough to re-implement from this
+// header in a debugger or a Python tool, not for cryptographic strength
+// (nothing here defends against a crafted collision; restore() re-checks every
+// field the schema hash covers anyway).
 //
-// If a second user of this appears, it belongs in core/hash.hpp; today
-// schema_hash() is the only one, so it lives with it (YAGNI).
+// THE TREE'S SEEDED FOLD, with three users: schema_hash() below, the
+// determinism digest (engine/testing/replay.hpp's state_digest/world_digest)
+// and the world-set config identity (sim/world_set.hpp's config_hash). All
+// three fold THIS function deliberately -- a second implementation of FNV would
+// be a second answer to "did these bytes change". The one near-duplicate in the
+// tree is core/rng.hpp's fnv1a64(string_view): same construction, same
+// constants, but no seed parameter, so it cannot chain a fold; it exists to
+// derive rng domain tags and nothing folds with both.
+//
+// It has outgrown "lives next to its only caller", then, and the honest home is
+// a core/hash.hpp. Left here rather than moved as a drive-by: every consumer
+// above already includes this header for other reasons, and relocating a
+// function whose output is baked into four committed golden digests deserves
+// its own commit rather than a footnote in someone else's.
 // ---------------------------------------------------------------------------
 inline constexpr uint64_t kFnv1a64Offset = 0xcbf29ce484222325ULL;
 inline constexpr uint64_t kFnv1a64Prime = 0x00000100000001b3ULL;
@@ -327,5 +340,43 @@ private:
 // corrupted their own state) -- different reporters, different fault.
 // ---------------------------------------------------------------------------
 [[nodiscard]] Result<void> restore(ArenaSet& arenas, const SnapshotBlob& blob);
+
+// ---------------------------------------------------------------------------
+// One section of a blob, located by name, WITHOUT restoring anything.
+//
+// `payload` is a VIEW INTO the blob's own buffer -- valid for as long as that
+// SnapshotBlob is alive and unmoved, never owned. Read it with memcpy like
+// everything else that comes out of a blob: sections are tightly packed, so a
+// payload can start at any offset and nothing here is legal to
+// reinterpret_cast.
+// ---------------------------------------------------------------------------
+struct BlobSection {
+    uint32_t elem_size = 0;
+    uint32_t world_count = 0;
+    uint32_t capacity_per_world = 0;
+    std::span<const std::byte> payload{};
+};
+
+// ---------------------------------------------------------------------------
+// find_section -- "what does this blob say about the array called `name`?",
+// answered before, and independently of, any decision to restore it.
+//
+// IT EXISTS SO THERE IS EXACTLY ONE BLOB PARSER. Simulation::restore() has to
+// read one section's bytes (the `replay_config` row) BEFORE it hands the blob
+// to restore(), and the alternative -- a second, sim-side walk over the section
+// table -- would duplicate this file's whole trust boundary in a layer that has
+// no business owning it. This runs the SAME bounds-checked parse restore() runs
+// and hands back one section's extents and bytes.
+//
+// STILL NAME-AGNOSTIC. The caller supplies the name; nothing in the state layer
+// knows what any array MEANS, which is the property the header opens with ("the
+// blob is a registry walk and nothing else").
+//
+// Errors: io_error when the blob does not parse (exactly the errors restore()
+// would report for it), not_found when it parses and holds no section by that
+// name. Note that finding a section proves nothing about whether the blob FITS
+// a given registry -- that is restore()'s question, checked there.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<BlobSection> find_section(const SnapshotBlob& blob, std::string_view name);
 
 }  // namespace spade

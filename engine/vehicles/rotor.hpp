@@ -399,9 +399,16 @@
 // files share an identical series (rotor.cpp's note on one_minus_exp_neg
 // derives why both are sound and what unifying them would cost). Mirroring the
 // wrong file's constant is exactly the kind of near-miss this sentence exists
-// to prevent. fp32 exp/sqrt are not bit-identical across implementations, so
-// parity here is a tolerance claim (medium.cpp says the same); the BRANCH
-// STRUCTURE and op order are exact.
+// to prevent.
+//
+// SINCE S5 TASK 1 THAT PARITY IS AN EXACT CLAIM, NOT A TOLERANCE ONE. This
+// file's only transcendental is core/fp32_math.hpp's exp32, built from
+// IEEE-mandated operations alone; std::sqrt is correctly rounded by mandate.
+// So every operation here is one the standard pins, and two conforming
+// implementations must agree bit for bit -- provided the S6 Slang mirror
+// mirrors exp32 rather than reaching for HLSL's exp() intrinsic, which is
+// specified only to a relative tolerance. world/medium.cpp's parity note says
+// the same thing about the same kernel.
 // ===========================================================================
 
 namespace spade::vehicles {
@@ -461,11 +468,19 @@ static_assert(1.0f / kRotorGroundDenomFloor <= kRotorMaxGroundFactor,
 // from its Taylor series instead of the closed form (section 5).
 //
 // The SERIES is medium.cpp's one_minus_exp_neg verbatim; this SWITCH POINT is
-// not (medium.cpp uses 0.125). Both sit below the 0.314 crossover where the
-// series stops being the more accurate branch, so both are sound and the
-// difference is a margin choice -- rotor.cpp derives the error model, tabulates
-// the two points, and states what unifying the kernels would cost. Do not
-// "fix" this to match medium.cpp on the assumption that it drifted.
+// not (medium.cpp uses 0.125). Both sit below x = 0.260, the MEASURED crossover
+// at which the truncated series stops being the more accurate branch (0.275 if
+// the comparison is made on worst case rather than on the mean). rotor.cpp
+// carries the model, shows why the model's own answer of 0.2843 is OPTIMISTIC
+// -- it charges the series only its truncation while charging the closed form
+// its total error -- and tabulates the measurement that supersedes it. The
+// pre-S5 comment quoted 0.314, from that same model under the old std::exp
+// assumption.
+//
+// So both thresholds are sound, and the difference between them is a margin
+// choice: 0.125 sits comfortably clear, 0.25 sits 4% from the crossover with a
+// 1.37x accuracy advantage. Do not "fix" either to match the other on the
+// assumption that one drifted.
 inline constexpr float kRotorLagSeriesThreshold = 0.25f;
 
 // ---------------------------------------------------------------------------

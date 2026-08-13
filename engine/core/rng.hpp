@@ -214,7 +214,7 @@ struct Stream {
     // CRT and glibc both implement them to well under one ulp, and they
     // disagree by one ulp on roughly one input in a hundred -- which made the
     // committed determinism corpus a recording of whichever libm generated it.
-    // It was caught exactly that way: tests/golden/bounce.digest reproduced on
+    // It was caught exactly that way: the `bounce` golden reproduced on
     // MSVC and failed on gcc, and the whole of the divergence was
     // cos(0x3FA9EA7E) and sin(0x3F8A17F6) landing one ulp apart inside
     // dryden_init's five draws for two of that scenario's four worlds.

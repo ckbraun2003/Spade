@@ -1,19 +1,14 @@
 #include "world/builder.hpp"
 
-#include <cmath>
 #include <utility>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/validate.hpp"
+
 namespace spade {
 namespace {
-
-[[nodiscard]] bool finite(float v) noexcept { return std::isfinite(v); }
-
-[[nodiscard]] bool finite(const glm::vec3& v) noexcept {
-    return finite(v.x) && finite(v.y) && finite(v.z);
-}
 
 [[nodiscard]] Error invalid(std::string context) {
     return Error{Code::invalid_argument, std::move(context)};
@@ -69,6 +64,15 @@ WorldBuilder& WorldBuilder::spawn(std::string spawn_name, glm::vec3 position,
         return *this;
     }
     desc_.spawns.push_back(SpawnPoint{std::move(spawn_name), position, orientation / qlen});
+    return *this;
+}
+
+WorldBuilder& WorldBuilder::visual(std::string ref) {
+    if (ref.empty()) {
+        fail("visual reference must not be empty");
+        return *this;
+    }
+    desc_.visual_refs.push_back(std::move(ref));
     return *this;
 }
 
@@ -197,17 +201,14 @@ WorldBuilder& WorldBuilder::smooth_union(float k) {
 }
 
 // ---------------------------------------------------------------------------
-// build()
+// validate_world_desc() -- the one validation, shared by build() and by the
+// world-file loader. See the contract in builder.hpp.
 // ---------------------------------------------------------------------------
 
-Result<WorldDesc> WorldBuilder::build() const {
-    if (error_) {
-        return std::unexpected(*error_);
-    }
-
+Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     // Capacities: fixed at creation and never grown, so a zero is always an
     // authoring mistake rather than "unlimited".
-    const Capacities& caps = desc_.capacities;
+    const Capacities& caps = desc.capacities;
     if (caps.bodies == 0) {
         return std::unexpected(invalid("world capacity 'bodies' must be > 0"));
     }
@@ -221,32 +222,76 @@ Result<WorldDesc> WorldBuilder::build() const {
         return std::unexpected(invalid("world capacity 'contacts' must be > 0"));
     }
 
-    // Spawn points: named, and uniquely named -- they are looked up by name.
-    for (size_t i = 0; i < desc_.spawns.size(); ++i) {
-        const SpawnPoint& s = desc_.spawns[i];
+    // Spawn points: named, uniquely named (they are looked up by name), and
+    // carrying a usable pose. The builder's spawn() already rejects a
+    // non-finite position and normalizes the rotation, so for a builder-made
+    // world these re-check what is true by construction -- they exist for the
+    // OTHER producer, the world file, whose numbers came out of a text editor.
+    //
+    // The unit-quaternion tolerance is SdfProgram::validate()'s plane-normal
+    // tolerance (1e-3 on the squared length), deliberately the same number:
+    // both answer "is this direction close enough to unit that the geometry it
+    // describes is still metric", and having two answers to that in one
+    // validator would be a defect waiting to be found.
+    for (size_t i = 0; i < desc.spawns.size(); ++i) {
+        const SpawnPoint& s = desc.spawns[i];
         if (s.name.empty()) {
             return std::unexpected(invalid("spawn point " + std::to_string(i) + " has no name"));
         }
         for (size_t j = 0; j < i; ++j) {
-            if (desc_.spawns[j].name == s.name) {
+            if (desc.spawns[j].name == s.name) {
                 return std::unexpected(invalid("duplicate spawn point name '" + s.name + "'"));
             }
         }
+        if (!finite(s.position)) {
+            return std::unexpected(
+                invalid("spawn point '" + s.name + "' has a non-finite position"));
+        }
+        if (!finite(s.orientation)) {
+            return std::unexpected(
+                invalid("spawn point '" + s.name + "' has a non-finite orientation"));
+        }
+        const glm::quat& q = s.orientation;
+        const float q2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+        if (!(glm::abs(q2 - 1.0f) <= 1e-3f)) {
+            return std::unexpected(
+                invalid("spawn point '" + s.name + "' orientation must be a unit quaternion"));
+        }
     }
 
-    const Environment& env = desc_.environment;
+    const Environment& env = desc.environment;
     if (!finite(env.gravity) || !finite(env.wind) || !finite(env.air_density) ||
         !finite(env.temperature_k)) {
         return std::unexpected(invalid("environment has non-finite values"));
     }
 
+    // Render-only, and the engine's only claim about one is that it names
+    // something. An empty string names nothing and is always a mistake.
+    for (size_t i = 0; i < desc.visual_refs.size(); ++i) {
+        if (desc.visual_refs[i].empty()) {
+            return std::unexpected(
+                invalid("visual reference " + std::to_string(i) + " is empty"));
+        }
+    }
+
     // Structural + parameter validation of the SDF program, including the
-    // kMaxSdfDepth bound (reported as capacity_exceeded).
-    const Result<uint32_t> depth = desc_.sdf.validate();
+    // kMaxSdfDepth bound (reported as capacity_exceeded). Returns the peak
+    // evaluation-stack depth, which is this function's own result.
+    return desc.sdf.validate();
+}
+
+// ---------------------------------------------------------------------------
+// build()
+// ---------------------------------------------------------------------------
+
+Result<WorldDesc> WorldBuilder::build() const {
+    if (error_) {
+        return std::unexpected(*error_);
+    }
+    const Result<uint32_t> depth = validate_world_desc(desc_);
     if (!depth) {
         return std::unexpected(depth.error());
     }
-
     return desc_;
 }
 

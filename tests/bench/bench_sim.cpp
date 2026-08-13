@@ -174,8 +174,8 @@ constexpr uint32_t kSubsteps = 1;
     // void world) and spaced 2 m apart so the broad phase buckets them into
     // distinct cells rather than one degenerate pile -- this sweep is about
     // general step-loop scaling with N, not about stressing Gauss-Seidel
-    // contact resolution (that is shower.digest's job in the determinism
-    // corpus).
+    // contact resolution (that is the `shower` scenario's job in the
+    // determinism corpus).
     const uint32_t side = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(body_count))));
     for (uint32_t i = 0; i < body_count; ++i) {
         const uint32_t row = i / side;

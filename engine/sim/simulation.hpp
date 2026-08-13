@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -326,6 +329,96 @@ struct ImuSensorSpawn {
     float sigma_ba = 0.0f;                           // accel bias walk step, m/s^2 per sample
     float sigma_bg = 0.0f;                           // gyro bias walk step, rad/s per sample
 };
+
+// ---------------------------------------------------------------------------
+// ReplayConfig -- the run's identity, as registered state (ticket M-1).
+//
+// WHAT PROBLEM THIS SOLVES. A snapshot blob is a registry walk: it carries
+// STATE and, deliberately, no configuration at all. So until this record
+// existed, `sim.restore(blob)` accepted any blob whose ARRAY SHAPES matched --
+// and two Simulations built from world sets that disagree about restitution,
+// about turbulence, about the SDF geometry, or running at a different substep
+// h, have byte-identical shapes. The blob loaded, the state was correct, and
+// every subsequent step ran different physics. restore()'s own doc comment used
+// to name that hole and hand it to the caller as a contract ("pairing a blob
+// with the (WorldSetDesc, dt_ns, substeps) it came from is the caller's
+// contract"). This record is that contract made ENFORCEABLE: the three numbers
+// below ride in the walk, so they are in every blob, and restore() compares
+// them before it writes a byte.
+//
+// IT IS CONFIGURATION LIVING IN STATE, WHICH IS THE POINT. Other registered
+// arrays hold per-element parameters too (physics::DragBodyRow's coefficients,
+// vehicles::RotorRow's curves), but those belong to a spawned thing and change
+// with its lifecycle; this one is a WHOLE-RUN CONSTANT, and it is the only
+// array in the walk that is. It is written EXACTLY ONCE, by create(), and
+// thereafter read-only to the whole engine; no pass touches it, and the only
+// other write in its life is restore() copying back bytes it has already proven
+// identical. So it is a constant in every run, which is precisely what makes it
+// a usable identity: it is the same in the blob and in the target, or the
+// pairing is wrong.
+//
+// 32 BYTES, std430-safe, laid out with the same battery discipline as
+// physics::ContactParams: every byte belongs to a named field, so the record
+// hashes and compares byte-wise with nothing left to reason about. `_pad` and
+// `_reserved0` are that discipline, not decoration -- `_pad` keeps
+// `config_hash` on its natural 8-byte boundary, and `_reserved0` is the growth
+// slot a version-2 field takes without moving anything.
+//
+// WHY THE HASH AND NOT THE DESC ITSELF. Storing the WorldSetDesc would mean
+// serializing SDF programs into every blob -- unbounded, and a format to
+// version. A 64-bit identity answers the only question restore() asks ("is this
+// the same configuration?") in eight bytes. It cannot say WHAT differs, which
+// is why the error message says which of the three FIELDS diverged and leaves
+// the diffing of two world sets to the caller who has both.
+// ---------------------------------------------------------------------------
+struct ReplayConfig {
+    uint64_t dt_ns;        // Simulation::dt_ns() -- the STEP duration, ns
+    uint32_t substeps;     // Simulation::substeps() -- substeps per step
+    uint32_t _pad;         // keeps config_hash 8-byte aligned; must stay 0
+    uint64_t config_hash;  // config_hash(WorldSetDesc) -- see sim/world_set.hpp
+    uint64_t _reserved0;   // reserved for versioned growth; must stay 0
+};
+
+// The layout battery, in physics/contacts.hpp's style and for its stated
+// reason: these asserts are the enforcement, not decoration. This record is
+// registered state, so its byte image is part of every snapshot blob and every
+// committed golden digest -- a layout change a human would have missed becomes
+// a build error here rather than a corpus-wide digest move nobody can explain.
+static_assert(std::is_standard_layout_v<ReplayConfig>,
+              "ReplayConfig must be standard-layout for offsetof to be meaningful");
+static_assert(std::is_trivially_copyable_v<ReplayConfig>,
+              "ReplayConfig must be memcpy-able: snapshots copy it byte-wise");
+static_assert(std::is_trivially_destructible_v<ReplayConfig>,
+              "registered array slots are never individually destroyed");
+static_assert(sizeof(ReplayConfig) == 32, "ReplayConfig layout is a snapshot contract");
+// std430 gives a struct the alignment of its largest member -- 8 here, since
+// nothing in it is a vec3/vec4. Asserted rather than assumed because ArenaSet
+// requires alignof(T) <= 16 and because a stray glm member would silently
+// change both this and the stride.
+static_assert(alignof(ReplayConfig) == 8, "ReplayConfig layout is a snapshot contract");
+static_assert(offsetof(ReplayConfig, dt_ns) == 0);
+static_assert(offsetof(ReplayConfig, substeps) == 8);
+static_assert(offsetof(ReplayConfig, _pad) == 12);
+static_assert(offsetof(ReplayConfig, config_hash) == 16);
+static_assert(offsetof(ReplayConfig, _reserved0) == 24);
+static_assert(offsetof(ReplayConfig, dt_ns) % 8 == 0, "uint64 needs 8-byte alignment in std430 too");
+static_assert(offsetof(ReplayConfig, config_hash) % 8 == 0, "uint64 needs 8-byte alignment in std430 too");
+// Named fields account for every byte: no IMPLICIT padding anywhere in
+// ReplayConfig. Without this the two `_` lanes would be indistinguishable from
+// compiler padding, and a byte-wise comparison of two rows -- which is what a
+// snapshot restore performs -- could differ on bytes no field owns.
+static_assert(sizeof(ReplayConfig::dt_ns) + sizeof(ReplayConfig::substeps) + sizeof(ReplayConfig::_pad) +
+                      sizeof(ReplayConfig::config_hash) + sizeof(ReplayConfig::_reserved0) ==
+                  sizeof(ReplayConfig),
+              "ReplayConfig has implicit padding: every byte must belong to a named field");
+
+// The registered name of the ReplayConfig array. PUBLIC, unlike the other eight
+// array names (which are private constants in sim/simulation.cpp), because two
+// things outside this file key on it by name: a caller inspecting a blob's
+// configuration without restoring it (find_section(), state/snapshot.hpp), and
+// the per-world replay digest, which must SKIP it -- see the normalization note
+// in engine/testing/replay.hpp.
+inline constexpr std::string_view kReplayConfigArray = "replay_config";
 
 class Simulation {
 public:
@@ -692,19 +785,142 @@ public:
     // error at all, and only by way of an array lookup that cannot fail on a set
     // this object registered itself. Stated rather than claimed away.
     //
-    // WHAT THIS DOES NOT RESTORE: configuration. The SDF programs, material,
-    // grid and turbulence records come from the WorldSetDesc this Simulation
-    // was created with, not from the blob -- AND SO DOES THE STEP
-    // DECOMPOSITION, dt_ns/substeps, which the blob does not carry either, AND
-    // SO DOES THE MODEL REGISTRY (register_model(); the ids a replay uses must
-    // come from re-registering the same models in the same order). The
-    // schema hash catches a SHAPE mismatch (different arrays, capacities or
-    // world count); it cannot catch a restore into a set with a different
-    // restitution, or into one running the same state forward at a different
-    // substep h. Pairing a blob with the (WorldSetDesc, dt_ns, substeps) it came
-    // from is the caller's contract.
+    // ---------------------------------------------------------------------
+    // WHAT THIS DOES NOT RESTORE -- AND WHAT IT NOW DETECTS INSTEAD.
+    //
+    // CONFIGURATION IS STILL NOT RESTORED, and cannot be: the SDF programs, the
+    // material, grid and turbulence records, the environment and the step
+    // decomposition all come from the (WorldSetDesc, dt_ns, substeps) THIS
+    // Simulation was created with, and a blob carries none of them. Neither is
+    // the MODEL REGISTRY (register_model(); the ids a replay uses must come
+    // from re-registering the same models in the same order -- that one is
+    // still an unchecked caller obligation, because model types are not
+    // registered state and have no identity in the walk).
+    //
+    // WHAT CHANGED (ticket M-1) IS THAT A MISMATCH IS NO LONGER SILENT. The
+    // `replay_config` array (see ReplayConfig above) carries this run's
+    // (dt_ns, substeps, config_hash) as registered state, so it is in every
+    // blob. Before a single arena byte is written, this function locates that
+    // section in the blob and compares its WHOLE PAYLOAD, byte for byte,
+    // against the LIVE registered array -- every world's row and every reserved
+    // lane, not merely the three named fields, because the restore would
+    // overwrite all of them. Any difference is invalid_argument, naming which
+    // of the three diverged (or saying plainly when the difference lies outside
+    // them). The old contract -- "pairing a blob with the (WorldSetDesc,
+    // dt_ns, substeps) it came from is the caller's contract" -- has therefore
+    // shrunk to "pair the blob with a COMPATIBLE world set", and that is now
+    // enforced rather than merely documented.
+    //
+    // THE THREE LAYERS OF CHECK, and why none of them subsumes another:
+    //   * WORLD COUNT and the schema hash catch a SHAPE mismatch -- different
+    //     arrays, element sizes, capacities or world count. They say nothing
+    //     about VALUES, so two sets differing only in restitution pass them
+    //     both, byte for byte.
+    //   * The config check catches exactly that: SAME SHAPE, DIFFERENT
+    //     PHYSICS. It is a hash comparison, so it names the field, not the
+    //     difference. It DEFERS to the shape verdict -- when the schema hash
+    //     already disagrees it stands down, because "array 'bodies': shape 2x5
+    //     in the blob, 2x4 in the registry" is a more useful sentence than
+    //     "you paired the wrong blob". So the only blob it can reject is one
+    //     the state layer would have accepted.
+    //   * The blob parse and the section-by-section match catch a corrupt or
+    //     foreign blob. All three run before anything is written.
+    //
+    // WHAT IT STILL CANNOT CATCH, stated rather than claimed away: a
+    // Simulation created from a desc that hashes the same is accepted, which is
+    // what a 64-bit identity means (see world_set.hpp's "not cryptographic"
+    // note); and the model registry, above.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> restore(const SnapshotBlob& blob);
+
+    // --- reseed -------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // reseed -- rewrite every world's rng root from a new SCENE seed, in
+    // place, and re-derive everything that had already cached a stream from
+    // the old one (engine design Addendum A3's second conformance case).
+    //
+    // This is what a training loop calls between episodes: same world set,
+    // same arenas, same roster, same model registry, same refs -- a fresh
+    // draw of every stochastic system. The alternative, destroying the
+    // Simulation and create()ing another one from a WorldSetDesc carrying new
+    // seeds, reallocates every arena, forgets every registered model and
+    // invalidates every BodyRef, which is a great deal of ceremony for "give
+    // me different weather".
+    //
+    // THE DERIVATION IS replicate()'s, VERBATIM:
+    //
+    //     WorldParams::seed = splitmix64(scene_seed ^ fnv1a64("world") ^ w)
+    //
+    // -- the same expression sim/world_set.cpp's replicate() computes, under
+    // the same pinned kWorldSeedDomainTag, over the same world INDEX. The
+    // equality is the point rather than a
+    // coincidence: a set reseeded to S is seed-for-seed the set
+    // `replicate(prototype, N, S)` would have built, so "reseed this set" and
+    // "rebuild it with a new scene seed" cannot drift apart. It also inherits
+    // errata-R4's domain separation unchanged -- adding a fifth world does not
+    // perturb the first four's roots.
+    //
+    // ---------------------------------------------------------------------
+    // WHAT IT REWRITES, AND WHY THE LIST IS EXACTLY THESE THREE THINGS
+    //
+    // The world seed is NOT read by the step loop. It is read ONCE by each
+    // system that derives a stream from it, and from then on the DERIVED
+    // STREAM is the live state -- which makes rewriting the seed only half a
+    // reseed. Every cached derivation has to be re-derived too, and the
+    // complete inventory of them is:
+    //
+    //   1. WorldParams::seed itself (state/layout.hpp) -- THE AUTHORITY, and
+    //      the only place a seed is stored. WorldConfig deliberately holds no
+    //      copy (see its "NO `seed` MEMBER" note below), which is exactly what
+    //      makes this a single write rather than a two-place update that could
+    //      half-fail. create() is the only other writer.
+    //   2. DrydenState, one row per world -- derived by dryden_init() under
+    //      the "dryden" tag at index 0 (world/medium.cpp). Re-run per world
+    //      AFTER the seed write, in create()'s order and for create()'s
+    //      reason: dryden_init both derives the stream and places the filter
+    //      on its stationary distribution, so the world starts gusty instead
+    //      of burning off a spin-up transient.
+    //   3. Every LIVE ImuSensorRow::noise -- derived at OpKind::init_imu from
+    //      (WorldParams::seed, WORLD-LOCAL sensor slot) via
+    //      sensors::imu_noise_stream(). Re-derived for every ALLOCATED sensor
+    //      row in the world, so a sensor that predates the reseed draws from
+    //      the new stream exactly like one added after it. World-local, like
+    //      the spawn path's, so a world's noise still does not depend on where
+    //      that world sits in the set.
+    //
+    // AND NOTHING ELSE -- a checkable claim, not a hope. WorldParams::seed is
+    // read at exactly three sites in the engine (create()'s row write,
+    // dryden_init(), and imu_noise_stream() at init_imu), and an rng::Stream
+    // is only ever constructed from a world seed at the latter two; every
+    // other stochastic value in the engine is a draw from one of those two
+    // streams, so re-deriving them re-randomizes everything downstream by
+    // construction. A future system that derives a THIRD stream from the world
+    // seed belongs in this list, and the A3 conformance test in
+    // tests/test_m1b_bar.cpp is what will catch its absence: a system left
+    // behind keeps its old stream, so a reseeded run would still agree with
+    // the un-reseeded one on that system's contribution.
+    //
+    // WHAT IT DOES NOT TOUCH: THE PAST. Ring contents, ring cursors
+    // (last_index), rate-divider phase and the accumulated bias states all
+    // stay exactly as they are. A RESEED CHANGES THE FUTURE DRAWS, NOT THE
+    // HISTORY: unpolled samples are readings that genuinely happened and a
+    // caller is still entitled to them, and rewinding a bias state would
+    // invent a different past for a sensor that is physically the same device.
+    // Body state, rotor state, the tick, the model registry and the arenas'
+    // shape are untouched for the same reason -- this call is about
+    // randomness and nothing else.
+    //
+    // Refuses (invalid_argument) while the structural queue is non-empty,
+    // mirroring snapshot() and for a related reason: a queued op carries its
+    // own seeding (init_imu derives its stream from the WorldParams row AT
+    // FLUSH TIME) while a queued despawn's rows are still allocated, so the
+    // outcome of a reseed issued over a pending queue would depend on how the
+    // two interleave rather than on the state alone. Requiring an empty queue
+    // makes a reseed a function of the FLUSHED state and the scene seed, full
+    // stop. Call step() or flush_structural() first.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<void> reseed(uint64_t scene_seed);
 
     // --- state inspection --------------------------------------------------
 
@@ -729,6 +945,79 @@ public:
     // from the state it is looking at rather than from a variable it kept.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<BodyRef> body_ref_at(uint32_t world_index, uint32_t local_slot) const;
+
+    // ---------------------------------------------------------------------
+    // vehicle_ref_at -- the VEHICLE analog of body_ref_at(): a live VehicleRef
+    // re-derived from the state alone, with no memory of the spawn that
+    // produced it (ticket T18-M2).
+    //
+    // WHY IT HAS TO EXIST. A VehicleRef captured before a snapshot is STALE
+    // after a restore, for exactly body_ref_at's reason -- the restore rewinds
+    // the generation counters with everything else -- and a vehicle's ref
+    // carries MORE than a body's: the rotor and sensor slots its commands are
+    // addressed through. So an input script that commands rotors across a
+    // replay resume point cannot hold a ref; it has to be able to ask the
+    // state which vehicle is which. That is this function.
+    //
+    // ---------------------------------------------------------------------
+    // WHAT `vehicle_ordinal` COUNTS, precisely, because it is NOT a slot.
+    //
+    // A VEHICLE, IN THE STATE, IS A LIVE BODY THAT OWNS AT LEAST ONE ROTOR
+    // ROW. There is no "is a vehicle" flag anywhere -- a model type is
+    // configuration, not registered state (see register_model), so the rotor
+    // rows naming a body are the only evidence in the walk that the body was
+    // manufactured from one. A rotorless model is therefore INVISIBLE here and
+    // deliberately so: nothing distinguishes its instance from a bare body
+    // with a drag element bolted on, and inventing a distinction would mean
+    // inventing state.
+    //
+    // THE ORDINAL IS THE POSITION IN ASCENDING WORLD-LOCAL BODY SLOT ORDER
+    // among those vehicles, 0-based. Slots are allocated lowest-free-first in
+    // call order (spawn()), so on an UNFRAGMENTED partition -- one that has
+    // seen no despawn -- that is exactly CREATION ORDER, which is the sense in
+    // which "vehicle 1" means "the second vehicle this scenario spawned into
+    // this world" and survives a restore.
+    //
+    // WHERE THAT EQUIVALENCE ENDS, stated rather than left to be discovered:
+    // a despawn renumbers. The vehicle whose despawn is queued stops being
+    // live the moment despawn() returns (the generation parity says so, and
+    // this function honours it exactly as body_ref_at does), so every vehicle
+    // after it in the world moves down one ordinal, and a later respawn into
+    // the freed slot lands wherever that slot sits rather than at the end.
+    // body_ref_at's addressing does not renumber, because a SLOT is an
+    // address; an ordinal is a census. A caller that despawns vehicles and
+    // needs stable addressing wants the body slot, not this.
+    //
+    // ROTOR AND SENSOR ORDER IS ASCENDING SLOT ORDER, which is the model's
+    // DECLARATION order under the same unfragmented-arena condition and for
+    // the same reason (spawn() reserves a model's rotors in declaration
+    // order). VehicleRef's own header note explains why the spawn path carries
+    // the slots inline rather than re-deriving them this way: after churn the
+    // free list can hand a vehicle's four rotors non-contiguous slots, and
+    // then "ascending slot order" and "declaration order" part company. That
+    // caveat is inherited here in full -- this function is the resume door,
+    // not a replacement for the ref spawn() returned.
+    //
+    // `model` IS LEFT NULL, and that is not an oversight. The model registry
+    // is configuration: it is not in any blob, restore() does not rebuild it,
+    // and no ModelTypeId appears anywhere in the state -- so there is nothing
+    // to read it back from, and guessing (by matching live rotor rows against
+    // registered models) would hand back a plausible answer that is sometimes
+    // wrong. Nothing in the engine reads VehicleRef::model today; every entry
+    // point that takes a VehicleRef validates `body` and indexes the slots.
+    //
+    // COST: O(bodies * elements) in the world's declared capacities. It is a
+    // query -- a resume, a tool, an editor selection -- never a step-path
+    // call, and it is spelled for clarity accordingly.
+    //
+    // Codes: invalid_argument for a world index outside the set; not_found
+    // when the world holds fewer than `vehicle_ordinal + 1` live vehicles;
+    // internal if a body somehow owns more rotors or sensors than a model may
+    // declare (vehicles::kMaxModelRotors / kMaxModelImuMounts), which the
+    // spawn path makes unreachable.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<VehicleRef> vehicle_ref_at(uint32_t world_index,
+                                                    uint32_t vehicle_ordinal) const;
 
     // This world's runtime parameter row (gravity, wind, density, seed, and the
     // body_count mirror). Read-only: WorldParams is written by create() and by
@@ -789,6 +1078,7 @@ public:
     [[nodiscard]] ArrayId<sensors::ImuSensorRow> imu_sensors_array() const noexcept { return imu_id_; }
     [[nodiscard]] ArrayId<sensors::ImuSample> imu_ring_array() const noexcept { return imu_ring_id_; }
     [[nodiscard]] ArrayId<vehicles::RotorRow> rotors_array() const noexcept { return rotors_id_; }
+    [[nodiscard]] ArrayId<ReplayConfig> replay_config_array() const noexcept { return replay_config_id_; }
 
 private:
     // What one world's passes read that is not per-body state. Copied from the
@@ -846,6 +1136,13 @@ private:
     // wrong thing -- structurally impossible.
     [[nodiscard]] Result<void> rebuild_views();
 
+    // The pre-apply half of restore(): "was this blob produced under the same
+    // (dt_ns, substeps, config_hash) this Simulation runs?". Reads the blob and
+    // this object's own registered row; writes nothing, so a failure leaves the
+    // whole tree untouched. See its definition for why it can only ever ADD a
+    // rejection, never mask one of the state layer's.
+    [[nodiscard]] Result<void> check_replay_config(const SnapshotBlob& blob) const;
+
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
     void free_drag_elements_of(uint32_t world_index, uint32_t body_slot);
     void free_imu_sensors_of(uint32_t world_index, uint32_t body_slot);
@@ -884,6 +1181,9 @@ private:
     ArrayId<sensors::ImuSensorRow> imu_id_{};
     ArrayId<sensors::ImuSample> imu_ring_id_{};
     ArrayId<vehicles::RotorRow> rotors_id_{};
+    // REGISTERED LAST, and that is load-bearing rather than incidental -- see
+    // the APPEND-ONLY note over create()'s registration block.
+    ArrayId<ReplayConfig> replay_config_id_{};
 
     Tick tick_{};
     uint64_t dt_ns_ = 0;

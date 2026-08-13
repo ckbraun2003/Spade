@@ -11,9 +11,21 @@
 #include "physics/grid.hpp"
 #include "sensors/imu.hpp"
 #include "state/layout.hpp"
-#include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
+
+// vehicles::RotorRow -- forward-declared, not included (S5 T9 schedule seam
+// ticket, mechanical per the T18 reviewer's sketch): WorldSubstepView::rotors
+// below is a std::span<vehicles::RotorRow>, and a span of an incomplete type
+// is valid until element access -- this header never dereferences a rotor,
+// only names the type for the span's declaration. The complete definition is
+// pulled in by physics/schedule.cpp, the one TU that actually walks
+// `rotors` (via vehicles::apply_rotors()). Proven with both compilers via
+// CI (this task's report has the run); revert-and-document if a compiler
+// disagreed -- see this comment's own presence for which outcome landed.
+namespace spade::vehicles {
+struct RotorRow;
+}  // namespace spade::vehicles
 
 // ---------------------------------------------------------------------------
 // THE SUBSTEP PASS SCHEDULE (engine design spec §3 "The step model").

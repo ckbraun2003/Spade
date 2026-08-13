@@ -19,7 +19,11 @@
 // fixed-size automatic array of kMaxSdfDepth floats -- eval() never allocates.
 //
 // CONVENTIONS (parity-relevant -- the GPU port must match these exactly):
-//   * fp32 everywhere; no doubles, no transcendentals beyond sin/sqrt.
+//   * fp32 everywhere; no doubles, and the only transcendental is the
+//     heightfield's sine -- core/fp32_math.hpp's sin32, NEVER std::sin, since
+//     this field feeds contacts and therefore the determinism corpus (see the
+//     long note at that call site in sdf.cpp). std::sqrt stays: IEEE mandates
+//     it correctly rounded, so it is already bit-identical everywhere.
 //   * Local axes: cylinder and capsule are aligned to local +Y; the torus ring
 //     lies in the local XZ plane with its hole axis along local +Y; the
 //     heightfield's up axis is local +Y. Anything else is expressed with the

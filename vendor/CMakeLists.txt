@@ -118,8 +118,12 @@ set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(benchmark)
 
 # ------------------------------------------------------------------------------
-# yaml-cpp (pinned now for the world-file parser, Task 10+; nothing links it
-# yet, so EXCLUDE_FROM_ALL keeps a plain build from compiling it for nothing)
+# yaml-cpp: the versioned YAML world file's parser (engine D7). As of S5 Task 5
+# it IS linked -- PRIVATE into spade_world (engine/CMakeLists.txt), whose
+# world/world_file.cpp is its only consumer; no yaml-cpp type appears in any
+# Spade header. EXCLUDE_FROM_ALL stays and still earns its place: it keeps
+# yaml-cpp's own auxiliary targets out of the default `all` target, while the
+# library itself is now built on demand because a target depends on it.
 # ------------------------------------------------------------------------------
 # 0.8.0's own CMakeLists.txt declares cmake_minimum_required(VERSION 2.8.12),
 # which current CMake (compatibility below 3.5 removed) rejects outright.

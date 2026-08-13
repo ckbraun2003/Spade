@@ -1,11 +1,12 @@
 #include "vehicles/rotor.hpp"
 
-#include <cmath>
+#include <cmath>  // std::sqrt (IEEE-mandated), std::isnan, std::fabs
 
 #include <glm/glm.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/fp32_math.hpp"
 #include "physics/integrator.hpp"  // body_flags::active
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,13 @@ namespace {
 //
 // to x^6; at this file's 0.25 threshold the first dropped term is 1.2e-8
 // absolute against a value of 0.2212, i.e. 5.5e-8 relative -- under an fp32
-// ulp of 1, and about 4x better than the closed form manages at that point.
+// ulp of 1. END TO END, with BOTH branches evaluated exactly as this file
+// spells them and measured against a double -expm1 reference, the series is
+// 1.37x better than the closed form at 0.25 (worst case over the surrounding
+// floats; 1.28x on the mean). NOT the 2.5x-7.4x an earlier revision of this
+// note claimed: that figure compared the series' TRUNCATION against the closed
+// form's TOTAL error, which is not a comparison of like with like. The same
+// correction applies to the crossover derivation below.
 //
 // RELATIONSHIP TO medium.cpp's one_minus_exp_neg, STATED EXACTLY, because a
 // reader will reach for it and because rotor.hpp's parity note makes this
@@ -36,21 +43,78 @@ namespace {
 //     uses 0.25 (kRotorLagSeriesThreshold). Two-fold apart, and deliberately
 //     left that way.
 //
-// NEITHER IS WRONG, and the arithmetic says why. The series' relative error is
-// x^7/5040 over the value, i.e. ~x^6/5040. The closed form's is fl(exp(-x))'s
-// ~eps/2 RELATIVE error inherited as an ABSOLUTE one -- the subtraction 1 - e
-// is exact by Sterbenz for x < 0.693 -- hence ~(eps/2)/x relative. The two
-// cross where x^7 = 5040 eps/2, i.e. x = 0.314. BOTH thresholds sit below
-// that, so both files hand over while the series is still the better branch:
+// NEITHER IS WRONG, and the arithmetic says why. Both errors are stated as
+// ABSOLUTE errors on the value, which is the only way to compare them without
+// tripping over the relative/ulp conversion: for every x in the interesting
+// band exp(-x) lies in (0.5, 1), a single binade, where one ulp is 2^-24 =
+// 5.9605e-8 flat.
 //
-//     x       series rel   closed rel
-//     0.125    8.1e-10      4.5e-7      <- medium.cpp switches here
-//     0.25     5.5e-8       2.1e-7      <- this file switches here
-//     0.314    1.4e-7       1.7e-7      <- the actual crossover
+//   * SERIES: absolute truncation x^7/5040 (alternating, so that is an upper
+//     bound on the tail, not just its first term).
+//   * CLOSED FORM: exactly the exponential's own absolute error E, because the
+//     subtraction 1 - e is EXACT by Sterbenz while e >= 0.5, i.e. for every
+//     x <= ln 2 = 0.693 -- which covers both thresholds and the whole
+//     crossover band with room to spare.
+//
+// They cross where x^7/5040 = E, i.e. at x* = (5040 E)^(1/7).
+//
+// RE-DERIVED FOR exp32 (S5 Task 1; this block previously assumed std::exp).
+// The old derivation used a single E of one ulp -- a fair reading of "the
+// platform libm is accurate to about an ulp" -- and got x* = 0.314. exp32's
+// bound is not a single number, so neither is the crossover:
+//
+//     E = 0.5 ulp = 2.98e-8   ->  x* = 0.2843   exp32 correctly rounded. NOT a
+//                                               bound -- a convention for "the
+//                                               typical case", and note that
+//                                               exp32's headline 99.19%
+//                                               correctly-rounded rate is over
+//                                               the WHOLE float line, dominated
+//                                               by near-zero arguments; over
+//                                               this band specifically (-x for
+//                                               x in [0.10, 0.40]) it is 86.8%.
+//     E = 1.0 ulp = 5.96e-8   ->  x* = 0.3139   <- the old std::exp number
+//     E = 1.5 ulp = 8.94e-8   ->  x* = 0.3326   exp32 worst case, and the only
+//                                               one of the three that is a
+//                                               genuine BOUND (exp32 is within
+//                                               1 ulp of the correctly rounded
+//                                               result, itself within 0.5)
+//
+// So the MODEL's crossover is a band, [0.2843, 0.3326], and the old single
+// value sits inside it.
+//
+// BUT THE MODEL IS OPTIMISTIC ABOUT THE SERIES, AND THE MEASUREMENT SAYS SO
+// (review round 1). x^7/5040 is the series' TRUNCATION only; the Horner
+// evaluation has rounding of its own, six multiply-adds' worth, which the model
+// omits entirely while charging the closed form its full error. Measuring BOTH
+// branches as this file spells them, against a double -expm1 reference, over
+// every float in each bin:
+//
+//     x       series rel      closed rel     series rel     closed rel
+//             (max)           (max)          (mean)         (mean)
+//     0.125    6.74e-8         2.92e-7        1.1e-8         6.6e-8    <- medium.cpp
+//     0.25     1.33e-7         1.82e-7        5.6e-8         7.2e-8    <- this file
+//     0.260    1.48e-7         1.80e-7        7.1e-8         7.1e-8    <- MEAN crossover
+//     0.275    1.80e-7         1.73e-7        1.00e-7        6.8e-8    <- MAX crossover
+//     0.3326   ~3.2e-7         ~1.6e-7        ~2.6e-7        ~6.3e-8
+//
+// THE REAL CROSSOVER IS 0.260 (mean basis) TO 0.275 (max basis) -- BELOW the
+// model band's lower edge of 0.2843. The model is therefore a useful skeleton
+// and an unsafe bound, and what follows is anchored on the measurement.
+//
+// NEITHER CONSTANT MOVES: 0.125 and 0.25 are both below 0.260, so the series is
+// still the better branch where each file hands over, on both bases. But the
+// margin at 0.25 is 4%, not the 14% the model suggested, and the advantage
+// there is 1.37x rather than the 4x-plus the model's mismatched comparison
+// implied. 0.25 really is close to optimal -- closer than anyone intended.
+//
+// (The pre-Task-1 version of this table had a 0.314 row reading 1.4e-7 / 1.7e-7
+// under the truncation model. Those two cells were wrong even on their own
+// terms -- recomputing gives 2.21e-7 and 2.21e-7, which do cross, as that
+// derivation says they must.)
 //
 // 0.25 is nearer the optimum; 0.125 is the wider margin. test_rotor.cpp checks
-// both points against a double reference, so this is a verified claim rather
-// than an asserted one.
+// both points against a double reference AND pins the MEASURED crossover, so
+// this is a verified claim rather than an asserted one.
 //
 // WHAT THAT COSTS THE "unify later" TICKET (deviation C4) -- spelled out so
 // nobody mistakes it for a pure refactor: promoting EITHER kernel verbatim
@@ -68,7 +132,7 @@ namespace {
                          x * (1.0f / 6.0f -
                               x * (1.0f / 24.0f - x * (1.0f / 120.0f - x * (1.0f / 720.0f))))));
     }
-    return 1.0f - std::exp(-x);
+    return 1.0f - math::exp32(-x);
 }
 
 // (NWS): lambda(x) = -x/2 + sqrt(x^2/4 + 1), the normal-working-state root of

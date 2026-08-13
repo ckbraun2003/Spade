@@ -14,6 +14,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
+#include "core/rng.hpp"
 #include "physics/integrator.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
@@ -1355,4 +1356,237 @@ TEST(Imu, SensorNoiseIsBatchingInvariant) {
         EXPECT_EQ(spade::testing::world_digest(*alone, 0), spade::testing::world_digest(*both, w))
             << "world " << w << " diverged between the solo and batched runs";
     }
+}
+
+// ===========================================================================
+// 9. RESEED (S5 Task 4; engine design Addendum A3)
+//
+// Simulation::reseed(scene_seed) rewrites every world's rng root and
+// re-derives the two things that had already cached a stream from the old one
+// -- the world's DrydenState and every LIVE sensor's ImuSensorRow::noise.
+// This section owns the SENSOR half of that claim; the seed derivation
+// itself, the whole-set determinism and the snapshot interaction are pinned
+// in test_m1b_bar.cpp's A3 conformance case.
+//
+// The claim has two halves and they pull in opposite directions, which is
+// exactly why one test asserts both:
+//
+//   * THE FUTURE CHANGES. A sensor that was ALREADY LIVE before the reseed
+//     must draw its next samples from a stream derived from the NEW world
+//     seed -- not from the old one it was carrying, and not from a stream
+//     that would only be right for a sensor added afterwards.
+//   * THE PAST DOES NOT. Its ring, its ring cursor, its divider phase and
+//     its accumulated bias states are history and stay exactly as they were
+//     (sim/simulation.hpp's reseed doc comment says so in those words).
+//
+// Both are checked against a stream this file constructs and draws from
+// ITSELF, following sensors/imu.hpp's stated model -- so a reseed that
+// re-derived the stream slightly differently (wrong seed, global instead of
+// world-local slot, a reset bias) fails here rather than agreeing with
+// itself.
+// ===========================================================================
+
+namespace {
+
+// Three standard normals in the pinned x, y, z order. sensors/imu.cpp's
+// draw_gauss3 exists to force exactly this sequencing, and the order is part
+// of the contract rather than an implementation detail.
+[[nodiscard]] glm::vec3 gauss3(spade::rng::Stream& stream) {
+    const float x = stream.next_gauss();
+    const float y = stream.next_gauss();
+    const float z = stream.next_gauss();
+    return glm::vec3(x, y, z);
+}
+
+struct Sigmas {
+    float a = 0.0f;
+    float g = 0.0f;
+    float ba = 0.0f;
+    float bg = 0.0f;
+};
+
+// One emitted sample of a COM-mounted, identity-mount sensor on a body in
+// FREE FALL, from sensors/imu.hpp section 4's model alone.
+//
+// Free fall is what makes the prediction COMPLETE rather than approximate:
+// specific_force is exactly zero there (FreeFallingBodyReadsZeroSpecificForce,
+// above) and an untorqued body's omega stays exactly zero, so accel_true and
+// gyro_true vanish and the sample IS the noise. Twelve draws per sample in
+// the header's pinned order (accel bias walk, gyro bias walk, accel white,
+// gyro white); the walks advance once per SAMPLE; both sums are grouped left
+// to right exactly as section 4 writes them, because fp32 addition is not
+// associative and the grouping is therefore part of the expectation.
+[[nodiscard]] ImuSample predict_free_fall_sample(spade::rng::Stream& stream, const Sigmas& s,
+                                                 glm::vec3& bias_a, glm::vec3& bias_g) {
+    const glm::vec3 walk_a = gauss3(stream);
+    const glm::vec3 walk_g = gauss3(stream);
+    const glm::vec3 white_a = gauss3(stream);
+    const glm::vec3 white_g = gauss3(stream);
+
+    bias_a += s.ba * walk_a;
+    bias_g += s.bg * walk_g;
+
+    ImuSample out;
+    std::memset(&out, 0, sizeof(out));
+    out.accel = glm::vec3(0.0f) + bias_a + s.a * white_a;
+    out.gyro = glm::vec3(0.0f) + bias_g + s.g * white_g;
+    return out;
+}
+
+}  // namespace
+
+TEST(Imu, ReseedRederivesALiveSensorsStreamAndLeavesItsHistoryAlone) {
+    // The world's root is set DIRECTLY here (void_world_set writes
+    // WorldInstanceDesc::seed, which create() copies into WorldParams), so
+    // the sensor's original stream is imu_noise_stream(kOldWorldSeed, 0) with
+    // no derivation in between -- which is what lets the "before" half below
+    // be predicted as exactly as the "after" half.
+    constexpr uint64_t kOldWorldSeed = 0x0DDC0FFEEULL;
+    constexpr uint64_t kSceneSeed = 0xA3F00DULL;
+    // reseed() derives the world root from the SCENE seed by replicate()'s
+    // formula -- re-written here from sim/world_set.hpp's pinned text, with
+    // the domain tag spelled as a literal so a change to the pinned constant
+    // fails rather than following along.
+    const uint64_t new_world_seed =
+        spade::rng::splitmix64(kSceneSeed ^ spade::rng::fnv1a64("world") ^ 0ULL);
+    ASSERT_NE(new_world_seed, kOldWorldSeed);
+
+    constexpr Sigmas kSigmas{0.05f, 0.01f, 0.001f, 0.0005f};
+    constexpr uint64_t kBefore = 8;  // samples drawn before the reseed
+    constexpr uint64_t kAfter = 6;   // ...and after it
+
+    const spade::Result<WorldSetDesc> set = void_world_set(1, 1, kOldWorldSeed);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+
+    // FREE FALL: no wrench, no drag element, no turbulence coupling. The
+    // samples are pure noise, so the prediction below is complete.
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+    ImuSensorSpawn spec;
+    spec.sigma_a = kSigmas.a;
+    spec.sigma_g = kSigmas.g;
+    spec.sigma_ba = kSigmas.ba;
+    spec.sigma_bg = kSigmas.bg;
+    const spade::Result<ImuSensorRef> imu = sim->add_imu_sensor(*body, spec);
+    ASSERT_OK(imu);
+    ASSERT_OK(sim->flush_structural());
+    ASSERT_EQ(imu->slot, 0u) << "the world-local slot the streams below are keyed on";
+
+    ASSERT_OK(sim->step(kBefore));
+
+    std::vector<ImuSample> buffer(kRingDepth);
+    std::vector<ImuSample> before;
+    {
+        const spade::Result<ImuPoll> poll = sim->poll_imu(*imu, 0, buffer);
+        ASSERT_OK(poll);
+        ASSERT_EQ(poll->samples.size(), kBefore);
+        before.assign(poll->samples.begin(), poll->samples.end());
+    }
+
+    // The pre-reseed run, predicted from the OLD root. This is not padding:
+    // it proves the model in predict_free_fall_sample() is the right model
+    // BEFORE it is used to judge the post-reseed samples, and it leaves
+    // `old_stream` sitting exactly where the sensor's own stream sits -- which
+    // is what makes the negative control at the end possible.
+    spade::rng::Stream old_stream = spade::sensors::imu_noise_stream(kOldWorldSeed, 0);
+    glm::vec3 bias_a(0.0f);
+    glm::vec3 bias_g(0.0f);
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        const ImuSample want = predict_free_fall_sample(old_stream, kSigmas, bias_a, bias_g);
+        ASSERT_EQ(before[i].accel, want.accel) << "pre-reseed sample " << i;
+        ASSERT_EQ(before[i].gyro, want.gyro) << "pre-reseed sample " << i;
+    }
+    const glm::vec3 bias_a_at_reseed = bias_a;
+    const glm::vec3 bias_g_at_reseed = bias_g;
+    ASSERT_NE(bias_a_at_reseed, glm::vec3(0.0f)) << "the bias walk must have actually accumulated, "
+                                                    "or 'history is preserved' is vacuous";
+
+    // The row's own view of that history, captured for the "untouched" half.
+    spade::sensors::ImuSensorRow row_before;
+    {
+        const spade::Result<const spade::sensors::ImuSensorRow*> row = sim->imu_sensor(*imu);
+        ASSERT_OK(row);
+        row_before = **row;
+    }
+    ASSERT_EQ(row_before.bias_a, bias_a_at_reseed) << "the engine's bias state and the predicted "
+                                                     "one must agree before the reseed";
+    ASSERT_EQ(row_before.bias_g, bias_g_at_reseed);
+
+    // ---------------------------------------------------------------------
+    // THE RESEED.
+    // ---------------------------------------------------------------------
+    ASSERT_OK(sim->reseed(kSceneSeed));
+
+    // THE PAST IS UNTOUCHED. Bias states, ring cursor and divider phase are
+    // exactly what they were; only `noise` moved.
+    {
+        const spade::Result<const spade::sensors::ImuSensorRow*> row = sim->imu_sensor(*imu);
+        ASSERT_OK(row);
+        EXPECT_EQ((*row)->bias_a, row_before.bias_a) << "reseed rewound the accumulated accel bias";
+        EXPECT_EQ((*row)->bias_g, row_before.bias_g) << "reseed rewound the accumulated gyro bias";
+        EXPECT_EQ((*row)->last_index, row_before.last_index) << "reseed moved the ring cursor";
+        EXPECT_EQ((*row)->phase, row_before.phase) << "reseed re-phased the rate divider";
+        EXPECT_NE(std::memcmp(&(*row)->noise, &row_before.noise, sizeof(spade::rng::Stream)), 0)
+            << "reseed did not touch the sensor's stream at all";
+    }
+
+    // ...AND SO IS THE RING. The samples the caller has not consumed yet are
+    // readings that genuinely happened; a reseed is not entitled to them.
+    {
+        const spade::Result<ImuPoll> poll = sim->poll_imu(*imu, 0, buffer);
+        ASSERT_OK(poll);
+        ASSERT_EQ(poll->samples.size(), before.size());
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            EXPECT_EQ(std::memcmp(&poll->samples[i], &before[i], sizeof(ImuSample)), 0)
+                << "reseed rewrote ring sample " << i;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // THE FUTURE IS THE NEW STREAM'S -- continued from the OLD bias state.
+    // ---------------------------------------------------------------------
+    ASSERT_OK(sim->step(kAfter));
+
+    std::vector<ImuSample> after;
+    {
+        // `since_index` is EXCLUSIVE (sensors/rings.hpp: "samples with index >
+        // since_index"), so passing the last pre-reseed index asks for exactly
+        // what came after it.
+        const spade::Result<ImuPoll> poll =
+            sim->poll_imu(*imu, static_cast<SampleIndex>(kBefore), buffer);
+        ASSERT_OK(poll);
+        ASSERT_EQ(poll->samples.size(), kAfter);
+        ASSERT_EQ(poll->dropped, 0u);
+        after.assign(poll->samples.begin(), poll->samples.end());
+    }
+
+    spade::rng::Stream new_stream = spade::sensors::imu_noise_stream(new_world_seed, 0);
+    glm::vec3 new_bias_a = bias_a_at_reseed;  // history carried, not reset
+    glm::vec3 new_bias_g = bias_g_at_reseed;
+    for (std::size_t i = 0; i < after.size(); ++i) {
+        const ImuSample want = predict_free_fall_sample(new_stream, kSigmas, new_bias_a, new_bias_g);
+        EXPECT_EQ(after[i].accel, want.accel)
+            << "post-reseed sample " << i
+            << ": a live sensor is not drawing imu_noise_stream(new world seed, world-local slot) "
+               "continued from its pre-reseed bias";
+        EXPECT_EQ(after[i].gyro, want.gyro) << "post-reseed sample " << i;
+    }
+
+    // THE NEGATIVE CONTROL. Had the reseed not reached this already-live row,
+    // the sensor would have gone on drawing from where its OLD stream stood --
+    // so those are the samples this run must NOT have produced.
+    glm::vec3 stale_bias_a = bias_a_at_reseed;
+    glm::vec3 stale_bias_g = bias_g_at_reseed;
+    std::size_t matching_stale = 0;
+    for (std::size_t i = 0; i < after.size(); ++i) {
+        const ImuSample stale =
+            predict_free_fall_sample(old_stream, kSigmas, stale_bias_a, stale_bias_g);
+        if (after[i].accel == stale.accel) ++matching_stale;
+    }
+    EXPECT_EQ(matching_stale, 0u)
+        << matching_stale << " of " << after.size()
+        << " post-reseed samples match the OLD stream's continuation: the reseed re-derived "
+           "WorldParams::seed but left this already-live sensor row behind";
 }

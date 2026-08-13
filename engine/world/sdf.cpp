@@ -6,6 +6,9 @@
 
 #include <glm/glm.hpp>
 
+#include "core/fp32_math.hpp"
+#include "core/validate.hpp"
+
 namespace spade {
 namespace {
 
@@ -68,11 +71,65 @@ namespace {
             //   hx = a*fx*cos(fx*x)*sin(fz*z), hz = a*fz*sin(fx*x)*cos(fz*z)
             //   max(hx^2 + hz^2) is bilinear in (sin^2(fx*x), sin^2(fz*z)), so
             //   its maximum sits at a corner: a^2 * max(fx^2, fz^2).
+            //
+            // sin32, NOT std::sin (S5 Task 1). This is the engine's only
+            // transcendental on a COLLISION path -- phi feeds contacts.cpp and
+            // vehicles/rotor.cpp's ground effect, both of which land in
+            // registered state and the golden digest -- so a libm here was the
+            // same class of platform dependency fp32_math.hpp was created to
+            // remove, and it survived the first pass only because nobody swept
+            // for it. See that header's scope note.
+            //
+            // THE ARGUMENTS ARE UNBOUNDED, which is the one thing this call
+            // site has to answer for: fx*p.x is a frequency times a world
+            // coordinate, so a large enough world leaves sin32's documented
+            // <= 1-ulp domain (|x| <= kMaxAccurateAngle == 100 rad). Precisely
+            // what happens out there, in the two regimes it happens in, and
+            // what each does to the Lipschitz claim above:
+            //
+            //   * 100 rad UP TO kMaxReducibleAngle (2^24 ~ 1.7e7): ACCURACY
+            //     degrades, the BOUND does not, and the reason is that the loss
+            //     is a PHASE SHIFT rather than a distortion. What stops being
+            //     exact is the product n*(pi/2 part) in sin32's Cody-Waite
+            //     reduction -- but n is CONSTANT across a quadrant, so within
+            //     one quadrant the evaluated field is EXACTLY the analytic
+            //     field with a constant phase offset, and a phase offset does
+            //     not change |grad h| at all. a^2*max(fx^2, fz^2) still bounds
+            //     it and phi is still 1-Lipschitz there. What is left is a STEP
+            //     at quadrant boundaries, bounded by ulp(n*pi/2) ~ 6e-8*|fx*x|
+            //     in phase, hence |a| * 6e-8 * |fx*x| in height: at
+            //     |fx*x| = 1e3, a kilometre-scale world at unit frequency, that
+            //     is 6e-5 of the amplitude -- three orders below
+            //     kSdfGradientStep's own resolution of the surface.
+            //   * AT OR BEYOND kMaxReducibleAngle the reduction is not
+            //     attempted at all: sin32 returns 0, h collapses to `base`, and
+            //     the terrain reads as FLAT. Bounded, defined, and trivially
+            //     1-Lipschitz (zero gradient), at the price of a discontinuity
+            //     at that surface. Not an accuracy claim and not offered as
+            //     one -- fp32_math.cpp's guard note explains why no accurate
+            //     answer is available at a magnitude where the argument's own
+            //     ulp is 2 radians.
+            //
+            // DETERMINISM IS UNCONDITIONAL, and BECAUSE OF that guard rather
+            // than in spite of it. Without it, sin32's reduction casts a float
+            // to int32 out of range past |x| ~ 3.37e9 -- undefined behaviour
+            // that resolves to INT_MIN on x86 and INT_MAX on ARM64, i.e.
+            // exactly the platform-divergence class this engine's determinism
+            // contract exists to exclude, sitting on exactly the path
+            // (phi -> contacts, phi -> rotor ground effect) that reaches the
+            // digest. Swapping std::sin for sin32 here is what put unbounded
+            // arguments in front of that cast, so the guard landed with it.
+            //
+            // The bound therefore survives at every magnitude, and the honest
+            // statement of the limit is "a heightfield sampled beyond
+            // |f*coordinate| = 2^24 reads as flat" -- strictly weaker than the
+            // "NOT an exact metric" caveat sdf.hpp already carries for this
+            // primitive, and seven orders past any world Spade runs.
             const float amp = prm.x;
             const float fx = prm.y;
             const float fz = prm.z;
             const float base = prm.w;
-            const float h = base + amp * std::sin(fx * p.x) * std::sin(fz * p.z);
+            const float h = base + amp * math::sin32(fx * p.x) * math::sin32(fz * p.z);
             const float slope = glm::abs(amp) * glm::max(glm::abs(fx), glm::abs(fz));
             return (p.y - h) / std::sqrt(1.0f + slope * slope);
         }
@@ -223,20 +280,6 @@ namespace {
         }
     }
     return ga;
-}
-
-// ---------------------------------------------------------------------------
-// Validation helpers
-// ---------------------------------------------------------------------------
-
-[[nodiscard]] bool finite(float v) noexcept { return std::isfinite(v); }
-
-[[nodiscard]] bool finite(const glm::vec4& v) noexcept {
-    return finite(v.x) && finite(v.y) && finite(v.z) && finite(v.w);
-}
-
-[[nodiscard]] bool finite(const glm::mat4& m) noexcept {
-    return finite(m[0]) && finite(m[1]) && finite(m[2]) && finite(m[3]);
 }
 
 // Dimension sanity per kind. Returns nullptr when the parameters are usable,

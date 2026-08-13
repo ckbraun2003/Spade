@@ -1,0 +1,888 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements`),
+# and an UNKNOWN key is an ERROR at every level rather than a warning -- a
+# reader of this version must never silently drop a field a later version
+# added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: shower -- 100 spheres dropped into an SDF bowl (a solid sphere of
+# radius 4 minus a sphere of radius 3.8 centred 0.4 m higher, so the shell is
+# thick at the bottom and open-ish at the top). 400 steps of 2 ms at 2 substeps.
+#
+# CollisionStatic and CollisionDynamic both run hot and a pile forms. This is
+# the scenario that would expose an ordering dependence in the sorted-grid
+# sweep: a hundred bodies in mutual contact resolve Gauss-Seidel, so any
+# instability in the sort order or the neighbour walk changes the pile.
+#
+# THE 100 SPAWN POSITIONS are the tabulated form of the S1-S4 builder's lattice:
+#     pos = (-1.2 + 0.3 * (i % 5), 0.35 * (i / 25), -1.2 + 0.3 * ((i / 5) % 5))
+# evaluated in fp32, which is why they are written to 9 digits rather than as
+# the round decimals the expression suggests.
+#
+# PROVENANCE OF `expected_digest`
+#   Value carried VERBATIM from tests/golden/shower.digest -- CONTAINER CHANGE
+#   ONLY (S5 Task 7 retires the .digest files into this field). Not a
+#   regeneration; the bridging test in tests/test_determinism.cpp is the
+#   committed proof that this data scenario and the builder lambda it replaced
+#   produce the same digest.
+#
+#   * REGENERATED 2026-08-11 -- the platform-libm parity fix (PR #5). Every
+#     digest in the corpus moved: next_gauss()'s Box-Muller pair now uses
+#     core/fp32_math.hpp's IEEE-only log32/sin32/cos32 instead of libm, so every
+#     gaussian changes in its last bit or two. Same quality (<=1 ulp,
+#     exhaustively verified over all 2^24 arguments), different bits -- the
+#     expected consequence of removing a platform dependency, not a physics
+#     change.
+#
+#   * REGENERATED 2026-08-11 -- S5 Task 3: replay_config joins the walk (M-1).
+#     Suffix continuation, checked rather than assumed:
+#       shower: old=0x6b773b313e06dd38 old+suffix=0xbc94f5b048b45473 actual=0xbc94f5b048b45473 match=YES
+#       previous digest 0x6b773b313e06dd38 (S1-S4 close-out, 2026-08-11)
+#
+#   generated  2026-08-11 (Task 3 regeneration; first generated at Task 16)
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#   cross-check gcc-13 Release -ffp-contract=off (spade-linux CI) produces this
+#              same value; msvc-ninja-release AND msvc-ninja-debug agree
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "shower"
+world: "../worlds/shower.world.yaml"
+
+instances:
+  - seed: 0xA11CE0F5E6D
+    contacts: {restitution_e: 0.200000003, friction_mu: 0.349999994, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.150000006}
+    grid: {cell_size: 0.300000012}
+    turbulence: light
+
+step: {dt_ns: 2000000, substeps: 2, steps: 400}
+
+# 100 spheres in a 5 x 4 x 5 lattice above the bowl's floor.
+spawns:
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.349999994, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.349999994, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.349999994, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.349999994, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.349999994, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.349999994, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.349999994, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.349999994, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.349999994, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.349999994, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.349999994, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.349999994, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.349999994, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.349999994, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.349999994, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.349999994, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.349999994, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.349999994, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.349999994, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.349999994, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.349999994, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.349999994, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.349999994, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.349999994, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.349999994, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.699999988, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.699999988, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.699999988, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.699999988, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.699999988, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.699999988, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.699999988, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.699999988, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.699999988, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.699999988, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.699999988, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.699999988, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.699999988, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.699999988, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.699999988, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.699999988, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.699999988, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.699999988, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.699999988, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.699999988, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 0.699999988, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 0.699999988, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 0.699999988, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 0.699999988, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 0.699999988, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 1.04999995, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 1.04999995, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 1.04999995, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 1.04999995, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 1.04999995, -1.20000005]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 1.04999995, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 1.04999995, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 1.04999995, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 1.04999995, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 1.04999995, -0.900000036]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 1.04999995, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 1.04999995, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 1.04999995, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 1.04999995, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 1.04999995, -0.600000024]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 1.04999995, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 1.04999995, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 1.04999995, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 1.04999995, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 1.04999995, -0.300000012]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-1.20000005, 1.04999995, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.900000036, 1.04999995, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.600000024, 1.04999995, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [-0.300000012, 1.04999995, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+  - world: 0
+    body:
+      pos:              [0, 1.04999995, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             0.200000003
+      inv_inertia_diag: [500, 500, 500]
+
+inputs: []
+
+expected_digest: "0xbc94f5b048b45473"

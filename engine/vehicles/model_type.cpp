@@ -1,10 +1,11 @@
 #include "vehicles/model_type.hpp"
 
-#include <cmath>
 #include <string>
 #include <utility>
 
 #include <glm/geometric.hpp>
+
+#include "core/validate.hpp"
 
 // ---------------------------------------------------------------------------
 // ModelType::validate() -- the model-type layer's whole runtime cost, paid
@@ -17,16 +18,6 @@ namespace {
 
 [[nodiscard]] Error invalid(std::string context) {
     return Error{Code::invalid_argument, std::move(context)};
-}
-
-[[nodiscard]] bool finite(float v) noexcept { return std::isfinite(v); }
-
-[[nodiscard]] bool finite(const glm::vec3& v) noexcept {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-}
-
-[[nodiscard]] bool finite(const glm::quat& q) noexcept {
-    return std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
 }
 
 // A rotation that can be normalized: finite and of non-zero length. The spawn

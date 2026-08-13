@@ -9,6 +9,7 @@
 #include "physics/grid.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
+#include "world/world_ref.hpp"
 
 // ---------------------------------------------------------------------------
 // The world set -- what a Simulation is created from (engine design spec §3
@@ -144,6 +145,39 @@ struct WorldSetDesc {
 inline constexpr std::string_view kWorldSeedDomainTag = "world";
 
 // ---------------------------------------------------------------------------
+// C5: "N worlds from this world file, capacities X" -- the training-fleet
+// constructor, spelled over a WorldRef (world/world_ref.hpp) so a caller can
+// name the world by FILE PATH or hand over an already-built WorldDesc.
+//
+// Resolves `ref` EXACTLY ONCE (a path is loaded and validated a single time,
+// never once per replicated instance), stamps the resolved WorldDesc into a
+// COPY of `instance_prototype`, and delegates to replicate() above so every
+// world's rng root derives by the ONE formula that function owns -- this
+// function must never re-derive or duplicate replicate()'s expression.
+//
+// THE CAPACITIES-OVERRIDE SPLIT, stated because it is observable: stamping
+// the resolved WorldDesc onto the prototype replaces the prototype's ENTIRE
+// `.world` field -- geometry, spawns, environment, and `capacities` all come
+// from the FILE (or the handed-over desc), never from instance_prototype. The
+// prototype's OTHER fields -- `turbulence`, `contacts`, `grid` -- are left
+// exactly as the caller set them, because those are RUN parameters, not world
+// geometry (see WorldInstanceDesc's own note above on why they ride
+// separately from WorldDesc): the FILE owns the world, the PROTOTYPE owns
+// instance physics.
+//
+// Codes: invalid_argument if `count == 0` -- checked here, before resolving,
+// so a zero-count caller never pays for a file read or parse it is about to
+// discard (replicate() itself has no way to reject this: it returns a plain
+// WorldSetDesc, not a Result, so the empty-fleet-is-a-caller-bug judgment it
+// documents for `count == 0` has to be enforced one level up, here);
+// otherwise resolve_world()'s error, verbatim (code and context, including
+// any file path it already carries).
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<WorldSetDesc> world_set_from(const WorldRef& ref, uint32_t count,
+                                                  uint64_t scene_seed,
+                                                  const WorldInstanceDesc& instance_prototype);
+
+// ---------------------------------------------------------------------------
 // The allocation shape a validated world set implies -- what Simulation sizes
 // its arenas from.
 //
@@ -215,5 +249,105 @@ struct WorldSetLayout {
 // later.
 // ---------------------------------------------------------------------------
 [[nodiscard]] Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc);
+
+// ---------------------------------------------------------------------------
+// THE CONFIG IDENTITY OF A WORLD SET: FNV-1a 64 over a canonical serialization
+// of `desc` (ticket M-1).
+//
+// WHY IT EXISTS. A snapshot blob carries STATE, never CONFIGURATION -- the SDF
+// programs, the material and grid records, the turbulence parameters and the
+// environment all come from the WorldSetDesc the receiving Simulation was
+// created with (see WorldInstanceDesc's DrydenParams note above, and
+// Simulation::restore). Until this hash existed, restoring a blob into a
+// Simulation built from a DIFFERENT desc was a silent, undetectable way to
+// replay the same state forward under different physics: the snapshot schema
+// hash covers array names, element sizes and extents, and every one of those is
+// identical between two sets that disagree only about restitution. This number
+// is what closes that hole -- it rides in the registered `replay_config` row
+// (sim/simulation.hpp), so it is in every blob, and Simulation::restore()
+// compares it before writing a byte.
+//
+// ---------------------------------------------------------------------------
+// THE FOLD ORDER IS A CONTRACT. Changing it changes every hash, which
+// invalidates every recorded blob's config check and moves every golden digest
+// in the determinism corpus. It is pinned here, in full, so that a future
+// reader can re-derive a hash by hand from this list:
+//
+//   seed = kFnv1a64Offset                          (state/snapshot.hpp's basis)
+//   fold u64  world count
+//   fold u32  max over the set of Capacities::bodies
+//   fold u32  max over the set of Capacities::force_elements
+//   fold u32  max over the set of Capacities::sensors
+//   fold u32  max over the set of Capacities::contacts
+//   for each world, IN INDEX ORDER (world index is world identity):
+//       fold u64   world.name.size(), then the name bytes
+//       fold u64   world.sdf.nodes.size(),      then the nodes' raw bytes
+//       fold u64   world.sdf.transforms.size(), then the transforms' raw bytes
+//       fold, in Environment's DECLARATION order:
+//            f32 gravity.x, gravity.y, gravity.z
+//            f32 wind.x, wind.y, wind.z
+//            f32 air_density
+//            f32 temperature_k
+//            u64 environment.seed
+//       fold u32   capacities.bodies, force_elements, sensors, contacts
+//       fold u64   instance seed (WorldInstanceDesc::seed)
+//       fold       DrydenParams raw bytes  (32)
+//       fold       ContactParams raw bytes (32)
+//       fold       GridParams raw bytes    (16)
+//
+// EVERY VARIABLE-LENGTH RUN IS LENGTH-PREFIXED -- the name and both SDF vectors
+// -- for the reason state/snapshot.hpp's schema hash gives for its own names:
+// without the prefix, two different (count, content) splits can present the
+// same byte stream, and a hash that cannot tell them apart is a hash with a
+// designed-in collision.
+//
+// THE THREE PARAMETER RECORDS FOLD AS RAW BYTES, which is only sound because
+// each one static_asserts that every byte of it belongs to a NAMED field (see
+// the batteries in world/medium.hpp, physics/contacts.hpp and physics/grid.hpp,
+// and the re-assertion at this function's definition). Implicit padding is the
+// one thing a byte-wise fold cannot reason about; none of the three has any.
+// The same argument, and the same re-assertion, covers SdfNode and
+// SdfTransform: both carry EXPLICIT `_pad` lanes that are named fields with
+// zero initializers, so their byte images are fully determined by their fields.
+//
+// WHAT IT DELIBERATELY DOES NOT COVER, and why:
+//
+//   * SPAWN POINTS. They are authoring anchors a caller reads to place a body;
+//     the placed body's state is in the snapshot. Two descs differing only in
+//     their spawn tables replay a restored blob identically, so covering them
+//     would reject pairings that are in fact sound.
+//   * dt_ns AND substeps. They are not properties of the world set at all --
+//     they are Simulation::create()'s other two arguments, and they ride in
+//     `replay_config` as their own fields, checked separately and reported by
+//     name.
+//   * VISUAL_REFS (WorldDesc, T5). RENDER-ONLY -- physics never reads them, no
+//     pass, no digest, no snapshot touches them (see WorldDesc's own comment
+//     on the field). Two descs differing only in which meshes/materials a
+//     presentation layer resolves for the same physical world replay a
+//     restored blob identically, so covering them here would reject pairings
+//     that are in fact sound, the same argument as spawn points above.
+//
+// AND ONE THING IT COVERS THAT THE ENGINE IGNORES, stated so the strictness is
+// not mistaken for a bug: Environment::seed is the world FILE's authoring
+// default, which Simulation deliberately ignores in favour of
+// WorldInstanceDesc::seed (see the SEED note above). Folding it makes this hash
+// STRICTER than the physics requires -- two descs differing only there would
+// replay identically but hash differently. That direction is the safe one: a
+// false rejection costs a caller an explicit error, a false acceptance costs
+// them a silently wrong replay.
+//
+// IT IS THE HASH OF A DESC, NOT OF LIVE STATE. Simulation::reseed() rewrites
+// every world's WorldParams::seed row without touching the desc it was created
+// from, so a reseeded Simulation's `replay_config` still carries the hash of
+// its CREATING desc -- which is exactly right: the new seeds are STATE, they
+// ride in the blob, and restoring that blob into a twin built from the original
+// desc must (and does) pass this check and then adopt the new seeds.
+//
+// NOT CRYPTOGRAPHIC. Nothing here defends against a crafted collision, for the
+// same reason state/snapshot.hpp's schema hash does not: the adversary is a
+// tired engineer pairing the wrong blob with the wrong world set, not an
+// attacker.
+// ---------------------------------------------------------------------------
+[[nodiscard]] uint64_t config_hash(const WorldSetDesc& desc) noexcept;
 
 }  // namespace spade

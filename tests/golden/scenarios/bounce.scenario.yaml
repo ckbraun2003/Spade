@@ -1,0 +1,133 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements`),
+# and an UNKNOWN key is an ERROR at every level rather than a warning -- a
+# reader of this version must never silently drop a field a later version
+# added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: bounce -- a restitution ladder. Four worlds, identical geometry (a
+# solid half-space y <= 0) and identical drops, restitution 0.0 / 0.3 / 0.6 /
+# 0.9. 900 steps of 1 ms.
+#
+# IT IS THE HETEROGENEOUS-MATERIAL SCENARIO ON PURPOSE: because the four worlds
+# disagree about ContactParams, WorldSetLayout::uniform_dynamic_params is false
+# and the CollisionDynamic pass takes its PER-WORLD form. Every other scenario
+# in the corpus takes the batched form, so between them the corpus pins both.
+#
+# PROVENANCE OF `expected_digest`
+#   Value carried VERBATIM from tests/golden/bounce.digest -- CONTAINER CHANGE
+#   ONLY (S5 Task 7 retires the .digest files into this field). Not a
+#   regeneration; the bridging test in tests/test_determinism.cpp is the
+#   committed proof that this data scenario and the builder lambda it replaced
+#   produce the same digest.
+#
+#   * REGENERATED 2026-08-11 -- the platform-libm parity fix (PR #5). bounce is
+#     the scenario that SURFACED it: the first Linux/gcc-13 CI run on that branch
+#     failed bounce ALONE, and instrumented per-array digests localized it to the
+#     "dryden" array at TICK 0 -- inside dryden_init(), before a single substep of
+#     physics. Two ulps, both in init draws:
+#       cos(0x3FA9EA7E)  MSVC 0x3E76B74D  glibc 0x3E76B74E  -> bounce w1 Dryden w0
+#       sin(0x3F8A17F6)  MSVC 0x3F61A49F  glibc 0x3F61A49E  -> bounce w3 Dryden u
+#     bounce carries FOUR Dryden streams to the other scenarios' one, one and two,
+#     so it simply had the most init draws exposed; the others passed on gcc by
+#     LUCK, not by contract. core/fp32_math.hpp closed it for all four.
+#       previous digest 0x721be2eae59b38c0 (Task 18, generated 2026-08-10) -- an MSVC-libm value
+#
+#   * REGENERATED 2026-08-11 -- S5 Task 3: replay_config joins the walk (M-1).
+#     Suffix continuation, checked rather than assumed:
+#       bounce: old=0x883ac9f095d08b85 old+suffix=0x8b6bd5f0df9ff4fa actual=0x8b6bd5f0df9ff4fa match=YES
+#       previous digest 0x883ac9f095d08b85 (S1-S4 close-out, 2026-08-11)
+#
+#   generated  2026-08-11 (Task 3 regeneration; first generated at Task 16)
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#   cross-check gcc-13 Release -ffp-contract=off (spade-linux CI) produces this
+#              same value; msvc-ninja-release AND msvc-ninja-debug agree
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "bounce"
+world: "../worlds/bounce.world.yaml"
+
+# Four instances of ONE world file, differing only in restitution and seed.
+# The disagreement is the point -- see the header.
+instances:
+  - seed: 0x5EED
+    contacts: {restitution_e: 0, friction_mu: 0.400000006, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.200000003}
+    turbulence: none
+  - seed: 0x5EEE
+    contacts: {restitution_e: 0.300000012, friction_mu: 0.400000006, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.200000003}
+    turbulence: none
+  - seed: 0x5EEF
+    contacts: {restitution_e: 0.600000024, friction_mu: 0.400000006, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.200000003}
+    turbulence: none
+  - seed: 0x5EF0
+    contacts: {restitution_e: 0.899999976, friction_mu: 0.400000006, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.200000003}
+    turbulence: none
+
+step: {dt_ns: 1000000, substeps: 1, steps: 900}
+
+# The same drop in every world.
+spawns:
+  - world: 0
+    body:
+      pos:              [0, 2, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0.5, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             1
+      inv_inertia_diag: [100, 100, 100]
+  - world: 1
+    body:
+      pos:              [0, 2, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0.5, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             1
+      inv_inertia_diag: [100, 100, 100]
+  - world: 2
+    body:
+      pos:              [0, 2, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0.5, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             1
+      inv_inertia_diag: [100, 100, 100]
+  - world: 3
+    body:
+      pos:              [0, 2, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [0.5, 0, 0]
+      omega_body:       [0, 0, 0]
+      mass:             1
+      inv_inertia_diag: [100, 100, 100]
+
+inputs: []
+
+expected_digest: "0x8b6bd5f0df9ff4fa"
