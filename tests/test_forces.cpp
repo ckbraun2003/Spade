@@ -205,8 +205,10 @@ TEST(ForceElements, DragQuadraticTerminalVelocityMatchesClosedForm) {
 //   drag_mode: componentwise # ... 'componentwise' (F_i=-cd*|v_i|*v_i)
 //
 // and the file's header comment on those same keys: "componentwise quadratic
-// drag, F_i = cd*|v_i|*v_i per BODY axis (matches the sim's per-axis
-// VelocityDragCoefficients)". Cross-checked against the two engines that
+// drag, F_i = -cd*|v_i|*v_i per BODY axis (matches the sim's per-axis
+// VelocityDragCoefficients)" (S6 hygiene: the header comment used to drop the
+// minus sign; reconciled in configs/physics.yaml, see forces.cpp's matching
+// note). Cross-checked against the two engines that
 // implement it: controller/dynamics/quadrotor.py's _drag_force_jit()
 // "componentwise" branch (rotate v into body frame, apply
 // drag_coeff*|v_i|*v_i per axis) and interface/src/physics/quadrotor.cpp's

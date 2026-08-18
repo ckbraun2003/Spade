@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "compute/backend.hpp"
 #include "core/error.hpp"
 #include "core/time.hpp"
 #include "sim/simulation.hpp"
@@ -230,11 +231,20 @@ struct Scenario {
 // Creates the Simulation for a scenario and runs its setup, leaving it at tick
 // 0 with the structural queue flushed (so the state is snapshot-legal and
 // digest-complete before the first step).
-[[nodiscard]] inline Result<Simulation> start_scenario(const Scenario& scenario) {
+//
+// `backend` (S6 Task 5) -- DEFAULTED, threading Simulation::create()'s own
+// new trailing parameter through unchanged for every pre-existing caller.
+// Its one reason to exist: the A7 cpu-leg backend-knob invariance test
+// (tests/test_gpu_state_mirror.cpp) needs to run the SAME scenario twice,
+// once under the implicit backend={} every other caller in this tree still
+// uses and once under an EXPLICIT BackendDesc{.kind = BackendKind::cpu}, and
+// compare digests -- which is impossible without a way to pass one in.
+[[nodiscard]] inline Result<Simulation> start_scenario(const Scenario& scenario,
+                                                        const compute::BackendDesc& backend = {}) {
     Result<WorldSetDesc> desc = scenario.build();
     if (!desc) return std::unexpected(desc.error());
 
-    Result<Simulation> sim = Simulation::create(*desc, scenario.dt_ns, scenario.substeps);
+    Result<Simulation> sim = Simulation::create(*desc, scenario.dt_ns, scenario.substeps, backend);
     if (!sim) return std::unexpected(sim.error());
 
     if (scenario.setup) {
@@ -258,9 +268,11 @@ struct Scenario {
     return {};
 }
 
-// Runs a scenario end to end and returns its whole-set digest.
-[[nodiscard]] inline Result<uint64_t> run_scenario(const Scenario& scenario) {
-    Result<Simulation> sim = start_scenario(scenario);
+// Runs a scenario end to end and returns its whole-set digest. `backend`:
+// see start_scenario()'s doc comment.
+[[nodiscard]] inline Result<uint64_t> run_scenario(const Scenario& scenario,
+                                                    const compute::BackendDesc& backend = {}) {
+    Result<Simulation> sim = start_scenario(scenario, backend);
     if (!sim) return std::unexpected(sim.error());
     if (Result<void> r = advance_scenario(scenario, *sim, scenario.steps); !r) {
         return std::unexpected(r.error());

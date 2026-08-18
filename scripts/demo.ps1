@@ -39,8 +39,27 @@
     Which build to launch: 'debug' or 'release', matching build.ps1's
     -Preset. Defaults to 'release'.
 
+.PARAMETER Backend
+    Which compute backend steps the v2 physics: 'cpu' (default) or 'vulkan'
+    (S6 Task 6). Ignored for v1- scenes, which are Sandbox.exe regression
+    references and have no v2 Simulation at all -- passing -Backend vulkan
+    with one of those is an error rather than a silent no-op.
+
+    'vulkan' routes the SAME scene, the same spawns and the same fixed-step
+    decomposition through the ported compute kernels. ALL EIGHT schedule
+    passes are ported as of S6 Task 8 -- MediumUpdate, ForceElements (rotors
+    and drag), CollisionStatic, CollisionDynamic, Integrate and
+    SensorSynthesis have kernels; Gravity and Publish are inert by design on
+    both backends -- so no scene is refused for an unported pass any more.
+    Through Task 7 a scene needing turbulence, rotors or IMU sensors was
+    rejected at startup with a message naming the pass; that gate is gone.
+    `bounce` remains the demonstration scene: four worlds, one ball each, a
+    restitution ladder against a ground plane.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene bounce
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene bounce -Backend vulkan
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene gate -Preset debug
 .EXAMPLE
@@ -52,7 +71,10 @@ param(
     [string] $Scene,
 
     [ValidateSet('debug', 'release')]
-    [string] $Preset = 'release'
+    [string] $Preset = 'release',
+
+    [ValidateSet('cpu', 'vulkan')]
+    [string] $Backend = 'cpu'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +99,24 @@ if (-not $IsV1Scene -and ($V2Scenes -notcontains $Scene)) {
     exit 1
 }
 
+# -Backend is a v2-only knob: a v1- scene launches Sandbox.exe, which is v1's
+# own unmodified renderer with no v2 Simulation in it at all. Rejecting the
+# combination rather than ignoring it is the point -- silently dropping the
+# switch would let someone believe they had just watched the Vulkan backend
+# render a v1 regression scene.
+#
+# CHECKED HERE, BEFORE THE BUILD BELOW (S6 hygiene: T6 review M7 -- this used
+# to run AFTER `& $BuildPs1`, so an invalid -Scene/-Backend combination paid
+# for a full foreground build before being told it could never have launched
+# anything). Both this check and the unknown-scene one above are pure
+# argument validation with no dependency on a build having happened, so both
+# now fail fast in the same place.
+if ($IsV1Scene -and $Backend -ne 'cpu') {
+    Write-Host "-Backend $Backend is not meaningful for the v1 scene '$Scene'." -ForegroundColor Red
+    Write-Host "v1- scenes launch Sandbox.exe (v1's own renderer); they run no v2 physics."
+    exit 1
+}
+
 # scripts/ is the child of spade/; spade/ is the CMake source dir.
 $SpadeDir = Split-Path -Parent $PSScriptRoot
 $BuildPs1 = Join-Path $PSScriptRoot 'build.ps1'
@@ -98,10 +138,14 @@ if ($LASTEXITCODE -ne 0) {
 # for the whole build tree, both targets included.
 if ($IsV1Scene) {
     $ExeName  = 'Sandbox.exe'
-    $ExeArg   = $V1SceneMap[$Scene]
+    $ExeArgs  = @($V1SceneMap[$Scene])
 } else {
     $ExeName  = 'spade_viewer.exe'
-    $ExeArg   = $Scene
+    # The viewer's own argv contract (engine/tools/viewer/main.cpp):
+    # <scene> [cpu|vulkan]. The backend argument is passed ALWAYS, not only
+    # when it is 'vulkan', so the launched command line always states which
+    # path it took.
+    $ExeArgs  = @($Scene, $Backend)
 }
 $ExePath = Join-Path $SpadeDir "build-ninja/$Preset/bin/$ExeName"
 if (-not (Test-Path $ExePath)) {
@@ -112,6 +156,9 @@ if (-not (Test-Path $ExePath)) {
 Write-Host ""
 Write-Host "=== Launching $ExeName : $Scene ($Preset) ===" -ForegroundColor Cyan
 Write-Host "Exe      : $ExePath"
+if (-not $IsV1Scene) {
+    Write-Host "Backend  : $Backend"
+}
 if ($IsV1Scene) {
     Write-Host "Controls : WASD + Space/Shift to fly, M to start/stop the simulation (starts PAUSED), C to toggle mouse capture, Esc or close the window to quit."
 } else {
@@ -131,7 +178,7 @@ Write-Host ""
 $ExeDir = Split-Path -Parent $ExePath
 Push-Location $ExeDir
 try {
-    & $ExePath $ExeArg
+    & $ExePath @ExeArgs
     $ViewerExitCode = $LASTEXITCODE
 } finally {
     Pop-Location

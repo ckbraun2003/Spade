@@ -53,12 +53,15 @@
 //     the VEHICLE LAYER (D4) -- that is where per-body contact geometry
 //     arrives.
 //
-//  2. ONE PROXY RADIUS FOR THE WHOLE SPAN. `ContactParams::proxy_radius`
-//     applies to every body in the span; there is no per-body radius, because
-//     BodyState has no radius field and layout.hpp is not this task's to
-//     change. Callers that need heterogeneous sizes must partition the span
-//     and call once per radius class. PER-BODY RADII ARRIVE WITH THE VEHICLE
-//     LAYER (D4), which is what introduces a per-body collision-shape record.
+//  2. ONE PROXY RADIUS FOR THE WHOLE SPAN, BY DEFAULT -- WITH A PER-BODY
+//     OVERRIDE (D-S6-2). `ContactParams::proxy_radius` is now the world's
+//     FALLBACK, read only when a body's own `BodyState::proxy_radius` is the
+//     0 sentinel -- which is every plain body's slot, and a vehicle's slot
+//     whose model left `proxy_radius` at its own 0 default. See
+//     effective_proxy_radius() below and state/layout.hpp's BodyState note.
+//     Nothing here partitions the span by radius class any more: the per-body
+//     read is a single branch per body, no different in shape from the
+//     `body_flags::active` test already in the loop.
 //
 //  3. ONE CONTACT PER BODY PER SUBSTEP. The world SDF is a single scalar
 //     field: a union of two walls reports ONE distance (the smaller) and ONE
@@ -185,7 +188,9 @@ struct alignas(kStd430StructAlignment) ContactParams {
     // against the correction) -- 1.05 mm at h = 1 ms, beta = 0.2, slop = 1 mm.
     float slop = 1e-3f;
 
-    // Sphere-proxy radius, metres. See limitation 2 above.
+    // Sphere-proxy radius, metres -- this world's DEFAULT (D-S6-2: a body's own
+    // BodyState::proxy_radius overrides it when that field is nonzero; see
+    // effective_proxy_radius() below and limitation 2 above).
     float proxy_radius = 0.0f;
 
     // Reserved for versioned growth; must stay 0. Named rather than left as
@@ -242,14 +247,47 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
               "ContactParams has implicit padding: every byte must belong to a named field");
 
 // ---------------------------------------------------------------------------
+// THE PER-BODY PROXY OVERRIDE (D-S6-2). One PAIR of functions -- a plain-float
+// rule and a BodyState-reading convenience over it -- so every reader of "this
+// body's radius" (CollisionStatic in contacts.cpp, CollisionDynamic in
+// grid.cpp, AND the vehicle-spawn preconditions in sim/simulation.cpp, which
+// have a model's DECLARED radius but no BodyState yet to read one from) shares
+// the SAME rule and cannot drift apart on what a 0 means.
+//
+// `body_radius` is state/layout.hpp's BodyState::proxy_radius row-0 lane (0 in
+// every slot a bare spawn() produces, and in every vehicle slot whose model
+// left its own proxy_radius at 0 -- vehicles/model_type.hpp) OR, at spawn time
+// before that slot exists, the model's own ModelType::proxy_radius directly --
+// the two are the SAME NUMBER, since Simulation::spawn(world, ModelTypeId,
+// VehicleSpawn) writes one into the other verbatim. `world_default` is the
+// caller's ContactParams::proxy_radius -- pass THAT world's row, not some
+// other one's.
+//
+// 0 IS A SENTINEL, NOT AN AUTHORED RADIUS. A body (or model) that never asked
+// for an override therefore reads EXACTLY the single world-wide value every
+// body read before this function existed, which is what makes a plain-body
+// world's digest impossible to move by this change: MakeUnitBody()-style test
+// fixtures and every pre-D-S6-2 snapshot blob leave this field at its
+// zero-fill, and the fallback IS the old behaviour.
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline float effective_proxy_radius(float body_radius, float world_default) noexcept {
+    return body_radius != 0.0f ? body_radius : world_default;
+}
+
+[[nodiscard]] inline float effective_proxy_radius(const BodyState& body, float world_default) noexcept {
+    return effective_proxy_radius(body.proxy_radius, world_default);
+}
+
+// ---------------------------------------------------------------------------
 // Resolves every ACTIVE body in `bodies` against the static world SDF.
 //
-// CONTACT TEST: phi = eval(world_sdf, pos); a contact exists iff
-// phi < params.proxy_radius, with depth = proxy_radius - phi and outward
-// normal n = normalize(gradient(world_sdf, pos)). Distance and gradient come
-// from a SINGLE sample() walk of the program (world/sdf.hpp), not from
-// separate eval()/gradient() calls -- half the work, and it makes the two
-// provably consistent.
+// CONTACT TEST: phi = eval(world_sdf, pos); radius = effective_proxy_radius
+// (body, params.proxy_radius) (D-S6-2: the body's own override, or this
+// world's default); a contact exists iff phi < radius, with depth = radius -
+// phi and outward normal n = normalize(gradient(world_sdf, pos)). Distance and
+// gradient come from a SINGLE sample() walk of the program (world/sdf.hpp),
+// not from separate eval()/gradient() calls -- half the work, and it makes the
+// two provably consistent.
 //
 // A body with |gradient| == 0 at its position is skipped: the field has no
 // defined normal there (the centre of a sphere primitive, the seam of a
@@ -261,7 +299,9 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // every impulse in those regions by the wrong factor.
 //
 // `bodies` is normally one world's partition (ArenaSet::world_slice), which is
-// why `params` is a single record rather than per body.
+// why `params` -- the world's MATERIAL and its default radius -- is a single
+// record rather than per body; the radius itself is read per body regardless
+// (see effective_proxy_radius() above).
 //
 // FRAMES: pos, vel and the SDF are all world-frame; nothing body-frame is read
 // or written (see limitation 1).

@@ -37,6 +37,19 @@ include(FetchContent)
 # tree (engine/, tests/) on its own.
 option(SPADE_BUILD_V1 "Build the v1 GL engine (src/, include/, examples/, assets/)" ON)
 
+# S6 Task 1: gates the spade_compute TARGET only (engine/CMakeLists.txt) --
+# not the vendor Vulkan-Headers/volk/slang FetchContent calls, which fetch
+# unconditionally regardless of this option (vendor/CMakeLists.txt's own
+# comments explain why: the fetch is cheap, and the existing pattern in this
+# tree gates consuming targets, not FetchContent calls -- see
+# SPADE_BUILD_V1's GLFW/ImGui/GLAD entries there). Default ON so the compute
+# scaffold builds and its tests register (skipping on a device-less runner)
+# out of the box; SPADE_VULKAN=OFF is the escape hatch for an environment
+# that cannot even fetch Vulkan-Headers/volk (e.g. no network) -- this
+# task's report proves an OFF-configure still configures, builds, and
+# installs the rest of the tree cleanly, with spade::compute simply absent.
+option(SPADE_VULKAN "Build the v2 Vulkan compute backend (engine/compute/vulkan, spade_compute)" ON)
+
 # Function to help with target aliases for consistency
 function(create_target_alias target alias)
     if(TARGET ${target} AND NOT TARGET ${alias})

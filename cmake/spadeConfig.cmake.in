@@ -43,6 +43,20 @@
 # this message describes: it FetchContents the SAME pinned tag Spade vendors
 # (spade/vendor/CMakeLists.txt's GIT_TAG 1.0.1) before its own
 # find_package(spade) call.
+#
+# ONE THING THIS FILE USED TO LEAVE UNCLOSED, NOW FIXED (S6 hygiene): the
+# paragraphs above describe DETECTION only, but glm::glm's usage in every
+# installed Spade header is header-only, exactly like yaml-cpp's usage below
+# is a linked archive -- so once the check above passes, the SAME closure
+# mechanism the yaml-cpp section documents at length applies here too, and
+# does: this file wires the now-confirmed-present glm::glm onto spade::core's
+# link interface (see "THE ACTUAL CLOSURE" below the yaml-cpp check), so a
+# consumer who fetched or found glm still only writes ONE
+# target_link_libraries(their_target PUBLIC spade::sim) and gets glm's
+# include directories transitively, rather than also having to know to link
+# glm::glm onto their own target by hand. This does not change anything
+# above: the file still never fetches or vendors glm for the consumer, it
+# only propagates a dependency that already, provably, exists.
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -157,6 +171,19 @@ if(NOT TARGET yaml-cpp::yaml-cpp)
 "instead. spade/tests/consumer/CMakeLists.txt is a worked example.")
 endif()
 
+# THE GLM CLOSURE -- the yaml-cpp twin below, same mechanism, simpler case.
+# spade::core is the IMPORTED target spadeTargets.cmake just defined, exists
+# only in the consumer's own CMake run, so this touches nothing Spade's own
+# build validates. Unlike yaml-cpp's PRIVATE, conditional-on-actual-symbol-use
+# treatment (see that closure's comment for why), glm is a PUBLIC, always-
+# needed dependency of spade::core's own public headers, so it is wired
+# unconditionally the moment the check above confirms glm::glm exists -- any
+# consumer linking spade::core (or anything above it, which is everything)
+# transitively gets glm's include directories on its compile line, exactly
+# as if spade_core's own $<BUILD_INTERFACE:glm> link (engine/CMakeLists.txt)
+# had been installable. spade/tests/consumer/main.cpp is the worked example.
+set_property(TARGET spade::core APPEND PROPERTY INTERFACE_LINK_LIBRARIES glm::glm)
+
 # THE ACTUAL CLOSURE: wire the now-confirmed-present yaml-cpp::yaml-cpp onto
 # spade::world's link interface, HERE, in the CONSUMER's own CMake run --
 # not at spade_world's own target_link_libraries call in engine/CMakeLists.txt,
@@ -176,4 +203,21 @@ endif()
 # example that calls the loader and proves this closure end to end.
 set_property(TARGET spade::world APPEND PROPERTY INTERFACE_LINK_LIBRARIES yaml-cpp::yaml-cpp)
 
+# NO COMPONENTS: spade is ALL-OR-NOTHING BY DESIGN, documented here rather than
+# left implicit. find_package(spade) always defines every spade::* target
+# (spadeTargets.cmake, included above, is one export set with no per-module
+# split), so `find_package(spade CONFIG REQUIRED COMPONENTS world)` is not a
+# smaller or faster request than a plain `find_package(spade CONFIG REQUIRED)`
+# -- it is the SAME request, and check_required_components() below only ever
+# has the empty set to check (this package never calls
+# set_package_properties()/set(<pkg>_FIND_COMPONENTS ...) to populate one), so
+# it always reports every named component present regardless of whether a
+# target by that name actually exists. A consumer that mistypes a component
+# name (e.g. COMPONENTS wrold) gets no diagnostic from this mechanism at all
+# -- the FIRST real error is CMake's own generic "target spade::wrold not
+# found" at the point something tries to link it. If per-module component
+# selection is ever wanted (e.g. installing spade::core without spade::sim's
+# heavier dependents), it is a real, separate change -- optional COMPONENTS
+# in install(EXPORT), per-component find_package() gating in this file, and
+# this note updated to describe it -- not a side effect of adding a name here.
 check_required_components(spade)

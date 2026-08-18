@@ -79,6 +79,44 @@
 #   report). msvc-ninja-release and msvc-ninja-debug agree.
 #   generated  2026-08-12
 #   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
+#
+#   MOVED at S6 Task 2 (D-S6-2, "collision consumes per-body proxy_radius"):
+#   0xf11be12c1c16b612 -> 0xe77ce28dc7797c22. This is the program's ONE
+#   authorized CPU golden move. Root cause: D-S6-2 makes Simulation::spawn
+#   (world, ModelTypeId, VehicleSpawn) write the model's own proxy_radius into
+#   the spawned body's BodyState::proxy_radius (state/layout.hpp) -- a lane
+#   that was UNUSED std430 padding, always 0, through S5. This scenario's
+#   quadrotor model declares `proxy_radius: 0.150000006` (above), so its two
+#   spawned bodies now carry that value in registered, snapshot-walked,
+#   digest-hashed state where every prior run carried 0. THE VALUE HAPPENS TO
+#   EQUAL this scenario's own `contacts.proxy_radius` (also 0.150000006,
+#   both instances, above), so CollisionStatic/CollisionDynamic's ANSWERS are
+#   unchanged bit-for-bit (this world has no SDF geometry at all and only one
+#   body per world, so neither pass ever resolves a contact regardless of the
+#   radius value read) -- the move is a pure BYTE-STATE change, not a physics
+#   change: the digest hashes the whole registry walk, and a body's slot no
+#   longer contains the same bytes it used to. The other four corpus scenarios
+#   are entirely bare-body worlds (no vehicle spawn ever writes this lane), so
+#   their digests are untouched -- exactly the "only worlds containing
+#   vehicles can move" guarantee D-S6-2's sentinel design makes structural.
+#   VERIFIED on msvc-ninja-release AND msvc-ninja-debug (both presets, full
+#   suite green, both digests literally captured before and after the change
+#   -- see the task-2 report). CROSS-CHECKED LOCALLY on 2026-08-17 on gcc-13
+#   (GCC) 13.4.0 / Linux -- NOT on GitHub Actions CI; the vehicle was a local
+#   Docker container (image gcc@sha256:056fa682471704249f619f65ccec87d671ad5
+#   f1b20878da54d60b0b863486621, cmake 3.28.3, ninja 1.11.1) replicating the
+#   spade-linux CI job's build+test steps one-for-one, run against lane tip
+#   66a335e: 442/442 tests passed, including
+#   Determinism.DigestsMatchTheCommittedGoldenCorpus, which is the test that
+#   verifies this exact digest. GitHub Actions itself still has not run this
+#   change: draft PR "DRAFT: S6 T2 digest cross-check -- do not merge" (#14)
+#   hit a BILLING failure (every job across every workflow failed at startup
+#   with ZERO STEPS EXECUTED, run id 31763926463) and is LEFT OPEN, pending
+#   the account's monthly quota reset, for the coordinator to re-run once
+#   Actions is billable again -- that re-run, when it goes green, is what
+#   would let this line drop the word LOCALLY.
+#   generated  2026-08-13
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
 # -----------------------------------------------------------------------------
 
 scenario_version: 1
@@ -160,4 +198,4 @@ inputs:
   - {tick: 600, rotor_commands: {vehicle: 0, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
   - {tick: 600, rotor_commands: {vehicle: 1, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
 
-expected_digest: "0xf11be12c1c16b612"
+expected_digest: "0xe77ce28dc7797c22"

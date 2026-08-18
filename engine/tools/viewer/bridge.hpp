@@ -28,6 +28,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "compute/backend.hpp"  // BackendDesc (S6 Task 6) -- Vulkan-free by design
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "vehicles/model_type.hpp"
@@ -190,7 +191,14 @@ struct Scene {
 // ---------------------------------------------------------------------------
 class Viewer {
 public:
-    explicit Viewer(Scene scene);
+    // `backend` (S6 Task 6): which compute backend steps this scene.
+    // DEFAULTED, so every existing construction is unchanged and still runs
+    // the CPU schedule. Passing BackendDesc{.kind = vulkan} routes the same
+    // scene, the same spawns and the same step decomposition through the
+    // ported kernels -- see bridge.cpp's Impl constructor. compute/backend.hpp
+    // is Vulkan-FREE (its own standing note), so naming the type here does not
+    // put a Vulkan header on this tool's include path.
+    explicit Viewer(Scene scene, spade::compute::BackendDesc backend = {});
     ~Viewer();
     Viewer(const Viewer&) = delete;
     Viewer& operator=(const Viewer&) = delete;

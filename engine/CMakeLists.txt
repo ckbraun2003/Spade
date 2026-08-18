@@ -552,6 +552,420 @@ install(TARGETS spade_vehicles
 
 install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN "*.hpp")
 
+# ------------------------------------------------------------------------------
+# spade_compute (S6 Task 1): the v2 Vulkan compute backend scaffold --
+# compute/backend.hpp's BackendKind/BackendDesc descriptors (no Vulkan
+# header; any consumer can use them without pulling in Vulkan at all) and
+# compute/vulkan/context.* (VulkanContext: headless instance + device + one
+# compute queue + one transfer queue, RAII, volk-loaded). STATIC, one
+# compiled TU today (vulkan/context.cpp), matching every other module in
+# this file.
+#
+# GATED ENTIRELY behind SPADE_VULKAN (spade/CMakeLists.txt, default ON) --
+# unlike vendor/CMakeLists.txt's Vulkan-Headers/volk/slang FetchContent
+# calls, which fetch unconditionally (see that file's own comments), this is
+# the one place SPADE_VULKAN actually removes something from the build
+# graph: with it OFF, this whole block -- target, install rules, everything
+# -- is absent, and spadeTargets.cmake/spadeConfig.cmake simply never
+# mention spade::compute. Proven by this task's OFF-configure verification
+# (task report): configure + build + install all succeed with
+# SPADE_VULKAN=OFF and no spade_compute anywhere in the result.
+#
+# PUBLIC spade::state: this task's own interface note -- device-side mirrors
+# of registered state (a later task) take BodyState/WorldParams
+# (state/layout.hpp) shapes, so a consumer of spade::compute needs those
+# layout types on its include path from day one, even though this task's two
+# headers (backend.hpp, vulkan/context.hpp) don't reference them yet.
+#
+# PRIVATE volk + Vulkan::Headers, $<BUILD_INTERFACE:...>-wrapped: this
+# target's one translation unit (vulkan/context.cpp) is the sole place in
+# the whole v2 tree that calls into Vulkan (the S6 dependency rule, spec
+# section 2: "nothing outside engine/compute/ includes a Vulkan header").
+# PRIVATE, not PUBLIC, because VulkanContext's public surface
+# (device_name()/api_version()/compute_queue_family()/instance()/etc.)
+# exposes Vk* types and plain scalars in ITS OWN header
+# (compute/vulkan/context.hpp) directly -- but nothing about spade_compute's
+# OWN target-level API (what a consumer gets merely by linking spade::compute
+# without including that header) requires volk/Vulkan-Headers, so neither
+# dependency needs to reach a consumer's link line by DEFAULT.
+# $<BUILD_INTERFACE:...>, not $<BUILD_LOCAL_INTERFACE:...>: the same
+# install(EXPORT) reasoning as spade_world's yaml-cpp link above applies
+# here even more directly -- volk is a COMPILED static archive (volk.c), not
+# flags-only, and a STATIC library records even PRIVATE links into its
+# interface as $<LINK_ONLY:...>; an unwrapped or BUILD_LOCAL_INTERFACE-only
+# entry would make install(EXPORT spadeTargets ...) reject `volk`/
+# `Vulkan-Headers` for not being in any export set. $<BUILD_INTERFACE:...>
+# keeps both live for in-tree consumers -- spade/tests/CMakeLists.txt directly
+# links `volk`/`Vulkan::Headers` itself for exactly this reason, mirroring
+# how it already directly links `yaml-cpp::yaml-cpp` for
+# engine/testing/scenario_file.hpp -- while leaving the installed export
+# exactly as bare as spade_world's yaml-cpp precedent leaves it, FOR HEADERS
+# (an out-of-tree consumer that includes compute/vulkan/context.hpp directly
+# still owes itself the same fetch spadeConfig.cmake.in already documents for
+# glm/yaml-cpp, since context.hpp names Vk*/volk types in its own public
+# signature).
+#
+# THIS WAS NOT THE WHOLE STORY, AND THE GAP IT LEFT WAS REAL (T11 fix-wave,
+# review F-I1; corrected here, not merely re-diagnosed). This comment
+# originally called closing volk's SYMBOL gap "future integration work" on
+# the assumption that only a consumer directly including context.hpp would
+# ever need volk resolved at link time. That assumption was wrong: S6 Task 5
+# made spade_sim link spade::compute PUBLIC and call
+# compute::VulkanBackend::create/upload/step/readback UNCONDITIONALLY
+# (BackendKind is a RUNTIME branch, not a compile-time one -- see spade_sim's
+# own link comment below), so context.cpp/state_mirror.cpp/step_recorder.cpp/
+# backend.cpp/timestamps.cpp compile real vk*/volk* calls into every
+# SPADE_VULKAN=ON build regardless of which backend a given run actually
+# selects. Those calls are UNRESOLVED SYMBOLS as far as libspade_compute.a's
+# own object files are concerned, and the PRIVATE + BUILD_INTERFACE wrap
+# above -- correct for HEADERS -- also means install(EXPORT) never lets
+# `volk`'s symbols reach an installed consumer's final link. So ANY
+# out-of-tree consumer that links spade::sim (i.e. essentially every real
+# consumer, whether or not it ever constructs a vulkan-backed Simulation)
+# failed to link with ~100 undefined vk*/volk* references -- proven by the
+# gcc-13 Linux gate's install+consumer-smoke step (task-11-fixwave-report.md).
+#
+# THE CLOSURE (below, after the PRIVATE link block): rather than exporting
+# volk's own FetchContent target into spadeTargets (install(EXPORT) allows
+# this in principle, but it would make a first-party-looking installed
+# dependency out of a vendored one -- not what glm/yaml-cpp's own precedent
+# chose) or pushing a "fetch volk yourself" obligation onto every consumer
+# the way the glm/yaml-cpp spadeConfig.cmake.in closures do (right for those
+# two: glm's types and yaml-cpp's calls are NAMED in Spade's own public API;
+# volk's are not -- no installed Spade header outside compute/vulkan/
+# context.hpp ever names anything volk.h declares, and context.hpp's own gap
+# is the HEADERS one above, already closed the glm/yaml-cpp way), volk.c --
+# its entire implementation, one translation unit -- is compiled DIRECTLY as
+# an ADDITIONAL spade_compute SOURCE. The object code then lives INSIDE
+# libspade_compute.a itself, so an installed consumer's final link resolves
+# every vk*/volk* symbol from the archive it already links, with no separate
+# volk archive and no consumer-side obligation at all. This is strictly a
+# SYMBOL fix, not a HEADERS one -- a consumer that includes context.hpp
+# directly still owes itself volk.h/Vulkan-Headers on its OWN include path,
+# exactly as the paragraph above already says.
+#
+# $<BUILD_LOCAL_INTERFACE:...> on warnings/fp_strict -- same reasoning as
+# every other target in this file (spade_core's own comment above): an
+# installed STATIC library must not leak flags-only INTERFACE targets into
+# its export set.
+# ------------------------------------------------------------------------------
+#
+# S6 TASK 3 ADDITIONS (the D9 pipeline), all inside the same SPADE_VULKAN gate:
+#
+#   * compute/layout_check.cpp -- the TU that compiles the GENERATED
+#     static_asserts (layout_check.gen.hpp) comparing every C++ state-row field
+#     offset against the offset slangc reports for the matching field of
+#     engine/shaders/shared/layouts.slang. Layout drift becomes a build failure
+#     of THIS target, which is the whole D9 mechanism.
+#   * spade_slang_generated_layouts() -- adds the slangc reflection command,
+#     the generator command, and the generated-header include directory (a
+#     BUILD_INTERFACE entry: those headers live only in the build tree and are
+#     never installed).
+#   * spade_slang_kernel() -- compiles a kernel to SPIR-V and embeds it as a
+#     uint32_t[] header, so nothing loads a .spv at runtime (the no-CWD rule
+#     applies to shaders too). Used for a kernel with no local-size knob to
+#     serve; fp32_math_probe is the only one (probe_runner.cpp dispatches it on
+#     its own terms, outside the schedule).
+#   * spade_slang_kernel_variants() -- the same, ONCE PER SIZE in
+#     SPADE_SLANG_WORKGROUP_SIZES {32, 64, 128}, embedded as one header holding
+#     all three plus a variant table (S6 Task 9b). Every kernel the schedule
+#     dispatches uses this one, because that is what makes the A7
+#     BackendDesc::workgroup_size knob reach a real pipeline instead of a
+#     literal `[numthreads(64,1,1)]` baked at slangc time.
+#
+# The functions live in cmake/SpadeSlang.cmake; see that file for the
+# generation-mechanism decision and for why -fp-mode precise is on every kernel
+# compile. include()d HERE rather than from the root CMakeLists.txt because it
+# FATAL_ERRORs without SPADE_SLANGC, which only exists once vendor/ has fetched
+# the slang prebuilt -- and because a SPADE_VULKAN=OFF configure must never
+# even look for slangc or for a Python interpreter.
+#
+if(SPADE_VULKAN)
+include(${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake)
+
+#
+# S6 TASK 4 ADDITION: compute/vulkan/probe_runner.cpp -- the one-dispatch
+# helper the fp32_math parity batteries run their kernel through (and that
+# Task 7 reuses for the sort-isolation tests). Inside the same SPADE_VULKAN
+# gate and inside engine/compute/vulkan/ for the same dependency reason as
+# context.cpp: it is the second (and, for S6, last) translation unit that
+# calls into Vulkan.
+#
+add_library(spade_compute STATIC
+    compute/layout_check.cpp
+    compute/vulkan/context.cpp
+    compute/vulkan/probe_runner.cpp
+)
+add_library(spade::compute ALIAS spade_compute)
+set_target_properties(spade_compute PROPERTIES EXPORT_NAME compute)
+
+target_include_directories(spade_compute PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Same reasoning as every other module above: pinned per target, not via the
+# ambient CMAKE_CXX_STANDARD the v1-frozen root CMakeLists.txt sets to 20.
+target_compile_features(spade_compute PUBLIC cxx_std_23)
+
+target_link_libraries(spade_compute PUBLIC spade::state)
+target_link_libraries(spade_compute PRIVATE
+    $<BUILD_INTERFACE:volk>
+    $<BUILD_INTERFACE:Vulkan::Headers>
+    $<BUILD_LOCAL_INTERFACE:spade_warnings>
+    $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+
+# T11 fix-wave (review F-I1) -- THE INSTALL-EXPORT CLOSURE. See this target's
+# own comment above (the corrected "THIS WAS NOT THE WHOLE STORY" paragraph)
+# for the full finding: the PRIVATE + $<BUILD_INTERFACE:...> volk link two
+# lines up is correct for HEADERS but, by the same install(EXPORT) rule that
+# makes it correct, never lets volk's SYMBOLS reach an installed consumer's
+# final link -- and every SPADE_VULKAN=ON build needs them there, because
+# spade_sim links spade::compute PUBLIC and unconditionally compiles vk*
+# calls into this target's TUs regardless of which backend a given run
+# selects.
+#
+# volk's entire implementation is one translation unit -- zeux/volk's own
+# CMakeLists.txt: `add_library(volk STATIC volk.h volk.c)` -- so rather than
+# exporting volk's own FetchContent target into spadeTargets (turns a
+# vendored dependency into an apparently first-party installed one; glm/
+# yaml-cpp's own precedent chose not to) or a spadeConfig.cmake.in
+# fetch-it-yourself closure like glm/yaml-cpp use (right for those two
+# because glm's types and yaml-cpp's calls are NAMED in Spade's own public
+# API; volk's are not), volk.c compiles DIRECTLY as an additional
+# spade_compute SOURCE. Its object code then lives INSIDE libspade_compute.a
+# itself, so an installed consumer's final link resolves vk*/volk* symbols
+# from the archive it already links -- no separate volk archive, no
+# consumer-side action, and no change to what any consumer's own compile
+# line needs (still nothing, by design: nothing about spade_compute's
+# TARGET-LEVEL API requires volk/Vulkan-Headers, exactly as this target's
+# own PUBLIC-vs-PRIVATE note above already establishes).
+#
+# get_target_property(... volk SOURCE_DIR), not a new vendor/CMakeLists.txt
+# CACHE variable: `volk` (linked PRIVATE just above, for the include
+# directories this file's TUs -- and now volk.c itself -- still need) is
+# already visible here by target name; SOURCE_DIR is a standard read-only
+# CMake target property (the directory add_library(volk ...) was called
+# from), so no new cross-directory-scope plumbing is needed the way
+# vendor/CMakeLists.txt's SPADE_SLANGC precedent needed one (that value is
+# needed BEFORE this SPADE_VULKAN block is even entered, which is not true
+# here).
+#
+# spade/tests/CMakeLists.txt's own direct `volk` link (its host-side
+# test_compute_context.cpp/probe_runner.hpp need volk.h on their own include
+# path -- see that file's comment) is UNTOUCHED and still correct: a static
+# archive only extracts the member that resolves a symbol still undefined at
+# that point in the link, so whichever of spade_compute's own bundled
+# volk.c.o or the separately-linked libvolk.a's copy is reached first
+# resolves every vk*/volk* symbol, and the other is never even considered --
+# volk.c compiling into two targets in the same build is not a duplicate-
+# symbol conflict, it is ordinary static-archive linking.
+get_target_property(_spade_volk_source_dir volk SOURCE_DIR)
+target_sources(spade_compute PRIVATE "${_spade_volk_source_dir}/volk.c")
+unset(_spade_volk_source_dir)
+
+install(TARGETS spade_compute
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+
+install(DIRECTORY compute/ DESTINATION include/compute FILES_MATCHING PATTERN "*.hpp")
+
+# The D9 generated headers and the SPIR-V embeddings, attached AFTER the
+# install rules above on purpose: both functions add a PUBLIC
+# $<BUILD_INTERFACE:...> include directory, which install(TARGETS ...) must not
+# see as an installed usage requirement -- generated headers exist only in this
+# build tree and are regenerated from the .slang sources on every build.
+#
+# ORDER MATTERS BETWEEN THE TWO: spade_slang_generated_layouts() must come
+# first, because compute/layout_check.cpp includes layout_check.gen.hpp and
+# bindings.gen.hpp, and both custom targets are wired as add_dependencies() of
+# spade_compute -- which is what stops ninja compiling that TU before the
+# generator has produced its inputs.
+spade_slang_generated_layouts(spade_compute)
+
+# pipeline_smoke IS GONE (S6 Task 8), and its absence is the deliverable rather
+# than a tidy-up. It was the D9 pipeline's SMOKE KERNEL -- scaffolding that gave
+# the compile/embed/float-controls half of the pipeline a real module to run
+# over before any physics kernel existed, and that Task 5 then reused as the
+# step recorder's copy-through stub for every un-ported schedule slot. Task 8
+# ports the last two (MediumUpdate and SensorSynthesis), so no slot binds a stub
+# any more; the two INERT slots (Gravity and Publish, empty functions on the CPU
+# too) now record NO DISPATCH AT ALL rather than a no-op one. See
+# compute/vulkan/step_recorder.hpp's slot table for that decision, and this
+# task's report for the accompanying retirement of spirv_scan.hpp's NO_OP
+# profile, which had no other instance.
+
+# fp32_math_probe (S6 Task 4): the evaluation kernel for the fp32_math parity
+# batteries. Compiling it is also what compiles engine/shaders/fp32_math.slang
+# -- the Slang port of core/fp32_math.cpp -- since a Slang module only reaches
+# SPIR-V through a kernel that imports it. That is deliberate rather than
+# incidental: the float-controls gate (SlangSpirv.FloatControlsPinned, EXACT
+# profile) scans the EMBEDDED module, so the ported kernels' NoContraction
+# decorations and their absence of OpFDiv/sqrt are checked on the real compiled
+# artifact, not on a separately-compiled copy of it.
+spade_slang_kernel(spade_compute fp32_math_probe)
+
+# ------------------------------------------------------------------------------
+# S6 TASK 6 -- kernels wave A. Three real physics kernels replacing the stub in
+# three of the eight schedule dispatch slots (compute/vulkan/step_recorder.hpp's
+# slot table): the drag half of ForceElements, CollisionStatic, and Integrate.
+# (S6 hygiene forward-pointer: this section describes what TASK 6 itself
+# added, as a historical delta -- by S6 Task 8, below, all eight slots are
+# live; see compute/vulkan/timestamps.hpp's header for the current, up to
+# date eight-of-eight account.)
+#
+# engine/shaders/sdf_eval.slang is NOT listed here and does not need to be: it
+# is a MODULE, not a kernel, and reaches SPIR-V only through
+# collision_static.slang's `import sdf_eval` -- the same arrangement
+# fp32_math.slang already has through fp32_math_probe. slangc's -depfile carries
+# the transitive import graph, so editing it recompiles the kernel that imports
+# it without this file naming it (cmake/SpadeSlang.cmake's DEPFILE note).
+#
+# Registered in tests/test_slang_layouts.cpp's kSpirvModules[] under the PARITY
+# profile -- P1 (NoContraction on every contractable op), P2 (no sum-of-products
+# opcode) and P3 (fp32 denormals preserved), but NOT exact's E1/E2: these are
+# downstream kernels and the global constraint allows them div and sqrt, which
+# is exactly why CPU<->GPU here is banded rather than bit-identical.
+# ------------------------------------------------------------------------------
+spade_slang_kernel_variants(spade_compute forces_drag)
+spade_slang_kernel_variants(spade_compute collision_static)
+spade_slang_kernel_variants(spade_compute integrate)
+
+# ------------------------------------------------------------------------------
+# S6 TASK 7 -- kernels wave B. The CollisionDynamic slot, which is the one
+# schedule slot that is a CHAIN rather than a single dispatch: the sorted-grid
+# broad phase's three stages (physics/grid.cpp's build / sort / resolve, v1's
+# GridBuild.comp / BitonicSort.comp / GridOffsets.comp + GridCollision.comp).
+#
+#   grid_build         one key per active, in-range body; sentinels elsewhere
+#   grid_sort          ONE compare-exchange stage of a bitonic network; the
+#                      host unrolls the (k, j) double loop into the recorded
+#                      command buffer, so this single module is dispatched once
+#                      per stage with its stage in a push constant
+#   collision_dynamic  the Gauss-Seidel sweep, one thread per WORLD (its own
+#                      header carries the parity argument for why the sweep
+#                      cannot be parallel within a world)
+#
+# All three are registered in tests/test_slang_layouts.cpp's kSpirvModules[]
+# under the PARITY profile, exactly like wave A's.
+# ------------------------------------------------------------------------------
+spade_slang_kernel_variants(spade_compute grid_build)
+spade_slang_kernel_variants(spade_compute grid_sort)
+spade_slang_kernel_variants(spade_compute collision_dynamic)
+
+# ------------------------------------------------------------------------------
+# S6 TASK 8 -- kernels wave C, which completes all eight schedule passes.
+#
+#   medium_update  the MediumUpdate pass: one thread per WORLD, advancing that
+#                  world's Dryden gust filter one substep (the filter is a
+#                  sequential recurrence within a world; worlds are the parallel
+#                  axis)
+#   rotors         the RotorElement half of ForceElements -- the FIRST of two
+#                  dispatches in slot 1, ahead of forces_drag, because
+#                  physics/schedule.cpp's own comment makes that order "a
+#                  numerical contract and not a preference" (both accumulate
+#                  into the same two float3 accumulators)
+#   sensor_imu     the SensorSynthesis pass: one thread per SENSOR slot, a THIRD
+#                  dispatch grid, writing sensor rows and ring samples
+#
+# FOUR MODULES, NOT LISTED HERE AND NOT NEEDING TO BE, for sdf_eval.slang's
+# reason above -- a Slang module reaches SPIR-V only through a kernel that
+# imports it, and slangc's -depfile carries the transitive graph:
+#
+#   u64.slang      exact 64-bit unsigned arithmetic on uint2 lanes (this device
+#                  has no shaderInt64 -- see engine/testing/spirv_scan.hpp's
+#                  rule P4)
+#   rng.slang      the port of core/rng.hpp's splitmix64 / next_float /
+#                  next_gauss
+#   dryden.slang   the port of world/medium.cpp's gust filter, imported by
+#                  medium_update (advance) AND by both force kernels (sample)
+#   mirrors.slang  the shared glm expression mirrors + effective_proxy_radius
+#
+# All three kernels are registered in tests/test_slang_layouts.cpp's
+# kSpirvModules[] under the PARITY profile, like waves A and B.
+# ------------------------------------------------------------------------------
+spade_slang_kernel_variants(spade_compute medium_update)
+spade_slang_kernel_variants(spade_compute rotors)
+spade_slang_kernel_variants(spade_compute sensor_imu)
+
+# T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/
+# spade_slang_kernel_variants() call above (fp32_math_probe through
+# sensor_imu, ten in total) -- see SpadeSlang.cmake's own function comment
+# for why the ordering is load-bearing. Writes kernel_manifest.gen.hpp's
+# kCompiledSpirvKernelCount, which tests/test_slang_layouts.cpp asserts
+# kSpirvModules[]'s size against.
+spade_slang_write_kernel_manifest(spade_compute)
+
+# ------------------------------------------------------------------------------
+# S6 TASK 5 ADDITIONS -- state mirror + step recorder + the VulkanBackend seam.
+# A single, clearly-delimited target_sources() block (appending to the
+# add_library(spade_compute ...) call above rather than editing its own file
+# list) because this file conflicts ADDITIVELY across S6 lanes (program note:
+# "both add sources... coordinator resolves at merge"); keeping this task's
+# additions in one place at the tail of the SPADE_VULKAN block is what makes
+# that merge mechanical.
+#
+#   compute/vulkan/state_mirror.cpp  -- the device buffer table (18-entry
+#     registered walk + dryden_params), upload()/readback().
+#   compute/vulkan/step_recorder.cpp -- the per-substep step command buffer,
+#     record-once-per-shape / submit-per-step.
+#   compute/vulkan/backend.cpp       -- VulkanBackend (compute/vulkan/
+#     backend.hpp, the Vulkan-FREE seam sim/simulation.hpp/.cpp includes):
+#     composes the two above behind a PIMPL.
+#
+# S6 TASK 10 ADDITION: compute/vulkan/timestamps.cpp -- PassTimestamps, the
+# per-pass GPU timing query-pool wrapper step_recorder.cpp now records into
+# its one reusable command buffer. Listed here rather than in a new block of
+# its own for the same reason state_mirror.cpp/step_recorder.cpp/backend.cpp
+# already share one: all four are additive TUs inside the same SPADE_VULKAN
+# gate, and step_recorder.cpp is this new file's only caller.
+# ------------------------------------------------------------------------------
+target_sources(spade_compute PRIVATE
+    compute/vulkan/state_mirror.cpp
+    compute/vulkan/step_recorder.cpp
+    compute/vulkan/backend.cpp
+    compute/vulkan/timestamps.cpp
+)
+
+# spade_sim needs spade::compute (S6 Task 5): Simulation
+# (sim/simulation.hpp/.cpp) owns a std::unique_ptr<compute::VulkanBackend> and
+# calls its create/upload/step/readback from simulation.cpp. PUBLIC, not
+# PRIVATE: simulation.hpp's own public surface now names
+# compute::BackendDesc (Simulation::create()'s new trailing parameter,
+# DEFAULTED so every pre-Task-5 call site is unaffected -- see create()'s own
+# doc comment) directly in a public function signature, so a consumer
+# including sim/simulation.hpp needs compute/backend.hpp on its include path
+# too, the same "public API exposes it, so the link is PUBLIC" reasoning
+# every other target in this file already uses. compute/backend.hpp itself
+# stays Vulkan-free (this task's design, matching this file's own Task-1
+# note on that header), so this link does not put a Vulkan header on
+# spade_sim's OWN public include surface -- only spade::compute's compiled
+# objects onto the link line of whatever links spade::sim.
+#
+# SPADE_VULKAN=OFF -- gap closed, S6 Task 5 review round 1 finding I1. The
+# ON branch above links spade_sim to spade::compute for the real
+# VulkanBackend definitions (compute/vulkan/backend.cpp, inside
+# spade_compute); this branch gives it the SAME symbols from a stub TU
+# instead, compiled directly into spade_sim itself (no spade_compute target
+# exists at all when this option is OFF, so there is nothing to link
+# against). sim/simulation.cpp calls compute::VulkanBackend::create/upload/
+# step/readback UNCONDITIONALLY -- the cpu/vulkan split is a RUNTIME branch
+# on BackendDesc::kind, not a compile-time #ifdef -- so every executable
+# that links spade::sim needs SOME definition of those symbols regardless of
+# this option, or the link fails even though nothing at runtime would ever
+# have taken the vulkan path. See compute/vulkan/backend_stub.cpp's own
+# header for the full mechanism (its create() always returns
+# Code::unavailable, matching VulkanContext::create()'s own report for "no
+# Vulkan present" -- from a caller's perspective the two situations are the
+# identical fact).
+target_link_libraries(spade_sim PUBLIC spade::compute)
+else()
+target_sources(spade_sim PRIVATE compute/vulkan/backend_stub.cpp)
+endif()
+
 install(EXPORT spadeTargets
     FILE spadeTargets.cmake
     NAMESPACE spade::

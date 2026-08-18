@@ -2272,6 +2272,66 @@ TEST(ScenarioFile, LoadsWhatTheDocumentSays) {
     ASSERT_OK(digest);
 }
 
+// parse_turbulence()'s OTHER branch (scenario_file.hpp): LoadsWhatTheDocumentSays
+// above only exercises the level shorthand ("light" -> dryden_params()'s
+// factory output). This scenario spells the mapping of all seven DrydenParams
+// fields directly, which nothing in this file's positive coverage has run
+// before (S6 hygiene, T7-S5 untested branch).
+TEST(ScenarioFile, AcceptsAnExplicitDrydenParamsMappingForTurbulence) {
+    const std::string text = replaced(
+        minimal_scenario_text(), "turbulence: light",
+        "turbulence: {scale_u: 150, scale_v: 175, scale_w: 40, sigma_u: 1.5, sigma_v: 2, "
+        "sigma_w: 0.75, reference_airspeed: 12}");
+    const spade::Result<LoadedScenario> loaded = load_scratch_scenario("explicit_dryden", text);
+    ASSERT_OK(loaded);
+
+    const spade::DrydenParams& t = loaded->data->worlds.worlds[0].turbulence;
+    EXPECT_EQ(t.scale_u, 150.0f);
+    EXPECT_EQ(t.scale_v, 175.0f);
+    EXPECT_EQ(t.scale_w, 40.0f);
+    EXPECT_EQ(t.sigma_u, 1.5f);
+    EXPECT_EQ(t.sigma_v, 2.0f);
+    EXPECT_EQ(t.sigma_w, 0.75f);
+    EXPECT_EQ(t.reference_airspeed, 12.0f);
+    EXPECT_EQ(t._reserved0, 0.0f);  // the file never carries it -- must stay 0
+
+    const spade::Result<uint64_t> digest = spade::testing::run_scenario(loaded->scenario);
+    ASSERT_OK(digest);
+}
+
+// parse_drag_elements()'s "componentwise" branch (scenario_file.hpp):
+// LoadsWhatTheDocumentSays' spawn carries no `drag_elements` key at all
+// (data.spawns[0].drag_elements.empty() there), so nothing in this file's
+// positive coverage has ever populated one from a scenario document (S6
+// hygiene, T7-S5 untested branch).
+TEST(ScenarioFile, AcceptsComponentwiseDragElementsOnABodySpawn) {
+    const std::string text = replaced(
+        minimal_scenario_text(), "      inv_inertia_diag: [100, 100, 100]\n",
+        "      inv_inertia_diag: [100, 100, 100]\n"
+        "      drag_elements:\n"
+        "        - {mode: componentwise, area: 0, coeffs: [0.02, 0.03, 0.04], "
+        "local_pos: [0.1, 0, -0.1], local_orient: [1, 0, 0, 0]}\n");
+    const spade::Result<LoadedScenario> loaded = load_scratch_scenario("componentwise_drag", text);
+    ASSERT_OK(loaded);
+
+    ASSERT_EQ(loaded->data->spawns.size(), 1u);
+    ASSERT_EQ(loaded->data->spawns[0].drag_elements.size(), 1u);
+    const spade::DragElementSpawn& drag = loaded->data->spawns[0].drag_elements[0];
+    EXPECT_EQ(drag.mode, spade::physics::drag_mode::componentwise);
+    EXPECT_EQ(drag.area, 0.0f);
+    EXPECT_EQ(drag.coeffs, glm::vec3(0.02f, 0.03f, 0.04f));
+    EXPECT_EQ(drag.local_pos, glm::vec3(0.1f, 0.0f, -0.1f));
+    EXPECT_EQ(drag.local_orient.w, 1.0f);
+    EXPECT_EQ(drag.local_orient.x, 0.0f);
+    EXPECT_EQ(drag.local_orient.y, 0.0f);
+    EXPECT_EQ(drag.local_orient.z, 0.0f);
+
+    // And the whole pipeline actually runs with the element wired in, not
+    // just parsed.
+    const spade::Result<uint64_t> digest = spade::testing::run_scenario(loaded->scenario);
+    ASSERT_OK(digest);
+}
+
 // EVERY REJECTION: one document, one defect each.
 TEST(ScenarioFile, RejectsEveryMalformedDocument) {
     const std::string base = minimal_scenario_text();
@@ -2293,6 +2353,12 @@ TEST(ScenarioFile, RejectsEveryMalformedDocument) {
         {"an unknown nested key",
          replaced(base, "grid: {cell_size: 0.5}", "grid: {cell_size: 0.5, cell_pad: 1}"),
          spade::Code::invalid_argument, "unknown key 'cell_pad'"},
+        // check_map()'s OTHER rejection (scenario_file.hpp's own comment:
+        // "Unknown keys and duplicate keys are both rejected") -- exercised
+        // nowhere else in this file, which tested only the unknown-key branch
+        // above.
+        {"a duplicate key", replaced(base, "grid: {cell_size: 0.5}", "grid: {cell_size: 0.5, cell_size: 0.6}"),
+         spade::Code::invalid_argument, "duplicate key 'cell_size'"},
         {"a missing required key", replaced(base, "    grid: {cell_size: 0.5}\n", ""),
          spade::Code::invalid_argument, "missing required key 'grid'"},
         {"an unknown turbulence level", replaced(base, "turbulence: light", "turbulence: gentle"),

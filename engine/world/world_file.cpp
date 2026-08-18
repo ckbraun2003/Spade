@@ -474,6 +474,16 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     return value;
 }
 
+// DECIMAL ONLY, DELIBERATELY -- the one place this parser diverges from its
+// copy in engine/testing/scenario_file.hpp, which additionally accepts a
+// `0x`/`0X` prefix for its `seed` and `expected_digest` fields. Not a gap:
+// every uint this file reads (Environment::seed included) is always WRITTEN
+// by emit()'s dec() (see "seed" below), never as a hex literal, because
+// world_to_yaml() is a real round-trip writer and a scenario file is not (it
+// is hand-authored test support that never gets written back out) -- so
+// there is no field here a human would ever spell in hex for this reader to
+// meet. See scenario_file.hpp's parse_uint for the full account of why the
+// two copies differ here and nowhere else.
 template <std::unsigned_integral T>
 [[nodiscard]] Result<T> parse_uint(const YAML::Node& node, std::string_view what) {
     const Result<std::string> text = scalar(node, what);

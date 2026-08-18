@@ -141,3 +141,150 @@ set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
+
+# ------------------------------------------------------------------------------
+# Vulkan-Headers (S6 Task 1) -- the v2 compute backend's device-layer types
+# (engine/compute/vulkan/context.*). Fetched UNCONDITIONALLY, not gated on
+# SPADE_VULKAN: the fetch itself is cheap (a header-only git checkout, no
+# compiled TUs), and the existing pattern in this file is to gate the
+# *consuming target*, not the FetchContent call -- see GLM's own comment
+# above (fetched unconditionally even though only v1 needs it standalone).
+# engine/CMakeLists.txt's spade_compute target, the actual consumer, is what
+# `if(SPADE_VULKAN)`-gates.
+#
+# PINNED VERSION AND WHY IT IS NOT "v1.3.*"-NAMED, DESPITE THIS TASK'S BRIEF
+# ASKING FOR "an exact v1.3.* tag": KhronosGroup/Vulkan-Headers tagged
+# "v1.3.NNN" through v1.3.302 (2024-11-21), then switched entirely to
+# "vulkan-sdk-X.Y.Z.W" tags once Vulkan 1.4 shipped -- there has been no new
+# "v1.3.*" tag since. Every "vulkan-sdk-*" tag is CUMULATIVE (it carries the
+# full VK_API_VERSION_1_0..1_4 surface; nothing 1.3-era is removed). The
+# coordinator's own dispatch for this task anticipated exactly this
+# situation and ruled on it directly (not a quote from global-constraints.md,
+# which does not contain this sentence): "Vulkan-Headers can be newer than
+# the driver's 1.3.215 -- target the 1.3 API in code." Pinning the STALE
+# (21-month-old) v1.3.302 tag over the current cumulative one would trade
+# real freshness for a naming convention this upstream repo itself
+# abandoned. This program's own code only calls the VK_API_VERSION_1_3
+# surface (engine/compute/vulkan/context.cpp's VkApplicationInfo::apiVersion),
+# so "target the 1.3 API in code" holds regardless of which cumulative tag
+# supplies the headers.
+#
+# Chosen via `gh api repos/KhronosGroup/Vulkan-Headers/tags` (current stable
+# HEAD tag at pin time, 2026-08-13).
+# Release: https://github.com/KhronosGroup/Vulkan-Headers/releases/tag/vulkan-sdk-1.4.357.0
+# ------------------------------------------------------------------------------
+FetchContent_Declare(
+    vulkan-headers
+    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+    GIT_TAG        vulkan-sdk-1.4.357.0
+)
+set(VULKAN_HEADERS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(vulkan-headers)
+
+# ------------------------------------------------------------------------------
+# volk (S6 Task 1) -- the dynamic Vulkan function-pointer loader
+# engine/compute/vulkan/context.cpp calls (volkInitialize/volkLoadInstanceOnly/
+# volkLoadDevice); no vulkan-1.lib/libvulkan.so is linked anywhere in this
+# tree, so a box or CI runner with no Vulkan loader installed still links,
+# and simply reports Code::unavailable / vulkan_available() == false at
+# runtime rather than failing to link at all.
+#
+# "MATCHING tag" (this task's brief): zeux/volk tags its own releases 1:1
+# against the identical vulkan-sdk-X.Y.Z.W string Vulkan-Headers uses above
+# (verified empirically -- both repos' `gh api .../tags` listings are
+# identical) -- "vulkan-sdk-1.4.357.0" here names the exact volk release cut
+# against the exact Vulkan-Headers commit fetched above, so the two
+# dependencies' header surfaces cannot drift apart.
+#
+# VOLK_PULL_IN_VULKAN (volk's own CMakeLists.txt, default ON) auto-detects
+# the in-tree `Vulkan-Headers` target declared just above (it checks `TARGET
+# Vulkan-Headers` once no VULKAN_SDK env var or find_package(Vulkan) result
+# is available) and adds its include directory to both the `volk` and
+# `volk_headers` targets -- this Declare/MakeAvailable pair MUST stay after
+# vulkan-headers's above for that detection to see the target.
+#
+# Release: https://github.com/zeux/volk/releases/tag/vulkan-sdk-1.4.357.0
+# ------------------------------------------------------------------------------
+FetchContent_Declare(
+    volk
+    GIT_REPOSITORY https://github.com/zeux/volk.git
+    GIT_TAG        vulkan-sdk-1.4.357.0
+)
+FetchContent_MakeAvailable(volk)
+
+# ------------------------------------------------------------------------------
+# Slang prebuilt compiler (S6 Task 1) -- the shader-compile-time toolchain a
+# LATER task (T3 onward, per this task's brief) invokes to turn .slang
+# source into SPIR-V. Nothing in Spade LINKS slang as a library, so this
+# fetches a PREBUILT RELEASE ARCHIVE (URL + URL_HASH), unlike every other
+# entry in this file, which builds a GIT_REPOSITORY checkout from source:
+# slang's own build is a multi-hour LLVM-adjacent undertaking wholly out of
+# scope for a per-configure fetch, and upstream already publishes the
+# compiler binaries this tree needs.
+#
+# Pinned to v2026.14.1 -- the release `gh api
+# repos/shader-slang/slang/releases/latest` resolved to at pin time
+# (2026-08-13, published 2026-07-30).
+# Release: https://github.com/shader-slang/slang/releases/tag/v2026.14.1
+#
+# Per-platform archive + hash. shader-slang publishes no separate checksum
+# manifest for a release, so each SHA256 below was computed locally
+# (`sha256sum`) from the asset downloaded directly off this release's GitHub
+# URL -- the same integrity guarantee URL_HASH exists to encode, just
+# computed rather than copied.
+#   windows-x64: slang-2026.14.1-windows-x86_64.zip
+#     SHA256 5ed0a59d650a0af0aca45d5db4e083b3d8fb5cea05748747dd95dfbe9c580658
+#   linux-x64:   slang-2026.14.1-linux-x86_64.tar.gz (the glibc-generic
+#     build, not the -glibc-2.27/-2.28-suffixed variants -- matches both
+#     this box's own x86_64 dev loop and .github/workflows/spade.yml's
+#     ubuntu-latest runner without pinning to a specific glibc ABI)
+#     SHA256 21f2d7847385a770e569fb61b1507a7794d742d97850bce0432bff0032ca005f
+#
+# Unconditional fetch, same reasoning as Vulkan-Headers/volk above. The
+# archive has no CMakeLists.txt at its root, so FetchContent_MakeAvailable
+# populates ${slang_SOURCE_DIR} (bin/, lib/, include/) WITHOUT calling
+# add_subdirectory -- exactly what a prebuilt-binary vendor drop needs; a
+# later task's CMake code is what will actually reference
+# ${slang_SOURCE_DIR}/bin/slangc(.exe) to compile SPIR-V, and this task
+# leaves the variable there unconsumed, correctly out of its own scope.
+#
+# SPADE_SLANGC (S6 Task 3) is that later task's consumption of it, and it is
+# defined HERE, immediately after the fetch that produces the binary, rather
+# than in cmake/SpadeSlang.cmake where it is used: ${slang_SOURCE_DIR} is a
+# FetchContent output variable, only meaningful in the scope that called
+# FetchContent_MakeAvailable, and re-deriving the archive's internal layout
+# (bin/slangc) at the consumer would put knowledge of the vendor drop's shape
+# in two files. CACHE INTERNAL, so it survives into every subdirectory scope
+# (engine/, tests/) without being a user-facing knob -- the compiler is pinned
+# by the URL_HASH above, and pointing this at a different slangc would silently
+# change the SPIR-V the layout checks were reflected from.
+# ------------------------------------------------------------------------------
+if(WIN32)
+    FetchContent_Declare(
+        slang
+        URL      https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-windows-x86_64.zip
+        URL_HASH SHA256=5ed0a59d650a0af0aca45d5db4e083b3d8fb5cea05748747dd95dfbe9c580658
+    )
+else()
+    FetchContent_Declare(
+        slang
+        URL      https://github.com/shader-slang/slang/releases/download/v2026.14.1/slang-2026.14.1-linux-x86_64.tar.gz
+        URL_HASH SHA256=21f2d7847385a770e569fb61b1507a7794d742d97850bce0432bff0032ca005f
+    )
+endif()
+FetchContent_MakeAvailable(slang)
+
+if(WIN32)
+    set(_spade_slangc "${slang_SOURCE_DIR}/bin/slangc.exe")
+else()
+    set(_spade_slangc "${slang_SOURCE_DIR}/bin/slangc")
+endif()
+if(NOT EXISTS "${_spade_slangc}")
+    message(FATAL_ERROR
+        "The slang prebuilt was fetched but no slangc was found at ${_spade_slangc}. "
+        "The release archive's layout changed, or the fetch is incomplete.")
+endif()
+set(SPADE_SLANGC "${_spade_slangc}" CACHE INTERNAL
+    "The pinned slangc (slang v2026.14.1 prebuilt) that compiles engine/shaders/**")
+unset(_spade_slangc)

@@ -327,19 +327,39 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 // name for the setting) rather than on _DEBUG or NDEBUG, which would guard
 // on the usual correlate instead of the cause.
 //
-// THE CROSS-PLATFORM QUESTION THIS DOES NOT ANSWER, FLAGGED RATHER THAN
-// ASSUMED: this program's CI never builds Debug at all
-// (.github/workflows/spade.yml pins -DCMAKE_BUILD_TYPE=Release on both the
-// Windows and Linux/gcc-13 jobs), so only the 184-byte, non-debug-iterator
-// shape ever needs to agree across the two CI platforms -- and libstdc++'s
-// std::string/std::vector are also 32 and 24 bytes on a 64-bit target with
-// no debug-iterator inflation of their own unless a build explicitly defines
-// _GLIBCXX_DEBUG, which this program's CI does not, so 184 is EXPECTED to
-// hold on gcc-13 Release too. That expectation is NOT verified locally --
-// this box has no gcc-13 toolchain -- and is flagged in this task's report
-// as the one build this literal has not been cross-checked on; if the
-// gcc-13 CI job's build ever disagrees, the fix is a third guarded branch
-// here, not a loosening of the assert.
+// THE CROSS-PLATFORM QUESTION, ANSWERED (S6 hygiene update; was flagged
+// unverified when this comment was first written). This program's CI never
+// builds Debug at all (.github/workflows/spade.yml pins
+// -DCMAKE_BUILD_TYPE=Release on both the Windows and Linux/gcc-13 jobs), so
+// only the 184-byte, non-debug-iterator shape ever needs to agree across the
+// two CI platforms -- and libstdc++'s std::string/std::vector are also 32
+// and 24 bytes on a 64-bit target with no debug-iterator inflation of their
+// own unless a build explicitly defines _GLIBCXX_DEBUG, which this program's
+// CI does not, so 184 was EXPECTED to hold on gcc-13 Release too.
+//
+// THAT EXPECTATION IS NOW CONFIRMED, LOCALLY, NOT MERELY ARGUED: this box has
+// no gcc-13 toolchain of its own, but S6 Task 2's golden-digest cross-check
+// (blocked from GitHub Actions CI by the account's exhausted monthly Actions
+// quota, global-constraints.md's billing note) ran an equivalent gcc-13 build
+// through a `gcc:13` Docker container replicating spade.yml's spade-linux job
+// one-for-one -- CC/CXX=gcc-13, `cmake -G Ninja Release -DSPADE_BUILD_V1=OFF`,
+// `ctest -L spade` -- on this file's own tree (task-2-gate-local-report.md:
+// gcc 13.4.0, cmake 3.28.3, ninja 1.11.1, 442/442 tests passed). That build
+// could not have SUCCEEDED if this static_assert's non-debug-iterator branch
+// disagreed with gcc-13/libstdc++'s actual sizeof(WorldDesc): the assert is
+// unconditional (not behind an #if this configuration would skip), so its
+// green ctest run IS the cross-check, not merely evidence for one.
+//
+// WHAT THIS DOES NOT COVER: the real GitHub Actions gcc-13 job (spade.yml)
+// still has not run since the quota exhaustion, so there is no CI-recorded
+// instance of this exact assert on that specific runner image; and any LATER
+// commit that changes WorldDesc's field set (adding, removing, or resizing a
+// member) is unverified on gcc-13 again until the next local gcc-13 build or
+// CI run after the quota resets -- this comment records ONE dated
+// cross-check (2026-08-17), not a standing guarantee. If a future change to
+// this literal ever needs re-verification and neither is available, the
+// local Docker recipe above is the sanctioned substitute, not a loosening of
+// the assert.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
 static_assert(sizeof(WorldDesc) == 224,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "

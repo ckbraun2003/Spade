@@ -361,6 +361,22 @@ template <std::unsigned_integral T>
     // fields a human reads as bit patterns rather than as quantities; every
     // other integer in the schema is a count and is written in decimal. The
     // prefix decides the base, so nothing is ambiguous.
+    //
+    // THE ONE DELIBERATE DIVERGENCE FROM world_file.cpp's parse_uint(), worth
+    // stating rather than leaving for a future diff to wonder about: that
+    // copy is decimal-only (base 10, unconditionally) and its "not a
+    // non-negative decimal integer" message has no hex clause. That is not a
+    // missed feature over there -- world_file.cpp's own `seed` field
+    // (Environment::seed) is a real round-trip: world_to_yaml()'s emit()
+    // always writes it with dec(), never a hex literal, so world_from_yaml()
+    // never needs to read one back. A scenario file is never written by this
+    // engine (scenario_file.hpp is read-only test support, "never installed
+    // or shipped" -- docs/dev/testing.md), so its `seed`/`expected_digest`
+    // fields are hand-authored, and hex is the natural spelling for a value a
+    // human reads as bits (a digest, a seed transcribed from a debug print)
+    // -- hence the accommodation exists on THIS side of the copy and not the
+    // other. If a future edit to either parse_uint ever needs to bring the
+    // two back in sync, this is the one place they are meant to disagree.
     int base = 10;
     if (body.size() > 2 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) {
         base = 16;

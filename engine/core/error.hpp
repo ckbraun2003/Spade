@@ -15,6 +15,14 @@ enum class Code {
     io_error,
     schema_mismatch,
     internal,
+    // S6 Task 1: a requested resource is architecturally absent from this
+    // process/environment rather than merely missing data (not_found) or
+    // malformed input (invalid_argument) -- e.g. compute::VulkanContext::
+    // create() when no Vulkan loader or physical device is present. Callers
+    // that can degrade or skip (a GPU test's GTEST_SKIP(), a future runtime
+    // backend fallback) switch on this specifically rather than treating it
+    // as a generic failure.
+    unavailable,
 };
 
 // Deliberately a plain aggregate (no user-declared constructors) so

@@ -118,6 +118,7 @@ TEST(Error, AllCodesAreDistinct) {
     constexpr spade::Code kCodes[] = {
         spade::Code::invalid_argument, spade::Code::capacity_exceeded, spade::Code::not_found,
         spade::Code::io_error,         spade::Code::schema_mismatch,   spade::Code::internal,
+        spade::Code::unavailable,
     };
     for (size_t i = 0; i < std::size(kCodes); ++i) {
         for (size_t j = i + 1; j < std::size(kCodes); ++j) {

@@ -234,6 +234,35 @@ constexpr float kAirDensity = 1.225f;
 }
 
 // ---------------------------------------------------------------------------
+// D-S6-2 fix-loop (I2+M3): a world WITH geometry, unlike void_world(), which
+// deliberately has none. A single ground plane, normal +Y, offset 0, so
+// phi(p) == p.y (world/sdf.cpp's plane eval is dot(p,n) - offset; test_
+// contacts.cpp's GroundPlane() documents the same primitive on the Z axis --
+// this file is Y-up, hence +Y here). `default_radius` and `cell_size` are the
+// two knobs the vehicle-spawn precondition tests below vary.
+// ---------------------------------------------------------------------------
+[[nodiscard]] spade::Result<Simulation> ground_plane_sim(float default_radius, float cell_size) {
+    const spade::Result<spade::WorldDesc> world = WorldBuilder()
+                                                      .name("ground_plane")
+                                                      .environment(default_environment())
+                                                      .capacities(capacities(4, 8, 2))
+                                                      .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
+                                                      .build();
+    if (!world) return std::unexpected(world.error());
+
+    WorldInstanceDesc instance;
+    instance.world = *world;
+    instance.seed = 0xC0FFEE2020ULL;
+    instance.turbulence = spade::dryden_params(TurbulenceLevel::none);
+    instance.contacts.restitution_e = 0.0f;
+    instance.contacts.friction_mu = 0.0f;
+    instance.contacts.proxy_radius = default_radius;
+    instance.grid.cell_size = cell_size;
+    const WorldSetDesc desc{{instance}};
+    return Simulation::create(desc, 1'000'000, 1);
+}
+
+// ---------------------------------------------------------------------------
 // The analytic reference for ONE substep from EXACT REST in an empty world,
 // re-derived here from quadrotor.hpp section 2 rather than transcribed from
 // the implementation.
@@ -622,6 +651,13 @@ TEST(Quadrotor, SpawnBuildsTheBodyEveryRotorAndTheSensorAndSeedsTheRotorsInTrim)
     EXPECT_NEAR((*body)->inv_inertia_diag.y, 1.0f / kIy, 1e-6f);
     EXPECT_NEAR((*body)->inv_inertia_diag.z, 1.0f / kIz, 1e-6f);
     EXPECT_NE((*body)->flags & spade::physics::body_flags::active, 0u);
+    // D-S6-2: the MODEL owns its bodies' contact-proxy radius, written at
+    // spawn from ModelType::proxy_radius (0.18f here) -- NOT the world's
+    // ContactParams::proxy_radius (0.1f, void_world()), which is the
+    // assertion that would pass by coincidence if spawn() had wired the two
+    // up backwards.
+    EXPECT_EQ((*body)->proxy_radius, params.proxy_radius);
+    EXPECT_NE((*body)->proxy_radius, 0.1f);
 
     // Four rotors, in DECLARATION order, each spawned holding its speed --
     // omega AND omega_cmd, which is what "spawns in trim" means.
@@ -648,6 +684,131 @@ TEST(Quadrotor, SpawnBuildsTheBodyEveryRotorAndTheSensorAndSeedsTheRotorsInTrim)
     const spade::Result<uint32_t> live_sensors = sim->live_imu_sensor_count(0);
     ASSERT_OK(live_sensors);
     EXPECT_EQ(*live_sensors, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// D-S6-2's other half of the contract: a BARE body (Simulation::spawn(world,
+// BodySpawn), the non-vehicle entry point -- no model, no per-body radius
+// concept at authoring time) never gets a proxy_radius override. Its slot
+// stays at the 0 sentinel, which is what makes a plain-body world's digest
+// impossible to move by D-S6-2: the fallback to the world's default IS the
+// only behaviour a bare spawn() ever had.
+// ---------------------------------------------------------------------------
+TEST(Quadrotor, PlainBodySpawnLeavesProxyRadiusAtTheSentinel) {
+    spade::Result<Simulation> sim = void_sim();
+    ASSERT_OK(sim);
+
+    spade::BodySpawn plain;
+    plain.pos = glm::vec3(3.0f, 10.0f, -1.0f);
+    plain.mass = 2.0f;
+    const spade::Result<BodyRef> ref = sim->spawn(0, plain);
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+
+    const spade::Result<const spade::BodyState*> body = sim->body(*ref);
+    ASSERT_OK(body);
+    EXPECT_EQ((*body)->proxy_radius, 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// D-S6-2 fix-loop, guard 1 (I2, coordinator review): the vehicle-spawn site
+// must reject a model whose own proxy_radius overrides the world default with
+// something the world's GRID cannot afford (physics/grid.hpp's cell_size >=
+// 2*radius footgun). sim/world_set.cpp's validate_grid_against_contacts()
+// only ever checks the world's DEFAULT at world-creation time, before any
+// vehicle model exists to register -- this is the gap that check cannot see.
+// ---------------------------------------------------------------------------
+TEST(Quadrotor, SpawnRejectsAModelRadiusTheWorldsGridCannotAfford) {
+    // void_world()'s grid.cell_size is 0.5 m, which affords radii up to
+    // 0.25 m (2*0.25 == 0.5). A model overriding the world's default (0.1 m)
+    // with 0.3 m (2*0.3 == 0.6 > 0.5) must be rejected at spawn.
+    {
+        spade::Result<Simulation> sim = void_sim();
+        ASSERT_OK(sim);
+        QuadrotorParams oversize = test_quad(0.02f, 0.9f);
+        oversize.proxy_radius = 0.3f;
+        const spade::Result<ModelType> model = spade::vehicles::make_quadrotor(oversize);
+        ASSERT_OK(model);
+        const spade::Result<ModelTypeId> id = sim->register_model(*model);
+        ASSERT_OK(id);
+
+        VehicleSpawn where;
+        where.pos = glm::vec3(0.0f, 10.0f, 0.0f);
+        EXPECT_EQ(code_of(sim->spawn(0, *id, where)), code(spade::Code::invalid_argument));
+    }
+
+    // Sanity, in a FRESH world (own Simulation, so this vehicle's force-
+    // element budget never collides with the rejected spawn above, which
+    // never got as far as reserving one): the SAME grid does not reject a
+    // model radius it CAN afford (0.2 m: 2*0.2 == 0.4 <= 0.5) -- the guard is
+    // a genuine bound, not a blanket rejection of every override.
+    {
+        spade::Result<Simulation> sim = void_sim();
+        ASSERT_OK(sim);
+        QuadrotorParams fits = test_quad(0.02f, 0.9f);
+        fits.proxy_radius = 0.2f;
+        const spade::Result<ModelType> model = spade::vehicles::make_quadrotor(fits);
+        ASSERT_OK(model);
+        const spade::Result<ModelTypeId> id = sim->register_model(*model);
+        ASSERT_OK(id);
+
+        VehicleSpawn where;
+        where.pos = glm::vec3(0.0f, 10.0f, 0.0f);
+        EXPECT_OK(sim->spawn(0, *id, where));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D-S6-2 fix-loop, guard 2 (M3, coordinator review): the vehicle-spawn site's
+// SDF-depth precondition ("not buried more than one proxy radius") must test
+// the vehicle's own EFFECTIVE radius, not unconditionally the world default --
+// a world WITH geometry (quad_hover deliberately has none, so it cannot
+// exercise this at all).
+// ---------------------------------------------------------------------------
+TEST(Quadrotor, SpawnSdfDepthPreconditionUsesTheModelsEffectiveRadiusNotAlwaysTheWorldDefault) {
+    // 0.15 m INSIDE the solid (phi == -0.15), so admission depends entirely on
+    // which radius the precondition reads (phi >= -radius).
+    const glm::vec3 buried_pos(0.0f, -0.15f, 0.0f);
+    constexpr float kCellSize = 1.0f;  // comfortably affords every radius below
+
+    // Direction 1: the model's own (LARGER) radius ADMITS a spawn the world
+    // default would have REJECTED. World default 0.1 m: -0.15 >= -0.1 is
+    // false (would reject). Model override 0.2 m: -0.15 >= -0.2 is true.
+    {
+        spade::Result<Simulation> sim = ground_plane_sim(/*default_radius=*/0.1f, kCellSize);
+        ASSERT_OK(sim);
+        QuadrotorParams params = test_quad(0.02f, 0.9f);
+        params.proxy_radius = 0.2f;
+        const spade::Result<ModelType> model = spade::vehicles::make_quadrotor(params);
+        ASSERT_OK(model);
+        const spade::Result<ModelTypeId> id = sim->register_model(*model);
+        ASSERT_OK(id);
+
+        VehicleSpawn where;
+        where.pos = buried_pos;
+        EXPECT_OK(sim->spawn(0, *id, where))
+            << "the model's own (larger) radius should have admitted this spawn";
+    }
+
+    // Direction 2 (vice versa): the model's own (SMALLER) radius REJECTS a
+    // spawn the world default would have ADMITTED. World default 0.3 m:
+    // -0.15 >= -0.3 is true (would admit). Model override 0.1 m: -0.15 >=
+    // -0.1 is false.
+    {
+        spade::Result<Simulation> sim = ground_plane_sim(/*default_radius=*/0.3f, kCellSize);
+        ASSERT_OK(sim);
+        QuadrotorParams params = test_quad(0.02f, 0.9f);
+        params.proxy_radius = 0.1f;
+        const spade::Result<ModelType> model = spade::vehicles::make_quadrotor(params);
+        ASSERT_OK(model);
+        const spade::Result<ModelTypeId> id = sim->register_model(*model);
+        ASSERT_OK(id);
+
+        VehicleSpawn where;
+        where.pos = buried_pos;
+        EXPECT_EQ(code_of(sim->spawn(0, *id, where)), code(spade::Code::invalid_argument))
+            << "the model's own (smaller) radius should have rejected this spawn";
+    }
 }
 
 TEST(Quadrotor, SpawnValidatesItsPoseAndRotorSpeed) {

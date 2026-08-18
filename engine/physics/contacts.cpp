@@ -11,8 +11,10 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
                              const ContactParams& params, [[maybe_unused]] float h) noexcept {
     // Hoisted once: per-world, not per-body, so the per-body op sequence below
     // is exactly what a GPU thread executes after reading its world's param
-    // row. (`h` is unused by the pinned model -- see contacts.hpp.)
-    const float radius = params.proxy_radius;
+    // row. (`h` is unused by the pinned model -- see contacts.hpp.) `radius`
+    // is NOT hoisted with these four (D-S6-2): it is now a per-body quantity,
+    // computed once per body below via effective_proxy_radius() rather than
+    // once per call, which is the one-branch cost of the per-body override.
     const float e = params.restitution_e;
     const float mu = params.friction_mu;
     const float beta = params.baumgarte_beta;
@@ -26,6 +28,12 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
         if ((body.flags & body_flags::active) == 0u) {
             continue;
         }
+
+        // D-S6-2: this body's own override, or the world's default -- see
+        // contacts.hpp's effective_proxy_radius(). A GPU thread performs the
+        // same single select after reading its body's row and its world's
+        // param row; nothing here diverges by thread.
+        const float radius = effective_proxy_radius(body, params.proxy_radius);
 
         // One walk of the program yields both the distance and the gradient
         // (world/sdf.hpp); sample().distance is bit-identical to eval().

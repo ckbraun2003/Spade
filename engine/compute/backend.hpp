@@ -1,0 +1,255 @@
+#pragma once
+
+// Backend descriptors ONLY -- deliberately the one file in engine/compute/
+// with zero Vulkan dependency (S6 dependency rule, spec section 2: "nothing
+// outside engine/compute/ includes a Vulkan header"; this header lets a
+// consumer name/configure a backend without needing Vulkan on its include
+// path at all). vulkan/context.hpp is the file that actually touches Vulkan.
+
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+namespace spade::compute {
+
+// Which compute backend a caller targets. `cpu` names today's existing
+// engine path (spade_physics/spade_sim's host-side passes) as a first-class
+// value so BackendDesc can select either uniformly; `vulkan` is what
+// engine/compute/vulkan/ implements starting this task.
+enum class BackendKind : uint32_t {
+    cpu = 0,
+    vulkan = 1,
+};
+
+// ---------------------------------------------------------------------------
+// THE LEGAL VALUES OF BackendDesc::workgroup_size (S6 Task 9b), stated HERE
+// because this is the knob's point of definition and the allowed set is part
+// of what the knob MEANS -- not a private detail of whichever file happens to
+// validate it.
+//
+// IT IS A CLOSED SET, AND THAT IS A BUILD FACT RATHER THAN A PREFERENCE. A
+// kernel's local size is compiled into its SPIR-V (`OpExecutionMode <entry>
+// LocalSize N 1 1`), so the only sizes a backend can offer are the sizes the
+// BUILD compiled a module for: cmake/SpadeSlang.cmake's
+// spade_slang_kernel_variants() compiles each of the nine schedule kernels
+// once per entry in this array, and compute/spirv_variants.hpp is the table
+// that results. Adding a size here without adding it there would produce a
+// value that validates and then fails at pipeline creation, so the two lists
+// are pinned to each other by tests/test_gpu_invariance.cpp's
+// WorkgroupSizeContract.AllowedSetMatchesCompiledVariants.
+//
+// WHY THESE THREE. 64 is the default and the size every kernel was authored,
+// measured and parity-banded at through Tasks 6-8; 32 and 128 bracket it by a
+// factor of two either way, which is what makes the A7 sweep a real test of
+// the "no workgroup-shared reduction whose result order depends on local size"
+// kernel design constraint rather than a re-run of one configuration. All
+// three are within every Vulkan implementation's guaranteed minimum
+// maxComputeWorkGroupInvocations (128), so the set costs no portability --
+// though compute/vulkan/step_recorder.cpp checks the actual device limit
+// anyway rather than trusting that guarantee.
+inline constexpr std::array<uint32_t, 3> kSupportedWorkgroupSizes = {32u, 64u, 128u};
+
+[[nodiscard]] inline constexpr bool workgroup_size_supported(uint32_t workgroup_size) noexcept {
+    for (const uint32_t supported : kSupportedWorkgroupSizes) {
+        if (supported == workgroup_size) return true;
+    }
+    return false;
+}
+
+// The allowed set as message text, e.g. "workgroup sizes {32, 64, 128}". Lives
+// beside the set itself so that every rejection message names the SAME list
+// this header defines -- a hand-written "{32, 64, 128}" in an error string is a
+// second copy that goes stale the moment the array grows, and the whole point
+// of a named error is that it tells the caller what to pass instead.
+[[nodiscard]] inline std::string supported_workgroup_sizes_text() {
+    std::string text = "workgroup sizes {";
+    for (std::size_t i = 0; i < kSupportedWorkgroupSizes.size(); ++i) {
+        if (i != 0) text += ", ";
+        text += std::to_string(kSupportedWorkgroupSizes[i]);
+    }
+    text += "}";
+    return text;
+}
+
+// Per-run backend configuration. Plain aggregate (no user-declared
+// constructors), matching every authored *Desc type in state/layout.hpp.
+//
+// workgroup_size and device_index are both A7 knobs (global constraint:
+// every backend knob owes a bit-invariance test -- same device, knob
+// varied, GPU results must stay bit-identical, and BackendKind::cpu must
+// reproduce today's CPU digests exactly).
+//
+// BOTH ARE LIVE AS OF S6 TASK 9b. device_index has been read by
+// VulkanContext::create() since Task 5. workgroup_size was INERT through Task
+// 9 -- declared here, plumbed through Simulation, and consumed by nothing,
+// because all nine kernels baked `[numthreads(64,1,1)]` at slangc time -- which
+// made T9's A7 sweep a test of the plumbing rather than of the kernels. Task 9b
+// closed that: the nine kernels spell `[numthreads(SPADE_WG,1,1)]`, the build
+// compiles each at every size in kSupportedWorkgroupSizes above,
+// VulkanBackend::create() rejects anything outside that set, and
+// compute/vulkan/step_recorder.cpp both SELECTS the matching compiled module
+// and divides its dispatch grids by the SAME value. A value outside the set is
+// a Code::invalid_argument naming the set, never a silent fallback to 64.
+struct BackendDesc {
+    BackendKind kind = BackendKind::cpu;
+    uint32_t workgroup_size = 64;
+    uint32_t device_index = 0;
+};
+
+// ---------------------------------------------------------------------------
+// StepShape (S6 Task 5) -- the fixed shape a VulkanBackend is created for:
+// world/body/element/sensor capacities plus the two scalars (substeps, h) and
+// the one config flag (batch_dynamic_collision) the schedule needs. Mirrors
+// Simulation::create()'s VALIDATED WorldSetLayout (sim/world_set.hpp) plus the
+// substep decomposition create() itself derives -- see sim/simulation.cpp's
+// create(), which is the one place all seven values are already in scope
+// together and is where a Simulation on the vulkan path builds one of these
+// to hand to VulkanBackend::create().
+//
+// DELIBERATELY DOES NOT CARRY ContactParams/GridParams. Those are per-WORLD
+// material/solver records (physics/contacts.hpp, physics/grid.hpp) that reach
+// the device through the PER-WORLD `contact_params`/`grid_params` buffers
+// (bindings.slang bindings 19/20), never through the shape a backend is
+// created for. Folding them into StepShape would make two distinct
+// Simulations that happen to share every capacity but disagree on
+// restitution report DIFFERENT shapes for no shape-related reason.
+//
+// A backend's buffers, descriptor set and dispatch grid are sized from this
+// struct ONCE, at VulkanBackend::create() time, and never resized -- exactly
+// like ArenaSet's own fixed-capacity contract (state/arenas.hpp). Reshaping a
+// running Simulation is out of scope for S6 (a fresh Simulation is the
+// documented way to change shape today).
+// ---------------------------------------------------------------------------
+// The two SDF extents (S6 Task 6) ARE shape, unlike the material record below:
+// they size two device buffers, exactly like body_capacity sizes the body
+// mirror, and they are fixed for a Simulation's life because the per-world
+// SdfProgram is configuration that never changes after create(). Both are
+// TOTALS OVER THE WHOLE SET (every world's nodes concatenated), because that is
+// what the buffers hold -- see compute/sdf_program.hpp for the flattening.
+struct StepShape {
+    uint32_t world_count = 0;
+    uint32_t body_capacity = 0;
+    uint32_t element_capacity = 0;
+    uint32_t sensor_capacity = 0;
+    uint32_t substeps = 0;
+    float h = 0.0f;
+    bool batch_dynamic_collision = false;
+    uint32_t sdf_node_count = 0;       // total SDF nodes across every world
+    uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
+};
+
+// ---------------------------------------------------------------------------
+// PassDurationsNs (S6 Task 10) -- per-pass GPU timing, one field per
+// physics/schedule.cpp's kSchedule slot, in that literal order (matching
+// compute/vulkan/step_recorder.hpp's kPassPipeline/kPassGrid tables and this
+// task's compute/vulkan/timestamps.hpp). Nanoseconds, summed across every
+// substep of the most recently completed step.
+//
+// WHY THIS LIVES HERE AND NOT IN compute/step_params.hpp, THE OTHER
+// Vulkan-free header sim/simulation.hpp already includes. StepParams/
+// StepWitness there are CPU<->GPU WIRE CONTRACTS -- mirrored verbatim in
+// engine/shaders/shared/layouts.slang, checked by the generated
+// layout_check.gen.hpp static_asserts, bytes that genuinely cross the device
+// boundary. PassDurationsNs crosses no such boundary: it is a HOST-SIDE
+// reduction of raw timestamp query ticks (compute/vulkan/timestamps.cpp's
+// read_durations_ns()), never seen by a kernel, never mirrored in Slang. It
+// belongs beside StepShape instead -- the general Vulkan-free "value that
+// crosses the compute::/sim:: seam by value" home compute/backend.hpp's own
+// file header already claims for BackendDesc/StepShape, and the SAME
+// Vulkan-free-header trick vulkan_step_witness()/vulkan_grid_entries()
+// (sim/simulation.hpp) already use to return a Vulkan-adjacent result from a
+// header with zero Vulkan dependency of its own.
+//
+// `supported == false` means the device/queue could not time compute work at
+// all (compute/vulkan/timestamps.hpp's skip-gracefully posture) -- every
+// other field is then a reported 0.0 that must not be read as "measured
+// zero". Gravity and Publish are inert on both backends (no dispatch is ever
+// recorded for either slot -- step_recorder.cpp's kNoDispatch), so their two
+// fields report a genuinely MEASURED ~0 ns whenever `supported` is true,
+// which is a different fact from every other field being unmeasured when it
+// is false.
+// ---------------------------------------------------------------------------
+struct PassDurationsNs {
+    bool supported = false;
+    double medium_update_ns = 0.0;
+    double force_elements_ns = 0.0;
+    double gravity_ns = 0.0;
+    double collision_static_ns = 0.0;
+    double collision_dynamic_ns = 0.0;
+    double integrate_ns = 0.0;
+    double sensor_synthesis_ns = 0.0;
+    double publish_ns = 0.0;
+};
+
+// ---------------------------------------------------------------------------
+// RunParams -- REMOVED (S6 Task 6b, checkpoint-1 heterogeneous-worlds
+// ruling). Task 6 introduced this struct to carry world 0's ContactParams/
+// GridParams into PassParams's push constant, on the theory that a future
+// batched CollisionDynamic kernel would read them as one per-dispatch
+// material for the whole batch. Task 6b's PassParams decision tree grepped
+// every kernel and step_recorder.cpp and found no reader anywhere -- the
+// push-constant fields were write-only, world 0's values copied in and never
+// read back out -- so both the PassParams fields (layouts.slang,
+// compute/vulkan/step_recorder.hpp) and this struct, their sole source, are
+// removed together: a carrier with nothing left to carry is not a smaller
+// version of the mechanism, it is the same dead weight one layer up. T7's
+// CollisionDynamic kernel will define its own per-batch (or, per this task's
+// own ruling, more likely per-world) consumption path when it lands, not
+// revive this one.
+// ---------------------------------------------------------------------------
+// The validation-message error sink (S6 Task 5, spec section 11's fault-path
+// requirement). ONE global callback, registered by a caller (today: the gpu
+// test fixture, tests/test_gpu_state_mirror.cpp) and invoked by
+// compute/vulkan/context.cpp's debug messenger whenever the
+// VK_LAYER_KHRONOS_validation layer reports a message on a debug build where
+// the layer is present -- "a validation message during any GPU test is a
+// test FAILURE" (this task's brief), which the fixture enforces by wiring the
+// sink to ADD_FAILURE().
+//
+// DELIBERATELY VULKAN-FREE, like the rest of this file: the signature
+// (std::string_view in, nothing Vulkan-shaped) is generic enough that any
+// future backend could route its own diagnostics through the same seam, and
+// a caller that only wants to register a sink never needs a Vulkan header on
+// its include path to do it.
+//
+// HEADER-ONLY, deliberately, matching backend.hpp's own standing note that
+// it is "the one file in engine/compute/ with zero Vulkan dependency" --
+// adding a .cpp here just to host two tiny functions and one atomic would
+// break that property for no benefit; an inline variable (C++17) is exactly
+// as safe and needs no new translation unit.
+//
+// THREAD SAFETY: the store/load pair is a plain relaxed atomic, not a full
+// memory-ordering protocol -- the engine is externally synchronized to one
+// caller thread (every class in this tree says so), but a validation
+// callback can fire from a driver-internal thread the caller does not
+// control, so the pointer itself must not be torn or racily read; relaxed
+// ordering is sufficient because the payload is a single pointer-sized value
+// with no associated data the reader needs synchronized against it.
+// ---------------------------------------------------------------------------
+using ErrorSink = void (*)(std::string_view) noexcept;
+
+namespace detail {
+inline std::atomic<ErrorSink> g_error_sink{nullptr};
+}  // namespace detail
+
+// Registers `sink` as the current error sink; pass nullptr to clear it (the
+// fixture's TearDown does this, so a later, unrelated test never inherits a
+// prior test's ADD_FAILURE()-wired callback).
+inline void set_error_sink(ErrorSink sink) noexcept {
+    detail::g_error_sink.store(sink, std::memory_order_relaxed);
+}
+
+// Invoked by compute/vulkan/context.cpp's debug messenger trampoline (and by
+// any future fault path that wants to report through the same seam) with the
+// message text. A no-op when no sink is registered -- the common case on a
+// release build or a test that never called set_error_sink().
+inline void invoke_error_sink(std::string_view message) noexcept {
+    if (const ErrorSink sink = detail::g_error_sink.load(std::memory_order_relaxed); sink != nullptr) {
+        sink(message);
+    }
+}
+
+}  // namespace spade::compute

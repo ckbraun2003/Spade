@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -11,6 +12,9 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
+#include "compute/backend.hpp"
+#include "compute/grid_entry.hpp"
+#include "compute/step_params.hpp"
 #include "core/error.hpp"
 #include "core/time.hpp"
 #include "physics/forces.hpp"
@@ -23,6 +27,19 @@
 #include "state/snapshot.hpp"
 #include "vehicles/model_type.hpp"
 #include "vehicles/rotor.hpp"
+
+// VulkanBackend (S6 Task 5) -- forward-declared, deliberately never fully
+// #included here. Simulation holds one behind a unique_ptr (private member,
+// below) and its destructor/move special members are DECLARED here but
+// DEFINED out-of-line in simulation.cpp, where
+// compute/vulkan/backend.hpp -- the Vulkan-FREE seam header a unique_ptr's
+// implicit special members can be instantiated against -- is actually
+// included. This is what lets sim/simulation.hpp itself stay exactly as
+// Vulkan-free as it always was: nothing here names a Vulkan type, only this
+// incomplete class.
+namespace spade::compute {
+class VulkanBackend;
+}  // namespace spade::compute
 
 // ---------------------------------------------------------------------------
 // Simulation -- the engine's integration point (engine design spec §3 "The step
@@ -458,12 +475,31 @@ public:
     //
     // Codes: invalid_argument (the world set does not validate -- see
     // validate_world_set(); dt_ns == 0; substeps == 0; dt_ns not divisible by
-    // substeps), capacity_exceeded (the arena allocation does not fit).
+    // substeps), capacity_exceeded (the arena allocation does not fit), plus
+    // (S6 Task 5) `backend`'s own failure taxonomy when
+    // backend.kind == compute::BackendKind::vulkan (compute/vulkan/backend.hpp's
+    // VulkanBackend::create() doc comment: unavailable, invalid_argument,
+    // capacity_exceeded, internal).
+    //
+    // `backend` (S6 Task 5) -- DEFAULTED TRAILING PARAMETER, so every call
+    // site that predates this task compiles UNCHANGED and gets today's
+    // behaviour: BackendKind::cpu, the existing host-side schedule, exactly
+    // as before. Passing BackendDesc{.kind = vulkan} instead makes this
+    // Simulation own a VulkanBackend (see vulkan_backend_ below) and routes
+    // step() through it -- see step()'s own doc comment for the split.
     // ---------------------------------------------------------------------
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
-                                                   uint32_t substeps);
+                                                   uint32_t substeps,
+                                                   const compute::BackendDesc& backend = {});
 
-    ~Simulation() = default;
+    // Declared here, DEFINED in simulation.cpp (not `= default` inline):
+    // vulkan_backend_ is a unique_ptr<compute::VulkanBackend> and
+    // VulkanBackend is only forward-declared above this class -- an
+    // implicitly-instantiated destructor needs the complete type, which
+    // simulation.cpp has (it includes compute/vulkan/backend.hpp) and this
+    // header deliberately does not. The four special members below all
+    // touch that member, so all four move out-of-line together.
+    ~Simulation();
 
     // Move-only, for the same reason ArenaSet is: copying would have to deep
     // copy every arena. Moving is cheap and safe -- every pointer the registry
@@ -471,13 +507,15 @@ public:
     // the move (state/arenas.hpp's move note).
     Simulation(const Simulation&) = delete;
     Simulation& operator=(const Simulation&) = delete;
-    // Deliberately NOT spelled `noexcept`: the implicit exception specification
-    // is whatever ArenaSet's (and the vectors') turn out to be, and an
-    // explicitly-defaulted function whose written spec disagrees with the
-    // implicit one is deleted rather than diagnosed at the definition -- which
-    // would surface a hundred lines away as "no move constructor".
-    Simulation(Simulation&&) = default;
-    Simulation& operator=(Simulation&&) = default;
+    // Deliberately NOT spelled `noexcept` here either (same reasoning the
+    // pre-Task-5 comment gave for the inline `= default` this replaces): the
+    // exception specification is whatever ArenaSet's, the vectors', and now
+    // unique_ptr<VulkanBackend>'s all turn out to be, and simulation.cpp's
+    // `Simulation::Simulation(Simulation&&) = default;` derives it exactly
+    // the same way an inline `= default` would have -- moving the
+    // DEFINITION out-of-line does not change what gets derived, only where.
+    Simulation(Simulation&&);
+    Simulation& operator=(Simulation&&);
 
     // --- shape and time ---------------------------------------------------
     [[nodiscard]] uint32_t world_count() const noexcept { return layout_.world_count; }
@@ -488,16 +526,94 @@ public:
     [[nodiscard]] float substep_h() const noexcept { return h_; }
     [[nodiscard]] const WorldSetLayout& layout() const noexcept { return layout_; }
 
+    // S6 Task 5 instrumentation: how many times step() has uploaded the
+    // vulkan-path device mirror (compute::VulkanBackend::upload_count()),
+    // zero on the cpu path or before this Simulation's first step(). This is
+    // what tests/test_gpu_state_mirror.cpp's dirty-tracking test reads --
+    // "a structural op between steps forces re-upload... assert only the
+    // re-upload happened via an instrumentation counter" (this task's
+    // brief) -- rather than a test reaching past Simulation's private
+    // vulkan_backend_ member. DEFINED in simulation.cpp, not inline here,
+    // for the same incomplete-VulkanBackend reason the destructor/move
+    // members are: this class body only forward-declares the type.
+    [[nodiscard]] uint64_t vulkan_upload_count() const noexcept;
+
+    // ---------------------------------------------------------------------
+    // S6 Task 6: the StepWitness the Integrate kernel published on its most
+    // recent dispatch -- the tick it READ out of the per-step buffer and the
+    // PassParams::substep it was dispatched with. This is what closes S6 Task
+    // 5's deliberately-deferred half ("proving a kernel can read it is Task
+    // 6's job"); see compute/step_params.hpp for what each field proves and
+    // why wave A publishes a witness rather than inventing a physical
+    // dependency on a tick none of its four passes needs.
+    //
+    // Costs a device->host copy and a queue submit, so it is a diagnostic
+    // call and not a step-path one. `unavailable` on the cpu path (there is
+    // no device to ask), which is a fact about the backend rather than a
+    // failure.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<compute::StepWitness> vulkan_step_witness() const;
+
+    // ---------------------------------------------------------------------
+    // S6 Task 7: the CollisionDynamic key array, as the most recent
+    // CollisionDynamic pass left it -- i.e. SORTED by physics::
+    // grid_entry_less()'s exact key, since the sweep is the chain's last
+    // dispatch and never reorders it.
+    //
+    // WHY THIS IS EXPOSED AT ALL. The sorted key array is the one part of the
+    // ported pass whose correctness is NOT visible in the trajectory: a sort
+    // defect that merely permutes two entries of the same cell changes the
+    // Gauss-Seidel sweep order and therefore the answer, but by an amount no
+    // tolerance band can distinguish from rounding. Reading the keys out is
+    // what lets tests/test_gpu_parity.cpp's GpuGridSort cases compare them
+    // ELEMENT FOR ELEMENT against std::sort with the CPU's own comparator --
+    // an equality assertion, not a banded one.
+    //
+    // Same posture as vulkan_step_witness() above: a DIAGNOSTIC (one
+    // device->host copy and one queue submit, never on the step path), and
+    // `unavailable` on the cpu path, which is a fact about the backend rather
+    // than a failure. The vector covers the whole POWER-OF-TWO-PADDED domain,
+    // sentinels included (compute/grid_entry.hpp) -- the caller decides where
+    // the live prefix ends, because that boundary is part of what the test is
+    // checking.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<std::vector<compute::GridEntryRow>> vulkan_grid_entries() const;
+
+    // ---------------------------------------------------------------------
+    // S6 Task 10: per-pass GPU timing for the most recently completed step()
+    // call (compute/backend.hpp's PassDurationsNs -- see that struct's own
+    // doc comment for why it lives in the Vulkan-free compute/backend.hpp
+    // rather than compute/step_params.hpp beside StepWitness). Same
+    // diagnostic posture as vulkan_step_witness()/vulkan_grid_entries()
+    // immediately above: `unavailable` on the cpu backend, never called from
+    // step() itself. Unlike those two, this reads no device memory of its
+    // own -- PassDurationsNs is already a host-side reduction by the time it
+    // reaches here -- so this call costs no extra device round trip beyond
+    // whatever the timing query pool's own vkGetQueryPoolResults did.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<compute::PassDurationsNs> vulkan_pass_durations_ns() const;
+
     // ---------------------------------------------------------------------
     // step -- advance `n` steps.
     //
-    // Each step is: flush the structural queue (the step BOUNDARY), then run
-    // the declared schedule `substeps` times, then ++tick. n == 0 is a no-op
-    // that still flushes -- "advance zero steps" is a boundary too.
+    // CPU PATH (backend.kind == cpu at create(), the default -- unchanged
+    // from before S6 Task 5): flush the structural queue (the step
+    // BOUNDARY), then run the declared schedule `substeps` times, then
+    // ++tick. n == 0 is a no-op that still flushes -- "advance zero steps"
+    // is a boundary too.
     //
-    // Errors are structural only (a queued op that cannot be applied, which
-    // the queueing side already made impossible -- reported as `internal` if it
-    // ever happens). The passes themselves cannot fail.
+    // VULKAN PATH (S6 Task 5, vulkan_backend_ != nullptr): n == 0 takes the
+    // identical early flush-only return the cpu path does (see step()'s
+    // definition) -- no GPU work for "advance zero steps" either. For n > 0:
+    // flush the structural queue ONCE (not once per step the way the cpu
+    // path's loop does -- sound today because nothing queues a structural op
+    // from INSIDE a step yet, the same "no reentrant hook exists" fact
+    // flush_structural()'s own doc comment already relies on), upload the
+    // device mirror if vulkan_dirty_, submit all `n` steps as ONE
+    // VulkanBackend::step() call, read the result back into arenas_, and
+    // advance tick_ by `n`. Errors are whatever the flush/upload/step/
+    // readback stage that failed reports -- see VulkanBackend's own doc
+    // comments (compute/vulkan/backend.hpp) for that taxonomy.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> step(uint64_t n = 1);
 
@@ -515,6 +631,12 @@ public:
     // between two steps IS a step boundary. The queue's reason to exist is
     // calls made from INSIDE a step (pass callbacks, controller hooks), which
     // do not exist yet and which this design is ready for.
+    //
+    // S6 Task 5: on the vulkan path (vulkan_backend_ != nullptr), applying a
+    // non-empty queue also sets vulkan_dirty_ -- the device mirror now
+    // disagrees with arenas_ and the next step() (or an explicit re-upload)
+    // must refresh it before trusting a readback. An empty queue changes
+    // nothing and leaves the flag as it was.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> flush_structural();
 
@@ -784,6 +906,42 @@ public:
     // itself transactional; the view rebuild is the only part that can report an
     // error at all, and only by way of an array lookup that cannot fail on a set
     // this object registered itself. Stated rather than claimed away.
+    //
+    // ---------------------------------------------------------------------
+    // BACKEND IS NOT PART OF REPLAY IDENTITY (S6 Task 9).
+    //
+    // ReplayConfig (above) pins exactly three numbers into every blob --
+    // dt_ns, substeps, config_hash -- and compute::BackendKind is deliberately
+    // NOT a fourth. A blob taken from a cpu-backend Simulation restores into a
+    // vulkan-backend one, and a blob taken from a vulkan-backend Simulation
+    // restores into a cpu-backend one, exactly as freely as either restores
+    // into a same-backend Simulation with a matching (dt_ns, substeps,
+    // config_hash) -- restore() has no code path that even reads which
+    // backend produced a blob, let alone rejects a mismatch.
+    //
+    // WHY THAT IS THE RIGHT CONTRACT AND NOT A GAP. Registered state (what a
+    // blob carries) is backend-independent by construction: BodyState, the
+    // rng streams, the sensor rings and every other array in the walk mean
+    // the same thing regardless of which schedule wrote them. BackendKind
+    // selects an EXECUTION STRATEGY for the steps that follow a restore, not
+    // a fact about the state itself -- the same distinction WorldConfig (this
+    // class's own private struct, just below) draws between configuration and
+    // state, one level down: nothing about "which engine will step this next"
+    // belongs in the snapshot any more than the SDF program does.
+    //
+    // WHAT GOVERNS CONTINUATION ACROSS THE SWITCH, since it is worth being
+    // precise about what restore()'s ACCEPTANCE does and does not promise. A
+    // same-backend resume is bit-identical to the uninterrupted run (the
+    // determinism guarantee this class's own header states). A CROSS-backend
+    // resume is not, and is not supposed to be: continuing on the other
+    // backend from that point onward is subject to the SAME CPU<->GPU parity
+    // bands (engine/testing/parity.hpp) that govern a live comparison of the
+    // two backends over the same scenario -- the divergence is the identical
+    // <= 2.5-ulp div/sqrt source parity.hpp's header explains, not a new one
+    // restore() introduces. tests/test_gpu_invariance.cpp's
+    // CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands and
+    // VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands are the two
+    // directions of that claim, checked.
     //
     // ---------------------------------------------------------------------
     // WHAT THIS DOES NOT RESTORE -- AND WHAT IT NOW DETECTS INSTEAD.
@@ -1121,6 +1279,15 @@ private:
         uint32_t slot = 0;        // the reserved global slot this op targets
         uint32_t body_slot = 0;   // init_drag/init_imu/init_rotor: the global body slot it attaches to
         BodySpawn body{};         // init_body
+        // init_body: the per-body contact-proxy radius to write into the new
+        // slot's BodyState::proxy_radius (D-S6-2), 0 = sentinel ("use the
+        // world's ContactParams::proxy_radius"). NOT a BodySpawn field --
+        // BodySpawn is the public, bare-body entry point and a plain body
+        // never gets a custom radius (see state/layout.hpp's BodyState note),
+        // so this stays 0.0f for every op a plain spawn() enqueues; only
+        // Simulation::spawn(world, ModelTypeId, VehicleSpawn) sets it, from
+        // the model's own ModelType::proxy_radius.
+        float body_proxy_radius = 0.0f;
         DragElementSpawn drag{};  // init_drag
         ImuSensorSpawn imu{};     // init_imu
         vehicles::RotorDesc rotor{};  // init_rotor
@@ -1142,6 +1309,83 @@ private:
     // whole tree untouched. See its definition for why it can only ever ADD a
     // rejection, never mask one of the state layer's.
     [[nodiscard]] Result<void> check_replay_config(const SnapshotBlob& blob) const;
+
+    // ---------------------------------------------------------------------
+    // THE UNPORTED-PASS GATE IS GONE (S6 Task 8), AND ITS REMOVAL IS THE
+    // HEADLINE RATHER THAN A SIDE EFFECT.
+    //
+    // From S6 Task 6 through Task 7 this class carried a two-halved refusal --
+    // check_vulkan_unported_config() (turbulence, known at create()) and
+    // check_vulkan_unported_state() (a live rotor or a live IMU, which arrive
+    // with spawns and so were scanned at the step boundary). Its purpose was to
+    // make a MISSING PASS loud: a world set that exercised an un-ported pass
+    // would otherwise have stepped on the vulkan backend with that pass
+    // silently absent, which is a wrong trajectory rather than a last-bit
+    // divergence, and nothing in a digest or a band would have named the cause.
+    // Each wave deleted its own clause as it landed (Task 7 removed the
+    // CollisionDynamic one, a "more than one active body in a world" scan).
+    //
+    // Task 8 ports MediumUpdate, the RotorElement half of ForceElements and
+    // SensorSynthesis -- ALL EIGHT schedule slots now have a kernel or are
+    // inert by design on both backends -- so there is nothing left to be
+    // silently absent and the refusal would now reject correct configurations.
+    // What REPLACED it is stronger than what it forbade:
+    // tests/test_gpu_parity.cpp runs the FULL committed corpus, `quad_hover`
+    // (rotors + IMU + turbulence) and `two_world_isolation` (turbulence)
+    // included, against the CPU within measured bands, and compares the
+    // `dryden`, `rotors`, `imu_sensors` and `imu_ring` arrays rather than only
+    // `bodies`. It measures the passes instead of forbidding the state that
+    // would exercise them.
+    // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // mark_vulkan_dirty -- "the arenas just changed under the device mirror".
+    // A no-op on the cpu path.
+    //
+    // THE CENSUS THIS FUNCTION EXISTS TO MAKE CHECKABLE (S6 Task 6 review
+    // round 1, finding C1). The vulkan path uploads `arenas_` only when it
+    // believes them stale, so EVERY way the arenas can change between two
+    // step() calls owes a call to this. Round 1 shipped with two of the four
+    // non-queue writers marked and two not -- and the two that were missed,
+    // restore() and reseed(), are the two that rewrite the MOST state. The
+    // complete inventory of this class's public, non-const entry points, and
+    // how each is covered, is therefore written down HERE, once, rather than
+    // rediscovered at each site:
+    //
+    //   step()                      owns the upload itself; not a caller.
+    //   flush_structural()          MARKS, on a non-empty queue (the original
+    //                               and, before this fix, the only site).
+    //   spawn(world, BodySpawn)     COVERED TRANSITIVELY. Both overloads
+    //   spawn(world, model, where)  reserve slots immediately (alloc_slot
+    //   despawn()                   writes the slot->world map; despawn also
+    //   add_drag_element()          bumps a generation) AND ALWAYS queue a
+    //   add_imu_sensor()            matching op, so the next boundary's
+    //                               flush_structural() sees a non-empty queue
+    //                               and marks. There is no reserve-without-
+    //                               queue path: a failed vehicle spawn
+    //                               releases every slot it took, and a
+    //                               reserve/release pair restores the map
+    //                               bytes it touched (a free slot's row reads
+    //                               as zeroes either way). Verified by the
+    //                               census test, not merely argued here.
+    //   apply_wrench()              MARKS (round 1). Writes force_acc/
+    //                               torque_acc straight into the arena with
+    //                               no queue involved.
+    //   set_rotor_commands()        MARKS (round 1). Same shape.
+    //   restore()                   MARKS (round 1 REVIEW, C1). Rewrites
+    //                               EVERY registered array.
+    //   reseed()                    MARKS (round 1 REVIEW, C1). Rewrites
+    //                               WorldParams::seed, every DrydenState and
+    //                               every live ImuSensorRow::noise.
+    //   register_model()            touches no arena at all -- the model
+    //                               registry is configuration, held in a
+    //                               plain vector outside the walk.
+    //
+    // A future public method that writes an arena outside step() belongs in
+    // that list and owes this call; tests/test_gpu_parity.cpp's
+    // VulkanDirtyTracking suite is the enforcement, one case per row.
+    // ---------------------------------------------------------------------
+    void mark_vulkan_dirty() noexcept;
 
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
     void free_drag_elements_of(uint32_t world_index, uint32_t body_slot);
@@ -1193,6 +1437,24 @@ private:
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;
     physics::GridScratch scratch_;
+
+    // ---------------------------------------------------------------------
+    // S6 Task 5: the vulkan-path backend. Null iff this Simulation was
+    // created with backend.kind == compute::BackendKind::cpu (every call
+    // site that does not pass `backend` at all, and every existing one that
+    // predates this task) -- step() branches on `vulkan_backend_ != nullptr`
+    // rather than caching BackendKind separately, so there is exactly one
+    // source of truth for which path a Simulation runs.
+    //
+    // vulkan_dirty_ starts true (not false) so the FIRST step() after
+    // create() always uploads once, seeding the device mirror from create()'s
+    // freshly seeded arenas, even when nothing has been spawned yet and the
+    // structural queue is empty (flush_structural() only ever SETS this
+    // true, on a non-empty queue -- see its doc comment -- so something else
+    // has to account for "never uploaded at all").
+    // ---------------------------------------------------------------------
+    std::unique_ptr<compute::VulkanBackend> vulkan_backend_;
+    bool vulkan_dirty_ = true;
 };
 
 }  // namespace spade

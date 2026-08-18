@@ -111,13 +111,29 @@ namespace spade::physics {
 #endif
 struct WorldSubstepView {
     const WorldParams* params = nullptr;         // this world's row of the param array
-    std::span<BodyState> bodies;                 // this world's body partition
+    // This world's body partition. NO SEPARATE PER-BODY RADIUS SPAN LIVES
+    // HERE (D-S6-2): each BodyState already carries its own `proxy_radius`
+    // (state/layout.hpp), so CollisionStatic and CollisionDynamic read it
+    // directly off the elements of THIS span via physics::effective_proxy_
+    // radius() -- one obvious place, rather than a second span a pass would
+    // have to index in lockstep with this one. THE OWNERSHIP SPLIT: a
+    // vehicle's own model owns its body's proxy (written once, at spawn, from
+    // ModelType::proxy_radius -- see Simulation::spawn(world, ModelTypeId,
+    // VehicleSpawn)); `contacts.proxy_radius` below owns the PLAIN-body and
+    // fallback default. 0 in a body's lane means "defer to the world's
+    // default", which is every slot a bare spawn() ever produces.
+    std::span<BodyState> bodies;
     std::span<const DragBodyRow> drag_elements;  // this world's drag-element partition
     std::span<const uint32_t> body_slot_to_world;  // this world's slice of the bodies map
     DrydenState* dryden = nullptr;               // this world's turbulence filter row
     const DrydenParams* dryden_params = nullptr; // that filter's configuration
     const SdfProgram* sdf = nullptr;             // this world's static geometry
-    ContactParams contacts{};                    // this world's material/solver record
+    // This world's material/solver record. `proxy_radius` here is the
+    // FALLBACK a per-body override (`bodies[i].proxy_radius`, above) defers
+    // to when it is the 0 sentinel -- see physics::effective_proxy_radius()
+    // (physics/contacts.hpp), which both CollisionStatic and CollisionDynamic
+    // call so the two passes cannot disagree about a body's size.
+    ContactParams contacts{};
     GridParams grid{};                           // this world's broad-phase cell size
 
     // This world's sensor table and its output-ring storage (Task 19).

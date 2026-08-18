@@ -160,7 +160,7 @@ struct QuadrotorParams {
     glm::vec3 inertia_diag{1.0f};         // body-frame PRINCIPAL moments, kg m^2, componentwise > 0
     float arm_length = 0.15f;             // L: COM to rotor hub, in the body XZ plane, m, > 0
     float rotor_height = 0.0f;            // hz: rotor plane above the COM, body +Y, m (any sign)
-    float proxy_radius = 0.0f;            // m, >= 0; DECLARED, NOT YET CONSUMED (model_type.hpp)
+    float proxy_radius = 0.0f;            // m, >= 0; CONSUMED as of D-S6-2 (model_type.hpp)
 
     std::array<RotorParams, kQuadrotorRotorCount> rotors{};
 

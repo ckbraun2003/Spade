@@ -63,6 +63,64 @@
 // build-graph dependency on the viewer at all -- see spade/CMakeLists.txt's
 // SPADE_BUILD_V1 comment for why that separation exists.
 //
+// ---------------------------------------------------------------------------
+// THE THIRD AND FOURTH SWEEPS (S6 Task 10): BM_StepPlainBodiesGpu and
+// BM_StepQuadWorldsGpu -- the SAME two scenes and the SAME builders as above,
+// the only difference being the BackendDesc each build_*_sim() call is handed:
+// {kind = vulkan}, workgroup_size defaulted to 64 (compute/backend.hpp's own
+// default, and the size every kernel was authored/parity-banded at through S6
+// Tasks 6-8 -- see baselines.json's _meta for why this sweep does not also
+// vary it). Skips gracefully -- state.SkipWithError() -- on any setup failure,
+// by catching build_plain_bodies_sim()/build_quad_worlds_sim()'s unwrap()
+// throw rather than pre-checking compute::vulkan_available() directly: a box
+// with no working vulkan path makes Simulation::create() fail with
+// Code::unavailable regardless of WHY (no device, or SPADE_VULKAN=OFF --
+// compute/vulkan/backend_stub.cpp's own header note is explicit that those are
+// "the SAME fact" from a caller's perspective), and catching that one throw
+// handles both without this file including compute/vulkan/context.hpp
+// directly. That distinction is not stylistic: unlike spade_tests (every
+// GPU-touching test file is added to that target's sources only inside an
+// `if(SPADE_VULKAN)` guard, so a Vulkan header include inside one of them is
+// simply never compiled in an OFF build), spade_bench compiles this file
+// UNCONDITIONALLY, so an unconditional Vulkan-header include here would break
+// the SPADE_VULKAN=OFF configuration -- volk/Vulkan::Headers are not on this
+// file's include path at all in that build.
+//
+// PER-PASS COUNTERS. Each GPU benchmark also reads
+// Simulation::vulkan_pass_durations_ns() once, after the timed loop, and
+// reports six of PassDurationsNs's eight fields as named counters --
+// medium_update/force_elements/collision_static/collision_dynamic/integrate/
+// sensor_synthesis, each in nanoseconds. Gravity and Publish are omitted, NOT
+// because they are uninteresting but because they are PROVABLY zero: both are
+// inert-by-design on both backends (no dispatch is ever recorded for either
+// schedule slot -- compute/vulkan/step_recorder.cpp's kNoDispatch), the same
+// reasoning that keeps them out of step_recorder's own pipeline table, applied
+// one level up to reporting rather than dispatching.
+//
+// WHAT THE COUNTERS MEASURE, PRECISELY. compute/vulkan/timestamps.hpp's
+// PassTimestamps resets and rewrites its query pool on EVERY GPU submit
+// (StepRecorder's "record once, submit n times" chain resubmits the same
+// timestamp-writing commands along with the physics dispatches), so by the
+// time the timed `for (auto _ : state)` loop above has finished, the query
+// pool holds only the LAST of the many GPU submits that loop performed -- one
+// representative step's per-pass breakdown, not a sum or average over the
+// whole benchmark run. That is the right number to report for these two
+// scenes: every step does IDENTICAL work (hover trim, free fall with no
+// contacts), so one step's breakdown is the steady-state answer, and reading
+// it once outside the timed region costs nothing the timed measurement itself
+// would have to account for.
+//
+// A GPU family's items_per_second/world_substeps_per_sec are computed on the
+// SAME cpu_time/real_time basis as the CPU families above (SetItemsProcessed()
+// and the world_substeps_per_sec counter do not know or care which backend
+// produced the step() calls they are timing) -- so the round trip they measure
+// includes the fence waits StepRecorder::submit() blocks on per substep, not
+// device-execution time alone. The per-pass counters are the device-side
+// complement: PURE GPU EXECUTION time, no host wait folded in, which is what
+// makes "device work vs. round-trip overhead" a comparison these two numbers
+// together can actually answer.
+// ---------------------------------------------------------------------------
+
 // Baseline comparison policy (through S6): spade/tests/bench/baselines.json
 // holds recorded runs as REFERENCE points only -- see that file's own
 // "_meta" entry and bench_core.cpp's header comment for the full policy.
@@ -88,6 +146,7 @@
 
 #include <glm/vec3.hpp>
 
+#include "compute/backend.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "vehicles/model_type.hpp"
@@ -107,6 +166,9 @@ using spade::VehicleSpawn;
 using spade::WorldBuilder;
 using spade::WorldInstanceDesc;
 using spade::WorldSetDesc;
+using spade::compute::BackendDesc;
+using spade::compute::BackendKind;
+using spade::compute::PassDurationsNs;
 
 // A benchmark's setup runs OUTSIDE the timed region, but a setup failure
 // still has to stop the run loudly rather than silently benchmark garbage --
@@ -145,12 +207,50 @@ constexpr uint64_t kStepsPerIter = 50;
 constexpr uint64_t kDtNs = 1'000'000;
 constexpr uint32_t kSubsteps = 1;
 
+// S6 Task 10: shared by both GPU families below (BM_StepPlainBodiesGpu,
+// BM_StepQuadWorldsGpu) -- reads Simulation::vulkan_pass_durations_ns() and,
+// if the query succeeded and this device could time compute work, sets six
+// named counters from it. See the file header's "PER-PASS COUNTERS" section
+// for the unit (nanoseconds), why Gravity/Publish are omitted, and what
+// "reads the LAST GPU submit" means for these two steady-state scenes.
+//
+// A FAILED OR UNSUPPORTED READING SETS NO COUNTERS AT ALL, rather than
+// forcing zeros into the JSON output: `!d` means a real Vulkan error reading
+// the query pool back (state.SkipWithError(), matching this file's existing
+// setup-failure posture for anything that can fail without being part of the
+// timed region); `d->supported == false` means this device/queue could not
+// time compute work (compute/vulkan/timestamps.hpp's skip-gracefully
+// posture) -- not expected on this program's correctness device (Intel Iris
+// Plus), but a caller-visible fact rather than a silently-reported 0 either
+// way.
+void set_pass_duration_counters(benchmark::State& state, Simulation& sim) {
+    const spade::Result<PassDurationsNs> d = sim.vulkan_pass_durations_ns();
+    if (!d) {
+        state.SkipWithError(d.error().context.c_str());
+        return;
+    }
+    if (!d->supported) {
+        return;
+    }
+    state.counters["gpu_medium_update_ns"] = d->medium_update_ns;
+    state.counters["gpu_force_elements_ns"] = d->force_elements_ns;
+    state.counters["gpu_collision_static_ns"] = d->collision_static_ns;
+    state.counters["gpu_collision_dynamic_ns"] = d->collision_dynamic_ns;
+    state.counters["gpu_integrate_ns"] = d->integrate_ns;
+    state.counters["gpu_sensor_synthesis_ns"] = d->sensor_synthesis_ns;
+}
+
 // ---------------------------------------------------------------------------
 // Sweep 1: 1 world x {10, 100, 1000} plain bodies, no vehicles, no SDF
 // geometry (a void world -- see the file header).
 // ---------------------------------------------------------------------------
 
-[[nodiscard]] Simulation build_plain_bodies_sim(uint32_t body_count) {
+// `backend` (S6 Task 10): DEFAULTED to {} (BackendKind::cpu), so every
+// pre-Task-10 call site -- BM_StepPlainBodies below -- is unaffected.
+// BM_StepPlainBodiesGpu passes BackendDesc{BackendKind::vulkan} instead,
+// same scene, same builder, different Simulation::create() backend argument
+// -- exactly the split simulation.hpp's own create() doc comment describes.
+[[nodiscard]] Simulation build_plain_bodies_sim(uint32_t body_count, const BackendDesc& backend = {}) {
     const spade::WorldDesc world = unwrap(WorldBuilder()
                                                .name("bench_plain_bodies")
                                                .environment(Environment{})
@@ -167,7 +267,7 @@ constexpr uint32_t kSubsteps = 1;
     instance.contacts.proxy_radius = 0.2f;
     instance.grid.cell_size = 0.5f;  // >= 2 * proxy_radius
 
-    Simulation sim = unwrap(Simulation::create(WorldSetDesc{{instance}}, kDtNs, kSubsteps),
+    Simulation sim = unwrap(Simulation::create(WorldSetDesc{{instance}}, kDtNs, kSubsteps, backend),
                              "Simulation::create (plain bodies)");
 
     // Spread across an XZ grid, well clear of the ground (there is none --
@@ -205,6 +305,31 @@ void BM_StepPlainBodies(benchmark::State& state) {
 }
 BENCHMARK(BM_StepPlainBodies)->Arg(10)->Arg(100)->Arg(1000);
 
+// S6 Task 10: Sweep 1's GPU twin -- see the file header's "THE THIRD AND
+// FOURTH SWEEPS" section (in particular for why this catches unwrap()'s
+// throw instead of pre-checking compute::vulkan_available()). Same scene,
+// same builder, BackendDesc{vulkan} (workgroup_size defaulted to 64).
+void BM_StepPlainBodiesGpu(benchmark::State& state) {
+    try {
+        const uint32_t body_count = static_cast<uint32_t>(state.range(0));
+        Simulation sim = build_plain_bodies_sim(body_count, BackendDesc{BackendKind::vulkan});
+
+        for (auto _ : state) {
+            const spade::Result<void> r = sim.step(kStepsPerIter);
+            if (!r) {
+                state.SkipWithError(r.error().context.c_str());
+                break;
+            }
+        }
+        state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(kStepsPerIter));
+
+        set_pass_duration_counters(state, sim);
+    } catch (const std::runtime_error& e) {
+        state.SkipWithError(e.what());
+    }
+}
+BENCHMARK(BM_StepPlainBodiesGpu)->Arg(10)->Arg(100)->Arg(1000);
+
 // ---------------------------------------------------------------------------
 // Sweep 2: {1, 4, 16, 64} worlds x the quad scene -- one Quadrotor + one
 // ideal IMU per world, spawned IN TRIM (hover_command()), all worlds sharing
@@ -237,7 +362,9 @@ BENCHMARK(BM_StepPlainBodies)->Arg(10)->Arg(100)->Arg(1000);
     return p;
 }
 
-[[nodiscard]] Simulation build_quad_worlds_sim(uint32_t world_count) {
+// `backend` (S6 Task 10): same defaulted-trailing-parameter shape as
+// build_plain_bodies_sim() above, for the identical reason.
+[[nodiscard]] Simulation build_quad_worlds_sim(uint32_t world_count, const BackendDesc& backend = {}) {
     const spade::vehicles::QuadrotorParams params = bench_quadrotor_params();
 
     const spade::WorldDesc ground = unwrap(WorldBuilder()
@@ -257,7 +384,8 @@ BENCHMARK(BM_StepPlainBodies)->Arg(10)->Arg(100)->Arg(1000);
     prototype.grid.cell_size = 0.5f;  // >= 2 * proxy_radius
 
     const WorldSetDesc set = spade::replicate(prototype, world_count, 0x51'4C'A9'E5ULL);
-    Simulation sim = unwrap(Simulation::create(set, kDtNs, kSubsteps), "Simulation::create (quad worlds)");
+    Simulation sim =
+        unwrap(Simulation::create(set, kDtNs, kSubsteps, backend), "Simulation::create (quad worlds)");
 
     const spade::vehicles::ModelType model = unwrap(spade::vehicles::make_quadrotor(params), "make_quadrotor");
     const ModelTypeId model_id = unwrap(sim.register_model(model), "register_model");
@@ -317,6 +445,47 @@ void BM_StepQuadWorlds(benchmark::State& state) {
         benchmark::Counter::kIsRate);
 }
 BENCHMARK(BM_StepQuadWorlds)->Arg(1)->Arg(4)->Arg(16)->Arg(64);
+
+// S6 Task 10: Sweep 2's GPU twin, and THE FIRST TIME §12's "batched headless
+// >= 64 worlds x 1 kHz faster than real time on the dev GPU" target is
+// measurable on the literal hardware it names -- baselines.json's existing
+// _meta calls the CPU family above only "a strong signal ... not the literal
+// target measurement" for exactly this reason. See baselines.json's own
+// _meta for this run's verdict (RECORDED, NOT GATED -- a dev-GPU miss on this
+// iGPU is a user-ratified posture, not a build failure) and for training spec
+// TR12's second-consumer note on the same numbers.
+//
+// world_substeps_per_sec here is computed IDENTICALLY to the CPU family's
+// (same formula, same TOTAL-not-per-iteration contract) -- on cpu_time by
+// default, same as items_per_second, which is the round-trip basis (fence
+// waits included) rather than device-execution time alone; see this file's
+// header for why that is the right complement to the per-pass counters
+// rather than a competing "the real number" claim.
+void BM_StepQuadWorldsGpu(benchmark::State& state) {
+    try {
+        const uint32_t world_count = static_cast<uint32_t>(state.range(0));
+        Simulation sim = build_quad_worlds_sim(world_count, BackendDesc{BackendKind::vulkan});
+
+        for (auto _ : state) {
+            const spade::Result<void> r = sim.step(kStepsPerIter);
+            if (!r) {
+                state.SkipWithError(r.error().context.c_str());
+                break;
+            }
+        }
+        state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(kStepsPerIter));
+
+        state.counters["world_substeps_per_sec"] = benchmark::Counter(
+            static_cast<double>(state.iterations()) * static_cast<double>(kStepsPerIter) *
+                static_cast<double>(world_count),
+            benchmark::Counter::kIsRate);
+
+        set_pass_duration_counters(state, sim);
+    } catch (const std::runtime_error& e) {
+        state.SkipWithError(e.what());
+    }
+}
+BENCHMARK(BM_StepQuadWorldsGpu)->Arg(1)->Arg(4)->Arg(16)->Arg(64);
 
 }  // namespace
 

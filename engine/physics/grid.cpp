@@ -20,15 +20,20 @@ namespace {
 // world's param row -- the same hoisting contacts.cpp does, and for the same
 // parity reason.
 //
-// `contact_dist` and `contact_dist2` are derived rather than stored in
-// ContactParams: the record holds a body's RADIUS, and every pair test wants
-// the pair's contact DIAMETER and its square. Deriving them here (once) rather
-// than per pair keeps the squaring out of the inner loop and, more to the
-// point, keeps a single spelling of "2 * proxy_radius" in the pass.
+// `default_radius` IS ContactParams::proxy_radius, carried by itself (rather
+// than the whole record) because it is the one field resolve_pair() needs
+// beyond the four below: the per-pair contact distance is no longer a
+// call-wide constant (D-S6-2). Each body may carry its own override
+// (BodyState::proxy_radius), so contact_dist is now effective_proxy_radius(a,
+// default_radius) + effective_proxy_radius(b, default_radius) -- a genuinely
+// PER-PAIR quantity -- and is computed inside resolve_pair() instead of once
+// here. That costs one select and one add per body examined (two of each per
+// pair test) where the old code paid nothing; the alternative -- precomputing
+// per-body radii into a side array before the sweep -- would be an extra pass
+// over every body for a saving this loop does not need.
 // ---------------------------------------------------------------------------
 struct PairParams {
-    float contact_dist = 0.0f;   // 2 * proxy_radius, m
-    float contact_dist2 = 0.0f;  // (2 * proxy_radius)^2, m^2
+    float default_radius = 0.0f;  // this world's ContactParams::proxy_radius, m
     float e = 0.0f;
     float mu = 0.0f;
     float beta = 0.0f;
@@ -83,6 +88,21 @@ struct PairParams {
 // ---------------------------------------------------------------------------
 void resolve_pair(BodyState& a, BodyState& b, const PairParams& pp) noexcept {
     // -----------------------------------------------------------------------
+    // -1. PER-PAIR CONTACT DISTANCE (D-S6-2). Each body's own override, or
+    //     the world's default -- physics/contacts.hpp's effective_proxy_
+    //     radius(), the SAME function contacts.cpp calls, so the static and
+    //     dynamic passes cannot read a body's size two different ways. Summed
+    //     rather than doubled: two spheres of DIFFERENT radii touch at the
+    //     sum of their radii, and ra == rb == default_radius recovers exactly
+    //     the old `2 * proxy_radius` (contact_dist below is a strict
+    //     generalization, not a new formula in the uniform case).
+    // -----------------------------------------------------------------------
+    const float ra = effective_proxy_radius(a, pp.default_radius);
+    const float rb = effective_proxy_radius(b, pp.default_radius);
+    const float contact_dist = ra + rb;
+    const float contact_dist2 = contact_dist * contact_dist;
+
+    // -----------------------------------------------------------------------
     // 0. NARROW PHASE. Squared distance first, so the overwhelmingly common
     //    "candidate from a neighbouring cell that is not actually touching"
     //    case costs no sqrt. v1's GridCollision.comp did the same; it is the
@@ -102,7 +122,7 @@ void resolve_pair(BodyState& a, BodyState& b, const PairParams& pp) noexcept {
     // -----------------------------------------------------------------------
     const glm::vec3 d = b.pos - a.pos;
     const float dist2 = glm::dot(d, d);
-    if (!(dist2 < pp.contact_dist2)) return;
+    if (!(dist2 < contact_dist2)) return;
     if (!(dist2 > 0.0f)) return;
 
     const float dist = std::sqrt(dist2);
@@ -114,7 +134,7 @@ void resolve_pair(BodyState& a, BodyState& b, const PairParams& pp) noexcept {
 
     // Penetration depth of the two sphere proxies, metres. Positive by the
     // test above.
-    const float depth = pp.contact_dist - dist;
+    const float depth = contact_dist - dist;
 
     // The two mass weights (see the derivation above). Computed once and
     // reused by all three steps, which is also what makes the equal-and-
@@ -432,8 +452,7 @@ void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint3
     // make the pass's cost unbounded and its result order-of-motion dependent.
     // -----------------------------------------------------------------------
     PairParams pp{};
-    pp.contact_dist = 2.0f * params.proxy_radius;
-    pp.contact_dist2 = pp.contact_dist * pp.contact_dist;
+    pp.default_radius = params.proxy_radius;
     pp.e = params.restitution_e;
     pp.mu = params.friction_mu;
     pp.beta = params.baumgarte_beta;

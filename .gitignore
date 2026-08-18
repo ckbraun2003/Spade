@@ -13,6 +13,15 @@ CMakeFiles/
 # already excluded by build/ above; this blanket pattern is broader than it
 # needs to be, but narrowing it further is out of this ticket's scope).
 !tests/AppendSpadeLabels.cmake
+# Same exception, same reason (S6 Task 3): cmake/SpadeSlang.cmake is an
+# authored, committed helper -- the D9 shader build's two functions -- that the
+# blanket *.cmake pattern above would otherwise hide from `git status`
+# entirely, so it could only ever be committed with `git add -f` and would
+# silently stop being tracked for edits. Nothing GENERATED is un-ignored here:
+# the D9 generated headers (layout_check.gen.hpp, bindings.gen.hpp,
+# <kernel>.spv.gen.hpp) and the .spv artifacts live under build-ninja/, already
+# excluded by build/ above, and are deliberately never committed.
+!cmake/SpadeSlang.cmake
 Makefile
 
 # IDEs

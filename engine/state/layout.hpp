@@ -65,7 +65,7 @@ static_assert(alignof(glm::quat) == 4, "glm::quat must be 4-byte aligned; the _p
 // bodies arena.
 //
 // Eight 16-byte rows:
-//   row 0  pos                | _p0
+//   row 0  pos                | proxy_radius
 //   row 1  orient (quat)
 //   row 2  vel                | mass
 //   row 3  omega_body         | _p1
@@ -91,13 +91,34 @@ static_assert(alignof(glm::quat) == 4, "glm::quat must be 4-byte aligned; the _p
 // linear dynamics have no such preference. Torque producers (force elements,
 // contacts) therefore owe BODY-frame torques and WORLD-frame forces.
 //
-// `flags` is a bitfield reserved for per-body predicates (asleep, kinematic,
+// `flags` is a bitfield reserved for per-body predicate (asleep, kinematic,
 // ...); no bits are assigned yet, so it is 0 in every state this task
 // produces -- assigning bits is the owning pass's business, not the layout's.
-// ---------------------------------------------------------------------------
+//
+// `proxy_radius` (D-S6-2) is the FIRST of this struct's five row-filler std430
+// pads to be consumed rather than left as padding -- row 0's, alongside `pos`,
+// which is where a body's own size naturally sits. It is 0 in every slot a
+// bare spawn() produces and in every snapshot taken before this task, which is
+// exactly the sentinel value physics::effective_proxy_radius() (physics/
+// contacts.hpp) reads as "no per-body override -- use this world's
+// ContactParams::proxy_radius", i.e. the ONLY behaviour that existed before
+// this field had a name. Only Simulation::spawn(world, ModelTypeId,
+// VehicleSpawn) ever writes a nonzero value (the model's own proxy_radius; see
+// vehicles/model_type.hpp), so a plain body's slot -- and therefore a
+// plain-body world's digest -- cannot change because this field started being
+// read. This is a RENAME of existing storage, not a layout change: sizeof,
+// every offsetof and alignof below are unchanged, so a pre-task snapshot blob
+// restores byte-identical and its zero in this lane means exactly what it
+// always meant.
 struct alignas(kStd430StructAlignment) BodyState {
     glm::vec3 pos;               // world-frame position, m
-    float _p0;                   // std430 pad -- keeps `orient` on row 1
+    // Per-body contact-proxy radius override, metres, >= 0 (D-S6-2). 0 is a
+    // SENTINEL, not a valid authored radius: see physics::effective_proxy_
+    // radius() in physics/contacts.hpp for the fallback it selects and this
+    // struct's own header comment for why 0 is also every pre-task slot's
+    // value. Former std430 pad `_p0` -- still keeps `orient` on row 1, since
+    // it occupies exactly the same 4 bytes.
+    float proxy_radius;
     glm::quat orient;            // body->world rotation, unit quaternion
     glm::vec3 vel;               // world-frame linear velocity, m/s
     float mass;                  // kg (the row-2 slot the pad would occupy)
@@ -120,7 +141,7 @@ static_assert(alignof(BodyState) == 16, "std430 base alignment");
 static_assert(sizeof(BodyState) == 128, "std430 array stride");
 
 static_assert(offsetof(BodyState, pos) == 0);
-static_assert(offsetof(BodyState, _p0) == 12);
+static_assert(offsetof(BodyState, proxy_radius) == 12);
 static_assert(offsetof(BodyState, orient) == 16);
 static_assert(offsetof(BodyState, vel) == 32);
 static_assert(offsetof(BodyState, mass) == 44);
@@ -149,7 +170,7 @@ static_assert(offsetof(BodyState, specific_force) % 16 == 0);
 // BodyState. This matters beyond tidiness -- implicit padding is the one
 // part of a state array a byte-wise snapshot comparison cannot reason about,
 // so BodyState has none by construction.
-static_assert(sizeof(BodyState::pos) + sizeof(BodyState::_p0) + sizeof(BodyState::orient) +
+static_assert(sizeof(BodyState::pos) + sizeof(BodyState::proxy_radius) + sizeof(BodyState::orient) +
                   sizeof(BodyState::vel) + sizeof(BodyState::mass) + sizeof(BodyState::omega_body) +
                   sizeof(BodyState::_p1) + sizeof(BodyState::inv_inertia_diag) + sizeof(BodyState::flags) +
                   sizeof(BodyState::force_acc) + sizeof(BodyState::_p2) + sizeof(BodyState::torque_acc) +

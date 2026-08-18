@@ -10,9 +10,13 @@
 
 #include <glm/geometric.hpp>
 
+#include "compute/sdf_program.hpp"
+#include "compute/step_params.hpp"
+#include "compute/vulkan/backend.hpp"
 #include "core/rng.hpp"
 #include "core/validate.hpp"
 #include "physics/integrator.hpp"
+#include "world/medium.hpp"
 #include "world/sdf.hpp"
 
 namespace spade {
@@ -76,7 +80,19 @@ Simulation::Simulation(ArenaSet arenas, WorldSetLayout layout, std::vector<World
       substeps_(substeps),
       h_(h) {}
 
-Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, uint32_t substeps) {
+// S6 Task 5: declared (not `= default`) in the header because
+// unique_ptr<compute::VulkanBackend>'s implicit special members need
+// VulkanBackend COMPLETE, and simulation.hpp only forward-declares it.
+// compute/vulkan/backend.hpp, included above, makes it complete HERE, which
+// is what lets `= default` be used at last -- these four definitions are
+// exactly what an inline `= default` would have generated, just placed
+// where the type they need is actually visible.
+Simulation::~Simulation() = default;
+Simulation::Simulation(Simulation&&) = default;
+Simulation& Simulation::operator=(Simulation&&) = default;
+
+Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, uint32_t substeps,
+                                      const compute::BackendDesc& backend) {
     if (dt_ns == 0) {
         return std::unexpected(invalid("Simulation::create: dt_ns must be > 0"));
     }
@@ -351,6 +367,142 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         return std::unexpected(views.error());
     }
 
+    // -----------------------------------------------------------------------
+    // S6 Task 5: the vulkan-path backend. StepShape mirrors the VALIDATED
+    // layout this function already derived above (`*layout`) plus the two
+    // scalars (substeps, h) and the config flag this function also already
+    // has in scope -- see compute/backend.hpp's StepShape doc comment for
+    // why it carries exactly these seven fields and no others.
+    // -----------------------------------------------------------------------
+    if (backend.kind == compute::BackendKind::vulkan) {
+        // NO UNPORTED-PASS GATE HERE ANY MORE (S6 Task 8). Through Task 7 this
+        // was where check_vulkan_unported_config() refused a TURBULENT world
+        // set, because MediumUpdate was a stub and its gusts would have been
+        // silently absent from the trajectory. All eight schedule slots now
+        // have a kernel or are inert by design on both backends, so there is
+        // nothing left to refuse -- see simulation.hpp's note where that
+        // function and its state-time twin used to be declared.
+
+        // The SDF extents ARE shape (compute/backend.hpp's StepShape note):
+        // they size two device buffers and are fixed for this Simulation's
+        // life, because the per-world SdfProgram is configuration.
+        uint32_t sdf_node_count = 0;
+        uint32_t sdf_transform_count = 0;
+        for (const WorldConfig& config : sim.configs_) {
+            sdf_node_count += static_cast<uint32_t>(config.sdf.nodes.size());
+            sdf_transform_count += static_cast<uint32_t>(config.sdf.transforms.size());
+        }
+
+        compute::StepShape shape{};
+        shape.world_count = layout->world_count;
+        shape.body_capacity = layout->body_capacity;
+        shape.element_capacity = layout->element_capacity;
+        shape.sensor_capacity = layout->sensor_capacity;
+        shape.substeps = substeps;
+        shape.h = h;
+        shape.batch_dynamic_collision = layout->uniform_dynamic_params;
+        shape.sdf_node_count = sdf_node_count;
+        shape.sdf_transform_count = sdf_transform_count;
+
+        // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
+        // PassParams no longer carries a per-batch ContactParams/GridParams
+        // (compute/vulkan/step_recorder.hpp's PassParams doc comment has the
+        // ruling), so VulkanBackend::create() takes only the shape. Per-world
+        // material still reaches the device -- see the contact_params and
+        // grid_params uploads a few lines further down.
+        Result<std::unique_ptr<compute::VulkanBackend>> vulkan_backend =
+            compute::VulkanBackend::create(backend, shape);
+        if (!vulkan_backend) return std::unexpected(vulkan_backend.error());
+        sim.vulkan_backend_ = std::move(*vulkan_backend);
+
+        // dryden_params (binding 13): uploaded exactly ONCE, here, not on
+        // every step() -- it is per-world CONFIGURATION
+        // (WorldConfig::turbulence, immutable for a Simulation's lifetime),
+        // not registered state, so it never appears in the ArenaSet
+        // upload()/readback() exchange step() drives. `sim.configs_` is
+        // used (not the local `configs` above, already moved-from into
+        // `sim` by this point) and copied into a CONTIGUOUS buffer first:
+        // WorldConfig interleaves turbulence with sdf/contacts/grid, so a
+        // span directly over sim.configs_ would have the wrong stride.
+        std::vector<DrydenParams> dryden_params_upload;
+        dryden_params_upload.reserve(layout->world_count);
+        for (uint32_t w = 0; w < layout->world_count; ++w) {
+            dryden_params_upload.push_back(sim.configs_[w].turbulence);
+        }
+        const std::span<const std::byte> dryden_bytes =
+            std::as_bytes(std::span<const DrydenParams>(dryden_params_upload));
+        if (Result<void> uploaded = sim.vulkan_backend_->upload_dryden_params(
+                dryden_bytes, static_cast<uint32_t>(sizeof(DrydenParams)), layout->world_count);
+            !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
+
+        // -----------------------------------------------------------------
+        // S6 Task 6: the same once-only, config-not-state upload, for the two
+        // records CollisionStatic reads.
+        //
+        // THE SDF PROGRAMS (bindings 14-16). Flattened -- every world's nodes
+        // and transforms concatenated, plus a per-world range record -- by
+        // compute/sdf_program.hpp, which is also where the "why three buffers"
+        // and "why the node's transform index stays world-local" reasoning
+        // lives. A pointer vector is built first because flatten_sdf_programs()
+        // takes a span of programs and WorldConfig interleaves the SdfProgram
+        // with three other members, so a span over configs_ would have the
+        // wrong stride -- the identical reason the dryden upload above copies
+        // into a contiguous buffer.
+        // -----------------------------------------------------------------
+        std::vector<const SdfProgram*> programs;
+        programs.reserve(layout->world_count);
+        for (uint32_t w = 0; w < layout->world_count; ++w) {
+            programs.push_back(&sim.configs_[w].sdf);
+        }
+        const compute::SdfUpload sdf =
+            compute::flatten_sdf_programs(std::span<const SdfProgram* const>(programs));
+        if (Result<void> uploaded = sim.vulkan_backend_->upload_sdf_program(
+                std::as_bytes(std::span<const compute::SdfNodeRow>(sdf.nodes)),
+                std::as_bytes(std::span<const compute::SdfTransformRow>(sdf.transforms)),
+                std::as_bytes(std::span<const compute::SdfWorldRange>(sdf.ranges)));
+            !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
+
+        // THE PER-WORLD CONTACT MATERIAL (binding 19). Per world, not per run:
+        // tests/golden/scenarios/bounce.scenario.yaml is a restitution ladder
+        // whose four worlds carry four different records, and CollisionStatic
+        // reads its own world's row exactly as the cpu pass reads `w.contacts`.
+        std::vector<physics::ContactParams> contacts_upload;
+        contacts_upload.reserve(layout->world_count);
+        for (uint32_t w = 0; w < layout->world_count; ++w) {
+            contacts_upload.push_back(sim.configs_[w].contacts);
+        }
+        if (Result<void> uploaded = sim.vulkan_backend_->upload_contact_params(
+                std::as_bytes(std::span<const physics::ContactParams>(contacts_upload)),
+                static_cast<uint32_t>(sizeof(physics::ContactParams)), layout->world_count);
+            !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
+
+        // THE PER-WORLD GRID CONFIG (binding 20, S6 Task 6b -- checkpoint-1
+        // ruling). Same per-world reasoning as contact_params immediately
+        // above, and the direct closure of that task: a world set may be
+        // heterogeneous, so a single per-dispatch cell_size cannot serve
+        // every world. No kernel reads this buffer yet (T7's CollisionDynamic
+        // is the first consumer -- see bindings.slang binding 20's comment),
+        // but it is uploaded now, unconditionally, so a world set built today
+        // is already correct once that kernel lands.
+        std::vector<physics::GridParams> grid_upload;
+        grid_upload.reserve(layout->world_count);
+        for (uint32_t w = 0; w < layout->world_count; ++w) {
+            grid_upload.push_back(sim.configs_[w].grid);
+        }
+        if (Result<void> uploaded = sim.vulkan_backend_->upload_grid_params(
+                std::as_bytes(std::span<const physics::GridParams>(grid_upload)),
+                static_cast<uint32_t>(sizeof(physics::GridParams)), layout->world_count);
+            !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
+    }
+
     return sim;
 }
 
@@ -451,8 +603,43 @@ Result<void> Simulation::step(uint64_t n) {
     if (n == 0) {
         // "Advance zero steps" is still a step boundary, so the queue is still
         // applied. Anything else would make step(0) observably different from
-        // step(1) minus the physics.
+        // step(1) minus the physics. Shared by both paths: the vulkan branch
+        // below never runs for n == 0 either.
         return flush_structural();
+    }
+
+    // -------------------------------------------------------------------
+    // S6 Task 5: the vulkan path. Flush ONCE (not per-step the way the cpu
+    // loop below does -- see step()'s header doc comment for why that is
+    // sound today), upload the device mirror if the flush (or create()'s
+    // initial vulkan_dirty_ == true) made it stale, submit all `n` steps in
+    // one VulkanBackend::step() call, read the result back, and advance the
+    // tick by `n`. The cpu schedule (physics::run_substep) never runs on
+    // this path -- the GPU is authoritative for these `n` steps.
+    // -------------------------------------------------------------------
+    if (vulkan_backend_) {
+        if (Result<void> flushed = flush_structural(); !flushed) {
+            return flushed;
+        }
+        if (vulkan_dirty_) {
+            // NO STATE-TIME GATE HERE ANY MORE (S6 Task 8). Through Task 7 this
+            // was where check_vulkan_unported_state() scanned for a live rotor
+            // or a live IMU sensor and refused the step, because the
+            // RotorElement half of ForceElements and SensorSynthesis were
+            // stubs. Both are ported; see simulation.hpp for the full note.
+            if (Result<void> uploaded = vulkan_backend_->upload(arenas_); !uploaded) {
+                return uploaded;
+            }
+            vulkan_dirty_ = false;
+        }
+        if (Result<void> stepped = vulkan_backend_->step(n, tick_.value); !stepped) {
+            return stepped;
+        }
+        if (Result<void> read_back = vulkan_backend_->readback(arenas_); !read_back) {
+            return read_back;
+        }
+        tick_ = Tick{tick_.value + n};
+        return {};
     }
 
     Result<std::span<BodyState>> all_bodies = arenas_.array(bodies_id_);
@@ -501,10 +688,68 @@ Result<void> Simulation::step(uint64_t n) {
 // structural queue
 // ---------------------------------------------------------------------------
 
+uint64_t Simulation::vulkan_upload_count() const noexcept {
+    return vulkan_backend_ ? vulkan_backend_->upload_count() : 0;
+}
+
+// See simulation.hpp for the CENSUS this function exists to make checkable --
+// every public entry point that can change `arenas_` between two step() calls,
+// and how each one is covered.
+void Simulation::mark_vulkan_dirty() noexcept {
+    if (vulkan_backend_) {
+        vulkan_dirty_ = true;
+    }
+}
+
+Result<compute::StepWitness> Simulation::vulkan_step_witness() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_step_witness: this Simulation runs on the cpu backend"});
+    }
+    compute::StepWitness witness{};
+    std::byte bytes[sizeof(compute::StepWitness)];
+    if (Result<void> read = vulkan_backend_->read_step_witness(std::span<std::byte>(bytes, sizeof(bytes)));
+        !read) {
+        return std::unexpected(read.error());
+    }
+    std::memcpy(&witness, bytes, sizeof(witness));
+    return witness;
+}
+
+Result<std::vector<compute::GridEntryRow>> Simulation::vulkan_grid_entries() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_grid_entries: this Simulation runs on the cpu backend"});
+    }
+    const std::size_t bytes = vulkan_backend_->grid_entries_byte_size();
+    std::vector<compute::GridEntryRow> rows(bytes / sizeof(compute::GridEntryRow));
+    if (Result<void> read = vulkan_backend_->read_grid_entries(
+            std::span<std::byte>(reinterpret_cast<std::byte*>(rows.data()), bytes));
+        !read) {
+        return std::unexpected(read.error());
+    }
+    return rows;
+}
+
+Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_pass_durations_ns: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->read_pass_durations_ns();
+}
+
 Result<void> Simulation::flush_structural() {
     if (queue_.empty()) {
         return {};
     }
+
+    // S6 Task 5: a non-empty queue is about to mutate arenas_, which makes
+    // the vulkan-path device mirror stale the moment it does. Set
+    // unconditionally before applying (not after) -- apply_op() below can
+    // fail partway, and a partially-applied queue is still a mutation the
+    // mirror does not yet reflect.
+    mark_vulkan_dirty();
 
     // FIFO over a std::vector: insertion order, front to back, no hashing, no
     // pointer ordering, nothing whose iteration order is unspecified. This loop
@@ -549,8 +794,15 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // spawn contract is "initializes BodyState FULLY", and a body must
             // start a step with no inherited wrench regardless of how its slot
             // came to be free. Relying on the zero-fill for state that has a
-            // meaning would make this correct by coincidence.
+            // meaning would make this correct by coincidence. `proxy_radius`
+            // (D-S6-2) is the same discipline: op.body_proxy_radius is 0.0f for
+            // a plain spawn() and the model's own value for a vehicle spawn, and
+            // writing it explicitly here -- rather than trusting the zero-fill
+            // for the common (plain-body) case -- is what keeps the field's
+            // value a stated fact of every spawn rather than an accident of two
+            // of its callers happening to agree.
             b.pos = op.body.pos;
+            b.proxy_radius = op.body_proxy_radius;  // D-S6-2; see StructuralOp's field comment
             b.orient = glm::normalize(op.body.orient);
             b.vel = op.body.vel;
             b.mass = op.body.mass;
@@ -1187,11 +1439,39 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         // of omega, is what says which way a rotor turns.
         return std::unexpected(invalid("spawn(vehicle): rotor_omega must be finite and >= 0"));
     }
+    // D-S6-2 fix-loop (I2+M3, coordinator review): both preconditions below
+    // test the VEHICLE's own EFFECTIVE radius -- the model's own proxy_radius
+    // when it overrides the default, else the world's contacts.proxy_radius
+    // -- rather than unconditionally the world default. A model whose own
+    // radius disagrees with the world's (either direction) would otherwise be
+    // validated against the wrong number, the same bug the collision passes
+    // themselves had before this task.
+    const float effective_radius =
+        physics::effective_proxy_radius(model.proxy_radius, config.contacts.proxy_radius);
+
+    // MIRRORS sim/world_set.cpp's validate_grid_against_contacts() -- same
+    // invariant (physics/grid.hpp's cell_size >= 2*radius footgun: the
+    // resolve step only gathers the 27 cells around a body, so a contact
+    // diameter larger than one cell silently loses pairs that straddle a
+    // gap), same failure mode, but checked against THIS MODEL's own declared
+    // radius rather than the world's default -- exactly the gap the
+    // world-level check cannot see, since it runs at world-set creation,
+    // before any vehicle model even exists to register. Only checked when the
+    // model overrides the default (proxy_radius != 0); the sentinel case
+    // (0, i.e. "use the world's default") is already covered by the
+    // world-level check that ran when this world was built.
+    if (model.proxy_radius != 0.0f && config.grid.cell_size < 2.0f * model.proxy_radius) {
+        return std::unexpected(invalid("spawn(vehicle): grid.cell_size must be >= 2 * the model's "
+                                       "proxy_radius (smaller silently misses contacts across cell "
+                                       "boundaries)"));
+    }
+
     // NOT BURIED IN THE WORLD -- the same check, for the same uncapped-
     // Baumgarte reason, that spawn(world, BodySpawn) applies. Spelled
-    // `!(phi >= -r)` so a NaN field value rejects.
+    // `!(phi >= -r)` so a NaN field value rejects. `r` is `effective_radius`
+    // above, not unconditionally the world default -- see the D-S6-2 note.
     const float phi = eval(config.sdf, where.pos);
-    if (!(phi >= -config.contacts.proxy_radius)) {
+    if (!(phi >= -effective_radius)) {
         return std::unexpected(invalid("spawn(vehicle): position is deeper than one proxy radius "
                                        "inside the world SDF (uncapped positional correction would "
                                        "eject it)"));
@@ -1311,6 +1591,11 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     body_op.world_index = world_index;
     body_op.slot = *body_slot;
     body_op.body.pos = where.pos;
+    // D-S6-2: the model OWNS its bodies' contact-proxy radius. Left at the
+    // model's own 0.0f default, this writes 0 -- the sentinel that defers to
+    // the world's ContactParams::proxy_radius, i.e. exactly what a model that
+    // never customized its proxy produced before this field was consumed.
+    body_op.body_proxy_radius = model.proxy_radius;
     body_op.body.orient = where.orient;
     body_op.body.vel = where.vel;
     body_op.body.omega_body = where.omega_body;
@@ -1433,6 +1718,17 @@ Result<void> Simulation::set_rotor_commands(const VehicleRef& ref, std::span<con
     for (uint32_t i = 0; i < ref.rotor_count; ++i) {
         (*rows)[ref.rotor_slots[i]].omega_cmd = omega_cmd[i];
     }
+
+    // The device mirror is now stale -- the identical statement, for the
+    // identical reason, as apply_wrench()'s (see the long note there). A rotor
+    // command is a between-steps arena write that no structural queue knows
+    // about. It was written by Task 6 in advance of being REACHABLE on the
+    // vulkan path -- a live rotor was refused outright until Task 8 ported the
+    // pass -- and Task 8 is what makes it live: tests/test_gpu_parity.cpp's
+    // RotorCommandsForceReupload now issues a real command to a real rotor and
+    // watches the upload counter, where through Task 7 it could only reach this
+    // line with a rotorless model.
+    mark_vulkan_dirty();
     return {};
 }
 
@@ -1457,6 +1753,29 @@ Result<void> Simulation::apply_wrench(BodyRef ref, glm::vec3 world_force, glm::v
 
     b.force_acc += world_force;
     b.torque_acc += body_torque;
+
+    // ---------------------------------------------------------------------
+    // S6 Task 6: THE DEVICE MIRROR IS NOW STALE, and saying so here closes a
+    // real hole rather than being belt-and-braces.
+    //
+    // Before this line, `vulkan_dirty_` was set by exactly one thing:
+    // flush_structural() applying a NON-EMPTY queue. apply_wrench() is not a
+    // structural op -- it writes straight into the arena, between steps, with
+    // no queue involved -- so a wrench applied on the vulkan path landed in
+    // arenas_ and was then never uploaded, because the next step() found the
+    // mirror "clean" and skipped the upload. The GPU kept its own force_acc
+    // (which its own Integrate had just zeroed) and the input silently did
+    // nothing.
+    //
+    // That is not hypothetical: the golden corpus's `ballistic` scenario
+    // applies a wrench on EVERY ONE of its 200 ticks, so a parity run of it
+    // would have compared a CPU trajectory driven by 200 inputs against a GPU
+    // trajectory driven by none. Found while building this task's parity
+    // harness; the fix is the same statement flush_structural() already makes
+    // about its own mutation, at the other place state is mutated between
+    // steps.
+    // ---------------------------------------------------------------------
+    mark_vulkan_dirty();
     return {};
 }
 
@@ -1647,6 +1966,27 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
         return restored;
     }
 
+    // -----------------------------------------------------------------------
+    // THE DEVICE MIRROR NOW DISAGREES WITH EVERY REGISTERED BYTE (S6 Task 6
+    // review round 1, finding C1). This is the largest arena mutation in the
+    // whole API -- spade::restore() above rewrote all nine arrays and both
+    // their free lists -- and it is not a structural-queue op, so
+    // flush_structural() never sees it. Without this call, a restore followed
+    // by a step() on the vulkan path would submit the STALE PRE-RESTORE state
+    // to the device and then have the readback overwrite the freshly restored
+    // arenas with the result: the restore would be silently discarded, and the
+    // run would continue from a state the caller had explicitly replaced.
+    //
+    // Marked AFTER the restore succeeds, not before, and the ordering is a
+    // deliberate match to this function's own all-or-nothing contract: a
+    // REJECTED blob leaves the arenas untouched (every check runs before the
+    // first byte is written), so it leaves the mirror valid too and must not
+    // force a pointless re-upload. flush_structural() marks BEFORE applying
+    // for the opposite reason -- apply_op() can fail partway, and a
+    // partially-applied queue IS a mutation.
+    // -----------------------------------------------------------------------
+    mark_vulkan_dirty();
+
     tick_ = blob.tick();
 
     // Spec §4: "Restore = reverse + structural-queue flush." The queue describes
@@ -1722,6 +2062,23 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
             (*sensors_rows)[slot].noise = sensors::imu_noise_stream(row.seed, slot - begin);
         }
     }
+
+    // The device mirror is stale (S6 Task 6 review round 1, finding C1). Every
+    // write above lands in a REGISTERED array -- WorldParams, DrydenState and
+    // the live ImuSensorRow noise streams are all part of the walk the mirror
+    // uploads -- and none of them goes through the structural queue, so
+    // nothing else would say so. Unmarked, a reseed on the vulkan path would
+    // be a call that appeared to succeed and changed nothing about the run:
+    // the next step() would submit the OLD seeds and the readback would put
+    // them straight back into `arenas_`, erasing the reseed.
+    //
+    // It was already true when Task 6 wrote it, even though the two systems the
+    // new seeds feed (Dryden gusts, IMU noise) were then REFUSED outright on
+    // this backend: WorldParams::seed is uploaded and read back regardless of
+    // whether any pass consumes it, so the erasure would have been observable
+    // in a snapshot or a digest immediately. S6 Task 8 ports both systems, so
+    // the mark is now load-bearing for the trajectory as well as for the bytes.
+    mark_vulkan_dirty();
 
     return {};
 }

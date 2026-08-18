@@ -955,6 +955,25 @@ TEST(WorldFileRejects, TransformIndexOutOfRange) {
     EXPECT_TRUE(contains(why(world), "SDF transform index out of range")) << why(world);
 }
 
+TEST(WorldFileRejects, OperatorNodeNonZeroTransform) {
+    // The op-node tightening (S6 hygiene batch): an operator's `transform` is
+    // unused (world_file.cpp's own emission comment: "on an `op` node it is
+    // unused") but nothing enforced that on the READ side until now --
+    // validated here, mirroring this codebase's other reserved-lane-must-be-
+    // zero checks (ContactParams/GridParams's _r0.._r2). This is the proof
+    // the new check actually fires rather than being dead validation code:
+    // sdf.cpp's operator branch checks `node.transform` BEFORE it checks the
+    // stack depth, so a single, stack-empty op node -- which would otherwise
+    // hit PostfixUnderflow's "needs two operands" rejection just below --
+    // hits THIS rejection first when its transform is nonzero.
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorld, "    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}",
+        "    - {op: union, transform: 5, params: [0, 0, 0, 0]}"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "SDF operator node's transform index must be 0"))
+        << why(world);
+}
+
 TEST(WorldFileRejects, PostfixUnderflow) {
     // An operator with nothing to pop. The message is SdfProgram::validate()'s
     // own wording, which is the proof that the loader runs the SAME validation

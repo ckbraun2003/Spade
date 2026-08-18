@@ -40,8 +40,12 @@ void apply_drag(std::span<BodyState> bodies, std::span<const DragBodyRow> elems,
             //   drag_coeff: 0.0280 # drag coefficient (kg/m for quadratic/componentwise)
             //
             // and the file's own header comment on those keys: "componentwise
-            // quadratic drag, F_i = cd*|v_i|*v_i per BODY axis (matches the
-            // sim's per-axis VelocityDragCoefficients)". Cross-checked against
+            // quadratic drag, F_i = -cd*|v_i|*v_i per BODY axis (matches the
+            // sim's per-axis VelocityDragCoefficients)" (S6 hygiene: this
+            // header comment used to drop the minus sign the `drag_mode`
+            // line above and this file's own sign convention both carry --
+            // reconciled in configs/physics.yaml so the file no longer
+            // states its own formula two ways). Cross-checked against
             // the two engines that actually implement it:
             //   * controller/dynamics/quadrotor.py, _drag_force_jit(),
             //     "componentwise" branch: rotate v into the body frame,

@@ -58,6 +58,7 @@
 
 #include <Spade/Spade.hpp>
 
+#include "physics/contacts.hpp"
 #include "world/sdf.hpp"
 
 namespace spade::viewer {
@@ -326,14 +327,36 @@ struct Viewer::Impl {
     // perturb, or be perturbed by, the fixed-step physics accumulator.
     float camera_orbit_elapsed_s = 0.0f;
 
-    explicit Impl(Scene s);
+    // The compute backend this Viewer's Simulation runs on (S6 Task 6). Held
+    // so the FPS line can name it -- a demo whose whole point is "this is the
+    // GPU stepping it" must say which path it took, or the user is taking the
+    // command line's word for it.
+    spade::compute::BackendDesc backend{};
+
+    Impl(Scene s, spade::compute::BackendDesc desc);
     void run();
     void step_and_sync();
 };
 
-Viewer::Impl::Impl(Scene s) : scene(std::move(s)) {
+Viewer::Impl::Impl(Scene s, spade::compute::BackendDesc desc) : scene(std::move(s)), backend(desc) {
     // --- v2: build the Simulation, spawn every body at t=0 ----------------
-    spade::Result<spade::Simulation> created = spade::Simulation::create(scene.worlds, kStepDtNs, kSubsteps);
+    //
+    // `backend` (S6 Task 6) is the ONLY thing that differs between a cpu run
+    // and a vulkan one: the scene, the spawns, the step decomposition and the
+    // render loop are identical, which is what makes `demo.ps1 -Scene bounce
+    // -Backend vulkan` a demonstration of the PORT rather than of a second
+    // code path.
+    //
+    // THROUGH S6 TASK 7 a world set the vulkan backend could not step
+    // correctly was refused by Simulation::create() itself, with
+    // Code::unavailable naming the unported pass. Task 8 ports the last two
+    // passes and deletes that gate, so create() now fails on this path only
+    // for a REAL reason (no device, a device that cannot preserve fp32
+    // denormals, an allocation failure). Either way the message reaches the
+    // user verbatim through the throw below rather than being swallowed into
+    // a generic failure, which is what this comment was always about.
+    spade::Result<spade::Simulation> created =
+        spade::Simulation::create(scene.worlds, kStepDtNs, kSubsteps, backend);
     if (!created) {
         throw std::runtime_error("spade_viewer: Simulation::create failed for scene '" + scene.name +
                                   "': " + created.error().context);
@@ -487,8 +510,19 @@ Viewer::Impl::Impl(Scene s) : scene(std::move(s)) {
                 }
             }
         }
-        const float radius = scene.worlds.worlds[w].contacts.proxy_radius;
+        // PER-BODY, not a blanket per-world constant (S6 hygiene: T2-era
+        // review finding, "visual should match physics" -- the checkpoint
+        // demo scene's own draw radius must track whatever the PHYSICS pass
+        // actually used for this body, not a world-level default that a
+        // per-body override (S6 Task 2's BodyState::proxy_radius, sentinel-0
+        // == "use the world default") can leave stale for exactly this
+        // body). physics::effective_proxy_radius() is the ONE canonical
+        // accessor every contact kernel (CPU and GPU) reads through; using
+        // it here rather than re-deriving the sentinel rule is what keeps
+        // the viewer from becoming a third, driftable spelling of it.
+        const float world_default_radius = scene.worlds.worlds[w].contacts.proxy_radius;
         for (const spade::BodyState& b : *bodies_span) {
+            const float radius = spade::physics::effective_proxy_radius(b, world_default_radius);
             push_sphere(*dynamic_mesh, b.pos, radius, color);
         }
     }
@@ -622,7 +656,14 @@ void Viewer::Impl::run() {
         fps_print_timer_s += engine.GetDeltaTime();
         if (fps_print_timer_s >= 1.0f) {
             fps_print_timer_s = 0.0f;
-            std::printf("fps: %.0f | bodies: %zu\n", engine.GetFPS(), scene.bodies.size() + scene.vehicles.size());
+            // THE BACKEND IS NAMED ON EVERY LINE (S6 Task 6). The FPS counter
+            // itself is user amendment A1's; a headed demo whose whole claim is
+            // "the Vulkan kernels are stepping this" has to STATE which path is
+            // running rather than leave the user taking the command line's word
+            // for it.
+            std::printf("fps: %.0f | bodies: %zu | backend: %s\n", engine.GetFPS(),
+                        scene.bodies.size() + scene.vehicles.size(),
+                        backend.kind == spade::compute::BackendKind::vulkan ? "vulkan" : "cpu");
             // Explicit flush: stdout is fully (not line-) buffered once it is
             // NOT an interactive console -- e.g. redirected to a file/pipe by
             // a caller capturing this diagnostic line -- so without this a
@@ -637,7 +678,8 @@ void Viewer::Impl::run() {
 // Viewer
 // ---------------------------------------------------------------------------
 
-Viewer::Viewer(Scene scene) : impl_(std::make_unique<Impl>(std::move(scene))) {}
+Viewer::Viewer(Scene scene, spade::compute::BackendDesc backend)
+    : impl_(std::make_unique<Impl>(std::move(scene), backend)) {}
 Viewer::~Viewer() = default;
 Viewer::Viewer(Viewer&&) noexcept = default;
 Viewer& Viewer::operator=(Viewer&&) noexcept = default;

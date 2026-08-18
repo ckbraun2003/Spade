@@ -266,6 +266,52 @@ TEST(Contacts, DropFromTenMetresRestsWithoutTunnelling) {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. D-S6-2 -- the per-body proxy override, both directions, in one call.
+//
+// A ground plane, phi(p) == p.z (GroundPlane()'s own doc). World default
+// proxy_radius = 0.1 m. Two bodies, both approaching at -1 m/s along z with
+// e = 0 and mu = 0, so a firing contact is a CLOSED FORM: v_n = -1 exactly,
+// j_n = -(1+0)*(-1) = 1 exactly, vel.z becomes -1 + 1 = 0 EXACTLY (no
+// rounding -- both operands and the result are exactly representable). A
+// contact that does NOT fire leaves the body byte-for-byte untouched
+// (contacts.hpp's own contract), so vel.z stays exactly -1.
+//
+//   body A at z = 0.15: world default (0.1) does NOT reach it (0.15 >= 0.1,
+//   no contact) but a per-body override of 0.2 DOES (0.15 < 0.2) --
+//   DIRECTION 1: the override PRODUCES a contact the default would not.
+//
+//   body B at z = 0.05: world default (0.1) DOES reach it (0.05 < 0.1,
+//   contact) but a per-body override of 0.02 does NOT (0.05 >= 0.02) --
+//   DIRECTION 2 (vice versa): the override SUPPRESSES a contact the default
+//   would have produced.
+//
+// A third body, C, has NO override (BodyState::proxy_radius left at its
+// MakeUnitBody() zero-fill) at the SAME z = 0.05 as B: it exists to pin the
+// sentinel semantics inline -- 0 defers to the world default, so C behaves
+// exactly as B would have WITHOUT its override, i.e. it contacts.
+// ---------------------------------------------------------------------------
+TEST(Contacts, PerBodyProxyRadiusOverridesWorldDefaultBothDirections) {
+    const SdfProgram prog = GroundPlane();
+    const ContactParams cp = MakeContacts(/*e=*/0.0f, /*mu=*/0.0f, /*radius=*/0.1f);
+
+    BodyState a = MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.15f), glm::vec3(0.0f, 0.0f, -1.0f));
+    a.proxy_radius = 0.2f;  // override: default (0.1) would miss; this hits
+
+    BodyState b = MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(0.0f, 0.0f, -1.0f));
+    b.proxy_radius = 0.02f;  // override: default (0.1) would hit; this misses
+
+    BodyState c = MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(0.0f, 0.0f, -1.0f));
+    // c.proxy_radius left at 0 -- the sentinel; falls back to cp.proxy_radius.
+
+    std::vector<BodyState> bodies{a, b, c};
+    resolve_static_contacts(bodies, prog, cp, kH);
+
+    EXPECT_EQ(bodies[0].vel.z, 0.0f) << "A: per-body override should have produced a contact";
+    EXPECT_EQ(bodies[1].vel.z, -1.0f) << "B: per-body override should have suppressed the contact";
+    EXPECT_EQ(bodies[2].vel.z, 0.0f) << "C: sentinel 0 should fall back to the world default (contact)";
+}
+
+// ---------------------------------------------------------------------------
 // 2. Bounce apex ratio == e^2.
 //
 // Energy at the apex is m*g*H, and the impulse scales the approach speed by e,

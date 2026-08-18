@@ -332,6 +332,58 @@ TEST(GridDynamicCollision, UnequalMassPairSplitsImpulseAndCorrectionInverselyByM
     EXPECT_NEAR(separation, 0.4f + corr, 1e-6f);
 }
 
+// ---------------------------------------------------------------------------
+// D-S6-2 -- the per-body proxy override, both directions, on a two-body pair.
+//
+// World default proxy_radius = 0.1 m (uniform contact_dist = 0.2 m). e = 0,
+// mu = 0, equal unit masses, so a firing pair's post-contact velocities are
+// the same closed form HeadOnEqualMassPairMatchesDirectPairMath above uses
+// with e = 0: w_a = w_b = 0.5, j_n = -(1+0)*v_rel_n, and for a pair
+// approaching head-on at 1 m/s each (v_rel_n = -2) that lands both bodies at
+// vel.x == 0.0f EXACTLY. A pair that does NOT overlap the contact test is left
+// byte-for-byte untouched (grid.hpp's own contract), so both velocities stay
+// exactly at their initial +-1.
+// ---------------------------------------------------------------------------
+TEST(GridDynamicCollision, PerBodyProxyRadiusOverridesWorldDefaultBothDirections) {
+    const ContactParams cp = MakeContacts(/*e=*/0.0f, /*mu=*/0.0f, /*radius=*/0.1f);
+    const GridParams gp = MakeGrid(/*cell_size=*/2.0f);  // generous -- not the footgun under test
+    const std::vector<uint32_t> worlds{0u, 0u};
+
+    // Direction 1: override PRODUCES a contact the world default would not.
+    // |d| = 0.5 m; uniform-default contact_dist = 0.2 m (0.5 > 0.2, no
+    // contact); body 0's override (0.45) makes contact_dist = 0.45 + 0.1 =
+    // 0.55 m > 0.5 m -- contact fires.
+    {
+        std::vector<BodyState> bodies{
+            MakeBody(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+            MakeBody(glm::vec3(0.5f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f))};
+        bodies[0].proxy_radius = 0.45f;  // bodies[1] stays sentinel (0 -> world default 0.1)
+
+        GridScratch scratch;
+        resolve_dynamic_contacts(bodies, worlds, gp, cp, scratch);
+
+        EXPECT_EQ(bodies[0].vel.x, 0.0f) << "override should have produced a contact";
+        EXPECT_EQ(bodies[1].vel.x, 0.0f) << "override should have produced a contact";
+    }
+
+    // Direction 2 (vice versa): override SUPPRESSES a contact the world
+    // default would have produced. |d| = 0.15 m; uniform-default contact_dist
+    // = 0.2 m (0.15 < 0.2, contact); body 0's override (0.02, tiny) makes
+    // contact_dist = 0.02 + 0.1 = 0.12 m < 0.15 m -- no contact.
+    {
+        std::vector<BodyState> bodies{
+            MakeBody(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+            MakeBody(glm::vec3(0.15f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f))};
+        bodies[0].proxy_radius = 0.02f;
+
+        GridScratch scratch;
+        resolve_dynamic_contacts(bodies, worlds, gp, cp, scratch);
+
+        EXPECT_EQ(bodies[0].vel.x, 1.0f) << "override should have suppressed the contact";
+        EXPECT_EQ(bodies[1].vel.x, -1.0f) << "override should have suppressed the contact";
+    }
+}
+
 TEST(GridDynamicCollision, FrictionRemovesTheCappedRelativeTangentialVelocity) {
     // n = +x. Approach speed 2 m/s, relative tangential speed 1 m/s along -y.
     //   e = 0  =>  j_n = 2;  mu = 0.3  =>  cap = 0.6 < |v_t| = 1, so the cap

@@ -64,23 +64,27 @@
 // beside the rows they describe, not to move these up.
 //
 // ---------------------------------------------------------------------------
-// TWO FIELDS ARE DECLARED AND NOT YET CONSUMED, and saying so is the point of
-// carrying them:
+// ONE FIELD IS CONSUMED AS OF D-S6-2; ONE STILL IS NOT, and saying so for both
+// is the point of carrying them:
 //
-//   * `proxy_radius`. v2's CollisionStatic takes its sphere-proxy radius from
-//     the WORLD's physics::ContactParams (one radius for every body in a
-//     world), so a per-MODEL radius has nothing to read it yet. It is declared
-//     because spec S6 lists the proxy as part of a model type and because a
-//     per-body proxy is the obvious next step; it is validated, so a
-//     nonsensical value is rejected at authoring time rather than at the
-//     moment it first matters. NOTHING IN THE ENGINE READS IT TODAY.
+//   * `proxy_radius`. Through S5, v2's CollisionStatic took its sphere-proxy
+//     radius only from the WORLD's physics::ContactParams (one radius for
+//     every body in a world), so a per-MODEL radius had nothing to read it.
+//     D-S6-2 closed that: Simulation::spawn(world, ModelTypeId, VehicleSpawn)
+//     now writes this value into the spawned body's BodyState::proxy_radius
+//     (state/layout.hpp), and CollisionStatic/CollisionDynamic read it there,
+//     per body, via physics::effective_proxy_radius() (physics/contacts.hpp)
+//     -- falling back to the world's default when a model leaves this field at
+//     its own 0.0f default. It was always validated at authoring time (a
+//     nonsensical value is rejected before it matters), which is what made it
+//     safe to start consuming without a second validation pass.
 //   * `visual_ref`. The name a viewer or editor resolves to a mesh. The engine
 //     is headless and never resolves it; it rides here so that the world/model
 //     files S5 loads do not need a parallel table keyed on model name.
 //
-// Both are description, which is what a ModelType is. Neither is a stub for
-// behaviour that is silently missing: the behaviour they would drive does not
-// exist anywhere in v2, in any form.
+// Both are description, which is what a ModelType is. `visual_ref` is not a
+// stub for behaviour that is silently missing: the behaviour it would drive
+// does not exist anywhere in v2, in any form.
 // ===========================================================================
 
 namespace spade::vehicles {
@@ -195,7 +199,13 @@ struct ModelType {
     std::string visual_ref;            // viewer/editor mesh reference; NOT read by the engine
 
     BodyTemplate body{};
-    float proxy_radius = 0.0f;         // m, >= 0; DECLARED, NOT YET CONSUMED (see the header note)
+    // m, >= 0. CONSUMED as of D-S6-2 (see the header note): every vehicle
+    // spawn() writes this value into its body's BodyState::proxy_radius
+    // (state/layout.hpp), which is what CollisionStatic and CollisionDynamic
+    // then read via physics::effective_proxy_radius(). Left at its 0.0f
+    // default, a model's bodies fall back to the WORLD's ContactParams::
+    // proxy_radius -- the same answer this field gave before it was consumed.
+    float proxy_radius = 0.0f;
 
     std::vector<RotorDesc> rotors;
     std::vector<DragBodyDesc> drag_bodies;

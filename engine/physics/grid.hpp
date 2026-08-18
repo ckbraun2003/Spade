@@ -156,10 +156,15 @@
 //     no contact torque r x J is generated. Two spheres exchanging a glancing
 //     blow do not start spinning. Revisited at the VEHICLE LAYER (D4), which is
 //     what introduces per-body contact geometry.
-//  2. ONE PROXY RADIUS FOR THE WHOLE SPAN -- ContactParams::proxy_radius, the
-//     same record the static pass uses, so the two passes cannot disagree about
-//     how big a body is. Contact distance is therefore 2 * proxy_radius for
-//     every pair. Per-body radii arrive with D4.
+//  2. ONE PROXY RADIUS FOR THE WHOLE SPAN, BY DEFAULT -- WITH A PER-BODY
+//     OVERRIDE (D-S6-2). ContactParams::proxy_radius is the same record the
+//     static pass uses -- the two passes cannot disagree about a world's
+//     DEFAULT -- but each body's own BodyState::proxy_radius (state/
+//     layout.hpp) now overrides it when nonzero, exactly as contacts.cpp's
+//     effective_proxy_radius() reads it. Contact distance for a pair is
+//     therefore the SUM of the two bodies' own effective radii, not a single
+//     shared diameter -- see resolve_pair() in grid.cpp for where that sum is
+//     computed.
 //  3. NO CONTINUOUS COLLISION DETECTION and no manifold: the test samples
 //     current positions only. Same envelope as the static pass, halved by
 //     relative motion -- |v_rel| * h < 2 * proxy_radius.
@@ -171,10 +176,14 @@
 namespace spade::physics {
 
 // ---------------------------------------------------------------------------
-// The grid's one geometric parameter. Per world set rather than per world (the
-// broad-phase spans all worlds by construction -- that is the point of keying
-// on world id), which is why this is a separate record from ContactParams
-// rather than four more lanes inside it.
+// The grid's one geometric parameter. PER WORLD (WorldConfig::grid,
+// sim/simulation.hpp; the S6 device mirror uploads one GridParams per world
+// at bindings.slang binding 20, exactly like ContactParams at binding 19) --
+// a heterogeneous world set may legitimately want different cell sizes for
+// different worlds' geometry scales, the same reasoning ContactParams already
+// documents for restitution. It is a separate record from ContactParams
+// rather than four more lanes inside it because the two vary independently:
+// a world's material and its broad-phase cell size are unrelated knobs.
 //
 // WHY THIS STRUCT IS NOT IN state/layout.hpp, AND WHY IT CARRIES LAYOUT.HPP'S
 // ASSERT BATTERY ANYWAY: the coordinator ruling recorded on ContactParams
@@ -220,7 +229,28 @@ namespace spade::physics {
 //     detects that; test_grid.cpp pins the envelope
 //     (CellSizeBelowContactDiameterMissesContacts) so the limit is recorded
 //     behaviour rather than folklore. The default is deliberately 1 m against a
-//     defaulted proxy_radius of 0, which satisfies it.
+//     defaulted proxy_radius of 0, which satisfies it. D-S6-2 WIDENS THE
+//     HAZARD, NOT ITS KIND: a per-body override (BodyState::proxy_radius) can
+//     make one PAIR's contact_dist exceed cell_size even when
+//     ContactParams::proxy_radius alone would not. THE INVARIANT IS ENFORCED
+//     AT BOTH AUTHORING SITES, not left as pure folklore: sim/world_set.cpp's
+//     validate_grid_against_contacts() checks cell_size against the world's
+//     DEFAULT (ContactParams::proxy_radius) when a world is built, and
+//     Simulation::spawn(world, ModelTypeId, VehicleSpawn) (sim/simulation.cpp)
+//     checks it AGAIN against the spawning MODEL's own proxy_radius when that
+//     model overrides the default -- the gap the world-level check cannot
+//     see, since it runs before any vehicle model exists to register. Each
+//     check independently guarantees `2 * r <= cell_size` for the body it
+//     admits (r = the world default or the model's own override,
+//     respectively), i.e. `r <= cell_size / 2` for EVERY body in the world at
+//     the moment it is spawned -- which is what closes this for PAIRS too,
+//     algebraically, without a separate per-pair check: for any two bodies a
+//     and b, ra <= cell_size/2 and rb <= cell_size/2 together give
+//     contact_dist = ra + rb <= cell_size, so two individually-compliant
+//     bodies cannot produce a pair whose contact_dist exceeds the cell. Config
+//     (config.grid.cell_size, config.contacts.proxy_radius) is fixed for a
+//     world's lifetime at create() and there is no reconfigure API, so neither
+//     check needs to be, or is, revisited after the fact.
 //
 // The default describes a valid but inert grid: with ContactParams' defaulted
 // zero proxy radius no pair is ever in contact, so a default-constructed pair
@@ -433,11 +463,13 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 // ---------------------------------------------------------------------------
 // Resolves every overlapping pair of ACTIVE bodies in `bodies`.
 //
-// CONTACT TEST: for bodies a and b, d = pos_b - pos_a; a contact exists iff
-// 0 < |d| < 2 * params.proxy_radius, with depth = 2*proxy_radius - |d| and
-// normal n = d / |d| pointing from a to b. Coincident bodies (|d| == 0) have no
-// defined normal and are skipped, exactly as the static pass skips a zero SDF
-// gradient.
+// CONTACT TEST: for bodies a and b, d = pos_b - pos_a; contact_dist =
+// effective_proxy_radius(a, params.proxy_radius) + effective_proxy_radius(b,
+// params.proxy_radius) (D-S6-2: each body's own override, or the world's
+// default -- physics/contacts.hpp); a contact exists iff 0 < |d| < contact_
+// dist, with depth = contact_dist - |d| and normal n = d / |d| pointing from a
+// to b. Coincident bodies (|d| == 0) have no defined normal and are skipped,
+// exactly as the static pass skips a zero SDF gradient.
 //
 // THE TWO SPANS ARE PARALLEL: index i of `bodies` and index i of
 // `slot_to_world` describe the same slot. `slot_to_world` is
@@ -465,9 +497,11 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 // tail is bounds-safe rather than undefined.
 //
 // `params` is the SAME ContactParams record the static pass takes, so the two
-// cannot disagree about a body's size or a world's material. `proxy_radius`,
-// `restitution_e`, `friction_mu`, `baumgarte_beta` and `slop` are all read; the
-// reserved lanes are not.
+// cannot disagree about a world's DEFAULT size or its material. `proxy_radius`
+// is now a per-body FALLBACK rather than the pair's whole answer -- see the
+// CONTACT TEST above and effective_proxy_radius() -- while `restitution_e`,
+// `friction_mu`, `baumgarte_beta` and `slop` are unchanged, per-world values;
+// the reserved lanes are not read.
 //
 // NO `h` PARAMETER. Unlike resolve_static_contacts(), which keeps an unused `h`
 // so its shape matches the uniform pass signature, this one already departs

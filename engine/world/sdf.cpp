@@ -442,6 +442,31 @@ Result<uint32_t> SdfProgram::validate() const {
             }
             peak = depth > peak ? depth : peak;
         } else {
+            // An operator node's `transform` is UNUSED: sample()/gradient()
+            // above only ever index `transforms` inside the op==none branch.
+            // Nothing enforced that until now, which is exactly how it can
+            // carry silent garbage -- world_file.cpp's emit() writes it
+            // verbatim (n.transform, no special-casing for an operator node),
+            // so a hand-edited or corrupted file's out-of-range or nonzero
+            // value here would round-trip and pass validation forever, and
+            // config_hash (sim/world_set.cpp) folds every SdfNode's raw
+            // bytes -- transform field included -- so two programs that are
+            // otherwise IDENTICAL CSG trees could hash differently purely
+            // from what garbage sits in a dead lane. WorldBuilder::push_op()
+            // already always writes 0 here (builder.cpp), and every world in
+            // the corpus already writes `transform: 0` on every op node (the
+            // file format's own documented convention, world_file.cpp's
+            // emission comment: "`transform` indexes `transforms` above; on
+            // an `op` node it is unused") -- so this tightens validation
+            // only, exactly mirroring the reserved-lane-must-be-zero checks
+            // elsewhere in this codebase (ContactParams::_r0.._r2,
+            // GridParams::_r0.._r2), and moves no corpus file.
+            if (node.transform != 0) {
+                return std::unexpected(
+                    invalid("SDF operator node's transform index must be 0 (unused on an operator "
+                            "node)" +
+                            at_node(i)));
+            }
             if (node.op == static_cast<uint32_t>(SdfOp::smooth_union) && node.params.x < 0.0f) {
                 return std::unexpected(invalid("smooth_union blend radius must be >= 0" + at_node(i)));
             }
