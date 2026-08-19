@@ -4,6 +4,13 @@ cmake-build-release/
 build/
 bin/
 lib/
+# Task 0 (spade-editor-integration): scripts/spade-prefix.ps1's scratch
+# install-source build + cmake --install prefix for dronesim/spade/
+# (kat_host_spade) to find_package(spade) against -- separate from the
+# build-ninja/<preset> dev-loop trees and build-ci/ (CI) below, same
+# "own name, own ignore line" shape as those two.
+build-host/
+install-host/
 CMakeCache.txt
 CMakeFiles/
 *.cmake
