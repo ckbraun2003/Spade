@@ -17,6 +17,7 @@ add_executable(spade_tests
     test_world_file.cpp
     test_determinism.cpp
     test_m1b_bar.cpp
+    test_render_target.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -127,6 +128,7 @@ target_link_libraries(spade_tests PRIVATE
     spade::core
     spade::world
     spade::state
+    spade::render
     spade::physics
     spade::vehicles
     spade::sim

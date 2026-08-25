@@ -331,6 +331,68 @@ install(TARGETS spade_state
 install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
+# spade_render (S7a Task 0): the Spade Rendering & Scene Representation
+# program's module skeleton -- the render target/camera contract
+# (render/target.hpp: RenderTarget, Camera, DrawMode, RenderOptions, Aabb, the
+# kNoMaterial/kNoMesh sentinels, and validate_target()) plus scene.hpp's
+# forward declaration of RenderScene, whose definition and scene_from_world()
+# land in Task R1. STATIC because target.cpp compiles validate_target();
+# scene.hpp stays a bare forward declaration with no TU of its own until Task
+# R1 gives it one.
+#
+# Modeled on spade_world above, verbatim in structure -- STATIC lib,
+# spade::render ALIAS, EXPORT_NAME, cxx_std_23 compile feature, PUBLIC engine
+# deps, PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings>/spade_fp_strict.
+#
+# PUBLIC spade::core: target.hpp's Result<void> return and Camera's
+# glm::vec3/glm::quat public members reach consumers through spade_core's own
+# PUBLIC interface (Result/Error from core/error.hpp; glm from spade_core's
+# own PUBLIC $<BUILD_INTERFACE:glm> link) -- the same "public API exposes it,
+# so the link is PUBLIC" reasoning every other target in this file uses, and
+# the same precedent spade_state's own comment above sets for not re-adding
+# glm here directly.
+#
+# PUBLIC spade::world + spade::state: Task R1's scene_from_world() builds a
+# RenderScene FROM a spade::WorldDesc (world/builder.hpp) and, transitively
+# through spade::world, spade::state -- named on this module now so its CMake
+# target does not need revisiting when that function lands.
+#
+# $<BUILD_LOCAL_INTERFACE:...> on warnings/fp_strict -- same reasoning as
+# every other target in this file (spade_core's own comment above): an
+# installed STATIC library must not leak flags-only INTERFACE targets into
+# its export set. spade_fp_strict specifically: this task's validate_target()
+# evaluates no pinned-order fp32 expression, but scene/tessellate/csg_mesh
+# TUs a later S7a task adds to this SAME target will, so the flag is wired
+# from the target's first TU rather than revisited per file.
+# ------------------------------------------------------------------------------
+add_library(spade_render STATIC
+    render/target.cpp
+)
+add_library(spade::render ALIAS spade_render)
+set_target_properties(spade_render PROPERTIES EXPORT_NAME render)
+
+target_include_directories(spade_render PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_compile_features(spade_render PUBLIC cxx_std_23)
+
+target_link_libraries(spade_render PUBLIC spade::core spade::world spade::state)
+target_link_libraries(spade_render PRIVATE
+    $<BUILD_LOCAL_INTERFACE:spade_warnings>
+    $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+
+install(TARGETS spade_render
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+
+install(DIRECTORY render/ DESTINATION include/render FILES_MATCHING PATTERN "*.hpp")
+
+# ------------------------------------------------------------------------------
 # spade_physics: the per-substep dynamics passes -- Integrate (Task 9: one
 # substep of symplectic Euler over a world's body span, with the specific-force
 # capture the IMU pass reads), CollisionStatic (Task 11: sphere-proxy vs
