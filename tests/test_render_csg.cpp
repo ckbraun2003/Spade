@@ -372,27 +372,42 @@ TEST(SplitProgram, SingleUnwrappedPrimitiveIsAUnionPrimitiveNotACsgRoot) {
 }
 
 // ===========================================================================
-// 2. csg_subtree_world_bounds() -- tight per-shape bounds, and the
-//    plane/heightfield fallback (PA-5's exemption, extended to CSG roots).
+// 2. csg_subtree_world_bounds() -- CSG-AWARE bounds per operator (S7a Task
+//    R5 fix wave, review IMPORTANT #1): each operator narrows or discards
+//    an operand's extent according to what it actually DOES to the solid
+//    region, not a flat union of every leaf's own shape regardless of the
+//    operator sitting above it. Getting this wrong does not corrupt
+//    geometry (the derived bound is always a SUPERSET of the true solid) --
+//    it starves resolution, silently and without bound, which is why each
+//    case below is pinned to an exact expected Aabb rather than just
+//    "non-empty".
 // ===========================================================================
 
-TEST(CsgSubtreeWorldBounds, UnionsTightBoxBoundsAcrossBothOperands) {
-    const WorldDesc world = gate_square_world();  // outer (2,2,0.3), inner (1.2,1.2,0.5), identity poses
+TEST(CsgSubtreeWorldBounds, SubtractUsesOnlyTheMinuendsBoundsNotTheSubtrahends) {
+    // gate_square_world(): outer half=(2,2,0.3) "a" (minuend), inner
+    // half=(1.2,1.2,0.5) "b" (subtrahend, the standard oversized-cutter
+    // idiom -- deeper than the slab it cuts through). "a minus b" is a
+    // SUBSET of a alone (sdf.cpp: max(a,-b)) -- the subtrahend's own extent,
+    // even though it happens to be larger on Z, must never widen the bound.
+    const WorldDesc world = gate_square_world();
     const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2, Aabb{});
 
     constexpr float kTol = 1e-5f;
     EXPECT_NEAR(bounds.min.x, -2.0f, kTol);
     EXPECT_NEAR(bounds.min.y, -2.0f, kTol);
-    EXPECT_NEAR(bounds.min.z, -0.5f, kTol);
+    EXPECT_NEAR(bounds.min.z, -0.3f, kTol) << "the subtrahend's larger Z extent (0.5) leaked into the bound";
     EXPECT_NEAR(bounds.max.x, 2.0f, kTol);
     EXPECT_NEAR(bounds.max.y, 2.0f, kTol);
-    EXPECT_NEAR(bounds.max.z, 0.5f, kTol);
+    EXPECT_NEAR(bounds.max.z, 0.3f, kTol) << "the subtrahend's larger Z extent (0.5) leaked into the bound";
 }
 
-TEST(CsgSubtreeWorldBounds, PlaneContributesTheFallbackBoundsInstead) {
-    // plane has no finite local extent (PA-5) -- its contribution to a CSG
-    // subtree's bounds must come from `fallback_bounds`, unioned with the
-    // OTHER operand's real (tight) extent.
+TEST(CsgSubtreeWorldBounds, IntersectWithAnUnboundedOperandUsesTheOtherOperandsTightBoundNotTheFallback) {
+    // plane has no finite local extent (PA-5) -- but "a b intersect" is a
+    // SUBSET of BOTH a and b (sdf.cpp: max(a,b)), so intersecting with an
+    // unbounded operand cannot make the OTHER, genuinely bounded operand's
+    // own extent any looser. The correct bound is the box's own tight
+    // extent, NOT a world-sized fallback (the pre-fix behaviour) and not
+    // the plane's own fallback at all.
     WorldBuilder b = base_builder();
     b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).box(glm::vec3(1.0f)).intersect();
     const WorldDesc world = build_or_fail(b);
@@ -400,10 +415,66 @@ TEST(CsgSubtreeWorldBounds, PlaneContributesTheFallbackBoundsInstead) {
     const Aabb fallback{.min = glm::vec3(-9.0f), .max = glm::vec3(9.0f)};
     const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2, fallback);
 
-    // union of the box's tight bound (-1..1) and the fallback (-9..9) is
-    // just the fallback.
+    EXPECT_EQ(bounds.min, glm::vec3(-1.0f));
+    EXPECT_EQ(bounds.max, glm::vec3(1.0f));
+    EXPECT_NE(bounds.min, fallback.min) << "fell back to the world-sized bounds instead of the box's own tight one";
+}
+
+TEST(CsgSubtreeWorldBounds, IntersectOfTwoBoundedOperandsIsTheirComponentwiseIntersection) {
+    // Two boxes, same origin, each tight on a DIFFERENT pair of axes: A is
+    // tight on X (half=1) and wide on Y/Z (half=3); B is tight on Y
+    // (half=1) and wide on X/Z (half=3). Their true intersection is tight
+    // on BOTH X and Y (half=1) and wide only on Z (half=3) -- a genuine
+    // per-axis clamp, not just "the smaller of the two boxes as a whole".
+    WorldBuilder b = base_builder();
+    b.box(glm::vec3(1.0f, 3.0f, 3.0f)).box(glm::vec3(3.0f, 1.0f, 3.0f)).intersect();
+    const WorldDesc world = build_or_fail(b);
+
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2, Aabb{});
+
+    EXPECT_EQ(bounds.min, glm::vec3(-1.0f, -1.0f, -3.0f));
+    EXPECT_EQ(bounds.max, glm::vec3(1.0f, 1.0f, 3.0f));
+}
+
+TEST(CsgSubtreeWorldBounds, UnboundedMinuendStillFallsBackWhenNothingElseBoundsIt) {
+    // "a minus b" uses a's bound alone (the test above) -- when a is ITSELF
+    // unbounded (a plane), the whole subtract is still unbounded regardless
+    // of what b is, so this is the one remaining case the fallback exists
+    // for: the subtree's OWN extent stays unbounded after every operator in
+    // it has had its say.
+    WorldBuilder b = base_builder();
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).box(glm::vec3(1.0f)).subtract();
+    const WorldDesc world = build_or_fail(b);
+
+    const Aabb fallback{.min = glm::vec3(-9.0f), .max = glm::vec3(9.0f)};
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2, fallback);
+
     EXPECT_EQ(bounds.min, fallback.min);
     EXPECT_EQ(bounds.max, fallback.max);
+}
+
+TEST(CsgSubtreeWorldBounds, SmoothUnionDilatesTheUnionBoundByKOverFour) {
+    // cylinder (radius=1, half_height=1 -> box (-1,-1,-1)..(1,1,1)) and a
+    // sphere (radius=1) offset to (3,0,0) (-> (2,-1,-1)..(4,1,1)), blended
+    // with k=0.4. sdf.cpp's own bound on the blend (min(a,b) - k/4 <= d <=
+    // min(a,b)) means the true surface can sit up to k/4 = 0.1 beyond the
+    // NAIVE union's own boundary -- the bound must include that margin, not
+    // just union_aabb(a,b) verbatim.
+    WorldBuilder b = base_builder();
+    b.cylinder(1.0f, 1.0f).sphere(1.0f, SdfPose{.position = {3.0f, 0.0f, 0.0f}}).smooth_union(0.4f);
+    const WorldDesc world = build_or_fail(b);
+
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2, Aabb{});
+
+    constexpr float kTol = 1e-5f;
+    const glm::vec3 expected_min(-1.1f, -1.1f, -1.1f);
+    const glm::vec3 expected_max(4.1f, 1.1f, 1.1f);
+    EXPECT_NEAR(bounds.min.x, expected_min.x, kTol);
+    EXPECT_NEAR(bounds.min.y, expected_min.y, kTol);
+    EXPECT_NEAR(bounds.min.z, expected_min.z, kTol);
+    EXPECT_NEAR(bounds.max.x, expected_max.x, kTol);
+    EXPECT_NEAR(bounds.max.y, expected_max.y, kTol);
+    EXPECT_NEAR(bounds.max.z, expected_max.z, kTol);
 }
 
 TEST(CsgSubtreeWorldBounds, RootNodeOutOfRangeIsAnError) {

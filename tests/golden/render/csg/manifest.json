@@ -1,12 +1,13 @@
 {
   "_provenance": "S7a Task R5 -- tests/test_render_csg.cpp's CsgMeshGolden.MatchesCommittedManifest. sha256 of each subtree's surface-nets positions bytes followed by its indices bytes, both taken from mesh_csg_subtree() at kCsgMeshDefaults over the bounds csg_subtree_world_bounds() derives for the fixture in that test file's golden_fixtures(). Unlike tessellate.hpp's tessellation manifest, vertex/index counts have no independent closed form to re-derive them from (they depend on the subtree's actual zero-crossing topology, not on cells_per_axis alone) -- these are snapshot-pinned, the same posture test_render_raster.cpp's frame goldens already use. limits_version is bumped ONLY alongside a deliberate kCsgMeshDefaults change, together with the matching constant in the test file.",
+  "_changelog": "Fix wave 1 (review IMPORTANT #1 + #2): csg_subtree_world_bounds() was rewritten from a flat union of every leaf's own extent to a CSG-aware recursive walk (union/intersect/subtract/smooth_union each narrow or discard an operand's extent per its own semantics, not a blanket union), and mesh_csg_subtree()'s own padding margin now floors at k/4 when root_node is itself a smooth_union (sdf.cpp's own bound on the blend). Both hashes moved as a direct, understood consequence, not a regression: gate_square's bound is now the SUBTRACT's minuend alone (the outer box, half-extent 0.3 in Z) rather than the union of both operands (which wrongly included the 0.5-deep subtrahend) -- Z now gets the full 48-cell resolution instead of ~26 of 48, so vertex/index counts INCREASED (10944->15200, 65664->91200). smooth_blend_cylinder_sphere's bound now carries the correct k/4 dilation at the bounds-computation level PLUS mesh_csg_subtree()'s own independent k/4 margin floor (defence in depth: the second one protects mesh_csg_subtree()'s own contract even if a future caller does not route through csg_subtree_world_bounds()) -- the resulting sampling volume is slightly larger overall than before, so at the same fixed 48 cells/axis the resolution over the actual shape is slightly coarser and counts DECREASED (10552->9056, 63300->54324). limits_version stays kCsgMeshDefaults@1 because the limits table itself did not change -- only what the code does with subtree_bounds/aabb_margin did.",
   "limits_version": "kCsgMeshDefaults@1",
   "limits": {
     "cells_per_axis": 48,
     "aabb_margin": 0.05
   },
   "subtrees": {
-    "gate_square": { "vertex_count": 10944, "index_count": 65664, "sha256": "a5e527ac8f71b9bb5d1887d3bea5e4a22ef337053aaf2d8e432341c3ce2efd12" },
-    "smooth_blend_cylinder_sphere": { "vertex_count": 10552, "index_count": 63300, "sha256": "0ac76737068e449ba3c11579bb013e5502d6e8a764927b91be8c79f1db54bac3" }
+    "gate_square": { "vertex_count": 15200, "index_count": 91200, "sha256": "0c46a16277cc9a46beaf2b81beab1a7a2bfc1fc0e80b50f42a9226b615232a7f" },
+    "smooth_blend_cylinder_sphere": { "vertex_count": 9056, "index_count": 54324, "sha256": "a09d782cacb5574a504d242394eb4ec16daabdd04f1bf6a7c80f4868caac5337" }
   }
 }

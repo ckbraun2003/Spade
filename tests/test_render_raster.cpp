@@ -28,10 +28,14 @@
 // ---------------------------------------------------------------------------
 // render() -- S7a Task R3, the deterministic CPU rasterizer.
 //
-// scene_from_world() currently allocates EMPTY MeshData placeholders per SDF
-// node (Task R5 wires real geometry in) -- so every test below builds its own
-// RenderScene/MeshData directly rather than going through scene_from_world(),
-// exactly as task-R3-brief.md's context note says to.
+// scene_from_world() now wires real geometry into every SDF-derived mesh
+// slot (Task R5) -- but every test below still builds its own RenderScene/
+// MeshData directly rather than going through scene_from_world(), exactly as
+// task-R3-brief.md's context note says to: this file's golden frames are
+// pinned to hand-authored scenes so a later, unrelated change to
+// scene_from_world()'s own wiring (node-to-mesh mapping, split_program()'s
+// grouping, world_bounds_of()'s heuristics) can never move a rasterizer
+// golden that has nothing to do with it.
 //
 // Sections:
 //   0. A tiny, self-contained SHA-256 -- the golden manifest's fingerprint
@@ -305,10 +309,10 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
 
 // A hand-built, CCW-outward-wound box -- the SAME face/corner convention as
 // render/tessellate.cpp's tessellate_box() (SR-13's back-face cull depends on
-// it), built directly here rather than through tessellate_primitive() so
-// this test does not depend on scene_from_world's currently-empty output or
-// on R2's tessellator (task-R3-brief.md's own note: this task's tests build
-// MeshData directly).
+// it), built directly here rather than through tessellate_primitive() (or
+// scene_from_world(), which now wires tessellate_primitive() in for real --
+// Task R5) so this test's own golden hash stays isolated from either one
+// (task-R3-brief.md's own note: this task's tests build MeshData directly).
 [[nodiscard]] MeshData make_box_mesh(float half_extent) {
     MeshData mesh;
     const float h = half_extent;

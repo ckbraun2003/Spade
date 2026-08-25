@@ -562,19 +562,42 @@ template <class T>
 }
 
 [[nodiscard]] bool no_libm_transcendental_in_engine_or_golden_test_source(std::string& detail) {
-    std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
-    const std::vector<fs::path> golden_tests = collect_golden_feeding_test_sources();
-    files.insert(files.end(), golden_tests.begin(), golden_tests.end());
-    std::sort(files.begin(), files.end());  // collect_sources()'s own deterministic-report-order contract
+    std::vector<fs::path> engine_files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
     // S5 final-review fix wave (I3a): same vacuous-pass hazard as
     // no_wallclock_symbols_in_engine_source() above -- see that function's
     // comment. Equivalent to ASSERT_FALSE(files.empty()).
-    if (files.empty()) {
-        detail = "0 source files found under engine/ (tools/ excluded) + golden-feeding test sources -- "
-                 "the scan roots are empty or missing, which would otherwise vacuously PASS; treating it "
-                 "as a failure instead";
+    if (engine_files.empty()) {
+        detail = "0 source files found under engine/ (tools/ excluded) -- the scan root is empty or "
+                 "missing, which would otherwise vacuously PASS; treating it as a failure instead";
         return false;
     }
+
+    const std::vector<fs::path> golden_tests = collect_golden_feeding_test_sources();
+    // S7a Task R5 fix wave (review IMPORTANT #4): the SAME vacuous-pass
+    // hazard as the engine-files check just above, but checked SEPARATELY
+    // against the WIDENED half alone -- checking it only on the COMBINED
+    // vector (as a first version of this fix did) never actually catches
+    // it, because the engine half is never empty, so `files.empty()` after
+    // merging can never be true on its own. If a future change ever makes
+    // collect_golden_feeding_test_sources() return nothing (the
+    // SPADE_GOLDEN_DIR macro renamed, its resolution moved into a helper
+    // header this scan does not know to unwrap, a change to
+    // read_lines_no_comments()/line_has_unquoted_token()), this check is
+    // what stops the widened scan from silently degrading back to
+    // engine-only and reporting green with "+ 0 golden-feeding test
+    // file(s)" -- exactly the failure mode SR-14 exists to close: a guard
+    // that quietly stops guarding.
+    if (golden_tests.empty()) {
+        detail = "0 golden-feeding test sources found (SPADE_TESTS_DIR) -- the widened half of this scan "
+                 "(SR-14) has silently lost its own scan root, which would otherwise vacuously report the "
+                 "combined scan green with 0 test files actually covered; treating it as a failure instead";
+        return false;
+    }
+
+    std::vector<fs::path> files = std::move(engine_files);
+    files.insert(files.end(), golden_tests.begin(), golden_tests.end());
+    std::sort(files.begin(), files.end());  // collect_sources()'s own deterministic-report-order contract
+
     const std::vector<std::string> hits =
         scan_for_forbidden(files,
                             {// the original five, qualified C++ spellings

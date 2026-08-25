@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 #include "world/sdf.hpp"
+#include "world/world_file.hpp"
 
 // ---------------------------------------------------------------------------
 // RenderScene / scene_from_world / update_dynamics tests (S7a Task R1).
@@ -212,9 +214,68 @@ TEST(SceneFromWorld, MixedUnionAndCsgRootProgramPreservesAuthoringOrder) {
         << "expected the sphere (item 0, authored first) before the CSG root (item 1, authored second)";
 }
 
+// S7a Task R5 fix wave (review IMPORTANT #3): every OTHER test in this file
+// authors its own WorldBuilder fixture with default (identity) or trivial
+// poses -- the one real world file this test suite loads anywhere
+// (SplitProgram's own maximal.world.yaml test, test_render_csg.cpp) is used
+// for split_program() alone and never put through scene_from_world(). That
+// leaves transform_aabb()/local_to_world_of() (csg_mesh.cpp) completely
+// unexercised against a genuine rotation or scale -- exactly the kind of
+// pose a shipped, placed gate actually has -- while every existing golden
+// hash stays self-consistent with whatever the code does, wrong or not.
+//
+// This test closes that gap end to end: load the real, committed
+// tests/golden/worlds/maximal.world.yaml (three of its six primitives sit
+// behind a non-identity, non-unit-scale transform -- transforms[1], [2] and
+// [4]) through the real scene_from_world(), and assert every mesh slot is
+// real geometry at a PLAUSIBLE resolution. A bounds bug that silently
+// starves a subtree's grid (review IMPORTANT #1's own defect) would show up
+// here as a near-empty or degenerate CSG mesh; every earlier, hand-authored
+// fixture in this file is too well-resolved by construction to ever notice.
+TEST(SceneFromWorld, RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToEnd) {
+    const spade::Result<WorldDesc> loaded =
+        spade::load_world_file(std::filesystem::path(SPADE_GOLDEN_DIR) / "worlds" / "maximal.world.yaml");
+    ASSERT_TRUE(loaded.has_value()) << "failed to load maximal.world.yaml";
+
+    const RenderScene scene = scene_or_fail(*loaded);
+
+    // split_program()'s own dedicated test (test_render_csg.cpp) proves
+    // this program decomposes into csg_roots={8}, union_primitive_nodes=
+    // {9, 10} -- 3 static items total, in that ascending-node-index order:
+    // the CSG root (node 8, a smooth_union of an intersect-clipped box with
+    // a subtract), then the torus (node 9), then the heightfield (node 10).
+    ASSERT_EQ(scene.statics.size(), 3u);
+    for (const DrawItem& item : scene.statics) {
+        ASSERT_LT(item.mesh_index, scene.meshes.size());
+        EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[item.mesh_index]));
+    }
+
+    // Item 0 is the CSG root. Its own subtree includes node 4's box, placed
+    // behind transforms[2] -- a real rotation + a 0.4x uniform scale, not
+    // the identity every other fixture in this file uses.
+    const MeshData& csg_mesh = scene.meshes[scene.statics[0].mesh_index];
+    const size_t triangle_count = csg_mesh.indices.size() / 3;
+    EXPECT_GT(triangle_count, 200u)
+        << "the CSG root's mesh looks collapsed -- got only " << triangle_count
+        << " triangles; a resolution-starved AABB (review IMPORTANT #1) would look exactly like this";
+}
+
 TEST(SceneFromWorld, StaticTransformIsInverseOfStoredNodeTransform) {
+    // 90 deg about Y, half-angle 45 deg -- spelled as literal float32
+    // quaternion components rather than glm::angleAxis. Not itself a
+    // committed-golden value (this pose is checked against an
+    // independently-computed forward_transform() at runtime, below), but
+    // this FILE now also loads tests/golden/worlds/maximal.world.yaml
+    // (RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToEnd,
+    // above), which pulls the whole translation unit into SR-14's widened
+    // libm-transcendental scan (test_m1b_bar.cpp) -- a scan that flags any
+    // glm::angleAxis call in a golden-feeding file regardless of which
+    // specific test uses it. 0x1.6a09e6p-1f is the nearest float32 to
+    // cos(45deg) = sin(45deg) = sqrt(2)/2 -- the identical literal
+    // test_render_raster.cpp's camera_top_down() already uses for the same
+    // 90-degree-about-an-axis shape.
     const SdfPose pose{.position = {5.0f, -1.0f, 2.0f},
-                        .rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
+                        .rotation = glm::quat(0x1.6a09e6p-1f, 0.0f, 0x1.6a09e6p-1f, 0.0f),
                         .scale = 2.0f};
     WorldBuilder b = base_builder();
     b.sphere(1.0f, pose);
@@ -262,7 +323,12 @@ TEST(SceneFromWorld, MaterialsHasDefaultAtIndexZero) {
 // ---------------------------------------------------------------------------
 
 TEST(SceneFromWorld, SpawnPositionsAndOrientationsMatchWorldSpawns) {
-    const glm::quat rot = glm::angleAxis(glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    // 45 deg about Y, half-angle 22.5 deg -- same literal-quaternion
+    // rationale as StaticTransformIsInverseOfStoredNodeTransform above.
+    // 0x1.d906bcp-1f/0x1.87de2ap-2f are the nearest float32 values to
+    // cos(22.5deg)/sin(22.5deg) -- the identical literals
+    // test_render_raster.cpp's own spawn_orientations fixture already uses.
+    const glm::quat rot(0x1.d906bcp-1f, 0.0f, 0x1.87de2ap-2f, 0.0f);
     WorldBuilder b = base_builder();
     b.spawn("start", glm::vec3(1.0f, 2.0f, 3.0f))
         .spawn("finish", glm::vec3(-4.0f, 0.0f, 6.0f), rot);
@@ -330,8 +396,13 @@ TEST(UpdateDynamics, ThreePosesYieldThreeDynamicItemsAndLeaveStaticsAlone) {
     const std::vector<BodyPose> bodies = {
         BodyPose{.position = {1.0f, 0.0f, 0.0f}, .mesh_index = 0},
         BodyPose{.position = {0.0f, 2.0f, 0.0f}, .mesh_index = 1},
+        // 30 deg about X, half-angle 15 deg -- same literal-quaternion
+        // rationale as StaticTransformIsInverseOfStoredNodeTransform above.
+        // 0x1.ee8dd4p-1f/0x1.0907dcp-2f are the nearest float32 values to
+        // cos(15deg)/sin(15deg) -- the identical literals
+        // test_render_raster.cpp's own box_spin fixture already uses.
         BodyPose{.position = {0.0f, 0.0f, 3.0f},
-                 .orientation = glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+                 .orientation = glm::quat(0x1.ee8dd4p-1f, 0x1.0907dcp-2f, 0.0f, 0.0f),
                  .mesh_index = spade::render::kNoMesh},
     };
 

@@ -5,6 +5,7 @@
 #include <cassert>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
@@ -51,6 +52,22 @@ namespace {
     return 0;
 }
 
+// Returns (a_root, b_root): the two operand subtree ROOTS of the operator
+// node at `op_node_index` (postfix "a b op" -- a is the deeper/first-
+// authored operand, b the shallower/second, i.e. the one immediately
+// preceding the operator). Shared by split_program()'s union decomposition
+// below and csg_subtree_world_bounds()'s recursive CSG-aware walk further
+// down -- both need to locate an operator's two operands the same way, and
+// the arithmetic (subtree_start() applied twice) does not depend on which
+// operator it is.
+[[nodiscard]] std::pair<uint32_t, uint32_t> operand_roots(const SdfProgram& program, uint32_t op_node_index) {
+    const uint32_t b_root = op_node_index - 1;
+    const uint32_t b_start = subtree_start(program, b_root);
+    assert(b_start >= 1 && "an operator's first operand must occupy at least one node");
+    const uint32_t a_root = b_start - 1;
+    return {a_root, b_root};
+}
+
 // ---------------------------------------------------------------------------
 // split_program -- see csg_mesh.hpp's file comment for the two populations.
 //
@@ -73,17 +90,11 @@ struct SplitCollector {
         }
 
         if (node.op == static_cast<uint32_t>(SdfOp::union_)) {
-            // Postfix "a b op": b (the shallow operand) is whatever subtree
-            // ends immediately before this node; a (the deep operand) is
-            // whatever ends immediately before b's subtree starts. Visiting
-            // a before b keeps both output vectors in the program's own
-            // left-to-right order (csg_mesh.hpp's ORDER guarantee) --
-            // exactly the order a human authoring `.box(...).sphere(...)
-            // .union_()` wrote them in.
-            const uint32_t b_root = node_index - 1;
-            const uint32_t b_start = subtree_start(program, b_root);
-            assert(b_start >= 1 && "a union's first operand must occupy at least one node");
-            const uint32_t a_root = b_start - 1;
+            // Visiting a before b keeps both output vectors in the
+            // program's own left-to-right order (csg_mesh.hpp's ORDER
+            // guarantee) -- exactly the order a human authoring
+            // `.box(...).sphere(...).union_()` wrote them in.
+            const auto [a_root, b_root] = operand_roots(program, node_index);
             visit(a_root);
             visit(b_root);
             return;
@@ -113,8 +124,11 @@ Result<SubtreeSplit> split_program(const SdfProgram& program) {
 namespace {
 
 // ---------------------------------------------------------------------------
-// csg_subtree_world_bounds -- local-space shape extents per primitive kind,
-// transformed to world space and unioned across the subtree.
+// csg_subtree_world_bounds -- a CSG-AWARE recursive walk (S7a Task R5 fix
+// wave, review IMPORTANT #1) that respects what each OPERATOR does to its
+// operands' extents, not a flat union of every leaf's own shape regardless
+// of what sits above it -- see subtree_extent()'s own doc comment further
+// down for the per-operator rules.
 // ---------------------------------------------------------------------------
 
 // Mirrors render/scene.cpp's own local_to_world_of() exactly (same one-line
@@ -182,39 +196,136 @@ namespace {
     return Aabb{glm::min(a.min, b.min), glm::max(a.max, b.max)};
 }
 
+// Aabb-Aabb intersection (component-wise). If the two boxes do not actually
+// overlap on some axis (not expected of any REAL CSG operand pair -- an
+// author who authors intersect() of two disjoint shapes gets an empty
+// result everywhere -- but not provably impossible of caller-supplied
+// data), the naive min(max)/max(min) would invert that axis's extent;
+// collapsing it to a single point instead keeps the returned Aabb always
+// well-formed (min <= max on every axis) rather than propagating a negative
+// extent into the grid-sizing arithmetic downstream.
+[[nodiscard]] Aabb intersect_aabb(const Aabb& a, const Aabb& b) {
+    Aabb result{glm::max(a.min, b.min), glm::min(a.max, b.max)};
+    for (int axis = 0; axis < 3; ++axis) {
+        if (result.min[axis] > result.max[axis]) {
+            const float mid = 0.5f * (result.min[axis] + result.max[axis]);
+            result.min[axis] = result.max[axis] = mid;
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// subtree_extent -- the CSG-AWARE recursive walk that replaced a flat
+// "union of every leaf's own extent" (S7a Task R5 fix wave, review
+// IMPORTANT #1). `nullopt` means UNBOUNDED: the subtree
+// rooted at `node_index` provably has no finite extent (a plane/heightfield
+// leaf, or any combination that stays infinite through it) -- the
+// union/intersect cases below need that as a real value, not just "missing
+// data", because union() and intersect() treat "one operand is unbounded"
+// completely differently:
+//
+//   union         -- unbounded if EITHER operand is (a genuinely infinite
+//                     piece makes the whole union infinite); otherwise the
+//                     union of both operands' extents.
+//   intersect     -- an unbounded operand is NEUTRAL: "a b intersect"'s
+//                     result is a subset of BOTH a and b (sdf.cpp's
+//                     combine_distance: max(a,b), solid only where both
+//                     are), so intersecting with "everywhere" cannot make
+//                     the OTHER operand's own bound any looser. Only
+//                     unbounded when BOTH operands are.
+//   subtract      -- "a minus b" is a subset of `a` ALONE (sdf.cpp: max(a,
+//                     -b)) -- `b`'s extent, bounded or not, never enters the
+//                     result's own bound.
+//   smooth_union  -- the union of both operands' extents, DILATED by k/4:
+//                     sdf.cpp's own bound on the blend (min(a,b) - k/4 <= d
+//                     <= min(a,b)) means the solid can extend up to k/4
+//                     beyond where the naive union's own boundary would put
+//                     it. Unbounded under the same rule as plain union.
+//
+// This is what lets an intersect() clipped to a small box (maximal.world.
+// yaml's own node 4: (plane u sphere) n box) get the BOX's own tight bound
+// instead of either the union's unbounded result or a world-sized fallback
+// -- the fallback is only ever reached (csg_subtree_world_bounds(), below)
+// when the WHOLE subtree's own extent is still unbounded after every
+// operator in it has had its say.
+[[nodiscard]] Result<std::optional<Aabb>> subtree_extent(const SdfProgram& program, uint32_t node_index) {
+    const SdfNode& node = program.nodes[node_index];
+
+    if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+        if (node.transform >= program.transforms.size()) {
+            return std::unexpected(
+                Error{Code::invalid_argument, "csg_subtree_world_bounds: SDF transform index out of range"});
+        }
+        const std::optional<Aabb> local = primitive_local_aabb(static_cast<SdfPrim>(node.kind), node.params);
+        if (!local.has_value()) {
+            return std::optional<Aabb>(std::nullopt);  // plane/heightfield: unbounded.
+        }
+        const glm::mat4 local_to_world = local_to_world_of(program.transforms[node.transform]);
+        return std::optional<Aabb>(transform_aabb(*local, local_to_world));
+    }
+
+    const auto [a_root, b_root] = operand_roots(program, node_index);
+    const Result<std::optional<Aabb>> a_extent = subtree_extent(program, a_root);
+    if (!a_extent) {
+        return a_extent;
+    }
+    const Result<std::optional<Aabb>> b_extent = subtree_extent(program, b_root);
+    if (!b_extent) {
+        return b_extent;
+    }
+    const std::optional<Aabb>& a = *a_extent;
+    const std::optional<Aabb>& b = *b_extent;
+
+    switch (static_cast<SdfOp>(node.op)) {
+        case SdfOp::union_:
+            if (!a.has_value() || !b.has_value()) {
+                return std::optional<Aabb>(std::nullopt);
+            }
+            return std::optional<Aabb>(union_aabb(*a, *b));
+        case SdfOp::intersect:
+            if (!a.has_value()) {
+                return b_extent;  // b alone, bounded or not (a was neutral).
+            }
+            if (!b.has_value()) {
+                return a_extent;  // a alone, bounded or not (b was neutral).
+            }
+            return std::optional<Aabb>(intersect_aabb(*a, *b));
+        case SdfOp::subtract:
+            return a_extent;  // "a minus b": b's extent never enters the bound.
+        case SdfOp::smooth_union: {
+            if (!a.has_value() || !b.has_value()) {
+                return std::optional<Aabb>(std::nullopt);
+            }
+            const float k = node.params.x;
+            const float dilation = k > 0.0f ? k * 0.25f : 0.0f;
+            const Aabb u = union_aabb(*a, *b);
+            return std::optional<Aabb>(Aabb{u.min - glm::vec3(dilation), u.max + glm::vec3(dilation)});
+        }
+        case SdfOp::none:
+            break;  // unreachable -- handled above.
+    }
+    return std::optional<Aabb>(std::nullopt);  // unreachable for a validated op.
+}
+
 }  // namespace
 
 Result<Aabb> csg_subtree_world_bounds(const SdfProgram& program, uint32_t root_node, const Aabb& fallback_bounds) {
     if (root_node >= program.nodes.size()) {
         return std::unexpected(Error{Code::invalid_argument, "csg_subtree_world_bounds: root_node out of range"});
     }
-
-    const uint32_t start = subtree_start(program, root_node);
-    bool any = false;
-    Aabb bounds{};
-    for (uint32_t i = start; i <= root_node; ++i) {
-        const SdfNode& node = program.nodes[i];
-        if (node.op != static_cast<uint32_t>(SdfOp::none)) {
-            continue;  // operator node: contributes no shape of its own.
-        }
-        if (node.transform >= program.transforms.size()) {
-            return std::unexpected(
-                Error{Code::invalid_argument, "csg_subtree_world_bounds: SDF transform index out of range"});
-        }
-        const glm::mat4 local_to_world = local_to_world_of(program.transforms[node.transform]);
-        const std::optional<Aabb> local = primitive_local_aabb(static_cast<SdfPrim>(node.kind), node.params);
-        const Aabb contribution = local.has_value() ? transform_aabb(*local, local_to_world) : fallback_bounds;
-        bounds = any ? union_aabb(bounds, contribution) : contribution;
-        any = true;
+    const Result<std::optional<Aabb>> extent = subtree_extent(program, root_node);
+    if (!extent) {
+        return std::unexpected(extent.error());
     }
-    if (!any) {
-        // Unreachable for a genuine CSG root (subtract/intersect/
-        // smooth_union always has two operands, so at least one primitive
-        // leaf sits under it) -- see csg_mesh.hpp's own doc comment.
-        return std::unexpected(
-            Error{Code::invalid_argument, "csg_subtree_world_bounds: subtree has no primitive leaves"});
-    }
-    return bounds;
+    // Only reached when the SUBTREE'S OWN extent is still unbounded after
+    // every operator inside it has had its say (subtree_extent()'s own file
+    // comment) -- e.g. a subtract whose minuend is itself a plane. Not the
+    // fallback's ONLY job before this fix wave: previously every plane/
+    // heightfield leaf routed here regardless of what operator sat above
+    // it, which is what starved intersect()'s and subtract()'s OTHER,
+    // genuinely-bounded operand of grid resolution (review IMPORTANT #1).
+    return extent->has_value() ? **extent : fallback_bounds;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,17 +400,37 @@ void emit_quad(MeshBuilder& out, uint32_t v00, uint32_t v10, uint32_t v11, uint3
 // unspecified one).
 [[nodiscard]] bool inside(float v) noexcept { return v < 0.0f; }
 
-// AXIS HANDEDNESS CONSTANTS -- empirically fixed, not derived by eye. Which
-// cyclic vertex order (see the three edge-scan loops in mesh_csg_subtree())
-// faces outward when the field goes from inside to outside along that
-// axis's positive direction is a fact about how each loop's (v00, v10, v11,
-// v01) naming maps to a right-handed frame; getting it wrong is exactly the
-// class of defect tessellate.cpp's file comment documents (four of seven
-// primitives wound backward, invisible to every check except the winding
-// test itself). These three were determined by running
-// CsgMesh.TriangleWindingIsConsistentlyOutward (test_render_csg.cpp) against
-// a real subtract mesh and reading off which axes needed a flip -- not by
-// hand-deriving cube-edge chirality on paper.
+// AXIS HANDEDNESS CONSTANTS -- derived below, then independently confirmed
+// empirically (S7a Task R5 fix wave, review): iterating a placeholder guess
+// against CsgMesh.TriangleWindingIsConsistentlyOutward and reading off which
+// axes needed a flip landed on exactly the values the derivation predicts,
+// which is what makes it a derivation rather than three numbers that merely
+// pass one test.
+//
+// Every edge-scan loop's UNFLIPPED order (v00, v10, v11, v01) walks the two
+// non-scan axes in the cyclic order (lo,lo) -> (hi,lo) -> (hi,hi) -> (lo,hi)
+// -- e.g. the X-scan (mesh_csg_subtree()'s first loop) walks (j,k), i.e.
+// (Y,Z). The unflipped triangle (v00,v10,v11)'s own face normal is
+// cross(v10-v00, v11-v00): for the X-scan that is cross(+Y, +Y+Z) = +X
+// (cross(Y,Z) = +X in this right-handed frame); by the identical
+// construction the Y-scan walks (X,Z) and gives cross(+X,+X+Z) = cross(X,Z)
+// = -Y; the Z-scan walks (X,Y) and gives cross(+X,+X+Y) = cross(X,Y) = +Z.
+//
+// `va` (mesh_csg_subtree()'s own name for the field value at the LOWER
+// corner along the scan axis) tells which way is actually outward: if `va`
+// is INSIDE (solid sits at the lower coordinate), the solid-to-empty
+// direction -- hence the wanted outward normal -- is the scan axis's OWN
+// POSITIVE direction. So the unflipped order is already correct (no flip
+// needed) exactly when its own default normal already points in that
+// scan axis's positive direction:
+//   X-scan: unflipped default is +X (positive)     -> no flip when va INSIDE
+//                                                      -> flip = !inside(va) -> kFlipX = true
+//   Y-scan: unflipped default is -Y (NEGATIVE)      -> flip WHEN va INSIDE
+//                                                      -> flip =  inside(va) -> kFlipY = false
+//   Z-scan: unflipped default is +Z (positive)      -> no flip when va INSIDE
+//                                                      -> flip = !inside(va) -> kFlipZ = true
+// (`flip = inside(va) != kFlipX` reduces to `!inside(va)` when kFlipX=true,
+// and to `inside(va)` when kFlipY=false -- exactly the two rules above.)
 constexpr bool kFlipX = true;
 constexpr bool kFlipY = false;
 constexpr bool kFlipZ = true;
@@ -347,7 +478,31 @@ Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node,
 
     const uint32_t cells = limits.cells_per_axis;
     const uint32_t verts_per_axis = cells + 1;
-    const glm::vec3 margin(limits.aabb_margin);
+
+    // The padding margin is `limits.aabb_margin`, EXCEPT when `root_node`
+    // is itself a smooth_union: sdf.cpp's own bound on the blend (min(a,b)
+    // - k/4 <= d <= min(a,b)) means the true surface can sit up to k/4
+    // beyond wherever `subtree_bounds` puts it, and a FIXED aabb_margin is
+    // not a bound against an arbitrary k (review IMPORTANT #2 -- this
+    // task's own committed smooth_union golden uses k=0.25, k/4=0.0625,
+    // already past the 0.05 default). This is deliberately independent of
+    // csg_subtree_world_bounds()'s OWN k/4 dilation for a smooth_union
+    // ANYWHERE in the subtree (subtree_extent(), above): that dilation
+    // tightens the STARTING bound for resolution's sake and only ever
+    // widens `subtree_bounds` for a caller who actually uses it; this check
+    // is `mesh_csg_subtree()`'s own defence against a caller who does not
+    // (a hand-picked bound, a future call site), so the root's own blend
+    // radius is never silently clipped no matter how `subtree_bounds` was
+    // produced.
+    float aabb_margin = limits.aabb_margin;
+    const SdfNode& root = program.nodes[root_node];
+    if (root.op == static_cast<uint32_t>(SdfOp::smooth_union)) {
+        const float k = root.params.x;
+        if (k > 0.0f) {
+            aabb_margin = std::max(aabb_margin, k * 0.25f);
+        }
+    }
+    const glm::vec3 margin(aabb_margin);
     const glm::vec3 lo = subtree_bounds.min - margin;
     const glm::vec3 hi = subtree_bounds.max + margin;
     const glm::vec3 extent = hi - lo;

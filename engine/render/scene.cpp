@@ -223,7 +223,21 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             scene.meshes.push_back(std::move(*mesh));
             scene.statics.push_back(DrawItem{
                 .mesh_index = mesh_index,
-                .local_to_world = local_to_world_for(world.sdf.nodes[root_node]),
+                // Identity, WRITTEN explicitly rather than read back via
+                // local_to_world_for(world.sdf.nodes[root_node]) (review
+                // IMPORTANT #5): mesh_csg_subtree() always emits WORLD-space
+                // geometry (csg_mesh.hpp's own doc comment), so this item's
+                // transform MUST be the identity regardless of what
+                // transforms[0] happens to hold. Reading it back through
+                // node.transform (always 0 on an operator node) only works
+                // by leaning on "transforms[0] is the identity" being TRUE
+                // -- a convention sdf.hpp documents but SdfProgram::
+                // validate() never enforces, so a hand-built or
+                // hand-edited-file program with a non-identity slot 0 would
+                // silently double-transform every CSG mesh while every
+                // primitive item stayed correct. Writing the identity here
+                // has no such dependency.
+                .local_to_world = glm::mat4(1.0f),
                 .material_override = kNoMaterial,
             });
         }
