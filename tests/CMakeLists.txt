@@ -18,6 +18,7 @@ add_executable(spade_tests
     test_determinism.cpp
     test_m1b_bar.cpp
     test_render_target.cpp
+    test_render_scene.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp

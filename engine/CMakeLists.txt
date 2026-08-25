@@ -331,14 +331,16 @@ install(TARGETS spade_state
 install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
-# spade_render (S7a Task 0): the Spade Rendering & Scene Representation
-# program's module skeleton -- the render target/camera contract
+# spade_render (S7a Task 0 + Task R1): the Spade Rendering & Scene
+# Representation program's module -- the render target/camera contract
 # (render/target.hpp: RenderTarget, Camera, DrawMode, RenderOptions, Aabb, the
-# kNoMaterial/kNoMesh sentinels, and validate_target()) plus scene.hpp's
-# forward declaration of RenderScene, whose definition and scene_from_world()
-# land in Task R1. STATIC because target.cpp compiles validate_target();
-# scene.hpp stays a bare forward declaration with no TU of its own until Task
-# R1 gives it one.
+# kNoMaterial/kNoMesh sentinels, and validate_target()) plus, since Task R1,
+# render/scene.hpp+.cpp: RenderScene and scene_from_world()/update_dynamics(),
+# the WorldDesc -> renderer-view bridge. STATIC because both TUs compile real
+# code -- target.cpp's validate_target(), and scene.cpp's
+# scene_from_world()/update_dynamics() plus the two world-bounds/ground-plane
+# heuristics ported from dronesim/spade/raster.cpp (kept file-local, not part
+# of this target's public surface).
 #
 # Modeled on spade_world above, verbatim in structure -- STATIC lib,
 # spade::render ALIAS, EXPORT_NAME, cxx_std_23 compile feature, PUBLIC engine
@@ -352,21 +354,25 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 # the same precedent spade_state's own comment above sets for not re-adding
 # glm here directly.
 #
-# PUBLIC spade::world + spade::state: Task R1's scene_from_world() builds a
-# RenderScene FROM a spade::WorldDesc (world/builder.hpp) and, transitively
-# through spade::world, spade::state -- named on this module now so its CMake
-# target does not need revisiting when that function lands.
+# PUBLIC spade::world + spade::state: Task R1's scene_from_world() takes a
+# `const spade::WorldDesc&` (world/builder.hpp) and stores a
+# `const spade::SdfProgram*` (world/sdf.hpp) in its own public RenderScene
+# result -- both in scene.hpp's own public signature -- and, transitively
+# through spade::world, spade::state comes along the same way spade_world's
+# own PUBLIC spade::state link does above.
 #
 # $<BUILD_LOCAL_INTERFACE:...> on warnings/fp_strict -- same reasoning as
 # every other target in this file (spade_core's own comment above): an
 # installed STATIC library must not leak flags-only INTERFACE targets into
-# its export set. spade_fp_strict specifically: this task's validate_target()
-# evaluates no pinned-order fp32 expression, but scene/tessellate/csg_mesh
-# TUs a later S7a task adds to this SAME target will, so the flag is wired
-# from the target's first TU rather than revisited per file.
+# its export set. spade_fp_strict specifically: scene.cpp's world-bounds
+# helper evaluates no pinned-order fp32 expression feeding the determinism
+# digest either (presentation-only, PA-4/PA-5), but tessellate/csg_mesh TUs a
+# later S7a task adds to this SAME target will, so the flag stays wired from
+# the target's first TU rather than revisited per file.
 # ------------------------------------------------------------------------------
 add_library(spade_render STATIC
     render/target.cpp
+    render/scene.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)
