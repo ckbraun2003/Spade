@@ -382,19 +382,42 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
     if (mesh.indices.empty()) {
         return;  // an allocated-but-not-yet-tessellated placeholder (SR-9), or a genuinely empty mesh.
     }
+    if (scene.materials.empty()) {
+        return;  // no material to shade with at all -- nothing safe to fall back to (review finding).
+    }
 
+    // Review finding: scene.hpp's own MESH INDEX SPACE note says resolving a
+    // world visual reference to real geometry (a MeshData's positions/
+    // indices/submesh_* arrays) is the CALLER's job -- e.g. Task R4's glTF
+    // loader, reading a file this module never validated. SR-11 declares
+    // submesh_first_index/submesh_index_count/submesh_material parallel and
+    // partitioning, but nothing upstream of this function enforces it, so
+    // this loop trusts none of it: `submesh_count` is the SHORTEST of the
+    // three arrays (never first_index.size() alone, which could outrun the
+    // other two), every submesh's [first, first+count) range is checked
+    // against indices.size() before use, and every triangle's three indices
+    // are checked against positions.size() before being dereferenced. A
+    // malformed or truncated file degrades to "some triangles/submeshes
+    // silently skipped" -- never an out-of-bounds read.
     const bool has_submeshes = !mesh.submesh_first_index.empty();
-    const size_t submesh_count = has_submeshes ? mesh.submesh_first_index.size() : size_t{1};
+    const size_t submesh_count =
+        has_submeshes ? std::min({mesh.submesh_first_index.size(), mesh.submesh_index_count.size(),
+                                   mesh.submesh_material.size()})
+                      : size_t{1};
 
     for (size_t s = 0; s < submesh_count; ++s) {
         const uint32_t first = has_submeshes ? mesh.submesh_first_index[s] : 0u;
         const uint32_t count = has_submeshes ? mesh.submesh_index_count[s] : static_cast<uint32_t>(mesh.indices.size());
+        if (first > mesh.indices.size() || count > mesh.indices.size() - first) {
+            continue;  // this submesh's range runs past the index buffer -- skip it, not the whole mesh.
+        }
         const uint32_t submesh_material_index = has_submeshes ? mesh.submesh_material[s] : 0u;
         const uint32_t material_index =
             item.material_override != kNoMaterial ? item.material_override : submesh_material_index;
-        // Defensive fallback to the default material -- scene.hpp's own
-        // contract says index 0 is always valid, matching scene.cpp's
-        // identical defensive posture for an out-of-range transform index.
+        // Fallback to the default material (index 0) only now that
+        // scene.materials is known non-empty (checked above) -- an untrusted
+        // index must never fall back onto an equally untrusted one (review
+        // finding).
         const Material& material =
             material_index < scene.materials.size() ? scene.materials[material_index] : scene.materials[0];
 
@@ -406,6 +429,9 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
             const uint32_t ia = mesh.indices[first + t];
             const uint32_t ib = mesh.indices[first + t + 1];
             const uint32_t ic = mesh.indices[first + t + 2];
+            if (ia >= mesh.positions.size() || ib >= mesh.positions.size() || ic >= mesh.positions.size()) {
+                continue;  // an index points past the vertex buffer -- skip this triangle, not the mesh.
+            }
 
             const glm::vec3 wa(item.local_to_world * glm::vec4(mesh.positions[ia], 1.0f));
             const glm::vec3 wb(item.local_to_world * glm::vec4(mesh.positions[ib], 1.0f));

@@ -12,7 +12,6 @@
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
-#include <glm/gtc/constants.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -214,10 +213,19 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
 // down world -Y. Numerically identical to the wireframe rasterizer's own
 // default CameraPose orientation (dronesim/spade/raster.h): (cos(-45deg),
 // sin(-45deg), 0, 0) = (0.70710678, -0.70710678, 0, 0).
+//
+// Spelled as literal float32 components (review finding, Task R3 fix round):
+// this camera feeds RasterGolden.CylinderStaticAndDynamicBoxTopDownMatches-
+// CommittedManifest's committed sha256, and glm::angleAxis computes sin/cos
+// through libm -- exactly the cross-platform-ulp hazard render/raster_cpu.cpp
+// (its tan32 comment) and render/tessellate.cpp already document, now closed
+// on the test side too. 0x1.6a09e6p-1f is the nearest float32 to cos(45deg) =
+// sin(45deg) = sqrt(2)/2, the same fp32_math.hpp "hex float literal for an
+// irrational constant" discipline this engine already follows.
 [[nodiscard]] Camera camera_top_down(glm::vec3 position) {
     Camera camera;
     camera.position = position;
-    camera.orientation = glm::angleAxis(-glm::half_pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
+    camera.orientation = glm::quat(0x1.6a09e6p-1f, -0x1.6a09e6p-1f, 0.0f, 0.0f);
     return camera;
 }
 
@@ -247,6 +255,23 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
         }
     }
     return false;
+}
+
+// Stronger than region_contains_bgr: EVERY pixel in the region must match --
+// needed where "never drew anything at all" (not merely "never drew some
+// OTHER specific colour") is the claim, e.g. a malformed submesh that must
+// be skipped entirely rather than merely mis-coloured.
+[[nodiscard]] bool region_is_entirely_bgr(const std::vector<uint8_t>& storage, uint32_t width, uint32_t x0,
+                                           uint32_t x1, uint32_t y0, uint32_t y1, std::array<uint8_t, 3> bgr) {
+    for (uint32_t y = y0; y < y1; ++y) {
+        for (uint32_t x = x0; x < x1; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * width + x) * 4;
+            if (storage[idx] != bgr[0] || storage[idx + 1] != bgr[1] || storage[idx + 2] != bgr[2]) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 [[nodiscard]] size_t count_non_matching_bgr(const std::vector<uint8_t>& storage, std::array<uint8_t, 3> bgr) {
@@ -587,6 +612,118 @@ TEST(RasterCpu, DrawItemMaterialOverrideReplacesEverySubmeshsMaterial) {
     EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth, 0, kSmallHeight, expected_bgr(blue)));
 }
 
+// ---------------------------------------------------------------------------
+// Review fix round (2 Important findings): draw_mesh_item must never trust
+// unvalidated MeshData -- scene.hpp's own MESH INDEX SPACE note says
+// resolving a world visual reference to real geometry (e.g. Task R4's glTF
+// loader) is the CALLER's job, so a malformed or truncated file's data
+// reaches this function without this module ever having checked it. Each
+// case below corrupts exactly one thing a real loader could get wrong and
+// asserts render() neither crashes (a debug build's _CrtIsValidHeapPointer /
+// vector::at-style abort, or plain UB in release) nor draws garbage -- the
+// well-formed part of the mesh still renders, only the malformed part is
+// silently skipped.
+// ---------------------------------------------------------------------------
+
+TEST(RasterCpu, MismatchedSubmeshArrayLengthsDoNotCrashAndDrawOnlyTheShortestPrefix) {
+    MeshData mesh = make_two_triangle_mesh();
+    // submesh_first_index (3 entries) outruns submesh_index_count/material (1
+    // and 2 entries) -- SR-11 says these three arrays are parallel, but
+    // nothing upstream enforces it for file-derived data.
+    mesh.submesh_first_index = {0, 3, 999};
+    mesh.submesh_index_count = {3};
+    mesh.submesh_material = {0, 1};
+
+    RenderScene scene = make_scene(std::move(mesh));
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    scene.materials = {red};
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions options;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);  // must not crash / read out of bounds
+
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
+        << "the one fully-specified submesh (index 0, the shortest array's length) should still draw";
+    // The right triangle's submesh (index 1) is beyond the shortest array's
+    // length -- submesh_count clamps to 1, so it must never be drawn at all,
+    // in any colour.
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_TRUE(region_is_entirely_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight, bg))
+        << "the right triangle's out-of-range submesh entry must never be drawn -- that half stays background";
+}
+
+TEST(RasterCpu, SubmeshRangeExceedingTheIndexBufferIsSkippedNotTheWholeMesh) {
+    MeshData mesh = make_two_triangle_mesh();  // 6 indices total
+    mesh.submesh_first_index = {0, 3};
+    mesh.submesh_index_count = {3, 999};  // second submesh's range runs past indices.size()
+    mesh.submesh_material = {0, 1};
+
+    RenderScene scene = make_scene(std::move(mesh));
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)};
+    scene.materials = {red, blue};
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions options;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);  // must not read past mesh.indices
+
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
+        << "the well-formed left submesh should still draw";
+    EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
+                                      expected_bgr(blue)))
+        << "the out-of-range right submesh must be skipped, not read out of bounds";
+}
+
+TEST(RasterCpu, IndexExceedingTheVertexBufferSkipsOnlyThatTriangle) {
+    MeshData mesh = make_two_triangle_mesh();  // indices = {0,1,2, 3,4,5}; positions.size() == 6
+    mesh.indices[3] = 9999;  // the right triangle's first index now points past positions.size()
+
+    RenderScene scene = make_scene(std::move(mesh));
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    scene.materials = {red};  // single implicit submesh (SR-11) -- both triangles would otherwise be red
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions options;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);  // must not dereference positions[9999]
+
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
+        << "the left triangle's indices are untouched and should still draw";
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
+                                      expected_bgr(red)))
+        << "the right triangle has an out-of-range index and must be skipped, not drawn";
+    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u) << "the left triangle should still be visible somewhere";
+}
+
+TEST(RasterCpu, EmptyMaterialsListSkipsDrawingRatherThanReadingMaterialsZero) {
+    RenderScene scene;  // scene.materials left default-empty, deliberately
+    scene.meshes.push_back(make_box_mesh(1.0f));
+    scene.statics.push_back(
+        DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f), .material_override = kNoMaterial});
+    scene.bounds = Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    ASSERT_TRUE(scene.materials.empty());
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions options;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);  // must not index scene.materials[0] on an empty vector
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+        << "with no material at all to shade with, the item must be skipped, not drawn with an untrusted fallback";
+}
+
 // ===========================================================================
 // 5. RenderOptions::overlays (PA-4) -- ground grid, world bounds, spawn
 //    marker, body marker. Each is checked present with overlays on and
@@ -797,14 +934,23 @@ const Aabb kGoldenTessellationBounds{.min = glm::vec3(-5.0f), .max = glm::vec3(5
     };
     scene.statics.push_back(
         DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f), .material_override = kNoMaterial});
-    const glm::quat box_spin = glm::angleAxis(glm::pi<float>() / 6.0f, glm::vec3(0.0f, 1.0f, 0.0f));  // 30 deg
+    // 30 deg about Y, spelled as literal float32 half-angle (15 deg)
+    // components rather than glm::angleAxis (review finding -- see
+    // camera_top_down's identical comment above: this quaternion feeds a
+    // committed golden hash, and angleAxis's sin/cos go through libm).
+    // 0x1.ee8dd4p-1f/0x1.0907dcp-2f are the nearest float32 values to
+    // cos(15deg)/sin(15deg).
+    const glm::quat box_spin(0x1.ee8dd4p-1f, 0.0f, 0x1.0907dcp-2f, 0.0f);
     scene.dynamics.push_back(DrawItem{
         .mesh_index = 1, .local_to_world = pose_at(glm::vec3(1.5f, 0.3f, 0.5f), box_spin), .material_override = 1});
     scene.has_ground = true;
     scene.ground_y = 0.0f;
     scene.bounds = Aabb{.min = glm::vec3(-2.0f, -0.5f, -2.0f), .max = glm::vec3(2.0f, 2.0f, 2.0f)};
     scene.spawn_positions = {glm::vec3(-1.2f, 0.0f, -1.2f)};
-    scene.spawn_orientations = {glm::angleAxis(glm::quarter_pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f))};  // 45 deg
+    // 45 deg about Y, half-angle 22.5 deg -- same literal-quaternion fix as
+    // box_spin above; 0x1.d906bcp-1f/0x1.87de2ap-2f are the nearest float32
+    // values to cos(22.5deg)/sin(22.5deg).
+    scene.spawn_orientations = {glm::quat(0x1.d906bcp-1f, 0.0f, 0x1.87de2ap-2f, 0.0f)};
     return scene;
 }
 
