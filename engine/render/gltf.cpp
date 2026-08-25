@@ -315,20 +315,22 @@ class BufferCache {
     return buffer_bytes->subspan(absolute_offset, needed);
 }
 
-// Reads a VEC3/FLOAT accessor's bytes into positions, rejecting any
-// non-finite component -- "positions finite" is part of this loader's own
-// contract with a valid MeshData, not just a happy-path property of well-
-// formed files.
+// Reads a VEC3/FLOAT accessor's bytes (POSITION or, when present, NORMAL)
+// into a vec3 array, rejecting any non-finite component -- "positions
+// finite" is part of this loader's own contract with a valid MeshData, not
+// just a happy-path property of well-formed files, and the same holds for a
+// file's own NORMAL data once this loader has decided to trust it.
 [[nodiscard]] Result<std::vector<glm::vec3>> read_vec3_float_accessor(const AccessorHeader& header,
-                                                                       std::span<const uint8_t> bytes) {
+                                                                       std::span<const uint8_t> bytes,
+                                                                       std::string_view attribute_name) {
     std::vector<glm::vec3> out(header.count);
     for (std::size_t i = 0; i < header.count; ++i) {
         float components[3];
         std::memcpy(components, bytes.data() + i * 3 * sizeof(float), 3 * sizeof(float));
         out[i] = glm::vec3(components[0], components[1], components[2]);
         if (!std::isfinite(out[i].x) || !std::isfinite(out[i].y) || !std::isfinite(out[i].z)) {
-            return std::unexpected(
-                invalid("gltf: POSITION accessor contains a non-finite value at vertex " + std::to_string(i)));
+            return std::unexpected(invalid("gltf: " + std::string(attribute_name) +
+                                            " accessor contains a non-finite value at vertex " + std::to_string(i)));
         }
     }
     return out;
@@ -450,7 +452,8 @@ class BufferCache {
         if (!position_bytes) {
             return std::unexpected(position_bytes.error());
         }
-        Result<std::vector<glm::vec3>> positions = read_vec3_float_accessor(*position_header, *position_bytes);
+        Result<std::vector<glm::vec3>> positions =
+            read_vec3_float_accessor(*position_header, *position_bytes, "POSITION");
         if (!positions) {
             return std::unexpected(positions.error());
         }
@@ -506,37 +509,91 @@ class BufferCache {
             material_index = prim["material"].get<std::size_t>();
         }
 
-        // Flat (per-face) normals -- ALWAYS generated, never read from a
-        // NORMAL attribute (gltf.hpp's own scope note): every triangle gets
-        // three brand-new, unshared vertices so MeshData::normals's own
-        // contract ("flat meshes duplicate vertices", scene.hpp) holds
-        // exactly. Positions/indices are validated in full above BEFORE any
-        // of this primitive's data is appended to mesh_data, so a failure
-        // partway through a later primitive never leaves an earlier one's
-        // contribution as the only partial state -- the whole function
+        // NORMAL, READ WHEN PRESENT (fix round, review "Important" finding):
+        // task-R4-brief.md states flat generation as a CONDITION ("when
+        // absent" / "when the file has none"), not an unconditional rule --
+        // see gltf.hpp's own corrected header comment. A present NORMAL is
+        // read through the identical VEC3/FLOAT accessor path already built
+        // for POSITION, and must be PARALLEL to it (same count) -- glTF's own
+        // requirement for per-vertex attributes on one primitive.
+        std::optional<std::vector<glm::vec3>> file_normals;
+        if (prim["attributes"].contains("NORMAL")) {
+            if (!prim["attributes"]["NORMAL"].is_number_unsigned()) {
+                return std::unexpected(invalid("gltf: primitives[" + std::to_string(p) +
+                                                "]'s 'attributes.NORMAL' must be an unsigned integer"));
+            }
+            const std::size_t normal_accessor_index = prim["attributes"]["NORMAL"].get<std::size_t>();
+            Result<AccessorHeader> normal_header = read_accessor_header(accessors, normal_accessor_index, "NORMAL");
+            if (!normal_header) {
+                return std::unexpected(normal_header.error());
+            }
+            if (normal_header->arity != 3 || normal_header->component_type != kFloatComponent) {
+                return std::unexpected(invalid(
+                    "gltf: NORMAL accessor has an unsupported component type or type (must be VEC3 of FLOAT)"));
+            }
+            if (normal_header->count != positions->size()) {
+                return std::unexpected(invalid(
+                    "gltf: primitives[" + std::to_string(p) + "]'s NORMAL accessor count " +
+                    std::to_string(normal_header->count) + " does not match POSITION's vertex count " +
+                    std::to_string(positions->size())));
+            }
+            Result<std::span<const uint8_t>> normal_bytes =
+                accessor_byte_span(*normal_header, buffer_views, buffer_count, buffer_cache, "NORMAL");
+            if (!normal_bytes) {
+                return std::unexpected(normal_bytes.error());
+            }
+            Result<std::vector<glm::vec3>> read_normals =
+                read_vec3_float_accessor(*normal_header, *normal_bytes, "NORMAL");
+            if (!read_normals) {
+                return std::unexpected(read_normals.error());
+            }
+            file_normals = std::move(*read_normals);
+        }
+
+        // Positions/indices (and, above, NORMAL) are validated in full BEFORE
+        // any of this primitive's data is appended to mesh_data, so a
+        // failure partway through a later primitive never leaves an earlier
+        // one's contribution as the only partial state -- the whole function
         // returns an error and mesh_data, wherever it got to, is simply
         // discarded (never returned to the caller).
         const uint32_t submesh_first = static_cast<uint32_t>(mesh_data.indices.size());
-        for (std::size_t t = 0; t + 3 <= raw_indices.size(); t += 3) {
-            const glm::vec3& p0 = (*positions)[raw_indices[t]];
-            const glm::vec3& p1 = (*positions)[raw_indices[t + 1]];
-            const glm::vec3& p2 = (*positions)[raw_indices[t + 2]];
-            const glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
-            if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) {
-                return std::unexpected(invalid("gltf: primitives[" + std::to_string(p) +
-                                                "] has a degenerate (zero-area) triangle at index " +
-                                                std::to_string(t)));
+        if (file_normals.has_value()) {
+            // SHARED-VERTEX PATH (NORMAL present): positions/normals/indices
+            // are appended UNCHANGED from the file's own accessors, only
+            // offset into this MeshData's running vertex/index space -- no
+            // duplication, exactly like the source accessors themselves.
+            const uint32_t vertex_offset = static_cast<uint32_t>(mesh_data.positions.size());
+            mesh_data.positions.insert(mesh_data.positions.end(), positions->begin(), positions->end());
+            mesh_data.normals.insert(mesh_data.normals.end(), file_normals->begin(), file_normals->end());
+            for (uint32_t idx : raw_indices) {
+                mesh_data.indices.push_back(idx + vertex_offset);
             }
-            const uint32_t base = static_cast<uint32_t>(mesh_data.positions.size());
-            mesh_data.positions.push_back(p0);
-            mesh_data.positions.push_back(p1);
-            mesh_data.positions.push_back(p2);
-            mesh_data.normals.push_back(normal);
-            mesh_data.normals.push_back(normal);
-            mesh_data.normals.push_back(normal);
-            mesh_data.indices.push_back(base);
-            mesh_data.indices.push_back(base + 1);
-            mesh_data.indices.push_back(base + 2);
+        } else {
+            // FLAT (PER-FACE) NORMAL PATH (NORMAL absent): every triangle
+            // gets three brand-new, unshared vertices so MeshData::normals's
+            // own contract ("flat meshes duplicate vertices", scene.hpp)
+            // holds exactly.
+            for (std::size_t t = 0; t + 3 <= raw_indices.size(); t += 3) {
+                const glm::vec3& p0 = (*positions)[raw_indices[t]];
+                const glm::vec3& p1 = (*positions)[raw_indices[t + 1]];
+                const glm::vec3& p2 = (*positions)[raw_indices[t + 2]];
+                const glm::vec3 normal = glm::normalize(glm::cross(p1 - p0, p2 - p0));
+                if (!std::isfinite(normal.x) || !std::isfinite(normal.y) || !std::isfinite(normal.z)) {
+                    return std::unexpected(invalid("gltf: primitives[" + std::to_string(p) +
+                                                    "] has a degenerate (zero-area) triangle at index " +
+                                                    std::to_string(t)));
+                }
+                const uint32_t base = static_cast<uint32_t>(mesh_data.positions.size());
+                mesh_data.positions.push_back(p0);
+                mesh_data.positions.push_back(p1);
+                mesh_data.positions.push_back(p2);
+                mesh_data.normals.push_back(normal);
+                mesh_data.normals.push_back(normal);
+                mesh_data.normals.push_back(normal);
+                mesh_data.indices.push_back(base);
+                mesh_data.indices.push_back(base + 1);
+                mesh_data.indices.push_back(base + 2);
+            }
         }
         const uint32_t submesh_count = static_cast<uint32_t>(mesh_data.indices.size()) - submesh_first;
 

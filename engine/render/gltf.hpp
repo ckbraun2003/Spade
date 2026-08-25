@@ -6,13 +6,30 @@
 // NON-empty submesh case -- scene.hpp's own comment on MeshData names this
 // module as the first PRODUCER of it; render/tessellate.cpp only ever emits
 // the empty/implicit case), embedded `data:application/octet-stream;base64,`
-// URIs and relative external .bin files. FLAT (per-face) normals are ALWAYS
-// generated -- tools/gen_meshes.py, which produced every shipped mesh, emits
-// POSITION and indices only, so this is the common path, not a fallback. A
-// NORMAL attribute, if a file happens to carry one, is never read: it is not
-// in this task's produces-list (task-R4-brief.md's interface comment names
-// exactly "POSITION, indices, per-primitive material grouping, embedded ...
-// and external .bin"), so reading it would be an unnamed feature.
+// URIs and relative external .bin files.
+//
+// NORMALS -- READ WHEN PRESENT, GENERATED FLAT ONLY WHEN ABSENT. This is a
+// CONDITION, not an unconditional "always generate": task-R4-brief.md states
+// it as one twice -- "Normals are generated flat WHEN ABSENT" (its interface
+// comment) and, in full, "Generate flat normals WHEN THE FILE HAS NONE --
+// tools/gen_meshes.py emits positions+indices only, so this path is the
+// common one" (its Step 2). (An earlier revision of this header quoted only
+// the clause up to "...embedded ... and external .bin" and stopped short of
+// the sentence stating the condition, which read as "NORMAL is never read"
+// -- corrected here after review; the fix report on this task records it.)
+// A NORMAL attribute, when a primitive carries one, is read through the SAME
+// VEC3/FLOAT accessor path already built for POSITION -- its count must
+// match POSITION's vertex count -- and its vertices are NOT duplicated: this
+// loader appends that primitive's positions/normals/indices UNCHANGED
+// (offset into MeshData's running vertex/index space), exactly like the
+// file's own shared-vertex accessors. Only when NORMAL is ABSENT does this
+// loader fabricate one flat (per-face) normal per triangle, which is what
+// forces the vertex duplication MeshData::normals's own doc comment names
+// ("flat meshes duplicate vertices", scene.hpp) -- tools/gen_meshes.py, which
+// produced every shipped mesh, never emits NORMAL, so today every shipped
+// mesh takes the flat-generation path; a hand-authored or licensed asset
+// carrying real per-vertex normals takes the other one instead of having
+// them silently discarded.
 //
 // OUT OF SCOPE, DELIBERATELY:
 //   - animation, skins, textures, any PBR parameter (this loader never even
@@ -52,15 +69,17 @@
 //   - an accessor/bufferView/buffer index is out of range
 //   - an accessor has a `sparse` override, or its bufferView declares a
 //     `byteStride` (interleaved data) -- neither is supported
-//   - POSITION's accessor is not VEC3/FLOAT, or the indices accessor is not
-//     SCALAR/(UNSIGNED_BYTE|UNSIGNED_SHORT|UNSIGNED_INT) -- "unsupported
-//     component type"
+//   - POSITION's accessor is not VEC3/FLOAT, the indices accessor is not
+//     SCALAR/(UNSIGNED_BYTE|UNSIGNED_SHORT|UNSIGNED_INT), or a present
+//     NORMAL's accessor is not VEC3/FLOAT -- "unsupported component type"
+//   - a present NORMAL accessor's count does not match POSITION's
 //   - an accessor's byte range runs past its bufferView, or a bufferView's
 //     runs past its buffer
 //   - an index references a vertex past the end of POSITION, or an index
 //     accessor's count is not a multiple of 3
-//   - a position component is not finite, or a generated face normal is not
-//     (a degenerate, zero-area triangle)
+//   - a position or (present) NORMAL component is not finite, or a
+//     GENERATED face normal is not (a degenerate, zero-area triangle --
+//     only possible when NORMAL is absent, since only then is one computed)
 //   - a buffer has no string `uri` (an embedded GLB binary chunk)
 //   - a data URI is not `data:application/octet-stream;base64,...`, or its
 //     payload contains an invalid base64 character

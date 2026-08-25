@@ -10,14 +10,20 @@
 //   own JSON directly (not trusting the loader to tell us its own input was
 //   what we think it was).
 //
-//   FLAT NORMALS DUPLICATE VERTICES (task-R4-brief.md's own words: "requires
-//   duplicating vertices per face"), and MeshData::normals's own doc comment
-//   ("flat meshes duplicate vertices") makes this a struct-level invariant,
-//   not a choice this loader made privately: the OUTPUT positions/normals/
-//   indices are all sized to the file's INDEX count (384 = 128 triangles x 3
-//   unique corners each), not its vertex count (256, which only existed
-//   because the source file shared vertices across triangles -- sharing this
-//   loader deliberately discards when it fabricates a normal per face).
+//   FLAT NORMALS ARE GENERATED ONLY WHEN NORMAL IS ABSENT (fix round: this
+//   was previously unconditional -- see PresentNormalAttributeIsUsedVerbatim
+//   below, the test the review demanded). When generated, they duplicate
+//   vertices (task-R4-brief.md's own words: "requires duplicating vertices
+//   per face"), and MeshData::normals's own doc comment ("flat meshes
+//   duplicate vertices") makes this a struct-level invariant, not a choice
+//   this loader made privately: the OUTPUT positions/normals/indices are all
+//   sized to the file's INDEX count (384 = 128 triangles x 3 unique corners
+//   each), not its vertex count (256, which only existed because the source
+//   file shared vertices across triangles -- sharing the flat-generation
+//   path discards when it fabricates a normal per face). When NORMAL IS
+//   PRESENT instead, the opposite holds: no duplication, positions/normals/
+//   indices come through unchanged (only offset into this MeshData's running
+//   vertex/index space).
 //
 //   REJECTION. One test per malformed shape, each asserting the CODE and, for
 //   the ones this loader raises itself, the diagnostic -- "it returned an
@@ -589,4 +595,182 @@ TEST(RenderGltf, PrimitiveWithoutMaterialDefaultsToZero) {
     ASSERT_OK(result);
     ASSERT_EQ(result->submesh_material.size(), 1u);
     EXPECT_EQ(result->submesh_material[0], 0u);
+}
+
+// ===========================================================================
+// NORMAL attribute -- fix round (review "Important" finding). The brief
+// states flat-normal generation as a CONDITION ("when absent" /
+// "when the file has none"), not an unconditional rule; the first
+// implementation read that condition out of gltf.hpp's own header comment
+// after the comment had (wrongly) quoted only up to the clause before the
+// condition. `PresentNormalAttributeIsUsedVerbatim` below is the test the
+// review specifically asked for: a fixture whose NORMAL values are
+// deliberately NOT the flat face normal this triangle would otherwise
+// compute, so the test fails loudly if NORMAL is ever ignored again. The
+// absent case (flat generation, vertices duplicated) is already covered
+// above by every other test in this file that builds a primitive with no
+// NORMAL attribute -- LoadsGateRingFixture and ExternalBinFileLoadsSuccessfully
+// both assert the duplicated-vertex shape explicitly.
+// ===========================================================================
+
+TEST(RenderGltf, PresentNormalAttributeIsUsedVerbatim) {
+    const std::filesystem::path dir = scratch_dir("normal_attribute_present");
+
+    // The same triangle geometry as make_triangle_buffers() --
+    // (0,0,0)-(1,0,0)-(0,1,0) -- whose TRUE flat face normal is (0,0,1)
+    // (cross((1,0,0), (0,1,0))). The NORMAL data below is deliberately
+    // (0,1,0) at every vertex instead: a different, "smooth" direction no
+    // flat-generation code path could ever produce, so a loader that
+    // silently discarded NORMAL and generated flat normals anyway would
+    // fail the normal-value assertions below, not just a vertex-count one.
+    const float positions[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const float normals[9] = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const uint16_t indices[3] = {0, 1, 2};
+
+    std::vector<uint8_t> combined;
+    const auto append = [&combined](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        combined.insert(combined.end(), bytes, bytes + size);
+    };
+    const std::size_t position_offset = combined.size();
+    append(positions, sizeof(positions));
+    const std::size_t normal_offset = combined.size();
+    append(normals, sizeof(normals));
+    const std::size_t index_offset = combined.size();
+    append(indices, sizeof(indices));
+    write_file(dir / "buffer.bin", combined);
+
+    Json doc;
+    doc["asset"] = {{"version", "2.0"}};
+    doc["buffers"] = Json::array({{{"uri", "buffer.bin"}, {"byteLength", combined.size()}}});
+    doc["bufferViews"] = Json::array({
+        {{"buffer", 0}, {"byteOffset", position_offset}, {"byteLength", 36}},
+        {{"buffer", 0}, {"byteOffset", normal_offset}, {"byteLength", 36}},
+        {{"buffer", 0}, {"byteOffset", index_offset}, {"byteLength", 6}},
+    });
+    doc["accessors"] = Json::array({
+        {{"bufferView", 0}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}},
+        {{"bufferView", 1}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}},
+        {{"bufferView", 2}, {"componentType", 5123}, {"count", 3}, {"type", "SCALAR"}},
+    });
+    doc["meshes"] = Json::array({
+        {{"primitives", Json::array({{{"attributes", {{"POSITION", 0}, {"NORMAL", 1}}},
+                                       {"indices", 2},
+                                       {"material", 0},
+                                       {"mode", 4}}})}},
+    });
+
+    const Result<MeshData> result = parse_gltf(doc.dump(), dir);
+    ASSERT_OK(result);
+    const MeshData& mesh = *result;
+
+    // SHARED-VERTEX path (NORMAL present): 3 positions, 3 normals, 3
+    // indices -- NOT duplicated to 3-per-triangle the way the flat-normal
+    // path would.
+    ASSERT_EQ(mesh.positions.size(), 3u);
+    ASSERT_EQ(mesh.normals.size(), 3u);
+    ASSERT_EQ(mesh.indices.size(), 3u);
+    EXPECT_EQ(mesh.indices[0], 0u);
+    EXPECT_EQ(mesh.indices[1], 1u);
+    EXPECT_EQ(mesh.indices[2], 2u);
+
+    // The file's own normals are used VERBATIM -- (0,1,0), never the
+    // computed flat face normal (0,0,1) this triangle would get if NORMAL
+    // had been ignored.
+    for (const glm::vec3& n : mesh.normals) {
+        EXPECT_NEAR(n.x, 0.0f, 1e-6f);
+        EXPECT_NEAR(n.y, 1.0f, 1e-6f);
+        EXPECT_NEAR(n.z, 0.0f, 1e-6f);
+    }
+}
+
+TEST(RenderGltf, NormalAccessorCountMismatchReturnsError) {
+    const std::filesystem::path dir = scratch_dir("normal_count_mismatch");
+
+    // 3 positions but only 2 normals -- glTF requires per-vertex attributes
+    // on one primitive to be parallel (same count).
+    const float positions[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const float normals[6] = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const uint16_t indices[3] = {0, 1, 2};
+
+    std::vector<uint8_t> combined;
+    const auto append = [&combined](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        combined.insert(combined.end(), bytes, bytes + size);
+    };
+    const std::size_t position_offset = combined.size();
+    append(positions, sizeof(positions));
+    const std::size_t normal_offset = combined.size();
+    append(normals, sizeof(normals));
+    const std::size_t index_offset = combined.size();
+    append(indices, sizeof(indices));
+    write_file(dir / "buffer.bin", combined);
+
+    Json doc;
+    doc["asset"] = {{"version", "2.0"}};
+    doc["buffers"] = Json::array({{{"uri", "buffer.bin"}, {"byteLength", combined.size()}}});
+    doc["bufferViews"] = Json::array({
+        {{"buffer", 0}, {"byteOffset", position_offset}, {"byteLength", 36}},
+        {{"buffer", 0}, {"byteOffset", normal_offset}, {"byteLength", 24}},
+        {{"buffer", 0}, {"byteOffset", index_offset}, {"byteLength", 6}},
+    });
+    doc["accessors"] = Json::array({
+        {{"bufferView", 0}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}},
+        {{"bufferView", 1}, {"componentType", 5126}, {"count", 2}, {"type", "VEC3"}},
+        {{"bufferView", 2}, {"componentType", 5123}, {"count", 3}, {"type", "SCALAR"}},
+    });
+    doc["meshes"] = Json::array({
+        {{"primitives", Json::array({{{"attributes", {{"POSITION", 0}, {"NORMAL", 1}}},
+                                       {"indices", 2},
+                                       {"material", 0},
+                                       {"mode", 4}}})}},
+    });
+
+    const Result<MeshData> result = parse_gltf(doc.dump(), dir);
+    EXPECT_EQ(code_of(result), code(Code::invalid_argument));
+    EXPECT_TRUE(contains(why(result), "NORMAL")) << why(result);
+}
+
+TEST(RenderGltf, UnsupportedComponentTypeOnNormalReturnsError) {
+    const std::filesystem::path dir = scratch_dir("normal_bad_component_type");
+    const float positions[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const float normals[9] = {0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const uint16_t indices[3] = {0, 1, 2};
+
+    std::vector<uint8_t> combined;
+    const auto append = [&combined](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        combined.insert(combined.end(), bytes, bytes + size);
+    };
+    const std::size_t position_offset = combined.size();
+    append(positions, sizeof(positions));
+    const std::size_t normal_offset = combined.size();
+    append(normals, sizeof(normals));
+    const std::size_t index_offset = combined.size();
+    append(indices, sizeof(indices));
+    write_file(dir / "buffer.bin", combined);
+
+    Json doc;
+    doc["asset"] = {{"version", "2.0"}};
+    doc["buffers"] = Json::array({{{"uri", "buffer.bin"}, {"byteLength", combined.size()}}});
+    doc["bufferViews"] = Json::array({
+        {{"buffer", 0}, {"byteOffset", position_offset}, {"byteLength", 36}},
+        {{"buffer", 0}, {"byteOffset", normal_offset}, {"byteLength", 36}},
+        {{"buffer", 0}, {"byteOffset", index_offset}, {"byteLength", 6}},
+    });
+    doc["accessors"] = Json::array({
+        {{"bufferView", 0}, {"componentType", 5126}, {"count", 3}, {"type", "VEC3"}},
+        {{"bufferView", 1}, {"componentType", 5121}, {"count", 3}, {"type", "VEC3"}},  // UNSIGNED_BYTE -- invalid for NORMAL
+        {{"bufferView", 2}, {"componentType", 5123}, {"count", 3}, {"type", "SCALAR"}},
+    });
+    doc["meshes"] = Json::array({
+        {{"primitives", Json::array({{{"attributes", {{"POSITION", 0}, {"NORMAL", 1}}},
+                                       {"indices", 2},
+                                       {"material", 0},
+                                       {"mode", 4}}})}},
+    });
+
+    const Result<MeshData> result = parse_gltf(doc.dump(), dir);
+    EXPECT_EQ(code_of(result), code(Code::invalid_argument));
+    EXPECT_TRUE(contains(why(result), "unsupported component type")) << why(result);
 }
