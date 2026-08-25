@@ -143,6 +143,28 @@ set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
 
 # ------------------------------------------------------------------------------
+# nlohmann/json (header-only): render/gltf.cpp's glTF 2.0 parser (S7a Task
+# R4). Same v3.12.0 pin the repo ROOT CMakeLists.txt already uses for its own
+# separate build (runtime/, editor/) -- this is a DIFFERENT CMake project
+# (spade/ configures standalone, spade/CMakePresets.json's own binaryDir),
+# so that pin buys nothing here automatically and has to be declared again;
+# keeping the version identical is deliberate, not load-bearing, so the two
+# trees' JSON behavior never has a reason to drift. No EXCLUDE_FROM_ALL: the
+# upstream CMakeLists.txt produces a single INTERFACE target
+# (nlohmann_json::nlohmann_json) with nothing compiled and no test/tool
+# targets to keep out of the default `all` target, unlike benchmark/yaml-cpp
+# above.
+# ------------------------------------------------------------------------------
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.12.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# ------------------------------------------------------------------------------
 # Vulkan-Headers (S6 Task 1) -- the v2 compute backend's device-layer types
 # (engine/compute/vulkan/context.*). Fetched UNCONDITIONALLY, not gated on
 # SPADE_VULKAN: the fetch itself is cheap (a header-only git checkout, no

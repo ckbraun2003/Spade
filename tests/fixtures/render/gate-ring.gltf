@@ -1,0 +1,104 @@
+{
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 256,
+      "max": [
+        0.8999999761581421,
+        0.8999999761581421,
+        0.05999999865889549
+      ],
+      "min": [
+        -0.8999999761581421,
+        -0.8999999761581421,
+        -0.05999999865889549
+      ],
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5123,
+      "count": 384,
+      "type": "SCALAR"
+    }
+  ],
+  "asset": {
+    "generator": "kat tools/gen_meshes.py (CS7 shipped mesh set)",
+    "version": "2.0"
+  },
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteLength": 3072,
+      "byteOffset": 0,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteLength": 768,
+      "byteOffset": 3072,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 3840,
+      "uri": "data:application/octet-stream;base64,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2+oiP9vqIr+PwnW9otxUPy1XsL6PwnW9otxUPy1XsL6PwnU9tsMHP7bDB7+PwnW9tsMHP7bDB7+PwnU9h2IxP1Dzkr6PwnU9h2IxP1Dzkr6PwnW9tsMHP7bDB7+PwnU92+oiP9vqIr+PwnU9otxUPy1XsL6PwnU9h2IxP1Dzkr6PwnU92+oiP9vqIr+PwnW9tsMHP7bDB7+PwnW9h2IxP1Dzkr6PwnW9otxUPy1XsL6PwnW9otxUPy1XsL6PwnU9otxUPy1XsL6PwnW9ZmZmPwAAAACPwnW9ZmZmPwAAAACPwnU9h2IxP1Dzkr6PwnW9h2IxP1Dzkr6PwnU9AABAPwAAAACPwnU9AABAPwAAAACPwnW9h2IxP1Dzkr6PwnU9otxUPy1XsL6PwnU9ZmZmPwAAAACPwnU9AABAPwAAAACPwnU9otxUPy1XsL6PwnW9h2IxP1Dzkr6PwnW9AABAPwAAAACPwnW9ZmZmPwAAAACPwnW9AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcAGAAZABoAGAAaABsAHAAdAB4AHAAeAB8AIAAhACIAIAAiACMAJAAlACYAJAAmACcAKAApACoAKAAqACsALAAtAC4ALAAuAC8AMAAxADIAMAAyADMANAA1ADYANAA2ADcAOAA5ADoAOAA6ADsAPAA9AD4APAA+AD8AQABBAEIAQABCAEMARABFAEYARABGAEcASABJAEoASABKAEsATABNAE4ATABOAE8AUABRAFIAUABSAFMAVABVAFYAVABWAFcAWABZAFoAWABaAFsAXABdAF4AXABeAF8AYABhAGIAYABiAGMAZABlAGYAZABmAGcAaABpAGoAaABqAGsAbABtAG4AbABuAG8AcABxAHIAcAByAHMAdAB1AHYAdAB2AHcAeAB5AHoAeAB6AHsAfAB9AH4AfAB+AH8AgACBAIIAgACCAIMAhACFAIYAhACGAIcAiACJAIoAiACKAIsAjACNAI4AjACOAI8AkACRAJIAkACSAJMAlACVAJYAlACWAJcAmACZAJoAmACaAJsAnACdAJ4AnACeAJ8AoAChAKIAoACiAKMApAClAKYApACmAKcAqACpAKoAqACqAKsArACtAK4ArACuAK8AsACxALIAsACyALMAtAC1ALYAtAC2ALcAuAC5ALoAuAC6ALsAvAC9AL4AvAC+AL8AwADBAMIAwADCAMMAxADFAMYAxADGAMcAyADJAMoAyADKAMsAzADNAM4AzADOAM8A0ADRANIA0ADSANMA1ADVANYA1ADWANcA2ADZANoA2ADaANsA3ADdAN4A3ADeAN8A4ADhAOIA4ADiAOMA5ADlAOYA5ADmAOcA6ADpAOoA6ADqAOsA7ADtAO4A7ADuAO8A8ADxAPIA8ADyAPMA9AD1APYA9AD2APcA+AD5APoA+AD6APsA/AD9AP4A/AD+AP8A"
+    }
+  ],
+  "extras": {
+    "kat": {
+      "description": "Low-poly racing gate: a single annular prism (hole axis +Z).",
+      "dimension_notes": [
+        "outer_radius=0.9m, inner_radius=0.75m (0.15m ring thickness -- matches content/prefabs/gate.json's torus minor_radius param for visual/physics consistency), depth=0.12m, 16 segments. All assumed placeholder proportions -- no plant/physics descriptor for this asset."
+      ],
+      "generator": "tools/gen_meshes.py",
+      "mesh_id": "track/gate-ring"
+    }
+  },
+  "materials": [
+    {
+      "name": "track/gate-ring/ring",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.8500000238418579,
+          0.3499999940395355,
+          0.05000000074505806,
+          1.0
+        ],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.9
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "track/gate-ring",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0
+          },
+          "indices": 1,
+          "material": 0,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "track/gate-ring"
+    }
+  ],
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ]
+}

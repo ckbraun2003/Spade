@@ -21,6 +21,7 @@ add_executable(spade_tests
     test_render_scene.cpp
     test_render_tessellate.cpp
     test_render_raster.cpp
+    test_render_gltf.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -124,6 +125,16 @@ endif()
 # is world_file.cpp's alone and no yaml-cpp type crosses its API), so nothing
 # propagates the headers here and this target has to name it itself.
 #
+# nlohmann_json (S7a Task R4): test_render_gltf.cpp builds/mutates glTF JSON
+# documents programmatically for its malformed-input cases rather than
+# hand-editing fragile raw string literals, and independently re-parses the
+# committed gate-ring.gltf fixture to pin its accessor counts. render/gltf.cpp
+# also uses nlohmann_json, but PRIVATE to spade_render (it never appears in
+# gltf.hpp's signature), so -- exactly like yaml-cpp above -- nothing
+# propagates it here and this target names it itself. INTERFACE-only
+# (header-only, no compiled archive), unlike yaml-cpp, so there is no
+# yaml-cpp-style final-link-line concern either way.
+#
 # NOT a packaging change: spade_tests is an executable that never leaves the
 # build tree, so there is no export set, no install rule and no consumer to
 # consider. Test support never ships.
@@ -138,6 +149,7 @@ target_link_libraries(spade_tests PRIVATE
     spade_warnings
     spade_fp_strict
     yaml-cpp::yaml-cpp
+    nlohmann_json::nlohmann_json
     GTest::gtest_main
 )
 

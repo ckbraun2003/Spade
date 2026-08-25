@@ -369,12 +369,28 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 # digest either (presentation-only, PA-4/PA-5), but tessellate/csg_mesh TUs a
 # later S7a task adds to this SAME target will, so the flag stays wired from
 # the target's first TU rather than revisited per file.
+#
+# render/gltf.cpp (S7a Task R4) joins this target's sources: the glTF 2.0
+# mesh loader, PRIVATE to spade_render (nlohmann::json never appears in
+# gltf.hpp's signature -- Result<MeshData>/std::filesystem::path/
+# std::string_view only). LINKED VIA $<BUILD_LOCAL_INTERFACE:...>, same as
+# spade_warnings/spade_fp_strict below, and for the identical reason even
+# though nlohmann_json::nlohmann_json is header-only (no compiled object code
+# at all, unlike yaml-cpp): CMake's install(EXPORT spadeTargets ...) rejects
+# ANY plain PRIVATE-linked target that is not itself in an export set,
+# regardless of whether that target compiles anything -- proved empirically
+# ("requires target \"nlohmann_json\" that is not in any export set", this
+# task's own first configure attempt) before reaching for the genex rather
+# than assuming header-only made it exempt. BUILD_LOCAL_INTERFACE scopes the
+# usage requirement to building spade_render's own sources and drops it from
+# the exported interface entirely, exactly like the flags-only targets below.
 # ------------------------------------------------------------------------------
 add_library(spade_render STATIC
     render/target.cpp
     render/scene.cpp
     render/tessellate.cpp
     render/raster_cpu.cpp
+    render/gltf.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)
@@ -390,6 +406,7 @@ target_link_libraries(spade_render PUBLIC spade::core spade::world spade::state)
 target_link_libraries(spade_render PRIVATE
     $<BUILD_LOCAL_INTERFACE:spade_warnings>
     $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+    $<BUILD_LOCAL_INTERFACE:nlohmann_json::nlohmann_json>
 )
 
 install(TARGETS spade_render
