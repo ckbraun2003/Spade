@@ -467,14 +467,112 @@ template <class T>
 // spelling like "sinf(" cannot fire on an unrelated identifier such as
 // "asinf(" -- verified against this tree with a temporary mutation (this
 // task's report carries the transcript).
-[[nodiscard]] bool no_libm_transcendental_in_engine_source(std::string& detail) {
-    const std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
+//
+// SCOPE WIDENED A SECOND TIME (S7a Task R5, controller ruling SR-14): the
+// scan root used to be SPADE_ENGINE_DIR alone, and that left a real gap --
+// this program hit the libm-portability trap a THIRD time when Task R3
+// removed std::tan from the engine correctly, then computed a COMMITTED
+// GOLDEN's camera quaternion with glm::angleAxis in test_render_raster.cpp
+// (a test file, never scanned here), whose sin/cos go through libm exactly
+// as the pattern list above already knows to forbid -- the pattern was
+// already on the list; the ROOT SET just never reached the file that used
+// it. Two conforming libms disagree on such a call by one ulp; the committed
+// hash would move between platforms; and the failure would present as a
+// rasterizer regression, not as what it actually is. The fix that landed at
+// Task R3 (test_render_raster.cpp's camera_top_down()/box_spin literal-
+// float-component quaternions, replacing glm::angleAxis) is a real,
+// already-fixed instance of exactly the class of bug this widened scan now
+// catches for good.
+//
+// MECHANISM: a test source file joins the scan iff its own text (comment-
+// stripped, exactly like the pattern matching itself) contains the
+// identifier SPADE_GOLDEN_DIR -- collect_golden_feeding_test_sources()
+// below. That one macro is ALREADY the established idiom every golden-
+// consuming test in this codebase uses to locate its own committed corpus
+// (tests/CMakeLists.txt's own comment: "the same discipline SPADE_GOLDEN_DIR
+// already uses" -- test_render_raster.cpp's frame manifest,
+// test_render_tessellate.cpp's tessellation manifest, test_world_file.cpp's
+// fixtures, test_determinism.cpp/test_gpu_*.cpp's scenario corpora, and this
+// task's own test_render_csg.cpp all reach their corpus this way), so
+// requiring a genuine reference to it is neither a hand-maintained list (a
+// SECOND list to remember to update is exactly the propagation-discipline
+// failure mode this codebase's own history warns about -- see fp32_math.hpp's
+// "nobody re-checked this one for four tasks") nor a marker comment a future
+// author could forget to add: a NEW golden-feeding test file opts itself in
+// merely by using the idiom it already has to use to find its own manifest.
+// Comment-stripped so a file that only TALKS ABOUT the macro in prose --
+// this very comment block, one section up, is exactly that case -- is not
+// swept in on the strength of a mention alone; verified this scans exactly
+// the intended set below (BitPortability's own report carries the file
+// list).
+// True iff `token` appears in `line` OUTSIDE of a quoted string/char
+// literal. Needed because a plain substring search over comment-stripped
+// text is fooled by exactly the self-referential case this file's own
+// is_v1_include_directive() was hardened against for a different scanner
+// (that function's own comment: "it flagged this file's OWN pattern-list
+// literal") -- collect_golden_feeding_test_sources() below has to name the
+// string "SPADE_GOLDEN_DIR" AS DATA to look for it, and a naive
+// line.find("SPADE_GOLDEN_DIR") would then match that very literal inside
+// THIS file, making test_m1b_bar.cpp "golden-feeding" by its own detection
+// code and sweeping its own forbidden-pattern list (the literal
+// "std::sin(", etc., a few lines above) into the scan. Skipping quoted
+// content is what tells "the token, as code" apart from "the token's own
+// name, as a string" -- not a full lexer (raw strings are not special-cased,
+// same limitation strip_comments() above already documents), but sufficient
+// for the one macro name this check looks for.
+[[nodiscard]] bool line_has_unquoted_token(const std::string& line, std::string_view token) {
+    bool in_string = false, in_char = false;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (in_string || in_char) {
+            if (c == '\\' && i + 1 < line.size()) {
+                ++i;  // skip the escaped character
+            } else if ((in_string && c == '"') || (in_char && c == '\'')) {
+                in_string = false;
+                in_char = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            continue;
+        }
+        if (c == '\'') {
+            in_char = true;
+            continue;
+        }
+        if (line.compare(i, token.size(), token) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+[[nodiscard]] std::vector<fs::path> collect_golden_feeding_test_sources() {
+    std::vector<fs::path> out;
+    for (const fs::path& file : collect_sources(fs::path(SPADE_TESTS_DIR), {})) {
+        for (const std::string& line : read_lines_no_comments(file)) {
+            if (line_has_unquoted_token(line, "SPADE_GOLDEN_DIR")) {
+                out.push_back(file);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] bool no_libm_transcendental_in_engine_or_golden_test_source(std::string& detail) {
+    std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
+    const std::vector<fs::path> golden_tests = collect_golden_feeding_test_sources();
+    files.insert(files.end(), golden_tests.begin(), golden_tests.end());
+    std::sort(files.begin(), files.end());  // collect_sources()'s own deterministic-report-order contract
     // S5 final-review fix wave (I3a): same vacuous-pass hazard as
     // no_wallclock_symbols_in_engine_source() above -- see that function's
     // comment. Equivalent to ASSERT_FALSE(files.empty()).
     if (files.empty()) {
-        detail = "0 source files found under engine/ (tools/ excluded) -- the scan root is empty or "
-                 "missing, which would otherwise vacuously PASS; treating it as a failure instead";
+        detail = "0 source files found under engine/ (tools/ excluded) + golden-feeding test sources -- "
+                 "the scan roots are empty or missing, which would otherwise vacuously PASS; treating it "
+                 "as a failure instead";
         return false;
     }
     const std::vector<std::string> hits =
@@ -493,8 +591,8 @@ template <class T>
                             /*strip_comments_first=*/true, /*require_non_identifier_before=*/true);
     if (hits.empty()) {
         std::ostringstream ok;
-        ok << "0 libm transcendental references in " << files.size()
-           << " source files under engine/ (tools/ excluded, comments excluded)";
+        ok << "0 libm transcendental references in " << files.size() << " source files under engine/ "
+           << "(tools/ excluded, comments excluded) + " << golden_tests.size() << " golden-feeding test file(s)";
         detail = ok.str();
         return true;
     }
@@ -805,10 +903,14 @@ TEST(M1B, HeadlessNoV1IncludeInEngineOrTestSource) {
 
 // S5 T9 ticket C -- not one of the brief's original six bullets (it is the
 // program-wide bit-portability rule, not an M1B charter item), kept in this
-// suite because it reuses bullet 1's exact scanning mechanism and scope.
-TEST(BitPortability, NoLibmTranscendentalInEngineSource) {
+// suite because it reuses bullet 1's exact scanning MECHANISM (collect_
+// sources()/scan_for_forbidden()) -- though, since S7a Task R5's SR-14
+// widening above, no longer bullet 1's exact SCOPE: this one also sweeps
+// every golden-feeding test source, which bullet 1 (engine-source-only,
+// by design) never needs to.
+TEST(BitPortability, NoLibmTranscendentalInEngineOrGoldenTestSource) {
     std::string detail;
-    const bool ok = no_libm_transcendental_in_engine_source(detail);
+    const bool ok = no_libm_transcendental_in_engine_or_golden_test_source(detail);
     EXPECT_TRUE(ok) << detail;
 }
 
