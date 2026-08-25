@@ -18,14 +18,23 @@
 // is rebuilt from scratch from `bodies` on every call, so the result never
 // depends on anything the scene held before the call.
 //
-// SR-9 (controller ruling, task-R1-brief.md): scene_from_world() emits
-// exactly one DrawItem per NON-OP SDF node (op == SdfOp::none) -- primitive
-// leaves only, in program order. Each such slot's MeshData starts EMPTY;
-// real triangles are Task R2's tessellate_primitive(), and Task R5 wires CSG
-// subtree splitting into this function, replacing the current
-// one-node-one-item mapping with split_program()'s grouping. This task
-// builds the CONTAINER and the overlay/bounds data only -- no tessellation,
-// no CSG meshing, no glTF loading, no rasterization.
+// SR-9 (controller ruling, task-R1-brief.md; REVISED at Task R5): one
+// DrawItem per entry of render/csg_mesh.hpp's split_program() -- one per
+// primitive leaf that sits under nothing but `union` (Task R2's
+// tessellate_primitive() fills its mesh), and one per CSG root
+// (subtract/intersect/smooth_union -- Task R5's mesh_csg_subtree() fills
+// its mesh, the WHOLE subtree collapsed into a single draw item). The two
+// output lists are merged back into the program's own left-to-right
+// authoring order (ascending node index) before becoming `statics`, so a
+// world's draw order is reproducible from the program alone and does not
+// depend on which of the two populations a given piece of geometry happens
+// to fall into.
+//
+// This SUPERSEDES Task R1's original one-non-op-node-one-EMPTY-item mapping:
+// a CSG root's own node IS an operator node (op != SdfOp::none), yet it now
+// gets exactly one draw item, while the primitive leaves consumed into its
+// subtree get none of their own -- the node/item correspondence is
+// split_program()'s, not "is this node a primitive leaf".
 //
 // MESH INDEX SPACE (this task's own design decision, driven by
 // task-H1-brief.md's plan for how the eventual host wires a body to its

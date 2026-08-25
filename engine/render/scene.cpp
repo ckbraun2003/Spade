@@ -6,6 +6,9 @@
 
 #include <glm/gtc/matrix_inverse.hpp>  // glm::inverse(mat4) -- see local_to_world_of() below
 
+#include "render/csg_mesh.hpp"    // split_program, csg_subtree_world_bounds, mesh_csg_subtree (Task R5)
+#include "render/tessellate.hpp"  // tessellate_primitive (Task R2)
+
 namespace spade::render {
 namespace {
 
@@ -145,43 +148,86 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     // Mesh index space (scene.hpp's own note): resolved_meshes copies in FIRST,
     // verbatim and in span order, so a caller's own index into that vector is
     // numerically identical to the matching RenderScene::meshes index. The
-    // SDF-node placeholders (below) follow, one per static DrawItem.
+    // SDF-derived meshes (below) follow, one per static DrawItem --
+    // world.sdf.nodes.size() is a safe upper bound on that count (never
+    // exact after R5: a CSG root's whole subtree collapses into one slot),
+    // so this reserve() may over-allocate slightly but never under-allocates.
     scene.meshes.reserve(resolved_meshes.size() + world.sdf.nodes.size());
     for (const NamedMesh& named : resolved_meshes) {
         scene.meshes.push_back(named.mesh);
-    }
-
-    // SR-9: one DrawItem per non-op SDF node, in program order. The mesh slot
-    // it points at is an empty placeholder here -- R2 (tessellate_primitive)
-    // and R5 (CSG subtree splitting) fill real geometry into scene_from_world
-    // later; this task builds the container only.
-    scene.statics.reserve(world.sdf.nodes.size());
-    for (const SdfNode& node : world.sdf.nodes) {
-        if (node.op != static_cast<uint32_t>(SdfOp::none)) {
-            continue;
-        }
-        const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
-        scene.meshes.emplace_back();  // empty MeshData placeholder (R2/R5 fill it in)
-
-        // Defensive fallback to identity for an out-of-range transform index --
-        // SdfProgram::validate() already guarantees this cannot happen for a
-        // validated WorldDesc (this function's own precondition), matching
-        // world_bounds_of()'s identical defensive skip above.
-        const glm::mat4 local_to_world = node.transform < world.sdf.transforms.size()
-                                              ? local_to_world_of(world.sdf.transforms[node.transform])
-                                              : glm::mat4(1.0f);
-
-        scene.statics.push_back(DrawItem{
-            .mesh_index = mesh_index,
-            .local_to_world = local_to_world,
-            .material_override = kNoMaterial,
-        });
     }
 
     scene.materials.push_back(Material{});  // index 0 is always the default material
     scene.lighting = Lighting{};
 
     scene.bounds = to_render_aabb(world_bounds_of(world));
+
+    // SR-9 (REVISED at Task R5 -- see this file's own header comment): one
+    // DrawItem per split_program() output entry, each carrying REAL geometry
+    // -- tessellate_primitive() (R2) for a union-primitive leaf,
+    // mesh_csg_subtree() (R5) for a whole CSG root's subtree. The two output
+    // lists are merged back into ascending node-index order (a simple
+    // 2-pointer merge -- both lists are already ascending, split_program()'s
+    // own ORDER guarantee) so `statics`' own order matches the program's
+    // left-to-right authoring order regardless of which population a given
+    // piece of geometry landed in.
+    const Result<SubtreeSplit> split = split_program(world.sdf);
+    if (!split) {
+        return std::unexpected(split.error());
+    }
+    const std::vector<uint32_t>& union_primitives = split->union_primitive_nodes;
+    const std::vector<uint32_t>& csg_roots = split->csg_roots;
+
+    scene.statics.reserve(union_primitives.size() + csg_roots.size());
+
+    const auto local_to_world_for = [&](const SdfNode& node) {
+        // Defensive fallback to identity for an out-of-range transform index --
+        // SdfProgram::validate() already guarantees this cannot happen for a
+        // validated WorldDesc (this function's own precondition), matching
+        // world_bounds_of()'s identical defensive skip above.
+        return node.transform < world.sdf.transforms.size() ? local_to_world_of(world.sdf.transforms[node.transform])
+                                                              : glm::mat4(1.0f);
+    };
+
+    size_t next_primitive = 0, next_csg_root = 0;
+    while (next_primitive < union_primitives.size() || next_csg_root < csg_roots.size()) {
+        const bool take_primitive =
+            next_csg_root >= csg_roots.size() ||
+            (next_primitive < union_primitives.size() && union_primitives[next_primitive] < csg_roots[next_csg_root]);
+
+        if (take_primitive) {
+            const uint32_t node_index = union_primitives[next_primitive++];
+            const SdfNode& node = world.sdf.nodes[node_index];
+            Result<MeshData> mesh = tessellate_primitive(static_cast<SdfPrim>(node.kind), node.params, scene.bounds);
+            if (!mesh) {
+                return std::unexpected(mesh.error());
+            }
+            const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
+            scene.meshes.push_back(std::move(*mesh));
+            scene.statics.push_back(DrawItem{
+                .mesh_index = mesh_index,
+                .local_to_world = local_to_world_for(node),
+                .material_override = kNoMaterial,
+            });
+        } else {
+            const uint32_t root_node = csg_roots[next_csg_root++];
+            const Result<Aabb> subtree_bounds = csg_subtree_world_bounds(world.sdf, root_node, scene.bounds);
+            if (!subtree_bounds) {
+                return std::unexpected(subtree_bounds.error());
+            }
+            Result<MeshData> mesh = mesh_csg_subtree(world.sdf, root_node, *subtree_bounds);
+            if (!mesh) {
+                return std::unexpected(mesh.error());
+            }
+            const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
+            scene.meshes.push_back(std::move(*mesh));
+            scene.statics.push_back(DrawItem{
+                .mesh_index = mesh_index,
+                .local_to_world = local_to_world_for(world.sdf.nodes[root_node]),
+                .material_override = kNoMaterial,
+            });
+        }
+    }
 
     scene.spawn_positions.reserve(world.spawns.size());
     scene.spawn_orientations.reserve(world.spawns.size());

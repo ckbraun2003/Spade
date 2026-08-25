@@ -389,6 +389,7 @@ add_library(spade_render STATIC
     render/target.cpp
     render/scene.cpp
     render/tessellate.cpp
+    render/csg_mesh.cpp
     render/raster_cpu.cpp
     render/gltf.cpp
 )

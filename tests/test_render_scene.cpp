@@ -17,11 +17,15 @@
 // ---------------------------------------------------------------------------
 // RenderScene / scene_from_world / update_dynamics tests (S7a Task R1).
 //
-// SR-9 (controller ruling, task-R1-brief.md) pins the seam this task builds:
-// scene_from_world() emits ONE DrawItem per non-op SDF node, each mesh slot
-// starting EMPTY (triangles are R2/R5's job) -- so these tests assert
-// draw-item COUNT, TRANSFORM correctness, and mesh-slot EMPTINESS, never
-// triangle counts.
+// SR-9 (controller ruling, task-R1-brief.md; REVISED at Task R5, see
+// render/scene.hpp's own SR-9 comment): scene_from_world() emits one
+// DrawItem per split_program() output entry -- one per union-primitive leaf
+// (tessellate_primitive() fills its mesh) and one per CSG root
+// (mesh_csg_subtree() fills its mesh, the whole subtree collapsed into a
+// single item). These tests assert draw-item COUNT, TRANSFORM correctness,
+// and (post-R5) that the mesh slot actually carries REAL geometry -- never
+// a specific triangle count or shape, which is R2's/R5's own tests' job, not
+// this seam's.
 //
 // Transform checks compare against an INDEPENDENTLY constructed forward
 // matrix (translate(position) * scale * rotation) rather than re-deriving
@@ -85,10 +89,12 @@ RenderScene scene_or_fail(const WorldDesc& world,
     return std::move(*scene);
 }
 
-bool mesh_is_empty(const MeshData& mesh) {
-    return mesh.positions.empty() && mesh.normals.empty() && mesh.indices.empty() &&
-           mesh.submesh_first_index.empty() && mesh.submesh_index_count.empty() &&
-           mesh.submesh_material.empty();
+// Post-R5, an SDF-derived mesh slot is never left empty (R2's
+// tessellate_primitive() or R5's mesh_csg_subtree() always fills it) --
+// these tests check for REAL geometry, the mirror image of R1-era's
+// mesh_is_empty() check.
+bool mesh_has_real_geometry(const MeshData& mesh) {
+    return !mesh.positions.empty() && !mesh.indices.empty() && mesh.positions.size() == mesh.normals.size();
 }
 
 bool mat4_near(const glm::mat4& a, const glm::mat4& b, float tol) {
@@ -119,7 +125,8 @@ glm::mat4 forward_transform(const SdfPose& pose) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Static draw items: one per non-op SDF node (SR-9).
+// Static draw items: one per split_program() output entry (SR-9, revised at
+// Task R5).
 // ---------------------------------------------------------------------------
 
 TEST(SceneFromWorld, StaticDrawItemCountMatchesNonOpNodes) {
@@ -131,14 +138,78 @@ TEST(SceneFromWorld, StaticDrawItemCountMatchesNonOpNodes) {
 
     const RenderScene scene = scene_or_fail(world);
 
-    // sphere + box + union -- exactly 2 non-op (primitive) nodes.
+    // sphere + box + union -- both are union-primitive leaves (no CSG root),
+    // so exactly 2 static items, one per tessellated primitive.
     EXPECT_EQ(scene.statics.size(), 2u);
     for (const DrawItem& item : scene.statics) {
         EXPECT_EQ(item.material_override, spade::render::kNoMaterial);
         ASSERT_LT(item.mesh_index, scene.meshes.size());
-        EXPECT_TRUE(mesh_is_empty(scene.meshes[item.mesh_index]))
-            << "R1 leaves geometry generation to R2/R5 -- the mesh slot must stay empty";
+        EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[item.mesh_index]))
+            << "R2's tessellate_primitive() must have filled real geometry into this slot";
     }
+}
+
+TEST(SceneFromWorld, CsgRootSubtreeCollapsesToOneStaticItemNotOnePerPrimitive) {
+    // box, box, subtract -- the gate-square prefab's own shape (S7a Task R5
+    // brief). Two primitive nodes but ONE genuine CSG root: this must
+    // produce exactly ONE static draw item, not two -- the defect this
+    // whole task exists to prevent is exactly "rendered as 2 separate boxes"
+    // (a solid block) instead of "rendered as 1 mesh with a hole".
+    WorldBuilder b = base_builder();
+    b.box(glm::vec3(2.0f, 2.0f, 0.3f)).box(glm::vec3(1.2f, 1.2f, 0.5f)).subtract();
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 1u);
+    ASSERT_LT(scene.statics[0].mesh_index, scene.meshes.size());
+    const MeshData& mesh = scene.meshes[scene.statics[0].mesh_index];
+    EXPECT_TRUE(mesh_has_real_geometry(mesh))
+        << "R5's mesh_csg_subtree() must have filled real geometry into the CSG root's slot";
+    // A subtract's surface-nets mesh is never axis-aligned-quad-flat the way
+    // a single tessellated box's own 24 vertices are -- more than a bare box
+    // is a cheap, independent signal that this really is the merged CSG
+    // mesh and not, say, an accidental single-operand fallback.
+    EXPECT_GT(mesh.positions.size(), 24u);
+
+    // The CSG root node is an operator node, whose own `transform` field is
+    // always 0 (the identity) -- SdfProgram::validate() enforces this, and
+    // render/csg_mesh.hpp's mesh_csg_subtree() bakes its output in WORLD
+    // space on that assumption (see its own doc comment).
+    EXPECT_TRUE(mat4_near(scene.statics[0].local_to_world, glm::mat4(1.0f), kTol));
+}
+
+TEST(SceneFromWorld, MixedUnionAndCsgRootProgramPreservesAuthoringOrder) {
+    // sphere, box, union, box, box, subtract, union -- a union of one plain
+    // primitive (sphere) with a gate-square-shaped CSG root (box, box,
+    // subtract). The merged static-item order must follow the PROGRAM's own
+    // left-to-right authoring order (render/scene.cpp's own 2-pointer-merge
+    // comment) -- sphere first, then the CSG root -- not "every
+    // union-primitive before every CSG root" regardless of how they were
+    // authored.
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f)
+        .box(glm::vec3(2.0f, 2.0f, 0.3f))
+        .box(glm::vec3(1.2f, 1.2f, 0.5f))
+        .subtract()
+        .union_();
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 2u);
+    ASSERT_LT(scene.statics[0].mesh_index, scene.meshes.size());
+    ASSERT_LT(scene.statics[1].mesh_index, scene.meshes.size());
+    // The sphere (tessellate_primitive(), 156-vertex closed form at
+    // kTessellationDefaults) precedes the CSG root (surface nets, no fixed
+    // vertex count) -- checked structurally (which one looks like a UV
+    // sphere grid) rather than pinning a specific count, which is R2's own
+    // test's job.
+    EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[scene.statics[0].mesh_index]));
+    EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[scene.statics[1].mesh_index]));
+    EXPECT_LT(scene.meshes[scene.statics[0].mesh_index].positions.size(),
+              scene.meshes[scene.statics[1].mesh_index].positions.size())
+        << "expected the sphere (item 0, authored first) before the CSG root (item 1, authored second)";
 }
 
 TEST(SceneFromWorld, StaticTransformIsInverseOfStoredNodeTransform) {
@@ -241,7 +312,8 @@ TEST(SceneFromWorld, ResolvedMeshesOccupyTheFrontOfTheMeshArrayInOrder) {
     ASSERT_EQ(scene.statics.size(), 1u);
     EXPECT_EQ(scene.statics[0].mesh_index, 2u)  // offset past the 2 resolved slots
         << "static draw items must not alias a resolved-mesh slot";
-    EXPECT_TRUE(mesh_is_empty(scene.meshes[scene.statics[0].mesh_index]));
+    EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[scene.statics[0].mesh_index]))
+        << "R2's tessellate_primitive() must have filled real geometry into the SDF-node slot";
 }
 
 // ---------------------------------------------------------------------------

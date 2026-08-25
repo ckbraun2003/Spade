@@ -1,0 +1,12 @@
+{
+  "_provenance": "S7a Task R5 -- tests/test_render_csg.cpp's CsgMeshGolden.MatchesCommittedManifest. sha256 of each subtree's surface-nets positions bytes followed by its indices bytes, both taken from mesh_csg_subtree() at kCsgMeshDefaults over the bounds csg_subtree_world_bounds() derives for the fixture in that test file's golden_fixtures(). Unlike tessellate.hpp's tessellation manifest, vertex/index counts have no independent closed form to re-derive them from (they depend on the subtree's actual zero-crossing topology, not on cells_per_axis alone) -- these are snapshot-pinned, the same posture test_render_raster.cpp's frame goldens already use. limits_version is bumped ONLY alongside a deliberate kCsgMeshDefaults change, together with the matching constant in the test file.",
+  "limits_version": "kCsgMeshDefaults@1",
+  "limits": {
+    "cells_per_axis": 48,
+    "aabb_margin": 0.05
+  },
+  "subtrees": {
+    "gate_square": { "vertex_count": 10944, "index_count": 65664, "sha256": "a5e527ac8f71b9bb5d1887d3bea5e4a22ef337053aaf2d8e432341c3ce2efd12" },
+    "smooth_blend_cylinder_sphere": { "vertex_count": 10552, "index_count": 63300, "sha256": "0ac76737068e449ba3c11579bb013e5502d6e8a764927b91be8c79f1db54bac3" }
+  }
+}
