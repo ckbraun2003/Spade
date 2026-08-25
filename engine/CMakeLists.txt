@@ -373,6 +373,7 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 add_library(spade_render STATIC
     render/target.cpp
     render/scene.cpp
+    render/tessellate.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)

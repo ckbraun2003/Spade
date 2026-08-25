@@ -1,0 +1,21 @@
+{
+  "_provenance": "S7a Task R2 -- tests/test_render_tessellate.cpp's TessellateGolden.MatchesCommittedManifest. sha256 of each primitive's positions bytes followed by its indices bytes, both taken from tessellate_primitive() at the fixture params in that test file's fixtures(), with world_bounds = [-5,-5,-5]..[5,5,5]. limits_version is bumped ONLY alongside a deliberate kTessellationDefaults change, together with the matching constant in the test file.",
+  "limits_version": "kTessellationDefaults@1",
+  "limits": {
+    "circle_segments": 24,
+    "sphere_rings": 12,
+    "sphere_segments": 24,
+    "torus_ring_segments": 16,
+    "heightfield_cells": 48,
+    "plane_grid_cells": 40
+  },
+  "primitives": {
+    "plane": { "vertex_count": 1681, "index_count": 9600, "sha256": "c5ed7495c340f0324f95997d7e4ab7004792c09dce39fab47c4f047f622adba1" },
+    "sphere": { "vertex_count": 325, "index_count": 1728, "sha256": "849bb7527fe3f2bc0de776b3520851c1fb331268485fc8c8de31cfd9daab7d78" },
+    "box": { "vertex_count": 24, "index_count": 36, "sha256": "c1035fdda659e7c052cc7331a60fdb3c3340e4ed05c494a25ac7b238c7c5cfd0" },
+    "cylinder": { "vertex_count": 98, "index_count": 288, "sha256": "c11dec78792d194fecf1fb92be47c4d6333c527786f247c9f4d7e097b2ccecb1" },
+    "capsule": { "vertex_count": 384, "index_count": 1872, "sha256": "3921a64d48e74cc7fac3a94edea3f9ed169de3b78d6d6f5d1609c25b4caa72b4" },
+    "torus": { "vertex_count": 384, "index_count": 2304, "sha256": "38106df40da5716fa3fb23127c72cb0e2949d53339c80418e47e089061224a14" },
+    "heightfield": { "vertex_count": 2401, "index_count": 13824, "sha256": "889c39b4b513c445670cfbf14b88d6e78e1876317967e5e5edda4ae9aaf15e9f" }
+  }
+}
