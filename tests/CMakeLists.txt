@@ -20,6 +20,7 @@ add_executable(spade_tests
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
+    test_render_raster.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp

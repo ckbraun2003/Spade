@@ -1,0 +1,11 @@
+{
+  "_provenance": "S7a Task R3 -- tests/test_render_raster.cpp's RasterGolden.* tests. sha256 of the rendered BGRX8 pixel buffer (target.pixels, width*height*4 bytes, 160x120) for each fixed (scene, camera, options) triple built by that test file's own golden_scene_*()/camera fixtures. Depends on render/tessellate.hpp's tessellate_primitive() output for box/sphere/cylinder geometry -- tessellation_limits_version pins WHICH kTessellationDefaults these hashes were captured against, the same convention tests/golden/render/tessellation/manifest.json uses for its own corpus.",
+  "_changelog": "Initial goldens, Task R3 (deterministic CPU rasterizer, first solid-shading + wireframe + overlay pass).",
+  "_regeneration_note": "R6 (directional/ambient/sky lighting) and R7 (sun shadows) are EXPECTED to change every one of these hashes -- flat per-submesh material colour (this task's own shading model) will no longer be what a shaded-mode pixel shows once lighting lands. A hash changing alongside a matching commit that touches lighting/shadow code is an intentional, reviewed move; a hash changing with no such commit is rot.",
+  "tessellation_limits_version": "kTessellationDefaults@1",
+  "frames": {
+    "box_shaded_with_overlays": { "sha256": "f470f7a7315d1df391baaad0aec6225f470c67c7da9852ccf257c341cb9a6102" },
+    "sphere_wireframe_no_overlays": { "sha256": "046cf445ad440e1bfa9a54c57ce202899ed833a78afca8a243386b04f721ac87" },
+    "cylinder_static_dynamic_box_top_down": { "sha256": "9ff827cc82001989cb714cda7389cfa2f84bb6655e12657c15ed4049f3c466a9" }
+  }
+}
