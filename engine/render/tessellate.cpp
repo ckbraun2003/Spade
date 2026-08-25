@@ -65,8 +65,21 @@ struct MeshBuilder {
 // grid whose vertex data ALREADY duplicates the seam (sphere's (segments+1)th
 // column repeats column 0's positions, heightfield/plane's grids simply end);
 // that is a property of how the vertices were emitted, not of this function.
+//
+// `flip_winding` (S7a Task R2 fix wave 1, review CRITICAL finding): whether
+// (r, c) increases in the SAME handedness as the stored outward normal, or
+// the opposite one, is a fact about how each CALLER built its (row, col)
+// parameterization in 3D -- not a fact about the grid topology row_wrap/
+// col_wrap already describe. Two generators can (and do) share identical
+// row_wrap/col_wrap values yet need opposite windings: sphere and plane both
+// pass (false, false), but sphere's theta/phi sweep and plane's (u, v) basis
+// disagree on handedness. Every call site below states which triangle order
+// it needs and why, rather than leaving it to be re-derived by eye per
+// generator (the review finding this fixes: four of seven primitives were
+// wound backward before `flip_winding` existed, checked only by hand and not
+// caught by any test in the process).
 void append_grid(MeshBuilder& out, uint32_t base, uint32_t row_count, uint32_t col_count, bool row_wrap,
-                  bool col_wrap) {
+                  bool col_wrap, bool flip_winding) {
     const uint32_t quad_rows = row_wrap ? row_count : row_count - 1;
     const uint32_t quad_cols = col_wrap ? col_count : col_count - 1;
     for (uint32_t r = 0; r < quad_rows; ++r) {
@@ -79,8 +92,13 @@ void append_grid(MeshBuilder& out, uint32_t base, uint32_t row_count, uint32_t c
             const uint32_t v01 = base + r0 * col_count + c1;
             const uint32_t v10 = base + r1 * col_count + c0;
             const uint32_t v11 = base + r1 * col_count + c1;
-            out.add_triangle(v00, v10, v11);
-            out.add_triangle(v00, v11, v01);
+            if (flip_winding) {
+                out.add_triangle(v00, v11, v10);
+                out.add_triangle(v00, v01, v11);
+            } else {
+                out.add_triangle(v00, v10, v11);
+                out.add_triangle(v00, v11, v01);
+            }
         }
     }
 }
@@ -139,7 +157,10 @@ MeshData tessellate_plane(glm::vec4 params, const Aabb& world_bounds, const Tess
             out.add_vertex(origin + u * fu + v * fv, n);
         }
     }
-    append_grid(out, base, cells + 1, cells + 1, /*row_wrap=*/false, /*col_wrap=*/false);
+    // flip_winding=false: correct as-is (review-verified, positive dot against
+    // the shared normal `n`).
+    append_grid(out, base, cells + 1, cells + 1, /*row_wrap=*/false, /*col_wrap=*/false,
+                /*flip_winding=*/false);
     return std::move(out.mesh);
 }
 
@@ -168,7 +189,11 @@ MeshData tessellate_sphere(glm::vec4 params, const TessellationLimits& limits) {
             out.add_vertex(position, normal);
         }
     }
-    append_grid(out, base, rings + 1, segments + 1, /*row_wrap=*/false, /*col_wrap=*/false);
+    // flip_winding=true: review CRITICAL finding -- the default order was
+    // backward here (theta/phi's handedness is opposite plane's (u, v) basis
+    // despite both passing row_wrap=col_wrap=false).
+    append_grid(out, base, rings + 1, segments + 1, /*row_wrap=*/false, /*col_wrap=*/false,
+                /*flip_winding=*/true);
     return std::move(out.mesh);
 }
 
@@ -234,7 +259,9 @@ MeshData tessellate_cylinder(glm::vec4 params, const TessellationLimits& limits)
             out.add_vertex(glm::vec3(radius * normal.x, y, radius * normal.z), normal);
         }
     }
-    append_grid(out, side_base, /*row_count=*/2, segs, /*row_wrap=*/false, /*col_wrap=*/true);
+    // flip_winding=false: correct as-is (review-verified).
+    append_grid(out, side_base, /*row_count=*/2, segs, /*row_wrap=*/false, /*col_wrap=*/true,
+                /*flip_winding=*/false);
 
     // Two flat caps: center + `segs` perimeter vertices, own flat normal.
     for (const float sign : {-1.0f, 1.0f}) {
@@ -293,12 +320,29 @@ MeshData tessellate_capsule(glm::vec4 params, const TessellationLimits& limits) 
             out.add_vertex(glm::vec3(radius * normal.x, y, radius * normal.z), normal);
         }
     }
-    append_grid(out, side_base, /*row_count=*/2, segs, /*row_wrap=*/false, /*col_wrap=*/true);
+    // flip_winding=false: correct as-is (review-verified, identical shape to
+    // tessellate_cylinder's side wall above).
+    append_grid(out, side_base, /*row_count=*/2, segs, /*row_wrap=*/false, /*col_wrap=*/true,
+                /*flip_winding=*/false);
 
     // Two hemispherical caps. theta sweeps [0, pi/2]: 0 at the dome's tip,
     // pi/2 at the equator (which geometrically coincides with the side wall's
     // own end ring, though the two are not vertex-welded -- see this file's
     // append_grid doc comment on duplicated seams).
+    //
+    // Winding (review CRITICAL finding, fixed): the two domes are mirror
+    // images of each other in Y, so the SAME (row, col) parameterization
+    // walks in opposite handedness relative to the outward normal on the two
+    // sides -- exactly one of the two domes needs flip_winding=true, and it
+    // is the one where sign matches the +Y axis append_grid's default order
+    // was derived against (review-verified: sign>0 needs the flip; sign<0 is
+    // append_grid's default, unmodified). A previous version of this
+    // function hand-rolled a second index-construction loop here instead of
+    // passing flip_winding, and had BOTH signs backward -- swapping an
+    // already-correct order into a wrong one for sign<0, while never
+    // flipping the sign>0 case that actually needed it. One shared call for
+    // both domes, as below, cannot independently drift out of sync with
+    // itself the way two hand-written loops did.
     for (const float sign : {-1.0f, 1.0f}) {
         const glm::vec3 cap_center(0.0f, sign * half_height, 0.0f);
         const uint32_t dome_base = static_cast<uint32_t>(out.mesh.positions.size());
@@ -312,29 +356,8 @@ MeshData tessellate_capsule(glm::vec4 params, const TessellationLimits& limits) 
                 out.add_vertex(cap_center + radius * normal, normal);
             }
         }
-        // row_wrap=false (pole -> equator is an open edge), col_wrap=true
-        // (periodic around the circumference). Winding: the bottom dome
-        // (sign < 0) needs the opposite row order from the top dome's to face
-        // outward, since going from i=0 (tip) to i=hemisphere_rings (equator)
-        // walks AWAY from the body for sign>0 but the tip itself is on the
-        // opposite side for sign<0 -- swap r0/r1 there by reversing the
-        // triangle's last two indices instead of re-deriving append_grid.
-        if (sign > 0.0f) {
-            append_grid(out, dome_base, hemisphere_rings + 1, segs, /*row_wrap=*/false, /*col_wrap=*/true);
-        } else {
-            const uint32_t quad_rows = hemisphere_rings;
-            for (uint32_t r = 0; r < quad_rows; ++r) {
-                for (uint32_t c = 0; c < segs; ++c) {
-                    const uint32_t c1 = (c + 1 == segs) ? 0 : c + 1;
-                    const uint32_t v00 = dome_base + r * segs + c;
-                    const uint32_t v01 = dome_base + r * segs + c1;
-                    const uint32_t v10 = dome_base + (r + 1) * segs + c;
-                    const uint32_t v11 = dome_base + (r + 1) * segs + c1;
-                    out.add_triangle(v00, v11, v10);
-                    out.add_triangle(v00, v01, v11);
-                }
-            }
-        }
+        append_grid(out, dome_base, hemisphere_rings + 1, segs, /*row_wrap=*/false, /*col_wrap=*/true,
+                    /*flip_winding=*/sign > 0.0f);
     }
     return std::move(out.mesh);
 }
@@ -363,7 +386,10 @@ MeshData tessellate_torus(glm::vec4 params, const TessellationLimits& limits) {
             out.add_vertex(position, normal);
         }
     }
-    append_grid(out, base, main_segs, tube_segs, /*row_wrap=*/true, /*col_wrap=*/true);
+    // flip_winding=true: review CRITICAL finding -- the default order was
+    // backward here.
+    append_grid(out, base, main_segs, tube_segs, /*row_wrap=*/true, /*col_wrap=*/true,
+                /*flip_winding=*/true);
     return std::move(out.mesh);
 }
 
@@ -410,7 +436,12 @@ MeshData tessellate_heightfield(glm::vec4 params, const Aabb& world_bounds, cons
             out.add_vertex(glm::vec3(x, y, z), normal);
         }
     }
-    append_grid(out, base, cells + 1, cells + 1, /*row_wrap=*/false, /*col_wrap=*/false);
+    // flip_winding=true: review CRITICAL finding -- the default order was
+    // backward here (verified exactly: amplitude 0, the flat-plane special
+    // case, yields cross(edge1, edge2) = (0, -100, 0) against the surface's
+    // own up-normal without the flip).
+    append_grid(out, base, cells + 1, cells + 1, /*row_wrap=*/false, /*col_wrap=*/false,
+                /*flip_winding=*/true);
     return std::move(out.mesh);
 }
 

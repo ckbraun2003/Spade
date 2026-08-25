@@ -19,8 +19,8 @@
 // nothing in this module ever chooses one on its own.
 //
 // THE CAPSULE IS A REAL CAPSULE HERE: two hemispherical caps plus a
-// cylindrical body, not a cylinder with flat ends. The existing kat-side
-// wireframe rasterizer draws a capsule as a plain cylinder -- a deliberate
+// cylindrical body, not a cylinder with flat ends. The existing wireframe
+// rasterizer draws a capsule as a plain cylinder -- a deliberate
 // shortcut for a wireframe overlay, where nobody is close enough to notice
 // the caps are wrong. That shortcut is EXPLICITLY REVERSED here: a shaded
 // triangle mesh with flat caps would show a visible seam and a wrong silhouette

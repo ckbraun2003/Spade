@@ -334,6 +334,54 @@ TEST(Tessellate, CapsuleCapsAreHemisphericalNotFlat) {
                                        "the caps look flat, which is the cylinder shortcut this task reverses";
 }
 
+// The stated winding convention (tessellate.cpp's tessellate_box() comment:
+// "CCW as seen from outside the box") is a claim about every generator, not
+// just box -- and nothing above this test can tell a correctly-wound triangle
+// from a backward one: vertex/index counts, index range and unit-normal
+// length are all identical either way. For every non-degenerate triangle,
+// cross(p1-p0, p2-p0) (the triangle's own face normal, by the same
+// right-hand-rule convention `add_triangle`'s argument order encodes) must
+// point the same way as the vertices' own stored normals -- summed rather
+// than averaged, since only the SIGN of the dot product matters and a flat
+// face's three identical normals sum to three times themselves with no
+// change of sign.
+//
+// Degenerate (zero-area) triangles are skipped rather than asserted on: the
+// sphere/capsule pole rows deliberately collapse one of each pair's two
+// triangles to a single point (this file's own tessellate.cpp comments say
+// so), and a cross product near the zero vector has a sign that is pure
+// floating-point noise, not a fact about winding.
+TEST(Tessellate, TriangleWindingIsConsistentlyOutward) {
+    constexpr float kDegenerateAreaEpsilon = 1e-6f;
+    for (const PrimFixture& fx : fixtures()) {
+        const MeshData mesh = mesh_or_fail(fx);
+        ASSERT_EQ(mesh.indices.size() % 3u, 0u) << fx.name;
+
+        size_t non_degenerate_triangles = 0;
+        for (size_t t = 0; t + 3 <= mesh.indices.size(); t += 3) {
+            const uint32_t ia = mesh.indices[t];
+            const uint32_t ib = mesh.indices[t + 1];
+            const uint32_t ic = mesh.indices[t + 2];
+            const glm::vec3& pa = mesh.positions[ia];
+            const glm::vec3& pb = mesh.positions[ib];
+            const glm::vec3& pc = mesh.positions[ic];
+
+            const glm::vec3 face_normal = glm::cross(pb - pa, pc - pa);
+            if (glm::length(face_normal) < kDegenerateAreaEpsilon) {
+                continue;  // pole-collapsed triangle -- sign is meaningless
+            }
+            ++non_degenerate_triangles;
+
+            const glm::vec3 stored_normal_sum = mesh.normals[ia] + mesh.normals[ib] + mesh.normals[ic];
+            EXPECT_GT(glm::dot(face_normal, stored_normal_sum), 0.0f)
+                << fx.name << ": triangle " << (t / 3)
+                << " is wound backward -- its face normal points opposite its own vertices' stored normals";
+        }
+        EXPECT_GT(non_degenerate_triangles, 0u)
+            << fx.name << ": every triangle was degenerate -- this test checked nothing for this primitive";
+    }
+}
+
 // ===========================================================================
 // 2. Determinism: identical inputs, byte-identical output (constraint 4).
 // ===========================================================================

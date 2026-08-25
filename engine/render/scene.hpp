@@ -75,6 +75,22 @@ struct Lighting {
 // slot this task allocated but did not fill (SR-9) -- R2/R5 fill the
 // SDF-derived slots; a resolved visual reference (NamedMesh, below) arrives
 // already filled by the caller.
+//
+// SUBMESH CONTRACT (controller ruling SR-11, settled at Task R2's review --
+// binding on every producer AND consumer of this struct, not just R2's own
+// tessellate_primitive()): an EMPTY submesh triple (all three arrays size 0,
+// including a mesh whose positions/normals/indices are otherwise fully
+// populated -- Task R2's tessellate_primitive() is exactly such a producer)
+// means EXACTLY ONE IMPLICIT SUBMESH spanning the whole index buffer, with
+// material index 0. Index 0 is always a valid default material: every
+// RenderScene's `materials` carries a defaulted entry there
+// (scene_from_world()'s own guarantee, scene.cpp). When the three arrays are
+// NON-empty, they are PARALLEL (equal length) and their
+// (submesh_first_index[i], submesh_index_count[i]) ranges PARTITION
+// `indices` -- every index belongs to exactly one submesh, in submesh order.
+// A consumer therefore never special-cases "no submeshes were declared" as a
+// draw failure: it is the one-submesh-at-material-0 case, spelled with empty
+// arrays instead of a redundant single-entry ones.
 struct MeshData {
     std::vector<glm::vec3> positions;
     std::vector<glm::vec3> normals;              // per-vertex; flat meshes duplicate vertices
