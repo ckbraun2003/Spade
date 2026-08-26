@@ -195,8 +195,12 @@
 // cannot reach. The deficit is a NARROW, ONE-SIDED band (raymarch only ever
 // UNDER-counts near the horizon, never over-counts) that WIDENS with screen
 // resolution as the horizon spans more discrete rows: one row at 96x72 and
-// 192x144, ~2.2 rows at 480x270 (measured). Not fixed here -- a fix (a much
-// larger step budget, or an analytic ground special-case that would
+// 192x144; at 480x270, a row-by-row scan (fix round 3, correcting an earlier
+// draft's stale "~2.2 rows" figure, which had been carried over from an
+// initial estimate and mislabelled as measured) found rows 50-52 fully
+// deficient (480/480 each) and row 53 partially recovered (460/480) -- 1,460
+// px total, ~3.04 row-equivalents (1,460 / 480). Not fixed here -- a fix
+// (a much larger step budget, or an analytic ground special-case that would
 // reintroduce exactly the raster-only device this file's own header comment
 // says it must not need) trades real cost or real duplication for a gap the
 // task's own loose smoke bound already tolerates; Task R9 should expect a

@@ -92,12 +92,38 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                 glm::vec3 p = origin + dir_world * t;
                 float d = spade::eval(*scene.sdf, p);
                 bool hit = false;
-                // Sticks at false while the ray is still inside (or within
-                // epsilon of) the solid it started behind -- see the "march
-                // past" note in raymarch.hpp's own header comment (fix round
-                // 2, review MINOR) for why this may NOT be treated as an
-                // immediate whole-ray miss the way fix round 1 did.
-                bool cleared_start_solid = d > kRaymarchSurfaceEpsilon;
+                // Sticks at false while the ray is still inside (or, for the
+                // ONGOING in-loop re-check below, within epsilon of) the
+                // solid it started behind -- see the "march past" note in
+                // raymarch.hpp's own header comment (fix round 2, review
+                // MINOR) for why this may NOT be treated as an immediate
+                // whole-ray miss the way fix round 1 did.
+                //
+                // INITIALIZED FROM `d > 0.0f`, NOT `d > epsilon` (fix round
+                // 3, review MINOR -- a real behaviour narrowing round 2 had
+                // introduced): the FIRST sample is a special case. A ray
+                // whose very first sample already satisfies
+                // `0 < d <= epsilon` is a genuine, legitimate hit converged
+                // from OUTSIDE -- round 1's own `d > 0.0f` gate let it
+                // register immediately, and round 2's `d > epsilon` gate
+                // silently swept it into the march-past branch instead,
+                // narrowing what counts as a hit for no reason tied to the
+                // march-past fix. The ONGOING in-loop re-check just below
+                // deliberately keeps the STRICTER `> epsilon` bound instead
+                // of reusing this same `> 0.0f` test: promoting on the first
+                // barely-positive sample seen WHILE MARCHING PAST a solid
+                // would fire almost every time on axis-aligned geometry --
+                // the march-past step lands very close to the solid's own
+                // flat exit face by construction, so a naive `> 0.0f` there
+                // reintroduced a MUCH worse regression than the one being
+                // fixed (measured: the whole frame read as a hit on the
+                // slab's own exit face in
+                // CameraInsideASolidWithAnotherObjectBehindItSeesTheSecond
+                // Object, and CameraFullyInsideAConvexSolidSeesNothingLike
+                // RastersBackFaceCull regressed too). The two thresholds are
+                // deliberately different for deliberately different
+                // reasons, not an oversight.
+                bool cleared_start_solid = d > 0.0f;
 
                 // Sphere tracing (task brief Step 2): step by the exact
                 // returned distance every iteration once outside (a lower
