@@ -257,8 +257,31 @@ include(GoogleTest)
 # WORKING_DIRECTORY's collision problem -- see AppendSpadeLabels.cmake,
 # included below, for the SECOND, independent bug that made it necessary to
 # set LABELS a different way.
+# NO_PRETTY_VALUES (S7a Task R9 fix round 1, test_render_agreement.cpp's
+# AgreementMatrix suite -- the only TEST_P/INSTANTIATE_TEST_SUITE_P in this
+# whole binary, so this flag's blast radius is exactly that one suite):
+# GoogleTestAddTests.cmake's write_test_to_file() macro, BY DEFAULT, replaces
+# a value-parameterized test's own name suffix with GetParam()'s PRINTED
+# VALUE in the name CTest registers (`pretty_test_name`, GoogleTestAddTests.
+# cmake's own comment: "Remove value param name, if any, from test name") --
+# a documented, intentional CTest UX feature, not a bug, and not something
+# this project's test code can opt out of per-suite. Confirmed directly, not
+# guessed (task-R9-report.md's fix-round-1 section has the transcript):
+# `spade_tests.exe --gtest_list_tests` reports the REAL, custom name a
+# TestParamInfo generator assigns (e.g. `.../circuit_track_default`,
+# annotated `# GetParam() = "circuit-track|default"`), and THAT real name is
+# what `--gtest_filter` actually selects at run time (GoogleTestAddTests.cmake
+# itself: `add_test(<pretty-name> ... --gtest_filter=<REAL name> ...)`) -- so
+# execution and CI selection were already correct without this flag. What
+# was NOT correct without it: `ctest -N`/`ctest -R <custom-name>`, i.e. the
+# DISPLAYED and PATTERN-MATCHED name a human or a `-R` filter actually sees,
+# used the GetParam() value instead, making a custom name generator dead
+# from that surface even though it was live from every other one. This flag
+# makes CTest use the REAL name everywhere, closing that gap without needing
+# to touch AgreementMatrix's own parameterization at all.
 gtest_discover_tests(spade_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    NO_PRETTY_VALUES
     PROPERTIES
         TIMEOUT 60
 )
