@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -170,6 +171,15 @@ using ClipPoly = std::array<ClipVertex, kMaxClipVertices>;
 // pairs a frame for no reason (clipTriangleNearFar's own fast path below
 // skips this function entirely on that path now, but this function stays
 // allocation-free regardless, for the straddling case that does reach it).
+//
+// Capacity guard (MINOR, R5b review round 2): outCount = #inside +
+// #sign-changes is provably <= 6 of kMaxClipVertices=8 for this function's
+// only two call sites (clipTriangleNearFar clips a 3- then a <=4-vertex
+// polygon, per-plane sign changes around a cycle are always even, and a
+// triangle can have at most 3), so this can never fire today -- but it is
+// cheap insurance against a silent out-of-bounds write if Task R6 or a
+// future third clip stage (frustum side planes) ever raises inCount without
+// this bound being re-derived first.
 size_t clipPolygonToHalfSpace(const ClipPoly& in, size_t inCount, double planeZ, bool keepLessEq, ClipPoly& out) {
     if (inCount == 0) {
         return 0;
@@ -182,10 +192,12 @@ size_t clipPolygonToHalfSpace(const ClipPoly& in, size_t inCount, double planeZ,
         const bool curIn = inside(cur.pos);
         const bool nextIn = inside(next.pos);
         if (curIn) {
+            assert(outCount < kMaxClipVertices && "clipPolygonToHalfSpace: output polygon exceeded kMaxClipVertices");
             out[outCount++] = cur;
         }
         if (curIn != nextIn) {
             const double t = (planeZ - cur.pos.z) / (next.pos.z - cur.pos.z);
+            assert(outCount < kMaxClipVertices && "clipPolygonToHalfSpace: output polygon exceeded kMaxClipVertices");
             out[outCount++] = ClipVertex{cur.pos + (next.pos - cur.pos) * t};
         }
     }

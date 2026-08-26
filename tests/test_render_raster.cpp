@@ -1310,22 +1310,31 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
     // orientation (world space IS camera space, so no worldToCameraSpace
     // call is needed either).
     //
-    // Review round 1, MINOR 2: the apex's X was originally an exact 3.0,
-    // which (combined with P0/P1's exact +-1.0 Y and the near_plane=4.1
-    // used below) made both of the clipped triangle's slanted screen-space
-    // edges land EXACTLY on the pixel-center diagonal grid (px - py and
-    // px + py are always integers at a pixel center (px+0.5, py+0.5) --
-    // an edge with slope exactly +-1 and an integer intercept then passes
-    // exactly through a whole streak of pixel centers, each one an
-    // exact-zero w in rasterizeTriangleFlat's inside test). At f=1 exactly
-    // that streak of pixels counts as inside; nudge f by one ULP either way
-    // (e.g. a mathematically-neutral but not bit-neutral refactor of
-    // projectCameraSpace -- hoisting f/aspect, an FMA contraction, a
-    // reordered multiply) and the WHOLE streak flips as one block, reading
-    // exactly like a clipping regression instead of the projection-arithmetic
-    // change it actually is. Nudging the apex's X to 3.1 breaks the exact
-    // +-1 slope (and therefore the whole streak) without changing which
-    // vertices the near plane clips -- that still depends only on Z.
+    // Review round 1, MINOR 2 (reworded in round 2 -- the original comment
+    // here, and the dispatch that asked for this nudge, both overclaimed):
+    // the apex's X was originally an exact 3.0, which (combined with
+    // P0/P1's exact +-1.0 Y and the near_plane=4.1 used below) put pixel
+    // centers exactly on the clipped triangle's slanted edges (px - py and
+    // px + py are always integers at a pixel center (px+0.5, py+0.5), and
+    // those edges had slope exactly +-1 with an integer intercept) -- the
+    // review's own from-scratch re-derivation counted 46 such centers. A
+    // real degeneracy, but only in EXACT (infinite-precision) arithmetic,
+    // at f=1 exactly. It was never a LIVE failure mode: production's actual
+    // f (from tan32/sin32/cos32) differs from 1 by ~1e-7, displacing those
+    // 46 centers by ~1e-5 px -- roughly 10^9 ULPs beyond what any
+    // reassociating-but-mathematically-neutral refactor of
+    // projectCameraSpace (hoisting f/aspect, an FMA contraction, a
+    // reordered multiply) could move a result by. Verified directly: such a
+    // refactor mutant leaves all 28 rasterizer tests green, goldens
+    // included. Only a change to tan32/sin32/cos32 itself could move these
+    // pixels -- and then this test's own oracle (which calls those same
+    // functions, not a hardcoded ratio) would move identically. Nudging the
+    // apex's X to 3.1 removes the exact-arithmetic degeneracy anyway, as
+    // hygiene: it costs nothing, and it is one fewer thing to reason about
+    // if this geometry is ever reused verbatim in a context where f could
+    // legitimately be exactly rational (e.g. a hand-computed oracle that
+    // does not call the real trig functions). It changes nothing about
+    // which vertices the near plane clips -- that depends only on Z.
     constexpr uint32_t kDim = 400;  // square target: aspect = 1 exactly
     // Declared once, as a float32, and reused (cast to double) for the
     // oracle's own p2 below -- mesh.positions is glm::vec3 (float), and
@@ -1444,7 +1453,15 @@ TEST(RasterCpu, NearPlaneClipQuadCaseIsGeometricallyExact) {
     // oracle's double literals below are bit-identical to what
     // mesh.positions (glm::vec3, float) actually carries once widened --
     // no float/double mismatch to guard against here (see T7's kApexX
-    // comment above for why that matters).
+    // comment above for why that matters). That same exactness cuts both
+    // ways, though (review round 2): it is also precisely what puts 4 pixel
+    // centers exactly on the clipped quad's boundary at f=1 -- the reason
+    // the measured count below is 6395 rather than 6399, not a rounding
+    // slip. Like T7, this is a real degeneracy only in exact arithmetic,
+    // not a live failure mode (production's f differs from 1 by ~1e-7). The
+    // 5-vertex test below, whose inputs are NOT this clean, has zero
+    // on-boundary centers and is the more robust of the two for that
+    // reason.
     const Cam3 p0{-1.0, -1.5, -3.0}, p1{1.5, -0.5, -3.0}, p2{0.25, 1.75, -1.0};
     MeshData mesh;
     mesh.positions = {glm::vec3(-1.0f, -1.5f, -3.0f), glm::vec3(1.5f, -0.5f, -3.0f), glm::vec3(0.25f, 1.75f, -1.0f)};
@@ -1557,4 +1574,112 @@ TEST(RasterCpu, BothPlanesClipFiveVertexCaseIsGeometricallyExact) {
         }
     }
     EXPECT_GT(expected_count, 0u) << "the analytic reference polygon itself must be non-degenerate";
+}
+
+// R5b review round 2, IMPORTANT: everything above exercises
+// draw_mesh_triangle_shaded's fan. draw_world_triangle -- the OVERLAY path,
+// used only by the spawn/body markers -- had NO exactness coverage at all:
+// SpawnMarkerOverlaySurvivesNearPlaneStraddle's straddling triangle
+// (v0,v2,v3) clips to exactly 3 vertices (one crossing survives), so its
+// fan loop body runs once and every fan variant coincides -- the identical
+// blind spot the previous round closed for the mesh path. This matters
+// specifically here: draw_world_triangle draws the markers that straddle
+// the near plane when Phase 4's camera flies close to them, which is
+// exactly the scenario SR-15 named ("leaving the overlay path rejecting
+// would mean spawn markers vanish at close range").
+//
+// This spawn marker's FIRST triangle (v0,v1,v2, draw_spawn_markers' own
+// naming) has v0,v2 survive the near plane and v1 clipped away -- exactly 4
+// vertices, a fan body that runs TWICE. Its SECOND triangle (v0,v2,v3) is
+// entirely inside (the fast path) and is included in the oracle below too,
+// since render() always draws both together.
+TEST(RasterCpu, SpawnMarkerNearPlaneClipQuadCaseIsGeometricallyExact) {
+    constexpr uint32_t kWidth = 300, kHeight = 300;
+    // Mirrors draw_spawn_markers' own kSpawnMarkerRadius/kSpawnMarkerYOffset
+    // (raster_cpu.cpp, anonymous namespace -- not accessible from this test
+    // file), duplicated here as named constants rather than magic numbers,
+    // same as SpawnMarkerOverlaySurvivesNearPlaneStraddle above already has
+    // to do. Both are `double` in production (not float), so these double
+    // literals are bit-identical to production's own -- no float32
+    // round-trip involved for either.
+    constexpr double kRadius = 0.3, kYOffset = 0.02;
+    // X stays at 0 -- the marker's whole footprint (radius 0.3) must fit
+    // inside the camera's frustum at this close a depth (visible half-width
+    // at depth d, fov_y=60deg default, is d*tan(30deg) ~ 0.577d; at
+    // d~0.2-0.5 that is only ~0.1-0.3, leaving no room for an X offset).
+    // No grid/bounds interference despite x=0 coinciding with the ground
+    // grid's own x=0 line: the camera sits exactly ON the grid's y=0 plane,
+    // so EVERY grid vertex has world y=0 relative to the camera, and
+    // therefore projects to the EXACT same degenerate screen row (yNdc=0
+    // for any depth, since yNdc = f*rel.y*invNegZ and rel.y=0). This
+    // marker sits at y=kYOffset=0.02 instead, and -- because this whole
+    // marker is planar at that one Y -- every one of its vertices/crossings
+    // projects comfortably away from that row (roughly 10+ screen rows at
+    // this depth and kHeight, verified by inspection of the rendered
+    // output below, not just assumed). Z is a float32 constant, reused
+    // (via static_cast<double>) for the oracle below rather than re-typed
+    // as a double literal -- same reasoning as T7's kApexX (round 1): -0.2
+    // is not exact in either precision, so the widened float32 value and
+    // an independently-written double literal would not be the same
+    // number.
+    constexpr float kMarkerX = 0.0f;
+    constexpr float kMarkerBaseZ = -0.2f;
+
+    RenderScene scene = make_empty_overlay_scene();
+    scene.spawn_positions = {glm::vec3(kMarkerX, 0.0f, kMarkerBaseZ)};
+    scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));  // world == camera space
+    RenderOptions options;
+    options.overlays = true;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kWidth, kHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto expected = bgr(190, 90, 170);  // kSpawnR/G/B
+
+    // Independent re-derivation of draw_spawn_markers' own vertex placement
+    // for BOTH of its triangles -- identity spawn orientation means
+    // rotateByQuat is a no-op, so world == base-plus-local exactly, in the
+    // SAME double arithmetic (base.z + 0.0 or +-kRadius) production uses.
+    const double baseX = static_cast<double>(kMarkerX), baseZ = static_cast<double>(kMarkerBaseZ);
+    const Cam3 v0{baseX + kRadius, kYOffset, baseZ}, v1{baseX, kYOffset, baseZ + kRadius},
+        v2{baseX - kRadius, kYOffset, baseZ}, v3{baseX, kYOffset, baseZ - kRadius};
+
+    const double nearZ = -static_cast<double>(camera.near_plane);
+    const double farZ = -static_cast<double>(camera.far_plane);
+    const double fov = static_cast<double>(camera.fov_y_radians);
+
+    const auto clip_and_project = [&](std::vector<Cam3> tri) {
+        std::vector<Cam3> poly = clip_polygon_oracle(std::move(tri), nearZ, /*keepLessEq=*/true);
+        poly = clip_polygon_oracle(poly, farZ, /*keepLessEq=*/false);
+        std::vector<Px> screenPoly;
+        for (const Cam3& v : poly) {
+            screenPoly.push_back(project_camera_space_oracle(v, fov, kWidth, kHeight));
+        }
+        return screenPoly;
+    };
+
+    const std::vector<Px> triangle1 = clip_and_project({v0, v1, v2});
+    const std::vector<Px> triangle2 = clip_and_project({v0, v2, v3});
+    ASSERT_EQ(triangle1.size(), 4u) << "sanity: triangle (v0,v1,v2) must produce the 4-vertex case under test";
+    ASSERT_EQ(triangle2.size(), 3u) << "sanity: triangle (v0,v2,v3) must be entirely inside, unclipped";
+
+    size_t expected_count = 0;
+    for (uint32_t y = 0; y < kHeight; ++y) {
+        for (uint32_t x = 0; x < kWidth; ++x) {
+            const Px p{x + 0.5, y + 0.5};
+            const bool want = fan_covers_pixel(triangle1, p) || fan_covers_pixel(triangle2, p);
+            const size_t idx = (static_cast<size_t>(y) * kWidth + x) * 4;
+            const bool got = storage[idx] == expected[0] && storage[idx + 1] == expected[1] &&
+                              storage[idx + 2] == expected[2];
+            ASSERT_EQ(got, want) << "pixel (" << x << "," << y
+                                  << ") disagrees with the analytically clipped spawn-marker silhouette "
+                                     "(draw_world_triangle's own fan)";
+            if (want) {
+                ++expected_count;
+            }
+        }
+    }
+    EXPECT_GT(expected_count, 0u) << "the analytic reference silhouette itself must be non-degenerate";
 }
