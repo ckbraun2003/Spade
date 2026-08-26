@@ -21,6 +21,20 @@
 // (materials[0]-for-everything was a correctness bug, not merely a visual
 // simplification -- see MATERIAL, below).
 //
+// FIX ROUND 2 (review): fix round 1's frustum bound compared RADIAL march
+// distance `t` to `far_plane`, but raster clips on CAMERA-SPACE DEPTH
+// (`-pc.z`) -- for an off-axis pixel these differ by 1/cos(theta), so a ray
+// toward a frame corner escaped up to ~1.55x too early (60 deg FOV, 16:9) and
+// missed geometry raster still draws. Fixed by bounding camera-space depth
+// directly (FRUSTUM PARITY, below). Also: the "started inside solid is a
+// total miss" cull over-reached -- raster's SR-13 only hides the ENCLOSING
+// solid itself, not whatever is BEHIND it, so a ray starting inside now
+// marches THROUGH that solid (see FRUSTUM PARITY's own "march past" note)
+// instead of abandoning the whole ray. Ruling SR-28 additionally moves
+// kRaymarchSurfaceEpsilon to 1e-4 (from 1e-3): the reference's own error
+// should be negligible against what it measures, not merely smaller than the
+// original 2 cm defect -- see that constant's own comment.
+//
 // THE GROUND COMES FREE (controller amendment, task-R8-brief.md): the
 // raster path needs an analytic background ground (render/scene.hpp's
 // GroundPlane list, ruling SR-17) because a tessellated plane grid is
@@ -56,36 +70,61 @@
 //     `fov_y_radians` -- a real geometry difference between the two paths'
 //     camera rays that had nothing to do with tessellation.
 //
-// FRUSTUM PARITY WITH raster_cpu.cpp (fix round 1, review IMPORTANT):
-// raster_cpu.cpp's ported clipTriangleNearFar rejects any triangle entirely
-// closer than `camera.near_plane` or farther than `camera.far_plane`, and
-// DrawMode::shaded's SR-13 back-face cull makes a camera fully enclosed by a
-// convex solid see nothing (every triangle presents its back face from
-// inside). Before this fix, render_raymarch() ignored both `near_plane` and
-// `far_plane` entirely: a ray starting inside a solid satisfied
-// `d <= 0 <= epsilon` at its very first sample and reported a hit at t=0
-// (100% false coverage for a camera embedded in geometry), and nothing
-// stopped marching at `far_plane`, so geometry beyond it was rendered when
-// raster had already clipped it away. Both are fixed by bounding the march
-// to `t IN [near_plane, far_plane]`:
-//   * marching starts at t = near_plane, mirroring the near-plane clip
-//     (geometry entirely closer than near_plane is invisible in raster and
-//     is never sampled here either);
-//   * if the FIRST sample (at t = near_plane) already has distance <= 0,
-//     the ray origin's visible range starts already inside a solid -- this
-//     ray is a miss, full stop, never a hit at t = near_plane. This is the
-//     SDF-native analogue of SR-13's back-face cull for "camera inside a
-//     convex solid": a sphere tracer can only detect a crossing FROM
-//     outside INTO the solid, so a ray that starts already inside has no
-//     such crossing to report, exactly mirroring back-face culling's own
-//     "there is no front face to see from here" result;
-//   * marching stops (miss) once t exceeds far_plane, mirroring the
-//     far-plane clip.
-// This is also the fix for the OTHER fix-round finding (a miss ray was
-// burning the full kRaymarchMaxSteps budget with no escape -- see that
-// constant's own comment): the far-plane bound IS the escape distance,
-// derived from the same camera the caller already passed in rather than a
-// second, invented constant.
+// FRUSTUM PARITY WITH raster_cpu.cpp (fix round 1, review IMPORTANT; fixed
+// AGAIN in fix round 2, review IMPORTANT -- the first attempt was itself
+// wrong): raster_cpu.cpp's ported clipTriangleNearFar rejects any triangle
+// entirely closer than `camera.near_plane` or farther than `camera.far_plane`
+// in CAMERA-SPACE DEPTH (`-pc.z`, the forward distance along the view axis),
+// and DrawMode::shaded's SR-13 back-face cull makes a camera fully enclosed
+// by a convex solid see nothing (every triangle presents its back face from
+// inside). Both are approximated by bounding the march:
+//   * DEPTH, NOT RADIAL DISTANCE (fix round 2 -- fix round 1 bounded `t`
+//     itself, which is the RADIAL distance travelled along the ray, against
+//     `far_plane`; that is only equal to camera-space depth for the exact
+//     centre pixel. For a ray at off-axis half-angle theta, depth =
+//     t * cos(theta), so a fixed radial cap escapes an off-axis ray up to
+//     1/cos(theta) TOO EARLY -- 1.55x at a 60 deg-FOV/16:9 frame corner --
+//     missing geometry raster still draws. `dir_cam` (camera-space, unit
+//     length) already carries cos(theta) as its own -Z component, so
+//     `cos_theta = -dir_cam.z` converts between the two exactly: marching
+//     starts at `t = near_plane / cos_theta` (the radial distance at which
+//     DEPTH equals near_plane) and stops once `t * cos_theta > far_plane`
+//     (equivalently `t > far_plane / cos_theta`, precomputed once per pixel
+//     as `t_far` so the per-step check stays a single comparison).
+//     RaymarchSmoke.GeometryWithinTheFrustumButBeyondTheOldRadialCapIsStill-
+//     Visible (test_render_raymarch.cpp) pins this at a frame corner with
+//     `far_plane` deliberately small enough to see the 1.55x error, per the
+//     review's own admonition about fixtures that cannot see what they test.
+//   * if the FIRST sample (at t = near_plane / cos_theta) already has
+//     distance <= 0, the ray origin's visible range starts already inside a
+//     solid. Fix round 1 treated this as an unconditional miss for the WHOLE
+//     ray, which over-reached: SR-13's own back-face cull hides only the
+//     ENCLOSING solid, not whatever sits behind it, so a raster frame with a
+//     camera embedded in a thin slab still shows an unoccluded object further
+//     along the ray. Fix round 2 instead MARCHES PAST the solid the ray
+//     started inside: while a running `cleared_start_solid` flag is false,
+//     each step advances by `max(|distance|, epsilon)` (the floor guards
+//     against a degenerate exact-zero sample on an axis-aligned face
+//     stalling progress) and registers no hit, however small `|distance|`
+//     gets -- a sphere tracer can only detect a genuine crossing, and
+//     re-crossing back OUT of the solid it started behind is not a new
+//     surface to report. Once a sample's distance exceeds epsilon, the flag
+//     flips permanently and ordinary exterior marching (hit when
+//     distance <= epsilon) resumes from there, now free to find real
+//     geometry further along the ray.
+//     RaymarchSmoke.CameraInsideASolidWithAnotherObjectBehindItSeesThe-
+//     SecondObject (test_render_raymarch.cpp) is the two-object fixture the
+//     review asked for -- the original one-object fixture
+//     (CameraFullyInsideAConvexSolidSeesNothingLikeRastersBackFaceCull)
+//     cannot distinguish "the whole ray is abandoned" from "the enclosing
+//     solid is correctly skipped and there is nothing else to find" (both
+//     read as 100% sky), which is exactly why it did not catch the
+//     over-reach the first time.
+// Both bounds together are also what makes a miss ray terminate promptly
+// instead of burning the full kRaymarchMaxSteps budget (fix round 1's other
+// finding): the far-plane depth bound converts to a finite radial cap for
+// every pixel, derived from the camera the caller already passed in rather
+// than a second, invented distance constant.
 //
 // SHADOWS ARE DELIBERATELY OUT OF SCOPE (controller amendment, not an
 // oversight): Task R9 compares SILHOUETTES ONLY -- coverage against the sky
@@ -132,6 +171,37 @@
 // dynamic bodies will show real coverage disagreement between the two paths
 // that has nothing to do with tessellation accuracy, purely because one path
 // can see content the other structurally cannot.
+//
+// KNOWN, ACCEPTED LIMITATION -- A NEAR-HORIZONTAL RAY OVER AN INFINITE GROUND
+// CAN LOSE THE HORIZON ROW (fix round 2, review MINOR -- diagnosed by
+// measurement, replacing fix round 1's own INCORRECT "float-vs-double
+// precision" guess for the identical symptom, which this file no longer
+// makes since it cannot back it up): on
+// RaymarchSmoke.HoverPadCoverageWithinTwoPercentOfTessellated's own 96x72
+// camera, the entire raymarch/raster coverage deficit is EXACTLY ONE screen
+// row -- row 13, the true optical horizon for that camera (y=3, pitch -20
+// deg, 60 deg FOV) -- where raster covers 96/96 pixels and raymarch covers
+// 0/96, with every OTHER row agreeing to the pixel. This is NOT the far-plane
+// depth bound above: sweeping `far_plane` from 1000 to 1e7 leaves the deficit
+// at exactly 96 px. The row's ray descends only ~0.15 deg below horizontal
+// and meets the infinite ground plane at radial t ~= 1145 m -- past the
+// default 1000 m far_plane, AND past what kRaymarchMaxSteps can reach at all
+// (sphere tracing a near-parallel ray toward a plane converges geometrically
+// with ratio (1 - cos(theta)) per step, and this row's shallow descent angle
+// needs roughly 3000 steps to close the gap; EITHER cause alone is
+// sufficient, independent of the other). Raster's own analytic ground
+// (ruling SR-17) has no such bound -- a ray-plane intersection is a single
+// division, not an iterated convergence -- so it paints the row raymarch
+// cannot reach. The deficit is a NARROW, ONE-SIDED band (raymarch only ever
+// UNDER-counts near the horizon, never over-counts) that WIDENS with screen
+// resolution as the horizon spans more discrete rows: one row at 96x72 and
+// 192x144, ~2.2 rows at 480x270 (measured). Not fixed here -- a fix (a much
+// larger step budget, or an analytic ground special-case that would
+// reintroduce exactly the raster-only device this file's own header comment
+// says it must not need) trades real cost or real duplication for a gap the
+// task's own loose smoke bound already tolerates; Task R9 should expect a
+// systematic horizon-band deficit on every world with an infinite ground
+// primitive and account for it rather than chase it as a bug.
 //
 // DETERMINISM (constraint 4, same contract as raster_cpu.cpp's render()):
 // render_raymarch() reads only its three explicit parameters -- no RNG, no
@@ -180,34 +250,52 @@ namespace spade::render {
 // epsilon (constant table, documented)"). Compile-time, never adaptive --
 // the same reason kTessellationDefaults (render/tessellate.hpp) is not.
 //
-// RETUNED IN FIX ROUND 1 against test_render_raymarch.cpp's SphereAnalytic
-// fixture (a bare sphere with a closed-form exact silhouette, resolution
-// 480x270) -- the ORIGINAL hover-pad-only tuning could not see either
-// constant: at 96x72 a hover-pad pixel covers ~0.096 m, so the original 2 cm
-// epsilon moved fewer than 0.2 px of any edge, and hover-pad's own coverage
-// stat never separated "epsilon too big" from "steps too few". Measured on
-// the sphere fixture (radius 0.5 m, camera 1.2 m out, exact analytic
-// silhouette 36,085 px of 129,600):
+// RETUNED IN FIX ROUND 1, then AGAIN in fix round 2 (ruling SR-28) against
+// test_render_raymarch.cpp's SphereAnalytic fixture (a bare sphere with a
+// closed-form exact silhouette, resolution 480x270) -- the ORIGINAL
+// hover-pad-only tuning could not see either constant: at 96x72 a hover-pad
+// pixel covers ~0.096 m, so the original 2 cm epsilon moved fewer than
+// 0.2 px of any edge, and hover-pad's own coverage stat never separated
+// "epsilon too big" from "steps too few" (confirmed directly: hover-pad
+// reads the identical 1.69% at every epsilon this file has ever shipped).
+// Measured on the sphere fixture (radius 0.5 m, camera 1.2 m out, exact
+// analytic silhouette 36,080 px of 129,600):
 //
-//   config (eps / steps / escape)          sphere coverage   vs exact
-//   shipped:  2e-2 / 512  / none            39,652 px         +9.88%
-//   1e-3 / 1024 / far-plane escape (THIS)   see report's fix-round table
+//   config (eps / steps / escape)             sphere coverage   vs exact
+//   shipped:        2e-2 / 512  / none          39,652 px        +9.88%
+//   fix round 1:    1e-3 / 1024 / far-plane     36,224 px        +0.40%
+//   fix round 2:    1e-4 / 1024 / far-plane     see report's fix-round-2 table
 //
 // (Exact figures for the chosen row are in this task's own report, fix
-// round 1 section -- re-measured, not copied from the review that first
-// found the defect.)
+// round 2 section -- re-measured, not copied from the review that swept
+// these values.)
 inline constexpr uint32_t kRaymarchMaxSteps = 1024;
 
 // A step converges (hits) once distance <= this, in the SAME world-space
-// units SdfProgram's own distances use (metres). Two orders of magnitude
-// below the original 2e-2 -- close enough to world/sdf.hpp's own
-// kSdfGradientStep (1e-3) that the two are now the SAME order of magnitude,
-// though they remain deliberately DIFFERENT constants for DIFFERENT reasons
-// (that one perturbs a point to estimate a derivative; this one accepts a
-// point as ON the surface) -- conflating them would be the "same numbers,
-// different provenance" mistake render/raster_cpu.cpp's own
-// kOverlayDepthBias comment warns against for an unrelated pair.
-inline constexpr float kRaymarchSurfaceEpsilon = 1e-3f;
+// units SdfProgram's own distances use (metres).
+//
+// RULING SR-28 (fix round 2): moved from 1e-3 (fix round 1) to 1e-4. The
+// reference path's OWN error against the true surface should be NEGLIGIBLE
+// against what it is measuring, not merely smaller than the original 2 cm
+// defect -- at 1e-3 the sphere fixture's own +0.40% over-coverage was
+// running at ~26% of the SAME signal R9 pins Task R6's tessellation error
+// against (measured -1.54% under-coverage there), with the OPPOSITE sign,
+// which contaminates every band comparison rather than merely adding noise
+// to it. At 1e-4 the sphere fixture reads +0.022% -- about 1.4% of that
+// signal, and 20x inside this file's own committed 0.5% assert instead of
+// 25x. Deliberately a DIFFERENT constant from world/sdf.hpp's own
+// kSdfGradientStep (1e-3, one order of magnitude ABOVE this value) for a
+// DIFFERENT reason: that one perturbs a point to estimate a DERIVATIVE and
+// wants to be small relative to surface curvature; this one accepts a point
+// as ON the surface and wants to be small relative to what a comparison
+// against a DIFFERENT rendering technique's own error can resolve --
+// conflating the two would be the "same numbers, different provenance"
+// mistake render/raster_cpu.cpp's own kOverlayDepthBias comment warns
+// against for an unrelated pair. Re-verified
+// at this value that kRaymarchMaxSteps=1024 still converges the sphere
+// fixture comfortably (a tighter epsilon needs more steps to reach, in
+// general) -- see the table above.
+inline constexpr float kRaymarchSurfaceEpsilon = 1e-4f;
 
 // Sphere-traces `scene.sdf` per pixel (S7a Task R8) into `target` -- the
 // exact alternative to raster_cpu.cpp's tessellated render() for

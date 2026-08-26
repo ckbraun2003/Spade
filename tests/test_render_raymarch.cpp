@@ -600,3 +600,138 @@ TEST(RaymarchSmoke, MaterialMisresolutionAgainstSkyColourNoLongerErasesTheSilhou
     EXPECT_LE(relative, 0.02) << "raymarch covered " << raymarch_covered << " px, tessellated covered "
                                << shaded_covered << " px -- " << (relative * 100.0) << "% relative difference";
 }
+
+// ===========================================================================
+// 7. Frustum parity: camera-space DEPTH, not radial distance (fix round 2,
+//    review IMPORTANT). `far_plane` is deliberately set to 10 m, not the
+//    default 1000 m against a ~10 m world -- the same "fixture cannot
+//    measure the constant it is meant to check" shape the review named for
+//    the original epsilon defect, so this one is built to actually see it.
+// ===========================================================================
+
+TEST(RaymarchSmoke, GeometryWithinTheFrustumButBeyondTheOldRadialCapIsStillVisible) {
+    // A sphere positioned at 0.9 of the frustum's own half-extents at depth
+    // 9 m: an off-axis ray toward it has RADIAL distance ~13.1 m (beyond
+    // far_plane=10) while its CAMERA-SPACE DEPTH is exactly 9 m (well within
+    // it). Fix round 1's radial-t escape stopped such a ray at t=10, short
+    // of the sphere; raster (which clips on depth, raster_cpu.cpp's ported
+    // clipTriangleNearFar) draws it in full.
+    constexpr float kDepth = 9.0f, kRadius = 0.6f, kFraction = 0.9f;
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    camera.far_plane = 10.0f;
+    constexpr uint32_t kW = 320, kH = 180;  // 16:9, matching the review's own fixture
+
+    const double half_fov = static_cast<double>(camera.fov_y_radians) * 0.5;
+    const double half_extent_y = static_cast<double>(kDepth) * std::tan(half_fov);
+    const double half_extent_x = half_extent_y * (static_cast<double>(kW) / static_cast<double>(kH));
+    const glm::vec3 sphere_position(static_cast<float>(kFraction * half_extent_x),
+                                     static_cast<float>(kFraction * half_extent_y), -kDepth);
+
+    WorldBuilder b = base_builder();
+    b.sphere(kRadius, SdfPose{.position = sphere_position});
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    uint32_t shaded_covered = 0, raymarch_covered = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
+                ++shaded_covered;
+            }
+            if (!(pixel_at(raymarch_storage, kW, x, y) == expected_sky)) {
+                ++raymarch_covered;
+            }
+        }
+    }
+
+    ASSERT_GT(shaded_covered, 0u)
+        << "sanity: raster must see this sphere -- its depth (9 m) is inside far_plane (10 m)";
+    EXPECT_GT(raymarch_covered, 0u)
+        << "raymarch saw nothing -- the RADIAL distance to this sphere (~13.1 m) exceeds far_plane even though its "
+           "CAMERA-SPACE DEPTH (9 m) does not; the escape must bound depth, not radial t";
+
+    const double relative =
+        std::fabs(static_cast<double>(raymarch_covered) - static_cast<double>(shaded_covered)) / shaded_covered;
+    EXPECT_LE(relative, 0.05) << "raymarch covered " << raymarch_covered << " px, tessellated covered "
+                               << shaded_covered << " px -- " << (relative * 100.0) << "% relative difference";
+}
+
+// ===========================================================================
+// 8. "March past" the solid a ray starts inside (fix round 2, review MINOR).
+//    Section 5's one-object fixture (CameraFullyInsideAConvexSolidSeesNothing
+//    LikeRastersBackFaceCull, above) cannot distinguish "the whole ray is
+//    abandoned" from "the enclosing solid is correctly skipped and there is
+//    nothing else to find" -- both read as 100% sky. This one has a second
+//    object.
+// ===========================================================================
+
+TEST(RaymarchSmoke, CameraInsideASolidWithAnotherObjectBehindItSeesTheSecondObject) {
+    // A 10x10x0.6 m slab centered ON the camera (half-extents 5,5,0.3 -- the
+    // camera sits dead in the middle of its own thin Z dimension) unioned
+    // with an UNOCCLUDED sphere further along the view axis. Raster's SR-13
+    // cull hides the slab itself (camera embedded in it) but still draws the
+    // sphere behind it -- a completely separate, unoccluded piece of
+    // geometry. Fix round 1's "started inside solid -> whole ray is a miss"
+    // cull wrongly hid the sphere too.
+    WorldBuilder b = base_builder();
+    b.box(glm::vec3(5.0f, 5.0f, 0.3f));
+    b.sphere(1.0f, SdfPose{.position = glm::vec3(0.0f, 0.0f, -4.0f)});
+    b.union_();
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    constexpr uint32_t kW = 128, kH = 128;
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    uint32_t shaded_covered = 0, raymarch_covered = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
+                ++shaded_covered;
+            }
+            if (!(pixel_at(raymarch_storage, kW, x, y) == expected_sky)) {
+                ++raymarch_covered;
+            }
+        }
+    }
+
+    ASSERT_GT(shaded_covered, 0u) << "sanity: raster must see the sphere behind the slab it back-face-culls";
+    EXPECT_GT(raymarch_covered, 0u)
+        << "raymarch saw nothing -- the ray starting inside the slab must march PAST it and find the sphere, not "
+           "abandon the whole ray";
+
+    const double relative =
+        std::fabs(static_cast<double>(raymarch_covered) - static_cast<double>(shaded_covered)) / shaded_covered;
+    EXPECT_LE(relative, 0.05) << "raymarch covered " << raymarch_covered << " px, tessellated covered "
+                               << shaded_covered << " px -- " << (relative * 100.0) << "% relative difference";
+}

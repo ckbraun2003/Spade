@@ -1,5 +1,7 @@
 #include "render/raymarch.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 #include <glm/geometric.hpp>
@@ -72,64 +74,89 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                 const glm::vec3 dir_cam = glm::normalize(glm::vec3(x_ndc * aspect / f, y_ndc / f, -1.0f));
                 const glm::vec3 dir_world = cam_to_world * dir_cam;
 
-                // FRUSTUM PARITY (fix round 1, review IMPORTANT -- see
-                // raymarch.hpp's own header comment for the full "why this
-                // mirrors raster's near/far clip and SR-13's camera-inside-
-                // a-solid cull" reasoning): march starts at t = near_plane,
-                // not t = 0. The FIRST sample decides whether this ray is
-                // even eligible to hit at all -- if the near-plane point is
-                // already inside a solid (d <= 0), the whole ray is a miss,
-                // full stop, mirroring a camera fully enclosed by a convex
-                // mesh seeing nothing under SR-13's back-face cull.
-                float t = near_plane;
+                // FRUSTUM PARITY, DEPTH NOT RADIAL DISTANCE (fix round 2,
+                // review IMPORTANT -- see raymarch.hpp's own header comment
+                // for the full derivation): raster clips on CAMERA-SPACE
+                // DEPTH (`-pc.z`), not radial distance travelled along the
+                // ray -- the two differ by cos(theta) for an off-axis pixel.
+                // `dir_cam` is already unit length, so its own -Z component
+                // IS cos(theta); dividing near_plane/far_plane by it converts
+                // them from depth bounds into the equivalent RADIAL bounds
+                // for THIS pixel's ray, computed once and reused every step
+                // rather than converting back and forth per iteration.
+                const float cos_theta = -dir_cam.z;  // > 0 always: the un-normalized z is exactly -1.0f before normalize()
+                const float t_near = near_plane / cos_theta;
+                const float t_far = far_plane / cos_theta;
+
+                float t = t_near;
                 glm::vec3 p = origin + dir_world * t;
                 float d = spade::eval(*scene.sdf, p);
                 bool hit = false;
+                // Sticks at false while the ray is still inside (or within
+                // epsilon of) the solid it started behind -- see the "march
+                // past" note in raymarch.hpp's own header comment (fix round
+                // 2, review MINOR) for why this may NOT be treated as an
+                // immediate whole-ray miss the way fix round 1 did.
+                bool cleared_start_solid = d > kRaymarchSurfaceEpsilon;
 
-                if (d > 0.0f) {
-                    // Sphere tracing (task brief Step 2): step by the exact
-                    // returned distance every iteration (a lower bound on
-                    // how far the nearest surface can be, world/sdf.hpp), so
-                    // no step can ever cross through unseen geometry.
-                    // Converges (`d <= kRaymarchSurfaceEpsilon`) once the ray
-                    // is close enough to call it a hit. `t` strictly
-                    // increases every iteration that reaches the bottom of
-                    // this loop (the preceding `d` was > epsilon > 0 to get
-                    // here), so this loop always terminates.
-                    //
-                    // FAR-PLANE ESCAPE (fix round 1, review IMPORTANT): the
-                    // only previous termination was hit-or-budget-exhausted,
-                    // which measured 81.5% of all SDF evaluations spent on
-                    // rays that hit nothing -- every miss burning the FULL
-                    // kRaymarchMaxSteps budget, because a ray nearly
-                    // parallel to an infinite ground plane has its distance
-                    // stay roughly CONSTANT (neither converging nor
-                    // escaping) rather than growing the way a ray receding
-                    // from a bounded primitive does. Stopping at
-                    // `t > far_plane` bounds this ray's cost by the SAME
-                    // frustum raster_cpu.cpp already clips to, rather than a
-                    // second, invented distance constant.
-                    //
-                    // Uses eval() here, NOT sample() or gradient() -- Task
-                    // R8's own performance note: sample()/gradient()
-                    // additionally compute a per-node gradient (a central
-                    // difference costs SIX extra primitive_distance() calls
-                    // per such node, world/sdf.hpp), which is pure waste on
-                    // every step that does not converge. The gradient is
-                    // fetched exactly ONCE below, only at the final hit
-                    // point.
-                    for (uint32_t step = 0; step < kRaymarchMaxSteps; ++step) {
+                // Sphere tracing (task brief Step 2): step by the exact
+                // returned distance every iteration once outside (a lower
+                // bound on how far the nearest surface can be,
+                // world/sdf.hpp), so no step can ever cross through unseen
+                // geometry. `t` strictly increases every iteration that
+                // reaches the bottom of this loop -- either branch below
+                // advances by a strictly positive amount -- so this loop
+                // always terminates.
+                //
+                // FAR-PLANE ESCAPE (fix round 1, review IMPORTANT): the only
+                // previous termination was hit-or-budget-exhausted, which
+                // measured 81.5% of all SDF evaluations spent on rays that
+                // hit nothing -- every miss burning the FULL kRaymarchMaxSteps
+                // budget, because a ray nearly parallel to an infinite ground
+                // plane has its distance stay roughly CONSTANT (neither
+                // converging nor escaping) rather than growing the way a ray
+                // receding from a bounded primitive does. Stopping at
+                // `t > t_far` bounds this ray's cost by the SAME frustum
+                // raster_cpu.cpp already clips to (now correctly, per the
+                // depth-not-radial fix above), rather than a second, invented
+                // distance constant.
+                //
+                // Uses eval() here, NOT sample() or gradient() -- Task R8's
+                // own performance note: sample()/gradient() additionally
+                // compute a per-node gradient (a central difference costs SIX
+                // extra primitive_distance() calls per such node,
+                // world/sdf.hpp), which is pure waste on every step that does
+                // not converge. The gradient is fetched exactly ONCE below,
+                // only at the final hit point.
+                for (uint32_t step = 0; step < kRaymarchMaxSteps; ++step) {
+                    if (!cleared_start_solid && d > kRaymarchSurfaceEpsilon) {
+                        cleared_start_solid = true;
+                    }
+                    if (cleared_start_solid) {
                         if (d <= kRaymarchSurfaceEpsilon) {
                             hit = true;
                             break;
                         }
                         t += d;
-                        if (t > far_plane) {
-                            break;  // escaped the visible frustum -- miss, sky.
-                        }
-                        p = origin + dir_world * t;
-                        d = spade::eval(*scene.sdf, p);
+                    } else {
+                        // MARCH PAST THE STARTING SOLID (fix round 2, review
+                        // MINOR): step toward the nearest surface without
+                        // registering a hit, however small |d| gets -- a
+                        // sphere tracer detects a genuine CROSSING, and
+                        // re-crossing back OUT of the solid the ray started
+                        // behind is not a new surface to report (raster's own
+                        // SR-13 cull hides only that ENCLOSING solid, never
+                        // whatever sits further along the ray). Floored at
+                        // kRaymarchSurfaceEpsilon so a degenerate exact-zero
+                        // sample (an axis-aligned face hit dead-on) cannot
+                        // stall progress.
+                        t += std::max(std::fabs(d), kRaymarchSurfaceEpsilon);
                     }
+                    if (t > t_far) {
+                        break;  // escaped the visible frustum -- miss, sky.
+                    }
+                    p = origin + dir_world * t;
+                    d = spade::eval(*scene.sdf, p);
                 }
 
                 if (hit) {

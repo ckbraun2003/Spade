@@ -223,14 +223,19 @@ struct ShadedColor {
 // DOUBLE, not float (review Minor 3's own finding): raster_cpu.cpp's
 // original private copy of this function took/returned double -- sin32/
 // cos32 themselves still compute in float, but the DIVISION that turns them
-// into a tangent happens at double precision. A caller that narrows this
-// result to float only at the very end (both render/raster_cpu.cpp's
-// background pass and render/raymarch.cpp's camera ray, after this
-// relocation) reproduces that division bit-for-bit; a caller that divided
-// in float instead (raymarch.cpp's own pre-fix-round private copy) could
-// disagree with raster_cpu.cpp's `f` by a ulp for the exact same
-// `fov_y_radians` -- a real, if tiny, geometry difference between the two
-// paths' camera rays that R9 has no business measuring.
+// into a tangent happens at double precision, and only THAT double result is
+// narrowed to float, once, by the caller. Narrowing a double to float is not
+// "bit-identical to the double" (it is the double's own correctly-rounded
+// float value, a real rounding step) -- the property this buys is narrower
+// but still load-bearing: every caller that shares THIS one function and
+// narrows its result the same way (both render/raster_cpu.cpp's background
+// pass and render/raymarch.cpp's camera ray, after this relocation) narrows
+// the SAME double bit pattern, so their two `f` values agree with EACH OTHER
+// bit-for-bit. A caller that instead divided in float directly (raymarch.cpp's
+// own pre-fix-round private copy) could disagree with raster_cpu.cpp's `f` by
+// a ulp for the exact same `fov_y_radians` -- a real, if tiny, geometry
+// difference between the two paths' camera rays that R9 has no business
+// measuring.
 [[nodiscard]] inline double tan32(double half_fov_rad) {
     const float x = static_cast<float>(half_fov_rad);
     return static_cast<double>(spade::math::sin32(x)) / static_cast<double>(spade::math::cos32(x));
