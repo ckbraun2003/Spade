@@ -1,0 +1,231 @@
+{
+  "_provenance": "S7a Task R9 (RS4 visual/physics agreement harness). measured: true. date: 2026-08-26. machine: DESKTOP-N7QJD3C (Windows 11, MSVC 19.44, msvc-ninja-release preset). worktree: C:/Users/ckbra/kat-wt/render-engine, branch spade/render, parent commit 10c74bd (this file's own values were produced by the code landing in the SAME commit that adds this file -- 'test(spade-render): raymarch-vs-raster agreement matrix with measured bands' -- so the commit that reads this file back is also the commit that measured it). limits_table_version: raymarch@SR-28 (kRaymarchMaxSteps=1024, kRaymarchSurfaceEpsilon=1e-4) + tessellation@kTessellationDefaults@1 (unchanged since Task R3). resolution: 160x120 (spade/tests/test_render_agreement.cpp's kMatrixWidth/kMatrixHeight -- Step 2's own 'reduced resolution' recommendation, matching the frame goldens' own resolution). Every world below is loaded straight from content/worlds/<name>.world.yaml via spade::load_world_file(), scene_from_world()'d with an EMPTY resolved-mesh span (no package instances, no props -- all ten are schema v1 and author none), and rendered with an explicitly-flattened sky (RenderScene::lighting.sky_horizon forced to sky_zenith before either render() call -- see render/agreement.hpp's own header comment for why compare_silhouettes()'s single sky_reference_rgb parameter requires this). DrawMode::shaded has overlays=false and shadows=false (see test file's own header comment: shadows can only darken an already-hit pixel, never flip coverage, and turning them off removes one more irrelevant source of colour divergence for a colour-based classifier). Per-world 'band' is derived from this file's own 'measured_max' (the largest of a world's three camera_bookmark disagreement_fraction values) by a single, uniform, DOCUMENTED rule -- band = round_up_to_nearest(0.001, 1.5 * measured_max) -- never hand-picked per world and never widened to make a borderline case pass (no case was borderline: the highest band, 0.025, is 2x below the task's own >5%-is-a-real-bug gate). RE-MEASURE DISCIPLINE (ruling SR-2): Task C4 will dress these same worlds with prefab instances and MUST re-measure rather than reuse these bands -- when it does, add a NEW 'measured' block per affected world (a versioned entry, e.g. under a 'measured_v2' key or a second dated provenance line), never edit an existing 'cameras'/'measured_max' block in place, so this file's own history stays an audit trail rather than a value silently replaced.",
+  "known_reference_characteristics": "Two structural facts about the raymarch reference attributed here rather than chased, per render/raymarch.hpp's own header comment: (1) the reference's OWN silhouette error is +0.022% against an exact analytic sphere (SphereAnalyticSilhouetteAgreesWithTheExactCircleWithinHalfAPercent, test_render_raymarch.cpp), opposite in sign to tessellation's measured -1.54% under-coverage on the same sphere -- together, well under 2% of any band pinned here. (2) A systematic horizon-band deficit on any world with an infinite ground primitive (all ten shipped worlds use exactly one 'prim: plane' ground, confirmed by the controller amendments' own grep): a near-horizontal ray toward the analytic ground converges too slowly for the fixed step budget to reach, so raymarch under-counts a narrow band of rows nearest the true horizon, one-sided (raymarch never over-counts). At this file's 160x120, that band is consistently ~1 screen row (160 px, 0.83% of the frame) for every 'default' bookmark except circuit-track/figure-eight (see 'investigated' below); the 'top_down' bookmark shows it as flat 0.0 for all ten worlds because looking straight down places no horizon in frame at all.",
+  "investigated": "circuit-track and figure-eight's 'default' bookmarks (pitch_radians=0.5235987755982988, i.e. exactly 30 degrees) measured roughly DOUBLE every other world's 'default' deficit (0.0166667 = 320 px, vs 0.0083333 = 160 px elsewhere) -- the largest values in the whole matrix, so this was checked rather than assumed benign. Cause, confirmed by the camera geometry itself, not merely plausible: with the default 60-degree vertical FOV (half-FOV 30 degrees), a camera pitched down by exactly 30 degrees points its TOP FRAME ROW exactly 30-30=0 degrees below horizontal -- precisely the mathematical horizon, the single worst case for the near-horizontal convergence limitation raymarch.hpp documents. Every other shipped world's 'default' bookmark is pitched at 25 degrees (0.4363323129985824 rad), leaving a comfortable 5-degree margin (top row sits at 25-30=-5 degrees, i.e. 5 degrees ABOVE horizontal, genuine sky) between the frame edge and the worst-case ray. This is the SAME already-diagnosed, already-attributed mechanism raymarch.hpp's header comment describes (not a second, undiagnosed defect) manifesting more strongly for this one camera framing because of where its pitch happens to sit relative to half-FOV; it is not a heightfield-ground gap (none of the ten shipped worlds has one, per the controller amendments' own grep) and it is more than 3x below the task's own >5% real-geometry-bug gate. Not chased, not fixed, not silently absorbed into a shared band -- named here, and both worlds' bands (0.025) are set from THEIR OWN measured maximum by the same uniform rule every other world uses, not widened further to hide the fact that they sit apart from the rest of the matrix.",
+  "resolution": {
+    "width": 160,
+    "height": 120
+  },
+  "worlds": {
+    "circuit-track": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.016666666666666666,
+          "covered_a": 19200,
+          "covered_b": 18880
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.007604166666666667,
+          "covered_a": 14894,
+          "covered_b": 14760
+        }
+      },
+      "measured_max": 0.016666666666666666,
+      "band": 0.025,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.016666666666666666) = 0.025 -- see 'investigated' above for why this world's own maximum is roughly double its siblings'."
+    },
+    "figure-eight": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.016666666666666666,
+          "covered_a": 19200,
+          "covered_b": 18880
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.008541666666666666,
+          "covered_a": 14874,
+          "covered_b": 14742
+        }
+      },
+      "measured_max": 0.016666666666666666,
+      "band": 0.025,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.016666666666666666) = 0.025 -- see 'investigated' above; shares circuit-track's exact 30-degree-pitch 'default' bookmark geometry."
+    },
+    "gate-corridor": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.007395833333333333,
+          "covered_a": 16108,
+          "covered_b": 16010
+        }
+      },
+      "measured_max": 0.008333333333333333,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008333333333333333) = 0.013"
+    },
+    "hover-pad": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 15680,
+          "covered_b": 15520
+        }
+      },
+      "measured_max": 0.008333333333333333,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008333333333333333) = 0.013"
+    },
+    "pdel-site": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.010520833333333333,
+          "covered_a": 14080,
+          "covered_b": 13878
+        }
+      },
+      "measured_max": 0.010520833333333333,
+      "band": 0.016,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.010520833333333333) = 0.016 -- this world's own maximum comes from family_third, not default, unlike most of the matrix."
+    },
+    "pfol-road": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.00875,
+          "covered_a": 14080,
+          "covered_b": 13912
+        }
+      },
+      "measured_max": 0.00875,
+      "band": 0.014,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.00875) = 0.014"
+    },
+    "pint-box": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 14231,
+          "covered_b": 14071
+        }
+      },
+      "measured_max": 0.008333333333333333,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008333333333333333) = 0.013"
+    },
+    "pnav-canyon": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.0078125,
+          "covered_a": 14336,
+          "covered_b": 14186
+        }
+      },
+      "measured_max": 0.008333333333333333,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008333333333333333) = 0.013"
+    },
+    "povr-compound": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008333333333333333,
+          "covered_a": 17280,
+          "covered_b": 17120
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.0005208333333333334,
+          "covered_a": 16565,
+          "covered_b": 16555
+        }
+      },
+      "measured_max": 0.008333333333333333,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008333333333333333) = 0.013 -- this world's family_third is the smallest disagreement in the entire matrix (0.052%)."
+    },
+    "swarm-grid": {
+      "cameras": {
+        "default": {
+          "disagreement_fraction": 0.008385416666666666,
+          "covered_a": 17280,
+          "covered_b": 17119
+        },
+        "top_down": {
+          "disagreement_fraction": 0.0,
+          "covered_a": 19200,
+          "covered_b": 19200
+        },
+        "family_third": {
+          "disagreement_fraction": 0.007864583333333333,
+          "covered_a": 14826,
+          "covered_b": 14675
+        }
+      },
+      "measured_max": 0.008385416666666666,
+      "band": 0.013,
+      "margin_note": "band = round_up(0.001, 1.5 * 0.008385416666666666) = 0.013"
+    }
+  }
+}

@@ -403,6 +403,17 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 # rather than becoming a separate library for the same reason shadow.cpp
 # did -- it and raster_cpu.cpp already need each other's headers
 # (raster_cpu.cpp includes raymarch.hpp to dispatch to it).
+#
+# render/agreement.cpp (S7a Task R9): the RS4 visual/physics agreement
+# harness -- compare_silhouettes()/assert_no_material_matches_sky(), a pure
+# post-process over two already-rendered RenderTarget frames (one shaded, one
+# raymarched). No new external dependency: it calls render/scene.hpp's shared
+# to_byte() and reads world/builder.hpp's MaterialDesc (already reached
+# transitively through this target's PUBLIC spade::world link, below, for the
+# SAME reason raymarch.cpp's SdfProgram reference is). Joins this target
+# rather than becoming a separate library, matching every other single-file
+# addition to spade_render above -- nothing about it needs a build boundary
+# raymarch.cpp/shadow.cpp/gltf.cpp did not already establish.
 # ------------------------------------------------------------------------------
 add_library(spade_render STATIC
     render/target.cpp
@@ -413,6 +424,7 @@ add_library(spade_render STATIC
     render/gltf.cpp
     render/shadow.cpp
     render/raymarch.cpp
+    render/agreement.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)

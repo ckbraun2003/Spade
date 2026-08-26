@@ -26,6 +26,7 @@ add_executable(spade_tests
     test_render_csg.cpp
     test_render_shadow.cpp
     test_render_raymarch.cpp
+    test_render_agreement.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -204,10 +205,33 @@ endif()
 # before it can be baked in, so the string the scanner sees never contains a
 # component that isn't a real directory on the path to engine/.
 cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../engine")
+
+# SPADE_CONTENT_DIR (S7a Task R9, test_render_agreement.cpp): the ONE place
+# spade/tests/ reaches outside the spade/ tree into the surrounding repo, and
+# ONLY for test-fixture DATA -- content/worlds/*.world.yaml (plain
+# Spade-schema world files, loaded through the SAME spade::world_from_yaml()
+# any other test uses) and content/scenes/*.kscene (JSON documents; this
+# suite reads only their camera_bookmarks object, never their
+# instances/package_ref fields). Task R9's brief requires measuring against
+# the ten SHIPPED worlds specifically -- their canonical home is content/,
+# not a second copy under tests/golden/worlds/ that could drift from what
+# actually ships, which matters because ruling SR-2 has Task C4 re-measuring
+# these same bands after the worlds are dressed with prefab instances: a copy
+# would need its own, separate update discipline to stay meaningful, and the
+# live directory does not. This is fixture DATA, not engine or kat CODE --
+# no `#include "kat`, no `kat_host`/`kat_abi` symbol, no spade:: CMake link
+# crosses this boundary, so tools/tests/test_engine_agnosticism.py's guard
+# (which scans for exactly those three things) has nothing to flag here; the
+# guard's own job is the C/C++ include graph and the CMake link graph, not
+# which YAML a test happens to read at run time. NORMALIZED for the same
+# reason SPADE_ENGINE_DIR is, immediately above.
+cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../../content")
+
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    SPADE_CONTENT_DIR="${SPADE_CONTENT_DIR_NORMALIZED}"
 )
 
 include(GoogleTest)
