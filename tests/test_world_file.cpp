@@ -60,6 +60,10 @@ namespace {
 
 using spade::Capacities;
 using spade::Environment;
+using spade::LightingDesc;
+using spade::MaterialDesc;
+using spade::MaterialShading;
+using spade::PropDesc;
 using spade::SdfPose;
 using spade::SpawnPoint;
 using spade::WorldBuilder;
@@ -169,6 +173,32 @@ template <class T>
     caps.sensors = 2;
     caps.contacts = 16;
 
+    // Schema v2's own showcase alongside the SDF program below: three
+    // materials spanning all three MaterialShading values, non-default
+    // lighting, and two render-only props.
+    LightingDesc lighting;
+    lighting.sun_direction = glm::vec3(0.400000006f, 0.699999988f, -0.300000012f);
+    lighting.sun_color = glm::vec3(1.0f, 0.949999988f, 0.899999976f);
+    lighting.sun_intensity = 2.5f;
+    lighting.ambient_color = glm::vec3(0.150000006f, 0.170000002f, 0.200000003f);
+    lighting.sky_zenith = glm::vec3(0.200000003f, 0.400000006f, 0.699999988f);
+    lighting.sky_horizon = glm::vec3(0.850000024f, 0.870000005f, 0.899999976f);
+
+    MaterialDesc asphalt;
+    asphalt.name = "asphalt";
+    asphalt.base_color = glm::vec4(0.200000003f, 0.200000003f, 0.210000008f, 1.0f);
+    asphalt.shading = MaterialShading::lambert;
+
+    MaterialDesc beacon;
+    beacon.name = "beacon";
+    beacon.base_color = glm::vec4(1.0f, 0.300000012f, 0.100000001f, 1.0f);
+    beacon.shading = MaterialShading::emissive;
+
+    MaterialDesc decal;
+    decal.name = "decal";
+    decal.base_color = glm::vec4(0.899999976f, 0.899999976f, 0.899999976f, 1.0f);
+    decal.shading = MaterialShading::unlit;
+
     // Postfix, 7 primitives and 6 operators, reducing to exactly one value:
     //   plane sphere UNION box INTERSECT cylinder capsule SUBTRACT SMOOTH_UNION
     //   torus heightfield UNION UNION
@@ -178,6 +208,10 @@ template <class T>
             .name("maximal")
             .environment(env)
             .capacities(caps)
+            .lighting(lighting)
+            .material(asphalt)  // index 0 -- the palette's default
+            .material(beacon)   // index 1
+            .material(decal)    // index 2
             .spawn("start", glm::vec3(0.0f, 1.25f, -6.0f))
             .spawn("mid", glm::vec3(-2.5f, 3.0f, 0.5f),
                    glm::normalize(glm::quat(0.5f, 0.5f, -0.5f, 0.5f)))
@@ -190,6 +224,7 @@ template <class T>
             .sphere(2.5f, pose(glm::vec3(1.25f, -0.5f, 2.0f),
                                glm::normalize(glm::quat(0.600000024f, 0.800000012f, 0.0f, 0.0f)),
                                1.75f))
+            .material_for_last_node(1)  // the sphere is the beacon
             .union_()
             .box(glm::vec3(0.75f, 1.5f, 0.25f),
                  pose(glm::vec3(-3.0f, 0.75f, 0.25f), glm::quat(0.5f, 0.5f, 0.5f, 0.5f), 0.400000006f))
@@ -204,10 +239,18 @@ template <class T>
             .torus(1.5f, 0.150000006f,
                    pose(glm::vec3(0.0f, 1.79999995f, 0.0f),
                         glm::normalize(glm::quat(0.0f, 0.0f, 0.707106781f, 0.707106781f)), 1.0f))
+            .material_for_last_node(2)  // the torus is the decal
             .heightfield(0.400000006f, glm::vec2(0.699999988f, 1.29999995f), -1.0f,
                          pose(glm::vec3(0.0f, -4.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                               3.0f))
             .union_()
+            .prop("mesh:props/tower",
+                  pose(glm::vec3(-5.0f, 0.0f, -5.0f),
+                       glm::normalize(glm::quat(0.899999976f, 0.0f, 0.400000006f, 0.0f)), 1.20000005f),
+                  1)
+            .prop("mesh:props/flag", pose(glm::vec3(5.0f, 0.5f, -5.0f),
+                                          glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.800000012f),
+                  2)
             .union_()
             .build();
     EXPECT_OK(world);
@@ -235,6 +278,8 @@ void expect_same_world(const WorldDesc& expected, const WorldDesc& actual) {
                                  expected.sdf.transforms.size() * sizeof(spade::SdfTransform)))
             << "SDF transform bytes differ -- the round trip is not bit-exact";
     }
+    EXPECT_EQ(expected.sdf.node_materials, actual.sdf.node_materials)
+        << "node_materials differ -- the round trip is not bit-exact";
 
     ASSERT_EQ(expected.spawns.size(), actual.spawns.size());
     for (std::size_t i = 0; i < expected.spawns.size(); ++i) {
@@ -266,6 +311,51 @@ void expect_same_world(const WorldDesc& expected, const WorldDesc& actual) {
     EXPECT_EQ(expected.capacities.contacts, actual.capacities.contacts);
 
     EXPECT_EQ(expected.visual_refs, actual.visual_refs);
+
+    ASSERT_EQ(expected.materials.size(), actual.materials.size());
+    for (std::size_t i = 0; i < expected.materials.size(); ++i) {
+        const MaterialDesc& e = expected.materials[i];
+        const MaterialDesc& a = actual.materials[i];
+        EXPECT_EQ(e.name, a.name) << "material " << i;
+        EXPECT_EQ(e.base_color.x, a.base_color.x) << "material " << i;
+        EXPECT_EQ(e.base_color.y, a.base_color.y) << "material " << i;
+        EXPECT_EQ(e.base_color.z, a.base_color.z) << "material " << i;
+        EXPECT_EQ(e.base_color.w, a.base_color.w) << "material " << i;
+        EXPECT_EQ(e.shading, a.shading) << "material " << i;
+    }
+
+    EXPECT_EQ(expected.lighting.sun_direction.x, actual.lighting.sun_direction.x);
+    EXPECT_EQ(expected.lighting.sun_direction.y, actual.lighting.sun_direction.y);
+    EXPECT_EQ(expected.lighting.sun_direction.z, actual.lighting.sun_direction.z);
+    EXPECT_EQ(expected.lighting.sun_color.x, actual.lighting.sun_color.x);
+    EXPECT_EQ(expected.lighting.sun_color.y, actual.lighting.sun_color.y);
+    EXPECT_EQ(expected.lighting.sun_color.z, actual.lighting.sun_color.z);
+    EXPECT_EQ(expected.lighting.sun_intensity, actual.lighting.sun_intensity);
+    EXPECT_EQ(expected.lighting.ambient_color.x, actual.lighting.ambient_color.x);
+    EXPECT_EQ(expected.lighting.ambient_color.y, actual.lighting.ambient_color.y);
+    EXPECT_EQ(expected.lighting.ambient_color.z, actual.lighting.ambient_color.z);
+    EXPECT_EQ(expected.lighting.sky_zenith.x, actual.lighting.sky_zenith.x);
+    EXPECT_EQ(expected.lighting.sky_zenith.y, actual.lighting.sky_zenith.y);
+    EXPECT_EQ(expected.lighting.sky_zenith.z, actual.lighting.sky_zenith.z);
+    EXPECT_EQ(expected.lighting.sky_horizon.x, actual.lighting.sky_horizon.x);
+    EXPECT_EQ(expected.lighting.sky_horizon.y, actual.lighting.sky_horizon.y);
+    EXPECT_EQ(expected.lighting.sky_horizon.z, actual.lighting.sky_horizon.z);
+
+    ASSERT_EQ(expected.props.size(), actual.props.size());
+    for (std::size_t i = 0; i < expected.props.size(); ++i) {
+        const PropDesc& e = expected.props[i];
+        const PropDesc& a = actual.props[i];
+        EXPECT_EQ(e.mesh_ref, a.mesh_ref) << "prop " << i;
+        EXPECT_EQ(e.pose.position.x, a.pose.position.x) << "prop " << i;
+        EXPECT_EQ(e.pose.position.y, a.pose.position.y) << "prop " << i;
+        EXPECT_EQ(e.pose.position.z, a.pose.position.z) << "prop " << i;
+        EXPECT_EQ(e.pose.rotation.w, a.pose.rotation.w) << "prop " << i;
+        EXPECT_EQ(e.pose.rotation.x, a.pose.rotation.x) << "prop " << i;
+        EXPECT_EQ(e.pose.rotation.y, a.pose.rotation.y) << "prop " << i;
+        EXPECT_EQ(e.pose.rotation.z, a.pose.rotation.z) << "prop " << i;
+        EXPECT_EQ(e.pose.scale, a.pose.scale) << "prop " << i;
+        EXPECT_EQ(e.material, a.material) << "prop " << i;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +384,46 @@ sdf:
   nodes:
     - {prim: plane, transform: 0, params: [0, 1, 0, 0]}
 visuals: []
+)YAML";
+
+// ---------------------------------------------------------------------------
+// The same minimal world, spelled at schema v2: the three new sections at
+// hand-authorable, non-default values (proving v2 -- not just v1's upgrade
+// path -- is hand authorable too). Base document for the v2-specific
+// adversarial tests below.
+// ---------------------------------------------------------------------------
+constexpr const char* kMinimalWorldV2 = R"YAML(world_version: 2
+name: "minimal"
+environment:
+  gravity: [0, -9.80665016, 0]
+  wind: [0, 0, 0]
+  air_density: 1.22500002
+  temperature_k: 288.149994
+  seed: 0
+capacities:
+  bodies: 1
+  force_elements: 1
+  sensors: 1
+  contacts: 1
+spawns: []
+sdf:
+  transforms:
+    - world_to_local: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+      scale: 1
+  nodes:
+    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}
+  node_materials: []
+visuals: []
+materials:
+  - {name: "default", base_color: [1, 1, 1, 1], shading: "lambert"}
+lighting:
+  sun_direction: [0, 1, 0]
+  sun_color: [1, 1, 1]
+  sun_intensity: 1
+  ambient_color: [0.100000001, 0.100000001, 0.100000001]
+  sky_zenith: [0.300000012, 0.5, 0.800000012]
+  sky_horizon: [0.800000012, 0.850000024, 0.899999976]
+props: []
 )YAML";
 
 // ---------------------------------------------------------------------------
@@ -522,6 +652,23 @@ TEST(WorldFile, MaximalWorldCoversEveryPrimitiveAndEveryOperator) {
     EXPECT_TRUE(scaled);
     EXPECT_EQ(world.spawns.size(), 3u);
     EXPECT_EQ(world.visual_refs.size(), 3u);
+
+    // Schema v2's own fields: a palette wider than the auto-inserted single
+    // default, all three MaterialShading values represented, non-default
+    // lighting, at least one node actually using a non-default material, and
+    // at least one prop.
+    ASSERT_EQ(world.materials.size(), 3u);
+    std::array<bool, spade::kMaterialShadingCount> shadings{};
+    for (const MaterialDesc& m : world.materials) {
+        ASSERT_LT(static_cast<uint32_t>(m.shading), spade::kMaterialShadingCount);
+        shadings[static_cast<uint32_t>(m.shading)] = true;
+    }
+    for (uint32_t i = 0; i < spade::kMaterialShadingCount; ++i) EXPECT_TRUE(shadings[i]) << "shading " << i;
+    EXPECT_NE(world.lighting.sun_intensity, LightingDesc{}.sun_intensity);
+    ASSERT_EQ(world.sdf.node_materials.size(), world.sdf.nodes.size());
+    EXPECT_TRUE(std::any_of(world.sdf.node_materials.begin(), world.sdf.node_materials.end(),
+                            [](uint32_t m) { return m != 0; }));
+    EXPECT_EQ(world.props.size(), 2u);
 }
 
 TEST(WorldFile, EmissionIsCanonical) {
@@ -790,6 +937,53 @@ TEST(WorldFile, MinimalHandWrittenDocumentLoads) {
     EXPECT_EQ(world->environment.gravity.y, -9.80665016f);
 }
 
+// Step 1's upgrade-path claim, pinned directly: a v1 file (no materials/
+// lighting/props keys at all) still loads, and its WorldDesc gains schema
+// v2's three sections at their defaults -- one default material, default
+// lighting, no props. Same fixture MinimalHandWrittenDocumentLoads uses
+// above, so this is strictly an ADDITIONAL claim about it, not a new fixture.
+TEST(WorldFile, V1FileUpgradesWithDefaultMaterialsLightingAndProps) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(kMinimalWorld);
+    ASSERT_OK(world);
+    ASSERT_EQ(world->materials.size(), 1u);
+    EXPECT_EQ(world->materials[0].name, "default");
+    EXPECT_EQ(world->materials[0].base_color, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    EXPECT_EQ(world->materials[0].shading, MaterialShading::lambert);
+    EXPECT_EQ(world->lighting.sun_direction, LightingDesc{}.sun_direction);
+    EXPECT_EQ(world->lighting.sun_intensity, LightingDesc{}.sun_intensity);
+    EXPECT_TRUE(world->props.empty());
+    EXPECT_TRUE(world->sdf.node_materials.empty());
+}
+
+// v2 is hand authorable too, not just v1's upgrade path -- kMinimalWorldV2
+// spells the three new sections directly, at values that are NOT the
+// defaults (props: [] aside, which is the only legal empty state for it).
+TEST(WorldFile, HandAuthoredV2DocumentLoads) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(kMinimalWorldV2);
+    ASSERT_OK(world);
+    EXPECT_EQ(world->name, "minimal");
+    ASSERT_EQ(world->materials.size(), 1u);
+    EXPECT_EQ(world->materials[0].name, "default");
+    EXPECT_EQ(world->materials[0].shading, MaterialShading::lambert);
+    EXPECT_EQ(world->lighting.sun_direction, glm::vec3(0.0f, 1.0f, 0.0f));
+    EXPECT_TRUE(world->props.empty());
+}
+
+// A v2 hand-authored document round-trips byte-exact through the writer too
+// (Step 1's other claim) -- world_from_yaml -> world_to_yaml -> world_from_yaml
+// produces the SAME WorldDesc, mirroring MaximalWorldRoundTripsBitExactly's
+// shape but starting from hand-written text instead of the builder.
+TEST(WorldFile, HandAuthoredV2DocumentRoundTripsThroughTheWriter) {
+    const spade::Result<WorldDesc> once = spade::world_from_yaml(kMinimalWorldV2);
+    ASSERT_OK(once);
+    const spade::Result<std::string> text = spade::world_to_yaml(*once);
+    ASSERT_OK(text);
+    const spade::Result<WorldDesc> twice = spade::world_from_yaml(*text);
+    ASSERT_OK(twice);
+    expect_same_world(*once, *twice);
+    EXPECT_TRUE(contains(*text, "world_version: 2")) << *text;
+}
+
 // ===========================================================================
 // 5. Adversarial -- every rejection rule, and its diagnostic
 // ===========================================================================
@@ -818,24 +1012,30 @@ TEST(WorldFileRejects, EmptyDocument) {
 // while this one means "this build cannot read this artifact" -- which a
 // caller may answer by upgrading instead. state/snapshot.cpp says the same
 // sentence about a versioned blob with the same code; one engine, one answer.
+//
+// version 3 (not 2) IS THE MISMATCH HERE, schema v2's own upgrade path
+// (kWorldFileMinReadVersion) is what made "world_version: 2" a version this
+// build reads -- that is exactly what WorldFile.HandAuthoredV2DocumentLoads
+// and the v1-upgrade tests below pin. Version 3 is a genuinely unsupported
+// future version, the same role 2 played before this task.
 TEST(WorldFileRejects, WrongSchemaVersionNamingBoth) {
     const spade::Result<WorldDesc> world =
-        spade::world_from_yaml(replace_first(kMinimalWorld, "world_version: 1", "world_version: 2"));
+        spade::world_from_yaml(replace_first(kMinimalWorld, "world_version: 1", "world_version: 3"));
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(contains(why(world), "version 2")) << why(world);
-    EXPECT_TRUE(contains(why(world), "version 1")) << why(world);
+    EXPECT_TRUE(contains(why(world), "version 3")) << why(world);
+    EXPECT_TRUE(contains(why(world), "versions 1-2")) << why(world);
     EXPECT_TRUE(contains(why(world), "line")) << why(world);
 }
 
 TEST(WorldFileRejects, AFutureVersionIsReportedAsAVersionNotAsUnknownKeys) {
-    // A v2 file is full of keys v1 does not know. "unknown key 'thermals'" is a
-    // true but useless answer; the version check has to come first.
-    const std::string v2 =
-        replace_first(replace_first(kMinimalWorld, "world_version: 1", "world_version: 2"),
+    // A v3 file is full of keys v1/v2 do not know. "unknown key 'thermals'" is
+    // a true but useless answer; the version check has to come first.
+    const std::string v3 =
+        replace_first(replace_first(kMinimalWorld, "world_version: 1", "world_version: 3"),
                       "name: \"minimal\"", "name: \"minimal\"\nthermals: {model: \"bubble\"}");
-    const spade::Result<WorldDesc> world = spade::world_from_yaml(v2);
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(v3);
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(contains(why(world), "schema version 2")) << why(world);
+    EXPECT_TRUE(contains(why(world), "schema version 3")) << why(world);
     EXPECT_FALSE(contains(why(world), "unknown key")) << why(world);
 }
 
@@ -844,16 +1044,16 @@ TEST(WorldFileRejects, AVersionMismatchKeepsItsCodeThroughTheFileLayer) {
     // has to survive that re-wrap, or the distinction above is invisible to
     // everyone who reads files rather than strings.
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_v2.world.yaml";
+        std::filesystem::temp_directory_path() / "spade_test_v3.world.yaml";
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(out.good());
-        const std::string v2 = replace_first(kMinimalWorld, "world_version: 1", "world_version: 2");
-        out.write(v2.data(), static_cast<std::streamsize>(v2.size()));
+        const std::string v3 = replace_first(kMinimalWorld, "world_version: 1", "world_version: 3");
+        out.write(v3.data(), static_cast<std::streamsize>(v3.size()));
     }
     const spade::Result<WorldDesc> world = spade::load_world_file(path);
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(contains(why(world), "spade_test_v2.world.yaml")) << why(world);
+    EXPECT_TRUE(contains(why(world), "spade_test_v3.world.yaml")) << why(world);
     std::filesystem::remove(path);
 }
 
@@ -1055,6 +1255,93 @@ TEST(WorldFileRejects, EmptyVisualReference) {
     EXPECT_TRUE(contains(why(world), "visual reference 0 is empty")) << why(world);
 }
 
+// ---------------------------------------------------------------------------
+// Schema v2's own sections (materials, lighting, props, sdf.node_materials).
+// Step 1: "Unknown keys are still errors at every level, including inside the
+// new sections. node_materials of the wrong length is invalid_argument. A
+// props entry with an empty mesh_ref is rejected."
+// ---------------------------------------------------------------------------
+
+TEST(WorldFileRejects, V1DocumentCannotCarryASchemaV2Section) {
+    // v1 never defined `materials` -- a v1-labeled document that includes it
+    // is malformed (bump world_version to 2, or drop the key), not silently
+    // upgraded. Proves the top-level allowlist really is version-gated, not
+    // just widened once and for all.
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(
+        replace_first(kMinimalWorld, "visuals: []", "visuals: []\nmaterials: []"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown key 'materials'")) << why(world);
+    EXPECT_TRUE(contains(why(world), "schema v1")) << why(world);
+}
+
+TEST(WorldFileRejects, V1DocumentSdfSectionCannotCarryNodeMaterials) {
+    // Same version-gating, one level down: v1's `sdf:` block never carried
+    // node_materials either (PA-2 postdates it).
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorld, "  nodes:\n    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}",
+        "  nodes:\n    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}\n  node_materials: []"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown key 'node_materials'")) << why(world);
+}
+
+TEST(WorldFileRejects, NodeMaterialsWrongLengthViaYamlIsInvalid) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(
+        replace_first(kMinimalWorldV2, "node_materials: []", "node_materials: [0, 0]"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "node_materials")) << why(world);
+}
+
+TEST(WorldFileRejects, UnknownKeyInsideAMaterialsEntry) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "shading: \"lambert\"}", "shading: \"lambert\", glossy: 0.5}"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown key 'glossy'")) << why(world);
+    EXPECT_TRUE(contains(why(world), "world.materials[0]")) << why(world);
+}
+
+TEST(WorldFileRejects, UnknownMaterialShadingNameIsInvalid) {
+    const spade::Result<WorldDesc> world =
+        spade::world_from_yaml(replace_first(kMinimalWorldV2, "shading: \"lambert\"", "shading: \"shiny\""));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown material shading 'shiny'")) << why(world);
+}
+
+TEST(WorldFileRejects, UnknownKeyInsideLighting) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(
+        replace_first(kMinimalWorldV2, "  sun_intensity: 1\n", "  sun_intensity: 1\n  haze: 0.2\n"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown key 'haze'")) << why(world);
+    EXPECT_TRUE(contains(why(world), "world.lighting")) << why(world);
+}
+
+TEST(WorldFileRejects, UnknownKeyInsideAPropsEntry) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "props: []",
+        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "scale: 1, material: 0, cast_shadow: true}"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "unknown key 'cast_shadow'")) << why(world);
+    EXPECT_TRUE(contains(why(world), "world.props[0]")) << why(world);
+}
+
+TEST(WorldFileRejects, PropWithEmptyMeshRefIsInvalid) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "props: []",
+        "props:\n  - {mesh_ref: \"\", position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1, "
+        "material: 0}"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "empty mesh_ref")) << why(world);
+}
+
+TEST(WorldFileRejects, PropMaterialIndexOutOfRangeViaYamlIsInvalid) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "props: []",
+        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "scale: 1, material: 9}"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "material index out of range")) << why(world);
+}
+
 TEST(WorldFileRejects, ErrorsFromLoadCarryTheFilePath) {
     const std::filesystem::path path =
         std::filesystem::temp_directory_path() / "spade_test_broken.world.yaml";
@@ -1099,6 +1386,26 @@ TEST(WorldFileRejects, WritingANodeSchemaV1CannotRepresent) {
     const spade::Result<std::string> b = spade::world_to_yaml(kinded);
     EXPECT_EQ(code_of(b), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(b), "non-zero primitive kind")) << why(b);
+}
+
+// PA-2 companion (schema v2, S7a task W1). The test above already exercises
+// this on maximal_world(), which now carries a real materials palette and a
+// fully-populated node_materials array -- this test just says so explicitly,
+// so the property "the _pad/kind refusals hold even with the new v2 payload
+// present" is a named fact rather than something a reader has to notice.
+// _pad sits right next to where a material index might have gone (sdf.hpp's
+// own note); this is the test that would fail if it ever did.
+TEST(WorldFileRejects, WritingANodeSchemaV2CannotRepresentEitherWithMaterialsPresent) {
+    WorldDesc world = maximal_world();
+    ASSERT_FALSE(world.materials.empty());
+    ASSERT_FALSE(world.sdf.node_materials.empty());
+    EXPECT_OK(spade::world_to_yaml(world));
+
+    WorldDesc padded = world;
+    padded.sdf.nodes[0]._pad = 1;
+    const spade::Result<std::string> a = spade::world_to_yaml(padded);
+    EXPECT_EQ(code_of(a), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(a), "non-zero padding")) << why(a);
 }
 
 TEST(WorldFileRejects, WritingAnInvalidWorld) {

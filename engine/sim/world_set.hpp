@@ -326,6 +326,13 @@ struct WorldSetLayout {
 //     presentation layer resolves for the same physical world replay a
 //     restored blob identically, so covering them here would reject pairings
 //     that are in fact sound, the same argument as spawn points above.
+//   * MATERIALS, LIGHTING, PROPS, and SdfProgram::node_materials (schema v2,
+//     S7a task W1). RENDER-ONLY, the identical VISUAL_REFS argument just
+//     above: a material palette, a sun/sky, a mesh placement and a per-node
+//     material index are all presentation-layer concerns WorldDesc's own
+//     comments on these fields already say physics never reads. Two descs
+//     differing only in one of these four replay a restored blob identically,
+//     so folding any of them would reject a pairing that is in fact sound.
 //
 // AND ONE THING IT COVERS THAT THE ENGINE IGNORES, stated so the strictness is
 // not mistaken for a bug: Environment::seed is the world FILE's authoring

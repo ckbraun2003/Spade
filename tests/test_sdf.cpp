@@ -977,6 +977,50 @@ TEST(SdfValidate, EmptyProgramValidatesToZeroDepth) {
     EXPECT_EQ(*r, 0u);
 }
 
+// ---------------------------------------------------------------------------
+// node_materials (schema v2, PA-2): a parallel, host-only array. validate()
+// only checks its LENGTH -- whether an index is in range depends on
+// WorldDesc::materials, which SdfProgram does not have, so that half lives in
+// validate_world_desc() (WorldBuilderValidation section below).
+// ---------------------------------------------------------------------------
+
+TEST(SdfValidate, EmptyNodeMaterialsIsAccepted) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).sphere(1.0f).union_();
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    EXPECT_TRUE(world->sdf.node_materials.empty());
+    EXPECT_TRUE(world->sdf.validate().has_value());
+}
+
+TEST(SdfValidate, NodeMaterialsWrongLengthIsInvalid) {
+    SdfProgram prog;
+    prog.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode node{};
+    node.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    node.params = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+    prog.nodes.push_back(node);
+    prog.nodes.push_back(node);
+    // Two nodes; node_materials of length 1 is neither 0 nor nodes.size().
+    prog.node_materials = {0u};
+    const spade::Result<uint32_t> r = prog.validate();
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Code::invalid_argument);
+    EXPECT_NE(r.error().context.find("node_materials"), std::string::npos) << r.error().context;
+}
+
+TEST(SdfValidate, FullLengthNodeMaterialsIsAccepted) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).sphere(1.0f).union_();  // 3 nodes: sphere, sphere, union
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    SdfProgram prog = world->sdf;
+    ASSERT_EQ(prog.nodes.size(), 3u);
+    prog.node_materials = {0u, 1u, 0u};  // one per node, including the op node
+    const spade::Result<uint32_t> r = prog.validate();
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().context);
+}
+
 // ===========================================================================
 // WorldBuilder validation
 // ===========================================================================
@@ -1062,6 +1106,172 @@ TEST(WorldBuilderValidation, FirstErrorSurvivesLaterAdds) {
     const spade::Result<WorldDesc> world = b.build();
     ASSERT_FALSE(world.has_value());
     EXPECT_NE(world.error().context.find("plane normal"), std::string::npos)
+        << world.error().context;
+}
+
+// ===========================================================================
+// Materials, lighting, props (schema v2, S7a task W1)
+// ===========================================================================
+
+using spade::MaterialDesc;
+using spade::MaterialShading;
+using spade::LightingDesc;
+using spade::PropDesc;
+
+TEST(WorldMaterials, BuildWithNoMaterialCallGetsOneDefaultMaterial) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    ASSERT_EQ(world->materials.size(), 1u);
+    EXPECT_EQ(world->materials[0].shading, MaterialShading::lambert);
+    EXPECT_TRUE(world->props.empty());
+}
+
+TEST(WorldMaterials, MaterialCallsAppendInOrder) {
+    WorldBuilder b = base_builder();
+    MaterialDesc red;
+    red.name = "red";
+    red.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    red.shading = MaterialShading::unlit;
+    MaterialDesc glow;
+    glow.name = "glow";
+    glow.shading = MaterialShading::emissive;
+    b.material(red).material(glow).sphere(1.0f);
+
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    ASSERT_EQ(world->materials.size(), 2u);
+    EXPECT_EQ(world->materials[0].name, "red");
+    EXPECT_EQ(world->materials[0].shading, MaterialShading::unlit);
+    EXPECT_EQ(world->materials[1].name, "glow");
+    EXPECT_EQ(world->materials[1].shading, MaterialShading::emissive);
+}
+
+TEST(WorldMaterials, MaterialForLastNodeSetsOnlyThatNodeAndDefaultsEarlierOnesToZero) {
+    WorldBuilder b = base_builder();
+    MaterialDesc primary;
+    primary.name = "primary";
+    MaterialDesc extra;
+    extra.name = "extra";
+    b.material(primary)   // index 0
+        .material(extra)  // index 1
+        .sphere(1.0f)
+        .sphere(1.0f)
+        .material_for_last_node(1)
+        .union_();
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    ASSERT_EQ(world->materials.size(), 2u);
+    ASSERT_EQ(world->sdf.nodes.size(), 3u);
+    ASSERT_EQ(world->sdf.node_materials.size(), 3u);
+    EXPECT_EQ(world->sdf.node_materials[0], 0u);  // first sphere: default ("primary")
+    EXPECT_EQ(world->sdf.node_materials[1], 1u);  // second sphere: set explicitly ("extra")
+    EXPECT_EQ(world->sdf.node_materials[2], 0u);  // union node: default
+}
+
+TEST(WorldMaterials, MaterialForLastNodeWithNoNodeYetIsInvalid) {
+    WorldBuilder b = base_builder();
+    b.material_for_last_node(0).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+}
+
+TEST(WorldMaterials, NodeMaterialIndexOutOfRangeIsInvalid) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).material_for_last_node(5);  // only material 0 (the default) exists
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("material index"), std::string::npos)
+        << world.error().context;
+}
+
+TEST(WorldMaterials, UnknownShadingValueIsInvalid) {
+    WorldBuilder b = base_builder();
+    MaterialDesc weird;
+    weird.shading = static_cast<MaterialShading>(99);
+    b.material(weird).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("shading"), std::string::npos) << world.error().context;
+}
+
+TEST(WorldLighting, DefaultLightingIsFinite) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    const LightingDesc& light = world->lighting;
+    EXPECT_TRUE(std::isfinite(light.sun_direction.x));
+    EXPECT_TRUE(std::isfinite(light.sun_intensity));
+    EXPECT_TRUE(std::isfinite(light.sky_zenith.x));
+    EXPECT_TRUE(std::isfinite(light.sky_horizon.x));
+}
+
+TEST(WorldLighting, LightingCallReplacesTheDefault) {
+    WorldBuilder b = base_builder();
+    LightingDesc light;
+    light.sun_direction = glm::vec3(1.0f, 0.0f, 0.0f);
+    light.sun_intensity = 3.5f;
+    b.lighting(light).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    EXPECT_EQ(world->lighting.sun_direction, glm::vec3(1.0f, 0.0f, 0.0f));
+    EXPECT_FLOAT_EQ(world->lighting.sun_intensity, 3.5f);
+}
+
+TEST(WorldLighting, NonFiniteLightingIsInvalid) {
+    WorldBuilder b = base_builder();
+    LightingDesc light;
+    light.sun_intensity = std::numeric_limits<float>::infinity();
+    b.lighting(light).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("lighting"), std::string::npos) << world.error().context;
+}
+
+TEST(WorldProps, PropIsKeptWithItsPoseAndMaterial) {
+    WorldBuilder b = base_builder();
+    SdfPose pose;
+    pose.position = glm::vec3(1.0f, 2.0f, 3.0f);
+    b.sphere(1.0f).prop("mesh:cone", pose, 0);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    ASSERT_EQ(world->props.size(), 1u);
+    EXPECT_EQ(world->props[0].mesh_ref, "mesh:cone");
+    EXPECT_EQ(world->props[0].pose.position, glm::vec3(1.0f, 2.0f, 3.0f));
+    EXPECT_EQ(world->props[0].material, 0u);
+}
+
+TEST(WorldProps, EmptyMeshRefIsInvalid) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).prop("", SdfPose{});
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+}
+
+TEST(WorldProps, NonPositivePoseScaleIsInvalid) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).prop("mesh:cone", SdfPose{.position = glm::vec3(0.0f),
+                                             .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                             .scale = 0.0f});
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+}
+
+TEST(WorldProps, MaterialIndexOutOfRangeIsInvalid) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).prop("mesh:cone", SdfPose{}, 7);  // only material 0 exists
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("material index"), std::string::npos)
         << world.error().context;
 }
 

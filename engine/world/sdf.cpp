@@ -396,6 +396,16 @@ glm::vec3 gradient(const SdfProgram& program, glm::vec3 p) noexcept {
 }
 
 Result<uint32_t> SdfProgram::validate() const {
+    // PA-2: node_materials is a parallel, host-only array (sdf.hpp) -- the
+    // only thing THIS type can check about it is its length, since whether an
+    // index is in range depends on WorldDesc::materials, which this type does
+    // not have (validate_world_desc() checks that half).
+    if (!node_materials.empty() && node_materials.size() != nodes.size()) {
+        return std::unexpected(invalid(
+            "SDF node_materials must be empty or exactly nodes.size() (" +
+            std::to_string(nodes.size()) + "), found " + std::to_string(node_materials.size())));
+    }
+
     for (size_t i = 0; i < transforms.size(); ++i) {
         const SdfTransform& t = transforms[i];
         if (!finite(t.world_to_local) || !finite(t.scale)) {

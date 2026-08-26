@@ -1242,6 +1242,18 @@ private:
     // What one world's passes read that is not per-body state. Copied from the
     // WorldInstanceDesc at create() and immutable thereafter -- configuration,
     // not state, which is precisely why none of it is in the snapshot.
+#if defined(_MSC_VER)
+#pragma warning(push)
+    // C4324: "structure was padded due to alignment specifier". ContactParams
+    // and GridParams are alignas(16) because they are std430 records the S6
+    // device buffers mirror, so ANY host aggregate that holds one inherits
+    // their alignment and gains tail padding. That is the intended cost of
+    // single-sourcing the layout, and it costs nothing here -- this struct is
+    // a description, never uploaded, never hashed and never snapshotted. Same
+    // disable, same reason, as state/layout.hpp's WorldParams and
+    // sim/world_set.hpp's WorldInstanceDesc.
+#pragma warning(disable : 4324)
+#endif
     struct WorldConfig {
         SdfProgram sdf;
         DrydenParams turbulence{};
@@ -1261,6 +1273,9 @@ private:
         // (WorldParams::body_capacity is the ARENA PARTITION size, which is
         // the set's maximum and deliberately a different number).
     };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
     // One queued structural change. A plain tagged record in a std::vector:
     // FIFO by construction, with no hashing, no pointer ordering and no

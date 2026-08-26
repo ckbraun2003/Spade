@@ -360,15 +360,40 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 // this literal ever needs re-verification and neither is available, the
 // local Docker recipe above is the sanctioned substitute, not a loosening of
 // the assert.
+// UPDATED (S7a task W1, schema v2): materials, lighting, props and
+// SdfProgram::node_materials added three std::vector members and one plain
+// LightingDesc (5 floats' worth of glm::vec3 + one float, no container of its
+// own) to WorldDesc's transitive field set -- classified into world_set.hpp's
+// "WHAT IT DELIBERATELY DOES NOT COVER" exclusion list, same as visual_refs,
+// not into config_hash's fold (see that list's new bullet). The
+// non-debug-iterator literal below (184 -> 320, a measured +136 bytes) was
+// MEASURED on this box exactly as the original 184 was: a template
+// instantiation deliberately left incomplete (`template <int N> struct
+// Probe; Probe<sizeof(WorldDesc)> x;`) forces the compiler to print the real
+// number in its own diagnostic, which is more reliable than hand-deriving it
+// from struct layout rules across two standard libraries. +136 is exactly the
+// three new vectors at 24 bytes each (72) plus sizeof(LightingDesc) (64,
+// itself exactly 5 vec3 + 1 float with no padding since every member is
+// 4-byte aligned) -- so the arithmetic and the measurement agree.
+//
+// The debug-iterator literal (224 -> 344) is DERIVED, not separately
+// measured on this box (no msvc-ninja-debug preset exists here): it follows
+// the SAME rule the 184->224 gap above already established and explained --
+// MSVC's debug STL adds exactly one 8-byte _Container_proxy pointer per
+// std::vector/std::string member, and this change adds exactly three new
+// vector members (node_materials, materials, props; LightingDesc contributes
+// none), so 320 + 3*8 = 344. Re-verify with the local gcc-13/msvc-debug
+// recipe below if this literal is ever in question and neither build is at
+// hand.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 224,
+static_assert(sizeof(WorldDesc) == 344,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 184,
+static_assert(sizeof(WorldDesc) == 320,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "

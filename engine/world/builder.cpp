@@ -124,6 +124,15 @@ void WorldBuilder::push_primitive(SdfPrim kind, const glm::vec4& params, const S
     node.transform = transform;
     node.params = params;
     desc_.sdf.nodes.push_back(node);
+    // Keep node_materials in lockstep once ANY material_for_last_node() call
+    // has activated it (sdf.hpp's invariant: empty, or exactly nodes.size()).
+    // Without this, a node pushed AFTER an earlier material_for_last_node()
+    // call would silently desync the two arrays until the next such call --
+    // this way, calling it once mid-chain and never again still leaves a
+    // fully-sized, valid array.
+    if (!desc_.sdf.node_materials.empty()) {
+        desc_.sdf.node_materials.push_back(0);
+    }
 }
 
 void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
@@ -133,6 +142,9 @@ void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
     node.transform = 0;
     node.params = params;
     desc_.sdf.nodes.push_back(node);
+    if (!desc_.sdf.node_materials.empty()) {
+        desc_.sdf.node_materials.push_back(0);
+    }
 }
 
 WorldBuilder& WorldBuilder::plane(glm::vec3 normal, float offset, const SdfPose& pose) {
@@ -197,6 +209,62 @@ WorldBuilder& WorldBuilder::subtract() {
 
 WorldBuilder& WorldBuilder::smooth_union(float k) {
     push_op(SdfOp::smooth_union, glm::vec4(k, 0.0f, 0.0f, 0.0f));
+    return *this;
+}
+
+// ---------------------------------------------------------------------------
+// Materials, lighting, props (schema v2)
+// ---------------------------------------------------------------------------
+
+WorldBuilder& WorldBuilder::material(MaterialDesc m) {
+    desc_.materials.push_back(std::move(m));
+    return *this;
+}
+
+WorldBuilder& WorldBuilder::lighting(const LightingDesc& light) {
+    desc_.lighting = light;
+    return *this;
+}
+
+WorldBuilder& WorldBuilder::prop(std::string mesh_ref, const SdfPose& pose, uint32_t material) {
+    if (mesh_ref.empty()) {
+        fail("prop mesh reference must not be empty");
+        return *this;
+    }
+    const float qlen = glm::length(pose.rotation);
+    if (!finite(pose.position) || !finite(pose.scale) || !finite(qlen)) {
+        fail("prop '" + mesh_ref + "' has a non-finite pose");
+        return *this;
+    }
+    if (!(pose.scale > 0.0f)) {
+        fail("prop '" + mesh_ref + "' pose scale must be > 0 (uniform scale only)");
+        return *this;
+    }
+    if (!(qlen > 0.0f)) {
+        fail("prop '" + mesh_ref + "' pose rotation is a degenerate quaternion");
+        return *this;
+    }
+
+    PropDesc p;
+    p.mesh_ref = std::move(mesh_ref);
+    p.pose = pose;
+    p.pose.rotation = pose.rotation / qlen;  // same normalize-at-authoring-time as spawn()
+    p.material = material;
+    desc_.props.push_back(std::move(p));
+    return *this;
+}
+
+WorldBuilder& WorldBuilder::material_for_last_node(uint32_t material_index) {
+    if (desc_.sdf.nodes.empty()) {
+        fail("material_for_last_node() called before any SDF node was pushed");
+        return *this;
+    }
+    // Grow lazily to nodes.size() (sdf.hpp's node_materials contract: empty or
+    // exactly nodes.size()), defaulting every not-yet-assigned slot to 0.
+    if (desc_.sdf.node_materials.size() != desc_.sdf.nodes.size()) {
+        desc_.sdf.node_materials.resize(desc_.sdf.nodes.size(), 0);
+    }
+    desc_.sdf.node_materials.back() = material_index;
     return *this;
 }
 
@@ -274,6 +342,78 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
         }
     }
 
+    // --- materials, lighting, props (schema v2) -----------------------------
+    //
+    // materials must never be empty: index 0 is the default every
+    // node_materials/PropDesc::material entry falls back to, and both
+    // producers of a WorldDesc (WorldBuilder::build(), world_from_yaml()'s v1
+    // upgrade path and its v2 parse) guarantee at least one entry before
+    // calling this function -- so an empty palette here can only mean a
+    // hand-assembled WorldDesc (world/world_ref.hpp's resolve_world() desc
+    // alternative) that skipped that step.
+    if (desc.materials.empty()) {
+        return std::unexpected(invalid("world must have at least one material (index 0)"));
+    }
+    for (size_t i = 0; i < desc.materials.size(); ++i) {
+        const MaterialDesc& m = desc.materials[i];
+        if (!finite(m.base_color)) {
+            return std::unexpected(
+                invalid("material " + std::to_string(i) + " has a non-finite base_color"));
+        }
+        if (static_cast<uint32_t>(m.shading) >= kMaterialShadingCount) {
+            return std::unexpected(
+                invalid("material " + std::to_string(i) + " has an unknown shading value"));
+        }
+    }
+
+    const LightingDesc& light = desc.lighting;
+    if (!finite(light.sun_direction) || !finite(light.sun_color) || !finite(light.sun_intensity) ||
+        !finite(light.ambient_color) || !finite(light.sky_zenith) || !finite(light.sky_horizon)) {
+        return std::unexpected(invalid("lighting has non-finite values"));
+    }
+
+    for (size_t i = 0; i < desc.props.size(); ++i) {
+        const PropDesc& p = desc.props[i];
+        if (p.mesh_ref.empty()) {
+            return std::unexpected(invalid("prop " + std::to_string(i) + " has an empty mesh_ref"));
+        }
+        const float qlen = glm::length(p.pose.rotation);
+        if (!finite(p.pose.position) || !finite(p.pose.scale) || !finite(qlen)) {
+            return std::unexpected(
+                invalid("prop '" + p.mesh_ref + "' has a non-finite pose"));
+        }
+        if (!(p.pose.scale > 0.0f)) {
+            return std::unexpected(
+                invalid("prop '" + p.mesh_ref + "' pose scale must be > 0 (uniform scale only)"));
+        }
+        // Same 1e-3 tolerance as a spawn point's orientation above -- both
+        // answer "is this direction close enough to unit that the pose it
+        // describes is metric", and this is NOT re-normalized for the same
+        // reason a spawn's is not (see validate_world_desc's own note above):
+        // re-normalizing here would perturb a file-loaded pose's last bit and
+        // break its round trip.
+        const float q2 = p.pose.rotation.w * p.pose.rotation.w + p.pose.rotation.x * p.pose.rotation.x +
+                         p.pose.rotation.y * p.pose.rotation.y + p.pose.rotation.z * p.pose.rotation.z;
+        if (!(glm::abs(q2 - 1.0f) <= 1e-3f)) {
+            return std::unexpected(
+                invalid("prop '" + p.mesh_ref + "' pose rotation must be a unit quaternion"));
+        }
+        if (p.material >= desc.materials.size()) {
+            return std::unexpected(
+                invalid("prop '" + p.mesh_ref + "' material index out of range"));
+        }
+    }
+
+    // node_materials' LENGTH is SdfProgram::validate()'s own job (it has the
+    // node count; it does not have the materials palette); each entry's VALUE
+    // is this function's job, since only here is desc.materials in scope.
+    for (size_t i = 0; i < desc.sdf.node_materials.size(); ++i) {
+        if (desc.sdf.node_materials[i] >= desc.materials.size()) {
+            return std::unexpected(invalid("SDF node " + std::to_string(i) +
+                                           "'s material index out of range"));
+        }
+    }
+
     // Structural + parameter validation of the SDF program, including the
     // kMaxSdfDepth bound (reported as capacity_exceeded). Returns the peak
     // evaluation-stack depth, which is this function's own result.
@@ -288,11 +428,22 @@ Result<WorldDesc> WorldBuilder::build() const {
     if (error_) {
         return std::unexpected(*error_);
     }
-    const Result<uint32_t> depth = validate_world_desc(desc_);
+    // build() is const (the fluent chain never mutates desc_ from here), so
+    // the default-material fallback works on a COPY: a caller who never calls
+    // .material() still gets a valid, non-empty palette (validate_world_desc's
+    // "materials must have at least one entry" rule), without .material()
+    // itself needing to pre-seed index 0 the way the constructor pre-seeds
+    // transforms[0] -- that would make a caller's FIRST .material() call land
+    // at index 1, not 0.
+    WorldDesc desc = desc_;
+    if (desc.materials.empty()) {
+        desc.materials.push_back(MaterialDesc{});
+    }
+    const Result<uint32_t> depth = validate_world_desc(desc);
     if (!depth) {
         return std::unexpected(depth.error());
     }
-    return desc_;
+    return desc;
 }
 
 }  // namespace spade

@@ -168,6 +168,26 @@ struct SdfProgram {
     std::vector<SdfNode> nodes;
     std::vector<SdfTransform> transforms;
 
+    // Per-node material index (schema v2, PA-2). A PARALLEL, HOST-ONLY array,
+    // deliberately NOT a field of SdfNode: SdfNode is mirrored byte-for-byte
+    // into compute::SdfNodeRow (compute/sdf_program.hpp) and into
+    // shaders/shared/layouts.slang, both of which index it BY NAME, and
+    // SdfNode's only spare lane (`_pad`) exists to keep `params` on a
+    // 16-byte boundary for that std430 upload -- putting a material index
+    // there would silently corrupt GPU-side layout. Rendering-only: physics
+    // (eval/sample/gradient above) never reads this array.
+    //
+    // Either empty (every node uses WorldDesc::materials[0], the default) or
+    // exactly nodes.size() long, one entry per node in the SAME order as
+    // `nodes` -- including operator nodes, which simply carry whatever index
+    // WorldBuilder::material_for_last_node() last set for that slot (a
+    // consumer that shades by leaf primitive, not by CSG node, is free to
+    // ignore an operator node's entry). validate() below checks the length;
+    // WHETHER an index is in range depends on WorldDesc::materials, which
+    // this type does not have, so that check lives in validate_world_desc()
+    // (world/builder.hpp) instead.
+    std::vector<uint32_t> node_materials;
+
     [[nodiscard]] bool empty() const noexcept { return nodes.empty(); }
 
     // Structural + parameter validation. On success returns the peak evaluation
@@ -178,7 +198,8 @@ struct SdfProgram {
     // for everything else -- malformed postfix (operator without two operands,
     // or more than one value left over), out-of-range kind/op/transform index,
     // non-finite or nonsensical parameters, non-unit plane normal,
-    // non-positive transform scale.
+    // non-positive transform scale, or a node_materials length that is
+    // neither 0 nor nodes.size().
     [[nodiscard]] Result<uint32_t> validate() const;
 };
 

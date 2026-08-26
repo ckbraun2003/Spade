@@ -58,29 +58,39 @@
 
 namespace spade {
 
-// The schema version written to, and required by, this build. A file carrying
-// any other value is rejected rather than guessed at: version gating IS the
-// upgrade path, which is precisely why unknown keys are an error.
-inline constexpr uint32_t kWorldFileVersion = 1;
+// The schema version this build WRITES. A file carrying a version this build
+// does not read at all (below kWorldFileMinReadVersion or above this) is
+// rejected rather than guessed at: version gating IS the upgrade path, which
+// is precisely why unknown keys are an error.
+inline constexpr uint32_t kWorldFileVersion = 2;
 
-// Serializes a VALIDATED world to canonical schema-v1 YAML text (LF line
+// The oldest schema version this build still READS, via an upgrade path: a
+// `world_version: 1` file loads successfully and its WorldDesc gains schema
+// v2's three new sections at their defaults (one default material, default
+// lighting, no props) -- see world_file.cpp's parse_world(). This build never
+// WRITES version 1 again; kWorldFileVersion above is the only version
+// world_to_yaml() ever produces.
+inline constexpr uint32_t kWorldFileMinReadVersion = 1;
+
+// Serializes a VALIDATED world to canonical schema-v2 YAML text (LF line
 // endings). Fails with the validation error if `world` is not valid --
 // nothing invalid is ever written -- and with invalid_argument if the world
-// holds something schema v1 cannot represent.
+// holds something schema v2 cannot represent.
 //
 // CANONICAL means the text is a pure function of the WorldDesc: fixed key
 // order, fixed float spelling, fixed comment blocks. world_to_yaml(
 // *world_from_yaml(t)) == t for any t this function produced.
 [[nodiscard]] Result<std::string> world_to_yaml(const WorldDesc& world);
 
-// Parses schema-v1 YAML text and returns the validated world. Diagnostics do
-// NOT carry a file path (there is no file here -- load_world_file() adds it).
+// Parses schema-v1-or-v2 YAML text (see kWorldFileMinReadVersion) and returns
+// the validated world. Diagnostics do NOT carry a file path (there is no file
+// here -- load_world_file() adds it).
 //
 // Codes: schema_mismatch when the file states a `world_version` this build
-// does not read -- the one failure a caller may answer by upgrading rather
-// than by editing, so it is distinguishable without matching on a string;
-// invalid_argument for every other rejection (malformed YAML, unknown or
-// missing or duplicate keys, bad numbers, and everything
+// does not read at all -- the one failure a caller may answer by upgrading
+// rather than by editing, so it is distinguishable without matching on a
+// string; invalid_argument for every other rejection (malformed YAML, unknown
+// or missing or duplicate keys, bad numbers, and everything
 // validate_world_desc() rejects); capacity_exceeded for an SDF program past
 // kMaxSdfDepth.
 [[nodiscard]] Result<WorldDesc> world_from_yaml(std::string_view yaml_text);
