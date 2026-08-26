@@ -22,6 +22,7 @@
 #include "core/fp32_math.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
+#include "render/shadow.hpp"
 #include "render/target.hpp"
 #include "render/tessellate.hpp"
 #include "world/sdf.hpp"
@@ -67,9 +68,11 @@ using spade::Error;
 using spade::Result;
 using spade::SdfPrim;
 using spade::render::Aabb;
+using spade::render::build_static_shadow_map;
 using spade::render::Camera;
 using spade::render::DrawItem;
 using spade::render::DrawMode;
+using spade::render::GroundPlane;
 using spade::render::kNoMaterial;
 using spade::render::kNoMesh;
 using spade::render::kTessellationDefaults;
@@ -80,6 +83,7 @@ using spade::render::render;
 using spade::render::RenderOptions;
 using spade::render::RenderScene;
 using spade::render::RenderTarget;
+using spade::render::ShadowMap;
 using spade::render::tessellate_primitive;
 using spade::render::validate_target;
 
@@ -1137,6 +1141,59 @@ const Aabb kGoldenTessellationBounds{.min = glm::vec3(-5.0f), .max = glm::vec3(5
     return scene;
 }
 
+// Golden D (S7a Task R7, review IMPORTANT I5): a real, tessellated ground
+// plane (not merely the analytic background -- SR-11's own submesh
+// fallback puts it at material 0) with a box caster floating above it, its
+// shadow baked via build_static_shadow_map() and sampled through render()'s
+// own shadow gate -- the first byte-exact anchor for the shadow feature,
+// since none of Goldens A-C populate RenderScene::static_shadow at all (see
+// this manifest's own _changelog for why the shadow feature moved none of
+// them). Verified sensitive, not assumed: forcing RenderOptions::shadows to
+// false renders a DIFFERENT frame (see this test's own temporary
+// verification block, removed once confirmed against the committed hash).
+//
+// Overlays are on, and the tessellated ground grid's finite extent
+// (kGoldenTessellationBounds, +-5) DOES sit at the SAME height as the
+// has_ground/ground_y overlay grid (+-10) -- but this golden does NOT, it
+// turns out, additionally anchor ruling SR-21's overlay-depth-bias fix:
+// checked directly by forcing kOverlayDepthBias to 0.0 and re-running this
+// exact test, and the hash did not move, the same outcome Goldens A-C
+// already have for the identical reason described in the ticket's own text
+// (the pixels where the grid and this mesh compete resolve as a clean win
+// for the mesh either way, at this camera's own framing, not a near-tie).
+// The dedicated OverlayDepthBias.* regression test above remains the sole,
+// mutation-verified anchor for that fix -- recorded here rather than left
+// as an unverified assumption once this golden was built specifically to
+// try to double as one.
+[[nodiscard]] RenderScene golden_scene_shadowed_ground_with_caster() {
+    RenderScene scene;
+    scene.meshes.push_back(tessellate_or_fail(SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f)));  // [0] ground
+    scene.meshes.push_back(tessellate_or_fail(SdfPrim::box, glm::vec4(0.8f, 0.8f, 0.8f, 0.0f)));     // [1] caster
+    scene.materials = {
+        Material{.base_color = glm::vec4(0.55f, 0.5f, 0.45f, 1.0f)},  // ground -- lambert (shading defaults to 0)
+        Material{.base_color = glm::vec4(0.75f, 0.3f, 0.25f, 1.0f)},  // caster -- lambert, a different colour
+    };
+    scene.statics.push_back(
+        DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f), .material_override = kNoMaterial});
+    scene.statics.push_back(DrawItem{
+        .mesh_index = 1, .local_to_world = pose_at(glm::vec3(0.0f, 2.5f, 0.0f)), .material_override = 1});
+    // Ruling SR-17: alongside the tessellated grid above, not instead of it
+    // -- scene_from_world()'s own contract for a standalone plane primitive
+    // (scene.cpp), reproduced by hand here since this fixture never goes
+    // through scene_from_world() itself.
+    scene.ground_planes.push_back(GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0});
+    scene.has_ground = true;  // the OLDER grid-overlay heuristic -- SAME y=0 height as the ground mesh above
+    scene.ground_y = 0.0f;
+    scene.bounds = Aabb{.min = glm::vec3(-5.0f, -1.0f, -5.0f), .max = glm::vec3(5.0f, 4.0f, 5.0f)};
+    const Result<ShadowMap> shadow_map = build_static_shadow_map(scene);
+    if (!shadow_map) {
+        ADD_FAILURE() << "build_static_shadow_map failed: " << shadow_map.error().context;
+        return scene;
+    }
+    scene.static_shadow = *shadow_map;
+    return scene;
+}
+
 [[nodiscard]] std::vector<uint8_t> render_golden(const RenderScene& scene, const Camera& camera,
                                                   const RenderOptions& options) {
     std::vector<uint8_t> storage;
@@ -1215,6 +1272,41 @@ TEST(RasterGolden, CylinderStaticAndDynamicBoxTopDownMatchesCommittedManifest) {
     ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
         << "sanity floor: this scene/camera must actually show something before its hash means anything";
     check_against_manifest("cylinder_static_dynamic_box_top_down", pixels);
+}
+
+TEST(RasterGolden, ShadowedGroundWithCasterMatchesCommittedManifest) {
+    const RenderScene scene = golden_scene_shadowed_ground_with_caster();
+    ASSERT_TRUE(scene.static_shadow.has_value());
+    // Below the box caster's underside (y=2.5-0.8=1.7) so its own shadow is
+    // not self-occluded from the camera's own line of sight -- the SAME
+    // "look under the floating object" placement task-R7-brief.md's own
+    // ShadowStep1 fixture (test_render_shadow.cpp) uses.
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.8f, 8.0f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = true;
+    options.shadows = true;
+
+    const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
+        << "sanity floor: this scene/camera must actually show something before its hash means anything";
+
+    // Kept as a PERMANENT guard, not just a one-time check at authoring
+    // time (I5's own point: a golden that happens to pass is not the same
+    // as a golden that is actually anchoring the feature it was added
+    // for) -- shadows=false must render something DIFFERENT, so a future
+    // regression that silently breaks render()'s own shadow gate (e.g. the
+    // `options.mode == DrawMode::shaded` or `scene.static_shadow.has_value()`
+    // conditions) cannot hide behind an unrelated hash staying green.
+    {
+        RenderOptions no_shadows = options;
+        no_shadows.shadows = false;
+        const std::vector<uint8_t> pixels_no_shadow = render_golden(scene, camera, no_shadows);
+        EXPECT_NE(pixels, pixels_no_shadow) << "this golden must be sensitive to RenderOptions::shadows";
+    }
+
+    check_against_manifest("shadowed_ground_with_caster", pixels);
 }
 
 // ===========================================================================

@@ -124,6 +124,30 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // compared through a fixed bias (shadow.cpp's own kShadowDepthBias) tuned
 // against shadow acne, not exposed here -- callers never see or tune it
 // directly.
+//
+// Ruling SR-25 (fix round 1, correcting SR-24's own original wording): the
+// caller applies this result to the SUN term only -- ambient is never
+// shadowed (raster_cpu.cpp's own apply_shadow()). This function itself is
+// unchanged by that ruling (it has always returned a pure occlusion fact,
+// never a colour), but a reader following the trail from this function to
+// its callers should not assume the returned factor multiplies a whole
+// shaded colour the way an early version of this task did.
+//
+// KNOWN, ACCEPTED LIMITATION (M6, R7 fix round 1, deliberately NOT fixed
+// here): this map is fitted to `scene.bounds` ONCE, from `scene.statics`
+// plus that bounds box, at build time (Step 3's own split). A DYNAMIC body
+// that flies outside `scene.bounds` silently stops casting a shadow at all
+// (its shadow-casting triangles rasterise to texels outside the map's own
+// [-1, 1] footprint and are simply never recorded, exactly like the
+// "outside the footprint" case above) -- a normal, expected state for this
+// product (a drone leaving the authored world bounds), not a crash or a
+// wrong answer, but a real loss of shadow fidelity the caller has no way to
+// detect from this call alone. Fitting the light frustum to the union of
+// `scene.bounds` and live dynamics would fix it but would invalidate the
+// static-map caching this task exists to establish (the frustum would then
+// have to be rebuilt every frame the moment any dynamic left the box) --
+// that trade is intentionally left for CK-② to weigh against real frames,
+// not decided unilaterally in a fix round.
 [[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos);
 
 }  // namespace spade::render

@@ -54,10 +54,13 @@
 // camera + options + target size => byte-identical pixels, unconditionally.
 //
 // PURITY: `scene` is `const RenderScene&` -- this module never mutates it
-// and never touches anything outside its four explicit parameters. Render
-// cadence (never called, called once, called every tick) changes nothing
-// about scene/body/sim state, because this module never reaches into any of
-// it.
+// and never touches anything outside its four explicit parameters (five,
+// counting the optional `shadow_scratch` below -- see its own comment: it
+// only ever affects an allocation's PROVENANCE, never a pixel render()
+// produces, so the determinism claim above is unchanged by its presence).
+// Render cadence (never called, called once, called every tick) changes
+// nothing about scene/body/sim state, because this module never reaches
+// into any of it.
 //
 // MN-14 (opaque BGRX8): every byte of `target.pixels` is written exactly
 // once per render() call before any drawing happens (the background clear),
@@ -65,6 +68,8 @@
 // call write it identically, so there is no code path that leaves it
 // unset.
 // ---------------------------------------------------------------------------
+
+#include <vector>
 
 #include "core/error.hpp"
 #include "render/scene.hpp"
@@ -75,7 +80,24 @@ namespace spade::render {
 // Errors: invalid_argument if `target` fails validate_target(), or if
 // `options.mode == DrawMode::raymarch` (not implemented until Task R8/R9 --
 // see this file's header comment).
-[[nodiscard]] Result<void> render(const RenderScene& scene, const Camera& camera,
-                                   const RenderOptions& options, RenderTarget& target);
+//
+// `shadow_scratch` (S7a Task R7, fix round 1, review IMPORTANT I3): an
+// OPTIONAL caller-owned buffer render() may use for its own per-frame
+// shadow-map-plus-dynamics working copy, instead of allocating a fresh one
+// every call. Defaulted to `nullptr` so every EXISTING call site keeps
+// compiling and behaving exactly as before (a fresh, function-local
+// allocation each call) -- this parameter is purely an opt-in optimisation,
+// never a behavioural or output difference: the RENDERED PIXELS are
+// identical whichever way this is passed, only where the 4 MiB-at-default-
+// size copy's memory comes from differs. A caller that renders the same
+// scene/shadow-map size across many frames (the common case) and passes the
+// SAME `std::vector<float>*` every call gets that buffer's capacity reused
+// via `std::vector::assign()` (a no-op resize once it has grown to fit),
+// amortising the allocation to effectively zero after the first frame --
+// see raster_cpu.cpp's own render() body for exactly when this path is
+// even reached (only when `scene.dynamics` is non-empty; an empty-dynamics
+// frame skips the copy entirely and never touches this parameter at all).
+[[nodiscard]] Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
+                                   RenderTarget& target, std::vector<float>* shadow_scratch = nullptr);
 
 }  // namespace spade::render

@@ -55,6 +55,7 @@ using spade::render::DrawItem;
 using spade::render::DrawMode;
 using spade::render::GroundPlane;
 using spade::render::kNoMaterial;
+using spade::render::Lighting;
 using spade::render::Material;
 using spade::render::MeshData;
 using spade::render::PixelFormat;
@@ -160,6 +161,66 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
         }
     }
     return count;
+}
+
+// Independent re-derivation of raster_cpu.cpp's own shade_vertex_color()/
+// apply_shadow() (ruling SR-25) -- the same "second source" oracle
+// convention test_render_raster.cpp's own expected_bgr()/channel_to_byte()
+// already use. Lambert only (shading==0); every fixture below that needs an
+// exact expected colour uses a lambert GROUND material for exactly this
+// reason (C2, R7 fix round 1 -- a shadow attenuates the SUN term only, so
+// an UNLIT receiver, which R7-as-committed used throughout this file, can
+// never be shadowed at all under the corrected model and is useless for
+// exercising this interaction).
+[[nodiscard]] uint8_t channel_to_byte(float c) {
+    const float clamped = std::clamp(c, 0.0f, 1.0f);
+    return static_cast<uint8_t>(std::lround(clamped * 255.0f));
+}
+
+[[nodiscard]] std::array<uint8_t, 3> bgr_from_linear(glm::vec3 c) {
+    return {channel_to_byte(c.b), channel_to_byte(c.g), channel_to_byte(c.r)};
+}
+
+[[nodiscard]] glm::vec3 expected_ambient(const Material& m, const Lighting& l) { return glm::vec3(m.base_color) * l.ambient_color; }
+
+[[nodiscard]] glm::vec3 expected_sun_term(const Material& m, const Lighting& l, glm::vec3 n) {
+    const float n_dot_l = std::max(glm::dot(n, l.sun_direction), 0.0f);
+    return glm::vec3(m.base_color) * (l.sun_color * (l.sun_intensity * n_dot_l));
+}
+
+// The UNSHADOWED (lit) colour of a lambert surface with normal `n`.
+[[nodiscard]] std::array<uint8_t, 3> expected_lit_bgr(const Material& m, const Lighting& l, glm::vec3 n) {
+    return bgr_from_linear(expected_ambient(m, l) + expected_sun_term(m, l, n));
+}
+
+// The FULLY SHADOWED colour (SR-25: ambient survives, sun term zeroed) --
+// independent of `n`, since a shadowed lambert surface's sun contribution is
+// zero regardless of which way it faces.
+[[nodiscard]] std::array<uint8_t, 3> expected_shadowed_bgr(const Material& m, const Lighting& l) {
+    return bgr_from_linear(expected_ambient(m, l));
+}
+
+// Within `tol` per channel -- needed wherever the SAME shadowed colour is
+// reached by two genuinely DIFFERENT floating-point paths: production's
+// apply_shadow() computes `combined - sun*(1-lit)` (a subtraction, chosen
+// specifically so the UNSHADOWED case stays bit-identical to before this
+// task -- see apply_shadow()'s own comment, raster_cpu.cpp), while this
+// oracle computes `base*ambient_color` directly. Both are the mathematically
+// same quantity, but are not guaranteed to round to the SAME byte in every
+// channel (measured directly on this file's own ShadowPerspectiveCorrectness
+// fixture, whose N.L is a genuinely irrational-ish value, not the exactly-1.0
+// case ShadowStep1/ShadowStep3 use: production's B channel came out 25,
+// this oracle's came out 26 -- a real, expected 1-ULP-scale rounding
+// difference, not a functional bug). ShadowStep1/ShadowStep3 use an EXACT
+// `==` instead (their N.L is exactly 1.0, so no such rounding gap exists to
+// tolerate) -- this helper is only for fixtures where it can.
+[[nodiscard]] bool bgr_close(std::array<uint8_t, 3> a, std::array<uint8_t, 3> b, int tol = 1) {
+    for (size_t i = 0; i < 3; ++i) {
+        if (std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i])) > tol) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -273,15 +334,28 @@ TEST(SampleShadow, PointOutsideTheOrthoFootprintIsAlwaysLit) {
 
 namespace {
 
+// Material 0 (the GROUND, the receiver this test is actually about): LAMBERT
+// -- shading defaults to 0, left unset here deliberately so the struct's own
+// default IS the "lit" material this fixture needs -- with the sun straight
+// overhead giving it N.L=1, its own maximal sun term. Material 1 (the BOX
+// caster): unlit and visually distinct (magenta), since this test has
+// nothing to say about the caster's own on-screen appearance -- only about
+// whether the GROUND, a real lambert surface, is correctly darkened.
 [[nodiscard]] RenderScene make_step1_scene() {
     RenderScene scene;
-    scene.materials = {Material{.base_color = glm::vec4(0.5f, 0.5f, 0.55f, 1.0f), .shading = 1u}};  // unlit
+    scene.materials = {
+        Material{.base_color = glm::vec4(0.6f, 0.55f, 0.5f, 1.0f)},
+        Material{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), .shading = 1u},
+    };
     scene.lighting.sun_direction = glm::vec3(0.0f, 1.0f, 0.0f);
+    scene.lighting.sun_color = glm::vec3(1.0f, 1.0f, 1.0f);
+    scene.lighting.sun_intensity = 1.0f;
+    scene.lighting.ambient_color = glm::vec3(0.2f, 0.2f, 0.2f);
     scene.bounds = Aabb{.min = glm::vec3(-4.0f, -1.0f, -4.0f), .max = glm::vec3(4.0f, 5.0f, 4.0f)};
     scene.ground_planes.push_back(GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0});
     scene.meshes.push_back(make_box_mesh(1.0f));
     scene.statics.push_back(
-        DrawItem{.mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 3.0f, 0.0f)), .material_override = kNoMaterial});
+        DrawItem{.mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 3.0f, 0.0f)), .material_override = 1});
     const Result<ShadowMap> map = build_static_shadow_map(scene);
     if (!map) {
         ADD_FAILURE() << "build_static_shadow_map failed: " << map.error().context;
@@ -324,8 +398,13 @@ TEST(ShadowStep1, ShadowsOnDarkensGroundBeneathCasterRelativeToShadowsOff) {
     // own gate) -- the two renders must therefore differ SOMEWHERE (the
     // shadow must actually show up), and every differing pixel must have
     // gone STRICTLY DARKER (never lighter, never a new colour) when shadows
-    // are on -- consistent with SR-24's own "multiply into the per-pixel
-    // colour" (never additive, never replacing with an unrelated colour).
+    // are on -- consistent with ruling SR-25 (ambient survives, only the
+    // sun term is ever attenuated, so a shadowed lambert pixel can only
+    // ever be <= its own lit value, per channel, never negative or
+    // additive).
+    const Material& ground_material = scene.materials[0];
+    const auto lit = expected_lit_bgr(ground_material, scene.lighting, glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto shadowed = expected_shadowed_bgr(ground_material, scene.lighting);
     size_t darkened = 0;
     for (size_t idx = 0; idx + 4 <= storage_on.size(); idx += 4) {
         const bool differs =
@@ -340,6 +419,16 @@ TEST(ShadowStep1, ShadowsOnDarkensGroundBeneathCasterRelativeToShadowsOff) {
             << "pixel " << (idx / 4) << " G channel got lighter, not darker";
         EXPECT_LE(storage_on[idx + 2], storage_off[idx + 2])
             << "pixel " << (idx / 4) << " R channel got lighter, not darker";
+        // Stronger than "darker": EXACTLY the SR-25 ambient-only colour on,
+        // EXACTLY the full lit colour off -- proving this is the shadow x
+        // Lambert interaction working correctly, not merely "something
+        // changed" (C2's own point: this interaction had zero coverage
+        // before this fix round, since every fixture in this file used to
+        // be unlit and therefore never had a sun term to attenuate at all).
+        EXPECT_EQ((std::array<uint8_t, 3>{storage_on[idx], storage_on[idx + 1], storage_on[idx + 2]}), shadowed)
+            << "pixel " << (idx / 4) << ": shadowed colour should be exactly ambient*base_color, sun term removed";
+        EXPECT_EQ((std::array<uint8_t, 3>{storage_off[idx], storage_off[idx + 1], storage_off[idx + 2]}), lit)
+            << "pixel " << (idx / 4) << ": unshadowed colour should be exactly the full lit colour";
     }
     EXPECT_GT(darkened, 0u) << "the box's shadow must darken at least one ground pixel beneath it";
 
@@ -382,29 +471,46 @@ TEST(ShadowStep1, SameSceneRendersByteIdenticalShadowedFramesTwice) {
 // render() folds dynamics into a per-frame COPY, never the cached original.
 // ===========================================================================
 
+// M3 (R7 fix round 1): the original version of this test left `statics`
+// EMPTY, which meant it could not exercise the caching split against any
+// REAL static occluder at all. Now there are TWO casters -- a STATIC one at
+// x=-3 (already baked into the cached map before render() is ever called)
+// and a DYNAMIC one at x=+3 (added to `scene.dynamics` only after the cache
+// is built) -- well clear of each other, so each side of the frame can be
+// checked independently.
 TEST(ShadowStep3, DynamicCasterShadowsTheGroundButCachedStaticMapNeverGainsAnOccluder) {
     RenderScene scene;
-    scene.materials = {Material{.base_color = glm::vec4(0.5f, 0.5f, 0.55f, 1.0f), .shading = 1u}};
+    scene.materials = {
+        Material{.base_color = glm::vec4(0.6f, 0.55f, 0.5f, 1.0f)},                    // ground, lambert
+        Material{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), .shading = 1u},        // casters, unlit magenta
+    };
     scene.lighting.sun_direction = glm::vec3(0.0f, 1.0f, 0.0f);
-    scene.bounds = Aabb{.min = glm::vec3(-4.0f, -1.0f, -4.0f), .max = glm::vec3(4.0f, 5.0f, 4.0f)};
+    scene.lighting.sun_color = glm::vec3(1.0f, 1.0f, 1.0f);
+    scene.lighting.sun_intensity = 1.0f;
+    scene.lighting.ambient_color = glm::vec3(0.2f, 0.2f, 0.2f);
+    scene.bounds = Aabb{.min = glm::vec3(-6.0f, -1.0f, -4.0f), .max = glm::vec3(6.0f, 5.0f, 4.0f)};
     scene.ground_planes.push_back(GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0});
-    // NOTE: no static geometry at all -- `statics` stays empty. The caster
-    // below is DYNAMIC ONLY.
     scene.meshes.push_back(make_box_mesh(1.0f));
-    scene.dynamics.push_back(DrawItem{
-        .mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 3.0f, 0.0f)), .material_override = kNoMaterial});
+    scene.statics.push_back(DrawItem{
+        .mesh_index = 0, .local_to_world = translation(glm::vec3(-3.0f, 3.0f, 0.0f)), .material_override = 1});
 
     const Result<ShadowMap> map = build_static_shadow_map(scene);
     ASSERT_TRUE(map.has_value());
     scene.static_shadow = *map;
 
-    // The cached STATIC map was built while `statics` was empty -- it must
-    // show no occluder at all at the point the dynamic box would otherwise
-    // shadow.
-    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(0.0f, 0.0f, 0.0f)), 1.0f)
-        << "a shadow map built from empty `statics` must not already show the dynamic-only caster's shadow";
+    // The cached map already reflects the STATIC caster's own shadow...
+    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(-3.0f, 0.0f, 0.0f)), 0.0f)
+        << "the static caster's own shadow must already be baked into the cached map";
+    // ...but the dynamic caster does not exist yet from the cached map's own
+    // point of view, so its future shadow location must read as lit.
+    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(3.0f, 0.0f, 0.0f)), 1.0f)
+        << "a shadow map built before the dynamic caster existed must not already show its shadow";
 
     const std::vector<float> depth_before_render = scene.static_shadow->depth;
+
+    // NOW add the dynamic caster -- AFTER the cache above was already built.
+    scene.dynamics.push_back(DrawItem{
+        .mesh_index = 0, .local_to_world = translation(glm::vec3(3.0f, 3.0f, 0.0f)), .material_override = 1});
 
     const Camera camera = step1_camera();
     RenderOptions with_shadows;
@@ -420,12 +526,35 @@ TEST(ShadowStep3, DynamicCasterShadowsTheGroundButCachedStaticMapNeverGainsAnOcc
     RenderTarget target_off = make_target(storage_off, kStep1Width, kStep1Height);
     render_or_fail(scene, camera, without_shadows, target_off);
 
-    EXPECT_GT(count_pixels_differing(storage_on, storage_off), 0u)
-        << "render() must fold the DYNAMIC caster into a per-frame shadow map even though `statics` is empty";
+    // BOTH halves of the frame must show a darkened region: LEFT (world
+    // x<0, the STATIC caster's own side) and RIGHT (world x>0, the DYNAMIC
+    // caster's side, added after the cache was built) -- proving render()
+    // renders the pre-existing static shadow AND folds in the freshly-added
+    // dynamic one, in the SAME call. Camera has zero lateral offset and
+    // identity orientation (step1_camera()'s own doc comment), so world
+    // x<0 maps to screen x < width/2 and vice versa.
+    size_t darkened_left = 0, darkened_right = 0;
+    for (uint32_t y = 0; y < kStep1Height; ++y) {
+        for (uint32_t x = 0; x < kStep1Width; ++x) {
+            if (bgr_at(storage_on, kStep1Width, x, y) == bgr_at(storage_off, kStep1Width, x, y)) {
+                continue;
+            }
+            (x < kStep1Width / 2 ? darkened_left : darkened_right)++;
+        }
+    }
+    EXPECT_GT(darkened_left, 0u) << "the pre-existing STATIC caster's own shadow must still render";
+    EXPECT_GT(darkened_right, 0u)
+        << "render() must fold the DYNAMIC caster into a per-frame shadow map even though it was added after the "
+           "cache was built";
 
     // The cached static map itself must be byte-for-byte unchanged by the
     // render() call above -- Step 3's own "only dynamics re-render per
-    // frame, into a COPY" contract.
+    // frame, into a COPY" contract. (This does not, on its own, prove
+    // `scene.statics` was never REDUNDANTLY re-rasterised into the per-frame
+    // copy -- doing so would be numerically a no-op on these depth VALUES,
+    // since the same static triangles would recompute the same occluders --
+    // but it DOES prove the cached ORIGINAL was never mutated, which is the
+    // contract this test's own name claims.)
     EXPECT_EQ(scene.static_shadow->depth, depth_before_render)
         << "render() must never mutate the cached RenderScene::static_shadow it copies from";
 }
@@ -488,24 +617,41 @@ namespace {
 // independently of any camera/rasterizer arithmetic.
 [[nodiscard]] MeshData make_wall_mesh() { return make_box_mesh(glm::vec3(0.05f, 0.5f, 45.0f)); }
 
+// `material_override = 1` (the CASTER material, unlit and visually distinct
+// from the lambert GROUND at index 0 below) -- C2, R7 fix round 1: the
+// ground is the receiver under test and must be LIT (lambert) so it has a
+// sun term a shadow can attenuate; the wall's own appearance is irrelevant
+// to this test.
 [[nodiscard]] DrawItem make_wall_item(uint32_t mesh_index) {
-    return DrawItem{.mesh_index = mesh_index,
-                     .local_to_world = translation(glm::vec3(0.0f, 0.5f, -20.0f)),
-                     .material_override = kNoMaterial};
+    return DrawItem{
+        .mesh_index = mesh_index, .local_to_world = translation(glm::vec3(0.0f, 0.5f, -20.0f)), .material_override = 1};
 }
 
 }  // namespace
 
 TEST(ShadowPerspectiveCorrectness, MeshReceiverMatchesExactAnalyticGroundAcrossALargeDepthRange) {
-    const Material material{.base_color = glm::vec4(0.6f, 0.55f, 0.5f, 1.0f), .shading = 1u};  // unlit
+    // Material 0: the GROUND (the receiver this test is actually about) --
+    // lambert, so N.L (and therefore a sun term a shadow can attenuate,
+    // ruling SR-25) is non-trivial for its own (0,1,0) normal against the
+    // chosen sun direction below. Material 1: the WALL caster -- unlit and
+    // visually distinct (magenta); its own appearance is not under test.
+    const Material ground_material{.base_color = glm::vec4(0.6f, 0.55f, 0.5f, 1.0f)};
+    const Material caster_material{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
     const glm::vec3 sun = glm::normalize(glm::vec3(1.0f, 1.0f, 0.0f));
     const Aabb bounds{.min = glm::vec3(-6.0f, -1.0f, -45.0f), .max = glm::vec3(6.0f, 3.0f, 8.0f)};
+
+    const auto configure_lighting = [&](Lighting& lighting) {
+        lighting.sun_direction = sun;
+        lighting.sun_color = glm::vec3(1.0f, 1.0f, 1.0f);
+        lighting.sun_intensity = 1.0f;
+        lighting.ambient_color = glm::vec3(0.2f, 0.2f, 0.2f);
+    };
 
     // Variant "Ground": the EXACT analytic background plane (zero
     // interpolation error) plus the wall caster.
     RenderScene ground_scene;
-    ground_scene.materials = {material};
-    ground_scene.lighting.sun_direction = sun;
+    ground_scene.materials = {ground_material, caster_material};
+    configure_lighting(ground_scene.lighting);
     ground_scene.bounds = bounds;
     ground_scene.ground_planes.push_back(
         GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0});
@@ -520,10 +666,12 @@ TEST(ShadowPerspectiveCorrectness, MeshReceiverMatchesExactAnalyticGroundAcrossA
     // Variant "Mesh": the SAME wall, but the ground is now a single HUGE
     // tessellated quad (2 triangles spanning a near-to-far depth range of
     // roughly 1 to 999 world units) shaded via the Gouraud/perspective-
-    // correct path -- no ground_planes at all.
+    // correct path -- no ground_planes at all. The quad's own submesh
+    // arrays are empty (SR-11), so it falls back to material 0 -- the SAME
+    // lambert ground material as the analytic variant.
     RenderScene mesh_scene;
-    mesh_scene.materials = {material};
-    mesh_scene.lighting.sun_direction = sun;
+    mesh_scene.materials = {ground_material, caster_material};
+    configure_lighting(mesh_scene.lighting);
     mesh_scene.bounds = bounds;
     mesh_scene.meshes.push_back(make_wall_mesh());
     mesh_scene.meshes.push_back(make_huge_ground_quad());
@@ -561,19 +709,22 @@ TEST(ShadowPerspectiveCorrectness, MeshReceiverMatchesExactAnalyticGroundAcrossA
 
     // Sanity floor: the shadow mechanism must have actually engaged in
     // BOTH variants (otherwise this test would trivially "pass" by
-    // comparing two unshadowed, featureless frames). A shadowed pixel
-    // multiplies the unlit base_color by 0.0f, landing at pure black
-    // (0,0,0) -- distinct from the lit ground colour and from the sky.
-    const auto is_black = [](std::array<uint8_t, 3> c) { return c[0] == 0 && c[1] == 0 && c[2] == 0; };
-    size_t black_ground = 0, black_mesh = 0;
+    // comparing two unshadowed, featureless frames). A shadowed LAMBERT
+    // pixel is exactly base_color*ambient_color (SR-25: sun term zeroed,
+    // ambient survives) -- NOT pure black (C2, R7 fix round 1: the ground
+    // is lambert now, not unlit, so "shadowed" and "background" are
+    // distinguished by the exact ambient-only colour, never by a shared
+    // (0,0,0)).
+    const auto shadowed = expected_shadowed_bgr(ground_material, ground_scene.lighting);
+    size_t shadowed_ground = 0, shadowed_mesh = 0;
     for (uint32_t y = 0; y < kHeight; ++y) {
         for (uint32_t x = 0; x < kWidth; ++x) {
-            if (is_black(bgr_at(storage_ground, kWidth, x, y))) ++black_ground;
-            if (is_black(bgr_at(storage_mesh, kWidth, x, y))) ++black_mesh;
+            if (bgr_close(bgr_at(storage_ground, kWidth, x, y), shadowed)) ++shadowed_ground;
+            if (bgr_close(bgr_at(storage_mesh, kWidth, x, y), shadowed)) ++shadowed_mesh;
         }
     }
-    EXPECT_GT(black_ground, 0u) << "sanity: the analytic-ground variant must show SOME shadowed pixels";
-    EXPECT_GT(black_mesh, 0u) << "sanity: the mesh-receiver variant must show SOME shadowed pixels too";
+    EXPECT_GT(shadowed_ground, 0u) << "sanity: the analytic-ground variant must show SOME shadowed pixels";
+    EXPECT_GT(shadowed_mesh, 0u) << "sanity: the mesh-receiver variant must show SOME shadowed pixels too";
 
     // The two variants must agree almost everywhere: same wall, same
     // camera, same lighting/material, same shadow-map footprint (identical

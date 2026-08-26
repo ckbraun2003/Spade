@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <utility>
 
 #include <glm/gtc/matrix_inverse.hpp>  // glm::inverse(mat4) -- see local_to_world_of() below
 
@@ -390,11 +391,17 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     // std::nullopt default rather than building a map with nothing ever
     // rasterised into it.
     if (!scene.statics.empty()) {
-        const Result<ShadowMap> shadow_map = build_static_shadow_map(scene);
+        // Non-const, and moved from below (M4, R7 fix round 1): `shadow_map`
+        // is a local about to go out of scope regardless, so binding it
+        // const and copy-assigning `*shadow_map` into `scene.static_shadow`
+        // was a second gratuitous ~4 MiB copy of the depth buffer on top of
+        // build_static_shadow_map()'s own return -- std::move() reclaims
+        // that allocation instead of duplicating it.
+        Result<ShadowMap> shadow_map = build_static_shadow_map(scene);
         if (!shadow_map) {
             return std::unexpected(shadow_map.error());
         }
-        scene.static_shadow = *shadow_map;
+        scene.static_shadow = std::move(*shadow_map);
     }
 
     return scene;

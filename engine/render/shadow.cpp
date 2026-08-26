@@ -41,8 +41,25 @@ struct LightBasis {
 // own lighting hits this branch on every call.
 constexpr float kNearVerticalDot = 0.999f;
 
+// Guards glm::normalize() below against a zero (or exactly self-cancelling)
+// `sun_direction` (M2, R7 fix round 1): normalize() of the zero vector is
+// NaN, and that NaN survives sample_shadow()'s own `p.x < -1.0f || p.x >
+// 1.0f` footprint test -- EVERY comparison against NaN is false, so a NaN
+// `p.x` falls through as "inside the footprint" straight into an undefined
+// float->int cast. scene_from_world()'s own caller path can never reach
+// this (WorldBuilder/validate_world_desc() already rejects a zero
+// sun_direction, world/builder.hpp's own doc comment), but every fixture in
+// THIS program's own test corpus hand-builds a RenderScene directly and
+// bypasses that validation entirely -- exactly how this would actually be
+// reached. Falls back to LightingDesc's own default (straight up) rather
+// than propagating a NaN through the rest of this file.
+constexpr float kMinSunDirectionLengthSq = 1e-12f;
+
 [[nodiscard]] LightBasis build_light_basis(const glm::vec3& sun_direction) {
-    const glm::vec3 forward = glm::normalize(sun_direction);
+    const glm::vec3 safe_sun_direction = glm::dot(sun_direction, sun_direction) > kMinSunDirectionLengthSq
+                                              ? sun_direction
+                                              : glm::vec3(0.0f, 1.0f, 0.0f);
+    const glm::vec3 forward = glm::normalize(safe_sun_direction);
     const glm::vec3 up_hint = std::fabs(glm::dot(forward, glm::vec3(0.0f, 1.0f, 0.0f))) > kNearVerticalDot
                                    ? glm::vec3(0.0f, 0.0f, 1.0f)
                                    : glm::vec3(0.0f, 1.0f, 0.0f);
@@ -144,11 +161,24 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
         return;  // degenerate (zero on-screen area)
     }
 
+    // Clamped BEFORE the floor/ceil+cast, not merely after (M1, R7 fix round
+    // 1): static_cast<int> of a float far outside int32's range is
+    // undefined behaviour, and the std::max(0, ...)/std::min(size_i-1, ...)
+    // calls below only clamp the ALREADY-cast int -- too late to matter for
+    // the UB itself. kMaxTexelCoord is comfortably inside int32 range with
+    // wide margin (the committed corpus's largest map reaches ~19,456
+    // texel-units square) while still being far larger than any of this
+    // file's own maps (`size` is a uint32_t but every constructed ShadowMap
+    // in this program is 64-2048) could legitimately produce; a pathological
+    // caller-supplied `light_view_proj` (a degenerate transform, an
+    // unvalidated hand-built RenderScene) is exactly the case this guards.
+    constexpr float kMaxTexelCoord = 1.0e8f;
+    const auto safe_coord = [](float v) { return std::clamp(v, -kMaxTexelCoord, kMaxTexelCoord); };
     const int size_i = static_cast<int>(map.size);
-    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({xa, xb, xc}))));
-    const int x1 = std::min(size_i - 1, static_cast<int>(std::ceil(std::max({xa, xb, xc}))));
-    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({ya, yb, yc}))));
-    const int y1 = std::min(size_i - 1, static_cast<int>(std::ceil(std::max({ya, yb, yc}))));
+    const int x0 = std::max(0, static_cast<int>(std::floor(safe_coord(std::min({xa, xb, xc})))));
+    const int x1 = std::min(size_i - 1, static_cast<int>(std::ceil(safe_coord(std::max({xa, xb, xc})))));
+    const int y0 = std::max(0, static_cast<int>(std::floor(safe_coord(std::min({ya, yb, yc})))));
+    const int y1 = std::min(size_i - 1, static_cast<int>(std::ceil(safe_coord(std::max({ya, yb, yc})))));
 
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {

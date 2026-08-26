@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <glm/geometric.hpp>
@@ -464,16 +465,45 @@ static_assert(static_cast<uint32_t>(spade::MaterialShading::unlit) == 1u,
 static_assert(static_cast<uint32_t>(spade::MaterialShading::emissive) == 2u,
               "shade_vertex_color's magic 2u must match MaterialShading::emissive");
 
-[[nodiscard]] glm::vec3 shade_vertex_color(const Material& material, const Lighting& lighting,
-                                            const glm::vec3& n_world) {
+// Ruling SR-25 (S7a Task R7, fix round 1 -- corrects the original SR-24
+// wording, which this file's own R7-as-committed code followed literally
+// and incorrectly): a shadow attenuates the SUN term only. Ambient is
+// never shadowed -- it models indirect/sky light, which a single-occluder
+// sun shadow says nothing about. `combined` is EXACTLY the value this
+// function returned before this fix (same expression, same rounding,
+// still `base * (sun_term + ambient_color)`) -- every caller that never
+// touches a shadow map keeps using `combined` alone and is therefore
+// byte-for-byte unaffected by this struct's addition. `sun` isolates the
+// term a shadow is allowed to touch: `base * sun_term`, exactly zero for
+// unlit/emissive (which have no sun term at all) -- so a shadow is a
+// mathematical no-op on those materials by construction, not a branch
+// anyone had to add for it.
+struct ShadedColor {
+    glm::vec3 combined;  // ambient + sun*N.L, base_color-scaled -- unshadowed value
+    glm::vec3 sun;         // JUST the sun*N.L contribution -- the only thing a shadow may attenuate
+};
+
+[[nodiscard]] ShadedColor shade_vertex_color(const Material& material, const Lighting& lighting,
+                                              const glm::vec3& n_world) {
     const glm::vec3 base(material.base_color);
-    if (material.shading == 1u || material.shading == 2u) {  // unlit, emissive
-        return base;
+    if (material.shading == 1u || material.shading == 2u) {  // unlit, emissive: no sun term to shadow
+        return ShadedColor{base, glm::vec3(0.0f)};
     }
     const float n_dot_l = std::max(glm::dot(n_world, lighting.sun_direction), 0.0f);
-    const glm::vec3 lit = lighting.sun_color * (lighting.sun_intensity * n_dot_l) + lighting.ambient_color;
-    return base * lit;
+    const glm::vec3 sun_term = lighting.sun_color * (lighting.sun_intensity * n_dot_l);
+    const glm::vec3 combined = base * (sun_term + lighting.ambient_color);
+    return ShadedColor{combined, base * sun_term};
 }
+
+// Applies a (binary, {0,1}) shadow factor per SR-25: ambient survives
+// untouched, the sun term is scaled. When `lit == 1.0f` (unshadowed, or no
+// shadow map at all) this reduces to `sc.combined - sc.sun * 0.0f ==
+// sc.combined` EXACTLY (IEEE 754: multiplying by exactly 0.0 and
+// subtracting exactly 0.0 are both exact) -- so every unshadowed pixel,
+// mesh or analytic ground alike, is bit-identical to what shade_vertex_
+// color's own `combined` field would have given directly, which is what
+// keeps the R6 SR-17 bit-identity seam intact through this fix too.
+[[nodiscard]] glm::vec3 apply_shadow(const ShadedColor& sc, float lit) { return sc.combined - sc.sun * (1.0f - lit); }
 
 [[nodiscard]] ViewContext build_view_context(const Camera& camera, uint32_t width, uint32_t height) {
     const double q[4] = {static_cast<double>(camera.orientation.w), static_cast<double>(camera.orientation.x),
@@ -627,33 +657,46 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
 // away the entire reason the hard-horizon design is safe (task-R6-brief.md's
 // own words) -- so this is an exact `==`, not a "close enough".
 //
-// `shadow` (S7a Task R7, ruling SR-24): when non-null, this function ALWAYS
-// runs its own per-pixel loop -- even in the equal-colour case above -- so
-// the shadow term can be sampled PER PIXEL, never per vertex. The
-// equal-colour optimisation survives in a WEAKENED form: the constant `c0`
-// is still used as-is (no barycentric recomputation, so the R6 seam above
-// still holds for the COLOUR term), but each covered pixel still gets its
-// own perspective-correct world position and its own sample_shadow() call,
-// multiplied in afterward. When a pixel's shadow factor is exactly 1.0f
-// (unshadowed -- the common case, including every pixel outside the shadow
-// map's own footprint, SR-17), `c0 * 1.0f == c0` bit-for-bit (IEEE 754:
-// multiplying by exactly 1.0 is always exact), so the R6 seam's bit-identity
-// with the analytic ground pass (which now ALSO samples the SAME shadow map
-// at its own exact per-pixel hit point, draw_sky_and_ground_background
-// below) survives through the shadow multiply too, not just through the
-// colour term alone. `shadow == nullptr` (shadows off, or no static
-// geometry to have built a map from) reproduces this function's own
-// pre-Task-R7 behaviour exactly, byte for byte -- the reason none of this
-// program's existing goldens move from this change alone (see this task's
-// own report).
+// `shadow` (S7a Task R7, ruling SR-25 -- fix round 1): when non-null, this
+// function ALWAYS runs its own per-pixel loop -- even in the equal-colour
+// case above -- so the shadow term can be sampled PER PIXEL, never per
+// vertex. The equal-colour optimisation survives in a WEAKENED form: the
+// constant `combined0`/`sun0` are still used as-is (no barycentric
+// recomputation, so the R6 seam above still holds for the COLOUR term), but
+// each covered pixel still gets its own perspective-correct world position
+// and its own sample_shadow() call, applied via apply_shadow() (SR-25:
+// ambient untouched, only the sun term scaled) afterward. When a pixel's
+// shadow factor is exactly 1.0f (unshadowed -- the common case, including
+// every pixel outside the shadow map's own footprint, SR-17),
+// `apply_shadow(sc, 1.0f) == sc.combined` bit-for-bit (IEEE 754: `x - y*0.0f
+// == x` exactly), so the R6 seam's bit-identity with the analytic ground
+// pass (which now ALSO samples the SAME shadow map at its own exact
+// per-pixel hit point, draw_sky_and_ground_background below) survives
+// through the shadow application too, not just through the colour term
+// alone. `shadow == nullptr` (shadows off, or no static geometry to have
+// built a map from) reproduces this function's own pre-Task-R7 behaviour
+// exactly, byte for byte -- the reason none of this program's original
+// three goldens moved from the shadow feature alone (see this task's own
+// report).
 void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const ScreenPoint& v1, const ScreenPoint& v2,
-                               const glm::vec3& c0, const glm::vec3& c1, const glm::vec3& c2, const glm::vec3& wpos0,
-                               const glm::vec3& wpos1, const glm::vec3& wpos2, const ShadowMap* shadow) {
-    const bool equal_colour = (c0 == c1 && c1 == c2);
-    if (equal_colour && shadow == nullptr) {
-        rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(c0.r), to_byte(c0.g), to_byte(c0.b));
+                               const glm::vec3& combined0, const glm::vec3& combined1, const glm::vec3& combined2,
+                               const glm::vec3& sun0, const glm::vec3& sun1, const glm::vec3& sun2,
+                               const glm::vec3& wpos0, const glm::vec3& wpos1, const glm::vec3& wpos2,
+                               const ShadowMap* shadow) {
+    const bool equal_combined = (combined0 == combined1 && combined1 == combined2);
+    if (equal_combined && shadow == nullptr) {
+        rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(combined0.r), to_byte(combined0.g), to_byte(combined0.b));
         return;
     }
+    // ambient_color is a scene-wide constant that never depends on the
+    // per-vertex normal (shade_vertex_color's own formula), so for a SINGLE
+    // material/triangle `combined_i - sun_i` (== `base * ambient_color`) is
+    // vertex-invariant even when `sun_i` itself varies with N.L -- meaning
+    // `equal_combined` and "sun is vertex-invariant" are the SAME fact.
+    // Checked independently anyway (rather than relying on that derivation)
+    // so this code stays correct even if a future change ever makes ambient
+    // vary per vertex.
+    const bool equal_sun = (sun0 == sun1 && sun1 == sun2);
     const double area = edgeFn(v0, v1, v2);
     if (std::fabs(area) < 1e-9) {
         return;  // degenerate
@@ -676,9 +719,11 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
             }
             const double b0 = w0 / area, b1 = w1 / area, b2 = w2 / area;
             const double invD = b0 * v0.invDepth + b1 * v1.invDepth + b2 * v2.invDepth;
-            glm::vec3 color = equal_colour ? c0
-                                            : (c0 * static_cast<float>(b0) + c1 * static_cast<float>(b1) +
-                                               c2 * static_cast<float>(b2));
+            const glm::vec3 combined = equal_combined
+                                            ? combined0
+                                            : (combined0 * static_cast<float>(b0) + combined1 * static_cast<float>(b1) +
+                                               combined2 * static_cast<float>(b2));
+            glm::vec3 color = combined;
             if (shadow != nullptr) {
                 // SR-24: perspective-correct world position -- interpolate
                 // world*invDepth AFFINELY (the SAME b0/b1/b2 screen-space
@@ -696,7 +741,13 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                                                     wpos1 * static_cast<float>(b1 * v1.invDepth) +
                                                     wpos2 * static_cast<float>(b2 * v2.invDepth);
                 const glm::vec3 world = world_over_depth / static_cast<float>(invD);
-                color *= sample_shadow(*shadow, world);
+                const float lit = sample_shadow(*shadow, world);
+                const glm::vec3 sun = equal_sun ? sun0
+                                                 : (sun0 * static_cast<float>(b0) + sun1 * static_cast<float>(b1) +
+                                                    sun2 * static_cast<float>(b2));
+                // SR-25: ambient (already folded into `combined`) is never
+                // shadowed -- only the sun term is attenuated.
+                color = apply_shadow(ShadedColor{combined, sun}, lit);
             }
             setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
         }
@@ -731,16 +782,17 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
     // rather than once per iteration (review nit, R5b round 1, extended here
     // to the shaded colour too).
     const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
-    const glm::vec3 ca = shade_vertex_color(material, lighting, poly[0].normal);
+    const ShadedColor sca = shade_vertex_color(material, lighting, poly[0].normal);
     for (size_t i = 1; i + 1 < count; ++i) {
         const ScreenPoint sb = projectCameraSpace(vc, poly[i].pos);
         const ScreenPoint sc = projectCameraSpace(vc, poly[i + 1].pos);
         if (edgeFn(sa, sb, sc) > 0.0) {
             continue;  // SR-13: back face, shaded mode culls it.
         }
-        const glm::vec3 cb = shade_vertex_color(material, lighting, poly[i].normal);
-        const glm::vec3 cc2 = shade_vertex_color(material, lighting, poly[i + 1].normal);
-        rasterizeTriangleGouraud(fb, sa, sb, sc, ca, cb, cc2, poly[0].world, poly[i].world, poly[i + 1].world, shadow);
+        const ShadedColor scb = shade_vertex_color(material, lighting, poly[i].normal);
+        const ShadedColor scc = shade_vertex_color(material, lighting, poly[i + 1].normal);
+        rasterizeTriangleGouraud(fb, sa, sb, sc, sca.combined, scb.combined, scc.combined, sca.sun, scb.sun, scc.sun,
+                                  poly[0].world, poly[i].world, poly[i + 1].world, shadow);
     }
 }
 
@@ -900,6 +952,27 @@ constexpr double kGridStep = 1.0;
 // test_render_raster.cpp's own OverlayDepthBias.* tests measure that noise
 // at several orders of magnitude below this value) while staying far too
 // small to visibly displace an overlay line that is NOT at a real tie.
+//
+// KNOWN, DOCUMENTED (not fixed) LIMITATION (M5, R7 fix round 1): this is an
+// ABSOLUTE bias on invDepth (~1/distance), so the EQUIVALENT world-space
+// displacement it can win a depth tie by GROWS WITH THE SQUARE of distance,
+// not linearly. Deriving it: biased invDepth = 1/d + eps has an equivalent
+// distance d' = d / (1 + eps*d), so the displacement is
+// Delta(d) = d - d' = eps*d^2 / (1 + eps*d) ~= eps*d^2 for eps*d << 1.
+// Recomputed directly (not assumed) at eps = 1e-4: Delta(20m) ~= 4.0 cm,
+// Delta(100m) ~= 99 cm (~1 m), Delta(200m) ~= 3.9 m. Harmless for this
+// program's own OverlayDepthBias.* regression fixture (a ground grid within
+// a few metres of the camera), but draw_world_bounds's box and the spawn/
+// body markers all follow scene.bounds and CAN be meaningfully far from the
+// camera in a large world -- at ~100+ m this bias could plausibly let an
+// overlay win a depth tie against real geometry that is genuinely closer by
+// up to about a metre, a real (if rare) mis-ordering, not merely a
+// theoretical one. NOT fixed here: a distance-proportional (relative, e.g.
+// `invDepth *= 1 + k`) bias would bound this linearly instead of
+// quadratically and is the natural next step, but retuning it needs its own
+// empirical verification pass (this file's own "recompute, don't assume"
+// discipline) rather than a hasty substitution alongside this round's other
+// changes -- flagged for a follow-up rather than guessed at here.
 constexpr double kOverlayDepthBias = 1e-4;
 
 void draw_ground_grid(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
@@ -1163,10 +1236,14 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
                 if (best_plane >= 0) {
                     const GroundPlane& gp = scene.ground_planes[static_cast<size_t>(best_plane)];
                     const uint32_t material_index = gp.material < scene.materials.size() ? gp.material : 0u;
-                    color = shade_vertex_color(scene.materials[material_index], scene.lighting, gp.normal);
+                    const ShadedColor sc = shade_vertex_color(scene.materials[material_index], scene.lighting, gp.normal);
+                    color = sc.combined;
                     if (shadow != nullptr) {
+                        // SR-25: ambient survives; only the sun term is
+                        // attenuated -- see apply_shadow()'s own comment.
                         const Vec3 hit = camPos + dirWorld * best_t;
-                        color *= sample_shadow(*shadow, vec3f(hit));
+                        const float lit = sample_shadow(*shadow, vec3f(hit));
+                        color = apply_shadow(sc, lit);
                     }
                 }
             }
@@ -1183,7 +1260,7 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
 }  // namespace
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
-                     RenderTarget& target) {
+                     RenderTarget& target, std::vector<float>* shadow_scratch) {
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
     }
@@ -1216,12 +1293,41 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // is no cached static map (every hand-built RenderScene fixture in this
     // program's own test corpus, until one opts in), or the mode is not
     // shaded.
+    //
+    // I3 (review IMPORTANT, fix round 1, measured at 1443 microseconds/frame
+    // for the unconditional-copy version at size=1024): the copy-plus-
+    // re-rasterise below is only NEEDED when there is something to fold in.
+    // `scene.dynamics.empty()` -- a loaded, disarmed editor session, the
+    // common case the review named -- reads the cached map DIRECTLY, no
+    // copy, no redundant re-rasterisation of `scene.statics` (which would
+    // be a pure no-op on the depth VALUES anyway, since the same triangles
+    // would recompute the same occluders, but is still wasted CPU to
+    // recompute at all). Only the non-empty-dynamics path below allocates
+    // (or, given `shadow_scratch`, reuses) a per-frame working copy.
     std::optional<ShadowMap> frame_shadow;
+    const ShadowMap* shadow = nullptr;
     if (options.shadows && options.mode == DrawMode::shaded && scene.static_shadow.has_value()) {
-        frame_shadow = *scene.static_shadow;
-        rasterize_shadow_casters(scene.meshes, scene.dynamics, *frame_shadow);
+        if (scene.dynamics.empty()) {
+            shadow = &*scene.static_shadow;
+        } else {
+            ShadowMap& built = frame_shadow.emplace();
+            built.size = scene.static_shadow->size;
+            built.light_view_proj = scene.static_shadow->light_view_proj;
+            // `shadow_scratch` (I3's own second fix, raster_cpu.hpp's doc
+            // comment): when the caller supplies a persistent buffer,
+            // reclaim whatever capacity it already grew on a previous
+            // frame before overwriting it -- `assign()` below only
+            // reallocates if that capacity is insufficient, so a caller
+            // reusing the SAME buffer at a STABLE shadow-map size pays the
+            // ~4 MiB allocation once, not every frame.
+            if (shadow_scratch != nullptr) {
+                built.depth = std::move(*shadow_scratch);
+            }
+            built.depth.assign(scene.static_shadow->depth.begin(), scene.static_shadow->depth.end());
+            rasterize_shadow_casters(scene.meshes, scene.dynamics, built);
+            shadow = &built;
+        }
     }
-    const ShadowMap* shadow = frame_shadow.has_value() ? &*frame_shadow : nullptr;
 
     // MN-14 / constraint 2: every byte written every frame, X always 0xFF --
     // now the sky gradient + analytic ground background pass (S7a Task R6),
@@ -1247,6 +1353,17 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         draw_world_bounds(fb, vc, scene);
         draw_spawn_markers(fb, vc, scene);
         draw_body_markers(fb, vc, scene);
+    }
+
+    // Hands the (possibly newly-grown) depth buffer back to the caller for
+    // reuse next frame (I3's own scratch-buffer mechanism) -- only reached
+    // when the dynamics branch above actually built a per-frame copy AND
+    // the caller opted in; every other combination leaves `shadow_scratch`
+    // untouched. This is the LAST use of `frame_shadow`/`shadow` in this
+    // function, so moving the buffer out here cannot affect anything drawn
+    // above.
+    if (shadow_scratch != nullptr && frame_shadow.has_value()) {
+        *shadow_scratch = std::move(frame_shadow->depth);
     }
 
     return {};
