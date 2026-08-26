@@ -399,21 +399,28 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     }
 
     // --- materials (schema v2) -----------------------------------------------
+    // UNCONDITIONALLY non-empty here, not merely usually: emit() is only ever
+    // reached from world_to_yaml() below, AFTER validate_world_desc(world)
+    // has already succeeded, and that function rejects an empty materials
+    // palette (builder.cpp's "world must have at least one material (index
+    // 0)"). An `if (empty) { materials: [] }` branch here would be dead code
+    // that, if it ever DID run, would write a document the loader's own
+    // "materials must have at least one entry" rule refuses to read back --
+    // asserting the invariant instead of silently handling it is what W1's
+    // fix round replaced that branch with.
+    assert(!world.materials.empty() &&
+           "emit() runs only after validate_world_desc() succeeded, which requires materials "
+           "to be non-empty");
     out +=
         "\n"
         "# The material palette. Index 0 is the default every SDF node/prop falls\n"
         "# back to when it names no material of its own. RENDER-ONLY -- physics never\n"
-        "# reads these.\n";
-    if (world.materials.empty()) {
-        out += "materials: []\n";
-    } else {
-        out += "materials:\n";
-        for (const MaterialDesc& m : world.materials) {
-            out += "  - {name: " + quote_yaml(m.name) + ", base_color: " +
-                   float_list({m.base_color.x, m.base_color.y, m.base_color.z, m.base_color.w}) +
-                   ", shading: " + quote_yaml(kShadingNames[static_cast<uint32_t>(m.shading)]) +
-                   "}\n";
-        }
+        "# reads these.\n"
+        "materials:\n";
+    for (const MaterialDesc& m : world.materials) {
+        out += "  - {name: " + quote_yaml(m.name) + ", base_color: " +
+               float_list({m.base_color.x, m.base_color.y, m.base_color.z, m.base_color.w}) +
+               ", shading: " + quote_yaml(kShadingNames[static_cast<uint32_t>(m.shading)]) + "}\n";
     }
 
     // --- lighting (schema v2) -------------------------------------------------
@@ -492,14 +499,18 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 //
 // `version_for_message` names the schema version the unknown-key diagnostic
 // blames. It defaults to kWorldFileVersion (this build's current/write
-// version) because every NESTED shape this function checks (environment,
-// capacities, a spawn/transform/node entry, a materials/lighting/props entry)
-// is identical across every version this build reads -- a key unknown there
-// is unknown in EVERY such version, so the default is accurate everywhere it
-// is left unstated. The one place that is not true is the TOP-LEVEL mapping,
-// where "materials"/"lighting"/"props" are unknown in v1 but defined in v2:
-// parse_world() passes the file's OWN declared version there explicitly, so
-// the message blames the version that actually matters.
+// version) because MOST nested shapes this function checks (environment,
+// capacities, a spawn/transform/node entry, a materials/lighting/props
+// entry) are identical across every version this build reads -- a key
+// unknown there is unknown in EVERY such version, so the default is accurate
+// for those. It is NOT accurate wherever a shape's OWN key set is
+// version-gated, the same way the top-level mapping's is: parse_sdf()'s
+// `sdf:` block is exactly that (v1: {transforms, nodes}; v2 adds
+// node_materials), so it -- like parse_world()'s top-level call -- must pass
+// the file's OWN declared version explicitly rather than take the default,
+// or a v1 document rejecting a v2-only key would blame the wrong version
+// (W1 fix round: this was caught live, parse_sdf() had the version-gated
+// allowlist but was not passing it here).
 [[nodiscard]] Result<void> check_map(const YAML::Node& node, std::string_view what,
                                      std::initializer_list<std::string_view> allowed,
                                      uint32_t version_for_message = kWorldFileVersion) {
@@ -839,15 +850,22 @@ template <std::size_t N>
 
 // `is_v1` gates whether `node_materials` is expected: v1 never carried it
 // (PA-2 didn't exist yet), v2 always does -- see parse_world()'s version
-// branch, the same shape the top-level allowlist branches on.
+// branch, the same shape the top-level allowlist branches on. Both check_map
+// calls below pass the file's OWN declared version explicitly (W1 fix round)
+// -- this block's allowlist is itself version-gated, so check_map's
+// kWorldFileVersion default (accurate for shapes that do NOT change between
+// versions) would blame the wrong version here specifically.
 [[nodiscard]] Result<SdfProgram> parse_sdf(const YAML::Node& node, bool is_v1) {
     constexpr std::string_view kWhat = "world.sdf";
+    const uint32_t version = is_v1 ? kWorldFileMinReadVersion : kWorldFileVersion;
     if (is_v1) {
-        if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes"}); !r) {
+        if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes"}, version); !r) {
             return std::unexpected(r.error());
         }
     } else {
-        if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes", "node_materials"}); !r) {
+        if (Result<void> r =
+                check_map(node, kWhat, {"transforms", "nodes", "node_materials"}, version);
+            !r) {
             return std::unexpected(r.error());
         }
     }

@@ -89,7 +89,8 @@ quit.
 
 A world is no longer only a `WorldBuilder` call in C++: `world/world_file.hpp`'s
 `save_world_file()`/`load_world_file()` round-trip a `WorldDesc` through a human-authorable YAML
-file (schema version 1 -- see any file under `tests/golden/worlds/*.world.yaml` for the annotated
+file (schema version 2, materials/lighting/props added at S7a task W1; a `world_version: 1` file
+still loads, upgraded -- see any file under `tests/golden/worlds/*.world.yaml` for the annotated
 format, including the `world_version` upgrade key and the "9 significant digits, fp32 round-trips
 exactly" float-spelling rule). `tests/consumer/main.cpp` is the worked, out-of-tree example: it
 authors a world, saves it, reloads it, and only THEN builds a `WorldSetDesc` and steps a
@@ -121,7 +122,7 @@ layer knows the layer above it exists):
 |---|---|---|
 | `core/` | `spade::core` | Typed handles (`ids.hpp`), `Error`/`Result<T>` (`error.hpp`), the `Tick` step counter (`time.hpp`), math primitives (`math_ops.*` -- the exp-map orientation update), the seeded `rng::Stream` (`rng.hpp`, errata-R4 domain-tag discipline). No wall-clock reads anywhere in this tree except `tools/` and bench timers. |
 | `state/` | `spade::state` | The state backbone: `layout.hpp`'s shared POD structs with `static_assert`ed std430 offsets (the Slang layout single-source, until S6), the world-partitioned `ArenaSet` + `StateRegistry` (`arenas.*`, `registry.*`), and the versioned snapshot/restore blob + file IO (`snapshot.*`) -- the engine's replay/determinism contract. |
-| `world/` | `spade::world` | Analytic SDF scene programs (`sdf.*`), the `WorldBuilder` fluent API + its `WorldDesc` product (`builder.*`), the Dryden turbulence filter (`medium.*`), and the YAML world-file round trip (`world_file.*` -- S5 Task 5: `save_world_file()`/`load_world_file()`, schema version 1, see the quickstart's "World files & the scenario corpus" section). |
+| `world/` | `spade::world` | Analytic SDF scene programs (`sdf.*`), the `WorldBuilder` fluent API + its `WorldDesc` product (`builder.*`), the Dryden turbulence filter (`medium.*`), and the YAML world-file round trip (`world_file.*` -- S5 Task 5: `save_world_file()`/`load_world_file()`, schema version 2 as of S7a task W1 (materials/lighting/props; a `world_version: 1` file still loads, upgraded), see the quickstart's "World files & the scenario corpus" section). |
 | `physics/` | `spade::physics` | The per-substep dynamics passes: `Integrate` (symplectic Euler + specific-force capture, `integrator.*`), `CollisionStatic` (sphere-proxy vs SDF, `contacts.*`), `CollisionDynamic` (world-batched sorted-grid broad phase, `grid.*`), and the `ForceElements` pass's drag law (`forces.*`). Each pass's op order is the CPU/GPU parity contract (D1/D11) -- compiled with `-ffp-contract=off` on non-MSVC so the optimizer cannot silently fuse it. |
 | `sim/` | `spade::sim` | The fixed eight-pass substep **schedule** as data (`physics/schedule.*` -- compiles here, not into `spade_physics`, because only `Simulation` runs it), and `Simulation`/`WorldSet` (`sim/*`): arenas, tick, the substep loop, the structural queue, spawn/despawn, snapshot/restore, model registration. This is the engine's one public entry point. |
 | `sensors/` | *(compiles into `spade::sim`)* | IMU synthesis (`imu.*`: mount-frame specific force + angular velocity, tick-stamped) and the sensor output ring buffers (`rings.hpp` -- editor tech spec TA5's sensor-poll convention, made executable). |
@@ -207,7 +208,10 @@ each carried by committed artifacts rather than claims:
 
 World-file schema v1 was frozen at a user checkpoint (strict unknown-keys, `schema_mismatch`
 version gate, uniform op-node shape -- all user-ratified 2026-08-12); changes from here are
-format-version bumps.
+format-version bumps. The first such bump landed at S7a task W1: schema v2 adds materials,
+lighting and props (all render-only), `kWorldFileVersion` is now 2, and a `world_version: 1`
+file still loads via the same `schema_mismatch`-gated upgrade path v1's freeze established,
+gaining a default material, default lighting and no props.
 
 ## S6 status (GPU backend, in progress)
 

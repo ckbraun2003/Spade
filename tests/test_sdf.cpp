@@ -1199,6 +1199,19 @@ TEST(WorldMaterials, UnknownShadingValueIsInvalid) {
     EXPECT_NE(world.error().context.find("shading"), std::string::npos) << world.error().context;
 }
 
+// W1 fix round: name must be non-empty, the same rule visual_refs and
+// PropDesc::mesh_ref already carry (an empty string names nothing).
+TEST(WorldMaterials, EmptyNameIsInvalid) {
+    WorldBuilder b = base_builder();
+    MaterialDesc nameless;
+    nameless.name = "";
+    b.material(nameless).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("empty name"), std::string::npos) << world.error().context;
+}
+
 TEST(WorldLighting, DefaultLightingIsFinite) {
     WorldBuilder b = base_builder();
     b.sphere(1.0f);
@@ -1232,6 +1245,23 @@ TEST(WorldLighting, NonFiniteLightingIsInvalid) {
     ASSERT_FALSE(world.has_value());
     EXPECT_EQ(world.error().code, Code::invalid_argument);
     EXPECT_NE(world.error().context.find("lighting"), std::string::npos) << world.error().context;
+}
+
+// W1 fix round: sun_direction is documented as "need not be pre-normalized --
+// R6 normalizes it" (builder.hpp), which makes a ZERO vector a reachable,
+// validating world that hands R6 a NaN the instant it normalizes -- finite
+// alone does not catch it (0 is finite). Same shape as
+// WorldBuilderValidation.DegeneratePlaneNormalIsInvalid.
+TEST(WorldLighting, ZeroSunDirectionIsInvalid) {
+    WorldBuilder b = base_builder();
+    LightingDesc light;
+    light.sun_direction = glm::vec3(0.0f);
+    b.lighting(light).sphere(1.0f);
+    const spade::Result<WorldDesc> world = b.build();
+    ASSERT_FALSE(world.has_value());
+    EXPECT_EQ(world.error().code, Code::invalid_argument);
+    EXPECT_NE(world.error().context.find("sun_direction"), std::string::npos)
+        << world.error().context;
 }
 
 TEST(WorldProps, PropIsKeptWithItsPoseAndMaterial) {

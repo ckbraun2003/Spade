@@ -356,6 +356,11 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     }
     for (size_t i = 0; i < desc.materials.size(); ++i) {
         const MaterialDesc& m = desc.materials[i];
+        // Non-empty, same rule as visual_refs and PropDesc::mesh_ref, NOT
+        // uniqueness -- materials are referenced by index, never by name.
+        if (m.name.empty()) {
+            return std::unexpected(invalid("material " + std::to_string(i) + " has an empty name"));
+        }
         if (!finite(m.base_color)) {
             return std::unexpected(
                 invalid("material " + std::to_string(i) + " has a non-finite base_color"));
@@ -370,6 +375,17 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     if (!finite(light.sun_direction) || !finite(light.sun_color) || !finite(light.sun_intensity) ||
         !finite(light.ambient_color) || !finite(light.sky_zenith) || !finite(light.sky_horizon)) {
         return std::unexpected(invalid("lighting has non-finite values"));
+    }
+    // sun_direction need not be PRE-normalized (builder.hpp's own note -- R6
+    // normalizes it), but it must be normalizABLE: a zero vector has no
+    // direction, and normalizing one hands R6 a NaN. Same shape as
+    // plane()'s own normal check just above (finite, then non-zero), the
+    // only difference being that this is enforced here rather than at an
+    // adder, because WorldBuilder::lighting() stores the struct verbatim
+    // (there is no per-field setter to normalize at) and the file loader
+    // reaches this same check by construction, both producers included.
+    if (!(glm::length(light.sun_direction) > 0.0f)) {
+        return std::unexpected(invalid("lighting.sun_direction must be a non-zero vector"));
     }
 
     for (size_t i = 0; i < desc.props.size(); ++i) {

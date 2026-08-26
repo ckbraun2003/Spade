@@ -1276,12 +1276,19 @@ TEST(WorldFileRejects, V1DocumentCannotCarryASchemaV2Section) {
 
 TEST(WorldFileRejects, V1DocumentSdfSectionCannotCarryNodeMaterials) {
     // Same version-gating, one level down: v1's `sdf:` block never carried
-    // node_materials either (PA-2 postdates it).
+    // node_materials either (PA-2 postdates it). Asserts "schema v1" too, not
+    // just the key name -- mirroring its top-level sibling
+    // (V1DocumentCannotCarryASchemaV2Section) -- because this is exactly the
+    // diagnostic that named the wrong version (v2, node_materials' OWN
+    // version) before the W1 fix round threaded parse_sdf()'s version into
+    // its check_map() calls. Asserting only the key name would have stayed
+    // green through that bug.
     const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
         kMinimalWorld, "  nodes:\n    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}",
         "  nodes:\n    - {prim: plane, transform: 0, params: [0, 1, 0, 0]}\n  node_materials: []"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "unknown key 'node_materials'")) << why(world);
+    EXPECT_TRUE(contains(why(world), "schema v1")) << why(world);
 }
 
 TEST(WorldFileRejects, NodeMaterialsWrongLengthViaYamlIsInvalid) {
@@ -1306,12 +1313,30 @@ TEST(WorldFileRejects, UnknownMaterialShadingNameIsInvalid) {
     EXPECT_TRUE(contains(why(world), "unknown material shading 'shiny'")) << why(world);
 }
 
+TEST(WorldFileRejects, EmptyMaterialNameIsInvalid) {
+    const spade::Result<WorldDesc> world =
+        spade::world_from_yaml(replace_first(kMinimalWorldV2, "name: \"default\"", "name: \"\""));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "empty name")) << why(world);
+}
+
 TEST(WorldFileRejects, UnknownKeyInsideLighting) {
     const spade::Result<WorldDesc> world = spade::world_from_yaml(
         replace_first(kMinimalWorldV2, "  sun_intensity: 1\n", "  sun_intensity: 1\n  haze: 0.2\n"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "unknown key 'haze'")) << why(world);
     EXPECT_TRUE(contains(why(world), "world.lighting")) << why(world);
+}
+
+// W1 fix round: the file header claims "every field is validated on load" --
+// this is the case that claim has to cover, since sun_direction: [0, 0, 0]
+// is finite (so a finite-only check would have accepted it) and hands R6 a
+// NaN the instant it normalizes.
+TEST(WorldFileRejects, ZeroSunDirectionViaYamlIsInvalid) {
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(
+        replace_first(kMinimalWorldV2, "sun_direction: [0, 1, 0]", "sun_direction: [0, 0, 0]"));
+    EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(contains(why(world), "sun_direction")) << why(world);
 }
 
 TEST(WorldFileRejects, UnknownKeyInsideAPropsEntry) {

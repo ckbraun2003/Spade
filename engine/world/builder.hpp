@@ -94,10 +94,15 @@ enum class MaterialShading : uint32_t {
 };
 inline constexpr uint32_t kMaterialShadingCount = 3;
 
-// One named surface appearance. `base_color`'s alpha lane is carried for a
-// future transparency pass; today's renderer (R6) is opaque-only and simply
-// ignores it. materials[0] -- the default -- always exists once a WorldDesc
-// has passed validate_world_desc() (WorldBuilder::build() and the world-file
+// One named surface appearance. `name` must be non-empty -- the same rule
+// visual_refs entries and PropDesc::mesh_ref already carry, for the same
+// reason (an empty string names nothing and is always a mistake); it is NOT
+// required to be unique, since materials are referenced by INDEX
+// (node_materials, PropDesc::material), never looked up by name the way a
+// spawn point is. `base_color`'s alpha lane is carried for a future
+// transparency pass; today's renderer (R6) is opaque-only and simply ignores
+// it. materials[0] -- the default -- always exists once a WorldDesc has
+// passed validate_world_desc() (WorldBuilder::build() and the world-file
 // loader both guarantee it, inserting this very default when the caller never
 // added one), so `node_materials`/`PropDesc::material`'s default value of 0
 // always resolves to something.
@@ -189,11 +194,12 @@ struct WorldDesc {
 //                        non-finite or non-unit spawn pose, non-finite
 //                        environment, empty visual reference, malformed SDF
 //                        postfix, bad node parameters, an empty materials
-//                        palette, an unknown material shading value, a
-//                        non-finite material/lighting value, a prop with an
-//                        empty mesh_ref or a non-finite/non-unit/non-positive
-//                        pose, or a materials/node_materials/prop material
-//                        index out of range
+//                        palette, a material with an empty name or an
+//                        unknown shading value, a non-finite material/
+//                        lighting value, a zero lighting.sun_direction, a
+//                        prop with an empty mesh_ref or a non-finite/non-
+//                        unit/non-positive pose, or a materials/
+//                        node_materials/prop material index out of range
 //   capacity_exceeded -- SDF program deeper than kMaxSdfDepth
 //
 // It does NOT normalize anything. A loader that re-normalized a spawn
