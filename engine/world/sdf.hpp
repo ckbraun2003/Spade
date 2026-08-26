@@ -235,4 +235,32 @@ struct SdfSample {
 };
 [[nodiscard]] SdfSample sample(const SdfProgram& program, glm::vec3 p) noexcept;
 
+// Sentinel returned by nearest_leaf_node() for an empty program (nothing to
+// own the returned distance). Rendering-only, like node_materials itself
+// (below) -- never compared against by eval()/gradient()/sample() above.
+inline constexpr uint32_t kNoSdfLeaf = std::numeric_limits<uint32_t>::max();
+
+// RENDERING-ONLY (S7a Task R8 fix round 1; parallels node_materials' own PA-2
+// note below -- physics eval()/gradient()/sample() above never call this):
+// the postfix NODE INDEX of the LEAF (primitive) that determines the
+// program's distance at p. Every operator already SELECTS a branch to
+// compute the distance/gradient it returns (combine_distance/
+// combine_gradient, sdf.cpp) -- this propagates that SAME selection up
+// through the evaluation stack instead of re-deriving a winner some other
+// way (e.g. a per-primitive nearest-distance search evaluated in isolation,
+// which can disagree with the real winner at a subtract's sign-flipped
+// boundary, where the "nearer" operand by raw magnitude is not the one
+// combine_distance actually keeps). A renderer that needs "which primitive
+// owns this hit" (to look up SdfProgram::node_materials) calls this instead
+// of inventing a second selection rule.
+//
+// For smooth_union, whose blend has no single hard winner, the branch with
+// the LARGER blend weight (h, sdf.cpp's smooth_union_weight -- h >= 0.5
+// favours the deeper-pushed postfix operand `a`) is reported: a stated,
+// reasonable convention for a material choice at a blended seam, never
+// claimed to be a sharper distinction than the blend itself has.
+//
+// Returns kNoSdfLeaf for an empty program.
+[[nodiscard]] uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept;
+
 }  // namespace spade

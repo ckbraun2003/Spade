@@ -33,19 +33,38 @@
 //   3. Determinism: byte-identical output across repeated renders of the
 //      same scene/camera/target.
 //
+// FIX ROUND 1 additions (review found the algorithm correct, the constants
+// and two behaviours wrong):
+//   4. A bare-sphere fixture with a CLOSED-FORM exact silhouette -- section
+//      1's own hover-pad fixture cannot see the constant table at all (96x72
+//      makes one pixel ~0.096 m, far coarser than the original 2 cm epsilon
+//      bug); this one can.
+//   5. Frustum parity with raster_cpu.cpp: a camera fully enclosed by a
+//      convex solid must see nothing (SR-13 back-face cull, mirrored here by
+//      the "started inside solid" cull), and geometry beyond
+//      Camera::far_plane must be invisible to both paths.
+//   6. Per-leaf material resolution: a world whose default material
+//      (node_materials' own fallback target) happens to match the sky
+//      colour must not erase a real silhouette's coverage.
+//
 // This file never references SPADE_GOLDEN_DIR (no committed sha256 -- it
 // asserts geometric/coverage behaviour, mirroring test_render_shading.cpp's
 // own posture) and is NOT swept by test_m1b_bar.cpp's libm-transcendental
 // scan for the identical reason: nothing here feeds a committed golden
-// digest, so ordinary trig is fine for building TEST cameras (production
-// render/raymarch.cpp itself uses only sin32/cos32/std::sqrt, per its own
+// digest, so ordinary trig is fine for building TEST cameras and the exact
+// analytic sphere oracle (production render/raymarch.cpp itself uses only
+// sin32/cos32/std::sqrt via render/scene.hpp's shared tan32(), per its own
 // header comment).
 // ---------------------------------------------------------------------------
 
 namespace {
 
 using spade::Capacities;
+using spade::LightingDesc;
+using spade::MaterialDesc;
+using spade::MaterialShading;
 using spade::Result;
+using spade::SdfPose;
 using spade::WorldBuilder;
 using spade::WorldDesc;
 using spade::render::Camera;
@@ -307,4 +326,277 @@ TEST(RaymarchSmoke, DeterministicAcrossRepeatedRenders) {
 
     EXPECT_EQ(first_storage, second_storage) << "render_raymarch() must be byte-identical across repeated calls "
                                                  "with the same scene/camera/target";
+}
+
+// ===========================================================================
+// 4. Sphere analytic fixture (fix round 1). hover-pad's own coverage stat
+//    cannot see the constant table (section 1's own header note) -- a bare
+//    sphere has a CLOSED-FORM exact silhouette, so this fixture can.
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] WorldDesc single_sphere_world(float radius) {
+    WorldBuilder b = base_builder();
+    b.sphere(radius);
+    return build_or_fail(b);
+}
+
+// Exact pixel-space silhouette RADIUS of an on-axis sphere (radius `radius`,
+// centered at the world origin) as seen by a Camera at world-space distance
+// `distance` along +Z with NO rotation (looking straight down -Z at the
+// sphere's own center, camera.hpp's own default orientation).
+//
+// Derivation: a point on the sphere's silhouette lies at half-angle
+// theta = asin(radius/distance) from the view axis. A pinhole camera's
+// perspective projection maps a ray at azimuth phi and half-angle theta to
+// camera-space direction (sin(theta)*cos(phi), sin(theta)*sin(phi),
+// -cos(theta)), which render/raymarch.cpp's own NDC formulas
+// (x_ndc = (f/aspect)*dir.x/(-dir.z), y_ndc = f*dir.y/(-dir.z), f =
+// 1/tan(half_fov_y)) turn into PIXEL offsets from the frame center
+// (width/2, height/2) of (0.5*height*f*tan(theta)*cos(phi),
+// -0.5*height*f*tan(theta)*sin(phi)) -- the aspect-ratio terms in x_ndc and
+// the width/aspect=height identity cancel exactly, so as phi sweeps
+// [0, 2*pi) this traces a PERFECT CIRCLE in actual screen pixels (not merely
+// in NDC, where it would be an ellipse off a square aspect), of radius
+// 0.5*height*f*tan(theta), regardless of aspect ratio.
+[[nodiscard]] double exact_sphere_pixel_radius(float radius, float distance, float fov_y_radians, uint32_t height) {
+    const double theta = std::asin(static_cast<double>(radius) / static_cast<double>(distance));
+    const double half_fov = static_cast<double>(fov_y_radians) * 0.5;
+    const double f = 1.0 / std::tan(half_fov);
+    return 0.5 * static_cast<double>(height) * f * std::tan(theta);
+}
+
+[[nodiscard]] uint32_t exact_sphere_coverage(float radius, float distance, float fov_y_radians, uint32_t width,
+                                              uint32_t height) {
+    const double pixel_radius = exact_sphere_pixel_radius(radius, distance, fov_y_radians, height);
+    const double radius_sq = pixel_radius * pixel_radius;
+    const double cx = static_cast<double>(width) * 0.5;
+    const double cy = static_cast<double>(height) * 0.5;
+    uint32_t covered = 0;
+    for (uint32_t y = 0; y < height; ++y) {
+        const double dy = (static_cast<double>(y) + 0.5) - cy;
+        for (uint32_t x = 0; x < width; ++x) {
+            const double dx = (static_cast<double>(x) + 0.5) - cx;
+            if (dx * dx + dy * dy <= radius_sq) {
+                ++covered;
+            }
+        }
+    }
+    return covered;
+}
+
+}  // namespace
+
+TEST(RaymarchSmoke, SphereAnalyticSilhouetteAgreesWithTheExactCircleWithinHalfAPercent) {
+    constexpr float kRadius = 0.5f, kDistance = 1.2f;
+    const WorldDesc world = single_sphere_world(kRadius);
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_NE(scene.sdf, nullptr);
+    ASSERT_FALSE(scene.sdf->empty());
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, kDistance);
+    constexpr uint32_t kW = 480, kH = 270;
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    const uint32_t exact_covered = exact_sphere_coverage(kRadius, kDistance, camera.fov_y_radians, kW, kH);
+    ASSERT_GT(exact_covered, 0u) << "sanity: the analytic circle must actually cover pixels";
+
+    uint32_t raymarch_covered = 0, shaded_covered = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            if (!(pixel_at(raymarch_storage, kW, x, y) == expected_sky)) {
+                ++raymarch_covered;
+            }
+            if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
+                ++shaded_covered;
+            }
+        }
+    }
+
+    // Sanity: the tessellated path's own (separate, tessellation-driven)
+    // error against the true sphere must also stay small, or this fixture's
+    // own analytic oracle is the thing that is wrong, not raymarch.
+    const double shaded_relative =
+        std::fabs(static_cast<double>(shaded_covered) - static_cast<double>(exact_covered)) / exact_covered;
+    ASSERT_LT(shaded_relative, 0.05) << "sanity: tessellated-vs-exact error is implausibly large (" << shaded_covered
+                                      << " vs exact " << exact_covered << ") -- check the analytic oracle first";
+
+    const double raymarch_relative =
+        std::fabs(static_cast<double>(raymarch_covered) - static_cast<double>(exact_covered)) / exact_covered;
+    EXPECT_LE(raymarch_relative, 0.005)
+        << "raymarch covered " << raymarch_covered << " px, EXACT analytic covered " << exact_covered << " px (of "
+        << (kW * kH) << ") -- " << (raymarch_relative * 100.0)
+        << "% relative difference against the TRUE geometry -- fix round 1's retuned constants must keep this well "
+           "under 1%, not merely under hover-pad's original loose 2% (which could not see a 2 cm epsilon error at "
+           "all)";
+}
+
+// ===========================================================================
+// 5. Frustum parity with raster_cpu.cpp (fix round 1, review IMPORTANT):
+//    near/far-plane bounds, and a camera embedded in a solid.
+// ===========================================================================
+
+TEST(RaymarchSmoke, CameraFullyInsideAConvexSolidSeesNothingLikeRastersBackFaceCull) {
+    // A 4m box (half-extents 2m) centered at the origin, camera dead center
+    // -- the exact fixture the review measured 4096/4096 false coverage on
+    // before this fix (a ray starting inside a solid satisfied
+    // d <= 0 <= epsilon at t=0).
+    WorldBuilder b = base_builder();
+    b.box(glm::vec3(2.0f));
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    constexpr uint32_t kW = 64, kH = 64;
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            ASSERT_EQ(pixel_at(shaded_storage, kW, x, y), expected_sky)
+                << "sanity: raster's own SR-13 back-face cull must show nothing from inside a convex box";
+            ASSERT_EQ(pixel_at(raymarch_storage, kW, x, y), expected_sky)
+                << "(" << x << "," << y << ") a camera fully enclosed by a solid must see sky, not the solid's own "
+                                            "inside surface";
+        }
+    }
+}
+
+TEST(RaymarchSmoke, GeometryBeyondFarPlaneIsInvisibleToBothPaths) {
+    // The exact fixture the review measured 172/4096 false coverage on
+    // before this fix (no far-plane escape at all).
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f, SdfPose{.position = glm::vec3(0.0f, 0.0f, -50.0f)});
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    camera.far_plane = 10.0f;  // the sphere at z=-50 sits well beyond this
+    constexpr uint32_t kW = 64, kH = 64;
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            ASSERT_EQ(pixel_at(shaded_storage, kW, x, y), expected_sky)
+                << "sanity: raster's own far-plane clip must remove this sphere entirely";
+            ASSERT_EQ(pixel_at(raymarch_storage, kW, x, y), expected_sky)
+                << "(" << x << "," << y << ") geometry beyond far_plane must be invisible to the reference path "
+                                            "too, matching raster's own clip";
+        }
+    }
+}
+
+// ===========================================================================
+// 6. Per-leaf material resolution (fix round 1, review IMPORTANT --
+//    SUPERSEDES this file's own original materials[0]-for-everything
+//    ruling).
+// ===========================================================================
+
+TEST(RaymarchSmoke, MaterialMisresolutionAgainstSkyColourNoLongerErasesTheSilhouette) {
+    // Constructed exactly as the review's own counterexample: material 0
+    // (the builder's default slot, and node_materials' own empty-array
+    // fallback target) is unlit and EQUAL to the (flattened, so every row
+    // shares one constant expected colour) sky colour; the sphere is
+    // authored at material index 1, a visibly distinct colour. Before this
+    // fix, EVERY raymarched hit resolved to materials[0] regardless of which
+    // primitive it actually hit -- painting the whole silhouette the exact
+    // sky colour and erasing it from a colour-vs-sky classifier, even though
+    // raster (which meshes per-node, so its own material lookup was never
+    // wrong) shows the sphere plainly.
+    constexpr glm::vec3 kFlatColor(0.3f, 0.5f, 0.7f);
+    WorldBuilder b = base_builder();
+    b.lighting(LightingDesc{
+        .sky_zenith = kFlatColor,
+        .sky_horizon = kFlatColor,  // flat sky -- every row's expected colour is the SAME constant
+    });
+    b.material(MaterialDesc{.name = "default_matches_sky",
+                             .base_color = glm::vec4(kFlatColor, 1.0f),
+                             .shading = MaterialShading::unlit});
+    b.material(MaterialDesc{.name = "sphere", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    b.sphere(0.8f).material_for_last_node(1);
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_EQ(scene.materials.size(), 2u);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    constexpr uint32_t kW = 96, kH = 72;
+
+    RenderOptions shaded_options;
+    shaded_options.mode = DrawMode::shaded;
+    shaded_options.overlays = false;
+    std::vector<uint8_t> shaded_storage;
+    RenderTarget shaded_target = make_target(shaded_storage, kW, kH);
+    render_or_fail(scene, camera, shaded_options, shaded_target);
+
+    RenderOptions raymarch_options;
+    raymarch_options.mode = DrawMode::raymarch;
+    std::vector<uint8_t> raymarch_storage;
+    RenderTarget raymarch_target = make_target(raymarch_storage, kW, kH);
+    render_or_fail(scene, camera, raymarch_options, raymarch_target);
+
+    uint32_t shaded_covered = 0, raymarch_covered = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
+                ++shaded_covered;
+            }
+            if (!(pixel_at(raymarch_storage, kW, x, y) == expected_sky)) {
+                ++raymarch_covered;
+            }
+        }
+    }
+
+    ASSERT_GT(shaded_covered, 0u) << "sanity: the raster path must see the sphere";
+    EXPECT_GT(raymarch_covered, 0u)
+        << "raymarch covered 0 px -- the WHOLE silhouette resolved to material 0 (which equals the sky colour by "
+           "construction), the exact failure mode this test pins";
+
+    const double relative =
+        std::fabs(static_cast<double>(raymarch_covered) - static_cast<double>(shaded_covered)) / shaded_covered;
+    EXPECT_LE(relative, 0.02) << "raymarch covered " << raymarch_covered << " px, tessellated covered "
+                               << shaded_covered << " px -- " << (relative * 100.0) << "% relative difference";
 }

@@ -18,16 +18,12 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
-#include "core/fp32_math.hpp"
 #include "render/raymarch.hpp"
 #include "render/shadow.hpp"
 
 namespace spade::render {
 
 namespace {
-
-using math::cos32;
-using math::sin32;
 
 // ---------------------------------------------------------------------------
 // Camera-space math -- a DIRECT, UNCHANGED port of the wireframe rasterizer's
@@ -89,22 +85,16 @@ struct ScreenPoint {
     double x = 0.0, y = 0.0, invDepth = 0.0;
 };
 
-// NEW (adaptation, not part of the port): the wireframe rasterizer's own
-// projectCameraSpace calls std::tan() directly, which is legal there --
-// dronesim/spade/ is kat-side, outside this engine's determinism contract.
-// This file lives under spade/engine/render/, which IS scanned by
-// tools/tests/test_m1b_bar.cpp's BitPortability.NoLibmTranscendentalInEngineSource
-// (no libm transcendental may execute on a path that feeds a committed golden
-// digest -- render/tessellate.cpp's own header comment states the identical
-// rule for the exact same reason: two conforming libms can disagree by a ulp,
-// which would move this file's own committed sha256 frame goldens silently
-// between platforms/compilers). half_fov_rad is always small (a camera's half
-// vertical FOV), always well inside sin32/cos32's accurate domain.
-[[nodiscard]] double tan32(double half_fov_rad) {
-    const float x = static_cast<float>(half_fov_rad);
-    return static_cast<double>(sin32(x)) / static_cast<double>(cos32(x));
-}
-
+// tan32() (S7a Task R6; RELOCATED to render/scene.hpp at Task R8 fix round 1,
+// review Minor 3) -- the wireframe rasterizer's own projectCameraSpace called
+// std::tan() directly, which was legal there (dronesim/spade/ is kat-side,
+// outside this engine's determinism contract); this file lives under
+// spade/engine/render/, which IS scanned by
+// tools/tests/test_m1b_bar.cpp's BitPortability.NoLibmTranscendentalInEngineSource,
+// so it uses scene.hpp's shared, sin32/cos32-built tan32() instead -- now
+// render/raymarch.cpp's identical camera-ray need reads the SAME function
+// rather than a second copy that could disagree with this one by a ulp.
+//
 // Projects an ALREADY near/far-valid camera-space point (pc.z in
 // [-farP, -nearP]) to screen space. invDepth = 1/-pc.z (larger = closer).
 ScreenPoint projectCameraSpace(const ViewContext& vc, const Vec3& pc) {
@@ -420,10 +410,10 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
     return glm::vec3(static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z));
 }
 
-[[nodiscard]] uint8_t to_byte(float channel) {
-    const float clamped = std::clamp(channel, 0.0f, 1.0f);
-    return static_cast<uint8_t>(std::lround(clamped * 255.0f));
-}
+// to_byte() (S7a Task R6; RELOCATED to render/scene.hpp at Task R8 fix
+// round 1, review Minor 3): the byte quantizer every draw call below still
+// calls exactly as before -- now the same function render/raymarch.cpp
+// calls too, since R9 compares the bytes it produces.
 
 // ---------------------------------------------------------------------------
 // Shading (S7a Task R6, ruling SR-18) -- ShadedColor/shade_vertex_color()

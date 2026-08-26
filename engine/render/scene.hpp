@@ -51,6 +51,7 @@
 // ---------------------------------------------------------------------------
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -65,6 +66,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "core/fp32_math.hpp"   // math::sin32/cos32 (S7a Task R8) -- tan32() below, SR-14
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
@@ -196,6 +198,42 @@ struct ShadedColor {
 // rather than writing a second gradient").
 [[nodiscard]] inline glm::vec3 sky_gradient_color(const Lighting& lighting, float row_fraction) {
     return lighting.sky_zenith * (1.0f - row_fraction) + lighting.sky_horizon * row_fraction;
+}
+
+// The linear-to-byte quantizer (S7a Task R6; relocated HERE at Task R8 fix
+// round 1, review Minor 3): every BGRX8 byte either render path ever writes
+// goes through this SAME clamp-then-round-to-nearest formula. This one is
+// NOT a rendering decision either path could legitimately disagree on the
+// way a shading model or a gradient stencil could (raster_cpu.cpp's own
+// comment on shade_vertex_color) -- but Task R9 compares BYTES, so the
+// quantizer that decides those bytes still has to be the SAME function, not
+// two copies that happen to compute the same formula today and could drift
+// tomorrow.
+[[nodiscard]] inline uint8_t to_byte(float channel) {
+    const float clamped = std::clamp(channel, 0.0f, 1.0f);
+    return static_cast<uint8_t>(std::lround(clamped * 255.0f));
+}
+
+// tan(half the vertical FOV), for a pinhole camera ray (S7a Task R6;
+// relocated HERE at Task R8 fix round 1, review Minor 3). SR-14: built from
+// math::sin32/math::cos32 (core/fp32_math.hpp), never std::tan -- half a
+// camera's vertical FOV is always small, always well inside sin32/cos32's
+// accurate domain.
+//
+// DOUBLE, not float (review Minor 3's own finding): raster_cpu.cpp's
+// original private copy of this function took/returned double -- sin32/
+// cos32 themselves still compute in float, but the DIVISION that turns them
+// into a tangent happens at double precision. A caller that narrows this
+// result to float only at the very end (both render/raster_cpu.cpp's
+// background pass and render/raymarch.cpp's camera ray, after this
+// relocation) reproduces that division bit-for-bit; a caller that divided
+// in float instead (raymarch.cpp's own pre-fix-round private copy) could
+// disagree with raster_cpu.cpp's `f` by a ulp for the exact same
+// `fov_y_radians` -- a real, if tiny, geometry difference between the two
+// paths' camera rays that R9 has no business measuring.
+[[nodiscard]] inline double tan32(double half_fov_rad) {
+    const float x = static_cast<float>(half_fov_rad);
+    return static_cast<double>(spade::math::sin32(x)) / static_cast<double>(spade::math::cos32(x));
 }
 
 // One loaded or generated mesh. Positions/normals/indices stay empty for a

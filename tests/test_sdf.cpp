@@ -754,6 +754,125 @@ TEST(SdfGradient, SmoothUnionBlendsBothBranchesConvexly) {
 }
 
 // ===========================================================================
+// nearest_leaf_node() -- S7a Task R8 fix round 1. Per-leaf material
+// resolution needs to know WHICH leaf primitive owns the returned distance;
+// this mirrors combine_distance()/combine_gradient()'s own branch selection
+// exactly, checked independently (never by calling nearest_leaf_node() and
+// comparing it to itself) the same way SelectingOpsCarryTheSelectedBranch-
+// Gradient/SubtractFlipsTheRemovedBranch/SmoothUnionBlendsBothBranchesConvexly
+// above check gradient() -- node 0 is always the sphere (ops.a), node 1 the
+// box (ops.b), per make_combined()'s own authoring order.
+// ===========================================================================
+
+TEST(SdfLeaf, SingleLeafProgramAlwaysReturnsItsOwnNodeIndex) {
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f);
+    const SdfProgram prog = sdf_of(b);
+    Lcg rng(0x5eed0026u);
+    for (int n = 0; n < kSamples; ++n) {
+        const glm::vec3 p = rng.point(2.0f);
+        EXPECT_EQ(spade::nearest_leaf_node(prog, p), 0u) << "n=" << n;
+    }
+}
+
+TEST(SdfLeaf, UnionPicksTheCloserOperandsLeafNode) {
+    const CsgFixture ops = make_operands();
+    const SdfProgram u = make_combined(spade::SdfOp::union_);
+
+    int sphere_wins = 0, box_wins = 0;
+    Lcg rng(0x5eed0027u);
+    for (int n = 0; n < kSamples; ++n) {
+        const glm::vec3 p = rng.point(2.0f);
+        const float da = spade::eval(ops.a, p);
+        const float db = spade::eval(ops.b, p);
+        if (std::abs(da - db) < 1e-3f) {
+            continue;  // on the crease either branch is admissible
+        }
+        const uint32_t expected = da <= db ? 0u : 1u;
+        EXPECT_EQ(spade::nearest_leaf_node(u, p), expected) << "n=" << n;
+        expected == 0u ? ++sphere_wins : ++box_wins;
+    }
+    EXPECT_GT(sphere_wins, 0) << "no sample exercised the sphere's own leaf -- test is vacuous";
+    EXPECT_GT(box_wins, 0) << "no sample exercised the box's own leaf -- test is vacuous";
+}
+
+TEST(SdfLeaf, IntersectPicksTheFartherOperandsLeafNode) {
+    const CsgFixture ops = make_operands();
+    const SdfProgram i = make_combined(spade::SdfOp::intersect);
+
+    int flipped = 0;
+    Lcg rng(0x5eed0028u);
+    for (int n = 0; n < kSamples; ++n) {
+        const glm::vec3 p = rng.point(2.0f);
+        const float da = spade::eval(ops.a, p);
+        const float db = spade::eval(ops.b, p);
+        if (std::abs(da - db) < 1e-3f) {
+            continue;
+        }
+        const uint32_t expected = da >= db ? 0u : 1u;
+        EXPECT_EQ(spade::nearest_leaf_node(i, p), expected) << "n=" << n;
+        if (expected == 1u) {
+            ++flipped;
+        }
+    }
+    EXPECT_GT(flipped, 0) << "no sample exercised the box's own leaf -- test is vacuous";
+}
+
+TEST(SdfLeaf, SubtractPicksTheSubtractedLeafNodeOnItsOwnSideOfTheBoundary) {
+    const CsgFixture ops = make_operands();
+    const SdfProgram s = make_combined(spade::SdfOp::subtract);
+
+    int flipped = 0;
+    Lcg rng(0x5eed0029u);
+    for (int n = 0; n < kSamples; ++n) {
+        const glm::vec3 p = rng.point(2.0f);
+        const float da = spade::eval(ops.a, p);
+        const float db = spade::eval(ops.b, p);
+        if (std::abs(da + db) < 1e-3f) {
+            continue;  // on the crease either branch is admissible
+        }
+        // Postfix "a b subtract" = max(a, -b) -- node 1 (the box, `b`) is the
+        // SUBTRACTED operand, and its leaf wins exactly where combine_distance
+        // keeps its (negated) branch: da < -db.
+        const uint32_t expected = da >= -db ? 0u : 1u;
+        EXPECT_EQ(spade::nearest_leaf_node(s, p), expected) << "n=" << n;
+        if (expected == 1u) {
+            ++flipped;
+        }
+    }
+    EXPECT_GT(flipped, 0) << "no sample exercised the subtracted branch's own leaf -- test is vacuous";
+}
+
+TEST(SdfLeaf, SmoothUnionPicksTheLargerBlendWeightsLeafNode) {
+    const CsgFixture ops = make_operands();
+    const float k = 0.5f;
+    const SdfProgram smooth = make_combined(spade::SdfOp::smooth_union, k);
+
+    int blended = 0;
+    Lcg rng(0x5eed002au);
+    for (int n = 0; n < kSamples; ++n) {
+        const glm::vec3 p = rng.point(2.0f);
+        const float da = spade::eval(ops.a, p);
+        const float db = spade::eval(ops.b, p);
+        const float h = glm::clamp(0.5f + 0.5f * (db - da) / k, 0.0f, 1.0f);
+        if (std::abs(h - 0.5f) < 1e-3f) {
+            continue;  // near-tie, either branch is admissible
+        }
+        const uint32_t expected = h >= 0.5f ? 0u : 1u;
+        EXPECT_EQ(spade::nearest_leaf_node(smooth, p), expected) << "n=" << n;
+        if (std::abs(da - db) < 0.5f * k) {
+            ++blended;
+        }
+    }
+    EXPECT_GT(blended, 0) << "no sample landed in the blend band -- test is vacuous";
+}
+
+TEST(SdfLeaf, EmptyProgramReturnsTheNoLeafSentinel) {
+    const SdfProgram empty;
+    EXPECT_EQ(spade::nearest_leaf_node(empty, glm::vec3(0.0f)), spade::kNoSdfLeaf);
+}
+
+// ===========================================================================
 // eval / sample agreement and the empty program
 // ===========================================================================
 

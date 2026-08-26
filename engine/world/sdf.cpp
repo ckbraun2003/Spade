@@ -282,6 +282,35 @@ namespace {
     return ga;
 }
 
+// Mirrors combine_distance()/combine_gradient()'s own branch selection
+// EXACTLY (S7a Task R8 fix round 1, world/sdf.hpp's own nearest_leaf_node()
+// doc comment) -- rendering-only, never called by eval()/gradient()/sample()
+// above. `leaf_a`/`leaf_b` are the postfix node indices already carried by
+// the `a`/`b` operands; this picks the same one combine_distance's own
+// comparison would keep.
+[[nodiscard]] uint32_t combine_leaf(uint32_t op, const glm::vec4& prm, float a, float b, uint32_t leaf_a,
+                                     uint32_t leaf_b) noexcept {
+    switch (static_cast<SdfOp>(op)) {
+        case SdfOp::none:
+            return leaf_a;  // unreachable: primitives never reach here
+        case SdfOp::union_:
+            return a <= b ? leaf_a : leaf_b;
+        case SdfOp::intersect:
+            return a >= b ? leaf_a : leaf_b;
+        case SdfOp::subtract:
+            return a >= -b ? leaf_a : leaf_b;
+        case SdfOp::smooth_union: {
+            const float k = prm.x;
+            if (!(k > 0.0f)) {
+                return a <= b ? leaf_a : leaf_b;
+            }
+            const float h = smooth_union_weight(k, a, b);
+            return h >= 0.5f ? leaf_a : leaf_b;
+        }
+    }
+    return leaf_a;
+}
+
 // Dimension sanity per kind. Returns nullptr when the parameters are usable,
 // otherwise the reason. Degenerate-but-meaningful values (a zero-radius sphere
 // is a point, a zero blend radius is a plain union) stay legal; values with no
@@ -393,6 +422,43 @@ SdfSample sample(const SdfProgram& program, glm::vec3 p) noexcept {
 
 glm::vec3 gradient(const SdfProgram& program, glm::vec3 p) noexcept {
     return sample(program, p).gradient;
+}
+
+// Rendering-only (sdf.hpp's own doc comment) -- a near-mirror of eval()'s own
+// stack loop, but threading a NODE-INDEX tag through the stack instead of a
+// gradient: a primitive leaf's tag is its own postfix index; an operator's
+// tag is combine_leaf()'s selection, which mirrors combine_distance()'s
+// comparison exactly so this can never disagree with which value eval()
+// itself actually returned.
+uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept {
+    float dist[kMaxSdfDepth];
+    uint32_t leaf[kMaxSdfDepth];
+    uint32_t sp = 0;
+
+    for (size_t i = 0; i < program.nodes.size(); ++i) {
+        const SdfNode& node = program.nodes[i];
+        if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+            assert(sp < kMaxSdfDepth && "SdfProgram exceeds kMaxSdfDepth -- unvalidated program");
+            assert(node.transform < program.transforms.size());
+            const SdfTransform& t = program.transforms[node.transform];
+            const glm::vec3 local(t.world_to_local * glm::vec4(p, 1.0f));
+            dist[sp] = primitive_distance(node.kind, node.params, local) * t.scale;
+            leaf[sp] = static_cast<uint32_t>(i);
+            ++sp;
+        } else {
+            assert(sp >= 2 && "SdfProgram operator without two operands -- unvalidated program");
+            const float b = dist[--sp];
+            const uint32_t leaf_b = leaf[sp];
+            const float a = dist[--sp];
+            const uint32_t leaf_a = leaf[sp];
+            dist[sp] = combine_distance(node.op, node.params, a, b);
+            leaf[sp] = combine_leaf(node.op, node.params, a, b, leaf_a, leaf_b);
+            ++sp;
+        }
+    }
+
+    // sp == 0 only for an empty program (mirrors eval()'s own check).
+    return sp == 1 ? leaf[0] : kNoSdfLeaf;
 }
 
 Result<uint32_t> SdfProgram::validate() const {
