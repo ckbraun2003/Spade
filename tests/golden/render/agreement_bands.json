@@ -46,7 +46,8 @@
               "probe_bare_ground_covered_b": 14560,
               "detects_total_deletion": true,
               "band": 0.012,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007604166666666667)) = 0.012"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007604166666666667)) = 0.012",
+              "margin_over_band": 1.4496
             }
           }
         },
@@ -83,7 +84,8 @@
               "probe_bare_ground_covered_b": 13920,
               "detects_total_deletion": true,
               "band": 0.013,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008541666666666666)) = 0.013"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008541666666666666)) = 0.013",
+              "margin_over_band": 3.8221
             }
           }
         },
@@ -120,7 +122,8 @@
               "probe_bare_ground_covered_b": 13920,
               "detects_total_deletion": true,
               "band": 0.012,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007395833333333333)) = 0.012"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007395833333333333)) = 0.012",
+              "margin_over_band": 9.4965
             }
           }
         },
@@ -268,7 +271,8 @@
               "probe_bare_ground_covered_b": 13912,
               "detects_total_deletion": true,
               "band": 0.013,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013",
+              "margin_over_band": 1.278
             }
           }
         },
@@ -305,7 +309,8 @@
               "probe_bare_ground_covered_b": 13920,
               "detects_total_deletion": true,
               "band": 0.012,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0078125)) = 0.012"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0078125)) = 0.012",
+              "margin_over_band": 1.8056
             }
           }
         },
@@ -342,7 +347,8 @@
               "probe_bare_ground_covered_b": 13912,
               "detects_total_deletion": true,
               "band": 0.001,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0005208333333333334)) = 0.001"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0005208333333333334)) = 0.001",
+              "margin_over_band": 138.177
             }
           }
         },
@@ -379,11 +385,13 @@
               "probe_bare_ground_covered_b": 14560,
               "detects_total_deletion": true,
               "band": 0.012,
-              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007864583333333333)) = 0.012"
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007864583333333333)) = 0.012",
+              "margin_over_band": 1.1545
             }
           }
         }
-      }
+      },
+      "thin_margin_note": "Every detecting case is described by margin_over_band = probe_bare_ground_disagreement_fraction / band (added fix round 2, review finding: record thin margins beside the bands, not just the pass/fail outcome). Two of the seven detecting cases clear their own band by less than 1.3x under TOTAL deletion, the most extreme mutation this probe can apply: swarm-grid/family_third at 1.1545x and pint-box/family_third at 1.278x. A future re-derivation of the band rule (the 1.5x-and-round-up multiplier, or the round-up step itself) that widens bands by more than roughly 15-20% would silently move these two out of the detecting set (7 of 30) into the non-discriminating one (23 of 30) with nothing to notice unless this field is read and re-checked at that time. The other five detecting cases have comfortable margins (1.45x to 138x) and are not at similar risk from a modest band-rule change."
     }
   }
 }

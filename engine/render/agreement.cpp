@@ -117,11 +117,18 @@ Result<void> assert_no_material_matches_sky(std::span<const spade::MaterialDesc>
     const glm::vec3 perp_raw = glm::cross(sun_dir, helper);
     const glm::vec3 perp = glm::length(perp_raw) > 1e-6f ? glm::normalize(perp_raw) : glm::vec3(1.0f, 0.0f, 0.0f);
 
-    // 129 samples (step 1/128) over N.L in [0, 1]: fine enough that no
-    // BYTE-level (1-in-255) match along a MONOTONIC, affine-in-N.L channel
-    // is ever skipped between two adjacent samples, with `tolerance`'s own
-    // slack besides. Cheap regardless -- this runs once per material at
-    // scene-build time, never per pixel or per frame.
+    // 129 samples (step 1/128) over N.L in [0, 1] (fix round 2, review
+    // finding: the ORIGINAL comment here overclaimed "no byte-level match is
+    // ever skipped" -- for a channel whose full swing from N.L=0 to N.L=1
+    // spans close to the full byte range, the per-sample step is close to
+    // 255/128 =~ 2 BYTES, not fine enough on its own to guarantee catching
+    // an exact 1-in-255 collision between two adjacent samples). The check
+    // is sound anyway, for a different, correct reason: `tolerance`'s
+    // default (8) is comfortably larger than half that worst-case step
+    // (~1), so a true collision can miss the nearest sample by up to ~1
+    // byte and still land inside the tolerance window that sample checks.
+    // Cheap regardless -- this runs once per material at scene-build time,
+    // never per pixel or per frame.
     constexpr int kNlSamples = 129;
 
     for (std::size_t i = 0; i < materials.size(); ++i) {
@@ -157,20 +164,51 @@ Result<void> assert_no_material_matches_sky(std::span<const spade::MaterialDesc>
 }
 
 Result<spade::WorldDesc> strip_to_ground_plane_only(const spade::WorldDesc& world) {
+    // UNIQUENESS, CHECKED (fix round 2, review finding): the original version
+    // took the FIRST plane leaf and never asked whether it was the ONLY one.
+    // Benign for every one of today's ten shipped worlds (the controller
+    // amendments' own grep already confirms each has exactly one `prim:
+    // plane` node), but this is production code SR-2 hands to Task C4 for
+    // DRESSED worlds -- a second plane leaf there would silently make the
+    // probe measure a different mutant than "everything but the ground" (an
+    // arbitrary pick among two candidates, not a documented choice), which
+    // is exactly the kind of quiet wrongness this whole task exists to
+    // refuse. A world with more than one plane leaf is now a hard error
+    // instead.
     std::size_t plane_index = static_cast<std::size_t>(-1);
+    std::size_t plane_count = 0;
     for (std::size_t i = 0; i < world.sdf.nodes.size(); ++i) {
         const spade::SdfNode& node = world.sdf.nodes[i];
         if (node.op == static_cast<uint32_t>(spade::SdfOp::none) &&
             node.kind == static_cast<uint32_t>(spade::SdfPrim::plane)) {
-            plane_index = i;
-            break;
+            if (plane_count == 0) {
+                plane_index = i;
+            }
+            ++plane_count;
         }
     }
-    if (plane_index == static_cast<std::size_t>(-1)) {
+    if (plane_count == 0) {
         return std::unexpected(
             Error{Code::not_found, "strip_to_ground_plane_only: world has no standalone ground-plane leaf node"});
     }
-
+    if (plane_count > 1) {
+        return std::unexpected(Error{
+            Code::invalid_argument,
+            "strip_to_ground_plane_only: world has " + std::to_string(plane_count) +
+                " plane leaf nodes -- ambiguous which one is 'the ground'; this function refuses to pick arbitrarily"});
+    }
+    // NOT CHECKED HERE, BY SCOPE (documented, not silently assumed): whether
+    // this node is actually the one raster_cpu.cpp's analytic background
+    // pass treats as a ground (render/scene.hpp's SR-17 GroundPlane list,
+    // built by render/csg_mesh.hpp's split_program(), which additionally
+    // requires the leaf sit under nothing but `union` -- a plane nested
+    // inside a subtract/intersect/smooth_union subtree as a CUTTING
+    // half-space, not a floor, would still match the kind/op test above.
+    // Pulling in split_program()'s own classification here, for a
+    // validation-only path, was judged out of proportion for a fix round
+    // scoped as "small" -- a caller with a world shaped that unusually
+    // should independently confirm `RenderScene::ground_planes` is
+    // non-empty for it before trusting this probe.
     spade::WorldDesc stripped = world;
     stripped.sdf.nodes = {world.sdf.nodes[plane_index]};
     if (!world.sdf.node_materials.empty()) {

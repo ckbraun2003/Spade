@@ -172,12 +172,21 @@ struct AgreementResult {
 // once" is load-bearing: checking each channel's own achievable range
 // independently (an earlier draft of this fix) is UNSOUND -- it flags any
 // material whose base_color is grey-ish against a saturated (non-grey) sky,
-// because a shared, single N.L drives every channel together, and R6/R7's
-// own DEFAULT white material against the DEFAULT blue-ish sky is exactly
-// such a false positive (white can only ever shade to a value with
-// r == g == b, and (0.3, 0.5, 0.8) is not one, at ANY N.L -- verified by
-// solving each channel's own required N.L independently and finding they
-// disagree: 0.2 / 0.4 / 0.7, never simultaneously achievable). Degenerates
+// because a shared, single N.L drives every channel together, and this
+// header's own worked example was WRONG about why (fix round 2, review
+// finding, corrected against the ACTUAL numbers rather than restated):
+// render::Lighting's own default (test_render_agreement.cpp's
+// Step1cPassesWhenNoMaterialIsNearTheSkyReference -- sun_color
+// (1, 0.98, 0.94), ambient_color (0.30, 0.34, 0.42), sky_zenith
+// (0.28, 0.42, 0.62)) is NOT the uniform-per-channel case a "white can only
+// shade to r == g == b" premise needs -- it is false here, since sun_color
+// and ambient_color both vary per channel. The real argument, which that
+// test file's own comment states correctly: solving each channel's own
+// required N.L independently gives -0.02 / 0.082 / 0.213 -- three DIFFERENT
+// values, so no single N.L matches all three at once, and the r-channel's
+// own -0.02 is not even reachable at all (N.L is clamped to >= 0, so the
+// achievable r range is [0.30, ...], already above the sky's 0.28 at its
+// own floor). Degenerates
 // to exactly the original base_color check for unlit/emissive materials
 // (shade_vertex_color() ignores the normal entirely for those, so every
 // sampled point collapses to the same value) -- this is a strict
@@ -219,6 +228,18 @@ struct AgreementResult {
 // keep (every one of today's ten shipped worlds has exactly one; a caller
 // that has verified `raster_cpu.cpp`'s own analytic-ground extraction found
 // one -- RenderScene::ground_planes non-empty -- will never hit this).
+// invalid_argument (fix round 2, review finding) -- `world.sdf` has MORE
+// THAN ONE plane leaf (`op == SdfOp::none`, `kind == SdfPrim::plane`):
+// arbitrarily keeping the first one found would silently pick a different
+// "everything but the ground" mutant than a caller (Task C4, dressing these
+// worlds with prefab instances, SR-2) would expect -- refused rather than
+// guessed. NOTE ON SCOPE: this function does not replicate SR-17's own
+// classification of which plane leaf is really a "ground" (a leaf that sits
+// under nothing but `union` -- render/csg_mesh.hpp's split_program()) versus
+// a plane nested inside a subtract/intersect/smooth_union subtree, which is
+// a cutting half-space, not a floor. A world shaped that unusually can still
+// pass this function's own kind/op test; a caller with such a world should
+// independently confirm `RenderScene::ground_planes` is non-empty for it.
 [[nodiscard]] Result<spade::WorldDesc> strip_to_ground_plane_only(const spade::WorldDesc& world);
 
 }  // namespace spade::render

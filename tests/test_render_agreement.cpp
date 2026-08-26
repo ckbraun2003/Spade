@@ -57,7 +57,7 @@
 // probe's disagreement exceeds the case's own pinned band -- i.e. whether
 // the band, as pinned, would actually catch a reference with zero real
 // scene geometry. Bands moved from per-WORLD to per-(WORLD, CAMERA)
-// (nothing else needed to change to stop the lausdering: each camera's band
+// (nothing else needed to change to stop the laundering: each camera's band
 // now comes ONLY from its own measured value). A case that proves `false`
 // is NOT deleted from the matrix -- it is still a real tripwire against a
 // change that breaks horizon-deficit saturation itself, and it is a real
@@ -99,14 +99,26 @@
 // each its own ctest entry (gtest_discover_tests) -- comfortably inside the
 // 60 s per-case timeout at either resolution this task's brief costs out.
 // PARAMETERIZED AS A FLAT "world|camera" STRING, NOT ::testing::Combine's
-// std::tuple<std::string,std::string> (fix round 1, review finding, see
-// this file's own final section for the measured symptom): this box's
-// installed CMake GoogleTest.cmake module mis-parses a tuple's printed
-// `GetParam() = ("a", "b")` comment (the embedded comma inside the comment
-// defeats its own name-stripping regex), so `ctest -R <name>` found zero
-// matches even though the gtest binary itself reports and runs the correct,
-// custom-named case. A single quoted string's `GetParam() = "a|b"` comment
-// has no embedded comma and parses correctly.
+// std::tuple<std::string,std::string> -- simpler to build and split, but
+// (fix round 2, review IMPORTANT correction) this reparameterization is NOT
+// what fixed ctest's display/selection of this suite's custom test names.
+// Fix round 1 misdiagnosed that symptom as a tuple-specific comma-parsing
+// bug in this box's CMake GoogleTest module and "fixed" it by switching to a
+// flat string -- which changed nothing observable, because the real cause is
+// neither box-specific nor tuple-specific: CMake's own
+// GoogleTestAddTests.cmake (write_test_to_file(), read directly rather than
+// guessed a second time) DELIBERATELY substitutes GetParam()'s printed value
+// for a value-parameterized test's name suffix in the name CTest displays
+// and matches (`ctest -N`/`-R`) -- documented, intentional behaviour, for
+// ANY printable parameter type, tuple or plain string alike (a flat string
+// registers exactly as `.../"world|camera"`, no better than a tuple's
+// `.../("world", "camera")`). The actual fix is `NO_PRETTY_VALUES` on this
+// binary's one `gtest_discover_tests()` call -- see spade/tests/
+// CMakeLists.txt's own comment there for the CMake source lines that prove
+// it, and task-R9-report.md's fix-round-2 note for how the round 1 mistake
+// was caught. This file keeps the flat-string parameterization anyway
+// because it is simpler to read and split than a tuple, not because it
+// fixes anything on its own.
 //
 // BARE GEOMETRY ONLY (ruling SR-2): worlds are loaded straight off disk via
 // load_world_file() + scene_from_world() with an EMPTY resolved-mesh span --
@@ -827,6 +839,22 @@ TEST_P(AgreementMatrix, MeasuredDisagreementIsWithinItsPinnedBandAndDetectionSur
 
     const bool live_detects = probe.disagreement_fraction > band;
     const bool recorded_detects = recorded_detects_total_deletion(world_name, camera_name);
+
+    // THE LINE fix round 2 adds (review: "PARTIALLY ADDRESSED -- the honesty
+    // is in the data file and absent from the test surface"): every case
+    // prints its own verdict, not just its raw numbers, so a human scanning
+    // 30 green ctest lines (or CK-2) sees which ones constrain real scene
+    // geometry without having to cross-reference agreement_bands.json at
+    // all. Gated on `recorded_detects` (the committed claim just verified
+    // above), not `live_detects` -- the printed verdict is a restatement of
+    // what this run is CHECKING, the same source EXPECT_EQ below reads.
+    std::cout << "[AgreementMatrix] " << world_name << "/" << camera_name << " band=" << (band * 100.0) << "% "
+              << (recorded_detects
+                      ? "VERDICT: DISCRIMINATING -- this case's band would catch its reference's entire scene "
+                        "geometry being deleted.\n"
+                      : "VERDICT: NON-DISCRIMINATING -- this case's band constrains NO scene geometry today (see "
+                        "agreement_bands.json's non_discriminating_summary/worlds_with_no_discriminating_camera).\n");
+
     EXPECT_EQ(live_detects, recorded_detects)
         << "'" << world_name << "'/" << camera_name << "': live SR-30 probe "
         << (live_detects ? "DETECTS" : "does NOT detect") << " total geometry deletion (probe disagreement "
