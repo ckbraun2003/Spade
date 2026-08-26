@@ -741,6 +741,61 @@ TEST(RasterCpu, IndexExceedingTheVertexBufferSkipsOnlyThatTriangle) {
         << "the left triangle should still be visible somewhere";
 }
 
+// Review MINOR 6: draw_mesh_item's missing/truncated-normals skip (S7a Task
+// R6) is NEW behaviour with no dedicated test -- every sibling defensive
+// branch (mismatched submesh arrays, an out-of-range submesh range, an
+// out-of-range vertex index) already has one. A mesh whose normals array is
+// shorter than its positions/indices arrays rendered FLAT per-submesh colour
+// before this task (normals were unread); it renders NOTHING for the
+// affected triangle now (draw_mesh_item's own "skip, never crash" posture,
+// matching how the pre-existing checks above already treat malformed data).
+TEST(RasterCpu, MissingNormalsSkipsThatTriangleInShadedModeButWireframeStillDraws) {
+    MeshData mesh = make_two_triangle_mesh();  // indices = {0,1,2, 3,4,5}; positions.size() == 6
+    mesh.normals.resize(3);  // only the LEFT triangle's vertices (0,1,2) still have a normal
+
+    // unlit (shading=1u): this test is about the missing-normals skip path,
+    // not lighting -- see EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh's
+    // identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+
+    {
+        RenderScene scene = make_scene(mesh);
+        scene.materials = {red};
+        RenderOptions options;
+        options.mode = DrawMode::shaded;
+        options.overlays = false;
+        std::vector<uint8_t> storage;
+        RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+        render_or_fail(scene, camera, options, target);  // must not read past mesh.normals
+
+        EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
+            << "the left triangle has valid normals and must still draw in shaded mode";
+        const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+        EXPECT_TRUE(
+            region_is_entirely_reference(storage, bg, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight))
+            << "the right triangle's missing normals must skip it entirely in shaded mode -- that half stays "
+               "background, never drawn with a wrong or default normal";
+    }
+    {
+        RenderScene scene = make_scene(mesh);
+        scene.materials = {red};
+        RenderOptions options;
+        options.mode = DrawMode::wireframe;
+        options.overlays = false;
+        std::vector<uint8_t> storage;
+        RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+        render_or_fail(scene, camera, options, target);
+
+        EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
+            << "the left triangle's wireframe edges must draw";
+        EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
+                                         expected_bgr(red)))
+            << "wireframe mode never needs a normal -- the right triangle's edges must still draw despite its "
+               "missing normals, unlike the shaded-mode skip above";
+    }
+}
+
 TEST(RasterCpu, EmptyMaterialsListSkipsDrawingRatherThanReadingMaterialsZero) {
     RenderScene scene;  // scene.materials left default-empty, deliberately
     scene.meshes.push_back(make_box_mesh(1.0f));

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -199,6 +200,7 @@ TEST(RenderShading, LambertFaceTowardSunIsBrighterThanAwayAndNeitherIsPureBlack)
     // partition that needs no separate reference render.
     uint32_t min_luma = 255u * 3u, max_luma = 0u;
     bool saw_sphere = false;
+    std::unordered_set<uint32_t> distinct_colours;
     for (uint32_t y = 0; y < kH; ++y) {
         for (uint32_t x = 0; x < kW; ++x) {
             const Bgr c = pixel_at(storage, kW, x, y);
@@ -209,12 +211,33 @@ TEST(RenderShading, LambertFaceTowardSunIsBrighterThanAwayAndNeitherIsPureBlack)
             saw_sphere = true;
             min_luma = std::min(min_luma, l);
             max_luma = std::max(max_luma, l);
+            distinct_colours.insert((static_cast<uint32_t>(c.b) << 16) | (static_cast<uint32_t>(c.g) << 8) |
+                                     static_cast<uint32_t>(c.r));
         }
     }
     ASSERT_TRUE(saw_sphere) << "sanity: the sphere must actually be visible";
     EXPECT_GT(min_luma, 0u) << "even the dimmest lit pixel must not be pure black (Step 1's ambient floor)";
     EXPECT_GT(max_luma, min_luma)
         << "a face toward the sun must be brighter than one away from it -- got a perfectly flat sphere";
+
+    // Review IMPORTANT 1: frame-wide min/max luma alone does not distinguish
+    // genuine per-vertex Gouraud shading from a per-TRIANGLE-flat mutant
+    // (colour every fan vertex from poly[0].normal alone) -- both still
+    // produce a bright pole and a dim rim, just far fewer distinct shades in
+    // between. Measured on this exact fixture: the real Gouraud path
+    // produces several hundred distinct colours across the sphere's
+    // kTessellationDefaults tessellation; a poly[0]-only flat mutant
+    // collapses that to roughly one shade per triangle. 40 sits comfortably
+    // below the real count and comfortably above what per-triangle-flat
+    // shading can produce even generously, so it is a genuine, non-fragile
+    // floor rather than a coin flip -- confirmed directly by mutating
+    // draw_mesh_triangle_shaded to colour every fan vertex from poly[0]
+    // .normal alone and rebuilding: this assertion fails (measured well
+    // under 40 distinct colours) while the frame-wide min/max check above
+    // stays green, reproducing exactly the blind spot this finding named.
+    EXPECT_GT(distinct_colours.size(), 40u)
+        << "too few distinct shaded colours (" << distinct_colours.size() << ") across the sphere -- this is what "
+           "a per-triangle-flat shading regression looks like, not genuine per-vertex Gouraud";
 }
 
 TEST(RenderShading, UnlitMaterialIgnoresSunDirectionEntirely) {
@@ -327,6 +350,26 @@ namespace {
     return Bgr{to_byte(sky.b), to_byte(sky.g), to_byte(sky.r)};
 }
 
+// Independent re-derivation of shade_vertex_color()'s own formula
+// (raster_cpu.cpp), for the ONE fixed material/normal a standalone ground
+// plane always shades with -- used to assert a scanned row/column is the
+// EXACT ground colour (never a blend with sky), review IMPORTANT 2's fix:
+// an infinite, single-material, constant-normal plane's colour is the same
+// at every hit point, so this is a single, reusable expected value.
+[[nodiscard]] Bgr expected_ground_bgr_oracle(const RenderScene& scene, const GroundPlane& ground) {
+    const spade::render::Material& material = scene.materials.at(ground.material);
+    const glm::vec3 base(material.base_color);
+    glm::vec3 color = base;
+    if (material.shading != 1u && material.shading != 2u) {  // not unlit/emissive -- lambert
+        const float n_dot_l = std::max(glm::dot(ground.normal, scene.lighting.sun_direction), 0.0f);
+        color = base * (scene.lighting.sun_color * (scene.lighting.sun_intensity * n_dot_l) + scene.lighting.ambient_color);
+    }
+    const auto to_byte = [](float c) {
+        return static_cast<uint8_t>(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f));
+    };
+    return Bgr{to_byte(color.b), to_byte(color.g), to_byte(color.r)};
+}
+
 }  // namespace
 
 TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
@@ -336,9 +379,18 @@ TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
     // fixed-margin box; tessellate_plane fits its bounded grid to exactly
     // that box. The plane extends past it (SR-17): this world is exactly
     // the "ground plane extends past its bounds" case the brief names.
+    // TWO materials, with the ground plane explicitly assigned the SECOND
+    // (review MINOR 10): a single-material fixture cannot discriminate "the
+    // analytic path resolved the wrong material index" from "it happened to
+    // fall back to index 0, which is also the only material" -- index 0
+    // stays defined but genuinely unused, so a bug that always resolves to
+    // it (instead of honouring node_materials) would show up as the WRONG
+    // base_color on the analytic (or tessellated) side, not a coincidental
+    // match.
     WorldBuilder b = base_builder();
-    b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.8f, 0.75f, 0.7f, 1.0f}});
-    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+    b.material(spade::MaterialDesc{.name = "unused_default", .base_color = {0.1f, 0.9f, 0.1f, 1.0f}})
+        .material(spade::MaterialDesc{.name = "ground", .base_color = {0.8f, 0.75f, 0.7f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(1);
     const WorldDesc world = build_or_fail(b);
     const RenderScene scene = scene_or_fail(world);
     ASSERT_EQ(scene.ground_planes.size(), 1u);
@@ -347,7 +399,10 @@ TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
     EXPECT_NEAR(ground.normal.y, 1.0f, 1e-4f);
     EXPECT_NEAR(ground.normal.z, 0.0f, 1e-4f);
     EXPECT_NEAR(ground.offset, 0.0f, 1e-4f);
-    EXPECT_EQ(ground.material, 0u);
+    ASSERT_EQ(ground.material, 1u) << "sanity: the ground plane must resolve to the material node_materials names";
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics[0].material_override, 1u)
+        << "the tessellated plane's own DrawItem must resolve to the SAME material index as the analytic entry";
 
     // Independent re-derivation of tessellate_plane's own (u,v) basis and
     // half-extent computation (tessellate.cpp), from the REAL scene.bounds
@@ -454,20 +509,181 @@ TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
     ASSERT_FALSE(top_hit) << "sanity: row 0 must be above the horizon for this camera pose";
     EXPECT_EQ(pixel_at(storage, kWidth, kWidth / 2, 0), expected_sky_bgr_oracle(scene, kHeight, 0));
 
-    // Hard horizon: scanning DOWN the inside column, the transition from
-    // sky to ground is exactly one row wide -- the row right before the
-    // first non-sky row must still match the sky formula exactly (no
-    // blended/gradient row at the boundary, which is what "hard horizon, no
-    // fog" (SR-17) means).
+    // Hard horizon (review IMPORTANT 2's fix -- the original version of this
+    // check found `transition_row` as "the first row that differs from the
+    // sky formula", then asserted the PREVIOUS row matches the sky formula:
+    // that is the loop's own break condition restated at an index it
+    // already passed, and cannot fail for ANY transition shape, gradual or
+    // hard, real or synthetic -- confirmed by feeding the identical
+    // assertion block a synthetic 11-row sky-to-ground blend, which also
+    // "passed"). The fix scans the WHOLE column and requires every single
+    // row to be EXACTLY one of two values -- the sky oracle's own per-row
+    // colour before the transition, or the ground's own single fixed colour
+    // at and after it -- with no third, in-between value anywhere. A
+    // blended/gradient row of any width, anywhere in the column, fails this
+    // (it matches neither exactly); only a genuinely hard, one-row-wide
+    // transition passes.
+    const Bgr expected_ground = expected_ground_bgr_oracle(scene, ground);
     uint32_t transition_row = kHeight;
     for (uint32_t y = 0; y < kHeight; ++y) {
-        if (pixel_at(storage, kWidth, col_inside, y) != expected_sky_bgr_oracle(scene, kHeight, y)) {
+        const Bgr actual = pixel_at(storage, kWidth, col_inside, y);
+        const Bgr expected_sky = expected_sky_bgr_oracle(scene, kHeight, y);
+        if (actual == expected_sky) {
+            ASSERT_EQ(transition_row, kHeight)
+                << "row " << y << " is sky again after row " << transition_row << " was ground -- not a single hard transition";
+            continue;
+        }
+        ASSERT_EQ(actual, expected_ground)
+            << "row " << y << " is neither the exact sky colour nor the exact ground colour -- a blended/"
+               "gradient row, which a hard horizon (SR-17, no fog) must never produce";
+        if (transition_row == kHeight) {
             transition_row = y;
-            break;
         }
     }
     ASSERT_LT(transition_row, kHeight) << "sanity: this column must transition from sky to ground somewhere";
     ASSERT_GT(transition_row, 0u) << "sanity: row 0 must still be sky (checked above)";
-    EXPECT_EQ(pixel_at(storage, kWidth, col_inside, transition_row - 1), expected_sky_bgr_oracle(scene, kHeight, transition_row - 1))
-        << "the row immediately above the transition must still be exact, unblended sky";
+}
+
+// ===========================================================================
+// 3. Fix round 1 (review IMPORTANT 4, MINOR 11): SR-22's wireframe gating,
+//    the analytic ground's own from-below cull, and nearest-of-several-planes.
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] WorldDesc single_ground_plane_world() {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.8f, 0.75f, 0.7f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+    return build_or_fail(b);
+}
+
+}  // namespace
+
+TEST(RenderShading, WireframeModeNeverDrawsTheAnalyticGroundFromAboveOrBelow) {
+    // Ruling SR-22 (review IMPORTANT 4): the analytic ground is gated to
+    // DrawMode::shaded only. Before this fix, an unconditional analytic
+    // ground made wireframe mode show a SOLID, LIT ground fill (up to 70% of
+    // the frame, measured by the review) behind its own unlit, edges-only
+    // geometry -- and, from below, produced an inverted seam (tessellated
+    // wireframe edges draw, unculled, while the analytic fill correctly did
+    // not, an inconsistency exactly like the one SR-17 exists to prevent in
+    // shaded mode).
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+    // The colour the analytic ground WOULD shade with in DrawMode::shaded --
+    // must never appear anywhere in a wireframe-rendered frame. Wireframe's
+    // own tessellated-mesh edges use the material's RAW, unlit base_color
+    // bytes (never this lit value, raster_cpu.cpp's own draw_mesh_item), so
+    // this is a clean, unambiguous discriminator between "no analytic fill
+    // at all" and "analytic fill leaked through".
+    const Bgr lit_ground = expected_ground_bgr_oracle(scene, scene.ground_planes[0]);
+
+    RenderOptions options;
+    options.mode = DrawMode::wireframe;
+    options.overlays = false;
+
+    const auto assert_no_lit_ground_fill_anywhere = [&](const Camera& camera, uint32_t width, uint32_t height) {
+        std::vector<uint8_t> storage;
+        RenderTarget target = make_target(storage, width, height);
+        render_or_fail(scene, camera, options, target);
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                ASSERT_NE(pixel_at(storage, width, x, y), lit_ground)
+                    << "the analytically-shaded ground colour must never appear in a wireframe frame (" << x << ","
+                    << y << ")";
+            }
+        }
+    };
+
+    // From above: the SAME camera pose the seam test uses -- exactly the
+    // pose/world combination that showed a solid analytic fill beyond the
+    // tessellated grid's own bounds before this fix.
+    {
+        Camera camera;
+        camera.position = glm::vec3(0.0f, 4.0f, 6.0f);
+        camera.orientation = glm::angleAxis(glm::radians(-18.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+        assert_no_lit_ground_fill_anywhere(camera, 200, 150);
+    }
+    // From below, looking up -- the case the review named directly.
+    {
+        Camera camera;
+        camera.position = glm::vec3(0.0f, -5.0f, 0.0f);
+        camera.orientation = glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+        assert_no_lit_ground_fill_anywhere(camera, 200, 150);
+    }
+}
+
+TEST(RenderShading, AnalyticGroundNeverDrawsWhenCameraIsAtOrBelowThePlane) {
+    // Review MINOR 11(a): the analytic ground's own from-below cull (SR-13
+    // parity) had no committed test -- the review verified it only by
+    // probe. Every background pixel must be EXACTLY the sky gradient's own
+    // per-row colour, matching the tessellated mesh's back-face cull from
+    // below.
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f, -5.0f, 0.0f);  // below the plane (offset 0)
+    camera.orientation = glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f));  // pitched to look up
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    constexpr uint32_t kW = 200, kH = 150;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kW, kH);
+    render_or_fail(scene, camera, options, target);
+
+    for (uint32_t y = 0; y < kH; ++y) {
+        const Bgr expected = expected_sky_bgr_oracle(scene, kH, y);
+        for (uint32_t x = 0; x < kW; ++x) {
+            ASSERT_EQ(pixel_at(storage, kW, x, y), expected)
+                << "(" << x << "," << y << ") should be pure sky -- the camera is below the plane";
+        }
+    }
+}
+
+TEST(RenderShading, AnalyticGroundPicksTheNearestOfSeveralPlanes) {
+    // Review MINOR 11(b): "nearest hit among several planes" had no
+    // committed test either. Two standalone ground planes, authored
+    // FAR-then-NEAR (offset -5 first, offset 0 second) so a "first
+    // successful hit wins" traversal-order bug would pick the WRONG (far,
+    // red) material instead of the correct (near, blue) one that "smallest
+    // t wins" must produce.
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"})
+        .material(spade::MaterialDesc{.name = "far", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}})
+        .material(spade::MaterialDesc{.name = "near", .base_color = {0.1f, 0.1f, 0.9f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), -5.0f).material_for_last_node(1);
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(2);
+    b.union_();
+    const WorldDesc world = build_or_fail(b);
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_EQ(scene.ground_planes.size(), 2u);
+
+    const GroundPlane* near_plane = nullptr;
+    for (const GroundPlane& gp : scene.ground_planes) {
+        if (gp.material == 2u) {
+            near_plane = &gp;
+        }
+    }
+    ASSERT_NE(near_plane, nullptr) << "sanity: the near plane (material 2) must exist";
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 10.0f, 0.0f);
+    camera.orientation = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));  // straight down
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    constexpr uint32_t kW = 100, kH = 100;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kW, kH);
+    render_or_fail(scene, camera, options, target);
+
+    const Bgr expected_near = expected_ground_bgr_oracle(scene, *near_plane);
+    EXPECT_EQ(pixel_at(storage, kW, kW / 2, kH / 2), expected_near)
+        << "the NEARER plane (offset 0, material 2) must win, not the farther one (offset -5, material 1) that "
+           "was authored first";
 }

@@ -418,6 +418,17 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
 // something this function needs to correct, and it never actually occurs at
 // all for a constant-normal mesh (SR-17's own seam), whose normal survives
 // any lerp bit-for-bit.
+// Pins the magic 1u/2u literals below against world::MaterialShading's own
+// values (world/builder.hpp) -- review MINOR 7: `unlit == 1` is already
+// exercised end to end by RenderShading.UnlitMaterialIgnoresSunDirectionEntirely,
+// but nothing previously pinned `emissive == 2` anywhere, so a future
+// reordering of that enum would silently swap emissive's behaviour with
+// lambert's and no test would catch it.
+static_assert(static_cast<uint32_t>(spade::MaterialShading::unlit) == 1u,
+              "shade_vertex_color's magic 1u must match MaterialShading::unlit");
+static_assert(static_cast<uint32_t>(spade::MaterialShading::emissive) == 2u,
+              "shade_vertex_color's magic 2u must match MaterialShading::emissive");
+
 [[nodiscard]] glm::vec3 shade_vertex_color(const Material& material, const Lighting& lighting,
                                             const glm::vec3& n_world) {
     const glm::vec3 base(material.base_color);
@@ -833,71 +844,131 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 }
 
 // ---------------------------------------------------------------------------
-// Background: vertical sky gradient + analytic ground (S7a Task R6, SR-17).
-// Runs FIRST, before any geometry (constraint 6's fixed operation order),
-// filling literally every background pixel -- it is what MN-14's "every
-// pixel written" now means, replacing the old flat clear entirely. Writes
-// colour only, never depth (`depth` stays 0 = infinitely far everywhere it
-// touches), so any real, depth-tested geometry drawn afterward -- including
-// the OLDER, unrelated ground-grid overlay below -- always wins the z-test
-// over it, and it never reaches R7's scene.bounds-fitted shadow frustum.
+// Background: vertical sky gradient + analytic ground (S7a Task R6, SR-17;
+// gating below is SR-22). Runs FIRST, before any geometry (constraint 6's
+// fixed operation order), filling literally every background pixel -- it is
+// what MN-14's "every pixel written" now means, replacing the old flat clear
+// entirely. Writes colour only, never depth (`depth` stays 0 = infinitely
+// far everywhere it touches), so any real, depth-tested geometry drawn
+// afterward -- including the OLDER, unrelated ground-grid overlay below --
+// always wins the z-test over it, and it never reaches R7's scene.bounds-
+// fitted shadow frustum.
+//
+// The sky gradient applies to EVERY draw mode; the analytic ground is
+// DrawMode::shaded-only (ruling SR-22) -- see draw_sky_and_ground_background's
+// own comment for why an unconditional ground is a mode-contract violation
+// (a filled surface with no edges, drawn under DrawMode::wireframe) and a
+// real SR-13 inversion risk (wireframe never culls, so a from-below view
+// would show the tessellated grid's edges over nothing, or over a solid
+// analytic fill an unconditional ground would incorrectly still withhold
+// there anyway -- the mismatch is the bug, not any one frame of it).
 // ---------------------------------------------------------------------------
 
 // Reconstructs the camera-space, UN-normalized ray direction through pixel
 // center (px+0.5, py+0.5) -- the exact inverse of projectCameraSpace's own
-// perspective divide (same f, same aspect), evaluated at pc.z = -1 so the
-// direction's scale is whatever falls out of that choice. Never normalized:
-// the analytic ground pass below only ever compares a t computed from this
-// ray AGAINST ANOTHER t computed from the SAME ray (nearest hit among
-// several standalone ground planes) or tests its SIGN (front/back) -- both
-// scale-invariant, so normalizing here would only add a sqrt this pass does
-// not need.
-[[nodiscard]] Vec3 background_ray_camera_space(const ViewContext& vc, uint32_t px, uint32_t py) {
-    const double f = 1.0 / tan32(vc.fovY * 0.5);
-    const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
-    const double xNdc = 2.0 * (static_cast<double>(px) + 0.5) / static_cast<double>(vc.width) - 1.0;
-    const double yNdc = 1.0 - 2.0 * (static_cast<double>(py) + 0.5) / static_cast<double>(vc.height);
+// perspective divide, evaluated at pc.z = -1 so the direction's scale is
+// whatever falls out of that choice. Never normalized: the analytic ground
+// pass below only ever compares a t computed from this ray AGAINST ANOTHER
+// t computed from the SAME ray (nearest hit among several standalone ground
+// planes) or tests its SIGN (front/back) -- both scale-invariant, so
+// normalizing here would only add a sqrt this pass does not need.
+//
+// `f`/`aspect` are precomputed by the caller (review IMPORTANT 3, fix round
+// 1): both are per-VIEW constants (same for every one of a frame's pixels),
+// so computing them here -- one sin32+cos32+divide plus a divide, PER PIXEL
+// -- was pure, measured waste (2.5-4.4x slower at 1280x720; hoisting alone
+// took a ground-bearing frame from 77.6ms to 31.3ms). The same species of
+// defect R5b's own review caught in this file (allocation-per-triangle).
+[[nodiscard]] Vec3 background_ray_camera_space(double f, double aspect, uint32_t width, uint32_t height, uint32_t px,
+                                                uint32_t py) {
+    const double xNdc = 2.0 * (static_cast<double>(px) + 0.5) / static_cast<double>(width) - 1.0;
+    const double yNdc = 1.0 - 2.0 * (static_cast<double>(py) + 0.5) / static_cast<double>(height);
     return Vec3{xNdc * aspect / f, yNdc / f, -1.0};
 }
 
-void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
-    const Vec3 camPos{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
-    // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
-    // to recover the camera-to-world rotation this background ray needs --
-    // quatConjugate is its own inverse, so this is exact, not an
-    // approximation.
-    double camQ[4];
-    quatConjugate(vc.camOrientationConj, camQ);
+// `draw_analytic_ground` gates the INFINITE analytic ground to
+// DrawMode::shaded only (ruling SR-22, review IMPORTANT 4) -- the sky
+// gradient still fills every draw mode's background. An analytic ground is
+// a shaded-SURFACE device (a filled region with no edges), so it has no
+// wireframe equivalent by construction; leaving it on unconditionally made
+// DrawMode::wireframe show a solid, LIT ground fill behind its own
+// unlit, edges-only geometry (a mode contract violation on its own), and
+// -- worse -- from below the tessellated grid's wireframe edges still draw
+// (SR-13: wireframe never culls) while the analytic ground correctly does
+// not (front-facing-only), an inverted-seam shape exactly like the one
+// SR-17 exists to prevent in shaded mode. Task R8's raymarch path needs no
+// such device at all: a `plane` SDF primitive is already infinite, so
+// sphere-tracing it directly gives an infinite ground for free, confirming
+// this is a raster-only expedient, not a real scene feature R9 should ever
+// see duplicated.
+void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
+                                     bool draw_analytic_ground) {
+    // Precomputed ONCE PER FRAME (review IMPORTANT 3): whether the analytic
+    // ground pass has anything at all to do. Skips not just the per-pixel
+    // ray/plane loop but the per-plane `front[]` precompute below too, for
+    // the overwhelmingly common "no standalone ground plane in this world"
+    // and "wireframe mode" cases (measured: 70.8ms -> 15.9ms at 1280x720 for
+    // a groundless world, on top of the f/aspect hoist above).
+    const bool ground_possible = draw_analytic_ground && !scene.ground_planes.empty() && !scene.materials.empty();
 
-    const bool have_materials = !scene.materials.empty();
+    Vec3 camPos{0.0, 0.0, 0.0};
+    double camQ[4] = {1.0, 0.0, 0.0, 0.0};
+    double f = 1.0, aspect = 1.0;
+    // uint8_t, not vector<bool> (review MINOR 9): this file already removed
+    // one hidden-cost STL specialization (R5b's own per-triangle heap
+    // allocation finding); vector<bool>'s bit-packed proxy-reference
+    // specialization is the same species of surprise, avoided here even
+    // though this vector is at most `scene.ground_planes.size()` long.
+    std::vector<uint8_t> front;
 
-    // SR-13 parity, precomputed ONCE PER PLANE (a per-frame fact about the
-    // camera and that plane, not a per-pixel one): "shade only when the ray
-    // meets the plane's FRONT side" means the camera itself must be
-    // strictly on the side the normal points to -- dot(camPos, normal) >
-    // offset -- exactly the outward-normal convention SR-13's mesh back-face
-    // cull already uses (world/sdf.hpp's own "dot(p,n) <= offset is solid").
-    // A plane the camera is at or below never contributes a hit, the same
-    // way the tessellated ground disappears when viewed from below.
-    std::vector<bool> front(scene.ground_planes.size(), false);
-    for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
-        const GroundPlane& gp = scene.ground_planes[i];
-        const double n_dot_cam = static_cast<double>(gp.normal.x) * camPos.x +
-                                  static_cast<double>(gp.normal.y) * camPos.y +
-                                  static_cast<double>(gp.normal.z) * camPos.z;
-        front[i] = n_dot_cam > static_cast<double>(gp.offset);
+    if (ground_possible) {
+        camPos = Vec3{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
+        // Undoes ViewContext's own stored conjugate (world-to-camera
+        // rotation) to recover the camera-to-world rotation this background
+        // ray needs -- quatConjugate is its own inverse, so this is exact,
+        // not an approximation.
+        quatConjugate(vc.camOrientationConj, camQ);
+        f = 1.0 / tan32(vc.fovY * 0.5);
+        aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
+
+        // SR-13 parity, precomputed ONCE PER PLANE (a per-frame fact about
+        // the camera and that plane, not a per-pixel one): "shade only when
+        // the ray meets the plane's FRONT side" means the camera itself
+        // must be strictly on the side the normal points to --
+        // dot(camPos, normal) > offset -- exactly the outward-normal
+        // convention SR-13's mesh back-face cull already uses (world/sdf.hpp's
+        // own "dot(p,n) <= offset is solid"). A plane the camera is at or
+        // below never contributes a hit, the same way the tessellated
+        // ground disappears when viewed from below.
+        front.assign(scene.ground_planes.size(), 0);
+        for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
+            const GroundPlane& gp = scene.ground_planes[i];
+            const double n_dot_cam = static_cast<double>(gp.normal.x) * camPos.x +
+                                      static_cast<double>(gp.normal.y) * camPos.y +
+                                      static_cast<double>(gp.normal.z) * camPos.z;
+            front[i] = (n_dot_cam > static_cast<double>(gp.offset)) ? 1u : 0u;
+        }
     }
 
     for (uint32_t y = 0; y < fb.height; ++y) {
-        // Vertical sky gradient (Step 1's own requirement): a plain fraction
-        // of SCREEN ROW, zenith at row 0 to horizon at the last row -- never
-        // a function of the camera's actual pose, and deliberately not a
-        // function of the 3D ray's true elevation angle either, which would
-        // need an inverse-trig call (atan2/asin) this engine's determinism
-        // contract forbids (constraint on libm transcendentals). "Hard
-        // horizon, no fog" (SR-17) is enforced by the GROUND hit-test below,
-        // not by this gradient -- this is purely the backdrop for pixels no
-        // ground plane claims.
+        // Vertical sky gradient (Step 1's own requirement, applies to EVERY
+        // draw mode, SR-22): a plain fraction of SCREEN ROW, zenith at row 0
+        // to horizon at the last row. This is simple and deterministic --
+        // NOT, as an earlier version of this comment incorrectly claimed,
+        // because an elevation-based gradient would need an inverse-trig
+        // call this engine's determinism contract forbids. It would not:
+        // dir.y / length(dir) is monotone in elevation and needs only one
+        // std::sqrt, which is IEEE-mandated (correctly rounded) and
+        // explicitly sanctioned by that same contract. The real
+        // consequence of the row-based choice (ruling SR-23, deferred to
+        // CK-2 for the user to judge against real frames rather than have
+        // this task guess): it anchors the horizon COLOUR to the bottom
+        // screen row, so under camera pitch that colour does not coincide
+        // with the ray-cast horizon LINE the ground hit-test below actually
+        // draws (the hard edge is still exactly where the ground begins;
+        // only the gradient's own colour-vs-row mapping is camera-pose-
+        // agnostic). "Hard horizon, no fog" (SR-17) is enforced by the
+        // GROUND hit-test below, never by this gradient.
         const double sky_t = fb.height > 1 ? static_cast<double>(y) / static_cast<double>(fb.height - 1) : 0.0;
         const float sky_tf = static_cast<float>(sky_t);
         const glm::vec3 sky = scene.lighting.sky_zenith * (1.0f - sky_tf) + scene.lighting.sky_horizon * sky_tf;
@@ -905,8 +976,8 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
         for (uint32_t x = 0; x < fb.width; ++x) {
             glm::vec3 color = sky;
 
-            if (have_materials) {
-                const Vec3 dirCam = background_ray_camera_space(vc, x, y);
+            if (ground_possible) {
+                const Vec3 dirCam = background_ray_camera_space(f, aspect, vc.width, vc.height, x, y);
                 const Vec3 dirWorld = rotateByQuat(camQ, dirCam);
 
                 double best_t = 0.0;
@@ -978,7 +1049,9 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // not a flat clear: it still writes every pixel unconditionally, just no
     // longer the same colour everywhere. Writes colour only, no depth, so it
     // never survives the z-test against any real geometry drawn afterward.
-    draw_sky_and_ground_background(fb, vc, scene);
+    // The analytic ground itself is gated to DrawMode::shaded (ruling SR-22,
+    // review IMPORTANT 4) -- the sky gradient applies to every mode.
+    draw_sky_and_ground_background(fb, vc, scene, options.mode == DrawMode::shaded);
 
     // Fixed operation order (constraint 4): background, then statics, then
     // dynamics, then overlays -- never based on hashing, pointer identity, or
