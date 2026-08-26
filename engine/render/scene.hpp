@@ -50,6 +50,7 @@
 // index, with no renumbering owed by either side of the seam.
 // ---------------------------------------------------------------------------
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -103,6 +104,99 @@ struct Lighting {
     glm::vec3 ambient_color{0.30f, 0.34f, 0.42f};
     glm::vec3 sky_zenith{0.28f, 0.42f, 0.62f}, sky_horizon{0.68f, 0.74f, 0.80f};
 };
+
+// ---------------------------------------------------------------------------
+// Shading (S7a Task R6, ruling SR-18; relocated HERE at Task R8 -- see below)
+// -- the pure function that turns a resolved Material, the scene's Lighting,
+// and a WORLD-SPACE surface normal into a linear-light RGB colour. Originally
+// a raster_cpu.cpp-private helper called from exactly two places (ONCE PER
+// VERTEX by the Gouraud fill, SR-18, and ONCE PER BACKGROUND PIXEL by the
+// analytic ground pass, SR-17 -- the SAME function both times, which is what
+// makes that tessellated-grid/analytic-ground seam agree bit-for-bit whenever
+// its three inputs do, transform_normal()'s own comment above). Task R8's
+// exact SDF raymarcher is a THIRD call site with the identical requirement
+// (its own brief: "shade with the same material/lighting model as R6 ...
+// reuse this rather than reimplementing Lambert") -- moved to this shared
+// header, unchanged, rather than duplicated a second time, so all three stay
+// bit-for-bit identical by construction, not by two (or three) independent
+// implementations happening to agree.
+//
+// unlit/emissive (MaterialShading 1/2, world/builder.hpp) both echo
+// base_color verbatim -- "no lighting applied" and "treated as emitted
+// radiance" amount to the same output today, since this renderer has no
+// tonemap/bloom pass yet to tell emissive apart from unlit.
+//
+// lambert (0, the default, and the fallback for any other stored value):
+// N.L clamped to >= 0 (Step 1's own "neither is pure black" ambient floor
+// holds as long as ambient_color is nonzero -- a face pointing away from the
+// sun still gets the ambient term, just never the sun term) times
+// sun_color*sun_intensity, plus a flat ambient_color term. `n_world` need
+// not be unit: a near/far-clip-interpolated normal (raster_cpu.cpp's
+// ClipVertex) is a lerp of two unit vectors and is deliberately not
+// re-normalized -- a slightly-non-unit vector here is a tiny cosine-law
+// approximation right at a clipped triangle's edge, never something this
+// function needs to correct. Task R8's raymarch caller passes an already-
+// re-normalized SDF gradient instead (its own call site normalizes it, since
+// gradient magnitude is only guaranteed 1 where the field is an exact metric
+// and differentiable, world/sdf.hpp), so this function's "need not be unit"
+// tolerance is exercised, never relied upon, from that side.
+// Pins the magic 1u/2u literals below against world::MaterialShading's own
+// values (world/builder.hpp) -- review MINOR 7 (Task R6): `unlit == 1` is
+// already exercised end to end by
+// RenderShading.UnlitMaterialIgnoresSunDirectionEntirely, but nothing
+// previously pinned `emissive == 2` anywhere, so a future reordering of that
+// enum would silently swap emissive's behaviour with lambert's and no test
+// would catch it.
+static_assert(static_cast<uint32_t>(spade::MaterialShading::unlit) == 1u,
+              "shade_vertex_color's magic 1u must match MaterialShading::unlit");
+static_assert(static_cast<uint32_t>(spade::MaterialShading::emissive) == 2u,
+              "shade_vertex_color's magic 2u must match MaterialShading::emissive");
+
+// Ruling SR-25 (S7a Task R7, fix round 1 -- corrects the original SR-24
+// wording): a shadow attenuates the SUN term only. Ambient is never
+// shadowed -- it models indirect/sky light, which a single-occluder sun
+// shadow says nothing about. `combined` is the value this function has
+// always returned (base * (sun_term + ambient_color)) -- every caller that
+// never touches a shadow map (Task R8's raymarcher included -- shadows are
+// deliberately out of that task's scope, see render/raymarch.hpp) uses
+// `combined` alone. `sun` isolates the term a shadow is allowed to touch:
+// `base * sun_term`, exactly zero for unlit/emissive (which have no sun term
+// at all) -- so a shadow is a mathematical no-op on those materials by
+// construction, not a branch anyone had to add for it.
+struct ShadedColor {
+    glm::vec3 combined;  // ambient + sun*N.L, base_color-scaled -- unshadowed value
+    glm::vec3 sun;         // JUST the sun*N.L contribution -- the only thing a shadow may attenuate
+};
+
+[[nodiscard]] inline ShadedColor shade_vertex_color(const Material& material, const Lighting& lighting,
+                                                     const glm::vec3& n_world) {
+    const glm::vec3 base(material.base_color);
+    if (material.shading == 1u || material.shading == 2u) {  // unlit, emissive: no sun term to shadow
+        return ShadedColor{base, glm::vec3(0.0f)};
+    }
+    const float n_dot_l = std::max(glm::dot(n_world, lighting.sun_direction), 0.0f);
+    const glm::vec3 sun_term = lighting.sun_color * (lighting.sun_intensity * n_dot_l);
+    const glm::vec3 combined = base * (sun_term + lighting.ambient_color);
+    return ShadedColor{combined, base * sun_term};
+}
+
+// The vertical zenith-to-horizon sky gradient (S7a Task R6, ruling SR-23;
+// relocated HERE at Task R8 for the identical reason shade_vertex_color()
+// was above it): `row_fraction` is a plain fraction of SCREEN ROW (0 at the
+// top/zenith, 1 at the bottom/horizon row) -- raster_cpu.cpp's
+// draw_sky_and_ground_background computes it once per row
+// (`y / (height - 1)`) and calls this for every pixel in that row; Task R8's
+// raymarcher (render/raymarch.cpp) calls it identically for every pixel
+// whose ray never hits scene.sdf. The SDF has nothing to say about the sky
+// -- there is no primitive to sphere-trace up there -- so a miss must fall
+// back to the SAME formula, from the SAME Lighting fields, as the raster
+// path's background pass; sharing this one function is what keeps the two
+// paths' sky agreeing bit-for-bit rather than by two coincidentally-equal
+// expressions (this task's own controller amendment: "share that code
+// rather than writing a second gradient").
+[[nodiscard]] inline glm::vec3 sky_gradient_color(const Lighting& lighting, float row_fraction) {
+    return lighting.sky_zenith * (1.0f - row_fraction) + lighting.sky_horizon * row_fraction;
+}
 
 // One loaded or generated mesh. Positions/normals/indices stay empty for a
 // slot this task allocated but did not fill (SR-9) -- R2/R5 fill the

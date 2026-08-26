@@ -55,9 +55,11 @@
 //   5. RenderOptions::overlays (PA-4): ground grid, world bounds, spawn
 //      marker, body marker -- each checked present when enabled, absent when
 //      not.
-//   6. DrawMode::raymarch is out of scope (Tasks R8/R9) and reported as an
-//      error rather than silently rendered some other way; validate_target()
-//      failures propagate.
+//   6. DrawMode::raymarch (S7a Task R8) forwards to render/raymarch.cpp's
+//      render_raymarch() rather than erroring (see raymarch.hpp's own header
+//      for that path's algorithm -- test_render_raymarch.cpp owns its actual
+//      behaviour; this file pins only that render()'s DISPATCH no longer
+//      rejects the mode); validate_target() failures propagate.
 //   7. Byte-exact frame goldens (Step 4).
 // ---------------------------------------------------------------------------
 
@@ -1012,8 +1014,20 @@ TEST(OverlayDepthBias, GridOverlayIsVisibleOverACoincidentGroundMeshNotHiddenByT
 //    failures propagate.
 // ===========================================================================
 
-TEST(RasterCpu, RaymarchModeIsNotImplementedAndReturnsAnError) {
+// S7a Task R8: DrawMode::raymarch is now implemented (render/raymarch.cpp)
+// and no longer an error -- this is the regression guard for render()'s own
+// DISPATCH decision (raster_cpu.cpp: "if (options.mode == DrawMode::raymarch)
+// return render_raymarch(...)"), so a future revert of that one line trips
+// this test immediately rather than being caught only indirectly by
+// test_render_raymarch.cpp's own suite. make_scene() never sets `.sdf`
+// (RenderScene::sdf defaults to nullptr, scene.hpp's own "non-owning, MAY BE
+// NULL" contract), so this exercises the null-pointer case too -- succeeds
+// with a sky-only frame, never a fault (raymarch.hpp's own header comment);
+// test_render_raymarch.cpp's NullSdfPointerYieldsSkyOnlyNeverFaults is the
+// exhaustive per-pixel version of that same claim.
+TEST(RasterCpu, RaymarchModeIsHandledAndNoLongerAnError) {
     const RenderScene scene = make_scene(make_box_mesh(1.0f));
+    ASSERT_EQ(scene.sdf, nullptr) << "sanity: make_scene() never points RenderScene::sdf at a program";
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
     RenderOptions options;
     options.mode = DrawMode::raymarch;
@@ -1022,8 +1036,16 @@ TEST(RasterCpu, RaymarchModeIsNotImplementedAndReturnsAnError) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
 
     const Result<void> result = render(scene, camera, options, target);
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, Code::invalid_argument);
+    ASSERT_TRUE(result.has_value()) << "render() failed: " << result.error().context;
+
+    // MN-14: every pixel's 4th (X) byte is opaque, unconditionally -- the
+    // same invariant every other DrawMode upholds.
+    for (uint32_t y = 0; y < kSmallHeight; ++y) {
+        for (uint32_t x = 0; x < kSmallWidth; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * kSmallWidth + x) * 4;
+            ASSERT_EQ(storage[idx + 3], 0xFFu) << "(" << x << "," << y << ") X byte must be opaque";
+        }
+    }
 }
 
 TEST(RasterCpu, PropagatesValidateTargetFailure) {

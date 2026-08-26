@@ -28,10 +28,11 @@
 // DrawMode::wireframe (edges only, both sides always
 // drawn, flat UNLIT submesh colour never touched by lighting -- the prior
 // wireframe rasterizer's own debug/comparison vocabulary, kept deliberately
-// unlit) are both implemented here; DrawMode::raymarch is out of this task's
-// scope entirely (Tasks R8/R9 own it -- RenderScene::sdf's own doc comment
-// says so) and render() reports it as an unhandled argument rather than
-// silently falling back to a mode the caller did not ask for.
+// unlit) are both implemented here. DrawMode::raymarch (S7a Task R8) is
+// implemented in render/raymarch.cpp instead -- an exact SDF sphere-tracer,
+// not a rasterizer, so it has no business sharing this file's ported
+// camera/projection/clip pipeline -- and render() below simply forwards to
+// it; see raymarch.hpp's own header for that path's algorithm and constants.
 //
 // RenderOptions::overlays (PA-4) draws the ground grid, world-bounds box,
 // spawn diamonds and body-pose markers -- real orientation aids, ported from
@@ -77,9 +78,12 @@
 
 namespace spade::render {
 
-// Errors: invalid_argument if `target` fails validate_target(), or if
-// `options.mode == DrawMode::raymarch` (not implemented until Task R8/R9 --
-// see this file's header comment).
+// Errors: invalid_argument if `target` fails validate_target(). Once that
+// passes, `options.mode == DrawMode::raymarch` (S7a Task R8) forwards to
+// render_raymarch() (render/raymarch.hpp) instead of this file's own
+// rasterizer -- `shadow_scratch` and `options.shadows`/`options.overlays`
+// are not consulted on that path (raymarch has no shadows or overlays by
+// design; see raymarch.hpp's own header for why).
 //
 // `shadow_scratch` (S7a Task R7, fix round 1, review IMPORTANT I3): an
 // OPTIONAL caller-owned buffer render() may use for its own per-frame

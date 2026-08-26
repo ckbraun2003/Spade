@@ -25,6 +25,7 @@ add_executable(spade_tests
     test_render_gltf.cpp
     test_render_csg.cpp
     test_render_shadow.cpp
+    test_render_raymarch.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp

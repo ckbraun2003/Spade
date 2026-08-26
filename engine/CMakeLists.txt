@@ -393,6 +393,16 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 # than assuming header-only made it exempt. BUILD_LOCAL_INTERFACE scopes the
 # usage requirement to building spade_render's own sources and drops it from
 # the exported interface entirely, exactly like the flags-only targets below.
+#
+# render/raymarch.cpp (S7a Task R8): the exact SDF reference path -- sphere-
+# traces RenderScene::sdf directly for DrawMode::raymarch, called from
+# raster_cpu.cpp's render(). No new external dependency: it calls
+# world/sdf.hpp's eval()/gradient() (already reached transitively through
+# this target's PUBLIC spade::world link, below) and render/scene.hpp's
+# shared shade_vertex_color()/sky_gradient_color(), joining this target
+# rather than becoming a separate library for the same reason shadow.cpp
+# did -- it and raster_cpu.cpp already need each other's headers
+# (raster_cpu.cpp includes raymarch.hpp to dispatch to it).
 # ------------------------------------------------------------------------------
 add_library(spade_render STATIC
     render/target.cpp
@@ -402,6 +412,7 @@ add_library(spade_render STATIC
     render/raster_cpu.cpp
     render/gltf.cpp
     render/shadow.cpp
+    render/raymarch.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)

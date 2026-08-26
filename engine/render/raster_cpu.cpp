@@ -19,6 +19,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/fp32_math.hpp"
+#include "render/raymarch.hpp"
 #include "render/shadow.hpp"
 
 namespace spade::render {
@@ -425,76 +426,13 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
 }
 
 // ---------------------------------------------------------------------------
-// Shading (S7a Task R6, ruling SR-18) -- material lookup happens per submesh
-// in draw_mesh_item (below); this is the pure function that turns a resolved
-// Material, the scene's Lighting, and a WORLD-SPACE surface normal into a
-// linear-light RGB colour. Called ONCE PER VERTEX by draw_mesh_triangle_
-// shaded's Gouraud fill (SR-18: shade at the vertices, interpolate the
-// resulting colour -- never interpolate the normal and shade per pixel) and
-// ONCE PER BACKGROUND PIXEL by the analytic ground pass (SR-17) -- the SAME
-// function both times, which is what makes the tessellated-grid/analytic-
-// ground seam agree bit-for-bit whenever its three inputs do (see
-// transform_normal()'s own comment, scene.hpp, for how those inputs are kept
-// identical at that seam).
+// Shading (S7a Task R6, ruling SR-18) -- ShadedColor/shade_vertex_color()
+// RELOCATED to render/scene.hpp at Task R8, alongside transform_normal(),
+// because Task R8's raymarcher became a THIRD call site needing the exact
+// same function (see scene.hpp's own comment there for the full "why shared,
+// not duplicated" reasoning). Everything below still calls it exactly as
+// before -- only the definition's address changed, not its behaviour.
 //
-// unlit/emissive (MaterialShading 1/2, world/builder.hpp) both echo
-// base_color verbatim -- "no lighting applied" and "treated as emitted
-// radiance" amount to the same output today, since this renderer has no
-// tonemap/bloom pass yet to tell emissive apart from unlit.
-//
-// lambert (0, the default, and the fallback for any other stored value):
-// N.L clamped to >= 0 (Step 1's own "neither is pure black" ambient floor
-// holds as long as ambient_color is nonzero -- a face pointing away from the
-// sun still gets the ambient term, just never the sun term) times
-// sun_color*sun_intensity, plus a flat ambient_color term. `n_world` need
-// not be unit: a near/far-clip-interpolated normal (ClipVertex, above) is a
-// lerp of two unit vectors and is deliberately not re-normalized (that
-// struct's own comment) -- a slightly-non-unit vector here is a tiny
-// cosine-law approximation right at a clipped triangle's edge, never
-// something this function needs to correct, and it never actually occurs at
-// all for a constant-normal mesh (SR-17's own seam), whose normal survives
-// any lerp bit-for-bit.
-// Pins the magic 1u/2u literals below against world::MaterialShading's own
-// values (world/builder.hpp) -- review MINOR 7: `unlit == 1` is already
-// exercised end to end by RenderShading.UnlitMaterialIgnoresSunDirectionEntirely,
-// but nothing previously pinned `emissive == 2` anywhere, so a future
-// reordering of that enum would silently swap emissive's behaviour with
-// lambert's and no test would catch it.
-static_assert(static_cast<uint32_t>(spade::MaterialShading::unlit) == 1u,
-              "shade_vertex_color's magic 1u must match MaterialShading::unlit");
-static_assert(static_cast<uint32_t>(spade::MaterialShading::emissive) == 2u,
-              "shade_vertex_color's magic 2u must match MaterialShading::emissive");
-
-// Ruling SR-25 (S7a Task R7, fix round 1 -- corrects the original SR-24
-// wording, which this file's own R7-as-committed code followed literally
-// and incorrectly): a shadow attenuates the SUN term only. Ambient is
-// never shadowed -- it models indirect/sky light, which a single-occluder
-// sun shadow says nothing about. `combined` is EXACTLY the value this
-// function returned before this fix (same expression, same rounding,
-// still `base * (sun_term + ambient_color)`) -- every caller that never
-// touches a shadow map keeps using `combined` alone and is therefore
-// byte-for-byte unaffected by this struct's addition. `sun` isolates the
-// term a shadow is allowed to touch: `base * sun_term`, exactly zero for
-// unlit/emissive (which have no sun term at all) -- so a shadow is a
-// mathematical no-op on those materials by construction, not a branch
-// anyone had to add for it.
-struct ShadedColor {
-    glm::vec3 combined;  // ambient + sun*N.L, base_color-scaled -- unshadowed value
-    glm::vec3 sun;         // JUST the sun*N.L contribution -- the only thing a shadow may attenuate
-};
-
-[[nodiscard]] ShadedColor shade_vertex_color(const Material& material, const Lighting& lighting,
-                                              const glm::vec3& n_world) {
-    const glm::vec3 base(material.base_color);
-    if (material.shading == 1u || material.shading == 2u) {  // unlit, emissive: no sun term to shadow
-        return ShadedColor{base, glm::vec3(0.0f)};
-    }
-    const float n_dot_l = std::max(glm::dot(n_world, lighting.sun_direction), 0.0f);
-    const glm::vec3 sun_term = lighting.sun_color * (lighting.sun_intensity * n_dot_l);
-    const glm::vec3 combined = base * (sun_term + lighting.ambient_color);
-    return ShadedColor{combined, base * sun_term};
-}
-
 // Applies a (binary, {0,1}) shadow factor per SR-25: ambient survives
 // untouched, the sun term is scaled. When `lit == 1.0f` (unshadowed, or no
 // shadow map at all) this reduces to `sc.combined - sc.sun * 0.0f ==
@@ -1199,7 +1137,10 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
         // GROUND hit-test below, never by this gradient.
         const double sky_t = fb.height > 1 ? static_cast<double>(y) / static_cast<double>(fb.height - 1) : 0.0;
         const float sky_tf = static_cast<float>(sky_t);
-        const glm::vec3 sky = scene.lighting.sky_zenith * (1.0f - sky_tf) + scene.lighting.sky_horizon * sky_tf;
+        // sky_gradient_color() (S7a Task R8, scene.hpp) -- shared with
+        // render/raymarch.cpp's own sky-miss pixels so the two paths' sky
+        // agrees bit-for-bit rather than by two independent expressions.
+        const glm::vec3 sky = sky_gradient_color(scene.lighting, sky_tf);
 
         for (uint32_t x = 0; x < fb.width; ++x) {
             glm::vec3 color = sky;
@@ -1264,12 +1205,13 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
     }
-    // raymarch is out of this task's scope entirely (Tasks R8/R9 own it,
-    // scene.hpp's own "raymarch + agreement only" note on RenderScene::sdf)
-    // -- reported rather than silently rendered as shaded or left blank.
+    // S7a Task R8: raymarch is an exact SDF sphere-tracer, not a rasterizer
+    // -- it shares this file's target-validation entry point (above) but
+    // none of the ported camera/projection/clip pipeline below, so it is
+    // implemented in its own TU (render/raymarch.cpp) and simply forwarded
+    // to here, target already validated.
     if (options.mode == DrawMode::raymarch) {
-        return std::unexpected(
-            Error{Code::invalid_argument, "raster_cpu::render: raymarch draw mode is not implemented until Task R8/R9"});
+        return render_raymarch(scene, camera, target);
     }
 
     const uint32_t width = target.width;
