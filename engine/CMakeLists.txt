@@ -370,6 +370,15 @@ install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp
 # later S7a task adds to this SAME target will, so the flag stays wired from
 # the target's first TU rather than revisited per file.
 #
+# render/shadow.cpp (S7a Task R7): the single-sun shadow map -- depth-only
+# orthographic rasterisation fitted to RenderScene::bounds, cached on
+# RenderScene::static_shadow (scene.cpp calls it from scene_from_world()) and
+# sampled per pixel from raster_cpu.cpp. PRIVATE to this target's own build
+# (no new external dependency): both TUs already need each other's headers
+# (scene.hpp includes shadow.hpp for the ShadowMap field type; shadow.cpp
+# includes scene.hpp for RenderScene's complete definition), so it joins the
+# same STATIC target rather than becoming a separate library.
+#
 # render/gltf.cpp (S7a Task R4) joins this target's sources: the glTF 2.0
 # mesh loader, PRIVATE to spade_render (nlohmann::json never appears in
 # gltf.hpp's signature -- Result<MeshData>/std::filesystem::path/
@@ -392,6 +401,7 @@ add_library(spade_render STATIC
     render/csg_mesh.cpp
     render/raster_cpu.cpp
     render/gltf.cpp
+    render/shadow.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)

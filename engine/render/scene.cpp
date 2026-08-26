@@ -7,6 +7,7 @@
 #include <glm/gtc/matrix_inverse.hpp>  // glm::inverse(mat4) -- see local_to_world_of() below
 
 #include "render/csg_mesh.hpp"    // split_program, csg_subtree_world_bounds, mesh_csg_subtree (Task R5)
+#include "render/shadow.hpp"      // build_static_shadow_map (Task R7)
 #include "render/tessellate.hpp"  // tessellate_primitive (Task R2)
 
 namespace spade::render {
@@ -381,6 +382,20 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     const std::optional<float> ground = ground_plane_y(world);
     scene.has_ground = ground.has_value();
     scene.ground_y = ground.value_or(0.0f);
+
+    // S7a Task R7 (this function's own interface note, scene.hpp): a shadow
+    // map is only meaningful when there is real static geometry the sun
+    // could cast a shadow FROM -- an empty world (`statics` empty, since
+    // props are appended into it above) leaves `static_shadow` at its
+    // std::nullopt default rather than building a map with nothing ever
+    // rasterised into it.
+    if (!scene.statics.empty()) {
+        const Result<ShadowMap> shadow_map = build_static_shadow_map(scene);
+        if (!shadow_map) {
+            return std::unexpected(shadow_map.error());
+        }
+        scene.static_shadow = *shadow_map;
+    }
 
     return scene;
 }

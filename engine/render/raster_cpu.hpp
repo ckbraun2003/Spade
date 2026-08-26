@@ -22,8 +22,10 @@
 //
 // DrawMode::shaded (solid, depth-tested, Gouraud-shaded per-submesh material
 // colour -- directional Lambert lighting + ambient + a vertical sky gradient
-// and analytic ground landed at Task R6 (rulings SR-17/SR-18); sun shadows
-// are still R7) and DrawMode::wireframe (edges only, both sides always
+// and analytic ground landed at Task R6 (rulings SR-17/SR-18); a single-sun
+// shadow map, sampled per pixel against a perspective-correct world
+// position, landed at Task R7 (render/shadow.hpp, ruling SR-24)) and
+// DrawMode::wireframe (edges only, both sides always
 // drawn, flat UNLIT submesh colour never touched by lighting -- the prior
 // wireframe rasterizer's own debug/comparison vocabulary, kept deliberately
 // unlit) are both implemented here; DrawMode::raymarch is out of this task's

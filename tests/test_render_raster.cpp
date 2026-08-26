@@ -913,6 +913,97 @@ TEST(RasterCpu, OverlaysDrawBodyMarkerForDynamicItemEvenWithoutAResolvedMesh) {
 }
 
 // ===========================================================================
+// 5b. Ruling SR-21 (S7a Task R7, controller amendment) -- the ground-grid-
+// overlay vs tessellated-mesh z-fight carried since Task R3. None of the
+// three RasterGolden.* fixtures below happen to contain an actual ground-
+// plane MESH at the SAME height as the has_ground/ground_y overlay grid (see
+// that section's own header comment) -- box/sphere/cylinder primitives never
+// exercise this seam, so this is the dedicated regression coverage for the
+// scenario the ticket actually describes: a real, flat, y=0 mesh occupying
+// the WHOLE visible frame, coincident with the grid overlay drawn at that
+// SAME y.
+// ===========================================================================
+
+namespace {
+
+// A flat, single quad (2 triangles, +Y normal, CCW-outward -- same corner
+// convention as make_box_mesh's own +Y face above) at y=0, deliberately
+// larger than anything camera_top_down(..., height=4) can see at this file's
+// kOverlayWidth/kOverlayHeight/default-fov (visible ground half-extent
+// ~4*tan(30deg) ~= 2.3 world units) -- every visible ground pixel in the
+// tests below is therefore guaranteed to be mesh-covered, not merely
+// "beyond the mesh's edge, where the grid always shows freely regardless of
+// any bias".
+[[nodiscard]] MeshData make_flat_ground_quad(float half_extent) {
+    MeshData mesh;
+    const float h = half_extent;
+    const glm::vec3 corners[4] = {{-h, 0.0f, h}, {h, 0.0f, h}, {h, 0.0f, -h}, {-h, 0.0f, -h}};
+    for (const glm::vec3& c : corners) {
+        mesh.positions.push_back(c);
+        mesh.normals.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    return mesh;
+}
+
+}  // namespace
+
+TEST(OverlayDepthBias, GridOverlayIsVisibleOverACoincidentGroundMeshNotHiddenByTheFirstWriterWinsTie) {
+    RenderScene scene;
+    // Unlit, and a colour with NOTHING in common with the grid's own
+    // (90,90,90) -- so "found the grid colour" can only mean the overlay
+    // line actually won a pixel, never a coincidental match with the mesh's
+    // own shaded colour.
+    scene.materials = {Material{.base_color = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), .shading = 1u}};
+    scene.meshes.push_back(make_flat_ground_quad(8.0f));
+    scene.statics.push_back(
+        DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f), .material_override = kNoMaterial});
+    scene.has_ground = true;
+    scene.ground_y = 0.0f;  // the OLDER grid-overlay heuristic -- SAME height as the mesh above
+    scene.bounds = Aabb{.min = glm::vec3(-8.0f, -1.0f, -8.0f), .max = glm::vec3(8.0f, 1.0f, 8.0f)};
+
+    const Camera camera = camera_top_down(glm::vec3(0.0f, 4.0f, 0.0001f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = true;
+    options.shadows = false;  // isolates this ticket from R7's OTHER, unrelated feature
+
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kOverlayWidth, kOverlayHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto grid = bgr(90, 90, 90);
+    const auto mesh_colour = bgr(0, 255, 0);
+    size_t grid_pixels = 0;
+    for (uint32_t y = 0; y < kOverlayHeight; ++y) {
+        for (uint32_t x = 0; x < kOverlayWidth; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * kOverlayWidth + x) * 4;
+            if (storage[idx] == grid[0] && storage[idx + 1] == grid[1] && storage[idx + 2] == grid[2]) {
+                ++grid_pixels;
+            }
+        }
+    }
+    EXPECT_TRUE(region_contains_bgr(storage, kOverlayWidth, 0, kOverlayWidth, 0, kOverlayHeight, mesh_colour))
+        << "sanity: the ground mesh itself must be visible somewhere in frame";
+    // A COUNT, not merely "somewhere in frame", and a THRESHOLD picked from
+    // measurement rather than assumption (this task's own "recompute before
+    // you write it down" discipline): a grid line and a coincident mesh
+    // surface at the SAME y do not resolve as one universal exact tie --
+    // TWO GENUINELY DIFFERENT interpolation formulas (a line's own two-point
+    // DDA lerp vs. a triangle's three-point barycentric weighting) round
+    // differently pixel by pixel, so SOME grid pixels already win even with
+    // NO bias at all. Measured directly on this exact fixture: 513 grid
+    // pixels win with kOverlayDepthBias temporarily forced to 0.0, vs. 935
+    // with the real, tuned value -- a reproducible +422 pixels (systematic,
+    // not lucky-rounding noise) attributable to nothing but the bias. 700
+    // sits with a wide margin on both sides of that measured gap.
+    EXPECT_GT(grid_pixels, 700u)
+        << "only " << grid_pixels << " grid-overlay pixels survived over the coincident ground mesh (measured "
+           "513 with the bias forced to 0.0, 935 with it live) -- ruling SR-21's fix should recover most of the "
+           "grid's own geometry, not leave it mostly hidden behind the mesh it annotates";
+}
+
+// ===========================================================================
 // 6. DrawMode::raymarch is out of this task's scope; validate_target()
 //    failures propagate.
 // ===========================================================================

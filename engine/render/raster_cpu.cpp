@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/fp32_math.hpp"
+#include "render/shadow.hpp"
 
 namespace spade::render {
 
@@ -153,9 +155,24 @@ bool clipSegmentToHalfSpace(Vec3& p0, Vec3& p1, double planeZ, bool keepLessEq) 
 // shade_vertex_color's own comment on why that is fine): a mesh whose
 // normal is genuinely constant across a triangle (a plane, SR-17's own
 // load-bearing case) lerps to the SAME value bit-for-bit regardless.
+//
+// `world` (S7a Task R7, SR-24 -- a second field added to this struct, same
+// posture as R6's own `normal` addition, and explicitly permitted by the
+// R5b clipper bound comment below: adding a FIELD is safe, adding a third
+// clip STAGE is not): the WORLD-space position, lerped at the SAME `t` as
+// `pos`/`normal`. Feeds sample_shadow() -- but never directly: SR-24
+// requires the shadow lookup to run PER PIXEL against a PERSPECTIVE-CORRECT
+// world position, and this field only ever carries a per-VERTEX value.
+// rasterizeTriangleGouraud (below) is what turns three of these into one
+// perspective-correct per-pixel position, via invDepth-weighted
+// interpolation -- never a plain barycentric lerp of the three `world`
+// values directly, which would be screen-space-affine and visibly wrong
+// across a large triangle. Defaults to the zero vector like `normal` --
+// only draw_mesh_triangle_shaded's Gouraud path ever populates or reads it.
 struct ClipVertex {
     Vec3 pos;
     glm::vec3 normal{0.0f};
+    glm::vec3 world{0.0f};
 };
 
 // Fixed capacity: a triangle clipped against one plane yields at most 4
@@ -208,14 +225,20 @@ size_t clipPolygonToHalfSpace(const ClipPoly& in, size_t inCount, double planeZ,
         if (curIn != nextIn) {
             const double t = (planeZ - cur.pos.z) / (next.pos.z - cur.pos.z);
             assert(outCount < kMaxClipVertices && "clipPolygonToHalfSpace: output polygon exceeded kMaxClipVertices");
-            // Normal lerped at the SAME t as position (SR-18, ClipVertex's
-            // own comment) -- cast to float only for the vec3 multiply;
-            // when cur.normal == next.normal bit-for-bit (a constant-normal
-            // mesh, e.g. a plane), next.normal - cur.normal is exactly the
-            // zero vector and this reduces to cur.normal exactly, regardless
-            // of t's value or precision.
-            out[outCount++] =
-                ClipVertex{cur.pos + (next.pos - cur.pos) * t, cur.normal + (next.normal - cur.normal) * static_cast<float>(t)};
+            // Normal AND world position lerped at the SAME t as position
+            // (SR-18/SR-24, ClipVertex's own comment) -- cast to float only
+            // for the vec3 multiply; when cur.normal == next.normal
+            // bit-for-bit (a constant-normal mesh, e.g. a plane),
+            // next.normal - cur.normal is exactly the zero vector and this
+            // reduces to cur.normal exactly, regardless of t's value or
+            // precision. `world` has no such constant-value case in general
+            // (two distinct clip vertices almost always have distinct world
+            // positions), so no analogous exactness claim is made for it --
+            // it is fed to sample_shadow() downstream, not compared for
+            // equality anywhere.
+            const float tf = static_cast<float>(t);
+            out[outCount++] = ClipVertex{cur.pos + (next.pos - cur.pos) * t, cur.normal + (next.normal - cur.normal) * tf,
+                                          cur.world + (next.world - cur.world) * tf};
         }
     }
     return outCount;
@@ -383,6 +406,18 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
     return Vec3{static_cast<double>(v.x), static_cast<double>(v.y), static_cast<double>(v.z)};
 }
 
+// The inverse of vec3d() above -- draw_mesh_triangle_shaded (S7a Task R7)
+// needs a WORLD-space `a`/`b`/`c` (its own Vec3 parameters, already widened
+// to double via vec3d() at its one call site, draw_mesh_item) back as a
+// glm::vec3 to populate ClipVertex::world. Exact, not merely approximate:
+// float -> double widening never loses a bit, and every one of these Vec3
+// values originated from a glm::vec3 (float) that fits exactly in a double,
+// so narrowing back to float recovers the identical bit pattern -- no
+// precision lost on the round trip.
+[[nodiscard]] glm::vec3 vec3f(const Vec3& v) {
+    return glm::vec3(static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z));
+}
+
 [[nodiscard]] uint8_t to_byte(float channel) {
     const float clamped = std::clamp(channel, 0.0f, 1.0f);
     return static_cast<uint8_t>(std::lround(clamped * 255.0f));
@@ -481,8 +516,15 @@ static_assert(static_cast<uint32_t>(spade::MaterialShading::emissive) == 2u,
 // and left the latter exactly as it was in each.
 // ---------------------------------------------------------------------------
 
+// `depth_bias` (S7a Task R7, ruling SR-21 -- the R3-opened, R6-declined
+// carried ticket): added ONLY to bias overlay draws toward the camera; see
+// kOverlayDepthBias's own comment further below for the full story. Defaults
+// to 0.0, so draw_mesh_item's WIREFRAME-mode mesh-edge calls to this
+// function (real geometry, never an overlay) are BYTE-IDENTICAL to before
+// this task -- only the four true overlay call sites (draw_ground_grid,
+// draw_world_bounds, further below) opt in explicitly.
 void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, uint8_t r, uint8_t g,
-                         uint8_t bC) {
+                         uint8_t bC, double depth_bias = 0.0) {
     Vec3 ac = worldToCameraSpace(vc, a);
     Vec3 bc = worldToCameraSpace(vc, b);
     if (!clipSegmentToHalfSpace(ac, bc, -vc.nearP, /*keepLessEq=*/true)) {
@@ -491,7 +533,11 @@ void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, 
     if (!clipSegmentToHalfSpace(ac, bc, -vc.farP, /*keepLessEq=*/false)) {
         return;
     }
-    rasterizeLine(fb, projectCameraSpace(vc, ac), projectCameraSpace(vc, bc), r, g, bC);
+    ScreenPoint sa = projectCameraSpace(vc, ac);
+    ScreenPoint sb = projectCameraSpace(vc, bc);
+    sa.invDepth += depth_bias;
+    sb.invDepth += depth_bias;
+    rasterizeLine(fb, sa, sb, r, g, bC);
 }
 
 // Exact near/far clip (Task R5b, SR-15), fan-triangulated
@@ -499,8 +545,16 @@ void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, 
 // whole-triangle rejection this function used before this task. Never
 // culls: used only by the overlay markers below, whose winding is not a
 // guaranteed fact.
+//
+// `depth_bias` (S7a Task R7, ruling SR-21): same overlay-toward-camera bias
+// as draw_world_segment's own identical parameter, added at every fan
+// triangle's three projected points -- defaults to 0.0 (this function's own
+// only callers, draw_spawn_markers/draw_body_markers further below, both
+// opt in explicitly; there is no wireframe-mesh-edge caller of this
+// function to stay byte-identical for, but the default keeps this
+// function's own signature consistent with draw_world_segment's).
 void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
-                          uint8_t r, uint8_t g, uint8_t bC) {
+                          uint8_t r, uint8_t g, uint8_t bC, double depth_bias = 0.0) {
     const ClipVertex ac{worldToCameraSpace(vc, a)};
     const ClipVertex bc{worldToCameraSpace(vc, b)};
     const ClipVertex cc{worldToCameraSpace(vc, c)};
@@ -511,10 +565,14 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
     }
     // poly[0] is shared by every fan triangle -- project it once rather than
     // once per iteration (review nit, R5b round 1).
-    const ScreenPoint s0 = projectCameraSpace(vc, poly[0].pos);
+    ScreenPoint s0 = projectCameraSpace(vc, poly[0].pos);
+    s0.invDepth += depth_bias;
     for (size_t i = 1; i + 1 < count; ++i) {
-        rasterizeTriangleFlat(fb, s0, projectCameraSpace(vc, poly[i].pos), projectCameraSpace(vc, poly[i + 1].pos), r,
-                               g, bC);
+        ScreenPoint si = projectCameraSpace(vc, poly[i].pos);
+        ScreenPoint sj = projectCameraSpace(vc, poly[i + 1].pos);
+        si.invDepth += depth_bias;
+        sj.invDepth += depth_bias;
+        rasterizeTriangleFlat(fb, s0, si, sj, r, g, bC);
     }
 }
 
@@ -560,18 +618,39 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
 // task-R6-brief.md): when all three vertex colours are BIT-IDENTICAL --
 // always true for a constant-normal mesh (a plane, whose normal is the same
 // at every vertex before or after any near/far-clip lerp, ClipVertex's own
-// comment) -- this falls straight through to rasterizeTriangleFlat's single
-// evaluation rather than the barycentric weighted sum below: b0+b1+b2 is not
-// always EXACTLY 1.0 in floating point, so a weighted sum of three EQUAL
-// inputs is not guaranteed to reproduce that exact input bit-for-bit, which
-// is precisely what the analytic background ground pass's own single
-// per-pixel evaluation needs to match. Converting this into a tolerance
-// instead would silently give away the entire reason the hard-horizon
-// design is safe (task-R6-brief.md's own words) -- so this is an exact `==`,
-// not a "close enough".
+// comment) -- this uses that single colour directly rather than the
+// barycentric weighted sum below: b0+b1+b2 is not always EXACTLY 1.0 in
+// floating point, so a weighted sum of three EQUAL inputs is not guaranteed
+// to reproduce that exact input bit-for-bit, which is precisely what the
+// analytic background ground pass's own single per-pixel evaluation needs
+// to match. Converting this into a tolerance instead would silently give
+// away the entire reason the hard-horizon design is safe (task-R6-brief.md's
+// own words) -- so this is an exact `==`, not a "close enough".
+//
+// `shadow` (S7a Task R7, ruling SR-24): when non-null, this function ALWAYS
+// runs its own per-pixel loop -- even in the equal-colour case above -- so
+// the shadow term can be sampled PER PIXEL, never per vertex. The
+// equal-colour optimisation survives in a WEAKENED form: the constant `c0`
+// is still used as-is (no barycentric recomputation, so the R6 seam above
+// still holds for the COLOUR term), but each covered pixel still gets its
+// own perspective-correct world position and its own sample_shadow() call,
+// multiplied in afterward. When a pixel's shadow factor is exactly 1.0f
+// (unshadowed -- the common case, including every pixel outside the shadow
+// map's own footprint, SR-17), `c0 * 1.0f == c0` bit-for-bit (IEEE 754:
+// multiplying by exactly 1.0 is always exact), so the R6 seam's bit-identity
+// with the analytic ground pass (which now ALSO samples the SAME shadow map
+// at its own exact per-pixel hit point, draw_sky_and_ground_background
+// below) survives through the shadow multiply too, not just through the
+// colour term alone. `shadow == nullptr` (shadows off, or no static
+// geometry to have built a map from) reproduces this function's own
+// pre-Task-R7 behaviour exactly, byte for byte -- the reason none of this
+// program's existing goldens move from this change alone (see this task's
+// own report).
 void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const ScreenPoint& v1, const ScreenPoint& v2,
-                               const glm::vec3& c0, const glm::vec3& c1, const glm::vec3& c2) {
-    if (c0 == c1 && c1 == c2) {
+                               const glm::vec3& c0, const glm::vec3& c1, const glm::vec3& c2, const glm::vec3& wpos0,
+                               const glm::vec3& wpos1, const glm::vec3& wpos2, const ShadowMap* shadow) {
+    const bool equal_colour = (c0 == c1 && c1 == c2);
+    if (equal_colour && shadow == nullptr) {
         rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(c0.r), to_byte(c0.g), to_byte(c0.b));
         return;
     }
@@ -597,8 +676,28 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
             }
             const double b0 = w0 / area, b1 = w1 / area, b2 = w2 / area;
             const double invD = b0 * v0.invDepth + b1 * v1.invDepth + b2 * v2.invDepth;
-            const glm::vec3 color =
-                c0 * static_cast<float>(b0) + c1 * static_cast<float>(b1) + c2 * static_cast<float>(b2);
+            glm::vec3 color = equal_colour ? c0
+                                            : (c0 * static_cast<float>(b0) + c1 * static_cast<float>(b1) +
+                                               c2 * static_cast<float>(b2));
+            if (shadow != nullptr) {
+                // SR-24: perspective-correct world position -- interpolate
+                // world*invDepth AFFINELY (the SAME b0/b1/b2 screen-space
+                // weights invD itself uses) and divide by the ALREADY
+                // perspective-correct invD, rather than a plain barycentric
+                // lerp of wpos0/wpos1/wpos2 (which would be screen-space
+                // affine and visibly wrong across a large triangle -- this
+                // task's own brief: "the ground grid is exactly that case").
+                // invD > 0 always holds here: every one of v0/v1/v2.invDepth
+                // is itself > 0 (both are post-near/far-clip camera-space
+                // points, clipTriangleNearFar's own contract), and
+                // b0+b1+b2 == 1 with each bi in [0, 1] inside the triangle,
+                // so invD is a convex combination of positive numbers.
+                const glm::vec3 world_over_depth = wpos0 * static_cast<float>(b0 * v0.invDepth) +
+                                                    wpos1 * static_cast<float>(b1 * v1.invDepth) +
+                                                    wpos2 * static_cast<float>(b2 * v2.invDepth);
+                const glm::vec3 world = world_over_depth / static_cast<float>(invD);
+                color *= sample_shadow(*shadow, world);
+            }
             setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
         }
     }
@@ -610,12 +709,19 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
 // the final clipped polygon's vertices, original or clip-synthesized alike,
 // not only the original three), then handed to rasterizeTriangleGouraud to
 // interpolate the resulting COLOUR across the fan triangle's pixels.
+//
+// `shadow` (S7a Task R7): forwarded to rasterizeTriangleGouraud unchanged --
+// this function's own job is only to populate ClipVertex::world (from `a`/
+// `b`/`c`, already WORLD-space -- draw_mesh_item's own call site passes
+// vec3d(wa)/vec3d(wb)/vec3d(wc)) so the per-PIXEL shadow sampling downstream
+// has real per-vertex world positions to interpolate, per SR-24. Null when
+// shadows are off or there is no static shadow map to sample.
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
-                                const Material& material, const Lighting& lighting) {
-    const ClipVertex ac{worldToCameraSpace(vc, a), na};
-    const ClipVertex bc{worldToCameraSpace(vc, b), nb};
-    const ClipVertex cc{worldToCameraSpace(vc, c), nc};
+                                const Material& material, const Lighting& lighting, const ShadowMap* shadow) {
+    const ClipVertex ac{worldToCameraSpace(vc, a), na, vec3f(a)};
+    const ClipVertex bc{worldToCameraSpace(vc, b), nb, vec3f(b)};
+    const ClipVertex cc{worldToCameraSpace(vc, c), nc, vec3f(c)};
     ClipPoly poly;
     const size_t count = clipTriangleNearFar(vc, ac, bc, cc, poly);
     if (count < 3) {
@@ -634,7 +740,7 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
         }
         const glm::vec3 cb = shade_vertex_color(material, lighting, poly[i].normal);
         const glm::vec3 cc2 = shade_vertex_color(material, lighting, poly[i + 1].normal);
-        rasterizeTriangleGouraud(fb, sa, sb, sc, ca, cb, cc2);
+        rasterizeTriangleGouraud(fb, sa, sb, sc, ca, cb, cc2, poly[0].world, poly[i].world, poly[i + 1].world, shadow);
     }
 }
 
@@ -666,7 +772,7 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
 // ---------------------------------------------------------------------------
 
 void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const DrawItem& item,
-                     DrawMode mode) {
+                     DrawMode mode, const ShadowMap* shadow) {
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
     }
@@ -745,7 +851,7 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 const glm::vec3 nb = transform_normal(item.local_to_world, mesh.normals[ib]);
                 const glm::vec3 nc = transform_normal(item.local_to_world, mesh.normals[ic]);
                 draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
-                                           scene.lighting);
+                                           scene.lighting, shadow);
             }
         }
     }
@@ -764,16 +870,50 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
 constexpr double kGridHalfExtent = 10.0;
 constexpr double kGridStep = 1.0;
 
+// Overlay depth bias (S7a Task R7, ruling SR-21 -- the ticket carried since
+// Task R3, re-affirmed at Task R6, landed here because R7 is the remaining
+// Phase-2 task that edits depth handling in this file). Pulls every OVERLAY
+// draw (ground grid, world bounds, spawn/body markers, all four below) this
+// many invDepth units toward the camera before it reaches setPixelIfCloser's
+// depth test, so a genuine near-tie against the tessellated surface an
+// overlay annotates is decided by INTENT -- the overlay should always read
+// as drawn ON TOP of the surface it marks -- rather than by
+// setPixelIfCloser's own "first writer wins" tie rule. That rule previously
+// meant the MESH always won: overlays draw LAST in render()'s fixed order
+// (statics, dynamics, THEN overlays), so at an exact or near-exact tie the
+// mesh (drawn first) kept its pixel and the overlay silently vanished --
+// e.g. the ground-grid overlay's y=0 line disappearing wherever a box's
+// bottom face rests exactly at y=0, the SAME scenario this ticket's own
+// text describes. Since overlays draw last, this bias can only ever affect
+// an overlay-vs-already-drawn-geometry comparison, never the reverse.
+//
+// TUNED (not derived), and a DIFFERENT constant from shadow.cpp's
+// kShadowDepthBias -- different units (an invDepth epsilon here, a
+// world-space light-axis distance there), different failure mode (an
+// overlay disappearing behind the surface it annotates, vs shadow acne),
+// different provenance (this ticket, ruling SR-21, vs Step 2's shadow
+// acne/peter-panning tuning). Conflating the two would be a defect even if
+// the numbers happened to coincide (this task's own controller amendment).
+// Chosen large enough to clear the floating-point evaluation-order noise
+// between two DIFFERENT interpolation paths computing the SAME world point
+// (a Gouraud-shaded mesh vertex vs. a grid line's own per-endpoint DDA,
+// test_render_raster.cpp's own OverlayDepthBias.* tests measure that noise
+// at several orders of magnitude below this value) while staying far too
+// small to visibly displace an overlay line that is NOT at a real tie.
+constexpr double kOverlayDepthBias = 1e-4;
+
 void draw_ground_grid(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
     // value_or(0.0f) equivalent -- the wireframe rasterizer's own
     // drawGroundGrid always drew a grid, defaulting to y=0 with no ground
     // plane found; reproduced unchanged.
     const double y = scene.has_ground ? static_cast<double>(scene.ground_y) : 0.0;
     for (double x = -kGridHalfExtent; x <= kGridHalfExtent + 1e-9; x += kGridStep) {
-        draw_world_segment(fb, vc, Vec3{x, y, -kGridHalfExtent}, Vec3{x, y, kGridHalfExtent}, kGridR, kGridG, kGridB);
+        draw_world_segment(fb, vc, Vec3{x, y, -kGridHalfExtent}, Vec3{x, y, kGridHalfExtent}, kGridR, kGridG, kGridB,
+                            kOverlayDepthBias);
     }
     for (double z = -kGridHalfExtent; z <= kGridHalfExtent + 1e-9; z += kGridStep) {
-        draw_world_segment(fb, vc, Vec3{-kGridHalfExtent, y, z}, Vec3{kGridHalfExtent, y, z}, kGridR, kGridG, kGridB);
+        draw_world_segment(fb, vc, Vec3{-kGridHalfExtent, y, z}, Vec3{kGridHalfExtent, y, z}, kGridR, kGridG, kGridB,
+                            kOverlayDepthBias);
     }
 }
 
@@ -793,7 +933,7 @@ void draw_world_bounds(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7},
     };
     for (const auto& e : kEdges) {
-        draw_world_segment(fb, vc, c[e[0]], c[e[1]], kBoundsR, kBoundsG, kBoundsB);
+        draw_world_segment(fb, vc, c[e[0]], c[e[1]], kBoundsR, kBoundsG, kBoundsB, kOverlayDepthBias);
     }
 }
 
@@ -811,8 +951,8 @@ void draw_spawn_markers(FrameBuffers& fb, const ViewContext& vc, const RenderSce
         const Vec3 v2{-kSpawnMarkerRadius, kSpawnMarkerYOffset, 0.0};
         const Vec3 v3{0.0, kSpawnMarkerYOffset, -kSpawnMarkerRadius};
         const auto place = [&](const Vec3& local) { return base + rotateByQuat(q, local); };
-        draw_world_triangle(fb, vc, place(v0), place(v1), place(v2), kSpawnR, kSpawnG, kSpawnB);
-        draw_world_triangle(fb, vc, place(v0), place(v2), place(v3), kSpawnR, kSpawnG, kSpawnB);
+        draw_world_triangle(fb, vc, place(v0), place(v1), place(v2), kSpawnR, kSpawnG, kSpawnB, kOverlayDepthBias);
+        draw_world_triangle(fb, vc, place(v0), place(v2), place(v3), kSpawnR, kSpawnG, kSpawnB, kOverlayDepthBias);
     }
 }
 
@@ -836,10 +976,14 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         const double q[4] = {static_cast<double>(orientation.w), static_cast<double>(orientation.x),
                               static_cast<double>(orientation.y), static_cast<double>(orientation.z)};
         const auto place = [&](const Vec3& local) { return base + rotateByQuat(q, local); };
-        draw_world_triangle(fb, vc, place(nose), place(left), place(right), kDroneR, kDroneG, kDroneB);
-        draw_world_triangle(fb, vc, place(nose), place(right), place(top), kDroneR, kDroneG, kDroneB);
-        draw_world_triangle(fb, vc, place(nose), place(top), place(left), kDroneR, kDroneG, kDroneB);
-        draw_world_triangle(fb, vc, place(left), place(right), place(top), kDroneR, kDroneG, kDroneB);
+        draw_world_triangle(fb, vc, place(nose), place(left), place(right), kDroneR, kDroneG, kDroneB,
+                            kOverlayDepthBias);
+        draw_world_triangle(fb, vc, place(nose), place(right), place(top), kDroneR, kDroneG, kDroneB,
+                            kOverlayDepthBias);
+        draw_world_triangle(fb, vc, place(nose), place(top), place(left), kDroneR, kDroneG, kDroneB,
+                            kOverlayDepthBias);
+        draw_world_triangle(fb, vc, place(left), place(right), place(top), kDroneR, kDroneG, kDroneB,
+                            kOverlayDepthBias);
     }
 }
 
@@ -901,8 +1045,19 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 // sphere-tracing it directly gives an infinite ground for free, confirming
 // this is a raster-only expedient, not a real scene feature R9 should ever
 // see duplicated.
+// `shadow` (S7a Task R7, ruling SR-24): when the ray hits a ground plane,
+// the EXACT world-space hit point (`camPos + dirWorld * best_t`, already
+// computed below with no interpolation at all -- a ray/plane intersection,
+// not a barycentric lerp) is sampled directly. This is the SAME
+// sample_shadow() the mesh path calls (draw_mesh_triangle_shaded via
+// rasterizeTriangleGouraud) with a PERSPECTIVE-CORRECT world position of its
+// own -- since this pass's hit point has no interpolation error to begin
+// with, the two paths agree on a shadow boundary that crosses from a
+// tessellated mesh onto the analytic ground exactly the way SR-17's own
+// bit-identity seam (rasterizeTriangleGouraud's own comment) already
+// requires them to agree on colour.
 void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
-                                     bool draw_analytic_ground) {
+                                     bool draw_analytic_ground, const ShadowMap* shadow) {
     // Precomputed ONCE PER FRAME (review IMPORTANT 3): whether the analytic
     // ground pass has anything at all to do. Skips not just the per-pixel
     // ray/plane loop but the per-plane `front[]` precompute below too, for
@@ -1009,6 +1164,10 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
                     const GroundPlane& gp = scene.ground_planes[static_cast<size_t>(best_plane)];
                     const uint32_t material_index = gp.material < scene.materials.size() ? gp.material : 0u;
                     color = shade_vertex_color(scene.materials[material_index], scene.lighting, gp.normal);
+                    if (shadow != nullptr) {
+                        const Vec3 hit = camPos + dirWorld * best_t;
+                        color *= sample_shadow(*shadow, vec3f(hit));
+                    }
                 }
             }
 
@@ -1044,6 +1203,26 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     FrameBuffers fb{target.pixels, depth, width, height};
     const ViewContext vc = build_view_context(camera, width, height);
 
+    // S7a Task R7 (Step 3): the STATIC half of the shadow map is built once,
+    // at scene-build time, and cached on `scene` -- render() never rebuilds
+    // it. Only `scene.dynamics` is re-rasterised, once per render() call,
+    // into a COPY of that cached map -- never `scene.statics` a second time.
+    // Gated on DrawMode::shaded (like the analytic ground below, ruling
+    // SR-22's own precedent): wireframe never shades (draw_mesh_item's
+    // wireframe branch calls draw_world_segment, which never samples a
+    // shadow map at all), so building a per-frame copy for it would be pure
+    // waste. `shadow` stays null -- and every existing caller's output stays
+    // byte-identical to before this task -- whenever shadows are off, there
+    // is no cached static map (every hand-built RenderScene fixture in this
+    // program's own test corpus, until one opts in), or the mode is not
+    // shaded.
+    std::optional<ShadowMap> frame_shadow;
+    if (options.shadows && options.mode == DrawMode::shaded && scene.static_shadow.has_value()) {
+        frame_shadow = *scene.static_shadow;
+        rasterize_shadow_casters(scene.meshes, scene.dynamics, *frame_shadow);
+    }
+    const ShadowMap* shadow = frame_shadow.has_value() ? &*frame_shadow : nullptr;
+
     // MN-14 / constraint 2: every byte written every frame, X always 0xFF --
     // now the sky gradient + analytic ground background pass (S7a Task R6),
     // not a flat clear: it still writes every pixel unconditionally, just no
@@ -1051,16 +1230,16 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // never survives the z-test against any real geometry drawn afterward.
     // The analytic ground itself is gated to DrawMode::shaded (ruling SR-22,
     // review IMPORTANT 4) -- the sky gradient applies to every mode.
-    draw_sky_and_ground_background(fb, vc, scene, options.mode == DrawMode::shaded);
+    draw_sky_and_ground_background(fb, vc, scene, options.mode == DrawMode::shaded, shadow);
 
     // Fixed operation order (constraint 4): background, then statics, then
     // dynamics, then overlays -- never based on hashing, pointer identity, or
     // anything else unordered.
     for (const DrawItem& item : scene.statics) {
-        draw_mesh_item(fb, vc, scene, item, options.mode);
+        draw_mesh_item(fb, vc, scene, item, options.mode, shadow);
     }
     for (const DrawItem& item : scene.dynamics) {
-        draw_mesh_item(fb, vc, scene, item, options.mode);
+        draw_mesh_item(fb, vc, scene, item, options.mode, shadow);
     }
 
     if (options.overlays) {

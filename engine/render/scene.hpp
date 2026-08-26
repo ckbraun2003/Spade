@@ -51,6 +51,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -63,6 +64,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
 #include "world/sdf.hpp"       // SdfProgram
@@ -198,6 +200,16 @@ struct RenderScene {
     // best-effort +Y-identity-plane heuristic, scene.cpp's ground_plane_y());
     // this is the raster background pass's own general, transform-aware list.
     std::vector<GroundPlane> ground_planes;
+    // The sun's own shadow map (S7a Task R7), built ONCE from `statics` alone
+    // at scene-build time and reused every frame -- raster_cpu.cpp's render()
+    // never rebuilds this; it only re-rasterises `dynamics` into a per-frame
+    // COPY of it (Step 3). std::nullopt for a hand-built RenderScene that
+    // never calls build_static_shadow_map() (every existing fixture in this
+    // corpus, until a test opts in) and, per scene_from_world()'s own
+    // contract below, for a world with no static geometry at all -- either
+    // way, RenderOptions::shadows has nothing to sample against and render()
+    // treats every pixel as unshadowed, identically to shadows being off.
+    std::optional<ShadowMap> static_shadow;
 };
 
 // Builds a RenderScene from a validated WorldDesc plus its already-resolved
@@ -212,6 +224,11 @@ struct RenderScene {
 //
 // `sdf` in the result points at `world.sdf`: the returned RenderScene must
 // not outlive `world`.
+//
+// `static_shadow` (S7a Task R7): populated via build_static_shadow_map()
+// whenever `statics` ends up non-empty (props count too -- any real geometry
+// the sun could cast a shadow FROM), left std::nullopt otherwise (an empty
+// world has nothing to build a meaningful shadow map from).
 [[nodiscard]] Result<RenderScene> scene_from_world(const WorldDesc& world,
                                                     std::span<const NamedMesh> resolved_meshes);
 
