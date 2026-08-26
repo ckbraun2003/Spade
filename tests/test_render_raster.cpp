@@ -1113,6 +1113,51 @@ struct Px {
     return (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
 }
 
+// R5b review round 1, IMPORTANT 1: general (not per-shape hand-derived)
+// independent re-derivation of clipPolygonToHalfSpace's own Sutherland-
+// Hodgman pass -- never calls into raster_cpu.cpp -- used by the two new
+// exactness tests below that exercise the 4-vertex (one plane) and 5-vertex
+// (both planes) clip outputs T7 above does not reach (T7's clip result is
+// exactly 3 vertices, so its fan loop runs its body exactly once and cannot
+// distinguish a correct fan from several plausible wrong ones).
+[[nodiscard]] std::vector<Cam3> clip_polygon_oracle(const std::vector<Cam3>& poly, double planeZ, bool keepLessEq) {
+    if (poly.empty()) {
+        return {};
+    }
+    const auto inside = [&](const Cam3& p) { return keepLessEq ? (p.z <= planeZ) : (p.z >= planeZ); };
+    std::vector<Cam3> out;
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const Cam3& cur = poly[i];
+        const Cam3& next = poly[(i + 1) % poly.size()];
+        const bool curIn = inside(cur);
+        const bool nextIn = inside(next);
+        if (curIn) {
+            out.push_back(cur);
+        }
+        if (curIn != nextIn) {
+            out.push_back(lerp_to_plane(cur, next, planeZ));
+        }
+    }
+    return out;
+}
+
+// True iff pixel-center `p` falls inside ANY of the fan triangles
+// (screenPoly[0], screenPoly[i], screenPoly[i+1]) for i in [1, size-2] --
+// the SAME fan pattern draw_mesh_triangle_shaded/draw_world_triangle use
+// over their own clipped-and-projected polygon. A wrong fan (a sliding
+// window, or emitting only the first triangle) produces a DIFFERENT set of
+// sub-triangles here than production's, so a pixel this oracle says is
+// covered by the CORRECT fan but a wrong fan would miss (or vice versa) is
+// exactly what catches those mutants.
+[[nodiscard]] bool fan_covers_pixel(const std::vector<Px>& screenPoly, Px p) {
+    for (size_t i = 1; i + 1 < screenPoly.size(); ++i) {
+        if (inside_triangle(screenPoly[0], screenPoly[i], screenPoly[i + 1], p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 TEST(RasterCpu, TriangleStraddlingNearPlaneRendersNonEmptyPixels) {
@@ -1170,10 +1215,16 @@ TEST(RasterCpu, SpawnMarkerOverlaySurvivesNearPlaneStraddle) {
     // whole-triangle rejection bug as draw_mesh_triangle_shaded -- SR-15's
     // own text warns that fixing only the mesh path would leave spawn/body
     // markers vanishing at close range while real geometry survives. This
-    // spawn marker sits close enough to the camera (z=-0.05, already past
-    // the default near_plane=0.1) that BOTH of its two triangles straddle
-    // the near plane; before this fix, both are rejected outright and the
-    // whole marker disappears.
+    // spawn marker sits close enough to the camera (base z=-0.05) that, of
+    // its two triangles (draw_spawn_markers' own v0/v1/v2/v3, radius 0.3,
+    // y-offset 0.02): triangle (v0,v1,v2) has all three vertices at
+    // z in {-0.05, +0.25, -0.05} -- every one already past the default
+    // near_plane=0.1 -- so it is WHOLLY outside and correctly draws nothing
+    // either before or after this fix; triangle (v0,v2,v3) has v0,v2 at
+    // z=-0.05 (outside) and v3 at z=-0.35 (inside) -- THIS is the one that
+    // straddles. Before this fix, (v0,v2,v3) was also rejected outright by
+    // the whole-triangle rejection, so the entire marker was invisible;
+    // after it, (v0,v2,v3)'s surviving sliver is what this test looks for.
     RenderScene scene = make_empty_overlay_scene();
     scene.spawn_positions = {glm::vec3(0.0f, 0.0f, -0.05f)};
     scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
@@ -1258,16 +1309,41 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
     // apex P2 is farther away at z=-6. Camera at the world origin, identity
     // orientation (world space IS camera space, so no worldToCameraSpace
     // call is needed either).
+    //
+    // Review round 1, MINOR 2: the apex's X was originally an exact 3.0,
+    // which (combined with P0/P1's exact +-1.0 Y and the near_plane=4.1
+    // used below) made both of the clipped triangle's slanted screen-space
+    // edges land EXACTLY on the pixel-center diagonal grid (px - py and
+    // px + py are always integers at a pixel center (px+0.5, py+0.5) --
+    // an edge with slope exactly +-1 and an integer intercept then passes
+    // exactly through a whole streak of pixel centers, each one an
+    // exact-zero w in rasterizeTriangleFlat's inside test). At f=1 exactly
+    // that streak of pixels counts as inside; nudge f by one ULP either way
+    // (e.g. a mathematically-neutral but not bit-neutral refactor of
+    // projectCameraSpace -- hoisting f/aspect, an FMA contraction, a
+    // reordered multiply) and the WHOLE streak flips as one block, reading
+    // exactly like a clipping regression instead of the projection-arithmetic
+    // change it actually is. Nudging the apex's X to 3.1 breaks the exact
+    // +-1 slope (and therefore the whole streak) without changing which
+    // vertices the near plane clips -- that still depends only on Z.
     constexpr uint32_t kDim = 400;  // square target: aspect = 1 exactly
+    // Declared once, as a float32, and reused (cast to double) for the
+    // oracle's own p2 below -- mesh.positions is glm::vec3 (float), and
+    // production widens it to double via vec3d()'s static_cast<double>, so
+    // the oracle must widen the SAME float32 value rather than an
+    // independently-typed double literal (a repeat, at the last ULP, of
+    // this file's earlier hardcoded-tan(45deg) lesson: 3.1f and the double
+    // literal 3.1 are not the same number).
+    constexpr float kApexX = 3.1f;
     Camera camera;
     camera.position = glm::vec3(0.0f);
     camera.fov_y_radians = 1.5707963267948966f;  // pi/2 = 90 degrees
 
     // Indices {0,2,1} order the triangle (P0,P2,P1) CCW as seen from the
     // camera (front-facing: 2D cross of (P2-P0),(P1-P0) using x,y only is
-    // +6) -- shaded mode must not cull it, before or after clipping.
+    // +6.2) -- shaded mode must not cull it, before or after clipping.
     MeshData mesh;
-    mesh.positions = {glm::vec3(0.0f, -1.0f, -2.0f), glm::vec3(0.0f, 1.0f, -2.0f), glm::vec3(3.0f, 0.0f, -6.0f)};
+    mesh.positions = {glm::vec3(0.0f, -1.0f, -2.0f), glm::vec3(0.0f, 1.0f, -2.0f), glm::vec3(kApexX, 0.0f, -6.0f)};
     mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
     mesh.indices = {0, 2, 1};
 
@@ -1303,7 +1379,7 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
     // world space here, so no worldToCameraSpace call is needed, just the
     // two crossing edges (P0-P2) and (P2-P1), via the SAME interpolation
     // formula clipSegmentToHalfSpace already uses.
-    const Cam3 p0{0.0, -1.0, -2.0}, p1{0.0, 1.0, -2.0}, p2{3.0, 0.0, -6.0};
+    const Cam3 p0{0.0, -1.0, -2.0}, p1{0.0, 1.0, -2.0}, p2{static_cast<double>(kApexX), 0.0, -6.0};
     const double planeZ = -static_cast<double>(camera.near_plane);  // -4.1
     const Cam3 i1 = lerp_to_plane(p0, p2, planeZ);
     const Cam3 i2 = lerp_to_plane(p2, p1, planeZ);
@@ -1348,4 +1424,137 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
                    "geometry outside the original triangle's silhouette";
         }
     }
+}
+
+// R5b review round 1, IMPORTANT 1: T7 above only ever produces a 3-vertex
+// clip result (P0/P1 outside, P2 inside), so its fan loop body runs exactly
+// once and cannot distinguish a correct fan from a wrong one. This test's
+// clip produces exactly 4 vertices instead -- P0,P1 both survive unclipped,
+// P2 is the ONLY vertex clipped away, replaced by two crossing points -- so
+// the fan loop runs TWICE, over (P0,P1,X1) and (P0,X1,X2), matching the
+// "[P0, P1, X1, X2]" topology the review specifically named.
+TEST(RasterCpu, NearPlaneClipQuadCaseIsGeometricallyExact) {
+    constexpr uint32_t kDim = 400;
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    camera.fov_y_radians = 1.5707963267948966f;  // pi/2 = 90 degrees
+    camera.near_plane = 2.5f;
+
+    // All coordinates are exact in float32 (multiples of 0.25), so the
+    // oracle's double literals below are bit-identical to what
+    // mesh.positions (glm::vec3, float) actually carries once widened --
+    // no float/double mismatch to guard against here (see T7's kApexX
+    // comment above for why that matters).
+    const Cam3 p0{-1.0, -1.5, -3.0}, p1{1.5, -0.5, -3.0}, p2{0.25, 1.75, -1.0};
+    MeshData mesh;
+    mesh.positions = {glm::vec3(-1.0f, -1.5f, -3.0f), glm::vec3(1.5f, -0.5f, -3.0f), glm::vec3(0.25f, 1.75f, -1.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};  // front-facing: 2D cross of (p1-p0),(p2-p0) using x,y only is +6.875
+
+    RenderScene scene = make_scene(mesh);
+    const Material cyan{.base_color = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)};
+    scene.materials = {cyan};
+    const auto expected = expected_bgr(cyan);
+
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kDim, kDim);
+    render_or_fail(scene, camera, options, target);
+
+    // Independent oracle: clip against near (P2 is the only vertex outside)
+    // then far (a no-op here -- both surviving depths are well inside the
+    // default far_plane=1000), then project via the same formula
+    // production uses.
+    const double nearZ = -static_cast<double>(camera.near_plane);
+    const double farZ = -static_cast<double>(camera.far_plane);
+    std::vector<Cam3> poly = clip_polygon_oracle({p0, p1, p2}, nearZ, /*keepLessEq=*/true);
+    poly = clip_polygon_oracle(poly, farZ, /*keepLessEq=*/false);
+    ASSERT_EQ(poly.size(), 4u) << "sanity: this geometry must produce the 4-vertex case under test";
+
+    const double fov = static_cast<double>(camera.fov_y_radians);
+    std::vector<Px> screenPoly;
+    for (const Cam3& v : poly) {
+        screenPoly.push_back(project_camera_space_oracle(v, fov, kDim, kDim));
+    }
+
+    size_t expected_count = 0;
+    for (uint32_t y = 0; y < kDim; ++y) {
+        for (uint32_t x = 0; x < kDim; ++x) {
+            const bool want = fan_covers_pixel(screenPoly, Px{x + 0.5, y + 0.5});
+            const size_t idx = (static_cast<size_t>(y) * kDim + x) * 4;
+            const bool got = storage[idx] == expected[0] && storage[idx + 1] == expected[1] &&
+                              storage[idx + 2] == expected[2];
+            ASSERT_EQ(got, want) << "pixel (" << x << "," << y
+                                  << ") disagrees with the analytically clipped 4-vertex polygon's fan "
+                                     "triangulation (P0,P1,X1) + (P0,X1,X2)";
+            if (want) {
+                ++expected_count;
+            }
+        }
+    }
+    EXPECT_GT(expected_count, 0u) << "the analytic reference polygon itself must be non-degenerate";
+}
+
+// R5b review round 1, IMPORTANT 1: the 5-vertex case (a triangle straddling
+// BOTH the near and the far plane at once) was exercised by no test at all.
+// P0 is too close (outside near), P1 is too far (outside far), P2 is inside
+// both -- clipping near-then-far leaves 5 vertices and a 3-triangle fan.
+TEST(RasterCpu, BothPlanesClipFiveVertexCaseIsGeometricallyExact) {
+    constexpr uint32_t kDim = 400;
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    camera.fov_y_radians = 1.5707963267948966f;  // pi/2 = 90 degrees
+    camera.near_plane = 1.0f;
+    camera.far_plane = 10.0f;
+
+    // All coordinates are exact in float32 (multiples of 0.25) -- same
+    // float/double-consistency reasoning as the quad-case test above.
+    const Cam3 p0{0.5, -1.25, -0.5}, p1{2.75, 0.5, -15.0}, p2{-1.25, 1.5, -5.0};
+    MeshData mesh;
+    mesh.positions = {glm::vec3(0.5f, -1.25f, -0.5f), glm::vec3(2.75f, 0.5f, -15.0f), glm::vec3(-1.25f, 1.5f, -5.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};  // front-facing: 2D cross of (p1-p0),(p2-p0) using x,y only is +9.25
+
+    RenderScene scene = make_scene(mesh);
+    const Material magenta{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f)};
+    scene.materials = {magenta};
+    const auto expected = expected_bgr(magenta);
+
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kDim, kDim);
+    render_or_fail(scene, camera, options, target);
+
+    const double nearZ = -static_cast<double>(camera.near_plane);
+    const double farZ = -static_cast<double>(camera.far_plane);
+    std::vector<Cam3> poly = clip_polygon_oracle({p0, p1, p2}, nearZ, /*keepLessEq=*/true);
+    poly = clip_polygon_oracle(poly, farZ, /*keepLessEq=*/false);
+    ASSERT_EQ(poly.size(), 5u) << "sanity: this geometry must produce the 5-vertex case under test";
+
+    const double fov = static_cast<double>(camera.fov_y_radians);
+    std::vector<Px> screenPoly;
+    for (const Cam3& v : poly) {
+        screenPoly.push_back(project_camera_space_oracle(v, fov, kDim, kDim));
+    }
+
+    size_t expected_count = 0;
+    for (uint32_t y = 0; y < kDim; ++y) {
+        for (uint32_t x = 0; x < kDim; ++x) {
+            const bool want = fan_covers_pixel(screenPoly, Px{x + 0.5, y + 0.5});
+            const size_t idx = (static_cast<size_t>(y) * kDim + x) * 4;
+            const bool got = storage[idx] == expected[0] && storage[idx + 1] == expected[1] &&
+                              storage[idx + 2] == expected[2];
+            ASSERT_EQ(got, want) << "pixel (" << x << "," << y
+                                  << ") disagrees with the analytically clipped 5-vertex polygon's fan "
+                                     "triangulation";
+            if (want) {
+                ++expected_count;
+            }
+        }
+    }
+    EXPECT_GT(expected_count, 0u) << "the analytic reference polygon itself must be non-degenerate";
 }

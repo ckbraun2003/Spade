@@ -1,6 +1,7 @@
 #include "render/raster_cpu.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -146,49 +147,94 @@ struct ClipVertex {
     Vec3 pos;
 };
 
-// Sutherland-Hodgman: clips the convex polygon `poly` (>= 3 vertices, or
-// empty) against the half-space `keepLessEq ? z <= planeZ : z >= planeZ`,
-// returning the result (possibly empty; at most poly.size()+1 vertices).
-// Reuses clipSegmentToHalfSpace's own interpolation formula --
+// Fixed capacity: a triangle clipped against one plane yields at most 4
+// vertices, against both planes at most 5 (SR-15's own bound) -- 8 is ample
+// headroom, chosen once and not revisited, rather than sized exactly to
+// that proven bound.
+constexpr size_t kMaxClipVertices = 8;
+using ClipPoly = std::array<ClipVertex, kMaxClipVertices>;
+
+// Sutherland-Hodgman: clips the convex polygon `in[0..inCount)` against the
+// half-space `keepLessEq ? z <= planeZ : z >= planeZ`, writing the result
+// into `out` (from index 0) and returning its vertex count (0 if the whole
+// polygon fell outside). `in` and `out` must be different buffers -- this
+// is one step of a ping-pong, never in-place. Reuses
+// clipSegmentToHalfSpace's own interpolation formula --
 // t = (planeZ - cur.z) / (next.z - cur.z), cur + (next - cur) * t -- rather
 // than a second one (SR-15's "What to build").
-std::vector<ClipVertex> clipPolygonToHalfSpace(const std::vector<ClipVertex>& poly, double planeZ, bool keepLessEq) {
-    if (poly.empty()) {
-        return {};
+//
+// Allocation-free (IMPORTANT 2, R5b review round 1): this used to return a
+// freshly heap-allocated std::vector per call -- two mallocs per triangle,
+// including on the overwhelmingly common wholly-inside path, at
+// kTessellationDefaults' 5k-20k triangles/frame that is 15k-60k malloc/free
+// pairs a frame for no reason (clipTriangleNearFar's own fast path below
+// skips this function entirely on that path now, but this function stays
+// allocation-free regardless, for the straddling case that does reach it).
+size_t clipPolygonToHalfSpace(const ClipPoly& in, size_t inCount, double planeZ, bool keepLessEq, ClipPoly& out) {
+    if (inCount == 0) {
+        return 0;
     }
     const auto inside = [&](const Vec3& p) { return keepLessEq ? (p.z <= planeZ) : (p.z >= planeZ); };
-    std::vector<ClipVertex> out;
-    out.reserve(poly.size() + 1);
-    for (size_t i = 0; i < poly.size(); ++i) {
-        const ClipVertex& cur = poly[i];
-        const ClipVertex& next = poly[(i + 1) % poly.size()];
+    size_t outCount = 0;
+    for (size_t i = 0; i < inCount; ++i) {
+        const ClipVertex& cur = in[i];
+        const ClipVertex& next = in[(i + 1) % inCount];
         const bool curIn = inside(cur.pos);
         const bool nextIn = inside(next.pos);
         if (curIn) {
-            out.push_back(cur);
+            out[outCount++] = cur;
         }
         if (curIn != nextIn) {
             const double t = (planeZ - cur.pos.z) / (next.pos.z - cur.pos.z);
-            out.push_back(ClipVertex{cur.pos + (next.pos - cur.pos) * t});
+            out[outCount++] = ClipVertex{cur.pos + (next.pos - cur.pos) * t};
         }
     }
-    return out;
+    return outCount;
 }
 
 // Exact near/far clip of a camera-space triangle (SR-15), replacing the
 // whole-triangle near/far rejection draw_world_triangle and
-// draw_mesh_triangle_shaded used before this task. A triangle clipped
-// against one plane yields a convex polygon of at most 4 vertices; against
-// both, at most 5. Returns an empty vector if the triangle is entirely
-// outside either half-space (the trivial-reject case still applies, it is
-// simply now a side effect of the general clip rather than a separate
-// up-front check). Order matters: near first, then far, matching
-// draw_world_segment's own two clipSegmentToHalfSpace calls.
-std::vector<ClipVertex> clipTriangleNearFar(const ViewContext& vc, const Vec3& ac, const Vec3& bc, const Vec3& cc) {
-    std::vector<ClipVertex> poly{ClipVertex{ac}, ClipVertex{bc}, ClipVertex{cc}};
-    poly = clipPolygonToHalfSpace(poly, -vc.nearP, /*keepLessEq=*/true);
-    poly = clipPolygonToHalfSpace(poly, -vc.farP, /*keepLessEq=*/false);
-    return poly;
+// draw_mesh_triangle_shaded used before this task. Writes the clipped
+// polygon into `outPoly` and returns its vertex count (0 if the triangle is
+// entirely outside either half-space -- the trivial-reject case still
+// applies on that path, it is simply now a side effect of the general clip
+// rather than a separate up-front check).
+//
+// Takes ClipVertex, not bare Vec3, at this boundary too (not just inside
+// clipPolygonToHalfSpace) so Task R6's normal field is a pure addition when
+// it lands here -- no signature change needed at either level.
+//
+// Clip order is FIXED (near, then far) for reproducibility and to read the
+// same way as draw_world_segment's own two clipSegmentToHalfSpace calls --
+// not because the two half-space intersections are order-dependent. They
+// are not: intersecting two half-spaces is commutative, and far-then-near
+// was verified to produce an identical covered pixel set on every geometry
+// this file's tests exercise (order is observable only at the last ULP, on
+// an edge that crosses both planes, as pure floating-point evaluation-order
+// noise -- never as a different real-valued clip result).
+size_t clipTriangleNearFar(const ViewContext& vc, const ClipVertex& a, const ClipVertex& b, const ClipVertex& c,
+                           ClipPoly& outPoly) {
+    // Fast path (IMPORTANT 2): all three vertices already inside both
+    // half-spaces -- the overwhelmingly common case at kTessellationDefaults
+    // triangle counts. Skips the Sutherland-Hodgman machinery (and its two
+    // ClipPoly buffer copies) entirely and hands the original triangle
+    // through unchanged -- byte-identical to running it through the general
+    // path below (nothing would cross either plane, so that path would
+    // produce these same three vertices in this same order too) and
+    // byte-identical to this function's own pre-clipping behavior (the
+    // same three points reaching the same three projectCameraSpace calls
+    // downstream).
+    const auto inRange = [&](const Vec3& p) { return p.z <= -vc.nearP && p.z >= -vc.farP; };
+    if (inRange(a.pos) && inRange(b.pos) && inRange(c.pos)) {
+        outPoly[0] = a;
+        outPoly[1] = b;
+        outPoly[2] = c;
+        return 3;
+    }
+    ClipPoly triangle{a, b, c};
+    ClipPoly afterNear;
+    const size_t nearCount = clipPolygonToHalfSpace(triangle, 3, -vc.nearP, /*keepLessEq=*/true, afterNear);
+    return clipPolygonToHalfSpace(afterNear, nearCount, -vc.farP, /*keepLessEq=*/false, outPoly);
 }
 
 // MN-14: the fixed opaque-byte value every BGRX8 pixel's 4th byte carries,
@@ -372,13 +418,20 @@ void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, 
 // guaranteed fact.
 void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                           uint8_t r, uint8_t g, uint8_t bC) {
-    const Vec3 ac = worldToCameraSpace(vc, a);
-    const Vec3 bc = worldToCameraSpace(vc, b);
-    const Vec3 cc = worldToCameraSpace(vc, c);
-    const std::vector<ClipVertex> poly = clipTriangleNearFar(vc, ac, bc, cc);
-    for (size_t i = 1; i + 1 < poly.size(); ++i) {
-        rasterizeTriangleFlat(fb, projectCameraSpace(vc, poly[0].pos), projectCameraSpace(vc, poly[i].pos),
-                               projectCameraSpace(vc, poly[i + 1].pos), r, g, bC);
+    const ClipVertex ac{worldToCameraSpace(vc, a)};
+    const ClipVertex bc{worldToCameraSpace(vc, b)};
+    const ClipVertex cc{worldToCameraSpace(vc, c)};
+    ClipPoly poly;
+    const size_t count = clipTriangleNearFar(vc, ac, bc, cc, poly);
+    if (count < 3) {
+        return;
+    }
+    // poly[0] is shared by every fan triangle -- project it once rather than
+    // once per iteration (review nit, R5b round 1).
+    const ScreenPoint s0 = projectCameraSpace(vc, poly[0].pos);
+    for (size_t i = 1; i + 1 < count; ++i) {
+        rasterizeTriangleFlat(fb, s0, projectCameraSpace(vc, poly[i].pos), projectCameraSpace(vc, poly[i + 1].pos), r,
+                               g, bC);
     }
 }
 
@@ -411,12 +464,18 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
 // test that pins this sign, independent of this comment's algebra).
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 uint8_t r, uint8_t g, uint8_t bC) {
-    const Vec3 ac = worldToCameraSpace(vc, a);
-    const Vec3 bc = worldToCameraSpace(vc, b);
-    const Vec3 cc = worldToCameraSpace(vc, c);
-    const std::vector<ClipVertex> poly = clipTriangleNearFar(vc, ac, bc, cc);
-    for (size_t i = 1; i + 1 < poly.size(); ++i) {
-        const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
+    const ClipVertex ac{worldToCameraSpace(vc, a)};
+    const ClipVertex bc{worldToCameraSpace(vc, b)};
+    const ClipVertex cc{worldToCameraSpace(vc, c)};
+    ClipPoly poly;
+    const size_t count = clipTriangleNearFar(vc, ac, bc, cc, poly);
+    if (count < 3) {
+        return;
+    }
+    // poly[0] is shared by every fan triangle -- project it once rather than
+    // once per iteration (review nit, R5b round 1).
+    const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
+    for (size_t i = 1; i + 1 < count; ++i) {
         const ScreenPoint sb = projectCameraSpace(vc, poly[i].pos);
         const ScreenPoint sc = projectCameraSpace(vc, poly[i + 1].pos);
         if (edgeFn(sa, sb, sc) > 0.0) {
