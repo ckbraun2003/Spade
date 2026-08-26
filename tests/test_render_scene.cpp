@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/epsilon.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
@@ -214,6 +215,64 @@ TEST(SceneFromWorld, MixedUnionAndCsgRootProgramPreservesAuthoringOrder) {
         << "expected the sphere (item 0, authored first) before the CSG root (item 1, authored second)";
 }
 
+// ---------------------------------------------------------------------------
+// node_materials wiring into DrawItem::material_override (S7a Task R6, W1's
+// PA-2 field, world/sdf.hpp) -- for BOTH populations split_program() emits:
+// a union-primitive leaf reads its OWN node's entry; a CSG root reads the
+// OPERATOR node's own entry (WorldBuilder::material_for_last_node()'s target
+// when called right after the operator adder), never a leaf's.
+// ---------------------------------------------------------------------------
+
+TEST(SceneFromWorld, UnionPrimitiveMaterialOverrideComesFromItsOwnNodeMaterialsEntry) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"})
+        .material(spade::MaterialDesc{.name = "accent"})
+        .sphere(1.0f)
+        .material_for_last_node(1);
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics[0].material_override, 1u);
+}
+
+TEST(SceneFromWorld, NodeMaterialsEmptyMeansEveryStaticItemUsesNoOverride) {
+    // No .material_for_last_node() call anywhere -- node_materials stays
+    // empty (sdf.hpp's own "empty means every node uses materials[0]"), so
+    // every static item -- both a union primitive and a CSG root -- must
+    // carry kNoMaterial, not some other stale or defaulted index.
+    WorldBuilder b = base_builder();
+    b.sphere(1.0f).box(glm::vec3(2.0f)).box(glm::vec3(1.2f)).subtract().union_();
+    const WorldDesc world = build_or_fail(b);
+    ASSERT_TRUE(world.sdf.node_materials.empty());
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 2u);
+    EXPECT_EQ(scene.statics[0].material_override, spade::render::kNoMaterial);
+    EXPECT_EQ(scene.statics[1].material_override, spade::render::kNoMaterial);
+}
+
+TEST(SceneFromWorld, CsgRootMaterialOverrideComesFromTheOperatorNodesOwnEntryNotALeafs) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"})
+        .material(spade::MaterialDesc{.name = "leaf_only"})
+        .material(spade::MaterialDesc{.name = "root_only"})
+        .box(glm::vec3(2.0f))
+        .material_for_last_node(1)  // one of the two leaves under the subtract
+        .box(glm::vec3(1.2f))
+        .subtract()
+        .material_for_last_node(2);  // the subtract node itself -- the CSG root
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 1u) << "box, box, subtract is one CSG root, not two static items";
+    EXPECT_EQ(scene.statics[0].material_override, 2u)
+        << "the CSG root's own item must use the SUBTRACT node's node_materials entry, not either leaf's";
+}
+
 // S7a Task R5 fix wave (review IMPORTANT #3): every OTHER test in this file
 // authors its own WorldBuilder fixture with default (identity) or trivial
 // poses -- the one real world file this test suite loads anywhere
@@ -241,11 +300,21 @@ TEST(SceneFromWorld, RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToE
 
     // split_program()'s own dedicated test (test_render_csg.cpp) proves
     // this program decomposes into csg_roots={8}, union_primitive_nodes=
-    // {9, 10} -- 3 static items total, in that ascending-node-index order:
-    // the CSG root (node 8, a smooth_union of an intersect-clipped box with
-    // a subtract), then the torus (node 9), then the heightfield (node 10).
-    ASSERT_EQ(scene.statics.size(), 3u);
-    for (const DrawItem& item : scene.statics) {
+    // {9, 10} -- 3 SDF-derived static items, in that ascending-node-index
+    // order: the CSG root (node 8, a smooth_union of an intersect-clipped
+    // box with a subtract), then the torus (node 9), then the heightfield
+    // (node 10). Node 0's plane sits INSIDE that CSG subtree (it feeds
+    // node 4's intersect, not a plain union all the way to the program's
+    // root) and so is correctly absorbed into item 0's mesh rather than
+    // becoming its own item or a standalone ground-plane candidate (SR-17:
+    // "never one that is a member of a CSG subtree").
+    //
+    // scene_from_world() then appends TWO more static items (S7a Task R6,
+    // Step 3) -- one per this file's own `props:` list (tower, then flag,
+    // in authoring order) -- for 5 total.
+    ASSERT_EQ(scene.statics.size(), 5u);
+    for (size_t i = 0; i < 3; ++i) {
+        const DrawItem& item = scene.statics[i];
         ASSERT_LT(item.mesh_index, scene.meshes.size());
         EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[item.mesh_index]));
     }
@@ -258,6 +327,16 @@ TEST(SceneFromWorld, RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToE
     EXPECT_GT(triangle_count, 200u)
         << "the CSG root's mesh looks collapsed -- got only " << triangle_count
         << " triangles; a resolution-starved AABB (review IMPORTANT #1) would look exactly like this";
+
+    // Items 3/4 are the two props (tower, material 1; flag, material 2) --
+    // this call passes no resolved_meshes, so neither mesh_ref ("mesh:props/
+    // tower"/"mesh:props/flag") resolves to anything, and both items must
+    // carry kNoMesh (draw_mesh_item's own existing "nothing to draw" skip)
+    // rather than an out-of-range or aliased mesh_index.
+    EXPECT_EQ(scene.statics[3].mesh_index, spade::render::kNoMesh);
+    EXPECT_EQ(scene.statics[3].material_override, 1u);
+    EXPECT_EQ(scene.statics[4].mesh_index, spade::render::kNoMesh);
+    EXPECT_EQ(scene.statics[4].material_override, 2u);
 }
 
 TEST(SceneFromWorld, StaticTransformIsInverseOfStoredNodeTransform) {
@@ -309,13 +388,64 @@ TEST(SceneFromWorld, MaterialsHasDefaultAtIndexZero) {
 
     const RenderScene scene = scene_or_fail(world);
 
+    // world.materials[0] is WorldBuilder::build()'s own default MaterialDesc{}
+    // (builder.hpp) when a test never calls .material() -- base_color
+    // (1,1,1,1), lambert shading. NOT render::Material{}'s own struct-literal
+    // default (scene.hpp's (0.72,0.72,0.74,1.0) grey): scene_from_world() now
+    // CONSUMES world.materials (S7a Task R6) instead of hardcoding its own
+    // default, so this test's expectation moved from this module's default to
+    // the WORLD's.
     ASSERT_GE(scene.materials.size(), 1u);
     const Material& def = scene.materials[0];
-    EXPECT_FLOAT_EQ(def.base_color.x, 0.72f);
-    EXPECT_FLOAT_EQ(def.base_color.y, 0.72f);
-    EXPECT_FLOAT_EQ(def.base_color.z, 0.74f);
+    EXPECT_FLOAT_EQ(def.base_color.x, 1.0f);
+    EXPECT_FLOAT_EQ(def.base_color.y, 1.0f);
+    EXPECT_FLOAT_EQ(def.base_color.z, 1.0f);
     EXPECT_FLOAT_EQ(def.base_color.w, 1.0f);
     EXPECT_EQ(def.shading, 0u);
+}
+
+TEST(SceneFromWorld, MaterialsMirrorWorldMaterialsFieldForField) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {1.0f, 0.0f, 0.0f, 1.0f},
+                                    .shading = spade::MaterialShading::lambert})
+        .material(spade::MaterialDesc{.name = "glow", .base_color = {0.1f, 0.9f, 0.2f, 0.5f},
+                                       .shading = spade::MaterialShading::emissive})
+        .material(spade::MaterialDesc{.name = "decal", .base_color = {0.5f, 0.5f, 0.5f, 1.0f},
+                                       .shading = spade::MaterialShading::unlit});
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.materials.size(), 3u);
+    for (size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(scene.materials[i].base_color, world.materials[i].base_color) << "material " << i;
+        EXPECT_EQ(scene.materials[i].shading, static_cast<uint32_t>(world.materials[i].shading)) << "material " << i;
+    }
+}
+
+TEST(SceneFromWorld, LightingMirrorsWorldLightingAndNormalizesSunDirection) {
+    WorldBuilder b = base_builder();
+    // Not pre-normalized (length 5) -- LightingDesc's own doc comment says
+    // this is allowed, and scene_from_world() (not the caller) normalizes it.
+    b.lighting(spade::LightingDesc{
+        .sun_direction = {0.0f, 5.0f, 0.0f},
+        .sun_color = {0.5f, 0.6f, 0.7f},
+        .sun_intensity = 2.5f,
+        .ambient_color = {0.11f, 0.12f, 0.13f},
+        .sky_zenith = {0.2f, 0.3f, 0.4f},
+        .sky_horizon = {0.6f, 0.7f, 0.8f},
+    });
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    EXPECT_EQ(scene.lighting.sun_direction, glm::vec3(0.0f, 1.0f, 0.0f))
+        << "sun_direction must come out unit-length even though the world file's copy is not";
+    EXPECT_EQ(scene.lighting.sun_color, world.lighting.sun_color);
+    EXPECT_FLOAT_EQ(scene.lighting.sun_intensity, world.lighting.sun_intensity);
+    EXPECT_EQ(scene.lighting.ambient_color, world.lighting.ambient_color);
+    EXPECT_EQ(scene.lighting.sky_zenith, world.lighting.sky_zenith);
+    EXPECT_EQ(scene.lighting.sky_horizon, world.lighting.sky_horizon);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +510,61 @@ TEST(SceneFromWorld, ResolvedMeshesOccupyTheFrontOfTheMeshArrayInOrder) {
         << "static draw items must not alias a resolved-mesh slot";
     EXPECT_TRUE(mesh_has_real_geometry(scene.meshes[scene.statics[0].mesh_index]))
         << "R2's tessellate_primitive() must have filled real geometry into the SDF-node slot";
+}
+
+// ---------------------------------------------------------------------------
+// Props (schema v2, S7a Task R6 Step 3): one static DrawItem per world.props
+// entry, using the caller-resolved mesh list the same way a NamedMesh's own
+// doc comment describes.
+// ---------------------------------------------------------------------------
+
+TEST(SceneFromWorldProps, ResolvedPropGetsItsMeshIndexPoseAndMaterial) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"}).material(spade::MaterialDesc{.name = "banner"});
+    const SdfPose pose{.position = {3.0f, 0.0f, -2.0f}, .scale = 2.0f};
+    b.prop("mesh:props/banner", pose, 1);
+    const WorldDesc world = build_or_fail(b);
+
+    std::vector<NamedMesh> resolved(1);
+    resolved[0].ref = "mesh:props/banner";
+    resolved[0].mesh.positions = {glm::vec3(0.0f)};
+
+    const RenderScene scene = scene_or_fail(world, resolved);
+
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics[0].mesh_index, 0u) << "must resolve to the matching NamedMesh's slot";
+    EXPECT_EQ(scene.statics[0].material_override, 1u);
+    EXPECT_TRUE(mat4_near(scene.statics[0].local_to_world, forward_transform(pose), kTol));
+}
+
+TEST(SceneFromWorldProps, UnresolvedPropMeshRefGetsNoMeshRatherThanAnErrorOrWrongSlot) {
+    WorldBuilder b = base_builder();
+    b.prop("mesh:props/never_resolved", SdfPose{}, 0);
+    const WorldDesc world = build_or_fail(b);
+
+    // Deliberately empty -- the caller never resolved this prop's reference.
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics[0].mesh_index, spade::render::kNoMesh);
+}
+
+TEST(SceneFromWorldProps, MultiplePropsAppendAfterSdfStaticsInAuthoringOrder) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"})
+        .material(spade::MaterialDesc{.name = "a"})
+        .material(spade::MaterialDesc{.name = "b"});
+    b.sphere(1.0f);
+    b.prop("mesh:first", SdfPose{}, 1).prop("mesh:second", SdfPose{}, 2);
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 3u);
+    // Item 0 is the sphere (the only SDF-derived static); items 1/2 are the
+    // props, in authoring order, both after every SDF-derived item.
+    EXPECT_EQ(scene.statics[1].material_override, 1u);
+    EXPECT_EQ(scene.statics[2].material_override, 2u);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,4 +716,90 @@ TEST(SceneFromWorldGround, NoPlaneMeansNoGround) {
 
     EXPECT_FALSE(scene.has_ground);
     EXPECT_FLOAT_EQ(scene.ground_y, 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// scene.ground_planes (S7a Task R6, ruling SR-17) -- a DIFFERENT, newer, more
+// general mechanism than has_ground/ground_y above (that pair is the OLDER
+// overlay grid's own identity-transform/+Y-only heuristic and is untouched
+// by this task): one entry per STANDALONE plane primitive (split_program()'s
+// own union-primitive-leaf classification), in WORLD space, general for any
+// transform -- "no Y-up special case" (SR-17's own ruling text).
+// ---------------------------------------------------------------------------
+
+TEST(SceneFromWorldGroundPlanes, IdentityPlaneBecomesOneCandidateWithMaterialZero) {
+    WorldBuilder b = base_builder();
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 3.5f);  // identity pose
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+    EXPECT_TRUE(glm::all(glm::epsilonEqual(scene.ground_planes[0].normal, glm::vec3(0.0f, 1.0f, 0.0f), kTol)));
+    EXPECT_NEAR(scene.ground_planes[0].offset, 3.5f, kTol);
+    EXPECT_EQ(scene.ground_planes[0].material, 0u);
+}
+
+TEST(SceneFromWorldGroundPlanes, NodeMaterialsEntrySetsTheGroundPlanesMaterial) {
+    WorldBuilder b = base_builder();
+    b.material(spade::MaterialDesc{.name = "default"}).material(spade::MaterialDesc{.name = "asphalt"});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(1);
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+    EXPECT_EQ(scene.ground_planes[0].material, 1u);
+    // The plane's own static DrawItem must resolve identically -- the two
+    // paths (tessellated grid, analytic ground) shade with the SAME material
+    // (task-R6-brief.md's own "the seam is load-bearing" requirement).
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics[0].material_override, 1u);
+}
+
+TEST(SceneFromWorldGroundPlanes, PlaneInsideACsgSubtreeIsNeverAGroundPlaneCandidate) {
+    // box, plane, subtract -- the plane is a CUTTING half-space, not a floor
+    // (SR-17's own "a plane inside a subtract is a cutting half-space, not a
+    // floor" text): it must never appear in ground_planes, even though it is
+    // still a `prim: plane` node in the program.
+    WorldBuilder b = base_builder();
+    b.box(glm::vec3(2.0f)).plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).subtract();
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.statics.size(), 1u) << "sanity: this must be exactly one CSG root, not two static items";
+    EXPECT_TRUE(scene.ground_planes.empty());
+}
+
+TEST(SceneFromWorldGroundPlanes, PosedPlaneUsesTheGeneralTransformNotAYUpSpecialCase) {
+    // 90 degrees about Z (half-angle 45 deg), spelled as a literal float32
+    // quaternion rather than glm::angleAxis -- this file loads
+    // maximal.world.yaml elsewhere (RealWorldFileWithNonIdentityPosesWires-
+    // GeometryThroughEndToEnd's own comment), which pulls the whole
+    // translation unit into SR-14's libm-transcendental scan; 0x1.6a09e6p-1f
+    // is the nearest float32 to cos(45deg) = sin(45deg) = sqrt(2)/2, the same
+    // literal this file's own StaticTransformIsInverseOfStoredNodeTransform
+    // test already uses for a different axis.
+    //
+    // Rotating a LOCAL +Y-normal, offset-2 plane by +90 deg about +Z sends
+    // the normal to WORLD -X (x' = x*cos - y*sin = -1, y' = x*sin + y*cos = 0
+    // at exactly 90 deg) and the local point (0,2,0) that sits on the plane
+    // to WORLD (-2,0,0) before translation, so the expected world-space
+    // offset -- dot(p_world, n_world) -- is 0 once the +2 X-translation below
+    // is folded in: p_world = (-2,0,0) + (2,3,-1) = (0,3,-1),
+    // dot((0,3,-1), (-1,0,0)) = 0.
+    const glm::quat rot(0x1.6a09e6p-1f, 0.0f, 0.0f, 0x1.6a09e6p-1f);
+    WorldBuilder b = base_builder();
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 2.0f,
+            SdfPose{.position = {2.0f, 3.0f, -1.0f}, .rotation = rot});
+    const WorldDesc world = build_or_fail(b);
+
+    const RenderScene scene = scene_or_fail(world);
+
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+    EXPECT_TRUE(glm::all(glm::epsilonEqual(scene.ground_planes[0].normal, glm::vec3(-1.0f, 0.0f, 0.0f), kTol)))
+        << "got (" << scene.ground_planes[0].normal.x << ", " << scene.ground_planes[0].normal.y << ", "
+        << scene.ground_planes[0].normal.z << ")";
+    EXPECT_NEAR(scene.ground_planes[0].offset, 0.0f, kTol);
 }

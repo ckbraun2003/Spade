@@ -234,19 +234,26 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
     return camera;
 }
 
-// The background pixel (BGR only -- position (0,0), a corner render()
-// unconditionally clears and no test scene below ever draws over) of an
-// otherwise-empty scene. Used as a live reference rather than hard-coding
-// the wireframe rasterizer's background constant a second time in this file.
-[[nodiscard]] std::array<uint8_t, 3> background_pixel(uint32_t width, uint32_t height) {
-    const RenderScene scene;  // no meshes, no statics/dynamics, no spawns
-    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 1000.0f, 1000.0f));  // looks at nothing
+// A full reference render of an otherwise-empty scene (no meshes, no
+// statics/dynamics/ground_planes, no overlays) at the given camera/size --
+// used to tell "matches background" from "differs from background" pixel by
+// pixel. S7a Task R6 replaced render()'s old flat background clear with a
+// vertical sky gradient (+ an analytic ground for a scene that has one,
+// never true of the default-constructed RenderScene this function renders),
+// so "the background" is no longer one flat colour a single BGR triple can
+// stand in for -- it varies by screen row -- and a comparison against only
+// row 0's colour would misclassify every OTHER row's legitimate sky-gradient
+// pixel as "something got drawn". Comparing against this full reference
+// buffer instead stays correct under a non-flat background exactly the way
+// a single reference colour no longer can.
+[[nodiscard]] std::vector<uint8_t> render_background_only(const Camera& camera, uint32_t width, uint32_t height) {
+    const RenderScene scene;  // no meshes, no statics/dynamics, no ground_planes
     RenderOptions options;
     options.overlays = false;
     std::vector<uint8_t> storage;
     RenderTarget target = make_target(storage, width, height);
     render_or_fail(scene, camera, options, target);
-    return {storage[0], storage[1], storage[2]};
+    return storage;
 }
 
 [[nodiscard]] bool region_contains_bgr(const std::vector<uint8_t>& storage, uint32_t width, uint32_t x0, uint32_t x1,
@@ -262,16 +269,19 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
     return false;
 }
 
-// Stronger than region_contains_bgr: EVERY pixel in the region must match --
-// needed where "never drew anything at all" (not merely "never drew some
+// Stronger than region_contains_bgr: EVERY pixel in the region must match the
+// SAME-SIZED reference buffer (render_background_only(), above) -- needed
+// where "never drew anything beyond background" (not merely "never drew some
 // OTHER specific colour") is the claim, e.g. a malformed submesh that must
 // be skipped entirely rather than merely mis-coloured.
-[[nodiscard]] bool region_is_entirely_bgr(const std::vector<uint8_t>& storage, uint32_t width, uint32_t x0,
-                                           uint32_t x1, uint32_t y0, uint32_t y1, std::array<uint8_t, 3> bgr) {
+[[nodiscard]] bool region_is_entirely_reference(const std::vector<uint8_t>& storage,
+                                                 const std::vector<uint8_t>& reference, uint32_t width, uint32_t x0,
+                                                 uint32_t x1, uint32_t y0, uint32_t y1) {
     for (uint32_t y = y0; y < y1; ++y) {
         for (uint32_t x = x0; x < x1; ++x) {
             const size_t idx = (static_cast<size_t>(y) * width + x) * 4;
-            if (storage[idx] != bgr[0] || storage[idx + 1] != bgr[1] || storage[idx + 2] != bgr[2]) {
+            if (storage[idx] != reference[idx] || storage[idx + 1] != reference[idx + 1] ||
+                storage[idx + 2] != reference[idx + 2]) {
                 return false;
             }
         }
@@ -279,10 +289,12 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
     return true;
 }
 
-[[nodiscard]] size_t count_non_matching_bgr(const std::vector<uint8_t>& storage, std::array<uint8_t, 3> bgr) {
+[[nodiscard]] size_t count_pixels_differing_from_reference(const std::vector<uint8_t>& storage,
+                                                            const std::vector<uint8_t>& reference) {
     size_t count = 0;
     for (size_t idx = 0; idx + 4 <= storage.size(); idx += 4) {
-        if (storage[idx] != bgr[0] || storage[idx + 1] != bgr[1] || storage[idx + 2] != bgr[2]) {
+        if (storage[idx] != reference[idx] || storage[idx + 1] != reference[idx + 1] ||
+            storage[idx + 2] != reference[idx + 2]) {
             ++count;
         }
     }
@@ -426,8 +438,9 @@ TEST(Render, WritesEveryPixelOpaqueBgrx8AndShowsGeometry) {
         ASSERT_EQ(storage[i], 0xFFu) << "pixel " << (i / 4) << "'s X byte is not opaque (MN-14)";
     }
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u) << "the box should be visible against the background";
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_pixels_differing_from_reference(storage, bg), 0u)
+        << "the box should be visible against the background";
 }
 
 TEST(Render, CallingTwiceProducesByteIdenticalBuffers) {
@@ -485,7 +498,7 @@ TEST(Render, PurityConstSceneUnchangedAndOutputDeterministic) {
 
 TEST(RasterCpu, ShadedModeRendersOutwardFacingTriangleButCullsReversedOne) {
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
     RenderOptions shaded;
     shaded.mode = DrawMode::shaded;
     shaded.overlays = false;
@@ -495,7 +508,7 @@ TEST(RasterCpu, ShadedModeRendersOutwardFacingTriangleButCullsReversedOne) {
         std::vector<uint8_t> storage;
         RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
         render_or_fail(scene, camera, shaded, target);
-        EXPECT_GT(count_non_matching_bgr(storage, bg), 0u)
+        EXPECT_GT(count_pixels_differing_from_reference(storage, bg), 0u)
             << "a correctly-wound, outward-facing triangle must be visible in shaded mode";
     }
     {
@@ -503,7 +516,7 @@ TEST(RasterCpu, ShadedModeRendersOutwardFacingTriangleButCullsReversedOne) {
         std::vector<uint8_t> storage;
         RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
         render_or_fail(scene, camera, shaded, target);
-        EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+        EXPECT_EQ(count_pixels_differing_from_reference(storage, bg), 0u)
             << "a reversed-winding triangle must be back-face culled in shaded mode (SR-13) -- "
                "this is Task R2's winding fix made observable at the pixel level";
     }
@@ -530,8 +543,8 @@ TEST(RasterCpu, WireframeModeDrawsBothWindingsIdentically) {
     // index order produces byte-identical output.
     EXPECT_EQ(storage_forward, storage_reversed);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_GT(count_non_matching_bgr(storage_forward, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_pixels_differing_from_reference(storage_forward, bg), 0u)
         << "wireframe mode must still draw something for a back-facing triangle";
 }
 
@@ -541,7 +554,11 @@ TEST(RasterCpu, WireframeModeDrawsBothWindingsIdentically) {
 
 TEST(RasterCpu, EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh) {
     RenderScene scene = make_scene(make_two_triangle_mesh());
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    // unlit (shading=1u): this test is about the SUBMESH CONTRACT (SR-11),
+    // not lighting -- an unlit material's base_color echoes through exactly,
+    // decoupled from S7a Task R6's Lambert N.L/ambient term, which expected_bgr()
+    // does not model.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
     scene.materials = {red};  // submesh_first_index/index_count/material all stay empty (SR-11)
 
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
@@ -565,8 +582,10 @@ TEST(RasterCpu, ExplicitSubmeshesEachKeepTheirOwnMaterial) {
     mesh.submesh_material = {0, 1};
 
     RenderScene scene = make_scene(std::move(mesh));
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
-    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)};
+    // unlit (shading=1u): SR-11 coverage, not lighting -- see the previous
+    // test's identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
+    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
     scene.materials = {red, blue};
 
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
@@ -596,9 +615,12 @@ TEST(RasterCpu, DrawItemMaterialOverrideReplacesEverySubmeshsMaterial) {
 
     RenderScene scene;
     scene.meshes.push_back(std::move(mesh));
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
-    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)};
-    const Material green{.base_color = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f)};
+    // unlit (shading=1u): this test is about material_override, not lighting
+    // -- see EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh's
+    // identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
+    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
+    const Material green{.base_color = glm::vec4(0.0f, 1.0f, 0.0f, 1.0f), .shading = 1u};
     scene.materials = {red, blue, green};
     scene.statics.push_back(
         DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f), .material_override = 2});
@@ -640,7 +662,10 @@ TEST(RasterCpu, MismatchedSubmeshArrayLengthsDoNotCrashAndDrawOnlyTheShortestPre
     mesh.submesh_material = {0, 1};
 
     RenderScene scene = make_scene(std::move(mesh));
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    // unlit (shading=1u): this test is about submesh-range validation, not
+    // lighting -- see EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh's
+    // identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
     scene.materials = {red};
 
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
@@ -655,8 +680,8 @@ TEST(RasterCpu, MismatchedSubmeshArrayLengthsDoNotCrashAndDrawOnlyTheShortestPre
     // The right triangle's submesh (index 1) is beyond the shortest array's
     // length -- submesh_count clamps to 1, so it must never be drawn at all,
     // in any colour.
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_TRUE(region_is_entirely_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight, bg))
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_TRUE(region_is_entirely_reference(storage, bg, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight))
         << "the right triangle's out-of-range submesh entry must never be drawn -- that half stays background";
 }
 
@@ -667,8 +692,11 @@ TEST(RasterCpu, SubmeshRangeExceedingTheIndexBufferIsSkippedNotTheWholeMesh) {
     mesh.submesh_material = {0, 1};
 
     RenderScene scene = make_scene(std::move(mesh));
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
-    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)};
+    // unlit (shading=1u): this test is about index-range validation, not
+    // lighting -- see EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh's
+    // identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
+    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
     scene.materials = {red, blue};
 
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
@@ -690,7 +718,10 @@ TEST(RasterCpu, IndexExceedingTheVertexBufferSkipsOnlyThatTriangle) {
     mesh.indices[3] = 9999;  // the right triangle's first index now points past positions.size()
 
     RenderScene scene = make_scene(std::move(mesh));
-    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f)};
+    // unlit (shading=1u): this test is about index-range validation, not
+    // lighting -- see EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh's
+    // identical note.
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
     scene.materials = {red};  // single implicit submesh (SR-11) -- both triangles would otherwise be red
 
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
@@ -702,11 +733,12 @@ TEST(RasterCpu, IndexExceedingTheVertexBufferSkipsOnlyThatTriangle) {
 
     EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, expected_bgr(red)))
         << "the left triangle's indices are untouched and should still draw";
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
     EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
                                       expected_bgr(red)))
         << "the right triangle has an out-of-range index and must be skipped, not drawn";
-    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u) << "the left triangle should still be visible somewhere";
+    EXPECT_GT(count_pixels_differing_from_reference(storage, bg), 0u)
+        << "the left triangle should still be visible somewhere";
 }
 
 TEST(RasterCpu, EmptyMaterialsListSkipsDrawingRatherThanReadingMaterialsZero) {
@@ -724,8 +756,8 @@ TEST(RasterCpu, EmptyMaterialsListSkipsDrawingRatherThanReadingMaterialsZero) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);  // must not index scene.materials[0] on an empty vector
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_pixels_differing_from_reference(storage, bg), 0u)
         << "with no material at all to shade with, the item must be skipped, not drawn with an untrusted fallback";
 }
 
@@ -1005,8 +1037,8 @@ TEST(RasterGolden, BoxShadedWithOverlaysMatchesCommittedManifest) {
     options.overlays = true;
 
     const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
-    const auto bg = background_pixel(kGoldenWidth, kGoldenHeight);
-    ASSERT_GT(count_non_matching_bgr(pixels, bg), 0u)
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
         << "sanity floor: this scene/camera must actually show something before its hash means anything";
     check_against_manifest("box_shaded_with_overlays", pixels);
 }
@@ -1019,8 +1051,8 @@ TEST(RasterGolden, SphereWireframeNoOverlaysMatchesCommittedManifest) {
     options.overlays = false;
 
     const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
-    const auto bg = background_pixel(kGoldenWidth, kGoldenHeight);
-    ASSERT_GT(count_non_matching_bgr(pixels, bg), 0u)
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
         << "sanity floor: this scene/camera must actually show something before its hash means anything";
     check_against_manifest("sphere_wireframe_no_overlays", pixels);
 }
@@ -1033,8 +1065,8 @@ TEST(RasterGolden, CylinderStaticAndDynamicBoxTopDownMatchesCommittedManifest) {
     options.overlays = true;
 
     const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
-    const auto bg = background_pixel(kGoldenWidth, kGoldenHeight);
-    ASSERT_GT(count_non_matching_bgr(pixels, bg), 0u)
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
         << "sanity floor: this scene/camera must actually show something before its hash means anything";
     check_against_manifest("cylinder_static_dynamic_box_top_down", pixels);
 }
@@ -1179,8 +1211,8 @@ TEST(RasterCpu, TriangleStraddlingNearPlaneRendersNonEmptyPixels) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_pixels_differing_from_reference(storage, bg), 0u)
         << "exact clipping must draw the surviving portion instead of discarding the whole triangle -- this "
            "rendered ZERO pixels under the pre-fix whole-triangle near/far rejection";
 }
@@ -1204,8 +1236,8 @@ TEST(RasterCpu, TriangleStraddlingFarPlaneRendersNonEmptyPixels) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_pixels_differing_from_reference(storage, bg), 0u)
         << "one vertex is beyond the far plane, two are in front -- exact clipping must still draw the "
            "surviving portion (this rendered ZERO pixels under the pre-fix whole-triangle rejection)";
 }
@@ -1254,8 +1286,8 @@ TEST(RasterCpu, TriangleEntirelyBehindNearPlaneRendersNothing) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_pixels_differing_from_reference(storage, bg), 0u)
         << "a triangle entirely behind the near plane must render nothing after exact clipping too";
 }
 
@@ -1275,8 +1307,8 @@ TEST(RasterCpu, TriangleEntirelyBeyondFarPlaneRendersNothing) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_pixels_differing_from_reference(storage, bg), 0u)
         << "a triangle entirely beyond the far plane must render nothing after exact clipping too";
 }
 
@@ -1298,8 +1330,8 @@ TEST(RasterCpu, BackFacingTriangleStraddlingNearPlaneStaysCulledAfterClipping) {
     RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
     render_or_fail(scene, camera, options, target);
 
-    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
-    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+    const auto bg = render_background_only(camera, kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_pixels_differing_from_reference(storage, bg), 0u)
         << "clipping a straddling triangle must not become a way for a back-facing triangle to leak through "
            "the SR-13 cull (fan triangulation preserves the source triangle's facing)";
 }
@@ -1357,7 +1389,14 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
     mesh.indices = {0, 2, 1};
 
     RenderScene scene = make_scene(mesh);
-    const Material yellow{.base_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f)};
+    // unlit (shading=1u): this test is a pixel-exact clipping/projection
+    // oracle, not a lighting one -- an unlit material's base_color echoes
+    // through exactly, decoupled from S7a Task R6's Lambert N.L/ambient term
+    // (every vertex here shares the same constant normal, so the Gouraud
+    // fast path (rasterizeTriangleGouraud) would flat-fill regardless, but
+    // WITH whatever the lighting term scaled it to -- unlit sidesteps needing
+    // to also reproduce that term in this file's own expected_bgr() oracle).
+    const Material yellow{.base_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f), .shading = 1u};
     scene.materials = {yellow};
     const auto expected = expected_bgr(yellow);
 
@@ -1371,8 +1410,9 @@ TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
     std::vector<uint8_t> storage_full;
     RenderTarget target_full = make_target(storage_full, kDim, kDim);
     render_or_fail(scene, camera, options, target_full);
-    const auto bg = background_pixel(kDim, kDim);
-    ASSERT_GT(count_non_matching_bgr(storage_full, bg), 0u) << "sanity: the full triangle must be visible";
+    const auto bg = render_background_only(camera, kDim, kDim);
+    ASSERT_GT(count_pixels_differing_from_reference(storage_full, bg), 0u)
+        << "sanity: the full triangle must be visible";
 
     // Frame B: SAME camera position/orientation/fov -- so the world->screen
     // mapping is IDENTICAL to Frame A's; projectCameraSpace never reads
@@ -1469,7 +1509,9 @@ TEST(RasterCpu, NearPlaneClipQuadCaseIsGeometricallyExact) {
     mesh.indices = {0, 1, 2};  // front-facing: 2D cross of (p1-p0),(p2-p0) using x,y only is +6.875
 
     RenderScene scene = make_scene(mesh);
-    const Material cyan{.base_color = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f)};
+    // unlit (shading=1u): a pixel-exact clipping oracle, not a lighting one
+    // -- see T7's (NearPlaneClipIsGeometricallyExactNotJustNonEmpty) identical note.
+    const Material cyan{.base_color = glm::vec4(0.0f, 1.0f, 1.0f, 1.0f), .shading = 1u};
     scene.materials = {cyan};
     const auto expected = expected_bgr(cyan);
 
@@ -1535,7 +1577,9 @@ TEST(RasterCpu, BothPlanesClipFiveVertexCaseIsGeometricallyExact) {
     mesh.indices = {0, 1, 2};  // front-facing: 2D cross of (p1-p0),(p2-p0) using x,y only is +9.25
 
     RenderScene scene = make_scene(mesh);
-    const Material magenta{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f)};
+    // unlit (shading=1u): a pixel-exact clipping oracle, not a lighting one
+    // -- see T7's (NearPlaneClipIsGeometricallyExactNotJustNonEmpty) identical note.
+    const Material magenta{.base_color = glm::vec4(1.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
     scene.materials = {magenta};
     const auto expected = expected_bgr(magenta);
 

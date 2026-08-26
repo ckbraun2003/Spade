@@ -20,14 +20,16 @@
 // instead of hand-built edge lists, and DrawMode::shaded back-face culling
 // (SR-13, below).
 //
-// DrawMode::shaded (solid, depth-tested, flat per-submesh material colour --
-// directional lighting/ambient/sky arrive in Task R6, sun shadows in R7) and
-// DrawMode::wireframe (edges only, both sides always drawn -- the prior
-// wireframe rasterizer's own vocabulary, kept available for comparison) are
-// both implemented here; DrawMode::raymarch is out of this task's scope
-// entirely (Tasks R8/R9 own it -- RenderScene::sdf's own doc comment says so)
-// and render() reports it as an unhandled argument rather than silently
-// falling back to a mode the caller did not ask for.
+// DrawMode::shaded (solid, depth-tested, Gouraud-shaded per-submesh material
+// colour -- directional Lambert lighting + ambient + a vertical sky gradient
+// and analytic ground landed at Task R6 (rulings SR-17/SR-18); sun shadows
+// are still R7) and DrawMode::wireframe (edges only, both sides always
+// drawn, flat UNLIT submesh colour never touched by lighting -- the prior
+// wireframe rasterizer's own debug/comparison vocabulary, kept deliberately
+// unlit) are both implemented here; DrawMode::raymarch is out of this task's
+// scope entirely (Tasks R8/R9 own it -- RenderScene::sdf's own doc comment
+// says so) and render() reports it as an unhandled argument rather than
+// silently falling back to a mode the caller did not ask for.
 //
 // RenderOptions::overlays (PA-4) draws the ground grid, world-bounds box,
 // spawn diamonds and body-pose markers -- real orientation aids, ported from

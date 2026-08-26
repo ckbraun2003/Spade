@@ -9,6 +9,7 @@
 #include <span>
 #include <vector>
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
@@ -138,14 +139,23 @@ bool clipSegmentToHalfSpace(Vec3& p0, Vec3& p1, double planeZ, bool keepLessEq) 
     return true;
 }
 
-// A clip vertex -- camera-space position only for now. Deliberately a
-// struct (not a bare Vec3) even though position is its only field today:
-// Task R6 needs an interpolated normal at each clip vertex, computed at the
-// SAME `t` the position below is, and must add it as a second field HERE
-// rather than forking this clipper into a second, normal-aware copy
-// (task-R5b-brief.md's own forward note).
+// A clip vertex: camera-space position, plus a WORLD-SPACE normal (S7a Task
+// R6, SR-18) interpolated at the SAME `t` the position is -- extending this
+// payload, rather than forking clipPolygonToHalfSpace/clipTriangleNearFar
+// into a second normal-aware copy, is exactly what Task R5b's own forward
+// note (below, and this struct's prior comment) asked for.
+//
+// `normal` defaults to the zero vector so the overlay paths (draw_world_
+// triangle/draw_world_segment, further below) -- which build a ClipVertex
+// from position alone and never read `.normal` back -- stay exactly as
+// terse as before; only draw_mesh_triangle_shaded's Gouraud path (SR-18)
+// ever populates or reads it. Not normalized after a lerp (see
+// shade_vertex_color's own comment on why that is fine): a mesh whose
+// normal is genuinely constant across a triangle (a plane, SR-17's own
+// load-bearing case) lerps to the SAME value bit-for-bit regardless.
 struct ClipVertex {
     Vec3 pos;
+    glm::vec3 normal{0.0f};
 };
 
 // Fixed capacity: a triangle clipped against one plane yields at most 4
@@ -198,7 +208,14 @@ size_t clipPolygonToHalfSpace(const ClipPoly& in, size_t inCount, double planeZ,
         if (curIn != nextIn) {
             const double t = (planeZ - cur.pos.z) / (next.pos.z - cur.pos.z);
             assert(outCount < kMaxClipVertices && "clipPolygonToHalfSpace: output polygon exceeded kMaxClipVertices");
-            out[outCount++] = ClipVertex{cur.pos + (next.pos - cur.pos) * t};
+            // Normal lerped at the SAME t as position (SR-18, ClipVertex's
+            // own comment) -- cast to float only for the vec3 multiply;
+            // when cur.normal == next.normal bit-for-bit (a constant-normal
+            // mesh, e.g. a plane), next.normal - cur.normal is exactly the
+            // zero vector and this reduces to cur.normal exactly, regardless
+            // of t's value or precision.
+            out[outCount++] =
+                ClipVertex{cur.pos + (next.pos - cur.pos) * t, cur.normal + (next.normal - cur.normal) * static_cast<float>(t)};
         }
     }
     return outCount;
@@ -340,14 +357,16 @@ void rasterizeTriangleFlat(FrameBuffers& fb, const ScreenPoint& v0, const Screen
 }
 
 // ---------------------------------------------------------------------------
-// Colors -- background/grid/bounds/spawn/drone unchanged from the wireframe
-// rasterizer (drone body marker = the editor's own accent color #7C93FF,
+// Colors -- grid/bounds/spawn/drone unchanged from the wireframe rasterizer
+// (drone body marker = the editor's own accent color #7C93FF,
 // global-constraints.md). No "gate" color here: gate/primitive proxies are
 // no longer overlay wireframes in this task -- they are real MeshData
-// geometry drawn by draw_mesh_item, shaded by their own material.
+// geometry drawn by draw_mesh_item, shaded by their own material. The old
+// flat kBackgroundR/G/B constant is GONE (S7a Task R6): the background is now
+// draw_sky_and_ground_background()'s vertical sky gradient + analytic ground,
+// read from the scene's own Lighting rather than a fixed literal.
 // ---------------------------------------------------------------------------
 
-constexpr uint8_t kBackgroundR = 20, kBackgroundG = 18, kBackgroundB = 16;
 constexpr uint8_t kGridR = 90, kGridG = 90, kGridB = 90;
 constexpr uint8_t kBoundsR = 90, kBoundsG = 140, kBoundsB = 200;
 constexpr uint8_t kSpawnR = 190, kSpawnG = 90, kSpawnB = 170;
@@ -367,6 +386,47 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
 [[nodiscard]] uint8_t to_byte(float channel) {
     const float clamped = std::clamp(channel, 0.0f, 1.0f);
     return static_cast<uint8_t>(std::lround(clamped * 255.0f));
+}
+
+// ---------------------------------------------------------------------------
+// Shading (S7a Task R6, ruling SR-18) -- material lookup happens per submesh
+// in draw_mesh_item (below); this is the pure function that turns a resolved
+// Material, the scene's Lighting, and a WORLD-SPACE surface normal into a
+// linear-light RGB colour. Called ONCE PER VERTEX by draw_mesh_triangle_
+// shaded's Gouraud fill (SR-18: shade at the vertices, interpolate the
+// resulting colour -- never interpolate the normal and shade per pixel) and
+// ONCE PER BACKGROUND PIXEL by the analytic ground pass (SR-17) -- the SAME
+// function both times, which is what makes the tessellated-grid/analytic-
+// ground seam agree bit-for-bit whenever its three inputs do (see
+// transform_normal()'s own comment, scene.hpp, for how those inputs are kept
+// identical at that seam).
+//
+// unlit/emissive (MaterialShading 1/2, world/builder.hpp) both echo
+// base_color verbatim -- "no lighting applied" and "treated as emitted
+// radiance" amount to the same output today, since this renderer has no
+// tonemap/bloom pass yet to tell emissive apart from unlit.
+//
+// lambert (0, the default, and the fallback for any other stored value):
+// N.L clamped to >= 0 (Step 1's own "neither is pure black" ambient floor
+// holds as long as ambient_color is nonzero -- a face pointing away from the
+// sun still gets the ambient term, just never the sun term) times
+// sun_color*sun_intensity, plus a flat ambient_color term. `n_world` need
+// not be unit: a near/far-clip-interpolated normal (ClipVertex, above) is a
+// lerp of two unit vectors and is deliberately not re-normalized (that
+// struct's own comment) -- a slightly-non-unit vector here is a tiny
+// cosine-law approximation right at a clipped triangle's edge, never
+// something this function needs to correct, and it never actually occurs at
+// all for a constant-normal mesh (SR-17's own seam), whose normal survives
+// any lerp bit-for-bit.
+[[nodiscard]] glm::vec3 shade_vertex_color(const Material& material, const Lighting& lighting,
+                                            const glm::vec3& n_world) {
+    const glm::vec3 base(material.base_color);
+    if (material.shading == 1u || material.shading == 2u) {  // unlit, emissive
+        return base;
+    }
+    const float n_dot_l = std::max(glm::dot(n_world, lighting.sun_direction), 0.0f);
+    const glm::vec3 lit = lighting.sun_color * (lighting.sun_intensity * n_dot_l) + lighting.ambient_color;
+    return base * lit;
 }
 
 [[nodiscard]] ViewContext build_view_context(const Camera& camera, uint32_t width, uint32_t height) {
@@ -474,26 +534,96 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
 // vertex-order assertion (test_render_raster.cpp's
 // RasterCpu.ShadedModeRendersOutwardFacingTriangleButCullsReversedOne is the
 // test that pins this sign, independent of this comment's algebra).
+//
+// Gouraud-filled, depth-tested triangle (S7a Task R6, SR-18): barycentrically
+// interpolates a per-vertex COLOUR (already shaded once at each vertex by
+// the caller -- shade_vertex_color(), never re-shaded per pixel) the same
+// way rasterizeTriangleFlat interpolates invDepth, converting to a byte
+// triple once per covered pixel. A deliberate near-duplicate of
+// rasterizeTriangleFlat's own bounding-box/edge-function walk (rather than a
+// shared helper parameterized over "what to do per pixel") -- this file's
+// own convention throughout is porting proven blocks unchanged rather than
+// generalizing them, and this keeps rasterizeTriangleFlat itself untouched.
+//
+// EXACT equal-colour fast path (SR-17's own load-bearing seam,
+// task-R6-brief.md): when all three vertex colours are BIT-IDENTICAL --
+// always true for a constant-normal mesh (a plane, whose normal is the same
+// at every vertex before or after any near/far-clip lerp, ClipVertex's own
+// comment) -- this falls straight through to rasterizeTriangleFlat's single
+// evaluation rather than the barycentric weighted sum below: b0+b1+b2 is not
+// always EXACTLY 1.0 in floating point, so a weighted sum of three EQUAL
+// inputs is not guaranteed to reproduce that exact input bit-for-bit, which
+// is precisely what the analytic background ground pass's own single
+// per-pixel evaluation needs to match. Converting this into a tolerance
+// instead would silently give away the entire reason the hard-horizon
+// design is safe (task-R6-brief.md's own words) -- so this is an exact `==`,
+// not a "close enough".
+void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const ScreenPoint& v1, const ScreenPoint& v2,
+                               const glm::vec3& c0, const glm::vec3& c1, const glm::vec3& c2) {
+    if (c0 == c1 && c1 == c2) {
+        rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(c0.r), to_byte(c0.g), to_byte(c0.b));
+        return;
+    }
+    const double area = edgeFn(v0, v1, v2);
+    if (std::fabs(area) < 1e-9) {
+        return;  // degenerate
+    }
+    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({v0.x, v1.x, v2.x}))));
+    const int x1 =
+        std::min(static_cast<int>(fb.width) - 1, static_cast<int>(std::ceil(std::max({v0.x, v1.x, v2.x}))));
+    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({v0.y, v1.y, v2.y}))));
+    const int y1 =
+        std::min(static_cast<int>(fb.height) - 1, static_cast<int>(std::ceil(std::max({v0.y, v1.y, v2.y}))));
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const ScreenPoint p{x + 0.5, y + 0.5, 0.0};
+            const double w0 = edgeFn(v1, v2, p);
+            const double w1 = edgeFn(v2, v0, p);
+            const double w2 = edgeFn(v0, v1, p);
+            const bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            if (!inside) {
+                continue;
+            }
+            const double b0 = w0 / area, b1 = w1 / area, b2 = w2 / area;
+            const double invD = b0 * v0.invDepth + b1 * v1.invDepth + b2 * v2.invDepth;
+            const glm::vec3 color =
+                c0 * static_cast<float>(b0) + c1 * static_cast<float>(b1) + c2 * static_cast<float>(b2);
+            setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
+        }
+    }
+}
+
+// `na`/`nb`/`nc` are the triangle's three WORLD-SPACE vertex normals
+// (draw_mesh_item's own transform_normal() call, per vertex) -- shaded HERE,
+// once per polygon vertex AFTER clipping (SR-18: "shade at the vertices" means
+// the final clipped polygon's vertices, original or clip-synthesized alike,
+// not only the original three), then handed to rasterizeTriangleGouraud to
+// interpolate the resulting COLOUR across the fan triangle's pixels.
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
-                                uint8_t r, uint8_t g, uint8_t bC) {
-    const ClipVertex ac{worldToCameraSpace(vc, a)};
-    const ClipVertex bc{worldToCameraSpace(vc, b)};
-    const ClipVertex cc{worldToCameraSpace(vc, c)};
+                                const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
+                                const Material& material, const Lighting& lighting) {
+    const ClipVertex ac{worldToCameraSpace(vc, a), na};
+    const ClipVertex bc{worldToCameraSpace(vc, b), nb};
+    const ClipVertex cc{worldToCameraSpace(vc, c), nc};
     ClipPoly poly;
     const size_t count = clipTriangleNearFar(vc, ac, bc, cc, poly);
     if (count < 3) {
         return;
     }
-    // poly[0] is shared by every fan triangle -- project it once rather than
-    // once per iteration (review nit, R5b round 1).
+    // poly[0] is shared by every fan triangle -- project and shade it once
+    // rather than once per iteration (review nit, R5b round 1, extended here
+    // to the shaded colour too).
     const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
+    const glm::vec3 ca = shade_vertex_color(material, lighting, poly[0].normal);
     for (size_t i = 1; i + 1 < count; ++i) {
         const ScreenPoint sb = projectCameraSpace(vc, poly[i].pos);
         const ScreenPoint sc = projectCameraSpace(vc, poly[i + 1].pos);
         if (edgeFn(sa, sb, sc) > 0.0) {
             continue;  // SR-13: back face, shaded mode culls it.
         }
-        rasterizeTriangleFlat(fb, sa, sb, sc, r, g, bC);
+        const glm::vec3 cb = shade_vertex_color(material, lighting, poly[i].normal);
+        const glm::vec3 cc2 = shade_vertex_color(material, lighting, poly[i + 1].normal);
+        rasterizeTriangleGouraud(fb, sa, sb, sc, ca, cb, cc2);
     }
 }
 
@@ -504,15 +634,24 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
 // DrawItem::material_override when set (it replaces the submesh's own
 // material for every submesh in the item, per task-R6-brief.md's own
 // "material lookup per submesh with DrawItem::material_override" framing).
-// DrawMode::shaded fills each triangle with rasterizeTriangleFlat via
-// draw_mesh_triangle_shaded (culled); DrawMode::wireframe draws each
-// triangle's three edges via draw_world_segment (not culled, per SR-13) --
-// the "old look", now applied to real tessellated geometry instead of hand-
-// built edge lists.
+// DrawMode::shaded Gouraud-fills each triangle (SR-18: per-vertex normals,
+// interpolated colour) via draw_mesh_triangle_shaded (culled); DrawMode::
+// wireframe draws each triangle's three edges via draw_world_segment (not
+// culled, per SR-13) using the submesh's flat, UNLIT base colour -- the "old
+// look", deliberately left untouched by lighting (this renderer's debug/
+// comparison view, raster_cpu.hpp's own header comment), now applied to real
+// tessellated geometry instead of hand-built edge lists.
 //
-// MeshData::normals is deliberately unread here: this task's shading is flat
-// per-submesh material colour only (no lighting) -- Task R6 is where normals
-// start mattering.
+// MeshData::normals is read HERE now (S7a Task R6 -- this comment used to say
+// "deliberately unread ... Task R6 is where normals start mattering"; this is
+// that task): each triangle's three per-vertex LOCAL normals are transformed
+// to WORLD space (transform_normal(), scene.hpp) and handed to
+// draw_mesh_triangle_shaded for Gouraud shading in DrawMode::shaded. Missing
+// or truncated normals (a malformed/truncated file -- this function trusts
+// none of MeshData, per the review-finding note above) skip just that
+// triangle in shaded mode, the same "some triangles silently skipped, never
+// a crash" posture already applied to indices/submesh ranges; wireframe mode
+// never needs a normal at all and is unaffected.
 // ---------------------------------------------------------------------------
 
 void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const DrawItem& item,
@@ -563,6 +702,8 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
         const Material& material =
             material_index < scene.materials.size() ? scene.materials[material_index] : scene.materials[0];
 
+        // Wireframe's flat colour -- the submesh's raw base_color, never
+        // relit (this function's own header comment above).
         const uint8_t r = to_byte(material.base_color.r);
         const uint8_t g = to_byte(material.base_color.g);
         const uint8_t b = to_byte(material.base_color.b);
@@ -584,7 +725,16 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 draw_world_segment(fb, vc, vec3d(wb), vec3d(wc), r, g, b);
                 draw_world_segment(fb, vc, vec3d(wc), vec3d(wa), r, g, b);
             } else {
-                draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), r, g, b);
+                const bool has_normals =
+                    ia < mesh.normals.size() && ib < mesh.normals.size() && ic < mesh.normals.size();
+                if (!has_normals) {
+                    continue;  // malformed/truncated normals -- skip this triangle rather than shade it wrong.
+                }
+                const glm::vec3 na = transform_normal(item.local_to_world, mesh.normals[ia]);
+                const glm::vec3 nb = transform_normal(item.local_to_world, mesh.normals[ib]);
+                const glm::vec3 nc = transform_normal(item.local_to_world, mesh.normals[ic]);
+                draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
+                                           scene.lighting);
             }
         }
     }
@@ -682,6 +832,124 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
     }
 }
 
+// ---------------------------------------------------------------------------
+// Background: vertical sky gradient + analytic ground (S7a Task R6, SR-17).
+// Runs FIRST, before any geometry (constraint 6's fixed operation order),
+// filling literally every background pixel -- it is what MN-14's "every
+// pixel written" now means, replacing the old flat clear entirely. Writes
+// colour only, never depth (`depth` stays 0 = infinitely far everywhere it
+// touches), so any real, depth-tested geometry drawn afterward -- including
+// the OLDER, unrelated ground-grid overlay below -- always wins the z-test
+// over it, and it never reaches R7's scene.bounds-fitted shadow frustum.
+// ---------------------------------------------------------------------------
+
+// Reconstructs the camera-space, UN-normalized ray direction through pixel
+// center (px+0.5, py+0.5) -- the exact inverse of projectCameraSpace's own
+// perspective divide (same f, same aspect), evaluated at pc.z = -1 so the
+// direction's scale is whatever falls out of that choice. Never normalized:
+// the analytic ground pass below only ever compares a t computed from this
+// ray AGAINST ANOTHER t computed from the SAME ray (nearest hit among
+// several standalone ground planes) or tests its SIGN (front/back) -- both
+// scale-invariant, so normalizing here would only add a sqrt this pass does
+// not need.
+[[nodiscard]] Vec3 background_ray_camera_space(const ViewContext& vc, uint32_t px, uint32_t py) {
+    const double f = 1.0 / tan32(vc.fovY * 0.5);
+    const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
+    const double xNdc = 2.0 * (static_cast<double>(px) + 0.5) / static_cast<double>(vc.width) - 1.0;
+    const double yNdc = 1.0 - 2.0 * (static_cast<double>(py) + 0.5) / static_cast<double>(vc.height);
+    return Vec3{xNdc * aspect / f, yNdc / f, -1.0};
+}
+
+void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    const Vec3 camPos{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
+    // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
+    // to recover the camera-to-world rotation this background ray needs --
+    // quatConjugate is its own inverse, so this is exact, not an
+    // approximation.
+    double camQ[4];
+    quatConjugate(vc.camOrientationConj, camQ);
+
+    const bool have_materials = !scene.materials.empty();
+
+    // SR-13 parity, precomputed ONCE PER PLANE (a per-frame fact about the
+    // camera and that plane, not a per-pixel one): "shade only when the ray
+    // meets the plane's FRONT side" means the camera itself must be
+    // strictly on the side the normal points to -- dot(camPos, normal) >
+    // offset -- exactly the outward-normal convention SR-13's mesh back-face
+    // cull already uses (world/sdf.hpp's own "dot(p,n) <= offset is solid").
+    // A plane the camera is at or below never contributes a hit, the same
+    // way the tessellated ground disappears when viewed from below.
+    std::vector<bool> front(scene.ground_planes.size(), false);
+    for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
+        const GroundPlane& gp = scene.ground_planes[i];
+        const double n_dot_cam = static_cast<double>(gp.normal.x) * camPos.x +
+                                  static_cast<double>(gp.normal.y) * camPos.y +
+                                  static_cast<double>(gp.normal.z) * camPos.z;
+        front[i] = n_dot_cam > static_cast<double>(gp.offset);
+    }
+
+    for (uint32_t y = 0; y < fb.height; ++y) {
+        // Vertical sky gradient (Step 1's own requirement): a plain fraction
+        // of SCREEN ROW, zenith at row 0 to horizon at the last row -- never
+        // a function of the camera's actual pose, and deliberately not a
+        // function of the 3D ray's true elevation angle either, which would
+        // need an inverse-trig call (atan2/asin) this engine's determinism
+        // contract forbids (constraint on libm transcendentals). "Hard
+        // horizon, no fog" (SR-17) is enforced by the GROUND hit-test below,
+        // not by this gradient -- this is purely the backdrop for pixels no
+        // ground plane claims.
+        const double sky_t = fb.height > 1 ? static_cast<double>(y) / static_cast<double>(fb.height - 1) : 0.0;
+        const float sky_tf = static_cast<float>(sky_t);
+        const glm::vec3 sky = scene.lighting.sky_zenith * (1.0f - sky_tf) + scene.lighting.sky_horizon * sky_tf;
+
+        for (uint32_t x = 0; x < fb.width; ++x) {
+            glm::vec3 color = sky;
+
+            if (have_materials) {
+                const Vec3 dirCam = background_ray_camera_space(vc, x, y);
+                const Vec3 dirWorld = rotateByQuat(camQ, dirCam);
+
+                double best_t = 0.0;
+                int64_t best_plane = -1;
+                for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
+                    if (!front[i]) {
+                        continue;  // camera at or below this plane -- SR-13 parity, never a hit.
+                    }
+                    const GroundPlane& gp = scene.ground_planes[i];
+                    const double nx = static_cast<double>(gp.normal.x), ny = static_cast<double>(gp.normal.y),
+                                 nz = static_cast<double>(gp.normal.z);
+                    const double denom = nx * dirWorld.x + ny * dirWorld.y + nz * dirWorld.z;
+                    if (denom >= 0.0) {
+                        continue;  // ray moving away from (or parallel to) the plane's front -- no hit.
+                    }
+                    const double n_dot_cam = nx * camPos.x + ny * camPos.y + nz * camPos.z;
+                    const double t = (static_cast<double>(gp.offset) - n_dot_cam) / denom;
+                    // front[i] (n_dot_cam > offset) and denom < 0 together
+                    // guarantee t > 0 algebraically -- a negative-over-
+                    // negative division -- so this is a defensive restatement,
+                    // not a live branch for any front-facing plane.
+                    if (t > 0.0 && (best_plane < 0 || t < best_t)) {
+                        best_t = t;
+                        best_plane = static_cast<int64_t>(i);
+                    }
+                }
+
+                if (best_plane >= 0) {
+                    const GroundPlane& gp = scene.ground_planes[static_cast<size_t>(best_plane)];
+                    const uint32_t material_index = gp.material < scene.materials.size() ? gp.material : 0u;
+                    color = shade_vertex_color(scene.materials[material_index], scene.lighting, gp.normal);
+                }
+            }
+
+            uint8_t* px = &fb.pixels[(static_cast<size_t>(y) * fb.width + x) * 4];
+            px[0] = to_byte(color.b);
+            px[1] = to_byte(color.g);
+            px[2] = to_byte(color.r);
+            px[3] = kBgrxOpaqueByte;
+        }
+    }
+}
+
 }  // namespace
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
@@ -701,22 +969,20 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     const uint32_t height = target.height;
     const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
 
-    // MN-14 / constraint 2: every byte written every frame, X always 0xFF.
-    for (size_t i = 0; i < pixel_count; ++i) {
-        uint8_t* px = &target.pixels[i * 4];
-        px[0] = kBackgroundB;
-        px[1] = kBackgroundG;
-        px[2] = kBackgroundR;
-        px[3] = kBgrxOpaqueByte;
-    }
-
     std::vector<double> depth(pixel_count, 0.0);  // 0 = infinitely far (ported convention)
     FrameBuffers fb{target.pixels, depth, width, height};
     const ViewContext vc = build_view_context(camera, width, height);
 
-    // Fixed operation order (constraint 4): statics, then dynamics, then
-    // overlays -- never based on hashing, pointer identity, or anything else
-    // unordered.
+    // MN-14 / constraint 2: every byte written every frame, X always 0xFF --
+    // now the sky gradient + analytic ground background pass (S7a Task R6),
+    // not a flat clear: it still writes every pixel unconditionally, just no
+    // longer the same colour everywhere. Writes colour only, no depth, so it
+    // never survives the z-test against any real geometry drawn afterward.
+    draw_sky_and_ground_background(fb, vc, scene);
+
+    // Fixed operation order (constraint 4): background, then statics, then
+    // dynamics, then overlays -- never based on hashing, pointer identity, or
+    // anything else unordered.
     for (const DrawItem& item : scene.statics) {
         draw_mesh_item(fb, vc, scene, item, options.mode);
     }

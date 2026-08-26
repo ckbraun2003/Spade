@@ -55,7 +55,9 @@
 #include <string>
 #include <vector>
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -66,6 +68,26 @@
 #include "world/sdf.hpp"       // SdfProgram
 
 namespace spade::render {
+
+// Transforms a LOCAL unit surface normal to WORLD space and re-normalizes
+// (S7a Task R6). For a rigid + UNIFORM-scale local_to_world (SdfTransform's
+// own contract, world/sdf.hpp), mat3(local_to_world) applied to a local
+// direction yields that direction correctly ROTATED and then scaled by the
+// uniform factor (the same relationship world/sdf.hpp's own gradient_world
+// derivation states for the SDF gradient) -- normalizing removes that scale,
+// leaving exactly the rotated normal.
+//
+// Used IDENTICALLY by two call sites that must agree bit-for-bit (SR-17's
+// load-bearing seam): the tessellated-mesh per-vertex normal transform
+// (raster_cpu.cpp's draw_mesh_item, shading a real triangle) and the
+// analytic background ground plane's precomputed world normal
+// (scene_from_world()'s ground-plane extraction, scene.cpp) -- for a
+// standalone ground-plane node, both call this SAME function with the SAME
+// local_to_world and the SAME local normal, so the two paths' shading
+// agrees exactly, not merely approximately.
+[[nodiscard]] inline glm::vec3 transform_normal(const glm::mat4& local_to_world, const glm::vec3& local_normal) {
+    return glm::normalize(glm::mat3(local_to_world) * local_normal);
+}
 
 struct Material {
     glm::vec4 base_color{0.72f, 0.72f, 0.74f, 1.0f};
@@ -120,6 +142,26 @@ struct NamedMesh {
 
 // Aabb, kNoMaterial and kNoMesh come from target.hpp (Task 0) -- do not redeclare.
 
+// An infinite analytic ground candidate (S7a Task R6, ruling SR-17): one per
+// STANDALONE plane primitive -- a node split_program() (render/csg_mesh.hpp)
+// classifies as a union-primitive leaf, never one buried inside a
+// subtract/intersect/smooth_union subtree (that plane is a cutting
+// half-space, not a floor). `normal`/`offset` are already WORLD-SPACE
+// (scene_from_world() bakes the node's own SdfTransform in once, at scene-
+// build time, via transform_normal() above) so the background pass
+// (raster_cpu.cpp) never re-derives them per pixel: solid is
+// dot(p, normal) <= offset, the SAME convention world/sdf.hpp's plane node
+// uses, so `normal` points away from the solid (the side a camera normally
+// stands on) exactly like a plane's outward mesh normal does. `material` is
+// always a valid index into RenderScene::materials (resolved the same way
+// DrawItem::material_override resolves for that node -- node_materials, or
+// submesh material 0 when node_materials is empty).
+struct GroundPlane {
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    float offset = 0.0f;
+    uint32_t material = 0;
+};
+
 struct DrawItem {
     uint32_t mesh_index = 0;   // index into RenderScene::meshes
     glm::mat4 local_to_world{1.0f};
@@ -149,6 +191,13 @@ struct RenderScene {
     const SdfProgram*      sdf = nullptr;     // non-owning; raymarch + agreement only
     float                  ground_y = 0.0f;
     bool                   has_ground = false;
+    // Analytic background ground candidates (S7a Task R6, SR-17) -- empty for
+    // a hand-built RenderScene (only scene_from_world() populates it) and
+    // for a world with no standalone ground plane. Never consulted by
+    // has_ground/ground_y's OLDER, unrelated purpose (the overlay grid's own
+    // best-effort +Y-identity-plane heuristic, scene.cpp's ground_plane_y());
+    // this is the raster background pass's own general, transform-aware list.
+    std::vector<GroundPlane> ground_planes;
 };
 
 // Builds a RenderScene from a validated WorldDesc plus its already-resolved

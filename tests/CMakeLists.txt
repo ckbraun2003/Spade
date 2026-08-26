@@ -21,6 +21,7 @@ add_executable(spade_tests
     test_render_scene.cpp
     test_render_tessellate.cpp
     test_render_raster.cpp
+    test_render_shading.cpp
     test_render_gltf.cpp
     test_render_csg.cpp
 )

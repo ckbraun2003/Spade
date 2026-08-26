@@ -157,8 +157,35 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
         scene.meshes.push_back(named.mesh);
     }
 
-    scene.materials.push_back(Material{});  // index 0 is always the default material
-    scene.lighting = Lighting{};
+    // Materials/lighting (schema v2, S7a Task R6): scene.materials/
+    // scene.lighting now CONSUME world.materials/world.lighting instead of
+    // this module's own hardcoded struct-literal defaults -- render::
+    // Material/Lighting mirror world::MaterialDesc/LightingDesc field for
+    // field, so the conversion is a straight per-entry copy.
+    // validate_world_desc() guarantees world.materials is never empty for a
+    // validated WorldDesc (this function's own precondition, builder.hpp),
+    // so scene.materials is never empty either.
+    scene.materials.reserve(world.materials.size());
+    for (const MaterialDesc& m : world.materials) {
+        scene.materials.push_back(Material{
+            .base_color = m.base_color,
+            .shading = static_cast<uint32_t>(m.shading),
+        });
+    }
+
+    // sun_direction need not be pre-normalized (LightingDesc's own doc
+    // comment, builder.hpp) -- validate_world_desc() guarantees it is
+    // non-zero, so normalizing it is always well-defined (never a 0/0 NaN).
+    // Normalized HERE, once, rather than at every shading evaluation,
+    // matching Lighting's own doc comment above ("normalised, world space").
+    scene.lighting = Lighting{
+        .sun_direction = glm::normalize(world.lighting.sun_direction),
+        .sun_color = world.lighting.sun_color,
+        .sun_intensity = world.lighting.sun_intensity,
+        .ambient_color = world.lighting.ambient_color,
+        .sky_zenith = world.lighting.sky_zenith,
+        .sky_horizon = world.lighting.sky_horizon,
+    };
 
     scene.bounds = to_render_aabb(world_bounds_of(world));
 
@@ -178,7 +205,7 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     const std::vector<uint32_t>& union_primitives = split->union_primitive_nodes;
     const std::vector<uint32_t>& csg_roots = split->csg_roots;
 
-    scene.statics.reserve(union_primitives.size() + csg_roots.size());
+    scene.statics.reserve(union_primitives.size() + csg_roots.size() + world.props.size());
 
     const auto local_to_world_for = [&](const SdfNode& node) {
         // Defensive fallback to identity for an out-of-range transform index --
@@ -187,6 +214,14 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
         // world_bounds_of()'s identical defensive skip above.
         return node.transform < world.sdf.transforms.size() ? local_to_world_of(world.sdf.transforms[node.transform])
                                                               : glm::mat4(1.0f);
+    };
+
+    // node_materials (PA-2, world/sdf.hpp): empty means every node uses
+    // materials[0] (kNoMaterial -- draw_mesh_item's own submesh-material
+    // fallback resolves that to 0, per SR-11); otherwise one entry per node,
+    // already range-checked against world.materials by validate_world_desc().
+    const auto node_material_override = [&](uint32_t node_index) {
+        return world.sdf.node_materials.empty() ? kNoMaterial : world.sdf.node_materials[node_index];
     };
 
     size_t next_primitive = 0, next_csg_root = 0;
@@ -204,11 +239,51 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             }
             const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
             scene.meshes.push_back(std::move(*mesh));
+            const glm::mat4 local_to_world = local_to_world_for(node);
+            const uint32_t material_override = node_material_override(node_index);
             scene.statics.push_back(DrawItem{
                 .mesh_index = mesh_index,
-                .local_to_world = local_to_world_for(node),
-                .material_override = kNoMaterial,
+                .local_to_world = local_to_world,
+                .material_override = material_override,
             });
+
+            // SR-17 (S7a Task R6): a standalone plane primitive -- this
+            // branch only ever sees union-primitive LEAVES (split_program()'s
+            // own contract, csg_mesh.hpp), never one buried inside a
+            // subtract/intersect/smooth_union subtree -- becomes an infinite
+            // analytic ground candidate for the background pass, ALONGSIDE
+            // its own bounded tessellated grid (tessellate_plane, above),
+            // never instead of it: the grid still draws real, depth-tested
+            // geometry unchanged; the analytic entry only ever shows through
+            // on a background pixel no drawn triangle already covered.
+            if (static_cast<SdfPrim>(node.kind) == SdfPrim::plane) {
+                // n_local: the SAME expression tessellate_plane (tessellate.cpp)
+                // computes from this identical node.params, so every one of
+                // that mesh's per-vertex normals is bit-identical to this
+                // local normal -- required for the seam's byte-identity
+                // (transform_normal() then applies the SAME local_to_world
+                // computed above, so the two paths' WORLD normal matches too).
+                const glm::vec3 n_local = glm::normalize(glm::vec3(node.params));
+                const glm::vec3 n_world = transform_normal(local_to_world, n_local);
+                // A point known to lie ON the local plane (dot(p,n_local) ==
+                // offset_local, since n_local is unit) carried through the
+                // SAME local_to_world to WORLD space, from which the plane's
+                // world-space offset (dot(p_world, n_world)) is re-derived --
+                // general for any transform (SR-17's "no Y-up special case"),
+                // not merely the identity-transform heuristic
+                // ground_plane_y() (below) uses for the unrelated overlay grid.
+                const glm::vec3 p_local = n_local * node.params.w;
+                const glm::vec3 p_world = glm::vec3(local_to_world * glm::vec4(p_local, 1.0f));
+                scene.ground_planes.push_back(GroundPlane{
+                    .normal = n_world,
+                    .offset = glm::dot(p_world, n_world),
+                    // Same resolution rule as draw_mesh_item's own submesh
+                    // fallback: tessellate_plane's mesh has empty submesh
+                    // arrays (SR-11), so its one implicit submesh is always
+                    // material 0 unless overridden.
+                    .material = material_override != kNoMaterial ? material_override : 0u,
+                });
+            }
         } else {
             const uint32_t root_node = csg_roots[next_csg_root++];
             const Result<Aabb> subtree_bounds = csg_subtree_world_bounds(world.sdf, root_node, scene.bounds);
@@ -238,9 +313,60 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
                 // primitive item stayed correct. Writing the identity here
                 // has no such dependency.
                 .local_to_world = glm::mat4(1.0f),
-                .material_override = kNoMaterial,
+                // An operator node's own node_materials entry (WorldBuilder::
+                // material_for_last_node()'s target when called right after
+                // an operator adder) -- this consumer shades by CSG root, not
+                // by leaf primitive, so it is exactly the entry this mesh's
+                // single implicit submesh (SR-11: a CSG mesh is always
+                // single-material) should use.
+                .material_override = node_material_override(root_node),
             });
         }
+    }
+
+    // Props (schema v2, S7a Task R6 Step 3): one static DrawItem per
+    // world.props entry, in authoring order, appended after every SDF-
+    // derived static item -- a prop is never part of the SDF program, so it
+    // has no node index to merge into that ordering, and ordering among
+    // props themselves has no other consumer that cares.
+    //
+    // `mesh_ref` resolution mirrors NamedMesh's own doc comment (scene.hpp):
+    // resolving a world reference to a file is the CALLER's job, so this
+    // function only ever LOOKS UP a match already present in
+    // `resolved_meshes` (linear scan -- `resolved_meshes` is typically a
+    // handful of entries, one per distinct visual reference a world uses,
+    // not per prop instance) and falls back to kNoMesh -- draw_mesh_item's
+    // own existing "nothing to draw" skip -- when the caller never resolved
+    // that reference, rather than treating an unresolved prop as an error
+    // here (resolving every prop is the caller's responsibility, not this
+    // builder's, the same posture visual_refs' own "opaque to the engine"
+    // framing takes).
+    for (const PropDesc& prop : world.props) {
+        uint32_t mesh_index = kNoMesh;
+        for (size_t i = 0; i < resolved_meshes.size(); ++i) {
+            if (resolved_meshes[i].ref == prop.mesh_ref) {
+                mesh_index = static_cast<uint32_t>(i);
+                break;
+            }
+        }
+        // Rigid + uniform scale, same T*R*S(s) construction WorldBuilder::
+        // add_transform() uses for the (pre-inverted) SDF-node direction:
+        // rotation matrix scaled by `scale` in its three column vectors,
+        // translation written into the last column.
+        glm::mat4 local_to_world = glm::mat4_cast(prop.pose.rotation);
+        local_to_world[0] *= prop.pose.scale;
+        local_to_world[1] *= prop.pose.scale;
+        local_to_world[2] *= prop.pose.scale;
+        local_to_world[3] = glm::vec4(prop.pose.position, 1.0f);
+        scene.statics.push_back(DrawItem{
+            .mesh_index = mesh_index,
+            .local_to_world = local_to_world,
+            // Always a concrete index, never kNoMaterial: validate_world_desc()
+            // guarantees prop.material < world.materials.size(), and a prop
+            // (unlike an SDF node) has no "use the mesh's own submesh
+            // material" fallback to defer to -- it always names one.
+            .material_override = prop.material,
+        });
     }
 
     scene.spawn_positions.reserve(world.spawns.size());
