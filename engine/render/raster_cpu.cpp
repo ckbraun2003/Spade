@@ -136,6 +136,61 @@ bool clipSegmentToHalfSpace(Vec3& p0, Vec3& p1, double planeZ, bool keepLessEq) 
     return true;
 }
 
+// A clip vertex -- camera-space position only for now. Deliberately a
+// struct (not a bare Vec3) even though position is its only field today:
+// Task R6 needs an interpolated normal at each clip vertex, computed at the
+// SAME `t` the position below is, and must add it as a second field HERE
+// rather than forking this clipper into a second, normal-aware copy
+// (task-R5b-brief.md's own forward note).
+struct ClipVertex {
+    Vec3 pos;
+};
+
+// Sutherland-Hodgman: clips the convex polygon `poly` (>= 3 vertices, or
+// empty) against the half-space `keepLessEq ? z <= planeZ : z >= planeZ`,
+// returning the result (possibly empty; at most poly.size()+1 vertices).
+// Reuses clipSegmentToHalfSpace's own interpolation formula --
+// t = (planeZ - cur.z) / (next.z - cur.z), cur + (next - cur) * t -- rather
+// than a second one (SR-15's "What to build").
+std::vector<ClipVertex> clipPolygonToHalfSpace(const std::vector<ClipVertex>& poly, double planeZ, bool keepLessEq) {
+    if (poly.empty()) {
+        return {};
+    }
+    const auto inside = [&](const Vec3& p) { return keepLessEq ? (p.z <= planeZ) : (p.z >= planeZ); };
+    std::vector<ClipVertex> out;
+    out.reserve(poly.size() + 1);
+    for (size_t i = 0; i < poly.size(); ++i) {
+        const ClipVertex& cur = poly[i];
+        const ClipVertex& next = poly[(i + 1) % poly.size()];
+        const bool curIn = inside(cur.pos);
+        const bool nextIn = inside(next.pos);
+        if (curIn) {
+            out.push_back(cur);
+        }
+        if (curIn != nextIn) {
+            const double t = (planeZ - cur.pos.z) / (next.pos.z - cur.pos.z);
+            out.push_back(ClipVertex{cur.pos + (next.pos - cur.pos) * t});
+        }
+    }
+    return out;
+}
+
+// Exact near/far clip of a camera-space triangle (SR-15), replacing the
+// whole-triangle near/far rejection draw_world_triangle and
+// draw_mesh_triangle_shaded used before this task. A triangle clipped
+// against one plane yields a convex polygon of at most 4 vertices; against
+// both, at most 5. Returns an empty vector if the triangle is entirely
+// outside either half-space (the trivial-reject case still applies, it is
+// simply now a side effect of the general clip rather than a separate
+// up-front check). Order matters: near first, then far, matching
+// draw_world_segment's own two clipSegmentToHalfSpace calls.
+std::vector<ClipVertex> clipTriangleNearFar(const ViewContext& vc, const Vec3& ac, const Vec3& bc, const Vec3& cc) {
+    std::vector<ClipVertex> poly{ClipVertex{ac}, ClipVertex{bc}, ClipVertex{cc}};
+    poly = clipPolygonToHalfSpace(poly, -vc.nearP, /*keepLessEq=*/true);
+    poly = clipPolygonToHalfSpace(poly, -vc.farP, /*keepLessEq=*/false);
+    return poly;
+}
+
 // MN-14: the fixed opaque-byte value every BGRX8 pixel's 4th byte carries,
 // unconditionally -- background clear and every draw call below write it
 // identically, so no code path can leave it unset.
@@ -274,18 +329,27 @@ constexpr uint8_t kDroneR = 124, kDroneG = 147, kDroneB = 255;  // #7C93FF
 }
 
 // ---------------------------------------------------------------------------
-// World-space draw passes. draw_world_segment/draw_world_triangle are a
-// DIRECT, UNCHANGED port (renamed to this file's snake_case convention) of
-// the wireframe rasterizer's own drawWorldSegment/drawWorldTriangle -- same
-// near/far clip on lines, same whole-triangle near/far REJECTION (not exact
-// clipping) on triangles, same "no winding check" fill. draw_mesh_triangle_shaded
-// is genuinely NEW: it is draw_world_triangle's near/far test plus the SR-13
-// back-face cull, kept as a separate function rather than a flag on
-// draw_world_triangle because markers (drawn by draw_world_triangle,
-// unchanged) are never guaranteed a consistent winding and must never be
-// culled, per SR-13's own text ("wireframe mode does not [cull] -- both
-// sides draw") and the fact this project's own spawn/body marker triangles
-// predate any winding convention at all.
+// World-space draw passes. draw_world_segment is a DIRECT, UNCHANGED port
+// (renamed to this file's snake_case convention) of the wireframe
+// rasterizer's own drawWorldSegment -- same near/far clip on lines, same
+// "no winding check" fill.
+//
+// draw_world_triangle originally matched it structurally (a direct,
+// unchanged port of drawWorldTriangle's own whole-triangle near/far
+// REJECTION), but Task R5b (SR-15) replaced that rejection with exact
+// clipTriangleNearFar()-based clipping in both this function and
+// draw_mesh_triangle_shaded below: real solid geometry (Task R5) makes a
+// camera approaching a wall reject that wall's triangles one by one as they
+// straddle the near plane, rather than rendering the part that is still in
+// view. draw_mesh_triangle_shaded is otherwise genuinely NEW relative to
+// draw_world_triangle: it adds the SR-13 back-face cull, kept as a separate
+// function rather than a flag on draw_world_triangle because markers (drawn
+// by draw_world_triangle) are never guaranteed a consistent winding and
+// must never be culled, per SR-13's own text ("wireframe mode does not
+// [cull] -- both sides draw") and the fact this project's own spawn/body
+// marker triangles predate any winding convention at all. Clipping and
+// culling are orthogonal: this task changed the former in both functions
+// and left the latter exactly as it was in each.
 // ---------------------------------------------------------------------------
 
 void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, uint8_t r, uint8_t g,
@@ -301,24 +365,32 @@ void draw_world_segment(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, 
     rasterizeLine(fb, projectCameraSpace(vc, ac), projectCameraSpace(vc, bc), r, g, bC);
 }
 
-// Whole-triangle near/far rejection rather than exact clipping -- unchanged
-// from the wireframe rasterizer. Never culls: used only by the overlay
-// markers below, whose winding is not a guaranteed fact.
+// Exact near/far clip (Task R5b, SR-15), fan-triangulated
+// ((v0,v1,v2), (v0,v2,v3), ... over the clipped polygon) -- replaces the
+// whole-triangle rejection this function used before this task. Never
+// culls: used only by the overlay markers below, whose winding is not a
+// guaranteed fact.
 void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                           uint8_t r, uint8_t g, uint8_t bC) {
     const Vec3 ac = worldToCameraSpace(vc, a);
     const Vec3 bc = worldToCameraSpace(vc, b);
     const Vec3 cc = worldToCameraSpace(vc, c);
-    const auto inRange = [&](const Vec3& p) { return p.z <= -vc.nearP && p.z >= -vc.farP; };
-    if (!inRange(ac) || !inRange(bc) || !inRange(cc)) {
-        return;
+    const std::vector<ClipVertex> poly = clipTriangleNearFar(vc, ac, bc, cc);
+    for (size_t i = 1; i + 1 < poly.size(); ++i) {
+        rasterizeTriangleFlat(fb, projectCameraSpace(vc, poly[0].pos), projectCameraSpace(vc, poly[i].pos),
+                               projectCameraSpace(vc, poly[i + 1].pos), r, g, bC);
     }
-    rasterizeTriangleFlat(fb, projectCameraSpace(vc, ac), projectCameraSpace(vc, bc), projectCameraSpace(vc, cc), r,
-                           g, bC);
 }
 
-// NEW: same near/far rejection as draw_world_triangle, plus the SR-13
-// back-face cull for DrawMode::shaded mesh geometry.
+// NEW (relative to draw_world_triangle): the SR-13 back-face cull for
+// DrawMode::shaded mesh geometry, applied AFTER the same exact near/far clip
+// draw_world_triangle now uses (Task R5b, SR-15) -- clipping and culling are
+// independent steps, in that order: clip the camera-space triangle first,
+// fan-triangulate, project each output triangle, THEN cull it, because
+// edgeFn's front/back sign convention (below) is only defined post-
+// projection. Fan triangulation preserves the source triangle's facing, so
+// every output triangle inherits the same cull decision the original,
+// unclipped triangle would have gotten.
 //
 // Sign derivation: camera space is right-handed with forward = -Z (a point
 // in front of the camera has pc.z < 0; projectCameraSpace's invNegZ =
@@ -342,17 +414,16 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
     const Vec3 ac = worldToCameraSpace(vc, a);
     const Vec3 bc = worldToCameraSpace(vc, b);
     const Vec3 cc = worldToCameraSpace(vc, c);
-    const auto inRange = [&](const Vec3& p) { return p.z <= -vc.nearP && p.z >= -vc.farP; };
-    if (!inRange(ac) || !inRange(bc) || !inRange(cc)) {
-        return;
+    const std::vector<ClipVertex> poly = clipTriangleNearFar(vc, ac, bc, cc);
+    for (size_t i = 1; i + 1 < poly.size(); ++i) {
+        const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
+        const ScreenPoint sb = projectCameraSpace(vc, poly[i].pos);
+        const ScreenPoint sc = projectCameraSpace(vc, poly[i + 1].pos);
+        if (edgeFn(sa, sb, sc) > 0.0) {
+            continue;  // SR-13: back face, shaded mode culls it.
+        }
+        rasterizeTriangleFlat(fb, sa, sb, sc, r, g, bC);
     }
-    const ScreenPoint sa = projectCameraSpace(vc, ac);
-    const ScreenPoint sb = projectCameraSpace(vc, bc);
-    const ScreenPoint sc = projectCameraSpace(vc, cc);
-    if (edgeFn(sa, sb, sc) > 0.0) {
-        return;  // SR-13: back face, shaded mode culls it.
-    }
-    rasterizeTriangleFlat(fb, sa, sb, sc, r, g, bC);
 }
 
 // ---------------------------------------------------------------------------

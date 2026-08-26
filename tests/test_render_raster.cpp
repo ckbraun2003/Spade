@@ -19,6 +19,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "core/error.hpp"
+#include "core/fp32_math.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
@@ -1036,4 +1037,315 @@ TEST(RasterGolden, CylinderStaticAndDynamicBoxTopDownMatchesCommittedManifest) {
     ASSERT_GT(count_non_matching_bgr(pixels, bg), 0u)
         << "sanity floor: this scene/camera must actually show something before its hash means anything";
     check_against_manifest("cylinder_static_dynamic_box_top_down", pixels);
+}
+
+// ===========================================================================
+// 8. Task R5b (controller ruling SR-15): exact near/far triangle clipping.
+// Before this task, draw_world_triangle and draw_mesh_triangle_shaded both
+// rejected a triangle OUTRIGHT the instant any one vertex fell outside the
+// [near, far] camera-space slab -- a camera approaching a wall made that
+// wall's triangles vanish one by one as they straddled the near plane,
+// rather than showing the part still in view. Every render() call below is
+// a black-box call into the real renderer -- none of these tests reach into
+// raster_cpu.cpp's anonymous-namespace internals -- so the geometry is
+// engineered so a straddling triangle's outcome (empty vs. non-empty,
+// or its exact silhouette) is knowable independently of the implementation.
+// ===========================================================================
+
+namespace {
+
+// Local, independent (never calls into raster_cpu.cpp) re-derivation of the
+// camera-space arithmetic needed to predict the EXACT clipped-and-projected
+// triangle for RasterCpu.NearPlaneClipIsGeometricallyExact below -- the same
+// "second source" posture as this file's own channel_to_byte/expected_bgr.
+struct Cam3 {
+    double x = 0.0, y = 0.0, z = 0.0;
+};
+[[nodiscard]] Cam3 operator+(const Cam3& a, const Cam3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+[[nodiscard]] Cam3 operator-(const Cam3& a, const Cam3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+[[nodiscard]] Cam3 operator*(const Cam3& a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+
+// Independently re-derives clipSegmentToHalfSpace's own interpolation
+// formula (task-R5b-brief.md: t = (planeZ - p0.z) / (p1.z - p0.z),
+// p0 + (p1 - p0) * t) for the one crossing this test needs.
+[[nodiscard]] Cam3 lerp_to_plane(Cam3 p0, Cam3 p1, double planeZ) {
+    const double t = (planeZ - p0.z) / (p1.z - p0.z);
+    return p0 + (p1 - p0) * t;
+}
+
+struct Px {
+    double x = 0.0, y = 0.0;
+};
+
+// Independently re-derives projectCameraSpace's own tan32() -- same two
+// steps (narrow to float, sin32/cos32) -- by calling spade::math::sin32/
+// cos32 DIRECTLY rather than re-deriving the ratio some other way. These are
+// the engine's own approved deterministic replacements, not libm (this file
+// is scanned by BitPortability.NoLibmTranscendentalInEngineOrGoldenTestSource,
+// per this program's own history of libm-portability defects: neither
+// "sin32(" nor "cos32(" is on that scan's forbidden-pattern list). Calling
+// the SAME functions production calls -- rather than assuming a "nice" FOV
+// makes the ratio an exact constant -- keeps this oracle bit-for-bit
+// identical to production's own f, which matters right at a clipped
+// triangle's vertex tips where even a handful of ULPs can flip a pixel.
+[[nodiscard]] double tan32_oracle(double half_fov_rad) {
+    const float x = static_cast<float>(half_fov_rad);
+    return static_cast<double>(spade::math::sin32(x)) / static_cast<double>(spade::math::cos32(x));
+}
+
+// Independently re-derives projectCameraSpace's perspective-divide formula
+// for a camera at the world origin with identity orientation (world space
+// IS camera space here -- no rotation/translation to account for).
+[[nodiscard]] Px project_camera_space_oracle(Cam3 pc, double fov_y_radians, double width, double height) {
+    const double f = 1.0 / tan32_oracle(fov_y_radians * 0.5);
+    const double aspect = width / height;
+    const double invNegZ = 1.0 / (-pc.z);
+    const double xNdc = (f / aspect) * pc.x * invNegZ;
+    const double yNdc = f * pc.y * invNegZ;
+    return {(xNdc * 0.5 + 0.5) * width, (1.0 - (yNdc * 0.5 + 0.5)) * height};
+}
+
+// Independently re-derives rasterizeTriangleFlat's own fill rule (both
+// windings count as inside a pixel whose center is `p`).
+[[nodiscard]] bool inside_triangle(Px v0, Px v1, Px v2, Px p) {
+    const auto edge = [](Px a, Px b, Px c) { return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x); };
+    const double w0 = edge(v1, v2, p), w1 = edge(v2, v0, p), w2 = edge(v0, v1, p);
+    return (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+}
+
+}  // namespace
+
+TEST(RasterCpu, TriangleStraddlingNearPlaneRendersNonEmptyPixels) {
+    // One vertex (z=+0.3) is behind the near plane (default 0.1); the other
+    // two (z=-6) are in front. Camera at the world origin, identity
+    // orientation, so world space IS camera space and these z values ARE
+    // the near/far test's own input.
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));
+    MeshData mesh;
+    mesh.positions = {glm::vec3(-1.0f, -1.0f, -6.0f), glm::vec3(1.0f, -1.0f, -6.0f), glm::vec3(0.0f, 1.0f, 0.3f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};  // front-facing: 2D cross of (p1-p0),(p2-p0) using x,y only is +4
+
+    const RenderScene scene = make_scene(mesh);
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u)
+        << "exact clipping must draw the surviving portion instead of discarding the whole triangle -- this "
+           "rendered ZERO pixels under the pre-fix whole-triangle near/far rejection";
+}
+
+TEST(RasterCpu, TriangleStraddlingFarPlaneRendersNonEmptyPixels) {
+    // The symmetric far-plane case: one vertex (z=-11) is beyond a reduced
+    // far plane (10); the other two (z=-9) are in front. Same shape as the
+    // near-plane case above, shifted in depth.
+    Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));
+    camera.far_plane = 10.0f;
+    MeshData mesh;
+    mesh.positions = {glm::vec3(-1.0f, -1.0f, -9.0f), glm::vec3(1.0f, -1.0f, -9.0f), glm::vec3(0.0f, 1.0f, -11.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};  // front-facing, same as the near-plane case
+
+    const RenderScene scene = make_scene(mesh);
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_GT(count_non_matching_bgr(storage, bg), 0u)
+        << "one vertex is beyond the far plane, two are in front -- exact clipping must still draw the "
+           "surviving portion (this rendered ZERO pixels under the pre-fix whole-triangle rejection)";
+}
+
+TEST(RasterCpu, SpawnMarkerOverlaySurvivesNearPlaneStraddle) {
+    // draw_world_triangle (the overlay/marker path) shares the SAME pre-fix
+    // whole-triangle rejection bug as draw_mesh_triangle_shaded -- SR-15's
+    // own text warns that fixing only the mesh path would leave spawn/body
+    // markers vanishing at close range while real geometry survives. This
+    // spawn marker sits close enough to the camera (z=-0.05, already past
+    // the default near_plane=0.1) that BOTH of its two triangles straddle
+    // the near plane; before this fix, both are rejected outright and the
+    // whole marker disappears.
+    RenderScene scene = make_empty_overlay_scene();
+    scene.spawn_positions = {glm::vec3(0.0f, 0.0f, -0.05f)};
+    scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));  // at the origin: world == camera space
+    RenderOptions options;
+    options.overlays = true;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto spawn = bgr(190, 90, 170);
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth, 0, kSmallHeight, spawn))
+        << "the spawn marker's near-straddling triangle must still contribute visible pixels -- this rendered "
+           "no spawn-colored pixels at all under the pre-fix whole-triangle rejection";
+}
+
+TEST(RasterCpu, TriangleEntirelyBehindNearPlaneRendersNothing) {
+    // The trivial-reject path must survive exact clipping: a triangle with
+    // EVERY vertex outside the slab must still render nothing.
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));  // make_single_triangle's z=+1 is now entirely behind
+    const RenderScene scene = make_scene(make_single_triangle(/*reversed=*/false));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+        << "a triangle entirely behind the near plane must render nothing after exact clipping too";
+}
+
+TEST(RasterCpu, TriangleEntirelyBeyondFarPlaneRendersNothing) {
+    Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));
+    camera.far_plane = 5.0f;
+    MeshData mesh;
+    mesh.positions = {glm::vec3(1.0f, -1.0f, -10.0f), glm::vec3(1.0f, 1.0f, -10.0f), glm::vec3(-1.0f, 1.0f, -10.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 1, 2};  // front-facing, same shape/winding as make_single_triangle(false)
+
+    const RenderScene scene = make_scene(mesh);
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+        << "a triangle entirely beyond the far plane must render nothing after exact clipping too";
+}
+
+TEST(RasterCpu, BackFacingTriangleStraddlingNearPlaneStaysCulledAfterClipping) {
+    // The SAME straddling geometry as TriangleStraddlingNearPlaneRendersNon-
+    // EmptyPixels above, but reversed winding (back-facing). Clipping must
+    // not become a way for a back face to leak through the SR-13 cull.
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 0.0f));
+    MeshData mesh;
+    mesh.positions = {glm::vec3(-1.0f, -1.0f, -6.0f), glm::vec3(1.0f, -1.0f, -6.0f), glm::vec3(0.0f, 1.0f, 0.3f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 2, 1};  // reversed vs. the front-facing case -- back-facing
+
+    const RenderScene scene = make_scene(mesh);
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto bg = background_pixel(kSmallWidth, kSmallHeight);
+    EXPECT_EQ(count_non_matching_bgr(storage, bg), 0u)
+        << "clipping a straddling triangle must not become a way for a back-facing triangle to leak through "
+           "the SR-13 cull (fan triangulation preserves the source triangle's facing)";
+}
+
+TEST(RasterCpu, NearPlaneClipIsGeometricallyExactNotJustNonEmpty) {
+    // A wedge: P0/P1 share depth z=-2 (an edge parallel to the near plane);
+    // apex P2 is farther away at z=-6. Camera at the world origin, identity
+    // orientation (world space IS camera space, so no worldToCameraSpace
+    // call is needed either).
+    constexpr uint32_t kDim = 400;  // square target: aspect = 1 exactly
+    Camera camera;
+    camera.position = glm::vec3(0.0f);
+    camera.fov_y_radians = 1.5707963267948966f;  // pi/2 = 90 degrees
+
+    // Indices {0,2,1} order the triangle (P0,P2,P1) CCW as seen from the
+    // camera (front-facing: 2D cross of (P2-P0),(P1-P0) using x,y only is
+    // +6) -- shaded mode must not cull it, before or after clipping.
+    MeshData mesh;
+    mesh.positions = {glm::vec3(0.0f, -1.0f, -2.0f), glm::vec3(0.0f, 1.0f, -2.0f), glm::vec3(3.0f, 0.0f, -6.0f)};
+    mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    mesh.indices = {0, 2, 1};
+
+    RenderScene scene = make_scene(mesh);
+    const Material yellow{.base_color = glm::vec4(1.0f, 1.0f, 0.0f, 1.0f)};
+    scene.materials = {yellow};
+    const auto expected = expected_bgr(yellow);
+
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+
+    // Frame A: near_plane (0.1, default) is below both depths -- the FULL
+    // triangle is inside the slab, unclipped. Sanity baseline only.
+    camera.near_plane = 0.1f;
+    std::vector<uint8_t> storage_full;
+    RenderTarget target_full = make_target(storage_full, kDim, kDim);
+    render_or_fail(scene, camera, options, target_full);
+    const auto bg = background_pixel(kDim, kDim);
+    ASSERT_GT(count_non_matching_bgr(storage_full, bg), 0u) << "sanity: the full triangle must be visible";
+
+    // Frame B: SAME camera position/orientation/fov -- so the world->screen
+    // mapping is IDENTICAL to Frame A's; projectCameraSpace never reads
+    // near/far -- but near_plane = 4.1, strictly between the two depths.
+    // P0/P1 (z=-2) now fall outside the valid slab and P2 (z=-6) stays
+    // inside: exactly a "two behind, one in front" straddle.
+    camera.near_plane = 4.1f;
+    std::vector<uint8_t> storage_clipped;
+    RenderTarget target_clipped = make_target(storage_clipped, kDim, kDim);
+    render_or_fail(scene, camera, options, target_clipped);
+
+    // Independently re-derive the exact clipped triangle -- camera space ==
+    // world space here, so no worldToCameraSpace call is needed, just the
+    // two crossing edges (P0-P2) and (P2-P1), via the SAME interpolation
+    // formula clipSegmentToHalfSpace already uses.
+    const Cam3 p0{0.0, -1.0, -2.0}, p1{0.0, 1.0, -2.0}, p2{3.0, 0.0, -6.0};
+    const double planeZ = -static_cast<double>(camera.near_plane);  // -4.1
+    const Cam3 i1 = lerp_to_plane(p0, p2, planeZ);
+    const Cam3 i2 = lerp_to_plane(p2, p1, planeZ);
+    const double fov = static_cast<double>(camera.fov_y_radians);
+    const Px v0 = project_camera_space_oracle(i1, fov, kDim, kDim);
+    const Px v1 = project_camera_space_oracle(p2, fov, kDim, kDim);
+    const Px v2 = project_camera_space_oracle(i2, fov, kDim, kDim);
+
+    size_t expected_count = 0;
+    for (uint32_t y = 0; y < kDim; ++y) {
+        for (uint32_t x = 0; x < kDim; ++x) {
+            const bool want = inside_triangle(v0, v1, v2, Px{x + 0.5, y + 0.5});
+            const size_t idx = (static_cast<size_t>(y) * kDim + x) * 4;
+            const bool got = storage_clipped[idx] == expected[0] && storage_clipped[idx + 1] == expected[1] &&
+                              storage_clipped[idx + 2] == expected[2];
+            ASSERT_EQ(got, want) << "pixel (" << x << "," << y
+                                  << ") disagrees with the analytically clipped triangle -- clipping must be "
+                                     "geometrically exact, not merely non-empty";
+            if (want) {
+                ++expected_count;
+            }
+        }
+    }
+    EXPECT_GT(expected_count, 0u) << "the analytic reference triangle itself must be non-degenerate";
+
+    // The straddling frame's visible geometry must be a subset of the
+    // fully-inside frame's -- same camera/projection in both, so clipping
+    // only ever REMOVES silhouette, never relocates or adds to it.
+    for (uint32_t y = 0; y < kDim; ++y) {
+        for (uint32_t x = 0; x < kDim; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * kDim + x) * 4;
+            const bool clipped_pixel_is_material =
+                storage_clipped[idx] == expected[0] && storage_clipped[idx + 1] == expected[1] &&
+                storage_clipped[idx + 2] == expected[2];
+            if (!clipped_pixel_is_material) {
+                continue;
+            }
+            EXPECT_TRUE(storage_full[idx] == expected[0] && storage_full[idx + 1] == expected[1] &&
+                        storage_full[idx + 2] == expected[2])
+                << "(" << x << "," << y << ") is material-colored in the clipped frame but not in the "
+                   "fully-inside frame -- same camera/projection, so this can only mean the clip leaked "
+                   "geometry outside the original triangle's silhouette";
+        }
+    }
 }
