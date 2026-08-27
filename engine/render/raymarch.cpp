@@ -56,8 +56,8 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
 
         for (uint32_t x = 0; x < width; ++x) {
             // Pinhole camera ray through pixel center (x+0.5, y+0.5) -- the
-            // SAME NDC convention raster_cpu.cpp's own
-            // background_ray_camera_space uses, but normalized here: sphere
+            // SAME NDC convention raster_cpu.cpp's own background pass
+            // (draw_sky_and_ground_background) uses, but normalized here: sphere
             // tracing steps `t` by a real WORLD-SPACE distance every
             // iteration, which is only correct when `dir_world` has unit
             // length. Reconstructed for EVERY pixel now, not merely when

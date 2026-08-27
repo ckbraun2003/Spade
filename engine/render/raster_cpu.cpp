@@ -1009,26 +1009,69 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 // there anyway -- the mismatch is the bug, not any one frame of it).
 // ---------------------------------------------------------------------------
 
-// Reconstructs the camera-space, UN-normalized ray direction through pixel
-// center (px+0.5, py+0.5) -- the exact inverse of projectCameraSpace's own
-// perspective divide, evaluated at pc.z = -1 so the direction's scale is
-// whatever falls out of that choice. Never normalized: the analytic ground
-// pass below only ever compares a t computed from this ray AGAINST ANOTHER
-// t computed from the SAME ray (nearest hit among several standalone ground
-// planes) or tests its SIGN (front/back) -- both scale-invariant, so
-// normalizing here would only add a sqrt this pass does not need.
+// The per-pixel camera-space background ray through pixel center (px+0.5,
+// py+0.5) is `Vec3{xNdc*aspect/f, yNdc/f, -1.0}` -- the exact inverse of
+// projectCameraSpace's own perspective divide, evaluated at pc.z = -1 so
+// the direction's scale is whatever falls out of that choice, and NEVER
+// normalized: the analytic ground pass below only ever compares a t
+// computed from this ray AGAINST ANOTHER t computed from the SAME ray
+// (nearest hit among several standalone ground planes) or tests its SIGN
+// (front/back) -- both scale-invariant, so normalizing here would only add
+// a sqrt this pass does not need.
 //
 // `f`/`aspect` are precomputed by the caller (review IMPORTANT 3, fix round
 // 1): both are per-VIEW constants (same for every one of a frame's pixels),
-// so computing them here -- one sin32+cos32+divide plus a divide, PER PIXEL
-// -- was pure, measured waste (2.5-4.4x slower at 1280x720; hoisting alone
+// so computing them per pixel -- one sin32+cos32+divide plus a divide --
+// was pure, measured waste (2.5-4.4x slower at 1280x720; hoisting alone
 // took a ground-bearing frame from 77.6ms to 31.3ms). The same species of
 // defect R5b's own review caught in this file (allocation-per-triangle).
-[[nodiscard]] Vec3 background_ray_camera_space(double f, double aspect, uint32_t width, uint32_t height, uint32_t px,
-                                                uint32_t py) {
-    const double xNdc = 2.0 * (static_cast<double>(px) + 0.5) / static_cast<double>(width) - 1.0;
-    const double yNdc = 1.0 - 2.0 * (static_cast<double>(py) + 0.5) / static_cast<double>(height);
-    return Vec3{xNdc * aspect / f, yNdc / f, -1.0};
+//
+// S7a Task VQ-B (ruling SR-34/SR-37 -- the user's CK-2 verdict, "standard
+// resolution, just low detail and feature"; this task fixes resolution
+// only, and this hoist recovers what Task VQ-A's elevation-based sky
+// gradient cost by killing this pass's OLD "skip ray reconstruction for a
+// ground-less world" gate -- see draw_sky_and_ground_background()'s own
+// comment on that gate, unchanged below). WORLD-space background rays are
+// no longer reconstructed per pixel via rotateByQuat(camQ, dirCam) (one
+// quaternion rotation -- two cross products -- per pixel); instead this
+// exploits that rotateByQuat(q, ·) is LINEAR in its second argument, so for
+// FIXED camQ:
+//   rotateByQuat(camQ, {xNdc*aspect/f, yNdc/f, -1.0})
+//     == (xNdc*aspect/f) * rotateByQuat(camQ, {1,0,0})     [right_world]
+//      + (yNdc/f)        * rotateByQuat(camQ, {0,1,0})     [up_world]
+//      +                   rotateByQuat(camQ, {0,0,-1})    [forward_world]
+// `xNdc` depends ONLY on the pixel's COLUMN, `yNdc` ONLY on its ROW, and the
+// third term is IDENTICAL for every pixel in the frame (dirCam.z is always
+// exactly -1.0) -- so `right_world`/`up_world`/`forward_world` are three
+// rotations per FRAME (not width*height), the two scaled terms are one
+// Vec3 per COLUMN and one per ROW (not one per pixel), and what remains at
+// each actual pixel is a plain three-term Vec3 add. draw_sky_and_ground_
+// background() below builds `col_ray`/`row_ray` from this struct and reads
+// them in its own per-pixel loop.
+//
+// BYTE-EXACT, VERIFIED EMPIRICALLY, NOT ASSUMED FROM THE ALGEBRA ABOVE:
+// linearity is a fact about REAL-number arithmetic; IEEE 754 rounding does
+// not automatically inherit it, and this hoist is a genuine change in
+// floating-point OPERATION ORDER (three separate rotateByQuat calls summed
+// per pixel, instead of one rotateByQuat call on the fully-assembled
+// per-pixel vector). Checked against all four RasterGolden frame hashes and
+// all 30 AgreementMatrix cases (real orbit-camera quaternions, not merely
+// axis-aligned ones) before being kept -- zero pixels moved on either; see
+// task-VQ-B-report.md for the run. Had either moved by even one bit, this
+// hoist would have been reverted, not tolerated: this task's own rule is
+// "optimization, not a behaviour change."
+struct BackgroundRayBasis {
+    Vec3 right_world;    // rotateByQuat(camQ, {1,0,0})
+    Vec3 up_world;       // rotateByQuat(camQ, {0,1,0})
+    Vec3 forward_world;  // rotateByQuat(camQ, {0,0,-1}) -- dirCam.z is always exactly -1.0
+};
+
+[[nodiscard]] BackgroundRayBasis background_ray_basis(const double camQ[4]) {
+    return BackgroundRayBasis{
+        rotateByQuat(camQ, Vec3{1.0, 0.0, 0.0}),
+        rotateByQuat(camQ, Vec3{0.0, 1.0, 0.0}),
+        rotateByQuat(camQ, Vec3{0.0, 0.0, -1.0}),
+    };
 }
 
 // `draw_analytic_ground` gates the INFINITE analytic ground to
@@ -1075,7 +1118,10 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     // world" saving (70.8ms -> 15.9ms at 1280x720) -- that saving assumed
     // the OLD row-only sky gradient, for which a screen row was the whole
     // input; a row alone is no longer enough to colour a pixel correctly
-    // under camera pitch, only a real ray is.
+    // under camera pitch, only a real ray is. S7a Task VQ-B recovers PART of
+    // this cost a different way, below: not by skipping ray reconstruction,
+    // but by no longer doing it PER PIXEL (see background_ray_basis()'s own
+    // comment above for the measured recovery and its byte-exactness proof).
     const Vec3 camPos{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
     double camQ[4];
     // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
@@ -1085,6 +1131,22 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     quatConjugate(vc.camOrientationConj, camQ);
     const double f = 1.0 / tan32(vc.fovY * 0.5);
     const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
+
+    // S7a Task VQ-B: the three per-frame rotated basis vectors, and the
+    // per-column/per-row vectors built from them -- see
+    // background_ray_basis()'s own comment above for the linearity
+    // argument this hoist relies on and its byte-exactness verification.
+    const BackgroundRayBasis basis = background_ray_basis(camQ);
+    std::vector<Vec3> col_ray(fb.width);
+    for (uint32_t x = 0; x < fb.width; ++x) {
+        const double x_ndc = 2.0 * (static_cast<double>(x) + 0.5) / static_cast<double>(vc.width) - 1.0;
+        col_ray[x] = basis.right_world * (x_ndc * aspect / f);
+    }
+    std::vector<Vec3> row_ray(fb.height);
+    for (uint32_t y = 0; y < fb.height; ++y) {
+        const double y_ndc = 1.0 - 2.0 * (static_cast<double>(y) + 0.5) / static_cast<double>(vc.height);
+        row_ray[y] = basis.up_world * (y_ndc / f);
+    }
 
     // uint8_t, not vector<bool> (review MINOR 9): this file already removed
     // one hidden-cost STL specialization (R5b's own per-triangle heap
@@ -1115,12 +1177,15 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
 
     for (uint32_t y = 0; y < fb.height; ++y) {
         for (uint32_t x = 0; x < fb.width; ++x) {
-            // The real per-pixel world-space background ray -- reconstructed
-            // for EVERY pixel now (see the per-frame-constants comment
-            // above), not merely when a ground plane exists, since the sky
-            // gradient below needs it too.
-            const Vec3 dirCam = background_ray_camera_space(f, aspect, vc.width, vc.height, x, y);
-            const Vec3 dirWorld = rotateByQuat(camQ, dirCam);
+            // The real per-pixel world-space background ray -- built for
+            // EVERY pixel now (see the per-frame-constants comment above),
+            // not merely when a ground plane exists, since the sky gradient
+            // below needs it too. S7a Task VQ-B: a per-column vector plus a
+            // per-row vector plus the per-frame forward term, added once
+            // here -- replaces what used to be a fresh rotateByQuat(camQ,
+            // dirCam) call at every pixel. See background_ray_basis()'s own
+            // comment for why this is bit-exact, not merely fast.
+            const Vec3 dirWorld = (col_ray[x] + row_ray[y]) + basis.forward_world;
 
             // Elevation-based sky gradient (ruling SR-23, Task VQ-A;
             // sky_gradient_color() lives in render/scene.hpp, shared

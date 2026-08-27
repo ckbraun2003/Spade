@@ -190,8 +190,9 @@ struct ShadedColor {
 // direction matters; this function divides by its own length itself), so a
 // caller that already has an un-normalized ray handy (raster_cpu.cpp's own
 // background pass, which deliberately never normalizes its background ray --
-// see background_ray_camera_space()'s own comment) does not need to spend an
-// extra sqrt unit-normalizing it just to call this.
+// see draw_sky_and_ground_background()'s own comment, and S7a Task VQ-B's
+// background_ray_basis() comment for how that ray is now built) does not
+// need to spend an extra sqrt unit-normalizing it just to call this.
 //
 // `dir.y / |dir|` is exactly sin(elevation) -- the ray's angle above the
 // horizontal (Y=0) plane -- which is monotone over the entire +/-90 degree
