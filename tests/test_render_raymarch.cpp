@@ -122,9 +122,28 @@ struct Bgr {
     return static_cast<uint8_t>(std::lround(clamped * 255.0f));
 }
 
-[[nodiscard]] Bgr expected_sky_bgr(const Lighting& lighting, uint32_t height, uint32_t y) {
-    const float t = height > 1 ? static_cast<float>(y) / static_cast<float>(height - 1) : 0.0f;
-    const glm::vec3 sky = sky_gradient_color(lighting, t);
+// Independent re-derivation of render_raymarch()'s own per-pixel camera-ray
+// reconstruction (render/raymarch.cpp), in plain std::tan/quaternion-vector
+// rotation -- this file is not golden-feeding (see the file header comment),
+// so ordinary libm is fine here. Elevation-based since Task VQ-A/SR-23: the
+// sky colour is now a function of the ACTUAL per-pixel world-space ray
+// (both x AND y), not merely screen row -- a camera's own horizontal FOV
+// makes even an unrotated ray's elevation vary slightly across a row (the
+// ray's world-Y component is one thing, but sky_gradient_color() divides by
+// the ray's full length, which every column's own x-component changes), so
+// a row-only oracle would silently mismatch at off-centre columns.
+[[nodiscard]] Bgr expected_sky_bgr(const Lighting& lighting, const Camera& camera, uint32_t width, uint32_t height,
+                                    uint32_t x, uint32_t y) {
+    const double half_fov = static_cast<double>(camera.fov_y_radians) * 0.5;
+    const double f = 1.0 / std::tan(half_fov);
+    const double aspect = static_cast<double>(width) / static_cast<double>(height);
+    const double x_ndc = 2.0 * (static_cast<double>(x) + 0.5) / static_cast<double>(width) - 1.0;
+    const double y_ndc = 1.0 - 2.0 * (static_cast<double>(y) + 0.5) / static_cast<double>(height);
+    const glm::dvec3 dir_cam(x_ndc * aspect / f, y_ndc / f, -1.0);
+    const glm::dquat q(static_cast<double>(camera.orientation.w), static_cast<double>(camera.orientation.x),
+                        static_cast<double>(camera.orientation.y), static_cast<double>(camera.orientation.z));
+    const glm::dvec3 dir_world = q * dir_cam;
+    const glm::vec3 sky = sky_gradient_color(lighting, glm::vec3(dir_world));
     return Bgr{to_byte(sky.b), to_byte(sky.g), to_byte(sky.r), 0xFFu};
 }
 
@@ -208,8 +227,8 @@ TEST(RaymarchSmoke, HoverPadCoverageWithinTwoPercentOfTessellated) {
 
     uint32_t shaded_covered = 0, raymarch_covered = 0;
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
                 ++shaded_covered;
             }
@@ -258,8 +277,8 @@ TEST(RaymarchSmoke, EmptySdfProgramYieldsSkyOnlyNeverFaults) {
     render_or_fail(scene, camera, options, target);
 
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             ASSERT_EQ(pixel_at(storage, kW, x, y), expected)
                 << "(" << x << "," << y << ") must be exactly the sky gradient -- an empty SDF program has nothing "
                                             "to hit";
@@ -291,8 +310,8 @@ TEST(RaymarchSmoke, NullSdfPointerYieldsSkyOnlyNeverFaults) {
     render_or_fail(scene, camera, options, target);
 
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             ASSERT_EQ(pixel_at(storage, kW, x, y), expected)
                 << "(" << x << "," << y << ") must be exactly the sky gradient -- a null scene.sdf has nothing to "
                                             "hit and must never be dereferenced";
@@ -417,8 +436,8 @@ TEST(RaymarchSmoke, SphereAnalyticSilhouetteAgreesWithTheExactCircleWithinHalfAP
 
     uint32_t raymarch_covered = 0, shaded_covered = 0;
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             if (!(pixel_at(raymarch_storage, kW, x, y) == expected_sky)) {
                 ++raymarch_covered;
             }
@@ -479,8 +498,8 @@ TEST(RaymarchSmoke, CameraFullyInsideAConvexSolidSeesNothingLikeRastersBackFaceC
     render_or_fail(scene, camera, raymarch_options, raymarch_target);
 
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             ASSERT_EQ(pixel_at(shaded_storage, kW, x, y), expected_sky)
                 << "sanity: raster's own SR-13 back-face cull must show nothing from inside a convex box";
             ASSERT_EQ(pixel_at(raymarch_storage, kW, x, y), expected_sky)
@@ -517,8 +536,8 @@ TEST(RaymarchSmoke, GeometryBeyondFarPlaneIsInvisibleToBothPaths) {
     render_or_fail(scene, camera, raymarch_options, raymarch_target);
 
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             ASSERT_EQ(pixel_at(shaded_storage, kW, x, y), expected_sky)
                 << "sanity: raster's own far-plane clip must remove this sphere entirely";
             ASSERT_EQ(pixel_at(raymarch_storage, kW, x, y), expected_sky)
@@ -579,8 +598,8 @@ TEST(RaymarchSmoke, MaterialMisresolutionAgainstSkyColourNoLongerErasesTheSilhou
 
     uint32_t shaded_covered = 0, raymarch_covered = 0;
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
                 ++shaded_covered;
             }
@@ -648,8 +667,8 @@ TEST(RaymarchSmoke, GeometryWithinTheFrustumButBeyondTheOldRadialCapIsStillVisib
 
     uint32_t shaded_covered = 0, raymarch_covered = 0;
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
                 ++shaded_covered;
             }
@@ -714,8 +733,8 @@ TEST(RaymarchSmoke, CameraInsideASolidWithAnotherObjectBehindItSeesTheSecondObje
 
     uint32_t shaded_covered = 0, raymarch_covered = 0;
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected_sky = expected_sky_bgr(scene.lighting, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected_sky = expected_sky_bgr(scene.lighting, camera, kW, kH, x, y);
             if (!(pixel_at(shaded_storage, kW, x, y) == expected_sky)) {
                 ++shaded_covered;
             }

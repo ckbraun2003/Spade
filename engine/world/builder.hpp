@@ -106,9 +106,28 @@ inline constexpr uint32_t kMaterialShadingCount = 3;
 // loader both guarantee it, inserting this very default when the caller never
 // added one), so `node_materials`/`PropDesc::material`'s default value of 0
 // always resolves to something.
+//
+// `base_color` DEFAULTS TO A LIGHT NEUTRAL GREY, NOT WHITE (Task VQ-A,
+// rulings SR-33/SR-35 -- the user's CK-2 verdict, "the rendering is pretty
+// horrible", measured as 70.6-79.9% of a shipped frame clipping to pure
+// (255,255,255)). shade_vertex_color()'s (render/scene.hpp) lambert term is
+// `base * (ambient + sun*N.L)`: a WHITE base has zero headroom, because
+// `ambient(0.1) + sun(1.0)*N.L` alone exceeds 1.0 the instant `N.L > 0.9` --
+// every near-vertical-to-the-sun surface clips, independent of how the sun
+// is angled. 0.8 leaves the same worst case (`N.L == 1`, the sun directly
+// aligned with a surface's normal) at `0.8 * 1.1 = 0.88`, comfortably under
+// 1.0 -- headroom that survives regardless of what LightingDesc::sun_color/
+// sun_intensity/ambient_color a world author later dials in, not merely
+// under today's values. DO NOT "fix" this back to white: a white default
+// is what produced the blown-out look CK-2 flagged, and raising
+// ambient_color instead (the OTHER tempting fix) would lift the shadow
+// floor without touching this ceiling, flattening contrast further rather
+// than restoring headroom -- see task-VQ-A-brief.md and LightingDesc::
+// sun_direction's own comment below for the matching light-angle half of
+// this fix.
 struct MaterialDesc {
     std::string name = "default";
-    glm::vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
+    glm::vec4 base_color{0.800000012f, 0.800000012f, 0.800000012f, 1.0f};
     MaterialShading shading = MaterialShading::lambert;
 };
 
@@ -120,8 +139,24 @@ struct MaterialDesc {
 // arrives from, not the direction it travels); need not be pre-normalized --
 // R6 normalizes it, the same convention SdfPose's rotation already uses for
 // authoring convenience.
+//
+// DEFAULTS TO AN ELEVATED, OFF-AXIS SUN, NOT STRAIGHT OVERHEAD (Task VQ-A --
+// see MaterialDesc::base_color's own comment for the matching exposure half
+// of this fix). A straight-overhead sun (the old `(0,1,0)` default) is the
+// worst possible angle for a single directional light: it maximises N.L on
+// every horizontal (ground) surface to exactly 1 -- the clipping case
+// above, at its worst -- while simultaneously flattening every VERTICAL
+// surface to N.L == 0 everywhere, so every wall in a shipped world sat on
+// the bare ambient floor with no shading gradient at all, regardless of
+// which way it faced. `(0.4, 0.8, 0.6)` keeps the sun high (a ground plane
+// still reads as clearly "lit from above", not raking or dim) while giving
+// it real horizontal components on TWO axes -- unequal (0.4 vs 0.6) so two
+// vertical faces at different angles to the sun shade to genuinely
+// different values instead of only ever discriminating one cardinal
+// direction. DO NOT move this back to straight overhead: that is the exact
+// authoring choice CK-2's verdict is about.
 struct LightingDesc {
-    glm::vec3 sun_direction{0.0f, 1.0f, 0.0f};   // overhead, by default
+    glm::vec3 sun_direction{0.400000006f, 0.800000012f, 0.600000024f};
     glm::vec3 sun_color{1.0f, 1.0f, 1.0f};
     float sun_intensity = 1.0f;
     glm::vec3 ambient_color{0.100000001f, 0.100000001f, 0.100000001f};

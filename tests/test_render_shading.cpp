@@ -339,16 +339,36 @@ namespace {
     return t > 0.0 ? std::optional<double>(t) : std::nullopt;
 }
 
-// Independent re-derivation of the sky gradient's own per-row formula
-// (draw_sky_and_ground_background): zenith at row 0, horizon at the last row.
-[[nodiscard]] Bgr expected_sky_bgr_oracle(const RenderScene& scene, uint32_t height, uint32_t y) {
-    const float t = height > 1 ? static_cast<float>(y) / static_cast<float>(height - 1) : 0.0f;
-    const glm::vec3 sky = scene.lighting.sky_zenith * (1.0f - t) + scene.lighting.sky_horizon * t;
+// Independent re-derivation of the sky gradient's own ELEVATION-based
+// formula (draw_sky_and_ground_background; ruling SR-23, Task VQ-A): reuses
+// this file's own background_ray_world_oracle() above for the per-pixel
+// world-space ray -- the sky colour depends on both x AND y now (a camera's
+// horizontal FOV makes even an unrotated ray's elevation vary slightly
+// across a row, since sky_gradient_color() divides by the ray's FULL
+// length, not merely its world-Y component), so unlike the old plain
+// fraction-of-SCREEN-ROW formula this oracle needs the real ray, not just a
+// row index.
+[[nodiscard]] Bgr expected_sky_bgr_oracle(const RenderScene& scene, const Camera& camera, uint32_t width,
+                                           uint32_t height, uint32_t x, uint32_t y) {
+    const glm::dvec3 dir = background_ray_world_oracle(camera, width, height, x, y);
+    const double len = std::sqrt(glm::dot(dir, dir));
+    const double elevation = len > 0.0 ? dir.y / len : 1.0;
+    const double horizon_fraction = std::clamp(1.0 - elevation, 0.0, 1.0);
+    const float hf = static_cast<float>(horizon_fraction);
+    // `zenith + (horizon-zenith)*hf`, not `zenith*(1-hf)+horizon*hf` -- see
+    // render/scene.hpp's own sky_gradient_color() comment (Task VQ-A): only
+    // this form is exact when sky_zenith == sky_horizon, and matches
+    // production's own formula so this independent oracle cannot disagree
+    // with it over a rounding half-boundary that the OTHER form could hit.
+    const glm::vec3 sky = scene.lighting.sky_zenith + (scene.lighting.sky_horizon - scene.lighting.sky_zenith) * hf;
     const auto to_byte = [](float c) {
         return static_cast<uint8_t>(std::lround(std::clamp(c, 0.0f, 1.0f) * 255.0f));
     };
     return Bgr{to_byte(sky.b), to_byte(sky.g), to_byte(sky.r)};
 }
+
+// Independent re-derivation of shade_vertex_color()'s own formula
+// (raster_cpu.cpp), for the ONE fixed material/normal a standalone ground
 
 // Independent re-derivation of shade_vertex_color()'s own formula
 // (raster_cpu.cpp), for the ONE fixed material/normal a standalone ground
@@ -507,7 +527,8 @@ TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
                              background_ray_world_oracle(camera, kWidth, kHeight, kWidth / 2, 0), glm::dvec3(0, 1, 0),
                              0.0);
     ASSERT_FALSE(top_hit) << "sanity: row 0 must be above the horizon for this camera pose";
-    EXPECT_EQ(pixel_at(storage, kWidth, kWidth / 2, 0), expected_sky_bgr_oracle(scene, kHeight, 0));
+    EXPECT_EQ(pixel_at(storage, kWidth, kWidth / 2, 0),
+              expected_sky_bgr_oracle(scene, camera, kWidth, kHeight, kWidth / 2, 0));
 
     // Hard horizon (review IMPORTANT 2's fix -- the original version of this
     // check found `transition_row` as "the first row that differs from the
@@ -527,7 +548,7 @@ TEST(RenderShading, TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam) {
     uint32_t transition_row = kHeight;
     for (uint32_t y = 0; y < kHeight; ++y) {
         const Bgr actual = pixel_at(storage, kWidth, col_inside, y);
-        const Bgr expected_sky = expected_sky_bgr_oracle(scene, kHeight, y);
+        const Bgr expected_sky = expected_sky_bgr_oracle(scene, camera, kWidth, kHeight, col_inside, y);
         if (actual == expected_sky) {
             ASSERT_EQ(transition_row, kHeight)
                 << "row " << y << " is sky again after row " << transition_row << " was ground -- not a single hard transition";
@@ -637,8 +658,8 @@ TEST(RenderShading, AnalyticGroundNeverDrawsWhenCameraIsAtOrBelowThePlane) {
     render_or_fail(scene, camera, options, target);
 
     for (uint32_t y = 0; y < kH; ++y) {
-        const Bgr expected = expected_sky_bgr_oracle(scene, kH, y);
         for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr expected = expected_sky_bgr_oracle(scene, camera, kW, kH, x, y);
             ASSERT_EQ(pixel_at(storage, kW, x, y), expected)
                 << "(" << x << "," << y << ") should be pure sky -- the camera is below the plane";
         }
@@ -686,4 +707,167 @@ TEST(RenderShading, AnalyticGroundPicksTheNearestOfSeveralPlanes) {
     EXPECT_EQ(pixel_at(storage, kW, kW / 2, kH / 2), expected_near)
         << "the NEARER plane (offset 0, material 2) must win, not the farther one (offset -5, material 1) that "
            "was authored first";
+}
+
+// ===========================================================================
+// 4. Task VQ-A (rulings SR-33/SR-35): the fix round for the user's CK-2
+//    verdict "the rendering is pretty horrible". Steps 1-3 of
+//    task-VQ-A-brief.md -- each a regression test the OLD (pre-fix)
+//    defaults/formula would genuinely have failed; each is verified below
+//    to actually discriminate, not merely to pass.
+// ===========================================================================
+
+TEST(RenderShading, DefaultMaterialUnderWorstCaseLightingLeavesHeadroomNoChannelReachesByte255) {
+    // Step 1: N.L = 1 (a surface normal aligned EXACTLY with the sun) is the
+    // worst case any lambert material can face -- shade_vertex_color()'s own
+    // formula there is base * (ambient_color + sun_color*sun_intensity).
+    // Under the OLD default (pure white base_color, ambient 0.1, sun_color
+    // (1,1,1), sun_intensity 1): 1.0 * (0.1 + 1.0) = 1.1, clipping to byte
+    // 255 on every channel -- exactly CK-2's "blown out" verdict. This
+    // constructs that worst case directly (a normal set to the scene's OWN
+    // normalized sun_direction, so N.L is exactly 1 by construction, not
+    // approximated by geometry) and asserts headroom remains under the
+    // CURRENT default.
+    const WorldDesc world = build_or_fail(base_builder());  // no .material()/.lighting() calls -- pure defaults
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_FALSE(scene.materials.empty());
+    ASSERT_GT(glm::length(scene.lighting.sun_direction), 0.0f)
+        << "sanity: scene_from_world must have a real, non-zero sun direction to normalize";
+
+    const glm::vec3 worst_case_normal = glm::normalize(scene.lighting.sun_direction);  // N.L == 1 exactly
+    const spade::render::ShadedColor shaded =
+        spade::render::shade_vertex_color(scene.materials[0], scene.lighting, worst_case_normal);
+
+    EXPECT_LT(spade::render::to_byte(shaded.combined.r), 255u)
+        << "red channel clipped at the worst-case N.L=1 -- no exposure headroom left";
+    EXPECT_LT(spade::render::to_byte(shaded.combined.g), 255u)
+        << "green channel clipped at the worst-case N.L=1 -- no exposure headroom left";
+    EXPECT_LT(spade::render::to_byte(shaded.combined.b), 255u)
+        << "blue channel clipped at the worst-case N.L=1 -- no exposure headroom left";
+}
+
+TEST(RenderShading, TwoVerticalFacesAtDifferentAnglesToTheDefaultSunShadeDifferently) {
+    // Step 2: under the OLD straight-overhead default sun_direction (0,1,0),
+    // EVERY vertical face has N.L == 0 exactly -- all of them collapse to
+    // the identical bare ambient floor, discriminating nothing about which
+    // way a wall faces. The new off-axis default must break that
+    // degeneracy: two vertical faces (normals +X and +Z) at DIFFERENT
+    // angles to the sun must shade to genuinely different values, and each
+    // must receive a real, non-zero sun contribution of its own.
+    const WorldDesc world = build_or_fail(base_builder());
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_FALSE(scene.materials.empty());
+
+    const glm::vec3 face_plus_x(1.0f, 0.0f, 0.0f);
+    const glm::vec3 face_plus_z(0.0f, 0.0f, 1.0f);
+    const spade::render::ShadedColor shaded_x =
+        spade::render::shade_vertex_color(scene.materials[0], scene.lighting, face_plus_x);
+    const spade::render::ShadedColor shaded_z =
+        spade::render::shade_vertex_color(scene.materials[0], scene.lighting, face_plus_z);
+
+    EXPECT_GT(shaded_x.sun.r + shaded_x.sun.g + shaded_x.sun.b, 1e-4f)
+        << "the +X wall face must receive a real, non-zero sun contribution under the off-axis default";
+    EXPECT_GT(shaded_z.sun.r + shaded_z.sun.g + shaded_z.sun.b, 1e-4f)
+        << "the +Z wall face must receive a real, non-zero sun contribution under the off-axis default";
+
+    const Bgr bgr_x{spade::render::to_byte(shaded_x.combined.b), spade::render::to_byte(shaded_x.combined.g),
+                     spade::render::to_byte(shaded_x.combined.r)};
+    const Bgr bgr_z{spade::render::to_byte(shaded_z.combined.b), spade::render::to_byte(shaded_z.combined.g),
+                     spade::render::to_byte(shaded_z.combined.r)};
+    EXPECT_NE(bgr_x, bgr_z) << "two vertical faces at different angles to the sun must shade to genuinely "
+                                "different values -- under the OLD straight-overhead default both collapse to "
+                                "the identical ambient floor";
+}
+
+TEST(RenderShading, SkyColourAtTheTrueHorizonMatchesAcrossDifferentCameraPitchesRulingSR23) {
+    // Step 3 / ruling SR-23: the OLD sky gradient interpolated on a plain
+    // fraction of SCREEN ROW (t = row/(height-1)), so the TRUE horizon (the
+    // ray whose elevation is exactly zero) got a DIFFERENT colour under
+    // different camera pitches, because it lands at a different screen row
+    // each time. This picks two pitches whose own true-horizon row is
+    // deliberately far apart on screen and asserts the ACTUAL rendered sky
+    // colour at each camera's own true-horizon row agrees -- something the
+    // row-based formula could not do (checked directly below: applied at
+    // these SAME two rows, it disagrees by far more than this test's own
+    // tolerance).
+    const WorldDesc world = build_or_fail(base_builder());  // no SDF nodes -- pure background
+    const RenderScene scene = scene_or_fail(world);
+
+    constexpr uint32_t kW = 128, kH = 128;
+    RenderOptions options;
+    options.overlays = false;
+
+    // For a PURE-PITCH camera (no yaw, no roll -- angleAxis about local X),
+    // the ray's world-space Y component depends only on screen ROW and the
+    // pitch angle, never on screen column (an X-axis rotation leaves the
+    // camera-space X component untouched) -- so "the row whose world-Y is
+    // closest to zero" is a column-independent property of the camera
+    // alone. Found here by a plain scan through this file's own
+    // background_ray_world_oracle(), never by re-deriving the rotation by
+    // hand.
+    const auto find_horizon_row = [&](const Camera& camera) {
+        uint32_t best_row = 0;
+        double best_abs_y = 1e18;
+        for (uint32_t y = 0; y < kH; ++y) {
+            const glm::dvec3 dir = background_ray_world_oracle(camera, kW, kH, kW / 2, y);
+            const double abs_y = std::fabs(dir.y);
+            if (abs_y < best_abs_y) {
+                best_abs_y = abs_y;
+                best_row = y;
+            }
+        }
+        return best_row;
+    };
+
+    Camera camera_a;
+    camera_a.orientation = glm::angleAxis(glm::radians(-30.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    Camera camera_b;
+    camera_b.orientation = glm::angleAxis(glm::radians(20.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+
+    const uint32_t row_a = find_horizon_row(camera_a);
+    const uint32_t row_b = find_horizon_row(camera_b);
+    ASSERT_GE(row_a > row_b ? row_a - row_b : row_b - row_a, 20u)
+        << "sanity: these two pitches must put the true horizon at genuinely different screen rows, or this "
+           "test cannot discriminate row-based from elevation-based interpolation -- row_a=" << row_a
+        << " row_b=" << row_b;
+
+    std::vector<uint8_t> storage_a, storage_b;
+    RenderTarget target_a = make_target(storage_a, kW, kH);
+    RenderTarget target_b = make_target(storage_b, kW, kH);
+    render_or_fail(scene, camera_a, options, target_a);
+    render_or_fail(scene, camera_b, options, target_b);
+
+    const Bgr horizon_a = pixel_at(storage_a, kW, kW / 2, row_a);
+    const Bgr horizon_b = pixel_at(storage_b, kW, kW / 2, row_b);
+
+    // Tight but not bit-exact: each row is the CLOSEST integer pixel to the
+    // true (continuous) zero-elevation ray, not that ray exactly, so a
+    // residual sub-pixel elevation offset remains -- a few LSBs of headroom
+    // absorbs that without weakening what this test actually proves (the
+    // row-based formula's OWN error here is not a couple of LSBs; it is
+    // checked separately below and is most of the zenith-to-horizon range).
+    EXPECT_LE(std::abs(int(horizon_a.b) - int(horizon_b.b)), 3)
+        << "B channel: true-horizon colour must agree across pitches";
+    EXPECT_LE(std::abs(int(horizon_a.g) - int(horizon_b.g)), 3)
+        << "G channel: true-horizon colour must agree across pitches";
+    EXPECT_LE(std::abs(int(horizon_a.r) - int(horizon_b.r)), 3)
+        << "R channel: true-horizon colour must agree across pitches";
+
+    // Proof this test actually discriminates: the OLD row-based formula
+    // (t = row/(height-1)) applied at these SAME two rows would have
+    // reported two fractions far apart, hence two very different colours --
+    // recomputed here independently, not asserted from prose.
+    const auto old_row_fraction_bgr = [&](uint32_t row) {
+        const float t = static_cast<float>(row) / static_cast<float>(kH - 1);
+        const glm::vec3 c = scene.lighting.sky_zenith * (1.0f - t) + scene.lighting.sky_horizon * t;
+        return Bgr{spade::render::to_byte(c.b), spade::render::to_byte(c.g), spade::render::to_byte(c.r)};
+    };
+    const Bgr old_a = old_row_fraction_bgr(row_a);
+    const Bgr old_b = old_row_fraction_bgr(row_b);
+    const int old_channel_spread =
+        std::max({std::abs(int(old_a.b) - int(old_b.b)), std::abs(int(old_a.g) - int(old_b.g)),
+                  std::abs(int(old_a.r) - int(old_b.r))});
+    EXPECT_GT(old_channel_spread, 20)
+        << "sanity: the OLD row-based formula must disagree substantially between these two rows, or this test "
+           "does not actually discriminate row-based from elevation-based interpolation";
 }

@@ -182,22 +182,71 @@ struct ShadedColor {
     return ShadedColor{combined, base * sun_term};
 }
 
-// The vertical zenith-to-horizon sky gradient (S7a Task R6, ruling SR-23;
-// relocated HERE at Task R8 for the identical reason shade_vertex_color()
-// was above it): `row_fraction` is a plain fraction of SCREEN ROW (0 at the
-// top/zenith, 1 at the bottom/horizon row) -- raster_cpu.cpp's
-// draw_sky_and_ground_background computes it once per row
-// (`y / (height - 1)`) and calls this for every pixel in that row; Task R8's
-// raymarcher (render/raymarch.cpp) calls it identically for every pixel
-// whose ray never hits scene.sdf. The SDF has nothing to say about the sky
-// -- there is no primitive to sphere-trace up there -- so a miss must fall
-// back to the SAME formula, from the SAME Lighting fields, as the raster
-// path's background pass; sharing this one function is what keeps the two
+// The zenith-to-horizon sky gradient (S7a Task R6, ruling SR-23; relocated
+// HERE at Task R8 for the identical reason shade_vertex_color() was above
+// it; made ELEVATION-based at Task VQ-A, fix round for the user's CK-2
+// verdict). `ray_direction_world` is the WORLD-SPACE camera ray a
+// background/sky-miss pixel casts -- need NOT be pre-normalized (only its
+// direction matters; this function divides by its own length itself), so a
+// caller that already has an un-normalized ray handy (raster_cpu.cpp's own
+// background pass, which deliberately never normalizes its background ray --
+// see background_ray_camera_space()'s own comment) does not need to spend an
+// extra sqrt unit-normalizing it just to call this.
+//
+// `dir.y / |dir|` is exactly sin(elevation) -- the ray's angle above the
+// horizontal (Y=0) plane -- which is monotone over the entire +/-90 degree
+// range any camera ray can span, and needs exactly one std::sqrt (folded
+// into the length below), IEEE-mandated (correctly rounded) and explicitly
+// sanctioned by SR-14. No inverse-trig call (atan2/asin) is needed at all --
+// an earlier version of this file's comment claimed one would be, which was
+// established false and is the reason this ruling exists: the OLD gradient
+// interpolated on a plain fraction of SCREEN ROW instead, which anchors the
+// horizon COLOUR to the bottom screen row and drifts from the ray-cast
+// horizon LINE the ground hit-test actually draws the moment the camera
+// pitches (measured directly in the CK-2 book's own frames).
+//
+// `horizon_fraction` is 0 straight up (elevation == 1, pure zenith) and
+// clamped to 1 AT and BELOW the true horizon (elevation <= 0) -- rather than
+// letting the lerp overshoot past sky_horizon for a downward-pitched ray --
+// so a pixel below the horizon with no ground plane to draw over it (or one
+// the analytic/tessellated hit test does not cover) reads as flat horizon
+// colour, never an out-of-gamut extrapolation. This is what keeps "hard
+// horizon, no fog" (SR-17) true for the SKY half of the boundary; the GROUND
+// half is still entirely the analytic-ground/tessellated-mesh hit test's own
+// job, never this function's.
+//
+// Both render paths call this on the SAME per-pixel ray direction they
+// already reconstruct for their own hit-testing (raster_cpu.cpp's
+// draw_sky_and_ground_background, raymarch.cpp's per-pixel camera ray) --
+// sharing this one function on that one shared input is what keeps the two
 // paths' sky agreeing bit-for-bit rather than by two coincidentally-equal
 // expressions (this task's own controller amendment: "share that code
 // rather than writing a second gradient").
-[[nodiscard]] inline glm::vec3 sky_gradient_color(const Lighting& lighting, float row_fraction) {
-    return lighting.sky_zenith * (1.0f - row_fraction) + lighting.sky_horizon * row_fraction;
+//
+// LERP FORM MATTERS (found running Step 7's own re-measure): `zenith +
+// (horizon - zenith) * horizon_fraction`, NOT `zenith*(1-t) + horizon*t`.
+// Both are the same real-valued interpolation, but only the first is
+// EXACT -- bit-for-bit, for every finite `horizon_fraction` -- when
+// `sky_zenith == sky_horizon`. `horizon - zenith` is then exactly the zero
+// vector (IEEE subtraction of two bit-identical values is exact), zero
+// times any finite fraction is exactly zero, and `zenith + zero` is exactly
+// `zenith` (adding zero never rounds). The `a*(1-t)+a*t` form has no such
+// guarantee -- two separate roundings (each multiply) plus a third (the
+// add) do not generally telescope back to bit-identical `a`, so two
+// callers computing `t` along different floating-point paths (raster's
+// background pass narrows a DOUBLE-precision ray to float;
+// raymarch's is float throughout; a test oracle may use double
+// throughout) could each round a per-pixel FLAT sky to a *different* byte
+// whenever that byte sits exactly on a to_byte() rounding half-boundary --
+// turning R9's "flatten the sky, then compare by exact colour" agreement
+// strategy into a source of spurious per-pixel disagreement having nothing
+// to do with geometry. The exact form removes the possibility entirely,
+// independent of how `horizon_fraction` was computed or by whom.
+[[nodiscard]] inline glm::vec3 sky_gradient_color(const Lighting& lighting, const glm::vec3& ray_direction_world) {
+    const float len = std::sqrt(glm::dot(ray_direction_world, ray_direction_world));
+    const float elevation = len > 0.0f ? ray_direction_world.y / len : 1.0f;
+    const float horizon_fraction = std::clamp(1.0f - elevation, 0.0f, 1.0f);
+    return lighting.sky_zenith + (lighting.sky_horizon - lighting.sky_zenith) * horizon_fraction;
 }
 
 // The linear-to-byte quantizer (S7a Task R6; relocated HERE at Task R8 fix

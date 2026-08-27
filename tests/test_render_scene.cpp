@@ -389,18 +389,22 @@ TEST(SceneFromWorld, MaterialsHasDefaultAtIndexZero) {
     const RenderScene scene = scene_or_fail(world);
 
     // world.materials[0] is WorldBuilder::build()'s own default MaterialDesc{}
-    // (builder.hpp) when a test never calls .material() -- base_color
-    // (1,1,1,1), lambert shading. NOT render::Material{}'s own struct-literal
-    // default (scene.hpp's (0.72,0.72,0.74,1.0) grey): scene_from_world() now
-    // CONSUMES world.materials (S7a Task R6) instead of hardcoding its own
-    // default, so this test's expectation moved from this module's default to
-    // the WORLD's.
+    // (builder.hpp) when a test never calls .material() -- a light neutral
+    // grey (Task VQ-A moved this off pure white; see MaterialDesc's own
+    // header comment for why), lambert shading. NOT render::Material{}'s own
+    // struct-literal default (scene.hpp's (0.72,0.72,0.74,1.0) grey):
+    // scene_from_world() now CONSUMES world.materials (S7a Task R6) instead
+    // of hardcoding its own default, so this test's expectation moved from
+    // this module's default to the WORLD's -- read directly off
+    // spade::MaterialDesc{} rather than a second hardcoded literal, so this
+    // assertion cannot drift out of sync with a future default change again.
     ASSERT_GE(scene.materials.size(), 1u);
     const Material& def = scene.materials[0];
-    EXPECT_FLOAT_EQ(def.base_color.x, 1.0f);
-    EXPECT_FLOAT_EQ(def.base_color.y, 1.0f);
-    EXPECT_FLOAT_EQ(def.base_color.z, 1.0f);
-    EXPECT_FLOAT_EQ(def.base_color.w, 1.0f);
+    const glm::vec4 expected_default = spade::MaterialDesc{}.base_color;
+    EXPECT_FLOAT_EQ(def.base_color.x, expected_default.x);
+    EXPECT_FLOAT_EQ(def.base_color.y, expected_default.y);
+    EXPECT_FLOAT_EQ(def.base_color.z, expected_default.z);
+    EXPECT_FLOAT_EQ(def.base_color.w, expected_default.w);
     EXPECT_EQ(def.shading, 0u);
 }
 

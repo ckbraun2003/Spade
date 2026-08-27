@@ -1059,17 +1059,33 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 // requires them to agree on colour.
 void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
                                      bool draw_analytic_ground, const ShadowMap* shadow) {
-    // Precomputed ONCE PER FRAME (review IMPORTANT 3): whether the analytic
-    // ground pass has anything at all to do. Skips not just the per-pixel
-    // ray/plane loop but the per-plane `front[]` precompute below too, for
-    // the overwhelmingly common "no standalone ground plane in this world"
-    // and "wireframe mode" cases (measured: 70.8ms -> 15.9ms at 1280x720 for
-    // a groundless world, on top of the f/aspect hoist above).
+    // Whether the analytic ground pass has anything at all to do -- still
+    // gates the per-plane `front[]` precompute and the per-pixel ray/plane
+    // loop below, exactly as before.
     const bool ground_possible = draw_analytic_ground && !scene.ground_planes.empty() && !scene.materials.empty();
 
-    Vec3 camPos{0.0, 0.0, 0.0};
-    double camQ[4] = {1.0, 0.0, 0.0, 0.0};
-    double f = 1.0, aspect = 1.0;
+    // Per-frame camera constants (review IMPORTANT 3's own discipline: never
+    // per pixel). UNCONDITIONALLY computed now, not merely when a ground
+    // plane exists (Task VQ-A, ruling SR-23): the elevation-based sky
+    // gradient below needs the real per-pixel WORLD-SPACE ray direction to
+    // know how far above or below the TRUE horizon that pixel looks, so
+    // there is no longer a "nothing to do" case that lets a frame skip ray
+    // reconstruction the way a groundless world used to. This gives up this
+    // function's own previously-measured "skip it entirely for a groundless
+    // world" saving (70.8ms -> 15.9ms at 1280x720) -- that saving assumed
+    // the OLD row-only sky gradient, for which a screen row was the whole
+    // input; a row alone is no longer enough to colour a pixel correctly
+    // under camera pitch, only a real ray is.
+    const Vec3 camPos{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
+    double camQ[4];
+    // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
+    // to recover the camera-to-world rotation a background ray needs --
+    // quatConjugate is its own inverse, so this is exact, not an
+    // approximation.
+    quatConjugate(vc.camOrientationConj, camQ);
+    const double f = 1.0 / tan32(vc.fovY * 0.5);
+    const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
+
     // uint8_t, not vector<bool> (review MINOR 9): this file already removed
     // one hidden-cost STL specialization (R5b's own per-triangle heap
     // allocation finding); vector<bool>'s bit-packed proxy-reference
@@ -1078,15 +1094,6 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     std::vector<uint8_t> front;
 
     if (ground_possible) {
-        camPos = Vec3{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
-        // Undoes ViewContext's own stored conjugate (world-to-camera
-        // rotation) to recover the camera-to-world rotation this background
-        // ray needs -- quatConjugate is its own inverse, so this is exact,
-        // not an approximation.
-        quatConjugate(vc.camOrientationConj, camQ);
-        f = 1.0 / tan32(vc.fovY * 0.5);
-        aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
-
         // SR-13 parity, precomputed ONCE PER PLANE (a per-frame fact about
         // the camera and that plane, not a per-pixel one): "shade only when
         // the ray meets the plane's FRONT side" means the camera itself
@@ -1107,38 +1114,29 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     }
 
     for (uint32_t y = 0; y < fb.height; ++y) {
-        // Vertical sky gradient (Step 1's own requirement, applies to EVERY
-        // draw mode, SR-22): a plain fraction of SCREEN ROW, zenith at row 0
-        // to horizon at the last row. This is simple and deterministic --
-        // NOT, as an earlier version of this comment incorrectly claimed,
-        // because an elevation-based gradient would need an inverse-trig
-        // call this engine's determinism contract forbids. It would not:
-        // dir.y / length(dir) is monotone in elevation and needs only one
-        // std::sqrt, which is IEEE-mandated (correctly rounded) and
-        // explicitly sanctioned by that same contract. The real
-        // consequence of the row-based choice (ruling SR-23, deferred to
-        // CK-2 for the user to judge against real frames rather than have
-        // this task guess): it anchors the horizon COLOUR to the bottom
-        // screen row, so under camera pitch that colour does not coincide
-        // with the ray-cast horizon LINE the ground hit-test below actually
-        // draws (the hard edge is still exactly where the ground begins;
-        // only the gradient's own colour-vs-row mapping is camera-pose-
-        // agnostic). "Hard horizon, no fog" (SR-17) is enforced by the
-        // GROUND hit-test below, never by this gradient.
-        const double sky_t = fb.height > 1 ? static_cast<double>(y) / static_cast<double>(fb.height - 1) : 0.0;
-        const float sky_tf = static_cast<float>(sky_t);
-        // sky_gradient_color() (S7a Task R8, scene.hpp) -- shared with
-        // render/raymarch.cpp's own sky-miss pixels so the two paths' sky
-        // agrees bit-for-bit rather than by two independent expressions.
-        const glm::vec3 sky = sky_gradient_color(scene.lighting, sky_tf);
-
         for (uint32_t x = 0; x < fb.width; ++x) {
-            glm::vec3 color = sky;
+            // The real per-pixel world-space background ray -- reconstructed
+            // for EVERY pixel now (see the per-frame-constants comment
+            // above), not merely when a ground plane exists, since the sky
+            // gradient below needs it too.
+            const Vec3 dirCam = background_ray_camera_space(f, aspect, vc.width, vc.height, x, y);
+            const Vec3 dirWorld = rotateByQuat(camQ, dirCam);
+
+            // Elevation-based sky gradient (ruling SR-23, Task VQ-A;
+            // sky_gradient_color() lives in render/scene.hpp, shared
+            // verbatim with render/raymarch.cpp's own sky-miss pixels on
+            // the SAME per-pixel ray-direction convention, so the two
+            // paths' sky agrees bit-for-bit rather than by two
+            // independently-equal expressions). Replaces the old plain
+            // fraction-of-SCREEN-ROW gradient, which anchored the horizon
+            // COLOUR to the bottom screen row and so drifted from the
+            // ray-cast horizon LINE the ground hit-test below actually
+            // draws whenever the camera pitched. "Hard horizon, no fog"
+            // (SR-17) is still enforced by the GROUND hit-test below, never
+            // by this gradient.
+            glm::vec3 color = sky_gradient_color(scene.lighting, vec3f(dirWorld));
 
             if (ground_possible) {
-                const Vec3 dirCam = background_ray_camera_space(f, aspect, vc.width, vc.height, x, y);
-                const Vec3 dirWorld = rotateByQuat(camQ, dirCam);
-
                 double best_t = 0.0;
                 int64_t best_plane = -1;
                 for (size_t i = 0; i < scene.ground_planes.size(); ++i) {

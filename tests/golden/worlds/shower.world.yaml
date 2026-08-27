@@ -107,13 +107,13 @@ visuals: []
 # back to when it names no material of its own. RENDER-ONLY -- physics never
 # reads these.
 materials:
-  - {name: "default", base_color: [1, 1, 1, 1], shading: "lambert"}
+  - {name: "default", base_color: [0.800000012, 0.800000012, 0.800000012, 1], shading: "lambert"}
 
 # One directional sun, a flat ambient term, and a two-colour sky gradient
 # (zenith overhead, horizon at the skyline). `sun_direction` points FROM the
 # scene TOWARD the sun; need not be pre-normalized. RENDER-ONLY.
 lighting:
-  sun_direction: [0, 1, 0]
+  sun_direction: [0.400000006, 0.800000012, 0.600000024]
   sun_color: [1, 1, 1]
   sun_intensity: 1
   ambient_color: [0.100000001, 0.100000001, 0.100000001]

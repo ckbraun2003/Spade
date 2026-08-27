@@ -52,28 +52,33 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
     const bool has_sdf = scene.sdf != nullptr && !scene.sdf->empty() && !scene.materials.empty();
 
     for (uint32_t y = 0; y < height; ++y) {
-        // Sky gradient (render/scene.hpp's sky_gradient_color(), shared with
-        // raster_cpu.cpp's own background pass -- see raymarch.hpp's header
-        // comment) -- computed once per ROW, exactly like the raster path's
-        // own per-row hoist, since it depends only on screen row.
-        const float row_fraction = height > 1 ? static_cast<float>(y) / static_cast<float>(height - 1) : 0.0f;
-        const glm::vec3 sky = sky_gradient_color(scene.lighting, row_fraction);
         const float y_ndc = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
 
         for (uint32_t x = 0; x < width; ++x) {
-            glm::vec3 color = sky;
+            // Pinhole camera ray through pixel center (x+0.5, y+0.5) -- the
+            // SAME NDC convention raster_cpu.cpp's own
+            // background_ray_camera_space uses, but normalized here: sphere
+            // tracing steps `t` by a real WORLD-SPACE distance every
+            // iteration, which is only correct when `dir_world` has unit
+            // length. Reconstructed for EVERY pixel now, not merely when
+            // has_sdf -- the elevation-based sky gradient below (ruling
+            // SR-23, Task VQ-A) needs this same per-pixel ray direction even
+            // on a sky-only (no-SDF) frame, unlike the old per-ROW gradient
+            // it replaces.
+            const float x_ndc = 2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(width) - 1.0f;
+            const glm::vec3 dir_cam = glm::normalize(glm::vec3(x_ndc * aspect / f, y_ndc / f, -1.0f));
+            const glm::vec3 dir_world = cam_to_world * dir_cam;
+
+            // Sky gradient (render/scene.hpp's sky_gradient_color(), shared
+            // with raster_cpu.cpp's own background pass -- see raymarch.hpp's
+            // header comment). Elevation-based since Task VQ-A/SR-23: keyed
+            // on this SAME per-pixel world-space ray direction (already unit
+            // length here, but the function does not require that), so the
+            // two paths' sky agrees bit-for-bit rather than by two
+            // independently-equal expressions.
+            glm::vec3 color = sky_gradient_color(scene.lighting, dir_world);
 
             if (has_sdf) {
-                // Pinhole camera ray through pixel center (x+0.5, y+0.5) --
-                // the SAME NDC convention raster_cpu.cpp's own
-                // background_ray_camera_space uses, but normalized here:
-                // sphere tracing steps `t` by a real WORLD-SPACE distance
-                // every iteration, which is only correct when `dir_world`
-                // has unit length.
-                const float x_ndc = 2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(width) - 1.0f;
-                const glm::vec3 dir_cam = glm::normalize(glm::vec3(x_ndc * aspect / f, y_ndc / f, -1.0f));
-                const glm::vec3 dir_world = cam_to_world * dir_cam;
-
                 // FRUSTUM PARITY, DEPTH NOT RADIAL DISTANCE (fix round 2,
                 // review IMPORTANT -- see raymarch.hpp's own header comment
                 // for the full derivation): raster clips on CAMERA-SPACE

@@ -947,7 +947,7 @@ TEST(WorldFile, V1FileUpgradesWithDefaultMaterialsLightingAndProps) {
     ASSERT_OK(world);
     ASSERT_EQ(world->materials.size(), 1u);
     EXPECT_EQ(world->materials[0].name, "default");
-    EXPECT_EQ(world->materials[0].base_color, glm::vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    EXPECT_EQ(world->materials[0].base_color, MaterialDesc{}.base_color);
     EXPECT_EQ(world->materials[0].shading, MaterialShading::lambert);
     EXPECT_EQ(world->lighting.sun_direction, LightingDesc{}.sun_direction);
     EXPECT_EQ(world->lighting.sun_intensity, LightingDesc{}.sun_intensity);
