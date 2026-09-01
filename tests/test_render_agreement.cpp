@@ -536,6 +536,40 @@ struct OrbitBasis {
     return entry.at("detects_total_deletion").get<bool>();
 }
 
+// Controller fix round 1, I-4 (a review process gap, not this task's own
+// bug -- the reviewer's own words: "I told you the suite 'recomputes and
+// asserts against the file'. That is true only for detects_total_deletion."):
+// band_for() and recorded_detects_total_deletion() are the only two fields
+// this suite ever checked LIVE against agreement_bands.json -- nothing
+// asserted that the recorded 'disagreement_fraction'/'covered_a'/
+// 'covered_b' (real OR probe) actually equal what this run measures. A
+// recorded disagreement_fraction 1.5x too high yields a band 1.5x too wide
+// (band_for() reads it straight from the same entry EXPECT_LE checks
+// against) and the suite stays green regardless -- the band derivation
+// itself was never a checked claim, only its OWN internal arithmetic
+// (margin_note) was. These four helpers make every recorded number in a
+// measurement a checked claim, the same sense detects_total_deletion
+// already was, for both the real comparison and the SR-30 probe.
+[[nodiscard]] double recorded_double(const std::string& world_name, const std::string& camera_name,
+                                      const std::string& field) {
+    const Json& entry = camera_entry(world_name, camera_name);
+    if (!entry.contains(field)) {
+        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no recorded '" << field << "'";
+        return 0.0;
+    }
+    return entry.at(field).get<double>();
+}
+
+[[nodiscard]] uint32_t recorded_uint(const std::string& world_name, const std::string& camera_name,
+                                      const std::string& field) {
+    const Json& entry = camera_entry(world_name, camera_name);
+    if (!entry.contains(field)) {
+        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no recorded '" << field << "'";
+        return 0;
+    }
+    return entry.at(field).get<uint32_t>();
+}
+
 // The ten shipped worlds (controller amendments: "content/worlds/*.world.yaml
 // IS the ten shipped worlds") and CS5's three required bookmark names,
 // spelled once here rather than discovered by directory listing -- a
@@ -840,6 +874,24 @@ TEST_P(AgreementMatrix, MeasuredDisagreementIsWithinItsPinnedBandAndDetectionSur
                                      << " tessellated path must see SOME geometry, not pure sky";
     ASSERT_GT(result.covered_b, 0u) << "sanity: '" << world_name << "'/" << camera_name
                                      << " raymarch path must see SOME geometry, not pure sky";
+
+    // I-4 (controller fix round 1): the recorded 'disagreement_fraction',
+    // 'covered_a', and 'covered_b' are now themselves checked claims, not
+    // merely the band the test derives from them -- see recorded_double()/
+    // recorded_uint()'s own header comment for why this was missing and
+    // what it would have let slip through unnoticed (a recorded
+    // disagreement_fraction inflated relative to what this run actually
+    // measures, silently widening this case's own band via band_for()
+    // reading the SAME inflated number).
+    EXPECT_NEAR(result.disagreement_fraction, recorded_double(world_name, camera_name, "disagreement_fraction"),
+                1e-9)
+        << "'" << world_name << "'/" << camera_name
+        << "': live disagreement_fraction does not match agreement_bands.json's recorded value -- "
+           "the recorded number is no longer a faithful measurement of this world/camera";
+    EXPECT_EQ(result.covered_a, recorded_uint(world_name, camera_name, "covered_a"))
+        << "'" << world_name << "'/" << camera_name << "': live covered_a does not match the recorded value";
+    EXPECT_EQ(result.covered_b, recorded_uint(world_name, camera_name, "covered_b"))
+        << "'" << world_name << "'/" << camera_name << "': live covered_b does not match the recorded value";
 
     const double band = band_for(world_name, camera_name);
     EXPECT_LE(result.disagreement_fraction, band)
