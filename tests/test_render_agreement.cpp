@@ -122,14 +122,33 @@
 //
 // BARE GEOMETRY ONLY (ruling SR-2): worlds are loaded straight off disk via
 // load_world_file() + scene_from_world() with an EMPTY resolved-mesh span --
-// no package instances, no prefab props. None of the ten shipped worlds
-// authors props of its own (all are schema v1, confirmed empty `props` on
-// load) or spawns a dynamic body in this harness (update_dynamics() is never
-// called), so raymarch.hpp's "props/dynamics are structurally invisible to
-// the reference" fact does not bite this matrix today -- stated here, not
-// assumed, because Task C4 dressing these same worlds with prefab instances
-// is exactly the case where it would start to, which is why SR-2 requires a
-// re-measure rather than reusing these bands unchanged.
+// no package instances, no resolved prop meshes. T8 (Task C4 fix, sweeping a
+// stale comment this same file's neighbourhood carried): this paragraph used
+// to say "none of the ten shipped worlds authors props (all are schema v1,
+// confirmed empty `props` on load)" -- both halves of that were already
+// false BEFORE Task C4 touched a single world (world_version has been 2,
+// with an explicit `props: []`, since Task H2), and the FIRST half is now
+// false in substance too: Task C4 (SR-54) placed real props in 9 of the ten
+// shipped worlds. The reason this matrix still does not need those props
+// resolved is different, and stronger, than "there are none" -- it is
+// structural: this file's own scene_or_fail() passes an EMPTY resolved-mesh
+// span to every scene_from_world() call, so EVERY prop's mesh_ref misses
+// that span's linear scan and resolves to kNoMesh (render/scene.cpp:340-352)
+// on BOTH the raster and raymarch paths alike (raymarch never even looks at
+// `scene.statics` -- raymarch.hpp's own "props are structurally invisible to
+// the reference" comment, a SEPARATE and additional reason on that side).
+// Both paths therefore agree about every prop by construction, contributing
+// zero disagreement regardless of how many a world carries -- Task C4's own
+// report (task-C4-report.md) states this plainly: the agreement matrix does
+// not validate props at all; C5's gallery is where they get checked, by eye.
+// Every SDF prefab INSTANCE Task C4 added, by contrast, is real scene.sdf
+// geometry and DOES change what this matrix measures, which is why SR-2
+// required a re-measure (see agreement_bands.json's versioned
+// `measurements.2`) rather than reusing measurement 1's bare-geometry bands
+// unchanged. No shipped world spawns a dynamic body in this harness either
+// (update_dynamics() is never called), so `scene.dynamics` stays structurally
+// invisible to the reference for the same raymarch.hpp reason, unaffected by
+// any of this.
 //
 // THE FLAT-SKY REQUIREMENT (render/agreement.hpp's own header comment, load-
 // bearing, restated here because this is the file that must actually honour

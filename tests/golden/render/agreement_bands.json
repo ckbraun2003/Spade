@@ -1,6 +1,6 @@
 {
   "_schema_note": "SR-31 (task-R9-brief.md fix round 1, review): measurements are a VERSIONED list under 'measurements.<version>', with 'active_measurement_version' selecting the live one. A re-measure (SR-2: Task C4, after dressing these worlds with prefab instances) adds a NEW version and bumps the selector -- it never edits a committed measurement's 'cameras'/'band'/'detects_total_deletion' fields in place, which is exactly the discipline the original (pre-fix-round) file's own prose asked for but could not enforce (band_for_world() read worlds.<name>.band directly, with no version selection at all, so the ONLY way to make a re-measurement take effect was the in-place edit the prose forbade).",
-  "active_measurement_version": 1,
+  "active_measurement_version": 2,
   "measurements": {
     "1": {
       "_provenance": "S7a Task R9, REMEASURED at fix round 1 (SR-30/SR-31). measured: true. date: 2026-08-26. machine: DESKTOP-N7QJD3C (Windows 11, MSVC 19.44, msvc-ninja-release preset). worktree: C:/Users/ckbra/kat-wt/render-engine, branch spade/render, commit 4504440 (the original R9 landing) plus this fix round's own commit (this file's own values were produced by the code landing in the SAME commit that rewrites this file). limits_table_version: raymarch@SR-28 (kRaymarchMaxSteps=1024, kRaymarchSurfaceEpsilon=1e-4) plus tessellation@kTessellationDefaults@1 (unchanged since Task R3). resolution: 160x120. Every world is loaded straight from content/worlds/<name>.world.yaml via spade::load_world_file(), scene_from_world()'d with an EMPTY resolved-mesh span (no package instances, no props -- all ten are schema v1 and author none), and rendered with an explicitly-flattened sky. DrawMode::shaded has overlays=false and shadows=false. SR-30: every camera entry below carries 'probe_bare_ground_disagreement_fraction' -- the SAME real fast-path frame compared against a raymarch reference rendered from render::strip_to_ground_plane_only(world) (every SDF node deleted except the standalone ground-plane leaf) -- and 'detects_total_deletion', TRUE iff that probe value exceeds this camera's OWN 'band'. test_render_agreement.cpp's AgreementMatrix suite recomputes BOTH the real comparison and this probe LIVE on every run and asserts the live outcome matches 'detects_total_deletion' -- this field is a checked claim, not a narrated one. BAND RULE, uniform, no exceptions: band = round_up_to_nearest(0.001, max(0.001, 1.5 * disagreement_fraction)) -- per (world, camera), never per world (SR-30 point 3: a per-world band, using a world's max across its three cameras, LAUNDERED a discriminating camera's tight signal onto a non-discriminating one's inflated threshold -- see 'per_camera_banding_fix' below for the measured before/after). The floor of 0.001 exists only so a camera whose measured value is exactly 0.0 (every 'top_down' bookmark) still gets a small, non-zero regression tripwire rather than a hair-trigger zero. RE-MEASURE DISCIPLINE (SR-2, SR-31): Task C4 dressing these worlds with prefab instances adds a NEW entry under 'measurements' (e.g. version 2) and bumps 'active_measurement_version' -- this entry (version 1) stays exactly as measured, forever, as the audit trail of what bare-geometry agreement looked like before dressing.",
@@ -392,6 +392,421 @@
         }
       },
       "thin_margin_note": "Every detecting case is described by margin_over_band = probe_bare_ground_disagreement_fraction / band (added fix round 2, review finding: record thin margins beside the bands, not just the pass/fail outcome). Two of the seven detecting cases clear their own band by less than 1.3x under TOTAL deletion, the most extreme mutation this probe can apply: swarm-grid/family_third at 1.1545x and pint-box/family_third at 1.278x. A future re-derivation of the band rule (the 1.5x-and-round-up multiplier, or the round-up step itself) that widens bands by more than roughly 15-20% would silently move these two out of the detecting set (7 of 30) into the non-discriminating one (23 of 30) with nothing to notice unless this field is read and re-checked at that time. The other five detecting cases have comfortable margins (1.45x to 138x) and are not at similar risk from a modest band-rule change."
+    },
+    "2": {
+      "_provenance": "S7a Task C4 (SR-2 re-measure, required after dressing these worlds with real prefab instances -- see agreement_bands.json's own measurement-1 RE-MEASURE DISCIPLINE note). measured: true. date: 2026-09-01. machine: DESKTOP-N7QJD3C (Windows 11, MSVC 19.44, msvc-ninja-release preset). worktree: C:/Users/ckbra/kat-wt/render-engine, branch spade/render, commit: produced by the code/content landing in the SAME commit that rewrites this file (Task C4's dressing commit -- see task-C4-report.md for the exact sha). limits_table_version: raymarch@SR-28 (kRaymarchMaxSteps=1024, kRaymarchSurfaceEpsilon=1e-4) plus tessellation@kTessellationDefaults@1, UNCHANGED from measurement 1 -- Task C4 touched no engine/tessellation code, only content/ (recipes, worlds, one prefab material tag) and this file. resolution: 160x120, unchanged. Same methodology as measurement 1 in every respect except the WORLDS THEMSELVES: each of the ten shipped worlds is now the Task-C4-DRESSED content/worlds/<name>.world.yaml (real prefab instances added: masts, barriers, fences, a container, a platform, a hangar-shell, a ramp, graded-slabs, and one gate-square->gate-arch swap -- see task-C4-report.md for the full per-world list), loaded the same way (load_world_file() + scene_from_world() with an EMPTY resolved-mesh span, flattened sky, DrawMode::shaded overlays=false shadows=false vs DrawMode::raymarch). Camera bookmarks are UNCHANGED from measurement 1 for 9 of the 10 worlds; pdel-site's own family_third was deliberately RE-FRAMED (T7, permitted by the task brief: 'you may re-frame family_third where dressing makes its old framing wrong... prefer a framing that also discriminates') from an aerial point over its empty spawn to a 3/4 elevated view of its new hangar-shell -- see the 'reframed_cameras' field below for the exact before/after bookmark values and why.",
+      "props_do_not_perturb_this_matrix": "Task C4 (SR-54) placed real props (mesh-based, render-only) in 9 of the ten worlds for the first time -- verified here, not assumed: every one of this measurement's 30 real disagreement_fraction/covered_a/covered_b values is either BIT-IDENTICAL to measurement 1's bare-geometry value (23 of 30 cases) or differs only by the SDF prefab instances also added in the same recipe edit (the remaining 7 family_third cases, where covered_a moved by the same handful of pixels a new mast/barrier/fence contributes). No case shows a change attributable to a prop, because none can, by construction: this suite's own scene_or_fail() (test_render_agreement.cpp) always calls scene_from_world() with an EMPTY resolved-mesh span, so every prop's mesh_ref misses that span's lookup and resolves to kNoMesh (render/scene.cpp:340-352), skipped identically on the path that would draw it -- the SAME fact is true whether the harness sees 0 props (measurement 1) or dozens (measurement 2). The honest conclusion, stated plainly rather than left implicit: this matrix does not validate props at all, in either measurement. C5's gallery is where props get checked, by eye.",
+      "t6_grid_resolution_finding": "C1's own M-6 risk (content/prefabs/README.md, task-C4-brief's T6): hangar-shell's 0.3m walls/0.2m roof and gate-arch's 0.12m torus tube are marginal against the fixed 48-per-axis surface-nets grid (roughly 1.8-2.4 cells). Task C4 placed hangar-shell in pdel-site (deliberately, as this ticket's own test case) and gate-arch in circuit-track (a gate-square swap). Finding: NO band in this measurement required widening, and every case touching either prefab shows LOW real disagreement_fraction (pdel-site/family_third, re-framed to look directly at the hangar-shell's side wall, measures only 0.00161 -- the SECOND-lowest of all 30 cases) -- i.e. where these prefabs are actually framed close-up, raster and raymarch agree closely, no tessellation hole observed. This is evidence against a live defect at today's camera framings, not proof the grid margin is safe in general: most of the ten worlds' three bookmarks do not frame either prefab's thin features close-up (see task-C4-report.md's T6 section for the honest scope of what was and was not actually exercised).",
+      "worlds_with_no_discriminating_camera": "Measurement 1 named three: hover-pad, pdel-site, pfol-road. After dressing: pdel-site's family_third is now DISCRIMINATING (re-framed, see _provenance above and 'reframed_cameras' below) -- T7 resolved for this world. hover-pad and pfol-road remain non-discriminating on all three bookmarks, honestly recorded here exactly as measurement 1 recorded them: hover-pad is UNCHANGED by design (RS9 -- the smallest recognisable world stays undressed, so its bare-geometry non-discrimination is unchanged for the same reason it held before). pfol-road WAS dressed (two fence-panels, a building-block depot, five props) but its family_third bookmark's tight framing on the spawn/corridor mouth does not happen to bring any of the new geometry into a position where deleting it changes a pixel classification (the new depot sits behind the fence line, largely out of this bookmark's frustum) -- task-C4-report.md's T7 section has the full account, including why a further re-frame was not attempted (this file's own 'do not game a camera' instruction, and diminishing returns after pdel-site's own re-frame already took several attempts to land).",
+      "reframed_cameras": {
+        "pdel-site.family_third": {
+          "before": {
+            "target": [
+              0.0,
+              4.0,
+              -8.0
+            ],
+            "distance": 6.0,
+            "yaw_radians": 1.5707963267948966,
+            "pitch_radians": 0.2617993877991494
+          },
+          "after": {
+            "target": [
+              0.0,
+              2.0,
+              7.0
+            ],
+            "distance": 10.0,
+            "yaw_radians": 1.5707963267948966,
+            "pitch_radians": 0.2
+          },
+          "why": "The original bookmark targeted the aerial 'start' spawn point itself (an empty point in space, 8m from every piece of dressed geometry) -- measured, before AND after dressing, as bit-identical bare-ground noise (0.0105208 both times), proving the hangar-shell/platform Task C4 added there were never in this camera's frustum at all. Re-framed to a 3/4 elevated side view of the new hangar-shell (target = its centre, viewed from its +X side) -- still a third-person-over-the-action framing (RS9/CS5's own purpose for this bookmark), now over the site's actual dressed structure instead of an empty point. Two earlier re-frame attempts (aimed through the hangar's own doorway opening, and from directly behind it) measured as non-discriminating too (0.00833/0.0167 real disagreement, probe bit-identical to real) before this one worked -- kept here as the honest record that this took iteration, not a single correct guess."
+        }
+      },
+      "resolution": {
+        "width": 160,
+        "height": 120
+      },
+      "worlds": {
+        "circuit-track": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.016666666666666666,
+              "covered_a": 19200,
+              "covered_b": 18880,
+              "probe_bare_ground_disagreement_fraction": 0.016667,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 18880,
+              "detects_total_deletion": false,
+              "band": 0.025,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.016666666666666666)) = 0.025"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.007604166666666667,
+              "covered_a": 14896,
+              "covered_b": 14762,
+              "probe_bare_ground_disagreement_fraction": 0.0175,
+              "probe_bare_ground_covered_a": 14896,
+              "probe_bare_ground_covered_b": 14560,
+              "detects_total_deletion": true,
+              "band": 0.012,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007604166666666667)) = 0.012",
+              "margin_over_band": 1.4583
+            }
+          }
+        },
+        "figure-eight": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.016666666666666666,
+              "covered_a": 19200,
+              "covered_b": 18880,
+              "probe_bare_ground_disagreement_fraction": 0.016667,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 18880,
+              "detects_total_deletion": false,
+              "band": 0.025,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.016666666666666666)) = 0.025"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.008541666666666666,
+              "covered_a": 14874,
+              "covered_b": 14742,
+              "probe_bare_ground_disagreement_fraction": 0.049688,
+              "probe_bare_ground_covered_a": 14874,
+              "probe_bare_ground_covered_b": 13920,
+              "detects_total_deletion": true,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008541666666666666)) = 0.013",
+              "margin_over_band": 3.8221
+            }
+          }
+        },
+        "gate-corridor": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.0071875,
+              "covered_a": 16108,
+              "covered_b": 16014,
+              "probe_bare_ground_disagreement_fraction": 0.113958,
+              "probe_bare_ground_covered_a": 16108,
+              "probe_bare_ground_covered_b": 13920,
+              "detects_total_deletion": true,
+              "band": 0.011,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0071875)) = 0.011",
+              "margin_over_band": 10.3598
+            }
+          }
+        },
+        "hover-pad": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 15680,
+              "covered_b": 15520,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 15680,
+              "probe_bare_ground_covered_b": 15520,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            }
+          }
+        },
+        "pdel-site": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.0016145833333333333,
+              "covered_a": 13056,
+              "covered_b": 13025,
+              "probe_bare_ground_disagreement_fraction": 0.013333,
+              "probe_bare_ground_covered_a": 13056,
+              "probe_bare_ground_covered_b": 12800,
+              "detects_total_deletion": true,
+              "band": 0.003,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0016145833333333333)) = 0.003",
+              "margin_over_band": 4.4444
+            }
+          }
+        },
+        "pfol-road": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.007604166666666667,
+              "covered_a": 14080,
+              "covered_b": 13934,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 14080,
+              "probe_bare_ground_covered_b": 13920,
+              "detects_total_deletion": false,
+              "band": 0.012,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007604166666666667)) = 0.012"
+            }
+          }
+        },
+        "pint-box": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.0084375,
+              "covered_a": 14231,
+              "covered_b": 14069,
+              "probe_bare_ground_disagreement_fraction": 0.016615,
+              "probe_bare_ground_covered_a": 14231,
+              "probe_bare_ground_covered_b": 13912,
+              "detects_total_deletion": true,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0084375)) = 0.013",
+              "margin_over_band": 1.278
+            }
+          }
+        },
+        "pnav-canyon": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.0078125,
+              "covered_a": 14336,
+              "covered_b": 14186,
+              "probe_bare_ground_disagreement_fraction": 0.021667,
+              "probe_bare_ground_covered_a": 14336,
+              "probe_bare_ground_covered_b": 13920,
+              "detects_total_deletion": true,
+              "band": 0.012,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0078125)) = 0.012",
+              "margin_over_band": 1.8056
+            }
+          }
+        },
+        "povr-compound": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008333333333333333,
+              "covered_a": 17280,
+              "covered_b": 17120,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008333333333333333)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.0005208333333333333,
+              "covered_a": 16565,
+              "covered_b": 16555,
+              "probe_bare_ground_disagreement_fraction": 0.138177,
+              "probe_bare_ground_covered_a": 16565,
+              "probe_bare_ground_covered_b": 13912,
+              "detects_total_deletion": true,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0005208333333333333)) = 0.001",
+              "margin_over_band": 138.1771
+            }
+          }
+        },
+        "swarm-grid": {
+          "cameras": {
+            "default": {
+              "disagreement_fraction": 0.008385416666666666,
+              "covered_a": 17280,
+              "covered_b": 17119,
+              "probe_bare_ground_disagreement_fraction": 0.008333,
+              "probe_bare_ground_covered_a": 17280,
+              "probe_bare_ground_covered_b": 17120,
+              "detects_total_deletion": false,
+              "band": 0.013,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.008385416666666666)) = 0.013"
+            },
+            "top_down": {
+              "disagreement_fraction": 0.0,
+              "covered_a": 19200,
+              "covered_b": 19200,
+              "probe_bare_ground_disagreement_fraction": 0.0,
+              "probe_bare_ground_covered_a": 19200,
+              "probe_bare_ground_covered_b": 19200,
+              "detects_total_deletion": false,
+              "band": 0.001,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.0)) = 0.001"
+            },
+            "family_third": {
+              "disagreement_fraction": 0.007864583333333333,
+              "covered_a": 14826,
+              "covered_b": 14675,
+              "probe_bare_ground_disagreement_fraction": 0.013854,
+              "probe_bare_ground_covered_a": 14826,
+              "probe_bare_ground_covered_b": 14560,
+              "detects_total_deletion": true,
+              "band": 0.012,
+              "margin_note": "band = round_up(0.001, max(0.001, 1.5*0.007864583333333333)) = 0.012",
+              "margin_over_band": 1.1545
+            }
+          }
+        }
+      }
     }
   }
 }
