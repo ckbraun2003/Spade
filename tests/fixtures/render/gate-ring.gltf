@@ -51,7 +51,7 @@
     "kat": {
       "description": "Low-poly racing gate: a single annular prism (hole axis +Z).",
       "dimension_notes": [
-        "outer_radius=0.9m, inner_radius=0.75m (0.15m ring thickness -- matches content/prefabs/gate.json's torus minor_radius param for visual/physics consistency), depth=0.12m, 16 segments. All assumed placeholder proportions -- no plant/physics descriptor for this asset."
+        "outer_radius=0.9m, inner_radius=0.75m (0.15m ring thickness), depth=0.12m, 16 segments. All assumed placeholder proportions. SR-57 (Task C5): FOUR plant/physics descriptors compose gate-shaped SDF geometry this mesh's own shape family relates to -- content/prefabs/gate.json (torus radius=1.5m, minor_radius=0.15m), gate-arch.json (torus radius=1.6m, minor_radius=0.12m), ring-pylon.json (torus radius=0.35m, minor_radius=0.05m -- a much smaller marker ring on a pylon post, not a racing gate), and gate-square.json (a box-subtract picture frame, not a torus at all -- no torus dimension to compare). This mesh's own ring thickness (0.15m) happens to equal gate.json's own torus minor_radius exactly; every OTHER dimension (this mesh's own outer_radius/inner_radius, and gate-arch.json's/ring-pylon.json's own minor_radius) diverges from all four -- named here, not hidden. This note previously claimed 'no plant/physics descriptor for this asset' in the same sentence that cited gate.json's own minor_radius -- a direct self-contradiction, corrected by this note (geometry unchanged; GOLDEN_SHA256 moved for this text-only edit, see tools/tests/test_gen_meshes.py)."
       ],
       "generator": "tools/gen_meshes.py",
       "mesh_id": "track/gate-ring"
