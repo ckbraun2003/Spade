@@ -73,25 +73,34 @@ struct SubtreeSplit {
 };
 [[nodiscard]] Result<SubtreeSplit> split_program(const SdfProgram& program);
 
-// World-space AABB tightly enclosing the CSG subtree rooted at `root_node`
-// (as identified by split_program()'s csg_roots / consumed by
-// mesh_csg_subtree() below): the union, over every primitive leaf inside the
-// subtree, of that primitive's own local shape extent transformed by its own
-// SdfTransform.
+// World-space AABB enclosing the CSG subtree rooted at `root_node` (as
+// identified by split_program()'s csg_roots / consumed by mesh_csg_subtree()
+// below).
 //
-// `fallback_bounds` stands in for a primitive whose own shape has no finite
-// local extent (plane, heightfield -- PA-5, tessellate.hpp's identical
-// exemption for the same two kinds): CALLERS pass the world's own overall
-// bounds (render/scene.cpp's world_bounds_of()), which is finite by
-// construction (world_bounds_of() always returns a real box, falling back to
-// a fixed default one itself when the world has no other spatial data).
+// The extent is OPERATOR-AWARE, not a flat union of the subtree's leaves.
+// Each operator narrows or widens what its operands contribute -- intersect
+// takes the tighter operand, subtract keeps only the minuend, union takes
+// both, smooth_union takes both dilated by k/4 (see subtree_extent()'s own
+// comment in the .cpp for the per-operator rules and why the dilation is
+// exactly k/4). This is what lets `(plane u sphere) n box` come back with the
+// BOX's tight bound instead of an unbounded union or a world-sized fallback.
 //
-// Errors: invalid_argument for `root_node` out of range, an out-of-range
-// transform index, or a subtree with no primitive leaves at all -- the last
-// is unreachable for a genuine CSG root (subtract/intersect/smooth_union
-// always has two operands, so at least one primitive sits under it), kept as
-// a defensive Result rather than an assert because this function inspects
+// `fallback_bounds` is a SUBTREE-level fallback, not a per-primitive one: it
+// is returned only when the whole subtree is still unbounded after every
+// operator in it has had its say -- e.g. a subtract whose minuend is itself a
+// plane. An unbounded leaf (plane, heightfield -- PA-5, tessellate.hpp's
+// identical exemption for the same two kinds) sitting under an operator that
+// bounds it does NOT reach here. CALLERS pass the world's own overall bounds
+// (render/scene.cpp's world_bounds_of()), finite by construction.
+//
+// Errors: invalid_argument for `root_node` out of range, or an out-of-range
+// SDF transform index (raised inside subtree_extent() and propagated). Kept
+// as a Result rather than asserts because this function inspects
 // caller-suppliable node indices.
+//
+// NOTE: there is deliberately NO "subtree with no primitive leaves" error.
+// That case is not an error at all -- it yields no extent and therefore
+// returns `fallback_bounds` by the rule above.
 [[nodiscard]] Result<Aabb> csg_subtree_world_bounds(const SdfProgram& program, uint32_t root_node,
                                                      const Aabb& fallback_bounds);
 
