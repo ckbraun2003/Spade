@@ -173,7 +173,17 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
     // caller-supplied `light_view_proj` (a degenerate transform, an
     // unvalidated hand-built RenderScene) is exactly the case this guards.
     constexpr float kMaxTexelCoord = 1.0e8f;
-    const auto safe_coord = [](float v) { return std::clamp(v, -kMaxTexelCoord, kMaxTexelCoord); };
+    // kMaxTexelCoord is CAPTURED, not left to the empty-capture default:
+    // std::clamp takes its bounds by const reference, so naming the variable
+    // odr-uses it, and a constexpr local that is odr-used inside a lambda
+    // must be captured. MSVC accepts the uncaptured form; g++-13 correctly
+    // rejects it ("'kMaxTexelCoord' is not captured"), which is what broke
+    // the spade-linux CI job. `-kMaxTexelCoord` alone would have been fine --
+    // unary minus yields a prvalue -- but the positive bound binds a
+    // reference straight to the variable.
+    const auto safe_coord = [kMaxTexelCoord](float v) {
+        return std::clamp(v, -kMaxTexelCoord, kMaxTexelCoord);
+    };
     const int size_i = static_cast<int>(map.size);
     const int x0 = std::max(0, static_cast<int>(std::floor(safe_coord(std::min({xa, xb, xc})))));
     const int x1 = std::min(size_i - 1, static_cast<int>(std::ceil(safe_coord(std::max({xa, xb, xc})))));

@@ -282,6 +282,16 @@ include(GoogleTest)
 gtest_discover_tests(spade_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     NO_PRETTY_VALUES
+    # DISCOVERY_TIMEOUT is NOT the same knob as PROPERTIES TIMEOUT below.
+    # TIMEOUT 60 bounds how long each discovered test may RUN; this bounds how
+    # long `spade_tests --gtest_list_tests` may take to ENUMERATE them, and its
+    # CMake default is a mere 5 seconds. S7a's render suite grew this one
+    # binary by ~750 tests across ten new test_render_*.cpp files, and on a
+    # GitHub windows-latest runner the enumeration crossed that 5s line --
+    # "Result: Process terminated due to timeout" at link time, so the job
+    # died before a single test ran. It stayed invisible locally because this
+    # box enumerates faster than the shared runner.
+    DISCOVERY_TIMEOUT 180
     PROPERTIES
         TIMEOUT 60
 )
