@@ -2,6 +2,9 @@
 
 #include <array>
 
+#include "objects/behavior.hpp"  // BehaviorRegistry's complete definition --
+                                  // schedule.hpp only forward-declares it, and
+                                  // this is the one TU that calls run_slot().
 #include "physics/integrator.hpp"
 #include "vehicles/rotor.hpp"  // RotorRow's complete definition -- schedule.hpp
                                 // only forward-declares it (S5 T9 seam ticket);
@@ -95,6 +98,28 @@ void pass_publish(const SubstepContext&) noexcept {
     // are S6. See the header for why the slot exists anyway.
 }
 
+// BehaviorsKinematic -- runs the registry's kinematic slot, or NOTHING when no
+// registry is attached. The slot's position is the ruling; see schedule.hpp
+// for why it sits between MediumUpdate and ForceElements.
+//
+// THE NULL CHECK IS WHAT KEEPS TASK 7'S GOLDEN PROOF ALIVE. Every scenario in
+// the corpus attaches no registry, so both of these remain the empty passes
+// that were proved byte-identical -- and the golden corpus keeps proving it on
+// every run, rather than that proof having been a one-time observation.
+void pass_behaviors_kinematic(const SubstepContext& ctx) noexcept {
+    if (ctx.behaviors != nullptr) {
+        ctx.behaviors->run_slot(objects::BehaviorSlot::kinematic, ctx);
+    }
+}
+
+// BehaviorsForce -- after ForceElements, so behavior wrenches never perturb the
+// pinned rotors-then-drag float accumulation. See schedule.hpp.
+void pass_behaviors_force(const SubstepContext& ctx) noexcept {
+    if (ctx.behaviors != nullptr) {
+        ctx.behaviors->run_slot(objects::BehaviorSlot::force, ctx);
+    }
+}
+
 namespace {
 
 // The pass list. `constexpr` and file-scope: there is no code path that can
@@ -102,10 +127,13 @@ namespace {
 //
 // The names are the spec's names, spelled exactly as §3 spells them -- they are
 // what test_determinism.cpp compares against, and what a future profiler or
-// debug HUD labels a timing row with.
+// debug HUD labels a timing row with. The two Behaviors* names are SL6's, in
+// the positions the user ruled.
 constexpr std::array<Pass, kSubstepPassCount> kSchedule{{
     {"MediumUpdate", &pass_medium_update},
+    {"BehaviorsKinematic", &pass_behaviors_kinematic},
     {"ForceElements", &pass_force_elements},
+    {"BehaviorsForce", &pass_behaviors_force},
     {"Gravity", &pass_gravity},
     {"CollisionStatic", &pass_collision_static},
     {"CollisionDynamic", &pass_collision_dynamic},

@@ -331,6 +331,61 @@ install(TARGETS spade_state
 install(DIRECTORY state/ DESTINATION include/state FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
+# spade_objects (24th spec, SL3-SL5): the composition half of the ECS engine
+# design section 4 ratified -- object identity, component attachment, and the
+# behavior registry. Holds NO simulation state (SL3): components reference the
+# SoA slots spade_state already owns, which is what keeps the snapshot and
+# parity estates byte-unchanged.
+# ------------------------------------------------------------------------------
+add_library(spade_objects STATIC
+    objects/behavior.cpp
+    objects/behaviors/kinematic_mover.cpp
+    objects/graph.cpp
+    objects/serialize.cpp
+)
+add_library(spade::objects ALIAS spade_objects)
+set_target_properties(spade_objects PROPERTIES EXPORT_NAME objects)
+
+target_include_directories(spade_objects PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+
+target_compile_features(spade_objects PUBLIC cxx_std_23)
+
+target_link_libraries(spade_objects PUBLIC spade::core)
+# spade::state PRIVATE (Plan A Task 9): objects/behaviors/kinematic_mover.cpp
+# writes BodyState. PRIVATE because no spade_objects HEADER names a state type
+# -- kinematic_mover.hpp exposes only glm and objects/behavior.hpp -- so this is
+# a compilation dependency, not part of this target's surface. Not
+# BUILD_LOCAL_INTERFACE-wrapped, unlike the spade_warnings/nlohmann links below:
+# spade::state IS in this package's export set, so naming it here is exactly
+# what an installed consumer's final link needs.
+#
+# physics/schedule.hpp is used HEADER-ONLY by that same TU (SubstepContext and
+# WorldSubstepView are read, no function declared there is called), so no link
+# on spade_sim is created and the objects <-> sim relationship stays one-way at
+# link time: spade_sim links spade::objects, never the reverse.
+target_link_libraries(spade_objects PRIVATE spade::state)
+# nlohmann_json is PRIVATE and BUILD_LOCAL_INTERFACE-wrapped for the same
+# reason spade_warnings is: serialize.cpp uses it, no nlohmann type appears in
+# serialize.hpp's signature, and an unwrapped link would put a target this
+# package does not export into spadeTargets.cmake -- breaking find_package()
+# for a consumer that has no nlohmann_json target defined.
+target_link_libraries(spade_objects PRIVATE
+    $<BUILD_LOCAL_INTERFACE:spade_warnings>
+    $<BUILD_LOCAL_INTERFACE:nlohmann_json::nlohmann_json>
+)
+
+install(TARGETS spade_objects
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+
+install(DIRECTORY objects/ DESTINATION include/objects FILES_MATCHING PATTERN "*.hpp")
+
+# ------------------------------------------------------------------------------
 # spade_render (S7a Task 0 + Task R1): the Spade Rendering & Scene
 # Representation program's module -- the render target/camera contract
 # (render/target.hpp: RenderTarget, Camera, DrawMode, RenderOptions, Aabb, the
@@ -574,6 +629,17 @@ install(DIRECTORY physics/ DESTINATION include/physics FILES_MATCHING PATTERN "*
 # ------------------------------------------------------------------------------
 add_library(spade_sim STATIC
     physics/schedule.cpp
+    # objects/spawn_helpers.cpp (SL9e, Plan A Task 11) -- HEADER DIRECTORY AND
+    # COMPILING TARGET DELIBERATELY DIFFER, exactly as physics/schedule.cpp's
+    # do a line above, and here it is not a preference but the only option:
+    # spawn_in_sphere/spawn_in_cube call Simulation::spawn/despawn/
+    # body_capacity/live_body_count, so the TU needs spade_sim's symbols -- and
+    # spade_sim already links spade::objects (Task 8, for the behavior
+    # registry). Compiling it into spade_objects would close that into a target
+    # cycle. The header stays under objects/ because SL9e groups it with the
+    # object model, and a consumer needs spade::sim to call it anyway: the API
+    # takes a Simulation&.
+    objects/spawn_helpers.cpp
     sensors/imu.cpp
     sim/simulation.cpp
     sim/world_set.cpp
@@ -591,7 +657,13 @@ target_include_directories(spade_sim PUBLIC
 # CMakeLists.txt sets to 20.
 target_compile_features(spade_sim PUBLIC cxx_std_23)
 
-target_link_libraries(spade_sim PUBLIC spade::physics spade::vehicles)
+# spade::objects (24th spec SL6, Plan A Task 8): physics/schedule.hpp's
+# SubstepContext carries a `const objects::BehaviorRegistry*` and schedule.cpp
+# calls run_slot() on it. PUBLIC because the pointer is in a public header's
+# struct, so a consumer that attaches a registry needs the target too. No cycle:
+# spade_objects links only spade::core, and objects/behavior.hpp forward-
+# declares SubstepContext rather than including schedule.hpp.
+target_link_libraries(spade_sim PUBLIC spade::physics spade::vehicles spade::objects)
 target_link_libraries(spade_sim PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings> $<BUILD_LOCAL_INTERFACE:spade_fp_strict>)
 
 install(TARGETS spade_sim

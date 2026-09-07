@@ -751,8 +751,21 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
 // never needs a normal at all and is unaffected.
 // ---------------------------------------------------------------------------
 
+// DrawMode::velocity's ramp (SL9c): blue at rest, red at options.velocity_-
+// scale_mps, CLAMPED above it rather than wrapped -- a fast outlier must read
+// as "at least this fast", never loop back through the slow colours and look
+// stationary. A display normalisation only; nothing here reaches physics.
+[[nodiscard]] glm::vec3 velocity_ramp(float speed_mps, float scale_mps) noexcept {
+    // A non-positive scale would divide by zero or invert the ramp; treat it as
+    // "everything is at the top" rather than producing NaN colours.
+    if (!(scale_mps > 0.0f)) return glm::vec3(1.0f, 0.0f, 0.0f);
+    const float u = std::clamp(speed_mps / scale_mps, 0.0f, 1.0f);
+    return glm::vec3(u, 0.0f, 1.0f - u);
+}
+
 void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const DrawItem& item,
-                     DrawMode mode, const ShadowMap* shadow) {
+                     const RenderOptions& options, const ShadowMap* shadow) {
+    const DrawMode mode = options.mode;
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
     }
@@ -796,8 +809,21 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
         // scene.materials is known non-empty (checked above) -- an untrusted
         // index must never fall back onto an equally untrusted one (review
         // finding).
-        const Material& material =
+        const Material& resolved =
             material_index < scene.materials.size() ? scene.materials[material_index] : scene.materials[0];
+
+        // DrawMode::velocity keeps the geometry and the lighting and replaces
+        // only the base colour, so the frame still reads as a lit 3D scene
+        // whose hue encodes speed -- rather than a flat silhouette that loses
+        // the shape the speed belongs to. Everything else about the pipeline is
+        // untouched, which is what keeps this mode from perturbing the others.
+        Material velocity_tinted;
+        if (mode == DrawMode::velocity) {
+            velocity_tinted = resolved;
+            velocity_tinted.base_color =
+                glm::vec4(velocity_ramp(item.speed_mps, options.velocity_scale_mps), 1.0f);
+        }
+        const Material& material = (mode == DrawMode::velocity) ? velocity_tinted : resolved;
 
         // Wireframe's flat colour -- the submesh's raw base_color, never
         // relit (this function's own header comment above).
@@ -1337,10 +1363,10 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // dynamics, then overlays -- never based on hashing, pointer identity, or
     // anything else unordered.
     for (const DrawItem& item : scene.statics) {
-        draw_mesh_item(fb, vc, scene, item, options.mode, shadow);
+        draw_mesh_item(fb, vc, scene, item, options, shadow);
     }
     for (const DrawItem& item : scene.dynamics) {
-        draw_mesh_item(fb, vc, scene, item, options.mode, shadow);
+        draw_mesh_item(fb, vc, scene, item, options, shadow);
     }
 
     if (options.overlays) {

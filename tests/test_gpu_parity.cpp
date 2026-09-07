@@ -20,7 +20,7 @@
 //
 // Through Task 7 this file carried a table of VERDICTS -- each corpus scenario
 // marked IN or OUT, an excluded one naming the pass that excluded it and the
-// task that would port it -- because only some of the schedule's eight passes
+// task that would port it -- because only some of the schedule's passes
 // had kernels. A scenario whose CPU run exercised an un-ported pass was not a
 // parity candidate at all: the two runs would have been running different
 // physics, and any band wide enough to hide that would be wide enough to hide

@@ -27,6 +27,16 @@ namespace spade::vehicles {
 struct RotorRow;
 }  // namespace spade::vehicles
 
+// objects::BehaviorRegistry -- forward-declared for exactly the reason
+// RotorRow above is, and with an extra one: objects/behavior.hpp names
+// SubstepContext, so including it here would be a CYCLE. SubstepContext below
+// holds only a POINTER to a registry and this header never dereferences one;
+// physics/schedule.cpp, the single TU that calls run_slot(), includes the real
+// header. objects/behavior.hpp forward-declares SubstepContext symmetrically.
+namespace spade::objects {
+class BehaviorRegistry;
+}  // namespace spade::objects
+
 // ---------------------------------------------------------------------------
 // THE SUBSTEP PASS SCHEDULE (engine design spec §3 "The step model").
 //
@@ -51,12 +61,13 @@ struct RotorRow;
 // "THE SCHEDULE OBJECT IS DATA; PASSES CANNOT REORDER THEMSELVES" (§3). That
 // sentence is the reason substep_schedule() returns a span over a fixed,
 // file-scope array of {name, function} records rather than the step loop simply
-// calling eight functions in a row. The difference is not stylistic:
+// calling the passes in a row. The difference is not stylistic:
 //
 //   * the ORDER is one reviewable, testable object -- test_determinism.cpp
-//     asserts the eight names in sequence against the spec text above, so a
-//     reordering is a red test rather than a physics regression found weeks
-//     later in a parity diff;
+//     asserts every name in sequence against the spec text above (plus SL6's
+//     two behavior slots; see kSubstepPassCount), so a reordering is a red
+//     test rather than a physics regression found weeks later in a parity
+//     diff;
 //   * a pass is a plain function pointer over a context struct, which is the
 //     shape §3's "every pass is one interface, two implementations --
 //     execute_cpu(WorldSpan) and record_gpu(CommandRecorder&)" grows into at
@@ -204,6 +215,24 @@ struct SubstepContext {
     // take. See Simulation::substep_h() for the ns -> s conversion contract.
     float h = 0.0f;
 
+    // The behaviors this world set runs, or NULL for a set that registers
+    // none -- which is every scenario in the golden corpus, and therefore the
+    // inert path Task 7 pinned. Non-owning, like every other view here: the
+    // registry outlives the step, and a substep never mutates it (run_slot is
+    // const), so behaviors cannot register behaviors.
+    const objects::BehaviorRegistry* behaviors = nullptr;
+
+    // The STEP duration in seconds -- dt, NOT the substep h above. Config
+    // alone, fixed for the Simulation's lifetime, and converted exactly as
+    // substep_h() converts (sim/simulation.hpp's ns -> s contract).
+    //
+    // It exists for behaviors, which derive their pose from `tick` and must
+    // therefore know what one tick is worth. Tick counts STEPS, so multiplying
+    // by `h` would be off by the substep count -- a bug that looks right and
+    // scales silently with a scenario's substeps setting. No pass that predates
+    // the behavior slots reads this.
+    float dt_s = 0.0f;
+
     // The STEP being executed -- what SensorSynthesis stamps its samples with.
     //
     // NOT A CLOCK. Tick is the engine's only notion of time (core/time.hpp) and
@@ -231,9 +260,26 @@ struct Pass {
     PassFn run;
 };
 
-// The eight passes of §3, in order. Fixed at compile time; there is no API to
-// add, remove or reorder one.
-inline constexpr std::size_t kSubstepPassCount = 8;
+// The ten passes, in order. Fixed at compile time; there is no API to add,
+// remove or reorder one.
+//
+// EIGHT OF THE TEN ARE §3'S, VERBATIM. The other two are the 24th spec's SL6
+// behavior slots, and they are here rather than inserted dynamically for
+// exactly the reason the line above states: §3 says the schedule is fixed at
+// compile time and its order is a parity contract, so "a behavior declares a
+// schedule position" could never have meant runtime insertion. The user ruled
+// TWO FIXED SLOTS instead, and their positions are the ruling:
+//
+//   BehaviorsKinematic -- after MediumUpdate, BEFORE ForceElements, so a pose
+//     written by a kinematic behavior is set before anything reads it,
+//     including both collision passes.
+//   BehaviorsForce -- AFTER ForceElements, so behavior wrenches accumulate
+//     after the rotors-then-drag order the golden corpus pins. Float addition
+//     is not associative; running before would change force_acc's last bits.
+//
+// Both are INERT until the behavior registry lands, and their inertness is a
+// proof obligation, not an intention -- see the two pass comments below.
+inline constexpr std::size_t kSubstepPassCount = 10;
 
 [[nodiscard]] std::span<const Pass> substep_schedule() noexcept;
 
@@ -268,6 +314,20 @@ void run_substep(const SubstepContext& ctx) noexcept;
 // OTHER stochastic system as well. So: no branch here, ever.
 void pass_medium_update(const SubstepContext&) noexcept;
 
+// BehaviorsKinematic -- DELIBERATELY INERT UNTIL THE REGISTRY LANDS (Task 8).
+//
+// SL6 places this AFTER MediumUpdate and BEFORE ForceElements: a pose written
+// by a kinematic behavior must be set before anything reads it, and both
+// collision passes read poses. Placing it later would let a body collide
+// against the position it held last substep.
+//
+// Inert here in the same sense the Gravity slot above is inert, and for a
+// different reason: Gravity is empty because its work happens inside Integrate,
+// while this is empty because the thing that fills it does not exist yet. Both
+// are represented rather than absent so the schedule stays one reviewable
+// object. See pass_behaviors_force below for the proof obligation both share.
+void pass_behaviors_kinematic(const SubstepContext&) noexcept;
+
 // ForceElements -- accumulate every force element's wrench into its body.
 //
 // TWO ELEMENT KINDS, IN §3'S ORDER: RotorElement (vehicles/rotor.hpp, Task 17,
@@ -290,6 +350,22 @@ void pass_medium_update(const SubstepContext&) noexcept;
 // costs two pointer stores per world per substep and cannot go stale.
 void pass_force_elements(const SubstepContext&) noexcept;
 
+// BehaviorsForce -- DELIBERATELY INERT UNTIL THE REGISTRY LANDS (Task 8).
+//
+// SL6 places this AFTER ForceElements so behavior wrenches accumulate after the
+// rotors-then-drag order the golden corpus pins. Float addition is not
+// associative, so running before would change force_acc's last bits -- a
+// difference no test of either element alone can see, and one that would
+// surface later as a CPU/GPU parity mystery. Same reasoning, same contract, as
+// the "rotors -> drag" ordering documented on pass_force_elements above.
+//
+// With nothing registered this MUST be a provable no-op, and the proof is the
+// golden corpus: Determinism.DigestsMatchTheCommittedGoldenCorpus and, more
+// strongly, GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus,
+// whose four digests are spelled independently in C++ and therefore cannot be
+// satisfied by re-blessing a scenario file.
+void pass_behaviors_force(const SubstepContext&) noexcept;
+
 // Gravity -- REPRESENTED BUT INERT. THIS PASS DELIBERATELY DOES NOTHING.
 //
 // Gravity application lives inside Integrate (Task 9 op-order contract); this
@@ -302,10 +378,11 @@ void pass_force_elements(const SubstepContext&) noexcept;
 // rather than a subtraction. The schedule's Gravity pass must therefore NOT
 // also add m*g to force_acc, or gravity is applied twice." Deleting this slot
 // instead of emptying it would have been the other defensible choice; keeping
-// it is what makes this file a literal transcription of §3, so that a reader
-// diffing the two finds eight names against eight names and this comment
-// explaining the one that is empty. A test asserts the emptiness (a body under
-// gravity falls by exactly one g, not two).
+// it is what makes this file a transcription of §3 rather than a rewrite of it,
+// so that a reader diffing the two finds §3's eight names present and in order
+// -- now interleaved with SL6's two behavior slots, which §3 predates -- and
+// this comment explaining the one of the eight that is empty. A test asserts
+// the emptiness (a body under gravity falls by exactly one g, not two).
 void pass_gravity(const SubstepContext&) noexcept;
 
 // CollisionStatic -- every world's active bodies against its world SDF.

@@ -13,6 +13,14 @@ that v2's strangler viewer drives during the transition to a real (Vulkan) rende
 > the charter's M1B bar -- see **M1B status** below. This README documents the engine **as it is
 > today**; the design spec is the source of truth for where it is going.
 
+## Where the other documents are
+
+| Path | What it is |
+|---|---|
+| `CHANGELOG.md` | Changes to the v2 engine. v1 is frozen. |
+| `docs/v1-transfer-register.md` | The normative v1 -> v2 transfer register (24th spec SL7). Every v1 system is dispositioned; **v1 may not be quarantined while any row is still open.** Machine-checked by `tests/test_transfer_register.cpp`, so it cannot drift from being true without a test failing. |
+| `engine/objects/README.md` | The object/component model and the behavior slots -- notably what the object graph is *not*. |
+
 ## v2 quickstart
 
 The commands below are written for the repo root (`C:\...\kat`) -- that leading `spade\` segment
@@ -115,7 +123,7 @@ derivation pin against `replicate()`'s own formula).
 
 `engine/` (v2, C++23, fp32-only state & math, no exceptions across module boundaries,
 `std::expected`-based `Result<T>`) -- one CMake target per subdirectory, dependency arrows point
-strictly downward (`sim` -> `vehicles`/`physics` -> `world` -> `state` -> `core`; nothing below a
+strictly downward (`sim` -> `objects`/`vehicles`/`physics` -> `world` -> `state` -> `core`; nothing below a
 layer knows the layer above it exists):
 
 | Directory | CMake target | What it is |
@@ -124,7 +132,8 @@ layer knows the layer above it exists):
 | `state/` | `spade::state` | The state backbone: `layout.hpp`'s shared POD structs with `static_assert`ed std430 offsets (the Slang layout single-source, until S6), the world-partitioned `ArenaSet` + `StateRegistry` (`arenas.*`, `registry.*`), and the versioned snapshot/restore blob + file IO (`snapshot.*`) -- the engine's replay/determinism contract. |
 | `world/` | `spade::world` | Analytic SDF scene programs (`sdf.*`), the `WorldBuilder` fluent API + its `WorldDesc` product (`builder.*`), the Dryden turbulence filter (`medium.*`), and the YAML world-file round trip (`world_file.*` -- S5 Task 5: `save_world_file()`/`load_world_file()`, schema version 2 as of S7a task W1 (materials/lighting/props; a `world_version: 1` file still loads, upgraded), see the quickstart's "World files & the scenario corpus" section). |
 | `physics/` | `spade::physics` | The per-substep dynamics passes: `Integrate` (symplectic Euler + specific-force capture, `integrator.*`), `CollisionStatic` (sphere-proxy vs SDF, `contacts.*`), `CollisionDynamic` (world-batched sorted-grid broad phase, `grid.*`), and the `ForceElements` pass's drag law (`forces.*`). Each pass's op order is the CPU/GPU parity contract (D1/D11) -- compiled with `-ffp-contract=off` on non-MSVC so the optimizer cannot silently fuse it. |
-| `sim/` | `spade::sim` | The fixed eight-pass substep **schedule** as data (`physics/schedule.*` -- compiles here, not into `spade_physics`, because only `Simulation` runs it), and `Simulation`/`WorldSet` (`sim/*`): arenas, tick, the substep loop, the structural queue, spawn/despawn, snapshot/restore, model registration. This is the engine's one public entry point. |
+| `objects/` | `spade::objects` | The composition half of the ECS (24th spec SL3-SL6): `ObjectGraph` (generational slot pool, component attachment, per-object type mask), the ten compile-time-registered component types whose ids ARE the serialization key, JSON round trip, and the behavior registry + `kinematic_mover`. Holds NO simulation state -- components reference the SoA slots `spade_state` already owns, which is what keeps `kSnapshotVersion` and every parity band byte-unchanged. See `objects/README.md`. (`spawn_helpers.*` lives here but compiles into `spade::sim`; it calls `Simulation`, and `spade_sim` links `spade::objects`, so the reverse would be a cycle.) |
+| `sim/` | `spade::sim` | The fixed ten-pass substep **schedule** as data (`physics/schedule.*` -- compiles here, not into `spade_physics`, because only `Simulation` runs it; spec section 3's eight passes plus SL6's two inert behavior slots, `BehaviorsKinematic` before `ForceElements` and `BehaviorsForce` after it), and `Simulation`/`WorldSet` (`sim/*`): arenas, tick, the substep loop, the structural queue, spawn/despawn, snapshot/restore, model registration. This is the engine's one public entry point. |
 | `sensors/` | *(compiles into `spade::sim`)* | IMU synthesis (`imu.*`: mount-frame specific force + angular velocity, tick-stamped) and the sensor output ring buffers (`rings.hpp` -- editor tech spec TA5's sensor-poll convention, made executable). |
 | `vehicles/` | `spade::vehicles` | The model-type layer (design spec section 6): `RotorElement` (thrust/torque curves, RPM lag, momentum-theory inflow, SDF ground effect -- `rotor.*`), the `ModelType` registry (`model_type.*`), and `Quadrotor` (`quadrotor.*`). "Nothing vehicle-specific below here" -- the dependency arrow points down into `physics`/`world`/`state`, never back. |
 | `testing/` | *(header-only, test support only)* | `replay.hpp`: the determinism digest (`state_digest()`, an incremental FNV-1a fold over the state registry's walk order) and the scenario replay harness. `scenario_file.hpp` (S5 Task 7): the scenario-file loader -- the golden corpus is data, see the quickstart section above. Both included by `spade/tests/` only -- absent from every install/export rule, not something an out-of-tree consumer has any business with. |
@@ -215,7 +224,7 @@ gaining a default material, default lighting and no props.
 
 ## S6 status (GPU backend, in progress)
 
-S6 (design spec §9/§13) ports the fixed eight-pass substep schedule to a Vulkan/Slang GPU backend
+S6 (design spec §9/§13) ports spec section 3's eight substep passes to a Vulkan/Slang GPU backend
 alongside the CPU reference twin, with CPU<->GPU parity as the acceptance bar rather than
 GPU-only correctness. As of this note:
 

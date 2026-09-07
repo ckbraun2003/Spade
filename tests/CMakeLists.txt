@@ -27,6 +27,14 @@ add_executable(spade_tests
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp
+    test_objects_graph.cpp
+    test_objects_component.cpp
+    test_objects_determinism.cpp
+    test_objects_serialize.cpp
+    test_objects_behavior.cpp
+    test_render_velocity.cpp
+    test_objects_spawn_helpers.cpp
+    test_transfer_register.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -147,6 +155,7 @@ target_link_libraries(spade_tests PRIVATE
     spade::core
     spade::world
     spade::state
+    spade::objects
     spade::render
     spade::physics
     spade::vehicles

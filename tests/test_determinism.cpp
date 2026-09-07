@@ -492,19 +492,77 @@ using spade::testing::ScenarioSpawn;
 // 1. The schedule is the spec's schedule
 // ===========================================================================
 
-TEST(Schedule, IsExactlySpecSectionThreeInOrder) {
+TEST(Schedule, IsSpecSectionThreeInOrderWithSL6sTwoBehaviorSlots) {
     const std::span<const spade::physics::Pass> schedule = spade::physics::substep_schedule();
     ASSERT_EQ(schedule.size(), spade::physics::kSubstepPassCount);
+    EXPECT_EQ(spade::physics::kSubstepPassCount, 10u);
 
-    // The eight names, in §3's order, transcribed independently of
-    // schedule.cpp. If a pass moves, is dropped, or is inserted, this fails --
-    // which is the entire reason the schedule is data.
-    const char* expected[] = {"MediumUpdate",   "ForceElements",    "Gravity",         "CollisionStatic",
-                              "CollisionDynamic", "Integrate",      "SensorSynthesis", "Publish"};
+    // The ten names, in order, transcribed independently of schedule.cpp. If a
+    // pass moves, is dropped, or is inserted, this fails -- which is the entire
+    // reason the schedule is data.
+    //
+    // EIGHT ARE §3'S, VERBATIM. The two Behaviors* slots are the 24th spec's
+    // SL6, and their POSITIONS are the ruling rather than a convenience:
+    // Kinematic before ForceElements so a behavior-written pose is set before
+    // anything reads it (both collision passes do); Force after ForceElements
+    // so behavior wrenches accumulate after the rotors-then-drag order the
+    // golden corpus pins, float addition not being associative. Both are inert
+    // until the registry lands; that inertness is proved by the golden corpus
+    // below, not by this test.
+    //
+    // THIS IS THE ONLY PLACE THE ORDER IS PINNED, deliberately. A second
+    // transcription elsewhere would be a copy that could agree with itself
+    // while both drifted from the array.
+    const char* expected[] = {"MediumUpdate",     "BehaviorsKinematic", "ForceElements",
+                              "BehaviorsForce",   "Gravity",            "CollisionStatic",
+                              "CollisionDynamic", "Integrate",          "SensorSynthesis",
+                              "Publish"};
+    ASSERT_EQ(std::size(expected), schedule.size());
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         EXPECT_EQ(schedule[i].name, expected[i]) << "pass " << i;
         EXPECT_NE(schedule[i].run, nullptr) << "pass " << i;
     }
+}
+
+// THE §3 SUBSEQUENCE, PINNED SEPARATELY -- and this is not a second copy of the
+// order test above, it asserts a different fact.
+//
+// WHY IT EXISTS: the Vulkan step recorder keeps its OWN slot table
+// (compute/vulkan/step_recorder.cpp's kPassPipeline/kPassGrid, plus
+// timestamps.hpp's per-pass duration fields), and that table deliberately
+// models §3's EIGHT passes only -- SL6's two behavior slots are not represented
+// on the GPU side, because a behavior without record_gpu is refused from a
+// GPU-authoritative world outright and Task 8 owns what the GPU shape should
+// be. That is a legitimate divergence, but only while it stays DELIBERATE.
+//
+// Nothing was pinning it. Adding the two behavior slots to the CPU schedule
+// left the recorder's "mirrors kSchedule slot by slot" claim false, its
+// hardcoded kForceElementsSlot pointing at the wrong CPU index, and EVERY GPU
+// TEST GREEN -- the recorder never reads kSchedule, so nothing could notice.
+// This test is what notices: if §3's eight ever stop appearing in §3's order
+// once the behavior slots are removed, the recorder's table is stale and the
+// two backends have silently drifted.
+TEST(Schedule, RemovingTheBehaviorSlotsLeavesSpecSectionThreeExactly) {
+    const std::span<const spade::physics::Pass> schedule = spade::physics::substep_schedule();
+
+    std::vector<std::string_view> without_behaviors;
+    for (const spade::physics::Pass& pass : schedule) {
+        if (pass.name.starts_with("Behaviors")) continue;
+        without_behaviors.push_back(pass.name);
+    }
+
+    const char* section_three[] = {"MediumUpdate",     "ForceElements", "Gravity",
+                                   "CollisionStatic",  "CollisionDynamic", "Integrate",
+                                   "SensorSynthesis",  "Publish"};
+    ASSERT_EQ(without_behaviors.size(), std::size(section_three))
+        << "the schedule no longer reduces to spec section 3's eight passes";
+    for (std::size_t i = 0; i < without_behaviors.size(); ++i) {
+        EXPECT_EQ(without_behaviors[i], section_three[i]) << "section 3 pass " << i;
+    }
+
+    // And exactly two behavior slots, so the subsequence above cannot be made
+    // to match by deleting a real pass and calling something "Behaviors...".
+    EXPECT_EQ(schedule.size() - without_behaviors.size(), 2u);
 }
 
 // The Gravity pass is REPRESENTED BUT INERT: integrate_bodies() applies gravity
@@ -890,6 +948,14 @@ TEST(ScenarioCorpus, EveryFileIsNamedAfterItsScenario) {
     }
 }
 
+// ALSO THE BEHAVIOR-SLOT INERTNESS GUARD (24th spec SL6, Plan A Task 7). The
+// two Behaviors* passes were added to the schedule with empty bodies, and "they
+// are inert" is a claim this test is what verifies -- a slot that did anything
+// at all moves a digest. Anyone weakening or re-blessing this is also removing
+// the only thing standing between a behavior slot and a silent parity
+// regression. GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus
+// below is the stronger half: its expectations are spelled in C++ here, so
+// unlike this test it cannot be satisfied by editing a scenario file.
 TEST(Determinism, DigestsMatchTheCommittedGoldenCorpus) {
     for (const LoadedScenario& loaded : corpus()) {
         const Scenario& scenario = loaded.scenario;

@@ -421,10 +421,19 @@ void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
         glm::mat4 local_to_world = glm::mat4_cast(body.orientation);
         local_to_world[3] = glm::vec4(body.position, 1.0f);
 
+        // Speed, not the vector: DrawMode::velocity paints magnitude, and
+        // reducing here keeps the per-frame work out of the rasterizer's inner
+        // loop. Computed inline rather than via glm::length so the expression
+        // is the same three multiplies and one sqrt on every platform.
+        const float speed = std::sqrt(body.velocity.x * body.velocity.x +
+                                      body.velocity.y * body.velocity.y +
+                                      body.velocity.z * body.velocity.z);
+
         scene.dynamics.push_back(DrawItem{
             .mesh_index = body.mesh_index,
             .local_to_world = local_to_world,
             .material_override = kNoMaterial,
+            .speed_mps = speed,
         });
     }
 }

@@ -3,12 +3,18 @@
 // ---------------------------------------------------------------------------
 // step_recorder.hpp (S6 Task 5; kernels wave A wired in by Task 6) -- the step
 // command buffer: PassParams (the push-constant block every dispatch carries)
-// and StepRecorder (the object that dispatches the schedule's 8-pass chain once
-// per step, stage-scoped barriers between passes, submit-per-step).
+// and StepRecorder (the object that dispatches spec section 3's 8-pass chain
+// once per step, stage-scoped barriers between passes, submit-per-step).
+//
+// "SECTION 3's EIGHT", not "the schedule's ten": physics/schedule.cpp's
+// kSchedule grew two inert SL6 behavior slots (Plan A Task 7) that this class
+// deliberately does not model. step_recorder.cpp's kNoDispatch comment carries
+// the reasoning and names the test that keeps the divergence deliberate.
 //
 // ---------------------------------------------------------------------------
-// ALL EIGHT SLOTS ARE REAL AS OF S6 TASK 8, AND THE STUB IS RETIRED. The
-// schedule's eight passes (physics/schedule.cpp's kSchedule) bind, in order:
+// ALL EIGHT SLOTS ARE REAL AS OF S6 TASK 8, AND THE STUB IS RETIRED. Spec
+// section 3's eight passes -- kSchedule's ten less its two behavior slots --
+// bind, in order (slot numbers below are THIS table's, not kSchedule's):
 //
 //   0 MediumUpdate      medium_update    -- REAL (S6 Task 8). One thread per
 //                                          WORLD: the Dryden filter is a

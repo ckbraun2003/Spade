@@ -667,6 +667,11 @@ Result<void> Simulation::step(uint64_t n) {
         ctx.dynamic_grid = configs_[0].grid;
         ctx.scratch = &scratch_;
         ctx.h = h_;
+        // dt, not h: Tick counts STEPS, and a behavior deriving a pose from the
+        // tick needs what one tick is worth. Same ns -> s conversion as
+        // substep_h(), so the two agree by construction.
+        ctx.dt_s = static_cast<float>(dt_ns_) / 1.0e9f;
+        ctx.behaviors = behaviors_;  // nullptr unless set_behaviors() was called
         // The step being executed -- what SensorSynthesis stamps samples with.
         // Taken BEFORE the increment below, so every substep of step k stamps
         // k (Tick counts steps, not substeps).
@@ -2106,6 +2111,14 @@ Result<uint32_t> Simulation::live_body_count(uint32_t world_index) const {
     const Result<uint32_t> world = checked_world(world_index);
     if (!world) return std::unexpected(world.error());
     return arenas_.live_count(bodies_id_, world_index);
+}
+
+Result<uint32_t> Simulation::body_capacity(uint32_t world_index) const {
+    if (world_index >= configs_.size()) {
+        return std::unexpected(Error{Code::not_found, "world index " + std::to_string(world_index) +
+                                                          " is out of range"});
+    }
+    return configs_[world_index].declared_body_capacity;
 }
 
 Result<BodyRef> Simulation::body_ref_at(uint32_t world_index, uint32_t local_slot) const {

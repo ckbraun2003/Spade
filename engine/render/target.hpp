@@ -41,12 +41,25 @@ struct Camera {
     float near_plane = 0.1f, far_plane = 1000.0f;
 };
 
-enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2 };
+// `velocity` (24th spec SL9c, Plan A Task 10) closes the v1 RenderVelocity /
+// Velocity.frag row of the transfer register. APPENDED, never renumbered: the
+// three existing values are what every render golden and every saved
+// RenderOptions already means by 0/1/2.
+enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3 };
 
 struct RenderOptions {
     DrawMode mode = DrawMode::shaded;
     bool shadows = true;
     bool overlays = true;             // ground grid, bounds, spawn markers (PA-4)
+
+    // The speed, in m/s, that DrawMode::velocity paints as the top of its
+    // ramp. Speeds above it clamp rather than wrap, so a fast outlier reads as
+    // "at least this fast" instead of looping back through the slow colours.
+    //
+    // A DISPLAY NORMALISATION AND NOTHING ELSE. It never reaches physics, is
+    // never registered state, and changing it cannot move a digest -- the
+    // renderer reads simulation output, never the reverse.
+    float velocity_scale_mps = 20.0f;
 };
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp

@@ -31,12 +31,13 @@
 // record_reset()/record_mark() regardless of device capability -- exactly
 // what StepRecorder now does (its own header/impl carry the wiring).
 //
-// EIGHT NAMED PASSES, physics/schedule.cpp's kSchedule order verbatim
-// (MediumUpdate, ForceElements, Gravity, CollisionStatic, CollisionDynamic,
-// Integrate, SensorSynthesis, Publish) -- the same eight names
-// step_recorder.hpp's kPassPipeline/kPassGrid tables already keep literal for
-// exactly this reason ("the correspondence with spec section 3's eight names
-// stays literal"). Two of the eight (Gravity, Publish) are INERT BY DESIGN on
+// EIGHT NAMED PASSES, spec section 3's order verbatim (MediumUpdate,
+// ForceElements, Gravity, CollisionStatic, CollisionDynamic, Integrate,
+// SensorSynthesis, Publish) -- the same eight names step_recorder.hpp's
+// kPassPipeline/kPassGrid tables keep literal, and for the same reason. NOT
+// kSchedule's full ten: SL6's two behavior slots are unmodelled on this
+// backend by design, so no field or query slot is spent measuring them. See
+// step_recorder.cpp's kNoDispatch comment. Two of the eight (Gravity, Publish) are INERT BY DESIGN on
 // both backends (no dispatch is ever recorded for them -- see
 // step_recorder.cpp's kNoDispatch), so their boundary marks bracket zero
 // intervening work and their durations report as (measured, not merely

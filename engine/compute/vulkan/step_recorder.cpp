@@ -206,6 +206,29 @@ namespace {
 // FIRST pipeline so the table stays a faithful "what does this slot start with"
 // and never silently reads as "this slot is one dispatch".
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// THIS TABLE MODELS SPEC SECTION 3'S EIGHT PASSES, NOT THE CPU SCHEDULE'S TEN.
+//
+// physics/schedule.cpp's kSchedule carries TEN slots as of the 24th spec's SL6
+// (Plan A Task 7): §3's eight, plus BehaviorsKinematic (before ForceElements)
+// and BehaviorsForce (after it). Neither is represented here, and that is
+// deliberate rather than an oversight -- SL6 refuses a behavior without a
+// record_gpu half from a GPU-authoritative world outright, so what the GPU
+// shape should be is the behavior registry's decision to make, not a pair of
+// no-dispatch slots added ahead of it. Adding them now would also cost two
+// PassDurationsNs fields and two timestamp query slots per substep to measure
+// two things that record nothing.
+//
+// THE SLOT INDICES BELOW ARE THIS TABLE'S, THEREFORE, AND NO LONGER THE CPU
+// SCHEDULE'S. In kSchedule, ForceElements is index 2 and CollisionDynamic is 5.
+//
+// WHAT KEEPS THE DIVERGENCE HONEST: test_determinism.cpp's
+// Schedule.RemovingTheBehaviorSlotsLeavesSpecSectionThreeExactly, which asserts
+// that striking the Behaviors* slots out of kSchedule leaves §3's eight names
+// in §3's order. That is precisely the property this table assumes, and until
+// it was written nothing checked it -- the recorder never reads kSchedule, so
+// the schedule grew from eight to ten with every GPU test green.
+// ---------------------------------------------------------------------------
 constexpr uint32_t kNoDispatch = 0xFFFFFFFFu;
 
 constexpr uint32_t kForceElementsSlot = 1;     // rotors -> forces_drag (S6 Task 8)
@@ -539,8 +562,9 @@ Result<void> StepRecorder::record() {
     // device (PassTimestamps::record_reset()'s own doc comment).
     timestamps_->record_reset(cmd_);
 
-    // The per-substep chain, `shape_.substeps` times, walking physics/
-    // schedule.hpp's kSchedule slot by slot (MediumUpdate .. Publish). Each slot
+    // The per-substep chain, `shape_.substeps` times, walking spec section 3's
+    // eight passes slot by slot (MediumUpdate .. Publish) -- which is kSchedule
+    // MINUS SL6's two behavior slots; see kNoDispatch's comment above. Each slot
     // records what kPassPipeline/kPassGrid name for it, EXCEPT the two CHAIN
     // slots (1 ForceElements and 4 CollisionDynamic) and the two INERT ones
     // (2 Gravity and 7 Publish), which record nothing at all.

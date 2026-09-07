@@ -520,6 +520,28 @@ public:
     // --- shape and time ---------------------------------------------------
     [[nodiscard]] uint32_t world_count() const noexcept { return layout_.world_count; }
     [[nodiscard]] Tick tick() const noexcept { return tick_; }
+    // The behaviors this Simulation runs, or nullptr for none (the default,
+    // and what every golden-corpus scenario uses). NOT OWNED: the caller keeps
+    // the registry -- and everything its descs' user_data points at -- alive
+    // for as long as it is attached.
+    //
+    // WHY THIS IS ITS OWN CALL RATHER THAN A create() PARAMETER: a registry is
+    // authored alongside a scene, which is built after the Simulation, and
+    // threading it through create() would put it in WorldSetDesc -- i.e. inside
+    // the thing snapshots and the replay config hash are computed from.
+    // Behaviors are composition (SL3), not registered state; keeping the
+    // attachment out of the descriptor is what keeps that true.
+    //
+    // NOT A MID-STEP HAZARD: read once per step, where the SubstepContext is
+    // built, so swapping registries between steps is well defined and swapping
+    // one mid-step is impossible.
+    void set_behaviors(const objects::BehaviorRegistry* registry) noexcept {
+        behaviors_ = registry;
+    }
+    [[nodiscard]] const objects::BehaviorRegistry* behaviors() const noexcept {
+        return behaviors_;
+    }
+
     [[nodiscard]] uint64_t dt_ns() const noexcept { return dt_ns_; }
     [[nodiscard]] uint32_t substeps() const noexcept { return substeps_; }
     [[nodiscard]] uint64_t substep_dt_ns() const noexcept { return dt_ns_ / substeps_; }
@@ -1091,6 +1113,13 @@ public:
     [[nodiscard]] Result<const BodyState*> body(BodyRef ref) const;
     [[nodiscard]] Result<uint32_t> live_body_count(uint32_t world_index) const;
 
+    // The world's OWN declared body capacity -- what spawn() enforces, which is
+    // NOT the same number as world_bodies(w).size(): that is the arena
+    // PARTITION size, and the two are allowed to differ. A caller planning a
+    // bulk spawn needs the enforced one, so it is the one exposed.
+    // Errors: not_found for an out-of-range world index.
+    [[nodiscard]] Result<uint32_t> body_capacity(uint32_t world_index) const;
+
     // ---------------------------------------------------------------------
     // The live BodyRef occupying a world-local body slot, or not_found if that
     // slot is free.
@@ -1448,6 +1477,8 @@ private:
     uint64_t dt_ns_ = 0;
     uint32_t substeps_ = 1;
     float h_ = 0.0f;
+
+    const objects::BehaviorRegistry* behaviors_ = nullptr;  // borrowed; see set_behaviors()
 
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;

@@ -355,6 +355,11 @@ struct DrawItem {
     uint32_t mesh_index = 0;   // index into RenderScene::meshes
     glm::mat4 local_to_world{1.0f};
     uint32_t material_override = kNoMaterial;
+
+    // Metres per second, for DrawMode::velocity only (SL9c). 0 for a static,
+    // which is exactly right: a static does not move. Every other draw mode
+    // ignores it, so adding it moves no existing golden.
+    float speed_mps = 0.0f;
 };
 
 // A tick-boundary copy of one body's pose (position/orientation only -- no
@@ -366,6 +371,12 @@ struct BodyPose {
     glm::vec3 position{0.0f};
     glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
     uint32_t mesh_index = kNoMesh;
+
+    // World-frame velocity at the same tick boundary as the pose. Carried as a
+    // VECTOR rather than a scalar speed so a future direction-coded mode needs
+    // no second migration of this struct; update_dynamics() reduces it to the
+    // magnitude DrawItem stores.
+    glm::vec3 velocity{0.0f};
 };
 
 struct RenderScene {
