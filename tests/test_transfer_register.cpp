@@ -103,9 +103,27 @@ TEST(TransferRegister, EveryRowIsDispositioned) {
 // parser that silently stops early cannot turn this suite green by reading
 // fewer rows than the register has. Raising it is a deliberate edit made
 // alongside adding a row.
+//
+// WHAT THIS ASSERTION CAN AND CANNOT DO -- read before trusting it.
+//
+// This is a CHANGE detector, not a completeness check, and the distinction is
+// not academic: the expected count is maintained by hand alongside the table,
+// so it can only catch a row lost AFTER the number was last set. It is
+// structurally blind to a row that was never transcribed in the first place --
+// and that is exactly what happened. The register carried 13 rows against the
+// 24th spec's 14 (SL9f, barycentric wireframe, missing), this line said 13u,
+// and the guard sided with the file over the authority for as long as both
+// were wrong together.
+//
+// It cannot be made self-checking. The spec that enumerates the systems lives
+// in design-specs/, which is gitignored -- absent from a fresh clone and from
+// CI -- so no test can read it. v1-transfer-register.md is therefore the
+// AUTHORITY rather than a copy (its header says so), and this count is a human
+// commitment maintained beside it, not a derived fact. Adding a row means
+// editing both, deliberately, in the same change.
 TEST(TransferRegister, HasEveryRowTheSpecEnumerates) {
     const std::vector<Row> rows = parse_transfer_register();
-    EXPECT_EQ(rows.size(), 13u) << "the register gained or lost a row";
+    EXPECT_EQ(rows.size(), 14u) << "the register gained or lost a row";
     for (const Row& row : rows) {
         EXPECT_FALSE(row.surface.empty()) << row.system << " has no v1 surface";
         EXPECT_FALSE(row.evidence.empty()) << row.system << " has no evidence";

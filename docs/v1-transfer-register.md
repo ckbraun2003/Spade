@@ -10,8 +10,17 @@ implementation of anything. Every v1 system below is dispositioned as
 > row count changes without the guard being updated. The check exists so that
 > §7's quarantine cannot execute over a live gap.
 
-The table is transcribed from the spec's SL7 register, which was itself verified
-against the v1 tree rather than recalled.
+**This file is the authority, not a copy.** It began as a transcription of the 24th
+spec's SL7 table, but that spec lives in `design-specs/`, which is gitignored -- it
+does not exist in a fresh clone or in CI, so no test can ever cross-check against it.
+The tracked artifact is therefore the normative one and the spec's table is the derived
+copy. Anything that must survive a clone belongs here.
+
+**The 2026-09-07 correction that forced this.** The spec enumerated fourteen v1 systems;
+this file carried thirteen. `SL9f` (barycentric wireframe) had never been transcribed,
+and `test_transfer_register.cpp` pinned the row count at `13u` -- a number read off this
+file, so the guard agreed with the omission rather than catching it. A self-derived
+expectation is blind to exactly one thing: the original transcription.
 
 ## Disposition vocabulary
 
@@ -39,6 +48,7 @@ against the v1 tree rather than recalled.
 | Camera component | `CameraComponent` | `transferred` | SL9d, Plan A Task 2. `ComponentTypeId::camera` — one of SL5's ten, with `fov_degrees`/`near_plane`/`far_plane`/`active`. |
 | Input component | `InputComponent` | `retired-to-sandbox` | SL9d. Key bindings and fly-through speed are an application concern; the engine is headless by construction (SL1) and must not grow an input concept. The capability survives as the sandbox's camera controller (Plan C). |
 | Instancing helpers | `SpawnInstancesInSphere/Cube`, `SetVelocity/Color/Mass`, `RandomizeVelocity/Color` | `transferred` | SL9e, Plan A Task 11. `spawn_in_sphere`/`spawn_in_cube` with `mass` and `velocity_radius_mps`, seeded from domain-separated splitmix64 streams rather than v1's `std::random_device`-seeded mt19937. **Colour has no body-side equivalent to transfer to:** in v2 colour is a `RenderScene` `Material`, not a property of a body. |
+| Barycentric wireframe | `Barycentric.geom` | `retired-with-reason` | SL9f. A geometry-shader technique for GPU wireframe overlay; the CPU rasterizer draws wireframe directly and needs no equivalent. **Transcribed 2026-09-07** -- enumerated by the spec's SL7 table but never copied here, and the guard's pinned count agreed with the omission. |
 
 ## What "zero open rows" means
 

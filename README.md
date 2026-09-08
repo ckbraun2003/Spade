@@ -8,7 +8,9 @@ that v2's strangler viewer drives during the transition to a real (Vulkan) rende
 > full history @ `1c8a133`) as the engine beneath Kat's sim stack. Its v2 direction -- fixed-step
 > deterministic stepping, a CPU reference twin for every authoritative pass, headless/offscreen
 > operation, seeded RNG, snapshots, native world-batching -- is pinned in
-> `design-specs/kat-spade-engine-design.html` (local, untracked; approved v1.0, 2026-08-08). The S1-S4
+> `design-specs/spade/02-engine.md` (local, untracked; the engine `D1`-`D12` decision record,
+> approved v1.0 2026-08-08, consolidated into the spade realm directory 2026-09-07 -- the original
+> is archived at `design-specs/spade/superseded/kat-spade-engine-design.html`). The S1-S4
 > implementation plan (`.superpowers/plans/2026-08-08-spade-engine-s1-s4.md`) landed the CPU path of
 > the charter's M1B bar -- see **M1B status** below. This README documents the engine **as it is
 > today**; the design spec is the source of truth for where it is going.

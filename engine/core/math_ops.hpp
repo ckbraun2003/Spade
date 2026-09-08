@@ -7,7 +7,7 @@ namespace spade::math {
 
 // ---------------------------------------------------------------------------
 // Rigid-body math primitives underneath the engine's Integrate pass (engine
-// design spec D1/D2; design-specs/kat-spade-engine-design.html S5 "Rigid
+// design spec D1/D2; design-specs/spade/02-engine.md S5 "Rigid
 // bodies (D1, D2)"). The full per-substep op order there is:
 //
 //   1. velocities integrated from the accumulated wrench (owned by the
