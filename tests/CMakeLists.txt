@@ -363,6 +363,7 @@ set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
 add_executable(spade_bench
     bench/bench_core.cpp
     bench/bench_sim.cpp
+    bench/bench_render.cpp
 )
 
 # spade_fp_strict here too, same reasoning as spade_tests above: bench_core.cpp
@@ -370,9 +371,16 @@ add_executable(spade_bench
 # inlines into this TU) and bench_sim.cpp builds scenario state inline --
 # both are fp32 expressions this executable evaluates itself, not just calls
 # into a pre-built library for.
+# spade::render (base-package phase W6c, 2026-09-08): bench_render.cpp calls
+# spade::render::render() directly to measure the CPU rasterizer's per-pixel
+# fill cost -- the render side of the MV3 render-scale-cap question, whose
+# present side the editor realm measured as neutral (1.03x). Listed explicitly
+# rather than leaned on transitively, per this target's own stated convention
+# that the link list should say what each file in it actually uses.
 target_link_libraries(spade_bench PRIVATE
     spade::core
     spade::sim
+    spade::render
     spade_warnings
     spade_fp_strict
     benchmark::benchmark

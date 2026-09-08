@@ -163,7 +163,19 @@ struct Scene {
     // bridge.cpp's SDF->mesh notes): a `plane` SDF primitive is an infinite
     // half-space with no inherent extent, so the viewer renders it as a large
     // finite slab of this size, centered/oriented at the primitive's pose.
-    float ground_half_extent = 6.0f;  // rendered slab half-width/-depth, m
+    // Base-package phase W2 (2026-09-08, ruling BP5: the world is INFINITE,
+    // no boundary). Was 6.0f, which read as a table the aircraft sits on
+    // rather than a world it flies over -- the slab edge entered frame at
+    // ordinary viewing distances and gave the plane a visible border the SDF
+    // does not have. Sized to the DEFAULT CAMERA FAR PLANE (1000 m; see
+    // render/target.hpp:41 and objects/component.hpp:82), because that is the
+    // distance at which the value stops mattering: slab geometry beyond the
+    // far plane is clipped before it can be drawn, so a larger half-extent
+    // adds nothing and a smaller one can show an edge. Scenes that set their
+    // own extent (scenes.cpp) are unaffected -- this is the default only.
+    // DISPLAY ONLY: ground_half_extent appears in exactly three files, all in
+    // this directory, so nothing outside the viewer can observe this change.
+    float ground_half_extent = 1000.0f;  // rendered slab half-width/-depth, m
     float ground_thickness = 0.4f;    // rendered slab thickness, m
 
     // Color for every STATIC world-geometry instance (ground slabs, boxes,
