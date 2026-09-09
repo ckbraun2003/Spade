@@ -65,6 +65,49 @@
 //     by a human. No check will contradict a stale number here.
 //
 // ---------------------------------------------------------------------------
+// HOW TO REGENERATE -- MV3 CITES THIS FILE, NOT A NUMBER
+// ---------------------------------------------------------------------------
+// The viewport & cameras spec's measured-throughput obligation is discharged by
+// pinning the METHOD rather than a figure. That is deliberate: MV3's table sat
+// unpinned from sign-off (2026-08-19) precisely because a bare number is
+// unfalsifiable later, and nothing in CI reads this directory's results -- so a
+// digit embedded in a spec today would repeat the original mistake with fresher
+// numbers. What is pinned is the conclusion, the basis, what would falsify it,
+// and this command:
+//
+//   spade_bench --benchmark_filter=BM_Render \
+//               --benchmark_min_time=1s \
+//               --benchmark_repetitions=3
+//
+// The min-time floor is not optional. Without it a hand-rolled loop on this box
+// produced a 2.4x run-to-run spread; the editor realm hit exactly that and the
+// floor collapsed it to 1.08-1.27x. 1s is ~64x the ~15.6 ms Windows scheduler
+// tick, so no single preempted sample can dominate -- the same reasoning
+// baselines.json's `spread_policy` states for the sim families.
+//
+// READ real_time AND cpu_time TOGETHER, ALWAYS. On single-threaded CPU work
+// they should be close. When they are not, the thread is being descheduled and
+// the numbers are silently rescaled rather than corrupted -- they still look
+// entirely plausible. The first run of this file measured 1775 ms / 2916 ms for
+// the two decision cases with real_time ~3x cpu_time, because other sessions on
+// this shared box were building. The clean re-run was 4x faster with real ~ cpu.
+// THAT GAP IS THE INSTRUMENT REPORTING ITS OWN TRUSTWORTHINESS; there is no
+// other signal that the box was loaded.
+//
+// WHAT THIS BOX MEASURED, 2026-09-08 (a reference point to re-derive against,
+// NOT a pin -- Release, spade/build-host, mean of 3, real_time):
+//
+//   BackgroundFill  1892x1066  401.4 ms  CV  9.8%   |  2256x1504  659.3 ms  CV 2.8%
+//   GroundPlane     1892x1066  396.2 ms  CV  7.0%   |  2256x1504  722.2 ms  CV 5.9%
+//
+//   ratio priced -> proposed: 1.64x (fill) to 1.82x (ground), against a 1.683x
+//   pixel ratio. Per-pixel rate 4.7-5.3 M px/s across a 15x pixel range.
+//
+// BM_RenderSlots is NOT part of that: it came back at up to 57% CV with slots=3
+// measuring slower than slots=4, which is impossible for monotonically
+// increasing work. It is noise and is recorded as unresolved rather than pinned.
+//
+// ---------------------------------------------------------------------------
 // THE THREE SWEEPS
 // ---------------------------------------------------------------------------
 //   1. BM_RenderBackgroundFill/<case>  -- an EMPTY scene: sky gradient only,
