@@ -129,14 +129,30 @@
 //   3. BM_RenderSlots/<n>  -- n independent targets rendered per iteration at
 //      the secondary-slot resolution, n in {1,2,3,4}.
 //
-//      ** THIS IS A PROXY AND MUST BE READ AS ONE. ** MV1's camera slots DO
-//      NOT EXIST: kat_host_abi.h carries no slot parameter on any of the four
-//      presentation calls, and W6b (which would give a kathost_t more than
-//      one camera/pool pair) is gated on ruling G-5. What this family
-//      measures is n independent render-and-fill cycles -- the WORK n slots
-//      would do -- with none of the per-slot bookkeeping, pool management or
-//      cross-slot contention a real implementation would add. It is a LOWER
-//      BOUND on multi-slot cost and cannot be anything else until slots ship.
+//      UPDATED 2026-09-09, W6: CAMERA SLOTS NOW EXIST, and this family is no
+//      longer the loose proxy the paragraph here used to describe. G-5 was
+//      ruled (option 3), and dronesim/spade/host.cpp's kathost_render now
+//      holds kMaxCameraSlots camera/pool pairs and renders every configured
+//      one. Crucially it hoists ALL the shared work out of the per-slot loop
+//      -- buildLiveBodyPoses, buildLiveBodyMeshIndices and update_dynamics
+//      each run ONCE per kathost_render however many slots are live -- so
+//      what actually repeats per slot is exactly one spade::render::render()
+//      call, which is exactly what this loop does.
+//
+//      What the host adds on top, per slot, and why it is not measured here:
+//      a FramePool::acquireWritableSlot (a scan of >=2 refcounts), a
+//      std::vector::resize that is a no-op after the first frame at a given
+//      size, and a publishRendered that copies seven scalars. All three are
+//      O(1)-ish bookkeeping against a full rasterization of 230k pixels, so
+//      this remains a lower bound -- but a TIGHT one, for a stated reason,
+//      rather than a lower bound of unknown looseness.
+//
+//      Still not measured here, and still the honest gap: this benchmark
+//      links spade::render directly and cannot link kat_host_spade (HS2
+//      rule 2 -- no kat concept inside spade/), so cross-slot effects that
+//      only exist at the host level (cache pressure from N live pixel
+//      buffers, pool growth under concurrent acquires) are outside its
+//      reach by construction, not by omission.
 // ---------------------------------------------------------------------------
 
 #include <benchmark/benchmark.h>
@@ -269,7 +285,10 @@ void BM_RenderGroundPlane(benchmark::State& state) {
 void BM_RenderSlots(benchmark::State& state) {
     const int slots = static_cast<int>(state.range(0));
     const uint32_t width = kResCases[0].width, height = kResCases[0].height;  // secondary-slot size
-    state.SetLabel("640x360_per_slot__PROXY_no_slot_abi_exists");
+    // W6: the label no longer says "no slot abi exists", because one does.
+    // It still says PROXY -- see the family's comment in this file's header
+    // for exactly which per-slot costs sit outside a spade-only benchmark.
+    state.SetLabel("640x360_per_slot__engine_only_excludes_host_bookkeeping");
 
     const RenderScene scene = ground_plane_scene();
     const Camera camera = bench_camera();
