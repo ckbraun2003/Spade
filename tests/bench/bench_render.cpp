@@ -103,6 +103,48 @@
 //   ratio priced -> proposed: 1.64x (fill) to 1.82x (ground), against a 1.683x
 //   pixel ratio. Per-pixel rate 4.7-5.3 M px/s across a 15x pixel range.
 //
+// BM_RenderSlots, 2026-09-09, AFTER slots shipped: STILL UNRESOLVED, and this
+// entry exists so the next person does not spend the afternoon re-deriving a
+// number that is not there. Two runs, same box, ~20 minutes apart, both
+// Release/spade-build-host, both with the min-time floor this file requires:
+//
+//   run A (min_time=1s, reps=3): slots 1 -> 4 mean 36.4 ms -> 65.0 ms  = 1.79x
+//   run B (min_time=2s, reps=5): slots 1 -> 4 mean 22.8 ms -> 75.9 ms  = 3.33x
+//
+// THE RATIO ITSELF DISAGREES BY 1.9x BETWEEN RUNS, so it cannot be pinned --
+// and the ratio was supposed to be the durable quantity here, the way it is
+// for the resolution rows above. Run A was also NON-MONOTONIC (slots=3 mean
+// 42.7 ms, FASTER than slots=2 at 56.2 ms, which is impossible for work that
+// only grows) with slots=2 at CV 38.7% and a 2.3x spread across its own three
+// repetitions. Run B was better behaved (CV 12.8% / 14.7%, mean and median
+// within 7%) but its absolute slots=1 figure is 1.6x run A's, which is the
+// box, not the code.
+//
+// The box was under memory pressure both times (~1.5 GB free of 7.6, several
+// sessions live). real_time and cpu_time stayed CLOSE throughout -- 1.13-1.17x
+// -- so the descheduling signature this file's header describes did NOT fire.
+// That is worth recording precisely because it is the honest failure of a
+// check I trusted: real~cpu says the thread was not preempted while running,
+// and says nothing about cache and memory-bandwidth contention from other
+// processes, which is what a RAM-starved box actually does to a fill-bound
+// rasterizer. A CLEAN real/cpu ratio IS NOT A CERTIFICATE THAT THE BOX WAS
+// QUIET. The within-case spread is the check that caught it here.
+//
+// WHAT IS SAFE TO USE ANYWAY, and it is enough to design a UI against:
+// TREAT N SLOTS AS COSTING N x ONE SLOT. That is a conservative UPPER bound,
+// not a measurement -- both runs came in well under it (1.79x and 3.33x for a
+// 4x pixel increase), and sublinearity is what the implementation predicts:
+// dronesim/spade/host.cpp hoists buildLiveBodyPoses/buildLiveBodyMeshIndices/
+// update_dynamics OUT of the per-slot loop, so those run once per
+// kathost_render however many slots are live, and every extra slot re-renders
+// a scene already hot in cache. Both runs agree on the SIGN of that effect
+// even where they disagree on its size. What they do not support is any
+// specific number, and W7 must not be handed one.
+//
+// TO RESOLVE IT: re-run on a quiet box (nothing else building, >4 GB free),
+// reps>=5, and require BOTH monotonicity in slot count AND agreement between
+// two independent runs before recording a figure. Neither condition held here.
+//
 // BM_RenderSlots is NOT part of that: it came back at up to 57% CV with slots=3
 // measuring slower than slots=4, which is impossible for monotonically
 // increasing work. It is noise and is recorded as unresolved rather than pinned.
