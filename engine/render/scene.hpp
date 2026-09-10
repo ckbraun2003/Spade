@@ -318,6 +318,31 @@ struct MeshData {
     std::vector<uint32_t>  submesh_first_index;  // parallel; size = submesh count
     std::vector<uint32_t>  submesh_index_count;
     std::vector<uint32_t>  submesh_material;
+
+    // The mesh FILE's own material palette, when the producer read one.
+    //
+    // ⚠ IT CHANGES WHAT submesh_material MEANS, so read both together:
+    //   * EMPTY (tessellate_primitive, csg_mesh, every pre-2026-09-09
+    //     producer) -- submesh_material indexes the SCENE's palette
+    //     directly. The original contract, unchanged.
+    //   * NON-EMPTY -- submesh_material is FILE-LOCAL and indexes THIS
+    //     array. scene_from_world() appends these to RenderScene::materials
+    //     and rewrites the indices by the offset; nothing downstream of that
+    //     merge ever sees a file-local index.
+    //
+    // WHY A SECOND ARRAY RATHER THAN PRE-RESOLVED COLOURS: a MeshData is
+    // loaded once and may be instanced into any scene, and the scene owns the
+    // palette. Baking colours into the geometry would make the same file
+    // un-shareable between two scenes with different palettes, which is the
+    // coupling this indirection exists to avoid.
+    //
+    // The gap this closes: gltf.hpp declared reading a file's `materials[]`
+    // out of scope and passed the raw index through, while raster_cpu applied
+    // that index to the WORLD's palette. A ten-submesh aircraft therefore drew
+    // in ten of the world's colours -- all in range, so not even a visible
+    // fallback -- and a mesh's authored colours could not reach the frame at
+    // all. gltf.hpp said resolving it was "a later task's job"; this is it.
+    std::vector<Material> source_materials;
 };
 
 // A world visual reference already resolved to its geometry. `ref` names the

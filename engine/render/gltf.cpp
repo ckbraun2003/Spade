@@ -13,6 +13,7 @@
 
 #include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -604,6 +605,48 @@ class BufferCache {
         mesh_data.submesh_first_index.push_back(submesh_first);
         mesh_data.submesh_index_count.push_back(submesh_count);
         mesh_data.submesh_material.push_back(static_cast<uint32_t>(material_index));
+    }
+
+    // The file's OWN material palette (MeshData::source_materials). This is
+    // the "later task" gltf.hpp's OUT-OF-SCOPE note deferred: until it existed,
+    // a primitive's material index was carried through unresolved and then
+    // applied by raster_cpu to the SCENE's palette, so an authored mesh drew
+    // in whatever colours the surrounding world happened to have at those
+    // indices.
+    //
+    // Deliberately narrow, and still not a PBR loader: baseColorFactor only.
+    // metallic/roughness/textures/alphaMode stay out of scope, because
+    // render::Material carries no field for them -- reading a value nothing
+    // can render would be the same defect in the other direction.
+    //
+    // A file with no `materials[]` leaves this EMPTY, which preserves the
+    // original meaning of submesh_material exactly (scene-palette indices) for
+    // every producer and every existing fixture.
+    if (root.contains("materials") && root["materials"].is_array()) {
+        const Json& mats = root["materials"];
+        mesh_data.source_materials.reserve(mats.size());
+        for (std::size_t m = 0; m < mats.size(); ++m) {
+            Material out{};  // defaults stand for anything the file omits
+            const Json& mat = mats[m];
+            if (mat.is_object() && mat.contains("pbrMetallicRoughness") &&
+                mat["pbrMetallicRoughness"].is_object()) {
+                const Json& pbr = mat["pbrMetallicRoughness"];
+                if (pbr.contains("baseColorFactor") && pbr["baseColorFactor"].is_array() &&
+                    pbr["baseColorFactor"].size() == 4) {
+                    const Json& c = pbr["baseColorFactor"];
+                    for (std::size_t k = 0; k < 4; ++k) {
+                        if (!c[k].is_number()) {
+                            return std::unexpected(invalid(
+                                "gltf: materials[" + std::to_string(m) +
+                                "].pbrMetallicRoughness.baseColorFactor must be four numbers"));
+                        }
+                    }
+                    out.base_color = glm::vec4(c[0].get<float>(), c[1].get<float>(),
+                                                c[2].get<float>(), c[3].get<float>());
+                }
+            }
+            mesh_data.source_materials.push_back(out);
+        }
     }
 
     return mesh_data;

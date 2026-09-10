@@ -175,6 +175,40 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
         });
     }
 
+    // A resolved mesh that carries its OWN palette (MeshData::source_materials
+    // -- glTF files do; tessellated SDF geometry does not) has FILE-LOCAL
+    // submesh_material indices. Append its palette to the scene's and rewrite
+    // those indices by the offset, so that from here on every submesh_material
+    // in this scene means the same thing: an index into scene.materials.
+    //
+    // ⚠ THIS IS WHY AN AUTHORED MESH'S COLOURS USED TO VANISH. Without the
+    // merge, a mesh's index 3 selected the WORLD's material 3 -- usually in
+    // range, so not a fallback and not an error, just silently the wrong
+    // colour. A ten-submesh aircraft drew in ten of the ground's.
+    //
+    // scene.meshes[i] is the copy of resolved_meshes[i] made above (that index
+    // correspondence is this function's own documented guarantee), so the
+    // rewrite lands on the scene's copy and never mutates the caller's
+    // MeshData -- which matters because a caller may resolve one mesh into
+    // several scenes.
+    for (size_t i = 0; i < resolved_meshes.size(); ++i) {
+        const MeshData& src = resolved_meshes[i].mesh;
+        if (src.source_materials.empty()) {
+            continue;  // scene-palette indices already; the original contract.
+        }
+        const uint32_t offset = static_cast<uint32_t>(scene.materials.size());
+        scene.materials.insert(scene.materials.end(), src.source_materials.begin(),
+                                src.source_materials.end());
+        const uint32_t count = static_cast<uint32_t>(src.source_materials.size());
+        for (uint32_t& index : scene.meshes[i].submesh_material) {
+            // An out-of-range file index is clamped to the mesh's OWN first
+            // material rather than left to select an unrelated world one --
+            // a broken file should look wrong in its own palette, never
+            // borrow the terrain's.
+            index = offset + (index < count ? index : 0u);
+        }
+    }
+
     // sun_direction need not be pre-normalized (LightingDesc's own doc
     // comment, builder.hpp) -- validate_world_desc() guarantees it is
     // non-zero, so normalizing it is always well-defined (never a 0/0 NaN).
