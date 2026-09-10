@@ -991,12 +991,34 @@ constexpr double kDroneNose = 0.5;
 // from BodyPose, with no scale: bodies are rigid), so position/orientation
 // are recovered from it directly rather than threading a second BodyPose
 // span through render()'s own signature.
+// F3: THE BODY MARKER IS A FALLBACK, NOT AN ANNOTATION. It is drawn only for
+// a dynamic body that has NO MESH -- because for such a body nothing else
+// marks the aircraft at all, which was exactly the state the user flew in:
+// no shipped airframe declared a visual_ref, so every body resolved to
+// kNoMesh, draw_mesh_item returned early, and this ~0.4 m placeholder
+// triangle WAS the drone. ("A triangle on a big circle" -- this is the
+// triangle; the circle was the spawn marker below.)
+//
+// Drawn over a real airframe it is clutter and it dominates: 0.4 m of
+// overlay across a 0.27 m aircraft, in an accent colour, biased toward the
+// camera. So it now yields the moment a body has geometry of its own.
+//
+// A FALLBACK rather than a RenderOptions flag, deliberately: no new option
+// means no consumer has to change and no realm has to coordinate; it
+// degrades correctly, since the case where it still fires is precisely the
+// case where nothing else would draw; and it retires itself as airframes
+// gain meshes, without anyone having to remember to turn it off. A flag for
+// "marker ON TOP of a mesh" can be added when someone can say why they want
+// one -- adding it now would be speculative.
 void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
     const Vec3 nose{0.0, 0.0, -kDroneNose};
     const Vec3 left{-0.2, -0.08, 0.2};
     const Vec3 right{0.2, -0.08, 0.2};
     const Vec3 top{0.0, 0.25, 0.2};
     for (const DrawItem& item : scene.dynamics) {
+        if (item.mesh_index != kNoMesh) {
+            continue;  // this body draws itself -- see this function's own comment.
+        }
         const glm::vec3 position(item.local_to_world[3]);
         const glm::quat orientation = glm::quat_cast(glm::mat3(item.local_to_world));
         const Vec3 base = vec3d(position);
@@ -1372,7 +1394,13 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (options.overlays) {
         draw_ground_grid(fb, vc, scene);
         draw_world_bounds(fb, vc, scene);
-        draw_spawn_markers(fb, vc, scene);
+        // F3: authoring-only -- see RenderOptions::spawn_markers. Gated HERE
+        // rather than inside draw_spawn_markers so the drawing function keeps
+        // taking exactly what it draws, and the policy stays visible in the
+        // one place that reads the whole overlay order.
+        if (options.spawn_markers) {
+            draw_spawn_markers(fb, vc, scene);
+        }
         draw_body_markers(fb, vc, scene);
     }
 

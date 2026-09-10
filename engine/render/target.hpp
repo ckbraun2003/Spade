@@ -52,6 +52,23 @@ struct RenderOptions {
     bool shadows = true;
     bool overlays = true;             // ground grid, bounds, spawn markers (PA-4)
 
+    // F3: spawn markers are an AUTHORING affordance -- the editor picks them
+    // (pickSpawnMarkerAt) to place a start position. Useful while authoring,
+    // clutter while flying, and the user named them: a 0.3 m marker under a
+    // 0.27 m aircraft is most of what "a big circle" meant, since from a
+    // ground-level camera a flat quad foreshortens into a disc.
+    //
+    // Defaulted TRUE so every existing caller -- all of spade's own render
+    // tests included -- keeps its current behaviour and its current goldens.
+    // Only a caller that knows the sim is running turns it off; today that is
+    // kathost_render, which uses tick != 0, because the editor's AUTHORING
+    // handle is created disarmed and never stepped while the flying handle
+    // steps every frame. That predicate is a property of how the editor
+    // drives the host, so it is stated here rather than left implicit: if an
+    // authoring handle ever starts stepping, this goes wrong quietly and
+    // this comment is where to look.
+    bool spawn_markers = true;
+
     // The speed, in m/s, that DrawMode::velocity paints as the top of its
     // ramp. Speeds above it clamp rather than wrap, so a fast outlier reads as
     // "at least this fast" instead of looping back through the slow colours.
