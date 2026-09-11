@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+#include <world/builder.hpp>
+
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -579,6 +581,119 @@ TEST(RasterCpu, EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh) {
         << "the left triangle should render in the single implicit submesh's material";
     EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight, expected))
         << "the right triangle should render in the SAME material -- one implicit submesh spans the whole mesh";
+}
+
+// ---------------------------------------------------------------------------
+// A MESH'S OWN AUTHORED MATERIALS, THROUGH scene_from_world() AND ONTO PIXELS.
+//
+// The debt 88ebdc6a named in its own commit message and did not pay: it added
+// MeshData::source_materials, taught the glTF loader to read baseColorFactor,
+// and made scene_from_world() merge a file's palette into the scene's -- with
+// no test at all, at any level.
+//
+// ⚠ THE CASE BELOW IS NOT THE ONE ABOVE IT. ExplicitSubmeshesEachKeepTheir-
+// OwnMaterial hand-builds `scene.materials` and uses SCENE-palette indices; it
+// proves the RASTERIZER honours submesh_material. This one gives the mesh a
+// FILE-LOCAL palette and goes through scene_from_world(), which is the step
+// that was untested -- and the step whose absence made a ten-submesh aircraft
+// draw in ten of the ground's colours while every index stayed in range, so
+// there was no fallback, no error, and nothing red.
+//
+// ⚠ THE WORLD'S PALETTE IS DELIBERATELY A COLOUR THE MESH NEVER AUTHORS.
+// If the world's materials shared the mesh's, this test would pass whether the
+// merge happened or not -- the two answers would coincide, which is exactly
+// how the original defect stayed invisible. Green is the discriminator: a
+// scene_from_world() that dropped the merge would leave file-local indices
+// {0,1} pointing into the WORLD's palette and both triangles would render
+// green, which the final two assertions forbid.
+//
+// SCOPE: this covers the merge and the rasterisation. The HOST's own draw-item
+// construction for a vehicle (dronesim/spade/host.cpp) is a separate seam and
+// is not exercised here; the DrawItem below stands in for it, carrying
+// kNoMaterial exactly as the vehicle path does, because a prop's
+// material_override would REPLACE the submesh materials outright
+// (raster_cpu.cpp:807) and so could never exercise them.
+// ---------------------------------------------------------------------------
+
+TEST(RasterCpu, AMeshsOwnAuthoredMaterialsSurviveSceneFromWorldAndReachTheFrame) {
+    using spade::MaterialDesc;
+    using spade::render::NamedMesh;
+    using spade::render::scene_from_world;
+
+    const glm::vec4 kGreen(0.0f, 1.0f, 0.0f, 1.0f);  // the WORLD's only colour
+    const Material red{.base_color = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), .shading = 1u};
+    const Material blue{.base_color = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f), .shading = 1u};
+
+    spade::WorldBuilder builder;
+    // Capacities are REQUIRED -- validate_world_desc() refuses bodies == 0, and
+    // the first version of this test found that out by failing with "world
+    // capacity 'bodies' must be > 0" rather than by anyone reading the
+    // validator. Same minimum test_render_scene.cpp's own base_builder() uses.
+    builder.name("raster-material-merge-test")
+        .capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1})
+        .material(MaterialDesc{.name = "world_green",
+                                .base_color = kGreen,
+                                .shading = spade::MaterialShading::unlit});
+    const spade::Result<spade::WorldDesc> world = builder.build();
+    if (!world) {
+        ADD_FAILURE() << "fixture world would not build: " << world.error().context;
+        return;
+    }
+
+    // A file-local palette: submesh_material indexes source_materials, NOT the
+    // scene. That is what a loaded glTF looks like.
+    MeshData mesh = make_two_triangle_mesh();
+    mesh.submesh_first_index = {0, 3};
+    mesh.submesh_index_count = {3, 3};
+    mesh.submesh_material = {0, 1};
+    mesh.source_materials = {red, blue};
+
+    const NamedMesh named{.ref = "mesh:test/two-tone", .mesh = mesh};
+    spade::Result<RenderScene> built = scene_from_world(*world, std::span<const NamedMesh>(&named, 1));
+    if (!built) {
+        ADD_FAILURE() << "scene_from_world failed: " << built.error().context;
+        return;
+    }
+    RenderScene scene = std::move(*built);
+
+    ASSERT_EQ(scene.meshes.size(), 1u);
+    // The merge, at the data level -- stated separately from the pixels so a
+    // failure says WHICH half broke.
+    ASSERT_GE(scene.materials.size(), 3u)
+        << "the mesh's two authored materials should have been appended to the world's one";
+    EXPECT_NE(scene.meshes[0].submesh_material[0], 0u)
+        << "a file-local index 0 must have been rewritten past the world's palette, not left "
+           "pointing at the world's material 0";
+
+    scene.statics.push_back(DrawItem{.mesh_index = 0,
+                                      .local_to_world = glm::mat4(1.0f),
+                                      .material_override = spade::render::kNoMaterial});
+    scene.bounds = Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions options;
+    options.overlays = false;
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, kSmallWidth, kSmallHeight);
+    render_or_fail(scene, camera, options, target);
+
+    const auto green_bgr = expected_bgr(Material{.base_color = kGreen, .shading = 1u});
+
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight,
+                                     expected_bgr(red)))
+        << "submesh 0 must render in the MESH's own first authored colour";
+    EXPECT_TRUE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
+                                     expected_bgr(blue)))
+        << "submesh 1 must render in the MESH's own second authored colour";
+
+    // The discriminators. Without the merge both triangles take the world's
+    // palette and these two fail; with it, the world's colour appears nowhere
+    // on the geometry at all.
+    EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, 0, kSmallWidth / 2, 0, kSmallHeight, green_bgr))
+        << "submesh 0 rendered in the WORLD's colour -- the file's palette was not merged";
+    EXPECT_FALSE(region_contains_bgr(storage, kSmallWidth, kSmallWidth / 2, kSmallWidth, 0, kSmallHeight,
+                                      green_bgr))
+        << "submesh 1 rendered in the WORLD's colour -- the file's palette was not merged";
 }
 
 TEST(RasterCpu, ExplicitSubmeshesEachKeepTheirOwnMaterial) {
