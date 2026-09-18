@@ -1,12 +1,36 @@
 
 # ------------------------------------------------------------------------------
-# GLFW (v1 only -- the v2 engine has no windowing/GL surface yet). Gated
-# behind SPADE_BUILD_V1: a bare Linux CI runner has no X11/Wayland dev
-# packages installed, and FetchContent_MakeAvailable(glfw) would otherwise
-# fail its own CMake configure trying to find them, for a target v2 never
-# links.
+# GLFW -- v1's viewer AND (Plan C task C2) the v2 sandbox's windowed TargetSink.
+#
+# ⚠ THIS BLOCK USED TO BE GATED ON SPADE_BUILD_V1 ALONE, and its stated reason
+# was: "a bare Linux CI runner has no X11/Wayland dev packages installed, and
+# FetchContent_MakeAvailable(glfw) would otherwise fail its own CMake
+# configure." THAT REASON WAS TRUE AND THE CONCLUSION DRAWN FROM IT WAS NOT.
+#
+# MEASURED 2026-09-18 on the real CI image (kat-ci-linux:local, which has
+# X11=no GL=no EGL=no), three probes each paired with a control that had to
+# fail:
+#
+#   GLFW with GLFW_BUILD_X11=OFF GLFW_BUILD_WAYLAND=OFF  -> configure 0,
+#       build 0, libglfw3.a linked.  CONTROL with X11=ON -> FAILED at
+#       find_package, which is what proves the probe could see the absence.
+#   imgui_impl_opengl3.cpp standalone                     -> status 0. Its
+#       bundled loader (SL11's claim) confirmed BY COMPILATION.
+#   imgui_impl_glfw.cpp with -DGLFW_INCLUDE_NONE          -> status 0.
+#       CONTROL without the macro -> FAILED: glfw3.h:241 pulls <GL/gl.h>.
+#
+# So GLFW builds on a bare image with NO dev packages at all, and the fetch
+# never had to be gated. ⭐ A CONFIGURE FAILURE UNDER THE DEFAULT SETTINGS WAS
+# READ AS A DEPENDENCY ON THE PLATFORM, when it was a dependency on a DEFAULT
+# -- and the default is ours to set.
+#
+# ⚠ AND THE BACKEND CHOICE IS DETECTED, NOT ASSUMED. Hardcoding the backends
+# OFF would make every LINUX DEVELOPER's window silently unopenable to buy a CI
+# green. X11 is probed; if it is there the backend is built, and the sandbox is
+# told either way so it can REFUSE with the real reason rather than failing
+# obscurely at glfwInit().
 # ------------------------------------------------------------------------------
-if(SPADE_BUILD_V1)
+if(SPADE_BUILD_V1 OR SPADE_BUILD_SANDBOX)
 FetchContent_Declare(
     glfw
     GIT_REPOSITORY https://github.com/glfw/glfw.git
@@ -16,6 +40,24 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+
+if(UNIX AND NOT APPLE)
+    find_package(X11 QUIET)
+    if(X11_FOUND)
+        set(SPADE_GLFW_HAS_BACKEND 1 CACHE INTERNAL "GLFW can open a window on this platform")
+        message(STATUS "spade: X11 found -- GLFW builds its X11 backend, windows can open")
+    else()
+        set(SPADE_GLFW_HAS_BACKEND 0 CACHE INTERNAL "GLFW can open a window on this platform")
+        message(STATUS "spade: no X11 dev headers -- GLFW builds WITHOUT a window backend. "
+                       "The windowed sink will COMPILE and LINK; it will refuse at runtime, by design.")
+    endif()
+    set(GLFW_BUILD_X11 ${X11_FOUND} CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+else()
+    # Win32 needs no dev packages -- the backend is part of the SDK.
+    set(SPADE_GLFW_HAS_BACKEND 1 CACHE INTERNAL "GLFW can open a window on this platform")
+endif()
+
 FetchContent_MakeAvailable(glfw)
 endif()
 
@@ -33,13 +75,12 @@ set(GLM_TEST_ENABLE OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glm)
 
 # ------------------------------------------------------------------------------
-# ImGui (v1 only -- the v1 viewer's UI layer; nothing in v2 links it).
-# Pinned to the v1.91.5-docking release tag (was tracking the floating
-# "docking" branch, which is not reproducible across builds). Depends on the
-# glfw target declared above, so it stays inside the same SPADE_BUILD_V1
-# guard.
+# ImGui -- v1's viewer UI layer AND (Plan C task C2) the v2 sandbox's windowed
+# TargetSink. Pinned to the v1.91.5-docking release tag (was tracking the
+# floating "docking" branch, which is not reproducible across builds). Depends
+# on the glfw target declared above, so it follows the same guard.
 # ------------------------------------------------------------------------------
-if(SPADE_BUILD_V1)
+if(SPADE_BUILD_V1 OR SPADE_BUILD_SANDBOX)
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -67,6 +108,19 @@ if(NOT TARGET imgui)
     # ImGui needs usage of these libraries, so we link them *to* ImGui or provide include paths
     # Just linking glfw here because the backend uses it.
     target_link_libraries(imgui PUBLIC glfw)
+
+    # ⚠ PRIVATE, NOT PUBLIC, AND THE DISTINCTION IS LOAD-BEARING.
+    # GLFW_INCLUDE_NONE stops glfw3.h pulling <GL/gl.h> (glfw3.h:241), which is
+    # what lets imgui_impl_glfw.cpp compile on an image with no GL headers --
+    # measured, with a control that failed without it. ImGui's OpenGL3 backend
+    # brings its own loader, so nothing here needs the system header.
+    #
+    # PUBLIC would propagate the macro to every consumer, including v1's viewer,
+    # which includes glfw3.h expecting GL declarations to arrive with it. That
+    # would fix this target by breaking a target that is not in question -- the
+    # header-fanout lesson from task C1, arriving one layer up in the build
+    # graph instead of in a source file.
+    target_compile_definitions(imgui PRIVATE GLFW_INCLUDE_NONE)
 endif()
 endif()
 

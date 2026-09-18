@@ -871,3 +871,322 @@ TEST(RenderShading, SkyColourAtTheTrueHorizonMatchesAcrossDifferentCameraPitches
         << "sanity: the OLD row-based formula must disagree substantially between these two rows, or this test "
            "does not actually discriminate row-based from elevation-based interpolation";
 }
+
+// ===========================================================================
+// 4. SR-17a -- the atmospheric term (03-world-and-render.md section 16,
+//    amended to ALL GEOMETRY AT RANGE by user ruling 2026-09-17).
+//
+// THE FIXTURE IS A SINGLE GROUND PLANE, AND IT IS CHOSEN BECAUSE IT EXERCISES
+// ALL THREE CALL SITES IN ONE FRAME. scene_from_world() turns one plane node
+// into BOTH a tessellated quad in `statics` (drawn by draw_mesh_item's Gouraud
+// fill, bounded to scene.bounds) AND a GroundPlane in `ground_planes` (drawn
+// analytically by the background pass, everywhere the quad is not). The SDF
+// program carries the same plane, so DrawMode::raymarch hits it as geometry.
+// One world, three code paths, no hand-built scene.
+//
+// ⚠ THESE TESTS DO NOT RE-ASSERT THE HARD HORIZON. That assertion lives in
+// TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam above and is
+// DELIBERATELY LEFT WHOLE: it runs at the engine default strength 0, where
+// horizon_blend() returns the surface colour exactly, so it still states
+// SR-17 clause 5 as the degenerate case of SR-17a rather than being deleted by
+// the supersession. Section 16.4 records why that matters -- that test's body
+// also carries clause 3/clause 4's seam assertion, which the term does not
+// touch, and rewriting it wholesale would have destroyed that as collateral.
+// ===========================================================================
+
+namespace {
+
+// A small onset (metres) relative to this camera's own view distances: the
+// term must be MEASURABLE on near geometry for the mesh-fill arm below to
+// discriminate at all. With the shipped default of 45 m every pixel of this
+// fixture sits in the fade's near-linear toe and the arm would read as "the
+// term does nothing" when the truth is "this camera is too close to it".
+constexpr float kProbeOnset = 8.0f;
+constexpr float kProbeStrength = 0.8f;
+
+// ⚠⚠ `shadows = false` IS A SELECTOR, NOT A SIMPLIFICATION, and leaving it at
+// its default silently disarmed the mesh arm below. RenderOptions::shadows
+// defaults to TRUE (target.hpp:63) and scene_from_world() builds a static
+// shadow map for any scene with statics (scene.cpp:434) -- so `shadow` is
+// non-null, and rasterizeTriangleGouraud's equal-colour fast path, whose
+// condition REQUIRES `shadow == nullptr`, is never reached. MEASURED: with
+// shadows on, deleting the fast path's `!atmo.active()` guard entirely changed
+// nothing and the arm stayed green.
+//
+// ⭐ A TEST CANNOT EXERCISE A BRANCH WHOSE PRECONDITION ITS OWN DEFAULTS
+// NEGATE, and nothing says so -- the frame renders, the pixels are right, and
+// the arm passes for a reason that has nothing to do with what it is named
+// for. Turning shadows off is what puts the guarded branch back in the path.
+[[nodiscard]] RenderOptions ground_probe_options(float strength, float onset) {
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;  // the overlay grid is a separate mechanism (SR-22); keep it out of the measurement
+    options.shadows = false;   // see above: this is what makes the Gouraud fast path reachable at all
+    options.horizon_blend_strength = strength;
+    options.horizon_blend_onset = onset;
+    return options;
+}
+
+[[nodiscard]] size_t count_bytes_differing(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    EXPECT_EQ(a.size(), b.size());
+    size_t n = 0;
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        if (a[i] != b[i]) ++n;
+    }
+    return n;
+}
+
+// A downward-pitched camera whose frame spans a LARGE range of ground
+// distances: the bottom rows land a few metres away (inside scene.bounds, so
+// the tessellated quad draws them) and the upper rows recede to the horizon
+// (outside the quad, so the analytic ground draws them). That spread is what
+// makes a distance-keyed term's monotonicity observable at all.
+[[nodiscard]] Camera ground_probe_camera() {
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 4.0f, 6.0f);
+    camera.orientation = glm::angleAxis(glm::radians(-18.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    return camera;
+}
+
+}  // namespace
+
+TEST(RenderShading, AtmosphericTermAtStrengthZeroIsBitIdenticalAndOnsetAloneDoesNothing) {
+    // SR-17a's degenerate case, asserted as a REQUIREMENT rather than assumed
+    // from the formula. horizon_blend() is written `base + (other - base) * k`
+    // precisely so k == 0 returns `base` bit-for-bit; the algebraically-equal
+    // `base * (1 - k) + other * k` would NOT, and this is the assertion that
+    // would catch someone "simplifying" it.
+    //
+    // It also pins the second half of the contract: with strength 0, the ONSET
+    // is inert. A non-zero onset that perturbed a single byte would mean the
+    // term had a path that ignores its own off switch.
+    // RenderScene::sdf is NON-OWNING, so the WorldDesc must outlive the scene --
+    // binding it to a named local rather than passing a temporary.
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    const Camera camera = ground_probe_camera();
+    constexpr uint32_t kW = 240, kH = 180;
+
+    std::vector<uint8_t> defaulted;
+    RenderTarget t0 = make_target(defaulted, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(0.0f, 45.0f), t0);
+
+    std::vector<uint8_t> explicit_zero;
+    RenderTarget t1 = make_target(explicit_zero, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(0.0f, kProbeOnset), t1);
+
+    EXPECT_EQ(count_bytes_differing(defaulted, explicit_zero), 0u)
+        << "SR-17a at strength 0 must be EXACTLY the pre-term frame, and the onset must be inert there";
+}
+
+TEST(RenderShading, AtmosphericTermActuallyChangesPixelsOnTheMeshFillAndTheAnalyticGround) {
+    // THE POSITIVE CONTROL, and section 16.4 requires it by name: a term that
+    // is identically zero is monotone AND bounded and would pass every other
+    // assertion in this section. Without this arm those assertions cannot tell
+    // a working term from a dead one.
+    //
+    // ⚠⚠ THE MESH HALF IS THE ONE THAT CAN SILENTLY DIE. raster_cpu.cpp's
+    // Gouraud fill has an equal-colour fast path that paints ONE colour across
+    // a whole triangle, valid only while shading has no position dependence --
+    // exactly the assumption this term breaks. A constant-normal surface (a
+    // plane, a box face, a wall) takes that path, so a missing `!atmo.active()`
+    // guard would drop the term across most real geometry while the analytic
+    // ground kept working and the frame kept looking plausible.
+    // RenderScene::sdf is NON-OWNING, so the WorldDesc must outlive the scene --
+    // binding it to a named local rather than passing a temporary.
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    ASSERT_EQ(scene.ground_planes.size(), 1u) << "fixture: the analytic ground must exist";
+    ASSERT_EQ(scene.statics.size(), 1u) << "fixture: the tessellated quad must exist -- this is the mesh-fill arm's subject";
+    const Camera camera = ground_probe_camera();
+    constexpr uint32_t kW = 240, kH = 180;
+
+    std::vector<uint8_t> off;
+    RenderTarget t_off = make_target(off, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(0.0f, kProbeOnset), t_off);
+
+    std::vector<uint8_t> on;
+    RenderTarget t_on = make_target(on, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(kProbeStrength, kProbeOnset), t_on);
+
+    const size_t differing = count_bytes_differing(off, on);
+    EXPECT_GT(differing, 100u) << "SR-17a is wired but inert: turning the term on changed " << differing
+                                << " bytes. Check AtmosphereContext::active() and the Gouraud fast-path guard.";
+
+    // ⚠⚠ THE MESH ARM ISOLATES ITS SUBJECT BY DELETING THE OTHER ONE, and the
+    // first version of this arm did not -- it asserted that the frame's BOTTOM
+    // BAND moved, on the reasoning that near ground must be inside
+    // scene.bounds and therefore tessellated. IT SURVIVED THE MUTATION THAT
+    // DELETES THE FAST-PATH GUARD, measured, which is the only reason this
+    // paragraph exists. The quad is bounded in world Z as well as X, so with
+    // the camera at z=6 the nearest rows fall OUTSIDE it and are drawn by the
+    // analytic background pass -- the band was measuring the very path the arm
+    // was supposed to exclude. A geometric assumption about where a fixture
+    // puts its pixels is not a selector for which CODE PATH drew them.
+    //
+    // Clearing `ground_planes` leaves the tessellated quad as the only thing
+    // that can draw ground at all, so every ground pixel below is unambiguously
+    // draw_mesh_item's. A flat quad has one normal, so `equal_combined` holds
+    // and the Gouraud fast path is live -- which is precisely the condition the
+    // `!atmo.active()` guard exists for.
+    RenderScene mesh_only = scene_or_fail(world);
+    ASSERT_EQ(mesh_only.statics.size(), 1u);
+    mesh_only.ground_planes.clear();
+
+    std::vector<uint8_t> mesh_off;
+    RenderTarget t_mesh_off = make_target(mesh_off, kW, kH);
+    render_or_fail(mesh_only, camera, ground_probe_options(0.0f, kProbeOnset), t_mesh_off);
+
+    std::vector<uint8_t> mesh_on;
+    RenderTarget t_mesh_on = make_target(mesh_on, kW, kH);
+    render_or_fail(mesh_only, camera, ground_probe_options(kProbeStrength, kProbeOnset), t_mesh_on);
+
+    // Sanity floor FIRST: the quad must actually cover pixels, or "the term
+    // changed nothing" and "there was nothing to change" are the same result.
+    std::vector<uint8_t> sky_only_storage;
+    RenderTarget t_sky = make_target(sky_only_storage, kW, kH);
+    RenderScene empty_ground = mesh_only;
+    empty_ground.statics.clear();
+    render_or_fail(empty_ground, camera, ground_probe_options(0.0f, kProbeOnset), t_sky);
+    const size_t quad_pixels = count_bytes_differing(mesh_off, sky_only_storage);
+    ASSERT_GT(quad_pixels, 400u) << "sanity floor: the tessellated quad covers only " << quad_pixels
+                                  << " bytes of this frame -- the mesh arm below would assert nothing";
+
+    const size_t mesh_changes = count_bytes_differing(mesh_off, mesh_on);
+    EXPECT_GT(mesh_changes, 100u)
+        << "SR-17a NEVER REACHED THE MESH FILL: with the analytic ground removed, turning the term on moved "
+        << mesh_changes << " bytes of " << quad_pixels
+        << " covered by the tessellated quad. The Gouraud equal-colour fast path paints one colour per "
+           "triangle and is only valid while shading has no position dependence -- check the `!atmo.active()` "
+           "term in raster_cpu.cpp's fast-path condition.";
+}
+
+TEST(RenderShading, AtmosphericTermIsBoundedByItsTwoEndpointColoursAndNeverOutOfGamut) {
+    // The property SR-17 clause 5's clamp existed to protect, carried forward
+    // rather than discarded with the clause. Every blended pixel must lie
+    // between the colour it started at and the sky it is heading toward -- an
+    // out-of-gamut extrapolation is exactly what the old hard clamp prevented,
+    // and the supersession must not reintroduce it.
+    // RenderScene::sdf is NON-OWNING, so the WorldDesc must outlive the scene --
+    // binding it to a named local rather than passing a temporary.
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    const GroundPlane& ground = scene.ground_planes[0];
+    const Camera camera = ground_probe_camera();
+    constexpr uint32_t kW = 240, kH = 180;
+
+    std::vector<uint8_t> off;
+    RenderTarget t_off = make_target(off, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(0.0f, kProbeOnset), t_off);
+
+    std::vector<uint8_t> on;
+    RenderTarget t_on = make_target(on, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(kProbeStrength, kProbeOnset), t_on);
+
+    const Bgr unblended = expected_ground_bgr_oracle(scene, ground);
+    size_t checked = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            const Bgr before = pixel_at(off, kW, x, y);
+            if (before != unblended) {
+                continue;  // sky, or a pixel the analytic ground did not own -- not this arm's subject
+            }
+            const Bgr after = pixel_at(on, kW, x, y);
+            const Bgr sky = expected_sky_bgr_oracle(scene, camera, kW, kH, x, y);
+            ++checked;
+            // Per channel, `after` must lie in the closed interval spanned by
+            // `before` and `sky` -- 1 byte of slack for to_byte()'s own
+            // round-to-nearest at an interval endpoint, never more.
+            const auto within = [](int a, int p, int q) {
+                const int lo = p < q ? p : q;
+                const int hi = p < q ? q : p;
+                return a >= lo - 1 && a <= hi + 1;
+            };
+            ASSERT_TRUE(within(after.b, before.b, sky.b))
+                << "out of gamut at (" << x << "," << y << ") B: " << int(after.b) << " not between " << int(before.b)
+                << " and " << int(sky.b);
+            ASSERT_TRUE(within(after.g, before.g, sky.g))
+                << "out of gamut at (" << x << "," << y << ") G: " << int(after.g) << " not between " << int(before.g)
+                << " and " << int(sky.g);
+            ASSERT_TRUE(within(after.r, before.r, sky.r))
+                << "out of gamut at (" << x << "," << y << ") R: " << int(after.r) << " not between " << int(before.r)
+                << " and " << int(sky.r);
+        }
+    }
+    EXPECT_GT(checked, 100u) << "sanity floor: this fixture must present real ground pixels, or the loop above "
+                                 "asserted nothing -- " << checked << " checked";
+}
+
+TEST(RenderShading, AtmosphericTermIsMonotoneInDistanceDownAGroundColumn) {
+    // Section 16.4's monotonicity requirement. Scanned down ONE column of the
+    // centre, from the horizon toward the camera: the ground recedes upward in
+    // this frame, so as `y` increases the ground gets NEARER, the blend weight
+    // must fall, and each pixel must sit no further from the unblended ground
+    // colour than the pixel above it.
+    //
+    // ⚠ MEASURED AGAINST AN INDEPENDENT PER-PIXEL QUANTITY, NEVER AGAINST
+    // ANOTHER PIXEL'S BYTES. Section 16.4 records why: the seam test above
+    // compares two DIFFERENT pixels and its byte-equality was only ever valid
+    // while shading had no position dependence. Re-using that shape here with
+    // a looser tolerance would rebuild the same defect. This walks one column
+    // and compares each pixel to a FIXED reference colour, so what it measures
+    // is the weight's behaviour, not two pixels' agreement.
+    // RenderScene::sdf is NON-OWNING, so the WorldDesc must outlive the scene --
+    // binding it to a named local rather than passing a temporary.
+    const WorldDesc world = single_ground_plane_world();
+    const RenderScene scene = scene_or_fail(world);
+    const GroundPlane& ground = scene.ground_planes[0];
+    const Camera camera = ground_probe_camera();
+    constexpr uint32_t kW = 240, kH = 180;
+    const uint32_t col = kW / 2;
+
+    std::vector<uint8_t> off;
+    RenderTarget t_off = make_target(off, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(0.0f, kProbeOnset), t_off);
+
+    std::vector<uint8_t> on;
+    RenderTarget t_on = make_target(on, kW, kH);
+    render_or_fail(scene, camera, ground_probe_options(kProbeStrength, kProbeOnset), t_on);
+
+    const Bgr unblended = expected_ground_bgr_oracle(scene, ground);
+    const auto distance_from_ground = [&](const Bgr& c) {
+        return std::abs(int(c.b) - int(unblended.b)) + std::abs(int(c.g) - int(unblended.g)) +
+               std::abs(int(c.r) - int(unblended.r));
+    };
+
+    int previous = -1;
+    int farthest = -1, nearest = -1;
+    size_t samples = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        if (pixel_at(off, kW, col, y) != unblended) {
+            continue;  // above the horizon, or not an analytic-ground pixel
+        }
+        const int d = distance_from_ground(pixel_at(on, kW, col, y));
+        if (farthest < 0) farthest = d;  // first ground row in the column == the most distant
+        nearest = d;                      // last one wins == the closest to the camera
+        if (previous >= 0) {
+            // Non-increasing, with 3 bytes of slack (one per channel) for
+            // to_byte()'s round-to-nearest -- NOT a tolerance on the trend,
+            // which must still fall.
+            ASSERT_LE(d, previous + 3)
+                << "row " << y << " is FURTHER from the ground colour (" << d << ") than the row above it ("
+                << previous << ") -- the blend is not monotone in distance";
+        }
+        previous = d;
+        ++samples;
+    }
+    ASSERT_GT(samples, 20u) << "sanity floor: only " << samples
+                             << " ground rows sampled in this column -- the scan asserted almost nothing";
+    // ⚠⚠ THE TREND MUST ACTUALLY FALL. Every ASSERT_LE above is satisfied by a
+    // CONSTANT term -- non-increasing is not decreasing -- so without this line
+    // the whole scan is compatible with a blend that ignores distance entirely.
+    // (The first draft of this test ended `EXPECT_GT(..., -1)`, which cannot
+    // fail for any input at all: a conclusion that cannot fail to print is a
+    // decoration, and it had been written into the arm whose entire job is
+    // being a positive control.)
+    ASSERT_GE(farthest, 0);
+    ASSERT_GE(nearest, 0);
+    EXPECT_GT(farthest, nearest + 2)
+        << "the most distant ground row is " << farthest << " from the unblended colour and the nearest is "
+        << nearest << " -- the term is not varying with distance";
+}

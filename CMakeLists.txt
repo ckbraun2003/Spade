@@ -37,6 +37,27 @@ include(FetchContent)
 # tree (engine/, tests/) on its own.
 option(SPADE_BUILD_V1 "Build the v1 GL engine (src/, include/, examples/, assets/)" ON)
 
+# SPADE_BUILD_SANDBOX (SL15a, Plan C task C0): gates spade_sandbox, the
+# engine's reference application. DEFAULT ON, WHICH CI CONFIGURES OFF -- the
+# same pattern SPADE_BUILD_V1 uses today and that CI already exercises.
+#
+# ⚠⚠ THIS FLAG IS *INTRODUCED* ALONGSIDE SPADE_BUILD_V1. IT DOES NOT MOVE
+# GLFW OR IMGUI OFF THAT GATE. SL14a specifies that move -- and SL14a is the
+# v1 QUARANTINE, which is correctly BLOCKED on SL8's one open transfer-register
+# row (SPH fluid). Executing the move here would be executing a quarantine that
+# must not execute, while v1 is still the only implementation of the fluid
+# solver. So vendor/CMakeLists.txt is untouched by C0 and the two gates coexist
+# until Plan B closes that row.
+#
+# Getting that wrong is not a small cost: the GLFW fetch sits inside the V1
+# gate because a bare Linux runner has no X11/Wayland dev packages and
+# FetchContent_MakeAvailable(glfw) fails its own configure without them. Moving
+# it would fail ALL SIX workflow configurations at CONFIGURE time. Done this
+# way the added CI cost is ZERO, because C0 is headless and links no windowing
+# library at all -- the Presenter's GL implementation (task C2) is what first
+# needs one, and it will need its own fetch under THIS gate, not a moved one.
+option(SPADE_BUILD_SANDBOX "Build spade_sandbox, the reference application (SL15a)" ON)
+
 # S6 Task 1: gates the spade_compute TARGET only (engine/CMakeLists.txt) --
 # not the vendor Vulkan-Headers/volk/slang FetchContent calls, which fetch
 # unconditionally regardless of this option (vendor/CMakeLists.txt's own
@@ -88,6 +109,12 @@ endif()
 
 # v2 engine tree.
 add_subdirectory(engine)
+
+# The reference application. AFTER engine/, because it links spade:: aliases
+# that engine/ defines.
+if(SPADE_BUILD_SANDBOX)
+    add_subdirectory(sandbox)
+endif()
 
 enable_testing()
 add_subdirectory(tests)

@@ -250,6 +250,120 @@ struct ShadedColor {
     return lighting.sky_zenith + (lighting.sky_horizon - lighting.sky_zenith) * horizon_fraction;
 }
 
+// ---------------------------------------------------------------------------
+// THE INFINITE GROUND GRID, and the horizon blend. Both are SHARED per-ray
+// functions in exactly the sense sky_gradient_color is, and for the same
+// reason: raster and raymarch must produce bit-identical background pixels,
+// and the only way to guarantee that is ONE function called on the ONE ray
+// each path already reconstructs -- never two expressions that happen to
+// agree. (Task R9's controller amendment: "share that code rather than
+// writing a second gradient.")
+//
+// ⚠ NO TRANSCENDENTALS. The rendered frame feeds a sha256 golden, so standing
+// rule 1 applies here exactly as it does to physics: `+ - * / sqrt` only, plus
+// the exactly-rounded floor/abs this file's callers already use. Every fade
+// below is therefore RATIONAL, never exponential -- an exp() here would be a
+// cross-libm coin flip on a byte a manifest pins across platforms.
+//
+// ⭐ AND EVERY BLEND USES THE `base + (other - base) * t` FORM, never
+// `base*(1-t) + other*t`. sky_gradient_color's own comment explains why: only
+// the first is EXACT when t is zero or when the two colours are equal --
+// `other - base` is then exactly the zero vector, zero times a finite t is
+// exactly zero, and adding zero never rounds. That makes "grid off" and
+// "beyond the fade" bit-identical to the ungridded ground rather than
+// approximately equal to it, which is what keeps the degenerate case a FREE,
+// EXACT regression control instead of a tolerance.
+// ---------------------------------------------------------------------------
+
+// GroundGridParams lives in target.hpp, beside the RenderOptions that carries
+// it -- target.hpp cannot include this header, and a parameter struct belongs
+// with the options struct that holds one.
+
+// An orthonormal basis for the plane, derived from its normal ALONE so it is
+// deterministic and carries no Y-up assumption -- SR-17's own "no Y-up special
+// case" clause applies to the grid exactly as it applies to the ground it sits
+// on. The axis choice is by largest-component comparison, which is exact.
+// NOT [[nodiscard]]: it returns void through out-params. MSVC accepts the
+// attribute there silently; gcc-13 rejects it under -Werror=attributes, so
+// this shipped as a WINDOWS-GREEN COMMIT THAT DOES NOT BUILD ON LINUX.
+inline void ground_plane_basis(const glm::vec3& n, glm::vec3& u, glm::vec3& v) {
+    const glm::vec3 a = (std::abs(n.x) <= std::abs(n.y) && std::abs(n.x) <= std::abs(n.z))
+                            ? glm::vec3(1.0f, 0.0f, 0.0f)
+                        : (std::abs(n.y) <= std::abs(n.z)) ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                                           : glm::vec3(0.0f, 0.0f, 1.0f);
+    glm::vec3 t = glm::cross(n, a);
+    const float tl = std::sqrt(glm::dot(t, t));
+    u = tl > 0.0f ? t / tl : glm::vec3(1.0f, 0.0f, 0.0f);
+    v = glm::cross(n, u);
+}
+
+// Distance from `c` to the nearest multiple of `spacing`. floor-based rather
+// than round-based: floor is exactly rounded and its behaviour at .5 does not
+// depend on the current rounding mode.
+[[nodiscard]] inline float distance_to_nearest_line(float c, float spacing) {
+    const float k = std::floor(c / spacing + 0.5f);
+    return std::abs(c - k * spacing);
+}
+
+// Returns the grid's coverage at a ground hit, in [0,1]. 0 means "no line
+// here", and a 0 must produce a bit-identical pixel to the ungridded ground.
+[[nodiscard]] inline float ground_grid_coverage(const glm::vec3& hit_world, const glm::vec3& plane_normal,
+                                                 float view_distance, const GroundGridParams& p) {
+    glm::vec3 u, v;
+    ground_plane_basis(plane_normal, u, v);
+    const float cu = glm::dot(hit_world, u);
+    const float cv = glm::dot(hit_world, v);
+
+    // Half-width grows linearly with distance so a line stays roughly one
+    // pixel wide instead of collapsing into aliasing noise at range.
+    const float hw = p.line_half_width * (1.0f + view_distance * p.width_growth);
+    const float du = distance_to_nearest_line(cu, p.spacing);
+    const float dv = distance_to_nearest_line(cv, p.spacing);
+    const float d = du < dv ? du : dv;
+    if (d >= hw) return 0.0f;  // EXACT zero: the common case is bit-identical ground
+
+    // Linear ramp across the line's own half-width. No smoothstep: a cubic
+    // buys nothing a manifest can see and costs two more roundings.
+    const float edge = 1.0f - d / hw;
+
+    // RATIONAL fade, never exponential. 1/(1+r^2) is 1 at the camera and
+    // falls off smoothly; at view_distance == fade_distance it is exactly 1/2.
+    const float r = view_distance / p.fade_distance;
+    const float fade = 1.0f / (1.0f + r * r);
+    return edge * fade;
+}
+
+// SR-17a's atmospheric term: how much the sky colour bleeds into a ground
+// pixel at range. ⛔ NOT a screen-space filter -- it reads THIS ray and no
+// neighbouring pixel, which is what keeps it out of RS15's post-processing
+// exclusion and what lets both render paths compute it independently and
+// agree. A neighbourhood filter could do neither, because the two paths do
+// not share a framebuffer.
+//
+// ✅ SR-17a IS IN FORCE (03-world-and-render.md section 16, amended to ALL
+// GEOMETRY AT RANGE by user ruling 2026-09-17). This comment previously read
+// "IN FORCE ONLY WHEN SR-17a IS ... until then callers pass a zero strength",
+// which was true when written and became false the moment section 16 landed --
+// the R5 mode-1 shape, in the one place a reader checks before calling.
+//
+// ⚠ IT APPLIES TO EVERY SHADED SURFACE, not just the sky/ground boundary. The
+// three call sites are the raster background pass (analytic ground + sky), the
+// raster mesh fill (per PIXEL, never per vertex -- see raster_cpu.cpp's
+// AtmosphereContext for why per-vertex breaks the seam), and raymarch's own
+// hit. ONE function, three call sites, exactly like shade_vertex_color.
+//
+// ⚠ THE ENGINE DEFAULT IS STRENGTH 0 and at 0 this returns the surface colour
+// EXACTLY, by the blend form above -- which is what lets every pre-SR-17a
+// golden stand unchanged as a control rather than being regenerated.
+[[nodiscard]] inline glm::vec3 horizon_blend(const glm::vec3& ground_color, const glm::vec3& sky_color,
+                                              float view_distance, float onset_distance, float strength) {
+    if (strength <= 0.0f || onset_distance <= 0.0f) return ground_color;
+    const float r = view_distance / onset_distance;
+    const float t = (r * r) / (1.0f + r * r);  // rational, 0 at the camera, ->1 at range
+    const float k = t * strength;
+    return ground_color + (sky_color - ground_color) * k;
+}
+
 // The linear-to-byte quantizer (S7a Task R6; relocated HERE at Task R8 fix
 // round 1, review Minor 3): every BGRX8 byte either render path ever writes
 // goes through this SAME clamp-then-round-to-nearest formula. This one is

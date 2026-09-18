@@ -606,13 +606,46 @@ void draw_world_triangle(FrameBuffers& fb, const ViewContext& vc, const Vec3& a,
 // exactly, byte for byte -- the reason none of this program's original
 // three goldens moved from the shadow feature alone (see this task's own
 // report).
+// SR-17a's atmospheric term, distilled to EXACTLY what a fill needs -- the
+// same house rule draw_sky_and_ground_background follows (a drawing function
+// takes what it draws, never the whole RenderOptions). Four values that are
+// meaningless apart travel as ONE thing so none can be passed without the
+// others, and so a future third parameter does not become a fourth positional
+// float next to two other floats of the same type.
+//
+// ⚠⚠ PER PIXEL, NEVER PER VERTEX, and this is a correctness requirement rather
+// than a quality preference. The analytic ground applies this term per pixel
+// (draw_sky_and_ground_background). A Gouraud fill shades per VERTEX (SR-18)
+// and interpolates, so folding the term into shade_vertex_color would have the
+// two sides of SR-17's own tessellated/analytic seam computing it at different
+// RATES on the same ground -- a seam artifact that grows with triangle size and
+// is invisible on the small triangles any fixture is likely to use.
+struct AtmosphereContext {
+    glm::vec3 eye{0.0f};                 // world-space camera position
+    const Lighting* lighting = nullptr;  // for sky_gradient_color along THIS pixel's ray
+    float strength = 0.0f;
+    float onset = 0.0f;
+    // strength 0 is the documented OFF state and horizon_blend() returns the
+    // surface colour exactly there, so `active()` is an optimisation AND the
+    // guard that keeps the equal-colour fast path below reachable.
+    [[nodiscard]] bool active() const { return lighting != nullptr && strength > 0.0f && onset > 0.0f; }
+};
+
 void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const ScreenPoint& v1, const ScreenPoint& v2,
                                const glm::vec3& combined0, const glm::vec3& combined1, const glm::vec3& combined2,
                                const glm::vec3& sun0, const glm::vec3& sun1, const glm::vec3& sun2,
                                const glm::vec3& wpos0, const glm::vec3& wpos1, const glm::vec3& wpos2,
-                               const ShadowMap* shadow) {
+                               const ShadowMap* shadow, const AtmosphereContext& atmo) {
     const bool equal_combined = (combined0 == combined1 && combined1 == combined2);
-    if (equal_combined && shadow == nullptr) {
+    // ⚠⚠ `!atmo.active()` IS LOAD-BEARING, NOT DEFENSIVE. The flat fast path
+    // paints ONE colour over the whole triangle, and it is only equivalent to
+    // the Gouraud path because shading had no position dependence -- the exact
+    // assumption SR-17a breaks. With the term on, a distant vertex and a near
+    // one no longer share a colour, so taking this path would silently drop the
+    // term across every constant-normal triangle (which is most of them: a
+    // plane, a box face, a wall). It would look like the feature simply did not
+    // work on flat surfaces, with nothing red.
+    if (equal_combined && shadow == nullptr && !atmo.active()) {
         rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(combined0.r), to_byte(combined0.g), to_byte(combined0.b));
         return;
     }
@@ -652,7 +685,13 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                                             : (combined0 * static_cast<float>(b0) + combined1 * static_cast<float>(b1) +
                                                combined2 * static_cast<float>(b2));
             glm::vec3 color = combined;
-            if (shadow != nullptr) {
+            // ONE perspective-correct world position, shared by the shadow
+            // lookup (SR-24) and the atmospheric term (SR-17a). Computed once
+            // when either needs it: two independent recoveries of the same
+            // quantity is the shape SR-17 clause 4 exists to forbid, and it
+            // would also double the per-pixel cost of the common case.
+            glm::vec3 world(0.0f);
+            if (shadow != nullptr || atmo.active()) {
                 // SR-24: perspective-correct world position -- interpolate
                 // world*invDepth AFFINELY (the SAME b0/b1/b2 screen-space
                 // weights invD itself uses) and divide by the ALREADY
@@ -668,7 +707,9 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 const glm::vec3 world_over_depth = wpos0 * static_cast<float>(b0 * v0.invDepth) +
                                                     wpos1 * static_cast<float>(b1 * v1.invDepth) +
                                                     wpos2 * static_cast<float>(b2 * v2.invDepth);
-                const glm::vec3 world = world_over_depth / static_cast<float>(invD);
+                world = world_over_depth / static_cast<float>(invD);
+            }
+            if (shadow != nullptr) {
                 const float lit = sample_shadow(*shadow, world);
                 const glm::vec3 sun = equal_sun ? sun0
                                                  : (sun0 * static_cast<float>(b0) + sun1 * static_cast<float>(b1) +
@@ -676,6 +717,27 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 // SR-25: ambient (already folded into `combined`) is never
                 // shadowed -- only the sun term is attenuated.
                 color = apply_shadow(ShadedColor{combined, sun}, lit);
+            }
+            if (atmo.active()) {
+                // SR-17a: LAST, after shadowing. The atmosphere sits between
+                // the eye and the surface, so it acts on whatever colour the
+                // surface finally has -- shadowed or lit. Doing it before the
+                // shadow would attenuate the haze by the shadow term, which is
+                // backwards: a shadow darkens a surface, not the air in front
+                // of it.
+                //
+                // The SAME scene.hpp functions the background pass and raymarch
+                // call, on the ray THIS pixel already determined. Note the ray
+                // is `world - eye` rather than a reconstructed NDC direction:
+                // sky_gradient_color normalises internally, and clause 4's
+                // bit-identity seam is the NORMAL transform (scene.hpp:85), not
+                // position -- the tree already tolerance-compares the two ways
+                // of recovering a ground pixel's world position
+                // (test_render_shadow.cpp's own 1% fringe allowance).
+                const glm::vec3 eye_to_surface = world - atmo.eye;
+                const float view_distance = std::sqrt(glm::dot(eye_to_surface, eye_to_surface));
+                const glm::vec3 sky = sky_gradient_color(*atmo.lighting, eye_to_surface);
+                color = horizon_blend(color, sky, view_distance, atmo.onset, atmo.strength);
             }
             setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
         }
@@ -697,7 +759,8 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
 // shadows are off or there is no static shadow map to sample.
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
-                                const Material& material, const Lighting& lighting, const ShadowMap* shadow) {
+                                const Material& material, const Lighting& lighting, const ShadowMap* shadow,
+                                const AtmosphereContext& atmo) {
     const ClipVertex ac{worldToCameraSpace(vc, a), na, vec3f(a)};
     const ClipVertex bc{worldToCameraSpace(vc, b), nb, vec3f(b)};
     const ClipVertex cc{worldToCameraSpace(vc, c), nc, vec3f(c)};
@@ -720,7 +783,7 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
         const ShadedColor scb = shade_vertex_color(material, lighting, poly[i].normal);
         const ShadedColor scc = shade_vertex_color(material, lighting, poly[i + 1].normal);
         rasterizeTriangleGouraud(fb, sa, sb, sc, sca.combined, scb.combined, scc.combined, sca.sun, scb.sun, scc.sun,
-                                  poly[0].world, poly[i].world, poly[i + 1].world, shadow);
+                                  poly[0].world, poly[i].world, poly[i + 1].world, shadow, atmo);
     }
 }
 
@@ -769,6 +832,19 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
     }
+    // SR-17a, distilled ONCE per item rather than per triangle or per pixel.
+    // SHADED-ONLY, the same gate ruling SR-22 puts on the analytic ground and
+    // the infinite grid: hazing a wireframe's edges would be a mode-contract
+    // violation, and there is no surface there for atmosphere to sit in front
+    // of. `mode` is read here, so a future mode inherits the gate rather than
+    // the term.
+    const AtmosphereContext atmo{
+        .eye = glm::vec3(static_cast<float>(vc.camPos[0]), static_cast<float>(vc.camPos[1]),
+                         static_cast<float>(vc.camPos[2])),
+        .lighting = &scene.lighting,
+        .strength = (mode == DrawMode::shaded) ? options.horizon_blend_strength : 0.0f,
+        .onset = options.horizon_blend_onset,
+    };
     const MeshData& mesh = scene.meshes[item.mesh_index];
     if (mesh.indices.empty()) {
         return;  // an allocated-but-not-yet-tessellated placeholder (SR-9), or a genuinely empty mesh.
@@ -857,7 +933,7 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 const glm::vec3 nb = transform_normal(item.local_to_world, mesh.normals[ib]);
                 const glm::vec3 nc = transform_normal(item.local_to_world, mesh.normals[ic]);
                 draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
-                                           scene.lighting, shadow);
+                                           scene.lighting, shadow, atmo);
             }
         }
     }
@@ -1148,8 +1224,16 @@ struct BackgroundRayBasis {
 // tessellated mesh onto the analytic ground exactly the way SR-17's own
 // bit-identity seam (rasterizeTriangleGouraud's own comment) already
 // requires them to agree on colour.
+// `grid` is nullptr when no analytic grid is to be drawn, and `horizon_strength`
+// is 0 when SR-17a is not in force. Both are DISTILLED AT THE CALL SITE rather
+// than passed as a whole RenderOptions, following this file's own rule that a
+// drawing function takes exactly what it draws (see the overlay gating in
+// render()'s body, and its comment on why the policy stays visible in one
+// place).
 void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
-                                     bool draw_analytic_ground, const ShadowMap* shadow) {
+                                     bool draw_analytic_ground, const ShadowMap* shadow,
+                                     const GroundGridParams* grid, float horizon_strength,
+                                     float horizon_onset) {
     // Whether the analytic ground pass has anything at all to do -- still
     // gates the per-plane `front[]` precompute and the per-pixel ray/plane
     // loop below, exactly as before.
@@ -1280,12 +1364,39 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
                     const uint32_t material_index = gp.material < scene.materials.size() ? gp.material : 0u;
                     const ShadedColor sc = shade_vertex_color(scene.materials[material_index], scene.lighting, gp.normal);
                     color = sc.combined;
+                    const Vec3 hit = camPos + dirWorld * best_t;
                     if (shadow != nullptr) {
                         // SR-25: ambient survives; only the sun term is
                         // attenuated -- see apply_shadow()'s own comment.
-                        const Vec3 hit = camPos + dirWorld * best_t;
                         const float lit = sample_shadow(*shadow, vec3f(hit));
                         color = apply_shadow(sc, lit);
+                    }
+
+                    // The infinite analytic grid and SR-17a's atmospheric
+                    // term, in that order: the grid is part of the GROUND, so
+                    // the horizon blend must act on the gridded colour rather
+                    // than on the bare one -- otherwise the lines stay crisp
+                    // through a haze that dims everything around them, which
+                    // is the artifact that makes a faked horizon look faked.
+                    //
+                    // BOTH are the SHARED scene.hpp functions, called on the
+                    // ray THIS pass already reconstructed. raymarch.cpp calls
+                    // the same two on its own ray. That is what keeps the
+                    // bit-identity seam (SR-17 clause 4) intact: one function,
+                    // one ray, never two expressions that agree by luck.
+                    const glm::vec3 hitf = vec3f(hit);
+                    const float view_distance =
+                        std::sqrt(static_cast<float>(glm::dot(vec3f(dirWorld), vec3f(dirWorld)))) *
+                        static_cast<float>(best_t);
+
+                    if (grid != nullptr) {
+                        const float cov = ground_grid_coverage(hitf, gp.normal, view_distance, *grid);
+                        // base + (line - base) * cov -- EXACT when cov is 0.
+                        color = color + (grid->color - color) * cov;
+                    }
+                    if (horizon_strength > 0.0f) {
+                        const glm::vec3 sky = sky_gradient_color(scene.lighting, vec3f(dirWorld));
+                        color = horizon_blend(color, sky, view_distance, horizon_onset, horizon_strength);
                     }
                 }
             }
@@ -1312,7 +1423,15 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // implemented in its own TU (render/raymarch.cpp) and simply forwarded
     // to here, target already validated.
     if (options.mode == DrawMode::raymarch) {
-        return render_raymarch(scene, camera, target);
+        // SR-17a's two values are forwarded EXPLICITLY rather than by handing
+        // over the whole RenderOptions. raymarch.hpp documents that it takes no
+        // RenderOptions so that `overlays`/`shadows` are known silent no-ops
+        // there; passing the struct would quietly make those two look supported.
+        // The term is different in kind from those: it is not something raymarch
+        // cannot do, it is something raymarch MUST do, or RS4's agreement band
+        // widens systematically on every world with geometry at range.
+        return render_raymarch(scene, camera, target, options.horizon_blend_strength,
+                                options.horizon_blend_onset);
     }
 
     const uint32_t width = target.width;
@@ -1379,7 +1498,16 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // never survives the z-test against any real geometry drawn afterward.
     // The analytic ground itself is gated to DrawMode::shaded (ruling SR-22,
     // review IMPORTANT 4) -- the sky gradient applies to every mode.
-    draw_sky_and_ground_background(fb, vc, scene, options.mode == DrawMode::shaded, shadow);
+    // Grid and horizon term are SHADED-ONLY, distilled here beside the analytic
+    // ground's own gate (ruling SR-22): a filled surface under wireframe is a
+    // mode-contract violation, and a grid painted onto a surface that is not
+    // drawn would be one too.
+    const bool shaded = options.mode == DrawMode::shaded;
+    const GroundGridParams* grid_params =
+        (shaded && options.ground_grid) ? &options.ground_grid_params : nullptr;
+    draw_sky_and_ground_background(fb, vc, scene, shaded, shadow, grid_params,
+                                    shaded ? options.horizon_blend_strength : 0.0f,
+                                    options.horizon_blend_onset);
 
     // Fixed operation order (constraint 4): background, then statics, then
     // dynamics, then overlays -- never based on hashing, pointer identity, or

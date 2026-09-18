@@ -13,7 +13,8 @@
 
 namespace spade::render {
 
-Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target) {
+Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target,
+                              float horizon_strength, float horizon_onset) {
     const uint32_t width = target.width;
     const uint32_t height = target.height;
 
@@ -76,7 +77,8 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
             // length here, but the function does not require that), so the
             // two paths' sky agrees bit-for-bit rather than by two
             // independently-equal expressions.
-            glm::vec3 color = sky_gradient_color(scene.lighting, dir_world);
+            const glm::vec3 sky = sky_gradient_color(scene.lighting, dir_world);
+            glm::vec3 color = sky;
 
             if (has_sdf) {
                 // FRUSTUM PARITY, DEPTH NOT RADIAL DISTANCE (fix round 2,
@@ -249,6 +251,24 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                     const ShadedColor shaded =
                         shade_vertex_color(scene.materials[material_index], scene.lighting, normal);
                     color = shaded.combined;
+
+                    // SR-17a (03-world-and-render.md section 16, ALL GEOMETRY
+                    // AT RANGE): scene.hpp's horizon_blend(), the SAME function
+                    // raster_cpu.cpp calls from its background pass and its
+                    // mesh fill. Three values, all belonging to THIS ray: the
+                    // colour just shaded, `t` -- which IS the eye-to-surface
+                    // distance because `dir_world` is unit length, this file's
+                    // own sphere-tracing precondition -- and the sky colour
+                    // already computed above for this same direction.
+                    //
+                    // ⚠ A MISS NEEDS NO BLEND: `color` is still exactly `sky`
+                    // there, and blending sky toward sky is the identity. The
+                    // hard horizon therefore disappears because the GROUND side
+                    // moves toward the sky, not because anything special
+                    // happens at the boundary -- which is the whole point of
+                    // the amendment: the boundary case is a CONSEQUENCE of the
+                    // rule, never the rule.
+                    color = horizon_blend(color, sky, t, horizon_onset, horizon_strength);
                 }
             }
 

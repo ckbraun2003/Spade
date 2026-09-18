@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -376,21 +377,72 @@ struct OrbitBasis {
     return *world;
 }
 
+// ---------------------------------------------------------------------------
+// CAMERA BOOKMARKS -- OWNED BY THIS SUITE, not read from a project.
+//
+// This used to read dev_project/scenes/<world>.kscene. It does not any more,
+// and the reason is a ruling rather than a convenience: `dev_project` is a
+// ROLE, not a fixture. It is whichever project happens to be open on a box,
+// and every demo and test package is a full openable project -- so a suite
+// bound to it is bound to something that CANNOT BE STATED OR VERSIONED, and
+// that breaks the day someone opens something else.
+//
+// tests/CMakeLists.txt's SPADE_CONTENT_DIR comment calls itself "the ONE place
+// spade/tests/ reaches outside the spade/ tree". Reading a project would have
+// made it two, and the second worse in kind. Owning the data NARROWS the
+// boundary back to one, which is the only answer consistent with why that
+// comment was written.
+//
+// THE DUPLICATION IS CHECKED, NOT HOPED --
+// AgreementFixture.BookmarksMatchTheShippedScenes below.
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] const Json& fixture_bookmarks() {
+    static const Json doc = [] {
+        const std::filesystem::path path =
+            std::filesystem::path(SPADE_TESTS_DIR) / "fixtures" / "camera_bookmarks.json";
+        std::string text;
+        if (!read_file(path.string(), text)) {
+            throw std::runtime_error("could not read the bookmark fixture: " + path.string());
+        }
+        Json parsed = Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+        if (parsed.is_discarded() || !parsed.contains("bookmarks")) {
+            throw std::runtime_error("bookmark fixture is not valid JSON with a 'bookmarks' object: " +
+                                     path.string());
+        }
+        return parsed;
+    }();
+    return doc;
+}
+
+// Returns a document shaped like a scene's, so camera_from_scene_bookmark below
+// is unchanged. THROWS rather than returning an empty object: a missing world
+// must refuse, never degrade into a measurement. Returning Json::object() here
+// is precisely what let thirty tests score an EMPTY FRAME and report the
+// failure as a disagreement-band mismatch -- naming the renderer for a defect
+// that was a missing file.
 [[nodiscard]] Json load_shipped_scene_json(const std::string& world_name) {
-    const std::filesystem::path path = content_dir() / "scenes" / (world_name + ".kscene");
-    std::string text;
-    if (!read_file(path.string(), text)) {
-        ADD_FAILURE() << "could not read shipped scene document: " << path;
-        return Json::object();
+    const Json& bookmarks = fixture_bookmarks().at("bookmarks");
+    const auto it = bookmarks.find(world_name);
+    if (it == bookmarks.end()) {
+        throw std::runtime_error("bookmark fixture has no entry for world '" + world_name +
+                                 "' -- add it to tests/fixtures/camera_bookmarks.json");
     }
-    return Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    return Json{{"camera_bookmarks", *it}};
+}
+
+// The project's scene documents, read by the consistency guard ALONE.
+[[nodiscard]] std::filesystem::path project_scenes_dir() {
+    return std::filesystem::path(SPADE_SCENES_DIR);
 }
 
 [[nodiscard]] Camera camera_from_scene_bookmark(const Json& scene_json, const std::string& bookmark_name) {
     const auto bookmarks_it = scene_json.find("camera_bookmarks");
     if (bookmarks_it == scene_json.end()) {
-        ADD_FAILURE() << "scene document has no camera_bookmarks object";
-        return Camera{};
+        // Throws for the same reason load_shipped_scene_json does: a default
+        // Camera{} is a VALID camera, so returning one turns "this document is
+        // not what I think it is" into a measurement of some other framing.
+        throw std::runtime_error("scene document has no camera_bookmarks object");
     }
     const auto bookmark_it = bookmarks_it->find(bookmark_name);
     if (bookmark_it == bookmarks_it->end()) {
@@ -944,3 +996,62 @@ INSTANTIATE_TEST_SUITE_P(
         }
         return name;
     });
+
+// ===========================================================================
+// THE DUPLICATION GUARD. This suite owns tests/fixtures/camera_bookmarks.json
+// so that no test depends on project content (see the CAMERA BOOKMARKS block
+// above). The cost of owning a copy is that it can drift from the shipped
+// bookmarks; this is what turns that cost from hoped-against into checked.
+//
+// ⭐ IT DISCRIMINATES BETWEEN TWO ABSENCES, AND THAT IS THE WHOLE DESIGN:
+//   * the project tree is NOT THERE at all -> SKIP. A standalone spade
+//     checkout legitimately has no Kat project, and failing there would make
+//     the engine suite depend on Kat again through the back door.
+//   * the tree IS there but a scene or a bookmark is missing -> FAIL. That is
+//     not a configuration, it is a move, and a move is exactly what cost this
+//     suite thirty tests once already.
+// "Absent" and "empty" are different findings. A guard that treats them alike
+// is the fail-open shape this file has already paid for.
+// ===========================================================================
+
+TEST(AgreementFixture, BookmarksMatchTheShippedScenes) {
+    const std::filesystem::path scenes = project_scenes_dir();
+    if (!std::filesystem::exists(scenes)) {
+        GTEST_SKIP() << "no project scene tree at " << scenes
+                     << " -- standalone spade checkout; the fixture stands on its own here, and "
+                        "this guard is the only thing in the suite that ever looks outside it.";
+    }
+
+    const Json& bookmarks = fixture_bookmarks().at("bookmarks");
+    ASSERT_GE(bookmarks.size(), kShippedWorldNames.size())
+        << "the fixture covers fewer worlds than the matrix runs -- a world was added to "
+           "kShippedWorldNames without its bookmarks";
+
+    for (const std::string& world : kShippedWorldNames) {
+        const std::filesystem::path path = scenes / (world + ".kscene");
+        std::string text;
+        ASSERT_TRUE(read_file(path.string(), text))
+            << "the project tree exists but " << path << " does not. The scenes moved again. "
+               "Re-harvest tests/fixtures/camera_bookmarks.json and update SPADE_SCENES_DIR in "
+               "tests/CMakeLists.txt.";
+        const Json shipped = Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+        ASSERT_FALSE(shipped.is_discarded()) << path << " is not valid JSON";
+
+        const auto shipped_bm = shipped.find("camera_bookmarks");
+        ASSERT_NE(shipped_bm, shipped.end()) << path << " has no camera_bookmarks object";
+
+        for (const std::string& name : kBookmarkNames) {
+            const auto mine = bookmarks.at(world).find(name);
+            ASSERT_NE(mine, bookmarks.at(world).end())
+                << "fixture is missing " << world << "/" << name;
+            const auto theirs = shipped_bm->find(name);
+            ASSERT_NE(theirs, shipped_bm->end())
+                << path << " is missing the '" << name << "' bookmark that the fixture carries";
+            EXPECT_EQ(*mine, *theirs)
+                << world << "/" << name
+                << ": the suite's fixture and the shipped scene document disagree. One of them "
+                   "moved. The fixture is what the matrix measures, so an unexplained change here "
+                   "means the recorded agreement bands describe a camera nobody ships any more.";
+        }
+    }
+}

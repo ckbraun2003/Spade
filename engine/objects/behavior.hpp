@@ -104,6 +104,13 @@ class BehaviorRegistry {
     [[nodiscard]] std::string_view name_at(uint32_t index) const noexcept;
 
   private:
+    // ✅ NO DEFECT IS BEING DESCRIBED HERE. Every sentence below is about a
+    // design THAT WAS REJECTED; the code beside it is the repair. Said first,
+    // and on its own line, because a grep or a review comment that surfaces any
+    // ONE line of the paragraph below reads as a live bug report in shipped
+    // code -- measured 2026-09-18, when the realm that owns this file did
+    // exactly that and reported a use-after-free that does not exist.
+    //
     // THE NAME IS OWNED HERE, and that is a correction to the plan rather than
     // a style choice. The plan stored BehaviorDesc values directly and kept the
     // strings in a parallel std::vector<std::string>, repointing each stored

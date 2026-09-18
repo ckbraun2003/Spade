@@ -1411,6 +1411,61 @@ TEST(RasterGolden, CylinderStaticAndDynamicBoxTopDownMatchesCommittedManifest) {
     check_against_manifest("cylinder_static_dynamic_box_top_down", pixels);
 }
 
+// SR-17a's atmospheric term (03-world-and-render.md section 16, amended to ALL
+// GEOMETRY AT RANGE by user ruling 2026-09-17), pinned across platforms.
+//
+// ⚠⚠ THIS GOLDEN IS A PAIR, NOT A FRAME, AND THE PAIRING IS THE WHOLE POINT.
+// The question to ask of any golden whose subject is a FEATURE is "what would
+// this still pass on?" -- and a lone "term ON" frame would still pass if the
+// term's strength were silently zero, because a sha256 only says the pipeline
+// produced the bytes it produced last time. That golden would prove the
+// renderer ran. It would be a fifth CONTROL wearing a feature's name.
+//
+// So this test renders the SAME scene and camera twice and pins both ends:
+// the off arm must reproduce the committed `shadowed_ground_with_caster` hash
+// that has been in this manifest since before SR-17a existed, and the on arm
+// must reproduce its own -- AND THE TWO MUST DIFFER. A term that stopped
+// applying collapses the on arm onto the off arm, and the inequality assertion
+// fires before either hash is even consulted.
+TEST(RasterGolden, AtmosphericTermOnAndOffAreTwoPinnedFramesThatMustDifferRulingSR17a) {
+    const RenderScene scene = golden_scene_shadowed_ground_with_caster();
+    ASSERT_TRUE(scene.static_shadow.has_value());
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.8f, 8.0f));
+
+    RenderOptions off;
+    off.mode = DrawMode::shaded;
+    off.overlays = true;
+    off.shadows = true;  // the engine default strength is 0, so this IS the pre-SR-17a frame
+
+    RenderOptions on = off;
+    // A real setting rather than the 45 m shipped default: at 45 m this scene's
+    // own depth range sits in the fade's toe and the two frames would differ by
+    // a handful of bytes, which is a weak thing to pin.
+    on.horizon_blend_strength = 0.75f;
+    on.horizon_blend_onset = 20.0f;
+
+    const std::vector<uint8_t> pixels_off = render_golden(scene, camera, off);
+    const std::vector<uint8_t> pixels_on = render_golden(scene, camera, on);
+
+    // FIRST, before any hash: the term must have done something. This is the
+    // assertion that makes the pair a pair.
+    size_t differing = 0;
+    ASSERT_EQ(pixels_off.size(), pixels_on.size());
+    for (size_t i = 0; i < pixels_off.size(); ++i) {
+        if (pixels_off[i] != pixels_on[i]) ++differing;
+    }
+    ASSERT_GT(differing, 1000u)
+        << "SR-17a changed only " << differing << " bytes of this frame -- the golden below would be pinning a "
+           "frame the term did not affect, i.e. a fifth control rather than a feature";
+
+    // The off arm must still be the frame this manifest has always held. It is
+    // re-derived here rather than assumed, so that a change to the term which
+    // accidentally perturbed the strength-0 path is caught HERE, attached to
+    // the term, and not only in the older test that has no idea SR-17a exists.
+    check_against_manifest("shadowed_ground_with_caster", pixels_off);
+    check_against_manifest("shadowed_ground_with_caster_atmospheric", pixels_on);
+}
+
 TEST(RasterGolden, ShadowedGroundWithCasterMatchesCommittedManifest) {
     const RenderScene scene = golden_scene_shadowed_ground_with_caster();
     ASSERT_TRUE(scene.static_shadow.has_value());

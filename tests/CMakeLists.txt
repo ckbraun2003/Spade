@@ -1,3 +1,81 @@
+# ==============================================================================
+# READ THIS BEFORE ADDING A TEST HERE. Two facts about where these tests run,
+# both measured 2026-09-17, and neither visible from inside a test file.
+#
+# ------------------------------------------------------------------------------
+# 1. THIS SUITE DOES NOT RUN IN KAT'S MAIN GATE. IT IS NOT REACHABLE FROM ANY
+#    ROOT BUILD TREE, AT ANY FLAG.
+# ------------------------------------------------------------------------------
+# A test added here will NOT be executed by `ctest -L T0`, by
+# `scripts/test.ps1`, or by any configuration of the repo-root CMake project.
+# Adding one and watching the Kat gate go green tells you NOTHING about it.
+#
+#   * the repo root CMakeLists.txt has no `add_subdirectory(spade)` -- its six
+#     add_subdirectory calls are runtime, dronesim, components, editor, train,
+#     sdk;
+#   * `dronesim/CMakeLists.txt`'s `add_subdirectory(spade)` resolves to
+#     `dronesim/spade/` -- a DIFFERENT directory wearing the same word, holding
+#     the C5 host `kat_host_spade`, not this tree;
+#   * the root build obtains the engine as a BINARY, via
+#     `find_package(spade CONFIG REQUIRED)` (dronesim/spade/CMakeLists.txt)
+#     against a pre-installed prefix;
+#   * this file is added only by `spade/CMakeLists.txt`, whose own
+#     `project(Spade ...)` makes it an independent top-level CMake project.
+#
+# WHAT DOES RUN IT: `.github/workflows/spade.yml`, which configures
+# `cmake -S spade` -- treating spade/ as its own root -- then
+# `ctest --test-dir spade/build-ci -L spade`. That workflow is this suite's
+# ONLY automated gate. Locally, build spade/ standalone via its own presets.
+#
+# ** DO NOT "FIX" THIS BY ADDING add_subdirectory(spade) TO THE ROOT. ** The
+# separation is not an oversight, it is SL1/SL2 severability working: Kat
+# consumes an INSTALLED Spade through find_package, exactly as an external
+# consumer does, which is the whole property `spade/tests/consumer/` exists to
+# prove. Wiring this tree into the root build would make Kat's green depend on
+# in-tree paths no third-party consumer has, and would retire that proof.
+# The gap this comment closes is not a build defect -- it is that nothing
+# previously told you your change was invisible to the loop you run.
+#
+# ------------------------------------------------------------------------------
+# 2. THE GPU-GATED TESTS IN THIS LIST HAVE NEVER RUN IN CI. ANYWHERE.
+# ------------------------------------------------------------------------------
+# Five files -- test_compute_context.cpp, test_gpu_fp32_math.cpp,
+# test_gpu_invariance.cpp, test_gpu_parity.cpp, test_gpu_state_mirror.cpp --
+# hold 67 TEST sites between them. 61 open with
+# `if (!vulkan_available()) GTEST_SKIP();`.
+#
+# spade.yml is the only automated path that runs this suite (fact 1) -- AND ITS
+# RUNNERS HAVE NO GPU, on both the Linux and Windows jobs, as that workflow's
+# own comment states. So those 61 SKIP, in both jobs, every run.
+# `--no-tests=error` only fires on ZERO REGISTERED tests, so a
+# permanently-skipping battery is invisible to red/green forever.
+#
+# ** GPU COVERAGE IN THIS REPOSITORY IS DEVELOPER-MACHINE-ONLY. ** Say so when
+# you cite it. These tests are real and worth keeping -- they are the only check
+# on cross-backend determinism, which SL18 requires -- but no gate has ever
+# observed one of them pass or fail.
+#
+# THE SIX THAT DO RUN ARE NOT AN OVERSIGHT, AND THEY ARE WHY THIS IS A DECLARED
+# LIMIT RATHER THAN A HOLE. Six sites in these files are deliberately NOT
+# device-gated, and every one is a CPU-side half that needs no device:
+#   test_gpu_invariance.cpp   WorkgroupSizeContract.AllowedSetMatchesCompiledVariants
+#                             BackendSeamReproof.CpuPathCorpusDigestsUnchangedAtTip
+#   test_gpu_parity.cpp       ParityCorpus.EveryCorpusScenarioIsInTheParitySet
+#                             ParityGeometry.HeterogeneousGeometrySetMatchesSoloRuns
+#                             ParityChaos.ShowerPileAmplifiesOneUlpOnTheCpuAlone
+#   test_gpu_state_mirror.cpp BackendKnobInvariance.CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus
+#
+# ParityCorpus.EveryCorpusScenarioIsInTheParitySet is the load-bearing one: it
+# is a MEMBERSHIP FLOOR over the parity corpus, so CI still catches a scenario
+# silently dropping OUT of the set the GPU tests would compare -- even though
+# the comparisons themselves cannot run. What CI cannot see is whether the two
+# backends AGREE; what it can still see is that the question is still being
+# asked about every scenario. Keep that property if you touch these files.
+#
+# If you add a GPU-gated test: it is on you to run it on a machine with a
+# device, and to say in the commit that you did. Nothing downstream will.
+# ==============================================================================
+
 add_executable(spade_tests
     test_core.cpp
     test_math.cpp
@@ -119,6 +197,50 @@ if(SPADE_VULKAN)
     )
 endif()
 
+# -----------------------------------------------------------------------
+# Plan C task C1: SL10's same-path invariant across the TargetSink seam.
+#
+# GATED ON SPADE_BUILD_SANDBOX BECAUSE THE FLAG MUST STAY A REAL OFF SWITCH.
+# ../sandbox/target_sink.hpp does not exist as a compiled thing when the
+# sandbox is off, and a test suite that failed to configure at OFF would make
+# the flag a lie -- C0 introduced it precisely so the target can be omitted
+# entirely.
+#
+# ⚠⚠ AND A GATED TEST THAT VANISHES QUIETLY IS THE 61-GPU-TEST DEFECT AGAIN:
+# `--no-tests=error` only fires on ZERO registered tests, so a battery that
+# disappears at a flag is invisible to red/green. THE COUNT IS THE EVIDENCE --
+# assert the count, never the rate, because a missing test reads exactly like a
+# passing one.
+#
+# THE INVARIANT, RATHER THAN TWO NUMBERS: the ON total minus the OFF total is
+# EXACTLY the cases registered by test_sandbox_target_sink.cpp, and nothing
+# else moves with this flag. That stays true when someone adds a test; a pair
+# of baked totals would not.
+#
+# (An earlier draft of this comment stated "825 at ON and 821 at OFF" -- both
+# WRITTEN BEFORE EITHER WAS MEASURED, and both already wrong: ON measured 829.
+# A number in a comment is a claim, and this one was a guess wearing a
+# measurement's clothes. It is also the third time in one night this realm
+# wrote something that named a MOMENT rather than a CONDITION and went stale
+# immediately; the fix is always the same shape.)
+#
+# ⚠ A SOURCE-LEVEL REACH INTO ../sandbox, AND IT IS THE THIRD IN THIS FILE.
+# The alternative was to make the sandbox a library so the test could LINK it,
+# which would have added a twelfth target to a release identity SL2a states as
+# eleven library modules, and changed the answer to "how many targets are
+# there" for everyone downstream. An include path costs less and claims less.
+# The header is header-only by design so no link is needed at all.
+#
+# This is what SL15b ("headless is the test surface") requires structurally
+# rather than by discipline: an executable's internals are not reachable from
+# a test, so a seam that lives only inside spade_sandbox cannot be asserted by
+# anything, however carefully it is written.
+# -----------------------------------------------------------------------
+if(SPADE_BUILD_SANDBOX)
+    target_sources(spade_tests PRIVATE test_sandbox_target_sink.cpp)
+    target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
+endif()
+
 # spade_fp_strict (plain link, not BUILD_LOCAL_INTERFACE -- spade_tests is an
 # executable, not an installed/exported target, so there is no export-set
 # concern to guard against): test TUs re-derive reference arithmetic of their
@@ -219,9 +341,45 @@ cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR
 # spade/tests/ reaches outside the spade/ tree into the surrounding repo, and
 # ONLY for test-fixture DATA -- content/worlds/*.world.yaml (plain
 # Spade-schema world files, loaded through the SAME spade::world_from_yaml()
-# any other test uses) and content/scenes/*.kscene (JSON documents; this
-# suite reads only their camera_bookmarks object, never their
-# instances/package_ref fields). Task R9's brief requires measuring against
+# any other test uses).
+#
+# CORRECTED 2026-09-17. This sentence used to continue "...and
+# content/scenes/*.kscene (JSON documents; this suite reads only their
+# camera_bookmarks object)". THAT STOPPED BEING TRUE AT f26fb39b, which split
+# content/ into a LIBRARY and moved *.kscene to dev_project/ as PROJECT
+# content -- and the false half sat HERE, at the definition of the very
+# variable that resolved the broken path, for as long as thirty agreement
+# tests were red.
+#
+# ⭐ A FALSE CLAIM AT A DEFINITION IS WORSE THAN A FALSE CLAIM ANYWHERE ELSE:
+# it tells the next reader the binding was INTENTIONAL, and sends them to look
+# at the renderer instead. That is the same recruitment the failure message
+# was doing one layer down -- a plausible explanation gets acted on, while
+# silence gets investigated. Found by another realm reading this file, not by
+# the realm that owns it.
+#
+# The suite now OWNS its camera bookmarks (tests/fixtures/camera_bookmarks.json),
+# so no test RESOLVES A CAMERA through a project path.
+#
+# ⚠⚠ BUT COUNT THE REACHES HONESTLY, BECAUSE I FIRST WROTE THIS WRONG. An
+# earlier version of this paragraph said "SPADE_CONTENT_DIR is the one reach
+# again, as this comment always claimed it was." IT IS NOT. There are TWO
+# defines pointing outside spade/ -- SPADE_CONTENT_DIR here and
+# SPADE_SCENES_DIR below -- and I added the second one myself an hour before
+# writing that sentence. Measured: `grep '\.\./\.\.' tests/CMakeLists.txt`
+# returns two. Correcting a false claim with a false claim is the defect this
+# very block exists to record, committed inside its own correction.
+#
+# THE TRUE STATEMENT NEEDS TWO CATEGORIES, and they are not the same kind:
+#   * MEASUREMENT reach -- SPADE_CONTENT_DIR, ONE, and every test that produces
+#     a number depends on it.
+#   * CONSISTENCY reach -- SPADE_SCENES_DIR, a SECOND, read by exactly one
+#     guard, which SKIPS when the tree is absent. No measurement depends on it,
+#     and a checkout without a Kat project runs the whole matrix without it.
+# The boundary narrowed in the way that matters -- no measurement crosses it --
+# and it did not narrow to one. Say which kind when you cite this.
+#
+# Task R9's brief requires measuring against
 # the ten SHIPPED worlds specifically -- their canonical home is content/,
 # not a second copy under tests/golden/worlds/ that could drift from what
 # actually ships, which matters because ruling SR-2 has Task C4 re-measuring
@@ -236,11 +394,39 @@ cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR
 # reason SPADE_ENGINE_DIR is, immediately above.
 cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../../content")
 
+# SPADE_SCENES_DIR (2026-09-17): scene documents are NO LONGER under content/.
+# `f26fb39b` ("content/ becomes a library, and a project DECLARES the one it
+# draws from") split the tree: content/ is now the standard LIBRARY (worlds,
+# airframes, meshes) and *.kscene moved to dev_project/scenes/ as PROJECT
+# content. content/worlds/ stayed, so load_shipped_world() kept working and
+# only the scene half broke -- which is why this went unnoticed.
+#
+# ⚠ READ BY EXACTLY ONE TEST -- AgreementFixture.BookmarksMatchTheShippedScenes,
+# the guard that checks this suite's own bookmark fixture still equals the
+# shipped one. NO test resolves a camera through this path.
+#
+# RULED 2026-09-17: a test must not depend on PROJECT content. `dev_project` is
+# a ROLE, not a fixture -- it is whichever project happens to be open on a box,
+# and every demo and test package is a full openable project, so a suite bound
+# to it is bound to something that cannot be stated or versioned and that breaks
+# the day someone opens something else. The suite therefore owns
+# tests/fixtures/camera_bookmarks.json, which NARROWS the boundary back to the
+# one reach the comment above always claimed, rather than widening it to two.
+#
+# The cost of owning a copy is drift, and the guard is what makes that cost
+# CHECKED rather than hoped. It distinguishes two absences deliberately: tree
+# missing -> SKIP (a standalone spade checkout has no Kat project, and failing
+# there would restore the dependency through the back door); tree present but a
+# scene or bookmark missing -> FAIL (that is a move, and a move is what cost
+# this suite thirty tests once already).
+cmake_path(SET SPADE_SCENES_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../../dev_project/scenes")
+
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     SPADE_CONTENT_DIR="${SPADE_CONTENT_DIR_NORMALIZED}"
+    SPADE_SCENES_DIR="${SPADE_SCENES_DIR_NORMALIZED}"
 )
 
 include(GoogleTest)

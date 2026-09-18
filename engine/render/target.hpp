@@ -47,10 +47,64 @@ struct Camera {
 // RenderOptions already means by 0/1/2.
 enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3 };
 
+// Parameters for the INFINITE ANALYTIC ground grid (Phase C). The functions
+// that consume these live in scene.hpp, beside sky_gradient_color, because
+// both render paths must call ONE of them on the ONE ray each reconstructs.
+struct GroundGridParams {
+    float spacing = 1.0f;            // metres between lines
+    float line_half_width = 0.012f;  // half-width at the camera, world units
+    float width_growth = 0.04f;      // per metre; keeps lines ~constant on screen
+    float fade_distance = 60.0f;     // metres at which the grid is half faded
+    glm::vec3 color{0.353f, 0.353f, 0.353f};  // the v1 overlay grid's 90/255
+};
+
 struct RenderOptions {
     DrawMode mode = DrawMode::shaded;
     bool shadows = true;
     bool overlays = true;             // ground grid, bounds, spawn markers (PA-4)
+
+    // THE INFINITE ANALYTIC GROUND GRID. ⚠ DISTINCT FROM `overlays`'s +/-10 m
+    // SEGMENT GRID, WHICH STAYS: that one is drawn as line segments after
+    // geometry and is the ONLY grid wireframe mode has, because wireframe has
+    // no analytic ground for this one to sit on. Two mechanisms, one word --
+    // say which you mean.
+    //
+    // Gated to DrawMode::shaded by the same argument ruling SR-22 makes about
+    // the analytic ground itself: a filled surface under wireframe is a
+    // mode-contract violation.
+    // ⚠⚠ DEFAULT OFF, AND THE DEFAULT IS THE DECISION -- MEASURED, NOT CHOSEN.
+    // Turning it on by default moved three tests, and two of them are a real
+    // invariant rather than a stale golden:
+    //
+    //   RenderShading.TessellatedAndAnalyticGroundAgreeAcrossTheHardHorizonSeam
+    //   ShadowPerspectiveCorrectness.MeshReceiverMatchesExactAnalyticGround...
+    //
+    // Both assert the ANALYTIC ground agrees with a TESSELLATED MESH ground.
+    // The grid is analytic-only, so gridding it makes the two disagree BY
+    // CONSTRUCTION -- correctly. That is not a golden to regenerate; it is a
+    // genuine gap, and closing it means deciding whether a tessellated ground
+    // carries the grid too. That decision is not this task's.
+    //
+    // The third (RasterGolden.ShadowedGroundWithCasterMatchesCommittedManifest)
+    // IS just a golden -- and it cannot be promoted tonight: regeneration
+    // requires the gcc cross-check (standing rule 4) and Docker is down. A
+    // default that leaves goldens red with NO PATH TO GREEN is not a default.
+    //
+    // So the ENGINE ships it off and the SANDBOX turns it on. That is also the
+    // better reading of the ask: "the default render WORLD" is the scene the
+    // reference application opens into, not every consumer's RenderOptions.
+    // The editor viewport and the C5 host keep the pixels they have.
+    bool ground_grid = false;
+    GroundGridParams ground_grid_params{};
+
+    // SR-17a's atmospheric horizon term. DEFAULT 0 = OFF, and that is not a
+    // preference: SR-17 CLAUSE 5 ("hard horizon, no fog") IS THE RULE IN FORCE
+    // until section 16 of design-specs/spade/03-world-and-render.md supersedes
+    // it. At 0, horizon_blend() returns the ground colour EXACTLY -- by its
+    // blend form, not approximately -- so shipping this field changes no pixel
+    // and moves no golden. The supersession is what turns it on.
+    float horizon_blend_strength = 0.0f;
+    float horizon_blend_onset = 45.0f;  // metres; where the term reaches half
 
     // F3: spawn markers are an AUTHORING affordance -- the editor picks them
     // (pickSpawnMarkerAt) to place a start position. Useful while authoring,

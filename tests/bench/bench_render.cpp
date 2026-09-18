@@ -75,9 +75,17 @@
 // numbers. What is pinned is the conclusion, the basis, what would falsify it,
 // and this command:
 //
-//   spade_bench --benchmark_filter=BM_Render \
-//               --benchmark_min_time=1s \
+//   spade_bench --benchmark_filter=BM_Render --benchmark_min_time=1s
 //               --benchmark_repetitions=3
+//
+// (Written with NO trailing backslash, and that is not cosmetic: a \ ending
+// a // comment is a LINE SPLICE, so gcc's -Werror=comment rejects it while
+// MSVC accepts it silently. This file therefore compiled on Windows and
+// could not compile on Linux AT ALL from 2026-09-09 until 2026-09-18 --
+// nine days -- and it was only found by a build that got this far because
+// two EARLIER -Werror breaks had just been cleared. Fixing a build error
+// reveals the next one, so "the Linux leg is broken" was never ONE defect;
+// it was a QUEUE, and every fix in it reads like the last one.)
 //
 // The min-time floor is not optional. Without it a hand-rolled loop on this box
 // produced a 2.4x run-to-run spread; the editor realm hit exactly that and the

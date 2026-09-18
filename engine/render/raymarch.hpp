@@ -225,6 +225,16 @@
 // rather than faulting -- belt AND suspenders, neither substituting for the
 // other.
 //
+// SR-17a IS FORWARDED EXPLICITLY (2026-09-17), and it is the ONE exception to
+// the paragraph below -- stated here rather than as a silent third parameter.
+// `horizon_strength`/`horizon_onset` arrive as two floats, not as RenderOptions,
+// precisely so the note below stays true of everything else. The distinction is
+// that overlays and shadows are things this path CANNOT do; the atmospheric term
+// is something it MUST do, because RS4 compares this path against raster within
+// a pinned band and a term applied on one side only widens that band
+// systematically on every world with geometry at range. Defaulted to 0.0f so a
+// direct caller that has no opinion gets the pre-SR-17a frame EXACTLY.
+//
 // RenderOptions IS NOT A PARAMETER HERE (fix round 1, review Minor 4):
 // render_raymarch() takes no RenderOptions at all -- raster_cpu.cpp's
 // render() calls it only for `options.mode == DrawMode::raymarch` and never
@@ -321,6 +331,7 @@ inline constexpr float kRaymarchSurfaceEpsilon = 1e-4f;
 // dispatch needs no error-shape translation, and is this program's own
 // stable-seam convention (scene_from_world()'s identical note, scene.hpp)
 // rather than a real failure mode today.
-[[nodiscard]] Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target);
+[[nodiscard]] Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target,
+                                            float horizon_strength = 0.0f, float horizon_onset = 45.0f);
 
 }  // namespace spade::render

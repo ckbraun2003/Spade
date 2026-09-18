@@ -196,7 +196,12 @@ TEST(SpawnHelpers, VelocityIsOptionalAndDoesNotDisturbPlacement) {
             ASSERT_TRUE(state.has_value());
             const float speed = glm::length((*state)->vel);
             EXPECT_LE(speed, 5.0f + 1e-5f);
-            if (run == 0) EXPECT_FLOAT_EQ(speed, 0.0f);
+            // BRACED, and not stylistically: EXPECT_FLOAT_EQ expands to an
+            // if/else, so a bare `if` makes that else ambiguous and gcc-13
+            // rejects it under -Werror=dangling-else. MSVC does not warn.
+            if (run == 0) {
+                EXPECT_FLOAT_EQ(speed, 0.0f);
+            }
             if (speed > 0.0f) any_moving = true;
         }
         EXPECT_EQ(any_moving, run == 1);
