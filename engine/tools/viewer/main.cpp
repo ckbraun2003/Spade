@@ -63,6 +63,18 @@ int main(int argc, char** argv) {
             backend.kind = spade::compute::BackendKind::cpu;
         } else if (backend_name == "vulkan") {
             backend.kind = spade::compute::BackendKind::vulkan;
+            // ⚠ SAID AT THE MOMENT A HUMAN CHOOSES IT, because the symptom
+            // (a scene that crawls, or shows no frame at all) is otherwise
+            // indistinguishable from a broken build -- which is exactly how
+            // it was first reported. See compute/backend.hpp's BackendDesc
+            // for the measurements. It is NOT refused: the backend stays
+            // selectable so it can be measured and improved.
+            std::fprintf(stderr,
+                         "spade_viewer: NOTE -- the vulkan compute backend is SLOWER than cpu in "
+                         "every configuration measured (74-2139x; see compute/backend.hpp). A "
+                         "single-world scene runs its whole dynamic-collision sweep on one GPU "
+                         "lane, and 1000 bodies may take minutes per frame. This is expected, not "
+                         "a broken build.\n");
         } else {
             std::fprintf(stderr, "error: unknown backend '%.*s' (expected cpu or vulkan)\n",
                          static_cast<int>(backend_name.size()), backend_name.data());

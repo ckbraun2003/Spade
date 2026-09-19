@@ -266,7 +266,12 @@ int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32
                 return 1;
             }
             const auto r1 = std::chrono::steady_clock::now();
-            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count());
+            // physics_ms is 0 here and that is an ABSENCE, not an omission: this
+            // scene is a static ground plane, so there is no physics step in
+            // the frame to time. The entry exists so that when bodies arrive
+            // the split can attribute them.
+            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count(),
+                                  0.0f);
         } else {
             const bool ok =
                 render_frame(scene, camera.to_render_camera(), fw, fh, grid, blur, pixels, *sink);

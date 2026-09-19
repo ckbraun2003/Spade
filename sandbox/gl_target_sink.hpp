@@ -99,6 +99,11 @@ class GlTargetSink final : public TargetSink {
     // --no-vsync is the control that tells them apart.
     // ---------------------------------------------------------------------
     struct Timings {
+        // ⚠ physics_ms EXISTS BECAUSE ITS ABSENCE WAS NOT AN OMISSION, IT WAS
+        // AN ABSENCE: until the sandbox could hold bodies, there was no
+        // physics step in the frame to time. A split with no entry for the
+        // thing a user complains about cannot attribute their complaint.
+        float physics_ms = 0.0f;  // Simulation::step + pose sync, the application's
         float render_ms = 0.0f;   // spade::render -- the application's, handed in
         float convert_ms = 0.0f;  // BGRX -> RGBA, CPU, per pixel
         float upload_ms = 0.0f;   // glTexImage2D
@@ -111,6 +116,7 @@ class GlTargetSink final : public TargetSink {
     // back on the NEXT accept(), which is why the HUD's render figure is one
     // frame behind everything else -- stated rather than hidden.
     void note_render_ms(float ms) noexcept;
+    void note_physics_ms(float ms) noexcept;
 
     // Rolling average over the recent window, which is what the HUD shows: a
     // per-frame readout jitters far too much to read.
@@ -155,7 +161,7 @@ class GlTargetSink final : public TargetSink {
     // else. Same ImGui pass and the same timing accounting as accept(), so the
     // HUD reads identically on both paths -- which is what makes them
     // comparable at all.
-    void present_overlay(float render_ms);
+    void present_overlay(float render_ms, float physics_ms);
 
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.

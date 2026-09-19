@@ -83,6 +83,7 @@ using Clock = std::chrono::steady_clock;
 // the declaration first, and the build is the only thing that would have told
 // me. A reading pass caught it; the compiler would have, a slot later.
 void accumulate(GlTargetSink::Timings& into, const GlTargetSink::Timings& t) {
+    into.physics_ms += t.physics_ms;
     into.render_ms += t.render_ms;
     into.convert_ms += t.convert_ms;
     into.upload_ms += t.upload_ms;
@@ -92,6 +93,7 @@ void accumulate(GlTargetSink::Timings& into, const GlTargetSink::Timings& t) {
 }
 [[nodiscard]] GlTargetSink::Timings scale(const GlTargetSink::Timings& t, float k) {
     GlTargetSink::Timings o;
+    o.physics_ms = t.physics_ms * k;
     o.render_ms = t.render_ms * k;
     o.convert_ms = t.convert_ms * k;
     o.upload_ms = t.upload_ms * k;
@@ -139,6 +141,7 @@ struct GlTargetSink::Impl {
     // HUD (a per-frame readout is unreadable) and a LIFETIME mean for the exit
     // summary, so the number does not depend on when somebody happened to look.
     float pending_render_ms = 0.0f;
+    float pending_physics_ms = 0.0f;
     GlTargetSink::Timings win_sum;
     uint32_t win_count = 0;
     GlTargetSink::Timings win_avg;
@@ -389,7 +392,8 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     // EVERY PHASE IS TIMED SEPARATELY, because a frame rate is a sum and a sum
     // is not a diagnosis. See the header for why swap_ms must be read first.
     Timings t;
-    t.render_ms = impl_->pending_render_ms;  // handed in by the application
+    t.render_ms = impl_->pending_render_ms;   // handed in by the application
+    t.physics_ms = impl_->pending_physics_ms;
     const auto t0 = Clock::now();
 
     // OUTSIDE THE GUARD: the conversion is the logic, and it is the same
@@ -450,7 +454,7 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     // span across accept(): a wall-clock total would silently absorb anything
     // that is not one of the five, and then the parts would not add up and
     // nobody would know which was wrong.
-    t.total_ms = t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
+    t.total_ms = t.physics_ms + t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
 
     accumulate(impl_->win_sum, t);
     accumulate(impl_->life_sum, t);
@@ -471,6 +475,7 @@ bool GlTargetSink::should_close() const noexcept {
 }
 
 void GlTargetSink::note_render_ms(float ms) noexcept { impl_->pending_render_ms = ms; }
+void GlTargetSink::note_physics_ms(float ms) noexcept { impl_->pending_physics_ms = ms; }
 
 GlTargetSink::Timings GlTargetSink::average_timings() const noexcept { return impl_->win_avg; }
 
@@ -517,6 +522,7 @@ void GlTargetSink::draw_overlay() {
             ImGui::Separator();
             // WHERE THE FRAME WENT. The point of showing all five rather than a
             // total: they have different remedies, and one of them is not a cost.
+            ImGui::Text("physics  %6.2f ms", a.physics_ms);
             ImGui::Text("render   %6.2f ms", a.render_ms);
             ImGui::Text("convert  %6.2f ms", a.convert_ms);
             ImGui::Text("upload   %6.2f ms", a.upload_ms);
@@ -551,9 +557,10 @@ void GlTargetSink::begin_gpu_frame() {
 #endif
 }
 
-void GlTargetSink::present_overlay(float render_ms) {
+void GlTargetSink::present_overlay(float render_ms, float physics_ms) {
     Timings t;
     t.render_ms = render_ms;
+    t.physics_ms = physics_ms;
 #if SPADE_SANDBOX_HAS_GL
     const auto t2 = Clock::now();
     ImGui_ImplOpenGL3_NewFrame();
@@ -576,7 +583,7 @@ void GlTargetSink::present_overlay(float render_ms) {
     // BGRX->RGBA conversion and no per-frame texture upload, because no pixel
     // ever reaches the CPU. A reader comparing the two HUDs sees exactly which
     // costs the primary path does not pay.
-    t.total_ms = t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
+    t.total_ms = t.physics_ms + t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
     accumulate(impl_->win_sum, t);
     accumulate(impl_->life_sum, t);
     if (++impl_->win_count >= 30u) {

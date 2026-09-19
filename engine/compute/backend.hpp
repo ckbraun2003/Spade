@@ -93,6 +93,47 @@ inline constexpr std::array<uint32_t, 3> kSupportedWorkgroupSizes = {32u, 64u, 1
 // compute/vulkan/step_recorder.cpp both SELECTS the matching compiled module
 // and divides its dispatch grids by the SAME value. A value outside the set is
 // a Code::invalid_argument naming the set, never a silent fallback to 64.
+// ⚠⚠ THE DEFAULT IS `cpu` AND THAT IS NOT A PLACEHOLDER -- IT IS THE FASTER
+// BACKEND IN EVERY CONFIGURATION ANYONE HAS MEASURED. Recorded here, beside
+// the field, because this is where a reader decides what to pass.
+//
+// Measured 2026-09-18, spade_bench, one box (Intel Iris Plus, driver
+// 3.3.0-31.0.101.2125), wall-clock per step, no render involved:
+//
+//   1 world x N bodies      CPU          vulkan        vulkan slower by
+//     10                    0.0141 ms     1.424 ms        101x
+//    100                    0.2297 ms    30.09   ms       131x
+//   1000                    3.834  ms   284.9    ms        74x
+//
+//   N worlds x quad scene   CPU          vulkan        vulkan slower by
+//     1                     0.0071 ms    15.14 ms        2139x
+//     4                     0.0276 ms    14.30 ms         519x
+//    16                     0.1139 ms    18.61 ms         163x
+//    64                     0.6169 ms    15.48 ms          25x
+//
+// ⛔ THERE IS NO CROSSOVER. Do not read the 64-world row as "it wins at
+// scale" -- it is still 25x behind, and the trend is a FIXED ~15 ms/step
+// floor rather than a slope that would eventually cross. A threshold implying
+// a crossover would be inventing a number nobody has found.
+//
+// TWO INDEPENDENT COSTS, and which dominates depends on the scene:
+//   * collision_dynamic maps ONE THREAD PER WORLD (kernels/
+//     collision_dynamic.slang, `const uint world = tid.x;`), so a
+//     single-world scene runs its whole sweep on ONE LANE. Its own header
+//     states this and calls the cost "REAL AND REPORTED RATHER THAN HIDDEN".
+//     Dominates single-world-many-body.
+//   * A ~14 ms/step fixed overhead, neither CPU work nor GPU kernel time --
+//     the GPU step is flat from 1 to 64 worlds while its kernels sum to under
+//     1 ms. Dominates everything else.
+//
+// ⭐ THE BACKEND IS BUILT FOR MANY WORLDS WITH FEW BODIES, AND EVERY SURFACE
+// THIS PRODUCT ACTUALLY RUNS IS ONE WORLD WITH MANY BODIES. It is not broken
+// and it was never hidden; nothing routinely ran it, so it degraded without
+// anyone being wrong about it.
+//
+// ⚠ THIS IS DOCUMENTATION OF A MEASUREMENT, NOT A FIX. `vulkan` REMAINS FULLY
+// SELECTABLE -- a backend that cannot be chosen on demand cannot be measured
+// again, and whoever improves it needs to be able to run it.
 struct BackendDesc {
     BackendKind kind = BackendKind::cpu;
     uint32_t workgroup_size = 64;
