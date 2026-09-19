@@ -30,6 +30,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -186,6 +187,17 @@ int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32
         return 3;
     }
 
+    // ⚠⚠ WHICH GL IMPLEMENTATION ARE WE ACTUALLY ON. Printed unconditionally
+    // rather than behind a flag, because it decides how every timing below is
+    // read: on Microsoft's GDI GENERIC software GL, SwapBuffers is a CPU blit
+    // of the framebuffer to the window, so it costs PER PIXEL rather than per
+    // frame -- and a per-pixel swap is indistinguishable from "the rasteriser
+    // is slow" in any aggregate number.
+    const spade::sandbox::GlTargetSink::GlInfo gl = sink->gl_info();
+    std::printf("spade_sandbox: GL_RENDERER %s\n", gl.renderer.c_str());
+    std::printf("spade_sandbox: GL_VERSION  %s\n", gl.version.c_str());
+    std::printf("spade_sandbox: GL_VENDOR   %s\n", gl.vendor.c_str());
+
     spade::sandbox::OrbitCamera camera;
     std::vector<uint8_t> pixels;
 
@@ -205,15 +217,37 @@ int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32
         if (fw == 0u || fh == 0u) {
             continue;  // minimised; there is nothing to render into
         }
-        if (!render_frame(scene, camera.to_render_camera(), fw, fh, grid, blur, pixels, *sink)) {
+        // The application owns the render call, so it times its own cost and
+        // hands it to the sink. Timed around render_frame, which includes the
+        // buffer reallocation on a resize -- honest, because that is time the
+        // frame really spent before the sink saw anything.
+        const auto r0 = std::chrono::steady_clock::now();
+        const bool ok =
+            render_frame(scene, camera.to_render_camera(), fw, fh, grid, blur, pixels, *sink);
+        const auto r1 = std::chrono::steady_clock::now();
+        sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
+        if (!ok) {
             return 1;
         }
     }
 
     // Reported rather than inferred: "the window appeared" and "the loop ran"
     // are different claims, and only the second has a number.
+    // ⭐ AND THE SPLIT GOES TO STDOUT AS WELL AS THE HUD, so the answer to
+    // "why is it N fps" survives the window closing and can be captured from
+    // a script. A number only a human can read by looking at it is not a
+    // measurement anyone else can check.
+    const spade::sandbox::GlTargetSink::Timings life = sink->lifetime_timings();
     std::printf("spade_sandbox: window closed after %llu frames\n",
                 static_cast<unsigned long long>(sink->presented()));
+    std::printf("spade_sandbox: mean frame %.2f ms (%.1f fps) at %ux%u, vsync %s\n",
+                life.total_ms, life.total_ms > 0.0f ? 1000.0f / life.total_ms : 0.0f, width,
+                height, vsync ? "on" : "off");
+    std::printf("spade_sandbox:   render %.2f  convert %.2f  upload %.2f  ui %.2f  swap %.2f  ms\n",
+                life.render_ms, life.convert_ms, life.upload_ms, life.ui_ms, life.swap_ms);
+    std::printf("spade_sandbox:   working set %.1f MB\n",
+                static_cast<double>(spade::sandbox::GlTargetSink::working_set_bytes()) /
+                    (1024.0 * 1024.0));
     return 0;
 }
 

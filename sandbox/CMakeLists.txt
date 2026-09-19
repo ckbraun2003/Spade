@@ -35,6 +35,15 @@ target_link_libraries(spade_sandbox PRIVATE
 
 target_compile_features(spade_sandbox PRIVATE cxx_std_20)
 
+if(WIN32)
+    # GetProcessMemoryInfo, for the memory figure the user asked to sit beside
+    # the fps. Linked OUTSIDE the backend guard on purpose: working_set_bytes()
+    # is declared unconditionally, so it must link in a no-backend build too --
+    # a symbol that resolves on only one configure path fails at somebody
+    # else's link rather than at mine.
+    target_link_libraries(spade_sandbox PRIVATE psapi)
+endif()
+
 if(SPADE_GLFW_HAS_BACKEND)
     target_compile_definitions(spade_sandbox PRIVATE
         SPADE_SANDBOX_HAS_GL=1

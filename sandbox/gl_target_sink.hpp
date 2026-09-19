@@ -82,6 +82,59 @@ class GlTargetSink final : public TargetSink {
     // Seconds since the previous poll(), for frame-rate-independent movement.
     [[nodiscard]] float delta_seconds() const noexcept;
 
+    // ---------------------------------------------------------------------
+    // WHERE THE FRAME WENT. Not a throwaway probe -- this is on the HUD.
+    //
+    // ⭐ A FRAME RATE IS A SUM AND A SUM IS NOT A DIAGNOSIS. "9 fps" is
+    // consistent with a slow rasteriser, a per-frame texture reallocation, an
+    // expensive overlay, and with a swap that is simply WAITING for the
+    // display -- and those have opposite remedies. One of them is not even a
+    // cost. So the window reports the SPLIT and not only the total, which
+    // answers the question permanently rather than once.
+    //
+    // ⚠ swap_ms IS THE ONE TO READ FIRST, and it is the one that can mislead:
+    // with vsync on, glfwSwapBuffers BLOCKS until the display is ready, so a
+    // large swap_ms means the frame finished EARLY and waited. That is the
+    // opposite of a problem, and it looks identical to a slow present.
+    // --no-vsync is the control that tells them apart.
+    // ---------------------------------------------------------------------
+    struct Timings {
+        float render_ms = 0.0f;   // spade::render -- the application's, handed in
+        float convert_ms = 0.0f;  // BGRX -> RGBA, CPU, per pixel
+        float upload_ms = 0.0f;   // glTexImage2D
+        float ui_ms = 0.0f;       // clear + ImGui build and draw
+        float swap_ms = 0.0f;     // glfwSwapBuffers (BLOCKS under vsync)
+        float total_ms = 0.0f;
+    };
+
+    // The application owns the render call, so it hands its own cost in. Read
+    // back on the NEXT accept(), which is why the HUD's render figure is one
+    // frame behind everything else -- stated rather than hidden.
+    void note_render_ms(float ms) noexcept;
+
+    // Rolling average over the recent window, which is what the HUD shows: a
+    // per-frame readout jitters far too much to read.
+    [[nodiscard]] Timings average_timings() const noexcept;
+
+    // Cumulative means over every frame this sink presented, for a summary
+    // that does not depend on when someone happened to look.
+    [[nodiscard]] Timings lifetime_timings() const noexcept;
+
+    // WHICH GL IMPLEMENTATION THIS WINDOW GOT. Not cosmetic: a software
+    // implementation makes the present a per-pixel CPU cost, which changes the
+    // reading of every other number here. Empty strings if unavailable, never
+    // a placeholder -- a plausible-looking wrong answer is worse than a blank.
+    struct GlInfo {
+        std::string renderer;
+        std::string version;
+        std::string vendor;
+    };
+    [[nodiscard]] GlInfo gl_info() const;
+
+    // Process working set in bytes, 0 when unavailable. The user asked for
+    // this beside the fps.
+    [[nodiscard]] static uint64_t working_set_bytes() noexcept;
+
     // Frames this sink has presented, so the application can assert the loop
     // ran rather than infer it.
     [[nodiscard]] uint64_t presented() const noexcept;

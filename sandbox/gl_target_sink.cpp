@@ -41,14 +41,21 @@
 #include <string>
 #include <vector>
 
-#if SPADE_SANDBOX_HAS_GL
-#include <GLFW/glfw3.h>  // GLFW_INCLUDE_NONE is set on this target, so no GL arrives with it
-#ifdef _WIN32
+// ⚠ OUTSIDE THE GL GUARD ON PURPOSE. The user asked for a memory figure, and
+// reading it must not depend on whether this build can open a window --
+// working_set_bytes() is declared unconditionally in the header, so it has to
+// link unconditionally too.
+//
 // NOMINMAX and WIN32_LEAN_AND_MEAN are set target-scoped in CMake, for the
 // reason spade/CMakeLists.txt already records against v1: windows.h's
 // unguarded min/max macros shadow GLM's quaternion_exponential.inl.
+#ifdef _WIN32
 #include <windows.h>
+#include <psapi.h>
 #endif
+
+#if SPADE_SANDBOX_HAS_GL
+#include <GLFW/glfw3.h>  // GLFW_INCLUDE_NONE is set on this target, so no GL arrives with it
 #include <GL/gl.h>
 
 // ⚠ GL_CLAMP_TO_EDGE IS GL 1.2, AND WINDOWS SHIPS A GL 1.1 <GL/gl.h>. The
@@ -70,6 +77,29 @@ namespace spade::sandbox {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// Timing accumulators. Defined HERE rather than beside the accessors that use
+// them, because accept() calls them and sits earlier in the file -- C++ needs
+// the declaration first, and the build is the only thing that would have told
+// me. A reading pass caught it; the compiler would have, a slot later.
+void accumulate(GlTargetSink::Timings& into, const GlTargetSink::Timings& t) {
+    into.render_ms += t.render_ms;
+    into.convert_ms += t.convert_ms;
+    into.upload_ms += t.upload_ms;
+    into.ui_ms += t.ui_ms;
+    into.swap_ms += t.swap_ms;
+    into.total_ms += t.total_ms;
+}
+[[nodiscard]] GlTargetSink::Timings scale(const GlTargetSink::Timings& t, float k) {
+    GlTargetSink::Timings o;
+    o.render_ms = t.render_ms * k;
+    o.convert_ms = t.convert_ms * k;
+    o.upload_ms = t.upload_ms * k;
+    o.ui_ms = t.ui_ms * k;
+    o.swap_ms = t.swap_ms * k;
+    o.total_ms = t.total_ms * k;
+    return o;
+}
 
 #if SPADE_SANDBOX_HAS_GL
 // GLFW reports errors through a callback and otherwise returns a bare false,
@@ -104,6 +134,15 @@ struct GlTargetSink::Impl {
     uint64_t presented = 0;
     uint32_t fb_width = 0;
     uint32_t fb_height = 0;
+
+    // Outside the GL guard with the rest of the logic. A WINDOWED mean for the
+    // HUD (a per-frame readout is unreadable) and a LIFETIME mean for the exit
+    // summary, so the number does not depend on when somebody happened to look.
+    float pending_render_ms = 0.0f;
+    GlTargetSink::Timings win_sum;
+    uint32_t win_count = 0;
+    GlTargetSink::Timings win_avg;
+    GlTargetSink::Timings life_sum;
 
 #if SPADE_SANDBOX_HAS_GL
     GLFWwindow* window = nullptr;
@@ -341,22 +380,31 @@ FrameInput GlTargetSink::poll() {
 }
 
 void GlTargetSink::accept(const spade::render::RenderTarget& target) {
+    // EVERY PHASE IS TIMED SEPARATELY, because a frame rate is a sum and a sum
+    // is not a diagnosis. See the header for why swap_ms must be read first.
+    Timings t;
+    t.render_ms = impl_->pending_render_ms;  // handed in by the application
+    const auto t0 = Clock::now();
+
     // OUTSIDE THE GUARD: the conversion is the logic, and it is the same
     // statement the headless sink runs. This is the line that keeps the Linux
     // gate's compile coverage meaningful.
     bgrx_to_channels<4u>(target, impl_->rgba);
+    const auto t1 = Clock::now();
 
 #if SPADE_SANDBOX_HAS_GL
     glBindTexture(GL_TEXTURE_2D, impl_->texture);
     // glTexImage2D per frame rather than glTexSubImage2D: the latter is absent
-    // from the loader the probe measured, and at sandbox resolutions a
-    // reallocation is not worth a second code path.
+    // from the loader the probe measured. ⚠ THIS REALLOCATES THE TEXTURE EVERY
+    // FRAME, which is a driver-side allocation per frame -- upload_ms exists
+    // specifically so that cost is VISIBLE rather than assumed either way.
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(target.width),
                  static_cast<GLsizei>(target.height), 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  impl_->rgba.data());
     impl_->texture_width = target.width;
     impl_->texture_height = target.height;
     glBindTexture(GL_TEXTURE_2D, 0);
+    const auto t2 = Clock::now();
 
     glViewport(0, 0, static_cast<GLsizei>(impl_->fb_width), static_cast<GLsizei>(impl_->fb_height));
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
@@ -367,38 +415,75 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     ImGui::NewFrame();
 
     // THE FRAME IS DRAWN BY IMGUI'S OWN DRAW LIST, not by a quad of ours.
-    // ⭐ That is the whole reason this file needs no shader, no VAO and no
-    // vertex buffer: ImGui already has a textured-quad pipeline and it is
-    // already verified. Writing a second one would add GL surface to a target
-    // whose entire GL budget is "upload one texture".
+    // ⭐ That is why this file needs no shader, no VAO and no vertex buffer:
+    // ImGui already has a textured-quad pipeline and it is already verified.
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::GetBackgroundDrawList()->AddImage(as_texture_id(impl_->texture), ImVec2(0.0f, 0.0f),
                                              display);
 
     if (impl_->show_help) {
         // NOT A PANEL. The exclusions ruled for this task are hierarchy,
-        // inspector and scene picker; this is a controls legend, and a tool
-        // whose controls are undiscoverable is not an interaction-testing
-        // surface. It is one window, it takes no input, and F1 dismisses it.
+        // inspector and scene picker. This is a controls legend plus the
+        // instrumentation the user asked for, it takes no input, and F1
+        // dismisses it.
         ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowBgAlpha(0.65f);
-        if (ImGui::Begin("controls", nullptr,
+        if (ImGui::Begin("spade sandbox", nullptr,
                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
-            ImGui::Text("drag  orbit     scroll  dolly");
-            ImGui::Text("WASD  pan       Q/E     down/up");
-            ImGui::Text("F1    hide      Esc     quit");
+            const Timings a = impl_->win_avg;
+            const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
+
+            ImGui::Text("%ux%u    %.1f fps    %.1f ms", impl_->texture_width, impl_->texture_height,
+                        a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, a.total_ms);
+            // The user's ask: memory beside the fps, same overlay, same cadence.
+            ImGui::Text("memory  %.1f MB", mb);
             ImGui::Separator();
-            ImGui::Text("%ux%u  %.1f fps", impl_->texture_width, impl_->texture_height,
-                        impl_->dt > 0.0f ? 1.0f / impl_->dt : 0.0f);
+            // WHERE THE FRAME WENT. The point of showing all five rather than a
+            // total: they have different remedies, and one of them is not a cost.
+            ImGui::Text("render   %6.2f ms", a.render_ms);
+            ImGui::Text("convert  %6.2f ms", a.convert_ms);
+            ImGui::Text("upload   %6.2f ms", a.upload_ms);
+            ImGui::Text("ui       %6.2f ms", a.ui_ms);
+            ImGui::Text("swap     %6.2f ms%s", a.swap_ms,
+                        impl_->options.vsync ? "   (vsync: waiting is normal)" : "");
+            ImGui::Separator();
+            ImGui::Text("drag orbit   scroll dolly   WASD pan   Q/E down/up");
+            ImGui::Text("F1 hide      Esc quit");
         }
         ImGui::End();
     }
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    const auto t3 = Clock::now();
+
     glfwSwapBuffers(impl_->window);
+    const auto t4 = Clock::now();
+
+    const auto ms = [](Clock::time_point a, Clock::time_point b) {
+        return std::chrono::duration<float, std::milli>(b - a).count();
+    };
+    t.convert_ms = ms(t0, t1);
+    t.upload_ms = ms(t1, t2);
+    t.ui_ms = ms(t2, t3);
+    t.swap_ms = ms(t3, t4);
+#else
+    t.convert_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
 #endif
+    // total is the SUM OF THE PARTS, deliberately, rather than a wall-clock
+    // span across accept(): a wall-clock total would silently absorb anything
+    // that is not one of the five, and then the parts would not add up and
+    // nobody would know which was wrong.
+    t.total_ms = t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
+
+    accumulate(impl_->win_sum, t);
+    accumulate(impl_->life_sum, t);
+    if (++impl_->win_count >= 30u) {
+        impl_->win_avg = scale(impl_->win_sum, 1.0f / static_cast<float>(impl_->win_count));
+        impl_->win_sum = Timings{};
+        impl_->win_count = 0u;
+    }
     ++impl_->presented;
 }
 
@@ -407,6 +492,46 @@ bool GlTargetSink::should_close() const noexcept {
     return glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 #else
     return true;
+#endif
+}
+
+void GlTargetSink::note_render_ms(float ms) noexcept { impl_->pending_render_ms = ms; }
+
+GlTargetSink::Timings GlTargetSink::average_timings() const noexcept { return impl_->win_avg; }
+
+GlTargetSink::Timings GlTargetSink::lifetime_timings() const noexcept {
+    if (impl_->presented == 0u) {
+        return Timings{};
+    }
+    return scale(impl_->life_sum, 1.0f / static_cast<float>(impl_->presented));
+}
+
+GlTargetSink::GlInfo GlTargetSink::gl_info() const {
+    GlInfo info;
+#if SPADE_SANDBOX_HAS_GL
+    const auto str = [](GLenum name) -> std::string {
+        const GLubyte* p = glGetString(name);
+        return p != nullptr ? std::string(reinterpret_cast<const char*>(p)) : std::string{};
+    };
+    info.renderer = str(GL_RENDERER);
+    info.version = str(GL_VERSION);
+    info.vendor = str(GL_VENDOR);
+#endif
+    return info;
+}
+
+uint64_t GlTargetSink::working_set_bytes() noexcept {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return static_cast<uint64_t>(pmc.WorkingSetSize);
+    }
+    return 0u;
+#else
+    // ⚠ REPORTS 0 RATHER THAN GUESSING. A fabricated figure on a HUD is worse
+    // than a blank one: the reader cannot tell it apart from a real measurement.
+    // The same argument that kept should_close() off the seam.
+    return 0u;
 #endif
 }
 
