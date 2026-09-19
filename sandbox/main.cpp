@@ -43,6 +43,8 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
+#include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
+
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
@@ -168,6 +170,9 @@ namespace {
 
 int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32_t height,
                  bool grid, float blur, bool vsync) {
+    spade::render::RenderOptions gpu_options;
+    gpu_options.ground_grid = grid;
+    gpu_options.horizon_blend_strength = blur;
     spade::sandbox::GlTargetSink::Options opts;
     opts.width = width;
     opts.height = height;
@@ -198,6 +203,36 @@ int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32
     std::printf("spade_sandbox: GL_VERSION  %s\n", gl.version.c_str());
     std::printf("spade_sandbox: GL_VENDOR   %s\n", gl.vendor.c_str());
 
+    // ⭐ GPU FIRST, CPU FALLBACK -- the user's ruling, implemented as a
+    // branch rather than as a preference. If the GPU renderer refuses, we say
+    // WHY and keep going on raster_cpu; we do not exit, because a fallback that
+    // aborts is not a fallback.
+    std::unique_ptr<spade::render_gl::GlRenderer> gpu;
+    {
+        spade::Result<std::unique_ptr<spade::render_gl::GlRenderer>> made =
+            spade::render_gl::GlRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
+        if (made) {
+            gpu = std::move(*made);
+            spade::Result<void> uploaded = gpu->upload_scene(scene);
+            if (!uploaded) {
+                std::fprintf(stderr, "spade_sandbox: GPU upload failed, falling back to the CPU "
+                                     "rasteriser: %s\n",
+                             uploaded.error().context.c_str());
+                gpu.reset();
+            }
+        } else {
+            std::fprintf(stderr, "spade_sandbox: GPU renderer unavailable, using the CPU "
+                                 "rasteriser: %s\n",
+                         made.error().context.c_str());
+        }
+    }
+    if (gpu) {
+        std::printf("spade_sandbox: GPU path ACTIVE -- %s, %s\n", gpu->renderer_name().c_str(),
+                    gpu->version_string().c_str());
+    } else {
+        std::printf("spade_sandbox: CPU fallback path (no GPU renderer)\n");
+    }
+
     spade::sandbox::OrbitCamera camera;
     std::vector<uint8_t> pixels;
 
@@ -217,17 +252,29 @@ int run_windowed(const spade::render::RenderScene& scene, uint32_t width, uint32
         if (fw == 0u || fh == 0u) {
             continue;  // minimised; there is nothing to render into
         }
-        // The application owns the render call, so it times its own cost and
-        // hands it to the sink. Timed around render_frame, which includes the
-        // buffer reallocation on a resize -- honest, because that is time the
-        // frame really spent before the sink saw anything.
+        // The application owns the render call, so it times its own cost.
+        // Both paths are timed the SAME WAY and feed the SAME HUD, which is
+        // what makes the two comparable at all.
         const auto r0 = std::chrono::steady_clock::now();
-        const bool ok =
-            render_frame(scene, camera.to_render_camera(), fw, fh, grid, blur, pixels, *sink);
-        const auto r1 = std::chrono::steady_clock::now();
-        sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
-        if (!ok) {
-            return 1;
+        if (gpu) {
+            sink->begin_gpu_frame();
+            const spade::Result<void> drew = gpu->draw(scene, camera.to_render_camera(),
+                                                       gpu_options, fw, fh);
+            if (!drew) {
+                std::fprintf(stderr, "spade_sandbox: GPU draw failed: %s\n",
+                             drew.error().context.c_str());
+                return 1;
+            }
+            const auto r1 = std::chrono::steady_clock::now();
+            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count());
+        } else {
+            const bool ok =
+                render_frame(scene, camera.to_render_camera(), fw, fh, grid, blur, pixels, *sink);
+            const auto r1 = std::chrono::steady_clock::now();
+            sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
+            if (!ok) {
+                return 1;
+            }
         }
     }
 

@@ -224,11 +224,17 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
                                                  : g_last_glfw_error));
     }
 
-    // 3.3 core is what ImGui's GLSL 330 backend expects. Requesting it up front
-    // makes an unsupported driver fail HERE with a clear message, rather than
-    // later inside ImGui's shader compile where the error is a log line nobody
-    // is reading.
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    // ⚠ 4.3, NOT 3.3, AND THE REASON IS THE GPU RENDER PATH. GlRenderer's whole
+    // mechanism rests on shader storage buffers, which are GL 4.3 -- ask for
+    // 3.3 here and the renderer correctly REFUSES on a machine that would have
+    // run it perfectly well. The context is the thing that has to be right;
+    // the refusal was working as designed.
+    //
+    // ImGui's GLSL 330 backend runs unchanged on a 4.3 core context -- v1 asks
+    // for exactly 4.3 and drives the same ImGui-less GL fine. Requesting it up
+    // front makes an unsupported driver fail HERE with a clear message rather
+    // than later inside a shader compile nobody is reading.
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #ifdef __APPLE__
@@ -421,38 +427,7 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     ImGui::GetBackgroundDrawList()->AddImage(as_texture_id(impl_->texture), ImVec2(0.0f, 0.0f),
                                              display);
 
-    if (impl_->show_help) {
-        // NOT A PANEL. The exclusions ruled for this task are hierarchy,
-        // inspector and scene picker. This is a controls legend plus the
-        // instrumentation the user asked for, it takes no input, and F1
-        // dismisses it.
-        ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowBgAlpha(0.65f);
-        if (ImGui::Begin("spade sandbox", nullptr,
-                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
-                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
-            const Timings a = impl_->win_avg;
-            const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
-
-            ImGui::Text("%ux%u    %.1f fps    %.1f ms", impl_->texture_width, impl_->texture_height,
-                        a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, a.total_ms);
-            // The user's ask: memory beside the fps, same overlay, same cadence.
-            ImGui::Text("memory  %.1f MB", mb);
-            ImGui::Separator();
-            // WHERE THE FRAME WENT. The point of showing all five rather than a
-            // total: they have different remedies, and one of them is not a cost.
-            ImGui::Text("render   %6.2f ms", a.render_ms);
-            ImGui::Text("convert  %6.2f ms", a.convert_ms);
-            ImGui::Text("upload   %6.2f ms", a.upload_ms);
-            ImGui::Text("ui       %6.2f ms", a.ui_ms);
-            ImGui::Text("swap     %6.2f ms%s", a.swap_ms,
-                        impl_->options.vsync ? "   (vsync: waiting is normal)" : "");
-            ImGui::Separator();
-            ImGui::Text("drag orbit   scroll dolly   WASD pan   Q/E down/up");
-            ImGui::Text("F1 hide      Esc quit");
-        }
-        ImGui::End();
-    }
+    draw_overlay();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -518,6 +493,98 @@ GlTargetSink::GlInfo GlTargetSink::gl_info() const {
     info.vendor = str(GL_VENDOR);
 #endif
     return info;
+}
+
+void GlTargetSink::draw_overlay() {
+#if SPADE_SANDBOX_HAS_GL
+    if (impl_->show_help) {
+        // NOT A PANEL. The exclusions ruled for this task are hierarchy,
+        // inspector and scene picker. This is a controls legend plus the
+        // instrumentation the user asked for, it takes no input, and F1
+        // dismisses it.
+        ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.65f);
+        if (ImGui::Begin("spade sandbox", nullptr,
+                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+            const Timings a = impl_->win_avg;
+            const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
+
+            ImGui::Text("%ux%u    %.1f fps    %.1f ms", impl_->texture_width, impl_->texture_height,
+                        a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, a.total_ms);
+            // The user's ask: memory beside the fps, same overlay, same cadence.
+            ImGui::Text("memory  %.1f MB", mb);
+            ImGui::Separator();
+            // WHERE THE FRAME WENT. The point of showing all five rather than a
+            // total: they have different remedies, and one of them is not a cost.
+            ImGui::Text("render   %6.2f ms", a.render_ms);
+            ImGui::Text("convert  %6.2f ms", a.convert_ms);
+            ImGui::Text("upload   %6.2f ms", a.upload_ms);
+            ImGui::Text("ui       %6.2f ms", a.ui_ms);
+            ImGui::Text("swap     %6.2f ms%s", a.swap_ms,
+                        impl_->options.vsync ? "   (vsync: waiting is normal)" : "");
+            ImGui::Separator();
+            ImGui::Text("drag orbit   scroll dolly   WASD pan   Q/E down/up");
+            ImGui::Text("F1 hide      Esc quit");
+        }
+        ImGui::End();
+    }
+#endif
+}
+
+void* (*GlTargetSink::proc_loader())(const char*) {
+#if SPADE_SANDBOX_HAS_GL
+    // glfwGetProcAddress returns GLFWglproc (void(*)()); the loader contract
+    // wants void*(*)(const char*). The cast is between function-pointer types
+    // and is exactly what every GL loader's glfw example does.
+    return reinterpret_cast<void* (*)(const char*)>(glfwGetProcAddress);
+#else
+    return nullptr;
+#endif
+}
+
+void GlTargetSink::begin_gpu_frame() {
+#if SPADE_SANDBOX_HAS_GL
+    glViewport(0, 0, static_cast<GLsizei>(impl_->fb_width), static_cast<GLsizei>(impl_->fb_height));
+    glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#endif
+}
+
+void GlTargetSink::present_overlay(float render_ms) {
+    Timings t;
+    t.render_ms = render_ms;
+#if SPADE_SANDBOX_HAS_GL
+    const auto t2 = Clock::now();
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    draw_overlay();
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    const auto t3 = Clock::now();
+    glfwSwapBuffers(impl_->window);
+    const auto t4 = Clock::now();
+    const auto ms = [](Clock::time_point a, Clock::time_point b) {
+        return std::chrono::duration<float, std::milli>(b - a).count();
+    };
+    t.ui_ms = ms(t2, t3);
+    t.swap_ms = ms(t3, t4);
+#endif
+    // convert_ms and upload_ms stay ZERO on this path, and that is the whole
+    // point rather than a gap in the instrumentation: the GPU path has no
+    // BGRX->RGBA conversion and no per-frame texture upload, because no pixel
+    // ever reaches the CPU. A reader comparing the two HUDs sees exactly which
+    // costs the primary path does not pay.
+    t.total_ms = t.render_ms + t.convert_ms + t.upload_ms + t.ui_ms + t.swap_ms;
+    accumulate(impl_->win_sum, t);
+    accumulate(impl_->life_sum, t);
+    if (++impl_->win_count >= 30u) {
+        impl_->win_avg = scale(impl_->win_sum, 1.0f / static_cast<float>(impl_->win_count));
+        impl_->win_sum = Timings{};
+        impl_->win_count = 0u;
+    }
+    ++impl_->presented;
 }
 
 uint64_t GlTargetSink::working_set_bytes() noexcept {

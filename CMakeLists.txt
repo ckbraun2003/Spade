@@ -71,6 +71,25 @@ option(SPADE_BUILD_SANDBOX "Build spade_sandbox, the reference application (SL15
 # installs the rest of the tree cleanly, with spade::compute simply absent.
 option(SPADE_VULKAN "Build the v2 Vulkan compute backend (engine/compute/vulkan, spade_compute)" ON)
 
+# ------------------------------------------------------------------------------
+# SPADE_RENDER_GL -- v2's GPU RENDER backend (engine/render_gl, spade_render_gl).
+#
+# DEFAULT ON, because the user ruled it: "Rendering should default to using the
+# computer gpu, most computers have one, the cpu is the fallback." raster_cpu is
+# not replaced -- it keeps three jobs (the no-GPU fallback, the headless/CI
+# surface, and the reference any future tolerance band is measured against).
+#
+# ⚠ THIS IS A SEPARATE MODULE AND NOT PART OF spade_render, ON PURPOSE.
+# spade_render is installed, embeddable and has NO windowing or GL dependency;
+# folding GL into it would hand that dependency to every consumer of the engine.
+# An optional GPU-backed module behind its own flag is exactly the shape
+# SPADE_VULKAN already uses for spade_compute, so this applies the established
+# pattern rather than inventing one.
+#
+# OFF gives a build with no GL anywhere in v2 -- which is what a headless
+# consumer, and the Linux gate, actually want.
+option(SPADE_RENDER_GL "Build the v2 OpenGL render backend (engine/render_gl, spade_render_gl)" ON)
+
 # Function to help with target aliases for consistency
 function(create_target_alias target alias)
     if(TARGET ${target} AND NOT TARGET ${alias})

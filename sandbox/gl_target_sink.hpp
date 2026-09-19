@@ -131,6 +131,32 @@ class GlTargetSink final : public TargetSink {
     };
     [[nodiscard]] GlInfo gl_info() const;
 
+    // ---------------------------------------------------------------------
+    // THE GPU PATH. accept() above is the CPU FALLBACK -- render into a buffer,
+    // convert, upload as a texture. These three are the primary path: the GPU
+    // renderer draws straight into this window's framebuffer and never makes a
+    // pixel touch the CPU at all.
+    //
+    // ⭐ BOTH PATHS STAY LIVE AND THAT IS THE USER'S RULING, NOT A HEDGE:
+    // "rendering should default to using the computer gpu... the cpu is the
+    // fallback." A fallback that is never exercised is not a fallback.
+    // ---------------------------------------------------------------------
+
+    // GL entry-point loader for this window's context. Handed out so the
+    // renderer can load GL without this sandbox linking it to GLFW, and
+    // without the renderer knowing what a window is.
+    [[nodiscard]] static void* (*proc_loader())(const char*);
+
+    // Clear and size the framebuffer for a GPU frame. The renderer clears
+    // depth itself; colour belongs to whoever owns the window.
+    void begin_gpu_frame();
+
+    // The overlay and the present, for a frame whose 3D was drawn by someone
+    // else. Same ImGui pass and the same timing accounting as accept(), so the
+    // HUD reads identically on both paths -- which is what makes them
+    // comparable at all.
+    void present_overlay(float render_ms);
+
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.
     [[nodiscard]] static uint64_t working_set_bytes() noexcept;
@@ -140,6 +166,12 @@ class GlTargetSink final : public TargetSink {
     [[nodiscard]] uint64_t presented() const noexcept;
 
   private:
+    // ONE STATEMENT OF THE HUD, called by BOTH paths. The CPU fallback and the
+    // GPU primary must show the same panel or the two are not comparable --
+    // and two copies of a panel is the same defect as two copies of a channel
+    // reorder, which this file already refused once.
+    void draw_overlay();
+
     struct Impl;
     explicit GlTargetSink(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;

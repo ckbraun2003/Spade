@@ -125,13 +125,22 @@ endif()
 endif()
 
 # ------------------------------------------------------------------------------
-# GLAD (v1 only -- the v1 GL loader; v2 has no GL surface).
+# GLAD -- the GL entry-point loader.
+#
+# ⚠ THE PARENTHETICAL BELOW USED TO READ "v1 only -- v2 has no GL surface", and
+# that stopped being true when spade_render_gl landed: v2 now HAS a GL surface
+# and needs a loader for the same reason v1 did. The gate is widened rather than
+# the comment merely corrected, because a comment that contradicts its own
+# `if()` is how the next reader concludes the wrong thing about the build graph.
+#
+# Same shape as the GLFW/ImGui widening earlier in this file: the dependency
+# follows the CONSUMER, and there are now two consumers.
 # Using libigl-glad as a source for pre-generated glad files.
 # Pinned to the commit that "master" resolved to on this box (was tracking
 # the floating "master" branch, which is not reproducible across builds);
 # see task-3-report.md for provenance.
 # ------------------------------------------------------------------------------
-if(SPADE_BUILD_V1)
+if(SPADE_BUILD_V1 OR SPADE_RENDER_GL)
 FetchContent_Declare(
     glad
     GIT_REPOSITORY https://github.com/libigl/libigl-glad.git

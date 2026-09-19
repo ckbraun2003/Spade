@@ -33,6 +33,16 @@ target_link_libraries(spade_sandbox PRIVATE
     spade::render
 )
 
+if(SPADE_RENDER_GL)
+    # The PRIMARY render path. Linked only when the option is on; with it off
+    # the sandbox still builds and runs on raster_cpu, which is exactly what
+    # "the cpu is the fallback" has to mean for a build with no GL at all.
+    target_link_libraries(spade_sandbox PRIVATE spade::render_gl)
+    target_compile_definitions(spade_sandbox PRIVATE SPADE_SANDBOX_HAS_GPU=1)
+else()
+    target_compile_definitions(spade_sandbox PRIVATE SPADE_SANDBOX_HAS_GPU=0)
+endif()
+
 target_compile_features(spade_sandbox PRIVATE cxx_std_20)
 
 if(WIN32)

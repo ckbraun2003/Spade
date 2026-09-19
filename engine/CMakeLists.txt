@@ -507,6 +507,49 @@ install(TARGETS spade_render
 install(DIRECTORY render/ DESTINATION include/render FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
+# spade_render_gl: v2's GPU RENDER backend, and the thing v2 has never had.
+#
+# ⭐ WHY IT IS A SEPARATE MODULE AND NOT SOURCES INSIDE spade_render:
+# spade_render is INSTALLED, embeddable, and has no windowing or GL dependency
+# of any kind. Folding GL into it would hand that dependency to every consumer
+# of the engine -- dronesim, the SDK, the Linux gate -- for a capability most of
+# them do not want. An optional GPU-backed module behind its own option is the
+# shape spade_compute already uses behind SPADE_VULKAN, so this is the
+# established pattern applied rather than a new one invented.
+#
+# ⚠ DELIBERATELY NOT INSTALLED AND NOT EXPORTED, FOR NOW. SL2a states a release
+# identity of ELEVEN library modules, and quietly making it twelve is a change
+# to a signed claim rather than a build detail. In-tree consumers (spade_sandbox)
+# link it directly; an out-of-tree consumer wanting the GPU path is a decision
+# for whoever amends SL2a, not a side effect of this file.
+#
+# The MEASUREMENT that motivates it, on one box, 2026-09-18: v1's GL path
+# renders a near-empty scene at ~950 fps at 1280x720 where v2's raster_cpu
+# renders a ground plane at 11.5 fps at 900x560 -- 1.83x fewer pixels and ~82x
+# slower, about 150x per pixel.
+# ------------------------------------------------------------------------------
+if(SPADE_RENDER_GL)
+add_library(spade_render_gl STATIC
+    render_gl/gl_renderer.cpp
+)
+add_library(spade::render_gl ALIAS spade_render_gl)
+
+target_include_directories(spade_render_gl PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+
+# glad is PUBLIC because the header does not expose it but the static library's
+# consumers must still resolve its symbols at link; glm is PUBLIC because the
+# header's signatures use it. spade::render brings the scene/target types the
+# whole API is expressed in.
+target_link_libraries(spade_render_gl PUBLIC spade::core spade::render glad glm)
+target_link_libraries(spade_render_gl PRIVATE
+    $<BUILD_LOCAL_INTERFACE:spade_warnings>
+)
+target_compile_features(spade_render_gl PUBLIC cxx_std_23)
+endif()
+
+# ------------------------------------------------------------------------------
 # spade_physics: the per-substep dynamics passes -- Integrate (Task 9: one
 # substep of symplectic Euler over a world's body span, with the specific-force
 # capture the IMU pass reads), CollisionStatic (Task 11: sphere-proxy vs
