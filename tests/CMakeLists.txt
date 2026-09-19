@@ -213,9 +213,16 @@ endif()
 # passing one.
 #
 # THE INVARIANT, RATHER THAN TWO NUMBERS: the ON total minus the OFF total is
-# EXACTLY the cases registered by test_sandbox_target_sink.cpp, and nothing
-# else moves with this flag. That stays true when someone adds a test; a pair
-# of baked totals would not.
+# EXACTLY the cases registered by THE SANDBOX TEST SOURCES LISTED BELOW, and
+# nothing else moves with this flag. That stays true when someone adds a test;
+# a pair of baked totals would not.
+#
+# ⚠ AND THE SENTENCE ABOVE USED TO NAME ONE FILE. C2 added a second, which
+# turned a correct invariant into a false one WITHOUT ANY TEST GOING RED --
+# the count still balances, and only the prose was wrong. A claim that names a
+# MEMBER goes stale when the SET grows; a claim that names the SET does not.
+# This is the same repair shape as every other stale count in this estate, and
+# it is here because the file that hosts the rule is not exempt from it.
 #
 # (An earlier draft of this comment stated "825 at ON and 821 at OFF" -- both
 # WRITTEN BEFORE EITHER WAS MEASURED, and both already wrong: ON measured 829.
@@ -237,7 +244,20 @@ endif()
 # anything, however carefully it is written.
 # -----------------------------------------------------------------------
 if(SPADE_BUILD_SANDBOX)
-    target_sources(spade_tests PRIVATE test_sandbox_target_sink.cpp)
+    target_sources(spade_tests PRIVATE
+        test_sandbox_target_sink.cpp
+        # C2. The two pieces of the window that are NOT the window: the single
+        # channel-order statement both sinks call, and OrbitCamera. Neither
+        # needs a display, which is the whole reason they are out here -- a
+        # windowed path can be COMPILED on both platforms and EXECUTED on
+        # neither gate, so anything that stays inside the window is untestable
+        # by construction.
+        #
+        # This file also carries L301's discharge: a KNOWN-ANSWER case whose
+        # expectations are hand-written literals rather than a second
+        # expression of the mapping under test.
+        test_sandbox_camera_and_channels.cpp
+    )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
 

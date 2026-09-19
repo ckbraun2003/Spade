@@ -1,17 +1,31 @@
-# spade_sandbox -- the engine's reference application (SL10-SL13, Plan C task C0).
+# spade_sandbox -- the engine's reference application (SL10-SL13, Plan C).
 #
 # SL2b: this target may include only headers the engine INSTALLS and may link
-# only spade:: targets. That is why the link list below is aliases and nothing
-# else -- no spade_render, no relative include into engine/, no vendor target.
-# The guard over this include graph gets its first subject here; before C0 it
-# was a rule with nothing to police.
+# only spade:: targets, plus -- from task C2 -- the windowing vendor targets.
+# That is why the engine link list below is aliases and nothing else: no
+# spade_render, no relative include into engine/, no vendor target beyond the
+# two the window genuinely needs.
 #
-# ⚠ NO GLFW, NO IMGUI, NO GLAD IN C0. This task is headless-only by design
-# (SL15b: headless is the test surface), so the windowing dependencies do not
-# appear until the windowed TargetSink arrives in task C2. The flag lands
-# before the dependency does, which is the ordering that keeps CI free.
+# ⚠⚠ THE WINDOWING DEPENDENCIES ARE LINKED ONLY WHEN THERE IS A BACKEND, AND
+# THAT IS A LINK-CORRECTNESS DECISION RATHER THAN A SIZE ONE. ImGui's OpenGL3
+# backend references GL symbols at LINK time even when no GL call of ours is
+# reached. On an image with no GL (measured 2026-09-18 on kat-ci-linux:local --
+# GL_HEADERS_PRESENT=no, X11=no, EGL=no) GLFW is built with no backend, so
+# linking imgui there would fail the link for a window nobody asked it to open.
+#
+# With SPADE_GLFW_HAS_BACKEND=0 this target links neither, compiles
+# gl_target_sink.cpp with its GL half guarded out, and the sandbox REFUSES at
+# runtime with the cause named. A missing capability refuses, never degrades.
+#
+# ⭐ gl_target_sink.cpp is in the source list UNCONDITIONALLY. Its conversion,
+# its frame budget and its refusal path are logic, and they keep their Linux
+# compile coverage; only the code that touches GLFW/GL/ImGui sits behind the
+# guard. That is the mitigation plan-c-sandbox.md names for this task.
 
-add_executable(spade_sandbox main.cpp)
+add_executable(spade_sandbox
+    main.cpp
+    gl_target_sink.cpp
+)
 
 target_link_libraries(spade_sandbox PRIVATE
     spade::core
@@ -20,6 +34,44 @@ target_link_libraries(spade_sandbox PRIVATE
 )
 
 target_compile_features(spade_sandbox PRIVATE cxx_std_20)
+
+if(SPADE_GLFW_HAS_BACKEND)
+    target_compile_definitions(spade_sandbox PRIVATE
+        SPADE_SANDBOX_HAS_GL=1
+        # glfw3.h:241 pulls <GL/gl.h> without this, which is what broke the
+        # no-GL-headers probe until the macro was added. Kept here as well as
+        # on the imgui target because THIS target includes glfw3.h itself, and
+        # a definition that arrives only transitively is one refactor from
+        # vanishing.
+        GLFW_INCLUDE_NONE
+    )
+    target_link_libraries(spade_sandbox PRIVATE glfw imgui)
+
+    if(WIN32)
+        target_compile_definitions(spade_sandbox PRIVATE
+            # TARGET-scoped, never directory-scoped: windows.h's unguarded
+            # min/max macros shadow GLM's quaternion_exponential.inl, which is
+            # the same defect spade/CMakeLists.txt already records against v1.
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+        )
+        # GL 1.1 -- glGenTextures/glBindTexture/glTexImage2D/glTexParameteri and
+        # the GL_RGBA/GL_LINEAR constants -- is what this target calls, and
+        # opengl32 is where Windows exports it. Everything above 1.1 is ImGui's
+        # problem and ImGui loads it itself.
+        target_link_libraries(spade_sandbox PRIVATE opengl32)
+    else()
+        find_package(OpenGL QUIET)
+        if(OpenGL_FOUND)
+            target_link_libraries(spade_sandbox PRIVATE OpenGL::GL)
+        endif()
+    endif()
+else()
+    target_compile_definitions(spade_sandbox PRIVATE SPADE_SANDBOX_HAS_GL=0)
+    message(STATUS
+        "spade_sandbox: no windowing backend (SPADE_GLFW_HAS_BACKEND=0). "
+        "The target builds and --headless works; the window refuses at runtime with the cause.")
+endif()
 
 # NOT installed, and that is deliberate: SL2a gives Spade a release identity of
 # eleven LIBRARY modules. The sandbox is a consumer of that surface, not part

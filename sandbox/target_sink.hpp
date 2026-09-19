@@ -40,6 +40,47 @@
 
 namespace spade::sandbox {
 
+// ---------------------------------------------------------------------------
+// THE ONE STATEMENT OF THE CHANNEL ORDER, AND THE ONLY ONE IN THE SANDBOX.
+//
+// C2's windowed sink needs BGRX -> RGBA (GL_BGRA is ABSENT from ImGui's
+// filtered loader, and absent from GL 1.1's header on the system path, so the
+// swap is ours to do); the headless sink needs BGRX -> RGB for its PPM. Those
+// are two destinations for ONE fact about the source layout, and writing them
+// as two loops would be "two expressions that happen to agree" -- this realm's
+// own named defect, the one that let competition-700's arithmetic hold to the
+// last digit in two files FOR OPPOSITE REASONS.
+//
+// So both sinks call this, and the reorder exists once.
+//
+// ⭐ AND IT CHANGES WHAT L301'S FIX IS WORTH. That row records that the C1
+// suite's oracle restates the conversion, so channel order is asserted by
+// nothing. With one statement here, L301's known-answer case pins the WINDOWED
+// path too when it lands, instead of leaving it beside the fix.
+//
+// Templated on the destination width so the alpha branch compiles out rather
+// than running per pixel; static_assert keeps the instantiation set honest.
+// ---------------------------------------------------------------------------
+template <unsigned DstChannels>
+void bgrx_to_channels(const spade::render::RenderTarget& target, std::vector<uint8_t>& out) {
+    static_assert(DstChannels == 3u || DstChannels == 4u,
+                  "the sandbox converts BGRX to RGB (PPM) or RGBA (GL texture) and nothing else");
+    const size_t n = static_cast<size_t>(target.width) * target.height;
+    out.assign(n * DstChannels, 0u);
+    for (size_t i = 0; i < n; ++i) {
+        out[i * DstChannels + 0] = target.pixels[i * 4 + 2];  // R <- the B slot
+        out[i * DstChannels + 1] = target.pixels[i * 4 + 1];  // G
+        out[i * DstChannels + 2] = target.pixels[i * 4 + 0];  // B <- the R slot
+        if constexpr (DstChannels == 4u) {
+            // X is undefined in BGRX by PA-1's own definition -- it is padding,
+            // not alpha. Forcing 255 rather than copying it is deliberate: a
+            // texture that inherited garbage in alpha would blend against the
+            // clear colour and look like a renderer bug.
+            out[i * 4 + 3] = 255u;
+        }
+    }
+}
+
 // The whole seam. One method and a destructor.
 struct TargetSink {
     // PA-1: the RenderTarget NEVER owns its pixel memory -- a sink is HANDED a
@@ -72,13 +113,12 @@ class HeadlessTargetSink final : public TargetSink {
 
     void accept(const spade::render::RenderTarget& target) override {
         ++accepted_;
-        rgb_.assign(static_cast<size_t>(target.width) * target.height * 3u, 0u);
-        const size_t n = static_cast<size_t>(target.width) * target.height;
-        for (size_t i = 0; i < n; ++i) {
-            rgb_[i * 3 + 0] = target.pixels[i * 4 + 2];  // R
-            rgb_[i * 3 + 1] = target.pixels[i * 4 + 1];  // G
-            rgb_[i * 3 + 2] = target.pixels[i * 4 + 0];  // B
-        }
+        // C2: the loop that used to live here is now bgrx_to_channels<3>, which
+        // the windowed sink also calls with <4>. Behaviour-identical by
+        // construction -- and NOT called verified until SandboxTargetSink's four
+        // arms say so, because "by construction" is a claim about my reasoning
+        // and ctest is a claim about the bytes.
+        bgrx_to_channels<3u>(target, rgb_);
         width_ = target.width;
         height_ = target.height;
         if (path_.empty()) {
