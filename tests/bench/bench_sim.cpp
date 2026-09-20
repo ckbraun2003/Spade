@@ -246,6 +246,7 @@ void set_pass_duration_counters(benchmark::State& state, Simulation& sim) {
     // distinguish from a build that never reported it, and "the field is
     // missing" reads as "fine" to every consumer.
     state.counters["gpu_implausible_samples"] = static_cast<double>(d->implausible_samples);
+
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +337,156 @@ void BM_StepPlainBodiesGpu(benchmark::State& state) {
         state.SkipWithError(e.what());
     }
 }
+// ⚠ THIS NAME DOES NOT SAY "BATCHED" AND IT SHOULD HAVE. Every case above
+// calls sim.step(kStepsPerIter) -- ONE step(50) per iteration -- so it
+// measures the BATCHED path: 50 fences but only ONE readback, amortised.
+// Production never does this. All four production call sites pass n = 1
+// (sdk/core/rollout.cpp:882 and :948, editor/core/sim/tick_loop.cpp:259 and
+// :286), paying a full readback EVERY tick.
+//
+// Annotated rather than RENAMED, deliberately: a rename would silently
+// zero-match every stored --benchmark_filter and every habit pointing at
+// this name, and a filter that matches nothing is a confident green on an
+// empty set. Same defect the estate hit tonight when a ctest label was
+// renamed to a string that CONTAINED the old one.
 BENCHMARK(BM_StepPlainBodiesGpu)->Arg(10)->Arg(100)->Arg(1000);
+
+// ---------------------------------------------------------------------------
+// Sweep 1c: THE SAME SCENE THROUGH THE CALL SHAPE PRODUCTION ACTUALLY USES.
+//
+// WHY THIS IS A SECOND ARM AND NOT A SECOND ARGUMENT TO THE FIRST. The two
+// differ only in how the same 50 steps are requested:
+//
+//     BM_StepPlainBodiesGpu            step(50) once    50 fences, 1 readback
+//     BM_StepPlainBodiesGpuUnbatched   step(1) 50 times 50 fences, 50 readbacks
+//
+// simulation.cpp:620-641 calls submit(n) ONCE and readback() ONCE per
+// step(n), while submit(n) itself waits on a fence PER STEP. So batching
+// divides the readback by 50 and leaves the fences alone -- and the
+// difference between these two arms is precisely the per-step cost that
+// batching hides and that every production tick pays.
+//
+// ⭐ THAT MAKES THIS PAIR ITS OWN CONTROL. Sizing the per-step stall by
+// subtracting summed pass counters from a wall-clock figure does not work:
+// the remainder silently absorbs readback, host bookkeeping and anything
+// else unaccounted, and a subtraction cannot be attributed to one of its
+// terms. Two arms differing in exactly one variable can.
+//
+// 🔴 THIS PAIR WAS BUILT AS L307 (2)'s FALSIFIER AND IT IS NOT ONE. RECORDED
+// HERE RATHER THAN QUIETLY RESCOPED, BECAUSE THE MISTAKE IS THE USEFUL PART.
+//
+// The intent was: the difference between the arms is what the params ring
+// removes. It is not. simulation.cpp:620-641 calls backend->step(n) ONCE and
+// readback() ONCE per step(n), while submit(n) fences PER STEP -- so:
+//
+//     batched     50 fences +  1 readback
+//     unbatched   50 fences + 50 readbacks
+//
+// BOTH ARMS PAY FIFTY FENCES. The pair isolates the READBACK, which is what
+// BATCHING removes. The ring removes the FENCE, which is identical in both
+// arms and therefore cancels exactly. A controlled pair differing in the
+// wrong variable answers a question nobody asked, confidently.
+//
+// Measured anyway, and it is a real fact about the system:
+//     Arg(10)   1.34 -> 1.75 ms/step   1.30x
+//     Arg(100)  9.37 -> 9.17 ms/step   0.98x   <- sign flips; noise at n=1
+//     Arg(1000) 102.3 -> 103.0 ms/step 1.01x
+// So batching buys ~0.4 ms/step at editor scale and nothing at all beyond it.
+// KEEP THIS PAIR FOR THAT -- it is the only measurement of the gap between
+// the batched path the benchmarks use and the n=1 path all four production
+// call sites take. It is simply not the ring's falsifier.
+//
+// The ring's own measurement does NOT exist yet, and backend.hpp records
+// why: the host-side timer that seemed obvious is forbidden in engine
+// source by the fixed-step determinism guard, AND it measures GPU execution
+// rather than stall. Sizing the ring needs the device-timeline gap between
+// steps, which needs the per-slot query pool the ring itself introduces.
+//
+// ---------------------------------------------------------------------------
+// THE DECISION THRESHOLDS, PRE-REGISTERED BEFORE THE FIRST RUN -- AND NOT
+// APPLIED, BECAUSE THE INSTRUMENT TURNED OUT NOT TO MEASURE THEIR SUBJECT.
+// ---------------------------------------------------------------------------
+// Kept verbatim rather than deleted. They were written before any number
+// existed and they did their job: when the run came back at 1.30x -- inside
+// the "report and ask" band -- the pressure was to read that as a verdict.
+// What stopped it was not the band but the discovery above that both arms
+// fence 50 times, so the ratio is about readback and these thresholds are
+// about a quantity this pair cannot see.
+//
+// Written into the source rather than a report, because a threshold that
+// arrives with the result is not a threshold -- it is a reading of the
+// result. `git log` shows this paragraph predates the numbers it judges.
+//
+// ⚠ A PRE-REGISTERED THRESHOLD DOES NOT MAKE AN INSTRUMENT VALID. It only
+// stops you moving the line after seeing the number. Both checks are needed,
+// and they fail independently.
+//
+//   unbatched >= 1.5x batched, per step, at Arg(10)
+//       BUILD THE RING. An editor tick is paying more for the fence and the
+//       readback than for the physics.
+//
+//   the two arms within 1.2x
+//       DO NOT BUILD IT, and that is the deliverable rather than a failure.
+//       R command buffers, R fences and a per-slot query pool are real risk
+//       against a stall that is not there.
+//
+//   between 1.2x and 1.5x
+//       REPORT THE NUMBER AND ASK. Deciding in that band, having already
+//       written the arm, is deciding under the influence of the work
+//       already done.
+//
+// Arg(100) and Arg(1000) run too because they are free, but THE DECISION
+// RIDES ON Arg(10): the editor viewport is a handful of bodies at n = 1 and
+// it is the front-facing case. The others are context, not the verdict.
+// ---------------------------------------------------------------------------
+void BM_StepPlainBodiesGpuUnbatched(benchmark::State& state) {
+    try {
+        const uint32_t body_count = static_cast<uint32_t>(state.range(0));
+        Simulation sim = build_plain_bodies_sim(body_count, BackendDesc{BackendKind::vulkan});
+
+        for (auto _ : state) {
+            // n = 1, fifty times: what rollout.cpp and tick_loop.cpp do.
+            bool failed = false;
+            for (uint64_t i = 0; i < kStepsPerIter; ++i) {
+                const spade::Result<void> r = sim.step(1);
+                if (!r) {
+                    state.SkipWithError(r.error().context.c_str());
+                    failed = true;
+                    break;
+                }
+            }
+            if (failed) break;
+        }
+        state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
+                                 static_cast<int64_t>(kStepsPerIter));
+
+        set_pass_duration_counters(state, sim);
+    } catch (const std::runtime_error& e) {
+        state.SkipWithError(e.what());
+    }
+}
+// Same arguments as the batched arm, so the pair is comparable row for row.
+//
+// ⚠ THE PAIR IS NOT FLAG-IDENTICAL AND THE READER MUST KNOW WHY. This arm
+// carries ->UseRealTime() and BM_StepPlainBodiesGpu above does not. That is
+// one more difference than a controlled pair is allowed, and it exists
+// because a host blocked in vkWaitForFences accrues almost no CPU time, so
+// google-benchmark's CPU-based iteration heuristic will happily run this arm
+// for a very long time without it.
+//
+// UseRealTime() changes only the ITERATION HEURISTIC -- the reported Time
+// column is wall clock in both cases -- so the per-step figures are
+// comparable. But rather than rely on that, RUN BOTH ARMS WITH
+// --benchmark_min_time=1x, which pins each to exactly one iteration and
+// removes the heuristic from the comparison entirely. Then the only
+// remaining difference between the two arms is the call shape, which is what
+// the pair exists to isolate.
+//
+// Adding UseRealTime() to the batched arm instead would have equalised the
+// flags, and it is NOT done here: that arm's reported numbers are quoted
+// elsewhere, and changing how an existing benchmark measures is a moved
+// pinned number wearing a cleanup's clothes.
+BENCHMARK(BM_StepPlainBodiesGpuUnbatched)->Arg(10)->Arg(100)->Arg(1000)->UseRealTime();
 
 // ---------------------------------------------------------------------------
 // Sweep 1b: THE CONTACT FALSIFIER -- the same bodies, packed so they TOUCH.

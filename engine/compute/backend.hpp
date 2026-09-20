@@ -224,6 +224,28 @@ struct PassDurationsNs {
     double sensor_synthesis_ns = 0.0;
     double publish_ns = 0.0;
 
+    // ⛔ THERE IS NO host_fence_wait_ns FIELD HERE, AND THE ABSENCE IS A
+    // RULING. L307 (2) added one -- a host-side wall-clock timer around vkWaitForFences in
+    // StepRecorder::submit() -- to size the host stall the params ring
+    // removes. M1B.FixedStepNoWallClockSymbolsInEngineSource went red:
+    // engine source may not name a wall clock at all, because it carries a
+    // fixed-step determinism charter.
+    //
+    // The guard is a SYMBOL scan. It cannot tell a diagnostic counter from
+    // a timestep input, and THAT IS THE POINT rather than a limitation --
+    // the next such timer in here might not be diagnostic. The instrument was
+    // removed; the guard was not weakened.
+    //
+    // ⚠ AND IT MEASURED THE WRONG THING ANYWAY, WHICH IS THE PART WORTH
+    // KEEPING: the host blocks in that fence WHILE THE GPU WORKS, so the
+    // wait is 93.8% / 99.0% / 99.9% of the step at 10 / 100 / 1000 bodies
+    // and is dominated by useful execution, not stall. At 1000 bodies it
+    // came out BELOW the GPU's own pass total -- i.e. no host bubble to
+    // recover at all. Anyone re-reaching for this: the quantity the ring
+    // removes is the GAP BETWEEN STEPS on the DEVICE timeline, not the host
+    // wait, and measuring it needs the per-slot query pool the ring itself
+    // introduces.
+
     // L307 (2): how many individual pass samples in this readback exceeded
     // kImplausibleSampleNs. NON-ZERO MEANS THE NUMBERS ABOVE ARE NOT A
     // MEASUREMENT, and a caller that prints a duration without checking this

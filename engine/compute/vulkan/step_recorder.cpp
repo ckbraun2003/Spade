@@ -774,6 +774,15 @@ Result<void> StepRecorder::submit(uint64_t n, uint64_t first_tick) {
             return std::unexpected(map_vk_error(r, "vkQueueSubmit (StepRecorder)"));
         }
 
+        // ⛔ DO NOT TIME THIS WAIT FROM HERE. An earlier draft of L307 (2)
+        // wrapped it in a host-side wall-clock timer to size the stall, and
+        // M1B.FixedStepNoWallClockSymbolsInEngineSource went red: engine
+        // source carries a fixed-step determinism charter that forbids
+        // wall-clock symbols outright. The guard is a SYMBOL scan and cannot
+        // tell a diagnostic counter from a timestep input -- which is the
+        // point of it, not a limitation, because the next use might not be
+        // diagnostic. Measure the bubble from the GPU timeline or from the
+        // caller, never from in here.
         if (VkResult r = vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX); r != VK_SUCCESS) {
             return std::unexpected(map_vk_error(r, "vkWaitForFences (StepRecorder)"));
         }
