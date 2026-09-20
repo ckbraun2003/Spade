@@ -692,16 +692,10 @@ Result<void> StepRecorder::record() {
                 //   2. grid_sort  x stages one thread per entry, one dispatch
                 //                          per (k, j) stage of the bitonic
                 //                          network
-                //   3. collision_dynamic   one WORKGROUP per world (L306).
-                //                          Was one THREAD per world, which
-                //                          made a 1000-body world 429 ms a
-                //                          step against the CPU backend's
-                //                          4.57 ms. The search now goes wide
-                //                          across the group and lane 0 walks
-                //                          the resolves in the serial sweep's
-                //                          exact order, so Gauss-Seidel is
-                //                          unchanged -- that kernel's header
-                //                          carries the ordering argument.
+                //   3. collision_dynamic   one thread per WORLD (the sweep is
+                //                          sequential within a world -- that
+                //                          kernel's header has the parity
+                //                          argument)
                 //
                 // RECORDED ONCE, like everything else in this function. The
                 // stage loop below is a HOST-side unroll of grid_sort.slang's
@@ -732,18 +726,7 @@ Result<void> StepRecorder::record() {
                     }
                 }
 
-                // ONE GROUP PER WORLD, NOT world_groups_x_ (L306).
-                // world_groups_x_ is ceil(world_count / workgroup_size) and
-                // is still correct for every OTHER per-world pass, which
-                // really is one thread per world. This pass is the only one
-                // whose kernel reads SV_GroupID, so it is the only one whose
-                // group count is the world count itself.
-                //
-                // WARNING: these two numbers are EQUAL when world_count <=
-                // workgroup_size and a single group covers everything, so a
-                // one-world scene cannot tell a correct dispatch from the
-                // old one. The many-worlds sweeps are what would catch it.
-                emit(kPipelineCollisionDynamic, params, shape_.world_count);
+                emit(kPipelineCollisionDynamic, params, world_groups_x_);
             }
 
             // S6 Task 10: "slot `pass` just finished" mark -- boundary
