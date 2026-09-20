@@ -223,6 +223,20 @@ struct PassDurationsNs {
     double integrate_ns = 0.0;
     double sensor_synthesis_ns = 0.0;
     double publish_ns = 0.0;
+
+    // L307 (2): how many individual pass samples in this readback exceeded
+    // kImplausibleSampleNs. NON-ZERO MEANS THE NUMBERS ABOVE ARE NOT A
+    // MEASUREMENT, and a caller that prints a duration without checking this
+    // is printing whatever the driver left in the undefined bits.
+    //
+    // It exists because masking by timestampValidBits removes the old
+    // `end > start` guard, which used to discard unexplainable samples in
+    // silence. Discarding them is what let a 119.8 ms collision_dynamic sit
+    // beside a 69.3 ms wall-clock step for a session without anybody being
+    // able to see that the instrument, not the kernel, was the problem.
+    // An instrument that cannot report its own failure produces a confident
+    // number, and a confident number gets acted on.
+    uint32_t implausible_samples = 0;
 };
 
 // ---------------------------------------------------------------------------

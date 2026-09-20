@@ -8,6 +8,19 @@ namespace spade::compute {
 
 namespace {
 
+// L307 (2): the threshold above which a single pass duration is reported as
+// IMPLAUSIBLE rather than believed. One second, chosen as a value no real
+// pass on any device can approach while still being orders of magnitude
+// below what a garbage high-bit sample produces -- at 52.0833 ns/tick, a
+// single stray bit 36 sets a delta of ~57 minutes.
+//
+// It is a DIAGNOSTIC BOUND, not a tolerance: nothing is clamped, rejected or
+// rescaled by it. It only decides whether PassDurationsNs::implausible_
+// samples is incremented, so a caller can tell "the instrument is broken"
+// from "the kernel is slow" -- the exact distinction that was unavailable
+// when collision_dynamic reported 119.8 ms against a 69.3 ms step.
+constexpr double kImplausibleSampleNs = 1e9;
+
 // Same taxonomy as step_recorder.cpp's identical helper -- duplicated rather
 // than shared through a third header for the same reason that file gives:
 // four lines, and every caller already has <core/error.hpp> and <volk.h> in
@@ -70,6 +83,12 @@ Result<std::unique_ptr<PassTimestamps>> PassTimestamps::create(VulkanContext& ct
 
     self->timestamp_period_ns_ = static_cast<double>(properties.limits.timestampPeriod);
 
+    // STORE the valid-bit count, do not merely test it. The check above uses
+    // this same field as a support predicate (== 0 means "this family cannot
+    // time"); every value ABOVE zero and below 64 is equally a statement that
+    // the high bits are undefined, and read_durations_ns() has to mask by it.
+    self->timestamp_valid_bits_ = families[compute_family].timestampValidBits;
+
     VkQueryPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -127,17 +146,51 @@ Result<PassDurationsNs> PassTimestamps::read_durations_ns() const {
     // ALL_COMMANDS_BIT choice above should make end >= start impossible, but
     // a wrong sign reported as a nonsense multi-second "duration" is a far
     // more confusing failure than a reported zero.
+    // THE MASK (L307 (2)). Bits at or above timestampValidBits are UNDEFINED
+    // per the spec, not zero, so they must be cleared before any arithmetic.
+    // `mask` is all-ones when valid_bits >= 64, which keeps a fully-reporting
+    // device bit-identical to the pre-mask behaviour.
+    //
+    // The shift is guarded because `1ull << 64` is UNDEFINED BEHAVIOUR in C++,
+    // not a conveniently-zero result -- the one line where getting this
+    // "obviously right" would reintroduce undefined behaviour to remove it.
+    const uint64_t mask =
+        (timestamp_valid_bits_ >= 64u) ? ~0ull : ((1ull << timestamp_valid_bits_) - 1ull);
+
     double totals[kSlotsPerSubstep] = {};
+    uint32_t implausible = 0;
     for (uint32_t s = 0; s < substeps_; ++s) {
         const uint64_t* block = &ticks[static_cast<std::size_t>(s) * kPassTimestampMarksPerSubstep];
         for (uint32_t slot = 0; slot < kSlotsPerSubstep; ++slot) {
-            const uint64_t start = block[slot];
-            const uint64_t end = block[slot + 1];
-            if (end > start) {
-                totals[slot] += static_cast<double>(end - start) * timestamp_period_ns_;
+            const uint64_t start = block[slot] & mask;
+            const uint64_t end = block[slot + 1] & mask;
+
+            // Wrapped difference in one expression. Correct for BOTH the
+            // ordinary case and a counter wrap, because the subtraction is
+            // modular and the true delta is far below the counter's range:
+            // at 36 bits and 52.0833 ns/tick this counter wraps every ~59.6
+            // MINUTES, and a pass is microseconds. Replaces the old
+            // `if (end > start)` guard, which the mask makes both unnecessary
+            // (garbage high bits were the reason end < start showed up at
+            // all) and wrong (it clamped a genuine wrap to zero).
+            const uint64_t delta = (end - start) & mask;
+            const double ns = static_cast<double>(delta) * timestamp_period_ns_;
+
+            // ⚠ AND THAT GUARD'S REMOVAL IS EXACTLY WHY THIS COUNTER EXISTS.
+            // The old code silently discarded any sample it could not explain;
+            // the new code cannot, because after masking every delta is a
+            // plausible-looking non-negative number. A single pass taking
+            // longer than a second is not a measurement, it is a broken
+            // instrument -- and an instrument that hides its own failures is
+            // how "collision_dynamic 119.8 ms" survived beside a 69.3 ms step
+            // for a whole session. Reported, never clamped away.
+            if (ns > kImplausibleSampleNs) {
+                ++implausible;
             }
+            totals[slot] += ns;
         }
     }
+    out.implausible_samples = implausible;
 
     out.medium_update_ns = totals[0];
     out.force_elements_ns = totals[1];
@@ -164,7 +217,8 @@ PassTimestamps::PassTimestamps(PassTimestamps&& other) noexcept
     : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
       pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
       substeps_(other.substeps_),
-      timestamp_period_ns_(other.timestamp_period_ns_) {}
+      timestamp_period_ns_(other.timestamp_period_ns_),
+      timestamp_valid_bits_(other.timestamp_valid_bits_) {}
 
 PassTimestamps& PassTimestamps::operator=(PassTimestamps&& other) noexcept {
     if (this != &other) {
@@ -173,6 +227,7 @@ PassTimestamps& PassTimestamps::operator=(PassTimestamps&& other) noexcept {
         pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
         substeps_ = other.substeps_;
         timestamp_period_ns_ = other.timestamp_period_ns_;
+        timestamp_valid_bits_ = other.timestamp_valid_bits_;
     }
     return *this;
 }

@@ -238,6 +238,14 @@ void set_pass_duration_counters(benchmark::State& state, Simulation& sim) {
     state.counters["gpu_collision_dynamic_ns"] = d->collision_dynamic_ns;
     state.counters["gpu_integrate_ns"] = d->integrate_ns;
     state.counters["gpu_sensor_synthesis_ns"] = d->sensor_synthesis_ns;
+
+    // L307 (2): THE INSTRUMENT'S OWN HEALTH, BESIDE THE NUMBERS IT PRODUCED.
+    // Non-zero means at least one pass sample exceeded kImplausibleSampleNs
+    // and every duration above is suspect. Emitted unconditionally -- a
+    // health counter that only appears when it is bad is one a reader cannot
+    // distinguish from a build that never reported it, and "the field is
+    // missing" reads as "fine" to every consumer.
+    state.counters["gpu_implausible_samples"] = static_cast<double>(d->implausible_samples);
 }
 
 // ---------------------------------------------------------------------------

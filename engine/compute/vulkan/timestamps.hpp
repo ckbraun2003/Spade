@@ -144,6 +144,22 @@ private:
     // device's timestamps count in (NOT guaranteed to be 1.0; Intel Iris Plus
     // reports its own value, read once at create() time).
     double timestamp_period_ns_ = 1.0;
+
+    // VkQueueFamilyProperties::timestampValidBits for the COMPUTE family.
+    //
+    // ⚠ THIS FIELD WAS READ AND DISCARDED FOR THE WHOLE OF S6. create() below
+    // has always fetched it, but only to test it against 0 as a support
+    // check -- it was never stored and read_durations_ns() subtracted RAW
+    // 64-bit values. The spec says the upper (64 - timestampValidBits) bits
+    // of a timestamp are UNDEFINED, and this box's Intel Iris Plus reports
+    // 36, so 28 undefined bits rode into every duration this engine has
+    // ever reported. That is the leading explanation for a measured
+    // collision_dynamic of 119.8 ms against a 69.3 ms wall-clock STEP -- a
+    // pass cannot outlast the step containing it.
+    //
+    // 64 is the correct default for the unsupported path: it makes the mask
+    // all-ones, so a device that never gets here is never silently truncated.
+    uint32_t timestamp_valid_bits_ = 64u;
 };
 
 }  // namespace spade::compute
