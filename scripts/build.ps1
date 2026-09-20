@@ -16,9 +16,32 @@
     Which CMake preset to build: 'debug' or 'release' (msvc-ninja-debug /
     msvc-ninja-release). Defaults to 'release'.
 
+.PARAMETER Target
+    Build a single target (spade_tests, spade_sandbox, spade_bench) instead of
+    everything. One target per invocation, by design.
+
+.PARAMETER BuildDir
+    Build a tree this script did not lay out -- spade/build-gui, for instance,
+    which is where spade_sandbox and the Vulkan-enabled tests actually live.
+    It must ALREADY be configured: the presets fix each preset's binaryDir, so
+    this script refuses to configure a directory it cannot aim a configure at,
+    rather than quietly configuring build-ninja and reporting success.
+
+.PARAMETER ParallelLevel
+    Compile jobs, 1..64, default 1. The box is memory-bound and its failure
+    mode is a silent OOM kill, so all-cores is not expressible here.
+
 .PARAMETER Clean
     Delete the preset's build directory before configuring, forcing a fresh
     configure and full rebuild.
+
+.NOTES
+    THIS SCRIPT DRIVES spade/build-ninja/<preset> BY DEFAULT, AND THAT IS NOT
+    THE TREE THE SPADE GUI RUNS FROM. The desktop shortcut launches
+    spade/build-gui/bin/spade_sandbox.exe; spade/build-ninja/release/bin has
+    never held that binary. Before -Target and -BuildDir existed, this script
+    could not be aimed there at all, which cost a coordinator a declared
+    deviation on 2026-09-20. If you are rebuilding the GUI, pass both.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1
@@ -26,11 +49,34 @@
     powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset debug
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset release -Clean
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -BuildDir spade\build-gui -Target spade_sandbox
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('debug', 'release')]
     [string] $Preset = 'release',
+
+    # Build ONE target instead of everything. Deliberately a single string and
+    # not a [string[]]: the editor's wrapper takes an array and `-Target a,b`
+    # fails there with no compiler output, so the shape that cannot work is
+    # not offered here at all.
+    [string] $Target,
+
+    # Build a tree this script did not lay out -- spade/build-gui, say, which
+    # is where spade_sandbox and the GPU-enabled tests actually live. Must
+    # ALREADY be configured; see the refusal below for why.
+    [string] $BuildDir,
+
+    # ValidateRange, not [int]: `--parallel 0` means ALL CORES, and that is the
+    # one value that must never be expressible on a box whose failure mode is
+    # a silent OOM kill. Copied from editor/scripts/ninja-build.ps1, together
+    # with its reason. Before this parameter existed the script ran a bare
+    # `cmake --build`, which is ninja's all-cores default -- the exact value
+    # the other wrapper goes out of its way to forbid.
+    [ValidateRange(1,64)]
+    [int] $ParallelLevel = 1,
+
     [switch] $Clean
 )
 
@@ -40,11 +86,21 @@ $ErrorActionPreference = 'Stop'
 # CMakePresets.json lives).
 $SpadeDir   = Split-Path -Parent $PSScriptRoot
 $PresetName = "msvc-ninja-$Preset"
-$BuildDir   = Join-Path $SpadeDir "build-ninja/$Preset"
+
+# -BuildDir aims this script at a tree the presets did not create. Without it
+# the preset's own binaryDir is used, exactly as before.
+$ExternalTree = [bool] $BuildDir
+if (-not $ExternalTree) {
+    $BuildDir = Join-Path $SpadeDir "build-ninja/$Preset"
+} elseif (-not [System.IO.Path]::IsPathRooted($BuildDir)) {
+    $BuildDir = Join-Path (Get-Location).Path $BuildDir
+}
 
 Write-Host "Spade  : $SpadeDir"
 Write-Host "Preset : $PresetName"
 Write-Host "Build  : $BuildDir"
+if ($Target) { Write-Host "Target : $Target" } else { Write-Host "Target : <all>" }
+Write-Host "Jobs   : $ParallelLevel"
 
 if ($Clean -and (Test-Path $BuildDir)) {
     Write-Host "Removing $BuildDir (-Clean)"
@@ -125,6 +181,18 @@ if (-not $env:VSCMD_ARG_TGT_ARCH) {
 # ---------------------------------------------------------------------------
 $cacheFile = Join-Path $BuildDir 'CMakeCache.txt'
 if (-not (Test-Path $cacheFile)) {
+    # A MISSING CAPABILITY REFUSES, IT DOES NOT DEGRADE. `cmake --preset` puts
+    # its output in the PRESET's binaryDir and has no idea -BuildDir was
+    # asked for, so configuring here would silently populate build-ninja and
+    # then build a tree the caller never named -- a success message about the
+    # wrong directory, which is the failure this script already caused once by
+    # pointing at a tree that has never held spade_sandbox.
+    if ($ExternalTree) {
+        throw ("-BuildDir '$BuildDir' is not configured (no CMakeCache.txt), and this script " +
+               "will not configure it: CMakePresets.json fixes each preset's binaryDir, so a " +
+               "configure here would land in build-ninja/$Preset instead. Configure it yourself " +
+               "with the cache flags that tree needs, then re-run.")
+    }
     Write-Host ""
     Write-Host "=== Configuring ($PresetName) ===" -ForegroundColor Cyan
     & cmake -S $SpadeDir --preset $PresetName
@@ -139,7 +207,9 @@ if (-not (Test-Path $cacheFile)) {
 Write-Host ""
 Write-Host "=== Building ($PresetName) ===" -ForegroundColor Cyan
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-& cmake --build $BuildDir
+$buildArgs = @('--build', $BuildDir, '--parallel', "$ParallelLevel")
+if ($Target) { $buildArgs += @('--target', $Target) }
+& cmake @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "Build failed (exit $LASTEXITCODE)" }
 $sw.Stop()
 Write-Host ("Build completed in {0:N1}s" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
