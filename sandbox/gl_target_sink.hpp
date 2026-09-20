@@ -32,6 +32,12 @@
 
 namespace spade::sandbox {
 
+// Forward-declared rather than included: this header does not touch a single
+// member of it, so including builder_scene.hpp here would pull the whole
+// object model (and glm's matrix headers) into every translation unit that
+// merely wants to open a window.
+struct BuilderScene;
+
 class GlTargetSink final : public TargetSink {
   public:
     struct Options {
@@ -161,7 +167,27 @@ class GlTargetSink final : public TargetSink {
     // else. Same ImGui pass and the same timing accounting as accept(), so the
     // HUD reads identically on both paths -- which is what makes them
     // comparable at all.
+    //
     void present_overlay(float render_ms, float physics_ms);
+
+    // Attach the builder's model, or nullptr to detach. While attached, the
+    // hierarchy and inspector are drawn by WHICHEVER path presents the frame
+    // and written back into.
+    //
+    // ⭐ ATTACHED ONCE RATHER THAN PASSED PER PRESENT, SO BOTH PATHS GET IT.
+    // The GPU path presents through present_overlay() and the CPU fallback
+    // through accept(); a parameter on one of them gives the builder to one
+    // path and silently withholds it from the other. That is the same defect
+    // as two copies of the HUD -- which this file already refused once -- with
+    // the copies replaced by an absence, which is harder to notice.
+    //
+    // WHY THE MODEL COMES HERE INSTEAD OF THE PANEL LIVING IN THE APPLICATION:
+    // ImGui is this file's dependency and nobody else's. Letting main.cpp draw
+    // its own widgets would put imgui.h in the application, which SL2b forbids
+    // and which would spread the one dependency that has to stay contained.
+    // BuilderScene is a pure struct with no UI in it, so it crosses this
+    // header freely -- the model travels, the toolkit does not.
+    void attach_builder(BuilderScene* model) noexcept;
 
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.
@@ -177,6 +203,12 @@ class GlTargetSink final : public TargetSink {
     // and two copies of a panel is the same defect as two copies of a channel
     // reorder, which this file already refused once.
     void draw_overlay();
+
+    // The builder's hierarchy + inspector. Separate from draw_overlay()
+    // because the HUD must appear whether or not a builder model exists --
+    // the headless and CPU-fallback paths have no builder and still need
+    // their numbers.
+    void draw_builder_panel(BuilderScene& model);
 
     struct Impl;
     explicit GlTargetSink(std::unique_ptr<Impl> impl);

@@ -33,6 +33,8 @@
 
 #include "gl_target_sink.hpp"
 
+#include "builder_scene.hpp"  // the builder's model -- pure, no UI in it
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -159,6 +161,14 @@ struct GlTargetSink::Impl {
     float scroll_accum = 0.0f;
     bool show_help = true;
     bool f1_was_down = false;
+    // Builder edges. Every one of these exists because glfwGetKey and
+    // glfwGetMouseButton report a STATE and the builder needs an EVENT.
+    bool last_left_down = false;
+    bool del_was_down = false;
+    bool dup_was_down = false;
+    // Non-owning. The application owns the model and outlives the sink;
+    // the sink only reads and writes it while drawing a panel.
+    BuilderScene* builder = nullptr;
 
     ~Impl() {
         // Teardown in creation-reverse order, and each step guarded by the flag
@@ -339,13 +349,31 @@ FrameInput GlTargetSink::poll() {
     impl_->fb_height = static_cast<uint32_t>(std::max(fbh, 1));
 
     const ImGuiIO& io = ImGui::GetIO();
+    in.ui_captured_mouse = io.WantCaptureMouse;
+    in.ui_captured_keyboard = io.WantCaptureKeyboard;
 
-    // Mouse drag -> orbit, but only when ImGui does not want the mouse, so a
-    // click on the overlay does not also spin the camera.
+    // ORBIT IS ON THE RIGHT BUTTON NOW. It was on the left until the builder
+    // arrived, and it could not stay there: left-drag cannot both orbit the
+    // camera and move an object, and whichever one it does the other becomes
+    // unreachable. Right orbits, left selects and drags -- the convention
+    // every tool in this category settled on, adopted rather than invented.
     double cx = 0.0, cy = 0.0;
     glfwGetCursorPos(impl_->window, &cx, &cy);
-    const bool down = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    if (down && !io.WantCaptureMouse) {
+
+    // CURSOR POSITION IS IN WINDOW COORDINATES AND THE PICKER NEEDS
+    // FRAMEBUFFER ONES. On a HiDPI display the two differ by the content
+    // scale, so handing the raw cursor to a ray built for the framebuffer
+    // gives a picker that is off by that factor -- correct on the author's
+    // display and wrong on the user's, which is the worst way to be wrong.
+    int ww = 0, wh = 0;
+    glfwGetWindowSize(impl_->window, &ww, &wh);
+    const float sx = ww > 0 ? static_cast<float>(impl_->fb_width) / static_cast<float>(ww) : 1.0f;
+    const float sy = wh > 0 ? static_cast<float>(impl_->fb_height) / static_cast<float>(wh) : 1.0f;
+    in.mouse_x = static_cast<float>(cx) * sx;
+    in.mouse_y = static_cast<float>(cy) * sy;
+
+    const bool rdown = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    if (rdown && !io.WantCaptureMouse) {
         if (impl_->dragging) {
             in.orbit_dx = static_cast<float>(cx - impl_->last_cursor_x);
             in.orbit_dy = static_cast<float>(cy - impl_->last_cursor_y);
@@ -354,6 +382,23 @@ FrameInput GlTargetSink::poll() {
     } else {
         impl_->dragging = false;
     }
+
+    // The left button as THREE signals. The edge is what selects or places;
+    // the level is what continues a drag; the release ends it. Deriving all
+    // three from one level test is how a drag re-picks every frame and the
+    // object under the cursor swaps mid-move.
+    const bool ldown = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    if (!io.WantCaptureMouse) {
+        in.left_down = ldown;
+        in.left_click = ldown && !impl_->last_left_down;
+    }
+    // THE RELEASE IS REPORTED EVEN WHEN THE UI HAS THE MOUSE, and that is
+    // deliberate: a drag that starts in the scene and ends over a panel must
+    // still END. Suppressing it leaves the drag latched and the object follows
+    // the cursor after the button is up.
+    in.left_release = !ldown && impl_->last_left_down;
+    impl_->last_left_down = ldown;
+
     impl_->last_cursor_x = cx;
     impl_->last_cursor_y = cy;
 
@@ -364,8 +409,13 @@ FrameInput GlTargetSink::poll() {
         const auto held = [this](int key) {
             return glfwGetKey(impl_->window, key) == GLFW_PRESS ? 1.0f : 0.0f;
         };
+        // Ctrl is read FIRST because it changes what D means. Without this,
+        // Ctrl+D duplicates the selection AND pans the camera right in the
+        // same frame -- a shortcut that quietly does a second thing.
+        const bool ctrl = glfwGetKey(impl_->window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                          glfwGetKey(impl_->window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
         in.move_forward = held(GLFW_KEY_W) - held(GLFW_KEY_S);
-        in.move_right = held(GLFW_KEY_D) - held(GLFW_KEY_A);
+        in.move_right = (ctrl ? 0.0f : held(GLFW_KEY_D)) - held(GLFW_KEY_A);
         in.move_up = held(GLFW_KEY_E) - held(GLFW_KEY_Q);
         // EDGE-TRIGGERED, not level. glfwGetKey reports the key as HELD for
         // every frame it is down, so a level test would fire ~60 times per
@@ -377,6 +427,18 @@ FrameInput GlTargetSink::poll() {
             impl_->show_help = !impl_->show_help;
         }
         impl_->f1_was_down = f1;
+
+        // Delete removes the selection; Ctrl+D duplicates it. Both edges, for
+        // the reason stated above -- a level-triggered delete empties the
+        // scene in one keypress because it fires every frame the key is down.
+        const bool del = glfwGetKey(impl_->window, GLFW_KEY_DELETE) == GLFW_PRESS ||
+                         glfwGetKey(impl_->window, GLFW_KEY_BACKSPACE) == GLFW_PRESS;
+        in.delete_pressed = del && !impl_->del_was_down;
+        impl_->del_was_down = del;
+
+        const bool dup = ctrl && glfwGetKey(impl_->window, GLFW_KEY_D) == GLFW_PRESS;
+        in.duplicate_pressed = dup && !impl_->dup_was_down;
+        impl_->dup_was_down = dup;
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.
@@ -530,10 +592,16 @@ void GlTargetSink::draw_overlay() {
             ImGui::Text("swap     %6.2f ms%s", a.swap_ms,
                         impl_->options.vsync ? "   (vsync: waiting is normal)" : "");
             ImGui::Separator();
-            ImGui::Text("drag orbit   scroll dolly   WASD pan   Q/E down/up");
+            ImGui::Text("RIGHT-drag orbit   scroll dolly   WASD pan   Q/E down/up");
+            ImGui::Text("LEFT click place/select, drag moves   Del removes");
             ImGui::Text("F1 hide      Esc quit");
         }
         ImGui::End();
+    }
+    // THE ONE PLACE THE BUILDER PANEL IS DRAWN, reached by both present
+    // paths because both of them call draw_overlay().
+    if (impl_->builder != nullptr) {
+        draw_builder_panel(*impl_->builder);
     }
 #endif
 }
@@ -554,6 +622,107 @@ void GlTargetSink::begin_gpu_frame() {
     glViewport(0, 0, static_cast<GLsizei>(impl_->fb_width), static_cast<GLsizei>(impl_->fb_height));
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#endif
+}
+
+void GlTargetSink::draw_builder_panel(BuilderScene& model) {
+#if SPADE_SANDBOX_HAS_GL
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 250.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(300.0f, 460.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("builder")) {
+        // --- Place -------------------------------------------------------
+        ImGui::TextUnformatted("PLACE  (then click the ground)");
+        int shape = static_cast<int>(model.pending_shape);
+        ImGui::RadioButton("box", &shape, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("sphere", &shape, 1);
+        ImGui::SameLine();
+        ImGui::RadioButton("cylinder", &shape, 2);
+        model.pending_shape = static_cast<Shape>(shape);
+        ImGui::Checkbox("placement mode (off = select/move)", &model.placing);
+        ImGui::Separator();
+
+        // --- Hierarchy ---------------------------------------------------
+        ImGui::Text("OBJECTS  (%zu)", model.objects.size());
+        // TWO ARGUMENTS ON PURPOSE. BeginChild's third parameter changed from
+        // a bool to ImGuiChildFlags across the versions this vendored pin sits
+        // between, and the deprecated spelling is a warning -- which is an
+        // ERROR here, because this target builds under /W4 /WX.
+        if (ImGui::BeginChild("hierarchy", ImVec2(0.0f, 120.0f))) {
+            for (size_t i = 0; i < model.objects.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                const bool sel = (model.selected == static_cast<int>(i));
+                if (ImGui::Selectable(model.objects[i].name.c_str(), sel)) {
+                    model.selected = static_cast<int>(i);
+                }
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndChild();
+
+        // --- Inspector ---------------------------------------------------
+        ImGui::Separator();
+        if (BuilderObject* o = model.selected_object()) {
+            ImGui::Text("INSPECTOR  %s", o->name.c_str());
+            // DRAGS, NOT SLIDERS, for position and scale: a slider needs a
+            // range, and any range picked here is a limit the user meets.
+            ImGui::DragFloat3("position", &o->position.x, 0.02f);
+            ImGui::DragFloat3("scale", &o->scale.x, 0.02f, 0.01f, 1000.0f);
+            ImGui::SliderAngle("yaw", &o->yaw, -180.0f, 180.0f);
+            if (ImGui::ColorEdit3("colour", &o->color.x)) {
+                // A COLOUR EDIT CHANGES THE MATERIAL SET, which the renderer
+                // uploads once rather than per frame -- so it must say so, or
+                // the picker moves and nothing on screen does.
+                model.materials_dirty = true;
+            }
+            ImGui::Separator();
+            ImGui::TextUnformatted("PHYSICS");
+            ImGui::Checkbox("dynamic", &o->dynamic);
+            ImGui::DragFloat("mass", &o->mass, 0.05f, 0.001f, 10000.0f);
+            ImGui::SliderFloat("restitution", &o->restitution, 0.0f, 1.0f);
+            ImGui::SliderFloat("friction", &o->friction, 0.0f, 2.0f);
+            ImGui::Separator();
+            if (ImGui::Button("duplicate")) {
+                model.duplicate_request = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("delete")) {
+                model.delete_request = true;
+            }
+        } else {
+            ImGui::TextUnformatted("INSPECTOR  (nothing selected)");
+            ImGui::TextUnformatted("click an object to select it");
+        }
+
+        // --- Scene settings ----------------------------------------------
+        ImGui::Separator();
+        ImGui::TextUnformatted("SCENE");
+        ImGui::Checkbox("ground grid", &model.grid);
+        ImGui::SliderFloat("sun", &model.sun_intensity, 0.0f, 3.0f);
+        // The application re-normalises this before it reaches the shader, so
+        // dragging a component to zero cannot black the scene out.
+        ImGui::DragFloat3("sun dir", &model.sun_direction.x, 0.01f, -1.0f, 1.0f);
+        ImGui::DragFloat("gravity", &model.gravity, 0.05f, -40.0f, 40.0f);
+        ImGui::Checkbox("physics running", &model.physics_running);
+        // SAID OUT LOUD RATHER THAN IMPLIED BY A DEAD TOGGLE. A switch that
+        // looks live and does nothing is worse than no switch, because the
+        // user concludes the physics is broken rather than absent.
+        if (model.physics_running) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                               "no solver wired yet -- poses are static");
+        }
+    }
+    ImGui::End();
+#else
+    (void)model;
+#endif
+}
+
+void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->builder = model;
+#else
+    (void)model;
 #endif
 }
 

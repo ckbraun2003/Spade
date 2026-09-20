@@ -257,6 +257,12 @@ if(SPADE_BUILD_SANDBOX)
         # expectations are hand-written literals rather than a second
         # expression of the mapping under test.
         test_sandbox_camera_and_channels.cpp
+        # The builder: placement, picking, dragging, delete/duplicate, the
+        # UI-capture gate and the upload contract. All of it decided by pure
+        # functions in sandbox/builder_scene.hpp, so all of it runs with no
+        # display -- which is the entire reason those functions are not in the
+        # window loop.
+        test_sandbox_builder.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

@@ -48,6 +48,35 @@ struct FrameInput {
     float move_right = 0.0f;    // -1..1, D/A, across it
     float move_up = 0.0f;       // -1..1, E/Q, world +Y
     bool want_close = false;
+
+    // ----- Builder input (the builder task) -------------------------------
+    //
+    // THE ORBIT MOVED TO THE RIGHT BUTTON AND THAT IS A REQUIREMENT, NOT A
+    // PREFERENCE. Left-drag cannot both orbit the camera and move an object:
+    // whichever one it does, the other becomes unreachable. Every builder in
+    // this category resolves it the same way -- left selects and drags, right
+    // orbits -- so `orbit_dx/dy` are now fed by the RIGHT button and the left
+    // button reports as the three fields below.
+    //
+    // THREE FIELDS FOR ONE BUTTON, because a click and a drag are different
+    // gestures and collapsing them loses one. `left_click` is the EDGE (select
+    // or place), `left_down` is the LEVEL (continue a drag), `left_release`
+    // ends it. A builder written against the level alone re-picks every frame
+    // of a drag and the object you are moving swaps under the cursor.
+    float mouse_x = 0.0f;   // framebuffer pixels, ORIGIN TOP-LEFT, +y DOWN
+    float mouse_y = 0.0f;
+    bool left_click = false;
+    bool left_down = false;
+    bool left_release = false;
+
+    // Set when the UI owns the pointer/keys this frame. The scene must ignore
+    // input while a panel has it, or every click that lands on the inspector
+    // ALSO places an object behind it.
+    bool ui_captured_mouse = false;
+    bool ui_captured_keyboard = false;
+
+    bool delete_pressed = false;     // Delete/Backspace -- remove the selection
+    bool duplicate_pressed = false;  // Ctrl+D
 };
 
 // An orbit rig: a target point, a direction to it, and a distance.
