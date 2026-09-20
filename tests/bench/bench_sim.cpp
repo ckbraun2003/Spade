@@ -331,6 +331,141 @@ void BM_StepPlainBodiesGpu(benchmark::State& state) {
 BENCHMARK(BM_StepPlainBodiesGpu)->Arg(10)->Arg(100)->Arg(1000);
 
 // ---------------------------------------------------------------------------
+// Sweep 1b: THE CONTACT FALSIFIER -- the same bodies, packed so they TOUCH.
+//
+// ⭐⭐⭐ WHY THIS EXISTS, AND IT IS THE WHOLE REASON IT LANDS BEFORE ANY KERNEL
+// CHANGE. Sweep 1 above spaces bodies 2 m apart with a 0.4 m contact distance
+// (proxy_radius 0.2), so NOTHING EVER TOUCHES: `resolve_pair` returns at its
+// first test every time and 100% of the measured cost is a search that finds
+// nothing. A fix to the collision kernel measured against that fixture reports
+// a total win WHATEVER IT DOES, INCLUDING NOTHING.
+//
+// ***A BENCHMARK THAT CANNOT DISTINGUISH A FIX FROM A NO-OP IS NOT EVIDENCE
+// FOR EITHER, AND THE DIRECTION OF ITS ERROR IS FLATTERING.***
+//
+// ⚠ AND NO EXISTING FIXTURE ON THIS ESTATE CAN STAND IN: every world in
+// content/worlds/ declares capacities.bodies = 1 except swarm-grid, which has
+// 4. `collision_dynamic` is body-vs-body, so one body is no pair at all --
+// the shipped corpus provably cannot exercise it.
+//
+// ⭐⭐ THE PAIRED CONTROL IS THE POINT, NOT A GARNISH. This benchmark takes
+// SPACING as its second argument, so the identical scene runs dense and sparse
+// at the same body count. If the two do not differ, the fixture is not
+// measuring contact work and every number after it is worthless -- the same
+// shape as "10 boxes cost the same as 1 box" needing "3 shapes cost more" to
+// mean anything.
+//
+// WHY THE PILE STAYS PUT, which a contact benchmark has to get right or it
+// measures a different scene on every iteration: gravity is ZEROED and
+// restitution is ZERO. Bodies start at rest, overlap by construction, and
+// `resolve_pair` writes only velocity -- so with no gravity to drive them and
+// no bounce to separate them, the contact SET is constant for the whole run.
+// A pile that explodes apart would make the first iterations dense, the last
+// ones sparse, and the mean meaningless.
+[[nodiscard]] Simulation build_dense_bodies_sim(uint32_t body_count, float spacing,
+                                                const BackendDesc& backend = {}) {
+    Environment env;
+    env.gravity = glm::vec3(0.0f);  // see above -- keeps the contact set constant
+
+    const spade::WorldDesc world = unwrap(WorldBuilder()
+                                               .name("bench_dense_bodies")
+                                               .environment(env)
+                                               .capacities(Capacities{body_count, 1, 1, 1})
+                                               .build(),
+                                           "build dense-bodies world");
+
+    WorldInstanceDesc instance;
+    instance.world = world;
+    instance.seed = 0xD0FFE000ULL + body_count;
+    instance.turbulence = spade::dryden_params(TurbulenceLevel::none);
+    instance.contacts.restitution_e = 0.0f;  // no bounce -> the pile does not separate
+    instance.contacts.friction_mu = 0.5f;
+    instance.contacts.proxy_radius = 0.2f;   // contact distance 0.4 m
+    instance.grid.cell_size = 0.5f;          // >= 2 * proxy_radius
+
+    Simulation sim = unwrap(Simulation::create(WorldSetDesc{{instance}}, kDtNs, kSubsteps, backend),
+                             "Simulation::create (dense bodies)");
+
+    // A CUBE, not a plane. A 2D grid at close spacing gives each body 4
+    // neighbours; a 3D packing gives it 6, and the point of this fixture is to
+    // put real work into the narrow phase rather than to look dense.
+    const uint32_t side =
+        static_cast<uint32_t>(std::ceil(std::cbrt(static_cast<double>(body_count))));
+    for (uint32_t i = 0; i < body_count; ++i) {
+        const uint32_t x = i % side;
+        const uint32_t y = (i / side) % side;
+        const uint32_t z = i / (side * side);
+        BodySpawn body;
+        body.pos = glm::vec3(static_cast<float>(x), static_cast<float>(y),
+                             static_cast<float>(z)) *
+                   spacing;
+        body.mass = 1.0f;
+        body.inv_inertia_diag = glm::vec3(1.0f);
+        unwrap(sim.spawn(0, body), "spawn dense body");
+    }
+    unwrap(sim.flush_structural(), "flush_structural (dense bodies)");
+    return sim;
+}
+
+// range(0) = body count, range(1) = spacing in MILLIMETRES (benchmark args are
+// integers). 300 mm is inside the 400 mm contact distance; 2000 mm is Sweep
+// 1's spacing and is the CONTROL -- it must cost measurably less, or this
+// fixture is not doing what it claims.
+void BM_StepDenseBodies(benchmark::State& state) {
+    const uint32_t body_count = static_cast<uint32_t>(state.range(0));
+    const float spacing = static_cast<float>(state.range(1)) * 0.001f;
+    Simulation sim = build_dense_bodies_sim(body_count, spacing);
+
+    for (auto _ : state) {
+        const spade::Result<void> r = sim.step(kStepsPerIter);
+        if (!r) {
+            state.SkipWithError(r.error().context.c_str());
+            break;
+        }
+    }
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
+                            static_cast<int64_t>(kStepsPerIter));
+}
+BENCHMARK(BM_StepDenseBodies)
+    ->Args({100, 300})
+    ->Args({100, 2000})
+    ->Args({1000, 300})
+    ->Args({1000, 2000})
+    ->UseRealTime();
+
+void BM_StepDenseBodiesGpu(benchmark::State& state) {
+    try {
+        const uint32_t body_count = static_cast<uint32_t>(state.range(0));
+        const float spacing = static_cast<float>(state.range(1)) * 0.001f;
+        Simulation sim = build_dense_bodies_sim(body_count, spacing, BackendDesc{BackendKind::vulkan});
+
+        for (auto _ : state) {
+            const spade::Result<void> r = sim.step(kStepsPerIter);
+            if (!r) {
+                state.SkipWithError(r.error().context.c_str());
+                break;
+            }
+        }
+        state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
+                                static_cast<int64_t>(kStepsPerIter));
+        set_pass_duration_counters(state, sim);
+    } catch (const std::runtime_error& e) {
+        state.SkipWithError(e.what());
+    }
+}
+// ⚠ ->UseRealTime() IS LOAD-BEARING ON THE GPU ROWS AND ITS ABSENCE ALREADY
+// PRODUCED ONE WRONG CONCLUSION IN THIS FILE'S HISTORY. Without it, google
+// benchmark reports CPU time, and a host blocked in vkWaitForFences accrues
+// almost none -- so the GPU rows read as near-parity with the CPU and one row
+// reported inf/s. Only wall clock compares these two backends.
+BENCHMARK(BM_StepDenseBodiesGpu)
+    ->Args({100, 300})
+    ->Args({100, 2000})
+    ->Args({1000, 300})
+    ->Args({1000, 2000})
+    ->UseRealTime();
+
+// ---------------------------------------------------------------------------
 // Sweep 2: {1, 4, 16, 64} worlds x the quad scene -- one Quadrotor + one
 // ideal IMU per world, spawned IN TRIM (hover_command()), all worlds sharing
 // one ContactParams/GridParams so replicate() puts the set on the batched
