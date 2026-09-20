@@ -995,3 +995,130 @@ TEST(GridDynamicCollision, GridParamsIsStd430SafeAndByteDetermined) {
     EXPECT_EQ(gp._r1, 0.0f);
     EXPECT_EQ(gp._r2, 0.0f);
 }
+
+// ---------------------------------------------------------------------------
+// PAIR SYMMETRY -- the precondition for a Jacobi GATHER, tested before the
+// solver that depends on it exists.
+//
+// THE PLANNED SOLVER, AND WHY THIS IS ITS CHEAPEST FALSIFIER. Parallelising
+// the contact resolve means abandoning the sequential sweep, and the design
+// chosen is Jacobi with a PER-BODY GATHER: every body re-runs the search over
+// its own 27-cell neighbourhood, computes each contact's impulse from the
+// start-of-iteration state, and sums. No per-body contact lists, no atomics,
+// no sort -- the accumulation order is the search order, which is
+// deterministic by construction and independent of how many lanes run.
+//
+// That design rests entirely on one unproven claim: THE SAME CONTACT,
+// COMPUTED FROM BODY A'S SIDE AND FROM BODY B'S SIDE, MUST AGREE. Today's
+// sweep computes each pair ONCE, under `ea.slot < eb.slot`, so the claim has
+// never been exercised -- the lower slot is always `a` and nothing ever asks
+// what the other side would have produced.
+//
+// The argument for it is that every step is an exact IEEE negation: d = pb -
+// pa versus pa - pb negates exactly, dot(d,d) is identical because (-x)^2 ==
+// x^2, ra + rb is exactly commutative, and v_rel negates exactly. THAT IS AN
+// ARGUMENT. This branch reverted a GPU kernel (b157ebcd) whose correctness
+// rested on an ordering argument in exactly the right words, checked against
+// its author's intent rather than against emitted behaviour. So the argument
+// gets a test before the solver gets a line.
+//
+// ⭐ THE FIXTURE IS DELIBERATELY ASYMMETRIC AND THAT IS THE WHOLE TEST.
+// Unequal masses, an off-axis separation, and a tangential velocity so
+// friction actually engages. A head-on equal-mass collision along an axis is
+// symmetric BY ACCIDENT: a and b are interchangeable in it, so it would pass
+// under an implementation with a genuine side-dependence and prove nothing.
+// The companion case below asserts the asymmetry itself, so that if someone
+// later simplifies this scene into the tidy symmetric one, that goes red
+// instead of this going quiet.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Two bodies in contact, sharing nothing: different masses, separated
+// off-axis, each carrying velocity that is neither parallel nor
+// perpendicular to the contact normal.
+struct AsymmetricPair {
+    BodyState a;
+    BodyState b;
+};
+
+AsymmetricPair MakeAsymmetricPair() {
+    AsymmetricPair p{};
+    // |d| = sqrt(0.30^2 + 0.12^2 + 0.05^2) ~= 0.3270, inside kContactDist.
+    p.a = MakeBody(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.25f, -0.75f, 0.5f), 0.6f);
+    p.b = MakeBody(glm::vec3(0.30f, 0.12f, 0.05f), glm::vec3(-0.5f, 0.875f, -1.5f), 1.4f);
+    return p;
+}
+
+} // namespace
+
+TEST(GridPairSymmetry, TheSameContactAgreesBitwiseFromEitherBodysSide) {
+    const ContactParams cp = MakeContacts(/*e=*/0.35f, /*mu=*/0.55f);
+    const GridParams gp = MakeGrid(kContactDist);
+    const std::vector<uint32_t> worlds{0u, 0u};
+
+    // Order A: the pair as authored, so slot 0 is `a` in resolve_pair.
+    const AsymmetricPair p0 = MakeAsymmetricPair();
+    std::vector<BodyState> forward{p0.a, p0.b};
+    GridScratch s0;
+    resolve_dynamic_contacts(forward, worlds, gp, cp, s0);
+
+    // Order B: the SAME two bodies, array positions swapped, so the body that
+    // was `a` is now `b`. Nothing physical changed -- only which side of
+    // resolve_pair each body arrives on.
+    const AsymmetricPair p1 = MakeAsymmetricPair();
+    std::vector<BodyState> reversed{p1.b, p1.a};
+    GridScratch s1;
+    resolve_dynamic_contacts(reversed, worlds, gp, cp, s1);
+
+    // forward[0] and reversed[1] are the same body. BIT-IDENTICAL, not NEAR:
+    // the claim the gather rests on is exactness, and a tolerance here would
+    // pass for a side-dependence small enough to hide and large enough to
+    // diverge over a run.
+    EXPECT_EQ(std::memcmp(&forward[0].vel, &reversed[1].vel, sizeof(glm::vec3)), 0)
+        << "body A's velocity depends on which side of the contact it was computed from";
+    EXPECT_EQ(std::memcmp(&forward[0].pos, &reversed[1].pos, sizeof(glm::vec3)), 0)
+        << "body A's position correction depends on which side it was computed from";
+    EXPECT_EQ(std::memcmp(&forward[1].vel, &reversed[0].vel, sizeof(glm::vec3)), 0)
+        << "body B's velocity depends on which side of the contact it was computed from";
+    EXPECT_EQ(std::memcmp(&forward[1].pos, &reversed[0].pos, sizeof(glm::vec3)), 0)
+        << "body B's position correction depends on which side it was computed from";
+}
+
+// The fixture's own discrimination check -- the reason the case above means
+// anything. If the two bodies came out of the sweep with mirror-image states,
+// swapping their slots could not tell a correct implementation from a
+// side-dependent one.
+TEST(GridPairSymmetry, TheFixtureIsAsymmetricEnoughToDetectASideDependence) {
+    const ContactParams cp = MakeContacts(/*e=*/0.35f, /*mu=*/0.55f);
+    const GridParams gp = MakeGrid(kContactDist);
+    const std::vector<uint32_t> worlds{0u, 0u};
+
+    const AsymmetricPair p = MakeAsymmetricPair();
+    std::vector<BodyState> bodies{p.a, p.b};
+    GridScratch scratch;
+    resolve_dynamic_contacts(bodies, worlds, gp, cp, scratch);
+
+    // Unequal masses mean unequal velocity deltas: the impulse is shared by
+    // inverse mass, so the lighter body must move more. If these were equal
+    // the scene would be interchangeable under a <-> b.
+    const glm::vec3 dv_a = bodies[0].vel - p.a.vel;
+    const glm::vec3 dv_b = bodies[1].vel - p.b.vel;
+    ASSERT_GT(glm::length(dv_a), 0.0f) << "no contact was resolved -- the fixture is not touching";
+    ASSERT_GT(std::fabs(glm::length(dv_a) - glm::length(dv_b)), 1e-4f)
+        << "THE FIXTURE HAS STOPPED DISCRIMINATING. The two bodies now receive equal-magnitude "
+           "velocity changes, which means the scene is interchangeable under a <-> b and the "
+           "symmetry case above would pass even against an implementation whose result genuinely "
+           "depends on which side computed it. The usual cause is the masses having been made "
+           "equal, or the separation having been put back on an axis.";
+
+    // And the contact must engage friction, or the tangential half of
+    // resolve_pair -- the part with the most opportunity for side-dependence,
+    // since it reads the POST-normal-impulse relative velocity -- is never
+    // exercised at all.
+    const glm::vec3 d = glm::normalize(p.b.pos - p.a.pos);
+    const glm::vec3 v_rel = p.b.vel - p.a.vel;
+    const glm::vec3 v_tan = v_rel - d * glm::dot(v_rel, d);
+    ASSERT_GT(glm::length(v_tan), 1e-3f)
+        << "the approach is purely normal, so the friction branch never runs and the symmetry "
+           "case exercises only half of resolve_pair";
+}
