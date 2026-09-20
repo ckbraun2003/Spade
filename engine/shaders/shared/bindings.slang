@@ -263,6 +263,19 @@ import layouts;
 // the measurement.
 [[vk::binding(21, 0)]] RWStructuredBuffer<GridEntryRow> grid_entries;
 
+// The CollisionDynamic GATHER's start-of-iteration shadow of pos/vel/mass/
+// radius, one row per grid entry (layouts.slang's GatherBodyRow). Written by
+// the fill dispatch, read-only to the gather itself, and dead between passes
+// exactly as grid_entries is.
+//
+// IT IS A SEPARATE BUFFER BECAUSE THERE IS NO BARRIER TO PUT BETWEEN THE READS
+// AND THE WRITES. A gather thread reads every one of its partners and writes
+// only itself; with threads mapped to entries, another workgroup may already
+// have written a partner, and Vulkan offers no device-wide barrier inside a
+// dispatch. Shadowing the two fields this pass mutates is what makes the
+// iteration a Jacobi one rather than a race.
+[[vk::binding(22, 0)]] RWStructuredBuffer<GatherBodyRow> body_snapshot;
+
 // -- C'. the per-STEP exchange (S6 Task 5's finding C2, closed by Task 6) ----
 //
 // step_params is the ONE buffer whose contents change between two submits of

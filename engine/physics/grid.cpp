@@ -658,7 +658,7 @@ void resolve_dynamic_contacts_jacobi(std::span<BodyState> bodies,
     scratch.snapshot.clear();
     for (uint32_t i = 0; i < entry_count; ++i) {
         const BodyState& body = bodies[scratch.entries[i].slot];
-        scratch.snapshot.push_back(GatherBody{body.pos, body.vel, body.mass,
+        scratch.snapshot.push_back(GatherBody{body.pos, body.mass, body.vel,
                                               effective_proxy_radius(body, pp.default_radius)});
     }
 

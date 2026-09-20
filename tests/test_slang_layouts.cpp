@@ -136,6 +136,19 @@ const RegistryEntry kExpectedRegistry[] = {
     // is neither uploaded nor read back on the step path: the build, the sort
     // stages and the sweep all live inside one CollisionDynamic pass.
     {"grid_entries", gen::kBinding_grid_entries},
+    // The CollisionDynamic GATHER's start-of-iteration shadow of pos, vel,
+    // mass and the effective proxy radius -- one row per grid ENTRY, the
+    // device analogue of GridScratch::snapshot. DERIVED for the same reason
+    // grid_entries is: written by a dispatch inside the pass, never uploaded,
+    // never read back, and dead the moment the pass ends.
+    //
+    // IT IS A BUFFER RATHER THAN A BARRIER. A gather thread reads all of its
+    // partners and writes only itself; with threads mapped to entries another
+    // workgroup may already have written a partner, and Vulkan has no
+    // device-wide barrier inside a dispatch to separate the reads from the
+    // writes. Shadowing the two fields this pass mutates is what makes the
+    // iteration Jacobi rather than a race.
+    {"body_snapshot", gen::kBinding_body_snapshot},
 };
 
 // How many entries of kExpectedRegistry are DERIVED (not part of the
@@ -143,7 +156,7 @@ const RegistryEntry kExpectedRegistry[] = {
 // spelled as a literal in the count assertion below, so the assertion reads as
 // the sentence it is meant to be: nine arrays + four siblings + the derived
 // buffers, and nothing else.
-constexpr std::size_t kDerivedBufferCount = 9;
+constexpr std::size_t kDerivedBufferCount = 10;
 
 }  // namespace
 
@@ -172,11 +185,27 @@ constexpr std::size_t kDerivedBufferCount = 9;
 // that header's own struct rather than physics::GridEntry, for the reason
 // stated there (the CPU record nests a GridCell and is scratch, not state).
 //
+// TWENTY WITH THE JACOBI GATHER, which added one: GatherBodyRow -- the
+// start-of-iteration shadow of pos, vel, mass and the effective proxy radius
+// that the gather's per-pair math reads, mirroring physics::GatherBody
+// (physics/grid.hpp). Unlike GridEntryRow it mirrors the PHYSICS struct
+// directly rather than a compute-side twin, because there is no CPU/device
+// difference to absorb: both sides hold the same four fields in the same
+// std430 row, and the CPU copy exists for the same reason the device one does.
+//
+// AND THE MIRROR EARNED ITS KEEP IMMEDIATELY. The offsets were predicted
+// correctly and the ALIGNMENT was not: glm::vec3 aligns to 4, std430 requires
+// 16 for any struct holding a vector, and the size was already 32 -- so every
+// field would have read correctly and an ARRAY of them would have been strided
+// wrong, which is the kind of defect that surfaces as physics rather than as a
+// crash. The generated assert named it in one line. A layout claim nobody can
+// check is exactly what this count exists to make impossible.
+//
 // WITHOUT THIS TEST a generator bug that emitted an empty layout_check.gen.hpp
 // would produce a green build: zero static_asserts all pass. The count is the
 // only thing that distinguishes "checked everything" from "checked nothing".
 TEST(SlangLayouts, GeneratedHeaderChecksEveryMirroredStruct) {
-    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{19});
+    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{20});
     EXPECT_EQ(spade::compute::layout_check_mirrored_struct_count(), gen::kMirroredStructCount);
 }
 

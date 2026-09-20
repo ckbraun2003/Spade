@@ -399,10 +399,31 @@ struct GridCellRun {
 // once per body when the snapshot is taken, instead of twice per pair
 // examination as the Gauss-Seidel sweep does it.
 // ---------------------------------------------------------------------------
-struct GatherBody {
+// FIELD ORDER IS THE std430 ROW'S, NOT A READING ORDER. `mass` sits between
+// `pos` and `vel` because a float3 aligns to 16 bytes in std430, so the fourth
+// lane after `pos` exists whether or not anything occupies it -- putting a
+// scalar there is free, and putting it anywhere else costs 16 bytes of pad.
+// The layout is therefore
+//
+//     pos 0..11   mass 12..15   vel 16..27   radius 28..31      32 bytes
+//
+// which is exactly shaders/shared/layouts.slang's GatherBodyRow, and the
+// generated static_assert in layout_check.gen.hpp is what holds the two to it
+// -- gen_layout_check.py fails the build for a mirror it cannot check.
+// BodyState uses the same trick one row up (`float3 pos; float proxy_radius;`).
+//
+// alignas IS NOT DECORATION AND I DID NOT PREDICT NEEDING IT. The offsets came
+// out right first time; the ALIGNMENT did not. glm::vec3 is three floats and
+// aligns to 4, so this struct's natural alignment is 4 while std430 requires
+// 16 for any struct containing a vector -- the size was already 32, so nothing
+// about reading the fields would have looked wrong, and an array of these
+// would have been laid out at a stride the device does not agree with. The
+// generated check named it exactly: "C++ alignment does not satisfy the Slang
+// std430 alignment (16)". Same alignas every other mirrored row carries.
+struct alignas(kStd430StructAlignment) GatherBody {
     glm::vec3 pos{0.0f};
-    glm::vec3 vel{0.0f};
     float mass = 0.0f;
+    glm::vec3 vel{0.0f};
     float radius = 0.0f;
 };
 

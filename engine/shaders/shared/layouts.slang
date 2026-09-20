@@ -481,6 +481,42 @@ struct GridEntryRow {
 };
 
 // ---------------------------------------------------------------------------
+// GatherBodyRow -- the CollisionDynamic GATHER's start-of-iteration shadow of
+// the state its per-pair math reads. One row per grid ENTRY, not per body.
+//
+// WHY A SHADOW EXISTS AT ALL. A Jacobi gather has every body compute its
+// contacts from the state at the start of the iteration and write only itself,
+// which is what makes the answer independent of how many lanes are running.
+// Threads cannot read `bodies` for that: another thread may already have
+// written it, and there is no barrier across workgroups to put between the
+// reads and the writes.
+//
+// WHY IT IS 32 BYTES AND NOT 128. The pass writes `pos` and `vel` AND NOTHING
+// ELSE, so `mass`, the proxy radius and the flags cannot change during it and
+// shadowing them would be copying something already immutable -- a second
+// BodyState row would be four times the bandwidth for no additional fact.
+// `mass` and `radius` ride here anyway because they occupy lanes std430 would
+// pad regardless: a float3 aligns to 16, so the scalar after each vector is
+// free, and carrying them removes the kernel's last read of `bodies`.
+// `radius` is ALREADY effective_proxy_radius() -- the 0 sentinel is resolved
+// once per body when the shadow is filled, rather than twice per pair
+// examination as the Gauss-Seidel sweep does it.
+//
+// NOT REGISTERED STATE and not snapshot-walked: it is a pure function of the
+// body positions at the instant the pass begins, rebuilt by the first dispatch
+// of every gather. Same lifetime GridEntryRow has, and the same lifetime
+// GridScratch::snapshot has on the CPU.
+// ---------------------------------------------------------------------------
+// @cpp-type   spade::physics::GatherBody
+// @cpp-header physics/grid.hpp
+struct GatherBodyRow {
+    float3 pos;     //  0..11  world-frame position at the start of the iteration, m
+    float  mass;    // 12..15  kg -- the lane std430 pads after a float3
+    float3 vel;     // 16..27  world-frame linear velocity at the start of the iteration, m/s
+    float  radius;  // 28..31  ALREADY-effective contact-proxy radius, m
+};
+
+// ---------------------------------------------------------------------------
 // StepParams -- the PER-STEP host write (S6 Task 5 review round 1, finding C2;
 // consumed on the device for the first time by S6 Task 6). One 8-byte row, one
 // element: the host rewrites it before every vkQueueSubmit, which is exactly
