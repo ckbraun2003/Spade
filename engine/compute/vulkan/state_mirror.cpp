@@ -435,6 +435,16 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
             !made) {
             return std::unexpected(made.error());
         }
+
+        // The gather's shadow, one row per entry -- the SAME domain, from the
+        // same grid_domain_of(shape) call, so a sizing change cannot move one
+        // without the other.
+        if (Result<void> made = make_derived(self->body_snapshot_, "body_snapshot",
+                                              static_cast<uint32_t>(sizeof(spade::physics::GatherBody)),
+                                              domain.entry_count, gen::kBinding_body_snapshot);
+            !made) {
+            return std::unexpected(made.error());
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -507,7 +517,8 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     {
         std::vector<Entry*> derived{&self->dryden_params_, &self->sdf_nodes_,      &self->sdf_transforms_,
                                     &self->sdf_ranges_,    &self->step_witness_,   &self->contact_params_,
-                                    &self->grid_params_,   &self->grid_entries_};
+                                    &self->grid_params_,   &self->grid_entries_,
+                                    &self->body_snapshot_};
         for (Entry* e : derived) {
             if (e->byte_size > 0) std::memset(e->staging_mapped, 0, static_cast<std::size_t>(e->byte_size));
         }

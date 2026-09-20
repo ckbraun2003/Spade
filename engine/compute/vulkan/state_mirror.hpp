@@ -234,6 +234,21 @@ private:
     // is.
     Entry grid_entries_;
 
+    // body_snapshot_ (binding 22) -- the Jacobi gather's start-of-iteration
+    // shadow of pos/vel/mass/radius, ONE ROW PER GRID ENTRY, so it is sized
+    // from the same grid_domain_of(shape) as grid_entries_ and the two cannot
+    // disagree about how big the domain is.
+    //
+    // IT EXISTS BECAUSE THERE IS NO BARRIER TO PUT BETWEEN THE READS AND THE
+    // WRITES, not to save bandwidth. A gather thread reads every one of its
+    // partners and writes only itself; with threads mapped to entries another
+    // workgroup may already have written a partner, and Vulkan offers no
+    // device-wide barrier inside a dispatch. The fill kernel writes this, the
+    // gather reads it, and a dispatch boundary separates them.
+    //
+    // Derived, never uploaded and never read back, exactly like grid_entries_.
+    Entry body_snapshot_;
+
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer
     // here is device-local with a host-visible staging partner and an explicit
     // copy between them; step_params_ has only the staging half -- a

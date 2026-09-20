@@ -50,6 +50,8 @@
 #include "kernel_manifest.gen.hpp"
 #include "layout_check.gen.hpp"
 #include "collision_dynamic.spv.gen.hpp"
+#include "collision_fill.spv.gen.hpp"
+#include "collision_gather.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
@@ -385,6 +387,30 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_grid_build, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_grid_sort, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
     {gen::kSpvVariants_collision_dynamic, spade::testing::SpirvProfile::parity},
+    // The Jacobi gather and its fill dispatch. Same PARITY profile as the
+    // sweep it mirrors, because it performs the same per-pair arithmetic in
+    // the same op order -- gather_apply_for_a IS resolve_pair with the
+    // b-side writes deleted, so anything the profile forbids one of them is
+    // forbidden the other. Its own module rather than two more entry points
+    // in collision_dynamic: the variant scan below requires exactly one
+    // differing word between two workgroup sizes, and three entry points
+    // would make that three.
+    // collision_fill is PARITY with integer_only, for grid_sort's reason
+    // reached from a different direction. It is a COPY: it reads pos, mass,
+    // vel and the effective radius off a body and writes them into the
+    // shadow, and effective_proxy_radius is a select rather than arithmetic.
+    // So it contains NO contractable float op, and parity's default
+    // non-vacuity instrument -- "at least one" -- would fail on it.
+    //
+    // ZERO IS THE POSITIVE ASSERTION HERE, NOT AN EXEMPTION. Float arithmetic
+    // appearing in this kernel would mean it had stopped being a copy and
+    // started computing something, which is exactly the defect that would make
+    // the shadow not a shadow of the START-of-iteration state. Demanding one
+    // contractable op would force fake work in to satisfy the checker, which
+    // is the trap spirv_scan.hpp's NO_OP note names. Policy is unchanged: P1,
+    // P2 and P3 all still apply in full.
+    {gen::kSpvVariants_collision_fill, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
+    {gen::kSpvVariants_collision_gather, spade::testing::SpirvProfile::parity},
     // S6 Task 8's three, completing the schedule, all under PARITY for wave A's
     // reasons. What each one CARRIES is the part worth naming, since a module
     // reaches SPIR-V only through a kernel that imports it and scanning the
@@ -704,7 +730,7 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
     // 9*sizes+1 modules) rather than the total-entry-count gap
     // gen::kCompiledSpirvKernelCount above now closes. Folding these into
     // the generated manifest too is exactly the review's larger "S" option.
-    constexpr std::size_t kScheduleKernels = 9;
+    constexpr std::size_t kScheduleKernels = 11;
     constexpr std::size_t kSingleVariantKernels = 1;  // fp32_math_probe
 
     std::size_t scanned = 0;

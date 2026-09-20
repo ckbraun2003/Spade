@@ -1092,6 +1092,17 @@ spade_slang_kernel_variants(spade_compute grid_build)
 spade_slang_kernel_variants(spade_compute grid_sort)
 spade_slang_kernel_variants(spade_compute collision_dynamic)
 
+# collision_gather -- the same pass as a Jacobi gather, one thread per ENTRY
+# rather than one per world, plus the fill dispatch that takes its
+# start-of-iteration shadow. Its own file rather than two more entry points in
+# collision_dynamic.slang: SlangSpirv.EveryCompiledVariantIsScanned requires
+# two workgroup-size variants of a module to differ in EXACTLY ONE word, and a
+# module with three entry points has three LocalSize declarations. The guard is
+# the estate's only automatic detector of lane-dependent codegen -- the one
+# L306 was reverted by -- so the file splits and the guard stays exact.
+spade_slang_kernel_variants(spade_compute collision_fill)
+spade_slang_kernel_variants(spade_compute collision_gather)
+
 # ------------------------------------------------------------------------------
 # S6 TASK 8 -- kernels wave C, which completes all eight schedule passes.
 #
