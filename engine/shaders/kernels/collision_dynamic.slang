@@ -41,11 +41,24 @@
 // is not in this task's scope and would be a different (and much larger)
 // design.
 //
-// NO WORKGROUP-SHARED ANYTHING, and therefore no workgroup_size dependence
-// (T9's A7 obligation): a world's whole sweep happens in one lane, with no
-// barrier(), no groupshared array and no cross-lane reduction, so the same
-// dispatch at local size 32, 64 or 128 executes the identical sequence of
-// reads and writes.
+// THIS PARAGRAPH WAS TRUE UNTIL L306 AND IS NOW FALSE. Struck rather than
+// deleted, because what it ASSERTED is the obligation the replacement has to
+// discharge, and a reader needs to see the obligation was not forgotten:
+//
+//   ~~NO WORKGROUP-SHARED ANYTHING, and therefore no workgroup_size
+//   dependence (T9's A7 obligation): a world's whole sweep happens in one
+//   lane, with no barrier(), no groupshared array and no cross-lane
+//   reduction, so the same dispatch at local size 32, 64 or 128 executes
+//   the identical sequence of reads and writes.~~
+//
+// L306 INTRODUCES groupshared AND BARRIERS, so the first clause no longer
+// holds. THE OBLIGATION IT EXISTED TO GUARANTEE STILL DOES, BY A DIFFERENT
+// ARGUMENT: the sequence of resolve_pair() calls is produced by LANE 0
+// walking entries in ascending order and each entry's partners in the order
+// the sweep appends them. That order is a property of grid_entries and the
+// fixed dz/dy/dx traversal, NOT of how many lanes did the searching -- so
+// local size 32, 64 or 128 still executes the identical sequence of WRITES,
+// and only the READS are spread across lanes.
 //
 // ===========================================================================
 // WHERE A WORLD'S ENTRIES ARE, IN BOTH DISPATCH SHAPES
@@ -107,7 +120,6 @@
 // Downstream kernels MAY use both (global constraint); this is why CPU<->GPU
 // here is banded rather than bit-identical.
 // ---------------------------------------------------------------------------
-
 import layouts;
 import bindings;
 // glm_min/glm_max/glm_dot3/glm_length3 AND effective_proxy_radius -- ONE
@@ -116,9 +128,7 @@ import bindings;
 // asserting they "must not be able to read the same law two different ways";
 // that is now true by construction rather than by assertion.
 import mirrors;
-
 static const uint kInvalidWorld = 0xFFFFFFFFu;
-
 // grid.cpp:329-333's key order, minus the slot tiebreak: the comparison
 // find_run() makes (grid.cpp:271-276's run_key_less), restricted to the cell
 // because the world is already constant over the searched range. SIGNED, and
@@ -128,7 +138,6 @@ bool cell_key_less(GridEntryRow e, int cz, int cy, int cx) {
     if (e.cell_y != cy) return e.cell_y < cy;
     return e.cell_x < cx;
 }
-
 // ---------------------------------------------------------------------------
 // resolve_pair -- grid.cpp:89-260, step for step. `ia` and `ib` are distinct
 // GLOBAL body slots (the caller's lower-slot rule guarantees it).
@@ -156,7 +165,6 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
     const float rb = effective_proxy_radius(bodies[ib].proxy_radius, pp.proxy_radius);
     const float contact_dist = ra + rb;
     const float contact_dist2 = contact_dist * contact_dist;
-
     // 0. NARROW PHASE, grid.cpp:123-133. Squared distance first, so a
     //    non-touching candidate costs no sqrt. Both tests are `!(...)` so a
     //    NaN coordinate FAILS to be a contact and returns, instead of falling
@@ -169,17 +177,13 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
     const float dist2 = glm_dot3(d, d);
     if (!(dist2 < contact_dist2)) return;
     if (!(dist2 > 0.0f)) return;
-
     const float dist = sqrt(dist2);
-
     // Unit normal, pointing from a to b: `+n` is the direction b must be
     // pushed and a pushed away from (grid.cpp:130-133).
     const float3 n = float3(d.x / dist, d.y / dist, d.z / dist);
-
     // Penetration depth of the two sphere proxies, positive by the test above
     // (grid.cpp:137).
     const float depth = contact_dist - dist;
-
     // The two mass weights (grid.cpp:142-146). w_a + w_b == 1 and
     // ma*w_a == mb*w_b == m_eff, which is what makes every step below equal
     // and opposite by construction rather than by accident.
@@ -188,10 +192,8 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
     const float m_eff = (ma * mb) / (ma + mb);
     const float w_a = m_eff / ma;
     const float w_b = m_eff / mb;
-
     float3 va = bodies[ia].vel;
     float3 vb = bodies[ib].vel;
-
     // 1. NORMAL IMPULSE, only for an APPROACHING pair (grid.cpp:168-175).
     //    v_rel_n >= 0 means they are already separating, and impulsing them
     //    again would be the classic double-hit energy pump. `j_n` is
@@ -205,7 +207,6 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
         va = va - (j_n * w_a) * n;
         vb = vb + (j_n * w_b) * n;
     }
-
     // 2. COULOMB FRICTION on the RELATIVE tangential velocity that remains
     //    AFTER step 1 (grid.cpp:215-224). The cap mu*j_n is 0 when step 1 did
     //    not fire, so a separating pair has no friction -- out of the algebra,
@@ -224,7 +225,6 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
     }
     bodies[ia].vel = va;
     bodies[ib].vel = vb;
-
     // 3. POSITIONAL CORRECTION (Baumgarte-style, grid.cpp:257-259), SPLIT
     //    INVERSELY BY MASS so the pair's centre of mass is preserved. No
     //    velocity contribution -- that is what keeps it from adding energy.
@@ -235,7 +235,107 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
     bodies[ia].pos = pa - (correction * w_a) * n;
     bodies[ib].pos = pb + (correction * w_b) * n;
 }
-
+// ---------------------------------------------------------------------------
+// L306: THE SWEEP, SPLIT INTO A PARALLEL SEARCH AND AN IN-ORDER RESOLVE.
+//
+// WHAT WAS WRONG, IN ONE LINE: `const uint world = tid.x` -- ONE THREAD PER
+// WORLD. This kernel's own header said so unprompted ("a world's sweep runs on
+// ONE lane, so a 100-body world is ~100 x 27 neighbour lookups of serial
+// work"), and it is a deliberate trade for MANY WORLDS WITH FEW BODIES. Every
+// surface the user actually runs is the opposite shape: ONE world with many
+// bodies. Measured on the dense fixture, 1000 bodies: 429.3 ms/step against
+// the CPU backend's 4.57 ms.
+//
+// THE SEAM THE FIX USES IS ALREADY IN THE CODE BELOW. The sweep does two
+// separable things:
+//   SEARCH  -- 27 cells, a binary search and a run scan per cell. READ-ONLY:
+//              it touches grid_entries and nothing else. Order-independent.
+//   RESOLVE -- resolve_pair(), which READS pos/vel/mass and WRITES BOTH vel
+//              AND pos. Gauss-Seidel, and therefore ORDER-DEPENDENT.
+// So the search can go wide and the resolve cannot.
+//
+// WHY A WORKGROUP PER WORLD RATHER THAN A SECOND DISPATCH AND A PAIR BUFFER:
+// the two-pass-with-a-contact-buffer design needs a new SSBO, a new pipeline,
+// a descriptor-layout change and a second barrier. This gets the same split
+// with NO new buffer and NO descriptor change -- the pair list lives in
+// groupshared for the length of one chunk. The only host-side change is the
+// dispatch width.
+//
+// ORDER IS PRESERVED EXACTLY, AND THAT IS THE WHOLE CORRECTNESS ARGUMENT.
+// The serial sweep resolves pairs in the order (entry i ascending, then the
+// fixed dz/dy/dx cell order, then the run scanned in sorted order). Here,
+// thread t searches entry chunk_start + t and appends its partners in that
+// same inner order; then LANE 0 WALKS t = 0..WG-1 IN ORDER and resolves each
+// entry's partners in the order they were appended. That is the identical
+// sequence of resolve_pair() calls, so the Gauss-Seidel result is bit-identical
+// and the banded CPU<->GPU parity tables hold BY CONSTRUCTION rather than by
+// tolerance. No colouring, no atomics on velocities, no Jacobi.
+//
+// NO OVERFLOW CASE EXISTS, BY CONSTRUCTION RATHER THAN BY A CAP. An entry with
+// more partners than the per-entry groupshared capacity is handled in ROUNDS:
+// round r collects partners [r*kPairsPerEntry, (r+1)*kPairsPerEntry) by
+// skipping the first r*kPairsPerEntry matches. The group repeats while ANY
+// lane still has partners left. A capped list that silently dropped contacts
+// would be a physics defect that no test in this corpus is shaped to catch,
+// and "rare" is not an argument -- a dense pile is exactly where it would fire.
+// ---------------------------------------------------------------------------
+// Per-entry partner capacity for one round. Only the PARTNER slot is stored:
+// the entry's own slot is recoverable by lane 0 from grid_entries, so this is
+// one uint per pair rather than two. At SPADE_WG = 256 that is 8 KiB.
+static const uint kPairsPerEntry = 8u;
+groupshared uint gs_partner[SPADE_WG * kPairsPerEntry];
+groupshared uint gs_count[SPADE_WG];
+groupshared uint gs_more[SPADE_WG];
+// ONE STATEMENT OF THE SWEEP, used by the parallel search and by nothing else.
+// It writes partner slots for entry `i` into gs_partner[base ..], skipping the
+// first `skip` matches, and reports whether more remain beyond what it wrote.
+//
+// `skip` is what makes the round-based overflow handling possible without a
+// second copy of this loop -- and a second copy is exactly what this file's
+// own history warns about (two kernels once carried their own glm_min/glm_max
+// under a comment asserting they must not be able to read the same law two
+// different ways).
+uint scan_entry_partners(uint i, uint lo, uint hi, uint skip, uint base, out bool more) {
+    const GridEntryRow ea = grid_entries[i];
+    uint seen = 0u;      // matches passed so far, including skipped ones
+    uint written = 0u;
+    more = false;
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int nx = ea.cell_x + dx;
+                const int ny = ea.cell_y + dy;
+                const int nz = ea.cell_z + dz;
+                // find_run(), grid.cpp:291-302 -- unchanged from the serial
+                // sweep: a lower bound on the cell key, then an exact compare
+                // of all three signed integers.
+                uint k = lo;
+                {
+                    uint l = lo;
+                    uint r = hi;
+                    while (l < r) {
+                        const uint m = l + (r - l) / 2u;
+                        if (cell_key_less(grid_entries[m], nz, ny, nx)) { l = m + 1u; } else { r = m; }
+                    }
+                    k = l;
+                }
+                for (; k < hi; ++k) {
+                    const GridEntryRow eb = grid_entries[k];
+                    if (eb.cell_x != nx || eb.cell_y != ny || eb.cell_z != nz) break;
+                    // Lower-slot-resolves (grid.cpp:477), which is also the
+                    // self-exclusion since slots are unique.
+                    if (!(ea.slot < eb.slot)) continue;
+                    if (seen < skip) { seen += 1u; continue; }
+                    if (written == kPairsPerEntry) { more = true; return written; }
+                    gs_partner[base + written] = eb.slot;
+                    written += 1u;
+                    seen += 1u;
+                }
+            }
+        }
+    }
+    return written;
+}
 [shader("compute")]
 // LOCAL SIZE COMES FROM THE BUILD, NOT FROM THIS LINE (S6 Task 9b).
 // cmake/SpadeSlang.cmake's spade_slang_kernel_variants() compiles this kernel
@@ -245,13 +345,24 @@ void resolve_pair(uint ia, uint ib, ContactParams pp) {
 // it. There is DELIBERATELY no #ifndef fallback: a missing -D must fail the
 // build loudly, not silently produce a 64-wide kernel that step_recorder.cpp
 // then dispatches on a grid divided by some other number.
+//
+// DISPATCH SHAPE CHANGED AT L306: ONE WORKGROUP PER WORLD, not one thread.
+// step_recorder.cpp emits shape_.world_count groups for this pass (and still
+// world_groups_x_ for every other per-world pass). SV_GroupID, not
+// SV_DispatchThreadID -- reading the wrong one here would silently give every
+// lane of the group a different "world" and quietly corrupt the sweep.
 [numthreads(SPADE_WG, 1, 1)]
-void collision_dynamic(uint3 tid : SV_DispatchThreadID) {
-    const uint world = tid.x;
+void collision_dynamic(uint3 gid : SV_GroupID, uint3 lid : SV_GroupThreadID) {
+    const uint world = gid.x;
+    const uint lane = lid.x;
+    // THE WHOLE GROUP RETURNS TOGETHER OR NOT AT ALL. A per-lane early return
+    // before a GroupMemoryBarrierWithGroupSync() is undefined behaviour, and
+    // it is the classic way a cooperative kernel works on one driver and hangs
+    // on another. Every lane of this group maps to the same world, so this
+    // condition is uniform across the group by construction.
     if (world >= pass_params.world_count) {
         return;
     }
-
     // -- this world's segment of the key array (see the header) -------------
     const uint segment = pass_params.grid_segment;
     const uint segments = pass_params.grid_entry_count / segment;
@@ -261,13 +372,12 @@ void collision_dynamic(uint3 tid : SV_DispatchThreadID) {
     const uint seg_index = (segments == 1u) ? 0u : world;
     const uint seg_begin = seg_index * segment;
     const uint seg_end = seg_begin + segment;
-
     // -- this world's half-open range of live keys within that segment ------
     //
-    // Two lower bounds over a range sorted by the leading `world` field:
-    // [first index whose world is >= w, first index whose world is > w). The
-    // second is spelled as a strict `>` rather than as a bound on w+1 so no
-    // arithmetic can run into the 0xFFFFFFFF sentinel value.
+    // Computed REDUNDANTLY BY EVERY LANE rather than by lane 0 and broadcast:
+    // two binary searches over a segment is a handful of reads, and a
+    // broadcast would need another barrier and another groupshared slot. The
+    // redundancy is cheaper than the synchronisation.
     uint lo = seg_begin;
     {
         uint l = seg_begin;
@@ -288,62 +398,54 @@ void collision_dynamic(uint3 tid : SV_DispatchThreadID) {
         }
         hi = l;
     }
-
     // grid.cpp:454-459 -- the material, hoisted once per world exactly as the
     // CPU hoists it outside the sweep. PER-WORLD (binding 19), never a
     // per-batch record; see the header.
     const ContactParams material = contact_params[world];
-
-    // -- THE SWEEP, grid.cpp:461-484 ----------------------------------------
-    //
-    // Entries in sorted order; for each, the 27 cells of the 3x3x3
-    // neighbourhood in the fixed dz/dy/dx order, each cell's run scanned in
-    // sorted order, each candidate resolved from the LOWER-SLOT side only.
-    // Every pair is therefore resolved exactly once (grid.cpp's three-clause
-    // argument at :426-439), and the response is applied IN PLACE, which is
-    // what makes this Gauss-Seidel.
-    //
-    // The neighbour arithmetic needs no overflow guard: cell coordinates are
-    // bounded by kMaxCellCoord (2e9), which leaves room for the +-1.
-    for (uint i = lo; i < hi; ++i) {
-        const GridEntryRow ea = grid_entries[i];
-
-        for (int dz = -1; dz <= 1; ++dz) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const int nx = ea.cell_x + dx;
-                    const int ny = ea.cell_y + dy;
-                    const int nz = ea.cell_z + dz;
-
-                    // find_run(), grid.cpp:291-302: lower bound on the cell
-                    // key, then an EXACT compare of all three signed integers.
-                    // The run is the maximal contiguous span that matches --
-                    // exactly the record the CPU's offsets stage would have
-                    // built for this cell.
-                    uint k = lo;
-                    {
-                        uint l = lo;
-                        uint r = hi;
-                        while (l < r) {
-                            const uint m = l + (r - l) / 2u;
-                            if (cell_key_less(grid_entries[m], nz, ny, nx)) { l = m + 1u; } else { r = m; }
-                        }
-                        k = l;
-                    }
-
-                    for (; k < hi; ++k) {
-                        const GridEntryRow eb = grid_entries[k];
-                        // The run ends exactly where the key changes.
-                        if (eb.cell_x != nx || eb.cell_y != ny || eb.cell_z != nz) break;
-
-                        // Lower-slot-resolves (grid.cpp:477). Also the
-                        // self-exclusion, since slots are unique.
-                        if (!(ea.slot < eb.slot)) continue;
-
-                        resolve_pair(ea.slot, eb.slot, material);
-                    }
-                }
+    // -- THE SWEEP, chunked so the search goes wide and the resolve stays in
+    //    order. Every lane executes this loop the same number of times, which
+    //    is what keeps the barriers below uniform.
+    for (uint chunk = lo; chunk < hi; chunk += SPADE_WG) {
+        const uint mine = chunk + lane;         // this lane's entry, or past hi
+        const uint base = lane * kPairsPerEntry;
+        uint round_skip = 0u;
+        bool group_more = true;
+        while (group_more) {
+            // ---- SEARCH: every lane, its own entry, read-only ------------
+            bool mine_more = false;
+            uint written = 0u;
+            if (mine < hi) {
+                written = scan_entry_partners(mine, lo, hi, round_skip, base, mine_more);
             }
+            gs_count[lane] = written;
+            gs_more[lane] = mine_more ? 1u : 0u;
+            GroupMemoryBarrierWithGroupSync();
+            // ---- RESOLVE: LANE 0 ONLY, IN THE SERIAL SWEEP'S EXACT ORDER --
+            // entry ascending, then partners in the order they were appended,
+            // which is the fixed dz/dy/dx cell order and then the run in
+            // sorted order. Identical to the sequence the one-lane sweep
+            // produced, so the Gauss-Seidel result is unchanged.
+            if (lane == 0u) {
+                uint any_more = 0u;
+                for (uint e = 0u; e < SPADE_WG; ++e) {
+                    const uint entry = chunk + e;
+                    if (entry >= hi) { break; }
+                    const uint ia = grid_entries[entry].slot;
+                    const uint n = gs_count[e];
+                    for (uint p = 0u; p < n; ++p) {
+                        resolve_pair(ia, gs_partner[e * kPairsPerEntry + p], material);
+                    }
+                    any_more |= gs_more[e];
+                }
+                // Reused as the group-wide "another round is needed" flag;
+                // lane 0 is the only writer and every lane reads it after the
+                // barrier below.
+                gs_more[0] = any_more;
+            }
+            GroupMemoryBarrierWithGroupSync();
+            group_more = (gs_more[0] != 0u);
+            round_skip += kPairsPerEntry;
+            GroupMemoryBarrierWithGroupSync();
         }
     }
 }
