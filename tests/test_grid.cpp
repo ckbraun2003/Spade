@@ -1294,3 +1294,127 @@ TEST(GridJacobiGather, BothSolversWritePosAndVelAndNothingElse) {
                "gather -- and the GPU mirror's per-body shadow buffer is sized on the same claim.";
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE THIRD ARM: THE GATHER'S UPDATE IS THE SUM OF ITS PAIRWISE UPDATES.
+//
+// WHY THIS EXISTS, AND IT IS A HOLE THE FIRST FOUR CASES CANNOT COVER. Every
+// case above tests the gather against the SWEEP -- identical on one pair,
+// different on two. That pair of claims is blind to a whole family of defect:
+// anything that is correct for one partner and wrong for several STILL agrees
+// on one pair and STILL disagrees on three, so both assertions pass.
+//
+// The concrete instance, found while drafting the Slang port rather than by
+// reading these tests: resolve_pair's positional step writes ABSOLUTELY,
+//
+//     bodies[ia].pos = pa - (correction * w_a) * n;     // pa read at the top
+//
+// where the CPU's resolve_pair ACCUMULATES (`a.pos -= ...`). The two forms
+// agree for one pair and only for one pair. A gather that inherited the
+// absolute form would apply ONLY THE LAST PARTNER'S positional correction --
+// every body still moves, every two-body case above still passes, every
+// three-body inequality above still holds, and a stack silently de-penetrates
+// against one neighbour out of six.
+//
+// SO THIS CASE ASSERTS WHAT JACOBI *IS*, NOT WHAT IT IS NOT. One iteration
+// computes every contact from the same start-of-iteration state and sums, so
+// a body's update MUST equal the sum of the updates it would receive from
+// each partner alone. That is a positive characterisation, it is checkable
+// without reference to the sweep, and it is exactly the property a scatter,
+// an atomic or a last-write-wins port would break.
+//
+// ⭐ AND IT IS THE ARM THE GPU PORT NEEDS MOST: the kernel's per-pair
+// arithmetic can be verified against the CPU, but "did every partner's
+// contribution survive the accumulation" is the question a thread-per-entry
+// rewrite actually risks getting wrong.
+// ---------------------------------------------------------------------------
+
+TEST(GridJacobiGather, ABodysUpdateIsTheSumOfItsPairwiseUpdates) {
+    const ContactParams cp = MakeContacts(/*e=*/0.3f, /*mu=*/0.2f);
+    const GridParams gp = MakeGrid(1.0f);
+    const std::vector<uint32_t> worlds{0u, 0u, 0u};
+
+    // The triangle again: every body is in contact with both others, so every
+    // body has exactly two contributions to add.
+    const auto make = [] {
+        std::vector<BodyState> v{
+            MakeBody(glm::vec3(0.5f, 0.5f, 0.5f), glm::vec3(0.6f, 0.4f, 0.0f), 1.0f),
+            MakeBody(glm::vec3(0.9f, 0.5f, 0.5f), glm::vec3(-0.5f, 0.3f, 0.1f), 2.0f),
+            MakeBody(glm::vec3(0.7f, 0.84641016f, 0.5f), glm::vec3(0.1f, -0.7f, -0.2f), 3.0f)};
+        return v;
+    };
+    const std::vector<BodyState> initial = make();
+
+    GridScratch scratch;
+
+    // The full gather: all three bodies, two partners each.
+    std::vector<BodyState> full = make();
+    resolve_dynamic_contacts_jacobi(full, worlds, gp, cp, scratch);
+
+    // One run per PAIR, isolated with body_flags::active exactly as the
+    // sweep's three-pair case isolates its pairs. Inactive bodies get no grid
+    // entry, so the remaining two see only each other.
+    const std::size_t partners[3][2] = {{1, 2}, {0, 2}, {0, 1}};
+
+    for (std::size_t self = 0; self < 3; ++self) {
+        glm::vec3 sum_dpos(0.0f);
+        glm::vec3 sum_dvel(0.0f);
+
+        for (const std::size_t other : partners[self]) {
+            std::vector<BodyState> pair = make();
+            for (BodyState& b : pair) b.flags = 0u;
+            pair[self].flags = body_flags::active;
+            pair[other].flags = body_flags::active;
+
+            resolve_dynamic_contacts_jacobi(pair, worlds, gp, cp, scratch);
+
+            const glm::vec3 dpos = pair[self].pos - initial[self].pos;
+            const glm::vec3 dvel = pair[self].vel - initial[self].vel;
+
+            // ANTI-VACUITY, AND IT IS WHAT MAKES THE TOLERANCE BELOW MEAN
+            // SOMETHING. If a single-partner contribution were itself near
+            // zero, the sum would match the full update whether or not the
+            // terms were being accumulated, and this case would pass against
+            // the very defect it exists to catch. Both contributions must be
+            // orders of magnitude above the comparison tolerance.
+            ASSERT_GT(glm::length(dvel), 1e-3f)
+                << "body " << self << " gains almost nothing from partner " << other
+                << ", so the additivity check below cannot distinguish a summed update from a "
+                   "single-partner one";
+
+            sum_dpos += dpos;
+            sum_dvel += dvel;
+        }
+
+        const glm::vec3 full_dpos = full[self].pos - initial[self].pos;
+        const glm::vec3 full_dvel = full[self].vel - initial[self].vel;
+
+        // ⚠ THE MARGIN IS A PROPERTY OF THIS FIXTURE, NOT OF THE DEFECT.
+        // The triangle penetrates 0.1 m against a 1e-3 slop, so a dropped
+        // correction is beta*(depth-slop)*w == 5e-3 to 1.5e-2 m -- four orders
+        // above the bound below. A fixture retuned nearer the slop band would
+        // shrink that margin toward the tolerance and turn this arm into a
+        // threshold call WITHOUT ANYONE EDITING THE ASSERTION. If the side
+        // length or kSlop moves, re-derive it; do not just re-run.
+        //
+        // NEAR rather than memcmp, and deliberately: the full gather sums its
+        // two terms in the search order while this loop sums them in partner
+        // order, so the two agree to fp32 addition and not to the bit. The
+        // bound is three orders below the smallest term the ASSERT_GT above
+        // proves is present, and the defect it must catch is a WHOLE MISSING
+        // TERM -- so there is a wide gap between "rounding" and "a partner
+        // was dropped", and this tolerance sits in it rather than at either
+        // edge.
+        EXPECT_NEAR(glm::length(full_dpos - sum_dpos), 0.0f, 1e-6f)
+            << "body " << self
+            << "'s POSITIONAL update is not the sum of its two pairwise positional updates. The "
+               "usual cause is an absolute write (pos = snapshot - correction) where an "
+               "accumulating one was needed: with several partners only the last correction "
+               "survives, and every one-pair test still passes.";
+
+        EXPECT_NEAR(glm::length(full_dvel - sum_dvel), 0.0f, 1e-6f)
+            << "body " << self
+            << "'s VELOCITY update is not the sum of its two pairwise velocity updates, so this "
+               "iteration is not reading every contact from the same start-of-iteration state.";
+    }
+}
