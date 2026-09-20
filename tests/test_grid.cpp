@@ -49,6 +49,7 @@ using spade::physics::grid_cell_of;
 using spade::physics::grid_entry_less;
 using spade::physics::integrate_bodies;
 using spade::physics::resolve_dynamic_contacts;
+using spade::physics::resolve_dynamic_contacts_jacobi;
 
 namespace body_flags = spade::physics::body_flags;
 
@@ -1121,4 +1122,175 @@ TEST(GridPairSymmetry, TheFixtureIsAsymmetricEnoughToDetectASideDependence) {
     ASSERT_GT(glm::length(v_tan), 1e-3f)
         << "the approach is purely normal, so the friction branch never runs and the symmetry "
            "case exercises only half of resolve_pair";
+}
+
+// ===========================================================================
+// THE JACOBI GATHER -- resolve_dynamic_contacts_jacobi().
+//
+// Nothing in the engine calls it yet. It exists alongside the Gauss-Seidel
+// sweep so that the solver change can be built and measured before it is
+// switched on, and these four cases are the pre-registered partition: which
+// results MUST move, which MUST NOT, and why each answer distinguishes a
+// mistake from the intended change.
+//
+// ⭐ THE PARTITION IS THE DIAGNOSIS. A two-body scene has no second contact
+// for Gauss-Seidel to have seen first, so the two solvers must agree BIT FOR
+// BIT there; a three-body scene where one body has two simultaneous contacts
+// is exactly where they must disagree. A failure in the first group therefore
+// means the ARITHMETIC is wrong, and a failure in the second means the
+// COUPLING did not actually change -- two different repairs, told apart before
+// anyone has to guess between them.
+// ===========================================================================
+
+TEST(GridJacobiGather, IsByteIdenticalToTheSweepWhenOnlyOnePairIsInFlight) {
+    const ContactParams cp = MakeContacts(/*e=*/0.35f, /*mu=*/0.55f);
+    const GridParams gp = MakeGrid(kContactDist);
+    const std::vector<uint32_t> worlds{0u, 0u};
+
+    // The asymmetric fixture, for the reason the symmetry cases above use it:
+    // unequal masses, off-axis separation, and a tangential approach so the
+    // friction branch actually runs. A tidy head-on pair would exercise only
+    // half of the per-pair kernel.
+    const AsymmetricPair p = MakeAsymmetricPair();
+    std::vector<BodyState> swept{p.a, p.b};
+    std::vector<BodyState> gathered{p.a, p.b};
+
+    GridScratch scratch;
+    resolve_dynamic_contacts(swept, worlds, gp, cp, scratch);
+    resolve_dynamic_contacts_jacobi(gathered, worlds, gp, cp, scratch);
+
+    ASSERT_NE(std::memcmp(&swept[0], &p.a, sizeof(BodyState)), 0)
+        << "the fixture resolved no contact at all, so this case would pass against any pair of "
+           "implementations that both do nothing";
+
+    // BIT-IDENTICAL, not NEAR, and that is the point of the test. The obvious
+    // way to write a gather -- have the pair kernel RETURN a delta and add it
+    // to the snapshot velocity -- computes vel + ((0 - x) + y) where the sweep
+    // computes ((vel - x) + y). Same values, different grouping, and in fp32
+    // not the same number. A tolerance would pass that regrouping; a memcmp
+    // does not, which is why this assertion is worth more than a NEAR.
+    EXPECT_EQ(std::memcmp(swept.data(), gathered.data(), swept.size() * sizeof(BodyState)), 0)
+        << "THE GATHER DISAGREES WITH THE SWEEP ON A SINGLE PAIR, where there is no second "
+           "contact for the sweep to have seen first and the two must therefore be the same "
+           "arithmetic. This is an error in the per-pair kernel or in how its result is "
+           "accumulated -- NOT the Jacobi/Gauss-Seidel difference, which cannot show up here.";
+}
+
+TEST(GridJacobiGather, DiffersFromTheSweepWhenABodyHasTwoSimultaneousContacts) {
+    const ContactParams cp = MakeContacts(/*e=*/0.3f, /*mu=*/0.2f);
+    const GridParams gp = MakeGrid(1.0f);  // one cell holds the whole triangle
+    const std::vector<uint32_t> worlds{0u, 0u, 0u};
+
+    // The same equilateral triangle the sweep's three-pair case uses: every
+    // body is in contact with both others, so every body has two simultaneous
+    // contacts and the two solvers cannot agree.
+    const auto make = [] {
+        std::vector<BodyState> v{
+            MakeBody(glm::vec3(0.5f, 0.5f, 0.5f), glm::vec3(0.6f, 0.4f, 0.0f), 1.0f),
+            MakeBody(glm::vec3(0.9f, 0.5f, 0.5f), glm::vec3(-0.5f, 0.3f, 0.1f), 2.0f),
+            MakeBody(glm::vec3(0.7f, 0.84641016f, 0.5f), glm::vec3(0.1f, -0.7f, -0.2f), 3.0f)};
+        return v;
+    };
+
+    std::vector<BodyState> swept = make();
+    std::vector<BodyState> gathered = make();
+
+    GridScratch scratch;
+    resolve_dynamic_contacts(swept, worlds, gp, cp, scratch);
+    resolve_dynamic_contacts_jacobi(gathered, worlds, gp, cp, scratch);
+
+    const std::vector<BodyState> initial = make();
+    ASSERT_NE(std::memcmp(gathered.data(), initial.data(), initial.size() * sizeof(BodyState)), 0)
+        << "the gather resolved nothing, so the inequality below would hold for the wrong reason";
+
+    // ⭐⭐⭐ THIS IS THE ANTI-VACUITY CONTROL FOR THE WHOLE SOLVER CHANGE. If
+    // it goes GREEN -- if the gather agrees with the sweep here -- then what
+    // was built is not a Jacobi solver at all, and every other case in this
+    // group would pass just as happily against a second copy of the sweep. A
+    // test suite where the change is invisible is the failure this branch has
+    // paid for more than once.
+    EXPECT_NE(std::memcmp(swept.data(), gathered.data(), swept.size() * sizeof(BodyState)), 0)
+        << "THE GATHER AGREES WITH THE GAUSS-SEIDEL SWEEP ON A BODY WITH TWO SIMULTANEOUS "
+           "CONTACTS, WHICH IT CANNOT DO IF IT IS ACTUALLY A JACOBI SOLVER. Either the pair "
+           "math is reading already-updated state instead of the snapshot, or this function is "
+           "not the one under test.";
+}
+
+TEST(GridJacobiGather, ConservesMomentumAndTheCentreOfMassOnTheThreeBodyTriangle) {
+    const ContactParams cp = MakeContacts(/*e=*/0.3f, /*mu=*/0.2f);
+    const GridParams gp = MakeGrid(1.0f);
+    const std::vector<uint32_t> worlds{0u, 0u, 0u};
+
+    std::vector<BodyState> bodies{
+        MakeBody(glm::vec3(0.5f, 0.5f, 0.5f), glm::vec3(0.6f, 0.4f, 0.0f), 1.0f),
+        MakeBody(glm::vec3(0.9f, 0.5f, 0.5f), glm::vec3(-0.5f, 0.3f, 0.1f), 2.0f),
+        MakeBody(glm::vec3(0.7f, 0.84641016f, 0.5f), glm::vec3(0.1f, -0.7f, -0.2f), 3.0f)};
+
+    const glm::dvec3 p0 = TotalMomentum(bodies);
+    const glm::dvec3 c0 = CentreOfMassTimesMass(bodies);
+
+    GridScratch scratch;
+    resolve_dynamic_contacts_jacobi(bodies, worlds, gp, cp, scratch);
+
+    // THIS IS WHERE grid.hpp's FIX 4 GETS TESTED RATHER THAN ARGUED. v1 also
+    // gathered per body -- and then applied the AVERAGE of a body's contacts,
+    // so the two halves of one pair were scaled by different neighbour counts,
+    // were not equal and opposite, and a closed cloud's momentum drifted. This
+    // gather SUMS, so each pair's two mass-weighted changes still cancel
+    // identically and the only residue is the fp32 rounding of two separate
+    // accumulations: O(eps) and unbiased, where v1's was systematic and O(1).
+    //
+    // The bound is the sweep's own (1e-6, the three-pair case above), NOT a
+    // looser one chosen to fit: if summing had reintroduced v1's defect it
+    // would show up here as a failure at this tolerance, and moving the
+    // tolerance to accommodate it would be how the defect survives.
+    EXPECT_NEAR(glm::length(TotalMomentum(bodies) - p0), 0.0, 1e-6);
+    EXPECT_NEAR(glm::length(CentreOfMassTimesMass(bodies) - c0), 0.0, 1e-6);
+}
+
+TEST(GridJacobiGather, BothSolversWritePosAndVelAndNothingElse) {
+    const ContactParams cp = MakeContacts(/*e=*/0.35f, /*mu=*/0.55f);
+    const GridParams gp = MakeGrid(kContactDist);
+    const std::vector<uint32_t> worlds{0u, 0u};
+
+    const AsymmetricPair p = MakeAsymmetricPair();
+    const std::vector<BodyState> initial{p.a, p.b};
+
+    // THIS IS NOT A TIDINESS CHECK -- IT IS THE GPU SHADOW BUFFER'S PREMISE.
+    // The gather needs a start-of-iteration copy of the state its pair math
+    // reads. It snapshots pos and vel ONLY, and reads mass, the proxy radius
+    // and the flags straight off the live array, on the ground that this pass
+    // cannot change them. If that ground is false the snapshot is stale for
+    // whichever field moved, and the Slang mirror inherits the same mistake
+    // with a shadow buffer sized 24 bytes per body instead of 128.
+    //
+    // Asserted for BOTH solvers, so that "the gather did not widen the write
+    // set" is measured rather than assumed.
+    for (int which = 0; which < 2; ++which) {
+        std::vector<BodyState> bodies = initial;
+        GridScratch scratch;
+        if (which == 0) {
+            resolve_dynamic_contacts(bodies, worlds, gp, cp, scratch);
+        } else {
+            resolve_dynamic_contacts_jacobi(bodies, worlds, gp, cp, scratch);
+        }
+
+        ASSERT_NE(std::memcmp(bodies.data(), initial.data(), initial.size() * sizeof(BodyState)), 0)
+            << "solver " << which << " resolved no contact, so the masked comparison below would "
+                                     "pass against a function that does nothing at all";
+
+        // Put pos and vel back; if the solver touched anything else, what is
+        // left still differs from the input.
+        std::vector<BodyState> masked = bodies;
+        for (std::size_t i = 0; i < masked.size(); ++i) {
+            masked[i].pos = initial[i].pos;
+            masked[i].vel = initial[i].vel;
+        }
+
+        EXPECT_EQ(std::memcmp(masked.data(), initial.data(), initial.size() * sizeof(BodyState)), 0)
+            << "solver " << which
+            << " WROTE A FIELD OTHER THAN pos OR vel. The Jacobi snapshot shadows pos and vel "
+               "only and reads everything else live, so whatever moved is now read stale by the "
+               "gather -- and the GPU mirror's per-body shadow buffer is sized on the same claim.";
+    }
 }

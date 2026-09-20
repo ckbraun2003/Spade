@@ -382,6 +382,30 @@ struct GridCellRun {
 // rebuilds it on the next substep. That is why it lives in a plain std::vector
 // rather than an arena.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The five fields resolve_dynamic_contacts_jacobi() reads off a body, split
+// out so that pos/vel come from the START-OF-ITERATION SNAPSHOT while mass and
+// the proxy radius do not need to be snapshotted at all.
+//
+// THAT SPLIT IS EXACT RATHER THAN AN OPTIMIZATION, and it is the reason this
+// record is two vectors' worth of floats and not a second BodyState array: the
+// CollisionDynamic pass writes `pos` and `vel` AND NOTHING ELSE, so `mass`,
+// `proxy_radius` and `flags` cannot change during it and a shadow copy of them
+// would be a copy of something already immutable. The GPU mirror therefore
+// needs a shadow buffer of two float3s per body rather than a second
+// 128-byte BodyState row (shaders/shared/layouts.slang).
+//
+// `radius` is ALREADY effective_proxy_radius() -- the 0 sentinel is resolved
+// once per body when the snapshot is taken, instead of twice per pair
+// examination as the Gauss-Seidel sweep does it.
+// ---------------------------------------------------------------------------
+struct GatherBody {
+    glm::vec3 pos{0.0f};
+    glm::vec3 vel{0.0f};
+    float mass = 0.0f;
+    float radius = 0.0f;
+};
+
 struct GridScratch {
     // One entry per ACTIVE, in-range body. Sorted by grid_entry_less() when the
     // call returns.
@@ -391,12 +415,24 @@ struct GridScratch {
     // order.
     std::vector<GridCellRun> runs;
 
-    // Sizes both arrays' capacity for `body_count` bodies -- the worst case for
-    // `runs` too, since every body could occupy its own cell. Idempotent and
-    // never shrinks (std::vector::reserve semantics).
+    // JACOBI ONLY -- one row per ENTRY (not per body, and not per slot),
+    // holding the start-of-iteration pos/vel plus the two scalars the pair
+    // math needs. Indexed by entry index, which is what lets the inner loop
+    // reach a candidate as snapshot[k] with no indirection through `slot`, and
+    // what makes the self-exclusion a single `k == i` compare.
+    //
+    // LEFT EMPTY BY resolve_dynamic_contacts(): the Gauss-Seidel path neither
+    // fills nor reads it, so its cost is unchanged by this field's existence.
+    // Same clear()-keeps-capacity discipline as the two arrays above.
+    std::vector<GatherBody> snapshot;
+
+    // Sizes all three arrays' capacity for `body_count` bodies -- the worst
+    // case for `runs` too, since every body could occupy its own cell.
+    // Idempotent and never shrinks (std::vector::reserve semantics).
     void reserve(std::size_t body_count) {
         entries.reserve(body_count);
         runs.reserve(body_count);
+        snapshot.reserve(body_count);
     }
 };
 
@@ -517,5 +553,56 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
                               const GridParams& grid, const ContactParams& params,
                               GridScratch& scratch) noexcept;
+
+// ---------------------------------------------------------------------------
+// THE SAME PASS AS A JACOBI GATHER -- one iteration, no in-place coupling.
+//
+// NOTHING IN THE ENGINE CALLS THIS YET. It is built, tested and measured
+// alongside resolve_dynamic_contacts() rather than replacing it, because
+// switching solvers moves every pinned number in the dynamic-collision corpus
+// and that is a decision with its own gate. Today its only callers are tests.
+//
+// WHAT IS THE SAME: the broad phase, exactly -- build, sort and offsets are
+// the SHARED code both functions call, so the two see byte-identical
+// `entries` and `runs` for the same input. The per-pair arithmetic is
+// resolve_pair()'s, op for op, grouping for grouping.
+//
+// WHAT IS DIFFERENT, AND IT IS ONE THING: every body computes its contacts
+// from the START-OF-ITERATION state and writes only itself. So
+//
+//   * THE RESULT DOES NOT DEPEND ON THE ORDER BODIES ARE VISITED IN. That is
+//     the whole point: on the GPU the outer loop becomes the thread index, and
+//     the answer must not depend on how many lanes are running. The
+//     Gauss-Seidel sweep cannot offer this -- its answer IS its sweep order.
+//   * EACH PAIR IS COMPUTED TWICE, once in each endpoint's gather, and the
+//     `ea.slot < eb.slot` rule that made the sweep visit it once is GONE
+//     rather than relaxed. A gather must see all of a body's partners, not
+//     only its higher-slot ones.
+//   * IT IS A DIFFERENT SOLVER AND GIVES DIFFERENT NUMBERS on anything with a
+//     body in two simultaneous contacts. With ONE pair in flight the two agree
+//     BIT FOR BIT -- there is no earlier pair for Gauss-Seidel to have seen --
+//     and the tests pin exactly that, because it separates an arithmetic
+//     mistake from the intended change in coupling.
+//
+// MOMENTUM, STATED PRECISELY RATHER THAN CLAIMED. Per pair the two bodies'
+// mass-weighted changes still cancel identically (ma*w_a == mb*w_b == m_eff),
+// and the approach guard fires identically from both sides because v_rel_n is
+// sign-identical under the exchange. What does NOT hold exactly is the sum:
+// the pair's two halves land in two different fp32 accumulations, in different
+// orders, so the cancellation is to those sums' rounding. THAT IS NOT v1's
+// DEFECT (FIX 4 above), which was an AVERAGE over each body's own neighbour
+// count -- a systematic, O(1) error that grew with contact count. This one is
+// O(eps) and unbiased, the same class as the sweep's own accumulation residue.
+//
+// CONVERGENCE IS NOT CLAIMED HERE. One Jacobi iteration propagates a contact
+// one body per substep where a Gauss-Seidel sweep can carry it through a whole
+// stack in one pass, so deep stacks are softer under this function until the
+// iteration count is raised. No number for that appears in this comment because
+// none has been measured.
+// ---------------------------------------------------------------------------
+void resolve_dynamic_contacts_jacobi(std::span<BodyState> bodies,
+                                     std::span<const uint32_t> slot_to_world,
+                                     const GridParams& grid, const ContactParams& params,
+                                     GridScratch& scratch) noexcept;
 
 }  // namespace spade::physics

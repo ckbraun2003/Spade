@@ -301,42 +301,25 @@ const GridCellRun* find_run(const std::vector<GridCellRun>& runs, uint32_t world
     return &*it;
 }
 
-}  // namespace
-
-bool grid_cell_of(const glm::vec3& pos, float cell_size, GridCell& out) noexcept {
-    // Component-wise division then floor, matching v1's
-    // `ivec3(floor(offsetPos / cellSize))` minus the global-bounds offset and
-    // the clamp (grid.hpp, FIX 3). Division rather than a hoisted reciprocal
-    // multiply: the two are not fp32-equivalent, and division is what the spec
-    // and the v1 shader both spell.
-    const glm::vec3 f = glm::floor(pos / cell_size);
-
-    // Range check BEFORE the cast (see kMaxCellCoord). Spelled as a negated
-    // conjunction so a NaN -- from a NaN position, or from the 0/0 a zero
-    // cell_size produces at the origin -- fails it and the body is skipped
-    // rather than converted to an unspecified integer. A zero cell_size sends
-    // every other position to +-inf, which fails the same test.
-    if (!(f.x >= -kMaxCellCoord && f.x <= kMaxCellCoord)) return false;
-    if (!(f.y >= -kMaxCellCoord && f.y <= kMaxCellCoord)) return false;
-    if (!(f.z >= -kMaxCellCoord && f.z <= kMaxCellCoord)) return false;
-
-    out.x = static_cast<int32_t>(f.x);
-    out.y = static_cast<int32_t>(f.y);
-    out.z = static_cast<int32_t>(f.z);
-    return true;
-}
-
-bool grid_entry_less(const GridEntry& a, const GridEntry& b) noexcept {
-    if (a.world != b.world) return a.world < b.world;
-    if (a.cell.z != b.cell.z) return a.cell.z < b.cell.z;
-    if (a.cell.y != b.cell.y) return a.cell.y < b.cell.y;
-    if (a.cell.x != b.cell.x) return a.cell.x < b.cell.x;
-    return a.slot < b.slot;  // unique -> the order is TOTAL (see grid.hpp)
-}
-
-void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
-                              const GridParams& grid, const ContactParams& params,
-                              GridScratch& scratch) noexcept {
+// ---------------------------------------------------------------------------
+// STAGES 1-3 -- BUILD, SORT, OFFSETS. Shared verbatim by the Gauss-Seidel
+// sweep and the Jacobi gather, because the broad phase is not what differs
+// between them and two copies of it would be free to drift.
+//
+// SHARED RATHER THAN DUPLICATED ON A STATED GROUND, not a stylistic one: this
+// function performs NO floating-point accumulation. It tests bits, compares
+// integers, computes one cell per body and sorts a total order. Extracting it
+// therefore cannot move a number, which is exactly the property that does NOT
+// hold for resolve_pair() -- and that is why resolve_pair() is left untouched
+// and the gather carries its own copy of the pair arithmetic instead.
+//
+// Returns the entry count, and leaves `scratch.entries` sorted and
+// `scratch.runs` populated. `scratch.snapshot` is NOT touched: the sweep never
+// wants it.
+// ---------------------------------------------------------------------------
+uint32_t build_broad_phase(std::span<const BodyState> bodies,
+                           std::span<const uint32_t> slot_to_world, const GridParams& grid,
+                           GridScratch& scratch) noexcept {
     // clear() keeps capacity, so after the warmup substeps that grow these to
     // their high-water mark this pass performs no allocation at all (grid.hpp,
     // GridScratch). It is also what makes the scratch carry no meaning across
@@ -410,6 +393,160 @@ void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint3
         }
     }
 
+    return entry_count;
+}
+
+// ---------------------------------------------------------------------------
+// ONE CONTACT, FROM `a`'S SIDE ONLY, COMPUTED ENTIRELY FROM START-OF-ITERATION
+// STATE, APPLIED TO `a`'S RUNNING OUTPUT. The gather's whole per-pair kernel.
+//
+// THIS IS resolve_pair() WITH EVERY `b`-SIDE WRITE DELETED. The op order, the
+// groupings and the `!(...)` guard spellings are that function's, verbatim:
+// they are the parity contract, and the Slang mirror will follow this shape.
+// resolve_pair() itself is deliberately NOT refactored to share this code --
+// keeping the two separate is what makes "the Gauss-Seidel path is byte-for-
+// byte unchanged" provable by `git diff` instead of by an argument about
+// whether a shared core preserves fp32 groupings. The duplication is
+// scaffolding and it comes out when the solver switch lands.
+//
+// WHY THE OUTPUT IS AN IN/OUT RUNNING VELOCITY AND NOT A RETURNED DELTA, since
+// the returned delta is the obvious shape and it is WRONG:
+//
+//     Gauss-Seidel:   ((vel - x) + y)          x = normal impulse, y = friction
+//     delta-return:   vel + ((0 - x) + y)
+//
+// In fp32 those are not the same number -- same values, different grouping,
+// two roundings in different places. Accumulating into a running copy of the
+// body's own velocity reproduces the sweep's left-to-right sequence exactly,
+// so WITH ONE PARTNER IN FLIGHT THE GATHER IS BYTE-IDENTICAL TO THE SWEEP
+// rather than merely within tolerance. That is what lets the two-body tests be
+// memcmp assertions, and a byte control sees a regrouping that a tolerance
+// cannot.
+//
+// `a` AND `b` BOTH COME FROM THE SNAPSHOT. `b` is never written here at all --
+// its half of this contact is computed in ITS own gather, from the same
+// snapshot, and d68fcd3d measured that the two sides agree bit for bit.
+// ---------------------------------------------------------------------------
+void gather_apply_for_a(const GatherBody& a, const GatherBody& b, const PairParams& pp,
+                        glm::vec3& vel_out, glm::vec3& pos_out) noexcept {
+    // -1. PER-PAIR CONTACT DISTANCE. Both radii are already effective (the 0
+    //     sentinel was resolved once per body when the snapshot was taken), so
+    //     this is the same sum of the same two floats resolve_pair() forms.
+    const float contact_dist = a.radius + b.radius;
+    const float contact_dist2 = contact_dist * contact_dist;
+
+    // 0. NARROW PHASE. Squared distance first; both tests spelled `!(...)` so
+    //    a NaN coordinate FAILS to be a contact rather than falling through.
+    const glm::vec3 d = b.pos - a.pos;
+    const float dist2 = glm::dot(d, d);
+    if (!(dist2 < contact_dist2)) return;
+    if (!(dist2 > 0.0f)) return;
+
+    const float dist = std::sqrt(dist2);
+    const glm::vec3 n = d / dist;
+    const float depth = contact_dist - dist;
+
+    const float ma = a.mass;
+    const float mb = b.mass;
+    const float m_eff = (ma * mb) / (ma + mb);
+    const float w_a = m_eff / ma;
+    const float w_b = m_eff / mb;
+
+    // 1. NORMAL IMPULSE. Only an APPROACHING pair gets one.
+    //
+    //    v_rel_n IS SIGN-IDENTICAL FROM BOTH SIDES -- dot(-v_rel, -n) is the
+    //    same sum of the same products in the same order -- so this guard
+    //    fires, or does not fire, identically in the partner's own gather. If
+    //    it did not, one side would impulse where the other did not and
+    //    momentum would break at O(1) rather than at O(eps). This is the
+    //    load-bearing half of what the pair-symmetry tests measure.
+    const glm::vec3 v_rel = b.vel - a.vel;
+    const float v_rel_n = glm::dot(v_rel, n);
+
+    float j_n = 0.0f;
+    glm::vec3 va_post = a.vel;
+    glm::vec3 vb_post = b.vel;
+    if (v_rel_n < 0.0f) {
+        j_n = -(1.0f + pp.e) * v_rel_n;
+        vel_out -= (j_n * w_a) * n;  // the ONLY write; b's half is b's own gather
+        va_post -= (j_n * w_a) * n;
+        vb_post += (j_n * w_b) * n;
+    }
+
+    // 2. COULOMB FRICTION on the relative tangential velocity remaining after
+    //    step 1. A separating pair has j_n == 0, so the cap is 0 and this is a
+    //    no-op -- out of the algebra rather than out of a branch.
+    //
+    //    va_post/vb_post ARE LOCALS RECONSTRUCTED FROM THE SNAPSHOT, and that
+    //    is the subtlest line in this function. The sweep reads the two
+    //    bodies' velocities after step 1 has WRITTEN them; a gather has no
+    //    write to read back. Reading `vel_out` here instead would fold this
+    //    body's OTHER partners into this pair's friction -- Gauss-Seidel
+    //    inside a single body's gather, a solver that is neither, AND IT WOULD
+    //    PASS EVERY TWO-BODY TEST, because with one partner `vel_out` and
+    //    `va_post` hold the same bits.
+    const glm::vec3 v_rel_post = vb_post - va_post;
+    const float v_n_post = glm::dot(v_rel_post, n);
+    const glm::vec3 v_t = v_rel_post - v_n_post * n;
+    const float v_t_len = glm::length(v_t);
+    if (v_t_len > 0.0f) {
+        const float dv_t = glm::min(pp.mu * j_n, v_t_len);
+        const glm::vec3 t = v_t / v_t_len;
+        vel_out += (dv_t * w_a) * t;
+    }
+
+    // 3. POSITIONAL CORRECTION, split inversely by mass, applied whether or
+    //    not step 1 fired. max() on the SUBTRACTION so the GPU mirror is
+    //    branch-free, exactly as in resolve_pair() and contacts.cpp.
+    const float correction = pp.beta * glm::max(depth - pp.slop, 0.0f);
+    pos_out -= (correction * w_a) * n;
+}
+
+}  // namespace
+
+bool grid_cell_of(const glm::vec3& pos, float cell_size, GridCell& out) noexcept {
+    // Component-wise division then floor, matching v1's
+    // `ivec3(floor(offsetPos / cellSize))` minus the global-bounds offset and
+    // the clamp (grid.hpp, FIX 3). Division rather than a hoisted reciprocal
+    // multiply: the two are not fp32-equivalent, and division is what the spec
+    // and the v1 shader both spell.
+    const glm::vec3 f = glm::floor(pos / cell_size);
+
+    // Range check BEFORE the cast (see kMaxCellCoord). Spelled as a negated
+    // conjunction so a NaN -- from a NaN position, or from the 0/0 a zero
+    // cell_size produces at the origin -- fails it and the body is skipped
+    // rather than converted to an unspecified integer. A zero cell_size sends
+    // every other position to +-inf, which fails the same test.
+    if (!(f.x >= -kMaxCellCoord && f.x <= kMaxCellCoord)) return false;
+    if (!(f.y >= -kMaxCellCoord && f.y <= kMaxCellCoord)) return false;
+    if (!(f.z >= -kMaxCellCoord && f.z <= kMaxCellCoord)) return false;
+
+    out.x = static_cast<int32_t>(f.x);
+    out.y = static_cast<int32_t>(f.y);
+    out.z = static_cast<int32_t>(f.z);
+    return true;
+}
+
+bool grid_entry_less(const GridEntry& a, const GridEntry& b) noexcept {
+    if (a.world != b.world) return a.world < b.world;
+    if (a.cell.z != b.cell.z) return a.cell.z < b.cell.z;
+    if (a.cell.y != b.cell.y) return a.cell.y < b.cell.y;
+    if (a.cell.x != b.cell.x) return a.cell.x < b.cell.x;
+    return a.slot < b.slot;  // unique -> the order is TOTAL (see grid.hpp)
+}
+
+void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
+                              const GridParams& grid, const ContactParams& params,
+                              GridScratch& scratch) noexcept {
+    // Stages 1-3 -- BUILD, SORT, OFFSETS -- are build_broad_phase(), shared
+    // verbatim with the Jacobi gather. Extracting them moved no number, and
+    // that is a property rather than a hope: that function performs no
+    // floating-point accumulation at all, so there is nothing in it for an
+    // extraction to regroup. The per-pair arithmetic, where that is NOT true,
+    // stays where it is -- resolve_pair() above is untouched, and the gather
+    // carries its own copy rather than sharing one.
+    const uint32_t entry_count = build_broad_phase(bodies, slot_to_world, grid, scratch);
+
     // -----------------------------------------------------------------------
     // 4. RESOLVE (v1: GridCollision.comp).
     //
@@ -481,6 +618,101 @@ void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint3
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// THE JACOBI GATHER. Same broad phase, same per-pair arithmetic, one
+// difference: every body computes its contacts from the START-OF-ITERATION
+// state and writes only itself. See grid.hpp for what that buys and costs.
+// ---------------------------------------------------------------------------
+void resolve_dynamic_contacts_jacobi(std::span<BodyState> bodies,
+                                     std::span<const uint32_t> slot_to_world,
+                                     const GridParams& grid, const ContactParams& params,
+                                     GridScratch& scratch) noexcept {
+    const uint32_t entry_count = build_broad_phase(bodies, slot_to_world, grid, scratch);
+
+    PairParams pp{};
+    pp.default_radius = params.proxy_radius;
+    pp.e = params.restitution_e;
+    pp.mu = params.friction_mu;
+    pp.beta = params.baumgarte_beta;
+    pp.slop = params.slop;
+
+    // -----------------------------------------------------------------------
+    // THE SNAPSHOT -- one row per ENTRY, taken before anything is written.
+    //
+    // Per entry rather than per body, so an inactive or out-of-range slot
+    // costs nothing and is never touched (the property
+    // InactiveAndFreedBodiesAreLeftByteIdentical pins, and it holds here for
+    // the same reason it holds for the sweep: those bodies have no entry).
+    // Entry indexing is also what lets the inner loop reach a candidate as
+    // snapshot[k] with no indirection through `slot`, and what lets the
+    // self-exclusion be `k == i`.
+    //
+    // effective_proxy_radius() is resolved ONCE PER BODY here, where the sweep
+    // resolves it twice per pair examination. That is a consequence of having
+    // a snapshot at all, not a separate optimization, and it is why
+    // gather_apply_for_a() takes radii rather than PairParams::default_radius.
+    // -----------------------------------------------------------------------
+    scratch.snapshot.clear();
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        const BodyState& body = bodies[scratch.entries[i].slot];
+        scratch.snapshot.push_back(GatherBody{body.pos, body.vel, body.mass,
+                                              effective_proxy_radius(body, pp.default_radius)});
+    }
+
+    // -----------------------------------------------------------------------
+    // 4'. GATHER. ONE ITERATION.
+    //
+    // Each entry re-runs the search over its own 27 cells -- the same fixed
+    // dz/dy/dx order, the same find_run(), the same sorted run scan the sweep
+    // uses -- computes each contact from the snapshot, and accumulates into
+    // its own running pos/vel. NOTHING READS ANOTHER ENTRY'S OUTPUT, so the
+    // order entries are visited in cannot affect the result. That is the
+    // entire point: on the GPU this outer loop becomes the thread index, and
+    // the answer must not depend on how many lanes are running.
+    //
+    // THE SELF-EXCLUSION IS NOW EXPLICIT, AND THAT IS THE ONE PLACE THIS LOOP
+    // CAN GO WRONG SILENTLY. The sweep got it free from `ea.slot < eb.slot`;
+    // that test is GONE rather than relaxed, because a gather must see ALL of
+    // a body's partners and not only its higher-slot ones. Without the `k ==
+    // i` guard a body resolves against itself, d is exactly zero, and the
+    // `dist2 > 0` narrow-phase guard swallows it -- a SKIPPED PAIR, not a
+    // crash, and no symptom anywhere. That guard is a backstop; this line is
+    // the mechanism.
+    //
+    // EVERY CONTACT IS COMPUTED TWICE, once in each endpoint's gather. That is
+    // required by the shape rather than incidental to it, and its cost is a
+    // measurement this comment deliberately does not pre-empt.
+    // -----------------------------------------------------------------------
+    for (uint32_t i = 0; i < entry_count; ++i) {
+        const GridEntry ea = scratch.entries[i];
+        const GatherBody& self = scratch.snapshot[i];
+
+        glm::vec3 vel_out = self.vel;
+        glm::vec3 pos_out = self.pos;
+
+        for (int32_t dz = -1; dz <= 1; ++dz) {
+            for (int32_t dy = -1; dy <= 1; ++dy) {
+                for (int32_t dx = -1; dx <= 1; ++dx) {
+                    const GridCell neighbour{ea.cell.x + dx, ea.cell.y + dy, ea.cell.z + dz};
+
+                    const GridCellRun* run = find_run(scratch.runs, ea.world, neighbour);
+                    if (run == nullptr) continue;
+
+                    const uint32_t end = run->begin + run->count;
+                    for (uint32_t k = run->begin; k < end; ++k) {
+                        if (k == i) continue;  // THE self-exclusion, and nothing else
+
+                        gather_apply_for_a(self, scratch.snapshot[k], pp, vel_out, pos_out);
+                    }
+                }
+            }
+        }
+
+        bodies[ea.slot].vel = vel_out;
+        bodies[ea.slot].pos = pos_out;
     }
 }
 
