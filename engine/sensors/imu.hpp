@@ -10,6 +10,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/rng.hpp"
+#include "sensors/kinds.hpp"
 #include "sensors/rings.hpp"
 #include "state/layout.hpp"
 
@@ -218,21 +219,16 @@
 namespace spade::sensors {
 
 // ---------------------------------------------------------------------------
-// ImuSensorRow::kind values. A plain uint32_t rather than an enum class, for
-// the same reason DragBodyRow::mode is one: the field's BYTES are what a
-// snapshot blob and (from S6) a Slang buffer see.
+// ImuSensorRow::kind values LIVE IN sensors/kinds.hpp, not here.
 //
-// `none` == 0 is ALSO THE LIVENESS PREDICATE, active-high exactly like
-// BodyState::flags and DragBodyRow::enabled: a zero-filled slot -- freed, or
-// reserved but not yet initialized -- has kind == none and is skipped without
-// any liveness lookup. That is why there is no separate `enabled` field.
+// They were declared in this file until 2026-09-21, which made the tag that
+// separates sensor KINDS a member of one kind's header: a second kind could not
+// name its own tag without including this file's row, noise model and std430
+// layout. The vocabulary that separates two things cannot live inside one of
+// them. `sensor_kind::imu` is the value this file's row carries; kinds.hpp
+// states the rules for adding another and why `none` must stay legal on the
+// poll path.
 // ---------------------------------------------------------------------------
-namespace sensor_kind {
-
-inline constexpr uint32_t none = 0u;
-inline constexpr uint32_t imu = 1u;
-
-}  // namespace sensor_kind
 
 // The rng domain tag every IMU noise stream is derived under (core/rng.hpp's
 // make_stream(world_seed, tag, index)). PINNED: changing this string re-seeds
