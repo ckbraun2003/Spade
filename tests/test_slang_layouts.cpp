@@ -804,6 +804,16 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
                     if (a.words[w] != b.words[w]) differing.push_back(w);
                 }
 
+                // THIS ALSO ENFORCES ONE ENTRY POINT PER MODULE, and nothing
+                // else says so. Every [shader("compute")] entry point emits its
+                // own LocalSize declaration, so a two-entry-point module differs
+                // in two words between variants and a three-entry-point module
+                // in three -- for a reason that has nothing to do with
+                // lane-dependent codegen. The Jacobi gather met this at 3, then
+                // at 2, and split into collision_fill.slang and
+                // collision_gather.slang rather than move this number.
+                //
+                // That is the resolution. A module carries one entry point.
                 ASSERT_EQ(differing.size(), std::size_t{1})
                     << pair << ": differ in " << differing.size()
                     << " words, expected exactly 1 (the LocalSize x-operand). "

@@ -22,10 +22,23 @@
 #   * this file is added only by `spade/CMakeLists.txt`, whose own
 #     `project(Spade ...)` makes it an independent top-level CMake project.
 #
-# WHAT DOES RUN IT: `.github/workflows/spade.yml`, which configures
-# `cmake -S spade` -- treating spade/ as its own root -- then
-# `ctest --test-dir spade/build-ci -L spade`. That workflow is this suite's
-# ONLY automated gate. Locally, build spade/ standalone via its own presets.
+# WHAT DOES RUN IT: the `spade-linux` section of `docker/run-ci-linux.sh`.
+# It configures `cmake -S spade` -- treating spade/ as its own root -- builds
+# it, runs `ctest --test-dir spade/build-ci -L spade --no-tests=error`,
+# installs to `spade/install-ci`, and smokes `tests/consumer` against that
+# prefix. The steps are spelled out here rather than cited, so this block
+# stays true if that script is reorganised.
+#
+# NOTHING TRIGGERS IT AUTOMATICALLY. Somebody runs it. Both halves of that
+# matter: "the suite has no gate" would be false, and "docker runs it" would
+# leave you expecting it to have run.
+#
+# This block used to name `.github/workflows/spade.yml` as "this suite's ONLY
+# automated gate". That directory was removed at `9b5fa453` -- "docker is the
+# gate, and now the only one" -- and this sentence went on standing for two
+# days after the thing it described had gone.
+#
+# Locally, build spade/ standalone via its own presets.
 #
 # ** DO NOT "FIX" THIS BY ADDING add_subdirectory(spade) TO THE ROOT. ** The
 # separation is not an oversight, it is SL1/SL2 severability working: Kat
