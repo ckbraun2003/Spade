@@ -152,16 +152,35 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // Each call contributes TWO registry entries (the elements and the
     // slot->world map), atomically.
     //
-    // APPEND-ONLY, ENFORCED BY CONVENTION HERE (no compile-time or runtime
-    // check forbids inserting mid-list -- this comment is the guard). A new
-    // array belongs AFTER every call below it, never between two existing
-    // ones: the golden scenarios' own provenance headers
-    // (tests/golden/scenarios/*.scenario.yaml) carry a structural argument
-    // ("rotors registered LAST -> pure walk suffix") that a future reader
-    // can re-verify by reading THIS function's call order directly --
-    // inserting a registration mid-list would silently invalidate that
-    // argument for every digest in the corpus at once, not just add a new
-    // one to check.
+    // APPEND-ONLY. A new array belongs AFTER every call below it, never
+    // between two existing ones: FOUR of the five golden scenario headers
+    // (tests/golden/scenarios/*.scenario.yaml) carry an
+    // `old + suffix = actual, match=YES` line, and a mid-list insertion would
+    // silently invalidate that argument for every one of them at once rather
+    // than merely adding a new digest to check. (quad_hover carries no such
+    // line: it is the fifth scenario, generated after that regeneration
+    // rather than continued through it -- which is the "not merely add a
+    // fifth to check" the test's own comment refers to.)
+    //
+    // AND IT IS ENFORCED BY A TEST, NOT BY THIS COMMENT -- which is what this
+    // paragraph used to claim. test_determinism.cpp's
+    // ReplayConfig.OccupiesItsPinnedWalkPosition asserts replay_config's
+    // elements sit at walk INDEX 16 and its slot->world map at 17. Read that
+    // test before appending: it pins the POSITION and deliberately NOT the
+    // last-ness, because an assertion that replay_config is LAST would fail on
+    // the very move that is sanctioned (appending), and its failure message
+    // would then recommend registering the new array BEFORE it -- the exact
+    // mid-list insertion the rule forbids, arrived at by obeying the test.
+    //
+    // Appending is therefore SILENT here: the index does not move, the test
+    // stays green, and the cost is regenerating the corpus for the new suffix.
+    //
+    // HISTORICAL NOTE, because this comment carried it wrongly until 2026-09-21:
+    // the structural argument it quoted was "rotors registered LAST -> pure
+    // walk suffix". That premise was superseded at S5 Task 3, when
+    // replay_config joined the walk after rotors; no golden has argued it
+    // since. The rule the paragraph states was never wrong -- only its
+    // citation and its claim to be the sole guard.
     // -----------------------------------------------------------------------
     Result<ArrayId<WorldParams>> world_params_id =
         sim.arenas_.register_array<WorldParams>(kWorldParamsArray, 1);
