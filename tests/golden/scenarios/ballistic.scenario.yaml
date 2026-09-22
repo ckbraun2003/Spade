@@ -330,4 +330,4 @@ inputs:
 #   introduces no hand-copied constant, so the continuation above is asserted
 #   on every run rather than asserted once in a comment.
 #
-expected_digest: "0x82c9ae1719781ee7"
+expected_digest: "0x9111bfccb4d2fe37"

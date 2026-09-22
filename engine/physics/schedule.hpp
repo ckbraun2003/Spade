@@ -9,6 +9,7 @@
 #include "physics/contacts.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
+#include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "state/layout.hpp"
 #include "world/medium.hpp"
@@ -156,6 +157,13 @@ struct WorldSubstepView {
     // implicit in the slot).
     std::span<sensors::ImuSensorRow> imu_sensors;
     std::span<sensors::ImuSample> imu_ring;
+    // The second sensor kind, same shape and the same ring arithmetic:
+    // `gnss_ring` holds exactly gnss_sensors.size() * sensors::kRingDepth
+    // fixes, receiver i owning [i*kRingDepth, (i+1)*kRingDepth). Two spans
+    // rather than a variant because the two row types differ in size and
+    // layout, which is also why they are two arenas.
+    std::span<sensors::GnssSensorRow> gnss_sensors;
+    std::span<sensors::GnssFix> gnss_ring;
 
     // This world's rotor partition (Task 18). MUTABLE, unlike drag_elements
     // and for the same reason imu_sensors is: a rotor row carries its own
@@ -423,9 +431,15 @@ void pass_integrate(const SubstepContext&) noexcept;
 // substep's forces against this substep's attitude.
 //
 // Iterates worlds serially, each world's sensors in slot order, and calls
-// sensors::synthesize_imu() -- v2's only sensor kind. A second kind becomes a
-// second batched call HERE, the way ForceElements will grow rotors and lift
-// surfaces, and not a second pass.
+// sensors::synthesize_imu() and then sensors::synthesize_gnss(). A second kind
+// became a second batched call HERE, the way ForceElements will grow rotors and
+// lift surfaces, and not a second pass -- this paragraph predicted that shape
+// before GNSS existed and the prediction held.
+//
+// THE TWO CALLS COMMUTE (see schedule.cpp): disjoint arrays, separate rng
+// domains, and state_digest folds in registration order rather than call order.
+// What does NOT commute is this pass's position after Integrate, for the reason
+// the paragraph above gives.
 void pass_sensor_synthesis(const SubstepContext&) noexcept;
 
 // Publish -- NO-OP STUB; the S6 hook point.

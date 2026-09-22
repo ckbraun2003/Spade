@@ -683,6 +683,7 @@ add_library(spade_sim STATIC
     # object model, and a consumer needs spade::sim to call it anyway: the API
     # takes a Simulation&.
     objects/spawn_helpers.cpp
+    sensors/gnss.cpp
     sensors/imu.cpp
     sim/simulation.cpp
     sim/world_set.cpp
@@ -1137,10 +1138,17 @@ spade_slang_kernel_variants(spade_compute collision_gather)
 spade_slang_kernel_variants(spade_compute medium_update)
 spade_slang_kernel_variants(spade_compute rotors)
 spade_slang_kernel_variants(spade_compute sensor_imu)
+# The SensorSynthesis pass's SECOND dispatch, over the GNSS slot space. Declared
+# with variants for the same reason sensor_imu is: it is dispatched per sensor
+# slot, so BackendDesc::workgroup_size must select a module compiled for that
+# size rather than a fallback.
+spade_slang_kernel_variants(spade_compute sensor_gnss)
 
 # T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/
 # spade_slang_kernel_variants() call above (fp32_math_probe through
-# sensor_imu, ten in total) -- see SpadeSlang.cmake's own function comment
+# sensor_gnss, ELEVEN in total -- sensor_gnss joined at the GPU-sensor leg and
+# moved kCompiledSpirvKernelCount 10 -> 11 with it) -- see SpadeSlang.cmake's
+# own function comment
 # for why the ordering is load-bearing. Writes kernel_manifest.gen.hpp's
 # kCompiledSpirvKernelCount, which tests/test_slang_layouts.cpp asserts
 # kSpirvModules[]'s size against.

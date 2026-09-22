@@ -16,6 +16,7 @@
 #include "integrate.spv.gen.hpp"
 #include "medium_update.spv.gen.hpp"
 #include "rotors.spv.gen.hpp"
+#include "sensor_gnss.spv.gen.hpp"
 #include "sensor_imu.spv.gen.hpp"
 
 namespace spade::compute {
@@ -232,6 +233,7 @@ namespace {
 constexpr uint32_t kNoDispatch = 0xFFFFFFFFu;
 
 constexpr uint32_t kForceElementsSlot = 1;     // rotors -> forces_drag (S6 Task 8)
+constexpr uint32_t kSensorSynthesisSlot = 6;   // sensor_imu -> sensor_gnss (GPU-sensor leg)
 constexpr uint32_t kCollisionDynamicSlot = 4;  // grid_build -> grid_sort xS -> collision_dynamic
 
 constexpr std::array<uint32_t, 8> kPassPipeline = {
@@ -241,7 +243,7 @@ constexpr std::array<uint32_t, 8> kPassPipeline = {
     StepRecorder::kPipelineCollision,         // 3 CollisionStatic
     StepRecorder::kPipelineGridBuild,         // 4 CollisionDynamic  -- CHAIN; see kCollisionDynamicSlot
     StepRecorder::kPipelineIntegrate,         // 5 Integrate
-    StepRecorder::kPipelineSensorImu,         // 6 SensorSynthesis   -- per-SENSOR grid
+    StepRecorder::kPipelineSensorImu,         // 6 SensorSynthesis   -- CHAIN; see kSensorSynthesisSlot
     kNoDispatch,                              // 7 Publish           -- inert by design
 };
 
@@ -417,6 +419,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
         {kPipelineMedium, gen::kSpvVariants_medium_update},
         {kPipelineRotors, gen::kSpvVariants_rotors},
         {kPipelineSensorImu, gen::kSpvVariants_sensor_imu},
+        {kPipelineSensorGnss, gen::kSpvVariants_sensor_gnss},
     };
     static_assert(std::size(kPipelineSources) == kPipelineCount,
                   "every PipelineSlot needs exactly one kernel variant set");
@@ -681,6 +684,34 @@ Result<void> StepRecorder::record() {
                 // -----------------------------------------------------------
                 emit(kPipelineRotors, params, dispatch_groups_x_);
                 emit(kPipelineDrag, params, dispatch_groups_x_);
+            } else if (pass == kSensorSynthesisSlot) {
+                // -----------------------------------------------------------
+                // THE SensorSynthesis CHAIN -- physics/schedule.cpp's
+                // pass_sensor_synthesis(), which calls synthesize_imu() and
+                // THEN synthesize_gnss().
+                //
+                // AND THE ORDER IS NOT A CONTRACT HERE, WHICH IS THE OPPOSITE
+                // OF THE ForceElements CHAIN ABOVE AND WORTH SAYING SO NOBODY
+                // INFERS THE RULE FROM THE SHAPE. Rotors-then-drag is a
+                // numerical contract because both accumulate into the same
+                // float3 accumulators and fp32 addition is not associative.
+                // These two share nothing: disjoint arrays, per-row rng streams
+                // seeded under different domain tags, and `bodies` read-only by
+                // both. state_digest folds the registry walk in REGISTRATION
+                // order rather than dispatch order, so swapping these two lines
+                // moves no digest either.
+                //
+                // The barrier `emit` places between them is therefore NOT
+                // load-bearing here, unlike in the chain above. It is left in
+                // place because it costs one pipeline barrier per substep and
+                // removing it would make this the one dispatch pair in the file
+                // whose safety depends on an argument rather than on a barrier.
+                //
+                // BOTH MEMBERS RUN ON THE SENSOR GRID: one sensor_capacity
+                // sizes both arenas, so a single extent covers the pair.
+                // -----------------------------------------------------------
+                emit(kPipelineSensorImu, params, groups_of(PassGrid::sensor));
+                emit(kPipelineSensorGnss, params, groups_of(PassGrid::sensor));
             } else if (pass != kCollisionDynamicSlot) {
                 emit(kPassPipeline[pass], params, groups_of(kPassGrid[pass]));
             } else {

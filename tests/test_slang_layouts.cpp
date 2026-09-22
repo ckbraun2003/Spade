@@ -18,10 +18,10 @@
 //      static_assert cannot -- a generated header that checked NOTHING.
 //
 //   2. THE BINDING REGISTRY COVERS THE BOUND WALK EXACTLY. bindings.gen.hpp
-//      must carry a binding for each of the nine BOUND arrays and for the four
-//      `.slot_to_world` siblings kernels need, with no duplicate index and no
-//      silent addition -- and NO binding for the two arrays listed as
-//      deliberately unbound.
+//      must carry a binding for each of the ELEVEN bound arrays and for the
+//      FIVE `.slot_to_world` siblings kernels need, with no duplicate index and
+//      no silent addition -- and no binding for any array listed as
+//      deliberately unbound (that list is empty as of the GPU-sensor leg).
 //
 //      WHAT THIS CANNOT SEE, SAID PLAINLY. kBoundArrays below is
 //      hardcoded, on purpose (a test reading its expectations out of the
@@ -41,6 +41,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -69,6 +70,7 @@
 #include "integrate.spv.gen.hpp"
 #include "medium_update.spv.gen.hpp"
 #include "rotors.spv.gen.hpp"
+#include "sensor_gnss.spv.gen.hpp"
 #include "sensor_imu.spv.gen.hpp"
 
 namespace {
@@ -76,8 +78,9 @@ namespace {
 namespace gen = spade::compute::gen;
 
 // -------------------------------------------------------------------------
-// The nine registered arrays, in registered-walk order (sim/simulation.cpp's
-// register_array calls; replay_config last, pinned by test_determinism.cpp).
+// The ELEVEN registered arrays that are BOUND, in registered-walk order
+// (sim/simulation.cpp's register_array calls; replay_config pinned at walk
+// index 16 by test_determinism.cpp, with the GNSS pair appended below it).
 // Spelled out here rather than derived from bindings.gen.hpp, deliberately:
 // this list is the INDEPENDENT statement of what the registry must cover, and
 // a test that read its expectations out of the artifact under test would
@@ -86,15 +89,26 @@ namespace gen = spade::compute::gen;
 constexpr const char* kBoundArrays[] = {
     "world_params", "bodies",      "body_generation", "drag_bodies", "dryden",
     "imu_sensors",  "imu_ring",    "rotors",          "replay_config",
+    "gnss_sensors", "gnss_ring",
 };
 
-// REGISTERED AND DELIBERATELY UNBOUND. No kernel reads either, and binding them
-// would mean authoring Slang struct mirrors for GnssSensorRow and GnssFix under
-// the strict layout gate purely so a descriptor could point at buffers nothing
-// reads. They are still allocated, uploaded, read back and folded into the
-// state digest -- state_mirror.cpp's per-entry has_binding flag is what makes
-// REGISTERED and BOUND separable. See bindings.slang section A.
-constexpr const char* kUnboundArrays[] = {"gnss_sensors", "gnss_ring"};
+// REGISTERED AND DELIBERATELY UNBOUND -- EMPTY AS OF THE GPU-SENSOR LEG, and
+// kept rather than deleted because the mechanism is still live and the next
+// registered array that no kernel reads belongs here.
+//
+// gnss_sensors and gnss_ring were its only two members, for exactly one leg:
+// while nothing read them, binding them would have cost a descriptor slot and
+// two Slang mirrors under the strict layout gate for buffers no kernel could
+// read. sensor_gnss.slang changed that, so they moved to kBoundArrays above.
+//
+// THE MOVE WAS FORCED BY A TEST RATHER THAN NOTICED BY A READER.
+// DeliberatelyUnboundArraysHaveNoBinding asserts in the NEGATIVE that every
+// name here has no binding, so adding one fails loudly -- which is the whole
+// point of writing an exemption as a two-way claim: AN EXEMPTION NOTHING CHECKS
+// IS NOT AN EXEMPTION, IT IS A CLAIM.
+// std::array rather than a C array because a zero-length C array is ill-formed;
+// this is the one shape that can legally hold "none, today".
+constexpr std::array<const char*, 0> kUnboundArrays{};
 
 constexpr std::size_t kRegisteredArrayCount = 11;
 static_assert(std::size(kBoundArrays) + std::size(kUnboundArrays) == kRegisteredArrayCount);
@@ -112,7 +126,7 @@ struct RegistryEntry {
 // BindingRegistryHasNoUnlistedEntries fails. Both directions are covered,
 // which is what "no silent omission" has to mean.
 const RegistryEntry kExpectedRegistry[] = {
-    // the nine registered arrays
+    // the nine original registered arrays
     {"world_params", gen::kBinding_world_params},
     {"bodies", gen::kBinding_bodies},
     {"body_generation", gen::kBinding_body_generation},
@@ -122,13 +136,22 @@ const RegistryEntry kExpectedRegistry[] = {
     {"imu_ring", gen::kBinding_imu_ring},
     {"rotors", gen::kBinding_rotors},
     {"replay_config", gen::kBinding_replay_config},
-    // the four .slot_to_world siblings a kernel dispatched over a global slot
-    // space needs (bindings.slang section B records why the other five are
-    // deliberately absent)
+    // The second sensor kind (bindings.slang section E), appended at 23..24
+    // rather than inserted in walk order so that no existing hand-authored
+    // [[vk::binding(n)]] had to be renumbered.
+    {"gnss_sensors", gen::kBinding_gnss_sensors},
+    {"gnss_ring", gen::kBinding_gnss_ring},
+    // the .slot_to_world siblings a kernel dispatched over a global slot space
+    // needs -- FIVE of them now (bindings.slang section B records why the rest
+    // are deliberately absent)
     {"bodies_slot_to_world", gen::kBinding_bodies_slot_to_world},
     {"drag_bodies_slot_to_world", gen::kBinding_drag_bodies_slot_to_world},
     {"imu_sensors_slot_to_world", gen::kBinding_imu_sensors_slot_to_world},
     {"rotors_slot_to_world", gen::kBinding_rotors_slot_to_world},
+    // The GNSS slot->world sibling, bound on section B's rule: sensor_gnss
+    // dispatches over the GNSS slot space and reads the map on its second line.
+    // gnss_ring's sibling is not bound -- nothing dispatches over a ring.
+    {"gnss_sensors_slot_to_world", gen::kBinding_gnss_sensors_slot_to_world},
     // the derived (non-registered) buffers -- backend-internal storage the
     // host owns, uploaded from configuration rather than walked out of the
     // ArenaSet. bindings.slang sections C and C' record why each exists.
@@ -174,7 +197,7 @@ const RegistryEntry kExpectedRegistry[] = {
 // How many entries of kExpectedRegistry are DERIVED (not part of the
 // registered walk and not one of its bound siblings). Named rather than
 // spelled as a literal in the count assertion below, so the assertion reads as
-// the sentence it is meant to be: the BOUND arrays + four siblings + the
+// the sentence it is meant to be: the BOUND arrays + five siblings + the
 // derived buffers, and nothing else.
 constexpr std::size_t kDerivedBufferCount = 10;
 
@@ -225,7 +248,7 @@ constexpr std::size_t kDerivedBufferCount = 10;
 // would produce a green build: zero static_asserts all pass. The count is the
 // only thing that distinguishes "checked everything" from "checked nothing".
 TEST(SlangLayouts, GeneratedHeaderChecksEveryMirroredStruct) {
-    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{20});
+    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{22});
     EXPECT_EQ(spade::compute::layout_check_mirrored_struct_count(), gen::kMirroredStructCount);
 }
 
@@ -249,8 +272,10 @@ TEST(SlangLayouts, BindingRegistryCoversEveryRegisteredArray) {
 // corresponding decision recorded here moves this number and fails.
 TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {
     EXPECT_EQ(std::size_t{gen::kBindingCount_state}, std::size(kExpectedRegistry));
+    // FIVE bound siblings now, not four: sensor_gnss.slang dispatches over the
+    // GNSS slot space, so gnss_sensors.slot_to_world joins on section B's rule.
     EXPECT_EQ(std::size_t{gen::kBindingCount_state},
-              kRegisteredArrayCount - std::size(kUnboundArrays) + 4u + kDerivedBufferCount);
+              kRegisteredArrayCount - std::size(kUnboundArrays) + 5u + kDerivedBufferCount);
 }
 
 // AN EXEMPTION NOTHING CHECKS IS NOT AN EXEMPTION, IT IS A CLAIM. kUnboundArrays
@@ -259,6 +284,20 @@ TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {
 // descriptor slot on a buffer the list says is absent. Asserted in the negative
 // so the exemption is bidirectional exactly like the coverage it replaces.
 TEST(SlangLayouts, DeliberatelyUnboundArraysHaveNoBinding) {
+    // INERT WHILE THE LIST IS EMPTY, AND IT SAYS SO RATHER THAN REPORTING GREEN.
+    // The GPU-sensor leg bound this guard's last two members, so today it has
+    // nothing to check -- and a loop over an empty list is exactly the "filter
+    // that matches nothing" this tree treats as a false green. Skipping makes
+    // the inertness VISIBLE in the run log instead of indistinguishable from a
+    // guard that ran and found nothing wrong.
+    //
+    // It is kept rather than deleted because the mechanism is live: the next
+    // registered array with no kernel reader re-populates kUnboundArrays and
+    // this test starts guarding again, in both directions, with no other edit.
+    if (kUnboundArrays.empty()) {
+        GTEST_SKIP() << "no registered array is currently exempt from binding -- this guard is "
+                        "inert by construction, not passing";
+    }
     for (const char* array : kUnboundArrays) {
         const auto found = std::find_if(
             std::begin(kExpectedRegistry), std::end(kExpectedRegistry),
@@ -467,6 +506,15 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_medium_update, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_rotors, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_sensor_imu, spade::testing::SpirvProfile::parity},
+    //   sensor_gnss    the SensorSynthesis pass's second dispatch. PARITY like
+    //                  sensor_imu, and for a sharper reason: its Gauss-Markov
+    //                  coefficients are precomputed on the CPU, so this module
+    //                  contains no exp and no OpFDiv at all -- the bias advance
+    //                  is two multiplies and an add. The only banded operation
+    //                  it reaches is rng.slang's Box-Muller sqrt, through the
+    //                  nine draws, exactly as sensor_imu reaches it through
+    //                  twelve.
+    {gen::kSpvVariants_sensor_gnss, spade::testing::SpirvProfile::parity},
 };
 
 }  // namespace
@@ -759,14 +807,21 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
         << " distinct kernels (kernel_manifest.gen.hpp) -- a kernel was added or "
         << "removed on one side without the other";
 
-    // These two remain hand-typed, deliberately out of this fix-wave's XS
-    // scope: they check a NARROWER, separate invariant below (that exactly
-    // nine of kCompiledSpirvKernelCount's kernels are schedule kernels with
-    // the full workgroup-size family, and that the scanner's total covers
-    // 9*sizes+1 modules) rather than the total-entry-count gap
-    // gen::kCompiledSpirvKernelCount above now closes. Folding these into
-    // the generated manifest too is exactly the review's larger "S" option.
-    constexpr std::size_t kScheduleKernels = 11;
+    // These two remain hand-typed: they check a NARROWER, separate invariant
+    // below (that exactly kScheduleKernels of kCompiledSpirvKernelCount's
+    // kernels are schedule kernels with the full workgroup-size family, and
+    // that the scanner's total covers kScheduleKernels*sizes + 1 modules)
+    // rather than the total-entry-count gap gen::kCompiledSpirvKernelCount
+    // above now closes. Folding these into the generated manifest too is
+    // exactly the review's larger "S" option.
+    //
+    // THE PROSE USED TO SAY "NINE" WHILE THE CONSTANT SAID 11, which is worth a
+    // line because it is this file's own failure mode in miniature: the number
+    // was maintained and the sentence describing it was not, so the sentence
+    // quietly became the less trustworthy of the two. It is written relative to
+    // the constant now, so it cannot drift again. 12 as of the GPU-sensor leg
+    // (sensor_gnss joined the schedule).
+    constexpr std::size_t kScheduleKernels = 12;
     constexpr std::size_t kSingleVariantKernels = 1;  // fp32_math_probe
 
     std::size_t scanned = 0;

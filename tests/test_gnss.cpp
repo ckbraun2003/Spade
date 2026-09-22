@@ -72,7 +72,7 @@ TEST(GnssLayout, FixMatchesTheStd430RowPlan) {
 }
 
 TEST(GnssLayout, SensorRowMatchesTheStd430RowPlan) {
-    EXPECT_EQ(sizeof(GnssSensorRow), std::size_t{96}) << "std430 array stride";
+    EXPECT_EQ(sizeof(GnssSensorRow), std::size_t{112}) << "std430 array stride";
     EXPECT_EQ(alignof(GnssSensorRow), std::size_t{16}) << "std430 base alignment";
 
     EXPECT_EQ(offsetof(GnssSensorRow, body_slot), std::size_t{0});
@@ -87,7 +87,17 @@ TEST(GnssLayout, SensorRowMatchesTheStd430RowPlan) {
     EXPECT_EQ(offsetof(GnssSensorRow, bias_tau_s), std::size_t{60});
     EXPECT_EQ(offsetof(GnssSensorRow, noise), std::size_t{64});
     EXPECT_EQ(offsetof(GnssSensorRow, last_index), std::size_t{80});
-    EXPECT_EQ(offsetof(GnssSensorRow, _reserved0), std::size_t{88});
+
+    // THE APPEND. Every pin above is unchanged from the 96-byte row this grew
+    // out of; the three fields below were added at the tail when the row went
+    // to 112, which is what makes it an APPEND rather than a reshuffle. If any
+    // pin ABOVE this comment ever moves, that is a different and much more
+    // expensive kind of change -- every committed digest moves with it and no
+    // continuation argument survives.
+    EXPECT_EQ(offsetof(GnssSensorRow, bias_retention), std::size_t{88});
+    EXPECT_EQ(offsetof(GnssSensorRow, bias_drive), std::size_t{92});
+    EXPECT_EQ(offsetof(GnssSensorRow, sigma_bias), std::size_t{96});
+    EXPECT_EQ(offsetof(GnssSensorRow, _reserved0), std::size_t{104});
 
     // `kind` sits at offset 4 on BOTH row types, which is what lets a reader
     // identify a row before it knows which row it is holding.

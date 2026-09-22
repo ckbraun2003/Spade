@@ -315,6 +315,71 @@ struct ImuSample {
 };
 
 // ---------------------------------------------------------------------------
+// GnssSensorRow -- one receiver's table row (sensors/gnss.hpp). Seven 16-byte
+// rows against ImuSensorRow's eight, and the difference is the point: no mount
+// orientation (an antenna is a POINT), no gyro channel, and one bias vector
+// instead of two. A row type that came out the same size as the IMU's would be
+// a sign it had been copied rather than designed.
+//
+// THE TWO DERIVED CONSTANTS AND THEIR TWO SOURCES. bias_retention and
+// bias_drive are exp(-dt/tau) and sigma_bias*sqrt(1 - exp(-2 dt/tau)),
+// COMPUTED ONCE ON THE CPU at add_gnss_sensor() time. bias_tau_s and
+// sigma_bias are kept beside them and are unused by the kernel: a derived
+// value cannot answer "derived from WHAT?" on its own, and the alternative is
+// a later author recovering tau by inverting a float.
+//
+// That precompute is why sensor_gnss.slang contains no exp and no divide --
+// fp32_math.slang:83-88 records that an OpFDiv is DEVICE-DEPENDENT, and a
+// recursive bias filter accumulates an ulp rather than tolerating it.
+// ---------------------------------------------------------------------------
+// @cpp-type   spade::sensors::GnssSensorRow
+// @cpp-header sensors/gnss.hpp
+struct GnssSensorRow {
+    uint      body_slot;       // world-local index into this world's bodies span
+    uint      kind;            // sensor_kind::; 0 == none == inert
+    uint      rate_divider;    // emit one fix every N substeps; normally >> 1 here
+    uint      phase;           // substeps elapsed in the current sensor period
+    float3    mount_pos;       // antenna lever arm, BODY-frame offset from the COM, m
+    float     _p0;             // std430 pad -- keeps `bias` on row 2
+    float3    bias;            // correlated position error state, WORLD frame, m
+    float     _p1;             // std430 pad
+    float     sigma_h;         // horizontal white noise, per-fix stddev, m
+    float     sigma_v;         // vertical white noise, per-fix stddev, m
+    float     sigma_vel;       // velocity white noise, per-axis per-fix stddev, m/s
+    float     bias_tau_s;      // Gauss-Markov correlation time, s -- THE SOURCE, unused here
+    RngStream noise;           // this receiver's own stream; ALL of its randomness
+    uint2     last_index;      // newest fix index written; 0 == none yet (uint2: header note)
+    float     bias_retention;  // exp(-dt/tau), precomputed on the CPU
+    float     bias_drive;      // sigma_bias * sqrt(1 - exp(-2 dt/tau)), precomputed on the CPU
+    float     sigma_bias;      // stationary bias stddev, m -- THE SOURCE, unused here
+    float     _p2;             // std430 pad
+    uint2     _reserved0;      // reserved for versioned growth; must stay 0
+};
+
+// ---------------------------------------------------------------------------
+// GnssFix -- one ring entry (sensors/gnss.hpp). Three 16-byte rows.
+//
+// THE ACCURACY ESTIMATES TRAVEL WITH THE FIX rather than being read back from
+// the row, because a real receiver reports its own accuracy per fix and a
+// filter weights each fix by the number that came with it. That is also why
+// the two dead pad lanes ImuSample carries are NAMED FIELDS here -- sigma_h and
+// sigma_v occupy the slots ImuSample spends on _p0/_p1.
+//
+// `index` is per-sensor monotonic starting at 1; `tick` is the step it was
+// produced in. Both are uint2 on this device (no shaderInt64).
+// ---------------------------------------------------------------------------
+// @cpp-type   spade::sensors::GnssFix
+// @cpp-header sensors/gnss.hpp
+struct GnssFix {
+    float3 position;  // antenna position, WORLD frame, m
+    float  sigma_h;   // this fix's own horizontal accuracy estimate, 1-sigma, m
+    float3 velocity;  // antenna velocity, WORLD frame, m/s (Doppler-derived)
+    float  sigma_v;   // this fix's own vertical accuracy estimate, 1-sigma, m
+    uint2  index;     // per-sensor monotonic, starts at 1 (uint2: header note)
+    uint2  tick;      // the step this fix was produced in (uint2: header note)
+};
+
+// ---------------------------------------------------------------------------
 // DrydenState -- one world's gust-filter state (world/medium.hpp). Five 8-byte
 // rows; NOT padded to 16-byte rows, because it carries no vector member --
 // std430 alignment 8, matching the C++ struct exactly.

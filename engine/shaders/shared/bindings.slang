@@ -49,13 +49,24 @@
 //    ReplayConfig comment).
 //
 //    THE WALK HOLDS ELEVEN ARRAYS, NOT NINE. gnss_sensors and gnss_ring are
-//    registered and DELIBERATELY UNBOUND: no kernel reads either, and binding
-//    them would mean authoring Slang struct mirrors for GnssSensorRow and
-//    GnssFix under the strict layout gate (shaders/tools/gen_layout_check.py's
-//    empty UNMIRRORED_STRUCTS) purely so that a descriptor could point at
-//    buffers nothing reads. They are still allocated, uploaded, read back and
-//    folded into the state digest -- state_mirror.cpp's per-entry has_binding
-//    flag is what makes REGISTERED and BOUND separable.
+//    bound at 23..24 with the GNSS slot->world sibling at 25 -- see section E.
+//
+//    THEY WERE DELIBERATELY UNBOUND FOR EXACTLY ONE LEG, AND THE REASON IS
+//    WORTH KEEPING. When the arena was registered no kernel read either array,
+//    so binding them would have meant authoring Slang mirrors for GnssSensorRow
+//    and GnssFix under the strict layout gate purely so a descriptor could
+//    point at buffers nothing reads -- cost with no consumer. That held until
+//    sensor_gnss.slang existed, which was the next leg. The sentence
+//    "deliberately unbound" read as a settled end state when the honest form
+//    was "unbound UNTIL THE SENSOR EMITS": A SENTENCE TRUE WHEN WRITTEN, PHRASED
+//    SO NOTHING IN IT EXPIRES. What caught the reversal was not a reader but a
+//    test -- test_slang_layouts.cpp asserted in the NEGATIVE that those arrays
+//    had no binding, so adding one failed loudly and forced this paragraph to
+//    be rewritten rather than quietly outgrown.
+//
+//    state_mirror.cpp's per-entry has_binding flag is still what makes
+//    REGISTERED and BOUND separable, and five `.slot_to_world` siblings remain
+//    unbound on section B's rule.
 //
 //    HOW THIS IS GUARDED, STATED HONESTLY -- AN EARLIER FORM OF THIS
 //    PARAGRAPH CLAIMED MORE THAN IS TRUE. It said the registry "mirrors that
@@ -312,6 +323,31 @@ import layouts;
 // dispatch. Shadowing the two fields this pass mutates is what makes the
 // iteration a Jacobi one rather than a race.
 [[vk::binding(22, 0)]] RWStructuredBuffer<GatherBodyRow> body_snapshot;
+
+// ---------------------------------------------------------------------------
+// E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound
+// because a kernel now reads it.
+//
+// APPENDED AT 23..25 RATHER THAN INSERTED AT 9..10 BESIDE THE OTHER REGISTERED
+// ARRAYS, AND THAT IS DELIBERATE. These indices are hand-authored
+// [[vk::binding(n, 0)]] attributes, so putting the arrays in walk order would
+// have renumbered fifteen existing bindings for cosmetic tidiness -- and this
+// file already tolerates numeric order differing from file order (step_params
+// and step_witness are 17/18, declared below grid_entries at 21). The C++ side
+// never hardcodes a number: it reads gen::kBinding_* out of the reflection
+// record, so appending costs nothing and renumbering would have risked a silent
+// swap that only a parity failure would catch.
+//
+// THE SIBLING IS BOUND, AND SECTION B'S RULE IS WHY. "A sibling is bound iff a
+// kernel dispatched over that array's GLOBAL slot space needs it" --
+// sensor_gnss.slang dispatches per GNSS sensor slot and reads
+// gnss_sensors_slot_to_world on its second line to find the owning world,
+// exactly as sensor_imu.slang reads the IMU's at binding 11. gnss_ring's own
+// sibling is NOT bound: nothing dispatches over the ring.
+// ---------------------------------------------------------------------------
+[[vk::binding(23, 0)]] RWStructuredBuffer<GnssSensorRow> gnss_sensors;
+[[vk::binding(24, 0)]] RWStructuredBuffer<GnssFix>       gnss_ring;
+[[vk::binding(25, 0)]] StructuredBuffer<uint>            gnss_sensors_slot_to_world;
 
 // -- C'. the per-STEP exchange (S6 Task 5's finding C2, closed by Task 6) ----
 //

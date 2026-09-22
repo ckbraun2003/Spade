@@ -204,19 +204,21 @@ struct ArrayShape {
     };
 }
 
-// Binding index for the 13 of 22 walk entries that bindings.slang binds (the
-// nine BOUND arrays plus the four `.slot_to_world` siblings a kernel dispatched
-// over a global slot space needs -- bindings.slang section B). Returns false
-// for the other nine: the five unbound siblings, plus the two GNSS arrays and
-// their own two siblings.
+// Binding index for the 16 of 22 walk entries that bindings.slang binds (the
+// eleven registered arrays plus the five `.slot_to_world` siblings a kernel
+// dispatched over a global slot space needs -- bindings.slang sections B and
+// E). Returns false for the other six siblings.
 //
-// ALL NINE ARE STILL ALLOCATED, UPLOADED AND READ BACK -- they are simply never
+// ALL SIX ARE STILL ALLOCATED, UPLOADED AND READ BACK -- they are simply never
 // written into the descriptor set. The per-entry has_binding flag below is what
-// makes REGISTERED and BOUND separable, and that separation is the whole reason
-// a sensor with no kernel can join the walk without spending a descriptor slot
-// on a buffer nothing can read. A GNSS kernel, if one is ever written, makes
-// binding a two-line change here plus the Slang struct mirrors it would then
-// need for a reason.
+// makes REGISTERED and BOUND separable.
+//
+// THE GNSS ARRAYS WERE IN THAT UNBOUND SET FOR EXACTLY ONE LEG. While no kernel
+// read them, binding them would have been a descriptor slot and two Slang
+// mirrors spent on buffers nothing could read. sensor_gnss.slang is that
+// kernel, so they are bound now -- and the earlier note here predicted the
+// change would be "a two-line change plus the Slang mirrors it would then need
+// for a reason", which is what it turned out to be.
 [[nodiscard]] bool binding_for(const std::string& name, uint32_t& out) {
     static const std::pair<const char*, uint32_t> kTable[] = {
         {"world_params", gen::kBinding_world_params},
@@ -232,6 +234,13 @@ struct ArrayShape {
         {"drag_bodies.slot_to_world", gen::kBinding_drag_bodies_slot_to_world},
         {"imu_sensors.slot_to_world", gen::kBinding_imu_sensors_slot_to_world},
         {"rotors.slot_to_world", gen::kBinding_rotors_slot_to_world},
+        // The second sensor kind. Its slot->world sibling IS bound, on
+        // bindings.slang section B's rule -- sensor_gnss.slang dispatches over
+        // the GNSS slot space and reads the map to find the owning world.
+        // gnss_ring's own sibling is not: nothing dispatches over a ring.
+        {"gnss_sensors", gen::kBinding_gnss_sensors},
+        {"gnss_ring", gen::kBinding_gnss_ring},
+        {"gnss_sensors.slot_to_world", gen::kBinding_gnss_sensors_slot_to_world},
     };
     for (const auto& [candidate, binding] : kTable) {
         if (name == candidate) {

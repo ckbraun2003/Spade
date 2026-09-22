@@ -550,15 +550,18 @@ constexpr uint64_t kTwoWorldSteps = 300;
 // replica of the scenario is transcribed correctly, never as this test's own
 // claim (that is TwoWorldIsolationMatchesTheCpuWithinBands's job, elsewhere).
 //
-// REGENERATED WITH THE CORPUS when the GNSS arena joined the state walk
-// (0xaab013d47c0eba42 -> 0xe43eedcf57f740dc). That is correct for THIS constant
+// REGENERATED WITH THE CORPUS TWICE, and the two reasons were different:
+// 0xaab013d47c0eba42 -> 0xe43eedcf57f740dc when the GNSS arena JOINED the
+// state walk (four new entries), then -> 0x69c6467bf2df206c when the GNSS
+// ROW GREW 96 -> 112 bytes (state_digest folds elem_size, so a row that
+// changes size moves every digest even though the walk did not change). That is correct for THIS constant
 // and would be wrong for the four in test_determinism.cpp's GoldenCorpus table:
 // this one is a MIRROR of the yaml, whose only job is to catch a transcription
 // slip in the replica beside it, so it must track the yaml. Those four are the
 // retired builder's own output, and not moving them is the entire independence
 // claim. Two hardcoded digests, opposite regeneration rules, and the difference
 // is what each number is a copy OF.
-constexpr uint64_t kTwoWorldIsolationExpectedDigest = 0xe43eedcf57f740dcULL;
+constexpr uint64_t kTwoWorldIsolationExpectedDigest = 0x69c6467bf2df206cULL;
 
 [[nodiscard]] Result<WorldInstanceDesc> two_world_isolation_instance(uint64_t seed) {
     const Result<WorldDesc> world =

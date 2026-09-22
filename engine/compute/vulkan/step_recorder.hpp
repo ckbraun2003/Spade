@@ -260,7 +260,12 @@ public:
         kPipelineMedium = 6,     // medium_update
         kPipelineRotors = 7,     // rotors
         kPipelineSensorImu = 8,  // sensor_imu
-        kPipelineCount = 9,
+        // The GPU-sensor leg's one addition: SensorSynthesis became a CHAIN
+        // when a second sensor kind arrived, exactly as physics/schedule.hpp
+        // predicted it would ("a second batched call HERE ... and not a second
+        // pass"). Appended rather than inserted so no existing enumerator moves.
+        kPipelineSensorGnss = 9, // sensor_gnss
+        kPipelineCount = 10,
     };
 
     // NO RunParams ARGUMENT AS OF S6 TASK 6b: PassParams no longer carries

@@ -89,6 +89,21 @@ void pass_sensor_synthesis(const SubstepContext& ctx) noexcept {
         // only sensor rows and rings, which is what keeps it safely after
         // Integrate rather than interleaved with it.
         sensors::synthesize_imu(w.bodies, w.imu_sensors, w.imu_ring, ctx.tick.value);
+
+        // THE SECOND BATCHED CALL, WHICH IS THE SHAPE THIS HEADER RULED BEFORE
+        // A SECOND KIND EXISTED -- "A second kind becomes a second batched call
+        // HERE ... and not a second pass".
+        //
+        // THE TWO CALLS COMMUTE, AND THAT IS WORTH KNOWING RATHER THAN
+        // ASSUMING EITHER WAY. They read `bodies` as const, write disjoint
+        // arrays, and draw from per-row streams seeded under DIFFERENT rng
+        // domain tags (sensors/gnss.hpp's kGnssNoiseDomainTag exists precisely
+        // so two sensors on one body cannot draw the same numbers). And
+        // state_digest folds the walk in REGISTRATION order, not in call
+        // order, so swapping these two lines moves no digest either. The order
+        // below is therefore readability, not contract -- unlike this pass's
+        // position AFTER Integrate, which is load-bearing and documented.
+        sensors::synthesize_gnss(w.bodies, w.gnss_sensors, w.gnss_ring, ctx.tick.value);
     }
 }
 

@@ -600,6 +600,10 @@ Result<void> Simulation::rebuild_views() {
     if (!imu) return std::unexpected(imu.error());
     Result<std::span<sensors::ImuSample>> imu_ring = arenas_.array(imu_ring_id_);
     if (!imu_ring) return std::unexpected(imu_ring.error());
+    Result<std::span<sensors::GnssSensorRow>> gnss = arenas_.array(gnss_id_);
+    if (!gnss) return std::unexpected(gnss.error());
+    Result<std::span<sensors::GnssFix>> gnss_ring = arenas_.array(gnss_ring_id_);
+    if (!gnss_ring) return std::unexpected(gnss_ring.error());
     Result<std::span<vehicles::RotorRow>> rotors = arenas_.array(rotors_id_);
     if (!rotors) return std::unexpected(rotors.error());
 
@@ -644,6 +648,14 @@ Result<void> Simulation::rebuild_views() {
         // "imu_ring.subspan(i * kRingDepth, kRingDepth) is sensor i's window"
         // true inside the pass without the pass knowing a world id.
         view.imu_ring = imu_ring->subspan(static_cast<std::size_t>(w) * ring_per_world, ring_per_world);
+        // The second sensor kind, bound by the SAME `w` and the SAME
+        // sensor_capacity -- so a receiver's world-local body_slot agrees with
+        // the `bodies` span above exactly as an IMU's does, and its ring window
+        // arithmetic is the same expression. The two arenas are separate but
+        // their partitioning is not: one sensor_capacity sizes both.
+        view.gnss_sensors = gnss->subspan(sensor_begin, layout_.sensor_capacity);
+        view.gnss_ring =
+            gnss_ring->subspan(static_cast<std::size_t>(w) * ring_per_world, ring_per_world);
         // Subscripted by the SAME `w` and, crucially, by the SAME
         // element_capacity as `drag_elements` above -- which is what makes
         // RotorRow::body_slot (a WORLD-LOCAL body index, exactly like

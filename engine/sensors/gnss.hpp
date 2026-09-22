@@ -1,5 +1,14 @@
 #pragma once
 
+// <cmath> IS BACK, AND THE DISTINCTION IS THE WHOLE REASON IT LEFT. It was
+// removed when this file's exp() became math::exp32: BitPortability.NoLibm-
+// TranscendentalInEngineOrGoldenTestSource bans std::sin/cos/exp/log/pow and
+// the inverse-trig family, because those are libm-implementation-defined and
+// break bit-identity. std::sqrt IS NOT ON THAT LIST and is not an oversight:
+// IEEE 754 MANDATES a correctly-rounded sqrt, so it is already bit-exact
+// everywhere. core/rng.hpp:222 keeps its Box-Muller sqrt for exactly this
+// reason and says so. gnss_bias_drive() below is the only user here.
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -157,9 +166,44 @@ struct alignas(kStd430StructAlignment) GnssSensorRow {
     float sigma_h;          // horizontal white noise, per-fix stddev, m
     float sigma_v;          // vertical white noise, per-fix stddev, m
     float sigma_vel;        // velocity white noise, per-axis per-fix stddev, m/s (§2)
-    float bias_tau_s;       // Gauss-Markov correlation time, s; <= 0 disables the bias
+    float bias_tau_s;       // Gauss-Markov correlation time, s; <= 0 disables the bias.
+                            // THE SOURCE, KEPT DELIBERATELY -- see bias_retention.
     rng::Stream noise;      // this receiver's own stream; ALL of its randomness
     SampleIndex last_index; // index of the newest fix written; 0 == none yet
+
+    // -----------------------------------------------------------------------
+    // THE TWO DERIVED CONSTANTS, COMPUTED ONCE ON THE CPU AT SPAWN AND NEVER ON
+    // THE STEP PATH. §2's model is
+    //
+    //   bias <- bias * exp(-dt/tau) + N(0, sigma_bias * sqrt(1 - exp(-2 dt/tau)))
+    //
+    // and BOTH coefficients depend only on `dt` -- IMMUTABLE AT CREATION -- and
+    // on `tau`, fixed per receiver. They are PER-SENSOR CONSTANTS, so
+    // add_gnss_sensor() evaluates them once with math::exp32 and the synthesis
+    // pass just multiplies.
+    //
+    // THAT IS A PARITY DECISION, NOT AN OPTIMISATION. shaders/fp32_math.slang
+    // records that "an OpFDiv is not merely less accurate, it is
+    // DEVICE-DEPENDENT", which is why log32_div() is a restoring integer long
+    // division and is domain-restricted. Other kernels divide freely, but those
+    // are BANDED physics paths where an ulp sits inside a band. A RECURSIVE BIAS
+    // FILTER DOES NOT TOLERATE ERROR, IT ACCUMULATES IT: an ulp of retention
+    // error compounds on every emission and walks out of any band eventually.
+    // Keeping the transcendental off the step path makes the Slang twin
+    // bit-identical BY CONSTRUCTION rather than by tolerance.
+    // -----------------------------------------------------------------------
+    float bias_retention;   // exp(-dt / bias_tau_s); 0 == no bias (tau <= 0)
+    float bias_drive;       // sigma_bias * sqrt(1 - exp(-2 dt / bias_tau_s))
+
+    // THE SECOND SOURCE, AND IT IS WHY THE MODEL IS NOW EXPRESSIBLE AT ALL.
+    // §2 has always documented a `sigma_bias`; the row shipped without one, so
+    // the bias process had a correlation time and NO MAGNITUDE -- a bias that
+    // decayed toward zero and was never driven. Stored rather than folded away
+    // into bias_drive for the same reason bias_tau_s is: a derived constant
+    // cannot answer "derived from WHAT?", and the alternative is a later author
+    // recovering it by inverting a float.
+    float sigma_bias;       // stationary stddev of the correlated bias, m (§2)
+    float _p2;              // std430 pad -- keeps `_reserved0` 8-byte aligned
     uint64_t _reserved0;    // reserved for versioned growth; must stay 0
 };
 
@@ -167,7 +211,7 @@ static_assert(std::is_standard_layout_v<GnssSensorRow>, "GnssSensorRow must be s
 static_assert(std::is_trivially_copyable_v<GnssSensorRow>, "GnssSensorRow must be memcpy-able: snapshots copy it byte-wise");
 static_assert(std::is_trivially_destructible_v<GnssSensorRow>, "arena slots are never individually destroyed");
 static_assert(alignof(GnssSensorRow) == 16, "std430 base alignment");
-static_assert(sizeof(GnssSensorRow) == 96, "std430 array stride");
+static_assert(sizeof(GnssSensorRow) == 112, "std430 array stride");
 
 static_assert(offsetof(GnssSensorRow, body_slot) == 0);
 static_assert(offsetof(GnssSensorRow, kind) == 4);
@@ -183,7 +227,14 @@ static_assert(offsetof(GnssSensorRow, sigma_vel) == 56);
 static_assert(offsetof(GnssSensorRow, bias_tau_s) == 60);
 static_assert(offsetof(GnssSensorRow, noise) == 64);
 static_assert(offsetof(GnssSensorRow, last_index) == 80);
-static_assert(offsetof(GnssSensorRow, _reserved0) == 88);
+// THE APPEND. Every offset at or below 88 above is unchanged from the 96-byte
+// row this grew out of, which is what makes the growth an APPEND rather than a
+// reshuffle -- and is why the shipped pins did not have to be rewritten.
+static_assert(offsetof(GnssSensorRow, bias_retention) == 88);
+static_assert(offsetof(GnssSensorRow, bias_drive) == 92);
+static_assert(offsetof(GnssSensorRow, sigma_bias) == 96);
+static_assert(offsetof(GnssSensorRow, _p2) == 100);
+static_assert(offsetof(GnssSensorRow, _reserved0) == 104);
 
 // Every vec3 starts a 16-byte row; the stream and the two uint64s are 8-byte
 // aligned, which std430 requires of them too.
@@ -197,7 +248,7 @@ static_assert(offsetof(GnssSensorRow, last_index) % 8 == 0);
 // own 16 bytes -- see core/rng.hpp.)
 static_assert(4 * sizeof(uint32_t) + 2 * (sizeof(glm::vec3) + sizeof(float)) +
                   4 * sizeof(float) + sizeof(rng::Stream) + sizeof(SampleIndex) +
-                  sizeof(uint64_t) ==
+                  4 * sizeof(float) + sizeof(uint64_t) ==
                   sizeof(GnssSensorRow),
               "GnssSensorRow has implicit padding: every byte must belong to a named field");
 
@@ -261,5 +312,64 @@ static_assert(4 * sizeof(uint32_t) + 2 * (sizeof(glm::vec3) + sizeof(float)) +
     if (!(tau_s > 0.0f) || !(dt_s > 0.0f)) return 0.0f;
     return math::exp32(-dt_s / tau_s);
 }
+
+// ---------------------------------------------------------------------------
+// The OTHER half of §2's Gauss-Markov step: the stddev of the white term that
+// DRIVES the bias, sigma_bias * sqrt(1 - exp(-2 dt / tau)).
+//
+// IT EXISTS BECAUSE THE ROW COULD NOT EXPRESS THE MODEL WITHOUT IT. §2 has
+// documented this process since the file was written, but GnssSensorRow shipped
+// with a correlation time and NO MAGNITUDE -- so a receiver built from it had a
+// bias that decayed toward zero and was never driven. The header described a
+// model the struct implemented a subset of, and nothing in this tree compares
+// the two.
+//
+// SAME DOMAIN CONTRACT AS gnss_bias_retention, deliberately: tau <= 0 or
+// dt <= 0 means "no correlated bias", and both coefficients must agree about
+// that or a receiver could be driven without decaying. The sqrt is evaluated at
+// SPAWN, on the CPU, exactly once -- it never reaches a kernel, for the same
+// reason the exp does not.
+//
+// The 1 - exp(-2 dt/tau) form is the stationary-variance solution: it is what
+// makes the bias's steady-state stddev equal sigma_bias regardless of dt, so
+// changing the substep size does not silently change how noisy a receiver is.
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline float gnss_bias_drive(float dt_s, float tau_s, float sigma_bias) noexcept {
+    if (!(tau_s > 0.0f) || !(dt_s > 0.0f)) return 0.0f;
+    const float retention_sq = math::exp32(-2.0f * dt_s / tau_s);
+    const float variance = 1.0f - retention_sq;
+    if (!(variance > 0.0f)) return 0.0f;
+    return sigma_bias * std::sqrt(variance);
+}
+
+// ---------------------------------------------------------------------------
+// synthesize_gnss() -- the SensorSynthesis pass's GNSS contribution, for ONE
+// world's spans. The SECOND batched call in that pass, not a second pass:
+// physics/schedule.hpp ruled that shape before this sensor existed.
+//
+// NINE STANDARD NORMALS PER EMITTED FIX, ALWAYS -- bias-walk, position-white,
+// velocity-white, each x/y/z -- whatever the sigmas are, so that the stream
+// position is a function of the emitted-fix count alone and configuring a
+// receiver noise-free does not shift every other draw in the world. Same
+// discipline imu.hpp section 4 states for its twelve.
+//
+// NINE IS ODD AND THAT IS FINE, WHICH IS WORTH SAYING BECAUSE THE NEIGHBOURING
+// FILE'S EVEN COUNT READS AS A RULE. sensor_imu.slang calls its even twelve "a
+// small dividend": rng::Stream's Box-Muller cache is empty again at the end of
+// every sample. Nine leaves it FULL -- and that is still bit-identical across
+// backends, because core/rng.hpp's Stream and layouts.slang's RngStream mirror
+// each other INCLUDING `cached_gauss`/`has_cached`, so both sides carry the
+// same spare forward. AN UNSTATED NON-REQUIREMENT BECOMES A REQUIREMENT BY
+// INHERITANCE, so the non-event is stated.
+//
+// Same precondition as synthesize_imu's, and unchecked for the same reason:
+// every sensors[i].body_slot with kind == gnss is a valid index into `bodies`.
+//
+// Allocates nothing, reads no clock, evaluates no transcendental and performs
+// no division (see GnssSensorRow's bias_retention/bias_drive), and draws only
+// from each row's own stream.
+// ---------------------------------------------------------------------------
+void synthesize_gnss(std::span<const BodyState> bodies, std::span<GnssSensorRow> sensors,
+                     std::span<GnssFix> rings, uint64_t tick) noexcept;
 
 }  // namespace spade::sensors

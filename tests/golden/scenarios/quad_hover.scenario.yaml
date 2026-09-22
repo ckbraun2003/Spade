@@ -210,4 +210,4 @@ inputs:
 #   continuation test carries. Its digest moved for the same reason and is
 #   covered by DigestsMatchTheCommittedGoldenCorpus alone.
 #
-expected_digest: "0xc4bc033cc902e43c"
+expected_digest: "0x7b90c4447624aecc"
