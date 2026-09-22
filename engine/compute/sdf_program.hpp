@@ -11,9 +11,16 @@
 // ArenaSet walk StateMirror::upload()/readback() exchange. The GPU pass needs
 // it anyway. Uploading it is therefore backend-internal DERIVED STORAGE, the
 // same category dryden_params (bindings.slang section C) already occupies and
-// exactly the category S6 is allowed to add (global constraint: registered
-// state is what is frozen, at 18 walk entries; this adds no register_array
-// call).
+// exactly the category backend work is allowed to add: derived storage, no
+// register_array call.
+//
+// The canonical wording is compute/step_params.hpp's and
+// compute/vulkan/backend.hpp's: global constraint: "S6 adds NO register_array
+// call". (This site said "registered state is what is frozen, at 18 walk
+// entries" -- a paraphrase that generalised past its own subject and acquired a
+// number; see compute/vulkan/state_mirror.hpp. The point made here survives
+// verbatim: what makes this buffer legal is that it is DERIVED, not that the
+// walk cannot grow.)
 //
 // ---------------------------------------------------------------------------
 // THREE BUFFERS, NOT ONE, AND WHY THE SPLIT IS THIS ONE

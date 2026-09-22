@@ -42,15 +42,48 @@
 // ---------------------------------------------------------------------------
 // WHAT IS BOUND, AND WHY EACH ONE
 //
-// A. THE NINE REGISTERED ARRAYS (bindings 0..8), in registered-walk order:
-//    world_params, bodies, body_generation, drag_bodies, dryden, imu_sensors,
-//    imu_ring, rotors, replay_config. Registered state is FROZEN at these nine
-//    (global constraint: 18 walk entries = 9 arrays x elements + .slot_to_world),
-//    and the registry mirrors that list EXACTLY -- test_slang_layouts.cpp
-//    asserts the correspondence in both directions so neither an addition nor
-//    an omission can pass silently. replay_config is bound even though no
-//    kernel will read it, for exactly that completeness reason
-//    (layouts.slang's ReplayConfig comment).
+// A. THE NINE BOUND REGISTERED ARRAYS (bindings 0..8), in registered-walk
+//    order: world_params, bodies, body_generation, drag_bodies, dryden,
+//    imu_sensors, imu_ring, rotors, replay_config. replay_config is bound even
+//    though no kernel will read it, for completeness (layouts.slang's
+//    ReplayConfig comment).
+//
+//    THE WALK HOLDS ELEVEN ARRAYS, NOT NINE. gnss_sensors and gnss_ring are
+//    registered and DELIBERATELY UNBOUND: no kernel reads either, and binding
+//    them would mean authoring Slang struct mirrors for GnssSensorRow and
+//    GnssFix under the strict layout gate (shaders/tools/gen_layout_check.py's
+//    empty UNMIRRORED_STRUCTS) purely so that a descriptor could point at
+//    buffers nothing reads. They are still allocated, uploaded, read back and
+//    folded into the state digest -- state_mirror.cpp's per-entry has_binding
+//    flag is what makes REGISTERED and BOUND separable.
+//
+//    HOW THIS IS GUARDED, STATED HONESTLY -- AN EARLIER FORM OF THIS
+//    PARAGRAPH CLAIMED MORE THAN IS TRUE. It said the registry "mirrors that
+//    list EXACTLY -- test_slang_layouts.cpp asserts the correspondence in both
+//    directions so neither an addition nor an omission can pass silently."
+//    Only one of those directions exists:
+//
+//      SLANG SIDE, GUARDED. A binding added to or removed from this file moves
+//      kBindingCount_state, which is generated from slangc reflection, and
+//      BindingRegistryHasNoUnlistedEntries fails.
+//
+//      REGISTRY SIDE, NOT GUARDED BY ANY TEST IN THAT FILE. Its
+//      kRegisteredArrays is a hardcoded list of string literals compared
+//      against the test's own kExpectedRegistry; nothing there walks the live
+//      StateRegistry, so an array registered in sim/simulation.cpp passes every
+//      test in that file silently.
+//
+//    THE LIST MUST STAY HARDCODED -- its own comment is right that a test
+//    reading its expectations out of the artifact under test would assert
+//    nothing. The independence that makes it a good expectation is the same
+//    property that makes it blind to the thing it names; both halves are true
+//    at once, which is why the old sentence read as correct. The real guard on
+//    the registry side is RUNTIME: StateMirror::upload() walks the live
+//    registry and refuses an array it has no buffer for. WARNING: that path is
+//    Vulkan-only and its tests are GTEST_SKIP()-gated on vulkan_available(),
+//    and A SKIPPED TEST COUNTS AS PASSED -- so on a box with no device, a
+//    registry-side addition is invisible: CPU suite fully green, backend broken
+//    at runtime.
 //
 // B. FOUR .slot_to_world SIBLINGS (bindings 9..12). Every registered array has
 //    one (state/arenas.hpp: register_array("bodies", ...) contributes both
@@ -126,7 +159,11 @@
 //    device and WorldParams carries none of them. None of the three is a
 //    registered array -- they are configuration, not evolving state -- and
 //    device-side derived storage uploaded from the host is explicitly the
-//    category S6 may add (registered state is what is frozen); see
+//    category the canonical global constraint permits: "S6 adds NO
+//    register_array call" (compute/step_params.hpp, compute/vulkan/backend.hpp).
+//    (This site said "registered state is what is frozen" -- a paraphrase that
+//    lost its subject; see compute/vulkan/state_mirror.hpp. What makes these
+//    three legal is that they are DERIVED, which is unchanged.) See
 //    layouts.slang's DrydenParams/ContactParams/GridParams comments.
 //
 //    ALL THREE HAVE READERS AS OF S6 TASK 8, which closes the last of this
@@ -250,7 +287,7 @@ import layouts;
 // of physics/grid.hpp's GridScratch: pure derived storage that is rebuilt from
 // the body positions at the start of every CollisionDynamic pass and carries
 // no meaning across passes, which is exactly why adding it needs no
-// register_array call and does not touch the frozen 18-entry walk.
+// register_array call and does not touch the registered walk at all.
 // StateMirror::read_grid_entries() copies it out for the GpuGridSort tests
 // alone -- a diagnostic path, one submit, never called by step().
 //

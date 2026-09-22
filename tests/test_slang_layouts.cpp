@@ -17,10 +17,19 @@
 //      below cannot express that; they exist to catch the one thing a
 //      static_assert cannot -- a generated header that checked NOTHING.
 //
-//   2. THE BINDING REGISTRY COVERS THE REGISTERED WALK EXACTLY. Registered
-//      state is frozen at nine arrays; bindings.gen.hpp must carry a binding
-//      for each of the nine and for the four `.slot_to_world` siblings kernels
-//      need, with no duplicate index and no silent addition.
+//   2. THE BINDING REGISTRY COVERS THE BOUND WALK EXACTLY. bindings.gen.hpp
+//      must carry a binding for each of the nine BOUND arrays and for the four
+//      `.slot_to_world` siblings kernels need, with no duplicate index and no
+//      silent addition -- and NO binding for the two arrays listed as
+//      deliberately unbound.
+//
+//      WHAT THIS CANNOT SEE, SAID PLAINLY. kBoundArrays below is
+//      hardcoded, on purpose (a test reading its expectations out of the
+//      artifact under test would assert nothing). That independence is exactly
+//      why nothing here notices an array REGISTERED in sim/simulation.cpp: the
+//      guard on that side is StateMirror::upload()'s runtime refusal, which is
+//      Vulkan-only and GTEST_SKIP()-gated, so on a device-less box an
+//      array_shapes() drift is caught by nothing at all.
 //
 //   3. THE SPIR-V FLOAT-CONTROLS GATE. SlangSpirv.FloatControlsPinned scans
 //      the embedded SPIR-V of every compiled kernel against
@@ -74,12 +83,21 @@ namespace gen = spade::compute::gen;
 // a test that read its expectations out of the artifact under test would
 // assert nothing.
 // -------------------------------------------------------------------------
-constexpr const char* kRegisteredArrays[] = {
+constexpr const char* kBoundArrays[] = {
     "world_params", "bodies",      "body_generation", "drag_bodies", "dryden",
     "imu_sensors",  "imu_ring",    "rotors",          "replay_config",
 };
-constexpr std::size_t kRegisteredArrayCount = 9;
-static_assert(std::size(kRegisteredArrays) == kRegisteredArrayCount);
+
+// REGISTERED AND DELIBERATELY UNBOUND. No kernel reads either, and binding them
+// would mean authoring Slang struct mirrors for GnssSensorRow and GnssFix under
+// the strict layout gate purely so a descriptor could point at buffers nothing
+// reads. They are still allocated, uploaded, read back and folded into the
+// state digest -- state_mirror.cpp's per-entry has_binding flag is what makes
+// REGISTERED and BOUND separable. See bindings.slang section A.
+constexpr const char* kUnboundArrays[] = {"gnss_sensors", "gnss_ring"};
+
+constexpr std::size_t kRegisteredArrayCount = 11;
+static_assert(std::size(kBoundArrays) + std::size(kUnboundArrays) == kRegisteredArrayCount);
 
 // One row of the registry as the generated header presents it. `name` is the
 // Slang parameter name (the `.` of a registered array's sibling spelled `_`).
@@ -156,8 +174,8 @@ const RegistryEntry kExpectedRegistry[] = {
 // How many entries of kExpectedRegistry are DERIVED (not part of the
 // registered walk and not one of its bound siblings). Named rather than
 // spelled as a literal in the count assertion below, so the assertion reads as
-// the sentence it is meant to be: nine arrays + four siblings + the derived
-// buffers, and nothing else.
+// the sentence it is meant to be: the BOUND arrays + four siblings + the
+// derived buffers, and nothing else.
 constexpr std::size_t kDerivedBufferCount = 10;
 
 }  // namespace
@@ -216,7 +234,7 @@ TEST(SlangLayouts, GeneratedHeaderChecksEveryMirroredStruct) {
 // ===========================================================================
 
 TEST(SlangLayouts, BindingRegistryCoversEveryRegisteredArray) {
-    for (const char* array : kRegisteredArrays) {
+    for (const char* array : kBoundArrays) {
         const auto found = std::find_if(
             std::begin(kExpectedRegistry), std::end(kExpectedRegistry),
             [array](const RegistryEntry& entry) { return std::string(entry.name) == array; });
@@ -231,7 +249,25 @@ TEST(SlangLayouts, BindingRegistryCoversEveryRegisteredArray) {
 // corresponding decision recorded here moves this number and fails.
 TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {
     EXPECT_EQ(std::size_t{gen::kBindingCount_state}, std::size(kExpectedRegistry));
-    EXPECT_EQ(std::size_t{gen::kBindingCount_state}, kRegisteredArrayCount + 4u + kDerivedBufferCount);
+    EXPECT_EQ(std::size_t{gen::kBindingCount_state},
+              kRegisteredArrayCount - std::size(kUnboundArrays) + 4u + kDerivedBufferCount);
+}
+
+// AN EXEMPTION NOTHING CHECKS IS NOT AN EXEMPTION, IT IS A CLAIM. kUnboundArrays
+// says two registered arrays deliberately have no binding; without this test
+// that sentence could quietly stop being true in the direction that spends a
+// descriptor slot on a buffer the list says is absent. Asserted in the negative
+// so the exemption is bidirectional exactly like the coverage it replaces.
+TEST(SlangLayouts, DeliberatelyUnboundArraysHaveNoBinding) {
+    for (const char* array : kUnboundArrays) {
+        const auto found = std::find_if(
+            std::begin(kExpectedRegistry), std::end(kExpectedRegistry),
+            [array](const RegistryEntry& entry) { return std::string(entry.name) == array; });
+        EXPECT_EQ(found, std::end(kExpectedRegistry))
+            << "'" << array
+            << "' is listed as deliberately unbound but now has a binding. If a kernel really does "
+               "read it, move it to kBoundArrays and name that kernel in bindings.slang section A.";
+    }
 }
 
 // Two buffers sharing a binding index is the failure mode a hand-numbered

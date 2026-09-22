@@ -12,6 +12,7 @@
 #include "physics/contacts.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
+#include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
 #include "state/layout.hpp"
@@ -193,14 +194,29 @@ struct ArrayShape {
          shape.sensor_capacity * sensors::kRingDepth},
         {"rotors", static_cast<uint32_t>(sizeof(vehicles::RotorRow)), shape.element_capacity},
         {"replay_config", 32u, 1u},
+        // APPENDED BELOW replay_config, matching sim/simulation.cpp's
+        // registration order. This table's order is not itself a contract (the
+        // mirror finds its counterpart by NAME), but keeping it in walk order
+        // is what lets a reader check the two files against each other by eye.
+        {"gnss_sensors", static_cast<uint32_t>(sizeof(sensors::GnssSensorRow)), shape.sensor_capacity},
+        {"gnss_ring", static_cast<uint32_t>(sizeof(sensors::GnssFix)),
+         shape.sensor_capacity * sensors::kRingDepth},
     };
 }
 
-// Binding index for the 13 of 18 walk entries that bindings.slang binds
-// (the nine arrays plus the four `.slot_to_world` siblings a kernel
-// dispatched over a global slot space needs -- bindings.slang section B).
-// Returns false for the other five, which this mirror still allocates and
-// round-trips but never writes into the descriptor set.
+// Binding index for the 13 of 22 walk entries that bindings.slang binds (the
+// nine BOUND arrays plus the four `.slot_to_world` siblings a kernel dispatched
+// over a global slot space needs -- bindings.slang section B). Returns false
+// for the other nine: the five unbound siblings, plus the two GNSS arrays and
+// their own two siblings.
+//
+// ALL NINE ARE STILL ALLOCATED, UPLOADED AND READ BACK -- they are simply never
+// written into the descriptor set. The per-entry has_binding flag below is what
+// makes REGISTERED and BOUND separable, and that separation is the whole reason
+// a sensor with no kernel can join the walk without spending a descriptor slot
+// on a buffer nothing can read. A GNSS kernel, if one is ever written, makes
+// binding a two-line change here plus the Slang struct mirrors it would then
+// need for a reason.
 [[nodiscard]] bool binding_for(const std::string& name, uint32_t& out) {
     static const std::pair<const char*, uint32_t> kTable[] = {
         {"world_params", gen::kBinding_world_params},

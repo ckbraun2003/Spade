@@ -20,6 +20,7 @@
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
 #include "physics/schedule.hpp"
+#include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
 #include "sim/world_set.hpp"
@@ -1266,6 +1267,8 @@ public:
     [[nodiscard]] ArrayId<sensors::ImuSample> imu_ring_array() const noexcept { return imu_ring_id_; }
     [[nodiscard]] ArrayId<vehicles::RotorRow> rotors_array() const noexcept { return rotors_id_; }
     [[nodiscard]] ArrayId<ReplayConfig> replay_config_array() const noexcept { return replay_config_id_; }
+    [[nodiscard]] ArrayId<sensors::GnssSensorRow> gnss_sensors_array() const noexcept { return gnss_id_; }
+    [[nodiscard]] ArrayId<sensors::GnssFix> gnss_ring_array() const noexcept { return gnss_ring_id_; }
 
 private:
     // What one world's passes read that is not per-body state. Copied from the
@@ -1469,9 +1472,16 @@ private:
     ArrayId<sensors::ImuSensorRow> imu_id_{};
     ArrayId<sensors::ImuSample> imu_ring_id_{};
     ArrayId<vehicles::RotorRow> rotors_id_{};
-    // REGISTERED LAST, and that is load-bearing rather than incidental -- see
-    // the APPEND-ONLY note over create()'s registration block.
+    // REGISTERED AT WALK POSITION 16, and that POSITION is load-bearing rather
+    // than incidental -- see the APPEND-ONLY note over create()'s registration
+    // block. It is no longer registered LAST: the GNSS arena is appended below
+    // it, which is the move that note sanctions and the reason the rule was
+    // always about position rather than last-ness.
     ArrayId<ReplayConfig> replay_config_id_{};
+    // Appended BELOW replay_config so its index does not move. Registered but
+    // deliberately NOT bound on the GPU -- no kernel reads either.
+    ArrayId<sensors::GnssSensorRow> gnss_id_{};
+    ArrayId<sensors::GnssFix> gnss_ring_id_{};
 
     Tick tick_{};
     uint64_t dt_ns_ = 0;

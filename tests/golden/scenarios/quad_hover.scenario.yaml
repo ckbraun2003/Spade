@@ -198,4 +198,16 @@ inputs:
   - {tick: 600, rotor_commands: {vehicle: 0, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
   - {tick: 600, rotor_commands: {vehicle: 1, omega: [445.628387, 445.628387, 445.628387, 445.628387]}}
 
-expected_digest: "0xe77ce28dc7797c22"
+# REGENERATED 2026-09-22 -- THE GNSS SENSOR ARENA JOINED THE STATE WALK.
+#   quad_hover: old=0xe77ce28dc7797c22 new=0xc4bc033cc902e43c
+#   The walk gained four entries -- gnss_sensors, gnss_ring and each one's
+#   .slot_to_world companion -- APPENDED AFTER replay_config, so this digest
+#   is the previous one with that suffix folded on top. replay_config's own
+#   walk index (16) did not move, which is what keeps every earlier
+#   provenance line below true rather than merely old.
+#   NO BUILDER DIGEST TO CHAIN FROM. quad_hover was generated at S5 Task 7 and
+#   postdates the retired builder corpus, so it is not one of the four the
+#   continuation test carries. Its digest moved for the same reason and is
+#   covered by DigestsMatchTheCommittedGoldenCorpus alone.
+#
+expected_digest: "0xc4bc033cc902e43c"

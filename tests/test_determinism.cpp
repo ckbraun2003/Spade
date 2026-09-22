@@ -996,18 +996,62 @@ TEST(Determinism, DigestsMatchTheCommittedGoldenCorpus) {
 // files held. The migration is a CONTAINER CHANGE: same worlds, same seeds,
 // same materials, same spawns, same script, same digests.
 //
-// WHY IT STAYS, now that the lambdas are gone. It is the corpus's SECOND,
-// INDEPENDENTLY SPELLED source for those four numbers. DigestsMatchThe-
-// CommittedGoldenCorpus above reads the expectation out of the same file it
-// runs, so an edit that changed a scenario AND its expected_digest together
-// would satisfy it; this test would not be satisfied, because its expectations
-// are here, in C++, and came from a run of code that no longer exists.
+// WHAT HAPPENED, PART TWO. Registering the GNSS sensor arena appended four
+// entries to the state walk (gnss_sensors, gnss_ring and each one's
+// .slot_to_world companion), so every digest in the corpus moved and the
+// scenario files now carry the new values.
+//
+// THE PROBLEM THAT CREATED, STATED PLAINLY. The four numbers above are what
+// made this test a SECOND, INDEPENDENTLY SPELLED source: they came from code
+// that no longer exists, so no edit to a scenario file could satisfy them.
+// Overwriting them with freshly generated values would have destroyed exactly
+// that -- the new constants would be "the value Spade produced the day I ran
+// it", recorded in two places, and this test would have silently become a
+// two-site tamper check while still reading like an independence proof. The
+// head-to-head is UNREPEATABLE; the builder lambdas are gone.
+//
+// SO THE FOUR DIGESTS STAY, AND THE TEST ASSERTS THE CONTINUATION RATHER THAN
+// THE ENDPOINT:
+//
+//     fold(builder_digest, <every walk entry after replay_config>) == today's digest
+//
+// state_digest() is a forward FNV-1a stream over the registry walk, and
+// state/registry.hpp pins walk order to registration order, so a digest taken
+// after N entries and folded with entries N+1.. IS the digest over all of them
+// -- by construction of the fold, not by observation. The builder digest covers
+// walk entries 0..17 (through replay_config and its companion); the GNSS arena
+// appended 18..21. Asserting the continuation therefore PINS ENTRIES 0..17 TO A
+// NUMBER NO CURRENT CODE CAN PRODUCE. The independence claim survives a
+// RECONSTRUCTION where it would not have survived a RE-DERIVATION.
+//
+// AND IT INTRODUCES NO NEW CONSTANT AT ALL. A note claiming independence that
+// rested on a hand-copied chain would be worse than one admitting the test had
+// become a tamper check, so the suffix is folded at runtime out of the live
+// registry, through the same detail::fold_* helpers state_digest() itself uses.
+// There is nothing here for a future regeneration to transcribe wrongly. A
+// second implementation of FNV -- which state/snapshot.hpp warns is "a second
+// answer to 'did these bytes change'" -- is never written.
+//
+// ON REACHING INTO detail::. Deliberate, and the lesser evil: the alternative
+// is a parallel fold, which is the thing that header warns about. The honest
+// fix is to promote the per-entry fold into a named helper that state_digest()
+// and this test both call -- its own commit, for the same reason fnv1a64 has
+// not moved to core/hash.hpp yet.
+//
+// IF THIS TEST IS EVER THE THING IN THE WAY. The remedy is never to refresh the
+// four constants. Either the chain still reconstructs (fix what moved), or a
+// deliberate layout change moved replay_config -- in which case every golden's
+// suffix-continuation argument is INVALIDATED, NOT MERELY EXTENDED, and this
+// test must be replaced by an honest statement that the corpus has become a
+// two-site tamper check. Say that plainly; do not paper it.
 // ---------------------------------------------------------------------------
 TEST(GoldenCorpus, TheDataScenariosReproduceTheRetiredBuilderCorpus) {
     struct Migrated {
         const char* name;
         uint64_t builder_digest;  // what the S1-S4 lambda produced; see the note above
     };
+    // NOT REGENERATED, EVER. These are the retired builder's own output and the
+    // only reason this test is independent of the files it loads.
     const Migrated migrated[] = {
         {"ballistic", 0x234f74d4c3c53563ULL},
         {"bounce", 0x8b6bd5f0df9ff4faULL},
@@ -1015,22 +1059,75 @@ TEST(GoldenCorpus, TheDataScenariosReproduceTheRetiredBuilderCorpus) {
         {"two_world_isolation", 0xaab013d47c0eba42ULL},
     };
 
+    // The latch: the builder-era walk ended with replay_config's elements and
+    // then its slot->world map. Everything strictly after that companion is
+    // what was appended since.
+    //
+    // A LATCH, NOT A LIST OF NEW ARRAY NAMES. An ArenaSet array contributes TWO
+    // walk entries (state/arenas.cpp registers `name + kSlotToWorldSuffix`
+    // alongside it), so "gnss_sensors and gnss_ring" is four entries, not two,
+    // and a name list would have folded half the suffix and reported a corpus
+    // change. The latch is correct without knowing how many entries a future
+    // array adds.
+    const std::string latch =
+        std::string(spade::kReplayConfigArray) + std::string(spade::kSlotToWorldSuffix);
+
     for (const Migrated& m : migrated) {
         const spade::Result<LoadedScenario> loaded = load_scenario(m.name);
         ASSERT_OK(loaded) << m.name;
 
-        // (a) The file still carries the value the builder corpus ended on.
-        EXPECT_EQ(loaded->data->expected_digest, m.builder_digest)
-            << m.name << ": the scenario file's expected_digest no longer matches the digest the "
-                         "retired S1-S4 builder produced. These four values were carried VERBATIM "
-                         "at the migration; moving one is a corpus regeneration, not an edit.";
+        // run_scenario() is start + advance + state_digest; this is that same
+        // run, kept open so the walk can be inspected at the same tick.
+        spade::Result<Simulation> sim = spade::testing::start_scenario(loaded->scenario);
+        ASSERT_OK(sim) << m.name;
+        ASSERT_OK(spade::testing::advance_scenario(loaded->scenario, *sim, loaded->scenario.steps))
+            << m.name;
+        const uint64_t digest = spade::testing::state_digest(*sim);
 
-        // (b) And running the data scenario still reaches it.
-        const spade::Result<uint64_t> digest = spade::testing::run_scenario(loaded->scenario);
-        ASSERT_OK(digest) << m.name;
-        EXPECT_EQ(*digest, m.builder_digest)
-            << m.name << ": got " << hex64(*digest) << ", the builder corpus produced "
-            << hex64(m.builder_digest);
+        // (a) The run reaches what the file claims.
+        EXPECT_EQ(digest, loaded->data->expected_digest)
+            << m.name << ": the scenario file's expected_digest is not what the run produces";
+
+        // (b) THE CONTINUATION. Seed with the retired builder's digest and fold
+        // only what was appended after it.
+        uint64_t seed = m.builder_digest;
+        bool latched = false;
+        std::size_t folded = 0;
+        sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
+            if (!latched) {
+                if (array.name == latch) latched = true;
+                return;
+            }
+            seed = spade::testing::detail::fold_name(seed, array.name);
+            seed = spade::testing::detail::fold_value(seed, array.elem_size);
+            seed = spade::testing::detail::fold_value(seed, array.world_count);
+            seed = spade::testing::detail::fold_value(seed, array.capacity_per_world);
+            seed = spade::testing::detail::fold_bytes(
+                seed, std::span<const std::byte>(array.data, array.byte_size()));
+            ++folded;
+        });
+
+        // A FOLD THAT MATCHED NOTHING WOULD OTHERWISE BE INDISTINGUISHABLE FROM
+        // A CORPUS THAT NEVER MOVED. Both of these fail on their own rather than
+        // leaving the comparison below to report a mismatch whose real cause is
+        // that the walk never reached the latch.
+        ASSERT_TRUE(latched) << m.name << ": '" << latch
+                             << "' is not in the state walk, so the suffix could not be located. "
+                                "replay_config moved or was renamed -- see the note above: every "
+                                "golden's continuation argument is then invalidated, not extended.";
+        ASSERT_GT(folded, 0u) << m.name
+                              << ": nothing is registered after replay_config, so this test folded "
+                                 "an empty suffix and proved nothing.";
+
+        // (c) And the chain lands exactly on today's digest.
+        EXPECT_EQ(seed, digest)
+            << m.name << ": the fold chain from the retired builder corpus no longer reaches "
+            << "today's digest. builder=" << hex64(m.builder_digest) << " + " << folded
+            << " appended walk entries = " << hex64(seed) << ", but the run produced "
+            << hex64(digest)
+            << ".\nSomething in walk entries 0..17 changed -- a pinned op order, layout, rng or "
+               "schedule change in the PRE-GNSS state, which is exactly what these four numbers "
+               "exist to catch. Do NOT refresh them.";
     }
 }
 

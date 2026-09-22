@@ -4,11 +4,34 @@
 // state_mirror.hpp (S6 Task 5) -- the device buffer table: one storage buffer
 // (device-local) plus one staging buffer (host-visible, persistently mapped)
 // per entry of the FULL registered walk (state/arenas.hpp's
-// ArenaSet::registry(): the nine registered arrays plus their nine
-// `.slot_to_world` siblings, 18 entries, global constraint: "Registered state
-// is FROZEN at 18 walk entries"), plus one more buffer for dryden_params
-// (bindings.slang binding 13 -- derived, backend-internal, not part of the
-// registered walk).
+// ArenaSet::registry(): eleven registered arrays plus their eleven
+// `.slot_to_world` siblings, 22 entries as of the GNSS sensor), plus one more
+// buffer for dryden_params (bindings.slang binding 13 -- derived,
+// backend-internal, not part of the registered walk).
+//
+// THE WALK GROWS. An earlier form of this comment said the global constraint
+// was "Registered state is FROZEN at 18 walk entries". That sentence was a
+// PARAPHRASE THAT LOST ITS SUBJECT. The canonical constraint is the one
+// compute/step_params.hpp and compute/vulkan/backend.hpp state:
+//
+//   global constraint: "S6 adds NO register_array call"
+//
+// which is a SCOPE FENCE ON A WORKSTREAM. A sensor cannot violate it, because
+// a sensor is not S6. Restated as a property of the platform -- "registered
+// state is frozen at 18" -- it became something anything could violate, and
+// the restatement is where the NUMBER got in, which made it look measured.
+// Nothing ever depended on it: entries_ is a std::vector sized from the walk at
+// runtime and this class is generic over the walk BY NAME. A sweep of the
+// engine found 25 uses of the phrase "global constraint" and every one is a
+// CITATION; the authority lives in the plan (core/time.hpp:9 points there).
+//
+// The number is gone from this tree. The rule that grows the walk, stated once,
+// here, because this is where the walk is defined:
+//
+//   Backend and derived storage never call register_array. REGISTERED state
+//   grows only with a sensor or feature that declares it -- and every growth
+//   moves array_shapes(), bindings.slang and test_slang_layouts.cpp's lists
+//   TOGETHER.
 //
 // NO register_array CALL ANYWHERE IN THIS FILE. Every buffer here is
 // backend-internal derived storage: a device-side MIRROR of state the

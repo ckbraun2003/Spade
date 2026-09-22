@@ -64,6 +64,8 @@ constexpr const char* kDrydenArray = "dryden";
 constexpr const char* kImuSensorsArray = "imu_sensors";
 constexpr const char* kImuRingArray = "imu_ring";
 constexpr const char* kRotorsArray = "rotors";
+constexpr const char* kGnssSensorsArray = "gnss_sensors";
+constexpr const char* kGnssRingArray = "gnss_ring";
 
 }  // namespace
 
@@ -306,6 +308,43 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         sim.arenas_.register_array<ReplayConfig>(std::string(kReplayConfigArray), 1);
     if (!replay_config_id) return std::unexpected(replay_config_id.error());
     sim.replay_config_id_ = *replay_config_id;
+
+    // THE APPEND THE PARAGRAPH ABOVE SANCTIONS, TAKEN FOR THE FIRST TIME. GNSS
+    // is the second sensor this platform has ever had, and registering it is
+    // the first real load on the walk's ability to grow. It goes BELOW
+    // replay_config for exactly the reason stated above: every earlier entry
+    // keeps its index, replay_config stays at 16, and each golden's
+    // continuation argument extends by a new suffix instead of being
+    // invalidated. GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus
+    // is what turns that from a paragraph into a checked claim -- it folds the
+    // retired builder's digests forward over precisely these appended entries.
+    //
+    // NOT BOUND ON THE GPU, DELIBERATELY. No kernel reads either array, so
+    // neither is in the descriptor set (shaders/shared/bindings.slang section
+    // A). They are still registered, allocated, uploaded, read back and folded
+    // into the state digest -- compute/vulkan/state_mirror.cpp's per-entry
+    // has_binding flag is what makes "registered" and "bound" separable, and it
+    // is why a sensor with no kernel can join the walk without spending a
+    // descriptor slot.
+    Result<ArrayId<sensors::GnssSensorRow>> gnss_id =
+        sim.arenas_.register_array<sensors::GnssSensorRow>(kGnssSensorsArray, layout->sensor_capacity);
+    if (!gnss_id) return std::unexpected(gnss_id.error());
+    sim.gnss_id_ = *gnss_id;
+
+    // ONE RING SLOT BLOCK PER SENSOR, same shape as the IMU ring: sensor g owns
+    // ring slots [g * kRingDepth, (g+1) * kRingDepth). kRingDepth lives in
+    // sensors/rings.hpp, not in imu.hpp -- it is shared ring vocabulary rather
+    // than an IMU constant, so reusing it here is correct and not a copy.
+    //
+    // THAT REUSE IS A CHOICE AND NOT AN INHERITANCE. A GNSS fix arrives at
+    // roughly 5-10 Hz against the IMU's ~1 kHz, so 64 slots is ~6-12 s of
+    // history here against ~64 ms there. The depths happening to match is
+    // convenient, not principled; if the rates ever justify a separate
+    // kGnssRingDepth, that is a deliberate commit, not a drive-by.
+    Result<ArrayId<sensors::GnssFix>> gnss_ring_id = sim.arenas_.register_array<sensors::GnssFix>(
+        kGnssRingArray, layout->sensor_capacity * sensors::kRingDepth);
+    if (!gnss_ring_id) return std::unexpected(gnss_ring_id.error());
+    sim.gnss_ring_id_ = *gnss_ring_id;
 
     // -----------------------------------------------------------------------
     // Seed the per-world rows.

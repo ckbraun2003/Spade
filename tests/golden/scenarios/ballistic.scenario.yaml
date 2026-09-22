@@ -316,4 +316,18 @@ inputs:
   - {tick: 198, wrench: {body: 0, force: [-0.0500000007, 0, 0.100000001], torque: [0, 0, 0]}}
   - {tick: 199, wrench: {body: 0, force: [0, 0, 0], torque: [0, 0, 0]}}
 
-expected_digest: "0x234f74d4c3c53563"
+# REGENERATED 2026-09-22 -- THE GNSS SENSOR ARENA JOINED THE STATE WALK.
+#   ballistic: old=0x234f74d4c3c53563 new=0x82c9ae1719781ee7
+#   The walk gained four entries -- gnss_sensors, gnss_ring and each one's
+#   .slot_to_world companion -- APPENDED AFTER replay_config, so this digest
+#   is the previous one with that suffix folded on top. replay_config's own
+#   walk index (16) did not move, which is what keeps every earlier
+#   provenance line below true rather than merely old.
+#   CHECKED MECHANICALLY, NOT BY HAND. GoldenCorpus.TheDataScenariosReproduce-
+#   TheRetiredBuilderCorpus (tests/test_determinism.cpp) seeds an FNV-1a fold
+#   with the retired S1-S4 builder's own digest and folds ONLY the entries
+#   appended after replay_config, out of the live registry at runtime. It
+#   introduces no hand-copied constant, so the continuation above is asserted
+#   on every run rather than asserted once in a comment.
+#
+expected_digest: "0x82c9ae1719781ee7"

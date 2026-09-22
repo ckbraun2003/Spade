@@ -105,6 +105,30 @@
 
 namespace {
 
+// THE WALK'S SIZE, PINNED -- AND THE ONLY PLACE IN THE TREE THAT EVER DEPENDED
+// ON THE NUMBER. Four comment sites once said the walk was "FROZEN at 18
+// entries"; all four were CITATIONS by authors explaining why their own derived
+// storage was exempt, and the canonical constraint they were paraphrasing is
+// compute/step_params.hpp's scope fence, "S6 adds NO register_array call". The
+// number itself was load-bearing here, in these two assertions, and nowhere
+// else -- a sweep for the DECLARATION searched spade/engine/ and so could not
+// have found it.
+//
+// 22 AS OF THE GNSS SENSOR: eleven registered arrays, each contributing its
+// elements and its .slot_to_world sibling.
+//
+// THIS PIN STAYS, because it is a real guard: these two tests snapshot every
+// entry and compare byte-for-byte, so an entry appearing or vanishing silently
+// would weaken them without failing them. What changes is that the remedy no
+// longer reads as "put it back".
+constexpr std::size_t kWalkEntryCount = 22;
+constexpr const char* kWalkDriftRemedy =
+    "the registered walk changed size. That is LEGAL -- registered state grows with a sensor or "
+    "feature that declares it (compute/vulkan/state_mirror.hpp has the rule). It is not a thing to "
+    "revert. Update this count, and check the same change also moved array_shapes(), "
+    "bindings.slang and test_slang_layouts.cpp's lists, because nothing else in the CPU suite sees "
+    "a registry-side addition at all.";
+
 using spade::BodySpawn;
 using spade::Result;
 using spade::Simulation;
@@ -218,13 +242,13 @@ TEST_F(GpuStateMirrorTest, RoundTripUploadReadbackWithoutSteppingIsByteIdentical
         VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim));
     ASSERT_TRUE(backend.has_value()) << backend.error().context;
 
-    // "Every registered array" (18-entry walk: state/arenas.hpp's
-    // ArenaSet::registry()) -- snapshot every byte BEFORE upload, per array.
+    // "Every registered array" (state/arenas.hpp's ArenaSet::registry()) --
+    // snapshot every byte BEFORE upload, per array.
     std::vector<std::pair<std::string, std::vector<std::byte>>> before;
     sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
         before.emplace_back(array.name, std::vector<std::byte>(array.data, array.data + array.byte_size()));
     });
-    ASSERT_EQ(before.size(), std::size_t{18}) << "registered walk drifted from the pinned 18 entries";
+    ASSERT_EQ(before.size(), kWalkEntryCount) << kWalkDriftRemedy;
 
     ASSERT_TRUE((*backend)->upload(sim->arenas()).has_value());
 
@@ -254,7 +278,7 @@ TEST_F(GpuStateMirrorTest, RoundTripUploadReadbackWithoutSteppingIsByteIdentical
             << "round-trip mismatch for '" << array.name << "'";
         ++checked;
     });
-    EXPECT_EQ(checked, std::size_t{18});
+    EXPECT_EQ(checked, kWalkEntryCount) << kWalkDriftRemedy;
 }
 
 // ===========================================================================
@@ -409,7 +433,7 @@ TEST_F(GpuStateMirrorTest, VulkanStepTouchesOnlyTheExpectedArrays) {
     sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
         before.emplace_back(array.name, std::vector<std::byte>(array.data, array.data + array.byte_size()));
     });
-    ASSERT_EQ(before.size(), std::size_t{18});
+    ASSERT_EQ(before.size(), kWalkEntryCount) << kWalkDriftRemedy;
 
     // PRECONDITION (S6 Task 5 review round 3): prove the -0.0f pattern this
     // test's whole premise rests on actually reached the arena, rather than
@@ -479,9 +503,14 @@ TEST_F(GpuStateMirrorTest, VulkanStepTouchesOnlyTheExpectedArrays) {
             << "ported kernel wrote outside its own array";
         ++unchanged;
     });
+    // THE CLAIM: the ported kernels write bodies and dryden, and that is all.
     EXPECT_EQ(changed, std::size_t{2});
-    EXPECT_EQ(unchanged, std::size_t{16});
-    EXPECT_EQ(changed + unchanged, std::size_t{18}) << "registered walk drifted from the pinned 18 entries";
+    // NOT AN INDEPENDENT FACT -- it is the walk minus the two that change, and
+    // spelling it as a literal is precisely why it drifted when the walk grew.
+    // Derived, a newly registered array that no kernel writes lands here on its
+    // own and this assertion keeps meaning what it says.
+    EXPECT_EQ(unchanged, kWalkEntryCount - std::size_t{2});
+    EXPECT_EQ(changed + unchanged, kWalkEntryCount) << kWalkDriftRemedy;
 }
 
 // ===========================================================================
