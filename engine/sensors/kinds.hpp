@@ -90,24 +90,57 @@ inline constexpr uint32_t count = 3u;
 // TRUE for an exact match and for `none` (queued init, see above). FALSE for
 // any other known kind and for any unknown tag.
 //
-// ⛔ AS OF THIS COMMIT NOTHING CALLS THIS YET, AND SAYING SO IS THE POINT. The
-// predicate is written and unit-tested; the wiring is leg 2, where it goes into
-// Simulation::validate_imu_ref() (sim/simulation.cpp), which today checks the
-// world index, the partition and the allocation and NEVER READS `row.kind`.
-// Until a GNSS arena exists no row can carry a conflicting tag, so wiring it
-// now would add a production branch that no test could reach -- and an
-// unreachable guard is the blind kind this tree has been bitten by before.
+// ⛔ NOT WIRED. NOTHING IN THE ENGINE CALLS THIS, AND SAYING SO IS THE POINT.
+// The predicate is written and unit-tested; no production path reads it.
+// Simulation::validate_imu_ref() (sim/simulation.cpp) checks the world index,
+// the partition and the allocation, and NEVER READS `row.kind`. Read this as a
+// report would say it: THIS CHECK IS NOT RUNNING. A predicate with no callers
+// cannot produce a false green, but it READS AS A CHECK THAT IS RUNNING, and
+// that is a claim -- an exemption nothing checks is not an exemption.
 //
-// That is also why this comment states the gap instead of describing the
-// finished state: THIS FILE'S OWN CONTRACT, TWENTY LINES UP, WARNS THAT A
-// DECLARATION WITH NOTHING BEHIND IT READS AS DONE. It would be a poor file
-// that broke its own rule in its own prose.
+// THE CONDITION IT GUARDS IS "ONE ARENA HOLDING TWO KINDS", AND THAT CONDITION
+// DOES NOT EXIST. gnss_sensors and imu_sensors are SEPARATE arenas with
+// separate ArrayIds and different row layouts, so a row reached through
+// imu_id_ can only ever be tagged `imu` or `none`. Nothing short of memory
+// corruption can put a conflicting tag there.
 //
-// WHAT IT IS FOR, once wired: before a second kind existed, `kind` was written
-// on every row and read by nothing on the poll path, so it was a liveness flag
-// wearing a tag's name. A poll that reaches a row of the wrong kind is a TYPE
-// CONFUSION THROUGH A VALID REF -- the slot is allocated, the partition agrees,
-// and the bytes belong to another row type.
+// ⛔ AND THE PRECONDITION THAT USED TO BE WRITTEN HERE WAS A PROXY. It said:
+// "until a GNSS arena exists no row can carry a conflicting tag". The GNSS
+// arena shipped at 7627c34d and NO ROW CAN CARRY A CONFLICTING TAG ANYWAY,
+// because that sentence named an OBSERVABLE EVENT rather than the PROPERTY it
+// stood for. The proxy was satisfiable two ways and the arena was built the way
+// that does not satisfy it -- then the original sentence was carried into a leg
+// plan as though it had been discharged.
+//
+//   A PRECONDITION WRITTEN AS A PROXY IS DISCHARGED BY THE PROXY, NOT BY THE
+//   CONDITION, AND NOTHING IN THE SENTENCE MARKS THE DIFFERENCE.
+//
+// The corrected precondition is the one above: ONE ARENA HOLDING TWO KINDS.
+// Recorded rather than quietly fixed, because this predicate shipped at
+// 5daee4f5 with a contract naming a leg that has since been ruled the wrong
+// remedy, and a reversal should be visible where the thing reversed lives.
+//
+// WHAT THE REAL HAZARD IS, AND WHERE IT IS ACTUALLY CLOSED. Both sensor arenas
+// are sized `sensor_capacity` with independently allocated slots, so a slot
+// that is valid in one is STRUCTURALLY valid in the other: allocated, partition
+// agreeing, bytes belonging to another row type. That is a type confusion
+// through a valid ref, and it is real. It is closed AT COMPILE TIME by giving
+// GNSS a DISTINCT ref type, so the compiler refuses poll_imu(gnss_ref). A
+// compile error beats a runtime error, and it leaves no branch to go
+// unreachable.
+//
+// SO WHAT IS `kind` DOING NOW? Being a liveness flag wearing a tag's name --
+// in BOTH rows, since 7627c34d. Adding the second arena DOUBLED the number of
+// places that is true and created ZERO sites where the tag discriminates. That
+// is honest and it is not urgent; it is written down so the next author does
+// not read `kind` as a type discriminator and build on it.
+//
+// WHAT WOULD MAKE THIS LIVE. A design where ONE arena holds rows of more than
+// one kind -- which would need one row type, and GnssSensorRow is not
+// ImuSensorRow. If that day comes, this predicate is ready and its unit tests
+// in tests/test_gnss.cpp already pin the semantics. Until then it is kept
+// rather than deleted because retiring it loses the analysis and the next
+// author re-derives it badly.
 [[nodiscard]] constexpr bool poll_permits(uint32_t actual, uint32_t wanted) noexcept {
     return actual == none || actual == wanted;
 }
