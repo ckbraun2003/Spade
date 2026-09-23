@@ -98,6 +98,7 @@
 #include "state/layout.hpp"
 #include "testing/parity.hpp"
 #include "testing/replay.hpp"
+#include "sensors/gnss.hpp"
 #include "testing/scenario_file.hpp"
 #include "world/world_ref.hpp"
 
@@ -274,6 +275,152 @@ protected:
     };
 }
 
+
+// ---------------------------------------------------------------------------
+// `gnss_sensors` + `gnss_ring` -- everything the GNSS half of SensorSynthesis
+// writes, split the same way imu_bands() splits: integers are BIT-EXACT claims,
+// floats get a measured band.
+//
+// ⭐ WHY THIS TABLE EXISTS AT ALL, AND IT IS NOT ROUTINE COVERAGE:
+// sensor_gnss.slang has been compiled, bound at 23/24/25 and dispatched every
+// step since acec7f7f, and until this test it had NEVER EXECUTED OVER A LIVE
+// ROW -- on any path. Every corpus scenario's receivers are inert (kind ==
+// none) because no scenario can spawn one, so both backends' synthesis returned
+// immediately and the parity band proved nothing about GNSS. A bug in that
+// kernel was undetectable by anything in the tree.
+//
+// ⭐⭐ AND THE HARNESS WAS ALREADY RIGHT. run_parity() requires
+// elements_compared > 0 per row, so this table CANNOT be added without a
+// scenario that populates the arrays -- "compared nothing" is a failure, not a
+// green. WHAT WAS MISSING WAS NEVER A GUARD. IT WAS A SCENARIO.
+//
+// The bit-exact claims are load-bearing in the same way the IMU's are, one
+// layer over: `phase` proves both runs emitted on the same substeps, the stream
+// proves they drew the same three gaussians per fix, and `last_index` proves
+// they emitted the same NUMBER of fixes. Get any of those wrong and the
+// positions would still be plausible.
+//
+// `sigma_h`/`sigma_v` on the FIX are copied from the row by the kernel and
+// never computed, so they are bit-exact and cheap -- and they are the one pair
+// that proves the kernel read the row it was dispatched for rather than a
+// neighbouring one.
+// ---------------------------------------------------------------------------
+[[nodiscard]] std::vector<BandEntry> gnss_bands(const ToleranceBand& bias, const ToleranceBand& cached,
+                                                const ToleranceBand& position,
+                                                const ToleranceBand& velocity) {
+    using spade::sensors::GnssFix;
+    using spade::sensors::GnssSensorRow;
+    return {
+        {"gnss_sensors", "phase", offsetof(GnssSensorRow, phase), 1, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "bias", offsetof(GnssSensorRow, bias), 3, QuantityKind::components, bias},
+        {"gnss_sensors", "noise.state",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, state), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "noise.cached",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, cached_gauss), 1,
+         QuantityKind::components, cached},
+        {"gnss_sensors", "noise.flag",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, has_cached), 1,
+         QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "last_index", offsetof(GnssSensorRow, last_index), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_ring", "position", offsetof(GnssFix, position), 3, QuantityKind::components, position},
+        {"gnss_ring", "velocity", offsetof(GnssFix, velocity), 3, QuantityKind::components, velocity},
+        {"gnss_ring", "sigma_h", offsetof(GnssFix, sigma_h), 1, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_ring", "sigma_v", offsetof(GnssFix, sigma_v), 1, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_ring", "index", offsetof(GnssFix, index), 2, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
+        {"gnss_ring", "tick", offsetof(GnssFix, tick), 2, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
+    };
+}
+
+// ---------------------------------------------------------------------------
+// A HAND-BUILT Scenario, not a corpus one -- and that is the finding that made
+// this leg cheap. run_parity() takes a `Scenario` (testing/replay.hpp), which is
+// a plain struct of three std::function members, NOT a YAML-loaded one. So a
+// receiver can be spawned in `setup` with no scenario-format change, no
+// VehicleSpawn field, no corpus file and NO DIGEST MOVEMENT.
+//
+// It is also invisible to ParityCorpus.EveryCorpusScenarioIsInTheParitySet,
+// which censuses on_disk against kCorpusScenarios in both directions -- a
+// census over the CORPUS TABLE, not over parity tests, exactly as
+// StructuralOpsAreCoveredTransitively is already outside it.
+//
+// THE BODY MUST MOVE AND ROTATE, or the comparison is over a constant. Gravity
+// supplies the translation; a non-zero omega_body supplies the lever-arm term,
+// which is the only path by which mount_pos reaches the reported position --
+// without it the antenna offset is a fixed addition both backends would get
+// right by doing nothing.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Scenario gnss_receiver_scenario() {
+    Scenario s;
+    s.name = "gnss_receiver";
+    s.dt_ns = 1'000'000;
+    s.substeps = 1;
+    s.steps = 200;
+
+    s.build = []() -> Result<WorldSetDesc> {
+        spade::Environment env;
+        env.gravity = glm::vec3(0.0f, -9.80665f, 0.0f);
+        env.wind = glm::vec3(0.0f);
+        env.air_density = 1.225f;
+
+        spade::Capacities caps;
+        caps.bodies = 2;
+        caps.force_elements = 1;
+        caps.sensors = 1;
+        caps.contacts = 1;
+
+        const Result<spade::WorldDesc> world =
+            spade::WorldBuilder().name("gnss_void").environment(env).capacities(caps).build();
+        if (!world) return std::unexpected(world.error());
+
+        spade::physics::ContactParams contacts;
+        contacts.restitution_e = 0.0f;
+        contacts.friction_mu = 0.0f;
+        contacts.proxy_radius = 0.0f;
+
+        spade::physics::GridParams grid;
+        grid.cell_size = 1.0f;
+
+        spade::WorldInstanceDesc instance;
+        instance.world = *world;
+        instance.seed = 0x6E55ull;
+        instance.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+        instance.contacts = contacts;
+        instance.grid = grid;
+        return WorldSetDesc{{instance}};
+    };
+
+    s.setup = [](Simulation& sim) -> Result<void> {
+        spade::BodySpawn body;
+        body.pos = glm::vec3(0.0f, 50.0f, 0.0f);
+        body.vel = glm::vec3(3.0f, 0.0f, -1.5f);
+        body.omega_body = glm::vec3(0.3f, -0.7f, 0.4f);  // the lever arm must rotate
+        body.mass = 1.0f;
+        body.inv_inertia_diag = glm::vec3(1.0f);
+        const Result<spade::BodyRef> ref = sim.spawn(0, body);
+        if (!ref) return std::unexpected(ref.error());
+
+        spade::GnssSensorSpawn gnss;
+        gnss.mount_pos = glm::vec3(0.25f, -0.5f, 0.75f);
+        gnss.rate_divider = 1;  // emit every substep, so 200 steps give 200 fixes
+        gnss.sigma_h = 1.5f;
+        gnss.sigma_v = 2.5f;
+        gnss.sigma_vel = 0.125f;
+        gnss.bias_tau_s = 60.0f;
+        gnss.sigma_bias = 0.8f;
+        const Result<spade::GnssSensorRef> sensor = sim.add_gnss_sensor(*ref, gnss);
+        if (!sensor) return std::unexpected(sensor.error());
+        return {};
+    };
+
+    s.input = [](Simulation&, spade::Tick) -> Result<void> { return {}; };
+    return s;
+}
+
 // Table concatenation, so a scenario reads as `join(body_bands(...),
 // medium_bands(...))` rather than as a sequence of insert() calls.
 [[nodiscard]] std::vector<BandEntry> join(std::vector<BandEntry> a, const std::vector<BandEntry>& b) {
@@ -421,6 +568,48 @@ constexpr CorpusScenario kCorpusScenarios[] = {
 // invocation it is meant to survive. The device-executing cases in this file
 // keep the Gpu prefix; the two that never touch a device do not.
 // ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+// THE FIRST EXECUTION OF sensor_gnss.slang OVER A LIVE ROW, ON EITHER BACKEND.
+//
+// ⛔ THE BANDS WERE MEASURED, NOT GUESSED, AND THE FIRST PASS WAS PRE-REGISTERED
+// TO FAIL. Every band was set to ZERO and the run was made expecting a red: a
+// tolerance band must be measured, because too wide passes anything, too narrow
+// is flaky, AND NEITHER FAILURE ANNOUNCES WHICH IT IS. A zero band forces the
+// harness to print the delta for every quantity that is genuinely band-legal,
+// so THE FAILURE REPORT WAS THE MEASUREMENT. See parity.hpp's gnss_receiver
+// namespace for the three numbers and their derivation.
+//
+// ⭐ AND THE SECOND THING THAT PASS BOUGHT CANNOT BE GUESSED EITHER: NINE OF
+// TWELVE QUANTITIES CAME BACK EXACT UNDER A ZERO BAND, so they keep the zero on
+// their merits rather than by assumption. A band pinned over a quantity that is
+// actually bit-exact is a guard that has been switched off without anyone
+// deciding to.
+// ---------------------------------------------------------------------------
+TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    const Scenario scenario = gnss_receiver_scenario();
+
+    using namespace spade::testing::bands::gnss_receiver;
+    run_parity(scenario, "gnss_receiver (1 receiver x 200 substeps at rate_divider 1)",
+               gnss_bands(kGnssBias, /*cached=*/ToleranceBand{0.0f, 0.0f}, kGnssPosition,
+                          kGnssVelocity),
+               [](const Simulation& cpu, const Simulation& gpu, std::string_view label) {
+                   // THE PREMISE, ASSERTED BEFORE THE BANDS MEAN ANYTHING: the
+                   // receiver is LIVE on both legs. run_parity already refuses a
+                   // row that compared nothing, but that fires per band entry;
+                   // this says the same thing about the thing itself, so a
+                   // failure reads as "no receiver" rather than as twelve
+                   // separate "compared nothing" lines.
+                   const Result<uint32_t> cpu_live = cpu.live_gnss_sensor_count(0);
+                   const Result<uint32_t> gpu_live = gpu.live_gnss_sensor_count(0);
+                   ASSERT_TRUE(cpu_live.has_value() && gpu_live.has_value());
+                   EXPECT_EQ(*cpu_live, 1u) << label << ": the cpu leg has no live receiver";
+                   EXPECT_EQ(*gpu_live, 1u) << label << ": the gpu leg has no live receiver";
+               });
+}
 
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;

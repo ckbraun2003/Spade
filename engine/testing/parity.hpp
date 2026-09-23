@@ -1357,6 +1357,45 @@ inline constexpr ToleranceBand kAccel{8.0e-6f, 4.0e-6f};
 inline constexpr ToleranceBand kGyro{0.0f, 0.0f};
 }  // namespace quad_hover
 
+// ---------------------------------------------------------------------------
+// gnss_receiver -- a HAND-BUILT scenario (test_gpu_parity.cpp), not a corpus
+// one, and the first thing in this tree ever to run sensor_gnss.slang over a
+// LIVE row. Measured 2026-09-23 on MSVC + Vulkan, 200 substeps, one receiver at
+// rate_divider 1, over 64 ring slots.
+//
+// Same posture as every namespace above: 4x measured, rounded up to one
+// significant figure; a row measured exactly zero is pinned at exactly zero.
+//
+// ⭐ NINE OF TWELVE QUANTITIES CAME BACK BIT-EXACT UNDER A ZERO BAND -- phase,
+// the whole rng stream INCLUDING the cached Box-Muller partner (a float),
+// last_index, the fix's sigma_h/sigma_v, and index/tick. So the two backends
+// agree exactly on WHEN a fix is emitted, HOW MANY are emitted, WHICH random
+// draws feed it and WHICH ROW it came from; only the arithmetic diverges.
+//
+// ⚠ AND THIS SCENARIO DELIBERATELY RUNS NON-ZERO SIGMAS, WHICH IS THE OPPOSITE
+// OF quad_hover's CHOICE AND FOR A REASON WORTH STATING. That IMU sensor
+// authors every sigma zero, which its comment notes makes the sample bands "a
+// clean measurement of the mount rotation rather than of accumulated noise".
+// Here sigma_bias MUST be non-zero or bias_drive is zero, the Gauss-Markov
+// state never leaves zero, and the `bias` row would be bit-exact FOR THE WRONG
+// REASON -- a band measuring a quantity that cannot move. The cost is that
+// position/velocity carry accumulated noise; the benefit is that the bias path
+// is compared at all.
+// ---------------------------------------------------------------------------
+namespace gnss_receiver {
+// The Gauss-Markov bias state. Measured abs 3.73e-09, rel 3.15e-07 -- roughly
+// 4 ulp at this magnitude, which is the multiply-add in
+// `bias * retention + drive * gauss` landing differently on the two backends.
+inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
+// The reported antenna position. Measured abs 9.54e-07 on values near 4.09 --
+// 2 ulp, consistent with Vulkan specifying divide and sqrt to <= 2.5 ulp
+// rather than correctly rounded.
+inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
+// The reported antenna velocity, which carries the omega x lever-arm cross
+// product. Measured abs 2.38e-07 on values near 2.17 -- exactly 1 ulp.
+inline constexpr ToleranceBand kGnssVelocity{1.0e-6f, 5.0e-7f};
+}  // namespace gnss_receiver
+
 }  // namespace bands
 
 }  // namespace spade::testing
