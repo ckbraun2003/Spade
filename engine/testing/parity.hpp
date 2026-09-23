@@ -1383,16 +1383,88 @@ inline constexpr ToleranceBand kGyro{0.0f, 0.0f};
 // is compared at all.
 // ---------------------------------------------------------------------------
 namespace gnss_receiver {
+// ⛔ THE THREE NUMBERS BELOW WERE MEASURED. THE CAUSES ORIGINALLY WRITTEN
+// BESIDE THEM WERE GUESSED, AND TWO OF THE THREE WERE WRONG -- corrected here
+// by tracing each one to a file that decides it.
+//
+// The first version of this block blamed `bias` on FMA contraction and
+// `position` on Vulkan's <= 2.5 ulp divide/sqrt. Neither can happen on this
+// path, and the tree says so in four places. That mistake is worth a comment
+// rather than a silent fix, because of the SHAPE it had: THE DELTA AND ITS
+// EXPLANATION WERE WRITTEN IN THE SAME SENTENCE, so the guess inherited the
+// measurement's credibility. A number measured under a pre-registered zero
+// band is authority for THAT the band is 4e-6; it is authority for NOTHING
+// about WHY -- and the zero-band discipline that produced these numbers
+// governs the quantity only, never the stated cause.
+// ---------------------------------------------------------------------------
+
 // The Gauss-Markov bias state. Measured abs 3.73e-09, rel 3.15e-07 -- roughly
-// 4 ulp at this magnitude, which is the multiply-add in
-// `bias * retention + drive * gauss` landing differently on the two backends.
+// 4 ulp at this magnitude.
+//
+// ⛔ CAUSE UNRESOLVED, AND THIS BAND IS PROVISIONAL. Every input to
+// `bias = bias * bias_retention + bias_drive * bias_walk` is identical on the
+// two backends: the expression is character-for-character the same at
+// sensors/gnss.cpp:137 and in sensor_gnss.slang (same grouping); the two
+// coefficients are CPU-precomputed row config, and run_parity's state_digest
+// precondition proves the rows START byte-identical; the draws come from a
+// stream whose `noise.state` and `noise.cached` both compare BIT-EXACT.
+//
+// It is NOT contraction, which was the original guess. Contraction is off on
+// both sides AND enforced: engine/CMakeLists.txt:22 (MSVC defaults /fp:precise,
+// "never fuses a multiply-add") and :77 (-ffp-contract=off for non-MSVC);
+// cmake/SpadeSlang.cmake compiles every kernel -fp-mode precise; and
+// tests/test_slang_layouts.cpp's SlangSpirv.FloatControlsPinned scans
+// sensor_gnss's SPIR-V -- every workgroup variant -- asserting NoContraction on
+// every contractable op. A cause an existing test forbids is not a cause.
+//
+// The one candidate left on this path is rng.slang's Box-Muller sqrt, the only
+// operation here carrying a documented <= 2.5 ulp licence. fp32_math.slang's
+// SQRT AUDIT already names it and defers it ("Box-Muller's, OUTSIDE these
+// kernels, and is a later task's problem"). ⚠ `noise.cached` comparing
+// bit-exact is evidence AGAINST that candidate, but only partial: nine draws
+// is odd, so the cache holds draw 9's twin and the earlier pairs' magnitudes
+// were consumed. It is evidence at the sampled points, not a proof over every
+// draw.
+//
+// ⛔⛔ AND THIS BAND HAS A SILENT EXPIRY DATE, WHICH IS WHY IT IS THE ONE TO
+// SETTLE FIRST. sensor_gnss.slang's header pre-registered this quantity as a
+// BIT-IDENTITY claim, not a banded one, and said why: "A RECURSIVE BIAS FILTER
+// DOES NOT TOLERATE ERROR, IT ACCUMULATES IT ... 'close enough' is a different
+// answer next hour." THIS NUMBER WAS MEASURED OVER 200 FIXES. Its adequacy is
+// therefore a function of run length, and no test on this path states a run
+// length -- so a longer scenario can walk out of this band with nothing having
+// changed. The one band here that compounds is the one that was reasoned about
+// least. Do not widen it to make a longer run pass; that converts a compounding
+// divergence into a permanently invisible one.
 inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
+
 // The reported antenna position. Measured abs 9.54e-07 on values near 4.09 --
-// 2 ulp, consistent with Vulkan specifying divide and sqrt to <= 2.5 ulp
-// rather than correctly rounded.
+// 2 ulp.
+//
+// CAUSE: IT READS BANDED INPUTS, and that is structural rather than a defect in
+// this sensor. fix.position is `bodies.pos + lever_world + bias + noise`, and
+// body_bands() bands `bodies.pos` and `bodies.orient` (which lever_world is
+// rotated through) -- only force_acc and torque_acc are pinned at zero there.
+// A sensor that reports a banded body's state CANNOT be bit-exact, and no edit
+// inside sensor_gnss.slang can change that.
+//
+// ⛔ NOT divide or sqrt, which was the original guess: sensor_gnss.slang
+// contains neither, and its own header says so outright ("NO exp(). NO
+// DIVISION ... DIVISION AND SQRT SITES: none in this file"). The Gauss-Markov
+// coefficients are precomputed on the CPU precisely so that this kernel only
+// multiplies.
 inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
+
 // The reported antenna velocity, which carries the omega x lever-arm cross
 // product. Measured abs 2.38e-07 on values near 2.17 -- exactly 1 ulp.
+//
+// CAUSE: the same structural one as position, and it is worth stating rather
+// than leaving to inference from the neighbour. fix.velocity is
+// `bodies.vel + cross(omega_world, lever_world) + noise`, and body_bands()
+// bands bodies.vel, bodies.omega_body AND bodies.orient -- all three of this
+// row's physical inputs. Exactly 1 ulp is what a banded input reproduced
+// through an unbanded arithmetic path looks like; it is not evidence that the
+// cross product itself diverges.
 inline constexpr ToleranceBand kGnssVelocity{1.0e-6f, 5.0e-7f};
 }  // namespace gnss_receiver
 
