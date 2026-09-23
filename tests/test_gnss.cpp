@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <type_traits>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -395,6 +396,54 @@ TEST(GnssLifecycle, TheBiasCoefficientsAreOnTheFixClockNotTheSubstepClock) {
     ASSERT_GT(desc.rate_divider, 1u) << "a rate_divider of 1 makes the two clocks equal and "
                                         "this test unable to tell them apart";
 }
+
+// ===========================================================================
+// THE REF TYPES ARE MUTUALLY UNASSIGNABLE, AND THIS IS A PROOF RATHER THAN A
+// REVIEW. Compile-time, so it adds no ctest slot and cannot be skipped.
+//
+// WHY THIS EXISTS: GnssSensorRef and ImuSensorRef are structurally identical --
+// a world index and a global slot -- and index DIFFERENT ARRAYS. An IMU ref
+// passed to poll_gnss() would name a real, allocated slot in the GNSS
+// partition: a type confusion reached through a perfectly VALID ref, which no
+// runtime validation can catch because there is nothing wrong with the value.
+// Only the type can. The dedup that shares poll_sensor<Row, Sample> between the
+// two families is exactly the change that could take this away while looking
+// like a tidy-up, so the guarantee is asserted rather than trusted.
+// ===========================================================================
+
+// POSITIVE CONTROL FIRST. is_invocable_v is false for a signature that is wrong
+// in ANY way, so without this the negative assertions below would pass just as
+// happily if the whole expression were malformed -- green for the wrong reason,
+// which is the failure this file already catches in three other places.
+static_assert(std::is_invocable_v<decltype(&Simulation::poll_gnss), const Simulation&,
+                                  GnssSensorRef, spade::sensors::SampleIndex,
+                                  std::span<spade::sensors::GnssFix>>,
+              "POSITIVE CONTROL FAILED: the matching call does not compile either, so the "
+              "negative assertions below prove nothing about ref distinctness");
+static_assert(std::is_invocable_v<decltype(&Simulation::poll_imu), const Simulation&,
+                                  spade::ImuSensorRef, spade::sensors::SampleIndex,
+                                  std::span<spade::sensors::ImuSample>>,
+              "POSITIVE CONTROL FAILED: see above");
+
+// THE GUARANTEE. Not "the types differ" -- THE CALL IS ILL-FORMED. A
+// !is_convertible check alone would pass while an implicit conversion through
+// some third type kept the call legal.
+static_assert(!std::is_invocable_v<decltype(&Simulation::poll_gnss), const Simulation&,
+                                   spade::ImuSensorRef, spade::sensors::SampleIndex,
+                                   std::span<spade::sensors::GnssFix>>,
+              "an ImuSensorRef compiles against poll_gnss -- the ref types have stopped being "
+              "distinct, and a type confusion through a VALID ref is now reachable");
+static_assert(!std::is_invocable_v<decltype(&Simulation::poll_imu), const Simulation&,
+                                   GnssSensorRef, spade::sensors::SampleIndex,
+                                   std::span<spade::sensors::ImuSample>>,
+              "a GnssSensorRef compiles against poll_imu -- see above");
+
+// And the weaker properties, kept because they localise a failure: if these
+// fire, the cause is the TYPES; if only the is_invocable pair fires, the cause
+// is an overload or a conversion somewhere else.
+static_assert(!std::is_same_v<spade::ImuSensorRef, GnssSensorRef>);
+static_assert(!std::is_convertible_v<spade::ImuSensorRef, GnssSensorRef>);
+static_assert(!std::is_convertible_v<GnssSensorRef, spade::ImuSensorRef>);
 
 // ---------------------------------------------------------------------------
 // The two-phase shape, in both directions: inert before the boundary, live

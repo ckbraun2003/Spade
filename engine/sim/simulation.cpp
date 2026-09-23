@@ -67,6 +67,153 @@ constexpr const char* kRotorsArray = "rotors";
 constexpr const char* kGnssSensorsArray = "gnss_sensors";
 constexpr const char* kGnssRingArray = "gnss_ring";
 
+
+// ---------------------------------------------------------------------------
+// THE SENSOR-FAMILY TEMPLATES -- one implementation per operation, instantiated
+// once per sensor family.
+//
+// WHY TEMPLATES AND NOT A KIND-TAGGED ARENA. The audit that named this
+// duplication (a0f81cde) proposed tagging ONE arena so poll() dispatches on the
+// tag. That amendment is RETIRED; design-specs/spade/sensor-arena-dedup.md has
+// the measurement. The short form: the arena is three things, and the audit was
+// written about one of them.
+//
+//   A CPU CONTAINER   what the audit saw
+//   A GPU BINDING     RWStructuredBuffer<ImuSensorRow> @5, <GnssSensorRow> @23
+//   A DIGEST SOURCE   state_digest folds elem_size AND the raw bytes
+//
+// sizeof(ImuSensorRow) is 128 and sizeof(GnssSensorRow) is 112, so one arena
+// means one union row: a 128-byte stride with 16 dead bytes per receiver, a
+// VARIANT in layouts.slang instead of a concrete struct, and -- disqualifying --
+//
+//   WITH ONE ARENA, A CHANGE TO THE IMU ROW MOVES EVERY GNSS DIGEST AND VICE
+//   VERSA. TWO SENSORS THAT SHARE NOTHING PHYSICALLY WOULD SHARE A CORPUS
+//   REGENERATION.
+//
+// THE SEPARATENESS OF THE ARENAS IS NOT AN ACCIDENT OF HOW THEY WERE BUILT; IT
+// IS WHAT KEEPS ONE SENSOR'S LAYOUT CHURN OUT OF THE OTHER'S REPRODUCIBILITY
+// RECORD. A runtime tag is the right answer when the set of kinds is OPEN and
+// the storage is SHARED; here the storage is deliberately not shared and the
+// kinds are a closed compile-time set, which is the shape a template fits.
+//
+// NOT TEMPLATED, DELIBERATELY: add_imu_sensor / add_gnss_sensor. Those two are
+// not identical -- the validation is sensor-specific (mount_orient and four
+// sigmas versus bias_tau_s and sigma_bias) and the queued op carries a
+// different field. Templating them needs a validation policy, which is more
+// machinery than the duplication it removes. THE DUPLICATION WORTH DELETING IS
+// THE DUPLICATION THAT IS IDENTICAL; forcing the remaining pair into the same
+// mould is how a dedup becomes a framework.
+// ---------------------------------------------------------------------------
+
+template <class Row>
+[[nodiscard]] Result<void> validate_sensor_ref(const ArenaSet& arenas, ArrayId<Row> rows_id,
+                                               const WorldSetLayout& layout, uint32_t world_index,
+                                               uint32_t slot, std::string_view what) {
+    if (world_index >= layout.world_count) {
+        return std::unexpected(missing(std::string(what) + " ref names a world outside this set"));
+    }
+    // The same redundancy check validate_ref() applies to a BodyRef: the world
+    // index must agree with the partition the slot falls in, which catches a
+    // hand-built ref or one from a differently-shaped set before it indexes.
+    if (layout.sensor_capacity == 0 || slot / layout.sensor_capacity != world_index) {
+        return std::unexpected(
+            missing(std::string(what) + " ref's slot does not lie in its world's partition"));
+    }
+    const Result<std::span<const uint32_t>> map = arenas.slot_to_world(rows_id);
+    if (!map) return std::unexpected(map.error());
+    if (slot >= map->size() || (*map)[slot] != world_index) {
+        return std::unexpected(missing(std::string(what) + " ref names a slot that is not allocated"));
+    }
+    return {};
+}
+
+template <class Row, class Sample>
+[[nodiscard]] Result<sensors::PollResult<Sample>> poll_sensor(
+    const ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> ring_id, uint32_t slot,
+    sensors::SampleIndex since_index, std::span<Sample> out, std::string_view what) {
+    const Result<std::span<const Row>> rows = arenas.array(rows_id);
+    if (!rows) return std::unexpected(rows.error());
+    const Result<std::span<const Sample>> ring = arenas.array(ring_id);
+    if (!ring) return std::unexpected(ring.error());
+
+    // The window is the sensor's global slot times the depth -- the implicit
+    // ring reference sensors/imu.hpp describes.
+    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
+    if (begin + sensors::kRingDepth > ring->size()) {
+        return std::unexpected(internal(std::string(what) + ": ring window is outside the ring array"));
+    }
+
+    // A row whose init is still queued has kind == none and last_index == 0, so
+    // this reports "nothing yet" rather than an error -- polling a sensor you
+    // just added, before the next step, is a legal thing to do, and
+    // sensor_kind::poll_permits() is the statement of why.
+    return sensors::ring_poll<Sample>(ring->subspan(begin, sensors::kRingDepth),
+                                      (*rows)[slot].last_index, since_index, out);
+}
+
+template <class Row>
+[[nodiscard]] Result<const Row*> sensor_row(const ArenaSet& arenas, ArrayId<Row> rows_id,
+                                            uint32_t slot) {
+    const Result<std::span<const Row>> rows = arenas.array(rows_id);
+    if (!rows) return std::unexpected(rows.error());
+    return &(*rows)[slot];
+}
+
+// ---------------------------------------------------------------------------
+// THIS REPLACES A FIELD-WISE WRITE, AND IT STATES THAT WRITE'S PURPOSE DIRECTLY
+// RATHER THAN EMULATING IT.
+//
+// clear_imu_ring() used to name all six ImuSample fields, with a comment
+// explaining that "ImuSample has no implicit padding (sensors/imu.hpp asserts
+// it), so naming all six fields zeroes every byte -- which is what makes a
+// freed sensor's ring read as zeroes in a snapshot". THE GOAL WAS ALWAYS
+// EVERY BYTE, and the field list was a way of reaching it that depended on the
+// reader knowing the padding argument. memset says it.
+//
+// A VALUE-INITIALIZED ASSIGNMENT (`*it = Sample{}`) WOULD NOT HAVE BEEN
+// EQUIVALENT and is the trap here: it zero-initializes every MEMBER and leaves
+// padding bytes unspecified. That is invisible in a test and visible in a
+// snapshot digest, which folds raw bytes.
+// ---------------------------------------------------------------------------
+template <class Sample>
+void clear_sensor_ring(ArenaSet& arenas, ArrayId<Sample> ring_id, uint32_t slot) {
+    static_assert(std::is_trivially_copyable_v<Sample>,
+                  "a ring payload is zeroed byte-wise, so it must be trivially copyable");
+    Result<std::span<Sample>> ring = arenas.array(ring_id);
+    if (!ring) return;
+    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
+    if (begin + sensors::kRingDepth > ring->size()) return;
+    std::memset(ring->data() + begin, 0, sensors::kRingDepth * sizeof(Sample));
+}
+
+template <class Row, class Sample>
+void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> ring_id,
+                     const WorldSetLayout& layout, uint32_t world_index, uint32_t body_slot) {
+    Result<std::span<const uint32_t>> map = arenas.slot_to_world(rows_id);
+    Result<std::span<Row>> rows = arenas.array(rows_id);
+    if (!map || !rows) return;
+
+    const uint32_t local_body = body_slot - world_index * layout.body_capacity;
+    const uint32_t begin = world_index * layout.sensor_capacity;
+    const uint32_t end = begin + layout.sensor_capacity;
+
+    // Ascending slot order and liveness-from-the-map, exactly as
+    // free_drag_elements_of does and for exactly the same reasons (a
+    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
+    // legitimate world-local index, so trusting the row alone would free live
+    // sensors attached to body 0).
+    for (uint32_t slot = begin; slot < end; ++slot) {
+        if ((*map)[slot] != world_index) continue;
+        if ((*rows)[slot].body_slot != local_body) continue;
+        if (Result<void> freed = arenas.free_slot(rows_id, slot); freed) {
+            // free_slot zeroes the ROW; the samples live in a second,
+            // direct-indexed array that nothing else would clear. See
+            // Simulation::despawn's contract.
+            clear_sensor_ring(arenas, ring_id, slot);
+        }
+    }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -2472,19 +2619,8 @@ Result<VehicleRef> Simulation::vehicle_ref_at(uint32_t world_index, uint32_t veh
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::validate_gnss_ref(GnssSensorRef ref) const {
-    if (ref.world_index >= layout_.world_count) {
-        return std::unexpected(missing("gnss sensor ref names a world outside this set"));
-    }
-    if (layout_.sensor_capacity == 0 || ref.slot / layout_.sensor_capacity != ref.world_index) {
-        return std::unexpected(
-            missing("gnss sensor ref's slot does not lie in its world's partition"));
-    }
-    const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
-    if (!map) return std::unexpected(map.error());
-    if (ref.slot >= map->size() || (*map)[ref.slot] != ref.world_index) {
-        return std::unexpected(missing("gnss sensor ref names a slot that is not allocated"));
-    }
-    return {};
+    return validate_sensor_ref(arenas_, gnss_id_, layout_, ref.world_index, ref.slot,
+                               "gnss sensor");
 }
 
 Result<GnssPoll> Simulation::poll_gnss(GnssSensorRef ref, sensors::SampleIndex since_index,
@@ -2492,31 +2628,14 @@ Result<GnssPoll> Simulation::poll_gnss(GnssSensorRef ref, sensors::SampleIndex s
     if (Result<void> valid = validate_gnss_ref(ref); !valid) {
         return std::unexpected(valid.error());
     }
-    const Result<std::span<const sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!rows) return std::unexpected(rows.error());
-    const Result<std::span<const sensors::GnssFix>> ring = arenas_.array(gnss_ring_id_);
-    if (!ring) return std::unexpected(ring.error());
-
-    const std::size_t begin = static_cast<std::size_t>(ref.slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) {
-        return std::unexpected(internal("poll_gnss: ring window is outside the ring array"));
-    }
-
-    // A row whose init is still queued has kind == none and last_index == 0, so
-    // this reports "nothing yet" rather than an error -- the same legality
-    // poll_imu() states, and the reason sensor_kind::poll_permits() lets `none`
-    // through while rejecting any OTHER known kind.
-    return sensors::ring_poll<sensors::GnssFix>(ring->subspan(begin, sensors::kRingDepth),
-                                                (*rows)[ref.slot].last_index, since_index, out);
+    return poll_sensor(arenas_, gnss_id_, gnss_ring_id_, ref.slot, since_index, out, "poll_gnss");
 }
 
 Result<const sensors::GnssSensorRow*> Simulation::gnss_sensor(GnssSensorRef ref) const {
     if (Result<void> valid = validate_gnss_ref(ref); !valid) {
         return std::unexpected(valid.error());
     }
-    const Result<std::span<const sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!rows) return std::unexpected(rows.error());
-    return &(*rows)[ref.slot];
+    return sensor_row(arenas_, gnss_id_, ref.slot);
 }
 
 Result<uint32_t> Simulation::live_gnss_sensor_count(uint32_t world_index) const {
@@ -2526,21 +2645,7 @@ Result<uint32_t> Simulation::live_gnss_sensor_count(uint32_t world_index) const 
 }
 
 Result<void> Simulation::validate_imu_ref(ImuSensorRef ref) const {
-    if (ref.world_index >= layout_.world_count) {
-        return std::unexpected(missing("imu sensor ref names a world outside this set"));
-    }
-    // The same redundancy check validate_ref() applies to a BodyRef: the world
-    // index must agree with the partition the slot falls in, which catches a
-    // hand-built ref or one from a differently-shaped set before it indexes.
-    if (layout_.sensor_capacity == 0 || ref.slot / layout_.sensor_capacity != ref.world_index) {
-        return std::unexpected(missing("imu sensor ref's slot does not lie in its world's partition"));
-    }
-    const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(imu_id_);
-    if (!map) return std::unexpected(map.error());
-    if (ref.slot >= map->size() || (*map)[ref.slot] != ref.world_index) {
-        return std::unexpected(missing("imu sensor ref names a slot that is not allocated"));
-    }
-    return {};
+    return validate_sensor_ref(arenas_, imu_id_, layout_, ref.world_index, ref.slot, "imu sensor");
 }
 
 Result<ImuPoll> Simulation::poll_imu(ImuSensorRef ref, sensors::SampleIndex since_index,
@@ -2548,32 +2653,14 @@ Result<ImuPoll> Simulation::poll_imu(ImuSensorRef ref, sensors::SampleIndex sinc
     if (Result<void> valid = validate_imu_ref(ref); !valid) {
         return std::unexpected(valid.error());
     }
-    const Result<std::span<const sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!rows) return std::unexpected(rows.error());
-    const Result<std::span<const sensors::ImuSample>> ring = arenas_.array(imu_ring_id_);
-    if (!ring) return std::unexpected(ring.error());
-
-    // The window is the sensor's global slot times the depth -- the implicit
-    // ring reference sensors/imu.hpp describes.
-    const std::size_t begin = static_cast<std::size_t>(ref.slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) {
-        return std::unexpected(internal("poll_imu: ring window is outside the ring array"));
-    }
-
-    // A row whose init is still queued has kind == none and last_index == 0, so
-    // this reports "nothing yet" rather than an error -- polling a sensor you
-    // just added, before the next step, is a legal thing to do.
-    return sensors::ring_poll<sensors::ImuSample>(ring->subspan(begin, sensors::kRingDepth),
-                                                  (*rows)[ref.slot].last_index, since_index, out);
+    return poll_sensor(arenas_, imu_id_, imu_ring_id_, ref.slot, since_index, out, "poll_imu");
 }
 
 Result<const sensors::ImuSensorRow*> Simulation::imu_sensor(ImuSensorRef ref) const {
     if (Result<void> valid = validate_imu_ref(ref); !valid) {
         return std::unexpected(valid.error());
     }
-    const Result<std::span<const sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!rows) return std::unexpected(rows.error());
-    return &(*rows)[ref.slot];
+    return sensor_row(arenas_, imu_id_, ref.slot);
 }
 
 Result<uint32_t> Simulation::live_imu_sensor_count(uint32_t world_index) const {
