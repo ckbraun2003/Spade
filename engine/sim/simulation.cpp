@@ -899,6 +899,7 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // the body that is about to stop existing.
             free_drag_elements_of(op.world_index, op.slot);
             free_imu_sensors_of(op.world_index, op.slot);
+            free_gnss_sensors_of(op.world_index, op.slot);
             free_rotors_of(op.world_index, op.slot);
             if (Result<void> freed = arenas_.free_slot(bodies_id_, op.slot); !freed) {
                 return std::unexpected(internal("structural queue: freeing a body slot failed: " +
@@ -994,6 +995,67 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // the row is inert to the SensorSynthesis pass, so a partially
             // written row can never be sampled.
             row.kind = sensors::sensor_kind::imu;
+            return {};
+        }
+
+        case OpKind::init_gnss: {
+            Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
+            if (!rows) return std::unexpected(rows.error());
+            if (op.slot >= rows->size()) {
+                return std::unexpected(internal("structural queue: gnss slot out of range"));
+            }
+            // Same defence in depth as init_imu, for the same reason.
+            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
+            if (!map) return std::unexpected(map.error());
+            if ((*map)[op.slot] != op.world_index) return {};
+
+            const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
+            if (!params) return std::unexpected(params.error());
+
+            sensors::GnssSensorRow& row = (*rows)[op.slot];
+            const uint32_t local_slot = op.slot - op.world_index * layout_.sensor_capacity;
+
+            // ⛔⛔ THE FIX PERIOD, NOT THE SUBSTEP. The Gauss-Markov bias
+            // advances ONCE PER EMITTED FIX -- it is the receiver's own error
+            // process and runs on the receiver's own clock -- so `dt` is
+            // rate_divider substeps, not one. Computed HERE rather than in
+            // add_gnss_sensor() because this is where the row is written and
+            // where the arena hands it over; `h_` is a member either way.
+            //
+            //   A CONSTANT COMPUTED FROM THE WRONG CLOCK IS STILL
+            //   DETERMINISTIC, AND DETERMINISM IS WHAT THIS SUITE CHECKS.
+            //
+            // A receiver at rate_divider = 200 on the substep clock decays 200x
+            // too slowly, both backends still agree bit for bit, every digest
+            // stays self-consistent, and the corpus pins it wrong forever. The
+            // only thing standing between that and this line is this comment.
+            const float fix_dt = static_cast<float>(op.gnss.rate_divider) * h_;
+
+            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body and init_imu. The
+            // row's contents are this function's complete statement.
+            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
+            row.rate_divider = op.gnss.rate_divider;
+            row.phase = 0u;
+            row.mount_pos = op.gnss.mount_pos;
+            row._p0 = 0.0f;
+            row.bias = glm::vec3(0.0f);
+            row._p1 = 0.0f;
+            row.sigma_h = op.gnss.sigma_h;
+            row.sigma_v = op.gnss.sigma_v;
+            row.sigma_vel = op.gnss.sigma_vel;
+            row.bias_tau_s = op.gnss.bias_tau_s;
+            row.noise = sensors::gnss_noise_stream((*params)[op.world_index].seed, local_slot);
+            row.last_index = 0;
+            row.bias_retention = sensors::gnss_bias_retention(fix_dt, op.gnss.bias_tau_s);
+            row.bias_drive =
+                sensors::gnss_bias_drive(fix_dt, op.gnss.bias_tau_s, op.gnss.sigma_bias);
+            row.sigma_bias = op.gnss.sigma_bias;
+            row._p2 = 0.0f;
+            row._reserved0 = 0;
+            // LAST, like init_imu's: until `kind` is set the row is inert to
+            // the SensorSynthesis pass, so a partially written row can never be
+            // sampled.
+            row.kind = sensors::sensor_kind::gnss;
             return {};
         }
 
@@ -1117,6 +1179,47 @@ void Simulation::free_rotors_of(uint32_t world_index, uint32_t body_slot) {
         if ((*map)[slot] != world_index) continue;
         if ((*rows)[slot].body_slot != local_body) continue;
         (void)arenas_.free_slot(rotors_id_, slot);
+    }
+}
+
+void Simulation::free_gnss_sensors_of(uint32_t world_index, uint32_t body_slot) {
+    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
+    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
+    if (!map || !rows) return;
+
+    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
+    const uint32_t begin = world_index * layout_.sensor_capacity;
+    const uint32_t end = begin + layout_.sensor_capacity;
+
+    // Ascending slot order and liveness-from-the-map, exactly as
+    // free_imu_sensors_of does and for exactly the same reasons.
+    for (uint32_t slot = begin; slot < end; ++slot) {
+        if ((*map)[slot] != world_index) continue;
+        if ((*rows)[slot].body_slot != local_body) continue;
+        if (Result<void> freed = arenas_.free_slot(gnss_id_, slot); freed) {
+            clear_gnss_ring(slot);
+        }
+    }
+}
+
+void Simulation::clear_gnss_ring(uint32_t slot) {
+    Result<std::span<sensors::GnssFix>> ring = arenas_.array(gnss_ring_id_);
+    if (!ring) return;
+    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
+    if (begin + sensors::kRingDepth > ring->size()) return;
+
+    for (std::size_t i = 0; i < sensors::kRingDepth; ++i) {
+        // FIELD-WISE, like clear_imu_ring. GnssFix has no implicit padding
+        // (sensors/gnss.hpp asserts it), so naming all six fields zeroes every
+        // byte -- which is what makes a freed receiver's ring read as zeroes in
+        // a snapshot, the same as any other freed slot.
+        sensors::GnssFix& fix = (*ring)[begin + i];
+        fix.position = glm::vec3(0.0f);
+        fix.sigma_h = 0.0f;
+        fix.velocity = glm::vec3(0.0f);
+        fix.sigma_v = 0.0f;
+        fix.index = 0;
+        fix.tick = 0;
     }
 }
 
@@ -1375,6 +1478,64 @@ Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragEleme
     queue_.push_back(op);
 
     return DragElementRef{ref.world_index, *slot};
+}
+
+Result<GnssSensorRef> Simulation::add_gnss_sensor(BodyRef ref, const GnssSensorSpawn& sensor) {
+    if (Result<void> valid = validate_ref(ref); !valid) {
+        return std::unexpected(valid.error());
+    }
+    if (sensor.rate_divider == 0) {
+        return std::unexpected(invalid("add_gnss_sensor: rate_divider must be >= 1"));
+    }
+    if (!finite(sensor.mount_pos)) {
+        return std::unexpected(invalid("add_gnss_sensor: mount_pos must be finite"));
+    }
+    // Spelled `!(x >= 0)` so a NaN REJECTS rather than comparing false on both
+    // sides -- add_imu_sensor()'s discipline, and world_set.cpp's in_range().
+    // bias_tau_s joins the sigmas here: <= 0 legitimately DISABLES the bias
+    // (gnss_bias_retention returns 0), but a NEGATIVE tau is a caller error and
+    // a NaN one would propagate into every fix through a finite-looking row.
+    if (!(sensor.sigma_h >= 0.0f) || !(sensor.sigma_v >= 0.0f) ||
+        !(sensor.sigma_vel >= 0.0f) || !(sensor.sigma_bias >= 0.0f) ||
+        !(sensor.bias_tau_s >= 0.0f) || !finite(sensor.sigma_h) ||
+        !finite(sensor.sigma_v) || !finite(sensor.sigma_vel) ||
+        !finite(sensor.sigma_bias) || !finite(sensor.bias_tau_s)) {
+        return std::unexpected(
+            invalid("add_gnss_sensor: every sigma and bias_tau_s must be finite and >= 0"));
+    }
+
+    const WorldConfig& config = configs_[ref.world_index];
+    const Result<uint32_t> live = arenas_.live_count(gnss_id_, ref.world_index);
+    if (!live) return std::unexpected(live.error());
+    if (*live >= config.declared_sensor_capacity) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     "add_gnss_sensor: world " + std::to_string(ref.world_index) +
+                                         " is at its declared sensor capacity (" +
+                                         std::to_string(config.declared_sensor_capacity) + ")"});
+    }
+
+    const Result<uint32_t> slot = arenas_.alloc_slot(gnss_id_, ref.world_index);
+    if (!slot) return std::unexpected(slot.error());
+
+    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME -- the same aliasing
+    // hole add_imu_sensor() and add_drag_element() close, for the same reason:
+    // a reserved row's zeroed `body_slot` is a legitimate world-local index
+    // (body 0), and free_gnss_sensors_of() identifies a body's receivers by
+    // exactly that field. `kind` stays 0, so the row is inert until the
+    // boundary.
+    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
+    if (!rows) return std::unexpected(rows.error());
+    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
+
+    StructuralOp op;
+    op.kind = OpKind::init_gnss;
+    op.world_index = ref.world_index;
+    op.slot = *slot;
+    op.body_slot = ref.slot;
+    op.gnss = sensor;
+    queue_.push_back(op);
+
+    return GnssSensorRef{ref.world_index, *slot};
 }
 
 Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpawn& sensor) {
@@ -2309,6 +2470,60 @@ Result<VehicleRef> Simulation::vehicle_ref_at(uint32_t world_index, uint32_t veh
 // ---------------------------------------------------------------------------
 // sensors
 // ---------------------------------------------------------------------------
+
+Result<void> Simulation::validate_gnss_ref(GnssSensorRef ref) const {
+    if (ref.world_index >= layout_.world_count) {
+        return std::unexpected(missing("gnss sensor ref names a world outside this set"));
+    }
+    if (layout_.sensor_capacity == 0 || ref.slot / layout_.sensor_capacity != ref.world_index) {
+        return std::unexpected(
+            missing("gnss sensor ref's slot does not lie in its world's partition"));
+    }
+    const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
+    if (!map) return std::unexpected(map.error());
+    if (ref.slot >= map->size() || (*map)[ref.slot] != ref.world_index) {
+        return std::unexpected(missing("gnss sensor ref names a slot that is not allocated"));
+    }
+    return {};
+}
+
+Result<GnssPoll> Simulation::poll_gnss(GnssSensorRef ref, sensors::SampleIndex since_index,
+                                       std::span<sensors::GnssFix> out) const {
+    if (Result<void> valid = validate_gnss_ref(ref); !valid) {
+        return std::unexpected(valid.error());
+    }
+    const Result<std::span<const sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
+    if (!rows) return std::unexpected(rows.error());
+    const Result<std::span<const sensors::GnssFix>> ring = arenas_.array(gnss_ring_id_);
+    if (!ring) return std::unexpected(ring.error());
+
+    const std::size_t begin = static_cast<std::size_t>(ref.slot) * sensors::kRingDepth;
+    if (begin + sensors::kRingDepth > ring->size()) {
+        return std::unexpected(internal("poll_gnss: ring window is outside the ring array"));
+    }
+
+    // A row whose init is still queued has kind == none and last_index == 0, so
+    // this reports "nothing yet" rather than an error -- the same legality
+    // poll_imu() states, and the reason sensor_kind::poll_permits() lets `none`
+    // through while rejecting any OTHER known kind.
+    return sensors::ring_poll<sensors::GnssFix>(ring->subspan(begin, sensors::kRingDepth),
+                                                (*rows)[ref.slot].last_index, since_index, out);
+}
+
+Result<const sensors::GnssSensorRow*> Simulation::gnss_sensor(GnssSensorRef ref) const {
+    if (Result<void> valid = validate_gnss_ref(ref); !valid) {
+        return std::unexpected(valid.error());
+    }
+    const Result<std::span<const sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
+    if (!rows) return std::unexpected(rows.error());
+    return &(*rows)[ref.slot];
+}
+
+Result<uint32_t> Simulation::live_gnss_sensor_count(uint32_t world_index) const {
+    const Result<uint32_t> world = checked_world(world_index);
+    if (!world) return std::unexpected(world.error());
+    return arenas_.live_count(gnss_id_, world_index);
+}
 
 Result<void> Simulation::validate_imu_ref(ImuSensorRef ref) const {
     if (ref.world_index >= layout_.world_count) {

@@ -197,6 +197,37 @@ struct ImuSensorRef {
 using ImuPoll = sensors::PollResult<sensors::ImuSample>;
 
 // ---------------------------------------------------------------------------
+// GnssSensorRef -- a receiver, and a DISTINCT TYPE rather than an alias for
+// ImuSensorRef.
+//
+// The two are structurally identical (a world index and a global slot) and
+// that is exactly why they must not be interchangeable: they index DIFFERENT
+// ARRAYS. A ref built from add_imu_sensor() and passed to poll_gnss() would
+// name a real, allocated slot in the GNSS partition -- a type confusion
+// reached through a perfectly VALID ref, which no validation can catch
+// because there is nothing wrong with the value. Only the type can.
+//
+// THE LIFETIME CONTRACT IS ImuSensorRef'S, UNCHANGED: a receiver is attached
+// to a body and lives exactly as long as it (despawning frees its sensors and
+// freeing a sensor clears its ring), so a ref outlives its sensor only if the
+// caller keeps using it after despawning the body. poll_gnss() reports
+// not_found for a freed slot; what it cannot detect is a ref used after that
+// slot was recycled by a LATER add_gnss_sensor(). Stated honestly rather than
+// argued away, same as there.
+// ---------------------------------------------------------------------------
+struct GnssSensorRef {
+    uint32_t world_index = 0;
+    uint32_t slot = 0;  // global slot in the GNSS sensor array
+
+    friend constexpr bool operator==(const GnssSensorRef&, const GnssSensorRef&) noexcept = default;
+};
+
+// What a poll_gnss() call returns. sensors::PollResult and ring_poll<T> are
+// already generic over the payload, so this is the template doing its job
+// rather than a second mechanism.
+using GnssPoll = sensors::PollResult<sensors::GnssFix>;
+
+// ---------------------------------------------------------------------------
 // A registered ModelType's identity (Task 18).
 //
 // ONE-BASED, so that a default-constructed id is null and names nothing --
@@ -346,6 +377,28 @@ struct ImuSensorSpawn {
     float sigma_g = 0.0f;                            // gyro white noise, rad/s per sample
     float sigma_ba = 0.0f;                           // accel bias walk step, m/s^2 per sample
     float sigma_bg = 0.0f;                           // gyro bias walk step, rad/s per sample
+};
+
+// ---------------------------------------------------------------------------
+// GnssSensorSpawn -- what a caller states about a receiver. The row's two
+// DERIVED constants (bias_retention, bias_drive) are deliberately absent:
+// they are computed at the step boundary from these fields plus the run's
+// substep, and a caller who could set them could set them inconsistently with
+// bias_tau_s and sigma_bias.
+//
+// NO mount_orient, UNLIKE ImuSensorSpawn, AND THAT IS NOT AN OMISSION. An IMU
+// measures in its own axes, so its orientation changes what it reports. An
+// antenna reports a POSITION -- a point, not a frame -- so only the lever arm
+// matters and an orientation would be a field nothing could read.
+// ---------------------------------------------------------------------------
+struct GnssSensorSpawn {
+    glm::vec3 mount_pos{0.0f};  // antenna lever arm, body-frame offset from COM, m
+    uint32_t rate_divider = 1;  // emit one fix every N substeps; normally >> 1 here
+    float sigma_h = 0.0f;       // horizontal white noise, per-fix stddev, m
+    float sigma_v = 0.0f;       // vertical white noise, per-fix stddev, m
+    float sigma_vel = 0.0f;     // velocity white noise, per-axis per-fix stddev, m/s
+    float bias_tau_s = 0.0f;    // Gauss-Markov correlation time, s; <= 0 disables the bias
+    float sigma_bias = 0.0f;    // stationary stddev of the correlated bias, m
 };
 
 // ---------------------------------------------------------------------------
@@ -764,6 +817,38 @@ public:
     // `capacities.sensors`.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<ImuSensorRef> add_imu_sensor(BodyRef ref, const ImuSensorSpawn& sensor);
+
+    // ---------------------------------------------------------------------
+    // add_gnss_sensor -- reserve a GNSS slot on `ref`'s body and queue its
+    // initialization. Identical two-phase shape to add_imu_sensor().
+    //
+    // ⛔ THE ONE THING THIS CALL DECIDES THAT NOTHING CAN CHECK LATER: the
+    // Gauss-Markov coefficients are computed at the boundary from
+    //
+    //     dt = rate_divider * substep_h()          NOT substep_h()
+    //
+    // because the bias advances ONCE PER EMITTED FIX, on the receiver's own
+    // clock, not once per substep. Both kernels say so at the multiply. A
+    // receiver at rate_divider = 200 computed on the substep clock would decay
+    // 200x too slowly, and NOTHING IN THIS SUITE WOULD CATCH IT: the digests
+    // would be self-consistent, both backends would agree bit for bit, and the
+    // corpus would pin the wrong number forever.
+    //
+    //   A CONSTANT COMPUTED FROM THE WRONG CLOCK IS STILL DETERMINISTIC, AND
+    //   DETERMINISM IS WHAT THIS SUITE CHECKS.
+    //
+    // Both inputs are fixed at spawn (`rate_divider` here, `h_` immutable at
+    // creation), so the coefficients stay per-sensor constants.
+    //
+    // VALIDATION (all invalid_argument): rate_divider >= 1; mount_pos finite;
+    // every sigma and bias_tau_s finite and >= 0. Spelled `!(x >= 0)` so a NaN
+    // REJECTS rather than comparing false on both sides. not_found for a dead
+    // or stale BodyRef; capacity_exceeded when the world already holds its
+    // declared `capacities.sensors` -- WHICH IS SHARED WITH THE IMU ARRAY ONLY
+    // IN ITS DECLARED SIZE, never in its slots: the two arenas are independent,
+    // so a world may hold `sensors` IMUs AND `sensors` receivers.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<GnssSensorRef> add_gnss_sensor(BodyRef ref, const GnssSensorSpawn& sensor);
 
     // --- model types (Task 18) --------------------------------------------
 
@@ -1246,6 +1331,28 @@ public:
 
     [[nodiscard]] Result<uint32_t> live_imu_sensor_count(uint32_t world_index) const;
 
+    // ---------------------------------------------------------------------
+    // poll_gnss -- the fixes this receiver has produced since `since_index`
+    // that are still resident in its fixed-depth ring. Same TA5 semantics as
+    // poll_imu(), over the same generic ring_poll<T>.
+    //
+    // ⚠ A RECEIVER'S RING COVERS FAR MORE WALL TIME THAN AN IMU'S, and the
+    // depth is the same: at rate_divider >> 1 a fix is emitted rarely, so
+    // kRingDepth fixes span rate_divider x kRingDepth substeps. A caller that
+    // polls on the IMU's schedule will find nothing most of the time, and that
+    // is not an error -- `lost` stays 0 and `next_since` does not move.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<GnssPoll> poll_gnss(GnssSensorRef ref, sensors::SampleIndex since_index,
+                                             std::span<sensors::GnssFix> out) const;
+
+    // This receiver's table row -- its lever arm, its configured sigmas, its
+    // two derived coefficients, and its live bias/phase/stream/cursor state.
+    // Read-only: the row is written by the structural queue and by the
+    // SensorSynthesis pass, nowhere else.
+    [[nodiscard]] Result<const sensors::GnssSensorRow*> gnss_sensor(GnssSensorRef ref) const;
+
+    [[nodiscard]] Result<uint32_t> live_gnss_sensor_count(uint32_t world_index) const;
+
     // --- rotors -----------------------------------------------------------
 
     // One of a vehicle's rotor rows, by the model's declaration index --
@@ -1317,6 +1424,7 @@ private:
         free_body,   // release a body slot (and cascade to its elements and sensors)
         init_drag,   // write the reserved drag-element slot
         init_imu,    // write the reserved sensor slot and seed its rng stream
+        init_gnss,   // write the reserved GNSS slot, seed its stream, derive its coefficients
         init_rotor,  // write the reserved rotor slot and seed its shaft speed
     };
 
@@ -1337,6 +1445,7 @@ private:
         float body_proxy_radius = 0.0f;
         DragElementSpawn drag{};  // init_drag
         ImuSensorSpawn imu{};     // init_imu
+        GnssSensorSpawn gnss{};   // init_gnss
         vehicles::RotorDesc rotor{};  // init_rotor
         float rotor_omega = 0.0f;     // init_rotor: the shaft speed AND command it spawns holding
     };
@@ -1437,6 +1546,8 @@ private:
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
     void free_drag_elements_of(uint32_t world_index, uint32_t body_slot);
     void free_imu_sensors_of(uint32_t world_index, uint32_t body_slot);
+    void free_gnss_sensors_of(uint32_t world_index, uint32_t body_slot);
+    void clear_gnss_ring(uint32_t slot);
     void free_rotors_of(uint32_t world_index, uint32_t body_slot);
     // Zeroes one sensor's ring window. `slot` is the GLOBAL sensor slot; the
     // window is [slot * kRingDepth, (slot + 1) * kRingDepth), which lands in
@@ -1449,6 +1560,7 @@ private:
     [[nodiscard]] Result<uint32_t> checked_world(uint32_t world_index) const;
     [[nodiscard]] Result<void> validate_ref(BodyRef ref) const;
     [[nodiscard]] Result<void> validate_imu_ref(ImuSensorRef ref) const;
+    [[nodiscard]] Result<void> validate_gnss_ref(GnssSensorRef ref) const;
 
     // How many force-element slots (rotors + drag bodies) world `w` currently
     // holds. The shared budget spawn() and add_drag_element() both check

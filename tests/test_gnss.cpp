@@ -28,11 +28,21 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
+#include <span>
 #include <string_view>
+#include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/kinds.hpp"
+#include "sensors/rings.hpp"
+#include "sim/simulation.hpp"
+#include "sim/world_set.hpp"
+#include "world/builder.hpp"
 
 namespace {
 
@@ -225,6 +235,406 @@ TEST(GnssNoise, TheDomainTagSeparatesCoLocatedSensors) {
     // And two receivers in the same world must differ from each other too.
     EXPECT_NE(spade::sensors::gnss_noise_stream(kSeed, 0).state,
               spade::sensors::gnss_noise_stream(kSeed, 1).state);
+}
+
+
+// ===========================================================================
+// THE LIFECYCLE. Everything above this line tests the HEADER; everything below
+// drives a real Simulation, because a header test cannot tell you whether the
+// structural queue ever writes the row it describes.
+//
+// ⭐ WHY THIS SECTION EXISTS AT ALL, stated so it is not mistaken for routine
+// coverage: before add_gnss_sensor() there was NO WAY TO MAKE A GNSS ROW LIVE,
+// so every row in every scenario had kind == none, both backends' synthesis
+// returned immediately, and the CPU/GPU parity band proved NOTHING about GNSS.
+// The green was a filter matching nothing. These cases are the first thing in
+// the tree that puts a live row in front of the code that reads it.
+// ===========================================================================
+
+using spade::Simulation;
+using spade::GnssSensorRef;
+using spade::GnssSensorSpawn;
+using spade::GnssPoll;
+using spade::ImuSensorSpawn;
+using spade::BodyRef;
+using spade::BodySpawn;
+using spade::Capacities;
+using spade::Environment;
+using spade::TurbulenceLevel;
+using spade::WorldBuilder;
+using spade::WorldInstanceDesc;
+using spade::WorldSetDesc;
+
+template <class T>
+[[nodiscard]] testing::AssertionResult IsOk(const char* expr, const spade::Result<T>& r) {
+    if (r) return testing::AssertionSuccess();
+    return testing::AssertionFailure() << expr << " failed: [" << static_cast<int>(r.error().code)
+                                       << "] " << r.error().context;
+}
+
+#define ASSERT_OK(expr) ASSERT_PRED_FORMAT1(IsOk, expr)
+#define EXPECT_OK(expr) EXPECT_PRED_FORMAT1(IsOk, expr)
+
+// -1 stands for "it succeeded": calling .error() on a Result holding a value is
+// UB, so a negative test that accidentally passes must not reach for it.
+template <class T>
+[[nodiscard]] int code_of(const spade::Result<T>& r) {
+    return r ? -1 : static_cast<int>(r.error().code);
+}
+
+[[nodiscard]] constexpr int code(spade::Code c) { return static_cast<int>(c); }
+
+[[nodiscard]] spade::Result<WorldSetDesc> void_world_set(uint32_t sensors) {
+    Environment env;
+    env.gravity = glm::vec3(0.0f, -9.80665f, 0.0f);
+    env.wind = glm::vec3(0.0f);
+    env.air_density = 1.225f;
+
+    Capacities caps;
+    caps.bodies = 4;
+    caps.force_elements = 1;
+    caps.sensors = sensors;
+    caps.contacts = 1;
+
+    const spade::Result<spade::WorldDesc> world =
+        WorldBuilder().name("void").environment(env).capacities(caps).build();
+    if (!world) return std::unexpected(world.error());
+
+    spade::physics::ContactParams contacts;
+    contacts.restitution_e = 0.0f;
+    contacts.friction_mu = 0.0f;
+    contacts.proxy_radius = 0.0f;
+
+    spade::physics::GridParams grid;
+    grid.cell_size = 1.0f;
+
+    WorldInstanceDesc instance;
+    instance.world = *world;
+    instance.seed = 0x5EEDu;
+    instance.turbulence = spade::dryden_params(TurbulenceLevel::none);
+    instance.contacts = contacts;
+    instance.grid = grid;
+    return WorldSetDesc{{instance}};
+}
+
+[[nodiscard]] BodySpawn unit_body() {
+    BodySpawn b;
+    b.mass = 1.0f;
+    b.inv_inertia_diag = glm::vec3(1.0f);
+    return b;
+}
+
+// A receiver with every field distinct and non-default, so a field-wise write
+// that drops one is visible rather than absorbed by a zero.
+[[nodiscard]] GnssSensorSpawn distinct_receiver() {
+    GnssSensorSpawn g;
+    g.mount_pos = glm::vec3(0.25f, -0.5f, 0.75f);
+    g.rate_divider = 200u;
+    g.sigma_h = 1.5f;
+    g.sigma_v = 2.5f;
+    g.sigma_vel = 0.125f;
+    g.bias_tau_s = 60.0f;
+    g.sigma_bias = 0.8f;
+    return g;
+}
+
+// ---------------------------------------------------------------------------
+// ⛔⛔ THE ONE TEST THAT ENCODES THE CLOCK. Nothing else in this suite can.
+//
+// The Gauss-Markov bias advances ONCE PER EMITTED FIX, so the coefficients are
+// derived from rate_divider * substep_h(), not substep_h(). A receiver built on
+// the substep clock at rate_divider = 200 decays 200x too slowly AND EVERY
+// OTHER INSTRUMENT STAYS GREEN: both backends agree bit for bit, every digest
+// is self-consistent, and the corpus pins the wrong number forever.
+//
+//   A CONSTANT COMPUTED FROM THE WRONG CLOCK IS STILL DETERMINISTIC, AND
+//   DETERMINISM IS WHAT THIS SUITE CHECKS.
+//
+// ⭐ THE NEGATIVE HALF IS THE WHOLE TEST. Asserting the right value alone would
+// pass for a implementation that happened to agree at rate_divider == 1; the
+// EXPECT_NE against the substep-clock value is what makes this a discriminator
+// rather than a restatement, and it is why rate_divider is 200 and not 1.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, TheBiasCoefficientsAreOnTheFixClockNotTheSubstepClock) {
+    const spade::Result<WorldSetDesc> set = void_world_set(2);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    const GnssSensorSpawn desc = distinct_receiver();
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, desc);
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+
+    const spade::Result<const spade::sensors::GnssSensorRow*> row = sim->gnss_sensor(*ref);
+    ASSERT_OK(row);
+
+    const float h = sim->substep_h();
+    const float fix_dt = static_cast<float>(desc.rate_divider) * h;
+
+    EXPECT_FLOAT_EQ((*row)->bias_retention,
+                    spade::sensors::gnss_bias_retention(fix_dt, desc.bias_tau_s));
+    EXPECT_FLOAT_EQ((*row)->bias_drive,
+                    spade::sensors::gnss_bias_drive(fix_dt, desc.bias_tau_s, desc.sigma_bias));
+
+    // THE DISCRIMINATOR. If either coefficient were built on the substep clock
+    // the two assertions above would still be the only ones anyone wrote, and
+    // they would be written against whatever the code produced.
+    EXPECT_NE((*row)->bias_retention, spade::sensors::gnss_bias_retention(h, desc.bias_tau_s))
+        << "bias_retention was computed on the SUBSTEP clock; it must be the FIX clock "
+           "(rate_divider * substep_h()) -- see add_gnss_sensor's contract";
+    EXPECT_NE((*row)->bias_drive,
+              spade::sensors::gnss_bias_drive(h, desc.bias_tau_s, desc.sigma_bias))
+        << "bias_drive was computed on the SUBSTEP clock; it must be the FIX clock";
+
+    // And the premise the discriminator rests on: the two clocks must actually
+    // differ here, or both EXPECT_NEs are vacuous.
+    ASSERT_GT(desc.rate_divider, 1u) << "a rate_divider of 1 makes the two clocks equal and "
+                                        "this test unable to tell them apart";
+}
+
+// ---------------------------------------------------------------------------
+// The two-phase shape, in both directions: inert before the boundary, live
+// after it, and polling in between is LEGAL rather than an error.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, ASpawnedReceiverIsInertUntilTheBoundary) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, distinct_receiver());
+    ASSERT_OK(ref);
+
+    {
+        const spade::Result<const spade::sensors::GnssSensorRow*> row = sim->gnss_sensor(*ref);
+        ASSERT_OK(row);
+        EXPECT_EQ((*row)->kind, kind::none) << "a reserved row must be inert to the synthesis pass";
+    }
+    {
+        // Polling a receiver you just added, before the next step, is legal and
+        // reports nothing -- the same contract poll_imu states, and the reason
+        // poll_permits() lets `none` through.
+        std::vector<spade::sensors::GnssFix> buffer(spade::sensors::kRingDepth);
+        const spade::Result<GnssPoll> poll = sim->poll_gnss(*ref, 0, buffer);
+        ASSERT_OK(poll);
+        EXPECT_TRUE(poll->samples.empty());
+        EXPECT_EQ(poll->dropped, 0u);
+    }
+
+    ASSERT_OK(sim->flush_structural());
+
+    const spade::Result<const spade::sensors::GnssSensorRow*> row = sim->gnss_sensor(*ref);
+    ASSERT_OK(row);
+    EXPECT_EQ((*row)->kind, kind::gnss);
+}
+
+// ---------------------------------------------------------------------------
+// Every spawn field reaches the row. Written with all-distinct inputs so a
+// dropped field shows up rather than being absorbed by a matching zero.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, TheRowIsWrittenFieldWiseFromTheSpawn) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    const GnssSensorSpawn desc = distinct_receiver();
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, desc);
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+
+    const spade::Result<const spade::sensors::GnssSensorRow*> row = sim->gnss_sensor(*ref);
+    ASSERT_OK(row);
+
+    EXPECT_EQ((*row)->body_slot, 0u);
+    EXPECT_EQ((*row)->rate_divider, desc.rate_divider);
+    EXPECT_EQ((*row)->phase, 0u);
+    EXPECT_EQ((*row)->mount_pos, desc.mount_pos);
+    EXPECT_FLOAT_EQ((*row)->sigma_h, desc.sigma_h);
+    EXPECT_FLOAT_EQ((*row)->sigma_v, desc.sigma_v);
+    EXPECT_FLOAT_EQ((*row)->sigma_vel, desc.sigma_vel);
+    EXPECT_FLOAT_EQ((*row)->bias_tau_s, desc.bias_tau_s);
+    EXPECT_FLOAT_EQ((*row)->sigma_bias, desc.sigma_bias);
+    EXPECT_EQ((*row)->bias, glm::vec3(0.0f));
+    EXPECT_EQ((*row)->last_index, 0u);
+    // The growth slot must stay zero or a later versioned field inherits junk.
+    EXPECT_EQ((*row)->_reserved0, 0u);
+    // The stream is the world's seed and the WORLD-LOCAL slot, not the global.
+    EXPECT_EQ((*row)->noise.state, spade::sensors::gnss_noise_stream(0x5EEDu, 0).state);
+}
+
+// ---------------------------------------------------------------------------
+// ⭐ THE NON-VACUOUS POPULATION. A floor proves the loop ran; this proves a
+// member of the population exists at all -- a live row that actually emits.
+// Without it every other GNSS assertion in the tree is about an empty set.
+// ---------------------------------------------------------------------------
+TEST(GnssEmission, ALiveReceiverEmitsOnItsOwnClockAndTheIndicesAreMonotonic) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    GnssSensorSpawn desc = distinct_receiver();
+    desc.rate_divider = 10u;  // small enough that a short run emits several
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, desc);
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+
+    constexpr uint64_t kSteps = 100;
+    for (uint64_t t = 0; t < kSteps; ++t) ASSERT_OK(sim->step(1));
+
+    std::vector<spade::sensors::GnssFix> buffer(spade::sensors::kRingDepth);
+    const spade::Result<GnssPoll> poll = sim->poll_gnss(*ref, 0, buffer);
+    ASSERT_OK(poll);
+
+    // THE FLOOR IS BELOW THE EXPECTED COUNT, NEVER EQUAL TO IT. A floor set
+    // equal to the count is not a floor, it is a change-detector: it goes red
+    // on every legitimate change to the run length and gets raised reflexively
+    // until someone deletes it for noise. A floor BELOW asserts the MECHANISM
+    // works; the exact count is asserted separately, below, where a change to
+    // it is a real statement about the clock.
+    ASSERT_GE(poll->samples.size(), 2u)
+        << "the receiver emitted fewer than two fixes in " << kSteps
+        << " substeps -- the synthesis pass is not reaching this row at all";
+
+    // And the exact count, which IS the fix clock observed from the outside:
+    // one fix every rate_divider substeps.
+    EXPECT_EQ(poll->samples.size(), kSteps / desc.rate_divider);
+
+    spade::sensors::SampleIndex previous = 0;
+    for (const spade::sensors::GnssFix& fix : poll->samples) {
+        EXPECT_GT(fix.index, previous) << "fix indices must increase strictly";
+        previous = fix.index;
+        EXPECT_FLOAT_EQ(fix.sigma_h, desc.sigma_h);
+        EXPECT_FLOAT_EQ(fix.sigma_v, desc.sigma_v);
+    }
+    EXPECT_EQ(poll->dropped, 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Despawn cascades to the receiver AND clears its ring. The ring is a second,
+// direct-indexed array that free_slot() does not touch, so this is the half
+// that would rot silently.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, DespawningTheBodyFreesTheReceiverAndClearsItsRing) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    GnssSensorSpawn desc = distinct_receiver();
+    desc.rate_divider = 5u;
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, desc);
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+    for (uint64_t t = 0; t < 20; ++t) ASSERT_OK(sim->step(1));
+
+    // PREMISE: there is something in the ring to clear. Without this the
+    // post-despawn assertion passes over an already-empty ring.
+    {
+        std::vector<spade::sensors::GnssFix> buffer(spade::sensors::kRingDepth);
+        const spade::Result<GnssPoll> poll = sim->poll_gnss(*ref, 0, buffer);
+        ASSERT_OK(poll);
+        ASSERT_FALSE(poll->samples.empty()) << "nothing was emitted, so clearing proves nothing";
+    }
+
+    const spade::Result<uint32_t> before = sim->live_gnss_sensor_count(0);
+    ASSERT_OK(before);
+    EXPECT_EQ(*before, 1u);
+
+    ASSERT_OK(sim->despawn(*body));
+    ASSERT_OK(sim->flush_structural());
+
+    const spade::Result<uint32_t> after = sim->live_gnss_sensor_count(0);
+    ASSERT_OK(after);
+    EXPECT_EQ(*after, 0u);
+
+    // The ref is dead: the slot is no longer allocated.
+    std::vector<spade::sensors::GnssFix> buffer(spade::sensors::kRingDepth);
+    EXPECT_EQ(code_of(sim->poll_gnss(*ref, 0, buffer)), code(spade::Code::not_found));
+}
+
+// ---------------------------------------------------------------------------
+// Validation, including the NaN cases the `!(x >= 0)` spelling exists for. A
+// NaN compares false against both `< 0` and `>= 0`, so the naive spelling
+// ACCEPTS it and the row carries a NaN into every fix it ever produces.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, ValidationRejectsEachBadFieldIncludingNaN) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const int invalid = code(spade::Code::invalid_argument);
+
+    {
+        GnssSensorSpawn g = distinct_receiver();
+        g.rate_divider = 0u;
+        EXPECT_EQ(code_of(sim->add_gnss_sensor(*body, g)), invalid) << "rate_divider 0";
+    }
+    {
+        GnssSensorSpawn g = distinct_receiver();
+        g.mount_pos = glm::vec3(0.0f, nan, 0.0f);
+        EXPECT_EQ(code_of(sim->add_gnss_sensor(*body, g)), invalid) << "non-finite mount_pos";
+    }
+    for (int field = 0; field < 5; ++field) {
+        for (float bad : {-1.0f, nan}) {
+            GnssSensorSpawn g = distinct_receiver();
+            switch (field) {
+                case 0: g.sigma_h = bad; break;
+                case 1: g.sigma_v = bad; break;
+                case 2: g.sigma_vel = bad; break;
+                case 3: g.sigma_bias = bad; break;
+                default: g.bias_tau_s = bad; break;
+            }
+            EXPECT_EQ(code_of(sim->add_gnss_sensor(*body, g)), invalid)
+                << "field " << field << " = " << bad << " was accepted";
+        }
+    }
+
+    // And the whole point of the negative battery: a VALID receiver still goes
+    // through, so the rejections above are the validator working rather than
+    // add_gnss_sensor refusing everything.
+    EXPECT_OK(sim->add_gnss_sensor(*body, distinct_receiver()));
+}
+
+// ---------------------------------------------------------------------------
+// `capacities.sensors` bounds EACH sensor arena, not their sum. The two arenas
+// are independent, which is the whole reason gnss_sensors is its own registered
+// array rather than a kind-tagged row in the IMU one -- and a reader who
+// assumed a shared pool would find this test rather than a surprise.
+// ---------------------------------------------------------------------------
+TEST(GnssLifecycle, TheDeclaredSensorCapacityBoundsEachArenaNotTheirSum) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);  // ONE sensor declared
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    EXPECT_OK(sim->add_imu_sensor(*body, ImuSensorSpawn{}));
+    EXPECT_OK(sim->add_gnss_sensor(*body, distinct_receiver()));
+
+    // The second of EITHER kind is what the declared capacity refuses.
+    EXPECT_EQ(code_of(sim->add_gnss_sensor(*body, distinct_receiver())),
+              code(spade::Code::capacity_exceeded));
+    EXPECT_EQ(code_of(sim->add_imu_sensor(*body, ImuSensorSpawn{})),
+              code(spade::Code::capacity_exceeded));
 }
 
 }  // namespace
