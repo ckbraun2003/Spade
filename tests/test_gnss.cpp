@@ -177,13 +177,139 @@ TEST(SensorKind, PollPermitsNoneButRejectsAnotherKnownKind) {
 // ---------------------------------------------------------------------------
 
 TEST(GnssBiasRetention, NonPositiveTauOrDtGivesZero) {
-    // tau <= 0 means "no correlated bias": the factor is 0 and the bias is
-    // redrawn white each fix. Total rather than rejecting, so a pass never has
-    // to branch on a validation the spawn path already did.
+    // ⛔ ERRATUM. This comment used to end "...and the bias is redrawn white
+    // each fix", which is FALSE and was false from the moment gnss_bias_drive()
+    // was added. It describes a receiver whose bias survives as white noise.
+    // There is no such receiver: gnss_bias_drive() carries the SAME guard (see
+    // its header, "SAME DOMAIN CONTRACT ... deliberately"), so tau <= 0 zeroes
+    // BOTH coefficients and sensors/gnss.cpp:137 collapses to
+    // `bias = 0 * 0 + 0 * walk`. THE BIAS IS IDENTICALLY ZERO FOREVER, which
+    // gnss.cpp's own comment states correctly seven lines above that line.
+    //
+    // ⭐ IT WAS TRUE WHEN IT WAS WRITTEN. GnssSensorRow shipped with a
+    // correlation time and no magnitude (gnss.hpp says so), so back then the
+    // only thing left at tau <= 0 really was the white position/velocity noise.
+    // Adding the drive coefficient falsified this sentence and touched neither
+    // the test's name nor its four assertions -- all still correct -- so
+    // nothing in the suite could notice. A COMMENT THAT WAS TRUE WHEN WRITTEN,
+    // IN A TEST WHOSE ASSERTIONS NEVER CHANGED, HAS NO FAILURE MODE.
+    //
+    // ⛔⛔ AND IT WAS LOAD-BEARING. A GPU-parity discriminator for the GNSS
+    // bias divergence was designed directly on this sentence -- set tau <= 0 to
+    // "break the recursion and keep the draws", then compare bias at a zero
+    // band. That design DELETES THE QUANTITY instead of breaking the mechanism:
+    // both backends hold an identically-zero bias, the comparison is bit-exact,
+    // and the run reports success having proved nothing. A DISCRIMINATOR BUILT
+    // ON A FALSE MECHANISM FAILS GREEN, which is the one way a falsifier can be
+    // worse than absent. The working design is the underflow route, pinned
+    // below by CollapsesToSigmaBiasWhenRetentionUnderflows.
+    //
+    // Total rather than rejecting, so a pass never has to branch on a
+    // validation the spawn path already did.
     EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_retention(0.1f, 0.0f), 0.0f);
     EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_retention(0.1f, -1.0f), 0.0f);
     EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_retention(0.0f, 60.0f), 0.0f);
     EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_retention(-0.1f, 60.0f), 0.0f);
+}
+
+// ---------------------------------------------------------------------------
+// THE OTHER HALF OF THE CONTRACT, WHICH HAD NO TEST OF ITS OWN.
+//
+// gnss_bias_drive() was called from this file twice before this block, both
+// times as an ORACLE: `EXPECT_FLOAT_EQ(row->bias_drive, gnss_bias_drive(...))`
+// compares a stored field against the function that computed it, which pins the
+// PLUMBING (the fix clock reached the right field) and cannot pin the FUNCTION.
+// Nothing asserted any property of the value. So the half of the Gauss-Markov
+// pair that silently deleted a discriminator was the half with no behaviour
+// test -- and the pair's agreement, the thing that actually bites, lived only
+// in a header sentence.
+// ---------------------------------------------------------------------------
+
+TEST(GnssBiasDrive, NonPositiveTauOrDtGivesZero) {
+    // sigma_bias is deliberately LARGE and positive in every case: a zero sigma
+    // would return 0 through the multiply rather than through the guard, and
+    // the test could not tell those apart.
+    constexpr float kSigma = 0.8f;
+    EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_drive(0.1f, 0.0f, kSigma), 0.0f);
+    EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_drive(0.1f, -1.0f, kSigma), 0.0f);
+    EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_drive(0.0f, 60.0f, kSigma), 0.0f);
+    EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_drive(-0.1f, 60.0f, kSigma), 0.0f);
+
+    // ANTI-VACUITY: a drive that returned 0 for every input would pass all four.
+    EXPECT_GT(spade::sensors::gnss_bias_drive(0.1f, 60.0f, kSigma), 0.0f)
+        << "a live (dt, tau) must produce a live drive, or the four zeros above "
+        << "are satisfied by a function that always returns zero";
+}
+
+TEST(GnssBiasCoefficients, BothHalvesAgreeOnTheDegenerateDomain) {
+    // gnss.hpp states this as prose -- "both coefficients must agree about that
+    // or a receiver could be driven without decaying" -- and until this test
+    // nothing enforced it. The ASYMMETRIC failure is the dangerous one: a drive
+    // that survived a domain the retention rejected would give a bias driven by
+    // white noise and never decaying, i.e. a random walk with no stationary
+    // distribution. That is not the documented model, and it would look like
+    // plausible receiver noise in every plot anyone drew of it.
+    constexpr float kSigma = 0.8f;
+    struct Case {
+        float dt;
+        float tau;
+        const char* what;
+    };
+    constexpr Case kDegenerate[] = {
+        {0.1f, 0.0f, "tau zero"},   {0.1f, -1.0f, "tau negative"},
+        {0.0f, 60.0f, "dt zero"},   {-0.1f, 60.0f, "dt negative"},
+        {0.0f, 0.0f, "both zero"},
+    };
+
+    for (const Case& c : kDegenerate) {
+        EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_retention(c.dt, c.tau), 0.0f) << c.what;
+        EXPECT_FLOAT_EQ(spade::sensors::gnss_bias_drive(c.dt, c.tau, kSigma), 0.0f)
+            << c.what << ": the drive survived a domain the retention rejected -- "
+            << "the bias would be driven without ever decaying";
+    }
+}
+
+TEST(GnssBiasDrive, CollapsesToSigmaBiasWhenRetentionUnderflows) {
+    // ⭐ THIS IS THE GPU-PARITY DISCRIMINATOR'S PREMISE, PINNED HERE SO IT IS A
+    // TESTED PROPERTY RATHER THAN AN ARGUMENT IN A DESIGN NOTE.
+    //
+    // A tau far BELOW the fix interval -- rather than at or below zero -- drives
+    // the exponent past core/fp32_math.cpp's explicit `if (x <= -104.0f) return
+    // 0.0f;`, so the retention underflows to exactly zero WITHOUT tripping the
+    // domain guard that would also kill the drive. Then variance == 1 - 0 == 1,
+    // sqrt(1) == 1 exactly, and the drive is sigma_bias exactly.
+    //
+    // WHY THAT MATTERS: the bias advance collapses to `bias = sigma_bias * walk`
+    // -- a single multiply by a byte-identical constant, which cannot introduce
+    // a cross-backend difference. So under this configuration `bias` is
+    // bit-exact IF AND ONLY IF every gaussian draw was bit-exact, which is the
+    // biconditional a parity discriminator needs. Set tau <= 0 instead and both
+    // coefficients vanish, the bias is identically zero on both sides, and the
+    // comparison proves nothing while reporting success.
+    //
+    // EXACT EQUALITY, NOT EXPECT_FLOAT_EQ: the 4-ULP latitude would hide exactly
+    // the property being claimed. `sigma_bias * 1.0f` is sigma_bias, or the
+    // claim is false.
+    constexpr float kSigma = 0.8f;
+    constexpr float kFixDt = 1.0e-3f;
+    constexpr float kTinyTau = 1.0e-6f;
+
+    EXPECT_EQ(spade::sensors::gnss_bias_retention(kFixDt, kTinyTau), 0.0f)
+        << "the retention must underflow to exactly zero, or the collapse below "
+        << "is not the one being claimed";
+    EXPECT_EQ(spade::sensors::gnss_bias_drive(kFixDt, kTinyTau, kSigma), kSigma)
+        << "the drive must be sigma_bias EXACTLY; if fp32_math's -104 cutoff has "
+        << "moved, the parity discriminator built on this collapse is no longer "
+        << "valid and must be re-derived, NOT re-banded";
+
+    // ANTI-VACUITY: the collapse must be a property of this CONFIGURATION and
+    // not of the function. At a realistic tau the drive is strictly below
+    // sigma_bias, because the variance is strictly below 1.
+    const float ordinary = spade::sensors::gnss_bias_drive(kFixDt, 60.0f, kSigma);
+    EXPECT_GT(ordinary, 0.0f);
+    EXPECT_LT(ordinary, kSigma)
+        << "at a realistic tau the drive must be strictly under sigma_bias, or "
+        << "the collapse above is not telling the two regimes apart";
 }
 
 TEST(GnssBiasRetention, AtOneTimeConstantItIsExpMinusOne) {

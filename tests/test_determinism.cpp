@@ -641,13 +641,63 @@ TEST(Simulation, SubstepDurationIsTheCorrectlyRoundedNanosecondQuotient) {
 // 3. Determinism: the same scenario twice
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// ⛔ THE ANTI-VACUITY ARMS BELOW WERE ADDED 2026-09-23 AND THEY ARE NOT
+// DECORATION -- WITHOUT THEM THESE TWO TESTS ARE THE PUREST FAIL-GREEN SHAPE
+// THIS SUITE CONTAINS.
+//
+// Both assert that two runs AGREE. An agreement test is satisfied by any
+// instrument that returns a CONSTANT, and both instruments here have a named,
+// reachable way to do exactly that: state_digest() folds to zero when the
+// registry walk finds nothing, and memcmp over a zero-length snapshot returns 0
+// for any two empty buffers. In both cases the run reports success having
+// compared nothing.
+//
+// ⭐⭐ AND THE FLOOR WAS ALREADY HERE, ONE LEVEL UP. corpus() carries a careful
+// guard for precisely this -- "WITHOUT THIS, A BROKEN SPADE_GOLDEN_DIR WOULD
+// MAKE EVERY `for (scenario : corpus())` TEST IN THIS FILE PASS VACUOUSLY -- an
+// empty range asserts nothing, cheerfully." That reasoning was applied to the
+// COLLECTION and never to the QUANTITY, so the loop was proven non-empty while
+// the thing compared inside it could still be nothing at all. A FLOOR UNDER THE
+// RANGE IS NOT A FLOOR UNDER THE VALUE.
+//
+// ⭐ THE SAME GUARD ALREADY EXISTS IN THE DERIVED TEST AND NOT IN THIS, THE
+// ORIGINAL. test_gpu_invariance.cpp's A7 sweep spells out both arms --
+// "state_digest() folded to zero -- the registry walk found nothing" and "the
+// digest did not move across the run -- a frozen device would satisfy
+// bit-identity below vacuously" -- and its header says it took its non-vacuity
+// posture FROM the two-run tests it generalizes. The posture travelled in the
+// comment and the arms did not.
+//
+// That is also why `at_rest` is safe to assert against rather than a guess: the
+// GPU sweep already asserts "the digest moved" over this same corpus, on the
+// same scenarios, and passes. This adds the CPU side of a property the other
+// backend has been proving all along.
+// ---------------------------------------------------------------------------
+
 TEST(Determinism, SameScenarioTwiceProducesTheSameDigest) {
     for (const LoadedScenario& loaded : corpus()) {
         const Scenario& scenario = loaded.scenario;
+
+        // Built and NOT stepped: the digest of the scenario at rest, which is
+        // what "the run moved" is measured against.
+        const spade::Result<Simulation> fresh = spade::testing::start_scenario(scenario);
+        ASSERT_OK(fresh) << scenario.name;
+        const uint64_t at_rest = spade::testing::state_digest(*fresh);
+
         const spade::Result<uint64_t> first = spade::testing::run_scenario(scenario);
         ASSERT_OK(first) << scenario.name;
         const spade::Result<uint64_t> second = spade::testing::run_scenario(scenario);
         ASSERT_OK(second) << scenario.name;
+
+        EXPECT_NE(*first, 0u) << scenario.name
+                              << ": state_digest() folded to zero -- the registry walk found "
+                                 "nothing, and two runs of nothing agree";
+        EXPECT_NE(*first, at_rest)
+            << scenario.name
+            << ": the digest is unchanged from the un-stepped simulation -- a scenario that "
+               "did not run satisfies the equality below vacuously";
+
         EXPECT_EQ(*first, *second) << scenario.name;
     }
 }
@@ -665,6 +715,13 @@ TEST(Determinism, SameScenarioTwiceProducesByteIdenticalSnapshots) {
             bytes[run].assign(blob->bytes().begin(), blob->bytes().end());
         }
         ASSERT_EQ(bytes[0].size(), bytes[1].size()) << scenario.name;
+
+        // `memcmp(a, b, 0)` IS 0. Two empty snapshots compare equal, and the
+        // EXPECT below would report a clean pass over zero bytes.
+        ASSERT_GT(bytes[0].size(), std::size_t{0})
+            << scenario.name << ": the snapshot is empty -- memcmp over zero bytes is a pass "
+            << "that compared nothing";
+
         EXPECT_EQ(std::memcmp(bytes[0].data(), bytes[1].data(), bytes[0].size()), 0) << scenario.name;
     }
 }
@@ -804,6 +861,64 @@ TEST(Determinism, TwoWorldsAtOverlappingCoordinatesDoNotInteract) {
     const spade::Result<LoadedScenario> loaded = load_scenario("two_world_isolation");
     ASSERT_OK(loaded);
     const Scenario& scenario = loaded->scenario;
+
+    // -----------------------------------------------------------------------
+    // ⛔ THE PREMISE, ASSERTED (2026-09-23). EVERYTHING THIS TEST MEANS DEPENDS
+    // ON THE WORLDS ACTUALLY OVERLAPPING, AND THAT FACT LIVED ONLY IN A YAML
+    // FILE AND IN THE COMMENT ABOVE.
+    //
+    // Two worlds whose bodies are nowhere near each other trivially do not
+    // interact. Move a spawn in two_world_isolation.scenario.yaml -- retune the
+    // cluster, separate the coordinates, drop world 1's bodies somewhere else --
+    // and the equality below still holds, still passes, and proves nothing about
+    // the broad phase. The scenario would go on being named "isolation" while
+    // testing that two distant things do not touch.
+    //
+    // ⭐ THE ADJACENT SECTION ALREADY KNEW THIS. Section 5b's two tests assert
+    // the batch-branch flag on each side "so neither can quietly degenerate back
+    // into batched-vs-batched", and its mutual-contact test says outright that a
+    // single-body world "finds no pair at all, which would make the comparison
+    // vacuous". The guard was written for the CODE PATH one test down and never
+    // for the SCENARIO GEOMETRY here, which is the same boundary this branch's
+    // other two commits ran into.
+    //
+    // THE THRESHOLD IS READ FROM THE SCENARIO, NOT TRANSCRIBED: a body pair
+    // closer than the contact proxy DIAMETER is a pair the dynamic sweep would
+    // resolve if the broad phase leaked across worlds. That is exactly the
+    // leak this test exists to detect, so it is the right distance to demand.
+    // (As committed, world 1's two bodies sit at the SAME coordinates as two of
+    // world 0's, so the measured distance is 0 and the margin is the whole
+    // diameter.)
+    // -----------------------------------------------------------------------
+    const ScenarioData& data = *loaded->data;
+    ASSERT_GE(data.worlds.worlds.size(), std::size_t{2}) << "the scenario must have two worlds";
+    const float contact_reach = 2.0f * data.worlds.worlds[0].contacts.proxy_radius;
+    ASSERT_GT(contact_reach, 0.0f) << "a zero proxy radius makes the overlap check below meaningless";
+
+    std::size_t world0_bodies = 0;
+    std::size_t world1_bodies = 0;
+    for (const ScenarioSpawn& spawn : data.spawns) {
+        if (spawn.kind != ScenarioSpawn::Kind::body) continue;
+        if (spawn.world == 0) ++world0_bodies;
+        if (spawn.world == 1) ++world1_bodies;
+    }
+    ASSERT_GT(world0_bodies, std::size_t{0}) << "world 0 has no bodies to overlap WITH";
+    ASSERT_GT(world1_bodies, std::size_t{0}) << "world 1 has no bodies to overlap";
+
+    for (const ScenarioSpawn& one : data.spawns) {
+        if (one.kind != ScenarioSpawn::Kind::body || one.world != 1) continue;
+        float nearest = std::numeric_limits<float>::infinity();
+        for (const ScenarioSpawn& zero : data.spawns) {
+            if (zero.kind != ScenarioSpawn::Kind::body || zero.world != 0) continue;
+            nearest = std::min(nearest, glm::length(one.body.pos - zero.body.pos));
+        }
+        EXPECT_LT(nearest, contact_reach)
+            << "a world-1 body at (" << one.body.pos.x << ", " << one.body.pos.y << ", "
+            << one.body.pos.z << ") is " << nearest << " from the nearest world-0 body, beyond the "
+            << contact_reach << " the contact proxies reach. THE WORLDS NO LONGER OVERLAP, so the "
+               "equality below would hold for two worlds that could never have interacted and this "
+               "test has stopped detecting a broad-phase leak";
+    }
 
     spade::Result<Simulation> both = spade::testing::start_scenario(scenario);
     ASSERT_OK(both);
