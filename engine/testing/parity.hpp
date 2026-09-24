@@ -1474,21 +1474,27 @@ inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
 // > guessed causes, a coordinator's review, and my own sweep for exactly this
 // > defect. Naming a source is what makes a guess look checked.
 //
-// ✅ WHAT IS STILL SUPPORTED, stated at the strength the evidence carries:
-// fix.position IS `bodies.pos + lever_world + bias + noise` -- that is read off
-// the kernel and is not in doubt -- so the reported position cannot be tighter
-// than its body inputs. On ballistic's evidence the divergence most likely
-// enters through `orient` (which lever_world is rotated through) rather than
-// through `bodies.pos`. ⚠ THAT IS A HYPOTHESIS, NOT A MEASUREMENT, and it is
-// labelled one because the last two sentences in this position were not.
+// ✅ SETTLED BY MEASUREMENT 2026-09-24, and the hypothesis this block carried
+// for a few hours was RIGHT while the cited guess before it was WRONG.
+// GnssReceiverBodyStateIsMeasuredNotAssumed runs this same scenario with
+// body_bands() at a zero band, and the answer is:
+//     pos BIT-EXACT . vel BIT-EXACT . omega_body BIT-EXACT .
+//     specific_force / force_acc / torque_acc BIT-EXACT .
+//     orient  abs 5.96046448e-08  rel 6.52729909e-07  <- THE ONLY DIVERGENCE
 //
-// ✅ THE CHEAP SETTLEMENT, FOR WHOEVER HOLDS THE NEXT BUILD TOKEN: append
-// body_bands() rows to gnss_receiver at a ZERO band, read the failure report,
-// and pin from it -- the pass-1 method this whole leg was built with. It rides
-// the run that is already happening, and it converts this paragraph from an
-// inference into a number. ⛔ It must be a SEPARATE test or an additive row
-// set: the three bands below are pinned against this scenario as it stands and
-// do not move.
+// ⭐ SO THE CAUSE IS ONE QUANTITY, NOT A CLASS OF THEM: fix.position is
+// `bodies.pos + lever_world + bias + noise`, `bodies.pos` is BIT-EXACT here,
+// and the entire band is the orientation quaternion reaching the report through
+// lever_world. The original comment named pos first and treated it as the
+// primary contributor; it contributes nothing.
+//
+// ⚠ AND THE CONCLUSION IS UNCHANGED WHILE EVERY STATED REASON FOR IT HAS NOW
+// BEEN WRONG TWICE. The band is right, `position` still cannot be bit-exact,
+// and no edit inside sensor_gnss.slang can change that -- but the first reason
+// was FMA contraction, the second was "body_bands() bands pos and orient", and
+// only the third is measured. A CONCLUSION THAT SURVIVES EVERY REFUTATION OF
+// ITS OWN REASONING IS NOT THEREBY WELL-SUPPORTED; it was just easy to reach
+// from several directions.
 //
 // ⛔ NOT divide or sqrt, which was the ORIGINAL guess: sensor_gnss.slang
 // contains neither, and its own header says so outright ("NO exp(). NO
@@ -1511,16 +1517,64 @@ inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
 // gnss_receiver never compares a body at all. See the position block above for
 // the measurement.
 //
-// ✅ WHAT SURVIVES: fix.velocity IS `bodies.vel + cross(omega_world,
-// lever_world) + noise`, read off the kernel. So this row cannot be tighter
-// than its body inputs either. And the shape of the number is still
-// informative -- EXACTLY 1 ULP is what a slightly-divergent input reproduced
-// through an exact arithmetic path looks like, and is not evidence that the
-// cross product itself diverges. ⚠ But which input carries it is UNMEASURED in
-// this scenario, and the same zero-band body_bands() append settles this row
-// and position's together.
+// ✅ SETTLED BY THE SAME MEASUREMENT, and this row's original claim was wrong
+// on TWO of the three inputs it named. fix.velocity is `bodies.vel +
+// cross(omega_world, lever_world) + noise`; the block said body_bands() "bands
+// bodies.vel, bodies.omega_body AND bodies.orient -- all three of this row's
+// physical inputs". MEASURED: bodies.vel is BIT-EXACT and bodies.omega_body is
+// BIT-EXACT. ONLY `orient` diverges, and it reaches this row exactly as it
+// reaches position's -- through lever_world.
+//
+// The shape observation survives and is now better supported: EXACTLY 1 ULP is
+// what a single slightly-divergent input reproduced through an exact arithmetic
+// path looks like. With two of three inputs proven bit-exact, that is no longer
+// an inference about "banded inputs" in general -- it is one input, named.
 inline constexpr ToleranceBand kGnssVelocity{1.0e-6f, 5.0e-7f};
 }  // namespace gnss_receiver
+
+// ---------------------------------------------------------------------------
+// gnss_receiver, THE BODY ROWS -- the inputs kGnssPosition and kGnssVelocity
+// actually read, measured rather than inferred from other scenarios' pins.
+//
+// ⛔ PASS 1 IS PRE-REGISTERED TO FAIL, exactly as the gnss rows above were
+// pinned: every band here is ZERO, so the harness prints the delta for anything
+// genuinely band-legal and THE FAILURE REPORT IS THE MEASUREMENT. A quantity
+// that comes back exact under a zero band is a bit-exact claim on its merits
+// and keeps the zero -- and in this scenario that is a live possibility rather
+// than a formality, because `ballistic` (gravity, one body, no contacts, the
+// closest analogue) pins pos BIT-EXACT and orient BANDED.
+//
+// Guessing these would reproduce the exact defect this block exists to correct.
+// ---------------------------------------------------------------------------
+namespace gnss_receiver_body {
+// MEASURED 2026-09-24, pass 1, this box, msvc-ninja-release, Vulkan on Intel
+// Iris Plus. 2 body slots compared, 1 live. THE RESULT REFUTED THE CAUSE THAT
+// HAD BEEN WRITTEN FOR kGnssPosition/kGnssVelocity ON TWO OF THREE COUNTS:
+//     pos             abs 0               rel 0              <- BIT-EXACT
+//     vel             abs 0               rel 0              <- BIT-EXACT
+//     orient          abs 5.96046448e-08  rel 6.52729909e-07 <- THE ONLY ONE
+//     omega_body      abs 0               rel 0              <- BIT-EXACT
+//     specific_force  abs 0               rel 0              <- BIT-EXACT
+//     force_acc       abs 0               rel 0              <- BIT-EXACT
+//     torque_acc      abs 0               rel 0              <- BIT-EXACT
+// worst: element 0 component 3 (the quaternion's w), cpu 9.963023663e-01 vs
+// gpu 9.963023067e-01.
+//
+// ⭐ SO THE ENTIRE GNSS POSITION/VELOCITY DIVERGENCE ENTERS THROUGH EXACTLY ONE
+// QUANTITY: THE BODY'S ORIENTATION QUATERNION, via lever_world. Not pos, not
+// vel, not omega_body -- all three were named as banded inputs and all three
+// are bit-exact here. The six zeros are kept AT ZERO rather than given nominal
+// bands, the posture `bounce`'s header sets out: a nominal band would assert
+// less than the measurement supports and would silently absorb a real change.
+inline constexpr ToleranceBand kPos{0.0f, 0.0f};
+inline constexpr ToleranceBand kVel{0.0f, 0.0f};
+// ~4x the measured maximum, rounded up to a round decimal, per this file's
+// standing margin rule. Far tighter than ballistic's {4.0e-6, 2.0e-5} because
+// this scenario has no contacts and no force elements.
+inline constexpr ToleranceBand kOrient{4.0e-7f, 4.0e-6f};
+inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
+inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+}  // namespace gnss_receiver_body
 
 }  // namespace bands
 

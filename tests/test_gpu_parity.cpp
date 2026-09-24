@@ -361,7 +361,8 @@ protected:
 // then the discriminator is answering a question about a different run than the
 // one whose bands are pinned. ONE DEFINITION, ONE ARGUMENT, SO "THE SAME
 // SCENARIO WITH A DIFFERENT TAU" IS CHECKABLE BY READING THE CALL.
-[[nodiscard]] Scenario gnss_receiver_scenario(float bias_tau_s, const char* name) {
+[[nodiscard]] Scenario gnss_receiver_scenario(float bias_tau_s, const char* name,
+                                              glm::vec3 mount_pos = glm::vec3(0.25f, -0.5f, 0.75f)) {
     Scenario s;
     s.name = name;
     s.dt_ns = 1'000'000;
@@ -401,7 +402,7 @@ protected:
         return WorldSetDesc{{instance}};
     };
 
-    s.setup = [bias_tau_s](Simulation& sim) -> Result<void> {
+    s.setup = [bias_tau_s, mount_pos](Simulation& sim) -> Result<void> {
         spade::BodySpawn body;
         body.pos = glm::vec3(0.0f, 50.0f, 0.0f);
         body.vel = glm::vec3(3.0f, 0.0f, -1.5f);
@@ -412,7 +413,7 @@ protected:
         if (!ref) return std::unexpected(ref.error());
 
         spade::GnssSensorSpawn gnss;
-        gnss.mount_pos = glm::vec3(0.25f, -0.5f, 0.75f);
+        gnss.mount_pos = mount_pos;
         gnss.rate_divider = 1;  // emit every substep, so 200 steps give 200 fixes
         gnss.sigma_h = 1.5f;
         gnss.sigma_v = 2.5f;
@@ -777,6 +778,143 @@ TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDra
                    EXPECT_EQ(*cpu_live, 1u) << label << ": the cpu leg has no live receiver";
                    EXPECT_EQ(*gpu_live, 1u) << label << ": the gpu leg has no live receiver";
                });
+}
+
+// ===========================================================================
+// WHAT THE BODY STATE ACTUALLY DOES IN THE GNSS SCENARIO -- THE MEASUREMENT
+// THAT SETTLES parity.hpp's SECOND ERRATUM.
+//
+// kGnssPosition and kGnssVelocity carried a CITED GUESS for their cause:
+// "body_bands() bands bodies.pos and bodies.orient". body_bands() bands
+// NOTHING -- those are parameters, and pos is pinned BIT-EXACT in 5 of the 11
+// corpus scenarios. Worse, GnssReceiverMatchesTheCpuWithinBands passes
+// gnss_bands() ALONE, so THE BODY STATE WAS NEVER COMPARED IN THIS SCENARIO AT
+// ALL. The cause was inferred from other scenarios' pins and written as though
+// observed in this one.
+//
+// This asks the harness instead of asserting. It is a SEPARATE, ADDITIVE test
+// over the same scenario -- the three gnss bands above are pinned against that
+// run as it stands and do not move.
+// ===========================================================================
+// ===========================================================================
+// ⛔ THE DISCRIMINATOR ABOVE IS WEAKER THAN ITS OWN HEADER CLAIMED, AND THE RUN
+// IS WHAT SHOWED IT. THIS IS THE STRONG FORM, AND IT FOUND THE DIVERGENCE --
+// SO IT IS A KNOWN-OPEN ENTRY CARRYING ITS OWN EXPIRY, NOT A PASSING TEST.
+// ⛔ ESCALATED 2026-09-24: the gaussian draws differ across backends. That is an
+// ESTATE-WIDE rng finding (the stream feeds every sensor and the Dryden filter),
+// it is the coordinator's, and the determinism GRADE for the gaussian path is a
+// decision rather than a measurement. Do not debug it from here.
+//
+// The header asserted "`bias` bit-exact IFF every draw was bit-exact". The
+// reverse direction holds; THE FORWARD ONE DOES NOT. With retention == 0 the
+// advance is `bias = 0 * bias_prev + sigma_bias * walk` -- THE PREVIOUS BIAS IS
+// ANNIHILATED, so the final row's `bias` is a function of THE LAST DRAW ALONE.
+// `gnss_sensors/bias` compares end-of-run row state, so it samples ONE fix out
+// of two hundred. It passed, and what it proved was one draw.
+//
+// ⭐ AND THE NARROWING IS WHAT COST IT. That test drops the `gnss_ring` rows on
+// the stated grounds that they are "banded against a different run" -- correct
+// about the bands, and the ring is ALSO the only place the per-fix history
+// lives. A DEFENSIBLE SCOPE DECISION REMOVED THE EVIDENCE THE TEST NEEDED, and
+// nothing about the narrowing announced that.
+//
+// ✅ THE FIX IS A ZERO LEVER ARM, and it is cheap because the body measurement
+// above just told us what to remove. fix.position is `bodies.pos + lever_world
+// + bias + noise`; `bodies.pos` is BIT-EXACT in this scenario and `orient` is
+// the sole divergence, reaching the report ONLY through lever_world. Set
+// mount_pos to zero and lever_world vanishes, so the ring's position carries
+// `bodies.pos + bias + noise` with a bit-exact first term -- and a zero band
+// over the WHOLE RING then tests every fix's draws, not the last one's.
+//
+// ⛔ THE OUTCOME TABLE FROM THE WEAK FORM STILL GOVERNS, and now over 200 fixes
+// instead of 1: DIFFERS means the draws diverge, which is an estate-wide rng
+// finding and not a GNSS one -- escalate before debugging. BIT-EXACT narrows
+// the tau=60 divergence without explaining it.
+// ===========================================================================
+TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    using spade::sensors::GnssFix;
+    using spade::sensors::GnssSensorRow;
+
+    const Scenario scenario =
+        gnss_receiver_scenario(1.0e-6f, "gnss_draws_known_open", glm::vec3(0.0f));
+
+    Result<Simulation> cpu =
+        spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(cpu.has_value()) << "cpu leg: " << cpu.error().context;
+    Result<Simulation> gpu =
+        spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(gpu.has_value()) << "gpu leg: " << gpu.error().context;
+    ASSERT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*gpu))
+        << "the two legs did not start from identical state";
+
+    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
+    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
+
+    const std::vector<BandEntry> table = {
+        // THE ISOLATION PREMISES. If any of these breaks, the argument below
+        // stops holding and this entry must be re-derived rather than trusted.
+        {"gnss_sensors", "phase", offsetof(GnssSensorRow, phase), 1, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "last_index", offsetof(GnssSensorRow, last_index), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "noise.state",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, state), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_ring", "index", offsetof(GnssFix, index), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        // THE SUBJECT. Zero band, deliberately, and it is EXPECTED TO BE OUTSIDE.
+        {"gnss_ring", "position", offsetof(GnssFix, position), 3, QuantityKind::components,
+         ToleranceBand{0.0f, 0.0f}},
+    };
+
+    const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    report->print("gnss_draws KNOWN-OPEN (tau=1e-6, zero lever arm, whole ring)");
+
+    const spade::testing::QuantityReport* position = nullptr;
+    for (const spade::testing::QuantityReport& q : report->quantities) {
+        EXPECT_GT(q.elements_compared, std::size_t{0}) << q.quantity << ": compared nothing";
+        if (q.array == "gnss_ring" && q.quantity == "position") {
+            position = &q;
+            continue;
+        }
+        // THE PREMISES MUST STILL HOLD.
+        EXPECT_TRUE(q.within_band())
+            << q.quantity << ": an ISOLATION PREMISE of this known-open entry has broken. The "
+            << "argument that `position` isolates the gaussian draws depended on this being "
+            << "bit-exact. Re-derive the entry; do not simply widen anything.";
+    }
+    ASSERT_NE(position, nullptr) << "the subject row was not compared";
+
+    // -----------------------------------------------------------------------
+    // ⛔⛔ THE INVERTED ASSERTION, AND IT IS THE WHOLE POINT OF THE ENTRY.
+    //
+    // This test PASSES while the defect is present and GOES RED THE DAY IT IS
+    // FIXED. A tolerated failure with no expiry becomes a permanent one, and
+    // THE ONLY THING THAT EXPIRES ONE AUTOMATICALLY IS FAILING WHEN IT PASSES.
+    // -----------------------------------------------------------------------
+    EXPECT_FALSE(position->within_band())
+        << "gnss_ring/position is now BIT-EXACT across backends. "
+        << "THIS IS GOOD NEWS AND THIS TEST IS NOW OBSOLETE -- RETIRE IT. "
+        << "It exists to record that the gaussian draws DIFFER between the cpu and vulkan legs. "
+        << "Measured 2026-09-24: 11 of 64 ring elements outside a zero band, max |abs| "
+        << "4.76837158e-07, worst element 22 component 2 (cpu 3.761487961e+00 vs gpu "
+        << "3.761488438e+00). If it no longer reproduces, someone has tightened the gaussian "
+        << "path -- almost certainly rng.slang's Box-Muller sqrt, which rng.slang:25 names as "
+        << "the SOLE bander of the float half. Delete this test and pin gnss_ring/position at "
+        << "a zero band in a normal parity test instead.";
+}
+
+TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    const Scenario scenario = gnss_receiver_scenario(60.0f, "gnss_receiver");
+
+    using namespace spade::testing::bands::gnss_receiver_body;
+    run_parity(scenario, "gnss_receiver BODY STATE (the inputs kGnssPosition/kGnssVelocity read)",
+               body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce));
 }
 
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
