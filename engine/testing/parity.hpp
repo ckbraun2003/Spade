@@ -1441,30 +1441,84 @@ inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
 // The reported antenna position. Measured abs 9.54e-07 on values near 4.09 --
 // 2 ulp.
 //
-// CAUSE: IT READS BANDED INPUTS, and that is structural rather than a defect in
-// this sensor. fix.position is `bodies.pos + lever_world + bias + noise`, and
-// body_bands() bands `bodies.pos` and `bodies.orient` (which lever_world is
-// rotated through) -- only force_acc and torque_acc are pinned at zero there.
-// A sensor that reports a banded body's state CANNOT be bit-exact, and no edit
-// inside sensor_gnss.slang can change that.
+// ⛔⛔ SECOND ERRATUM, 2026-09-23, AND IT IS IN THE TEXT THAT FIXED THE FIRST.
+// This block previously read: "IT READS BANDED INPUTS ... body_bands() bands
+// `bodies.pos` and `bodies.orient` ... only force_acc and torque_acc are pinned
+// at zero there. A sensor that reports a banded body's state CANNOT be
+// bit-exact." THE MECHANISM IS WRONG AND IT IS WRONG THE SAME WAY THE FMA GUESS
+// IT REPLACED WAS WRONG.
 //
-// ⛔ NOT divide or sqrt, which was the original guess: sensor_gnss.slang
+// MEASURED: body_bands() (tests/test_gpu_parity.cpp) BANDS NOTHING. It is a
+// table constructor taking pos/vel/orient/omega/specific_force AS PARAMETERS;
+// only force_acc and torque_acc are hardcoded at zero. Whether `pos` is banded
+// is a property of THE CALLING SCENARIO, and across the eleven corpus
+// scenarios it goes both ways:
+//     kPos    BIT-EXACT in ballistic, bounce, restore_resume, contact_pair,
+//             two_world_isolation                                    (5 of 11)
+//     kOrient BIT-EXACT in bounce, shower, shower_ladder,
+//             two_world_isolation, quad_hover                        (5 of 11)
+// ballistic -- gravity, one body, no contacts, the closest analogue to this
+// scenario -- has pos BIT-EXACT and orient BANDED. So the sentence asserted as
+// a structural property of the harness something that is a per-run outcome, and
+// asserted it in the direction the conclusion needed.
+//
+// ⛔ AND THE RUN THIS BAND COMES FROM NEVER COMPARED A BODY. gnss_receiver
+// passes gnss_bands() ALONE -- every other scenario in this file passes
+// join(body_bands(...), ...) and this one does not. THE BODY STATE IS
+// UNMEASURED HERE. The cited cause was inferred from other scenarios' pins and
+// written as though observed in this one.
+//
+// > A CITED GUESS IS HARDER TO CATCH THAN AN UNCITED ONE. The FMA guess named
+// > no source and was found in a day. This one named a function and a file, so
+// > it READ as measured -- and it survived the commit that existed to correct
+// > guessed causes, a coordinator's review, and my own sweep for exactly this
+// > defect. Naming a source is what makes a guess look checked.
+//
+// ✅ WHAT IS STILL SUPPORTED, stated at the strength the evidence carries:
+// fix.position IS `bodies.pos + lever_world + bias + noise` -- that is read off
+// the kernel and is not in doubt -- so the reported position cannot be tighter
+// than its body inputs. On ballistic's evidence the divergence most likely
+// enters through `orient` (which lever_world is rotated through) rather than
+// through `bodies.pos`. ⚠ THAT IS A HYPOTHESIS, NOT A MEASUREMENT, and it is
+// labelled one because the last two sentences in this position were not.
+//
+// ✅ THE CHEAP SETTLEMENT, FOR WHOEVER HOLDS THE NEXT BUILD TOKEN: append
+// body_bands() rows to gnss_receiver at a ZERO band, read the failure report,
+// and pin from it -- the pass-1 method this whole leg was built with. It rides
+// the run that is already happening, and it converts this paragraph from an
+// inference into a number. ⛔ It must be a SEPARATE test or an additive row
+// set: the three bands below are pinned against this scenario as it stands and
+// do not move.
+//
+// ⛔ NOT divide or sqrt, which was the ORIGINAL guess: sensor_gnss.slang
 // contains neither, and its own header says so outright ("NO exp(). NO
 // DIVISION ... DIVISION AND SQRT SITES: none in this file"). The Gauss-Markov
 // coefficients are precomputed on the CPU precisely so that this kernel only
-// multiplies.
+// multiplies. That exclusion is measured and stands.
 inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
 
 // The reported antenna velocity, which carries the omega x lever-arm cross
 // product. Measured abs 2.38e-07 on values near 2.17 -- exactly 1 ulp.
 //
-// CAUSE: the same structural one as position, and it is worth stating rather
-// than leaving to inference from the neighbour. fix.velocity is
-// `bodies.vel + cross(omega_world, lever_world) + noise`, and body_bands()
-// bands bodies.vel, bodies.omega_body AND bodies.orient -- all three of this
-// row's physical inputs. Exactly 1 ulp is what a banded input reproduced
-// through an unbanded arithmetic path looks like; it is not evidence that the
-// cross product itself diverges.
+// ⛔ SAME ERRATUM AS position, and it was WORSE HERE because this block said
+// the cause was "worth stating rather than leaving to inference from the
+// neighbour" -- it presented an inference as an independent observation while
+// announcing that it was not merely inheriting one.
+//
+// It read: "body_bands() bands bodies.vel, bodies.omega_body AND bodies.orient
+// -- all three of this row's physical inputs." body_bands() bands NONE of
+// them; they are parameters, several scenarios pin them bit-exact, and
+// gnss_receiver never compares a body at all. See the position block above for
+// the measurement.
+//
+// ✅ WHAT SURVIVES: fix.velocity IS `bodies.vel + cross(omega_world,
+// lever_world) + noise`, read off the kernel. So this row cannot be tighter
+// than its body inputs either. And the shape of the number is still
+// informative -- EXACTLY 1 ULP is what a slightly-divergent input reproduced
+// through an exact arithmetic path looks like, and is not evidence that the
+// cross product itself diverges. ⚠ But which input carries it is UNMEASURED in
+// this scenario, and the same zero-band body_bands() append settles this row
+// and position's together.
 inline constexpr ToleranceBand kGnssVelocity{1.0e-6f, 5.0e-7f};
 }  // namespace gnss_receiver
 
