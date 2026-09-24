@@ -354,9 +354,16 @@ protected:
 // without it the antenna offset is a fixed addition both backends would get
 // right by doing nothing.
 // ---------------------------------------------------------------------------
-[[nodiscard]] Scenario gnss_receiver_scenario() {
+// ⭐ PARAMETERISED ON `bias_tau_s` RATHER THAN COPIED (2026-09-23). The bias
+// discriminator below is this scenario with ONE KNOB MOVED, and that claim has
+// to be true of the code rather than of a comment. A forked copy drifts -- the
+// two scenarios stop being comparable the first time somebody edits one -- and
+// then the discriminator is answering a question about a different run than the
+// one whose bands are pinned. ONE DEFINITION, ONE ARGUMENT, SO "THE SAME
+// SCENARIO WITH A DIFFERENT TAU" IS CHECKABLE BY READING THE CALL.
+[[nodiscard]] Scenario gnss_receiver_scenario(float bias_tau_s, const char* name) {
     Scenario s;
-    s.name = "gnss_receiver";
+    s.name = name;
     s.dt_ns = 1'000'000;
     s.substeps = 1;
     s.steps = 200;
@@ -394,7 +401,7 @@ protected:
         return WorldSetDesc{{instance}};
     };
 
-    s.setup = [](Simulation& sim) -> Result<void> {
+    s.setup = [bias_tau_s](Simulation& sim) -> Result<void> {
         spade::BodySpawn body;
         body.pos = glm::vec3(0.0f, 50.0f, 0.0f);
         body.vel = glm::vec3(3.0f, 0.0f, -1.5f);
@@ -410,7 +417,7 @@ protected:
         gnss.sigma_h = 1.5f;
         gnss.sigma_v = 2.5f;
         gnss.sigma_vel = 0.125f;
-        gnss.bias_tau_s = 60.0f;
+        gnss.bias_tau_s = bias_tau_s;
         gnss.sigma_bias = 0.8f;
         const Result<spade::GnssSensorRef> sensor = sim.add_gnss_sensor(*ref, gnss);
         if (!sensor) return std::unexpected(sensor.error());
@@ -590,7 +597,7 @@ constexpr CorpusScenario kCorpusScenarios[] = {
 TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
     if (!vulkan_available()) GTEST_SKIP();
 
-    const Scenario scenario = gnss_receiver_scenario();
+    const Scenario scenario = gnss_receiver_scenario(60.0f, "gnss_receiver");
 
     using namespace spade::testing::bands::gnss_receiver;
     run_parity(scenario, "gnss_receiver (1 receiver x 200 substeps at rate_divider 1)",
@@ -603,6 +610,167 @@ TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
                    // this says the same thing about the thing itself, so a
                    // failure reads as "no receiver" rather than as twelve
                    // separate "compared nothing" lines.
+                   const Result<uint32_t> cpu_live = cpu.live_gnss_sensor_count(0);
+                   const Result<uint32_t> gpu_live = gpu.live_gnss_sensor_count(0);
+                   ASSERT_TRUE(cpu_live.has_value() && gpu_live.has_value());
+                   EXPECT_EQ(*cpu_live, 1u) << label << ": the cpu leg has no live receiver";
+                   EXPECT_EQ(*gpu_live, 1u) << label << ": the gpu leg has no live receiver";
+               });
+}
+
+// ===========================================================================
+// THE `bias` DISCRIMINATOR -- AND IT PRE-REGISTERS ITS INTERPRETATION, NOT
+// JUST ITS NUMBER.
+//
+// WHY IT EXISTS. Nine of twelve GNSS parity quantities are bit-exact.
+// `position` and `velocity` are banded for a STRUCTURAL reason that is closed
+// -- they read body state that is itself banded, and no kernel edit can change
+// that. `bias` is the one genuinely open question, and its band is PROVISIONAL:
+// sensor_gnss.slang pre-registered this quantity as a BIT-IDENTITY claim and
+// said why -- "a recursive bias filter does not tolerate error, it accumulates
+// it". The band was measured over 200 fixes, so its adequacy is a function of
+// run length that no test states.
+//
+// ⛔ THE FIRST DESIGN OF THIS TEST WAS DEFECTIVE AND MUST NOT BE REBUILT.
+// It set `bias_tau_s <= 0` to "break the recursion and keep the draws", on the
+// strength of a sentence in test_gnss.cpp that turned out to be false.
+// gnss_bias_drive() carries the SAME domain guard as gnss_bias_retention(), so
+// that configuration zeroes BOTH coefficients: the bias is identically zero on
+// both backends, the comparison is bit-exact, and the run reports success
+// having proved nothing. THAT DESIGN DELETES THE QUANTITY RATHER THAN BREAKING
+// THE MECHANISM, and it fails GREEN.
+//
+// ✅ THE WORKING ROUTE IS THE EXPONENT, NOT THE GUARD. tau = 1e-6 against a fix
+// interval of ~1e-3 gives -fix_dt/tau ~= -1000, past core/fp32_math.cpp:380's
+// explicit `if (x <= -104.0f) return 0.0f;`, so the retention underflows to
+// exactly zero WITHOUT tripping the domain guard that would also kill the
+// drive. variance == 1 - 0 == 1, sqrt(1) == 1 exactly, drive == sigma_bias
+// exactly. The advance collapses to `bias = sigma_bias * walk` -- ONE MULTIPLY
+// BY A BYTE-IDENTICAL CONSTANT, which cannot introduce a difference. Both
+// halves of that collapse are pinned as unit facts by
+// GnssBiasDrive.CollapsesToSigmaBiasWhenRetentionUnderflows (tests/test_gnss.cpp),
+// so if fp32_math's cutoff ever moves this test's PREMISE reds on the CPU side
+// before anyone spends a GPU run on it.
+//
+// ⭐⭐⭐ AND THE OUTCOME TABLE IS WRITTEN BEFORE THE RUN, WHICH IS THE POINT.
+// This realm shipped three MEASURED band numbers beside three GUESSED causes,
+// in the same sentences, so the guesses inherited the measurements'
+// credibility. The lesson was: A MEASURED NUMBER IS AUTHORITY FOR THE NUMBER
+// AND FOR NOTHING ABOUT ITS CAUSE -- and the hole it exposed is that every
+// falsifier in this tree tests a QUANTITY and none tests a STATED CAUSE. A
+// zero band governs the number and leaves the explanation entirely unguarded.
+// So the explanation goes here, in advance, where it can be wrong in public:
+//
+//   BIT-EXACT   Every gaussian draw agrees across backends under a
+//               configuration where `bias` is a pure function of the draws.
+//               ⛔ THIS DOES NOT EXPLAIN THE tau=60 DIVERGENCE -- IT NARROWS
+//               IT, and the remaining candidate is the one that was always
+//               hardest to reach: THE RECURSION ITSELF, 200 multiply-adds
+//               deep, with contraction already excluded on both sides AND
+//               asserted by SlangSpirv.FloatControlsPinned. Coefficients are
+//               CPU-precomputed row config and run_parity's state_digest
+//               precondition proves the rows START byte-identical; `phase` and
+//               `last_index` prove the two legs emitted on the same substeps
+//               and the same NUMBER of times. A bit-exact result here would
+//               leave NO NAMED CANDIDATE, and that is a finding to report as
+//               such rather than to paper over with a wider band.
+//
+//   DIFFERS     The draws themselves diverge, and ⛔ THIS IS NOT A GNSS
+//               FINDING AT ALL. rng.slang's Box-Muller sqrt is the only
+//               operation on this path carrying a documented <= 2.5 ulp
+//               licence -- fp32_math.slang's SQRT AUDIT already names it and
+//               defers it with no owner and no trigger. THE STREAM IS SHARED
+//               WITH EVERY OTHER SENSOR AND WITH THE DRYDEN FILTER, so a
+//               divergence here is estate-wide and outranks this realm's
+//               queue. ⚠ Escalate before doing anything else with it.
+//
+// ⚠ EITHER WAY, THE tau=60 BANDS DO NOT MOVE. This is a SEPARATE, ADDITIVE
+// scenario; the pinned bands belong to the run that measured them. Widening
+// kGnssBias to make a longer run pass would convert a compounding divergence
+// into a permanently invisible one, which is the one thing parity.hpp's own
+// header forbids by name.
+//
+// THE TABLE IS DELIBERATELY NARROWER THAN gnss_bands(). This test asks ONE
+// question, so it carries the bias, the stream that feeds it, and the premises
+// that make those mean anything -- and NOT the ring rows. `position` and
+// `velocity` are banded against a DIFFERENT run and are not this test's
+// subject; asserting them here would risk a red that says nothing about the
+// question, which is how a focused test acquires a reputation for flaking.
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] std::vector<BandEntry> gnss_bias_discriminator_bands() {
+    using spade::sensors::GnssSensorRow;
+    return {
+        // THE PREMISES FIRST. Each is a bit-exact claim on its own merits, and
+        // each one being wrong would make the bias row uninterpretable rather
+        // than merely failing.
+        {"gnss_sensors", "phase", offsetof(GnssSensorRow, phase), 1, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "last_index", offsetof(GnssSensorRow, last_index), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "noise.state",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, state), 2, QuantityKind::bits,
+         ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "noise.flag",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, has_cached), 1,
+         QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
+        {"gnss_sensors", "noise.cached",
+         offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, cached_gauss), 1,
+         QuantityKind::components, ToleranceBand{0.0f, 0.0f}},
+
+        // THE SUBJECT, AT A ZERO BAND. Under this configuration the bias is
+        // `sigma_bias * walk`, so anything other than bit-exact IS the answer.
+        {"gnss_sensors", "bias", offsetof(GnssSensorRow, bias), 3, QuantityKind::components,
+         ToleranceBand{0.0f, 0.0f}},
+    };
+}
+
+}  // namespace
+
+TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    // 1e-6 s against a ~1e-3 s fix interval. Validation requires bias_tau_s to
+    // be finite and >= 0 (sim/simulation.cpp:1647), which this satisfies -- it
+    // is a legal receiver, merely an absurdly fast-decorrelating one.
+    constexpr float kTau = 1.0e-6f;
+    constexpr float kSigmaBias = 0.8f;  // the scenario's own, and the value the collapse returns
+    const Scenario scenario = gnss_receiver_scenario(kTau, "gnss_bias_discriminator");
+
+    // -----------------------------------------------------------------------
+    // ⛔ THE PREMISE, CHECKED BEFORE THE GPU RUN RATHER THAN INSIDE IT. This is
+    // the arm the defective first design would have failed silently: the whole
+    // argument is that the retention underflows to zero WITHOUT the drive being
+    // zeroed with it. If both were zero the bias would be identically zero on
+    // both backends, every band below would pass, and the run would report
+    // success having proved nothing.
+    //
+    // DERIVED FROM THE SCENARIO, NOT TRANSCRIBED. fix_dt = rate_divider * h,
+    // and h is the substep in seconds exactly as sim/simulation.cpp computes it
+    // (substep_ns = dt_ns / substeps; h = substep_ns / 1e9). So if anyone
+    // retunes this scenario's step decomposition, this recomputes and keeps
+    // checking the real premise instead of a stale constant.
+    //
+    // It also runs FIRST because it is free: an ASSERT here costs no GPU time,
+    // and a discriminator whose premise is broken should not spend a device run
+    // to tell you so.
+    // -----------------------------------------------------------------------
+    const float h = static_cast<float>(scenario.dt_ns / scenario.substeps) / 1.0e9f;
+    const float fix_dt = 1.0f * h;  // rate_divider == 1 in this scenario
+    ASSERT_EQ(spade::sensors::gnss_bias_retention(fix_dt, kTau), 0.0f)
+        << "the retention did NOT underflow to exactly zero at fix_dt=" << fix_dt << ", tau=" << kTau
+        << " -- the recursion is still live and a bit-exact result would not isolate the draws";
+    ASSERT_EQ(spade::sensors::gnss_bias_drive(fix_dt, kTau, kSigmaBias), kSigmaBias)
+        << "THE DRIVE IS NOT sigma_bias. If it is zero, the bias is identically zero on both "
+           "backends and every band below passes VACUOUSLY -- that is the defective first design "
+           "reasserting itself; see this section's header. If it is some other value, the collapse "
+           "to a single multiply does not hold and the biconditional this test rests on is false";
+
+    run_parity(scenario, "gnss_bias_discriminator (tau=1e-6, retention underflowed to zero)",
+               gnss_bias_discriminator_bands(),
+               [](const Simulation& cpu, const Simulation& gpu, std::string_view label) {
                    const Result<uint32_t> cpu_live = cpu.live_gnss_sensor_count(0);
                    const Result<uint32_t> gpu_live = gpu.live_gnss_sensor_count(0);
                    ASSERT_TRUE(cpu_live.has_value() && gpu_live.has_value());
