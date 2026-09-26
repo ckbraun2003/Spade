@@ -44,9 +44,24 @@
 //      (the mantissa split point), not a call, and core/fp32_math.hpp's own
 //      "WHAT IS *NOT* HERE" note states the policy ("std::sqrt STAYS ... IEEE
 //      754 mandates a correctly rounded square root"). rng.hpp's
-//      `std::sqrt(-2 * log32(u1))` is Box-Muller's, OUTSIDE these kernels, and
-//      is a later task's problem. So rule E2 is satisfied by absence, not by
-//      respelling, and that is stated rather than left to be inferred.
+//      `std::sqrt(-2 * log32(u1))` is Box-Muller's, OUTSIDE these kernels. So
+//      rule E2 is satisfied by absence, not by respelling, and that is stated
+//      rather than left to be inferred.
+//
+//      THE DEFERRAL THAT USED TO END THIS PARAGRAPH IS DELETED, NOT REASSIGNED
+//      (R3, 2026-09-24). It read "and is a later task's problem" -- a promise
+//      that the divergence would eventually be removed, carried with no owner
+//      and no trigger since it was written. THE RULING REFUSES TIGHTENING, and
+//      not on cost: Vulkan does not guarantee a correctly-rounded sqrt, so a
+//      "tightened" implementation would be a claim the platform cannot keep.
+//
+//      Giving this deferral an owner would have scheduled work the platform
+//      forbids. A DEFERRAL ASSERTS THAT A THING IS STILL COMING; once it has
+//      been ruled un-takeable, the honest edit is to delete it and point at the
+//      declared grade instead. The gaussian path is now BANDED BY DECLARATION
+//      -- see rng.slang's header for the measured band, its n and its device
+//      provenance, and design-specs/spade/01-charter.md section 4 for where
+//      that grade sits among the three.
 //
 //   4. CONSTANTS ARE SPELLED EXACTLY AS THE CPU SPELLS THEM -- exact rationals
 //      (`1.0f / 5040.0f`) for the polynomial coefficients, hex float literals

@@ -38,10 +38,52 @@
 //     for a polynomial". On the GPU the guarantee is weaker, and respelling it
 //     as a polynomial here would trade a <= 2.5-ulp difference for a
 //     GUARANTEED one -- so it stays, and the difference is measured rather than
-//     argued. (Measured: see the task report's headline table. On this device
-//     the corpus's gaussian draws come back bit-identical, so the band it
-//     forces is currently unexercised -- but it is a real allowance, not a
-//     claim that Vulkan's sqrt is correctly rounded.)
+//     argued.
+//
+//     THE BAND IS EXERCISED. DECLARED GRADE, MEASURED 2026-09-24 (R3).
+//         scenario   one GNSS receiver, 200 substeps at rate_divider 1,
+//                    bias_tau_s = 1e-6 so the Gauss-Markov retention underflows
+//                    to exactly zero, mount_pos = 0 so the body's orientation
+//                    cannot reach the report through the lever arm
+//         compared   gnss_ring/position over the whole ring, ZERO band
+//         n          64 ring elements; 11 OUTSIDE
+//         measured   max |abs| 4.76837158e-07, max rel 5.06893741e-07
+//         worst      element 22 component 2, cpu 3.761487961e+00 vs
+//                    gpu 3.761488438e+00
+//         device     Intel Iris Plus Graphics (integrated), Vulkan 1.3.215,
+//                    driver 31.0.101.2125, msvc-ninja-release
+//     11 of 64 rather than 64 of 64, at roughly 1 ulp: THAT IS WHAT A <= 2.5-ULP
+//     sqrt LICENCE LOOKS LIKE, not a systematically different algorithm. It is
+//     what makes banding this honest rather than resigned.
+//
+//     THIS PARAGRAPH USED TO SAY THE BAND WAS "CURRENTLY UNEXERCISED", on the
+//     evidence that THE CORPUS's gaussian draws came back bit-identical. That
+//     was true of the corpus and it was never a statement about the operation.
+//     No corpus scenario ISOLATES a draw: the gaussian reaches a comparable
+//     quantity only through sums whose other terms carry their own divergence,
+//     so a 1-ulp difference in a draw had nowhere to show itself.
+//
+//     A BAND IS "UNEXERCISED" ONLY RELATIVE TO THE SCENARIOS THAT EXIST, AND
+//     THAT IS A FACT ABOUT THE CORPUS RATHER THAN ABOUT THE ARITHMETIC. The
+//     run above was built to isolate the draws and found the divergence on its
+//     first execution.
+//
+//     It remains a real allowance and NOT a claim that Vulkan's sqrt is
+//     correctly rounded. Tightening is REFUSED (R3) -- Vulkan does not
+//     guarantee a correctly-rounded sqrt, so a tightened implementation would
+//     be a claim the platform cannot keep. fp32_math.slang's deferral on this
+//     sqrt is deleted rather than reassigned, for the same reason.
+//
+//     LIVE REPRODUCTION, kept alongside the declaration deliberately:
+//     tests/test_gpu_parity.cpp's GnssDrawsDivergeAcrossBackends_KNOWN_OPEN
+//     asserts the divergence IS present, so it goes RED the day anyone tightens
+//     this sqrt and demands its own retirement. A DECLARED BAND AND A LIVE
+//     REPRODUCTION ARE DIFFERENT INSTRUMENTS and this path carries both.
+//
+//     SCOPE, BY CALL AND NOT BY INCLUDE: rng_next_gauss reaches dryden.slang,
+//     sensor_gnss.slang and sensor_imu.slang. forces_drag.slang and
+//     medium_update.slang include this header and call only the integer/float
+//     draws -- no sqrt on that path, so the grade does not apply to them.
 //
 // ===========================================================================
 // STATE IS PASSED `inout`, NOT READ AND WRITTEN THROUGH A BUFFER

@@ -111,11 +111,37 @@ inline constexpr std::string_view kGnssNoiseDomainTag = "sensor.gnss";
 // filter weights each fix by the number that came with it. It also means the
 // two dead pad lanes ImuSample carries are named fields here.
 // ---------------------------------------------------------------------------
+// ⛔ sigma_h IS PER-AXIS, NOT RADIAL, AND THE FIELD NAME DEFAULTS TO THE OTHER
+// READING. Clarified 2026-09-24 after Runtime read "horizontal accuracy" the
+// standard way and asked before writing -- which is the only reason this was
+// caught before a consumer shipped on it.
+//
+// In GNSS practice "horizontal accuracy" is a RADIAL 2D quantity (x (+) y).
+// HERE IT IS THE PER-AXIS SIGMA: sensors/gnss.cpp:174 and the Slang twin both
+// apply it independently to X and Z --
+//     position += (sigma_h * white.x, sigma_v * white.y, sigma_h * white.z)
+// -- where white.x and white.z are INDEPENDENT standard normals. So the radial
+// 2D error of a fix is Rayleigh with scale sigma_h, and its RMS is
+// sigma_h * sqrt(2), NOT sigma_h.
+//
+// ⛔ THE ERROR DIRECTION IS THE DANGEROUS ONE. A consumer reading this as
+// radial infers a per-axis sigma of sigma_h/sqrt(2) and therefore UNDERSTATES
+// the true per-axis uncertainty by a factor of sqrt(2). An estimator weighting
+// a fix by that number OVER-TRUSTS the measurement, which is the failure mode
+// that does not announce itself -- the filter simply converges too confidently.
+//
+// A DOMAIN TERM CARRIES ITS DOMAIN'S MEANING WHETHER OR NOT THE IMPLEMENTATION
+// AGREES, so the disagreement has to be written down at the field rather than
+// left to whoever reads the multiply. Any wire type carrying this value should
+// say per-axis in its own name or its own comment; the default reading of the
+// bare name is the wrong one.
 struct alignas(kStd430StructAlignment) GnssFix {
     glm::vec3 position;  // antenna position, WORLD frame, m (§1)
-    float sigma_h;       // this fix's own horizontal accuracy estimate, 1-sigma, m
+    float sigma_h;       // PER-AXIS horizontal 1-sigma, m -- see the note above, NOT radial
     glm::vec3 velocity;  // antenna velocity, WORLD frame, m/s (§2: Doppler-derived)
-    float sigma_v;       // this fix's own vertical accuracy estimate, 1-sigma, m
+    float sigma_v;       // vertical 1-sigma, m -- ONE axis (section 1 names which), so no
+                         // radial ambiguity here. Section 1 is the only place in this header
+                         // that says which axis is up, deliberately: see the note above.
     SampleIndex index;   // monotonically increasing, per sensor, starts at 1 (TA5)
     uint64_t tick;       // the step this fix was produced in
 };
