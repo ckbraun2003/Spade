@@ -126,7 +126,7 @@ public:
     // scene.statics and scene.dynamics are NOT read at this stage and a scene
     // carrying them is not an error -- the caller asked for a background.
     //
-    // Fails with Code::invalid when target exceeds the descriptor's max_width
+    // Fails with Code::invalid_argument when target exceeds the descriptor's max_width
     // or max_height, rather than reallocating. See GpuRasterizerDesc.
     [[nodiscard]] Result<void> render_background(const RenderScene& scene, const Camera& camera,
                                                   const RenderOptions& options, RenderTarget& target);

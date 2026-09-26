@@ -97,7 +97,7 @@ public:
     // the caller asked for a background. See render/raster_gpu.hpp for why the
     // entry point is named for what it draws rather than called render().
     //
-    // Code::invalid for a target exceeding the create() bounds, or a target
+    // Code::invalid_argument for a target exceeding the create() bounds, or a target
     // whose stride is narrower than its width.
     [[nodiscard]] Result<void> render(const RenderScene& scene, const Camera& camera,
                                       const RenderOptions& options, RenderTarget& target);
@@ -154,13 +154,35 @@ private:
         float base_color[3];
         uint32_t is_front;
         float grid_u[3];
-        float pad0;
+        // The kernel's repurposed pad0: Material::shading, 0 = lambert /
+        // 1 = unlit / 2 = emissive. A uint32_t where a float of padding was, so
+        // sizeof(PlaneGpu) and every offset are unchanged -- the only property
+        // this unguarded mirror can rely on.
+        uint32_t shading_mode;
         float grid_v[3];
         float pad1;
     };
 
     compute::VulkanContext* ctx_ = nullptr;   // borrowed; outlives this by construction order
 
+    // ⛔ SET 0 IS DECLARED AND EMPTY, AND IT IS NOT OPTIONAL. The kernel binds
+    // its three resources at [[vk::binding(n, 1)]] -- SET 1 -- so the pipeline
+    // layout must describe sets 0 AND 1 for set 1 to mean set 1. A layout with
+    // one entry would bind these descriptors as SET 0 and the shader would read
+    // nothing. Zero-binding layouts are legal and cost one handle.
+    //
+    // ⚠ AND THE STAGE-1 JUSTIFICATION FOR SET 1 WAS OVERSTATED, CORRECTED HERE
+    // RATHER THAN LEFT TO LAUNDER. It said adding a render buffer to set 0 would
+    // renumber the physics bindings. It would not: shaders/shared/bindings.slang
+    // is a SOURCE-level registry and this kernel does not `import bindings` at
+    // all (its only import is fp32_math), so its set numbering is private to its
+    // own pipeline layout and could have been 0 with nothing to collide with.
+    // Set 1 is kept because `binding(n, 0)` means PHYSICS by convention
+    // everywhere else in this tree and a grep should not turn up a render buffer
+    // wearing that spelling -- a legibility argument, which is a real one, but a
+    // SMALLER one than the commit message claimed. A FALSE MECHANISM IN A
+    // COMMENT IS WHAT THE NEXT IMPLEMENTER DESIGNS AGAINST.
+    VkDescriptorSetLayout empty_set0_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set_ = VK_NULL_HANDLE;

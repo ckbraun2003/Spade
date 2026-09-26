@@ -133,7 +133,12 @@ struct GroundPlaneGpu {
     float3 base_color;  // the resolved material colour, already looked up
     uint   is_front;    // host-side precompute: dot(camPos, normal) > offset
     float3 grid_u;      // the plane's orthonormal basis, from ground_plane_basis()
-    float  pad0;
+    // WAS `float pad0`. Material::shading, 0 = lambert / 1 = unlit / 2 = emissive.
+    // ⛔ A uint IN A SLOT THAT HELD PADDING: sizeof(GroundPlaneGpu) and every
+    // field offset are UNCHANGED by this, which is the only property the
+    // host-side mirror (background_pass.hpp's PlaneGpu) can rely on, since
+    // nothing compares the two.
+    uint   shading_mode;
     float3 grid_v;
     float  pad1;
 };
@@ -242,9 +247,31 @@ uint encode_channel(float channel) {
     return (uint)floor(clamped * 255.0f + 0.5f);
 }
 
-uint pack_rgba(float3 rgb) {
-    return encode_channel(rgb.x) | (encode_channel(rgb.y) << 8) |
-           (encode_channel(rgb.z) << 16) | (255u << 24);
+// ---------------------------------------------------------------------------
+// PACKS B,G,R,X -- NOT R,G,B,A. render/target.hpp's PixelFormat has exactly ONE
+// value, bgrx8, and raster_cpu.cpp writes it as px[0]=b, px[1]=g, px[2]=r,
+// px[3]=kBgrxOpaqueByte at both of its pixel-write sites (:305, :1404). A `uint`
+// stored to a buffer lands least-significant-byte-first on every device this
+// engine targets, so the low 8 bits ARE px[0] -- which is BLUE.
+//
+// ⛔ THE FIRST VERSION OF THIS FUNCTION WAS NAMED pack_rgba AND PACKED RGBA,
+// WHICH WOULD HAVE SWAPPED RED AND BLUE IN EVERY GPU FRAME. Found by reading the
+// consumer while writing the host side, BEFORE this kernel ever ran -- it has
+// never been compiled, so no measurement was wrong, only the code.
+//
+// ⭐⭐⭐ AND THE GUARD THIS PATH CHOSE CANNOT SEE IT. render/agreement.hpp's
+// compare_silhouettes() is COVERAGE, NEVER COLOUR -- deliberately, because
+// raster_cpu.cpp is fp64 and this kernel is fp32, so a colour comparison would be
+// red on its first run for a reason nobody can fix. A CHANNEL SWAP CHANGES NO
+// PIXEL'S COVERAGE: every sky pixel is still sky and every ground pixel still
+// ground. AN INSTRUMENT CHOSEN FOR BEING INSENSITIVE TO AN EXPECTED DIFFERENCE IS
+// ALSO INSENSITIVE TO A DEFECT WEARING THAT DIFFERENCE'S CLOTHES -- so the name
+// stating the byte order is the only guard on this, and it is why the name changed
+// rather than only the body.
+// ---------------------------------------------------------------------------
+uint pack_bgrx(float3 rgb) {
+    return encode_channel(rgb.z) | (encode_channel(rgb.y) << 8) |
+           (encode_channel(rgb.x) << 16) | (255u << 24);
 }
 
 [shader("compute")]
@@ -337,16 +364,26 @@ void raster_background(uint3 tid : SV_DispatchThreadID) {
         // fade behave in metres rather than in ray-parameter units.
         const float view_distance = best_t * sqrt(dot(ray, ray));
 
-        float3 ground = shade_lambert(gp.base_color, gp.normal);
+        // shade_vertex_color()'s OWN EARLY RETURN, not an approximation of it:
+        // unlit (1) and emissive (2) echo base_color verbatim, with no sun term
+        // at all. Omitting this lamberted every plane and was WRONG for any
+        // ground whose material is not mode 0.
+        float3 ground = gp.shading_mode == 0u ? shade_lambert(gp.base_color, gp.normal)
+                                             : gp.base_color;
         if (bg.grid_enabled != 0u) {
             const float coverage = grid_coverage(hit, gp.grid_u, gp.grid_v, view_distance);
             if (coverage > 0.0f) {
-                const float3 lit_grid = shade_lambert(bg.grid_color, gp.normal);
-                ground = ground + (lit_grid - ground) * coverage;
+                // ⛔ THE RAW grid_color, NEVER A SHADED ONE. raster_cpu.cpp blends
+                // `grid->color` itself into the already-shaded ground
+                // (`color + (grid->color - color) * cov`). An earlier draft of this
+                // kernel lambert-shaded it first, which is A DIFFERENT FORMULA rather
+                // than a different precision -- exactly the class of divergence that
+                // fp32-vs-fp64 gets blamed for and does not cause.
+                ground = ground + (bg.grid_color - ground) * coverage;
             }
         }
         color = fade_to_horizon(ground, sky, view_distance);
     }
 
-    out_pixels[py * bg.row_pitch_texels + px] = pack_rgba(color);
+    out_pixels[py * bg.row_pitch_texels + px] = pack_bgrx(color);
 }
