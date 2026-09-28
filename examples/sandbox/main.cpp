@@ -19,7 +19,7 @@ Universe universe;
 
 // ---------------------------------------------------------------------------
 // Task 14b amendment A3: the v1 renders stay runnable as visual regression
-// references while v2 (spade/engine/) progresses. This file used to be ONE
+// references while v2 (engine/) progresses. This file used to be ONE
 // hardcoded scene (50,000-sphere SPH fluid + grid collision); it is now three,
 // selected by argv:
 //

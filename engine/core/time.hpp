@@ -6,7 +6,7 @@ namespace spade {
 
 // The engine's only notion of time: a monotonic count of physics steps,
 // advanced by exactly one per step by the schedule (Task 13). Nothing under
-// spade/engine/ reads the wall clock (see the plan's global constraints) --
+// engine/ reads the wall clock (see the plan's global constraints) --
 // Tick is the deterministic substitute, and structural changes (spawn,
 // despawn, world load) apply only at Tick boundaries via the structural
 // queue.

@@ -26,7 +26,7 @@ struct Row {
 
 [[nodiscard]] std::string register_path() {
     // The engine dir is the anchor CMake already defines; the register lives
-    // beside it under spade/docs/.
+    // beside it under docs/.
     return std::string(SPADE_ENGINE_DIR) + "/../docs/v1-transfer-register.md";
 }
 

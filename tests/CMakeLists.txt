@@ -3,51 +3,56 @@
 # both measured 2026-09-17, and neither visible from inside a test file.
 #
 # ------------------------------------------------------------------------------
-# 1. THIS SUITE DOES NOT RUN IN KAT'S MAIN GATE. IT IS NOT REACHABLE FROM ANY
-#    ROOT BUILD TREE, AT ANY FLAG.
+# 1. THIS SUITE WAS WRITTEN AGAINST KAT'S MAIN GATE, WHICH IT DID NOT REACH.
+#    THAT NO LONGER DESCRIBES THIS REPO -- READ THE UPDATE BELOW FIRST.
 # ------------------------------------------------------------------------------
-# A test added here will NOT be executed by `ctest -L T0`, by
-# `scripts/test.ps1`, or by any configuration of the repo-root CMake project.
-# Adding one and watching the Kat gate go green tells you NOTHING about it.
+# UPDATE, Spade's extraction into its own repo (2026-09-28): the paragraph
+# below is KEPT AS HISTORY, because it explains the SL1/SL2 severability
+# reasoning that still applies to Kat's own build. But its central claim --
+# that a test added here is invisible to this repo's own gate -- is NOW FALSE.
+# This file's parent, this repo's own root CMakeLists.txt, DOES
+# `add_subdirectory(tests)`, and `scripts/test.ps1`'s `-L spade` DOES run it.
+# Adding a test here and running scripts/test.ps1 is now the correct way to
+# exercise it.
 #
-#   * the repo root CMakeLists.txt has no `add_subdirectory(spade)` -- its six
-#     add_subdirectory calls are runtime, dronesim, components, editor, train,
-#     sdk;
-#   * `dronesim/CMakeLists.txt`'s `add_subdirectory(spade)` resolves to
+# THE ORIGINAL CLAIM, for context (was true only while spade/ was nested
+# inside Kat, and describes KAT's tree, not this one):
+#   * Kat's repo root CMakeLists.txt had no `add_subdirectory(spade)` -- its
+#     six add_subdirectory calls were runtime, dronesim, components, editor,
+#     train, sdk;
+#   * `dronesim/CMakeLists.txt`'s `add_subdirectory(spade)` resolved to
 #     `dronesim/spade/` -- a DIFFERENT directory wearing the same word, holding
 #     the C5 host `kat_host_spade`, not this tree;
-#   * the root build obtains the engine as a BINARY, via
+#   * Kat's own root build obtains the engine as a BINARY, via
 #     `find_package(spade CONFIG REQUIRED)` (dronesim/spade/CMakeLists.txt)
-#     against a pre-installed prefix;
-#   * this file is added only by `spade/CMakeLists.txt`, whose own
-#     `project(Spade ...)` makes it an independent top-level CMake project.
+#     against a pre-installed prefix -- this is UNCHANGED by the extraction and
+#     still describes Kat's side of the boundary today;
+#   * this file was added only by the nested `spade/CMakeLists.txt`, whose own
+#     `project(Spade ...)` made it an independent top-level CMake project even
+#     while nested -- that much is still true now that it IS the top level.
 #
-# WHAT DOES RUN IT: the `spade-linux` section of `docker/run-ci-linux.sh`.
-# It configures `cmake -S spade` -- treating spade/ as its own root -- builds
-# it, runs `ctest --test-dir spade/build-ci -L spade --no-tests=error`,
-# installs to `spade/install-ci`, and smokes `tests/consumer` against that
-# prefix. The steps are spelled out here rather than cited, so this block
-# stays true if that script is reorganised.
+# WHAT USED TO RUN IT FROM KAT'S SIDE: the `spade-linux` section of Kat's
+# `docker/run-ci-linux.sh` -- it configured `cmake -S spade`, built it, ran
+# `ctest --test-dir spade/build-ci -L spade --no-tests=error`, installed to
+# `spade/install-ci`, and smoked `tests/consumer` against that prefix. That
+# leg was removed 2026-09-28 when Spade was extracted into its own repo,
+# proving Spade was no longer Kat's gate's job. This block used to name
+# `.github/workflows/spade.yml` as "this suite's ONLY automated gate" before
+# that, too, was deleted (2026-09-18). Neither exists any more; scripts/test.ps1
+# is this repo's own gate now, and (per the update above) it does reach this
+# tree directly.
 #
-# NOTHING TRIGGERS IT AUTOMATICALLY. Somebody runs it. Both halves of that
-# matter: "the suite has no gate" would be false, and "docker runs it" would
-# leave you expecting it to have run.
+# Locally, build standalone via scripts/build.ps1 and this repo's own presets.
 #
-# This block used to name `.github/workflows/spade.yml` as "this suite's ONLY
-# automated gate". That directory was removed at `9b5fa453` -- "docker is the
-# gate, and now the only one" -- and this sentence went on standing for two
-# days after the thing it described had gone.
-#
-# Locally, build spade/ standalone via its own presets.
-#
-# ** DO NOT "FIX" THIS BY ADDING add_subdirectory(spade) TO THE ROOT. ** The
-# separation is not an oversight, it is SL1/SL2 severability working: Kat
-# consumes an INSTALLED Spade through find_package, exactly as an external
-# consumer does, which is the whole property `spade/tests/consumer/` exists to
-# prove. Wiring this tree into the root build would make Kat's green depend on
-# in-tree paths no third-party consumer has, and would retire that proof.
-# The gap this comment closes is not a build defect -- it is that nothing
-# previously told you your change was invisible to the loop you run.
+# ** IN KAT, DO NOT "FIX" THE SEPARATION DESCRIBED ABOVE BY ADDING
+# add_subdirectory(spade) TO ITS ROOT. ** That separation is not an oversight,
+# it is SL1/SL2 severability working: Kat consumes an INSTALLED Spade through
+# find_package, exactly as any external consumer does, which is the whole
+# property `tests/consumer/` exists to prove. Wiring this tree into Kat's root
+# build would make Kat's green depend on in-tree paths no third-party consumer
+# has, and would retire that proof. The gap this comment closes is not a build
+# defect -- it is that nothing previously told you a change here was invisible
+# to Kat's own loop.
 #
 # ------------------------------------------------------------------------------
 # 2. THE GPU-GATED TESTS IN THIS LIST HAVE NEVER RUN IN CI. ANYWHERE.
@@ -378,8 +383,8 @@ endif()
 cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../engine")
 
 # SPADE_CONTENT_DIR (S7a Task R9, test_render_agreement.cpp): the ONE place
-# spade/tests/ reaches outside the spade/ tree into the surrounding repo, and
-# ONLY for test-fixture DATA -- content/worlds/*.world.yaml (plain
+# tests/ reaches outside this repo entirely, and ONLY for test-fixture DATA --
+# content/worlds/*.world.yaml (plain
 # Spade-schema world files, loaded through the SAME spade::world_from_yaml()
 # any other test uses).
 #
@@ -404,7 +409,7 @@ cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR
 # ⚠⚠ BUT COUNT THE REACHES HONESTLY, BECAUSE I FIRST WROTE THIS WRONG. An
 # earlier version of this paragraph said "SPADE_CONTENT_DIR is the one reach
 # again, as this comment always claimed it was." IT IS NOT. There are TWO
-# defines pointing outside spade/ -- SPADE_CONTENT_DIR here and
+# defines pointing outside this repo -- SPADE_CONTENT_DIR here and
 # SPADE_SCENES_DIR below -- and I added the second one myself an hour before
 # writing that sentence. Measured: `grep '\.\./\.\.' tests/CMakeLists.txt`
 # returns two. Correcting a false claim with a false claim is the defect this
@@ -432,7 +437,26 @@ cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR
 # guard's own job is the C/C++ include graph and the CMake link graph, not
 # which YAML a test happens to read at run time. NORMALIZED for the same
 # reason SPADE_ENGINE_DIR is, immediately above.
-cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../../content")
+# ⚠⚠ 2026-09-28, THE EXTRACTION: `../../content` MEANT KAT'S content/ WHILE THIS
+# TREE WAS `kat/spade/tests/`. It is `spade/tests/` now, so `../..` escapes this
+# repository onto whatever sits beside it -- and neither content/ nor
+# dev_project/ exists in a Spade checkout at all.
+#
+# ⭐ THE COMMENT BELOW ALREADY ANTICIPATED THIS CASE AND SOLVED IT FOR THE OTHER
+# PATH: "tree missing -> SKIP (a standalone spade checkout has no Kat project,
+# and failing there would restore the dependency through the back door)". That
+# was written about SPADE_SCENES_DIR. The identical reach through
+# SPADE_CONTENT_DIR never got the same treatment, so the extraction turned an
+# anticipated hypothetical into thirty FAILING tests rather than thirty skipped
+# ones. An asymmetry between two paths that reach the same way outlives whoever
+# knew which one was guarded.
+#
+# Both are cache variables now, defaulting to a sibling Kat checkout, so a
+# contributor who has one keeps the coverage and a contributor who does not gets
+# a loud skip instead of a red suite.
+set(SPADE_KAT_CONTENT_DIR "${CMAKE_SOURCE_DIR}/../KAT/content" CACHE PATH
+    "Kat's content/ library (worlds, airframes, meshes) the render-agreement matrix reads. Absent -> those cases SKIP.")
+cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${SPADE_KAT_CONTENT_DIR}")
 
 # SPADE_SCENES_DIR (2026-09-17): scene documents are NO LONGER under content/.
 # `f26fb39b` ("content/ becomes a library, and a project DECLARES the one it
@@ -459,7 +483,9 @@ cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DI
 # there would restore the dependency through the back door); tree present but a
 # scene or bookmark missing -> FAIL (that is a move, and a move is what cost
 # this suite thirty tests once already).
-cmake_path(SET SPADE_SCENES_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../../dev_project/scenes")
+set(SPADE_KAT_SCENES_DIR "${CMAKE_SOURCE_DIR}/../KAT/dev_project/scenes" CACHE PATH
+    "Kat's dev_project/scenes/ the bookmark-drift guard compares against. Absent -> that ONE test SKIPs, which it already did correctly.")
+cmake_path(SET SPADE_SCENES_DIR_NORMALIZED NORMALIZE "${SPADE_KAT_SCENES_DIR}")
 
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"

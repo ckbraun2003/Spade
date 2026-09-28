@@ -5,7 +5,7 @@
 //
 // WHY THAT ISOLATION EXISTS. spade_viewer links spade_warnings (/W4 /WX,
 // engine/CMakeLists.txt) like every other v2 target -- but v1's own `Spade`
-// library target does NOT (spade/src/CMakeLists.txt), and v1 is frozen, so
+// library target does NOT (src/CMakeLists.txt), and v1 is frozen, so
 // there is no fixing a v1 header that does not survive /W4 /WX. Rather than
 // weaken the whole spade_viewer target's warning policy for main.cpp and
 // scenes.cpp too (both of which are v1-free and DO compile clean under it),
@@ -21,7 +21,7 @@
 // ---------------------------------------------------------------------------
 // <windows.h> FIRST, DELIBERATELY -- AHEAD OF EVERYTHING ELSE IN THIS FILE,
 // INCLUDING bridge.hpp (S5 T9 /WX ticket). v1's Spade/Core/Engine.hpp
-// (spade/include/**, FROZEN -- not editable) includes <glad/glad.h> BEFORE
+// (include/**, FROZEN -- not editable) includes <glad/glad.h> BEFORE
 // its own <windows.h>, and minwindef.h's APIENTRY definition then collides
 // with glad.h's own -- warning C4005 "macro redefinition", fatal under /WX
 // (engine/CMakeLists.txt's spade_viewer target comment has the fuller

@@ -357,7 +357,7 @@ TEST(Fp32Exp, HandlesTheIdentityAtZeroAndTheNonFiniteArgumentsLikeTheStandardExp
 // FROM THE REPOSITORY, not from a scratch directory somebody has since deleted.
 //
 //     $env:SPADE_FULL_EXP_SWEEP = 1
-//     powershell -File spade\scripts\test.ps1 -Preset release -Filter FullDomainSweep
+//     powershell -File scripts\test.ps1 -Preset release -Filter FullDomainSweep
 //
 // WHY AN ENVIRONMENT GATE AND NOT THE DISABLED_ PREFIX, which is the idiom a
 // reader will expect and which was tried first: gtest_discover_tests sets
@@ -365,7 +365,7 @@ TEST(Fp32Exp, HandlesTheIdentityAtZeroAndTheNonFiniteArgumentsLikeTheStandardExp
 // and a CTest-DISABLED test is skipped by CTest itself before the binary is
 // ever launched. No flag overrides it, and --gtest_also_run_disabled_tests is
 // not a CTest option at all -- so the DISABLED_ form would have been reachable
-// only by invoking the gtest executable directly, which spade/scripts/test.ps1
+// only by invoking the gtest executable directly, which scripts/test.ps1
 // exists to forbid. GTEST_SKIP costs the same nothing on a normal run (it
 // reports as skipped in ~0.02 s) and stays reachable through the sanctioned
 // path, which is the whole point of committing the sweep.

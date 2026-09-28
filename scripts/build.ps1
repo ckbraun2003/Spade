@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Foreground Ninja build of the Spade v2 engine (spade/engine, spade/tests)
+    Foreground Ninja build of the Spade v2 engine (engine, tests)
     via CMake presets.
 
 .DESCRIPTION
@@ -8,7 +8,7 @@
     MSVC compiler environment itself, so this script imports it first (same
     vcvars64 discovery as interface/scripts/ninja-build.ps1), then configures
     (if not already configured) and builds the requested preset from
-    spade/CMakePresets.json.
+    CMakePresets.json.
 
     Run this in the FOREGROUND. Backgrounded builds get killed on this box.
 
@@ -21,7 +21,7 @@
     everything. One target per invocation, by design.
 
 .PARAMETER BuildDir
-    Build a tree this script did not lay out -- spade/build-gui, for instance,
+    Build a tree this script did not lay out -- build-gui, for instance,
     which is where spade_sandbox and the Vulkan-enabled tests actually live.
     It must ALREADY be configured: the presets fix each preset's binaryDir, so
     this script refuses to configure a directory it cannot aim a configure at,
@@ -36,21 +36,21 @@
     configure and full rebuild.
 
 .NOTES
-    THIS SCRIPT DRIVES spade/build-ninja/<preset> BY DEFAULT, AND THAT IS NOT
+    THIS SCRIPT DRIVES build-ninja/<preset> BY DEFAULT, AND THAT IS NOT
     THE TREE THE SPADE GUI RUNS FROM. The desktop shortcut launches
-    spade/build-gui/bin/spade_sandbox.exe; spade/build-ninja/release/bin has
+    build-gui/bin/spade_sandbox.exe; build-ninja/release/bin has
     never held that binary. Before -Target and -BuildDir existed, this script
     could not be aimed there at all, which cost a coordinator a declared
     deviation on 2026-09-20. If you are rebuilding the GUI, pass both.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset debug
+    powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Preset debug
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset release -Clean
+    powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Preset release -Clean
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -BuildDir spade\build-gui -Target spade_sandbox
+    powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -BuildDir build-gui -Target spade_sandbox
 #>
 [CmdletBinding()]
 param(
@@ -63,7 +63,7 @@ param(
     # not offered here at all.
     [string] $Target,
 
-    # Build a tree this script did not lay out -- spade/build-gui, say, which
+    # Build a tree this script did not lay out -- build-gui, say, which
     # is where spade_sandbox and the GPU-enabled tests actually live. Must
     # ALREADY be configured; see the refusal below for why.
     [string] $BuildDir,
@@ -82,8 +82,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# scripts/ is the child of spade/; spade/ is the CMake source dir (where
-# CMakePresets.json lives).
+# scripts/ is the child of the repo root; the repo root is the CMake source
+# dir (where CMakePresets.json lives).
 $SpadeDir   = Split-Path -Parent $PSScriptRoot
 $PresetName = "msvc-ninja-$Preset"
 

@@ -63,7 +63,7 @@ endif()
 
 # ------------------------------------------------------------------------------
 # GLM -- unconditional: spade_core's math_ops.hpp (v2) exposes glm types in
-# its public signatures (see spade/engine/CMakeLists.txt), so v2 needs GLM
+# its public signatures (see engine/CMakeLists.txt), so v2 needs GLM
 # even with SPADE_BUILD_V1=OFF.
 # ------------------------------------------------------------------------------
 FetchContent_Declare(
@@ -163,7 +163,7 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 # ------------------------------------------------------------------------------
-# google-benchmark (spade_bench, spade/tests/bench/bench_core.cpp, links this
+# google-benchmark (spade_bench, tests/bench/bench_core.cpp, links this
 # now; EXCLUDE_FROM_ALL just means benchmark's own internal targets --
 # its bundled gtest copy, its `benchmark_main`-less variants, etc. -- still
 # don't get pulled into the default `all` target just because the library
@@ -209,7 +209,7 @@ FetchContent_MakeAvailable(yaml-cpp)
 # nlohmann/json (header-only): render/gltf.cpp's glTF 2.0 parser (S7a Task
 # R4). Same v3.12.0 pin the repo ROOT CMakeLists.txt already uses for its own
 # separate build (runtime/, editor/) -- this is a DIFFERENT CMake project
-# (spade/ configures standalone, spade/CMakePresets.json's own binaryDir),
+# (this repo configures standalone, CMakePresets.json's own binaryDir),
 # so that pin buys nothing here automatically and has to be declared again;
 # keeping the version identical is deliberate, not load-bearing, so the two
 # trees' JSON behavior never has a reason to drift. No EXCLUDE_FROM_ALL: the

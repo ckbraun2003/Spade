@@ -24,7 +24,7 @@ lib/
 # kept current by someone remembering, so it needs a test to catch them
 # forgetting. This cannot fall behind.
 #
-# SAFE because nothing under spade/ that is not a build artifact begins with
+# SAFE because nothing here that is not a build artifact begins with
 # build- or install-: the real directories are assets/ cmake/ docs/ engine/
 # examples/ include/ scripts/ src/ tests/ vendor/. A future source directory
 # wanting one of those prefixes has to say so here, which is the right place
@@ -36,7 +36,7 @@ lib/
 #                                find_package(spade) resolves against
 #   build-ci/ + install-ci/      the docker gate's own spade leg + its
 #                                out-of-tree consumer smoke
-#   build-ninja/<preset>/        spade/scripts/build.ps1's dev-loop trees
+#   build-ninja/<preset>/        scripts/build.ps1's dev-loop trees
 #
 # NOTE: the ROOT .gitignore also lists spade/build-ci/ and spade/build-ninja/
 # individually. Those entries are now redundant rather than wrong, and they

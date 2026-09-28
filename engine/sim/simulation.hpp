@@ -70,7 +70,7 @@ class VulkanBackend;
 // substeps, the sequence of API calls). Concretely, the properties this class
 // is responsible for:
 //
-//   * NO WALL CLOCK. Nothing under spade/engine/ reads one; Tick is the only
+//   * NO WALL CLOCK. Nothing under engine/ reads one; Tick is the only
 //     notion of time and it advances by exactly one per step().
 //   * NO UNORDERED CONTAINERS anywhere in the step path or the structural
 //     queue. The queue is a std::vector applied front to back; worlds are

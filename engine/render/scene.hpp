@@ -462,7 +462,7 @@ struct MeshData {
 // A world visual reference already resolved to its geometry. `ref` names the
 // same string one of WorldDesc::visual_refs carries; resolving ref -> file ->
 // MeshData is entirely the CALLER's job (glTF loading, asset lookup -- no
-// kat- or file-format-specific vocabulary belongs in spade/).
+// kat- or file-format-specific vocabulary belongs in this codebase).
 struct NamedMesh {
     std::string ref;
     MeshData mesh;

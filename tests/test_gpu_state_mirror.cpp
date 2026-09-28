@@ -111,7 +111,7 @@ namespace {
 // storage was exempt, and the canonical constraint they were paraphrasing is
 // compute/step_params.hpp's scope fence, "S6 adds NO register_array call". The
 // number itself was load-bearing here, in these two assertions, and nowhere
-// else -- a sweep for the DECLARATION searched spade/engine/ and so could not
+// else -- a sweep for the DECLARATION searched engine/ and so could not
 // have found it.
 //
 // 22 AS OF THE GNSS SENSOR: eleven registered arrays, each contributing its

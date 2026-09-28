@@ -24,7 +24,7 @@
 //
 // TEST SUPPORT, NOT ENGINE API. This header lives under engine/testing/ and is
 // deliberately NOT installed, NOT exported, and NOT compiled into any shipped
-// target: it is header-only and included by spade/tests/ only. It uses
+// target: it is header-only and included by tests/ only. It uses
 // std::function and std::string freely for that reason -- it is allowed to be
 // convenient in ways the engine is not.
 //

@@ -73,12 +73,12 @@
 // cleanly with MSVC+Ninja, implement the strongest honest alternative (e.g.
 // a dumpbin symbol audit wired as a test, or an include-level static check)
 // and report the tradeoff." This file takes the SECOND option -- a
-// SOURCE-LEVEL scan of every .hpp/.cpp under spade/engine/ (skipping
+// SOURCE-LEVEL scan of every .hpp/.cpp under engine/ (skipping
 // tools/, the viewer's documented wall-clock exemption) for a short list of
 // forbidden substrings -- and the reasoning is worth stating rather than
 // just asserting:
 //
-//   * PORTABILITY. spade/CMakeLists.txt's own comment records that Task 4's
+//   * PORTABILITY. CMakeLists.txt's own comment records that Task 4's
 //     Linux CI configures SPADE_BUILD_V1=OFF specifically to build/test the
 //     v2 engine tree on its own -- i.e. this suite is expected to run on a
 //     platform where dumpbin.exe does not exist at all. A dumpbin-based
@@ -368,7 +368,7 @@ template <class T>
 // testing spec's no-CWD rule: a data location a test MUST find cannot be
 // CWD-relative).
 
-// Bullet 1 -- FIXED-STEP: no wall-clock symbol anywhere under spade/engine/
+// Bullet 1 -- FIXED-STEP: no wall-clock symbol anywhere under engine/
 // except tools/ (the viewer's documented pacing exemption).
 [[nodiscard]] bool no_wallclock_symbols_in_engine_source(std::string& detail) {
     const std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
@@ -433,7 +433,7 @@ template <class T>
 }
 
 // ---------------------------------------------------------------------------
-// S5 T9 ticket C -- NO LIBM TRANSCENDENTAL anywhere under spade/engine/
+// S5 T9 ticket C -- NO LIBM TRANSCENDENTAL anywhere under engine/
 // (tools/ excluded, the same render-only exemption bullet 1 above uses --
 // see this file's header comment and Ticket A's note in
 // tools/viewer/scenes.cpp: viewer code is not digest-feeding).

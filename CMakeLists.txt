@@ -31,7 +31,7 @@ include(FetchContent)
 # dead-code deletions -- e.g. include/Spade/Core/Engine.hpp's
 # EnableBruteForceNewtonianGravity, a method whose shader existed but whose
 # C++ body was never implemented, deleted outright rather than kept as
-# permanent dead weight (this is the exception clause spade/README.md's v1
+# permanent dead weight (this is the exception clause README.md's v1
 # section points back to). Default ON so today's behavior is unchanged;
 # Task 4's Linux CI configures with this OFF to build/test the v2 engine
 # tree (engine/, tests/) on its own.

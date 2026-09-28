@@ -82,7 +82,7 @@
 // bookmark schema (content/scenes/*.kscene's camera_bookmarks: target +
 // distance + yaw_radians + pitch_radians, an orbit camera -- mirrors
 // editor/ui/viewport/camera_controller.cpp's identical model, NOT included
-// from here since spade/ stays engine-agnostic and that file's own std::sin/
+// from here since this codebase stays engine-agnostic and that file's own std::sin/
 // std::cos would fail this scan anyway) is converted to a position+
 // orientation using spade::math::sin32/cos32 for the yaw/pitch trig and
 // Shepperd's rotation-matrix-to-quaternion method (cross/dot/normalize/sqrt
@@ -114,7 +114,7 @@
 // ANY printable parameter type, tuple or plain string alike (a flat string
 // registers exactly as `.../"world|camera"`, no better than a tuple's
 // `.../("world", "camera")`). The actual fix is `NO_PRETTY_VALUES` on this
-// binary's one `gtest_discover_tests()` call -- see spade/tests/
+// binary's one `gtest_discover_tests()` call -- see tests/
 // CMakeLists.txt's own comment there for the CMake source lines that prove
 // it, and task-R9-report.md's fix-round-2 note for how the round 1 mistake
 // was caught. This file keeps the flat-string parameterization anyway
@@ -388,7 +388,7 @@ struct OrbitBasis {
 // that breaks the day someone opens something else.
 //
 // tests/CMakeLists.txt's SPADE_CONTENT_DIR comment calls itself "the ONE place
-// spade/tests/ reaches outside the spade/ tree". Reading a project would have
+// tests/ reaches outside this repo entirely". Reading a project would have
 // made it two, and the second worse in kind. Owning the data NARROWS the
 // boundary back to one, which is the only answer consistent with why that
 // comment was written.
@@ -887,6 +887,27 @@ class AgreementMatrix : public ::testing::TestWithParam<std::string> {};
 
 TEST_P(AgreementMatrix, MeasuredDisagreementIsWithinItsPinnedBandAndDetectionSurfaceMatchesTheRecordedClaim) {
     const auto [world_name, camera_name] = split_case_key(GetParam());
+
+    // SKIP, NOT FAIL, WHEN KAT'S content/ IS NOT THERE. This matrix reads the
+    // LIVE shipped world library, which lives in Kat, not in this repository --
+    // see tests/CMakeLists.txt's SPADE_KAT_CONTENT_DIR. A Spade-only checkout
+    // legitimately has no Kat beside it.
+    //
+    // ⭐ THE SAME REACH THROUGH SPADE_SCENES_DIR HAS SKIPPED CORRECTLY SINCE
+    // 2026-09-17, and its CMake comment states the reason: "failing there would
+    // restore the dependency through the back door." This path never got the
+    // guard, so when Spade was extracted on 2026-09-28 these thirty cases went
+    // RED where the one scenes case went yellow -- identical reach, opposite
+    // outcome, because only one of them had been thought about.
+    //
+    // ⛔ A MISSING WORLD INSIDE A PRESENT TREE IS STILL A FAILURE. That is a
+    // move, and load_shipped_world()'s ADD_FAILURE below is what catches it.
+    // Only the whole tree being absent is a skip.
+    if (!std::filesystem::exists(content_dir())) {
+        GTEST_SKIP() << "no Kat content library at " << content_dir()
+                     << " -- the render-agreement matrix reads Kat's shipped worlds. "
+                        "Point -DSPADE_KAT_CONTENT_DIR=<path> at a Kat checkout to run it.";
+    }
 
     const WorldDesc world = load_shipped_world(world_name);
     ASSERT_FALSE(world.sdf.nodes.empty()) << "sanity: '" << world_name << "' must have real SDF geometry";

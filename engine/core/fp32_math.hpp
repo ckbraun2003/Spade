@@ -89,7 +89,7 @@
 // ---------------------------------------------------------------------------
 // ROUNDING MODE. Everything here assumes the default round-to-nearest,
 // ties-to-even, which is the mode every other fp32 expression in the engine
-// already assumes and which nothing in spade/ ever changes. The
+// already assumes and which nothing in this repo ever changes. The
 // round-to-integer step in the sin/cos reduction is written as a truncating
 // cast rather than std::rint precisely so it does not read the mode at all.
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 //
 // Same policy as bench_core.cpp / bench_sim.cpp: spade_bench is a standalone
 // executable, NOT registered with ctest, run by hand. Correctness of
-// render() is covered by spade/tests/test_render_raster.cpp; this file is for
+// render() is covered by tests/test_render_raster.cpp; this file is for
 // "how fast".
 //
 // ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@
 // other signal that the box was loaded.
 //
 // WHAT THIS BOX MEASURED, 2026-09-08 (a reference point to re-derive against,
-// NOT a pin -- Release, spade/build-host, mean of 3, real_time):
+// NOT a pin -- Release, build-host, mean of 3, real_time):
 //
 //   BackgroundFill  1892x1066  401.4 ms  CV  9.8%   |  2256x1504  659.3 ms  CV 2.8%
 //   GroundPlane     1892x1066  396.2 ms  CV  7.0%   |  2256x1504  722.2 ms  CV 5.9%
@@ -199,7 +199,7 @@
 //
 //      Still not measured here, and still the honest gap: this benchmark
 //      links spade::render directly and cannot link kat_host_spade (HS2
-//      rule 2 -- no kat concept inside spade/), so cross-slot effects that
+//      rule 2 -- no kat concept inside this engine), so cross-slot effects that
 //      only exist at the host level (cache pressure from N live pixel
 //      buffers, pool growth under concurrent acquires) are outside its
 //      reach by construction, not by omission.

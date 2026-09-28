@@ -17,7 +17,7 @@
 //
 // The global constraints make the negative half of that rule explicit and
 // review-rejectable: no std::random_device, no rand(), no std::mt19937 seeded
-// from anything, and no wall-clock read anywhere under spade/engine/. A
+// from anything, and no wall-clock read anywhere under engine/. A
 // stream's entire future is a function of (world seed, domain tag, index) and
 // of how many values have been drawn from it -- nothing else.
 //

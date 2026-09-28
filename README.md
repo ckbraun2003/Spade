@@ -1,26 +1,103 @@
-# Spade Engine
+# Spade
 
-Spade is Kat's simulation engine: a fixed-step, deterministic physics core (the "v2" engine,
-`engine/` + `tests/`) with a frozen v1 OpenGL renderer (`src/`, `include/`, `examples/`, `assets/`)
-that v2's strangler viewer drives during the transition to a real (Vulkan) render backend.
+**A deterministic, fixed-step simulation engine for robotics and autonomy training.**
+Headless by construction, bit-stable across runs, and built to step *many worlds at once* so a
+training fleet is one call rather than N processes.
 
-> **Status (2026-08, v0.2.0):** Spade lives inside the Kat monorepo (`spade/`, subtree-merged with
-> full history @ `1c8a133`) as the engine beneath Kat's sim stack. Its v2 direction -- fixed-step
-> deterministic stepping, a CPU reference twin for every authoritative pass, headless/offscreen
-> operation, seeded RNG, snapshots, native world-batching -- is pinned in
-> `docs/design/02-engine.md` (tracked in this repo; the engine `D1`-`D12` decision record,
-> approved v1.0 2026-08-08, consolidated into the spade realm directory 2026-09-07 -- the original
-> is archived at `docs/design/superseded/kat-spade-engine-design.html`). The S1-S4
-> implementation plan (`.superpowers/plans/2026-08-08-spade-engine-s1-s4.md`) landed the CPU path of
-> the charter's M1B bar -- see **M1B status** below. This README documents the engine **as it is
-> today**; the design spec is the source of truth for where it is going.
+```cpp
+#include "sim/simulation.hpp"
+#include "sim/world_set.hpp"
+#include "world/builder.hpp"
+
+// Author a world.
+spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
+    .name("hover_pad")
+    .environment(spade::Environment{})
+    .capacities(spade::Capacities{4, 4, 1, 1})
+    .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
+    .build();
+
+spade::WorldInstanceDesc prototype;
+prototype.world      = *world;
+prototype.turbulence = spade::dryden_params(spade::TurbulenceLevel::light);
+
+// Replicate into a fleet: 64 worlds, each with its own derived RNG root.
+spade::WorldSetDesc set = spade::replicate(prototype, /*count=*/64, /*scene_seed=*/0xC0FFEEULL);
+
+// ONE Simulation owns all 64. dt and substeps are fixed and part of the contract.
+spade::Result<spade::Simulation> sim =
+    spade::Simulation::create(set, /*dt_ns=*/2'000'000, /*substeps=*/2);
+
+sim->step();                        // steps every world, batched
+std::vector<std::byte> blob = ...;  // snapshot(): versioned; restore() refuses a
+                                    // blob taken under a different dt/substeps
+```
+
+Every fallible call returns `Result<T>` (`std::expected`-based). No exceptions cross a module
+boundary. C++23, fp32-only state and math.
+
+## What it is for
+
+Spade exists to make a training run **reproducible** and a parity claim **checkable**:
+
+- **Fixed-step and seeded.** Same seed, same inputs, same bits — pinned by a golden digest
+  corpus (`tests/golden/scenarios/*.scenario.yaml`), where each scenario is a committed data file
+  carrying its own `expected_digest` and a provenance block naming what moved and why.
+  Regenerating a digest is a deliberate act with a cost.
+- **A CPU reference twin for every authoritative pass.** The GPU is never a golden source;
+  device-dependent parity is compared live, every run, against the CPU path.
+- **World-batching is native, not a wrapper.** 64 worlds step in one call, with state
+  world-partitioned in an `ArenaSet` whose POD layouts `static_assert` their std430 offsets.
+- **Headless by construction.** No windowing, no input concept, and no wall-clock read anywhere
+  in `engine/` outside `tools/` and bench timers. Rendering is offscreen and optional.
+- **Snapshot/restore is a contract, not a convenience.** A blob restored under a different
+  `dt_ns`, `substeps` or `config_hash` is *rejected* rather than silently accepted.
+
+Measured on the reference box: a single quadrotor+IMU world runs **~296,000 substeps/sec**
+against a ≥10,000 floor, and a 64-world batched set runs **~176,000 world-substeps/sec** against
+a ≥64,000 (64 × 1 kHz) floor. Full runs in `tests/bench/baselines.json`.
+
+## Status — v0.2.0
+
+**The M1B bar is met on the CPU path**: fixed-step, headless, seeded determinism,
+snapshot/restore, 6-DOF + Quadrotor + IMU, each written as executable asserts in
+`tests/test_m1b_bar.cpp`. **521 tests, both presets green.** 59 carry the `gpu` ctest label and
+begin with a device check, so without a GPU they skip rather than fail and the count is 521
+either way.
+
+What is **not** done, stated plainly: the Vulkan/Slang GPU backend and real rendering are in
+progress (S6+), Linux GPU support rides that backend, and **one v1 system is still
+untransferred** — the SPH fluid solver, the single open row in `docs/v1-transfer-register.md`.
+Until it closes, the frozen v1 OpenGL engine stays in this tree, because it is still the only
+implementation of that solver.
+
+> **This repository became standalone on 2026-09-28.** Spade was built inside the Kat monorepo
+> and was extracted with its full history — the fourteen v1 commits at the base of this tree are
+> the originals, not a re-import. Kat is now a *consumer*: it links `spade::*` from an installed
+> tree via `find_package(spade CONFIG)` and owns its own adapter code, so nothing here depends on
+> Kat. Where the documents below mention Kat, they mean that consumer relationship.
+
+## Layout
+
+| Directory | What it is |
+|---|---|
+| `engine/` | the v2 engine — `core/ state/ world/ physics/ objects/ sim/ sensors/ vehicles/ compute/ shaders/`, one CMake target per subdirectory, dependency arrows strictly downward |
+| `tests/` | `spade_tests` (gtest, run through ctest), the golden determinism corpus, `tests/bench/`, and `tests/consumer/` — the worked out-of-tree `find_package` example |
+| `src/` `include/` `examples/` `assets/` | the **frozen v1** OpenGL engine. Not developed; kept runnable as a visual reference and because of the open transfer row |
+| `sandbox/` | the interactive sandbox application |
+| `scripts/` | `build.ps1`, `test.ps1`, `demo.ps1` |
+| `docs/design/` | the design record: charter, the `D1`–`D12` engine decisions, world/render, objects, status, lessons |
+| `docs/v1-transfer-register.md` | **normative** — every v1 system dispositioned, machine-checked so it cannot drift without a test failing |
 
 ## Where the other documents are
 
 | Path | What it is |
 |---|---|
 | `CHANGELOG.md` | Changes to the v2 engine. v1 is frozen. |
-| `docs/v1-transfer-register.md` | The normative v1 -> v2 transfer register (24th spec SL7). Every v1 system is dispositioned; **v1 may not be quarantined while any row is still open.** Machine-checked by `tests/test_transfer_register.cpp`, so it cannot drift from being true without a test failing. |
+| `CONTRIBUTING.md` | The rules that are not negotiable here — determinism, parity, and what regenerating a golden costs. |
+| `docs/design/01-charter.md` | What Spade is for, and the M1B bar it is measured against. |
+| `docs/design/02-engine.md` | The `D1`–`D12` decision record: determinism, CPU/GPU parity, batching. |
+| `docs/v1-transfer-register.md` | The normative v1 → v2 transfer register. **v1 may not be quarantined while any row is still open.** |
 | `engine/objects/README.md` | The object/component model and the behavior slots -- notably what the object graph is *not*. |
 
 ## v2 quickstart

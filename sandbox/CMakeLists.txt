@@ -70,7 +70,7 @@ if(SPADE_GLFW_HAS_BACKEND)
         target_compile_definitions(spade_sandbox PRIVATE
             # TARGET-scoped, never directory-scoped: windows.h's unguarded
             # min/max macros shadow GLM's quaternion_exponential.inl, which is
-            # the same defect spade/CMakeLists.txt already records against v1.
+            # the same defect CMakeLists.txt already records against v1.
             NOMINMAX
             WIN32_LEAN_AND_MEAN
         )

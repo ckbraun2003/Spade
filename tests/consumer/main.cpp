@@ -2,16 +2,24 @@
 // Task 5/8 integration follow-up: the yaml-cpp consumer-link closure).
 //
 // This is deliberately NOT a test of Spade's physics -- test_m1b_bar.cpp and
-// the rest of spade/tests/ already do that, in-tree, against spade_tests
+// the rest of tests/ already do that, in-tree, against spade_tests
 // linked directly to the engine's build-tree targets. What this program
 // proves is narrower and different: that find_package(spade CONFIG REQUIRED)
 // resolves from an INSTALLED tree (spadeConfig.cmake + spadeTargets.cmake,
-// spade/engine/CMakeLists.txt), that spade::sim/spade::vehicles link and run
+// engine/CMakeLists.txt), that spade::sim/spade::vehicles link and run
 // correctly once installed, and that the consumer's own glm and yaml-cpp
-// obligations (see spade/cmake/spadeConfig.cmake.in) are satisfiable the way
+// obligations (see cmake/spadeConfig.cmake.in) are satisfiable the way
 // that file documents. See CMakeLists.txt in this directory for how it is
-// configured against a scratch install prefix, and .github/workflows/spade.yml
-// for the CI step that drives both.
+// configured against a scratch install prefix.
+//
+// !! NOTHING CURRENTLY RUNS THIS PROGRAM. It used to be driven by
+// .github/workflows/spade.yml (deleted 2026-09-18) and then by Kat's
+// docker/run-ci-*.{sh,ps1} consumer legs, which went away on 2026-09-28 when
+// Spade was extracted into this repository -- proving Spade is not Kat's gate's
+// job any more. The PROGRAM is still correct and still the right check; the leg
+// that invokes it has to be rebuilt in this repo's own gate. Recorded in
+// CONTRIBUTING.md as owed rather than left to be discovered by someone
+// wondering why an obviously-important smoke never fails.
 //
 // THE WORLD-FILE ROUND TRIP BELOW IS LOAD-BEARING, NOT DECORATION: the
 // original version of this file built a WorldDesc directly via WorldBuilder

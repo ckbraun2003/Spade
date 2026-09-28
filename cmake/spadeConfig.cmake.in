@@ -1,12 +1,13 @@
 # spadeConfig.cmake -- generated from this file by configure_package_config_file
-# (spade/engine/CMakeLists.txt, next to the existing install(EXPORT spadeTargets
+# (engine/CMakeLists.txt, next to the existing install(EXPORT spadeTargets
 # ...)). This is what makes `find_package(spade CONFIG REQUIRED)` work for an
 # out-of-tree consumer at all: install(EXPORT) only emits spadeTargets.cmake --
 # the raw target definitions -- and CMake's config mode looks for a file named
 # exactly spade<Version>Config.cmake / spadeConfig.cmake, not for an export file
-# by name. spade/tests/consumer/ is this repo's own out-of-tree consumer, kept
-# in-tree only so CI can build+run it against a scratch `cmake --install` prefix
-# (see .github/workflows/spade.yml); the kat monorepo is the real one.
+# by name. tests/consumer/ is this repo's own out-of-tree consumer, kept
+# in-tree only to build+run against a scratch `cmake --install` prefix.
+# .github/workflows/spade.yml, which used to do that, was deleted 2026-09-18;
+# scripts/test.ps1 is this repo's gate now.
 #
 # ------------------------------------------------------------------------------
 # THE GLM GAP, AND WHY THIS FILE'S JOB IS A DIAGNOSTIC, NOT MAGIC.
@@ -15,7 +16,7 @@
 # their own signatures, and every module above it (world/state/physics/sim/
 # vehicles) carries that dependency transitively -- a consumer including ANY
 # installed Spade header needs glm's headers on its include path. Spade's own
-# build gets glm by FetchContent-vendoring it (spade/vendor/CMakeLists.txt,
+# build gets glm by FetchContent-vendoring it (vendor/CMakeLists.txt,
 # pinned to tag 1.0.1), but every link to it in engine/CMakeLists.txt is wrapped
 # in $<BUILD_INTERFACE:...> (see spade_core's glm-link comment there for the
 # full reasoning): install(EXPORT) refuses an export set whose members require a
@@ -39,9 +40,9 @@
 # IT IS DELIBERATELY NOT MAGIC: this file does not fetch or vendor glm on the
 # consumer's behalf -- that would mean two copies of glm (this one and whatever
 # the consumer's own build already manages) with no guarantee they agree.
-# spade/tests/consumer/CMakeLists.txt is the worked example of the obligation
+# tests/consumer/CMakeLists.txt is the worked example of the obligation
 # this message describes: it FetchContents the SAME pinned tag Spade vendors
-# (spade/vendor/CMakeLists.txt's GIT_TAG 1.0.1) before its own
+# (vendor/CMakeLists.txt's GIT_TAG 1.0.1) before its own
 # find_package(spade) call.
 #
 # ONE THING THIS FILE USED TO LEAVE UNCLOSED, NOW FIXED (S6 hygiene): the
@@ -66,7 +67,7 @@
 #
 # world/world_file.hpp's world_to_yaml()/world_from_yaml()/save_world_file()/
 # load_world_file() (S5 Task 5) parse and emit YAML through yaml-cpp, and
-# spade_world links it PRIVATE, $<BUILD_INTERFACE:...>-only (spade/engine/
+# spade_world links it PRIVATE, $<BUILD_INTERFACE:...>-only (engine/
 # CMakeLists.txt's spade_world yaml-cpp-link comment) for the identical
 # install(EXPORT) reason glm is genex-wrapped: yaml-cpp is a FetchContent
 # target (add_subdirectory + add_library, not an IMPORTED find_package
@@ -137,15 +138,15 @@ if(NOT TARGET glm::glm)
 "signatures, but glm is vendored via FetchContent in Spade's own build and is "
 "deliberately NOT part of this package's installed export set (glm is "
 "header-only and BUILD_INTERFACE-only there -- see "
-"spade/engine/CMakeLists.txt's spade_core glm-link comment). "
+"Spade's own engine/CMakeLists.txt's spade_core glm-link comment). "
 "find_package(spade) cannot provide it for you.\n"
-"Fetch the SAME pinned tag Spade itself vendors (spade/vendor/CMakeLists.txt) "
+"Fetch the SAME pinned tag Spade itself vendors (Spade's own vendor/CMakeLists.txt) "
 "before calling find_package(spade), e.g.:\n"
 "    include(FetchContent)\n"
 "    FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 1.0.1)\n"
 "    FetchContent_MakeAvailable(glm)\n"
 "or find_package(glm) a compatible install from your own environment instead. "
-"spade/tests/consumer/CMakeLists.txt is a worked example.")
+"Spade's own tests/consumer/CMakeLists.txt is a worked example.")
 endif()
 
 if(NOT TARGET yaml-cpp::yaml-cpp)
@@ -156,19 +157,19 @@ if(NOT TARGET yaml-cpp::yaml-cpp)
 "reader/writer -- S5 Task 5) links yaml-cpp's COMPILED archive, not just "
 "its headers -- and like glm above, yaml-cpp is vendored via FetchContent "
 "in Spade's own build and is NOT part of this package's installed export "
-"set (see spade/engine/CMakeLists.txt's spade_world yaml-cpp-link comment). "
+"set (see Spade's own engine/CMakeLists.txt's spade_world yaml-cpp-link comment). "
 "If your program calls into world_file.hpp -- directly, or transitively "
 "through anything that does -- your FINAL LINK needs yaml-cpp's symbols and "
 "find_package(spade) cannot supply them for you. (If it does not, this "
 "check still ran -- see this file's yaml-cpp comment block above for why "
 "that is the deliberate, conservative choice.)\n"
-"Fetch the SAME pinned tag Spade itself vendors (spade/vendor/CMakeLists.txt, "
+"Fetch the SAME pinned tag Spade itself vendors (Spade's own vendor/CMakeLists.txt, "
 "GIT_TAG 0.8.0) before calling find_package(spade), e.g.:\n"
 "    include(FetchContent)\n"
 "    FetchContent_Declare(yaml-cpp GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git GIT_TAG 0.8.0)\n"
 "    FetchContent_MakeAvailable(yaml-cpp)\n"
 "or find_package(yaml-cpp) a compatible install from your own environment "
-"instead. spade/tests/consumer/CMakeLists.txt is a worked example.")
+"instead. Spade's own tests/consumer/CMakeLists.txt is a worked example.")
 endif()
 
 # THE GLM CLOSURE -- the yaml-cpp twin below, same mechanism, simpler case.
@@ -181,7 +182,7 @@ endif()
 # consumer linking spade::core (or anything above it, which is everything)
 # transitively gets glm's include directories on its compile line, exactly
 # as if spade_core's own $<BUILD_INTERFACE:glm> link (engine/CMakeLists.txt)
-# had been installable. spade/tests/consumer/main.cpp is the worked example.
+# had been installable. tests/consumer/main.cpp is the worked example.
 set_property(TARGET spade::core APPEND PROPERTY INTERFACE_LINK_LIBRARIES glm::glm)
 
 # THE ACTUAL CLOSURE: wire the now-confirmed-present yaml-cpp::yaml-cpp onto
@@ -199,7 +200,7 @@ set_property(TARGET spade::core APPEND PROPERTY INTERFACE_LINK_LIBRARIES glm::gl
 # spade::world) transitively pulls yaml-cpp::yaml-cpp onto its final link
 # line, which is what actually resolves world_file.obj's yaml-cpp symbols
 # when (and only when) something in the link closure calls into
-# world/world_file.hpp. See spade/tests/consumer/main.cpp for the worked
+# world/world_file.hpp. See tests/consumer/main.cpp for the worked
 # example that calls the loader and proves this closure end to end.
 set_property(TARGET spade::world APPEND PROPERTY INTERFACE_LINK_LIBRARIES yaml-cpp::yaml-cpp)
 

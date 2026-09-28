@@ -5,7 +5,7 @@
     (Sandbox.exe, unmodified v1 GL engine).
 
 .DESCRIPTION
-    Task 14's USER CHECKPOINT #1: `spade\scripts\demo.ps1 -Scene bounce` builds
+    Task 14's USER CHECKPOINT #1: `scripts\demo.ps1 -Scene bounce` builds
     the requested target via build.ps1, then launches it with the mapped scene
     name as its one argument. build.ps1 runs in the FOREGROUND, mirroring
     build.ps1/test.ps1's own rule (backgrounded builds get killed on this
@@ -13,9 +13,9 @@
     are closed by the user (Esc or the window's close button).
 
     Task 14b amendment A3 added three more scenes -- v1-fluid, v1-spheres,
-    v1-cubes -- which launch Sandbox.exe (spade/examples/sandbox) instead of
+    v1-cubes -- which launch Sandbox.exe (examples/sandbox) instead of
     spade_viewer.exe, so the pre-existing v1 renders stay runnable as visual
-    regression references while v2 (spade/engine/) progresses. The four
+    regression references while v2 (engine/) progresses. The four
     original scenes (drop, bounce, shower, gate) are unchanged and still
     launch spade_viewer.exe.
 
@@ -57,13 +57,13 @@
     restitution ladder against a ground plane.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene bounce
+    powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene bounce
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene bounce -Backend vulkan
+    powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene bounce -Backend vulkan
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene gate -Preset debug
+    powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene gate -Preset debug
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene v1-fluid
+    powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene v1-fluid
 #>
 [CmdletBinding()]
 param(
@@ -84,7 +84,7 @@ $ErrorActionPreference = 'Stop'
 # (main.cpp: fluid|spheres|cubes).
 #
 # Task 20 added hover/wind/flight/swarm -- the flight demo + M1B verification
-# scenes (spade/engine/tools/viewer/scenes.cpp's make_scene()/scene_names()).
+# scenes (engine/tools/viewer/scenes.cpp's make_scene()/scene_names()).
 $V2Scenes = @('drop', 'bounce', 'shower', 'gate', 'hover', 'wind', 'flight', 'swarm')
 $V1SceneMap = @{
     'v1-fluid'   = 'fluid'
@@ -117,7 +117,7 @@ if ($IsV1Scene -and $Backend -ne 'cpu') {
     exit 1
 }
 
-# scripts/ is the child of spade/; spade/ is the CMake source dir.
+# scripts/ is the child of the repo root; the repo root is the CMake source dir.
 $SpadeDir = Split-Path -Parent $PSScriptRoot
 $BuildPs1 = Join-Path $PSScriptRoot 'build.ps1'
 
@@ -129,7 +129,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "build.ps1 failed (exit $LASTEXITCODE)"
 }
 
-# CMAKE_RUNTIME_OUTPUT_DIRECTORY (spade/CMakeLists.txt) puts every exe under
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY (CMakeLists.txt) puts every exe under
 # <binaryDir>/bin; build-ninja/<preset> is CMakePresets.json's binaryDir for
 # this preset (single-config Ninja generator -- no extra Debug/Release
 # subfolder the way a multi-config generator would add). Sandbox.exe (v1,

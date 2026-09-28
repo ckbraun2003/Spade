@@ -48,7 +48,7 @@ target_compile_options(spade_warnings INTERFACE
 # floating-point expression a contraction could touch, so linking this in
 # would be a no-op wearing the label of coverage.
 #
-# spade_tests AND spade_bench ARE ALSO LINKED (spade/tests/CMakeLists.txt) --
+# spade_tests AND spade_bench ARE ALSO LINKED (tests/CMakeLists.txt) --
 # an earlier version of this comment excluded them, on a justification that
 # does not survive contact with what those TUs actually do. Test code
 # RE-DERIVES REFERENCE ARITHMETIC of its own: test_dryden.cpp and
@@ -108,7 +108,7 @@ add_library(spade::core ALIAS spade_core)
 # does not see it. Without this property the installed, out-of-tree target
 # would be spade::spade_core, not spade::core, silently breaking every
 # find_package(spade) consumer's target_link_libraries(... spade::core) call
-# (this exact gap is what spade/tests/consumer/'s out-of-tree smoke caught).
+# (this exact gap is what tests/consumer/'s out-of-tree smoke caught).
 # Setting EXPORT_NAME here makes the exported name match this in-tree alias
 # exactly, so one name works both in-tree and installed. Same on every other
 # exported target below (spade_world/state/physics/sim/vehicles) -- see this
@@ -250,7 +250,7 @@ set_target_properties(spade_world PROPERTIES EXPORT_NAME world)
 # surface).
 #
 # THE ACTUAL FIX therefore lives one layer up, in the CONSUMER's own CMake run
-# rather than in this export: spade/cmake/spadeConfig.cmake.in, AFTER
+# rather than in this export: cmake/spadeConfig.cmake.in, AFTER
 # confirming yaml-cpp::yaml-cpp exists (its own explicit check, mirroring
 # glm's), does `set_property(TARGET spade::world APPEND PROPERTY
 # INTERFACE_LINK_LIBRARIES yaml-cpp::yaml-cpp)` -- legal precisely because
@@ -259,7 +259,7 @@ set_target_properties(spade_world PROPERTIES EXPORT_NAME world)
 # validation. The observable effect for a consumer is identical to what a
 # working install-interface entry would have produced: linking spade::sim (or
 # anything above spade::world) pulls yaml-cpp::yaml-cpp onto their final link
-# line transitively. spade/tests/consumer/ is the worked example that calls
+# line transitively. tests/consumer/ is the worked example that calls
 # the loader and proves the closure.
 target_link_libraries(spade_world
     PUBLIC
@@ -661,7 +661,7 @@ install(DIRECTORY physics/ DESTINATION include/physics FILES_MATCHING PATTERN "*
 # NOT LISTED HERE: engine/testing/. It holds header-only TEST SUPPORT --
 # replay.hpp (the determinism digest and the scenario harness) and, since S5
 # Task 7, scenario_file.hpp (the scenario-file loader) -- included by
-# spade/tests/ only, and deliberately absent from every target and every
+# tests/ only, and deliberately absent from every target and every
 # install rule. Note that every install(DIRECTORY ...) above names ONE module
 # directory (core/, world/, state/, physics/, sim/, sensors/, vehicles/), so
 # nothing sweeps testing/ by accident; adding a header there ships nothing.
@@ -798,7 +798,7 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # compiled TU today (vulkan/context.cpp), matching every other module in
 # this file.
 #
-# GATED ENTIRELY behind SPADE_VULKAN (spade/CMakeLists.txt, default ON) --
+# GATED ENTIRELY behind SPADE_VULKAN (CMakeLists.txt, default ON) --
 # unlike vendor/CMakeLists.txt's Vulkan-Headers/volk/slang FetchContent
 # calls, which fetch unconditionally (see that file's own comments), this is
 # the one place SPADE_VULKAN actually removes something from the build
@@ -832,7 +832,7 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # interface as $<LINK_ONLY:...>; an unwrapped or BUILD_LOCAL_INTERFACE-only
 # entry would make install(EXPORT spadeTargets ...) reject `volk`/
 # `Vulkan-Headers` for not being in any export set. $<BUILD_INTERFACE:...>
-# keeps both live for in-tree consumers -- spade/tests/CMakeLists.txt directly
+# keeps both live for in-tree consumers -- tests/CMakeLists.txt directly
 # links `volk`/`Vulkan::Headers` itself for exactly this reason, mirroring
 # how it already directly links `yaml-cpp::yaml-cpp` for
 # engine/testing/scenario_file.hpp -- while leaving the installed export
@@ -989,7 +989,7 @@ target_link_libraries(spade_compute PRIVATE
 # needed BEFORE this SPADE_VULKAN block is even entered, which is not true
 # here).
 #
-# spade/tests/CMakeLists.txt's own direct `volk` link (its host-side
+# tests/CMakeLists.txt's own direct `volk` link (its host-side
 # test_compute_context.cpp/probe_runner.hpp need volk.h on their own include
 # path -- see that file's comment) is UNTOUCHED and still correct: a static
 # archive only extracts the member that resolves a symbol still undefined at
@@ -1238,8 +1238,9 @@ install(EXPORT spadeTargets
 # ------------------------------------------------------------------------------
 # spadeConfig.cmake / spadeConfigVersion.cmake (Task 8: the kat build wiring) --
 # what makes `find_package(spade CONFIG REQUIRED)` work for an OUT-OF-TREE
-# consumer (spade/tests/consumer/, .github/workflows/spade.yml's install+consume
-# CI step). install(EXPORT) above only emits spadeTargets.cmake, the raw target
+# consumer (tests/consumer/). .github/workflows/spade.yml's install+consume
+# CI step, which used to exercise this, was deleted 2026-09-18; scripts/test.ps1
+# is this repo's gate now. install(EXPORT) above only emits spadeTargets.cmake, the raw target
 # definitions; CMake's config mode looks for a file named spadeConfig.cmake (or
 # spade<Version>Config.cmake) to find its way TO that file at all, and for a
 # spadeConfigVersion.cmake to perform the compatibility check a versioned
@@ -1252,7 +1253,7 @@ install(EXPORT spadeTargets
 # happens to point rather than baked in as THIS build's absolute prefix.
 #
 # SameMajorVersion, version ${PROJECT_VERSION} (project(Spade VERSION 0.2.0),
-# spade/CMakeLists.txt): any 0.x.y request is accepted -- the same "no
+# CMakeLists.txt): any 0.x.y request is accepted -- the same "no
 # stability promise yet" posture 0.x carries everywhere else in this tree --
 # and a 1.0.0 request would be rejected once the project actually reaches 1.0.
 # ------------------------------------------------------------------------------
@@ -1279,9 +1280,9 @@ install(FILES
 # ------------------------------------------------------------------------------
 # spade_viewer (Task 14): the strangler viewer -- v1's frozen OpenGL renderer
 # fed by v2 Simulation state, one demo scene at a time
-# (spade/scripts/demo.ps1). A TOOL, not a library: not installed, not
+# (scripts/demo.ps1). A TOOL, not a library: not installed, not
 # exported, and guarded by SPADE_BUILD_V1 because it links v1's GL stack (the
-# `Spade` target from spade/src, only built when SPADE_BUILD_V1=ON -- root
+# `Spade` target from src/, only built when SPADE_BUILD_V1=ON -- root
 # CMakeLists.txt). With SPADE_BUILD_V1=OFF this whole block -- and therefore
 # the viewer -- is absent from the build graph; nothing else here depends on
 # it existing.
@@ -1316,7 +1317,7 @@ target_link_libraries(spade_viewer PRIVATE
 # APIENTRY, Engine.hpp then includes <windows.h> AFTER glad.h, and
 # minwindef.h's own APIENTRY definition collides -- warning C4005 "macro
 # redefinition", fatal under /WX. v1's own `Spade` target never hits this
-# because it links no warnings flags at all (spade/src/CMakeLists.txt).
+# because it links no warnings flags at all (src/CMakeLists.txt).
 #
 # Per the coordinator's resolution: isolate the relaxation to bridge.cpp
 # ALONE rather than dropping /W4 /WX for the whole target. main.cpp and

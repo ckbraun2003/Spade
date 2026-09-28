@@ -1,14 +1,14 @@
 // Manual-only benchmark harness for the v2 engine's core math primitives.
 //
-// spade_bench (see spade/tests/CMakeLists.txt) is a standalone executable,
+// spade_bench (see tests/CMakeLists.txt) is a standalone executable,
 // NOT registered with ctest / gtest_discover_tests -- it is not part of the
 // "spade" or "T0" CTest label sets that CI runs, and is not expected to be
 // until S6. google-benchmark drives it because the goal here is throughput
 // measurement, not pass/fail assertions: correctness of
 // spade::math::integrate_orientation is covered separately (closed-form
-// comparisons in spade/tests/test_math.cpp), this file is for "how fast."
+// comparisons in tests/test_math.cpp), this file is for "how fast."
 //
-// Baseline comparison policy (through S6): spade/tests/bench/baselines.json
+// Baseline comparison policy (through S6): tests/bench/baselines.json
 // holds recorded runs' numbers as REFERENCE points only, seeded by hand --
 // see that file's own "_meta" entry for box/date/provenance (re-seeded more
 // than once already; "first recorded run" stopped being true the moment a
@@ -21,13 +21,13 @@
 // automated comparison; until then, treat every number here as
 // informational, not a gate.
 //
-// Run (after spade/scripts/build.ps1, or the equivalent direct-configure
+// Run (after scripts/build.ps1, or the equivalent direct-configure
 // build on Linux):
-//   spade/build-ninja/release/bin/spade_bench.exe --benchmark_format=json
-//   spade/build-ci/bin/spade_bench --benchmark_format=json
+//   build-ninja/release/bin/spade_bench.exe --benchmark_format=json
+//   build-ci/bin/spade_bench --benchmark_format=json
 //
 // Never invoke this (or any other Spade binary) from a backgrounded shell on
-// this box -- see spade/scripts/build.ps1's header and the plan's global
+// this box -- see scripts/build.ps1's header and the plan's global
 // constraints. Unlike spade_tests, spade_bench is a manual tool: run it in
 // the foreground and read its own output directly.
 

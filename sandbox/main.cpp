@@ -19,10 +19,12 @@
 // states the headless command that exercises its logic before it states its
 // UI.
 //
-// And it is the only mode CI will ever run: this suite's sole automated gate
-// is .github/workflows/spade.yml (spade/tests/ is unreachable from every root
-// build tree -- see tests/CMakeLists.txt), and that runner has no GPU AND NO
-// DISPLAY.
+// .github/workflows/spade.yml, which used to be this suite's sole automated
+// gate and ran it exactly this way -- headless, no GPU, no display -- was
+// deleted 2026-09-18. scripts/test.ps1 is this repo's gate now, but it does
+// not run this suite; nothing currently runs spade_sandbox automatically
+// (tests/ is unreachable from every root build tree -- see
+// tests/CMakeLists.txt).
 //
 // SL2b: this target may include only headers the engine INSTALLS and may link
 // only spade:: targets. It reaches into no engine internal by relative path.
@@ -524,7 +526,7 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
     std::vector<uint8_t> pixels;
 
     // THE BUILDER. The model is the application's; every decision it makes
-    // lives in builder_scene.hpp and is exercised by spade/tests with no
+    // lives in builder_scene.hpp and is exercised by tests/ with no
     // display. What remains here is the wiring, and it is deliberately dull.
     spade::sandbox::BuilderScene builder;
     builder.grid = grid;

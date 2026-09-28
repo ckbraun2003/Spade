@@ -89,7 +89,7 @@ struct ScreenPoint {
 // review Minor 3) -- the wireframe rasterizer's own projectCameraSpace called
 // std::tan() directly, which was legal there (dronesim/spade/ is kat-side,
 // outside this engine's determinism contract); this file lives under
-// spade/engine/render/, which IS scanned by
+// engine/render/, which IS scanned by
 // tools/tests/test_m1b_bar.cpp's BitPortability.NoLibmTranscendentalInEngineSource,
 // so it uses scene.hpp's shared, sin32/cos32-built tan32() instead -- now
 // render/raymarch.cpp's identical camera-ray need reads the SAME function

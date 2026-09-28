@@ -1,14 +1,14 @@
 // Manual-only benchmark harness for the v2 engine's Simulation::step()
 // throughput -- Task 21 close-out.
 //
-// spade_bench (see spade/tests/CMakeLists.txt) is a standalone executable,
+// spade_bench (see tests/CMakeLists.txt) is a standalone executable,
 // NOT registered with ctest / gtest_discover_tests -- it is not part of the
 // "spade" or "T0" CTest label sets that CI runs, and is not expected to be
 // until S6. google-benchmark drives it because the goal here is throughput
 // measurement, not pass/fail assertions -- exactly bench_core.cpp's policy,
 // restated for this file: correctness of everything exercised below (the
 // integrator, the broad phase, the rotor/IMU chain) is covered separately by
-// spade/tests/test_*.cpp; this file is for "how fast."
+// tests/test_*.cpp; this file is for "how fast."
 //
 // WHAT THIS FILE MEASURES, AND IN WHAT UNIT. Every benchmark below calls
 // Simulation::step(n) with the Simulation configured at substeps == 1 (see
@@ -60,7 +60,7 @@
 // values in bench_quadrotor_params() below are copied from
 // tools/viewer/scenes.cpp's demo_quadrotor_params() (same mass, inertia, arm
 // length, rotor constants, drag) rather than shared, so this file has no
-// build-graph dependency on the viewer at all -- see spade/CMakeLists.txt's
+// build-graph dependency on the viewer at all -- see CMakeLists.txt's
 // SPADE_BUILD_V1 comment for why that separation exists.
 //
 // ---------------------------------------------------------------------------
@@ -121,15 +121,15 @@
 // together can actually answer.
 // ---------------------------------------------------------------------------
 
-// Baseline comparison policy (through S6): spade/tests/bench/baselines.json
+// Baseline comparison policy (through S6): tests/bench/baselines.json
 // holds recorded runs as REFERENCE points only -- see that file's own
 // "_meta" entry and bench_core.cpp's header comment for the full policy.
 // Nothing in CI reads or diffs against it.
 //
-// Run (after spade/scripts/build.ps1, or the equivalent direct-configure
+// Run (after scripts/build.ps1, or the equivalent direct-configure
 // build on Linux):
-//   spade/build-ninja/release/bin/spade_bench.exe --benchmark_format=json
-//   spade/build-ci/bin/spade_bench --benchmark_format=json
+//   build-ninja/release/bin/spade_bench.exe --benchmark_format=json
+//   build-ci/bin/spade_bench --benchmark_format=json
 //
 // Never invoke this (or any other Spade binary) from a backgrounded shell on
 // this box -- run it in the foreground, same as bench_core.cpp and every

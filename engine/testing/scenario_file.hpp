@@ -39,7 +39,7 @@
 // it: header-only, deliberately NOT installed, NOT exported, and not compiled
 // into any shipped target (engine/CMakeLists.txt installs headers per
 // DIRECTORY -- core/, world/, state/, physics/, sim/, sensors/, vehicles/ --
-// and testing/ is in none of them). It is included by spade/tests/ only, which
+// and testing/ is in none of them). It is included by tests/ only, which
 // is why it may use std::function, std::string and yaml-cpp freely.
 //
 // ---------------------------------------------------------------------------

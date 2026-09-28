@@ -1,8 +1,8 @@
 # ------------------------------------------------------------------------------
 # Out-of-tree find_package(spade) consumer smoke (S5 Task 8: the kat build
 # wiring). This is a SEPARATE, STANDALONE CMake project -- NOT add_subdirectory'd
-# from spade/CMakeLists.txt or spade/tests/CMakeLists.txt -- because that is the
-# whole point of it: the rest of spade/tests/ links spade::* as in-tree
+# from CMakeLists.txt or tests/CMakeLists.txt -- because that is the
+# whole point of it: the rest of tests/ links spade::* as in-tree
 # build-tree targets and never touches spadeConfig.cmake/spadeTargets.cmake at
 # all, so it cannot catch a defect in either. This project is configured and
 # built against an INSTALLED Spade tree (CMAKE_PREFIX_PATH pointing at a
@@ -15,9 +15,11 @@
 # repo that would fail to link if such a dependency's symbols are not reachable
 # from the installed tree.
 #
-# See .github/workflows/spade.yml for how both CI jobs drive this (install the
-# engine build, then configure+build+run this project against that prefix) and
-# main.cpp for what it actually does.
+# .github/workflows/spade.yml used to drive this (install the engine build,
+# then configure+build+run this project against that prefix) but was deleted
+# 2026-09-18; scripts/test.ps1 is this repo's gate now, though it does not run
+# this out-of-tree smoke either -- see main.cpp for what this project actually
+# does.
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.28)
 project(spade_consumer_smoke LANGUAGES CXX)
@@ -25,10 +27,10 @@ project(spade_consumer_smoke LANGUAGES CXX)
 include(FetchContent)
 
 # ------------------------------------------------------------------------------
-# glm -- the consumer's own obligation. spadeConfig.cmake.in (spade/cmake/)
+# glm -- the consumer's own obligation. spadeConfig.cmake.in (cmake/)
 # documents WHY: glm is header-only and BUILD_INTERFACE-only in Spade's own
 # export, so find_package(spade) alone cannot supply it. Pinned to the SAME tag
-# spade/vendor/CMakeLists.txt vendors (GIT_TAG 1.0.1) and copied in the same
+# vendor/CMakeLists.txt vendors (GIT_TAG 1.0.1) and copied in the same
 # stanza shape rather than abstracted, so the pin stays visible here without
 # cross-referencing the other file.
 # ------------------------------------------------------------------------------
@@ -42,13 +44,13 @@ FetchContent_MakeAvailable(glm)
 
 # ------------------------------------------------------------------------------
 # yaml-cpp -- the consumer's OTHER obligation (integration follow-up to S5
-# Task 5's world-file reader/writer). spadeConfig.cmake.in (spade/cmake/)
+# Task 5's world-file reader/writer). spadeConfig.cmake.in (cmake/)
 # documents WHY, at length: unlike glm (headers only), yaml-cpp is a COMPILED
 # archive spade_world's world_file.hpp API needs at LINK time, and
 # spadeConfig.cmake checks for it unconditionally because it cannot see, at
 # configure time, whether main.cpp below will call into that API (it does --
 # see main.cpp for the actual world-file round trip that exercises this).
-# Pinned to the SAME tag spade/vendor/CMakeLists.txt vendors (GIT_TAG 0.8.0)
+# Pinned to the SAME tag vendor/CMakeLists.txt vendors (GIT_TAG 0.8.0)
 # and copied in the same stanza shape (down to the CMAKE_POLICY_VERSION_MINIMUM
 # workaround yaml-cpp 0.8.0's own ancient cmake_minimum_required needs), for
 # the same reason glm's stanza above is copied rather than abstracted: the pin
@@ -83,7 +85,7 @@ target_compile_features(spade_consumer_smoke PRIVATE cxx_std_23)
 # non-exported target (yaml-cpp::yaml-cpp, FetchContent-built, is exactly
 # that). The propagation actually happens one layer up, in THIS project's own
 # find_package(spade CONFIG REQUIRED) call above: spadeConfig.cmake.in
-# (spade/cmake/) confirms yaml-cpp::yaml-cpp exists (find_package(yaml-cpp)
+# (cmake/) confirms yaml-cpp::yaml-cpp exists (find_package(yaml-cpp)
 # plus a FATAL_ERROR check) and then does, at CONFIGURE TIME, in the
 # consumer's own CMake run --
 #     set_property(TARGET spade::world APPEND PROPERTY

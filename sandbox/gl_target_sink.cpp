@@ -49,7 +49,7 @@
 // link unconditionally too.
 //
 // NOMINMAX and WIN32_LEAN_AND_MEAN are set target-scoped in CMake, for the
-// reason spade/CMakeLists.txt already records against v1: windows.h's
+// reason CMakeLists.txt already records against v1: windows.h's
 // unguarded min/max macros shadow GLM's quaternion_exponential.inl.
 #ifdef _WIN32
 #include <windows.h>

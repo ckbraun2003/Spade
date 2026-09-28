@@ -5,13 +5,13 @@
 
 .DESCRIPTION
     Never invoke a test .exe directly -- gtest_discover_tests registers each
-    TEST() as its own CTest case with LABELS "spade;T0" (spade/tests/
+    TEST() as its own CTest case with LABELS "spade;T0" (tests/
     CMakeLists.txt), and -L spade below relies on that registration to select
     the v2 engine suite.
 
     WHY -L spade AND NOT -L T0 (S6 hygiene note; no behavior change, this is
     the consumer decision the label's existence implies but nothing states):
-    every test this suite registers carries BOTH labels today (spade/tests/
+    every test this suite registers carries BOTH labels today (tests/
     AppendSpadeLabels.cmake's blanket "spade;T0" call), so the two selectors
     are currently equivalent in this build tree -- but they answer different
     questions, and only one of them is this script's job to answer. "spade"
@@ -30,18 +30,18 @@
 
 .PARAMETER Preset
     Which build to test: 'debug' or 'release', matching build.ps1's -Preset.
-    Defaults to 'release', i.e. spade/build-ninja/release.
+    Defaults to 'release', i.e. build-ninja/release.
 
 .PARAMETER Filter
     Optional regex passed through to ctest's -R (only run matching test
     names).
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\test.ps1
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1 -Preset debug
+    powershell -ExecutionPolicy Bypass -File scripts\test.ps1 -Preset debug
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1 -Filter IntegrateOrientation
+    powershell -ExecutionPolicy Bypass -File scripts\test.ps1 -Filter IntegrateOrientation
 #>
 [CmdletBinding()]
 param(
@@ -52,7 +52,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# scripts/ is the child of spade/; spade/build-ninja/<preset> is where
+# scripts/ is the child of the repo root; build-ninja/<preset> is where
 # CMakePresets.json's binaryDir puts this preset's build.
 $SpadeDir = Split-Path -Parent $PSScriptRoot
 $TestDir  = Join-Path $SpadeDir "build-ninja/$Preset"
