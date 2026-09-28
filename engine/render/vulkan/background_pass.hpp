@@ -163,6 +163,39 @@ private:
         float pad1;
     };
 
+    // -----------------------------------------------------------------
+    // ⛔ THESE TWO SIZES ARE A STRIDE CONTRACT WITH THE DEVICE, NOT TRIVIA.
+    //
+    // PlaneGpu is copied into a StructuredBuffer with
+    //   memcpy(dst, src, count * sizeof(PlaneGpu))
+    // so sizeof() IS the element stride the shader will be indexed at. Under
+    // std430 the kernel's GroundPlaneGpu has base alignment 16 (it contains
+    // float3), so its stride is ROUNDED UP to 64 whatever its fields sum to.
+    // This C++ struct's alignof is only 4 -- every member is float or uint32_t
+    // -- so MSVC does NO such rounding.
+    //
+    // ⛔ CONCRETELY: DELETING `pad1` AS UNUSED PADDING TAKES sizeof(PlaneGpu)
+    // FROM 64 TO 60 WHILE THE SHADER'S STRIDE STAYS 64, AND EVERY PLANE AFTER
+    // THE FIRST IS READ FROM THE WRONG OFFSET. Nothing else in this program
+    // would notice: it compiles, it runs, and the corruption is silent and
+    // per-element. `pad1` is therefore NOT removable, and this assert is what
+    // says so to whoever tidies it.
+    //
+    // ⚠ WHAT THIS DOES *NOT* DO, stated because a guard that looks like proof
+    // of more than it checks is worse than none: IT PINS THE HOST SIDE ONLY. It
+    // cannot see the kernel's structs at all, so it catches DRIFT in this file
+    // and would not catch a field added to raster_background.slang. The real
+    // both-sides guard is a std430 layout assertion against slangc's
+    // reflection, and it is still owed -- see the Params note above.
+    //
+    // The values were derived by hand (10 float3+scalar pairs = 160, plus four
+    // trailing scalars = 176; and 4 pairs = 64) and NOT read off a compiler,
+    // because this file has never been compiled. If the first build disagrees,
+    // THE ASSERT IS THE THING THAT IS WRONG -- re-derive it, do not delete it.
+    // -----------------------------------------------------------------
+    static_assert(sizeof(Params) == 176, "Params must stay 176 B: 11 16-byte std140 slots");
+    static_assert(sizeof(PlaneGpu) == 64, "PlaneGpu IS the std430 element stride; 60 corrupts every plane after the first");
+
     compute::VulkanContext* ctx_ = nullptr;   // borrowed; outlives this by construction order
 
     // ⛔ SET 0 IS DECLARED AND EMPTY, AND IT IS NOT OPTIONAL. The kernel binds

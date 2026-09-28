@@ -1145,9 +1145,17 @@ spade_slang_kernel_variants(spade_compute sensor_imu)
 spade_slang_kernel_variants(spade_compute sensor_gnss)
 
 # T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/
-# spade_slang_kernel_variants() call above (fp32_math_probe through
-# sensor_gnss, ELEVEN in total -- sensor_gnss joined at the GPU-sensor leg and
-# moved kCompiledSpirvKernelCount 10 -> 11 with it) -- see SpadeSlang.cmake's
+# spade_slang_kernel_variants() call above (fp32_math_probe through sensor_gnss)
+# -- see SpadeSlang.cmake's
+#
+# This comment USED TO SAY "ELEVEN in total" and "moved kCompiledSpirvKernelCount
+# 10 -> 11". The generated value is 13 today. The count was restated here and
+# then moved twice more without anyone touching this line.
+# DO NOT REPLACE IT WITH 13. A CURRENT VALUE RESTATED IN PROSE IS GUARANTEED TO
+# ROT; ONLY AN INVARIANT IS SAFE TO WRITE DOWN -- and the invariant is the
+# ORDERING, which is the whole reason this comment exists. The number has exactly
+# one home (the generated header) and exactly one checker
+# (test_slang_layouts.cpp's SlangSpirv.EveryCompiledVariantIsScanned).
 # own function comment
 # for why the ordering is load-bearing. Writes kernel_manifest.gen.hpp's
 # kCompiledSpirvKernelCount, which tests/test_slang_layouts.cpp asserts

@@ -73,6 +73,28 @@ struct ProbeResources {
     }
 };
 
+// ⚠ THIS COLLAPSES A TAXONOMY TWO OTHER FILES IN THIS DIRECTORY KEEP, AND THE
+// DISAGREEMENT IS LIVE RATHER THAN HYPOTHETICAL. state_mirror.cpp's and
+// render/vulkan/background_pass.cpp's map_vk_error() both route
+// VK_ERROR_OUT_OF_{DEVICE,HOST}_MEMORY to Code::capacity_exceeded and
+// VK_ERROR_DEVICE_LOST to a named Code::internal. This maps EVERY VkResult to a
+// bare Code::internal, so an out-of-memory reported through this file and the
+// identical failure reported through those two CARRY DIFFERENT CODES TODAY.
+//
+// ⛔ NOT CHANGED HERE, DELIBERATELY. What this returns is a fault-path behaviour
+// change, no build was available in the session that found it, and a fault-path
+// test may assert Code::internal. Folded into the kernel-wiring commit, which is
+// the first one that will have a compiler. ⚠ Collapsing may also be RIGHT for a
+// one-shot probe whose only real answer is "the probe could not run" -- in which
+// case the fix is to SAY that here, not to converge. The silence is the defect.
+//
+// ⭐⭐⭐ HOW IT STAYED INVISIBLE, WHICH IS THE PART THAT GENERALISES. It was
+// reported as "three copies of map_vk_error" after grepping for the NAME. There
+// are TWO copies and they AGREE; this third site does the same job under a
+// different name (fail / pick_host_memory_type / make_host_buffer) and is the
+// ONLY ONE THAT DIVERGED. ***A SEARCH KEYED ON A NAME FINDS COPIES AND IS BLIND
+// TO REIMPLEMENTATIONS -- AND THE REIMPLEMENTATION IS WHERE THE DRIFT ALREADY IS,
+// PRECISELY BECAUSE NOTHING MADE IT LOOK LIKE A COPY.***
 [[nodiscard]] std::unexpected<Error> fail(const char* what, VkResult result) {
     return std::unexpected(
         Error{Code::internal, std::string(what) + " failed (VkResult " + std::to_string(static_cast<int>(result)) + ")"});

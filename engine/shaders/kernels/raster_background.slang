@@ -220,8 +220,17 @@ float grid_coverage(float3 hit_world, float3 u, float3 v, float view_distance) {
 }
 
 // render/scene.hpp's shade(), lambert half only -- the background pass never
-// samples the shadow map for a ground plane (raster_cpu applies the static
-// shadow separately, and stage 2 brings it across).
+// samples the shadow map for a ground plane, and raster_cpu DOES apply the
+// static shadow to its analytic ground (apply_shadow/sample_shadow).
+// ⛔ THIS SENTENCE USED TO SAY "STAGE 2 BRINGS IT ACROSS". STAGE 2 LANDED
+// (cfd01879) AND DID NOT. Corrected rather than left standing, because a
+// forward promise whose deadline has passed reads as a plan and is a false
+// statement about the tree -- the declaration rotted while the behaviour
+// stayed correct, which is the failure nothing here instruments for.
+// ⚠ SO THIS IS A REAL, OPEN DIFFERENCE FROM THE CPU BACKGROUND, not a
+// deferred one with an owner: with RenderOptions::shadows on and a static
+// shadow map present, the CPU's ground is shadowed and this kernel's is not.
+// It is COLOUR-ONLY, so compare_silhouettes() cannot see it either.
 float3 shade_lambert(float3 base, float3 n_world) {
     const float n_dot_l = max(dot(n_world, bg.sun_direction), 0.0f);
     const float3 sun_term = bg.sun_color * (bg.sun_intensity * n_dot_l);
@@ -364,12 +373,24 @@ void raster_background(uint3 tid : SV_DispatchThreadID) {
         // fade behave in metres rather than in ray-parameter units.
         const float view_distance = best_t * sqrt(dot(ray, ray));
 
-        // shade_vertex_color()'s OWN EARLY RETURN, not an approximation of it:
-        // unlit (1) and emissive (2) echo base_color verbatim, with no sun term
-        // at all. Omitting this lamberted every plane and was WRONG for any
-        // ground whose material is not mode 0.
-        float3 ground = gp.shading_mode == 0u ? shade_lambert(gp.base_color, gp.normal)
-                                             : gp.base_color;
+        // shade_vertex_color()'s OWN EARLY RETURN, and note the TEST IS ON 1 AND 2,
+        // NOT ON `!= 0`. The CPU is `if (shading == 1 || shading == 2) return base;`
+        // and falls through to lambert for 0 OR ANY OTHER VALUE. Testing `== 0`
+        // instead is its complement only across {0,1,2}, and diverges for anything
+        // outside that set -- the GPU would echo raw base_color where the CPU
+        // lamberts.
+        // ⛔ AND "OUT OF RANGE CANNOT HAPPEN" IS NOT A FACT ABOUT THIS FILE.
+        // world/builder.cpp:368 rejects shading >= kMaterialShadingCount, but that
+        // validates a WorldDesc -- and a RenderScene can be HAND-BUILT, which every
+        // fixture in this corpus does (render/scene.hpp says so), bypassing that
+        // check entirely. So the guarantee lives in a different file at a different
+        // layer and does not cover this path's real callers.
+        // ⭐ A DIVERGENCE GROUNDED IN "SOMETHING UPSTREAM CURRENTLY PREVENTS IT" IS
+        // A TASK, NOT A PROPERTY. Mirroring the reference's own test costs one
+        // comparison and removes the dependency outright.
+        float3 ground = (gp.shading_mode == 1u || gp.shading_mode == 2u)
+                            ? gp.base_color
+                            : shade_lambert(gp.base_color, gp.normal);
         if (bg.grid_enabled != 0u) {
             const float coverage = grid_coverage(hit, gp.grid_u, gp.grid_v, view_distance);
             if (coverage > 0.0f) {

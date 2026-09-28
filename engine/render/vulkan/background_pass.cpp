@@ -46,6 +46,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include "compute/spirv_variants.hpp"
 
