@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spade &amp; Sim Stack Foundation Charter — Kat Design Spec</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #0E8C9C; --accent-soft: #0E8C9C22; --amber: #B5731D; --amber-soft: #B5731D1A;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+      --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+    --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #0E8C9C; --accent-soft: #0E8C9C22; --amber: #B5731D; --amber-soft: #B5731D1A;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 62ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  section { margin-top: 44px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  p { max-width: 70ch; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 70ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  .st { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .st.m1b { color: var(--crit); }
+  .st.v2 { color: var(--amber); }
+  .st.later { color: var(--muted); }
+  .st.done { color: var(--ok); }
+  .pid { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; color: var(--accent); font-weight: 700; }
+  .callout { border-left: 3px solid var(--amber); background: var(--amber-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 74ch; }
+  .callout b { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  .callout.teal { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.teal b { color: var(--accent); }
+  .ruling { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 12px 16px; margin: 14px 0; max-width: 74ch; }
+  .ruling .lbl { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
+  .ruling p { margin: 0; font-size: 15px; }
+  ul { max-width: 72ch; padding-left: 22px; margin: 8px 0 12px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  pre.tree { background: var(--code-bg); color: var(--code-ink); font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 13px; line-height: 1.6; border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin: 12px 0; }
+  pre .c { color: #6E8296; }
+  pre .a { color: #62D3E2; }
+  .footer-note { margin-top: 56px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; font-family: "Cascadia Mono", Consolas, monospace; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Design specification · approved</div>
+  <h1>Spade &amp; Sim Stack — Foundation Charter</h1>
+  <p class="subtitle">The seventh Kat spec: what Spade is, the architecture pillars it commits to, how the repo moved into the monorepo, and where it sits on the milestone ladder. A charter, not an engine design — the technicals are deliberately deferred.</p>
+  <div class="status-row">
+    <span class="chip live">approved v1.0 · 2026-08-06</span>
+    <span class="chip">amends: errata R1 · R11 · C5 determinism</span>
+    <span class="chip">repo state: spade/ subtree-merged at 1c8a133</span>
+  </div>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>What this document is</h2></div>
+    <p>The errata (sixth spec, approved 2026-08-06) created a hole on purpose: C5 — the sim-host contract — got a surface and a conformance suite, but the engine beneath it had no spec, no repo presence, and a survey showing that its current state and its obligations describe different software. This charter closes the <em>setup</em> half of that hole: identity, pillars, repo integration, milestone placement, and an honest gap register.</p>
+    <p>It deliberately does <b>not</b> design the engine. Buffer layouts, the many-worlds batching model, rate envelopes, API surfaces, Vulkan module structure — all of that belongs to a dedicated engine design session held now that the repo is in the tree (§8 lists what that session owes). Two implementers reading this document should agree on <em>what Spade is and what it must become</em>, and should refuse to start building until the engine session pins <em>how</em>.</p>
+    <div class="callout teal"><b>Precedence</b>
+      <p>Where this document touches the errata, this document governs (§4 lists the three amendments). Everywhere else, the approved errata governs over the five v1.0 specs, per its own §0.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>The sim stack</h2></div>
+<pre class="tree"><span class="a">editor viewport · kat-train rollouts · kat CLI</span>
+        │  C5 — the sim-host contract (errata R1: surface, conformance, semver)
+        ▼
+<span class="a">dronesim</span>            <span class="c">// implements C5. Thin adapter: contract surface, drone</span>
+        │           <span class="c">// assembly (drone description → engine bodies/aero/actuators),</span>
+        │           <span class="c">// Kat-side timing &amp; sample stamping. No physics of its own.</span>
+        ▼
+<span class="a">spade/</span>              <span class="c">// the engine. Owns rigid bodies, collision, aerodynamics,</span>
+                    <span class="c">// propulsion/actuator force models, sensor-simulation</span>
+                    <span class="c">// primitives, rendering, worlds. No Kat types in its API.</span></pre>
+    <div class="ruling"><span class="lbl">Boundary ruling</span><p><b>Fat Spade, thin dronesim.</b> Everything that can live in the engine does — including aerodynamics, propulsion force models, and sensor-simulation primitives (IMU synthesis, camera render-to-sensor). dronesim contributes no physics: it is the C5 surface, the mapping from a drone description onto engine constructs, and Kat-side stamping. This maximizes what Spade grows into while keeping the contract seam exactly where the errata put it.</p></div>
+    <p class="note">Consequence worth stating: because dronesim is thin, C5 conformance effectively tests Spade through a narrow adapter — engine regressions surface as contract failures, which is the intended coupling.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>Identity</h2></div>
+    <p>Spade is a <b>high-fidelity, low-latency, high-throughput physics and rendering engine</b>: complex rigid-body collision, aerodynamics, extreme-accuracy step rates — written primarily in GPU compute, operable CPU-only, optimized for GPU. It is <b>Kat's engine, cleanly bounded</b>: it exists to serve Kat's sim stack, keeps a no-Kat-types API so extraction stays possible, and spends no energy on standalone packaging or independent releases.</p>
+    <div class="callout teal"><b>v2 is a modification/addition/refine stage — not a rewrite</b>
+      <p>The 2026-08-06 survey confirmed the foundations fit: the data-oriented ECS, the compute-pass structure, the <code>std430</code> POD state layout (memcpy-able by design), and the atomics-free one-invocation-per-index shader discipline — the exact property that makes same-device GPU determinism achievable — all carry forward. What changes is plumbing and discipline (§7), not architecture.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>Architecture pillars</h2></div>
+    <p>Eight commitments, decided 2026-08-06. Each is one sentence here; the engine session expands them into designs.</p>
+    <div class="table-scroll"><table>
+      <tr><th>#</th><th>Pillar</th><th>Commitment</th></tr>
+      <tr><td class="pid">P1</td><td class="k">CPU reference twin</td><td>Every authoritative physics pass exists twice — GPU compute (primary, performance) and CPU (reference) — kept in <b>enforced tolerance-banded parity</b> by the fixtures pattern this project already lives by. The twin is not a degraded fallback: it is the determinism reference and a full implementation.</td></tr>
+      <tr><td class="pid">P2</td><td class="k">Three-grade determinism</td><td>CPU path: bit-identical per platform — the conformance grade; CI enforces it and <b>golden traces are recorded from the CPU path only</b>. GPU path: bit-identical per device+driver — same-machine replay and editor step-back work. CPU↔GPU: tolerance-banded parity. (Amends C5 — §4·A3.)</td></tr>
+      <tr><td class="pid">P3</td><td class="k">Vulkan</td><td>The GPU path moves to Vulkan: true headless compute, offscreen render, explicit sync, a Linux/cloud-training route, and GLSL→SPIR-V carries the existing shader logic. GLFW/GL survive only as long as the port takes.</td></tr>
+      <tr><td class="pid">P4</td><td class="k">Fixed-step, seeded</td><td>Fixed-step only; no wall-clock read anywhere in the step path; every RNG is seeded and domain-separated in the R4 style. <code>dt</code> is immutable after creation, per C5.</td></tr>
+      <tr><td class="pid">P5</td><td class="k">Thin adapter above</td><td>The §1 boundary: Spade owns the physics and sensor primitives; dronesim owns the contract surface and assembly. No Kat types below the C5 seam.</td></tr>
+      <tr><td class="pid">P6</td><td class="k">Offscreen render boundary</td><td>Spade renders the world to an offscreen image; the editor imports it and composites UI on top. Headless = simply don't render. Stepping never depends on render state (C5 conformance test).</td></tr>
+      <tr><td class="pid">P7</td><td class="k">Effects layer → aero path</td><td>The v1 SPH/grid/particle machinery survives as the <b>non-authoritative</b> effects/medium layer, with a stated roadmap toward air-flow simulation (downwash, prop wash, wind fields). <b>Promotion rule:</b> nothing becomes authoritative until the CPU twin can mirror it (P1 applies to every authoritative pass, no exceptions).</td></tr>
+      <tr><td class="pid">P8</td><td class="k">Snapshot as first-class</td><td>World snapshot/save/restore is a core engine feature (C5 §world-snapshot, errata R9), sized and designed for the editor's session ring and training determinism — not an afterthought serializer.</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>Amendments to the approved errata</h2></div>
+    <p class="note"><b>Namespace note (batch 2 §0, 2026-08-08):</b> the A1–A3 identifiers below are retroactively <b>SA1–SA3</b> — the editor technical spec's amendment series is TA1–TA6, and bare "A<i>n</i>" citations are retired. Text below is unchanged; cite these as SA1–SA3.</p>
+    <p>Three decisions made in this spec's session supersede specific errata statements, per the docs-spec supersession rule.</p>
+    <div class="table-scroll"><table>
+      <tr><th>ID</th><th>Errata said</th><th>Now reads</th></tr>
+      <tr><td class="pid">A1</td><td>R11·M1b: "C5 + dronesim: <em>interim C++ physics</em> behind the sim host."</td><td><b>Spade is the M1b backend.</b> No interim C++ physics backend is built; M1b's bar is Spade's M1B-tagged gap set (§6). The current KAT sim code is still mined for reference and test oracles, but never becomes a C5 implementation.</td></tr>
+      <tr><td class="pid">A2</td><td>R1: "The two conformant backends at M1b are the interim C++ physics and dronesim-on-Spade."</td><td>The cross-backend parity pair is <b>Spade's CPU twin ↔ Spade's GPU path</b> — two implementations of the same passes inside one engine, compared through the same C5 seam. <code>golden-parity</code>'s widened definition ("any two implementations of a Kat contract") already covers this; the twin is the second implementation.</td></tr>
+      <tr><td class="pid">A3</td><td>R1: C5 conformance = "bit-identical body state and sensor output, per platform."</td><td>Three grades (P2): <b>CPU per-platform bit-identity</b> is the conformance claim and CI's gate; GPU is bit-identical per device+driver; CPU↔GPU parity is tolerance-banded. Golden traces come from the CPU path only.</td></tr>
+    </table></div>
+    <div class="callout"><b>A1's accepted risk — stated, not hidden</b>
+      <p>M1's critical path now runs through engine work. What buys that back: M1a (runtime skeleton) has no world dependency and proceeds in parallel; the CPU twin lands first (§6) and is dramatically less work than the Vulkan port; and building one backend instead of two deletes an entire throwaway implementation.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>Repo integration — done and ruled</h2></div>
+    <h3>Executed 2026-08-06</h3>
+    <ul>
+      <li><b>Subtree merge:</b> <code>desktop/Spade</code> → <code>spade/</code> at commit <code>1c8a133</code>, all 14 commits of history preserved (second parent <code>2d36c54</code>). The old standalone repo is now the archive; development happens here.</li>
+      <li><b>README corrected</b> (<code>4cca21d</code>): the survey's drift list fixed — C++20 / CMake 3.15 / GL 4.3 core / FetchContent-not-vendored / <code>Sandbox</code> binary / real API signatures — plus the monorepo status note pointing here.</li>
+      <li><b>Git control:</b> Spade's own <code>.gitignore</code> was already adequate (build trees, IDE, residue) and is kept; Kat's root ignores were verified non-conflicting (<code>cmake-build-*/</code> and <code>.idea/</code> unanchored; the root <code>/shaders/</code> rule cannot touch <code>spade/assets/shaders/</code>). Untracked local residue (<code>cmake-build-debug/</code>, <code>.idea/</code>) did not transfer.</li>
+      <li><b>design-specs/ untracked</b> (<code>6f3abb0</code>): specs stay hand-authored HTML, local + artifact-backed, gitignored — the same session decision that approved the errata's format row.</li>
+    </ul>
+    <h3>Standing rules</h3>
+    <ul>
+      <li><code>spade/</code> joins the docs-spec §3 <b>infrastructure-directory exemption</b> (enumerated list; proper names are not domain names).</li>
+      <li>Spade keeps its <b>own CMake project</b>, built as a subproject. Kat code consumes Spade's public API only; no Kat target includes <code>spade/src</code> internals. How Kat's build wires Spade in is an engine-session item (§8).</li>
+      <li>Spade's version stays <code>0.1.0</code> until the engine session establishes v2 versioning. <em>(Addendum A11, signed 2026-08-10: Spade advances to <code>0.2.0</code> at the S4-M1B claim.)</em></li>
+      <li>The old <code>desktop/Spade</code> checkout is frozen: no commits land there. (Its <code>origin</code> remote remains the historical mirror until the user retires it.)</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>Milestone placement</h2></div>
+    <div class="ruling"><span class="lbl">Ruling</span><p><b>Spade is the M1b backend</b> (§4·A1). M1b's minimum bar is the §7 rows tagged <span class="st m1b">M1B</span>: fixed-step, headless, seeded determinism, snapshot/restore, and rigid-body dynamics + collision + force models sufficient to fly a racing track through the C5 seam.</p></div>
+    <h3>Sequencing inside M1b</h3>
+    <ul>
+      <li><b>CPU twin first.</b> The CPU reference path alone satisfies M1b's proof — a package flies a track headless and passes determinism replay — with no Vulkan work on the critical path. It is also how the twin earns its P1 role from day one: the reference exists before the thing it references.</li>
+      <li><b>Vulkan GPU path second,</b> on its own clock, joining as the parity partner (§4·A2). The parity harness stands up the moment both paths exist, per the existing fixtures pattern.</li>
+      <li>M1a (runtime skeleton) is untouched by any of this; M1c/M1d follow the errata as approved.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§7</span><h2>Gap register</h2></div>
+    <p>From the 2026-08-06 survey of the code as merged. Tags: <span class="st m1b">M1B</span> = on M1b's critical path · <span class="st v2">V2</span> = required for v2 completeness, off M1b's path · <span class="st later">LATER</span> = scheduled when it bites.</p>
+    <div class="table-scroll"><table>
+      <tr><th>Gap</th><th>Today (survey fact)</th><th>Tag</th></tr>
+      <tr><td class="k">fixed-step</td><td>dt is wall-clock (<code>glfwGetTime</code>) computed in <code>UpdateStatistics</code>, called from <code>DrawScene</code> — stepping is coupled to drawing cadence. <code>EnableMotion(dt)</code> already accepts an arbitrary dt, so the plumbing half-exists.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">headless</td><td>No non-windowed init path: <code>SetupEngineWindow</code> → GLFW window is mandatory before any buffer load. CPU twin sidesteps GL entirely; GPU headless arrives with Vulkan.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">seeded RNG</td><td><code>random_device</code>-seeded <code>mt19937</code> in spawn/randomize paths; no seed parameter anywhere. Replace with R4-style domain-separated seeding.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">rigid-body dynamics</td><td>Rotation is never integrated: quaternions ride in buffers untouched; no inertia tensor, no torque, no angular velocity in <code>Motion</code>. Semi-implicit Euler on linear terms only.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">force models</td><td>No aerodynamics or propulsion. M1b minimum: propeller thrust + drag adequate for racing; full aero (P7 promotion) is the roadmap.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">sensor primitives</td><td>None. M1b minimum: IMU synthesis from body state. Camera render-to-sensor and richer models follow.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">snapshot/restore</td><td>No serialization of any kind; after a GPU step only the GPU copy is current and <b>nothing ever reads back</b>. CPU-twin state is trivially memcpy-able (the <code>std430</code> PODs); GPU-path snapshot needs designed readback.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">test suite</td><td>Zero tests. The spine to build first: determinism replay + CPU↔GPU parity harness — they are also M1b's proof obligations.</td><td class="st m1b">M1B</td></tr>
+      <tr><td class="k">instance isolation</td><td><code>~Engine()</code> calls <code>glfwTerminate()</code> process-wide; unrefcounted <code>glfwInit</code>; per-TU <code>static</code> GL function pointers in a header; hard-coded SSBO binding points 4–13; <code>ComponentPool</code> presized to 10k; no <code>Universe::Clear</code>.</td><td class="st v2">V2</td></tr>
+      <tr><td class="k">Vulkan port</td><td>OpenGL 4.3 + GLFW today (README claimed 4.6). Compute shaders port via SPIR-V; render + windowing plumbing is the real work.</td><td class="st v2">V2</td></tr>
+      <tr><td class="k">platform unlock</td><td><code>windows.h</code>/<code>psapi.h</code> included in <code>Engine.hpp</code> itself (for a memory stat); Windows-locked. Linux headless matters for cloud training.</td><td class="st v2">V2</td></tr>
+      <tr><td class="k">build modernization</td><td>ImGui pinned to moving <code>docking</code> branch and GLAD to <code>master</code>; deprecated <code>FetchContent_Populate</code> under <code>CMP0169 OLD</code> (breaks on future CMake); no install/export rules. Fix when the engine session touches the build anyway.</td><td class="st later">LATER</td></tr>
+    </table></div>
+    <p class="note"><b>Status note (addendum A11, signed 2026-08-10):</b> as of 2026-08-10 the CPU path has fixed-step, headless, seeded RNG, rigid-body dynamics, snapshot/restore, and tests (engine S1–S3 gates passed 2026-08-09); propulsion landed with T17/T18; sensors (IMU) with T19. The survey rows above are kept as written for the record.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§8</span><h2>Owed by the engine design session</h2></div>
+    <ul>
+      <li><b>Many-worlds model</b> — batched worlds in one dispatch vs. process instances vs. both; where the world index lives in the data layout. (The GPU-authoritative choice pays off or doesn't largely here.)</li>
+      <li><b>Buffer &amp; state layout</b> — the authoritative state set, CPU↔GPU mirroring scheme, readback design, snapshot format.</li>
+      <li><b>Rate envelope</b> — actual numbers: physics substep targets, real-time viewport scale, headless training throughput targets.</li>
+      <li><b>Sensor primitive set</b> — which sensors are engine features and their synthesis models.</li>
+      <li><b>Vulkan module structure</b> — device/queue/context ownership, offscreen image handoff to Qt (P6 mechanism), shader toolchain.</li>
+      <li><b>Kat build wiring</b> — how kat targets consume the Spade subproject; toolchain alignment with the interface build.</li>
+      <li><b>SPH → aero promotion criteria</b> — what the effects layer must demonstrate before P7 promotion.</li>
+      <li><b>Dead-code cleanup</b> — the §9 list, adjudicated item by item (delete vs. finish).</li>
+      <li><b>Linux/cloud timing</b> — when platform unlock enters the schedule.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§9</span><h2>Appendix — survey condensate (2026-08-06)</h2></div>
+    <p class="note">Vitals: 39 tracked files · 14 commits (2025-12-11 → 2026-01-28) · ~1,960 lines C++ across 6 <code>.cpp</code> / 7 <code>.hpp</code> + ~1,455 lines GLSL (13 compute) · single static-lib target, consumers <code>add_subdirectory</code> · deps via FetchContent (GLFW 3.4, GLM 1.0.1, GLAD@master, ImGui@docking) · math is GLM · no atomics in any shader; bitonic sort is a fixed network — same-device runs are order-deterministic by construction.</p>
+    <h3>Dead / half-finished / defects (engine-session adjudication list)</h3>
+    <ul>
+      <li><code>EnableBruteForceNewtonianGravity</code> — public API + complete shader, C++ body is <code>{ return; }</code>.</li>
+      <li><code>SaveRenderToFile</code> — declared, never defined (link error if called).</li>
+      <li><code>[FRAGMENT]Density.frag</code> — orphaned; no code path references it.</li>
+      <li><code>Internal::GetUniqueComponentID</code> — implemented, never called (superseded by <code>typeid</code> hashing).</li>
+      <li><code>Resources::m_ProgramCache</code> — defined, never read or written.</li>
+      <li>ImGui — linked into the target, never included or called.</li>
+      <li><code>MotionComponent</code> / <code>MaterialComponent</code> — declared, never instantiated by engine or example.</li>
+      <li><code>ProcessInput</code> rebuilds the camera UBO per pressed key per frame; play/cursor toggles are edge-less (held key flips state every frame).</li>
+      <li><code>Camera::viewInverse</code> assigned <code>view</code>, not <code>inverse(view)</code> — leftover from abandoned ray-tracing work.</li>
+    </ul>
+  </section>
+
+  <div class="footer-note">Spade &amp; sim stack foundation charter · v1.0 approved 2026-08-06 · seventh spec · amends errata R1 · R11 · C5 determinism · repo: spade/ @ 1c8a133 · engine design delivered (ninth spec, 2026-08-08 — closes §8)</div>
+</div>
+</body>
+</html>

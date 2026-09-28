@@ -41,7 +41,7 @@ CPU↔GPU parity band is byte-identical to before.
   `splitmix64` streams rather than v1's `std::random_device`-seeded mt19937.
   All-or-nothing: capacity is checked before any body is placed.
 - **`Simulation::set_behaviors()`** and **`Simulation::body_capacity()`**.
-- **`spade/docs/v1-transfer-register.md`** — the SL7 register, machine-checked
+- **`docs/v1-transfer-register.md`** — the SL7 register, machine-checked
   by `test_transfer_register.cpp`. One row remains open (SPH fluid); until Plan
   B closes it, v1 must not be quarantined.
 

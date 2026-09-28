@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spade — The Library, Its Object Model, and the Sandbox</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+      --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+      --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+    --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+    --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 68ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+  .chip.warn { border-color: var(--amber-line); color: var(--amber); background: var(--amber-soft); }
+  section { margin-top: 46px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { max-width: 74ch; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 74ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; margin: 10px 0 6px; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  td.mono, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  .callout { border-left: 3px solid var(--amber); background: var(--amber-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 78ch; }
+  .callout b { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  .callout.acc { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.acc b { color: var(--accent); }
+  .ruling { border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; margin: 16px 0; max-width: 78ch; }
+  .ruling .lbl { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 5px; }
+  .ruling p { margin: 0 0 8px; font-size: 15px; }
+  .ruling p:last-child { margin-bottom: 0; }
+  ul, ol { max-width: 76ch; padding-left: 22px; margin: 8px 0 12px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+  .footer-note { margin-top: 60px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; font-family: "Cascadia Mono", Consolas, monospace; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="eyebrow">Design specification · twenty-fourth spec · draft</div>
+  <h1>Spade — The Library, Its Object Model, and the Sandbox</h1>
+  <p class="subtitle">Spade is a general physics and rendering engine, and this spec says so normatively. It restores the object/component model the v2 rewrite dropped, defines what a <em>behavior</em> can be in a fixed-step bit-deterministic engine, completes the v1→v2 system transfer that was left unfinished, and builds <code>spade_sandbox</code> — an engine editor that makes physics and rendering observable instead of inferred. The frozen v1 GL engine is then quarantined, but only after every system it holds exists in v2 and every scene it demonstrates has a working successor.</p>
+  <div class="status-row">
+    <span class="chip warn">✎ DRAFT — drafted 2026-08-30 · awaiting review</span>
+    <span class="chip">decision series SL1–SL18</span>
+    <span class="chip">absorbs RS10a/RS10b/RS10c (21st spec Phase 4)</span>
+    <span class="chip">realises engine design §4's ECS clause</span>
+    <span class="chip">amends engine design §3 (behavior passes) · §13 (S7a/S7b scope)</span>
+    <span class="chip">retires spade v1 to <code>spade/legacy/</code> (D10 endpoint)</span>
+  </div>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>What this document is</h2></div>
+    <p>This spec drops the <b>Kat —</b> title prefix every other document in the corpus carries. That is deliberate and it is the thesis: Spade is not a Kat subsystem that happens to live in <code>spade/</code>. It is a general-purpose physics and rendering engine of which Kat is one consumer. The filename keeps the corpus <code>kat-</code> convention so the register and the artifact tooling stay uniform; the title does not.</p>
+    <p>Three things prompted it. First, the engine is <b>already generic where it counts</b> and nothing says so normatively — <code>vehicles/quadrotor.hpp</code>'s own header states that <em>"there is no Quadrotor class, no quadrotor-shaped code path in the <code>Simulation</code>, and no quadrotor branch in any pass. If this file were deleted, the engine would still fly quadrotors."</em> That discipline is being held by comment and habit rather than by specification. Second, the <b>object/component model the engine design ratified in §4 does not exist in code</b>: the identity half was built, the composition half was not, and the model it points back at is sitting in the v1 tree scheduled for deletion. Third, there is <b>no way to look at the engine</b>. The only interactive tool renders v2 physics through the frozen v1 OpenGL engine across a bridge translation unit that needs <code>&lt;windows.h&gt;</code> included first to dodge a macro collision, and carries its own relaxed warning policy because v1 cannot survive <code>/W4 /WX</code>.</p>
+    <div class="ruling"><span class="lbl">Session rulings absorbed (user, 2026-08-30)</span>
+      <p><b>①</b> Spade is a <b>blanket physics/render engine</b> — objects, meshes, components, physics, behaviors — and the sandbox behaves accordingly. <b>②</b> Isolation is <b>hardened in place</b>: Spade stays in the monorepo and gains a provable standalone identity, not a separate repository. <b>③</b> The sandbox is a <b>viewer plus inspection plus exploration</b> that saves its own scenes, and does not author canonical content. <b>④</b> The object model is <b>designed in full and built minimally</b>. <b>⑤</b> Behaviors are <b>declared and deterministic</b>, joining the pass schedule as data. <b>⑥</b> <b>Both Spade and Kat keep the word "component"</b>, separated by context. <b>⑦</b> v1 is <b>quarantined to <code>spade/legacy/</code></b>, not deleted, and completely cut off from any functionality or system. <b>⑧</b> The retired scenes need <b>equivalent presets, not numerically exact ports</b> — but <b>every system v1 holds must first exist in v2</b>. <b>⑨</b> The 21st spec's Task C4 is slotted <b>after C3</b>, so the render program merges on a clean base before this program starts.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>SL1 — Spade is a blanket engine</h2></div>
+    <div class="ruling"><span class="lbl">SL1 · the engine is domain-neutral, normatively</span>
+      <p>Spade's core — <code>core</code>, <code>state</code>, <code>world</code>, <code>physics</code>, <code>render</code>, <code>sim</code>, <code>compute</code> — carries <b>no domain concept</b>. It knows bodies, elements, contacts, meshes, materials, lights, sensors and worlds. It does not know drones, missions, gates, policies or packages.</p>
+      <p>Domain vocabulary lives in <b>convenience layers above the core</b> that construct general descriptions and add no code path of their own. <code>vehicles/</code> and <code>sensors/</code> are exactly this and stay where they are: <code>make_quadrotor()</code> constructs a <code>ModelType</code> from a dozen numbers, and deleting it would cost callers convenience, not capability.</p>
+      <p><b>The test of a proposed engine addition</b> is whether a caller with no aerial-vehicle interest would still want it. A fluid solver passes. A gate-pass detector does not.</p>
+    </div>
+    <h3>Where the boundary is enforced today</h3>
+    <p>Two guards already hold the Kat side of this line and are unchanged by this spec. <b>HS2 rule 1</b>: nothing under <code>spade/</code> may depend on Kat. <b>HS2 rule 2</b>: no Spade engine header may appear outside <code>dronesim/spade/</code>. Both are enforced by <code>tools/tests/test_engine_agnosticism.py</code>, which went red during the render program's Task C0 and caught a real violation — the guard is live, not decorative.</p>
+    <p>What has never been stated is the <em>other</em> direction, and SL1 states it: the engine may not grow a Kat-shaped concept even in a Kat-free form. A guard cannot catch that; only a specification can.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>SL2 — The library surface and its hardening</h2></div>
+    <p>Spade is already a well-formed installable library, and this section is deliberately narrow because of it. Eleven modules, each a static library with a <code>spade::</code> namespaced alias, <code>install(TARGETS ... EXPORT spadeTargets)</code>, per-module header installation, and a generated <code>spadeConfig.cmake</code>. An out-of-tree <code>find_package(spade CONFIG REQUIRED)</code> consumer project is configured, built and run by CI on <b>both Linux and Windows</b> against a scratch install prefix — and it is load-bearing rather than ceremonial: it is what caught the <code>yaml-cpp</code> consumer-link gap that the in-tree tests structurally could not see, because a static archive only extracts the members it needs.</p>
+    <p>Severability is likewise already proven rather than aspirational. <code>scripts/spade-prefix.ps1</code> has built Kat's Spade install with <code>-DSPADE_BUILD_V1=OFF</code> from the beginning: <b>Kat has never linked v1.</b></p>
+
+    <div class="ruling"><span class="lbl">SL2a · release identity</span>
+      <p>Spade gains its own release identity: <code>spade/CHANGELOG.md</code>, a stated versioning policy for <code>project(Spade VERSION ...)</code> (currently a bare <code>0.2.0</code> with no release notes behind it), and a <code>spade/README.md</code> quickstart that stands on its own — buildable, installable and consumable by a reader who has never heard of Kat. Today's README opens by defining Spade as <em>"Kat's simulation engine"</em>; that framing is corrected.</p>
+      <p><b>Not in scope:</b> a package registry, binary distribution, or an ABI-stability promise. Those belong to seat S1 if they are ever wanted.</p>
+      <p><b>The repository situation, stated so it stops being ambiguous (user, 2026-08-30):</b> Spade has <b>its own upstream git repository, unrelated to Kat</b>, which is where v1 lives. The copy under <code>spade/</code> is subtree-merged into this monorepo — 185 tracked files, no submodule, not ignored — and is <b>the development home</b>: Spade is built and tested inside Kat for development convenience, and is freely editable here. Both facts hold at once. "Harden in place" therefore means hardening the <em>development</em> home, and is not a claim that no external Spade exists. It also makes SL14a's quarantine-rather-than-delete the obviously correct call: v1's history survives in two places, so nothing is at risk, and the local copy stays available as a reference.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL2b · the sandbox may use only Spade's public installed surface</span>
+      <p><code>spade_sandbox</code> may include only headers that <code>install(DIRECTORY ...)</code> actually installs, and may link only <code>spade::</code> targets. It may not reach into engine internals by relative path, and it may not depend on anything the exported package does not carry.</p>
+      <p><b>Why this is the highest-value constraint in the spec:</b> the sandbox is the library's largest consumer, so this makes it a <em>continuous proof</em> that the public API is sufficient. If the sandbox needs something the API does not expose, that is a finding about the library rather than a reason to widen an include path. Enforced by a guard over the sandbox's include graph, in the same shape as the existing agnosticism guard.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>SL3–SL5 — The object model</h2></div>
+    <p>The engine design spec §4 already ratified this and the code only half-implements it:</p>
+    <div class="callout acc"><b>Engine design §4, verbatim</b>
+      <p><em>"The ECS carries identity, not physics: generational handles (index+generation, reuse-safe — v1 had no lifecycle at all), components reference state slots. Pool iteration order no longer feeds GPU buffer order; slot assignment does. Component type IDs are compile-time registered monotonic (v1's dead <code>GetUniqueComponentID</code> pattern, resurrected), never <code>typeid().hash_code()</code>."</em></p>
+    </div>
+    <p><b>Built:</b> the identity half — <code>core/ids.hpp</code>'s generational <code>Handle</code> (index + generation, generation 0 reserved for "never issued") and <code>sim/simulation.hpp</code>'s <code>BodyRef</code>, whose generation counter lives in a <em>registered</em> array (<code>body_generation</code>) so lifecycle survives the snapshot walk.</p>
+    <p><b>Not built:</b> the composition half. There is no component type, no compile-time type-ID registry, and no attachment mechanism anywhere in <code>spade/engine/</code>. Bodies, force elements, sensors and render instances are <b>parallel concepts</b> addressed through separate APIs rather than parts of one thing.</p>
+
+    <div class="ruling"><span class="lbl">SL3 · the object graph is composition and identity, never state — and therefore determinism-neutral</span>
+      <p>§4's clause <em>"pool iteration order no longer feeds GPU buffer order; slot assignment does"</em> is the load-bearing property, and this spec makes it explicit and permanent: <b>the object graph never influences buffer layout, pass order, or any value the physics computes.</b> Objects and components may be created, reordered, renamed and destroyed freely, because slot assignment — which already exists and is already deterministic — is what the GPU sees.</p>
+      <p>It follows that <b>the object graph is not registered state.</b> It is composition, reconstructed from the scene or world description; components hold <em>handles into the existing SoA arenas</em> and never own physics data. Consequences, all of which are the point: <code>kSnapshotVersion</code> does not change; the registry walk does not change; every existing CPU↔GPU parity band and determinism test remains valid unmodified; and a snapshot taken before this model existed still restores after it.</p>
+      <p><b>Cost if wrong:</b> if a future component genuinely needs to own persistent state, it must be registered and the snapshot version bumped — a known, bounded, deliberate change rather than a silent one.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL4 · the component model, specified in full</span>
+      <p><b>Object</b> — a generational handle plus a stable name, owned by an <code>ObjectGraph</code>. An object has a transform and zero or more attached components. Objects may nest; nesting affects transform composition only and never pass order.</p>
+      <p class="note">The container is named <code>ObjectGraph</code>, not <code>Scene</code>, deliberately: <code>spade::render::RenderScene</code> already exists and means something different (the renderer's per-frame view of a world). Two things called a scene, one namespace apart, is a prose trap even where C++ would disambiguate them.</p>
+      <p><b>Component</b> — a typed part attached to exactly one object. A component holds configuration plus <em>references</em> to engine state slots; it does not hold simulation state. Component type IDs are <b>compile-time registered and monotonic</b>, never <code>typeid().hash_code()</code>, because the id is what a saved scene stores and a hash is neither stable across compilers nor meaningful across versions.</p>
+      <p><b>Lifecycle</b> — attach and detach are <em>structural changes</em> and obey the engine's existing rule: queued, applied only at step boundaries, never mid-step. This inherits the discipline rather than inventing a second one.</p>
+      <p><b>Serialization</b> — an object graph serializes by component type id plus configuration; slot references resolve at load. A saved scene therefore survives a change in slot assignment, which is exactly why the id is registered rather than positional.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL5 · what this program actually builds</span>
+      <p>The model above is specified in full. <b>Implementation is limited to the component types the sandbox exercises</b> — ten of them: <code>Transform</code> · <code>Body</code> (references a body slot) · <code>Mesh</code> (references a render draw item) · <code>Material</code> · <code>Collider</code> (SDF or sphere proxy) · <code>Sensor</code> (references a sensor slot) · <code>ForceElement</code> (rotor or drag) · <code>Camera</code> · <code>Behavior</code> (§4) · <code>Fluid</code> (§5's SL8, arriving with that phase rather than P1).</p>
+      <p class="note">This is <em>not</em> v1's set replayed. Of v1's eight, <code>Transform</code>, <code>Mesh</code>, <code>Material</code>, <code>Camera</code> and <code>Fluid</code> carry across by name; <code>Motion</code> folds into <code>Body</code> and <code>Bounding</code> into <code>Collider</code>, since v2 already owns both concepts in its state arenas; and <code>Input</code> does not become an engine component at all (SL9d). <code>Body</code>, <code>Sensor</code>, <code>ForceElement</code> and <code>Behavior</code> are new, because v2 has state layers v1 never had.</p>
+      <p>Everything else the full ECS eventually wants — queries, systems iterating by component signature, archetype storage — is <b>designed against, not built</b>. The reason for the split is that inventing the model twice is the expensive failure; building it incrementally against a settled design is not.</p>
+    </div>
+    <p class="note">The content layer reached this vocabulary first: <code>content/recipes/*.json</code> already describes scenes as instances of prefabs with poses. SL4 gives the engine the same shape the recipes have been using, which is why the sandbox and the recipe format will map onto each other cleanly at §6.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>SL6 — Behaviors</h2></div>
+    <p>"Behavior" is the one word in the framing with no precedent anywhere in the corpus, and the naive form of it is incompatible with guarantees the engine is built on. The pass schedule is <em>data</em> and <em>"passes cannot reorder themselves"</em>; there is <em>"no wall-clock anywhere below <code>Simulation</code>"</em>; every pass is one interface with two implementations, <code>execute_cpu(WorldSpan)</code> and <code>record_gpu(CommandRecorder&amp;)</code>, <em>"same math, same operation order, fp32 both"</em>. A Unity-style <code>MonoBehaviour</code> — arbitrary user code, arbitrary order, per-frame — violates every one of those, and would not fail loudly. It would quietly destroy CPU↔GPU parity, which is the property the entire GPU program was built to establish.</p>
+
+    <div class="ruling"><span class="lbl">SL6 · a behavior is a declared, ordered, fixed-step pass</span>
+      <p>A behavior declares, at registration: a <b>stable name</b>; which of <b>two fixed behavior slots</b> it runs in; the <b>components it reads and writes</b>; and an <b><code>execute_cpu</code></b> implementation.</p>
+      <p><b>The schedule stays fixed, and grows from eight passes to ten</b> (user ruling, 2026-08-30). <code>physics/schedule.hpp</code> states that the eight passes are <em>"fixed at compile time; there is no API to add, remove or reorder one"</em>, and that their order is a parity contract because float addition is not associative. Behaviors therefore do not insert themselves anywhere. Two slots are added to the fixed array, and behaviors register into one of them:</p>
+      <ul>
+        <li><code>BehaviorsKinematic</code> — after <code>MediumUpdate</code>, <b>before</b> <code>ForceElements</code>. A pose written here is set before anything reads it, including both collision passes.</li>
+        <li><code>BehaviorsForce</code> — <b>after</b> <code>ForceElements</code>. Additional wrenches accumulate after the built-in rotors-then-drag order the golden corpus already pins, so behavior forces never perturb the last bits of an existing element's accumulation.</li>
+      </ul>
+      <p>Both slots are <b>always present and inert when nothing is registered</b> — the same pattern the deliberately-inert <code>Gravity</code> slot already establishes. <b>Proof obligation:</b> with no behaviors registered, every existing golden must remain <b>byte-identical</b>, which makes the inertness testable rather than asserted.</p>
+      <p><b>Determinism obligations, inherited not renegotiated:</b> no wall-clock; randomness only from the existing per-world, per-system <code>splitmix64</code> streams under the errata-R4 domain-separation discipline; no allocation inside a step; structural effects queued to step boundaries. The schedule remains data, and a behavior cannot reorder itself or another pass.</p>
+      <p><b>GPU:</b> a behavior with no <code>record_gpu</code> is <b>CPU-only and must declare itself so.</b> A world containing a CPU-only behavior is not eligible for the GPU-authoritative path, and this is a <b>refusal, not a silent fallback</b> — the parity corpus must never be able to include a world whose behavior did not run identically on both backends.</p>
+      <p><b>Cost if wrong:</b> if the declared read/write sets turn out too coarse, behaviors serialize more than necessary — a performance cost, not a correctness one. The reverse error, permitting undeclared access, would be silent divergence, which is why the declaration is mandatory rather than advisory.</p>
+    </div>
+
+    <div class="callout acc"><b>The first behavior closes a blocker in two other programs</b>
+      <p>The natural first behavior to build is a <b>kinematic mover</b>: a declared pose update applied at a step boundary, deterministic in <code>(seed, tick)</code>. That is precisely the capability demo-mission Phase 1 and the <code>tracking-moving-target</code> training structure are both blocked on today — the engine has no mover concept at all, <code>BodyState::flags</code>' kinematic bit is unassigned, and <code>integrate_bodies()</code> is the only thing that moves anything. This spec does <b>not</b> adopt DM3's mover/Target schema, which stays that addendum's to define; it provides the engine mechanism that addendum has been waiting for.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>SL7–SL9 — The v1→v2 transfer audit</h2></div>
+    <p>v1 may not be quarantined while it is the only implementation of anything. The D10 strangler has been running since S1 and was never audited for completeness; this section is that audit, and it found a real gap.</p>
+
+    <div class="ruling"><span class="lbl">SL7 · the transfer register is normative and must reach zero open rows before §7 executes</span>
+      <p>Every v1 system is dispositioned as <b>transferred</b>, <b>to transfer</b>, or <b>deliberately retired with a stated reason</b>. A silent drop is not a disposition. The register below is the register; it is verified against the v1 tree, not recalled.</p>
+    </div>
+
+    <div class="table-scroll"><table>
+      <tr><th>v1 system</th><th>v1 surface</th><th>Disposition</th></tr>
+      <tr><td class="k">Gravity</td><td class="mono">EnableGravity</td><td>✅ <b>Transferred</b> — applied inside <code>Integrate</code> for exact specific-force capture (the <code>Gravity</code> pass is deliberately inert, engine design A9)</td></tr>
+      <tr><td class="k">Motion / integration</td><td class="mono">EnableMotion, Motion.comp</td><td>✅ <b>Transferred</b> — <code>physics/integrator</code>, symplectic Euler + quaternion exp-map</td></tr>
+      <tr><td class="k">Grid collision</td><td class="mono">EnableGridCollision, Grid*.comp</td><td>✅ <b>Transferred</b> — <code>physics/grid</code> + <code>CollisionDynamic</code>; v1's hash-collision bug fixed by exact cell compare</td></tr>
+      <tr><td class="k">Bitonic sort</td><td class="mono">BitonicSort.comp</td><td>✅ <b>Transferred</b> — records its dispatch chain once per shape and reuses it</td></tr>
+      <tr><td class="k">Wireframe / colour render</td><td class="mono">RenderWireframe, RenderColor</td><td>✅ <b>Transferred</b> — <code>DrawMode::wireframe</code> / <code>shaded</code></td></tr>
+      <tr><td class="k">Newtonian gravity</td><td class="mono">EnableBruteForceNewtonianGravity</td><td>— <b>Already retired.</b> The shader existed; the C++ body was never implemented. Deleted during S1 as documented dead weight</td></tr>
+      <tr><td class="k">Brute-force collision</td><td class="mono">EnableBruteForceCollision</td><td>⚠️ <b>SL9a — retire with reason.</b> Superseded by the sorted-grid path, which is strictly better at every body count v1 shipped. Recorded so it is a decision rather than an omission</td></tr>
+      <tr><td class="k">Custom shader loading</td><td class="mono">RenderShader(frag, geom)</td><td>⚠️ <b>SL9b — not applicable, deferred to S7b.</b> A user-supplied fragment/geometry shader has no meaning against a CPU rasterizer. Reserved for the Vulkan backend; not a v2 gap today</td></tr>
+      <tr><td class="k"><b>SPH fluid</b></td><td class="mono">EnableSPHFluid, FluidDensity.comp, FluidForce.comp, FluidComponent, FluidMaterial</td><td>❌ <b>SL8 — NOT TRANSFERRED.</b> v2 has no fluid solver of any kind. This is the system the 50,000-body <code>fluid</code> scene runs on</td></tr>
+      <tr><td class="k">Velocity render mode</td><td class="mono">RenderVelocity, Velocity.frag</td><td>❌ <b>SL9c — to transfer.</b> Velocity-coloured debug shading; a <code>DrawMode</code> addition</td></tr>
+      <tr><td class="k">Camera component</td><td class="mono">CameraComponent</td><td>❌ <b>SL9d — to transfer as an engine component.</b> v2 has <code>render::Camera</code> as a value but no camera-as-component; it becomes one of SL5's ten</td></tr>
+      <tr><td class="k">Input component</td><td class="mono">InputComponent</td><td>⚠️ <b>SL9d — transfers to the sandbox, NOT to the engine.</b> Key bindings and fly-through speed are an <em>application</em> concern; the engine is headless by construction and must not grow an input concept (SL1). The capability survives as the sandbox's camera controller</td></tr>
+      <tr><td class="k">Instancing helpers</td><td class="mono">SpawnInstancesInSphere/Cube, SetVelocity/Color/Mass, RandomizeVelocity/Color</td><td>❌ <b>SL9e — to transfer.</b> Authoring conveniences over v2's explicit per-slot spawn; directly what the sandbox's "spawn 50,000 bodies in a sphere" affordance needs</td></tr>
+      <tr><td class="k">Barycentric wireframe</td><td class="mono">Barycentric.geom</td><td>⚠️ <b>SL9f — retire with reason.</b> A geometry-shader technique for GPU wireframe overlay; the CPU rasterizer draws wireframe directly and needs no equivalent</td></tr>
+    </table></div>
+
+    <div class="ruling"><span class="lbl">SL8 · SPH fluid is implemented to v2 discipline, not ported</span>
+      <p>v1's fluid is a pair of GPU-only compute shaders with no CPU path, no determinism story, and no parity obligation. v2 admits no such pass. The transfer therefore means <b>implementing a fluid solver under the engine's existing rules</b>: a declared pass with both <code>execute_cpu</code> and <code>record_gpu</code>, identical math and operation order, fp32 on both, seeded from the domain-separated streams, participating in the golden-corpus parity comparison with its own ratified tolerance band.</p>
+      <p><b>This is the largest single item in the program</b> and it gets its own phase and its own checkpoint (§10). It is scoped as: neighbour search reusing the <em>existing</em> sorted grid rather than a second spatial structure; density and pressure-force passes; a <code>Fluid</code> component carrying the material parameters; and the parity band measured, never assumed.</p>
+      <p><b>Cost if wrong:</b> if SPH cannot reach an acceptable CPU↔GPU band, the honest outcome is a CPU-only fluid declared under SL6's rule — visible in the sandbox, excluded from GPU-authoritative worlds — not a widened band. Widening a parity band to accommodate a new pass would compromise the corpus for every existing one.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>SL10–SL13 — The sandbox</h2></div>
+    <p><code>spade_sandbox</code> is the engine's reference application: the place a physics or rendering change becomes <em>visible</em> rather than inferred from an assertion. It replaces <code>spade_viewer</code> and its v1 bridge entirely.</p>
+
+    <div class="ruling"><span class="lbl">SL10 · the same-path invariant</span>
+      <p>The sandbox renders through the <b>same <code>spade::render</code> entry points</b> the C5 host and the conformance tests use. There is no second render path, no sandbox-only shading, and no "close enough" preview mode.</p>
+      <p><b>Why it is stated as an invariant rather than a preference:</b> the sandbox's entire value is that a visual difference implies a real difference. A private render path makes it a picture of itself, and a tool that can disagree with the tests is worse than no tool, because it will be believed. Guarded by construction — the sandbox links <code>spade::render</code> and SL2b forbids it reaching anywhere else.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL11 · presentation stack</span>
+      <p>The CPU rasterizer produces a BGRX8 frame; the sandbox uploads it as a texture and draws one fullscreen quad; ImGui runs on its OpenGL3 backend. The window presents a buffer and hosts a UI — it is not a renderer.</p>
+      <p>This sits behind a <b><code>Presenter</code> interface</b> so S7b substitutes Vulkan presentation without touching a line of sandbox logic. <b>GLAD is not reintroduced:</b> ImGui's OpenGL3 backend has bundled its own loader since v1.87, and the vendored pin is v1.91.5-docking. <em>This must be verified against the pinned tag at implementation; if it does not hold, the fallback is the Vulkan presenter using the already-unconditional Vulkan-Headers and volk, not a return to GLAD.</em></p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL12 · the sandbox is object-centric</span>
+      <p>The UI is organised around SL4's model, which is what makes it an engine editor rather than a scene viewer: a <b>scene hierarchy</b>; a <b>per-object inspector</b> listing attached components with editable configuration; <b>add-object</b> and <b>add-component</b> menus; and an <b>asset browser</b> over the SDF prefab kit, the parametric mesh library and the material palette.</p>
+      <p><b>Live controls:</b> CPU ↔ Vulkan backend, switchable on a running scene and runnable side-by-side in lockstep so a parity divergence can be watched rather than read from a JSON file · render mode and shading (<code>shaded</code>, <code>wireframe</code>, <code>raymarch</code>, velocity per SL9c, and a raster-vs-raymarch difference view) · sun direction, sky, exposure, shadows and per-object material · gravity, timestep, substep count and contact parameters.</p>
+      <p><b>Inspection:</b> physics debug draw — contact points and normals, body AABBs, the broadphase grid, force and velocity vectors — extending the existing depth-biased overlay path rather than adding one · pause, single-step and scrub with snapshot save and restore on the existing <code>kSnapshotVersion</code> machinery · SDF slice and distance-field visualisation.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL13 · scene sources and persistence</span>
+      <p>Three sources behind one picker: curated <b>presets</b> (including §7's successors to the retired scenes) · <b>test scenarios</b>, surfaced in a dev mode through the existing <code>ScenarioData</code> loader so any failing case can be opened and watched · <b>saved sandbox scenes</b>.</p>
+      <p>The sandbox saves its <b>own scene format</b> (JSON; <code>nlohmann/json</code> is already a dependency), screenshots, and physics snapshots. It <b>does not write <code>.world.yaml</code> or Kat recipes.</b> Canonical content authoring stays where it is; a second authoring home for production content is exactly the outcome this clause exists to prevent.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§7</span><h2>SL14 — v1 quarantine and scene equivalence</h2></div>
+
+    <div class="ruling"><span class="lbl">SL14a · quarantine, not deletion</span>
+      <p><code>spade/src/</code>, <code>spade/include/</code>, <code>spade/examples/</code>, <code>spade/assets/</code>, <code>engine/tools/viewer/</code> and the <code>SPADE_BUILD_V1</code> option move to <b><code>spade/legacy/</code></b> as <b>pure renames with zero edits</b>, following the repo's existing quarantine precedent exactly. GLFW and ImGui move from the <code>SPADE_BUILD_V1</code> gate to <code>SPADE_BUILD_SANDBOX</code>; GLAD leaves the build entirely.</p>
+      <p><b>Location:</b> inside <code>spade/</code>, not the repo-root <code>legacy/</code>. Root <code>legacy/</code> is a Kat concept, and Spade's own history belongs to Spade — SL1's identity claim would be hollow if the engine's predecessor were archived as a Kat artifact.</p>
+      <p><b>"Completely cut off"</b> is enforced, not asserted: no build wiring references it, no target links it, no test includes it, and a ratchet guard in the shape of the existing legacy-quarantine test fails if anything reaches back in.</p>
+      <p><b>One thing must be harvested before the viewer moves:</b> <code>engine/tools/viewer/scenes.cpp</code> is <b>v2 code, not v1</b> — only <code>bridge.cpp</code> touches the old engine. Its eight scene constructors are the direct source material for the eight successors in SL14b and are ported forward, not re-derived from screenshots.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">SL14b · scene equivalence, and the order it must happen in</span>
+      <p>The retired scenes need <b>successor presets that exercise the same objects, physics and rendering</b> — <b>not</b> numerically exact reproductions. Equivalence is judged on three axes, and the axes are not uniform across the eleven scenes, so the spec states each honestly rather than promising one comparison for all of them.</p>
+      <p><b>The binding constraint is ordering.</b> Baselines can only be captured while v1 still builds. Once it is quarantined and cut from the build, it can never be run again and the comparison becomes impossible forever:</p>
+    </div>
+    <pre><code>characterise what each scene exercises
+  -> capture baselines from the LIVE v1 tools     &lt;- last moment this is possible
+    -> build the successor presets
+      -> compare on all three axes
+        -> only then quarantine</code></pre>
+
+    <h3>The two populations</h3>
+    <p>The eleven scenes are not one set. The <b>eight</b> <code>spade_viewer</code> scenes — <code>drop · bounce · shower · gate · hover · wind · flight · swarm</code> — already run <b>v2 physics</b> and are merely <em>rendered</em> through the v1 bridge. The <b>three</b> <code>Sandbox.exe</code> scenes — <code>fluid</code> (50,000-sphere SPH), <code>spheres</code>, <code>cubes</code> — run <b>v1's own engine</b>, which is the thing being retired.</p>
+
+    <div class="table-scroll"><table>
+      <tr><th>Axis</th><th>The eight v2 scenes</th><th>The three v1 scenes</th></tr>
+      <tr><td class="k">Functional</td><td><b>Bit-identical state trajectories</b> asserted across the port. The engine underneath is unchanged, so this is available and is far stronger than visual judgement</td><td>Capability assertion: the successor exercises the named systems (SPH, grid collision, contact saturation) and runs stably. No trajectory comparison exists — the engine that produced them is being retired</td></tr>
+      <tr><td class="k">Visual</td><td colspan="2">Reference frames captured from the live tools before quarantine; successors judged equivalent on geometry, motion and materials. <b>Not a pixel diff</b> — v1 rasterises on the GPU through OpenGL and the sandbox blits CPU frames, so pixel equality is impossible and asserting it would be a fake test. The new frames are then <b>pinned as goldens</b>, so everything after this program is diffable</td></tr>
+      <tr><td class="k">Latency &amp; memory</td><td>Physics step time and memory compared directly via <code>spade_bench</code>, which already benchmarks <code>Simulation::step()</code> and already carries a recorded <code>baselines.json</code></td><td>Fresh baselines recorded only. <b>Render time is not comparable on either population</b> — CPU rasterisation is slower than hardware GL by design, and recording that as a regression would be wrong. It is recorded as a new baseline for the CPU path</td></tr>
+    </table></div>
+
+    <div class="callout"><b>SL14c — <code>fluid</code> becomes a standing capability target</b>
+      <p>The 50,000-body scene is the largest stress case in the tree and is retained as a permanent preset and a stated sandbox requirement, not merely as a migration artifact. The three v1 successors are <b>labelled as capability demonstrations</b>, never as parity or regression claims, so that no later reader mistakes them for a numeric guarantee they cannot support.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§8</span><h2>SL15 — Build, CI, and how a windowed tool gets tested</h2></div>
+    <div class="ruling"><span class="lbl">SL15a · build gating</span>
+      <p>A new <code>SPADE_BUILD_SANDBOX</code> option, <b>default ON</b>, which CI configures <b>OFF</b> — the same pattern <code>SPADE_BUILD_V1</code> uses today and that CI already exercises. The reason the windowing dependencies were gated in the first place is recorded in the vendor file and still applies: a bare Linux runner has no X11/Wayland development packages, and <code>FetchContent_MakeAvailable(glfw)</code> fails its own configure without them.</p>
+    </div>
+    <div class="ruling"><span class="lbl">SL15b · headless is the test surface</span>
+      <p><code>spade_sandbox --headless</code> loads a scene, applies options, steps, renders and dumps frames <b>with no window</b>, feeding the existing frame-dump and golden-image pattern. Every panel's logic is reachable from it, and it runs in CI with the window build off.</p>
+      <p>The window itself is a <b>deliberately dumb shell</b>: presentation and input, nothing else. Any logic that migrates into it is a defect, because it becomes untestable by construction. This is the concrete answer to "how does a GUI tool avoid regressing silently" — by having almost nothing in the GUI.</p>
+    </div>
+    <p class="note">Hosted CI is presently failing on a billing block rather than a quota, so every claim in this program is proven on local evidence under the standing directive until that is resolved. That is a condition of the environment, not of this design.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§9</span><h2>SL16 — Vocabulary</h2></div>
+    <div class="ruling"><span class="lbl">SL16 · "component" is shared and context-scoped (user ruling, 2026-08-30)</span>
+      <p>Both Spade and Kat keep the word <b>component</b>. They are the same idea — a part attached to an underlying structure — and the trees are worked separately, so context disambiguates in practice.</p>
+      <p>Two things make that safe rather than merely convenient. In code the namespaces already separate them: Spade's are C++ types under <code>spade::</code>; Kat's are C3-contract manifests addressed by dotted <code>typeId</code> strings such as <code>decision.policy</code>. And <code>AGENTS.md</code>'s vocabulary section records that both senses are live and context-scoped, so a reader meeting the word at the <code>dronesim/spade/</code> boundary — the one place both appear in a single file — knows there are two.</p>
+      <p><b>Not renamed:</b> <code>element</code> stays the force-element layer's word (rotors, drag surfaces) in Spade, and is not a synonym for a component in either tree.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§10</span><h2>SL17 — Phases and checkpoints</h2></div>
+    <p>Entry condition: the 21st spec's render program completes <b>C1 → C2 → C3 → C4 → C5</b> and merges to master. C4 is slotted after C3 by user ruling, discharging SR-42's "C0 cannot merge without C4" and retiring the render branch's merge debt before this program adds to it.</p>
+    <div class="table-scroll"><table>
+      <tr><th>Phase</th><th>Contents</th><th>Exit</th></tr>
+      <tr><td class="k">P0 · Audit &amp; baselines</td><td>Characterise all 11 scenes; capture visual, functional and performance baselines from the <b>live</b> v1 tools; ratify the SL7 transfer register against the tree</td><td>Baselines recorded and reviewed. <b>Nothing may be quarantined before this completes</b></td></tr>
+      <tr><td class="k">P1 · Object model</td><td>SL3–SL5: object graph, component attachment, registered type ids, serialization, the nine component types</td><td>Snapshot and parity estate provably unchanged; object graph proven determinism-neutral</td></tr>
+      <tr><td class="k">P2 · Behaviors</td><td>SL6: declared-pass registration, ordering, read/write declarations, GPU-eligibility refusal; the kinematic mover as the first behavior</td><td>A CPU-only behavior is refused from a GPU-authoritative world, proven by construction</td></tr>
+      <tr><td class="k">P3 · Transfer gaps</td><td>SL9c–SL9e: velocity render mode, camera and input components, instancing helpers</td><td>Register rows closed; the three smaller gaps demonstrable</td></tr>
+      <tr><td class="k">P4 · SPH fluid</td><td>SL8: CPU and GPU passes, grid reuse, <code>Fluid</code> component, measured parity band</td><td>👤 <b>CHECKPOINT ①</b> — fluid runs on both backends inside its measured band, or is honestly declared CPU-only</td></tr>
+      <tr><td class="k">P5 · Sandbox</td><td>SL10–SL13: presenter, ImGui shell, hierarchy and inspector, asset browser, live controls, inspection surfaces, headless mode</td><td>👤 <b>CHECKPOINT ②</b> — the sandbox opens a test scenario, a preset and a saved scene; every control operates live</td></tr>
+      <tr><td class="k">P6 · Successors</td><td>SL14b: the 11 successor presets; three-axis comparison against P0's baselines</td><td>👤 <b>CHECKPOINT ③</b> — equivalence demonstrated on all three axes, with the honest asymmetries stated</td></tr>
+      <tr><td class="k">P7 · Quarantine &amp; hardening</td><td>SL14a quarantine + ratchet guard; SL2a release identity; SL2b public-surface guard; SL16 vocabulary note</td><td>👤 <b>CHECKPOINT ④</b> — v1 quarantined and unreachable; standalone build → install → consume green with zero GL dependency</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§11</span><h2>SL18 — Verification</h2></div>
+    <ul>
+      <li><b>The object graph does not perturb physics</b> — an existing golden scenario produces bit-identical results with and without an object graph built over it. This is the SL3 claim, tested rather than argued.</li>
+      <li><b>Snapshot compatibility</b> — a snapshot taken before P1 restores after it, unmodified.</li>
+      <li><b>Behavior determinism</b> — a world with a behavior produces identical trajectories across runs, processes and backends; a CPU-only behavior is <em>refused</em> from the GPU path rather than silently degraded.</li>
+      <li><b>SPH parity</b> — measured band with recorded provenance, never widened to accommodate a result.</li>
+      <li><b>Transfer completeness</b> — a guard asserts every SL7 register row is dispositioned, so a future v1 system cannot be quarantined unnoticed.</li>
+      <li><b>Public-surface purity</b> — the sandbox's include graph touches only installed headers (SL2b).</li>
+      <li><b>Standalone consumption</b> — the out-of-tree <code>find_package(spade)</code> consumer builds and runs with <code>SPADE_BUILD_SANDBOX=OFF</code> and no GL anywhere.</li>
+      <li><b>Quarantine ratchet</b> — a seeded violation reaching into <code>spade/legacy/</code> fails the guard.</li>
+      <li><b>Scene equivalence</b> — the eight v2 successors assert bit-identical trajectories; all eleven carry pinned golden frames going forward.</li>
+    </ul>
+    <div class="callout"><b>Guard discipline carried from the render program</b>
+      <p><em>A constant, test, or fixture validated only against something that cannot vary is unvalidated.</em> That lesson was learned six times over in the 21st spec's execution. Every guard this spec adds must be shown to <b>fail under the mutation it exists to catch</b> — the transfer-completeness guard with a row removed, the quarantine ratchet with a seeded reach-back, the purity guard with an internal include, the equivalence assertions with a perturbed trajectory.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§12</span><h2>What this spec does not do</h2></div>
+    <ul>
+      <li><b>Extract Spade to its own repository.</b> Hardening in place; extraction is a later decision with a stated trigger, not a deliverable here.</li>
+      <li><b>Author canonical content.</b> The sandbox saves its own scenes and never writes <code>.world.yaml</code> or Kat recipes.</li>
+      <li><b>Build the full ECS.</b> Queries, signature iteration and archetype storage are designed against, not implemented.</li>
+      <li><b>Scripted or plugin behaviors.</b> SL6 admits declared, compiled, deterministic behaviors only.</li>
+      <li><b>Adopt DM3's mover/Target schema.</b> P2 supplies the engine mechanism; the schema stays that addendum's to define.</li>
+      <li><b>Vulkan presentation, camera sensors, the ImGui debug HUD on the GPU path.</b> S7b's, behind SL11's <code>Presenter</code> seam.</li>
+      <li><b>Change the C5 ABI.</b> Untouched. Phase G remains its only amending authority.</li>
+      <li><b>Textures, PBR, post-processing, mesh colliders.</b> Unchanged from the 21st spec's exclusions; SDF remains collision truth.</li>
+      <li><b>An ABI or API stability promise.</b> Seat S1's, if ever wanted.</li>
+    </ul>
+  </section>
+
+  <div class="footer-note">Twenty-fourth spec · drafted 2026-08-30 · session rulings: blanket engine · harden in place · viewer+inspection+explore · object model designed fully/built minimally · declared deterministic behaviors · shared "component" vocabulary · v1 to spade/legacy/ · equivalent presets not exact ports · C4 after C3 · absorbs 21st spec RS10a/b/c · realises engine design §4 ECS clause · amends engine design §3/§13</div>
+</div>
+</body>
+</html>

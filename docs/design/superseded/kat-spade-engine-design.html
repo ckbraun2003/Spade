@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spade v2 Engine Design — Design Spec</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #0E8C9C; --accent-soft: #0E8C9C22; --amber: #B5731D; --amber-soft: #B5731D1A;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+      --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+    --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #0E8C9C; --accent-soft: #0E8C9C22; --amber: #B5731D; --amber-soft: #B5731D1A;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 64ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .chip.warn { border-color: var(--amber); color: var(--amber); background: var(--amber-soft); }
+  section { margin-top: 44px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  p { max-width: 72ch; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 72ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  .st { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .st.s1 { color: var(--crit); }
+  .st.s2 { color: var(--amber); }
+  .st.s3 { color: var(--muted); }
+  .st.keep { color: var(--ok); }
+  .pid { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; color: var(--accent); font-weight: 700; }
+  .callout { border-left: 3px solid var(--amber); background: var(--amber-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 76ch; }
+  .callout b { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  .callout.teal { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.teal b { color: var(--accent); }
+  .ruling { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 12px 16px; margin: 14px 0; max-width: 76ch; }
+  .ruling .lbl { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 4px; }
+  .ruling p { margin: 0; font-size: 15px; }
+  ul { max-width: 74ch; padding-left: 22px; margin: 8px 0 12px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  pre.tree, pre.api { background: var(--code-bg); color: var(--code-ink); font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 13px; line-height: 1.6; border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin: 12px 0; }
+  pre .c { color: #6E8296; }
+  pre .a { color: #62D3E2; }
+  pre .y { color: #E8B662; }
+  .footer-note { margin-top: 56px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; font-family: "Cascadia Mono", Consolas, monospace; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Design specification · approved</div>
+  <h1>Spade v2 — Engine Design</h1>
+  <p class="subtitle">The ninth spec: how the Spade engine is actually built. Delivers everything the foundation charter's §8 deferred — module architecture, the step model, world-batched state and snapshots, the physics pipeline, the vehicle model-type layer, sensors, worlds, Slang/Vulkan backends, API conventions, testing, and the S1–S8 build order.</p>
+  <div class="status-row">
+    <span class="chip live">approved v1.0 · 2026-08-08</span>
+    <span class="chip">implements: Spade charter P1–P8 · closes charter §8</span>
+    <span class="chip">complies: errata rev 2 · editor tech spec TA1/TA5</span>
+    <span class="chip">grounded: v1 deep-dive 2026-08-07</span>
+    <span class="chip live">reconciled — Addendum A (§15) SIGNED 2026-08-10</span>
+  </div>
+  <div class="callout" style="margin-top:18px"><b>Reconciled — Addendum A (§15) SIGNED 2026-08-10 — operative</b>
+    <p>The batch-2 reconciliation registered 2026-08-08 is <b>Addendum A (§15)</b>: B1/B10/B12/B13/B11 → <b>A1–A5</b>, the camera cost model → <b>A6</b>, the opaque <code>backend</code> config block → <b>A7</b>, the M1d-camera-vs-S7 conflict → <b>A8</b> (user-ruled, as is A3), the §3 schedule corrections → <b>A9</b>, housekeeping → <b>A11</b>. Execution context — the S1–S4 plan ran under user go with this addendum outstanding — is recorded in <b>A10</b>. Signed off by the user 2026-08-10; A1–A11 operative.</p>
+  </div>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>What this document is</h2></div>
+    <p>The foundation charter (seventh spec) pinned Spade's identity and eight pillars, then deliberately deferred the engineering to this session. This document is that engineering: every §8-owed item is answered here, grounded in a line-level dive of the v1 codebase (§13 carries the keep/kill verdicts). Spade is designed as a <b>general extreme-fidelity, high-throughput physics + rendering engine</b> — Kat is its first consumer, not its shape. The long-term arc is modeling and rendering the aerodynamics of motorized vehicles; the quadrotor is the first vehicle model class, not the point.</p>
+    <div class="callout teal"><b>Binding context</b>
+      <p>Charter pillars P1–P8 govern (GPU-authoritative + CPU reference twin · three-grade determinism · Vulkan · fixed-step/seeded · fat-Spade/thin-dronesim · offscreen render · effects→aero promotion rule · snapshot first-class). The editor technical spec's <b>TA1</b> (C5 presentation semantics) and <b>TA5</b> (sensor-poll convention) bind the frame and sensor surfaces (§9, §7). Where this document details a mechanism the charter only named, this document governs.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>Decision record (2026-08-07/08 session)</h2></div>
+    <div class="table-scroll"><table>
+      <tr><th>#</th><th>Decision</th><th>Pinned as</th></tr>
+      <tr><td class="pid">D1</td><td class="k">Integrator</td><td>Semi-implicit (symplectic) Euler; quaternion via exponential map; body-frame inertia; accuracy via substeps. Integrator API = pure function of (state, wrench, dt) so families can be added without touching state layout.</td></tr>
+      <tr><td class="pid">D2</td><td class="k">Precision</td><td>fp32 on BOTH paths, pinned reduction order; worlds are local-frame by rule (no planetary coordinates).</td></tr>
+      <tr><td class="pid">D3</td><td class="k">Collision</td><td>Analytic SDF static world (primitives + CSG + heightfield); sphere/capsule dynamic proxies; sorted-grid for dynamic–dynamic; triangle-mesh colliders = later add-on.</td></tr>
+      <tr><td class="pid">D4</td><td class="k">Vehicles</td><td>Model-type layer: engine asset classes one tier above meshes (body template + collision proxy + force elements + visual refs + param schema). Quadrotor first; generic ForceElements beneath.</td></tr>
+      <tr><td class="pid">D5</td><td class="k">Rotor aero</td><td>v2 = curves + RPM lag + momentum-theory inflow + SDF-sampled ground effect. BEMT + flow-field coupling = roadmap behind P7.</td></tr>
+      <tr><td class="pid">D6</td><td class="k">Medium</td><td>Per-world density/temperature + uniform wind + Dryden turbulence (seeded), behind one Medium interface P7 fields later implement.</td></tr>
+      <tr><td class="pid">D7</td><td class="k">Worlds</td><td>WorldBuilder API + versioned YAML world file (serializes exactly what the builder builds). glTF visual imports later, render-only.</td></tr>
+      <tr><td class="pid">D8</td><td class="k">Many-worlds</td><td>Native world-index batching in every physics buffer from day one; N=1 degenerate; CPU twin loops worlds serially.</td></tr>
+      <tr><td class="pid">D9</td><td class="k">Shaders</td><td>Slang modules; shared layout definitions single-sourced in Slang, C++ headers generated at build (static_asserts on offsets); generated binding registry.</td></tr>
+      <tr><td class="pid">D10</td><td class="k">Transition</td><td>Strangler: v1 GL engine + sandbox stay alive untouched as harness until the Vulkan renderer replaces them (S7).</td></tr>
+      <tr><td class="pid">D11</td><td class="k">Tests/CI</td><td>GTest + CTest from the first v2 commit; determinism replay + CPU↔GPU parity as the spine; bench baselines in-repo; own CI job (ubuntu CPU twin + windows build); GPU tests on the dev box.</td></tr>
+      <tr><td class="pid">D12</td><td class="k">Toolchain</td><td>MSVC + Ninja + CMake presets; C++23 (std::expected error spine). MinGW/CLion path retired for v2 targets.</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>Module architecture</h2></div>
+<pre class="tree">spade/
+  engine/                      <span class="c">// v2 — all new code lives here</span>
+    core/       <span class="c">// math (GLM + engine wrappers), typed IDs, Error/std::expected, time, config</span>
+    ecs/        <span class="c">// generational-handle entities, pools with stable slots, views; lifecycle real</span>
+    state/      <span class="c">// authoritative-state registry, world-partitioned SoA arenas, snapshot blobs</span>
+    world/      <span class="c">// World, WorldBuilder, YAML world file, SDF scene program, environment/Medium</span>
+    physics/    <span class="c">// integrator, force-element tables, collision (SDF + sorted grid), pass schedule</span>
+    vehicles/   <span class="c">// model-type layer: ModelType, Quadrotor; nothing vehicle-specific below here</span>
+    sensors/    <span class="c">// sensor tables + synthesis passes; IMU first, camera seat reserved</span>
+    compute/    <span class="c">// backend seam: pass interface, CPU backend, Vulkan backend (device/queues/arenas)</span>
+    shaders/    <span class="c">// Slang modules incl. shared/ layout definitions (single source of truth)</span>
+    render/     <span class="c">// S7: Vulkan renderer — offscreen FramePool, instanced meshes, SDF raymarch, ImGui HUD</span>
+    testing/    <span class="c">// replay/parity/bench harness support</span>
+  src/ include/ examples/ assets/   <span class="c">// v1 GL engine — UNTOUCHED strangler harness until S7</span>
+  tests/                       <span class="c">// gtest suites, golden corpora, bench baselines</span></pre>
+    <ul>
+      <li>One CMake project, targets per module (<code>spade_core</code>, <code>spade_ecs</code>, … <code>spade_cpu</code>, <code>spade_vulkan</code>, <code>spade_tests</code>); presets for MSVC+Ninja (debug/release/relwithdebinfo). <b>Install/export rules with <code>spade::</code> namespaced targets land in S1</b> — that is the kat build wiring: dronesim consumes Spade via <code>add_subdirectory</code> or <code>find_package(spade)</code>, public API only.</li>
+      <li>Dependency rules (enforced by target link visibility): <code>core</code> depends on nothing; <code>ecs/state/world/physics/vehicles/sensors</code> never include Vulkan or windowing headers; only <code>compute/vulkan</code> and <code>render</code> touch the GPU API; nothing anywhere includes <code>windows.h</code> in a public header (v1's psapi mistake).</li>
+      <li>FetchContent pins move to exact tags/commits (GLM, GLFW for the v1 harness, Slang toolchain, GTest, google-benchmark, yaml-cpp, Dear ImGui — kept, finally used by the S7 debug HUD). <code>CMP0169</code>-deprecated ImGui block replaced.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>The step model</h2></div>
+    <p>v1 has no concept of a step — the substep loop lives in the sandbox. v2 makes the step the engine's central object: deterministic, declared, inspectable.</p>
+    <ul>
+      <li><b>Fixed dt, immutable at creation</b> (C5). A <code>Simulation</code> owns a <code>WorldSet</code> and steps it: <code>step(n_steps)</code>. Substep count per world config; effective substep dt = dt / substeps.</li>
+      <li><b>The substep pipeline is a fixed, declared pass sequence:</b></li>
+    </ul>
+<pre class="api"><span class="c">// per substep, in this order, always:</span>
+MediumUpdate      <span class="c">// Dryden gust states advance (seeded, per world)</span>
+ForceElements     <span class="c">// rotors -> drag -> lift surfaces (each element type = one batched pass)</span>
+Gravity
+CollisionStatic   <span class="c">// dynamic proxies vs world SDF: distance + gradient -> contact impulses</span>
+CollisionDynamic  <span class="c">// sorted-grid pair path (exact cell compare — v1 hash-collision bug fixed)</span>
+Integrate         <span class="c">// symplectic Euler + quaternion exp-map; captures specific force for sensors</span>
+SensorSynthesis   <span class="c">// only on sensor-rate boundaries; writes sensor output rings</span>
+Publish           <span class="c">// tick counter++, snapshot ring hook, frame-state copy point</span></pre>
+    <p class="note"><em>[Two corrections to this shorthand ratified in Addendum A — <b>A9</b>: the tick counter increments once per <b>step</b>, not in the per-substep Publish pass (<code>schedule.hpp:328-338</code>); and the Gravity pass is deliberately <b>inert</b> — gravity is applied inside Integrate for exact specific-force capture (<code>schedule.hpp:265-282</code>). The landed schedule is normative; see §15 A9.]</em></p>
+    <ul>
+      <li><b>Every pass is one interface, two implementations</b> — <code>execute_cpu(WorldSpan)</code> and <code>record_gpu(CommandRecorder&amp;)</code> — same math, same operation order, fp32 both (P1/P2). The schedule object is data; passes cannot reorder themselves.</li>
+      <li><b>Determinism:</b> no wall-clock anywhere below <code>Simulation</code>; every stochastic element (Dryden, sensor noise, spawn randomization) draws from per-world, per-system splitmix64 streams domain-separated from the world seed (the errata-R4 discipline, engine-generic). Structural changes (spawn/despawn/model load) are queued and applied only at step boundaries.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>State, many-worlds, snapshot</h2></div>
+    <h3>State layout</h3>
+    <ul>
+      <li>Authoritative state is <b>SoA arenas partitioned by world</b>: bodies/elements/sensors occupy world-contiguous slot ranges inside global arrays. Per-world parameters (gravity, medium, capacities, seed) live in an indexed param buffer. A slot→world map buffer lets one dispatch cover all worlds.</li>
+      <li><b>Fixed capacity per world at creation</b> (bodies, elements, sensors, contacts). Spawn/despawn (C5 calls) allocate/free slots deterministically in call order within capacity — no reallocation mid-run, ever. v1's "Load-then-never-again" becomes an explicit, honest contract instead of a silent overrun.</li>
+      <li>The <b>ECS carries identity, not physics</b>: generational handles (index+generation, reuse-safe — v1 had no lifecycle at all), components reference state slots. Pool iteration order no longer feeds GPU buffer order; slot assignment does. Component type IDs are compile-time registered monotonic (v1's dead <code>GetUniqueComponentID</code> pattern, resurrected), never <code>typeid().hash_code()</code>.</li>
+      <li>Static world geometry (the SDF program, §5) is immutable per world in its own buffer; rebuilding it is a structural change.</li>
+    </ul>
+    <h3>Many-worlds (D8)</h3>
+    <ul>
+      <li>The collision grid hashes <b>(world_id, cell)</b>; sorted domains are global; range checks make cross-world interaction structurally impossible. One dispatch steps N worlds; N=1 is the degenerate case with no overhead.</li>
+      <li>The CPU twin iterates worlds serially with identical per-world math — parity comparisons are per-world, so a divergence names its world.</li>
+      <li>A <code>WorldSet</code> template ("N worlds from this world file, capacities X") is the training-fleet constructor; heterogeneous sets are allowed but uniform sets get the tightest layouts.</li>
+    </ul>
+    <h3>Snapshot (P8) and readback</h3>
+    <ul>
+      <li>The <b>state registry</b> records every authoritative array (name, element type, per-world extents). Snapshot = registry walk → versioned blob: header (schema hash, tick, world set shape) + arena copies + RNG stream states. CPU path = memcpy. Restore = reverse + structural-queue flush. Blobs save/load to file — the determinism-replay corpus is snapshot pairs + input scripts.</li>
+      <li><b>GPU path:</b> on-demand snapshot = one arena→staging copy at a tick boundary (single <code>vkCmdCopyBuffer</code>, fence, map). The editor's continuous rewind ring = async double-buffered staging copies every K ticks, never blocking the physics queue.</li>
+      <li><b>Sensors solve the per-tick readback problem:</b> sensor outputs are tiny; they live in a dedicated output buffer read back per tick (double-buffered). Full-state readback happens only on demand. Nothing else crosses the bus per tick.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>Physics content</h2></div>
+    <h3>Rigid bodies (D1, D2)</h3>
+    <ul>
+      <li>State per body: position, velocity, orientation quaternion, angular velocity (body frame), mass, inverse inertia tensor (body frame), accumulators (force, torque), flags. Layout defined once in <code>shaders/shared/</code> (§8).</li>
+      <li>Integration: semi-implicit Euler — velocities first from accumulated wrench, then pose; orientation advanced by <code>q ⊗ exp(½ ω dt)</code> (exact for constant ω over the substep); Euler's rigid-body term (ω × Iω) included; quaternion renormalized per substep (deterministic op order).</li>
+      <li>Specific force (acceleration minus gravity, body frame) is captured inside Integrate for the IMU pass — computed once, not reconstructed.</li>
+    </ul>
+    <h3>Collision (D3)</h3>
+    <ul>
+      <li><b>Static world = an analytic SDF program:</b> primitives (plane, box, sphere, cylinder, capsule, torus, heightfield) + transforms + CSG ops (union, intersect, subtract, smooth variants) compiled by the WorldBuilder into a flattened postfix node program. Both backends evaluate the identical program (§8 single-sourcing). Contact = φ(p) &lt; r ⇒ depth, normal = ∇φ (analytic where closed-form, central differences otherwise — pinned stencil for parity).</li>
+      <li>Race gates are box/torus compositions — exact geometry, zero mesh error. Contact response: impulse-based with restitution + Coulomb friction (v1's model, kept), positional correction clamped.</li>
+      <li><b>Dynamic–dynamic:</b> the v1 sorted-grid pipeline ports (atomics-free design kept — it is the engine's best idea), with fixes: exact cell-ID compare (hash-bucket neighbors bug), bounds-checked bitonic tail, hash size configurable per world set (not a 4×-duplicated constant).</li>
+      <li>Dynamic proxies v2: sphere and capsule. Convex hulls and triangle-mesh statics are the stated later rungs.</li>
+    </ul>
+    <h3>Medium &amp; aero (D5, D6)</h3>
+    <ul>
+      <li><code>Medium</code> interface: <code>sample(world, position) → {density, wind_velocity}</code>. v2 implementation: per-world density + constant wind + Dryden turbulence (standard MIL-spec form, per-world seeded filter states advanced in MediumUpdate). P7's flow fields implement the same interface later — aero code never knows which medium it reads.</li>
+      <li>Aero force elements read Medium at their body-frame station: <b>RotorElement</b> (§6), <b>DragBody</b> (quadratic + componentwise, matching what current KAT configs express), <b>LiftSurface</b> (flat-plate + polar tables — the fixed-wing seat, post-v2).</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>Vehicles — the model-type layer</h2></div>
+    <div class="ruling"><span class="lbl">The pattern</span><p>A <b>ModelType</b> is an engine asset class one tier above shapes and meshes: rigid-body template (mass, inertia, proxies) + force-element set + sensor mounts + visual mesh references + a parameter schema. Instances spawn from a ModelType into slot allocations. The Quadrotor is the first ModelType; cars and fixed-wing arrive as new element types + model classes — <b>nothing vehicle-specific exists below <code>vehicles/</code></b>.</p></div>
+    <h3>RotorElement (D5)</h3>
+<pre class="api"><span class="c">// per rotor, SoA, batched across all worlds:</span>
+params:  body slot · local pose · spin dir · time-constant τ (RPM lag)
+         thrust curve T(ω) · torque curve Q(ω)   <span class="c">// polynomial or table</span>
+state:   ω (RPM)                                  <span class="c">// first-order lag toward command</span>
+step:    ω += (ω_cmd − ω)·dt/τ
+         v_axial = axis · (v_body + ω_b × r − medium.wind)
+         T = T(ω) · f_inflow(v_axial)             <span class="c">// momentum-theory correction:</span>
+                                                  <span class="c">// climb/descent/hover thrust variation</span>
+         T *= f_ground(φ_world(p_rotor))          <span class="c">// ground effect from the WORLD SDF —</span>
+                                                  <span class="c">// the collision field IS the proximity query</span>
+         apply wrench {T·axis, Q(ω)·spin + T·axis × r} at body</pre>
+    <ul>
+      <li><b>Quadrotor API:</b> a parameter struct (rotor poses or arm-geometry shorthand, mass/inertia, per-rotor params, drag body, sensor mounts, visual mesh ref) + factory → ModelType. Convenience accessors for command vectors (per-rotor ω_cmd or normalized u). This is the class Kat's dronesim maps drone descriptions onto.</li>
+      <li>Gyroscopic rotor terms and BEMT are per-rotor opt-ins on the roadmap; the param schema reserves their fields now so upgrading a model never changes layout.</li>
+      <li>Aero roadmap (charter P7): BEMT per rotor → effects-layer flow fields (rotor wake, downwash) feeding <code>Medium.sample</code> as local inflow. Promotion to authoritative requires the CPU twin mirroring — restated here because it guards this exact path.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§7</span><h2>Sensors</h2></div>
+    <ul>
+      <li>Sensor tables (SoA, batched): kind · body slot · mount pose · rate divider · seeded noise params · output ring reference. Synthesis runs inside the step (SensorSynthesis pass) only on that sensor's rate boundary.</li>
+      <li><b>IMU (v2):</b> gyro = body ω at mount (+ lever-arm terms), accel = specific force at mount transformed by mount pose; noise = white + bias random walk per axis, per-sensor seeded streams. Output = timestamped samples into the sensor's ring.</li>
+      <li><b>Output rings:</b> monotonically indexed, tick-stamped samples in the per-tick readback buffer. The host polls rings (C5 <code>kathost_sensor_poll</code>); ring depth ≥ the host's worst poll interval; the count/latest-index convention follows the editor tech spec's <b>TA5</b>. Spade exposes samples + indices; stamping policy above the seam belongs to dronesim (P5).</li>
+      <li><b>Camera sensors — seat reserved, phase S7+:</b> a camera sensor is a render-to-texture at sensor rate on the render queue, output = image + tick. Explicitly distinct from <b>presentation</b> frames (TA1's domain, §9): sensor frames are simulation outputs and must exist headless; presentation frames are for humans. Keeping the two frame kinds separate is what keeps render-cadence invariance (TA1) and headless sensor fidelity simultaneously true. <em>[Superseded for sensors by Addendum A — <b>A1</b>: camera-sensor synthesis executes inside stepping, in the reserved SensorSynthesis pass; presentation frames stay on the render path. See §15 A1.]</em></li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§8</span><h2>Worlds &amp; the file format</h2></div>
+    <ul>
+      <li><b>WorldBuilder</b> (fluent API): add SDF nodes (primitive, transform, material, CSG op), spawn points (named poses), environment (gravity vector, medium params, default seed), capacities. <code>build()</code> validates (capacity sanity, SDF program depth, name uniqueness) → immutable <code>WorldDesc</code>.</li>
+      <li><b>World file:</b> versioned YAML serializing exactly the builder's product — <code>world_version</code>, environment, sdf scene tree, spawns, capacities, visual attachments (mesh refs, render-only). Load = parse → same validation → <code>WorldDesc</code>. C5's <code>world_ref</code> = a file path or an in-memory <code>WorldDesc</code> handle.</li>
+      <li>Golden-world test corpus = world files + input scripts + expected snapshots: <b>data, not code</b>.</li>
+      <li>glTF import (visual meshes attached to bodies/statics) is a later, render-only add-on; physics never reads imported meshes until triangle-mesh colliders land (D3's later rung).</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§9</span><h2>Compute backends, Slang, parity — and frames</h2></div>
+    <h3>Single-source layouts (D9)</h3>
+    <ul>
+      <li>All shared state/param structs and the binding registry are authored once as <b>Slang modules</b> under <code>engine/shaders/shared/</code>. A build step (slangc reflection) generates the C++ headers with <code>static_assert</code>ed offsets/sizes. v1's two worst layout hazards — 9-file struct duplication and the GLM quaternion-order coincidence — become build errors instead of silent corruption.</li>
+      <li>Kernels are Slang, compiled to SPIR-V at build; pipeline layouts and descriptor bindings come from the generated registry. No string-name uniform lookups; push constants + param buffers only.</li>
+    </ul>
+    <h3>Vulkan backend structure</h3>
+    <ul>
+      <li><code>compute/vulkan/</code> owns instance/device/queues: one compute queue for physics, one transfer queue for readback/snapshot, (S7) one graphics queue for render. Headless by construction — no surface required for physics or camera sensors.</li>
+      <li>Command recording per step: passes record into one command buffer per step batch; barriers between passes are explicit and minimal (v1's barrier-after-every-dispatch becomes stage-scoped barriers; the bitonic sort records its full dispatch chain once per shape and reuses it).</li>
+      <li>Timestamps queries per pass feed the bench harness — the budget numbers stop being guesses.</li>
+    </ul>
+    <h3>Parity (P1/P2 mechanics)</h3>
+    <ul>
+      <li>Golden scenario corpus (world file + inputs + N steps) runs on both backends; comparison per state array with per-quantity tolerance classes (positions, velocities, quaternions, RPM). CPU↔CPU replay must be bit-identical per platform; GPU↔GPU bit-identical per device+driver; CPU↔GPU within bands. Tolerances are <b>measured then pinned with margin</b> — the consolidation's golden-atol lesson (calibrate cross-platform before pinning) is standing policy.</li>
+    </ul>
+    <h3>Presentation frames (TA1 compliance)</h3>
+    <ul>
+      <li>The render module (S7) exposes a <b>FramePool</b>: explicit <code>render(world, camera, target)</code>, ≥2 outstanding frames, non-blocking acquire, every frame tagged with its simulation tick. Rendering reads a tick-boundary state copy on its own queue — <b>render cadence cannot perturb stepping</b>, satisfying TA1's render-cadence invariance and the C5 headless/rendered equivalence test by construction. At M1b, Spade privately owns the graphics context exactly as the editor tech spec assumes. <em>[B10's deferral rule recorded in Addendum A — A2; B11's discharge note in A5. See §15.]</em></li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§10</span><h2>Rendering (S7) — designed now, built later</h2></div>
+    <ul>
+      <li>Offscreen-first (P6): instanced mesh pipeline (v1's flatten + <code>instanceStartIndex</code> scheme kept), color/velocity/wireframe debug modes carried over.</li>
+      <li><b>The SDF world renders by raymarching the physics field</b> — the debug view draws the exact geometry collision sees; visual world and physics world cannot disagree. Materials attach to SDF nodes.</li>
+      <li>Dear ImGui becomes the engine debug HUD (pass timings, world/slot inspector, medium probes) — the dependency v1 linked and never used finally earns its place.</li>
+      <li>The v1 GL sandbox retires only when the Vulkan sandbox (window + swapchain over the same FramePool) reaches feature parity: the strangler's endpoint.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§11</span><h2>API surface &amp; conventions</h2></div>
+    <ul>
+      <li><code>namespace spade</code>; C++23. Public API returns <code>std::expected&lt;T, spade::Error&gt;</code>; no exceptions cross the boundary (v1's uncatchable private exception classes are the counterexample). Error carries code + context string; an error-sink callback surfaces async/GPU-side faults. Debug builds run Vulkan validation layers; device-lost and OOM paths are explicit.</li>
+      <li>Typed RAII handles everywhere (<code>WorldHandle</code>, <code>ModelTypeHandle</code>, <code>BodyRef</code>, <code>FrameHandle</code>…) — never bare integer aliases (v1's GLuint soup). No globals; no process-wide teardown side effects (v1's <code>glfwTerminate</code>-in-destructor); N Simulations in one process is a supported, tested configuration (charter instance-isolation gap closed by construction).</li>
+      <li>Threading contract: a Simulation is externally synchronized (one caller thread); internal GPU queues are the engine's business; the render module may be driven from a second thread against the FramePool only.</li>
+      <li>Rule-of-five discipline on every resource-owning type (v1's MeshComponent double-delete landmine is the counterexample); moves explicit, copies deleted unless value-semantic.</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§12</span><h2>Testing &amp; benchmarks (D11)</h2></div>
+    <div class="table-scroll"><table>
+      <tr><th>Suite</th><th>Contents</th><th>Where it runs</th></tr>
+      <tr><td class="k">unit</td><td>math vs closed forms (exp-map, inertia transforms), SDF distances vs analytic, ECS lifecycle (create/destroy/reuse/generation), state registry round-trip, world file parse/validate</td><td>every commit — box + CI (ubuntu CPU, windows build)</td></tr>
+      <tr><td class="k">physics validation</td><td>ballistic drop vs closed form · energy behavior of the symplectic integrator · hover trim (thrust = weight ⇒ station-keeping) · climb/descent thrust vs momentum-theory reference curves · Dryden spectral sanity</td><td>every commit (CPU)</td></tr>
+      <tr><td class="k">determinism replay</td><td>golden corpus: world + inputs + snapshot pairs; bit-identity per platform (CPU); N-world batching invariance (same world stepped alone vs inside a set ⇒ identical)</td><td>every commit (CPU); GPU per-device on the box</td></tr>
+      <tr><td class="k">parity</td><td>CPU↔GPU per-array tolerance bands over the same corpus</td><td>box, nightly-class (S6+)</td></tr>
+      <tr><td class="k">bench</td><td>google-benchmark: per-pass timings (Vulkan timestamps), steps/sec × worlds sweep, baselines JSON in-repo with regression thresholds</td><td>box; report artifact in CI later</td></tr>
+    </table></div>
+    <p class="note">Rate-envelope targets (charter §8 owed; validated by bench, not promised): single world ≥ 10 kHz substeps CPU for a quadrotor-class scene · viewport (1 world, few vehicles) 1 kHz physics + 60 fps render concurrently · batched headless ≥ 64 worlds × 1 kHz faster than real time on the dev GPU. Misses trigger design review, not silent acceptance.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§13</span><h2>Phasing S1–S8 and the v1 verdicts</h2></div>
+    <div class="table-scroll"><table>
+      <tr><th>Stage</th><th>Delivers</th><th>Exit proof</th></tr>
+      <tr><td class="k">S1</td><td>Scaffold: engine/ tree, MSVC+Ninja presets, C++23, CI job, core (math/ids/Error), gtest+bench harness, Slang toolchain in build, install/export (<code>spade::</code>)</td><td>CI green on a math unit suite; bench harness emits a baseline</td></tr>
+      <tr><td class="k">S2</td><td>ECS v2 + state registry + arenas + CPU snapshot/restore</td><td>lifecycle + snapshot round-trip suites green</td></tr>
+      <tr><td class="k">S3</td><td>CPU physics core: integrator, SDF collision, grid port, pass schedule</td><td>determinism replay green; ballistic/energy validation green</td></tr>
+      <tr><td class="k">S4</td><td>Medium + force elements + Quadrotor ModelType + IMU</td><td>hover-trim + climb/descent validation green; <b>charter M1B bar met (headless CPU)</b></td></tr>
+      <tr><td class="k">S5</td><td>WorldBuilder + YAML world file + golden-world corpus</td><td>corpus is data; C5 <code>world_ref</code> loadable</td></tr>
+      <tr><td class="k">S6</td><td>Vulkan compute backend + Slang kernels + batched many-worlds + parity harness</td><td>parity bands green on the box; batching-invariance test green; bench sweep recorded</td></tr>
+      <tr><td class="k">S7</td><td>Vulkan renderer: FramePool (TA1), instanced meshes, SDF raymarch, ImGui HUD, Vulkan sandbox; camera-sensor seat opens</td><td>GL sandbox retired; headless/rendered equivalence test green</td></tr>
+      <tr><td class="k">S8</td><td>Effects layer port (SPH/grid, non-authoritative) + aero roadmap opens (BEMT, flow fields per P7)</td><td>effects demos run under Vulkan; promotion rule documented in code</td></tr>
+    </table></div>
+    <h3>v1 dead-code adjudication (charter §9 list — verdicts)</h3>
+    <div class="table-scroll"><table>
+      <tr><th>Item</th><th>Verdict</th><th>Note</th></tr>
+      <tr><td class="k">SaveRenderToFile decl</td><td class="st s1">DELETE (S1)</td><td>never defined; screenshots return properly with the S7 FramePool</td></tr>
+      <tr><td class="k">[FRAGMENT]Density.frag</td><td class="st s1">DELETE (S1)</td><td>orphaned</td></tr>
+      <tr><td class="k">Resources::m_ProgramCache · Triangle · HashPair</td><td class="st s1">DELETE (S1)</td><td>dead</td></tr>
+      <tr><td class="k">GetUniqueComponentID</td><td class="st keep">RESURRECT</td><td>its pattern becomes v2's component-ID mechanism</td></tr>
+      <tr><td class="k">BruteForceNewtonianGravity shader</td><td class="st keep">KEEP</td><td>effects-layer demo at S8; the C++ stub body is deleted S1</td></tr>
+      <tr><td class="k">Dear ImGui dependency</td><td class="st keep">KEEP</td><td>S7 debug HUD</td></tr>
+      <tr><td class="k">viewInverse=view · per-key UBO rebuild · edge-less toggles · RenderWireframe cache key</td><td class="st s3">LEAVE (v1)</td><td>strangler code is not maintained; dies with GL at S7</td></tr>
+      <tr><td class="k">v1 patterns carried forward</td><td class="st keep">KEEP</td><td>POD↔std430 single-mapping discipline (now generated) · instanceStartIndex flattening · composable pass verbs (now a declared schedule) · atomics-free sorted grid · Upload/Update allocation split (now typed)</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§14</span><h2>Traceability</h2></div>
+    <p class="note">Charter §8 owed items → here: many-worlds model → §4 · buffer/state layout + readback + snapshot → §4, §9 · rate envelope → §12 · sensor primitive set → §7 · Vulkan module structure + Qt/frame handoff → §9 · kat build wiring → §2 · SPH→aero promotion criteria → §6/P7 restated · dead-code adjudication → §13 · Linux timing → S1's CI ubuntu CPU job is the first Linux surface; full Linux GPU support rides the Vulkan backend (S6+), scheduled when cloud training needs it. Charter M1B gap rows all close at S4 except snapshot-GPU/instance-isolation-GPU (S6) — the M1b bar is the CPU path by charter sequencing. No open sign-offs; the three embedded calls (YAML world file · ImGui kept · SDF-raymarch debug view) were approved in-session 2026-08-08. <em>One post-approval registration (2026-08-08): the batch-2 reconciliation addendum — B1/B10/B11/B12/B13, the camera cost model, and the <code>backend</code> config surface — drafted 2026-08-10 as Addendum A (§15), signed off 2026-08-10.</em></p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§15</span><h2>Addendum A — batch-2 reconciliation</h2></div>
+    <div class="status-row">
+      <span class="chip live">SIGNED OFF 2026-08-10 — operative (A1–A11) · A3/A8 user-ruled</span>
+      <span class="chip">reconciles: amendment batch 2 (B1–B14, operative) + config spec</span>
+      <span class="chip">drafted against landed S1–S4 code</span>
+    </div>
+    <p style="margin-top:12px">Reconciles this approved design with amendment batch 2 (B1–B14, operative) and the configuration spec; discharges the two obligations assigned after the design session closed (the camera cost model; the <code>backend</code> config surface, config §18) and the sequencing conflict recorded nowhere (M1d-camera vs S7). Drafted 2026-08-10 against the landed S1–S4 code (none of the eight rulings was foreclosed — 2026-08-09 verification review, VC-1); A3 and A8 are user-ruled 2026-08-10.</p>
+
+    <h3><span class="pid">A1</span> · B1 camera placement — ratified as the schedule already leans</h3>
+    <p>Camera-<b>sensor</b> synthesis executes <em>inside stepping</em>, in the schedule's reserved SensorSynthesis pass (<code>schedule.hpp:310-324</code>), exactly as B1 requires; §7's camera-on-the-render-queue reading is superseded <em>for sensors</em>. Presentation frames stay on the render path (TA1 FramePool, S7) — "camera sensors ≠ presentation frames" stands. When the rendered camera lands (S7), its work is dispatched from within the SensorSynthesis pass (<code>record_gpu</code>), not the presentation queue; adding it adds no pass (the slot exists) but does change the snapshot schema hash + golden digests when camera state registers — declared-schedule discipline, re-record per §12.</p>
+
+    <h3><span class="pid">A2</span> · B10 frame-pool deferral — recorded for S7</h3>
+    <p>The FramePool must satisfy B10: frames handed to the host remain valid across <em>all</em> host calls; pool slots are deferred, not recycled, while frames are outstanding; ≥2 outstanding supported. No landed code affected.</p>
+
+    <h3><span class="pid">A3</span> · B12 reset — restore + reseed surface</h3>
+    <div class="ruling"><span class="lbl">User-ruled 2026-08-10</span><p><code>kathost_reset</code> = restore of an initial snapshot taken <em>after</em> roster assembly (roster preserved per B12), <b>plus</b> one new engine surface (e.g. <code>Simulation::reseed(seed)</code>) that re-derives all RNG streams from a fresh seed post-restore per R4's domain-separated derivation — necessary because <code>WorldParams::seed</code> is registered state inside the blob and restore alone reinstates the old seed.</p></div>
+    <p>The landed <code>restore()</code> semantics are ratified as correct (structural queue discarded; config/dt not in the blob). dronesim (the C5 implementer) must capture the post-roster snapshot at session start. Conformance: "reset preserves roster" round-trip + "reseed re-derives streams deterministically" cases added to §12's suite list.</p>
+
+    <h3><span class="pid">A4</span> · B13 poll cursor — discharged by T19's landed shape, ratified</h3>
+    <p>Every per-sensor cursor-bearing state (ring write cursor <code>last_index</code>, bias states, RNG stream, phase counter) is <b>registered</b> state inside the world snapshot blob (landed, <code>ec5289f</code>); <code>poll(sensor, since_index)</code> is caller-carried, stateless engine-side. The <em>host</em>-side consumed-sample cursor — B13's "poll cursor" at the C5 level — therefore belongs to the world-snapshot layer owned by dronesim (R9's world/runtime/session split): the host snapshots its own <code>since_index</code> values alongside the engine blob. The register's "B13 lands inside S2's snapshot round-trip suites" expectation is re-scoped: the engine-side obligation landed with T19's tests (ring wrap, poll-since, snapshot resume); the host-side cursor case lands in the C5 conformance suite (M1b).</p>
+
+    <h3><span class="pid">A5</span> · B11 discharge note</h3>
+    <p>The render-thread question formally moved to this session is answered: v1 renders on the sim thread (B11's sim-thread-render v1 posture; the strangler viewer conforms); the S7 target remains §11's second render thread consuming only the FramePool — satisfying B11's threading clause. Degradation order = renders drop first (B11): presentation frame production may be shed under load; sensor synthesis inside stepping is never shed.</p>
+
+    <h3><span class="pid">A6</span> · Camera cost model (owed by batch 2 §1) — model now, numbers at S7 entry</h3>
+    <p>Rendered camera ≈ <code>n_drones × (W×H) × k_raymarch(SDF node count)</code> per sample at 25 Hz; the synthetic-feature path (A8) ≈ <code>n_drones × n_gates_in_frustum × k_sdf_query</code> — negligible against R10's envelope. S7's entry gate benches the rendered model against the 3-drone × 25 Hz envelope; a miss triggers design review per §12's bench-miss rule (resolution options — resolution/rate reduction, GPU-only camera — recorded then).</p>
+
+    <h3><span class="pid">A7</span> · The opaque <code>backend</code> config block (owed by config §18)</h3>
+    <p>The accreted create-time surface is partitioned:</p>
+    <ul>
+      <li><b>(a) Simulation content</b> — result-affecting, versioned, authored in world/sim config: <code>dt_ns</code> + substeps, <code>ContactParams</code>, <code>GridParams.cell_size</code> (order-affecting through the sorted-grid comparator), <code>DrydenParams</code>, <code>WorldSetDesc</code>.</li>
+      <li><b>(b) The opaque <code>backend</code> block</b> — result-neutral <em>by contract</em> (config §11: may not change stepping): <code>uniform_dynamic_params</code> batching selection (proven byte-identical by the landed tripwire, <code>c088179</code>), capacities/pool sizing, device and thread-count selection (thread counts additionally bound by R10's bit-stability sweep). The block's constitutional rule: CPU-vs-GPU path selection is an implementation property (charter P2), never a tunable.</li>
+      <li><b>(c) Not configurable:</b> pass-schedule shape, integrator op order, publish semantics.</li>
+    </ul>
+    <p><b>Conformance rule:</b> every knob admitted to the <code>backend</code> block owes an invariance test in the tripwire pattern (digest equality across the knob's settings); <code>c088179</code> is the template. Discharges config §18's backend item.</p>
+
+    <h3><span class="pid">A8</span> · M1d camera vs engine S7 — synthetic features for M1d</h3>
+    <div class="ruling"><span class="lbl">User-ruled 2026-08-10</span><p>M1d's 25 Hz camera lane is satisfied by <b>host-synthesized analytic gate-feature buffers</b> derived from the SDF world geometry (B1's fake-camera architecture promoted to the real host); M1d proves lane cadence + package plumbing, not pixels.</p></div>
+    <p>The rendered camera arrives with S7 and is <em>not</em> on M1d's critical path — the sequencing conflict dissolves. Transport of the feature buffer to the consuming component = batch-3 B15's sensor-input ruling; errata R11's M1d row gains a pointer with batch-3 propagation.</p>
+
+    <h3><span class="pid">A9</span> · §3 schedule corrections ratified (2026-08-09 review, VI-5)</h3>
+    <p>Two corrections implemented in code become the spec: <b>(i)</b> the tick counter increments once per <b>step</b> — not in the per-substep Publish pass (a literal §3 reading would tick substeps× per step and break every snapshot header; <code>schedule.hpp:328-338</code>); <b>(ii)</b> the Gravity pass is deliberately <b>inert</b> — gravity is applied inside Integrate (<code>vel += (force_acc/mass + g)·h</code>) for exact specific-force capture; a literal Gravity pass would double-apply (<code>schedule.hpp:265-282</code>). S6's GPU mirror implements the landed schedule, not §3's shorthand. (Inline notes added at §3.)</p>
+
+    <h3><span class="pid">A10</span> · Execution-gate record</h3>
+    <p>The S1–S4 plan executed under user go (2026-08-08, SDD ledger; serial→parallel-waves amendment) with this addendum outstanding — waiver recorded here. S1–S3 gates passed 2026-08-09 (ctest 277/277; checkpoint №1); wave 8' merged 2026-08-10 (T17 rotor · T19 IMU + rings · T14b viewer — T19 landed B13's substance, ruled in A4). This addendum is signed before T20 (checkpoint №2) and the S4-M1B claim, restoring the register's description of reality.</p>
+
+    <h3><span class="pid">A11</span> · Housekeeping</h3>
+    <ul>
+      <li><b>(i)</b> Spade's own version (charter §5's undischarged promise) advances 0.1.0 → 0.2.0 at the S4-M1B claim; <code>world_version</code> and the snapshot format version remain separately versioned.</li>
+      <li><b>(ii)</b> Charter §7's gap-survey column is stale: fixed-step, headless, seeded RNG, rigid-body dynamics, snapshot/restore, and the test estate exist on the CPU path; propulsion landed with T17/T18; sensors with T19.</li>
+      <li><b>(iii)</b> The determinism corpus landed as builder-scenarios + committed digests rather than §4's "snapshot pairs + input scripts; data, not code" — S5's exit proof must absorb the substitution explicitly.</li>
+      <li><b>(iv)</b> The stale "A5" citation reached <code>spade/engine/sensors/imu.hpp:268</code> via T19's dispatch — one-line comment fix rides with T21 close-out.</li>
+    </ul>
+  </section>
+
+  <div class="footer-note">spade v2 engine design · v1.0 approved 2026-08-08 · ninth spec · implements the spade &amp; sim stack foundation charter (closes its §8) · complies with errata rev 2 + editor tech spec TA1/TA5 · reconciliation addendum signed 2026-08-10 (Addendum A, §15) · grounded in the 2026-08-07 v1 deep-dive · next: T20/M1B, then S5+</div>
+</div>
+</body>
+</html>

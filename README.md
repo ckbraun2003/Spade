@@ -8,9 +8,9 @@ that v2's strangler viewer drives during the transition to a real (Vulkan) rende
 > full history @ `1c8a133`) as the engine beneath Kat's sim stack. Its v2 direction -- fixed-step
 > deterministic stepping, a CPU reference twin for every authoritative pass, headless/offscreen
 > operation, seeded RNG, snapshots, native world-batching -- is pinned in
-> `design-specs/spade/02-engine.md` (local, untracked; the engine `D1`-`D12` decision record,
+> `docs/design/02-engine.md` (tracked in this repo; the engine `D1`-`D12` decision record,
 > approved v1.0 2026-08-08, consolidated into the spade realm directory 2026-09-07 -- the original
-> is archived at `design-specs/spade/superseded/kat-spade-engine-design.html`). The S1-S4
+> is archived at `docs/design/superseded/kat-spade-engine-design.html`). The S1-S4
 > implementation plan (`.superpowers/plans/2026-08-08-spade-engine-s1-s4.md`) landed the CPU path of
 > the charter's M1B bar -- see **M1B status** below. This README documents the engine **as it is
 > today**; the design spec is the source of truth for where it is going.
@@ -25,35 +25,33 @@ that v2's strangler viewer drives during the transition to a real (Vulkan) rende
 
 ## v2 quickstart
 
-The commands below are written for the repo root (`C:\...\kat`) -- that leading `spade\` segment
-is a relative path from there, not something the scripts resolve on their own. Running from inside
-`spade\` itself: drop it (e.g. `scripts\build.ps1` instead of `spade\scripts\build.ps1`). All three
-scripts are PowerShell, foreground-only (backgrounded builds/tests get killed on this box), and
-each accepts `-Preset debug` or `-Preset release` (default `release`) -- the value maps internally
-to `spade/CMakePresets.json`'s `msvc-ninja-debug` / `msvc-ninja-release` CMake preset names, but
+The commands below are written for this repo's root. All three scripts are PowerShell,
+foreground-only (backgrounded builds/tests get killed on this box), and each accepts
+`-Preset debug` or `-Preset release` (default `release`) -- the value maps internally
+to `CMakePresets.json`'s `msvc-ninja-debug` / `msvc-ninja-release` CMake preset names, but
 also happens to be the literal build directory name (see Build, below); the two are related, not
 identical.
 
 ### Build
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1
-powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset debug
-powershell -ExecutionPolicy Bypass -File spade\scripts\build.ps1 -Preset release -Clean
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Preset debug
+powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Preset release -Clean
 ```
 
 Imports a vcvars64 MSVC environment (Ninja invokes `cl.exe` directly and needs it set up first),
 configures the requested preset if it isn't already, and builds. Binaries land under
-`spade/build-ninja/<debug|release>/bin/` -- the directory name is the `-Preset` VALUE you passed
+`build-ninja/<debug|release>/bin/` -- the directory name is the `-Preset` VALUE you passed
 (`debug` or `release`), not the longer CMake preset name (`msvc-ninja-debug` /
 `msvc-ninja-release`) that value maps to internally.
 
 ### Test
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1
-powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1 -Preset debug
-powershell -ExecutionPolicy Bypass -File spade\scripts\test.ps1 -Filter IntegrateOrientation
+powershell -ExecutionPolicy Bypass -File scripts\test.ps1
+powershell -ExecutionPolicy Bypass -File scripts\test.ps1 -Preset debug
+powershell -ExecutionPolicy Bypass -File scripts\test.ps1 -Filter IntegrateOrientation
 ```
 
 Runs the v2 engine suite (`spade_tests`, gtest) through `ctest -L spade` against a build this preset
@@ -76,8 +74,8 @@ validation tests, none of them Vulkan-gated).
 ### Demo
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene hover
-powershell -ExecutionPolicy Bypass -File spade\scripts\demo.ps1 -Scene flight -Preset debug
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene hover
+powershell -ExecutionPolicy Bypass -File scripts\demo.ps1 -Scene flight -Preset debug
 ```
 
 Builds (if needed) and launches one windowed demo scene. `-Scene` is one of:
@@ -138,12 +136,12 @@ layer knows the layer above it exists):
 | `sim/` | `spade::sim` | The fixed ten-pass substep **schedule** as data (`physics/schedule.*` -- compiles here, not into `spade_physics`, because only `Simulation` runs it; spec section 3's eight passes plus SL6's two inert behavior slots, `BehaviorsKinematic` before `ForceElements` and `BehaviorsForce` after it), and `Simulation`/`WorldSet` (`sim/*`): arenas, tick, the substep loop, the structural queue, spawn/despawn, snapshot/restore, model registration. This is the engine's one public entry point. |
 | `sensors/` | *(compiles into `spade::sim`)* | IMU synthesis (`imu.*`: mount-frame specific force + angular velocity, tick-stamped) and the sensor output ring buffers (`rings.hpp` -- editor tech spec TA5's sensor-poll convention, made executable). |
 | `vehicles/` | `spade::vehicles` | The model-type layer (design spec section 6): `RotorElement` (thrust/torque curves, RPM lag, momentum-theory inflow, SDF ground effect -- `rotor.*`), the `ModelType` registry (`model_type.*`), and `Quadrotor` (`quadrotor.*`). "Nothing vehicle-specific below here" -- the dependency arrow points down into `physics`/`world`/`state`, never back. |
-| `testing/` | *(header-only, test support only)* | `replay.hpp`: the determinism digest (`state_digest()`, an incremental FNV-1a fold over the state registry's walk order) and the scenario replay harness. `scenario_file.hpp` (S5 Task 7): the scenario-file loader -- the golden corpus is data, see the quickstart section above. Both included by `spade/tests/` only -- absent from every install/export rule, not something an out-of-tree consumer has any business with. |
+| `testing/` | *(header-only, test support only)* | `replay.hpp`: the determinism digest (`state_digest()`, an incremental FNV-1a fold over the state registry's walk order) and the scenario replay harness. `scenario_file.hpp` (S5 Task 7): the scenario-file loader -- the golden corpus is data, see the quickstart section above. Both included by `tests/` only -- absent from every install/export rule, not something an out-of-tree consumer has any business with. |
 | `tools/` | `spade_viewer` (`SPADE_BUILD_V1`-gated) | The strangler viewer: v1's frozen OpenGL renderer fed by v2 `Simulation` state, one demo scene at a time (`viewer/bridge.*`, `viewer/scenes.cpp`, `viewer/main.cpp`). The one place in `engine/` allowed a wall-clock read (frame pacing) and the one v2 code that includes v1 headers. Task 6 added a `-Backend cpu\|vulkan` switch (`demo.ps1`), so the same scenes can render off either backend's `Simulation`. |
 | `compute/` | `spade::compute` (`SPADE_VULKAN`-gated, default `ON`) | S6's Vulkan/Slang GPU backend: `BackendDesc`/`BackendKind` (`backend.hpp`) select it at `Simulation::create()`; `vulkan/context.*` owns the instance/device/queue (device-capability checks, incl. `shaderDenormPreserveFloat32`); `vulkan/state_mirror.*` is the host<->device buffer mirror (derived storage only -- no `register_array` call, per the frozen-18-array global constraint); `vulkan/step_recorder.*` records the whole per-substep dispatch chain ONCE and resubmits it verbatim per step; `vulkan/timestamps.*` is the optional per-pass GPU timing S6 Task 10 added. `layout_check.cpp` + the generated `bindings.gen.hpp`/layout asserts are the single-sourced C++<->Slang struct mirror (`cmake/SpadeSlang.cmake`'s codegen). Nothing outside this directory includes a Vulkan header (spec §2's dependency rule, machine-checked by `test_slang_layouts.cpp`). |
 | `shaders/` | Slang sources, compiled to embedded SPIR-V (no install rule) | The GPU port of `physics/`'s per-substep passes, one `.slang` kernel per schedule slot that has one (`kernels/integrate.slang`, `forces_drag.slang`, `collision_static.slang`; `sdf_eval.slang`/`shared/*.slang` are shared modules, not kernels) plus `compute/grid_entry.hpp`'s sorted-grid broad phase (`grid_build`/`grid_sort`/`collision_dynamic` in the CollisionDynamic chain) and `fp32_math.slang`/`fp32_math_probe.slang` (the `log32`/`exp32`/`sin32`/`cos32`/`div32` Slang port -- no `OpFDiv`, no `sqrt`, no GLSL.std.450 transcendental import on any parity-profile module, `spirv_scan.hpp`'s scanner rules P1-P5 + E1/E2, enforced on every compiled variant). Every kernel compiles once per `compute::kSupportedWorkgroupSizes` entry (`{32, 64, 128}`, S6 Task 9b) -- the `workgroup_size` backend knob is live, not a plumbing-only lever. |
 
-`spade/tests/` (`spade_tests`, gtest, ctest labels `spade` + `T0`, plus `gpu` on every device-executing
+`tests/` (`spade_tests`, gtest, ctest labels `spade` + `T0`, plus `gpu` on every device-executing
 `Gpu*` suite -- see the Test section above) mirrors this module list one `test_*.cpp` per concern,
 plus `test_m1b_bar.cpp` (the M1B charter bar as executable asserts), `test_gpu_parity.cpp` (S6:
 CPU<->GPU correctness -- see "S6 status" below), and the golden determinism corpus
@@ -151,7 +149,7 @@ CPU<->GPU correctness -- see "S6 status" below), and the golden determinism corp
 `two_world_isolation`, `quad_hover` -- each a committed data file naming its own world file
 (`tests/golden/worlds/*.world.yaml`) and carrying its own `expected_digest` with a provenance
 block, loaded by `engine/testing/scenario_file.hpp`); this corpus is CPU-golden only -- the GPU is
-never a golden source, device-dependent parity is compared live, every run. `spade/tests/bench/`
+never a golden source, device-dependent parity is compared live, every run. `tests/bench/`
 (`spade_bench`, google-benchmark, **not**
 ctest -- see its own header comments) holds `bench_core.cpp` (math primitive throughput) and
 `bench_sim.cpp` (`Simulation::step()` throughput sweeps, CPU and GPU families); `baselines.json`
@@ -176,7 +174,7 @@ below) -- both presets green.
   currently `1` -- S5 Task 5 gave it a real version once the format itself existed). Neither is
   touched by this bump.
 - **Rate envelope** (design spec §12): both CPU-measurable targets are **HIT** on this box
-  (`spade/tests/bench/baselines.json` has the full run) -- a single world's quadrotor+IMU scene
+  (`tests/bench/baselines.json` has the full run) -- a single world's quadrotor+IMU scene
   measures ~296,000 substeps/sec against a >=10,000 floor, and the 64-world batched set measures
   ~176,000 world-substeps/sec against a >=64,000 (64 worlds x 1 kHz) floor. The spec's batched
   target is phrased "on the dev GPU"; this is the CPU reference twin, so it is a strong signal, not
@@ -201,7 +199,7 @@ below) -- both presets green.
 S5's exit bar (design spec, phase S5; plan `2026-08-11-spade-engine-s5`) is met on three legs,
 each carried by committed artifacts rather than claims:
 
-- **The corpus is data.** Five `spade/tests/golden/scenarios/*.scenario.yaml` + seven byte-pinned
+- **The corpus is data.** Five `tests/golden/scenarios/*.scenario.yaml` + seven byte-pinned
   `worlds/*.world.yaml`; the S1-S4 builder lambdas are retired, with
   `GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus` (`test_determinism.cpp`) as the
   permanent equivalence record -- it hard-codes the four builder-era digests as a second source and
@@ -210,7 +208,7 @@ each carried by committed artifacts rather than claims:
 - **C5 `world_ref` is loadable.** Worlds load by path or in-memory handle (`world/world_ref.hpp`,
   installed) through the same `validate_world_desc` gate as `WorldBuilder::build()` -- all four
   entry paths (build, file load, path ref, desc ref) validate; the out-of-tree consumer smoke
-  (`spade/tests/consumer/`) proves `find_package(spade)` + `load_world_file` on both CI platforms.
+  (`tests/consumer/`) proves `find_package(spade)` + `load_world_file` on both CI platforms.
 - **Substitution is absorbed** (spec Addendum note (iii)). The four migrated `expected_digest`
   values carried over byte-identical from the retired `.digest` files (provenance blocks in each
   scenario file record the chain); the program's only golden regeneration remains Task 3's
@@ -234,7 +232,7 @@ GPU-only correctness. As of this note:
   CollisionStatic, CollisionDynamic (the sorted-grid broad phase's build/sort/resolve chain), Integrate
   and SensorSynthesis are ported (`engine/shaders/`, `compute/`, see the module map above); Gravity
   and Publish are inert by design on both backends (no dispatch is ever recorded for either). A demo
-  scene is no longer refused for an unported pass -- `spade\scripts\demo.ps1 -Scene <scene> -Backend
+  scene is no longer refused for an unported pass -- `scripts\demo.ps1 -Scene <scene> -Backend
   vulkan` runs any scene through the ported kernels.
 - **CPU<->GPU parity is measured, not assumed**, against the same five-scenario golden corpus
   (`test_gpu_parity.cpp`): `bounce` (a restitution ladder with friction) comes out **BIT-IDENTICAL**
@@ -256,7 +254,7 @@ GPU-only correctness. As of this note:
   The 18-entry registered-state walk (state/arenas.hpp) is unchanged -- S6 adds no `register_array`
   call; every GPU-side buffer is derived, backend-internal storage.
 - **The dev-GPU rate envelope is measured and recorded, not gated**, per this program's
-  user-ratified posture: `spade/tests/bench/baselines.json`'s `_meta` block carries the full
+  user-ratified posture: `tests/bench/baselines.json`'s `_meta` block carries the full
   account, including the honest dual-basis (`cpu_time` vs. `real_time`) reading for
   `BM_StepQuadWorldsGpu/64` (the literal 64-worlds x 1kHz target scene) -- a bare ~1.014x pass on
   the real-time basis this box's integrated GPU measures. A miss on this specific hardware is a

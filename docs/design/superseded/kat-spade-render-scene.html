@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kat — Spade Rendering &amp; Scene Representation</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+      --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+      --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+    --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+    --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 68ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+  .chip.warn { border-color: var(--amber-line); color: var(--amber); background: var(--amber-soft); }
+  section { margin-top: 46px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { max-width: 74ch; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 74ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; margin: 10px 0 6px; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  td.mono, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  .callout { border-left: 3px solid var(--amber); background: var(--amber-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 78ch; }
+  .callout b { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  .callout.acc { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.acc b { color: var(--accent); }
+  .ruling { border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; margin: 16px 0; max-width: 78ch; }
+  .ruling .lbl { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 5px; }
+  .ruling p { margin: 0 0 8px; font-size: 15px; }
+  .ruling p:last-child { margin-bottom: 0; }
+  ul, ol { max-width: 76ch; padding-left: 22px; margin: 8px 0 12px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.5; }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: inherit; }
+  .footer-note { margin-top: 60px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; font-family: "Cascadia Mono", Consolas, monospace; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="eyebrow">Design specification · twenty-first spec · draft</div>
+  <h1>Kat — Spade Rendering &amp; Scene Representation</h1>
+  <p class="subtitle">Spade grows a renderer. The engine gains <code>engine/render/</code> — a scene model, a CPU reference rasterizer, and a TA1 frame pool — so that a world stops being a wireframe diagram and becomes a place: shaded geometry, materials, a sun, shadows, and a kit of parts the ten shipped scenes are dressed from. This is engine-design S7, split: S7a here (CPU), S7b later (Vulkan). Collision truth stays SDF, and the raymarched SDF becomes the mechanical proof that the picture and the physics agree.</p>
+  <div class="status-row">
+    <span class="chip warn">✎ DRAFT — drafted 2026-08-24 · awaiting review</span>
+    <span class="chip">decision series RS1–RS15</span>
+    <span class="chip">amends engine design §10/§13 (S7 split) · world schema v1→v2 (freeze lifted)</span>
+    <span class="chip">retires spade v1 GL engine (D10 endpoint) · retires HS5's interim raster</span>
+    <span class="chip">consumes TA1/MN-14 · B10/B11 · A1/A5/A7 · HS2/HS5 · CS3–CS8 · MV5 · DM8</span>
+  </div>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>What this document is</h2></div>
+    <p>Nothing in Kat renders geometry today. Both C5 sim hosts present through a CPU <em>wireframe</em> rasterizer — ground grid, a derived bounds box, one wireframe proxy per SDF node with CSG operators skipped entirely, spawn diamonds, drone tetrahedra. That is the whole visual vocabulary. The eight shipped glTF meshes and CS7's <code>visual_resolver</code> exist and are correct, and have <b>zero consumers</b>: the raster hook was deliberately parked as a documented S7 seam. Spade's <code>engine/</code> tree has no <code>render/</code> module at all; the only thing in the repo that draws a shaded pixel is the frozen v1 OpenGL engine behind <code>spade_viewer</code>, which D10 schedules for death <em>at</em> S7.</p>
+    <p>This spec is that S7, scoped to what makes a scene designable rather than what makes it photographic. It pins the render module's placement and seam, the scene model, how SDF geometry becomes pixels, world schema v2 (materials, lighting, collision-free props), the material and light model, the kit-of-parts and the dressing of the ten CS3 scenes, the standalone sandbox that replaces the v1 GL harness, the executable register, and the checkpoints.</p>
+    <div class="ruling"><span class="lbl">Session rulings absorbed (user, 2026-08-24)</span>
+      <p><b>①</b> The renderer is <b>S7, CPU reference first</b> — a real engine module with a backend seam, not a grown host-side raster; Vulkan lands behind the same frame pool as S7b. <b>②</b> Appearance lives in the <b>world file</b>: schema v1's freeze is lifted to v2. <b>③</b> Content is <b>kit-of-parts first</b>, then all ten scenes dressed from it. <b>④</b> Assets are a <b>hybrid with a declared line</b>: SDF prefabs for structure, procedural glTF for parametric geometry, an admitted authored-asset lane gated on provenance and licence. <b>⑤</b> Authoring is <b>tool-side; the editor views</b>. <b>⑥</b> The program includes a <b>standalone sandbox window and the retirement of the v1 GL engine</b>. <b>⑦</b> Long-term, Spade-as-a-library gets a <b>lightweight ImGui world/scene builder</b> — recorded here as a design seat that this program's shapes must not foreclose.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>RS1 — Placement, module shape, and the S7 split</h2></div>
+    <div class="ruling"><span class="lbl">RS1 · the renderer is an engine module with a backend seam</span>
+      <p>A new <code>spade/engine/render/</code> module, structured like <code>compute/</code> — one interface, backends beneath it:</p>
+      <ul>
+        <li><code>render/scene.hpp</code> — <code>RenderScene</code>: the renderer's own view of a world (draw items, material palette, lights, resolved meshes). Built from a <code>WorldDesc</code> plus a tick-boundary body-pose copy. Immutable once built; cheap to rebuild.</li>
+        <li><code>render/raster_cpu.{hpp,cpp}</code> — the CPU reference rasterizer (S7a).</li>
+        <li><code>render/target.hpp</code> — the render target: a caller-owned pixel span plus width/height/stride/format. <b>S7a adds no engine-side frame pool.</b> <code>dronesim/spade/frames.h</code> already implements a B10-conformant <code>FramePool</code> that the C5 suite proves; the engine writes into a slot that pool hands it. B10 is a C5-boundary contract and stays where C5 lives — duplicating it engine-side would create two pools and one of them would be the untested one. Engine-design §9's frame-pool obligation is therefore met at the seam, and S7b revisits an engine-side pool only if Vulkan image lifetime demands one. MV5's "slots map 1:1 onto pool targets" is unaffected: slots map onto host pool slots.</li>
+        <li><code>render/vulkan/</code> — S7b, behind the same pool. Not built here.</li>
+      </ul>
+      <p><b>Engine-design §13 is amended:</b> S7 splits into <b>S7a</b> (this program: scene model, CPU rasterizer, frame pool, sandbox, v1 retirement) and <b>S7b</b> (Vulkan backend, ImGui debug HUD, camera-sensor seat). S7's original exit proof — "GL sandbox retired; headless/rendered equivalence green" — is met by S7a; S7b inherits the Vulkan half of §10.</p>
+    </div>
+
+    <h3>Constraints held, not renegotiated</h3>
+    <div class="table-scroll"><table>
+      <tr><th>Constraint</th><th>How this design satisfies it</th></tr>
+      <tr><td class="k">HS2 R1 — Spade stays kat-free</td><td>The render module gains no kat dependency. Mesh <em>resolution</em> (id → path) stays kat-side in CS7's resolver; the engine is handed loaded geometry, never an id it must interpret.</td></tr>
+      <tr><td class="k">TA1 / MN-14 — editor owns no graphics context</td><td>Frames remain opaque BGRX8 across C5. The editor is unchanged by this program, exactly as it was unchanged by M1b.</td></tr>
+      <tr><td class="k">TA1 — render-cadence invariance</td><td>Holds <b>by construction</b>: the renderer is a pure function of (RenderScene, camera, target) and touches no sim state, no RNG stream and no clock. Calling it zero times, once, or every tick cannot perturb stepping.</td></tr>
+      <tr><td class="k">A5 / B11 — degradation order</td><td>Renders drop first; sensor synthesis inside stepping is never shed. Unchanged.</td></tr>
+      <tr><td class="k">MV5 — camera slots</td><td>The entry point is per-call-camera (<code>render(scene, camera, target)</code>) as the viewport spec already assumes, so Phase G's slots map 1:1 onto pool targets and are a <b>no-op against this renderer</b>.</td></tr>
+      <tr><td class="k">D3 / DM8 / CS7 — SDF is collision truth</td><td>No mesh collider is introduced. Meshes are presentation only; §4 makes the agreement between them a test rather than a hope.</td></tr>
+    </table></div>
+
+    <div class="callout acc"><b>RS1a — the interim raster is retired, not amended</b>
+      <p><code>dronesim/spade/raster.cpp</code> and <code>raster.h</code> are <b>deleted</b>; <code>kathost_render</code> calls the engine renderer instead. HS5 wrote its own endpoint — "explicitly interim, D10-strangler style, retired when S7 reaches parity behind the same <code>kathost_render</code>/<code>frame_acquire</code> calls" — so this discharges HS5 as written and needs no amendment to it. <code>dronesim/fake/raster.cpp</code> is <b>kept unchanged</b>: the fake is the kat-free conformance reference and the editor's deterministic test host, and must never acquire a Spade dependency. The two hosts' pixels differ; C5 conformance is about semantics, not pixels.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>RS2 — The render scene model</h2></div>
+    <p>A <code>RenderScene</code> is built once per (world, roster) and refreshed per frame only with body poses. It carries four kinds of draw item, a material palette, and a light rig:</p>
+    <div class="table-scroll"><table>
+      <tr><th>Draw item</th><th>Source</th><th>Rebuild cost</th></tr>
+      <tr><td class="k">Tessellated SDF primitive</td><td>Each non-op node of a union subtree (RS3)</td><td>World load</td></tr>
+      <tr><td class="k">Meshed CSG subtree</td><td>Each subtract / intersect / smooth_union subtree (RS3)</td><td>World load</td></tr>
+      <tr><td class="k">Static prop mesh</td><td>Schema v2 <code>props:</code> entries (RS5) via the CS7 resolver</td><td>World load</td></tr>
+      <tr><td class="k">Body mesh</td><td><code>ModelType::visual_ref</code>, instanced per live body</td><td>Per frame: transform only</td></tr>
+    </table></div>
+    <p>Only the last is per-frame work, and only its transform changes — geometry is never re-uploaded or re-tessellated to move a drone. This is the property that lets the same scene serve the editor viewport, the sandbox, a frame-dump batch, and (at S7b) a camera sensor without three code paths.</p>
+    <p class="note">The world-builder rebuild path is kept cheap and explicit for the ImGui-builder seat (RS10c): rebuilding a <code>WorldDesc</code> and swapping the <code>RenderScene</code> must be a supported, tested operation, not a process restart.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>RS3 — How a world becomes pixels</h2></div>
+    <p>The shipped content is <b>88 unions and 2 subtracts</b> across ten worlds. That distribution — overwhelmingly unions, but with a real subtract that matters visually (<code>gate-square</code> is <code>box − box</code>: the hole you fly through) — sets the algorithm.</p>
+    <div class="ruling"><span class="lbl">RS3 · three geometry paths and one truth path</span>
+      <p><b>(a) Union subtrees → tessellated primitives.</b> Each primitive kind (plane, box, sphere, cylinder, capsule, torus, heightfield) has an exact parametric tessellation at a declared per-kind resolution. <b>A union is free</b>: draw both operands and the depth buffer resolves the union exactly. No approximation, no CSG evaluation, no cost. This covers 88 of the 90 operators in shipped content.</p>
+      <p><b>(b) CSG subtrees → meshed once at world load.</b> A <code>subtract</code>, <code>intersect</code> or <code>smooth_union</code> subtree is meshed by surface nets over the subtree's AABB, deterministically, and cached in the <code>RenderScene</code>. The cost is paid at load, never per frame. <b>Resolution is a renderer-side constant table</b>, not a world-file field and not an adaptive heuristic — the same discipline as (a)'s tessellation table, so worlds stay portable across renderer versions and emission is golden-testable byte-identical for a given (subtree, table version).</p>
+      <p><b>(c) glTF meshes</b> — bodies via <code>ModelType::visual_ref</code>, static props via schema v2. Resolved through CS7's <code>visual_resolver</code>, which finally acquires a consumer. Miss and malformed refs render the fallback marker and raise exactly one warning, per CS7's declared behaviour — never a blank, never a fault.</p>
+      <p><b>(d) Exact raymarch mode</b> — sphere-tracing of the real <code>SdfProgram</code>, evaluating the identical field the collision passes evaluate. Too slow on CPU to be the default presentation path, and that is fine: its job is truth, not throughput (§4). Selectable per render call, used at reduced resolution.</p>
+    </div>
+    <p><b>Declared simplifications</b>, each written into the code and the docs rather than discovered later: an infinite <code>plane</code> tessellates as a bounded grid fitted to world bounds; <code>smooth_union</code>'s blend is honoured by path (b) rather than approximated as a plain union; tessellation resolution is a fixed table, not an adaptive heuristic, so output stays byte-reproducible.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>RS4 — The visual/physics agreement test</h2></div>
+    <div class="ruling"><span class="lbl">RS4 · the raymarched image is the collision field</span>
+      <p>Path (d) evaluates the same SDF program the <code>CollisionStatic</code> pass evaluates. So for every shipped world, at every shipped camera bookmark, the build renders <b>both ways</b> — fast path and raymarched path — and asserts silhouette agreement within a declared per-world tolerance. A gate whose tessellation or CSG meshing does not match its SDF <b>fails a test</b> instead of surprising a pilot.</p>
+      <p>This is the engine design's "the debug view draws the exact geometry collision sees; visual world and physics world cannot disagree" (§10) turned from a property of one view mode into a mechanised gate over all of them. It is cheap because it runs offline at reduced resolution, and it is the direct answer to the structural hazard DM8/CS7 create by ruling meshes render-only: the moment scenes look good, a visual wall that isn't there becomes a real failure mode.</p>
+    </div>
+    <p class="note">Tolerance is measured then pinned with provenance, per the standing execution-record discipline — no invented bands. The comparison is silhouette/coverage-based, not per-pixel colour, because shading legitimately differs between the two paths.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>RS5 — World schema v2</h2></div>
+    <div class="ruling"><span class="lbl">RS5 · the v1 freeze is lifted, once, with a shape that admits DM3 additively</span>
+      <p>World schema v1 has been user-frozen since 2026-08-12. This program lifts it to <b>v2</b> to carry appearance. Three additions and one zero-cost field change:</p>
+      <ul>
+        <li><b>Per-node material — a parallel host-only array, <em>not</em> <code>SdfNode._pad</code>.</b> <code>SdfProgram</code> gains <code>std::vector&lt;uint32_t&gt; node_materials</code>, same length as <code>nodes</code>, default 0, carried as its own world-file section. <b>The draft's "repurpose the spare pad word" idea was checked and rejected during planning</b>: <code>_pad</code> is single-sourced into <code>compute::SdfNodeRow</code>, <code>layouts.slang</code> and generated layout asserts that index it <em>by name</em>, and <code>world_to_yaml</code> deliberately <b>refuses</b> a node with non-zero padding ("non-zero padding" — schema v1 cannot represent it, <code>test_world_file.cpp</code> pins this). A parallel array leaves the device image, both writer guards, the Slang layout and every generated assert untouched — and is the more honest split anyway: materials are a render concern, the SDF program is a physics artifact. <code>_pad</code> stays 0 and remains available to S7b if materials ever need to reach the GPU.</li>
+        <li><b><code>materials:</code></b> — the palette: name, base colour, and a small shading-flag set (RS6). Index 0 is a defined default so a v1 file upgrades without authoring.</li>
+        <li><b><code>lighting:</code></b> — sun direction and colour, ambient, sky gradient (RS6).</li>
+        <li><b><code>props:</code></b> — collision-free visual instances: <code>{ mesh_ref, transform, material }</code>. This is the home for dressing that must not affect physics, and it is the one place a "visual-only" object may exist.</li>
+      </ul>
+      <p><code>visual_refs:</code> (the flat opaque string list) is <b>retained</b> — v1 files carry it and it round-trips — with its role narrowed to world-level references that are not per-node or per-prop. Nothing that exists today stops working.</p>
+    </div>
+    <h3>Migration and the round-trip contract</h3>
+    <p>The world file's constitutional rules stand: every key required, an unknown key is an error at every level, and <code>world_version</code> is the one upgrade path. A v1 file therefore continues to load — into a v2 <code>WorldDesc</code> with the default material, default lighting and no props — and <code>world_to_yaml</code> writes v2. CS8's byte-exact round-trip discipline extends to every new field, charconv-only floats included, and the ten shipped worlds are migrated in place with their v1 forms provable from git.</p>
+    <div class="callout"><b>Coordination — DM3's world schema v2</b>
+      <p>The demo program's mover/Target/kinematic block is <em>also</em> waiting on a v2. This spec does <b>not</b> build movers, and deliberately shapes v2 so DM3's block is a purely additive later change (new top-level keys plus a body flag; no restructuring of what v2 introduces here). Whether DM3 folds into this bump or takes its own is a decision for the demo program's engine addendum, filed as a coordination row — but the shape it will need is not foreclosed here.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>RS6 — Material and light model</h2></div>
+    <p>Low-poly-appropriate and deliberately small. A material is a base colour — <b>RGBA</b>, the alpha carrying the one admitted transparency case — plus a shading flag from a closed set (<code>unlit</code>, <code>lambert</code>, <code>emissive</code>). Transparency exists for envelope and marker geometry only (the competition-700 mesh already ships a translucent collision-envelope disc) and is drawn in a declared, order-stable pass so it cannot make output non-reproducible. No textures, no PBR, no post-processing.</p>
+    <p>The light rig is one directional sun (direction, colour, intensity), hemispheric ambient, and a sky gradient rendered as the frame's background so the horizon reads.</p>
+    <div class="ruling"><span class="lbl">RS6a · shadows ship in S7a</span>
+      <p>A single sun shadow map — orthographic, fitted to the scene bounds, one declared resolution — is in scope for the CPU path. This is not polish: without shadows a viewer cannot judge where a drone sits relative to a gate or the ground, which is precisely the job "enough to properly design the scene" names. It is affordable on CPU because the shadow pass is depth-only over the same static geometry, and static geometry's shadow map is rebuilt at world load, not per frame.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§7</span><h2>RS7 — Meshes and the resolver's first consumer</h2></div>
+    <p>CS7's contract is unchanged and finally exercised: <code>mesh:&lt;family&gt;/&lt;name&gt;</code> resolves to <code>&lt;content_root&gt;/meshes/&lt;family&gt;/&lt;name&gt;.gltf</code>, with path-traversal guards, a mixed-namespace filter (<code>material:</code> entries are not malformed mesh refs), and miss/malformed both rendering the fallback marker plus exactly one warning.</p>
+    <p>Loading is glTF 2.0, render-only, positions and indices and per-primitive material association — the subset <code>tools/gen_meshes.py</code> already emits. Kat-side resolution hands the engine loaded geometry; the engine never learns what an id is (HS2 R1).</p>
+    <div class="callout"><b>The fallback marker becomes visible</b>
+      <p>Until now a resolver miss had no renderer to fall back <em>in</em>. RS7 makes the marker a real, recognisable object — deliberately conspicuous, never a blank space — so a missing asset is obvious in the viewport and not just in a log line.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§8</span><h2>RS8 — The kit-of-parts</h2></div>
+    <div class="ruling"><span class="lbl">RS8 · three lanes with a declared line between them</span>
+      <p><b>Lane 1 — SDF prefabs (structure + collision).</b> The primary lane. Today's nine prefabs grow into a real vocabulary; every entry is a parameterised SDF fragment expanded at authoring time into plain schema-v2 nodes, so worlds stay self-contained and the engine never learns the word "prefab" (CS4, unchanged). Because expansion now emits material assignment alongside geometry, <b>collision and appearance are authored in one act and cannot drift</b>.</p>
+      <p><b>Lane 2 — procedural glTF (parametric, technical).</b> <code>tools/gen_meshes.py</code> grows from eight hard-coded builders into a parametric library. Deterministic output, sha-pinned goldens, the <code>.gitattributes</code> CRLF guard retained. This lane owns the drone, rotor geometry, gate rings, markers — anything whose dimensions must cite a descriptor.</p>
+      <p><b>Lane 3 — authored assets (admitted, gated).</b> Hand-modelled or licensed geometry <em>may</em> be committed, but only carrying provenance and licence metadata in the asset's <code>extras.kat</code> block, verified by a content test. The lane may well stay empty through S7a; the point is that the rule is written before someone needs it, so it cannot drift in silently. Licence provenance is a product-shipping concern under the charter's export posture, not a formality.</p>
+    </div>
+    <p><b>Roster direction</b> (final list settled in the implementation plan, sized to the ten scenes' actual needs): gate variants beyond the two shipped, pylons and masts, fences and barriers, containers and crates, building and hangar volumes, towers, ramps and platforms, landing and delivery pads, terrain treatments beyond flat and heightfield, and a shared <b>material palette shipped as content</b> so every scene reads as one product rather than ten unrelated demos.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§9</span><h2>RS9 — The ten scenes, dressed</h2></div>
+    <p>CS3's roster is unchanged — the same ten scenes, the same families, the same spawn and sim-physics content. Each gains material assignment, a lighting and sky setup, ground treatment, and composition from the RS8 kit: the racing family reads as a venue, the demo family as a site. Existing camera bookmark sets are preserved (CS5), because they are what the gallery and the Camera panels initialise from.</p>
+    <p>Every dressed world still round-trips byte-exact and still validates; dressing is content, not a new mechanism. <code>hover-pad</code> stays the minimal smoke scene and is dressed only enough to remain recognisable as the smallest possible world.</p>
+    <p class="note">Static-only, per CS3's DP-G: movers and Targets are not introduced here, and the demo family upgrades in place when DM3's addendum lands.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§10</span><h2>RS10 — Sandbox, v1 retirement, and the ImGui seat</h2></div>
+    <div class="ruling"><span class="lbl">RS10a · the new sandbox</span>
+      <p><code>spade_sandbox</code> — a minimal window that blits CPU frames from the frame pool, with camera controls, scene selection and an on-screen frame-rate readout. GLFW is already vendored; the window does nothing but present a buffer, so there is no GL engine, no glad/<code>windows.h</code> ordering hazard, and no <code>/WX</code> suppression scaffolding. It replaces <code>spade_viewer</code>'s v1-OpenGL path.</p>
+    </div>
+    <div class="ruling"><span class="lbl">RS10b · v1 retires — but only after its scenes are ported (L12)</span>
+      <p>D10's strangler ends here: <code>spade/src/</code>, <code>spade/include/</code>, <code>spade/examples/</code>, <code>spade/assets/</code>, the <code>SPADE_BUILD_V1</code> option, <code>tools/viewer/bridge.cpp</code> and the vendored GL dependency chain are deleted. That v1 is <em>severable at all</em> is already proven: <code>scripts\spade-prefix.ps1</code> has been building the host's Spade install with <code>-DSPADE_BUILD_V1=OFF</code> all along, so kat has never linked v1. Retirement flips a default that is already exercised, then deletes. <b>Ordering is binding:</b> the three v1 regression scenes currently launched as <code>Sandbox.exe</code> (<code>v1-fluid</code>, <code>v1-spheres</code>, <code>v1-cubes</code>) and the eight <code>spade_viewer</code> scenes are ported to <code>spade_sandbox</code> and proven runnable <em>before</em> anything is deleted. The predecessor's demos are regression assets, not casualties — retirement that drops them is not retirement, it is loss. <code>spade/CMakeLists.txt</code>'s asset-copy step and <code>spade/scripts/demo.ps1</code>'s scene map are updated in the same wave.</p>
+    </div>
+    <div class="ruling"><span class="lbl">RS10c · the ImGui world/scene builder — a named seat, not built here</span>
+      <p>The long-term goal for Spade as a library is a lightweight ImGui interface for building worlds and scenes against the library. This program does not build it, and must not foreclose it. Three shapes are held open for it: the sandbox window exists and owns a presentable surface; <code>WorldBuilder</code> rebuild-and-swap of a live <code>RenderScene</code> is a supported, tested operation (RS2); and the renderer is callable from a standalone tool rather than only through the C5 host. The ImGui HUD itself arrives with S7b, where the long-linked-never-used Dear ImGui dependency finally earns its place.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§11</span><h2>RS11 — The executable register</h2></div>
+    <div class="callout"><b>Why this section exists</b>
+      <p>The M-2 smoke failed twice for reasons that were entirely about executables rather than physics: a host DLL that silently lacked three exports the editor's all-or-nothing loader required, and a path the user could not connect. Nothing in the repo documents where <code>kat-editor.exe</code> or <code>kat_frame_dump</code> land, and <code>kat_content_author</code> is <code>EXCLUDE_FROM_ALL</code> — it does not build unless named explicitly. Every executable this program builds, changes or retires is therefore registered here with its target name, output path, build command and run command, and the register is mechanically verified.</p>
+    </div>
+
+    <div class="ruling"><span class="lbl">RS11a · the register is a tracked, guarded document</span>
+      <p>The implementation ships <code>docs/dev/executables.md</code> — one table covering every runnable artifact in the repo (not only this program's), with target name, owning CMake list, build command, resolved output path and one-line purpose. A tools-tier test walks that table and asserts each named target exists in the build graph and lands at the named path after the declared configure+build, in the same class as the existing <code>test_c5_export_surface.py</code> export guard and <code>test_openable_packages.py</code> layout guard. A register that drifts is a failing test, not a stale page.</p>
+    </div>
+
+    <h3>Spade-side executables</h3>
+    <p class="note">Spade sets <code>CMAKE_RUNTIME_OUTPUT_DIRECTORY = ${CMAKE_BINARY_DIR}/bin</code> (<code>spade/CMakeLists.txt:63</code>), and its configure presets bind <code>msvc-ninja-debug</code>/<code>msvc-ninja-release</code> to <code>spade/build-ninja/&lt;preset&gt;</code>. So every Spade executable resolves to <code>spade/build-ninja/&lt;preset&gt;/bin/&lt;target&gt;.exe</code>.</p>
+    <div class="table-scroll"><table>
+      <tr><th>Target</th><th>State after S7a</th><th>Output path</th><th>Run</th></tr>
+      <tr><td class="k mono">spade_sandbox</td><td><b>NEW</b> — the windowed scene viewer (RS10a)</td><td class="mono">spade/build-ninja/&lt;preset&gt;/bin/spade_sandbox.exe</td><td class="mono">spade\scripts\demo.ps1 -Scene &lt;name&gt; [-Preset release] [-Backend cpu|vulkan]<br><span style="opacity:.7">-Backend selects the <b>compute</b> backend (S6 physics), not the renderer — the renderer is CPU throughout S7a</span></td></tr>
+      <tr><td class="k mono">spade_viewer</td><td><b>RETIRED</b> — scenes ported to <code>spade_sandbox</code> first (RS10b)</td><td class="mono">—</td><td class="mono">—</td></tr>
+      <tr><td class="k mono">Sandbox</td><td><b>RETIRED</b> with v1 — its three scenes ported first (RS10b)</td><td class="mono">—</td><td class="mono">—</td></tr>
+      <tr><td class="k mono">spade_tests</td><td>unchanged; gains the render suites</td><td class="mono">spade/build-ninja/&lt;preset&gt;/bin/spade_tests.exe</td><td class="mono">spade\scripts\test.ps1 — never invoke the .exe directly (AGENTS.md)</td></tr>
+      <tr><td class="k mono">spade_bench</td><td>unchanged; gains render-pass baselines</td><td class="mono">spade/build-ninja/&lt;preset&gt;/bin/spade_bench.exe</td><td class="mono">no wrapper script exists today — RS11a's guard pins the real invocation rather than this spec guessing it</td></tr>
+    </table></div>
+    <p><b>Build:</b> <code>spade\scripts\build.ps1 -Preset release</code> (foreground only — backgrounded builds are killed on this box). <code>spade\scripts\demo.ps1</code>'s scene map is updated in the same wave that ports the scenes, so <code>-Scene</code> keeps naming every scene that exists, v1-derived ones included.</p>
+
+    <h3>Kat-side executables</h3>
+    <p class="note">The kat root sets no unified runtime output directory, so targets land under their source-relative path in the build tree — the one documented instance, <code>build-ninja/dronesim/spade/kat_host_spade.dll</code>, is the rule's witness. RS11a's guard resolves and pins the rest rather than this spec asserting them.</p>
+    <div class="table-scroll"><table>
+      <tr><th>Target</th><th>Role in this program</th><th>Build</th><th>Notes</th></tr>
+      <tr><td class="k mono">kat_host_spade</td><td>Its render half is rewritten to call the engine renderer; the raster is deleted</td><td class="mono">cmake --build build-ninja --target kat_host_spade</td><td>Needs <code>-DKAT_BUILD_SPADE_HOST=ON</code> and an installed Spade at <code>KAT_SPADE_PREFIX</code> (<code>scripts\spade-prefix.ps1</code>)</td></tr>
+      <tr><td class="k mono">kat_frame_dump_spade</td><td><b>The checkpoint evidence tool</b> — renders scenes to PNG for every book</td><td class="mono">cmake --build build-ninja --target kat_frame_dump_spade</td><td>Built only when <code>KAT_BUILD_SPADE_HOST=ON</code>; POST_BUILD copies the host DLL beside it, so it runs in place</td></tr>
+      <tr><td class="k mono">kat_frame_dump</td><td>Fake leg; unchanged (fake keeps its wireframe raster)</td><td class="mono">cmake --build build-ninja --target kat_frame_dump</td><td>Always available</td></tr>
+      <tr><td class="k mono">kat_content_author</td><td>Prefab expansion — the authoring path for the RS8 kit and RS9 dressing</td><td class="mono">cmake --build build-ninja --target kat_content_author</td><td class="mono"><b>EXCLUDE_FROM_ALL</b> — a plain build does NOT produce it; it must be named. Registered explicitly for this reason.</td></tr>
+      <tr><td class="k mono">kat-editor</td><td><b>Unchanged by this program</b> — it simply receives better frames through the same C5 calls</td><td class="mono">cmake --build build-ninja --target kat-editor</td><td>Needs <code>-DKAT_BUILD_EDITOR=ON</code>; Preferences must name BOTH DLL paths (editor ticket ⑥)</td></tr>
+    </table></div>
+    <p class="note">Test executables are named here for completeness only. The standing rule stands: tests run through <code>pytest</code>, <code>ctest</code> or <code>scripts\test.ps1</code>, never by invoking a compiled test binary directly.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§12</span><h2>RS12 — Checkpoints</h2></div>
+    <p>Every checkpoint is visualisation-bearing and every checkpoint names the exact executable that produces its evidence and the exact command the user runs. A checkpoint whose evidence cannot be reproduced from this table by copy-paste has failed its own bar.</p>
+    <div class="table-scroll"><table>
+      <tr><th>CK</th><th>Gate</th><th>Evidence &amp; the executable that makes it</th><th>User action</th></tr>
+      <tr><td class="k">①</td><td>First light — shaded world, drone mesh, sun shadow</td><td>PNG book over <code>hover-pad</code> + <code>gate-corridor</code> from <code>kat_frame_dump_spade</code>; the same scenes live in <code>spade_sandbox</code></td><td class="mono">spade\scripts\demo.ps1 -Scene gate<br>then open the book</td></tr>
+      <tr><td class="k">②</td><td>Schema v2 + materials/lighting + RS4 agreement</td><td>Ten worlds migrated and round-tripping byte-exact; raymarch-vs-raster agreement table with measured, pinned tolerances; side-by-side book from <code>kat_frame_dump_spade</code></td><td>Review the agreement table + book</td></tr>
+      <tr><td class="k">③</td><td>Kit-of-parts + ten scenes dressed</td><td>Gallery book: 10 scenes × 3 bookmarks from <code>kat_frame_dump_spade</code>; the kit's roster rendered as a parts sheet; <b>plus the same scenes opened in <code>kat-editor.exe</code> through File &gt; Open Project</b></td><td class="mono">kat-editor.exe → open<br>demo_packages\racing-competition<br>and test_packages\hover-pad-smoke</td></tr>
+      <tr><td class="k">④</td><td>Sandbox complete + v1 retired</td><td>All 11 ported scenes (8 v2 + 3 v1-derived) runnable in <code>spade_sandbox</code>; v1 tree deleted; build green with no GL dependency</td><td class="mono">spade\scripts\demo.ps1 -Scene v1-fluid<br>(and each remaining scene)</td></tr>
+    </table></div>
+    <div class="callout"><b>CK-③ carries the editor half deliberately</b>
+      <p>The editor needs zero code changes for this program, which means the only way to prove that claim is to <em>open the editor and look</em>. CK-③ therefore runs the real File &gt; Open Project flow against the standing package-layout ruling's roots — <code>demo_packages/</code> and <code>test_packages/</code>, both fully openable — rather than accepting a frame-dump book as proof that the editor path works. The M-2 history is the reason: headless evidence was green while the user could not open anything.</p>
+      <p><b>Prerequisite, stated because it is exactly what failed before:</b> the dressed scenes render through <code>kat_host_spade.dll</code>, so CK-③ requires BOTH Preferences DLL paths set (runtime and sim host) against freshly staged binaries. The fake host keeps its wireframe raster by design (RS1a) — an editor pointed at the fake will correctly show wireframes and that is not a defect. The checkpoint's staging step names the exact DLL paths and their hashes, per the M-2 runbook correction.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§13</span><h2>RS13 — Verification</h2></div>
+    <ul>
+      <li><b>Byte-exact frame goldens.</b> The CPU rasterizer has no RNG, no clock, no static mutable state and a fixed operation order, so same scene + same camera + same resolution ⇒ byte-identical pixels. Goldens are exact, not banded — this is the payoff of choosing CPU first, and it is a stronger guarantee than S7b will be able to make.</li>
+      <li><b>RS4 agreement:</b> raymarch vs fast path, every shipped world × every shipped bookmark, tolerances measured then pinned with provenance.</li>
+      <li><b>Render-cadence invariance</b> re-proven against the real renderer: stepping byte-identical for any cadence including none. Extends the existing case rather than replacing it.</li>
+      <li><b>Tessellation and CSG-meshing goldens:</b> byte-identical triangle emission per (primitive kind, params, resolution) and per (CSG subtree, resolution).</li>
+      <li><b>World v1→v2:</b> migration correctness, byte-exact round-trip for all ten shipped worlds plus the golden corpus, unknown-key rejection preserved at every level.</li>
+      <li><b>Resolver in situ:</b> hit renders the mesh, miss and malformed render the fallback marker and warn exactly once (C3b's unit coverage plus, now, a rendered case).</li>
+      <li><b>C5 conformance:</b> both legs green, unchanged. The Spade host's semantics must not move because its pixels did.</li>
+      <li><b>Executable register guard</b> (RS11a) and the ported-scene inventory guard (RS10b: every retired scene has a live successor before deletion).</li>
+      <li><b>Bench:</b> per-pass render timings recorded as baselines; the CPU path's frame cost at slot-0 and 640×360 size classes measured and pinned, feeding MV3's still-unmeasured multi-slot table.</li>
+      <li>All testing local until the Actions quota resets (standing directive).</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§14</span><h2>RS14 — Sequencing, collisions, and amendments owed</h2></div>
+    <p>The program runs standalone in worktrees, touching <code>spade/</code>, <code>content/</code>, <code>dronesim/spade/</code> and <code>tools/</code>. <b>Zero editor changes</b> — the same proof M1b made, and the reason CK-③ verifies it by opening the editor rather than by assertion.</p>
+    <div class="table-scroll"><table>
+      <tr><th>Owed to</th><th>What</th></tr>
+      <tr><td class="k">Engine design §13</td><td>S7 splits into S7a/S7b; §10's Vulkan half moves to S7b. Amendment.</td></tr>
+      <tr><td class="k">Engine design D7/§8</td><td>World file grows the v2 appearance fields; "glTF import later, render-only" is discharged. Amendment.</td></tr>
+      <tr><td class="k">Engine design D10</td><td>Strangler endpoint reached; v1 verdict rows close. Amendment.</td></tr>
+      <tr><td class="k">Demo program / DM3</td><td>World schema v2 exists; DM3's mover block is additive to it. Coordination row.</td></tr>
+      <tr><td class="k">Phase G / G2</td><td>G2's brief targets a raster that will no longer exist; MV5 means the renderer is slot-ready, so the brief simplifies rather than grows. Pointer note.</td></tr>
+      <tr><td class="k">CS3 / CS7 / CS8</td><td>Content evolves (dressing, materials); the resolver acquires its consumer; verification extends. Pointer notes.</td></tr>
+      <tr><td class="k">HS5</td><td>No amendment — the interim raster's retirement is HS5's own stated endpoint.</td></tr>
+      <tr><td class="k">MV3</td><td>The measured multi-slot budget table this program's bench data finally makes pinnable.</td></tr>
+    </table></div>
+    <p><b>Unaffected but noted:</b> the M-2 flight-fidelity decision (options A/B/C) remains owed and is not resolved here. A better-looking viewport makes a ground-pinned drone <em>more</em> conspicuous, not less — worth deciding before CK-③ puts ten dressed scenes in front of a viewer.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§15</span><h2>RS15 — Out of scope</h2></div>
+    <ul>
+      <li><b>The Vulkan render backend</b> — S7b, behind the same frame pool.</li>
+      <li><b>The ImGui debug HUD and the ImGui world/scene builder</b> — seat named and held open (RS10c), not built.</li>
+      <li><b>Camera sensors and rendered training pixels</b> — A8 stands: the vision lane remains host-synthesised analytic features from the SDF. Rendered camera pixels arrive with S7b.</li>
+      <li><b>Textures, PBR, post-processing, dynamic global illumination.</b></li>
+      <li><b>Mesh colliders</b> — D3's later rung. SDF remains collision truth; RS4 polices the gap rather than closing it.</li>
+      <li><b>Movers, Targets, kinematics</b> — DM3's engine addendum, additive to v2.</li>
+      <li><b>Editor placement UI</b> — prefab palette, gizmos, world documents in the editor. Authoring stays tool-side; the editor views.</li>
+      <li><b>Level-of-detail, culling beyond frustum, occlusion</b> — revisit only if a dressed scene misses the bench envelope.</li>
+    </ul>
+  </section>
+
+  <div class="footer-note">Twenty-first spec · drafted 2026-08-24 · session rulings: S7 CPU-first · world schema v2 · kit-of-parts first · hybrid asset lanes · tool-authored/editor-viewed · sandbox + v1 retirement · ImGui builder seat · amends: spade engine design §10/§13/D7/D10 · companion specs: kat-spade-host.html · kat-viewport-cameras.html · kat-default-content.html</div>
+</div>
+</body>
+</html>

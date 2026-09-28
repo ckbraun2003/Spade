@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kat — Spade Sim Host &amp; Training Connectors</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+      --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+      --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #5FC2BA; --accent-soft: #5FC2BA1A; --accent-line: #5FC2BA4D;
+    --amber: #E8A33D; --amber-soft: #E8A33D1A; --amber-line: #E8A33D4D;
+    --line: #26303B; --ok: #5BBB86; --crit: #E0666C; --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  :root[data-theme="light"] {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #1F6E68; --accent-soft: #1F6E6818; --accent-line: #1F6E6840;
+    --amber: #B5731D; --amber-soft: #B5731D1A; --amber-line: #B5731D40;
+    --line: #D8DFE5; --ok: #2E7D4F; --crit: #B3383E; --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 66ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft); }
+  .chip.warn { border-color: var(--amber-line); color: var(--amber); background: var(--amber-soft); }
+  section { margin-top: 46px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 26px 0 8px; }
+  p { max-width: 72ch; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 72ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .table-scroll { overflow-x: auto; margin: 10px 0 6px; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; }
+  td.mono, .mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  .pid { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; color: var(--accent); font-weight: 700; white-space: nowrap; }
+  .callout { border-left: 3px solid var(--amber); background: var(--amber-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 76ch; }
+  .callout b { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  .callout.acc { border-left-color: var(--accent); background: var(--accent-soft); }
+  .callout.acc b { color: var(--accent); }
+  .ruling { border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; margin: 16px 0; max-width: 76ch; }
+  .ruling .lbl { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 5px; }
+  .ruling p { margin: 0 0 8px; font-size: 15px; }
+  .ruling p:last-child { margin-bottom: 0; }
+  ul, ol { max-width: 74ch; padding-left: 22px; margin: 8px 0 12px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 0.92em; background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .footer-note { margin-top: 60px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; font-family: "Cascadia Mono", Consolas, monospace; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="eyebrow">Design specification · seventeenth spec · approved</div>
+  <h1>Kat — Spade Sim Host &amp; Training Connectors</h1>
+  <p class="subtitle">M1b's substance: the real C5 sim host — <code>kat_host_spade.dll</code> — wrapping the Spade engine behind the same six-call frame ABI the editor already drives, plus the training connectors and the physics/aero configuration schema family that make legacy training dynamics mirrorable on Spade. The editor needs zero code changes; that is the proof the seam was real.</p>
+  <div class="status-row">
+    <span class="chip live">✅ APPROVED v1.0 — drafted 2026-08-18 · signed off 2026-08-19</span>
+    <span class="chip">decision series HS1–HS12</span>
+    <span class="chip">consumes C2 · C5 (TA1–TA6, B1/B10/B11/B15) · engine spec + Addendum A · config spec · catalog CP8/CP18 · training TR1/TR3/TR15</span>
+    <span class="chip">Spec I of the spade↔editor integration program (Specs II–III: viewport-cameras · default-content)</span>
+  </div>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§0</span><h2>What this document is</h2></div>
+    <p>The 2026-08-18 spade↔editor integration session ruled the program shape: <b>adapter first with interim CPU presentation; the S7 Vulkan renderer swaps in later behind the same frame ABI</b> (user-ruled, option A of three). This spec pins the adapter: placement, engine-agnosticism rules, the C5→Spade call mapping, the conformance bar, the interim presentation raster, the physics/aero config schemas, and the six training connectors (F-1…F-6) the user ruled into scope. It designs seams and contracts; implementation detail lands with the writing-plans plan.</p>
+    <div class="callout acc"><b>Precedence &amp; series</b>
+      <p>Decision series <span class="pid">HS1–HS12</span>. This spec <em>implements</em> C5 (it does not amend it — the one C5 widening this program carries, camera slots, lives in Spec II as a TA-series amendment; the experimental batch surface in HS9 is deliberately non-normative). Where it touches other specs' territory it does so by recorded coordination: the airframe extension is a CP-series amendment owned jointly with the catalog program; the HS8 config rulings feed batch 4's Q2/Q3.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§1</span><h2>HS1 — Identity &amp; placement</h2></div>
+    <div class="ruling"><span class="lbl">HS1 · placement (user-approved DP-A, 2026-08-18)</span>
+      <p>The Spade-backed sim host lives at <code>dronesim/spade/</code>, building <code>kat_host_spade.dll</code>, sibling to <code>dronesim/fake/</code>. The fake is <b>retained</b> as the CI/conformance reference and the deterministic lightweight host for editor tests. Spade is consumed via <code>find_package(spade CONFIG)</code> against an installed tree and statically absorbed into the host DLL — one self-contained artifact, loaded by the editor through the existing DLL-path setting, exactly as the fake is today.</p>
+      <p><em>Rejected:</em> hosting inside <code>spade/</code> — the engine tree stays kat-free by charter; the adapter is kat-side by definition.</p>
+    </div>
+    <p class="note">The C5 header home is unchanged: <code>dronesim/include/kat/kat_host_abi.h</code>. The host advertises the same <code>KATHOST_ABI_MAJOR 1</code>; a conformance-identical implementation is the point.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§2</span><h2>HS2 — Engine-agnosticism, three hard rules</h2></div>
+    <div class="ruling"><span class="lbl">HS2 · engine-agnosticism (user-ruled 2026-08-18)</span>
+      <p><b>Rule 1 — Spade stays kat-free.</b> The engine tree gains zero kat dependencies, schemas, or concepts. Everything kat-flavoured lives in the adapter.</p>
+      <p><b>Rule 2 — the kat side stays Spade-free.</b> No spade header is includable outside <code>dronesim/spade/</code>, enforced at the CMake level (the same mechanism class as the editor's <code>kat_assert_no_widgets()</code>), mirroring the existing "no <code>kat_*</code> symbol outside <code>core/sim/</code> + <code>core/validate/</code>" rule. Every consumer — editor, trainer, SDK — reaches simulation only through C2/C5 and schema'd artifacts.</p>
+      <p><b>Rule 3 — connectors bind to schemas, not structs.</b> The adapter is a <em>resolver</em>: it consumes the schema'd configuration artifacts (HS8) and maps them to Spade PODs privately. A different engine would implement the same resolution against the same artifacts.</p>
+    </div>
+    <div class="callout acc"><b>G2 stands (user-ruled 2026-08-18)</b>
+      <p>Engine-agnosticism holds at the contract layer, not the format layer: the world file and the sim-physics vocabulary remain <b>Spade-defined, versioned as C5 contract artifacts</b> (config spec G2, world schema v1 user-frozen 2026-08-12). Any conforming host must read them; no engine-neutral world format is created.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§3</span><h2>HS3 — The C5 → Spade call mapping</h2></div>
+    <p>One <code>kathost</code> handle owns one <code>spade::Simulation</code> with <b>world_count = 1</b> (HS3a): the editor host is single-world; training's many-world parallelism never rides the editor's C5 path (TR1/TR3 — it is the trainer's loop; see HS9/F-5). All calls single-threaded per handle (B11); frame-buffer reads legal from any thread between acquire and release.</p>
+    <div class="table-scroll"><table>
+      <tr><th>C5 call</th><th>Spade resolution</th><th>Notes</th></tr>
+      <tr><td class="mono">kathost_load_world</td><td class="mono">resolve_world(WorldRef) → world_set_from(…, 1, seed, proto)</td><td>The file owns the world; the scene's sim-physics block (HS8b) owns the instance prototype (contacts/grid/turbulence). <code>schema_mismatch</code> and validation errors surface verbatim through the C5 error string surface.</td></tr>
+      <tr><td class="mono">kathost_step</td><td class="mono">Simulation::step(n)</td><td>Never renders (TA1/B1). Structural ops flushed at step boundaries exactly as Spade defines.</td></tr>
+      <tr><td class="mono">kathost_spawn / despawn</td><td class="mono">register_model + spawn(VehicleRef) / despawn</td><td>Model registration order is part of the replay contract (Spade: registry is configuration, not state); the host re-registers deterministically on restore.</td></tr>
+      <tr><td class="mono">kathost_body_get</td><td class="mono">world_bodies / body_ref_at</td><td>Poses re-derived from state after restore via <code>body_ref_at</code> — built for exactly this consumer.</td></tr>
+      <tr><td class="mono">kathost_sensor_poll</td><td class="mono">poll_imu(since_index, out)</td><td>TA5 semantics preserved: count return, 0 = no new sample; ring-wrap <code>dropped</code> is surfaced in the sample envelope, never silent.</td></tr>
+      <tr><td class="mono">kathost_snapshot / restore</td><td class="mono">SnapshotBlob save/restore</td><td>Blob is host-opaque to callers; the editor's step-back ring holds host blobs as today.</td></tr>
+      <tr><td class="mono">kathost_reset / reseed</td><td class="mono">restore(t0 blob) / reseed(scene_seed)</td><td>Scene seed root from the scene document (HS8b); R4 derivation inside the engine.</td></tr>
+      <tr><td class="mono">kathost_camera_set / render / frame_acquire / release</td><td class="mono">interim raster (HS5) over a tick-boundary state copy</td><td>B10 pool semantics: ≥2 outstanding, slots deferred not recycled, frames valid across all host calls, camera_set affects next render only.</td></tr>
+    </table></div>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§4</span><h2>HS4 — Conformance bar: the fake's own suite, zero editor changes</h2></div>
+    <div class="ruling"><span class="lbl">HS4 · definition of done</span>
+      <p>The Spade host passes the editor-skeleton program's C5 conformance suite <b>unchanged</b> — every case the fake passes, byte-for-byte semantics. Additionally: (a) <b>render-cadence invariance</b> proven against Spade's own golden digests (stepping bit-identical for any render cadence including none); (b) determinism — same seed, same commands ⇒ byte-identical state at equal tick counts, cross-checked against Spade's scenario goldens; (c) the editor binary needs <b>zero code changes</b> for milestone M-2 — connecting Spade is a settings line (the DLL path), not a build.</p>
+    </div>
+    <p class="note">Known fake deficiencies the real host retires and must test as retired: the fake's missing lateral thrust authority (the M1b item named by the TR15 parity-gate artifact) — the Spade host's plant is the real rotor/drag model resolved from the airframe descriptor (HS8a).</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§5</span><h2>HS5 — Interim presentation raster</h2></div>
+    <div class="ruling"><span class="lbl">HS5 · interim raster (user-approved sequencing ruling, 2026-08-18)</span>
+      <p>Presentation frames are produced by a port of the fake's deterministic, Qt-free CPU rasterizer (<code>dronesim/fake/raster.cpp</code>) reading live Spade state: poses from <code>world_bodies</code>, wireframes from the same <code>WorldDesc</code> SDF program, spawn markers, body markers. Opaque BGRX per TA1's MN-14 floor. It is <b>explicitly interim</b> — D10-strangler style — and is retired when S7's FramePool reaches parity behind the same <code>kathost_render/frame_acquire</code> calls. Renders happen on the sim thread at most once per presentation interval, after step, renders-drop-first under load (B11/A5).</p>
+    </div>
+    <p class="note">The raster port may optionally draw wireframe hulls from resolved visual meshes (Spec III's resolver) where cheap; it must never become a rendering program of its own — feature growth beyond "recognizable + correct poses" waits for S7.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§6</span><h2>HS6 — The vision lane: synthetic features per A8</h2></div>
+    <p>Per engine Addendum <b>A8</b> (user-ruled 2026-08-10): the 25 Hz camera lane is satisfied by <b>host-synthesized analytic feature buffers</b> derived from the SDF world geometry — the fake's camera architecture promoted to the real host. They ride the sensor surface (B15: no ref ports; image-like payloads cross via <code>kathost_sensor_poll</code> with host-owned fixed-maximum buffers), synthesized <em>inside stepping</em> (B1/A1), deterministic and seeded. Rendered camera pixels arrive with S7's camera-sensor seat and change nothing about this transport. The training spec §4's in-loop geometry-sensor obs kind (depth/range from the SDF + the true-SDF privileged shortcut) rides this same machinery and is declared/versioned per that spec.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§7</span><h2>HS7 — Faults</h2></div>
+    <p>The host installs <code>compute::set_error_sink</code> and maps engine faults to the sticky C5 status codes (<code>KATHOST_E_DEVICE_LOST</code> for backend loss, <code>E_BAD_STATE</code>/<code>E_INVALID</code> per class). The editor's existing B8 behaviour — freeze last presented frame, banner, session dead, all instances disarmed — needs no change. Backend selection (cpu | vulkan) is opaque backend config per A7(b): result-neutral by contract, surfaced as a host setting, never scene content.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§8</span><h2>HS8 — The physics/aero configuration schema family</h2></div>
+    <p>Per the user's 2026-08-18 ruling, the connectors bind to <b>established configuration structures</b>, and this program defines the schema'd homes for physics and aerodynamics params — under the configuration spec's schema law (authored once → generated C++ struct, Python dataclass, validator bindings, editor form, docs page; <code>x-kat-units</code> everywhere; provenance mandatory on dimensional values).</p>
+
+    <h3>HS8a — Airframe descriptor extension (CP-series amendment, coordinated with the catalog program)</h3>
+    <div class="ruling"><span class="lbl">HS8a · one plant vocabulary</span>
+      <p>CP8's <code>airframe.json</code> (schema in <code>runtime/schemas/</code>, semver'd with C1/C3) is extended with the full plant vocabulary this program needs: <b>multi-element aero</b> (per-element drag bodies — fuselage/arms/rotors — with geometry-derived placement; aero rung 1), <b>rotor model</b> (tau, thrust/torque coefficients, spin layout, thrust ceilings, airspeed-thrust decay), <b>rate-loop constants</b> (gain vector, first-order lag tau, omega ceilings — the CTBR inner loop), <b>sensor mounts + sigmas</b>, inertia, proxy radius. The Spade adapter resolves descriptor → <code>vehicles::ModelType</code>; the legacy mirror (HS9/F-3), the trainer's env adapter, and the editor's generated forms all read the same artifact. Mesh-derived values (aero rung 2) use the existing closed provenance vocabulary — <code>source: "derived"</code> with a method record naming the mesh + tool — no config-spec amendment needed.</p>
+    </div>
+    <div class="callout"><b>CP18 discharge — the axis transform is stated here, once</b>
+      <p>This spec's implementation writes down the Y-up/Z-up (and handedness) transform between the catalog/obs-registry frame and Spade's Y-up right-handed frame in exactly one place — the descriptor resolver — and the HS9/F-3 parity harness is its executable proof. <code>HOST_AIRFRAME_MISMATCH</code> (rung ③) becomes a real check in the Spade host: world plant vs descriptor divergence errors at arm.</p>
+    </div>
+    <p class="note">Aero rung 3 — runtime mesh-based aerodynamics (panel/BEM methods) — is <b>explicitly staged out</b> (user-approved DP-C): a future engine S-phase with GPU-parity implications. The descriptor schema is written so rung 3 slots in as new element kinds without breaking rungs 1–2.</p>
+
+    <h3>HS8b — Scene sim-physics block (N3, editor-owned schema)</h3>
+    <div class="ruling"><span class="lbl">HS8b · sim content lives in the scene (user-ruled DP-F, 2026-08-18 — settles batch-4 Q2/Q3)</span>
+      <p><code>dt_ns</code>, <code>substeps</code>, and <code>seed</code> live in the <b>scene document (N3)</b> — they are result-affecting simulation content, versioned with the scene. (The as-built editor already has <code>sim_settings.dt_ns/seed</code>; this ruling confirms it and adds <code>substeps</code>.) The scene's placeholder <code>wind</code> block is replaced by the real schema'd instance-physics block: <b>contacts</b> (restitution, friction, baumgarte, slop, proxy radius), <b>grid</b> (cell size), <b>turbulence</b> (Dryden scales/sigmas/reference airspeed). N4 keeps paths, mode, trust anchors, and the opaque backend block. <b>Sensor noise sigmas live in the airframe/sensor descriptor</b> (plant side), not the world file. These rulings are recorded for batch 4's Q2/Q3 absorption per the propagation discipline.</p>
+    </div>
+    <p class="note">A7's partition becomes the editor's config-surface law: content knobs (above) are authored, versioned scene config with units + provenance; the opaque backend block (device selection, workgroup size, capacities) is host settings whose result-neutrality is contractual (every admitted knob owes an invariance test). Pass-schedule shape and integrator order are not configurable, ever.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§9</span><h2>HS9 — Training connectors (F-1 … F-6)</h2></div>
+    <p>User-ruled 2026-08-18: the connectors exist <em>now</em>; training itself is implemented in its own session. Everything below binds to contracts and schemas per HS2 Rule 3.</p>
+
+    <h3>F-1 · Headless full-loop rollout proof</h3>
+    <p>The Spade host runs the complete STEPPED loop headless — C2 runtime + C5 Spade host, no editor process — proven by a T1-class rollout test and the headless CLI path. This is SD5's "headless STEPPED rollouts" socket; TR15's protocol names this substrate verbatim ("Spade-backed C5, never dronesim/fake").</p>
+
+    <h3>F-2 · Python rollout harness (test-tier seed, not the glue home)</h3>
+    <p>A thin ctypes harness over the two C ABIs — load <code>kat_runtime</code> + <code>kat_host_spade</code>, create/step/poll/snapshot from Python — living under <code>train/</code> as <b>test-tier infrastructure, explicitly not a public surface</b>. SD3's one-glue-home rule stands: the public session/build/train glue is designed once by the SDK implementation plan; this harness is its living evidence and feedstock, scheduled for absorption there (SD7 schedules the glue migration). Divergence between this harness and the eventual glue is a defect in the harness.</p>
+
+    <h3>F-3 · Legacy-dynamics mirror</h3>
+    <div class="ruling"><span class="lbl">HS9/F-3 · the oracle (user-ruled 2026-08-18)</span>
+      <p><b>The oracle is the legacy training plant, code-as-executed</b> — <code>controller/dynamics/quadrotor.py</code> + <code>quadrotor_env</code>'s rate lag — the dynamics the 42.6% result actually trained against, including airspeed-thrust decay and the inner rate loop. The converter maps <code>configs/physics.yaml</code> + <code>configs/drones.yaml</code> (competition_aigp) → the <b>competition-700</b> <code>airframe.json</code>, carrying the legacy record's own provenance (measured dates, joint-fit annotations) through <code>x-kat-provenance</code>, with method <code>legacy-mirror</code>. Every authored key the legacy code ignored or transformed — the interface-side C++ plant's 5 dropped airspeed/rate keys included — lands in a <b>discrepancy report</b>: documented decisions, never silent drops.</p>
+      <p>The <b>dynamics-parity harness</b> drives identical command traces through the legacy plant and through Spade (via F-2), applies the HS8a axis transform, and compares trajectories within tolerance bands that are <b>measured then pinned</b> with provenance (execution-record discipline). Bit-parity is not the claim — RK4 vs Spade's integrator differ by design; the claim is bounded, documented dynamical equivalence. This is the evidence machinery that makes TR15's "comparable performance on Spade physics" adjudicable. It does not adjudicate the gate: RI-1/RI-2 were open user rulings (active-work queue #11); both were <em>dissolved by structures TS17, 2026-08-26</em>, which withdrew the number they turned on.</p>
+    </div>
+
+    <h3>F-4 · Action-path connector (CTBR → rotors, no fork)</h3>
+    <p>Legacy training's action space is CTBR with the rate loop inside the plant; Spade takes rotor omegas. The reference CTBR→rotor path is <b>the catalog's <code>control.rate</code> component's math</b> — fixture-verified, never a reimplementation — driven by the descriptor's rate-loop constants (HS8a), shipped trainer-side in the env-adapter home. Parity-tested against the legacy rate lag (rate_gain/rate_tau/omega_max as executed).</p>
+
+    <h3>F-5 · Batched-training seam (<s>experimental</s> — <b>RATIFIED</b>, see the stamp below)</h3>
+    <div class="ruling"><span class="lbl">HS9/F-5 · experimental extension (user-ruled 2026-08-18)</span>
+      <p><code>kat_host_spade.dll</code> exposes a small <code>kathost_x_batch_*</code> surface — create an N-world set, step all, per-world state/sensor access — <s><b>explicitly non-normative</b> (the <code>_x_</code> namespace marks it experimental)</s>, smoke-tested through the F-2 harness. TR3's ruling (world-index batching is training's parallelism axis) gets a working connector without pre-empting seat S2, which designs the real contract with this as living evidence. The fake does not implement it; no conformance case references it.</p>
+      <p><b>&#9888; STATUS SUPERSEDED (structures TS11, user-ruled 2026-08-26; stamped 2026-09-01).</b> The <b>non-normative / experimental status claim is withdrawn</b>: TS11 (twenty-second spec, DRAFT but later and higher in the precedence chain, and user-ruled) <b>promotes <code>kathost_x_batch_*</code> to the ratified C5 training seam</b>, and master ships that promotion. <code>dronesim/spade/batch_x.h</code>'s own header records the change verbatim — <em>"the RATIFIED C5 TRAINING SEAM (22nd spec, TS11, USER-RULED 2026-08-26 — amends C5)"</em>, and: <em>"This surface began as the experimental, non-normative quartet the 17th spec's HS9/F-5 introduced for seat S2. TS11 promotes it."</em> The surface has since grown <code>kathost_x_batch_create_configured</code> over a per-world <code>kathost_world_config_t</code> array (merge <code>000b8f8</code>, 2026-09-01), which is where domain randomization reaches the simulation. <b>What is NOT struck — the rest of F-5 still holds as written:</b> the reach is unchanged (the symbols are still resolved <b>by name</b> from <code>kat_host_spade.dll</code> and are still <em>not</em> declared in <code>kat/kat_host_abi.h</code>, which stays byte-identical); the fake still does not implement it; and <code>dronesim/tests/conformance_c5/</code> still contains no reference to it — both re-verified 2026-09-01. Seat <b>S2</b> is likewise unpre-empted. Only the words <em>experimental</em> and <em>explicitly non-normative</em> are false now.</p>
+    </div>
+
+    <h3>F-6 · Observation connector</h3>
+    <p>The demo program's obs-block assembler (7 registered blocks) is wired to Spade-host state behind the same catalog §2.2 declaration; the existing obs-parity test extends to the Spade substrate — observations, like dynamics, are mirrorable. Touching <code>train/</code> is coordinated through the active-work register with the paused demo-training program, never a silent edit.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§10</span><h2>HS10 — Verification</h2></div>
+    <ul>
+      <li>C5 conformance suite: fake and Spade host both green, same cases (HS4).</li>
+      <li>Determinism/digests: same-seed byte-identity at equal ticks vs Spade goldens; render-cadence invariance including cadence none.</li>
+      <li>Snapshot round-trip across the ABI (save → restore → identical continuation digests).</li>
+      <li>TA5 poll semantics incl. ring-wrap drop reporting.</li>
+      <li>Descriptor resolution goldens: airframe.json → ModelType, axis-transform cases, <code>HOST_AIRFRAME_MISMATCH</code> both directions.</li>
+      <li>Dynamics-parity harness: pinned command-trace corpus, measured-then-pinned bands, discrepancy report as a tracked artifact.</li>
+      <li>B10 frame-pool semantics: one case per call class (restore, reset, load_world, despawn, camera_set).</li>
+      <li>All testing local until the Actions quota resets (standing user directive).</li>
+    </ul>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§11</span><h2>HS11 — Milestones &amp; program sequencing</h2></div>
+    <ul>
+      <li><b>M-1</b> — adapter passes the C5 conformance suite headless (+ F-1).</li>
+      <li><b>M-2</b> — <em>the editor opens a default racing scene on real Spade physics</em> (user smoke; DLL-path swap only, zero editor changes).</li>
+      <li><b>M-3</b> — training connectors F-2…F-6 green; content suite (Spec III) + multi-viewport (Spec II) complete per their own sequencing.</li>
+      <li><b>S7</b> — the renderer program follows, replacing HS5's raster behind the same calls.</li>
+    </ul>
+    <p class="note">Cross-program rows filed on sign-off: catalog (HS8a CP-series amendment) · demo-training (F-2/F-6 <code>train/</code> tickets) · batch 4 (HS8b settles Q2/Q3) · editor program (scene-schema v5 migration, post-②v-2). The editor session owns the main checkout; all work here runs in worktrees.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <section>
+    <div class="sec-head"><span class="sec-num">§12</span><h2>HS12 — Out of scope</h2></div>
+    <ul>
+      <li>World schema v2 / movers / Targets (user-approved DP-G: deferred to the DM3 engine addendum; this spec's artifacts co-exist with it).</li>
+      <li>Aero rung 3 — runtime mesh aerodynamics (HS8a note).</li>
+      <li>Rendered camera pixels and the camera-sensor seat (S7, per A8).</li>
+      <li>The normative batch/training contract (seat S2 + SDK implementation plan; F-5 is evidence, not contract).</li>
+      <li>REALTIME mode against Spade (STEPPED first; REALTIME rides a later ticket with R8 supervisor implications).</li>
+    </ul>
+  </section>
+
+  <div class="footer-note">Seventeenth spec · drafted 2026-08-18 (spade↔editor integration session) · session rulings: sequencing (adapter-first + interim raster) · DP-A…DP-I · F-1…F-6 scope · engine-agnosticism rules · G2 kept · F-5 experimental · F-3 oracle = executed legacy training plant · HS8b settles batch-4 Q2/Q3 · companion specs: kat-viewport-cameras.html · kat-default-content.html</div>
+</div>
+</body>
+</html>

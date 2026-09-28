@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spade v2 Engine — S1–S4 Implementation Record</title>
+<style>
+  :root {
+    --bg: #F4F6F8; --panel: #FFFFFF; --panel-2: #EDF1F4; --ink: #16202B; --muted: #5C6B7A;
+    --accent: #0E8C9C; --accent-soft: #0E8C9C22; --amber: #B5731D; --amber-soft: #B5731D1A;
+    --line: #D8DFE5; --ok: #2E7D4F; --ok-soft: #2E7D4F1A; --crit: #B3383E; --crit-soft: #B3383E14;
+    --code-bg: #0F1720; --code-ink: #C8D6E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+      --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+      --line: #26303B; --ok: #5BBB86; --ok-soft: #5BBB861A; --crit: #E0666C; --crit-soft: #E0666C14;
+      --code-bg: #0B1117; --code-ink: #B9C9D6;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10151B; --panel: #161D25; --panel-2: #1C242E; --ink: #DCE5EC; --muted: #8A99A8;
+    --accent: #45C6D6; --accent-soft: #45C6D61F; --amber: #E8A33D; --amber-soft: #E8A33D1A;
+    --line: #26303B; --ok: #5BBB86; --ok-soft: #5BBB861A; --crit: #E0666C; --crit-soft: #E0666C14;
+    --code-bg: #0B1117; --code-ink: #B9C9D6;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Avenir Next", system-ui, sans-serif; line-height: 1.55; margin: 0; }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 40px 24px 96px; }
+  .eyebrow { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 6px 0 4px; letter-spacing: -0.015em; text-wrap: balance; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; max-width: 68ch; }
+  .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .chip { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); white-space: nowrap; }
+  .chip.live { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .chip.good { border-color: var(--ok); color: var(--ok); background: var(--ok-soft); }
+  .chip.warn { border-color: var(--amber); color: var(--amber); background: var(--amber-soft); }
+  section { margin-top: 44px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 2px solid var(--line); padding-bottom: 8px; margin-bottom: 18px; }
+  .sec-num { font-family: "Cascadia Mono", Consolas, monospace; font-size: 13px; color: var(--accent); letter-spacing: 0.08em; }
+  h2 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  p { max-width: 74ch; margin: 0 0 12px; }
+  ul { max-width: 74ch; margin: 0 0 12px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .note { color: var(--muted); font-size: 14px; max-width: 74ch; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  .table-scroll { overflow-x: auto; margin: 0 0 14px; }
+  th { text-align: left; font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.k { font-weight: 600; white-space: nowrap; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; }
+  code, .mono { font-family: "Cascadia Mono", "Cascadia Code", Consolas, monospace; font-size: 0.92em; }
+  code { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .st { font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .st.ok { color: var(--ok); }
+  .st.amber { color: var(--amber); }
+  .st.crit { color: var(--crit); }
+  .st.mut { color: var(--muted); }
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; max-width: 78ch; }
+  .callout.amber { border-left-color: var(--amber); background: var(--amber-soft); }
+  .callout b.t { color: var(--accent); }
+  .callout.amber b.t { color: var(--amber); }
+  .callout p { margin: 4px 0 0; font-size: 14.5px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.5; }
+  a { color: var(--accent); }
+  .foot { margin-top: 56px; border-top: 2px solid var(--line); padding-top: 14px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="eyebrow">design-specs · meta &amp; process · implementation record</div>
+<h1>Spade v2 Engine — S1–S4 Implementation Record</h1>
+<p class="subtitle">What was actually built against the ninth spec, the decisions made while building it, and how every claim was verified. A record and review — this document adopts nothing and amends nothing; where it cites decisions it cites the registers that own them (engine D1–D12, engine S1–S8, Addendum A, coordinator rulings by ledger date).</p>
+<div class="status-row">
+  <span class="chip good">MERGED — PR #5 → master @ 6772f0c (2026-08-11)</span>
+  <span class="chip live">M1B bar MET (CPU path) · Spade v0.2.0</span>
+  <span class="chip live">360/360 tests · MSVC + gcc-13</span>
+  <span class="chip">executed 2026-08-08 → 2026-08-11</span>
+</div>
+<p class="note">Companion to <span class="mono">kat-spade-engine-design.html</span> (spec of record) and the foundation charter. Execution: subagent-driven development on branch <span class="mono">spade/s1-s4</span> — 21 planned tasks + 1 user-amendment task, parallel worktree waves (≤3 lanes), every task implementer→review gated, three user checkpoints, four stage gates. The SDD workspace was deleted post-merge per process; the durable records are git history, this document, <span class="mono">kat-open-agendas.md</span> §6, and lessons L12/L13 in <span class="mono">tasks/lessons.md</span>.</p>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§1</span><h2>Outcome</h2></div>
+<p>The charter's M1B bar — a fixed-step, headless, seeded-deterministic, snapshot-capable CPU engine flying a Quadrotor with IMU — is met and merged. Final state at the merge commit:</p>
+<div class="table-scroll"><table>
+<tr><th>Measure</th><th>Result</th><th>Notes</th></tr>
+<tr><td class="k">Tests</td><td class="num">360/360, both presets, both platforms</td><td>gtest via ctest, label <span class="mono">spade;T0</span>; includes the golden determinism corpus and the M1B bar suite</td></tr>
+<tr><td class="k">Determinism</td><td>bit-identical replay per platform; cross-platform bit-parity <b>proven</b></td><td>4-scenario golden corpus; digests identical MSVC ↔ gcc-13 after the fp32_math fix (§5)</td></tr>
+<tr><td class="k">Rate envelope (spec §12)</td><td class="num">~296k substeps/s single-world quad (floor 10k, ~30×) · ~176k world-substeps/s at 64 worlds (floor 64k, ~2.75×)</td><td>CPU-twin proxy for the S6 GPU claim, labeled as such; both timing bases documented in <span class="mono">baselines.json</span></td></tr>
+<tr><td class="k">Review posture</td><td>every task review-gated; no task needed more than one fix round; whole-plan opus review clean after one fix wave</td><td>physics tasks got re-derivation reviews (reviewer re-derives the math independently)</td></tr>
+<tr><td class="k">Checkpoints</td><td>№0 build/test scripts · №1 demo scenes (+3 user amendments) · №2 flight scenes</td><td>all user-passed; №1's amendments became standing scene rules (§3, rows A1–A3)</td></tr>
+<tr><td class="k">Footprint</td><td>non-spade diff = exactly 3 files</td><td><span class="mono">.github/workflows/spade.yml</span> (new), <span class="mono">.gitignore</span>, <span class="mono">docs/dev/testing.md</span>; v1 freeze held exactly (audited across all 49 pre-PR commits)</td></tr>
+</table></div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§2</span><h2>Architecture as built</h2></div>
+<p>One CMake target per module; dependency arrows point strictly downward (<span class="mono">sim → vehicles/physics → world → state → core</span>). Everything below is fp32, pinned op order, no wall-clock, no <code>std::random_device</code> — the one exemption is <span class="mono">tools/</span> (frame pacing).</p>
+
+<div class="table-scroll"><table>
+<tr><th>Module</th><th>What it is, as landed</th><th>Load-bearing internals</th></tr>
+<tr><td class="k">core/</td><td>Handles, <code>Result&lt;T&gt;</code> (std::expected), Tick, math primitives, seeded RNG, <b>fp32_math</b></td><td>Exp-map orientation update <code>q ⊗ exp(½·h·ω)</code> body-frame right-multiply; <code>splitmix64(seed ^ fnv1a64(tag) ^ index)</code> stream derivation with domain tags; Box-Muller with snapshot-safe cache (cleared on consume); <code>log32/sin32/cos32</code> from IEEE-mandated ops only, exhaustively ≤1-ulp verified (§5)</td></tr>
+<tr><td class="k">state/</td><td>The determinism backbone</td><td><span class="mono">layout.hpp</span>: BodyState 128 B / WorldParams 64 B, every offset static_asserted (std430 single-source until S6 Slang); world-partitioned <b>ArenaSet</b> with free-list order provably reconstructible from <span class="mono">slot_to_world</span>; <b>StateRegistry walk = the snapshot surface</b> — registration order is append-only by documented rule (inserting mid-list invalidates every golden's continuation argument); versioned <span class="mono">'SPSN'</span> blob, all-or-nothing restore that resyncs derived state</td></tr>
+<tr><td class="k">world/</td><td>Analytic SDF worlds + medium</td><td>CSG postfix programs (7 primitives, 4 ops, 32 B nodes, pre-inverted transforms, validated stack depth ≤32); WorldBuilder → WorldDesc; Dryden turbulence with <b>exact OU discretization</b> (matrix exponential, PSD-guarded Taylor branch for the O(θ³) fp32 cancellation that would otherwise produce NaN at default θ)</td></tr>
+<tr><td class="k">physics/</td><td>The per-substep passes</td><td>Symplectic Euler integrator, 7-step pinned order, gyroscopic −(ω×Iω), <b>specific force captured pre-gravity in body frame</b> via the pre-update orientation (deliberate — the IMU's physical input); sphere-proxy vs SDF contacts, velocity-space impulse, Baumgarte β=0.2, <b>LINEAR-only response</b> (ruling, §3); world-batched sorted-grid broad phase, (world,cell) exact-compare keys, mass-weighted momentum-conserving pairs, Gauss-Seidel sweep <i>is</i> the S6 parity contract; drag force elements (AoS rows, registered state)</td></tr>
+<tr><td class="k">sim/</td><td>The engine's one public entry point</td><td>The 8-pass schedule as a <b>constexpr array</b> driven by one substep loop (spec §3 order is executable data, not eight calls; Gravity slot declared-but-inert — the integrator owns gravity, double-application hazard documented); FIFO structural queue applied at step boundaries, reserved-row identity written at reservation; generation parity odd=live/even=pending; <code>WorldParams::body_count</code> published at every structural boundary; ModelType registry + vehicle spawn (all-or-nothing, capacity-checked before first reservation)</td></tr>
+<tr><td class="k">sensors/</td><td>IMU synthesis + rings (compiles into sim)</td><td>Accel = specific force at mount (centripetal in, Euler α×r term omitted-and-documented); gyro = post-update ω (the intra-sample two-instants asymmetry is documented at the same rigor and pinned by two mutation-verified tests); white + bias-RW noise, <b>exactly 12 gaussian draws per sample, unconditional, pinned order</b>; fixed-depth tick-stamped rings, monotonic SampleIndex, poll-since semantics per editor tech spec TA5</td></tr>
+<tr><td class="k">vehicles/</td><td>The model-type layer (spec §6)</td><td>RotorElement: thrust/torque curves, exact-exponential RPM lag, momentum-theory inflow with <b>cancellation-free conjugate roots</b> (naive forms collapse to exactly 0 above x≈8192 in fp32), clamped linear vortex-ring band with bit-exact branch joins, SDF-sampled ground effect (D5 double-duty), <code>1/(1−(R/4z)²)</code> clamped ≤1.25; ModelType = body template + element descs + sensor mounts + param schema; Quadrotor with +−+− spin layout, <code>hover_command()</code> = exact inverse of the implemented thrust curve</td></tr>
+<tr><td class="k">testing/ + tests/</td><td>Replay harness + the estate</td><td><code>state_digest()</code> FNV-1a fold over the registry walk; per-world digest variant for isolation proofs; golden corpus = 4 scenarios with narrative provenance headers; <span class="mono">test_m1b_bar.cpp</span> = the charter bar as executable asserts (source-scan canaries for fixed-step/headless, chosen over link-level for Linux-CI portability — tradeoff documented)</td></tr>
+<tr><td class="k">tools/</td><td>The strangler viewer</td><td>v2 physics through v1's frozen GL via one dual-include TU (<span class="mono">bridge.cpp</span>); instance counts fixed at setup — register → spawn → flush → <i>then</i> count (ordering documented as load-bearing); 11 demo scenes incl. the v1 regression renders; FPS counter + deterministic spawn jitter per the №1 user amendments</td></tr>
+</table></div>
+
+<p class="note">Not built, by phasing: YAML world file (S5 — in flight as this record is written), Vulkan/Slang GPU path + CPU↔GPU parity (S6), renderer/FramePool/camera sensors (S7), SPH port + aero beyond momentum theory (S8). <span class="mono">ecs/</span> was scaffolded in S1 and ended S4 with zero production consumers — the S5 plan deletes it (decision D-S5-1).</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§3</span><h2>Decisions made during execution</h2></div>
+<p>The spec's engine D1–D12 were never re-decided. These are the rulings and adjudicated deviations that execution itself produced — each lives in code comments and the registers cited; this table is the collected index.</p>
+
+<div class="table-scroll"><table>
+<tr><th>Decision</th><th>Ruling, and why</th><th>Where it lives</th></tr>
+<tr><td class="k">Frame convention</td><td><code>force_acc</code> accumulates WORLD-frame; <code>torque_acc</code> BODY-frame (op-order contract + rotor physics; a stale world-frame comment was corrected under review)</td><td><span class="mono">layout.hpp</span> · T9 ruling</td></tr>
+<tr><td class="k">Contact response</td><td>LINEAR-only, v1-faithful — no contact torque; sliding spheres don't roll. Documented limitation, revisit at the vehicle layer if landings need it</td><td><span class="mono">contacts.hpp</span> limitations · T11 ruling</td></tr>
+<tr><td class="k">Pass-parameter structs</td><td><span class="mono">layout.hpp</span> holds memory-resident snapshot-walked STATE only; pass-parameter value structs (ContactParams 32 B, GridParams) carry the full static_assert battery in their own pass header, graduate to layout/Slang at S6</td><td>T11 ruling · every pass header since</td></tr>
+<tr><td class="k">Per-world grid sweeps</td><td>CollisionDynamic runs batched when every world's dynamic params are byte-identical, per-world otherwise — world-partitioned semantics ratified; equivalence pinned by a mutual-contact cluster tripwire test</td><td>T12/T13 · <span class="mono">world_set.hpp</span> layout flag</td></tr>
+<tr><td class="k">RPM lag discretization</td><td>Exact <code>α = 1−exp(−h/τ)</code> over the spec's literal Euler step — ruled faithful-and-superior (the spec names the ODE, not its discretization; Euler is unstable for h&gt;2τ; Dryden's exact-OU precedent)</td><td>T17 opus review adjudication · <span class="mono">rotor.cpp</span></td></tr>
+<tr><td class="k">Momentum-theory closure</td><td><code>f_inflow = λ</code> is a stated closure, not a theorem (one equation, two unknowns) — header names the alternatives and the ~2.5× climb-sensitivity delta vs BEMT; thrust NOT ρ-scaled (ρ enters via v_h only — the spec's literal reading, confirmed)</td><td>T17 review · <span class="mono">rotor.hpp</span> §3</td></tr>
+<tr><td class="k">Shared force-element budget</td><td><code>Capacities::force_elements</code> covers rotors + drag jointly — a separate rotor capacity would force conditional array registration (state shape depending on contents) and change the S5 world-file format</td><td>T18 adjudication · <span class="mono">world_set</span> validation</td></tr>
+<tr><td class="k">Layering: schedule ↔ vehicles</td><td><span class="mono">physics/schedule.hpp</span> includes <span class="mono">vehicles/rotor.hpp</span> — inversion confined to the <i>directory</i>, not the link graph (the spade_physics target never sees vehicles headers; schedule compiles into spade_sim). Forward-decl seam ticketed, executing in S5</td><td>T18 adjudication · open-agendas §6</td></tr>
+<tr><td class="k">vehicles → physics link</td><td>PRIVATE→PUBLIC promotion when a public vehicles header names <code>physics::drag_mode</code> — same rule as state/world links; the alternative duplicated a wire enum</td><td>T18 adjudication · engine CMake comment</td></tr>
+<tr><td class="k">IMU sample instants</td><td>Accel = substep-start (pre-update orientation, avoids rotation smear), gyro = substep-end — the asymmetry is documented with an error bound (∝|α|·h) and pinned by discriminating tests, in preference to a BodyState layout change (+12.5% on the hottest array) for a bounded term</td><td>T19 fix-round adjudication · <span class="mono">imu.hpp</span> §3</td></tr>
+<tr><td class="k">M1B canaries</td><td>Source-scans (preprocessor-directive detection), not link-level — deliberately portable to the Linux V1=OFF CI job; the unprovable gap (indirection, vendored TUs) stated rather than hidden</td><td>T20 adjudication · <span class="mono">test_m1b_bar.cpp</span></td></tr>
+<tr><td class="k">A1 — FPS counter <span class="st mut">(user, №1)</span></td><td>Visible during all demo scenes — standing scene rule</td><td>T14b · bridge frame loop</td></tr>
+<tr><td class="k">A2 — spawn jitter <span class="st mut">(user, №1)</span></td><td>Large-count scenes perturb spawn positions — deterministic, fixed-seed, never wall-clock — unless exact stacking is a deliberate physics test; scenes stay byte-reproducible as regression references</td><td>T14b · lesson L12</td></tr>
+<tr><td class="k">A3 — v1 regression renders <span class="st mut">(user, №1)</span></td><td>The pre-existing v1 renders (SPH fluid, large sphere/cube counts) stay one command away (<span class="mono">demo.ps1 -Scene v1-*</span>) as visual baselines while v2 progresses; v1 engine stays frozen — only the consumer example was parameterized</td><td>T14b · demo.ps1</td></tr>
+<tr><td class="k">Addendum A carries</td><td>A9 ratified the landed inert-Gravity + tick-per-step corrections; A11 set v0.2.0 at the M1B claim + the TA5 citation fix; A3's reseed surface ruled out of close-out scope (no new engine surface during close-out) → ticketed, now S5-T4</td><td>engine spec §15 · T21</td></tr>
+</table></div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§4</span><h2>Verification record</h2></div>
+<h3>Method</h3>
+<ul>
+<li><b>Per-task gate:</b> fresh implementer per task → independent review on the task diff before merge — spec compliance and code quality both required. Physics tasks received <b>re-derivation reviews</b>: the reviewer re-derives the math from first principles (momentum theory, covariance identities, discrete-bias references) rather than reading the implementation as its own proof. No task in the program needed more than one fix round.</li>
+<li><b>Mutation-kill evidence:</b> where a test's value is discrimination (frame swaps, sign errors, branch selection), fix rounds required demonstrated red-under-mutation — the recurring S1–S4 pattern was correct math whose original tests couldn't distinguish a swapped variant (identity-orientation/unit-mass blindness, three separate tasks); each was closed with discriminating tests plus verified kill tables.</li>
+<li><b>Golden discipline:</b> digests regenerate only with root-cause provenance in the file header; the two structural regenerations (T18 vehicle arrays, T19 sensor arrays) were each proven to be pure walk-suffix continuations — old digest reproducible with the new arrays excluded — rather than trusted.</li>
+<li><b>Stage gates:</b> S1/S2/S3/S4 each ran the full suite on both presets plus kat-side checks (pytest, mkdocs strict, non-spade diff audit). The S4 gate added the whole-plan opus review over all 49 commits, which mechanically verified the global constraints (zero fp64/wall-clock/random_device hits, v1-freeze exact) and triaged the entire deferred-minor backlog: <b>zero must-fix</b>, everything else ticketed or dropped with a written ruling.</li>
+</ul>
+
+<h3>Notable catches — the process working</h3>
+<div class="table-scroll"><table>
+<tr><th>Found by</th><th>Defect</th><th>Disposition</th></tr>
+<tr><td class="k">implementer self-catch</td><td>Dryden Q00: O(θ³) catastrophic fp32 cancellation → exactly 0 → NaN at default θ</td><td>Taylor+threshold branch, dual-referenced; opus review re-derived all 15 coefficients</td></tr>
+<tr><td class="k">implementer self-catch</td><td>Consumed Box-Muller partner left in cache ⇒ phantom snapshot divergence</td><td>cache-cleared-on-consume, pinned by memcmp-canonicality test</td></tr>
+<tr><td class="k">implementer self-catch</td><td>Two structural-queue bugs: reserved drag row's zeroed body_slot aliasing body 0 in despawn cascades; despawn-killed ref re-mintable</td><td>identity-at-reservation rule + generation parity; both carried forward as dispatch warnings and honored by later tasks</td></tr>
+<tr><td class="k">implementer self-catch</td><td>fp32 overflow (0.25·x²→∞−∞=NaN) and cancellation collapse in both momentum roots above x≈8200</td><td>cancellation-free conjugate forms; review re-derived both algebraically and confirmed the threshold arithmetic</td></tr>
+<tr><td class="k">task review</td><td>pose_of() scale composition wrong (masked — all shipped scenes used scale=1)</td><td>fixed + re-derived independently via Python quat recovery</td></tr>
+<tr><td class="k">task review</td><td>IMU intra-sample timing asymmetry undocumented and structurally untestable</td><td>documented + two counterfactual-mutation-verified tests (§3 row)</td></tr>
+<tr><td class="k">implementer, against the coordinator</td><td>The wind-scene brief predicted "leaning/buffeted hover" — 30-seed measurement showed altitude-excursion-only, 0.000° lean</td><td>scene comment rewritten with the mechanism; review then <i>derived</i> the mechanism from the code (uniform medium ⇒ identical per-rotor inflow ⇒ zero moment, inductively level) — correct physics, not curve-fit</td></tr>
+<tr><td class="k">whole-plan review</td><td>Bench baseline note carried an unsourced range, a false mechanism, and a "noise" verdict on a +37% move; fp-contract guard stopped one target short of the test binaries</td><td>both fixed in the single close-out fix wave; re-review confirmed with independent recomputation</td></tr>
+</table></div>
+
+<h3>Checkpoints and demos</h3>
+<p>Checkpoint №1 validated the four physics scenes (drop, bounce, shower, gate) and produced the three user amendments above. Checkpoint №2 validated the flight scenes: hover (in-trim quad, orbit camera), wind (Dryden moderate — visibly wandering altitude, deliberately level), flight (scripted takeoff through the gate ring, ~t≈8 s crossing), swarm (four worlds batched, four vehicles). Scene validation evidence included per-scene screenshots, FPS ranges, and full-window garbage-geometry sweeps; the hover test's non-vacuity is anchored by an IMU assertion that is physically incapable of passing on a frozen or free-falling body (+g requires rotor thrust through <code>force_acc</code>).</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§5</span><h2>The first Linux run — cross-platform parity, earned</h2></div>
+<p>The PR was the first time any non-MSVC compiler built the engine (an honest caveat carried since S1: "portability by inspection"). It found three defects, escalating in depth:</p>
+<ul>
+<li><b>Name-lookup portability:</b> a file-local <code>apply()</code> helper resolved to <code>std::apply</code> via ADL on libstdc++ (hard error) while MSVC picked the local — renamed ADL-proof.</li>
+<li><b>Warning strictness:</b> a <code>-Wredundant-move</code> under gcc's -Werror.</li>
+<li><b>A real bit-parity defect:</b> exactly one golden scenario diverged on Linux, with fp-contraction already off. Per-array/per-tick digest instrumentation localized it to the Dryden array at tick 0 — before any physics ran. Root cause: <b>MSVC's CRT and glibc disagree by 1 ulp</b> on <code>cosf/sinf</code> at two specific arguments consumed by Box-Muller during Dryden init. Only one scenario failed because an <i>init-time</i> draw lands in registered state unattenuated, while per-substep draws pass through a ~7·10⁻³ noise gain that rounds 1-ulp differences away — the other three scenarios passed by luck, which is worse than failing. Body trajectories were bit-identical on both platforms for all 901 ticks throughout.</li>
+</ul>
+<div class="callout"><b class="t">The fix set the standing rule.</b><p>IEEE 754 mandates correct rounding for <code>+ − × ÷ √</code> only; libm transcendentals differ across implementations. <span class="mono">core/fp32_math</span> was born: <code>log32/sin32/cos32</code> built from mandated ops only, exhaustively verified ≤1 ulp over all 2²⁴ inputs, and the goldens regenerated with provenance naming the old values as MSVC-libm artifacts — no tolerance loosened, no per-platform goldens, no digest weakening. The remaining sites of the same class (<code>std::exp</code> in Dryden, the exp-map's sin/cos, plus two sites the original exception list missed) are being retired in S5 Task 1, before the corpus is re-baked as data. The generalized lesson is recorded as L13.</p></div>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§6</span><h2>Known limitations &amp; forward obligations</h2></div>
+<div class="table-scroll"><table>
+<tr><th>Item</th><th>Status</th><th>Owner</th></tr>
+<tr><td>A body resting <i>on the ground</i> reads ~0 specific force (contact impulses bypass <code>force_acc</code>); in-flight readings are correct. Any ESKF-initializes-on-ground assumption on the kat side must know this</td><td class="st amber">documented in-code (imu.hpp §5)</td><td>S7 contact-model question</td></tr>
+<tr><td><code>config/dt_ns/substeps</code> live outside the snapshot blob — restore() documents rather than detects a mismatched pairing</td><td class="st ok">closing — S5 T3 (replay_config in the digest + pre-apply rejection)</td><td>S5, in flight</td></tr>
+<tr><td>No <code>reseed()</code> surface; Addendum A3's second conformance case unwritten</td><td class="st ok">closing — S5 T4</td><td>S5, in flight</td></tr>
+<tr><td>Remaining libm transcendentals (Dryden exp, exp-map sin/cos, heightfield sin, rotor lag exp)</td><td class="st ok">closing — S5 T1, golden regen event #1</td><td>S5, in flight</td></tr>
+<tr><td>VehicleRef not reconstructible after restore into a fresh Simulation (steppable, not commandable)</td><td class="st ok">closing — S5 T7 (<code>vehicle_ref_at</code>)</td><td>S5</td></tr>
+<tr><td><code>ModelType::proxy_radius</code> declared/validated but NOT-CONSUMED (contacts read the per-world radius)</td><td class="st amber">ticketed</td><td>S6+ (per-body proxy)</td></tr>
+<tr><td>Reaction torque Q uncorrected by inflow/ground factors while thrust is corrected (spec-literal); rotor Q is not a power budget</td><td class="st amber">documented in rotor.hpp</td><td>revisit with aero roadmap (S8/P7)</td></tr>
+<tr><td>Hover scene's orbit camera angle is wall-clock-driven — physics tick-exact, composited image not pixel-reproducible across launches (tools exemption, disclosed)</td><td class="st mut">accepted</td><td>—</td></tr>
+<tr><td>Gauss-Seidel pair sweep is the parity contract; a parallel GPU solver is a different solver</td><td class="st amber">recorded</td><td>S6 design work</td></tr>
+<tr><td>Microbenchmark spread (27.9/73.4/100.4 ns across three same-box runs) makes <span class="mono">BM_IntegrateOrientation</span> unusable as a regression basis at current precision</td><td class="st amber">honestly recorded in baselines.json</td><td>bench policy before S6 perf gates</td></tr>
+<tr><td><span class="mono">ecs/</span> — zero production consumers since S1</td><td class="st ok">delete pending — S5 T9 (D-S5-1)</td><td>S5</td></tr>
+</table></div>
+<p class="note">The complete ticket register with pointers lives in <span class="mono">kat-open-agendas.md</span> §6 (T21 close-out section, 12 rows).</p>
+</section>
+
+<!-- ============================================================ -->
+<section>
+<div class="sec-head"><span class="sec-num">§7</span><h2>Traceability</h2></div>
+<p class="note">Task → landing commit on <span class="mono">spade/s1-s4</span> (merge commits where the task ran in a lane). Full diffs in git history; base master@3ee7894, merge 6772f0c.</p>
+<div class="table-scroll"><table>
+<tr><th>Task</th><th>Delivered</th><th>Commit(s)</th></tr>
+<tr><td class="k">T1–T4</td><td>Scaffold/presets/core · math ops + scripts (№0) · v1 deletions + pins · CI + bench (S1 gate)</td><td class="mono">e85652c · 45ebea9 · c831220 · 76aa0d4</td></tr>
+<tr><td class="k">T5–T7</td><td>ECS · state layout/arenas · snapshot (S2 gate)</td><td class="mono">42795df · 26acab1 · 4d53fce</td></tr>
+<tr><td class="k">T8–T10</td><td>RNG + medium v0 · integrator · SDF worlds</td><td class="mono">5bb9b68 · eeab0bc · dcffd89</td></tr>
+<tr><td class="k">T11–T13</td><td>Contacts · sorted grid · schedule/Simulation/corpus</td><td class="mono">d4b9887 · f6961fa · a67d04c..c088179</td></tr>
+<tr><td class="k">T14 + T14b</td><td>Viewer + demo scenes (№1, S3 gate) · FPS/jitter/v1-regression amendments</td><td class="mono">76b5b00+8a2a521 · c86c443</td></tr>
+<tr><td class="k">T15–T17</td><td>Force elements + drag · Dryden · rotor</td><td class="mono">1ae2a79 · 686e339 · 9194095</td></tr>
+<tr><td class="k">T18–T20</td><td>ModelType + Quadrotor · IMU + rings · flight scenes + M1B bar (№2)</td><td class="mono">f03c44b · ec5289f · 0e2e29d</td></tr>
+<tr><td class="k">T21</td><td>Bench sweep · docs · mechanical batch · review fix wave · parity fix</td><td class="mono">2667077 · 3b34617 · 1525114 · 2533082 · 5cd3a63..9de1f75</td></tr>
+</table></div>
+<p class="note">Durable records: git history (every review-gated commit) · <span class="mono">kat-open-agendas.md</span> §6 (tickets) · <span class="mono">tasks/lessons.md</span> L12 (demo-scene rules) and L13 (libm bit-portability) · the golden digest provenance headers (structural continuation arguments, source-re-checkable) · project memory <span class="mono">kat-spade-engine-design.md</span> (execution summary). The S5 program executing at the time of writing is planned in <span class="mono">.superpowers/plans/2026-08-11-spade-engine-s5.md</span>.</p>
+</section>
+
+<div class="foot">
+kat-spade-s1-s4-implementation-record.html · written 2026-08-11, during S5 wave 2 · records the S1–S4 execution (2026-08-08 → 2026-08-11, PR #5 → master @ 6772f0c) · adopts nothing; cites engine D/S series qualified · companion to kat-spade-engine-design.html (v1.0 + Addendum A)
+</div>
+
+</div>
+</body>
+</html>

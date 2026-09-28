@@ -5,16 +5,20 @@ implementation of anything. Every v1 system below is dispositioned as
 `transferred`, `to-transfer`, `retired-with-reason` or `retired-to-sandbox`.
 
 > **A silent drop is not a disposition.** This file is machine-checked:
-> `spade/tests/test_transfer_register.cpp` parses the table and fails if any row
+> `tests/test_transfer_register.cpp` parses the table and fails if any row
 > carries a disposition outside that set, if a row loses its evidence, or if the
 > row count changes without the guard being updated. The check exists so that
 > §7's quarantine cannot execute over a live gap.
 
 **This file is the authority, not a copy.** It began as a transcription of the 24th
-spec's SL7 table, but that spec lives in `design-specs/`, which is gitignored -- it
-does not exist in a fresh clone or in CI, so no test can ever cross-check against it.
-The tracked artifact is therefore the normative one and the spec's table is the derived
-copy. Anything that must survive a clone belongs here.
+spec's SL7 table (`docs/design/06-sandbox-and-v1.md` in this repo). The reason has
+changed since: that spec is now tracked and present in every clone same as this file
+is, so the old gitignored/fresh-clone argument no longer holds. What still makes this
+file the authority rather than the spec's table is that only this one is
+machine-checked -- `tests/test_transfer_register.cpp` parses it and pins its row
+count, so it is this table, not the spec's prose copy, that cannot silently drift.
+The tracked, machine-checked artifact remains the normative one and the spec's table
+is the derived copy. Anything that must survive a clone belongs here.
 
 **The 2026-09-07 correction that forced this.** The spec enumerated fourteen v1 systems;
 this file carried thirteen. `SL9f` (barycentric wireframe) had never been transcribed,
