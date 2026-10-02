@@ -4,40 +4,45 @@ What isn't built yet, why, and what proves it done. One row per item. A realm's 
 
 ## Suggested order (lead, 2026-10-02)
 
-1. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades. Everything below either builds on it or is easier after it.
-2. **The translation lock**, inside that work — it lifts the drone sim box's Vulkan refusal.
-3. **Physics: SPH as a field provider** — closes the last v1 transfer row.
-4. **Rendering: field channels and GL parity** (back-face culling, honouring `RenderOptions`), then the Vulkan raster as a technique.
-5. **Interface: the editor spec**, written against the module API once it exists.
+1. **Test/Docs: the Docker CI leg** (`TD-11`). It is small, it closes the consumer-smoke gap, and it gates every golden regeneration below (`TD-12`).
+2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`), the v1 baselines (`INT-4`), then the `Lighting{}` regeneration once the Docker leg exists (`RND-5`). Rendering's GL parity work (back-face culling, honouring `RenderOptions`) can run alongside.
+3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.
+4. **On top of the module API:** SPH as a field provider (`PHY-4`), field channels for cameras, then the Vulkan raster as a technique (`RND-4`), and the editor spec (`INT-3`).
 
 Each starts as its own spec and plan in the owning realm's `plans/`.
 
-## Open user decisions
+## Ruled by the user, 2026-10-02
 
-| Decision | Raised by | Where it's recorded |
-|---|---|---|
-| A second toolchain for the golden cross-check (restore a Linux leg via WSL or a container, or declare goldens MSVC-pinned) | Test/Docs | `test-docs/07-status.md` |
-| Engine `D11`'s "own CI legs" with no hosted CI (restore CI, or amend `D11`) | Test/Docs | `test-docs/07-status.md` |
-| When SPH (Plan B) resumes | Physics | `physics/07-status.md` |
-| When the Vulkan raster resumes as a technique, and whether GL stays as its own technique | Rendering | `rendering/07-status.md` |
-| Adopt or delete the unwired Jacobi contact path | Physics | `physics/07-status.md` |
-| Regenerate four frame goldens so `render::Lighting{}`'s default sun is above the horizon | Rendering | `rendering/07-status.md` |
-| Add a GNSS golden scenario so GNSS reaches reference grade | Physics | `physics/07-status.md` |
-| The IMU/GNSS function-pair dedup proposal (or let the module API absorb it) | Core | `core/07-status.md` |
-| Saved scenes in the editor's first cut (save/load now, defer, or world-file only) | Interface | `interface/07-status.md` |
-| When to capture the `SL14b` v1 baselines before v1 is retired | Interface | `interface/07-status.md` |
-| GPU coverage on a one-machine gate: a missing device fails the run, or the run keeps skipping and names its skips | Test/Docs | `test-docs/07-status.md` |
+Every decision this file held is ruled; the rulings live in the realm registers.
+
+| Decision | Ruling |
+|---|---|
+| CI and the golden cross-check toolchain | Self-run Docker legs, no hosted CI: `TD-11` (amends `engine D11`), `TD-12` |
+| GPU coverage on a one-machine gate | `TD-13` |
+| When SPH resumes | After Core's module API: `PHY-4` |
+| The Jacobi contact path | Kept unwired, returns as a contact module: `PHY-5` |
+| A GNSS golden | Now: `PHY-6` |
+| The Vulkan raster, and GL's future | After field channels and the module API; GL stays the editor's path: `RND-4` |
+| The below-horizon default sun | Flip with one regeneration, after the Docker leg: `RND-5` |
+| The IMU/GNSS dedup | Absorbed by the module API: `CORE-4` |
+| Editor saves | World files only: `INT-3` |
+| The `SL14b` v1 baselines | Capture now: `INT-4` |
+
+No user decision is open.
 
 ## Work items
 
 | Item | Owner | Why it's open | Done when |
 |---|---|---|---|
+| Docker CI leg (`TD-11`, `TD-12`) | Test/Docs, with Interface for the consumer | No CI and no second toolchain since the split. `tests/consumer` was run by hand on 2026-10-02 for the `SPADE_VULKAN=OFF` install (`3a48c4d`); Core's local `tasks/core-offtree.ps1` is a starting point | One script builds the Linux/gcc image, runs `ctest -L spade -LE gpu` on release, and builds and runs `tests/consumer` against an installed prefix with Vulkan ON and OFF |
+| GNSS golden scenario (`PHY-6`) | Physics | GNSS's CPU path has no golden, so it is not reference grade | A GNSS scenario sits in `tests/golden/scenarios/` with its provenance, and every existing digest is unchanged |
+| `SL14b` v1 baselines (`INT-4`) | Interface | v1 must be captured before it can be retired | Baselines committed with how they were captured |
+| Default-sun regeneration (`RND-5`) | Rendering | `render::Lighting{}`'s default sun is below the horizon | Default flipped; four frame goldens regenerated with provenance, cross-checked by the Docker leg |
 | Module API, scheduler phases, regions, field registry, grades | Core (then Physics, Rendering) | The engine model (`01-engine-model.md`) is signed but not built; today's schedule is a fixed ten-pass array | Today's passes run as built-in modules through the new scheduler, with every golden unchanged |
 | Translation-lock constraint on both backends | Core / Physics | The drone stand pins with CPU behaviors, so Vulkan is refused there | The drone sim box runs on Vulkan with its position held |
-| SPH fluid as a field provider | Physics | The one open v1 transfer row (`docs/v1-transfer-register.md`); v1 stays in the tree until it closes | Row closed with a v2 implementation and a declared grade |
-| GPU rasterizer as a render technique | Rendering | Stages 1–2 exist but are in no build graph; paused for the restructure | Built, tested, selectable as a technique, with colour guarded |
+| SPH fluid as a field provider (`PHY-4`) | Physics | The one open v1 transfer row (`docs/v1-transfer-register.md`); v1 stays in the tree until it closes | Row closed with a v2 implementation and a declared grade |
+| GPU rasterizer as a render technique (`RND-4`) | Rendering | Stages 1–2 exist but are in no build graph | Built, tested, selectable as a technique, with colour guarded |
 | Field channels for cameras | Rendering / Core | The drone heatmap draws a field with sandbox-side cells; the engine has no field channel | A camera renders a registered field as a channel on both CPU and GPU paths |
-| Sandbox → editor (old plan C tasks C3–C8, rethought) | Interface | The sandbox grows into the editor | An editor spec, approved, then built |
+| Sandbox → editor (`INT-3`) | Interface | The sandbox grows into the editor | An editor spec, approved, then built |
 | Spade-owned content for render agreement bands | Rendering / Test/Docs | The bands were measured on KAT's worlds, which left Spade's suite on 2026-10-01 | Bands re-measured on worlds in this repo |
-| Out-of-tree consumer smoke | Test/Docs / Interface | `tests/consumer/` is correct but nothing runs it since the split; it was run by hand on 2026-10-02 for the `SPADE_VULKAN=OFF` install (`3a48c4d`) | A script or gate configures, builds and runs it against an installed prefix |
 | `SR-3`'s content | Rendering | Every cited `SR-nn` now has a row; `SR-3`'s ruling text could not be reconstructed | Its content is found or the citation is retired |
