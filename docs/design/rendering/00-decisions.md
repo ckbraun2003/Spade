@@ -33,7 +33,7 @@ Reconstructed 2026-10-01 from their code citations (`SR-17`, `SR-17a`: 03 §15�
 
 | ID | Ruling | Signed | Status | Source (enforced by) |
 |---|---|---|---|---|
-| `SR-2` | The agreement matrix measures bare geometry only; re-measure after dressing worlds | — | historical (KAT worlds) | agreement test header, removed on `rendering/kat-reach` |
+| `SR-2` | The agreement matrix measures bare geometry only; re-measure after dressing worlds | — | historical (KAT worlds) | agreement test header, removed at `ab2a21e` |
 | `SR-3` | Content unknown; listed as orphaned in 2026-09, cited nowhere | — | unknown | 03 §15.1 |
 | `SR-9` | One static draw item per split-program entry (a union leaf or a whole CSG root), in authoring order; `local_to_world` = float inverse of `world_to_local` | — | live | `scene_from_world`; `SceneFromWorld.*` |
 | `SR-11` | Submesh contract: empty submesh arrays mean one submesh at material 0; non-empty arrays are parallel and partition the indices | — | live | `MeshData`; `RasterCpu.EmptySubmeshArrays…`, `…ExplicitSubmeshes…` |
@@ -51,7 +51,7 @@ Reconstructed 2026-10-01 from their code citations (`SR-17`, `SR-17a`: 03 §15�
 | `SR-27` | Ray-march takes each hit's material from its owning leaf, not material 0 | — | live | `RaymarchSmoke.MaterialMisresolution…`; `AgreementGuard.Step1c*` |
 | `SR-28` | The ray-march surface epsilon is `1e-4`, so the reference's own error is negligible | — | live | `kRaymarchSurfaceEpsilon`; `RaymarchSmoke.SphereAnalyticSilhouette…` |
 | `SR-30` | Every agreement band proves its own detection surface, via the bare-ground probe, re-checked live; bands are per world and camera | — | live as a rule; no matrix enforces it until bands return | `03-verification.md`; `strip_to_ground_plane_only`, `AgreementProbe.*` |
-| `SR-31` | Agreement bands are versioned; a re-measure adds a version and never edits one | — | live as a rule; no bands file exists after `rendering/kat-reach` | `03-verification.md` |
+| `SR-31` | Agreement bands are versioned; a re-measure adds a version and never edits one | — | live as a rule; no bands file exists since `ab2a21e` | `03-verification.md` |
 | `SR-33`, `SR-35` | Default material 0.8 grey, not white; default sun off-axis `(0.4, 0.8, 0.6)`, not overhead. Never cited apart | — | live | `MaterialDesc`, `LightingDesc`; `RenderShading.DefaultMaterialUnderWorstCase…` |
 | `SR-34`, `SR-37` | "Standard resolution" (Task VQ-B). The resolution change is not in this tree; only a byte-exact perf hoist cites them | — | live, KAT-side (probably) | `BackgroundRayBasis` comment |
 | `SR-42` | *"C0 cannot merge without C4"*: a KAT-era merge-order rule, discharged by a user ruling | — | historical | `06-sandbox-and-v1.md` (`SL17`) |
@@ -89,6 +89,6 @@ Also on the 2026-09 orphan list but cited nowhere in this tree, and probably KAT
 
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
-| `RND-1` | **One sun convention.** `sun_direction` points from the scene toward the sun; every path shades with `dot(n, +sun_direction)` | — | proposed; in the code once `rendering/sun-convention` merges | restructure defect 4; `02-scene-and-appearance.md` |
+| `RND-1` | **One sun convention.** `sun_direction` points from the scene toward the sun; every path shades with `dot(n, +sun_direction)` | — | **in force in the code since `94deae3`; awaiting the user's signature** | restructure defect 4; `02-scene-and-appearance.md` |
 | `RND-2` | **A partial technique carries a partial name.** A backend that cannot draw a full frame exposes an entry point named for what it does draw (`render_background()`), never `render()` | — | proposed; already how `render/raster_gpu.hpp` is written | `01-techniques-and-channels.md` |
 | `RND-3` | **Grades:** CPU raster reference (fp64, declared); CPU ray-march reference for coverage; OpenGL best-effort; Vulkan raster banded once colour is guarded | — | proposed | `01-techniques-and-channels.md` |
