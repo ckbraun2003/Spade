@@ -1,10 +1,42 @@
 # Spade engine changelog
 
-Spade has its own upstream repository and is developed inside the kat monorepo
-(24th spec SL2a). This file records changes to the **v2 engine** (`engine/`);
-v1 is frozen.
+Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ examples/ assets/`) is frozen. Spade was developed inside the KAT monorepo until 2026-09-28 and is now its own repository; KAT is a consumer (`docs/design/consumers.md`).
 
-## Unreleased — the object model (24th spec, Plan A of 3)
+## Unreleased
+
+### The restructure (2026-10-01 to 2026-10-02)
+
+- **A design library of Spade's own.** `docs/design/` now opens on a charter (laws `L1`–`L8`), an engine model (modules, fields, regions, responders, grades) and a realm map, with one library per realm: `core/`, `physics/`, `rendering/`, `interface/`, `test-docs/`. Every legacy ruling ID has exactly one home row in a realm's `00-decisions.md`. The KAT-era documents moved, unedited, to `docs/design/superseded/`.
+- **`AGENTS.md` and `CLAUDE.md`**: short, broad guidance for anyone changing the code.
+- **Test labels are `spade` and `gpu`.** The KAT-era `T0` tier label is gone; nothing here selected it (`TD-10`).
+- **Scripts, presets, `.gitignore`, the bench baselines' notes and the pre-push guard** describe Spade in its own terms. `*.sh` checks out LF, so the guard can be installed by copying it.
+- **Spade's suite no longer reads a KAT checkout.** The 30 render-agreement cases over KAT's worlds and the scene-drift guard moved out; 3 `AgreementProbe` cases keep the agreement machinery tested here. The bands are to be re-measured on Spade's own content (`docs/design/backlog.md`).
+- **Two Vulkan-path defects fixed.** The Vulkan step now refuses a world with behaviors attached instead of silently skipping them. The step recorder now derives its barriers from the dispatches it actually emits: since GNSS it had been counting 8+S dispatches per substep against 9+S emitted, dropping the last `substeps` barriers. A test pins a barrier between every adjacent dispatch pair.
+- **One sun convention.** The GL path lit scenes with `-sun_direction` while the CPU used `+sun_direction`, so world-loaded scenes were lit from below. It also hid inward-wound builder meshes, which were fixed in the same change (spheres and cylinders now wind outward, and a test checks every triangle).
+- **`Simulation::sample_medium`**: a host-side read of a world's medium (density and wind, including the turbulence gust) at a point.
+- **`vehicles::rotor_wake_velocity`**: an actuator-disc rotor wake for visualising the air a rotor moves. CPU-only, best-effort grade.
+- **The drone sim box is the sandbox's default scene.** A quadrotor is held in place while the air moves around it, driven through the engine's rotor model. It has attitude keys, an orbit camera, an air-velocity heatmap view and a physics panel, and Vulkan is refused with a reason.
+- **Measured at `df33f09`:** 921 tests on both presets, 919 passed, 2 skipped by design, 0 failed. All 65 GPU tests ran (`docs/design/test-docs/07-status.md`).
+
+### Stands alone (2026-09-28)
+
+- **Extracted from the KAT monorepo with its full history.** About 70 path citations lost their `spade/` prefix. KAT now builds against an installed Spade through `find_package(spade CONFIG)`.
+- **A reach outside the repository, found and guarded.** The render agreement tests read KAT's content through a relative path that escaped this repository once it stood alone; they now skip loudly when that tree is absent, instead of failing.
+- **A pre-push guard** (`scripts/pre-push-guard.sh`): nothing is pushed without `SPADE_PUSH_AUTHORIZED` set for that push.
+- **A front-facing `README.md` and a `CONTRIBUTING.md`.**
+
+### GPU rasterizer, stages 1–2 (2026-09-25 to 2026-09-27)
+
+- **A Vulkan raster kernel and its host side**, written beside the CPU rasterizer. They are **in no build graph** and paused for the restructure (`docs/design/backlog.md`).
+- Writing the host side found, and fixed, three colour defects in the stage-1 kernel (R and B swapped, the grid line shaded, unlit materials lit). The silhouette comparison could not see them, because it compares coverage and never colour. **Colour on this path is still unguarded.** An audit then found four more (a shading test that was the complement of the reference's, an unkept forward promise, a struct-stride footgun, a stale count), all fixed.
+
+### GNSS (2026-09-21 to 2026-09-23)
+
+- **A second sensor kind.** `sensors/kinds.hpp` holds the kind vocabulary, so a kind no longer lives inside the IMU's header.
+- **A GNSS receiver** can be spawned, polled and despawned on its own clock (`add_gnss_sensor`, `poll_gnss`, …). Its state joins the registered walk.
+- **Synthesis on both backends**, as a matched CPU/GPU pair. Nine of twelve compared quantities are bit-exact between backends. The rest sit inside bands pinned from measurement.
+
+### The object model (Plan A, 2026-09-07)
 
 **`kSnapshotVersion` did not change, and neither did any golden file.** That is
 the fact most worth confirming up front: a structural addition this size cost
@@ -12,7 +44,7 @@ the determinism estate nothing, because the object graph is composition, not
 registered state (SL3). Every scenario digest, every render golden and every
 CPU↔GPU parity band is byte-identical to before.
 
-### Added
+#### Added
 
 - **`spade::objects`** — the composition half of the ECS the engine design spec
   ratified and never built. `ObjectGraph` is a recycling slot pool with
@@ -45,7 +77,7 @@ CPU↔GPU parity band is byte-identical to before.
   by `test_transfer_register.cpp`. One row remains open (SPH fluid); until Plan
   B closes it, v1 must not be quarantined.
 
-### Changed
+#### Changed
 
 - **The substep schedule is ten passes, not eight.** `BehaviorsKinematic` sits
   after `MediumUpdate` and before `ForceElements`; `BehaviorsForce` sits after
@@ -61,7 +93,7 @@ CPU↔GPU parity band is byte-identical to before.
   nothing previously related the recorder's slot table to `kSchedule` — the
   schedule grew from eight to ten with every GPU test green.
 
-### Notes for anyone extending this
+#### Notes for anyone extending this
 
 - A field belongs on `Object` only if it could be rebuilt from a saved
   description. Velocities, contact sets and accumulated forces are state; they
