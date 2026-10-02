@@ -24,9 +24,9 @@
 // ---------------------------------------------------------------------------
 // THE MODEL: a straight, skewed, contracting actuator-disc slipstream
 //
-// Let n = -axis be the direction the disc pushes air, F the freestream (air
-// velocity at the rotor, world frame), and s, r the downstream distance along
-// the wake axis and the distance from it.
+// Let n = -axis be the direction the disc pushes air, F the freestream (the
+// air's velocity RELATIVE TO THE HUB, world frame), and s, r the downstream
+// distance along the wake axis and the distance from it.
 //
 //   1. AXIAL PROFILE. On the axis of a uniformly loaded disc (the
 //      semi-infinite vortex-cylinder model) the induced speed is
@@ -81,7 +81,10 @@
 //     the one the rotated geometry gives for free;
 //   * interaction between rotors (the caller sums them);
 //   * obstruction by the airframe;
-//   * the ground. A wake meeting the ground spreads; this one passes through.
+//   * the ground. A wake meeting the ground spreads; this one passes through;
+//   * mixing and decay. This inviscid slipstream holds 2 v_i indefinitely,
+//     where a real one mixes out over a few rotor diameters, so a drawn
+//     column stays crisp far below the rotor.
 // A solved flow field replaces all of this as a higher-fidelity field
 // provider (restructure spec section 2).
 // ===========================================================================
@@ -91,6 +94,12 @@ namespace spade::vehicles {
 // One rotor, as rotor_wake_velocity() sees it. Every field is a plain value,
 // so the caller builds it from a RotorRow plus its body pose (or from nothing)
 // without this header naming the arena layout.
+//
+// `freestream` is the air's velocity RELATIVE TO THE HUB: the medium's wind
+// minus the hub's own velocity (body velocity plus omega x r). That is the
+// relative velocity the rotor element's inflow reads, so the disc then shows
+// the induced velocity that rotor's thrust came from. For a hub at rest it is
+// just the wind.
 struct RotorWakeInput {
     glm::vec3 hub_world{0.0f};                      // rotor hub, world frame, m
     glm::vec3 thrust_axis_world{0.0f, 1.0f, 0.0f};  // thrust direction, world frame; normalised here. The wake flows opposite
@@ -98,12 +107,13 @@ struct RotorWakeInput {
     float thrust_coeff = 0.0f;                      // k_T in T_static = k_T w^2, N s^2
     float omega = 0.0f;                             // shaft speed, rad/s
     float density = 0.0f;                           // rho, kg/m^3
-    glm::vec3 freestream{0.0f};                     // air velocity at the rotor, world frame, m/s
+    glm::vec3 freestream{0.0f};                     // air velocity relative to the hub, world frame, m/s (see above)
 };
 
 // Induced air velocity (world frame, m/s) at `point` from one rotor's
-// slipstream. The freestream itself is NOT included; the caller adds it once,
-// however many rotors it sums.
+// slipstream. The air's own motion is NOT included: for the world-frame air
+// velocity, the caller adds the medium's WIND once, however many rotors it
+// sums. (That is the wind, not `freestream`: the two differ when the hub moves.)
 //
 // TOTAL. It never returns a NaN or an infinity, and it returns exactly zero
 // for:
