@@ -22,5 +22,5 @@
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
 | `PHY-1` | (moved) The gaussian draw's CPU↔GPU band at its source | — | moved to Core 2026-10-01 as `CORE-3` (`../core/00-decisions.md`), because it is a band on an RNG primitive. The Dryden, IMU and GNSS bands cite it | `01-charter.md` §4.1 |
-| `PHY-2` | Grades of the physics modules, per backend: the table in `04-verification.md` | — | proposed | this library |
-| `PHY-3` | A field or effect that stepping does not read may be added at best-effort grade, as a pure function of published state. It may not be read by stepping until it declares a grade that meets the world's requirement, and for reference grade that means a CPU implementation with a golden. This is `charter P7`'s promotion rule, in engine-model terms | — | proposed; first instance: `vehicles::rotor_wake_velocity` | `../plans/2026-10-01-drone-sim-box-design.md` |
+| `PHY-2` | Grades of the physics modules, per backend: the table in `04-verification.md` | signed 2026-10-02 (user, via lead) | live | this library |
+| `PHY-3` | A field or effect that stepping does not read may be added at best-effort grade, as a pure function of published state. It may not be read by stepping until it declares a grade that meets the world's requirement, and for reference grade that means a CPU implementation with a golden. This is `charter P7`'s promotion rule, in engine-model terms | signed 2026-10-02 (user, via lead) | live; first instance: `vehicles::rotor_wake_velocity` | `../plans/2026-10-01-drone-sim-box-design.md` |

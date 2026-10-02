@@ -20,9 +20,9 @@
 4. **CPU↔GPU parity** (`engine/testing/parity.hpp`): per-scenario bands on positions, velocities, orientations, angular rates and specific force, compared abs-or-rel. Bands are **measured, then pinned with margin and device provenance**, and **never widened** to admit a new pass. Several bands are pinned at zero because those quantities are bit-identical across backends: every `bounce` quantity, and the contact pair's positions, velocities and rates.
 5. **Invariance:** solo vs in-set batching, workgroup sizes `{32, 64, 128}`, and CPU↔Vulkan snapshot restore are bit-identical (`test_gpu_invariance.cpp`).
 
-**GPU parity runs on a developer machine only.** No gate in this repository has a GPU. Every `Gpu*` test skips without a device, so a green run without one says nothing about agreement. Anyone adding or touching a GPU physics path runs `ctest -L gpu` on real hardware and says so in the commit.
+**GPU parity runs only where the gate has a device.** On the reference box all `gpu` tests run inside `scripts\test.ps1`. Every `Gpu*` test skips without a device, so a green run on a machine without one says nothing about agreement. Anyone adding or touching a GPU physics path runs `ctest -L gpu` on real hardware and says so in the commit.
 
-## Grades (`PHY-2`, proposed)
+## Grades (`PHY-2`)
 
 `L3`/`L4`: reference needs a CPU implementation and a golden; banded needs a measured band against the reference, with its record. The GPU is never a golden source.
 

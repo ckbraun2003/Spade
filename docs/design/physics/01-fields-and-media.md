@@ -19,7 +19,7 @@
 | Gust | Dryden turbulence, MIL-F-8785C low-altitude form, seeded per world | procedural | `world/medium.*` (`DrydenMedium`). Position-independent: one gust per world, advanced once per substep in MediumUpdate. The filters are discretised exactly, not by Euler |
 | Temperature | per-world constant | constant | **Not built** (named in `engine D6`) |
 | Flow velocity, pressure, fluid density | SPH (`SL8`) | solved | **Not built**; paused (below) |
-| Rotor wake (visualisation) | `vehicles::rotor_wake_velocity` | analytic, best-effort | `vehicles/rotor_wake.*`. Its one intended reader is the drone sim box's heatmap (drone plan Task 5); stepping never reads it (`PHY-3`) |
+| Rotor wake (visualisation) | `vehicles::rotor_wake_velocity` | analytic, best-effort | `vehicles/rotor_wake.*`. Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`); stepping never reads it (`PHY-3`) |
 
 Today every responder reads these through `Medium::sample(world, pos) -> {density, wind}` (`engine D6`). The interface is the point: a provider can be replaced without touching its readers.
 
