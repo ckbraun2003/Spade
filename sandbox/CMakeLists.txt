@@ -31,6 +31,9 @@ target_link_libraries(spade_sandbox PRIVATE
     spade::core
     spade::world
     spade::render
+    # The drone sim box steps a Simulation (drone_sim.hpp) -- the first scene
+    # in the sandbox that does.
+    spade::sim
 )
 
 if(SPADE_RENDER_GL)
@@ -43,7 +46,7 @@ else()
     target_compile_definitions(spade_sandbox PRIVATE SPADE_SANDBOX_HAS_GPU=0)
 endif()
 
-target_compile_features(spade_sandbox PRIVATE cxx_std_20)
+target_compile_features(spade_sandbox PRIVATE cxx_std_23)
 
 if(WIN32)
     # GetProcessMemoryInfo, for the memory figure the user asked to sit beside

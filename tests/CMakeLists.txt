@@ -282,6 +282,10 @@ if(SPADE_BUILD_SANDBOX)
         # display -- which is the entire reason those functions are not in the
         # window loop.
         test_sandbox_builder.cpp
+        # The drone sim box: the test stand's pin, the attitude controller and
+        # mixer (checked against the engine, not only against their own
+        # formulas), the accumulator cap and the rebuild carry.
+        test_sandbox_drone.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
