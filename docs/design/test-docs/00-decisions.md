@@ -15,13 +15,13 @@
 | `SL15b` (test half) | A windowed tool is tested through a headless surface; the window is a dumb shell, and logic that moves into it is a defect | signed 2026-09-17 | live. The `--headless` mode itself: Interface | 06 §5 |
 | `SL16` | "Component" means Spade's component type in this repo; "element" stays the force-element word | signed 2026-09-17 | live for Spade's half. The KAT half (KAT's own components, the AGENTS.md vocabulary leg) superseded by `../consumers.md` | 06 §8 |
 | `SL18` | Nine verification obligations for the library program, and the guard discipline: **every guard must be shown to fail under the mutation it exists to catch** | signed 2026-09-17 | live. Obligations 1–3 Core, 4 Physics, 5 Test/Docs, 6–9 Interface; the guard discipline binds every realm | 06 §7 |
-| `SPIR-V rule P1` | Every contractable float op in a parity kernel carries `NoContraction` | — (S6) | live | `engine/testing/spirv_scan.hpp`; 07 §4 rule 9 |
-| `SPIR-V rule P2` | No sum-of-products opcode (`OpDot` and kin): its accumulation order is unspecified | — (S6) | live | as `P1` |
-| `SPIR-V rule P3` | fp32 denormals preserved, declared in the module | — (S6 Task 4) | live | as `P1` |
-| `SPIR-V rule P4` | No `Int64` capability | — (S6 Task 8) | live | as `P1` |
-| `SPIR-V rule P5` | No GLSL.std.450 transcendental | — (S6 Task 8) | live | as `P1` |
-| `SPIR-V rule E1` | No `OpFDiv` in an `fp32_math` module | — (S6) | live | as `P1` |
-| `SPIR-V rule E2` | No GLSL.std.450 `Sqrt` or `InverseSqrt` in an `fp32_math` module | — (S6) | live | as `P1` |
+| `SPIR-V rule P1` | Every contractable float op in a parity kernel carries `NoContraction` | signed 2026-10-02 (user, via lead); in force since S6 | live | `engine/testing/spirv_scan.hpp`; 07 §4 rule 9 |
+| `SPIR-V rule P2` | No sum-of-products opcode (`OpDot` and kin): its accumulation order is unspecified | signed 2026-10-02 (user, via lead); in force since S6 | live | as `P1` |
+| `SPIR-V rule P3` | fp32 denormals preserved, declared in the module | signed 2026-10-02 (user, via lead); in force since S6 Task 4 | live | as `P1` |
+| `SPIR-V rule P4` | No `Int64` capability | signed 2026-10-02 (user, via lead); in force since S6 Task 8 | live | as `P1` |
+| `SPIR-V rule P5` | No GLSL.std.450 transcendental | signed 2026-10-02 (user, via lead); in force since S6 Task 8 | live | as `P1` |
+| `SPIR-V rule E1` | No `OpFDiv` in an `fp32_math` module | signed 2026-10-02 (user, via lead); in force since S6 | live | as `P1` |
+| `SPIR-V rule E2` | No GLSL.std.450 `Sqrt` or `InverseSqrt` in an `fp32_math` module | signed 2026-10-02 (user, via lead); in force since S6 | live | as `P1` |
 
 The SPIR-V rules share letters with `charter P1`–`P8` and with `SL17`'s phases. Always cite them as `SPIR-V rule Pn`.
 
@@ -29,17 +29,17 @@ The SPIR-V rules share letters with `charter P1`–`P8` and with `SL17`'s phases
 
 ## Test/Docs rulings
 
-Harvested from the KAT-era standing rules (07 §4), `CONTRIBUTING.md` and the lessons (`08-lessons.md`). Proposed until the user signs them.
+Harvested from the KAT-era standing rules (07 §4), `CONTRIBUTING.md` and the lessons (`08-lessons.md`). Signed by the user on 2026-10-02, relayed by the lead.
 
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
-| `TD-1` | **Goldens.** Understand why a golden moved before regenerating it. The new value carries written provenance in the golden's own record (a scenario's provenance block, a manifest's changelog key). Never loosen a golden, never keep per-platform goldens, never take one from the GPU. Regeneration is routine and governed, not rare | — | proposed | 07 §4 rule 4 and its 2026-09-17 correction; `CONTRIBUTING.md` |
-| `TD-2` | **Bands.** A tolerance band is measured, then pinned with margin, with the device and toolchain it was measured on. It is never widened to make a failure pass without a root cause; a band that cannot be met is a grade change (`L3`), not a wider band | — | proposed | 07 §4 rule 8; `SL8` |
-| `TD-3` | **Bit-portability.** No libm transcendental on a path that feeds state or a digest: use `core/fp32_math`. Enforced by the source-scan canary on the CPU and the SPIR-V rules on the GPU | — | proposed | 07 §4 rules 1, 9; `08-lessons.md` §1.1–1.2 |
-| `TD-4` | **Independent expectations.** A guard's expected value comes from a source independent of the thing it checks. One read off the checked thing is a change detector and must say so | — | proposed | `08-lessons.md` §2.4 |
-| `TD-5` | **Absence fails.** A test that cannot find its subject fails. It may skip only for an environmental absence it names (no GPU, an opt-in sweep), and a missing item inside a present tree is still a failure | — | proposed | `08-lessons.md` §6; commit `9387c75` |
-| `TD-6` | **Device-gated tests.** A test that needs a GPU lives in a `Gpu*` suite (so it gets the `gpu` label) and begins with the device check. Whoever adds or changes one runs it on a device and says so in the commit. GPU coverage is cited as developer-machine-only | — | proposed | 07 §4 rule 14; `tests/CMakeLists.txt` header |
-| `TD-7` | **The gate.** A change is green when `scripts\test.ps1` is green on both presets. Builds and tests run in the foreground; `spade_tests` is never run directly, only through ctest | — | proposed | `CONTRIBUTING.md`; `08-lessons.md` §4 |
-| `TD-8` | **Measurements carry their provenance.** A test count names its build tree and commit; skips are reported by name; a clean check states its coverage; a timing states its basis and spread | — | proposed | 07 header; `08-lessons.md` §3.1, §3.10, §6 |
-| `TD-9` | **One invariant, one site.** An invariant is maintained where it is established and nowhere else, so a mutation can reach it | — | proposed | 07 §4 rule 13; `08-lessons.md` §2.1 |
-| `TD-10` | **Labels.** The ctest labels are `spade` (every test) and `gpu` (device-executing `Gpu*` suites). No tier labels until Spade has a second tier; the KAT-era `T0` on every test is dropped, since nothing here selected it | — | proposed | restructure plan R4 item 3 |
+| `TD-1` | **Goldens.** Understand why a golden moved before regenerating it. The new value carries written provenance in the golden's own record (a scenario's provenance block, a manifest's changelog key). Never loosen a golden, never keep per-platform goldens, never take one from the GPU. Regeneration is routine and governed, not rare | signed 2026-10-02 (user, via lead) | live | 07 §4 rule 4 and its 2026-09-17 correction; `CONTRIBUTING.md` |
+| `TD-2` | **Bands.** A tolerance band is measured, then pinned with margin, with the device and toolchain it was measured on. It is never widened to make a failure pass without a root cause; a band that cannot be met is a grade change (`L3`), not a wider band | signed 2026-10-02 (user, via lead) | live | 07 §4 rule 8; `SL8` |
+| `TD-3` | **Bit-portability.** No libm transcendental on a path that feeds state or a digest: use `core/fp32_math`. Enforced by the source-scan canary on the CPU and the SPIR-V rules on the GPU | signed 2026-10-02 (user, via lead) | live | 07 §4 rules 1, 9; `08-lessons.md` §1.1–1.2 |
+| `TD-4` | **Independent expectations.** A guard's expected value comes from a source independent of the thing it checks. One read off the checked thing is a change detector and must say so | signed 2026-10-02 (user, via lead) | live | `08-lessons.md` §2.4 |
+| `TD-5` | **Absence fails.** A test that cannot find its subject fails. It may skip only for an environmental absence it names (no GPU, an opt-in sweep), and a missing item inside a present tree is still a failure | signed 2026-10-02 (user, via lead) | live | `08-lessons.md` §6; commit `9387c75` |
+| `TD-6` | **Device-gated tests.** A test that needs a GPU lives in a `Gpu*` suite (so it gets the `gpu` label) and begins with the device check. Whoever adds or changes one runs it on a device and says so in the commit. GPU coverage is cited as developer-machine-only | signed 2026-10-02 (user, via lead) | live | 07 §4 rule 14; `tests/CMakeLists.txt` header |
+| `TD-7` | **The gate.** A change is green when `scripts\test.ps1` is green on both presets. Builds and tests run in the foreground; `spade_tests` is never run directly, only through ctest | signed 2026-10-02 (user, via lead) | live | `CONTRIBUTING.md`; `08-lessons.md` §4 |
+| `TD-8` | **Measurements carry their provenance.** A test count names its build tree and commit; skips are reported by name; a clean check states its coverage; a timing states its basis and spread | signed 2026-10-02 (user, via lead) | live | 07 header; `08-lessons.md` §3.1, §3.10, §6 |
+| `TD-9` | **One invariant, one site.** An invariant is maintained where it is established and nowhere else, so a mutation can reach it | signed 2026-10-02 (user, via lead) | live | 07 §4 rule 13; `08-lessons.md` §2.1 |
+| `TD-10` | **Labels.** The ctest labels are `spade` (every test) and `gpu` (device-executing `Gpu*` suites). No tier labels until Spade has a second tier; the KAT-era `T0` on every test is dropped, since nothing here selected it | signed 2026-10-02 (user, via lead) | live | restructure plan R4 item 3 |

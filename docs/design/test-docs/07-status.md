@@ -1,6 +1,6 @@
 # Test/Docs — status
 
-**The only place that describes what exists today in this realm.** Checked against the tree at `df33f09` (2026-10-02) unless a row says otherwise. Every count carries its tree and commit (`TD-8`).
+**The only place that describes what exists today in this realm.** Checked against master at `332a186` (2026-10-02) unless a row says otherwise. The test counts were measured at `df33f09`; no `TEST()` was added or removed between the two (source diff), and the lead's final run re-measures them. Every count carries its tree and commit (`TD-8`).
 
 ## Baseline (restructure plan R5)
 
@@ -38,3 +38,9 @@
 
 - **The consumer smoke** (`tests/consumer/`) runs nowhere (`../backlog.md`, with Interface).
 - **Test discovery writes into the source root.** `gtest_discover_tests()` runs in the tests' `WORKING_DIRECTORY` (the source root), so CMake 4.x leaves `cmake_test_discovery_<hash>.json` there. It is ignored (`.gitignore`); moving the working directory would change every test's CWD, and is not worth that today.
+
+## What's next
+
+1. **The consumer-smoke leg.** Make `tests/consumer/` a repeatable check against an installed prefix, for both `SPADE_VULKAN=ON` and `OFF`. Core's `tasks/core-offtree.ps1` already does the OFF half (configure, build libraries, install, build and run the consumer), but it lives in untracked scratch with hard-coded paths. Promote it into `scripts/`, add the ON leg, and say how often it runs. This closes the backlog row.
+2. **The two open decisions above:** a second toolchain for the golden cross-check, and `engine D11`'s "own CI legs".
+3. **The GPU coverage policy.** All 65 GPU tests run on this machine, and nowhere else. With no CI, the gate is this machine, so decide whether the gate requires a device (a missing device fails the run) or keeps skipping and names the skips (`TD-6`, `TD-8`). Either way, write it into `02-build-and-gate.md`.
