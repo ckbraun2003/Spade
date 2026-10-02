@@ -45,7 +45,7 @@
   
   Owed by R4 item 4.
 - **KAT references** in `scripts/`, `CMakePresets.json`, `tests/CMakeLists.txt`, `tests/bench/baselines.json` (`_meta`), `cmake/SpadeSlang.cmake` and `scripts/pre-push-guard.sh`. Owed by R4 item 3 and the R2 comment sweep.
-- **`T0` label.** Every test carries `T0`, a KAT tier name. Decide whether to keep it and define it locally (R4 item 3).
+- **`T0` label.** Dropped on branch `test-docs/cleanup` (`TD-10`); the baseline above was measured with it.
 - **Stray file.** Test discovery writes `cmake_test_discovery_<hash>.json` into the source root. Point discovery's working directory into the build tree, or ignore the file.
 - **The pre-push hook.** It is installed and matches the tracked copy apart from line endings. The tracked copy checks out as CRLF (`core.autocrlf=true`), so a reinstall must strip CRs (R4 item 3).
 - **A link into a moved file.** `docs/v1-transfer-register.md` cites `docs/design/06-sandbox-and-v1.md`, which is now under `superseded/2026-09-consolidation/`.

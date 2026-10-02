@@ -364,8 +364,8 @@ template <class T>
 
 // SPADE_ENGINE_DIR / SPADE_TESTS_DIR: absolute paths baked in at configure
 // time (tests/CMakeLists.txt), the same discipline SPADE_GOLDEN_DIR already
-// uses -- see that compile definition's own comment for why (the kat
-// testing spec's no-CWD rule: a data location a test MUST find cannot be
+// uses -- see that compile definition's own comment for why (the no-CWD
+// rule: a data location a test MUST find cannot be
 // CWD-relative).
 
 // Bullet 1 -- FIXED-STEP: no wall-clock symbol anywhere under engine/

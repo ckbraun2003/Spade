@@ -115,11 +115,12 @@ TEST(TransferRegister, EveryRowIsDispositioned) {
 // and the guard sided with the file over the authority for as long as both
 // were wrong together.
 //
-// It cannot be made self-checking. The spec that enumerates the systems lives
-// in design-specs/, which is gitignored -- absent from a fresh clone and from
-// CI -- so no test can read it. v1-transfer-register.md is therefore the
-// AUTHORITY rather than a copy (its header says so), and this count is a human
-// commitment maintained beside it, not a derived fact. Adding a row means
+// It cannot be made self-checking. The spec that enumerated the systems is now
+// a frozen record (docs/design/superseded/2026-09-consolidation/
+// 06-sandbox-and-v1.md), and tests do not read the design library.
+// v1-transfer-register.md is therefore the AUTHORITY rather than a copy (its
+// header says so), and this count is a change detector maintained beside it,
+// not a derived fact (docs/design/test-docs/00-decisions.md, TD-4). Adding a row means
 // editing both, deliberately, in the same change.
 TEST(TransferRegister, HasEveryRowTheSpecEnumerates) {
     const std::vector<Row> rows = parse_transfer_register();

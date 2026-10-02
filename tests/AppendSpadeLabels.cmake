@@ -1,10 +1,16 @@
-# CTest TEST_INCLUDE_FILES script (S5 T9 ticket B) -- sets the "spade" and
-# "T0" ctest labels on every test spade_tests's gtest_discover_tests() call
-# (CMakeLists.txt, this directory) registered. See that call's own comment
-# for WHY this lives in a separate file instead of gtest_discover_tests()'s
-# own PROPERTIES keyword: PROPERTIES's LABELS value needs two items in one
-# property, and GoogleTestAddTests.cmake's own internal forwarding (upstream
-# CMake, not this project) silently flattens and drops the second one.
+# CTest TEST_INCLUDE_FILES script (S5 T9 ticket B) -- sets the "spade" ctest
+# label on every test spade_tests's gtest_discover_tests() call
+# (CMakeLists.txt, this directory) registered, and "spade;gpu" on the
+# device-executing ones (below). See that call's own comment for WHY this
+# lives in a separate file instead of gtest_discover_tests()'s own PROPERTIES
+# keyword: a LABELS value with two items in one property ("spade;gpu") is
+# silently flattened by GoogleTestAddTests.cmake's own internal forwarding
+# (upstream CMake, not this project), which drops the second one.
+#
+# THE LABEL SET IS "spade" AND "gpu", NOTHING ELSE (docs/design/test-docs/
+# 00-decisions.md, TD-10). Every test also carried "T0" until 2026-10-01: a
+# tier name from the KAT monorepo's test tiers, which nothing in this
+# repository selects. A tier label comes back when Spade has a second tier.
 #
 # ORDERING THIS RELIES ON: CTest evaluates the directory's TEST_INCLUDE_FILES
 # list in append order. gtest_discover_tests(spade_tests ...) appends ITS OWN
@@ -14,7 +20,7 @@
 # already holds the discovered list -- gtest_discover_tests()'s default
 # TEST_LIST name, "<target>_TESTS" (this call site never overrides TEST_LIST).
 if(spade_tests_TESTS)
-    set_tests_properties(${spade_tests_TESTS} PROPERTIES LABELS "spade;T0")
+    set_tests_properties(${spade_tests_TESTS} PROPERTIES LABELS "spade")
 endif()
 
 # S5 final-review fix wave (I2): CMakeLists.txt's gtest_discover_tests() call
@@ -56,7 +62,7 @@ endif()
 # gpu label (S6 Task 1) -- NAME-PREFIX RULE: any registered test whose ctest
 # name (gtest_discover_tests's own "Suite.Test" convention) starts with
 # "Gpu" -- i.e. its test suite is Gpu* ("Gpu*.*") -- gets "gpu" appended to
-# its label set, on top of the blanket "spade;T0" every test above already
+# its label set, on top of the blanket "spade" every test above already
 # carries. These are the DEVICE-EXECUTING tests (global constraint: "Every
 # device-executing test begins if (!compute::vulkan_available())
 # GTEST_SKIP()"); "gpu" is what lets a caller select/exclude them
@@ -73,11 +79,11 @@ endif()
 # whole file is TEST_INCLUDE_FILES content, re-evaluated by CTest on EVERY
 # invocation within a build tree, not a one-time configure step. APPEND
 # semantics would re-append "gpu" onto the SAME already-registered test's
-# LABELS property on each subsequent run, growing "spade;T0;gpu" into
-# "spade;T0;gpu;gpu;gpu;..." across repeated invocations -- a real bug this
+# LABELS property on each subsequent run, growing "spade;gpu" into
+# "spade;gpu;gpu;gpu;..." across repeated invocations -- a real bug this
 # file's own header comment on the FIRST set_tests_properties() call
 # documents CTest's LABELS handling is fragile enough to warrant sidestepping
-# outright, not just here. Computing the FULL label string ("spade;T0;gpu")
+# outright, not just here. Computing the FULL label string ("spade;gpu")
 # once below and passing it to set_tests_properties(), which ASSIGNS
 # (replaces) rather than appends, produces the identical result on the 1st
 # and the 100th run in the same build tree.
@@ -89,7 +95,7 @@ if(spade_tests_TESTS)
         endif()
     endforeach()
     if(_spade_gpu_tests)
-        set_tests_properties(${_spade_gpu_tests} PROPERTIES LABELS "spade;T0;gpu")
+        set_tests_properties(${_spade_gpu_tests} PROPERTIES LABELS "spade;gpu")
 
         # TIMEOUT 180 on the device-executing set (S6 Task 4), same posture and
         # same mechanism as the Fp32Exp.FullDomainSweep override above: a

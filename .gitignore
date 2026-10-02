@@ -31,18 +31,18 @@ lib/
 # for that argument to happen.
 #
 # What these cover, since the names no longer explain themselves:
-#   build-host/ + install-host/  scripts/spade-prefix.ps1's scratch build and
-#                                the cmake --install prefix dronesim/spade's
-#                                find_package(spade) resolves against
-#   build-ci/ + install-ci/      the docker gate's own spade leg + its
-#                                out-of-tree consumer smoke
 #   build-ninja/<preset>/        scripts/build.ps1's dev-loop trees
-#
-# NOTE: the ROOT .gitignore also lists spade/build-ci/ and spade/build-ninja/
-# individually. Those entries are now redundant rather than wrong, and they
-# are not mine to remove.
+#   build-<anything>/            hand-configured trees (-DSPADE_VULKAN=OFF,
+#                                a consumer-smoke build, ...)
+#   install-<anything>/          cmake --install prefixes, e.g. the one an
+#                                out-of-tree consumer resolves find_package
+#                                (spade) against
 build-*/
 install-*/
+# gtest_discover_tests() runs discovery with the tests' WORKING_DIRECTORY,
+# which is the source root (tests/CMakeLists.txt), and CMake 4.x leaves its
+# --gtest_output file there: a build artifact, never source.
+/cmake_test_discovery_*.json
 CMakeCache.txt
 CMakeFiles/
 *.cmake
@@ -78,3 +78,11 @@ Release/
 # OS
 .DS_Store
 Thumbs.db
+
+# Process residue: per-checkout session scratch (plans, ledgers, local specs).
+# Anything another session or a fresh clone must see belongs in a tracked
+# file instead (docs/design/test-docs/03-documentation.md).
+tasks/
+.superpowers/
+docs/superpowers/
+design-specs/

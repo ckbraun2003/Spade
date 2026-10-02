@@ -1,0 +1,4 @@
+# Shell scripts run under sh, which rejects CR line endings. scripts/
+# pre-push-guard.sh is installed by copying it to .git/hooks/pre-push, so it
+# must check out LF even where core.autocrlf=true.
+*.sh text eol=lf

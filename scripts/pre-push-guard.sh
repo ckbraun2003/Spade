@@ -1,34 +1,22 @@
 #!/bin/sh
 # scripts/pre-push-guard.sh -- refuse a push without the owner's word.
 #
-# WHY THIS REPOSITORY NEEDS ONE
+# WHY A HOOK AND NOT A SENTENCE
 # -----------------------------
-# Spade was extracted from the Kat monorepo on 2026-09-28. Kat enforces "nothing
-# leaves this box without the owner's direct word" MECHANICALLY, with a hook of
-# this shape armed at .git/hooks/pre-push. On the day of the split this repository
-# inherited the rule and not the enforcement -- so the same rule was a guard in
-# one repo and a convention in the other, and this is the one that now holds the
-# engine.
+# The rule is "nothing leaves this machine without the owner's direct word".
+# Written down, it has failed before: a session following a stored step ("push
+# once green") that had been superseded exported twenty-four commits while the
+# rule sat in prose and in roughly ten restated messages. Reading a rule and
+# holding a procedure are different faculties, and under load the procedure
+# wins. A push that is not refused looks exactly like a push that was allowed,
+# so the refusal has to be mechanical.
 #
-#   A RULE WITH A GUARD IN ONE REPOSITORY AND NO GUARD IN THE OTHER FAILS THE
-#   FIRST TIME SOMEONE WORKS IN THE UNGUARDED ONE -- and it fails silently,
-#   because a push that is not refused looks exactly like a push that was allowed.
-#
-# Kat's own version of this file records what it cost to learn: twenty-four
-# commits reached origin/master unauthorised while the rule existed in prose and
-# in roughly ten restated messages. The realm that pushed was following a stored
-# step -- "push once green" -- that had been superseded and never updated. Reading
-# a rule and holding a procedure are different faculties, and under load the
-# procedure wins. That is why this is a hook and not a sentence.
-#
-# WHY A SEPARATE VARIABLE FROM KAT'S
-# ----------------------------------
-# Kat releases on KAT_PUSH_AUTHORIZED; this releases on SPADE_PUSH_AUTHORIZED.
-# Deliberately NOT shared. One variable would mean that authorising a push in one
-# repository silently authorises a push in the other from the same shell -- and
-# these two repositories now sit side by side, worked on in the same session, with
-# a remote each. The estate's rule is that an authorisation covers THE PUSH IT WAS
-# ABOUT; a shared override would quietly widen every authorisation to two repos.
+# WHY ITS OWN VARIABLE
+# --------------------
+# This releases on SPADE_PUSH_AUTHORIZED and nothing else. Other repositories
+# worked from the same shell -- a consumer's, say -- use their own variables,
+# deliberately not shared: an authorisation covers THE PUSH IT WAS ABOUT, and a
+# shared override would quietly widen every authorisation to several repos.
 #
 # HOW TO PUSH WHEN THE OWNER HAS ACTUALLY SAID SO
 # -----------------------------------------------
@@ -39,9 +27,9 @@
 #
 # EVERY BRANCH, NOT JUST master
 # -----------------------------
-# The rule is about the BOX, not about master. Kat's first version protected only
-# master and main, and a realm branch push exported twelve commits with no prompt,
-# no list and no exit code. The asymmetry decides it: refusing an authorised push
+# The rule is about the BOX, not about master. A guard that protected only master
+# and main once let a realm branch push export twelve commits with no prompt, no
+# list and no exit code. The asymmetry decides it: refusing an authorised push
 # costs one variable on one command; allowing an unauthorised export is the thing
 # the rule exists to prevent.
 #
@@ -65,8 +53,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # WHAT "WOULD EXPORT" MEANS. `local_sha --not --remotes` is commits reachable
     # from what is being pushed and reachable from NO remote-tracking ref -- what
-    # has genuinely never left this box. Kat's version learned this the hard way:
-    # using the bare local_sha for a new branch degenerated to FULL HISTORY and
+    # has genuinely never left this box. An earlier version learned this the hard
+    # way: using the bare local_sha for a new branch degenerated to FULL HISTORY and
     # printed 197 KB of stderr where the true answer was six commits. It never let
     # a push through; it failed toward ILLEGIBILITY, which defeats the reason this
     # prints a list rather than a count. Too much output and no output are both
@@ -81,8 +69,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  PUSH REFUSED -- $remote_name/$branch" >&2
     echo "" >&2
     echo "  Nothing leaves this machine without the owner's direct word." >&2
-    echo "  This repository holds the engine; Kat consumes it as a library, so a" >&2
-    echo "  push here changes what every consumer resolves." >&2
+    echo "  This repository holds the engine, and consumers build against it, so" >&2
+    echo "  a push here changes what every consumer resolves." >&2
     echo "" >&2
     if [ -z "$range" ]; then
         echo "  This push DELETES $branch on $remote_name. It exports no commits," >&2
@@ -99,9 +87,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  If the owner has said so for THIS push, run it once as:" >&2
     echo "      SPADE_PUSH_AUTHORIZED=1 git push $remote_name $branch" >&2
     echo "" >&2
-    echo "  Do not export that variable, and do not reuse Kat's" >&2
-    echo "  KAT_PUSH_AUTHORIZED -- the two repositories are authorised separately" >&2
-    echo "  on purpose, so one word cannot release both." >&2
+    echo "  Do not export that variable, and do not reuse another repository's" >&2
+    echo "  push variable -- each repository is authorised separately on purpose," >&2
+    echo "  so one word cannot release two." >&2
     echo "" >&2
     exit 1
 done

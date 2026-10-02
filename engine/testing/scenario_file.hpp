@@ -371,7 +371,7 @@ template <std::unsigned_integral T>
     // always writes it with dec(), never a hex literal, so world_from_yaml()
     // never needs to read one back. A scenario file is never written by this
     // engine (scenario_file.hpp is read-only test support, "never installed
-    // or shipped" -- docs/dev/testing.md), so its `seed`/`expected_digest`
+    // or shipped" -- docs/design/test-docs/01-verification.md), so its `seed`/`expected_digest`
     // fields are hand-authored, and hex is the natural spelling for a value a
     // human reads as bits (a digest, a seed transcribed from a debug print)
     // -- hence the accommodation exists on THIS side of the copy and not the

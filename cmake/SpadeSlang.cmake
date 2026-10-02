@@ -39,10 +39,9 @@
 #      separate cmake process per build anyway, so it buys no configure-time
 #      integration over a python process -- the supposed "no extra dependency"
 #      advantage is the only real one, and see 4.
-#   4. PYTHON IS ALREADY A HARD DEPENDENCY OF THIS REPOSITORY'S TOOLING
-#      (kat's trainer, its scripts, its CI), it is present on this box and on
-#      both GitHub runners, and find_package(Python3 COMPONENTS Interpreter) is
-#      confined to the SPADE_VULKAN branch -- so a SPADE_VULKAN=OFF configure,
+#   4. PYTHON IS ALREADY PRESENT WHERE THIS REPOSITORY BUILDS (this box, and
+#      the hosted runners while they existed), and find_package(Python3
+#      COMPONENTS Interpreter) is confined to the SPADE_VULKAN branch -- so a SPADE_VULKAN=OFF configure,
 #      the documented escape hatch for an environment that cannot even fetch
 #      the toolchain, never looks for it.
 #

@@ -5,7 +5,7 @@
 ## The suite
 
 - **One executable, one ctest case per test.** `spade_tests` (GoogleTest) is registered by `gtest_discover_tests` in `tests/CMakeLists.txt`, so every `TEST()` is its own ctest case: filterable, timed and counted. Run it through `scripts\test.ps1`, never directly (`TD-7`).
-- **Labels.** Every test carries `spade` and `T0`, and a test in a `Gpu*` suite also gets `gpu` (`tests/AppendSpadeLabels.cmake`). Select or exclude with `ctest -L gpu` / `-LE gpu`. Whether `T0` stays is open (`07-status.md`).
+- **Labels** (`TD-10`). Every test carries `spade`, and a test in a `Gpu*` suite also gets `gpu` (`tests/AppendSpadeLabels.cmake`). Select or exclude with `ctest -L gpu` / `-LE gpu`.
 - **Timeouts.** 60 s per test. Overrides are per test and carry their reason beside them: the opt-in full `exp` sweep (900 s), the shower-pile chaos control (180 s), `Gpu*` (180 s).
 - **Layout.** One `test_<subject>.cpp` per concern. Test support lives in `engine/testing/` (`replay.hpp`, `scenario_file.hpp`, `parity.hpp`, `spirv_scan.hpp`): header-only, compiled into the tests, never installed.
 - **Device-gated tests** follow `TD-6`. On a machine without a device they skip; nothing automated runs them today.

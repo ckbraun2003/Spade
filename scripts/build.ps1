@@ -5,10 +5,9 @@
 
 .DESCRIPTION
     CMake's Ninja generator invokes cl.exe directly and does not set up the
-    MSVC compiler environment itself, so this script imports it first (same
-    vcvars64 discovery as interface/scripts/ninja-build.ps1), then configures
-    (if not already configured) and builds the requested preset from
-    CMakePresets.json.
+    MSVC compiler environment itself, so this script imports it first
+    (vswhere -> vcvars64.bat), then configures (if not already configured)
+    and builds the requested preset from CMakePresets.json.
 
     Run this in the FOREGROUND. Backgrounded builds get killed on this box.
 
@@ -21,11 +20,12 @@
     everything. One target per invocation, by design.
 
 .PARAMETER BuildDir
-    Build a tree this script did not lay out -- build-gui, for instance,
-    which is where spade_sandbox and the Vulkan-enabled tests actually live.
-    It must ALREADY be configured: the presets fix each preset's binaryDir, so
-    this script refuses to configure a directory it cannot aim a configure at,
-    rather than quietly configuring build-ninja and reporting success.
+    Build a tree this script did not lay out -- a worktree's own build
+    directory, or a tree configured with non-preset flags such as
+    -DSPADE_VULKAN=OFF. It must ALREADY be configured: the presets fix each
+    preset's binaryDir, so this script refuses to configure a directory it
+    cannot aim a configure at, rather than quietly configuring build-ninja
+    and reporting success.
 
 .PARAMETER ParallelLevel
     Compile jobs, 1..64, default 1. The box is memory-bound and its failure
@@ -36,12 +36,9 @@
     configure and full rebuild.
 
 .NOTES
-    THIS SCRIPT DRIVES build-ninja/<preset> BY DEFAULT, AND THAT IS NOT
-    THE TREE THE SPADE GUI RUNS FROM. The desktop shortcut launches
-    build-gui/bin/spade_sandbox.exe; build-ninja/release/bin has
-    never held that binary. Before -Target and -BuildDir existed, this script
-    could not be aimed there at all, which cost a coordinator a declared
-    deviation on 2026-09-20. If you are rebuilding the GUI, pass both.
+    THIS SCRIPT DRIVES build-ninja/<preset> BY DEFAULT. Any other tree --
+    a worktree's, or one configured by hand -- is reached with -BuildDir,
+    and a single target with -Target.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build.ps1
@@ -50,7 +47,7 @@
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -Preset release -Clean
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -BuildDir build-gui -Target spade_sandbox
+    powershell -ExecutionPolicy Bypass -File scripts\build.ps1 -BuildDir build-novk -Target spade_tests
 #>
 [CmdletBinding()]
 param(
@@ -63,17 +60,15 @@ param(
     # not offered here at all.
     [string] $Target,
 
-    # Build a tree this script did not lay out -- build-gui, say, which
-    # is where spade_sandbox and the GPU-enabled tests actually live. Must
-    # ALREADY be configured; see the refusal below for why.
+    # Build a tree this script did not lay out -- a worktree's, or one
+    # configured by hand. Must ALREADY be configured; see the refusal below
+    # for why.
     [string] $BuildDir,
 
     # ValidateRange, not [int]: `--parallel 0` means ALL CORES, and that is the
     # one value that must never be expressible on a box whose failure mode is
-    # a silent OOM kill. Copied from editor/scripts/ninja-build.ps1, together
-    # with its reason. Before this parameter existed the script ran a bare
-    # `cmake --build`, which is ninja's all-cores default -- the exact value
-    # the other wrapper goes out of its way to forbid.
+    # a silent OOM kill. Before this parameter existed the script ran a bare
+    # `cmake --build`, which is ninja's all-cores default.
     [ValidateRange(1,64)]
     [int] $ParallelLevel = 1,
 
@@ -111,8 +106,7 @@ if ($Clean -and (Test-Path $BuildDir)) {
 # 1. Locate ninja. Prefer PATH (winget install), then the winget package dir
 #    (PATH is only updated for NEW shells, so a freshly-installed ninja is
 #    invisible to the shell that installed it), then the copy bundled inside
-#    Visual Studio as a last resort. Mirrors
-#    interface/scripts/ninja-build.ps1's discovery logic.
+#    Visual Studio as a last resort.
 # ---------------------------------------------------------------------------
 $ninja = $null
 $onPath = Get-Command ninja -ErrorAction SilentlyContinue
@@ -140,9 +134,7 @@ if ($env:PATH -notlike "*$ninjaDir*") { $env:PATH = "$ninjaDir;$env:PATH" }
 # 2. Import the MSVC x64 environment. Ninja invokes cl.exe directly and will
 #    fail configure ("no CMAKE_CXX_COMPILER could be found") without this.
 #    vcvars64.bat only mutates its own cmd session, so run it and copy the
-#    resulting variables back into this PowerShell process. Identical logic
-#    to interface/scripts/ninja-build.ps1 -- read that script first if this
-#    ever needs to change.
+#    resulting variables back into this PowerShell process.
 # ---------------------------------------------------------------------------
 if (-not $env:VSCMD_ARG_TGT_ARCH) {
     $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
