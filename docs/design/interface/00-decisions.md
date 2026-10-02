@@ -1,0 +1,37 @@
+# Interface — decisions
+
+**Owner:** Interface. **The only place an Interface decision's status lives.** One row per ID. Statuses: `live`; `live, paused` (in force, but its work waits on the restructure); `live, blocked` (in force, and its precondition is unmet); `superseded by X`; `record` (a fact about the past); `proposed` (unsigned). Sources are in `../superseded/2026-09-consolidation/` unless noted. "06" means `06-sandbox-and-v1.md`.
+
+## Legacy rulings homed in Interface
+
+| ID | Ruling | Signed | Status | Source |
+|---|---|---|---|---|
+| `SL2` | Spade is an installable library: static-library modules with `spade::` aliases, an exported `spadeTargets` set, per-module header install and a generated `spadeConfig.cmake`, consumable out of tree by `find_package(spade CONFIG)` | signed 2026-09-17 | live | `01-charter.md` §6 |
+| `SL2a` | Spade has its own release identity: a changelog, a stated versioning policy and a README that stands alone. No registry, binary distribution or ABI promise | signed 2026-09-17 | live. The README stands alone since the 2026-09-28 split; the versioning policy is not written (`07-status.md`) | `01-charter.md` §6 |
+| `SL2b` | The sandbox may include only headers the engine installs and link only `spade::` targets. Needing more is a finding about the library, not a reason to widen an include path | signed 2026-09-17 | live. Kept by hand; its guard is not built (`07-status.md`) | `01-charter.md` §6 |
+| `SL7` (rule) | v1 may not be quarantined while it is the only implementation of anything. Every v1 system gets one of four dispositions; a silent drop is not a disposition | signed 2026-09-17 | live. The machine check is Test/Docs's half (`../../v1-transfer-register.md`, `test_transfer_register.cpp`) | 06 §1 |
+| `SL9a` | Brute-force collision: retired with reason, superseded by the sorted grid | signed 2026-09-17 | record | 06 §2.3 |
+| `SL9b` | Custom shader loading: has no meaning on a CPU rasterizer; deferred to a GPU render backend. Does not block quarantine | signed 2026-09-17 | live | 06 §2.3 |
+| `SL9c` | Velocity render mode: transferred (`DrawMode::velocity`) | signed 2026-09-17 | record. The mode is Rendering's | 06 §2.3 |
+| `SL9d` | Camera transfers as an engine component; `InputComponent` does not: input is an application concern, and the capability survives as the sandbox's camera controller (`retired-to-sandbox`) | signed 2026-09-17 | live for the input half, which is this realm's. The camera component is Core's | 06 §2.3 |
+| `SL9e` | Instancing helpers: transferred with seeded streams. Colour is not transferred: it is a render material, not a body property | signed 2026-09-17 | record. The helpers are Core's | 06 §2.3 |
+| `SL9f` | Barycentric wireframe: retired with reason; the CPU rasterizer draws wireframe directly | signed 2026-09-17 | record | 06 §2.3 |
+| `SL10` | The sandbox renders through the same `spade::render` entry points the tests use. No second render path, no sandbox-only shading | signed 2026-09-17 | live. The GPU path (`spade::render_gl`) is an engine module, not a sandbox path; its gaps against the CPU reference are Rendering's (`07-status.md`) | 06 §3.1 |
+| `SL11` | The window presents a buffer and hosts a UI; it is not a renderer. The seam is `TargetSink` (renamed from `Presenter` on 2026-09-18: name a seam for the type it consumes). ImGui runs on its OpenGL3 backend, as signed | signed 2026-09-17; name ruled 2026-09-18 | live. A Vulkan supersession was ruled and unruled on 2026-09-18; OpenGL3 stands | 06 §3.2; `plans/README.md` |
+| `SL12` | The sandbox is object-centric: hierarchy, inspector, add-object and add-component menus, asset browser, live render and physics controls, inspection surfaces | signed 2026-09-17 | live, paused (restructure §5). It returns as the editor spec | 06 §3.3 |
+| `SL13` | Three scene sources behind one picker: presets, test scenarios, saved sandbox scenes (JSON). The sandbox never writes `.world.yaml` or consumer recipes | signed 2026-09-17 | live, paused | 06 §3.4 |
+| `SL14a` | v1 (`src/`, `include/`, `examples/`, `assets/`, `engine/tools/viewer/`, `SPADE_BUILD_V1`) moves to `legacy/` as pure renames, not deleted. GLFW and ImGui move to the sandbox gate; GLAD leaves the build. A ratchet guard keeps it cut off. `RS10b`'s "deleted" is dead text | signed 2026-09-17 | live, blocked on `SL8` (SPH, the one open register row) | 06 §0, §4.1 |
+| `SL14b` | Each retired scene gets a successor preset, judged on three axes. Baselines come from the live v1 tools **before** quarantine; the eight v2 scenes assert bit-identical trajectories | signed 2026-09-17 | live, blocked. The P0 baselines are owed and can only be captured while v1 builds | 06 §4.2 |
+| `SL14c` | The 50,000-body fluid scene is a permanent preset and a capability target, never a parity claim | signed 2026-09-17 | live, waits on `SL8` | 06 §4.3 |
+| `SL15a` | `SPADE_BUILD_SANDBOX` defaults ON everywhere; the windowing backend is probed, not assumed, and a build without one refuses at runtime with the cause | signed 2026-09-17; amended by user ruling 2026-09-18 | live as amended. The original "CI configures OFF" clause is struck | 06 §5 |
+| `engine D10` | Strangler: v1 stays untouched as a harness until it is not the only implementation of anything. Quarantine (`SL14a`) replaces deletion as the endpoint | approved 2026-08-08 | live. v1 is present and untouched | `02-engine.md` §1 |
+| `engine D4` (template half) | "Quadrotor first" becomes the quadrotor **template**: an assembly on the public API, never linked into the core | approved 2026-08-08; reframed by the engine model 2026-10-01 | live. The quadrotor is still engine code (`vehicles/quadrotor.*`). The layer half is Physics's | `02-engine.md` §1, `../01-engine-model.md` |
+
+**Quoted here, homed elsewhere:** `SL3`–`SL6` (the object model and behaviors) are Core's; `SL8` (SPH) is Physics's; `SL15b` (headless is the test surface), `SL16` and `SL18` (the nine verification obligations) are Test/Docs's; `RS1`–`RS15` are Rendering's; `SL1` and `SL17` are the charter's.
+
+## Interface rulings
+
+| ID | Ruling | Signed | Status | Source |
+|---|---|---|---|---|
+| `INT-1` | The sandbox's default scene is the drone sim box: a quadrotor on a CPU test stand, flown in attitude through the engine's rotor model, with an analytic air-field heatmap. The builder stays reachable as `--scene builder`, and `--smoke` stays on it. User-directed exception to the restructure pause | approved in conversation 2026-10-01 | live, being built (`07-status.md`) | `../plans/2026-10-01-drone-sim-box-design.md` |
+| `INT-2` | A control that changes a Simulation's configuration rebuilds it debounced (never while a widget is held) and carries the state that survives the change. A refused change keeps the running simulation, shows the reason, and puts the control back to what is running | — | proposed; first instance: the drone sim box's physics panel | this library |
