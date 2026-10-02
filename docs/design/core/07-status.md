@@ -1,6 +1,6 @@
 # Core — status: specified vs built
 
-**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`8009587`** (2026-10-02) for the rows Core's merges changed. The only measured results are the branch runs named in a row, each with its tree.
+**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`3a48c4d`** (2026-10-02) for the rows Core's merges changed. The only measured results are the branch runs named in a row, each with its tree.
 
 ## Specified vs built
 
@@ -32,10 +32,9 @@
 
 ## Debt
 
-**Defects (2026-10-01):**
-- A `SPADE_VULKAN=OFF` install ships `sim/simulation.hpp` without the `compute/` headers it includes. Fixed on branch `core/vulkan-off-install`, awaiting its own OFF-tree build. (The behavior refusal and the barrier shortfall merged as `CORE-1` and `CORE-2`.)
+**Defects (2026-10-01):** none open. All three are on master with red-then-green evidence: the behavior refusal (`CORE-1`, `ceb4aef`), the barrier shortfall (`CORE-2`, `c7a36a4`), and the `SPADE_VULKAN=OFF` install, which now ships the three `compute/` headers `sim/simulation.hpp` includes (`3a48c4d`). The install fix was verified by hand: with Vulkan off, `tests/consumer` failed to compile against master's install (`C1083`, `compute/backend.hpp`) and built and ran against the fix. No gate runs that check yet (`../backlog.md`, consumer smoke).
 
-**Code that disagrees with itself:** Core's own stale comments were corrected in `8009587`. What remains is outside Core's code: `CONTRIBUTING.md` still says the state arrays are "frozen at 18" and that adding one moves `kSnapshotVersion`, and `README.md` still says "18-entry walk" (Test/Docs, restructure R4).
+**Code that disagrees with itself:** none known. Core's stale comments were corrected in `8009587`, and `CONTRIBUTING.md`/`README.md` no longer carry the "frozen at 18" wording.
 
 **Deferred on purpose:**
 - `fnv1a64` belongs in a `core/hash.hpp`. It was left in `state/snapshot.hpp` because four golden digests depend on its output.
