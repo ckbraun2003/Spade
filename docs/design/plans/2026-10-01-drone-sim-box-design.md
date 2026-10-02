@@ -61,7 +61,7 @@
 **Rendering (GL path and CPU fallback, no engine change).**
 - **Drone parts:** a body box, four arm boxes (the +X nose arm coloured differently) and four rotor discs (thin cylinders). Each part's `DrawItem` is `pose × part_offset`, built from `quadrotor_arm_offset`.
 - **Heatmap slice:**
-  - **Placement:** a vertical plane through the drone that always faces the camera horizontally. It is 2 m wide and 2.5 m tall, extending further below the drone for the downwash.
+  - **Placement:** the body plane through one pair of opposite rotors, containing the thrust axis and that arm. Of the two arm pairs, it uses the one whose plane faces the camera more squarely. It is 2 m wide and 2.5 m tall, extending further below the drone along the thrust axis for the downwash. *(Amended 2026-10-02 by the lead after Physics' review: the original "vertical plane facing the camera" missed both plumes whenever the camera was 28–62° from an arm, so the downwash vanished every 90° of orbit. With the body plane, the plumes are always in-plane, at any attitude, and the plane is never more than 45° off facing the camera.)*
   - **Cells:** 64 × 64 instances of one double-sided quad.
   - **Colour:** each cell takes `material_override = palette_base + bin(|v|)`, using 32 unlit viridis-style palette materials appended once after the builder materials.
   - **Speed range:** auto, from 0 to the maximum, with a manual override.
