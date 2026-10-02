@@ -455,6 +455,29 @@ TEST(SandboxBuilderMesh, EveryPrimitiveIsAUnitShape) {
     }
 }
 
+// EVERY TRIANGLE FACES OUT. Both shading paths light by the stored normal and
+// the CPU path culls by screen winding, so an inward-wound primitive is lit
+// from the wrong side and drawn from the inside. The sphere and cylinder were
+// wound inward until 2026-10-02, and the sphere's pole caps were zero-area
+// triangles with NaN normals; nothing noticed, because the GL path's sun was
+// also inverted and the two errors cancelled. A degenerate triangle fails here
+// too: its winding is zero and its normal is not a number.
+TEST(SandboxBuilderMesh, EveryTriangleFacesOutward) {
+    const spade::render::MeshData meshes[3] = {make_box_mesh(), make_sphere_mesh(), make_cylinder_mesh()};
+    for (int k = 0; k < 3; ++k) {
+        const spade::render::MeshData& m = meshes[k];
+        ASSERT_FALSE(m.indices.empty());
+        for (size_t t = 0; t + 2 < m.indices.size(); t += 3) {
+            const glm::vec3 a = m.positions[m.indices[t]];
+            const glm::vec3 b = m.positions[m.indices[t + 1]];
+            const glm::vec3 c = m.positions[m.indices[t + 2]];
+            const glm::vec3 centroid = (a + b + c) / 3.0f;  // every primitive is centred on the origin
+            ASSERT_GT(glm::dot(glm::cross(b - a, c - a), centroid), 0.0f) << "mesh " << k << " triangle " << t / 3;
+            ASSERT_GT(glm::dot(m.normals[m.indices[t]], centroid), 0.0f) << "mesh " << k << " triangle " << t / 3;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Model -> RenderScene
 // ---------------------------------------------------------------------------

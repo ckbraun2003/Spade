@@ -424,11 +424,16 @@ inline void finish(render::MeshData& m) {
             const glm::vec3 b = at(ri + 1u, si);
             const glm::vec3 c = at(ri + 1u, si + 1u);
             const glm::vec3 d = at(ri, si + 1u);
-            if (ri != 0u) {
-                detail::push_tri(m, a, b, c);
-            }
+            // Counter-clockwise seen from OUTSIDE, like the box. At the north
+            // pole a == d and at the south pole b == c, so the triangle that
+            // collapses there is the one skipped -- the two conditions were
+            // once the other way round, which left a hole at each pole and a
+            // zero-area triangle with a NaN normal in its place.
             if (ri + 1u != rings) {
-                detail::push_tri(m, a, c, d);
+                detail::push_tri(m, a, c, b);
+            }
+            if (ri != 0u) {
+                detail::push_tri(m, a, d, c);
             }
         }
     }
@@ -447,10 +452,13 @@ inline void finish(render::MeshData& m) {
     for (uint32_t si = 0; si < sectors; ++si) {
         const glm::vec3 a = ring(si, -h), b = ring(si + 1u, -h);
         const glm::vec3 c = ring(si + 1u, h), d = ring(si, h);
-        detail::push_tri(m, a, b, c);
-        detail::push_tri(m, a, c, d);
-        detail::push_tri(m, glm::vec3(0.0f, h, 0.0f), d, c);     // top cap
-        detail::push_tri(m, glm::vec3(0.0f, -h, 0.0f), b, a);    // bottom cap
+        // Counter-clockwise seen from OUTSIDE, like the box. The ring runs
+        // from +X toward +Z, so the outward side triangles are (a, c, b) and
+        // (a, d, c).
+        detail::push_tri(m, a, c, b);
+        detail::push_tri(m, a, d, c);
+        detail::push_tri(m, glm::vec3(0.0f, h, 0.0f), c, d);     // top cap, normal +Y
+        detail::push_tri(m, glm::vec3(0.0f, -h, 0.0f), a, b);    // bottom cap, normal -Y
     }
     detail::finish(m);
     return m;
