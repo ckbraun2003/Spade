@@ -2721,4 +2721,15 @@ Result<const WorldParams*> Simulation::world_params(uint32_t world_index) const 
     return &(*params)[world_index];
 }
 
+Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 pos) const {
+    const Result<const WorldParams*> params = world_params(world_index);
+    if (!params) return std::unexpected(params.error());
+    const Result<std::span<const DrydenState>> dryden = arenas_.array(dryden_id_);
+    if (!dryden) return std::unexpected(dryden.error());
+    // Paired by the same world index rebuild_views() uses, so this is the
+    // DrydenMedium the ForceElements pass builds for this world.
+    const DrydenMedium medium((*dryden)[world_index], configs_[world_index].turbulence);
+    return medium.sample(**params, pos);
+}
+
 }  // namespace spade

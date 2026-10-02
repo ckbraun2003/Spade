@@ -1301,6 +1301,15 @@ public:
     // the structural-queue application, nowhere else.
     [[nodiscard]] Result<const WorldParams*> world_params(uint32_t world_index) const;
 
+    // What the air is doing in this world at `pos`, as the ForceElements pass
+    // samples it: density from the WorldParams row, wind = the row's mean wind
+    // plus the world's current Dryden gust. Position-independent today (Dryden
+    // is a point model). A read, never an advance: it reflects the filter as
+    // the last completed step left it, on either backend (the Vulkan path reads
+    // back into the arenas after every step()). invalid_argument for a world
+    // index outside the set.
+    [[nodiscard]] Result<MediumSample> sample_medium(uint32_t world_index, glm::vec3 pos) const;
+
     // --- sensors ----------------------------------------------------------
 
     // ---------------------------------------------------------------------
