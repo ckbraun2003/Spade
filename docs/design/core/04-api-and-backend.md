@@ -15,6 +15,7 @@
 - **fp32 by default** for state and step math (`engine D2`). A module may declare fp64 as part of its grade (charter numerics note).
 - **Pass op order is part of the result.** Non-MSVC builds compile engine math with `-ffp-contract=off` so the optimizer cannot fuse a multiply-add the pinned order spells as two roundings.
 - **No libm transcendental feeds state.** `core/fp32_math` provides `log32`, `exp32`, `sin32` and `cos32`, bit-reproducible across MSVC and glibc. On the CPU, `+ - * /` and `sqrt` are IEEE-exact and stay. Kernels use the Slang port of the same functions, which adds `div32` because the device's divide is not exact. They never use vendor intrinsics.
+- **One input is banded at its source.** The GPU's gaussian draw differs from the CPU's in the last bits, because the device `sqrt` is not correctly rounded (`CORE-3`). Bands downstream of it cite `CORE-3` rather than re-deriving the cause.
 - **Authored rotations use exact spellings** (sqrt forms or correctly-rounded constants), never `glm::angleAxis`.
 
 ## The backend seam
