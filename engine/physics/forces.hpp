@@ -56,9 +56,9 @@ namespace drag_mode {
 inline constexpr uint32_t quadratic = 0u;
 
 // F_i = -c_i * |v_rel_i| * v_rel_i per BODY axis, i.e. DragBodyRow::coeffs
-// applied componentwise to the body-frame relative velocity. This is kat's
-// existing drag convention -- see apply_drag()'s doc comment in forces.cpp
-// for the configs/physics.yaml cross-check.
+// applied componentwise to the body-frame relative velocity: per-axis
+// quadratic drag, the usual small-multirotor form, whose axes do not couple.
+// See apply_drag()'s comment in forces.cpp for the frame round trip.
 inline constexpr uint32_t componentwise = 1u;
 
 }  // namespace drag_mode
@@ -105,8 +105,7 @@ inline constexpr uint32_t componentwise = 1u;
 // array.
 //
 // `mode`/`coeffs`/`area` are the drag law's own parameters -- see
-// apply_drag()'s doc comment in forces.cpp for the formulas and the
-// configs/physics.yaml cross-check.
+// apply_drag()'s doc comment in forces.cpp for the formulas and frames.
 // ---------------------------------------------------------------------------
 struct alignas(kStd430StructAlignment) DragBodyRow {
     uint32_t body_slot;      // index into the world's `bodies` span, see above
@@ -117,7 +116,7 @@ struct alignas(kStd430StructAlignment) DragBodyRow {
     float _p0;                // std430 pad -- keeps `local_orient` on row 2
     glm::quat local_orient;  // local->body rotation; unused by DragBody's own force law (see above)
     glm::vec3 coeffs;        // quadratic: coeffs.x is Cd (dimensionless), y/z unused (see drag_mode::quadratic)
-                              // componentwise: per-body-axis coefficient, kg/m (see configs/physics.yaml)
+                              // componentwise: per-body-axis coefficient, kg/m (see drag_mode::componentwise)
     float _p1;                // std430 pad
 };
 
