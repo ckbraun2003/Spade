@@ -39,6 +39,7 @@
 | **GPU colour unguarded** | The Vulkan raster's only evidence is coverage. A colour oracle is required before it is selectable (`03-verification.md`) |
 | **No agreement bands on Spade's own worlds** | `../backlog.md` |
 | **No render-cadence invariance test** | It holds by construction. A Spade-side test is owed (`RS13`) |
+| **GL does not cull back faces** | `SR-13` says shaded mode culls back faces, and the CPU path does. `GlRenderer` never enables `GL_CULL_FACE`. So a mesh wound inward still draws on GL, lit through its inverted normals, while the CPU culls its near faces. That is how the sandbox builder's inward-wound sphere and cylinder went unnoticed on GL: their inverted normals cancelled the inverted sun. Interface is fixing the winding on `interface/builder-winding`, which merges before `rendering/sun-convention`. Culling on GL is still owed |
 | **GL and CPU frames differ in content** | Because GL ignores `RenderOptions`, a scene looks different on the two paths beyond numerics: no sky, ground or shadows on GL |
 | **Stale comments** | `render/shadow.cpp` and `tests/test_render_shadow.cpp` say `LightingDesc`'s default sun is `(0,1,0)`. It has been `(0.4, 0.8, 0.6)` since the VQ-A fix |
 | **KAT-citing comments in render code** | About 20 lines in `engine/render/`, `raster_background.slang` and `tests/test_render_*.cpp`. **Swept on `rendering/kat-reach`** (`e7e1039`, comment-only), awaiting build and merge |
