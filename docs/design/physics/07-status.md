@@ -40,7 +40,7 @@
 | **Rotor torque is uncorrected by inflow and ground** | Thrust is corrected; `Q = k_Q ω²` is not, so `Q` is not a power budget. Documented in `rotor.hpp`; it waits on BEMT |
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |
-| **KAT-citing comments in physics code** | `physics/forces.cpp`, `forces.hpp` and `tests/test_forces.cpp` cite KAT's `configs/physics.yaml` and two KAT source files for the componentwise drag convention. To be reworded in Spade's terms on a Physics branch (comment-only) |
+| **KAT-citing comments in physics code** | `physics/forces.cpp`, `forces.hpp` and `tests/test_forces.cpp` cite KAT's `configs/physics.yaml` and two KAT source files for the componentwise drag convention. **Swept on `physics/rotor-wake`** (`34291ba`, comment-only), awaiting build and merge |
 | **GPU parity is developer-machine-only** | No gate has a device (`04-verification.md`) |
 
 ## Corrections to earlier records
