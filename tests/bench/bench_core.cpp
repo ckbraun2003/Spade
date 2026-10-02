@@ -2,8 +2,7 @@
 //
 // spade_bench (see tests/CMakeLists.txt) is a standalone executable,
 // NOT registered with ctest / gtest_discover_tests -- it is not part of the
-// "spade" or "T0" CTest label sets that CI runs, and is not expected to be
-// until S6. google-benchmark drives it because the goal here is throughput
+// "spade" CTest label set the gate runs (scripts/test.ps1). google-benchmark drives it because the goal here is throughput
 // measurement, not pass/fail assertions: correctness of
 // spade::math::integrate_orientation is covered separately (closed-form
 // comparisons in tests/test_math.cpp), this file is for "how fast."

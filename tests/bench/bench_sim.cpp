@@ -3,8 +3,7 @@
 //
 // spade_bench (see tests/CMakeLists.txt) is a standalone executable,
 // NOT registered with ctest / gtest_discover_tests -- it is not part of the
-// "spade" or "T0" CTest label sets that CI runs, and is not expected to be
-// until S6. google-benchmark drives it because the goal here is throughput
+// "spade" CTest label set the gate runs (scripts/test.ps1). google-benchmark drives it because the goal here is throughput
 // measurement, not pass/fail assertions -- exactly bench_core.cpp's policy,
 // restated for this file: correctness of everything exercised below (the
 // integrator, the broad phase, the rotor/IMU chain) is covered separately by
