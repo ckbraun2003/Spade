@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "bindings.gen.hpp"
 #include "collision_dynamic.spv.gen.hpp"
@@ -595,21 +597,24 @@ Result<void> StepRecorder::record() {
     // comment for the ruling, and note that S6 Task 7's five new lanes are on
     // the right side of it (shape/dispatch, never material).
     //
-    // A LAMBDA-DRIVEN EMIT, deliberately: the "barrier between adjacent
-    // dispatches, none after the last" rule is now stated ONCE rather than
-    // once per dispatch site, which is what keeps the sort chain from needing
-    // its own copy of it (and from getting it subtly wrong at the seam between
-    // the last sort stage and the sweep).
-    const uint32_t sort_stages = sort_stage_count();
-    chain_ = RecordedChain{.sort_stages = sort_stages};
-    // Per substep (S6 Task 8; step_recorder.hpp's header has the same tally as
-    // a table): FOUR single-dispatch slots (MediumUpdate, CollisionStatic,
-    // Integrate, SensorSynthesis) + the TWO-dispatch ForceElements chain
-    // (rotors, drag) + the CollisionDynamic chain (build + stages + sweep) +
-    // ZERO for the two inert slots.
-    const uint32_t per_substep = 4u + 2u + 2u + sort_stages;
-    const uint32_t total_dispatches = shape_.substeps * per_substep;
-    uint32_t dispatch_index = 0;
+    // BUILT AS A LIST, THEN RECORDED. The walk below appends each dispatch and
+    // each timestamp mark to `commands` in order; the loop after it records
+    // them, with a barrier after every dispatch except the last one in the
+    // list. "Which dispatch is last" is therefore read off what was actually
+    // emitted. Until 2026-10-01 it came from a hand tally of dispatches per
+    // substep that went stale when SensorSynthesis became a two-kernel chain,
+    // and the last `substeps` barriers of every recording were silently
+    // dropped. Barrier placement relative to the timestamp marks is unchanged,
+    // so the per-pass timings mean what they meant before.
+    struct Command {
+        bool is_dispatch = false;
+        uint32_t pipeline = 0;  // dispatch: PipelineSlot
+        PassParams params{};    // dispatch: its push constant
+        uint32_t groups = 0;    // dispatch: group count
+        uint32_t substep = 0;   // mark: which substep
+        uint32_t boundary = 0;  // mark: which boundary of that substep
+    };
+    std::vector<Command> commands;
 
     PassParams base{};
     base.world_count = shape_.world_count;
@@ -622,22 +627,10 @@ Result<void> StepRecorder::record() {
     base.grid_segment_slots = grid_.segment_slots;
 
     const auto emit = [&](uint32_t pipeline, const PassParams& params, uint32_t groups) {
-        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[pipeline]);
-        vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, gen::kPushConstantOffset,
-                            gen::kPushConstantSize, &params);
-        vkCmdDispatch(cmd_, groups, 1, 1);
-        ++chain_.dispatches;
-
-        ++dispatch_index;
-        if (dispatch_index < total_dispatches) {
-            VkMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                  0, 1, &barrier, 0, nullptr, 0, nullptr);
-            ++chain_.barriers;
-        }
+        commands.push_back(Command{.is_dispatch = true, .pipeline = pipeline, .params = params, .groups = groups});
+    };
+    const auto mark = [&](uint32_t substep, uint32_t boundary) {
+        commands.push_back(Command{.substep = substep, .boundary = boundary});
     };
 
     // The extent each PassGrid names, resolved once. A degenerate shape yields
@@ -658,7 +651,7 @@ Result<void> StepRecorder::record() {
     for (uint32_t s = 0; s < shape_.substeps; ++s) {
         // S6 Task 10: "start of this substep" mark -- boundary 0 of this
         // substep's 9-slot block. A no-op when timestamps_ is unsupported.
-        timestamps_->record_mark(cmd_, s, 0);
+        mark(s, 0);
 
         for (uint32_t pass = 0; pass < 8u; ++pass) {
             PassParams params = base;
@@ -768,7 +761,35 @@ Result<void> StepRecorder::record() {
             // above (including the inert one, whose mark simply brackets zero
             // intervening commands and so reads back as a measured ~0 ns
             // rather than an unmeasured one). A no-op when unsupported.
-            timestamps_->record_mark(cmd_, s, pass + 1);
+            mark(s, pass + 1);
+        }
+    }
+
+    // Record the list. The last dispatch is found from the list itself.
+    std::size_t last_dispatch = 0;
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        if (commands[i].is_dispatch) last_dispatch = i;
+    }
+    chain_ = RecordedChain{.sort_stages = sort_stage_count()};
+    for (std::size_t i = 0; i < commands.size(); ++i) {
+        const Command& c = commands[i];
+        if (!c.is_dispatch) {
+            timestamps_->record_mark(cmd_, c.substep, c.boundary);
+            continue;
+        }
+        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[c.pipeline]);
+        vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, gen::kPushConstantOffset,
+                            gen::kPushConstantSize, &c.params);
+        vkCmdDispatch(cmd_, c.groups, 1, 1);
+        ++chain_.dispatches;
+        if (i < last_dispatch) {
+            VkMemoryBarrier barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                  0, 1, &barrier, 0, nullptr, 0, nullptr);
+            ++chain_.barriers;
         }
     }
 
