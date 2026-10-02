@@ -44,9 +44,4 @@
   - `CHANGELOG.md` says Spade is "developed inside the kat monorepo".
   
   Owed by R4 item 4.
-- **KAT references** in `scripts/`, `CMakePresets.json`, `tests/CMakeLists.txt`, `tests/bench/baselines.json` (`_meta`), `cmake/SpadeSlang.cmake` and `scripts/pre-push-guard.sh`. Owed by R4 item 3 and the R2 comment sweep.
-- **`T0` label.** Dropped on branch `test-docs/cleanup` (`TD-10`); the baseline above was measured with it.
-- **Stray file.** Test discovery writes `cmake_test_discovery_<hash>.json` into the source root. Point discovery's working directory into the build tree, or ignore the file.
-- **The pre-push hook.** It is installed and matches the tracked copy apart from line endings. The tracked copy checks out as CRLF (`core.autocrlf=true`), so a reinstall must strip CRs (R4 item 3).
-- **A link into a moved file.** `docs/v1-transfer-register.md` cites `docs/design/06-sandbox-and-v1.md`, which is now under `superseded/2026-09-consolidation/`.
-- **The `tests/CMakeLists.txt` header** counts 67 GPU-file test sites, 61 of them device-gated, and still describes spade.yml-era CI. Recount it, or point it at `TD-6`.
+- **Test discovery writes into the source root.** `gtest_discover_tests()` runs in the tests' `WORKING_DIRECTORY` (the source root), so CMake 4.x leaves `cmake_test_discovery_<hash>.json` there. It is ignored (`.gitignore`); moving the working directory would change every test's CWD, and is not worth that today.
