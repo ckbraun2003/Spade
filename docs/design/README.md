@@ -31,14 +31,17 @@ Each library has a `README.md`; `00-decisions.md` (the only place a decision's s
 | Series | What | Home |
 |---|---|---|
 | `L1`–`L8` | Charter laws | `00-charter.md` |
-| `D1`–`D12` | Engine decisions (2026-08-08) | realm `00-decisions.md` rows, see R3 |
-| `A1`–`A11` | Engine addendum (2026-08-10) | realm `00-decisions.md` rows, see R3 |
-| `P1`–`P8`, `SA1`–`SA3` | KAT-era pillars and amendments | realm `00-decisions.md` rows, see R3 |
-| `RS1`–`RS15`, `SR-*` | Rendering and scene | `rendering/00-decisions.md` |
-| `SL1`–`SL18` | Library, objects, sandbox | split across Core, Interface and Test/Docs, see R3 |
+| `D1`–`D12` | Engine decisions (2026-08-08) | Core `D2 D6* D7 D8 D9* D12*`; Physics `D1 D3 D4* D5 D6*`; Interface `D4* D10`; Test/Docs `D9* D11 D12*` |
+| `A1`–`A11` | Engine addendum (2026-08-10) | Core `A1* A3 A4 A7 A9`; Rendering `A1* A2 A5 A6 A8`; Test/Docs `A10 A11` (records) |
+| `P1`–`P8` | KAT-era pillars | Core `P1–P4 P8`; Rendering `P6`; Physics `P7`; `consumers.md` `P5` |
+| `SA1`–`SA3` | KAT-era errata amendments | `consumers.md` `SA1`; Test/Docs `SA2`; Core `SA3` |
+| `RS1`–`RS15`, `SR-*`, `PA-*` | Rendering and scene | Rendering (`RS5` shared with Core) |
+| `SL1`–`SL18` | Library, objects, sandbox | `00-charter.md` `SL1 SL17`; Core `SL3–SL6`; Physics `SL8`; Interface `SL2 SL2a SL2b SL7 SL9a–f* SL10–SL14c SL15a`; Test/Docs `SL7* SL15b* SL16* SL18`; `consumers.md` `SL16*` |
+| SPIR-V rules `P1`–`P5`, `E1`, `E2` | Shader scan rules | Test/Docs |
+| `D-S5-1`, `D-S6-2` | In-program execution decisions | Core, Physics |
 | `CORE-`, `PHY-`, `RND-`, `INT-`, `TD-` | New rulings, from 2026-10-01 | each realm's `00-decisions.md` |
 
-The "see R3" homes are filled in by the restructure plan's cross-check.
+`*` marks a split ruling: each listed realm homes its own half. Assigned 2026-10-01 (restructure plan R3) from a full inventory of the 94 ID tokens in `superseded/2026-09-consolidation/`. The Interface rows land with Interface's library.
 
 ## Citing and signing
 

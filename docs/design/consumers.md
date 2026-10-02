@@ -30,6 +30,15 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | `R1`–`R15` | KAT's errata |
 | `CN-*`, `CG*`, `CS*`, `SC*`, `SD*`, `TA*`, `MV*`, `T0`–`T3` | other KAT series |
 
+**Legacy Spade rulings that are about KAT.** Each keeps its ID and is homed here. None binds Spade's design.
+
+| ID | Ruling | Status |
+|---|---|---|
+| charter `SA1` | Spade is the backend of KAT's M1b milestone | record |
+| charter `P5` | A thin adapter above Spade (dronesim implements C5); no KAT types below the seam | superseded by this page and `L7`. The boundary holds from Spade's side as "no domain in the core" |
+| `SL16` (KAT half) | KAT-side vocabulary of the 24th spec | record; the Spade half is in `test-docs/00-decisions.md` |
+| `interleaving-shuffle.md` (§13.3, open) | A KAT runtime proposal; Spade only supplies `state_digest` | KAT's to decide (`superseded/2026-09-consolidation/interleaving-shuffle.md`) |
+
 **Moving to KAT:** the 30 render-agreement cases and the scene-drift guard that read KAT's worlds from `../KAT` (restructure plan R4). Spade rebuilds its agreement bands on its own content (`backlog.md`).
 
 ## Other consumers

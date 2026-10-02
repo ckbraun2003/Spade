@@ -34,3 +34,10 @@ Spade carries no domain concept. Consumers build their domain from modules and t
 | Effects layer with an aero roadmap | Fidelity tiers |
 
 The KAT-era charter is `superseded/2026-09-consolidation/01-charter.md`; its rulings keep their IDs and are homed in the realm registers.
+
+## Legacy rulings homed here
+
+| ID | Ruling | Status |
+|---|---|---|
+| `SL1` | Spade is a domain-neutral engine; KAT is one consumer | superseded by Identity and `L7` (2026-10-01) |
+| `SL17` | The 24th spec's phase table P0–P7 (sequencing record) | record only; sequencing now lives in `backlog.md` and realm `plans/` |
