@@ -14,11 +14,11 @@
 
 **5. Only the public API.** (`SL2b`, see `02-library-surface.md`.) If the editor needs something the installed headers do not offer, that is a finding for Core.
 
-**6. Configuration changes rebuild, debounced, and carry state.** (`INT-2`, proposed.) Anything in a Simulation's `config_hash` is fixed per Simulation, so changing it means a new one. The editor rebuilds only when the user lets go of a control, carries the state that survives the change, and on a refusal keeps the running simulation, shows the reason and puts the control back.
+**6. Configuration changes rebuild, debounced, and carry state.** (`INT-2`.) Anything in a Simulation's `config_hash` is fixed per Simulation, so changing it means a new one. The editor rebuilds only when the user lets go of a control, carries the state that survives the change, and on a refusal keeps the running simulation, shows the reason and puts the control back.
 
 ## The scenes
 
-**The drone sim box** (`INT-1`, the default once it lands; it is being built, see `07-status.md`). A quadrotor on a test stand in an empty world, flown in attitude, built to show end to end that what Spade claims works: quadrotor, rotor model, integrator, Dryden turbulence, CPU stepping and both render paths.
+**The drone sim box** (`INT-1`, the default). A quadrotor on a test stand in an empty world, flown in attitude, built to show end to end that what Spade claims works: quadrotor, rotor model, integrator, Dryden turbulence, CPU stepping and both render paths.
 - *Stand:* two CPU behaviors hold the body at the origin (kinematic: position and velocity zero; force: `force_acc = −m·g`, so Integrate's `+g` cancels exactly for a 1 kg airframe). The rotor model computes thrust, torque and inflow as for a free vehicle; only the translation is discarded. The IMU reads +g, as a stand-mounted sensor does.
 - *Control:* a PD attitude controller and a plus-layout mixer, with yaw limited last so tilt keeps its authority, turn key-set targets into four shaft speeds. Scene code and template material, not engine API.
 - *Stepping:* a fixed-dt accumulator (2 ms, 2 substeps, at most 100 steps a frame, backlog dropped) over the window's frame time. Nothing a test steps reads a wall clock.
