@@ -39,6 +39,7 @@
 
 #include "builder_scene.hpp"  // make_box_mesh / make_cylinder_mesh / detail::push_tri
 #include "drone_sim.hpp"
+#include "orbit_camera.hpp"   // FrameInput
 
 namespace spade::sandbox {
 
@@ -303,6 +304,62 @@ inline float append_slice_items(const DroneDrawBinding& b, const SliceSpec& s, c
         }
     }
     return observed;
+}
+
+// ---------------------------------------------------------------------------
+// The panel and the keys -- the logic the window would otherwise own
+// ---------------------------------------------------------------------------
+
+// What the physics panel shows and edits. The window draws it and writes
+// `edited`, `view_heatmap`, `heatmap_max` and `ui_item_active`; everything that
+// decides what those edits DO is in the functions below.
+struct DronePanelModel {
+    DronePhysicsOptions edited{};  // the widgets' values; the simulation's are drone.options()
+    bool view_heatmap = false;
+    float heatmap_max = 0.0f;   // m/s; 0 = auto
+    float observed_max = 0.0f;  // the last slice's maximum, for the legend
+    DroneReadouts readouts{};
+    AttitudeTarget target{};     // what the keys asked for, beside what the drone did
+    std::string status;          // shown in a warning colour when non-empty
+    bool ui_item_active = false; // a widget is being dragged or typed into this frame
+    const char* render_path = "";  // "GPU (OpenGL)" or "CPU raster"
+};
+
+inline constexpr float kAttitudeRateRadPerS = 1.5f;
+
+// The attitude keys nudge a target that holds when released. Pitch and roll
+// are clamped HERE, at the target, so holding a key past the limit does not
+// wind up a target the controller then has to unwind; yaw wraps.
+inline void nudge_attitude(AttitudeTarget& t, const FrameInput& in, float dt_seconds) noexcept {
+    if (in.ui_captured_keyboard) return;
+    const float step = kAttitudeRateRadPerS * std::max(dt_seconds, 0.0f);
+    t.pitch = std::clamp(t.pitch + in.attitude_pitch * step, -kMaxTiltRad, kMaxTiltRad);
+    t.roll = std::clamp(t.roll + in.attitude_roll * step, -kMaxTiltRad, kMaxTiltRad);
+    constexpr float kPi = 3.14159265358979323846f;
+    t.yaw += in.attitude_yaw * step;
+    if (t.yaw > kPi) t.yaw -= 2.0f * kPi;
+    if (t.yaw < -kPi) t.yaw += 2.0f * kPi;
+    if (in.level_pressed) {
+        t.pitch = 0.0f;
+        t.roll = 0.0f;
+    }
+}
+
+// Applies the panel's physics edits, DEBOUNCED: nothing happens while a widget
+// is active (a dragged slider would otherwise rebuild the Simulation every
+// frame), and nothing happens when the edits match what is running. A refused
+// rebuild -- Vulkan today -- keeps the running simulation, puts the reason in
+// `status`, and snaps the widgets back to what is actually running so the
+// refusal is not retried every frame. Returns true when it rebuilt.
+inline bool apply_panel_edits(DroneSim& drone, DronePanelModel& panel) {
+    if (panel.ui_item_active || panel.edited == drone.options()) return false;
+    if (auto r = drone.apply_options(panel.edited); !r) {
+        panel.status = r.error().context;
+        panel.edited = drone.options();
+        return false;
+    }
+    panel.status.clear();
+    return true;
 }
 
 }  // namespace spade::sandbox

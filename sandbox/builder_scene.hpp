@@ -96,7 +96,7 @@ struct BuilderScene {
     // Scene-wide render settings the inspector edits.
     bool grid = true;
     float sun_intensity = 1.0f;
-    glm::vec3 sun_direction{-0.35f, -0.86f, -0.37f};
+    glm::vec3 sun_direction{0.37139067f, 0.74278135f, 0.55708601f};  // toward the sun: (0.4, 0.8, 0.6) normalised
 
     // Scene-wide physics settings.
     float gravity = -9.81f;

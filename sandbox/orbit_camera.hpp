@@ -77,6 +77,18 @@ struct FrameInput {
 
     bool delete_pressed = false;     // Delete/Backspace -- remove the selection
     bool duplicate_pressed = false;  // Ctrl+D
+
+    // ----- Drone sim box input ---------------------------------------------
+    // Held axes, -1..1, each nudging an attitude target that holds when
+    // released. Signs are drone_sim.hpp's AttitudeTarget's: + pitch = nose up,
+    // + roll = right side down, + yaw = nose turns left (about +Y). The keys
+    // map like a stick: Up arrow pushes the nose DOWN (-1), Right arrow rolls
+    // right (+1), Z yaws left (+1).
+    float attitude_pitch = 0.0f;  // Down = +1, Up = -1
+    float attitude_roll = 0.0f;   // Right = +1, Left = -1
+    float attitude_yaw = 0.0f;    // Z = +1, X = -1
+    bool level_pressed = false;        // R, edge -- pitch and roll back to 0
+    bool toggle_view_pressed = false;  // V, edge -- standard <-> heatmap
 };
 
 // An orbit rig: a target point, a direction to it, and a distance.
@@ -161,5 +173,31 @@ struct OrbitCamera {
         return cam;
     }
 };
+
+// The drone sim box's camera: an orbit that never lets go of the drone.
+//
+// The target stays where the caller puts it (the drone), so the camera always
+// faces it. The keys that pan the target in the builder orbit instead: A/D
+// around it, E/Q over and under it, W/S nearer and further. Mouse drag and the
+// scroll wheel work as in OrbitCamera::apply. Distance is clamped to a view
+// sphere sized for a 36 cm airframe.
+inline constexpr float kDroneMinDistance = 0.5f;
+inline constexpr float kDroneMaxDistance = 6.0f;
+inline constexpr float kDroneOrbitRadiansPerSecond = 1.5f;
+inline constexpr float kDroneDollyPerSecond = 1.5f;  // e-folds of distance per second of W/S
+
+inline void apply_drone_orbit(OrbitCamera& cam, const FrameInput& in, float dt_seconds) noexcept {
+    // d(eye_offset)/d(yaw) is cos(pitch) * ground_right(), so +yaw carries the
+    // eye to the camera's right: D, which reports move_right = +1.
+    cam.yaw += (in.move_right * kDroneOrbitRadiansPerSecond * dt_seconds) - in.orbit_dx * cam.orbit_radians_per_pixel;
+    cam.pitch += (in.move_up * kDroneOrbitRadiansPerSecond * dt_seconds) + in.orbit_dy * cam.orbit_radians_per_pixel;
+    cam.pitch = std::clamp(cam.pitch, -OrbitCamera::kPitchLimit, OrbitCamera::kPitchLimit);
+
+    // Multiplicative for the same reason the builder's dolly is: the ratio is
+    // what reads as constant speed.
+    cam.distance *= std::exp(-in.move_forward * kDroneDollyPerSecond * dt_seconds);
+    if (in.dolly != 0.0f) cam.distance *= std::pow(cam.dolly_factor_per_notch, in.dolly);
+    cam.distance = std::clamp(cam.distance, kDroneMinDistance, kDroneMaxDistance);
+}
 
 }  // namespace spade::sandbox

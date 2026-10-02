@@ -219,3 +219,76 @@ TEST(SandboxDroneView, TheSliceFacesTheCameraAndStaysUpright) {
     const SliceSpec top = camera_facing_slice(camera, glm::vec3(0.0f));
     EXPECT_TRUE(std::isfinite(top.right.x) && std::isfinite(top.right.z));
 }
+
+// --------------------------------------------------------------------------
+// The panel and the keys (the logic the window loop only calls)
+// --------------------------------------------------------------------------
+
+TEST(SandboxDronePanel, ADraggedSliderDoesNotRebuildUntilReleased) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    ASSERT_TRUE(drone->step_fixed(20).has_value());
+
+    panel.ui_item_active = true;
+    for (int frame = 0; frame < 30; ++frame) {  // dragging wind from 0 to 15 m/s
+        panel.edited.wind_speed_mps = 0.5f * static_cast<float>(frame);
+        EXPECT_FALSE(apply_panel_edits(*drone, panel)) << "rebuilt mid-drag at frame " << frame;
+    }
+    EXPECT_EQ(drone->readouts().tick, 20u) << "the running simulation was replaced during the drag";
+
+    panel.ui_item_active = false;  // released
+    EXPECT_TRUE(apply_panel_edits(*drone, panel));
+    EXPECT_EQ(drone->options().wind_speed_mps, 14.5f);
+    EXPECT_FALSE(apply_panel_edits(*drone, panel)) << "rebuilt again with nothing changed";
+    EXPECT_TRUE(panel.status.empty());
+}
+
+TEST(SandboxDronePanel, SelectingVulkanIsRefusedVisiblyAndTheStandStaysOnCpu) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    ASSERT_TRUE(drone->step_fixed(20).has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    panel.edited.vulkan = true;
+    EXPECT_FALSE(apply_panel_edits(*drone, panel));
+    EXPECT_FALSE(panel.status.empty()) << "the refusal must reach the panel";
+    EXPECT_FALSE(panel.edited.vulkan) << "the backend widget must snap back to what is running";
+    EXPECT_FALSE(drone->options().vulkan);
+    EXPECT_EQ(drone->readouts().tick, 20u);
+    // A retried refusal also returns false, so the return value cannot tell;
+    // a retry would refill `status`, so clear it and look.
+    panel.status.clear();
+    EXPECT_FALSE(apply_panel_edits(*drone, panel));
+    EXPECT_TRUE(panel.status.empty()) << "the refusal is retried every frame";
+}
+
+TEST(SandboxDronePanel, TheKeysNudgeHoldClampAndLevel) {
+    AttitudeTarget t;
+    FrameInput in;
+    in.attitude_pitch = 1.0f;
+    in.attitude_roll = -1.0f;
+    in.attitude_yaw = 1.0f;
+    for (int i = 0; i < 600; ++i) nudge_attitude(t, in, 1.0f / 60.0f);  // held for 10 s
+    EXPECT_FLOAT_EQ(t.pitch, kMaxTiltRad);
+    EXPECT_FLOAT_EQ(t.roll, -kMaxTiltRad);
+    EXPECT_LE(std::fabs(t.yaw), 3.14159265f + 1e-6f) << "yaw did not wrap";
+
+    const AttitudeTarget held = t;
+    nudge_attitude(t, FrameInput{}, 1.0f);  // released: the target holds
+    EXPECT_EQ(t.pitch, held.pitch);
+    EXPECT_EQ(t.yaw, held.yaw);
+
+    FrameInput level;
+    level.level_pressed = true;
+    nudge_attitude(t, level, 1.0f / 60.0f);
+    EXPECT_EQ(t.pitch, 0.0f);
+    EXPECT_EQ(t.roll, 0.0f);
+    EXPECT_EQ(t.yaw, held.yaw) << "R levels the drone; it does not reset the heading";
+
+    FrameInput captured = in;
+    captured.ui_captured_keyboard = true;
+    nudge_attitude(t, captured, 1.0f);
+    EXPECT_EQ(t.pitch, 0.0f) << "keys typed into a panel field flew the drone";
+}
