@@ -223,8 +223,8 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
 }
 
 // A camera at `position`, pitched -90 degrees about local X -- looks straight
-// down world -Y. Numerically identical to the wireframe rasterizer's own
-// default CameraPose orientation (dronesim/spade/raster.h): (cos(-45deg),
+// down world -Y. Numerically identical to the interim wireframe rasterizer's
+// default top-down camera orientation: (cos(-45deg),
 // sin(-45deg), 0, 0) = (0.70710678, -0.70710678, 0, 0).
 //
 // Spelled as literal float32 components (review finding, Task R3 fix round):
@@ -607,8 +607,8 @@ TEST(RasterCpu, EmptySubmeshArraysUseTheDefaultMaterialAcrossTheWholeMesh) {
 // {0,1} pointing into the WORLD's palette and both triangles would render
 // green, which the final two assertions forbid.
 //
-// SCOPE: this covers the merge and the rasterisation. The HOST's own draw-item
-// construction for a vehicle (dronesim/spade/host.cpp) is a separate seam and
+// SCOPE: this covers the merge and the rasterisation. A host's own draw-item
+// construction for a vehicle is a separate seam and
 // is not exercised here; the DrawItem below stands in for it, carrying
 // kNoMaterial exactly as the vehicle path does, because a prop's
 // material_override would REPLACE the submesh materials outright

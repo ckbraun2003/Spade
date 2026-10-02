@@ -7,9 +7,10 @@
 // by the fast tessellated path, render/raster_cpu.cpp's DrawMode::shaded; one
 // drawn by the exact SDF reference, render/raymarch.cpp's DrawMode::raymarch)
 // into a single number: how much of the frame disagrees about whether
-// there IS something there at all. The measured bands this task pins live in
-// tests/golden/render/agreement_bands.json and tests/test_render_agreement.cpp
-// -- this header is deliberately silent about any specific world's threshold.
+// there IS something there at all. Bands are pinned by whoever measures a
+// world -- this header is deliberately silent about any specific world's
+// threshold. (The first bands were measured on KAT's worlds and left Spade's
+// suite on 2026-10-01; docs/design/backlog.md has the re-measure.)
 //
 // COVERAGE ONLY, NEVER COLOUR (RS4's own contract, restated from
 // render/raymarch.hpp): shading -- and specifically shadows, which the
@@ -100,10 +101,9 @@
 // ONLY the standalone ground-plane leaf a world's SDF program authors,
 // delete everything else, and compare the REAL fast render against THAT
 // reference. A case whose disagreement does not move past its own pinned
-// band under this mutation proves nothing about scene geometry -- see
-// tests/golden/render/agreement_bands.json's `detects_total_deletion` field,
-// which records the outcome test_render_agreement.cpp's own probe computes,
-// not a claim asserted without checking.
+// band under this mutation proves nothing about scene geometry, so a pinned
+// band records that outcome beside it (`detects_total_deletion`) and the test
+// re-checks it every run rather than trusting the record.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>

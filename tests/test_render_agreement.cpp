@@ -2,187 +2,43 @@
 
 #include <cmath>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <iostream>
-#include <iterator>
-#include <stdexcept>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <nlohmann/json.hpp>
 
 #include "core/error.hpp"
-#include "core/fp32_math.hpp"
 #include "render/agreement.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
 #include "world/builder.hpp"
-#include "world/world_file.hpp"
+#include "world/sdf.hpp"
 
 // ---------------------------------------------------------------------------
-// The RS4 visual/physics agreement MATRIX (S7a Task R9). render/agreement.hpp
-// is the pure, general-purpose measurement machinery; this file is the one
-// place that says WHICH worlds and WHICH cameras get measured, and pins the
-// per-(world, camera) bands recorded in
-// tests/golden/render/agreement_bands.json.
+// The RS4 visual/physics agreement machinery's own tests. render/agreement.hpp
+// is the measurement (compare_silhouettes, the Step 1c sky-collision guard,
+// strip_to_ground_plane_only); this file proves the metric can tell a wrong
+// scene from a right one, and that the Step 1c guard fires when it must.
 //
-// FIX ROUND 1 (review): the review proved, by construction (Probe A --
-// re-rendering the reference against a world with EVERY node deleted except
-// its ground plane), that 24 of the original 30 per-WORLD-banded cases
-// passed their pinned band with the reference's entire geometry gone, 22
-// bit-identical to the committed value. The root cause: every shipped world
-// paints its infinite ground plane below the horizon regardless of what
-// sits on it, so "covered" (not sky) saturates the WHOLE frame for
-// `top_down` and most of it for `default` -- the only region an error can
-// move is the sky area, and when that area is zero (or the raster path also
-// saturates it), the per-pixel XOR is identically zero for ANY reference
-// geometry whatsoever. A per-WORLD band (this world's *maximum* observed
-// camera) additionally LAUNDERED a discriminating camera's tight signal onto
-// a non-discriminating one's inflated threshold (circuit-track/
-// family_third: 1.74% with the world deleted, invisible under the 2.5% band
-// its own horizon-inflated `default` camera set). SR-30/SR-31 below are the
-// fix. This file's own git history carries the pre-fix-round version for
-// comparison; task-R9-report.md's fix-round-1 section is the full account.
+// THE MATRIX THAT USED TO LIVE HERE MOVED OUT (restructure, 2026-10-01). Its
+// thirty cases measured KAT's ten worlds at three bookmarks each, read from a
+// sibling KAT checkout, and so did the bookmark-drift guard beside them. Spade's
+// tests no longer read any other repository. Their bands are to be re-measured
+// on worlds this repository owns -- docs/design/backlog.md, "Spade-owned
+// content for render agreement bands". The removed cases, their bookmark
+// fixture and agreement_bands.json are recoverable from git history for KAT.
 //
-// SR-30 -- EVERY CASE MUST PROVE ITS OWN DETECTION SURFACE: at measurement
-// time (and again, LIVE, in every test run below -- "assert it in the test",
-// not narrate it), each case's reference is re-rendered against
-// render/agreement.hpp's strip_to_ground_plane_only(world) (every SDF node
-// deleted except the standalone ground-plane leaf) and compared against the
-// SAME real fast-path frame. `detects_total_deletion` records whether THAT
-// probe's disagreement exceeds the case's own pinned band -- i.e. whether
-// the band, as pinned, would actually catch a reference with zero real
-// scene geometry. Bands moved from per-WORLD to per-(WORLD, CAMERA)
-// (nothing else needed to change to stop the laundering: each camera's band
-// now comes ONLY from its own measured value). A case that proves `false`
-// is NOT deleted from the matrix -- it is still a real tripwire against a
-// change that breaks horizon-deficit saturation itself, and it is a real
-// product camera bookmark CK-2 will show -- it is labelled, not hidden, and
-// excluded from ever being used to derive ANOTHER camera's band (per-camera
-// banding already makes that structural, not a rule someone has to
-// remember).
+// THE FLAT-SKY REQUIREMENT (render/agreement.hpp's header): every scene here
+// has `lighting.sky_horizon` forced equal to `sky_zenith` before either
+// render() call, because compare_silhouettes() decides "is this the sky" by
+// one reference colour.
 //
-// SR-31 -- THE BANDS FILE IS STRUCTURALLY VERSIONED: `agreement_bands.json`
-// keys its data under `measurements.<version>`, with a top-level
-// `active_measurement_version` selecting which one is live. A re-measure
-// (SR-2: Task C4, after dressing these worlds with prefab instances) adds a
-// NEW version and bumps the selector -- there is no field left whose only
-// valid edit is the in-place mutation the original file's own prose asked
-// readers not to make.
-//
-// GOLDEN-FEEDING (references SPADE_GOLDEN_DIR below, per
-// test_m1b_bar.cpp's collect_golden_feeding_test_sources() -- see that
-// file's own header comment): this file is therefore swept by
-// BitPortability.NoLibmTranscendentalInEngineOrGoldenTestSource. The camera
-// bookmark schema (content/scenes/*.kscene's camera_bookmarks: target +
-// distance + yaw_radians + pitch_radians, an orbit camera -- mirrors
-// editor/ui/viewport/camera_controller.cpp's identical model, NOT included
-// from here since this codebase stays engine-agnostic and that file's own std::sin/
-// std::cos would fail this scan anyway) is converted to a position+
-// orientation using spade::math::sin32/cos32 for the yaw/pitch trig and
-// Shepperd's rotation-matrix-to-quaternion method (cross/dot/normalize/sqrt
-// only -- no trig at all) for the look-at orientation, never glm::angleAxis/
-// glm::quatLookAt/std::sin/std::cos.
-//
-// TEN SHIPPED WORLDS, THREE BOOKMARKS EACH (task brief Step 2; controller
-// amendments confirm content/worlds/*.world.yaml IS "the ten shipped
-// worlds"): loaded from content/ (SPADE_CONTENT_DIR, tests/CMakeLists.txt's
-// own comment explains why that live directory, not a second copy, is the
-// right source), each against its OWN content/scenes/<name>.kscene's
-// "default"/"top_down"/"family_third" bookmarks (CS5's own three required
-// names, tools/tests/test_content_suite.py's
-// test_scene_has_at_least_three_camera_bookmarks). 30 parameterized cases,
-// each its own ctest entry (gtest_discover_tests) -- comfortably inside the
-// 60 s per-case timeout at either resolution this task's brief costs out.
-// PARAMETERIZED AS A FLAT "world|camera" STRING, NOT ::testing::Combine's
-// std::tuple<std::string,std::string> -- simpler to build and split, but
-// (fix round 2, review IMPORTANT correction) this reparameterization is NOT
-// what fixed ctest's display/selection of this suite's custom test names.
-// Fix round 1 misdiagnosed that symptom as a tuple-specific comma-parsing
-// bug in this box's CMake GoogleTest module and "fixed" it by switching to a
-// flat string -- which changed nothing observable, because the real cause is
-// neither box-specific nor tuple-specific: CMake's own
-// GoogleTestAddTests.cmake (write_test_to_file(), read directly rather than
-// guessed a second time) DELIBERATELY substitutes GetParam()'s printed value
-// for a value-parameterized test's name suffix in the name CTest displays
-// and matches (`ctest -N`/`-R`) -- documented, intentional behaviour, for
-// ANY printable parameter type, tuple or plain string alike (a flat string
-// registers exactly as `.../"world|camera"`, no better than a tuple's
-// `.../("world", "camera")`). The actual fix is `NO_PRETTY_VALUES` on this
-// binary's one `gtest_discover_tests()` call -- see tests/
-// CMakeLists.txt's own comment there for the CMake source lines that prove
-// it, and task-R9-report.md's fix-round-2 note for how the round 1 mistake
-// was caught. This file keeps the flat-string parameterization anyway
-// because it is simpler to read and split than a tuple, not because it
-// fixes anything on its own.
-//
-// BARE GEOMETRY ONLY (ruling SR-2): worlds are loaded straight off disk via
-// load_world_file() + scene_from_world() with an EMPTY resolved-mesh span --
-// no package instances, no resolved prop meshes. T8 (Task C4 fix, sweeping a
-// stale comment this same file's neighbourhood carried): this paragraph used
-// to say "none of the ten shipped worlds authors props (all are schema v1,
-// confirmed empty `props` on load)" -- both halves of that were already
-// false BEFORE Task C4 touched a single world (world_version has been 2,
-// with an explicit `props: []`, since Task H2), and the FIRST half is now
-// false in substance too: Task C4 (SR-54) placed real props in 9 of the ten
-// shipped worlds. The reason this matrix still does not need those props
-// resolved is different, and stronger, than "there are none" -- it is
-// structural: this file's own scene_or_fail() passes an EMPTY resolved-mesh
-// span to every scene_from_world() call, so EVERY prop's mesh_ref misses
-// that span's linear scan and resolves to kNoMesh (render/scene.cpp:340-352)
-// on BOTH the raster and raymarch paths alike (raymarch never even looks at
-// `scene.statics` -- raymarch.hpp's own "props are structurally invisible to
-// the reference" comment, a SEPARATE and additional reason on that side).
-// Both paths therefore agree about every prop by construction, contributing
-// zero disagreement regardless of how many a world carries -- Task C4's own
-// report (task-C4-report.md) states this plainly: the agreement matrix does
-// not validate props at all; C5's gallery is where they get checked, by eye.
-// Every SDF prefab INSTANCE Task C4 added, by contrast, is real scene.sdf
-// geometry and DOES change what this matrix measures, which is why SR-2
-// required a re-measure (see agreement_bands.json's versioned
-// `measurements.2`) rather than reusing measurement 1's bare-geometry bands
-// unchanged. No shipped world spawns a dynamic body in this harness either
-// (update_dynamics() is never called), so `scene.dynamics` stays structurally
-// invisible to the reference for the same raymarch.hpp reason, unaffected by
-// any of this.
-//
-// THE FLAT-SKY REQUIREMENT (render/agreement.hpp's own header comment, load-
-// bearing, restated here because this is the file that must actually honour
-// it): every scene this file builds has its `lighting.sky_horizon` forced
-// equal to `sky_zenith` immediately after scene_from_world() returns, BEFORE
-// either render() call -- compare_silhouettes()'s single sky_reference_rgb
-// parameter is only a correct "is this the sky" test against a flat sky, and
-// both DrawMode::shaded and DrawMode::raymarch (INCLUDING the SR-30 bare-
-// ground probe's own raymarch render) read `scene.lighting` from an
-// already-flattened RenderScene, so all three agree on the flattened colour
-// by construction, not by coincidence.
-//
-// STEP 1c CHECKS THE SHADED RANGE, NOT THE AUTHORED base_color (fix round 1,
-// review IMPORTANT -- render/agreement.hpp's own header comment has the full
-// account): assert_no_material_matches_sky() now takes the scene's Lighting
-// and samples the material's ACHIEVABLE shaded colour (via the real
-// shade_vertex_color()) across every achievable N.L, because the classifier
-// sees the SHADED output, not the raw base_color, and a material can clear a
-// base_color-only tolerance check yet still shade to the sky colour at some
-// real surface orientation. Runs against every one of the ten worlds' OWN
-// authored materials before either render() call, in every one of the 30
-// cases -- not merely asserted once in isolation.
-//
-// SHADOWS EXPLICITLY OFF ON THE FAST PATH (RenderOptions::shadows = false,
-// on top of overlays = false): raymarch never casts one (SR-25, out of
-// scope by design), so leaving raster's own shadow ON would add a second,
-// irrelevant source of colour divergence -- a shadow only ever DARKENS an
-// already-hit pixel (never turns a hit into a miss or back), so it cannot
-// change which pixels compare_silhouettes() calls "covered", but disabling
-// it removes any chance of a shadow-darkened pixel coincidentally
-// quantizing to the flat sky reference, which is a strictly-safer posture
-// for a colour-based classifier for zero cost (RS4 already permits shading,
-// shadows included, to differ between the paths).
+// SHADOWS AND OVERLAYS OFF ON THE FAST PATH: raymarch draws neither, so leaving
+// them on would only add colour divergence that RS4 already permits.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -209,12 +65,10 @@ using spade::render::RenderTarget;
 using spade::render::scene_from_world;
 using spade::render::strip_to_ground_plane_only;
 
-using Json = nlohmann::json;
-
 // ---------------------------------------------------------------------------
 // Small helpers, each mirroring an existing sibling test file's identical
-// pattern (test_render_raymarch.cpp's make_target()/render_or_fail(),
-// test_world_file.cpp's read_file()) rather than sharing a header -- this
+// pattern (test_render_raymarch.cpp's make_target()/render_or_fail())
+// rather than sharing a header -- this
 // program's own established per-file-duplication convention for helpers this
 // small.
 // ---------------------------------------------------------------------------
@@ -234,13 +88,6 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
                      RenderTarget& target) {
     const Result<void> result = render(scene, camera, options, target);
     ASSERT_TRUE(result) << "render() failed: " << result.error().context;
-}
-
-[[nodiscard]] bool read_file(const std::string& path, std::string& out) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
 }
 
 [[nodiscard]] WorldBuilder base_builder() {
@@ -277,385 +124,8 @@ void render_or_fail(const RenderScene& scene, const Camera& camera, const Render
     return pack_sky_reference_bgrx(scene.lighting);
 }
 
-// ---------------------------------------------------------------------------
-// Orbit camera (content/scenes/*.kscene's camera_bookmarks schema: target +
-// distance + yaw_radians + pitch_radians) -- reimplements
-// editor/ui/viewport/camera_controller.cpp's identical model with sin32/
-// cos32 in place of std::sin/std::cos (this file's own header comment: it is
-// swept for libm transcendentals because it references SPADE_GOLDEN_DIR
-// below). Shepperd's method needs no trig at all -- only cross/dot/
-// normalize/sqrt, all IEEE-mandated.
-// ---------------------------------------------------------------------------
-
-struct OrbitBasis {
-    glm::vec3 right, up, backward;
-};
-
-[[nodiscard]] OrbitBasis basis_from_direction(const glm::vec3& backward) {
-    glm::vec3 world_up(0.0f, 1.0f, 0.0f);
-    if (std::fabs(glm::dot(backward, world_up)) > 0.999f) {
-        world_up = glm::vec3(0.0f, 0.0f, 1.0f);  // avoid a degenerate cross product looking straight up/down
-    }
-    const glm::vec3 right = glm::normalize(glm::cross(world_up, backward));
-    const glm::vec3 up = glm::cross(backward, right);
-    return OrbitBasis{right, up, backward};
-}
-
-// Shepperd's method, verbatim in structure from camera_controller.cpp's
-// lookAtQuaternion() -- rotation-matrix columns [right, up, backward], no
-// trig anywhere in this function.
-[[nodiscard]] glm::quat look_at_quaternion(const glm::vec3& position, const glm::vec3& target) {
-    const glm::vec3 backward = glm::normalize(position - target);
-    const OrbitBasis basis = basis_from_direction(backward);
-
-    const float r00 = basis.right.x, r01 = basis.up.x, r02 = basis.backward.x;
-    const float r10 = basis.right.y, r11 = basis.up.y, r12 = basis.backward.y;
-    const float r20 = basis.right.z, r21 = basis.up.z, r22 = basis.backward.z;
-
-    const float trace = r00 + r11 + r22;
-    float w, x, y, z;
-    if (trace > 0.0f) {
-        const float s = 0.5f / std::sqrt(trace + 1.0f);
-        w = 0.25f / s;
-        x = (r21 - r12) * s;
-        y = (r02 - r20) * s;
-        z = (r10 - r01) * s;
-    } else if (r00 > r11 && r00 > r22) {
-        const float s = 2.0f * std::sqrt(1.0f + r00 - r11 - r22);
-        w = (r21 - r12) / s;
-        x = 0.25f * s;
-        y = (r01 + r10) / s;
-        z = (r02 + r20) / s;
-    } else if (r11 > r22) {
-        const float s = 2.0f * std::sqrt(1.0f + r11 - r00 - r22);
-        w = (r02 - r20) / s;
-        x = (r01 + r10) / s;
-        y = 0.25f * s;
-        z = (r12 + r21) / s;
-    } else {
-        const float s = 2.0f * std::sqrt(1.0f + r22 - r00 - r11);
-        w = (r10 - r01) / s;
-        x = (r02 + r20) / s;
-        y = (r12 + r21) / s;
-        z = 0.25f * s;
-    }
-    return glm::quat(w, x, y, z);
-}
-
-[[nodiscard]] Camera camera_from_bookmark(const glm::vec3& target, double distance, double yaw_radians,
-                                           double pitch_radians) {
-    const float yaw = static_cast<float>(yaw_radians);
-    const float pitch = static_cast<float>(pitch_radians);
-    const float cy = spade::math::cos32(yaw), sy = spade::math::sin32(yaw);
-    const float cp = spade::math::cos32(pitch), sp = spade::math::sin32(pitch);
-    const glm::vec3 dir(cp * sy, sp, cp * cy);
-    const glm::vec3 position = target + dir * static_cast<float>(distance);
-
-    Camera camera;
-    camera.position = position;
-    camera.orientation = look_at_quaternion(position, target);
-    return camera;
-}
-
-// ---------------------------------------------------------------------------
-// content/ loaders (SPADE_CONTENT_DIR -- tests/CMakeLists.txt's own comment
-// explains why this suite reads the live shipped directory rather than a
-// second copy).
-// ---------------------------------------------------------------------------
-
-[[nodiscard]] std::filesystem::path content_dir() {
-    return std::filesystem::path(SPADE_CONTENT_DIR);
-}
-
-[[nodiscard]] WorldDesc load_shipped_world(const std::string& world_name) {
-    const std::filesystem::path path = content_dir() / "worlds" / (world_name + ".world.yaml");
-    const Result<WorldDesc> world = spade::load_world_file(path);
-    if (!world) {
-        ADD_FAILURE() << "load_world_file(" << path << ") failed: " << world.error().context;
-        return WorldDesc{};
-    }
-    return *world;
-}
-
-// ---------------------------------------------------------------------------
-// CAMERA BOOKMARKS -- OWNED BY THIS SUITE, not read from a project.
-//
-// This used to read dev_project/scenes/<world>.kscene. It does not any more,
-// and the reason is a ruling rather than a convenience: `dev_project` is a
-// ROLE, not a fixture. It is whichever project happens to be open on a box,
-// and every demo and test package is a full openable project -- so a suite
-// bound to it is bound to something that CANNOT BE STATED OR VERSIONED, and
-// that breaks the day someone opens something else.
-//
-// tests/CMakeLists.txt's SPADE_CONTENT_DIR comment calls itself "the ONE place
-// tests/ reaches outside this repo entirely". Reading a project would have
-// made it two, and the second worse in kind. Owning the data NARROWS the
-// boundary back to one, which is the only answer consistent with why that
-// comment was written.
-//
-// THE DUPLICATION IS CHECKED, NOT HOPED --
-// AgreementFixture.BookmarksMatchTheShippedScenes below.
-// ---------------------------------------------------------------------------
-
-[[nodiscard]] const Json& fixture_bookmarks() {
-    static const Json doc = [] {
-        const std::filesystem::path path =
-            std::filesystem::path(SPADE_TESTS_DIR) / "fixtures" / "camera_bookmarks.json";
-        std::string text;
-        if (!read_file(path.string(), text)) {
-            throw std::runtime_error("could not read the bookmark fixture: " + path.string());
-        }
-        Json parsed = Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
-        if (parsed.is_discarded() || !parsed.contains("bookmarks")) {
-            throw std::runtime_error("bookmark fixture is not valid JSON with a 'bookmarks' object: " +
-                                     path.string());
-        }
-        return parsed;
-    }();
-    return doc;
-}
-
-// Returns a document shaped like a scene's, so camera_from_scene_bookmark below
-// is unchanged. THROWS rather than returning an empty object: a missing world
-// must refuse, never degrade into a measurement. Returning Json::object() here
-// is precisely what let thirty tests score an EMPTY FRAME and report the
-// failure as a disagreement-band mismatch -- naming the renderer for a defect
-// that was a missing file.
-[[nodiscard]] Json load_shipped_scene_json(const std::string& world_name) {
-    const Json& bookmarks = fixture_bookmarks().at("bookmarks");
-    const auto it = bookmarks.find(world_name);
-    if (it == bookmarks.end()) {
-        throw std::runtime_error("bookmark fixture has no entry for world '" + world_name +
-                                 "' -- add it to tests/fixtures/camera_bookmarks.json");
-    }
-    return Json{{"camera_bookmarks", *it}};
-}
-
-// The project's scene documents, read by the consistency guard ALONE.
-[[nodiscard]] std::filesystem::path project_scenes_dir() {
-    return std::filesystem::path(SPADE_SCENES_DIR);
-}
-
-[[nodiscard]] Camera camera_from_scene_bookmark(const Json& scene_json, const std::string& bookmark_name) {
-    const auto bookmarks_it = scene_json.find("camera_bookmarks");
-    if (bookmarks_it == scene_json.end()) {
-        // Throws for the same reason load_shipped_scene_json does: a default
-        // Camera{} is a VALID camera, so returning one turns "this document is
-        // not what I think it is" into a measurement of some other framing.
-        throw std::runtime_error("scene document has no camera_bookmarks object");
-    }
-    const auto bookmark_it = bookmarks_it->find(bookmark_name);
-    if (bookmark_it == bookmarks_it->end()) {
-        ADD_FAILURE() << "scene document is missing the '" << bookmark_name << "' camera bookmark";
-        return Camera{};
-    }
-    const Json& bookmark = *bookmark_it;
-    const Json& target_arr = bookmark.at("target");
-    const glm::vec3 target(target_arr.at(0).get<double>(), target_arr.at(1).get<double>(),
-                            target_arr.at(2).get<double>());
-    const double distance = bookmark.at("distance").get<double>();
-    const double yaw = bookmark.at("yaw_radians").get<double>();
-    const double pitch = bookmark.at("pitch_radians").get<double>();
-    return camera_from_bookmark(target, distance, yaw, pitch);
-}
-
-// ---------------------------------------------------------------------------
-// SR-30's probe: re-renders the reference against a world with every SDF
-// node deleted except the standalone ground-plane leaf
-// (render::strip_to_ground_plane_only(), a PRODUCTION function -- Task C4
-// will call this SAME one against dressed worlds, SR-2) and compares that
-// against the REAL fast-path frame already rendered for this case. Reuses
-// the ALREADY-FLATTENED Lighting from the real comparison verbatim (not a
-// second, independently-flattened copy) so the probe's sky reference is
-// bit-identical to the real one, never a second source of drift.
-// ---------------------------------------------------------------------------
-
-[[nodiscard]] AgreementResult bare_ground_probe(const WorldDesc& real_world, const RenderTarget& fast_target,
-                                                 const Camera& camera, const Lighting& flattened_lighting,
-                                                 uint32_t sky_ref) {
-    const Result<WorldDesc> bare_world = strip_to_ground_plane_only(real_world);
-    if (!bare_world) {
-        ADD_FAILURE() << "strip_to_ground_plane_only failed: " << bare_world.error().context;
-        return AgreementResult{};
-    }
-    RenderScene bare_scene = scene_or_fail(*bare_world);
-    bare_scene.lighting = flattened_lighting;
-
-    RenderOptions raymarch_options;
-    raymarch_options.mode = DrawMode::raymarch;
-    std::vector<uint8_t> bare_storage;
-    RenderTarget bare_target = make_target(bare_storage, fast_target.width, fast_target.height);
-    render_or_fail(bare_scene, camera, raymarch_options, bare_target);
-
-    return compare_silhouettes(fast_target, bare_target, sky_ref);
-}
-
-// ---------------------------------------------------------------------------
-// agreement_bands.json -- SR-31: a VERSIONED list of measurements, with
-// `active_measurement_version` selecting the live one, and SR-30: bands are
-// keyed per (world, camera), not per world. Loaded once, cached for the
-// process lifetime.
-// ---------------------------------------------------------------------------
-
-[[nodiscard]] const Json& empty_json_object() {
-    static const Json empty = Json::object();
-    return empty;
-}
-
-[[nodiscard]] const Json& agreement_bands_root() {
-    static const Json bands = [] {
-        const std::filesystem::path path = std::filesystem::path(SPADE_GOLDEN_DIR) / "render" / "agreement_bands.json";
-        std::string text;
-        if (!read_file(path.string(), text)) {
-            ADD_FAILURE() << "could not read agreement_bands.json at " << path;
-            return Json::object();
-        }
-        const Json parsed = Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
-        if (parsed.is_discarded()) {
-            ADD_FAILURE() << "agreement_bands.json at " << path << " is not valid JSON";
-            return Json::object();
-        }
-        return parsed;
-    }();
-    return bands;
-}
-
-// SR-31: selects `measurements.<active_measurement_version>` -- a re-measure
-// adds a NEW entry under `measurements` and bumps the selector, rather than
-// editing a committed measurement in place.
-[[nodiscard]] const Json& active_measurement() {
-    const Json& root = agreement_bands_root();
-    const auto version_it = root.find("active_measurement_version");
-    if (version_it == root.end()) {
-        ADD_FAILURE() << "agreement_bands.json has no 'active_measurement_version'";
-        return empty_json_object();
-    }
-    const auto measurements_it = root.find("measurements");
-    if (measurements_it == root.end()) {
-        ADD_FAILURE() << "agreement_bands.json has no 'measurements' object";
-        return empty_json_object();
-    }
-    const std::string version_key = std::to_string(version_it->get<int>());
-    const auto measurement_it = measurements_it->find(version_key);
-    if (measurement_it == measurements_it->end()) {
-        ADD_FAILURE() << "agreement_bands.json's active_measurement_version (" << version_key
-                       << ") has no matching entry under 'measurements'";
-        return empty_json_object();
-    }
-    return *measurement_it;
-}
-
-[[nodiscard]] const Json& camera_entry(const std::string& world_name, const std::string& camera_name) {
-    const Json& measurement = active_measurement();
-    const auto worlds_it = measurement.find("worlds");
-    if (worlds_it == measurement.end()) {
-        ADD_FAILURE() << "active measurement has no 'worlds' object";
-        return empty_json_object();
-    }
-    const auto world_it = worlds_it->find(world_name);
-    if (world_it == worlds_it->end()) {
-        ADD_FAILURE() << "active measurement has no entry for world '" << world_name << "'";
-        return empty_json_object();
-    }
-    const auto cameras_it = world_it->find("cameras");
-    if (cameras_it == world_it->end()) {
-        ADD_FAILURE() << "world '" << world_name << "' has no 'cameras' object";
-        return empty_json_object();
-    }
-    const auto camera_it = cameras_it->find(camera_name);
-    if (camera_it == cameras_it->end()) {
-        ADD_FAILURE() << "world '" << world_name << "' has no pinned camera entry '" << camera_name << "'";
-        return empty_json_object();
-    }
-    return *camera_it;
-}
-
-[[nodiscard]] double band_for(const std::string& world_name, const std::string& camera_name) {
-    const Json& entry = camera_entry(world_name, camera_name);
-    if (!entry.contains("band")) {
-        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no pinned 'band'";
-        return 0.0;
-    }
-    return entry.at("band").get<double>();
-}
-
-[[nodiscard]] bool recorded_detects_total_deletion(const std::string& world_name, const std::string& camera_name) {
-    const Json& entry = camera_entry(world_name, camera_name);
-    if (!entry.contains("detects_total_deletion")) {
-        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no recorded 'detects_total_deletion'";
-        return false;
-    }
-    return entry.at("detects_total_deletion").get<bool>();
-}
-
-// Controller fix round 1, I-4 (a review process gap, not this task's own
-// bug -- the reviewer's own words: "I told you the suite 'recomputes and
-// asserts against the file'. That is true only for detects_total_deletion."):
-// band_for() and recorded_detects_total_deletion() are the only two fields
-// this suite ever checked LIVE against agreement_bands.json -- nothing
-// asserted that the recorded 'disagreement_fraction'/'covered_a'/
-// 'covered_b' (real OR probe) actually equal what this run measures. A
-// recorded disagreement_fraction 1.5x too high yields a band 1.5x too wide
-// (band_for() reads it straight from the same entry EXPECT_LE checks
-// against) and the suite stays green regardless -- the band derivation
-// itself was never a checked claim, only its OWN internal arithmetic
-// (margin_note) was. These four helpers make every recorded number in a
-// measurement a checked claim, the same sense detects_total_deletion
-// already was, for both the real comparison and the SR-30 probe.
-[[nodiscard]] double recorded_double(const std::string& world_name, const std::string& camera_name,
-                                      const std::string& field) {
-    const Json& entry = camera_entry(world_name, camera_name);
-    if (!entry.contains(field)) {
-        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no recorded '" << field << "'";
-        return 0.0;
-    }
-    return entry.at(field).get<double>();
-}
-
-[[nodiscard]] uint32_t recorded_uint(const std::string& world_name, const std::string& camera_name,
-                                      const std::string& field) {
-    const Json& entry = camera_entry(world_name, camera_name);
-    if (!entry.contains(field)) {
-        ADD_FAILURE() << "'" << world_name << "'/" << camera_name << " has no recorded '" << field << "'";
-        return 0;
-    }
-    return entry.at(field).get<uint32_t>();
-}
-
-// The ten shipped worlds (controller amendments: "content/worlds/*.world.yaml
-// IS the ten shipped worlds") and CS5's three required bookmark names,
-// spelled once here rather than discovered by directory listing -- a
-// silently-added eleventh world file would not silently join this matrix
-// (and drift the corpus this task measured) without a deliberate edit here.
-const std::vector<std::string> kShippedWorldNames = {
-    "circuit-track", "figure-eight",  "gate-corridor", "hover-pad",     "pdel-site",
-    "pfol-road",     "pint-box",      "pnav-canyon",   "povr-compound", "swarm-grid",
-};
-const std::vector<std::string> kBookmarkNames = {"default", "top_down", "family_third"};
-
-// Matches Step 2's own "reduced resolution... 160x120 is recommended" --
-// exactly the frame goldens' own resolution (task brief's Frame-time budget
-// section).
-constexpr uint32_t kMatrixWidth = 160, kMatrixHeight = 120;
-
-// Flat "world|camera" keys, NOT a std::tuple<std::string,std::string> (fix
-// round 1 -- this file's own header comment has the measured CMake/CTest
-// parsing symptom the tuple form triggered).
-[[nodiscard]] std::vector<std::string> matrix_case_keys() {
-    std::vector<std::string> keys;
-    keys.reserve(kShippedWorldNames.size() * kBookmarkNames.size());
-    for (const std::string& world_name : kShippedWorldNames) {
-        for (const std::string& camera_name : kBookmarkNames) {
-            keys.push_back(world_name + "|" + camera_name);
-        }
-    }
-    return keys;
-}
-
-[[nodiscard]] std::pair<std::string, std::string> split_case_key(const std::string& key) {
-    const std::size_t sep = key.find('|');
-    return {key.substr(0, sep), key.substr(sep + 1)};
-}
+// Matches the frame goldens' own resolution.
+constexpr uint32_t kFrameWidth = 160, kFrameHeight = 120;
 
 }  // namespace
 
@@ -680,14 +150,13 @@ constexpr uint32_t kMatrixWidth = 160, kMatrixHeight = 120;
 //    is what proves this assertion is measuring the injected mismatch and
 //    not a fixed baseline the metric always reports regardless of input.
 //
-//    THIS GUARD EXERCISES THE METRIC AGAINST PURE SKY, NOT THE MATRIX'S OWN
-//    REGIME (review, fix round 1): a box against sky is exactly the
-//    configuration where coverage discriminates -- none of the 30 matrix
-//    cases look like this, since every shipped world saturates most or all
-//    of the frame with its own infinite ground. This guard is still correct
-//    and still required (it proves the METRIC can register a real
-//    difference at all), but it does NOT, on its own, prove any given
-//    MATRIX CASE can -- that is what section 3's SR-30 probe below is for.
+//    THIS GUARD EXERCISES THE METRIC AGAINST PURE SKY: a box against sky is
+//    exactly the configuration where coverage discriminates. A world with an
+//    infinite ground saturates most of the frame, so a band measured on one
+//    must also prove its own detection surface (SR-30: re-render the
+//    reference through strip_to_ground_plane_only() and check the band would
+//    catch that). Whoever re-measures bands on Spade's own worlds owes that
+//    probe per case; this guard alone does not provide it.
 // ===========================================================================
 
 namespace {
@@ -700,8 +169,7 @@ namespace {
 
 // Camera at (0,0,6) looking down -Z at the origin (Camera's own default
 // identity orientation, the SAME convention test_render_raymarch.cpp's
-// SphereAnalytic fixture uses) -- no trig needed, so this section stays
-// entirely literal even though the file as a whole is libm-scanned.
+// SphereAnalytic fixture uses) -- no trig needed.
 [[nodiscard]] Camera box_guard_camera() {
     Camera camera;
     camera.position = glm::vec3(0.0f, 0.0f, 6.0f);
@@ -731,13 +199,13 @@ TEST(AgreementGuard, MismatchedBoxScaleReportsALargeDisagreement) {
     fast_options.overlays = false;
     fast_options.shadows = false;
     std::vector<uint8_t> fast_storage;
-    RenderTarget fast_target = make_target(fast_storage, kMatrixWidth, kMatrixHeight);
+    RenderTarget fast_target = make_target(fast_storage, kFrameWidth, kFrameHeight);
     render_or_fail(wrong_scene, camera, fast_options, fast_target);
 
     RenderOptions raymarch_options;
     raymarch_options.mode = DrawMode::raymarch;
     std::vector<uint8_t> raymarch_storage;
-    RenderTarget raymarch_target = make_target(raymarch_storage, kMatrixWidth, kMatrixHeight);
+    RenderTarget raymarch_target = make_target(raymarch_storage, kFrameWidth, kFrameHeight);
     render_or_fail(right_scene, camera, raymarch_options, raymarch_target);
 
     const AgreementResult result = compare_silhouettes(fast_target, raymarch_target, sky_ref);
@@ -765,13 +233,13 @@ TEST(AgreementGuard, IdenticalScenesReportNearZeroDisagreement) {
     fast_options.overlays = false;
     fast_options.shadows = false;
     std::vector<uint8_t> fast_storage;
-    RenderTarget fast_target = make_target(fast_storage, kMatrixWidth, kMatrixHeight);
+    RenderTarget fast_target = make_target(fast_storage, kFrameWidth, kFrameHeight);
     render_or_fail(scene, camera, fast_options, fast_target);
 
     RenderOptions raymarch_options;
     raymarch_options.mode = DrawMode::raymarch;
     std::vector<uint8_t> raymarch_storage;
-    RenderTarget raymarch_target = make_target(raymarch_storage, kMatrixWidth, kMatrixHeight);
+    RenderTarget raymarch_target = make_target(raymarch_storage, kFrameWidth, kFrameHeight);
     render_or_fail(scene, camera, raymarch_options, raymarch_target);
 
     const AgreementResult result = compare_silhouettes(fast_target, raymarch_target, sky_ref);
@@ -876,203 +344,35 @@ TEST(AgreementGuard, Step1cCatchesAShadedColourCollisionEvenWhenTheAuthoredBaseC
 }
 
 // ===========================================================================
-// 3. The matrix: ten shipped worlds x three camera bookmarks each, at
-//    160x120, DrawMode::shaded vs DrawMode::raymarch -- see this file's own
-//    header comment for the bare-geometry/flat-sky/Step-1c posture every
-//    case below follows, and SR-30 for the bare-ground detection-surface
-//    probe every case now runs and checks LIVE.
+// 3. SR-30's probe helper, on its own. strip_to_ground_plane_only() was only
+//    ever exercised through the KAT-world matrix; these keep it tested while
+//    the bands are rebuilt on Spade's own worlds.
 // ===========================================================================
 
-class AgreementMatrix : public ::testing::TestWithParam<std::string> {};
+TEST(AgreementProbe, StripKeepsOnlyTheStandaloneGroundPlane) {
+    WorldBuilder b = base_builder();
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).box(glm::vec3(0.5f)).union_().sphere(0.3f).union_();
+    const WorldDesc world = build_or_fail(b);
+    ASSERT_GT(world.sdf.nodes.size(), 1u) << "sanity: the source world must hold more than the plane";
 
-TEST_P(AgreementMatrix, MeasuredDisagreementIsWithinItsPinnedBandAndDetectionSurfaceMatchesTheRecordedClaim) {
-    const auto [world_name, camera_name] = split_case_key(GetParam());
-
-    // SKIP, NOT FAIL, WHEN KAT'S content/ IS NOT THERE. This matrix reads the
-    // LIVE shipped world library, which lives in Kat, not in this repository --
-    // see tests/CMakeLists.txt's SPADE_KAT_CONTENT_DIR. A Spade-only checkout
-    // legitimately has no Kat beside it.
-    //
-    // ⭐ THE SAME REACH THROUGH SPADE_SCENES_DIR HAS SKIPPED CORRECTLY SINCE
-    // 2026-09-17, and its CMake comment states the reason: "failing there would
-    // restore the dependency through the back door." This path never got the
-    // guard, so when Spade was extracted on 2026-09-28 these thirty cases went
-    // RED where the one scenes case went yellow -- identical reach, opposite
-    // outcome, because only one of them had been thought about.
-    //
-    // ⛔ A MISSING WORLD INSIDE A PRESENT TREE IS STILL A FAILURE. That is a
-    // move, and load_shipped_world()'s ADD_FAILURE below is what catches it.
-    // Only the whole tree being absent is a skip.
-    if (!std::filesystem::exists(content_dir())) {
-        GTEST_SKIP() << "no Kat content library at " << content_dir()
-                     << " -- the render-agreement matrix reads Kat's shipped worlds. "
-                        "Point -DSPADE_KAT_CONTENT_DIR=<path> at a Kat checkout to run it.";
-    }
-
-    const WorldDesc world = load_shipped_world(world_name);
-    ASSERT_FALSE(world.sdf.nodes.empty()) << "sanity: '" << world_name << "' must have real SDF geometry";
-
-    const Json scene_json = load_shipped_scene_json(world_name);
-    const Camera camera = camera_from_scene_bookmark(scene_json, camera_name);
-
-    RenderScene scene = scene_or_fail(world);
-    const uint32_t sky_ref = flatten_sky_and_pack_reference(scene);
-
-    // Step 1c, run for real against this world's OWN authored materials --
-    // fatal, because a collision here means every downstream pixel count is
-    // meaningless, not merely off.
-    const Result<void> guard = assert_no_material_matches_sky(world.materials, scene.lighting, sky_ref);
-    ASSERT_TRUE(guard) << "Step 1c guard tripped for '" << world_name << "': " << guard.error().context;
-
-    RenderOptions fast_options;
-    fast_options.mode = DrawMode::shaded;
-    fast_options.overlays = false;
-    fast_options.shadows = false;
-    std::vector<uint8_t> fast_storage;
-    RenderTarget fast_target = make_target(fast_storage, kMatrixWidth, kMatrixHeight);
-    render_or_fail(scene, camera, fast_options, fast_target);
-
-    RenderOptions raymarch_options;
-    raymarch_options.mode = DrawMode::raymarch;
-    std::vector<uint8_t> raymarch_storage;
-    RenderTarget raymarch_target = make_target(raymarch_storage, kMatrixWidth, kMatrixHeight);
-    render_or_fail(scene, camera, raymarch_options, raymarch_target);
-
-    const AgreementResult result = compare_silhouettes(fast_target, raymarch_target, sky_ref);
-    std::cout << "[AgreementMatrix] " << world_name << "/" << camera_name
-              << ": disagreement_fraction=" << result.disagreement_fraction << " covered_a=" << result.covered_a
-              << " covered_b=" << result.covered_b << " (of " << (kMatrixWidth * kMatrixHeight) << " px)\n";
-
-    ASSERT_GT(result.covered_a, 0u) << "sanity: '" << world_name << "'/" << camera_name
-                                     << " tessellated path must see SOME geometry, not pure sky";
-    ASSERT_GT(result.covered_b, 0u) << "sanity: '" << world_name << "'/" << camera_name
-                                     << " raymarch path must see SOME geometry, not pure sky";
-
-    // I-4 (controller fix round 1): the recorded 'disagreement_fraction',
-    // 'covered_a', and 'covered_b' are now themselves checked claims, not
-    // merely the band the test derives from them -- see recorded_double()/
-    // recorded_uint()'s own header comment for why this was missing and
-    // what it would have let slip through unnoticed (a recorded
-    // disagreement_fraction inflated relative to what this run actually
-    // measures, silently widening this case's own band via band_for()
-    // reading the SAME inflated number).
-    EXPECT_NEAR(result.disagreement_fraction, recorded_double(world_name, camera_name, "disagreement_fraction"),
-                1e-9)
-        << "'" << world_name << "'/" << camera_name
-        << "': live disagreement_fraction does not match agreement_bands.json's recorded value -- "
-           "the recorded number is no longer a faithful measurement of this world/camera";
-    EXPECT_EQ(result.covered_a, recorded_uint(world_name, camera_name, "covered_a"))
-        << "'" << world_name << "'/" << camera_name << "': live covered_a does not match the recorded value";
-    EXPECT_EQ(result.covered_b, recorded_uint(world_name, camera_name, "covered_b"))
-        << "'" << world_name << "'/" << camera_name << "': live covered_b does not match the recorded value";
-
-    const double band = band_for(world_name, camera_name);
-    EXPECT_LE(result.disagreement_fraction, band)
-        << "'" << world_name << "'/" << camera_name << " disagreement_fraction "
-        << (result.disagreement_fraction * 100.0) << "% exceeds its pinned band " << (band * 100.0)
-        << "% (agreement_bands.json)";
-
-    // SR-30, checked LIVE, not narrated: re-render the reference with every
-    // node except the ground plane deleted, and confirm the band's own
-    // power to detect that (or documented lack of it) matches what
-    // agreement_bands.json claims.
-    const AgreementResult probe = bare_ground_probe(world, fast_target, camera, scene.lighting, sky_ref);
-    std::cout << "[AgreementMatrix] " << world_name << "/" << camera_name
-              << " SR-30 PROBE (bare ground): disagreement_fraction=" << probe.disagreement_fraction
-              << " covered_a=" << probe.covered_a << " covered_b=" << probe.covered_b << "\n";
-
-    const bool live_detects = probe.disagreement_fraction > band;
-    const bool recorded_detects = recorded_detects_total_deletion(world_name, camera_name);
-
-    // THE LINE fix round 2 adds (review: "PARTIALLY ADDRESSED -- the honesty
-    // is in the data file and absent from the test surface"): every case
-    // prints its own verdict, not just its raw numbers, so a human scanning
-    // 30 green ctest lines (or CK-2) sees which ones constrain real scene
-    // geometry without having to cross-reference agreement_bands.json at
-    // all. Gated on `recorded_detects` (the committed claim just verified
-    // above), not `live_detects` -- the printed verdict is a restatement of
-    // what this run is CHECKING, the same source EXPECT_EQ below reads.
-    std::cout << "[AgreementMatrix] " << world_name << "/" << camera_name << " band=" << (band * 100.0) << "% "
-              << (recorded_detects
-                      ? "VERDICT: DISCRIMINATING -- this case's band would catch its reference's entire scene "
-                        "geometry being deleted.\n"
-                      : "VERDICT: NON-DISCRIMINATING -- this case's band constrains NO scene geometry today (see "
-                        "agreement_bands.json's non_discriminating_summary/worlds_with_no_discriminating_camera).\n");
-
-    EXPECT_EQ(live_detects, recorded_detects)
-        << "'" << world_name << "'/" << camera_name << "': live SR-30 probe "
-        << (live_detects ? "DETECTS" : "does NOT detect") << " total geometry deletion (probe disagreement "
-        << (probe.disagreement_fraction * 100.0) << "% vs band " << (band * 100.0)
-        << "%), but agreement_bands.json's 'detects_total_deletion' claims "
-        << (recorded_detects ? "true" : "false")
-        << " -- SR-30 requires this claim be checked every run, not recorded once and trusted";
+    const Result<WorldDesc> bare = strip_to_ground_plane_only(world);
+    ASSERT_TRUE(bare) << bare.error().context;
+    ASSERT_EQ(bare->sdf.nodes.size(), 1u);
+    EXPECT_EQ(bare->sdf.nodes[0].kind, static_cast<uint32_t>(spade::SdfPrim::plane));
+    EXPECT_EQ(bare->sdf.nodes[0].op, static_cast<uint32_t>(spade::SdfOp::none));
+    EXPECT_EQ(bare->materials.size(), world.materials.size()) << "everything but the nodes is copied verbatim";
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    ShippedWorlds, AgreementMatrix, ::testing::ValuesIn(matrix_case_keys()),
-    [](const ::testing::TestParamInfo<std::string>& info) {
-        std::string name = info.param;
-        for (char& c : name) {
-            if (c == '-' || c == '|') c = '_';
-        }
-        return name;
-    });
+TEST(AgreementProbe, StripRefusesAWorldWithNoGroundPlane) {
+    const Result<WorldDesc> bare = strip_to_ground_plane_only(box_world(1.0f));
+    ASSERT_FALSE(bare);
+    EXPECT_EQ(bare.error().code, spade::Code::not_found);
+}
 
-// ===========================================================================
-// THE DUPLICATION GUARD. This suite owns tests/fixtures/camera_bookmarks.json
-// so that no test depends on project content (see the CAMERA BOOKMARKS block
-// above). The cost of owning a copy is that it can drift from the shipped
-// bookmarks; this is what turns that cost from hoped-against into checked.
-//
-// ⭐ IT DISCRIMINATES BETWEEN TWO ABSENCES, AND THAT IS THE WHOLE DESIGN:
-//   * the project tree is NOT THERE at all -> SKIP. A standalone spade
-//     checkout legitimately has no Kat project, and failing there would make
-//     the engine suite depend on Kat again through the back door.
-//   * the tree IS there but a scene or a bookmark is missing -> FAIL. That is
-//     not a configuration, it is a move, and a move is exactly what cost this
-//     suite thirty tests once already.
-// "Absent" and "empty" are different findings. A guard that treats them alike
-// is the fail-open shape this file has already paid for.
-// ===========================================================================
-
-TEST(AgreementFixture, BookmarksMatchTheShippedScenes) {
-    const std::filesystem::path scenes = project_scenes_dir();
-    if (!std::filesystem::exists(scenes)) {
-        GTEST_SKIP() << "no project scene tree at " << scenes
-                     << " -- standalone spade checkout; the fixture stands on its own here, and "
-                        "this guard is the only thing in the suite that ever looks outside it.";
-    }
-
-    const Json& bookmarks = fixture_bookmarks().at("bookmarks");
-    ASSERT_GE(bookmarks.size(), kShippedWorldNames.size())
-        << "the fixture covers fewer worlds than the matrix runs -- a world was added to "
-           "kShippedWorldNames without its bookmarks";
-
-    for (const std::string& world : kShippedWorldNames) {
-        const std::filesystem::path path = scenes / (world + ".kscene");
-        std::string text;
-        ASSERT_TRUE(read_file(path.string(), text))
-            << "the project tree exists but " << path << " does not. The scenes moved again. "
-               "Re-harvest tests/fixtures/camera_bookmarks.json and update SPADE_SCENES_DIR in "
-               "tests/CMakeLists.txt.";
-        const Json shipped = Json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
-        ASSERT_FALSE(shipped.is_discarded()) << path << " is not valid JSON";
-
-        const auto shipped_bm = shipped.find("camera_bookmarks");
-        ASSERT_NE(shipped_bm, shipped.end()) << path << " has no camera_bookmarks object";
-
-        for (const std::string& name : kBookmarkNames) {
-            const auto mine = bookmarks.at(world).find(name);
-            ASSERT_NE(mine, bookmarks.at(world).end())
-                << "fixture is missing " << world << "/" << name;
-            const auto theirs = shipped_bm->find(name);
-            ASSERT_NE(theirs, shipped_bm->end())
-                << path << " is missing the '" << name << "' bookmark that the fixture carries";
-            EXPECT_EQ(*mine, *theirs)
-                << world << "/" << name
-                << ": the suite's fixture and the shipped scene document disagree. One of them "
-                   "moved. The fixture is what the matrix measures, so an unexplained change here "
-                   "means the recorded agreement bands describe a camera nobody ships any more.";
-        }
-    }
+TEST(AgreementProbe, StripRefusesToGuessBetweenTwoPlaneLeaves) {
+    WorldBuilder b = base_builder();
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).plane(glm::vec3(1.0f, 0.0f, 0.0f), 4.0f).union_();
+    const Result<WorldDesc> bare = strip_to_ground_plane_only(build_or_fail(b));
+    ASSERT_FALSE(bare);
+    EXPECT_EQ(bare.error().code, spade::Code::invalid_argument);
 }

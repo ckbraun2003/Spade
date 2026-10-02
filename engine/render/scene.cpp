@@ -17,8 +17,8 @@ namespace {
 // ---------------------------------------------------------------------------
 // local_to_world_of -- SdfTransform::world_to_local is stored PRE-INVERTED
 // (world/sdf.hpp), so recovering the forward, local-to-world matrix a draw
-// item needs is one glm::inverse() call. This is dronesim/spade/raster.cpp's
-// own localToWorldOf(), verbatim (S7a Task R1 brief, SR-9): float, not
+// item needs is one glm::inverse() call. Ported verbatim from the interim
+// raster this module replaced (S7a Task R1 brief, SR-9): float, not
 // double -- world_to_local is already fp32, so inverting in double would
 // manufacture precision the source data never had.
 // ---------------------------------------------------------------------------
@@ -27,9 +27,9 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// ground_plane_y / world_bounds_of -- PORTED, not re-derived, from
-// dronesim/spade/raster.cpp's groundPlaneY()/computeWorldBounds() (~lines
-// 250-330; task-R1-brief.md Step 2): same heuristics, same constants, same
+// ground_plane_y / world_bounds_of -- PORTED, not re-derived, from the
+// interim raster's groundPlaneY()/computeWorldBounds() (task-R1-brief.md
+// Step 2): same heuristics, same constants, same
 // default-box rule (PA-5). The only changes from the source are cosmetic --
 // snake_case names to match this module's convention, and the local Aabb
 // type renamed to WorldBoundsD to avoid colliding with render::Aabb

@@ -86,9 +86,9 @@ struct ScreenPoint {
 };
 
 // tan32() (S7a Task R6; RELOCATED to render/scene.hpp at Task R8 fix round 1,
-// review Minor 3) -- the wireframe rasterizer's own projectCameraSpace called
-// std::tan() directly, which was legal there (dronesim/spade/ is kat-side,
-// outside this engine's determinism contract); this file lives under
+// review Minor 3) -- the interim wireframe rasterizer this replaced called
+// std::tan() directly, which was legal there (it lived outside this
+// engine's determinism contract); this file lives under
 // engine/render/, which IS scanned by
 // tools/tests/test_m1b_bar.cpp's BitPortability.NoLibmTranscendentalInEngineSource,
 // so it uses scene.hpp's shared, sin32/cos32-built tan32() instead -- now
@@ -1150,7 +1150,7 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 // took a ground-bearing frame from 77.6ms to 31.3ms). The same species of
 // defect R5b's own review caught in this file (allocation-per-triangle).
 //
-// S7a Task VQ-B (ruling SR-34/SR-37 -- the user's CK-2 verdict, "standard
+// S7a Task VQ-B (ruling SR-34/SR-37 -- the user's verdict, "standard
 // resolution, just low detail and feature"; this task fixes resolution
 // only, and this hoist recovers what Task VQ-A's elevation-based sky
 // gradient cost by killing this pass's OLD "skip ray reconstruction for a

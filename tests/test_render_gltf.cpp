@@ -4,8 +4,8 @@
 // WHAT THIS FILE HAS TO PROVE:
 //
 //   THE REAL FIXTURE LOADS. tests/fixtures/render/gate-ring.gltf is a vendored
-//   copy of content/meshes/track/gate-ring.gltf (the engine tree must not read
-//   from content/ at runtime) -- one primitive, POSITION accessor count 256,
+//   copy of a generated gate-ring mesh (this suite reads only fixtures it
+//   owns) -- one primitive, POSITION accessor count 256,
 //   indices accessor count 384, both confirmed below by parsing the fixture's
 //   own JSON directly (not trusting the loader to tell us its own input was
 //   what we think it was).
@@ -96,8 +96,8 @@ template <class T>
 }
 
 // SPADE_TESTS_DIR is baked in at configure time (tests/CMakeLists.txt) as an
-// absolute path -- the kat testing spec's no-CWD rule, same discipline every
-// other fixture-reading test in this target already follows.
+// absolute path -- a test must not depend on its working directory, the same
+// discipline every other fixture-reading test in this target already follows.
 [[nodiscard]] std::filesystem::path fixture_path(const char* name) {
     return std::filesystem::path(SPADE_TESTS_DIR) / "fixtures" / "render" / name;
 }

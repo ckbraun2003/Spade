@@ -710,7 +710,7 @@ TEST(RenderShading, AnalyticGroundPicksTheNearestOfSeveralPlanes) {
 }
 
 // ===========================================================================
-// 4. Task VQ-A (rulings SR-33/SR-35): the fix round for the user's CK-2
+// 4. Task VQ-A (rulings SR-33/SR-35): the fix round for the user's
 //    verdict "the rendering is pretty horrible". Steps 1-3 of
 //    task-VQ-A-brief.md -- each a regression test the OLD (pre-fix)
 //    defaults/formula would genuinely have failed; each is verified below
@@ -723,7 +723,7 @@ TEST(RenderShading, DefaultMaterialUnderWorstCaseLightingLeavesHeadroomNoChannel
     // formula there is base * (ambient_color + sun_color*sun_intensity).
     // Under the OLD default (pure white base_color, ambient 0.1, sun_color
     // (1,1,1), sun_intensity 1): 1.0 * (0.1 + 1.0) = 1.1, clipping to byte
-    // 255 on every channel -- exactly CK-2's "blown out" verdict. This
+    // 255 on every channel -- exactly the "blown out" verdict. This
     // constructs that worst case directly (a normal set to the scene's OWN
     // normalized sun_direction, so N.L is exactly 1 by construction, not
     // approximated by geometry) and asserts headroom remains under the
