@@ -754,8 +754,16 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
     spade::render::RenderOptions o;
     o.overlays = false;     // no ground, no bounds worth drawing
     o.ground_grid = false;  // and no ground for the grid to sit on
-    o.shadows = !heatmap;   // the slice would shadow the drone and the drone the slice
-    o.horizon_blend_strength = blur;
+    // The design's "shadows off in the heatmap view". A no-op in this scene
+    // either way: the shadow map is baked from statics at world load, the
+    // empty world has none, and dynamics (drone, cells) neither cast nor receive.
+    o.shadows = !heatmap;
+    // The heatmap's colour IS the datum, and the CPU path applies the
+    // atmospheric horizon term to every material, unlit included -- so with
+    // blur > 0 the cells would fade toward the sky by distance and stop
+    // matching the legend (and the GL path, which ignores options). A field
+    // channel is exempt from it (Rendering's rule).
+    o.horizon_blend_strength = heatmap ? 0.0f : blur;
     return o;
 }
 

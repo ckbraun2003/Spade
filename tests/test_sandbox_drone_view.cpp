@@ -137,6 +137,64 @@ TEST(SandboxDroneView, AHeatmapPixelIsExactlyItsPaletteColour) {
     EXPECT_EQ(px[at + 2], spade::render::to_byte(want.r));
 }
 
+// The test above proves the palette's bytes reach the pixel, but in a uniform
+// field ANY cell would do. Here the field is lopsided -- one hovering rotor's
+// plume at x = +0.5 -- and two mirror-image pixels must each show the bin of
+// the cell their own ray hits: one in the plume, one in still air. A slice that
+// was mirrored, shifted or mis-scaled shows the wrong colour in at least one.
+// (Rendering's review.) The ray is raster_cpu's own: pixel centre at +0.5,
+// NDC y up, direction (x_ndc * aspect / f, y_ndc / f, -1) for an identity
+// camera orientation.
+TEST(SandboxDroneView, EachPixelShowsTheCellItsRayHits) {
+    spade::WorldDesc world;
+    DroneDrawBinding b;
+    spade::render::RenderScene scene;
+    ASSERT_NO_FATAL_FAILURE(drone_scene(world, b, scene));
+    const spade::render::Camera camera = camera_on_z(3.0f);
+
+    AirField field;
+    field.medium.density = 1.225f;
+    field.rotors[0].hub_world = glm::vec3(0.5f, 0.0f, 0.0f);
+    field.rotors[0].thrust_axis_world = glm::vec3(0.0f, 1.0f, 0.0f);
+    field.rotors[0].radius = 0.12f;
+    field.rotors[0].thrust_coeff = 1.2e-5f;
+    field.rotors[0].omega = 452.0f;
+    field.rotors[0].density = 1.225f;
+    const float range = 12.0f;
+    const SliceSpec s = camera_facing_slice(camera, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    ASSERT_EQ(s.right, glm::vec3(1.0f, 0.0f, 0.0f));
+    append_slice_items(b, s, field, range, scene.dynamics);
+    const std::vector<uint8_t> px = render_cpu(scene, camera);
+
+    const double f = 1.0 / std::tan(0.5 * static_cast<double>(camera.fov_y_radians));
+    const double aspect = static_cast<double>(kW) / static_cast<double>(kH);
+    uint32_t bins[2] = {0u, 0u};
+    const uint32_t pixel_x[2] = {57u, kW - 1u - 57u};  // aimed into the plume, and its mirror image
+    for (int k = 0; k < 2; ++k) {
+        const uint32_t x = pixel_x[k], y = 46u;
+        const double x_ndc = 2.0 * (x + 0.5) / kW - 1.0;
+        const double y_ndc = 1.0 - 2.0 * (y + 0.5) / kH;
+        // The ray from (0, 0, 3) along (x_ndc*aspect/f, y_ndc/f, -1) meets z = 0 at t = 3.
+        const double hit_x = 3.0 * x_ndc * aspect / f;
+        const double hit_y = 3.0 * y_ndc / f;
+        const double ci = (hit_x / s.width + 0.5) * kSliceCells;
+        const double cj = ((hit_y - s.center.y) / s.height + 0.5) * kSliceCells;
+        // Far enough inside its cell that rounding cannot move it to a neighbour.
+        ASSERT_GT(ci - std::floor(ci), 0.1);
+        ASSERT_LT(ci - std::floor(ci), 0.9);
+        ASSERT_GT(cj - std::floor(cj), 0.1);
+        ASSERT_LT(cj - std::floor(cj), 0.9);
+        const auto i = static_cast<uint32_t>(ci), j = static_cast<uint32_t>(cj);
+        bins[k] = speed_bin(glm::length(field.velocity(slice_cell_center(s, i, j))), range);
+        const glm::vec3 want = heatmap_color(bins[k]);
+        const size_t at = (static_cast<size_t>(y) * kW + x) * 4u;
+        EXPECT_EQ(px[at + 0], spade::render::to_byte(want.b)) << "pixel " << x << " cell " << i << "," << j;
+        EXPECT_EQ(px[at + 1], spade::render::to_byte(want.g)) << "pixel " << x << " cell " << i << "," << j;
+        EXPECT_EQ(px[at + 2], spade::render::to_byte(want.r)) << "pixel " << x << " cell " << i << "," << j;
+    }
+    EXPECT_GT(bins[0], bins[1] + 8u) << "the two pixels must see different air, or a mirror would pass";
+}
+
 TEST(SandboxDroneView, TheHoverSliceSpansSeveralBins) {
     auto drone = DroneSim::create(DronePhysicsOptions{});
     ASSERT_TRUE(drone.has_value());
