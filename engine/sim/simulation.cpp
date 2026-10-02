@@ -15,6 +15,7 @@
 #include "compute/vulkan/backend.hpp"
 #include "core/rng.hpp"
 #include "core/validate.hpp"
+#include "objects/behavior.hpp"
 #include "physics/integrator.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -835,6 +836,17 @@ Result<void> Simulation::step(uint64_t n) {
     // this path -- the GPU is authoritative for these `n` steps.
     // -------------------------------------------------------------------
     if (vulkan_backend_) {
+        // Behaviors run only in the cpu schedule; the recorded GPU chain has no
+        // slot for them. So an attached registry is refused here, before
+        // anything moves, rather than skipped (SL6: a refusal, never a silent
+        // fallback). Any non-empty registry counts, including one whose
+        // behaviors all declare a record_gpu half, because nothing calls that
+        // half yet. step(0) above is unaffected: it runs no behaviors.
+        if (behaviors_ != nullptr && behaviors_->size() > 0) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "behaviors are CPU-only today; the Vulkan step cannot run "
+                                         "them and refuses rather than skipping them (SL6)"});
+        }
         if (Result<void> flushed = flush_structural(); !flushed) {
             return flushed;
         }
@@ -2707,6 +2719,17 @@ Result<const WorldParams*> Simulation::world_params(uint32_t world_index) const 
     const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
     if (!params) return std::unexpected(params.error());
     return &(*params)[world_index];
+}
+
+Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 pos) const {
+    const Result<const WorldParams*> params = world_params(world_index);
+    if (!params) return std::unexpected(params.error());
+    const Result<std::span<const DrydenState>> dryden = arenas_.array(dryden_id_);
+    if (!dryden) return std::unexpected(dryden.error());
+    // Paired by the same world index rebuild_views() uses, so this is the
+    // DrydenMedium the ForceElements pass builds for this world.
+    const DrydenMedium medium((*dryden)[world_index], configs_[world_index].turbulence);
+    return medium.sample(**params, pos);
 }
 
 }  // namespace spade
