@@ -24,8 +24,8 @@
 // ⚠⚠ SO THE EXPECTATIONS BELOW ARE LITERALS. Not a loop, not a helper, not a
 // second expression of the mapping -- bytes written out by hand. That is the
 // entire point: an oracle derived from the code under test cannot contradict
-// it, and this realm has already paid for that twice (competition-700's
-// arithmetic held to the last digit in two files FOR OPPOSITE REASONS).
+// it, and this has already been paid for (an airframe's arithmetic once held
+// to the last digit in two files FOR OPPOSITE REASONS).
 //
 // ⭐ NAMING WHICH ARM PROVES WHICH, per the standing bar minted after a
 // production mutation arm FAILED GREEN elsewhere in this estate:

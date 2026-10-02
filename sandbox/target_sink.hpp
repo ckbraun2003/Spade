@@ -1,12 +1,12 @@
 // TargetSink -- Plan C task C1, the seam SL11 names (SL11's own word was
 // `Presenter`; see below for why that name is refused).
 //
-// ⛔ THE NAME `Presenter` IS REFUSED, RULED 2026-09-18. editor/ui/viewport/
-// presenter.h:84 already declares `class Presenter`, which receives frame
-// packets from the C5 host and puts them in a widget -- very nearly this
-// seam's job. That would be a FOURTH homograph in an estate that has already
-// paid for three: FramePool (three distinct objects), `component` (two live
-// senses), and this very directory's spade_sandbox beside v1's Sandbox target.
+// ⛔ THE NAME `Presenter` IS REFUSED, RULED 2026-09-18. A consumer's editor
+// already declares a `Presenter` that receives frame packets from its host
+// and puts them in a widget -- very nearly this seam's job. That would be a
+// FOURTH homograph after three already paid for: FramePool (three distinct
+// objects), `component` (two live senses), and this very directory's
+// spade_sandbox beside v1's Sandbox target.
 //
 // The criterion, which outlives the name: NAME THE SEAM FOR THE TYPE IT
 // CONSUMES. This one takes a RenderTarget; the editor's takes a frame packet.
@@ -19,9 +19,8 @@
 // honest answer to it. Always-false means "run forever"; always-true means
 // "one frame". Both are ARBITRARY VALUES INVENTED TO SATISFY AN INTERFACE, and
 // an arbitrary answer on an interface is how a loop ends up asking the wrong
-// object when to stop. It is the same shape as sim_tick being non-optional and
-// zero-defaulted in both C5 frame mirrors: the fabricated value is LEGAL, so
-// the fabrication is silent.
+// object when to stop. It is the same shape as a required field defaulted to
+// zero: the fabricated value is LEGAL, so the fabrication is silent.
 //
 // Loop termination is the APPLICATION's concern. C0/C1 have no loop at all.
 // C2's windowed sink exposes closing on its own concrete type.
@@ -47,9 +46,9 @@ namespace spade::sandbox {
 // filtered loader, and absent from GL 1.1's header on the system path, so the
 // swap is ours to do); the headless sink needs BGRX -> RGB for its PPM. Those
 // are two destinations for ONE fact about the source layout, and writing them
-// as two loops would be "two expressions that happen to agree" -- this realm's
-// own named defect, the one that let competition-700's arithmetic hold to the
-// last digit in two files FOR OPPOSITE REASONS.
+// as two loops would be "two expressions that happen to agree" -- a named
+// defect: two copies of one fact can agree to the last digit FOR OPPOSITE
+// REASONS, and then neither can fail.
 //
 // So both sinks call this, and the reorder exists once.
 //

@@ -9,7 +9,7 @@
 # ⚠⚠ THE WINDOWING DEPENDENCIES ARE LINKED ONLY WHEN THERE IS A BACKEND, AND
 # THAT IS A LINK-CORRECTNESS DECISION RATHER THAN A SIZE ONE. ImGui's OpenGL3
 # backend references GL symbols at LINK time even when no GL call of ours is
-# reached. On an image with no GL (measured 2026-09-18 on kat-ci-linux:local --
+# reached. On an image with no GL (measured 2026-09-18 on a Linux CI image --
 # GL_HEADERS_PRESENT=no, X11=no, EGL=no) GLFW is built with no backend, so
 # linking imgui there would fail the link for a window nobody asked it to open.
 #

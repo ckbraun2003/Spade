@@ -13,10 +13,10 @@
 // configured against a scratch install prefix.
 //
 // !! NOTHING CURRENTLY RUNS THIS PROGRAM. It used to be driven by
-// .github/workflows/spade.yml (deleted 2026-09-18) and then by Kat's
-// docker/run-ci-*.{sh,ps1} consumer legs, which went away on 2026-09-28 when
-// Spade was extracted into this repository -- proving Spade is not Kat's gate's
-// job any more. The PROGRAM is still correct and still the right check; the leg
+// .github/workflows/spade.yml (deleted 2026-09-18) and then by a consumer
+// project's own CI legs, which stopped covering it on 2026-09-28 when Spade
+// became its own repository. The PROGRAM is still correct and still the right
+// check; the leg
 // that invokes it has to be rebuilt in this repo's own gate. Recorded in
 // CONTRIBUTING.md as owed rather than left to be discovered by someone
 // wondering why an obviously-important smoke never fails.

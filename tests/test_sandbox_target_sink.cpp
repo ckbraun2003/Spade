@@ -12,9 +12,9 @@
 // ⛔ THE OBVIOUS TEST CANNOT FAIL. A sink that holds a REFERENCE to the
 // caller's buffer makes "what the sink got" and "what render produced"
 // trivially equal, and the assertion then passes for ANY sink, correct or not.
-// That is two copies that move together reported as agreement -- this realm's
-// competition-700 finding, where the same arithmetic held to the last digit in
-// two files FOR OPPOSITE REASONS and could not fail in either.
+// That is two copies that move together reported as agreement -- the same
+// shape as arithmetic that holds to the last digit in two files FOR OPPOSITE
+// REASONS and so cannot fail in either.
 //
 // So the subject here is not the pointer. It is WHAT THE SANDBOX EMITS: the
 // PPM it writes. That round-trips through a real channel reorder and a real

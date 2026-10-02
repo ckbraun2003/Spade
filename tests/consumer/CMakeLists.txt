@@ -1,6 +1,6 @@
 # ------------------------------------------------------------------------------
-# Out-of-tree find_package(spade) consumer smoke (S5 Task 8: the kat build
-# wiring). This is a SEPARATE, STANDALONE CMake project -- NOT add_subdirectory'd
+# Out-of-tree find_package(spade) consumer smoke (added at S5 Task 8). This is
+# a SEPARATE, STANDALONE CMake project -- NOT add_subdirectory'd
 # from CMakeLists.txt or tests/CMakeLists.txt -- because that is the
 # whole point of it: the rest of tests/ links spade::* as in-tree
 # build-tree targets and never touches spadeConfig.cmake/spadeTargets.cmake at
