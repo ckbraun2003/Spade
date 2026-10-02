@@ -261,6 +261,16 @@ struct PassDurationsNs {
     uint32_t implausible_samples = 0;
 };
 
+// What the Vulkan step recorder put into its one recorded command buffer, as
+// counted while recording it. A diagnostic, like PassDurationsNs: tests read
+// it to check that every adjacent pair of dispatches has a barrier between
+// them, which a parity run on a forgiving driver cannot see.
+struct RecordedChain {
+    uint32_t dispatches = 0;   // vkCmdDispatch calls, across every substep
+    uint32_t barriers = 0;     // vkCmdPipelineBarrier calls between them
+    uint32_t sort_stages = 0;  // bitonic stages per CollisionDynamic pass
+};
+
 // ---------------------------------------------------------------------------
 // RunParams -- REMOVED (S6 Task 6b, checkpoint-1 heterogeneous-worlds
 // ruling). Task 6 introduced this struct to carry world 0's ContactParams/

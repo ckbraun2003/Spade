@@ -210,17 +210,21 @@ struct PassParams {
 //     slot 3  CollisionStatic   1
 //     slot 4  CollisionDynamic  2 + sort_stage_count()
 //     slot 5  Integrate         1
-//     slot 6  SensorSynthesis   1                    (per-SENSOR grid)
+//     slot 6  SensorSynthesis   2                    sensor_imu, sensor_gnss (per-SENSOR grid)
 //     slot 7  Publish           0                    inert -- nothing recorded
 //                              ---
-//                               8 + sort_stage_count()
+//                               9 + sort_stage_count()
+//
+// This table is documentation, not an input: record() finds the last dispatch
+// from what it actually emitted, and recorded_chain() reports the counts
+// (tests/test_gpu_state_mirror.cpp checks both against this tally).
 //
 // The barrier rule above is unchanged and covers all three kinds of hazard --
 // between passes, between the sort chain's stages, and between rotors and drag
 // inside slot 1 -- by the same clause, rather than special-casing any of them.
 // ---------------------------------------------------------------------------
-// NINE PIPELINES, ONE LAYOUT (four at S6 Task 6, three more at Task 7, three
-// more at Task 8, less the retired stub). Every kernel this class dispatches is
+// TEN PIPELINES, ONE LAYOUT (four at S6 Task 6, three more at Task 7, three
+// more at Task 8, less the retired stub, plus sensor_gnss). Every kernel this class dispatches is
 // a distinct VkShaderModule/VkPipeline pair created from the SAME
 // VkPipelineLayout -- they share one descriptor set layout (StateMirror's) and
 // one push-constant range, because they read the same pool of bindings. The
@@ -341,6 +345,9 @@ public:
     // read any time after submit() has returned.
     [[nodiscard]] Result<PassDurationsNs> pass_durations_ns() const;
 
+    // What record() put into the command buffer (compute/backend.hpp).
+    [[nodiscard]] RecordedChain recorded_chain() const noexcept { return chain_; }
+
 private:
     StepRecorder() = default;
     void destroy() noexcept;
@@ -433,6 +440,9 @@ private:
     // (a device that cannot time compute work still gets a valid, merely
     // !supported() object -- see PassTimestamps's own class comment).
     std::unique_ptr<PassTimestamps> timestamps_;
+
+    // Counted by record(), never written anywhere else.
+    RecordedChain chain_{};
 };
 
 }  // namespace spade::compute
