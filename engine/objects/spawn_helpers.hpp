@@ -5,7 +5,7 @@
 // one-body-at-a-time spawn().
 //
 // SEEDED, NEVER AMBIENT. Placement is drawn from core/rng.hpp's splitmix64
-// streams with an explicit domain tag, exactly as errata-R4 requires -- never
+// streams with an explicit domain tag, as the stream-derivation rule requires -- never
 // std::random_device, never a global generator, never a clock. v1's own
 // RandomizeVelocity/RandomizeColor seeded mt19937 from std::random_device on
 // every call, which is precisely why the v1 baseline captures can never be a

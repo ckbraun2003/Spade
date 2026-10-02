@@ -193,7 +193,7 @@ struct ImuSensorRef {
 
 // What a poll_imu() call returns: samples in the caller's buffer, the index to
 // resume from, and how many were lost to the ring's wrap. See
-// sensors/rings.hpp for the full TA5 semantics.
+// sensors/rings.hpp for the full poll semantics.
 using ImuPoll = sensors::PollResult<sensors::ImuSample>;
 
 // ---------------------------------------------------------------------------
@@ -497,7 +497,7 @@ public:
     // create -- validate the world set, allocate every arena, seed every
     // world, and pin the step decomposition.
     //
-    // FIXED dt, IMMUTABLE AT CREATION (spec C5/§3). `dt_ns` is the STEP
+    // FIXED dt, IMMUTABLE AT CREATION (L1; engine design §3). `dt_ns` is the STEP
     // duration in nanoseconds and `substeps` the per-step substep count; the
     // effective substep duration is dt_ns / substeps. Nanoseconds because the
     // step rate is an integer fact that must not accumulate float error over a
@@ -727,7 +727,7 @@ public:
     // TWO PHASES, AND THE SPLIT IS DELIBERATE:
     //
     //   * SLOT RESERVATION IS IMMEDIATE, in call order, lowest-free-first --
-    //     which is exactly spec §4's "Spawn/despawn (C5 calls) allocate/free
+    //     which is exactly spec §4's "Spawn/despawn allocate/free
     //     slots deterministically in call order within capacity". That is what
     //     lets this return a usable BodyRef instead of a promise.
     //   * STATE INITIALIZATION AND ACTIVATION ARE QUEUED and applied at the
@@ -1124,7 +1124,7 @@ public:
     // coincidence: a set reseeded to S is seed-for-seed the set
     // `replicate(prototype, N, S)` would have built, so "reseed this set" and
     // "rebuild it with a new scene seed" cannot drift apart. It also inherits
-    // errata-R4's domain separation unchanged -- adding a fifth world does not
+    // the stream derivation's domain separation unchanged -- adding a fifth world does not
     // perturb the first four's roots.
     //
     // ---------------------------------------------------------------------
@@ -1301,8 +1301,8 @@ public:
 
     // ---------------------------------------------------------------------
     // poll_imu -- the samples this sensor has produced since `since_index`
-    // that are still resident in its fixed-depth ring (editor tech spec TA5;
-    // sensors/rings.hpp for the full semantics).
+    // that are still resident in its fixed-depth ring (sensors/rings.hpp has
+    // the full semantics).
     //
     // Copies into `out` and returns a span over the filled prefix, oldest
     // first, together with the index to pass back next time and how many
@@ -1333,7 +1333,7 @@ public:
 
     // ---------------------------------------------------------------------
     // poll_gnss -- the fixes this receiver has produced since `since_index`
-    // that are still resident in its fixed-depth ring. Same TA5 semantics as
+    // that are still resident in its fixed-depth ring. Same semantics as
     // poll_imu(), over the same generic ring_poll<T>.
     //
     // ⚠ A RECEIVER'S RING COVERS FAR MORE WALL TIME THAN AN IMU'S, and the

@@ -1,7 +1,7 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// C5: the world reference (engine design spec, "worlds loadable by path or
+// The world reference (engine design spec, "worlds loadable by path or
 // handle") -- a WorldDesc a caller can name either by FILE PATH or by an
 // already-resolved, in-memory value, plus resolve_world() to collapse either
 // spelling to the WorldDesc a Simulation is actually built from.

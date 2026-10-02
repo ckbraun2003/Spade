@@ -126,7 +126,7 @@ struct WorldSetDesc {
 // each with its own rng root derived from a single scene seed.
 //
 // The derivation is core/rng.hpp's, verbatim -- splitmix64(scene_seed ^
-// fnv1a64("world") ^ index) -- which is the errata-R4 discipline applied one
+// fnv1a64("world") ^ index) -- the same stream-derivation rule applied one
 // level up: the domain tag keeps world 0's root from colliding with the bare
 // scene seed, and every per-world system then derives ITS stream from the world
 // root under its own tag. Adding a fifth world therefore does not perturb the
@@ -145,8 +145,7 @@ struct WorldSetDesc {
 inline constexpr std::string_view kWorldSeedDomainTag = "world";
 
 // ---------------------------------------------------------------------------
-// C5: "N worlds from this world file, capacities X" -- the training-fleet
-// constructor, spelled over a WorldRef (world/world_ref.hpp) so a caller can
+// "N worlds from this world file, capacities X" -- the fleet constructor, spelled over a WorldRef (world/world_ref.hpp) so a caller can
 // name the world by FILE PATH or hand over an already-built WorldDesc.
 //
 // Resolves `ref` EXACTLY ONCE (a path is loaded and validated a single time,
