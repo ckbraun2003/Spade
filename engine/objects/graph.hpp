@@ -48,12 +48,10 @@
 // layer, and it is why leaving hierarchy unowned here is safe rather than
 // merely unfinished.
 //
-// It is not free, though, and the bill lands on the serializer: Task 6 writes
-// `parent` as the parent's NAME and resolves it on load, so an object whose
-// parent was destroyed serializes a name that resolves to nothing. Whoever
-// builds that pass must decide -- explicitly -- whether a dangling parent is
-// an Error or silently re-roots the child. Do not let it be decided by
-// whichever branch happens to run first.
+// It is not free, though, and the bill lands on the serializer: the serializer
+// writes `parent` as the parent's INDEX in the objects array, and an object
+// whose parent was destroyed has no index to write. to_json() refuses it with
+// an Error rather than silently re-rooting the child (serialize.hpp).
 
 #pragma once
 

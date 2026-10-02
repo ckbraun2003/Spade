@@ -12,8 +12,8 @@
 // spade::rng -- the determinism substrate. EVERY random draw in the engine
 // flows through this header (engine design spec section 3: "every stochastic
 // element (Dryden, sensor noise, spawn randomization) draws from per-world,
-// per-system splitmix64 streams domain-separated from the world seed -- the
-// errata-R4 discipline, engine-generic").
+// per-system splitmix64 streams domain-separated from the world seed"; see
+// docs/design/core/02-state-and-snapshot.md, "Randomness").
 //
 // The global constraints make the negative half of that rule explicit and
 // review-rejectable: no std::random_device, no rand(), no std::mt19937 seeded
@@ -88,10 +88,10 @@ constexpr uint64_t splitmix64_step(uint64_t& state) noexcept {
     return z ^ (z >> 31);
 }
 
-// splitmix64 as errata-R4's one-argument MIXER: one step over a state
-// initialized to `x`. R4 names the mixer for a stated reason -- "XOR alone is
-// a poor mixer and two implementations that pick differently will silently
-// diverge" -- so this is the named one, not an equivalent-looking substitute.
+// splitmix64 as the one-argument MIXER: one step over a state initialized to
+// `x`. The mixer is named rather than left to taste because XOR alone is a
+// poor mixer, and two implementations that pick differently would silently
+// diverge -- so this is the named one, not an equivalent-looking substitute.
 constexpr uint64_t splitmix64(uint64_t x) noexcept {
     uint64_t state = x;
     return splitmix64_step(state);
@@ -109,7 +109,7 @@ inline constexpr uint64_t kFnv1aPrime = 0x100000001B3ULL;
 // non-ASCII tag would hash its UTF-8 bytes.
 //
 // Note that fnv1a64("") is the offset basis, NOT zero. That is load-bearing:
-// R4 warns that `splitmix64(scene_seed ^ 0)` equals `splitmix64(scene_seed)`,
+// `splitmix64(scene_seed ^ 0)` equals `splitmix64(scene_seed)`,
 // so an untagged derivation hands index 0 the stream the raw seed would take.
 // Because even the empty tag contributes the offset basis, this formula has
 // no such collision.
@@ -158,11 +158,11 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
 //   row 0  state
 //   row 1  cached_gauss | has_cached
 //
-// Unlike layout.hpp's structs this one is not (yet) a GPU-mirrored std430
-// array element, so it is 8-byte aligned rather than padded to 16 -- an
-// array of Streams is a dense array of 16-byte records either way. If S6
-// mirrors streams to the device, the offsets asserted here are what the
-// generated Slang struct must reproduce.
+// A Stream is never an array of its own: it is embedded in registered rows
+// (DrydenState, ImuSensorRow, GnssSensorRow) that the Vulkan mirror uploads
+// byte for byte, so it is 8-byte aligned rather than padded to 16. The
+// offsets asserted here are what shaders/shared/layouts.slang's RngStream
+// reproduces.
 // ---------------------------------------------------------------------------
 struct Stream {
     uint64_t state = 0;         // the splitmix64 state; ALL of the entropy
@@ -277,27 +277,27 @@ static_assert(sizeof(Stream::state) + sizeof(Stream::cached_gauss) + sizeof(Stre
               "Stream has implicit padding: every byte must belong to a named field");
 
 // ---------------------------------------------------------------------------
-// The derivation (errata-R4 discipline, engine-generic):
+// The derivation (docs/design/core/02-state-and-snapshot.md, "Randomness"):
 //
 //     stream(world_seed, domain_tag, index)
 //         = Stream{ splitmix64(world_seed ^ fnv1a64(domain_tag) ^ index) }
 //
 // The three inputs are the three axes randomness varies along in this engine:
-// WHICH WORLD (world_seed -- itself derived from the scene seed by the host,
-// see R4), WHICH SYSTEM (domain_tag -- "dryden", "sensor.noise", "spawn",
+// WHICH WORLD (world_seed -- itself derived from a scene seed by the caller),
+// WHICH SYSTEM (domain_tag -- "dryden", "sensor.noise", "spawn",
 // ...), and WHICH INSTANCE within that system (index -- body slot, sensor
 // slot, rollout, ...).
 //
-// Why domain separation is mandatory rather than tidy, in R4's own terms:
+// Why domain separation is mandatory rather than tidy:
 // XOR-ing an index into a raw seed makes index 0 collide with the untagged
-// stream, so "a naive index XOR hands drone 0 the same stream the world would
-// take" -- correlated wind and sensor noise on precisely the vehicle being
+// stream, so a naive index XOR hands instance 0 the same stream the world would
+// take -- correlated wind and sensor noise on precisely the vehicle being
 // watched, reproducible enough to be mistaken for physics. Tags are what
 // break that, and fnv1a64("") being the non-zero offset basis means even an
 // empty tag is separated from the bare seed.
 //
 // Streams are derived, never stored-and-shared: two call sites that want the
-// same sequence pass the same three inputs. Adding a fourth drone therefore
+// same sequence pass the same three inputs. Adding a fourth body therefore
 // does not perturb the first three, and adding a new SYSTEM (a new tag)
 // perturbs nothing at all -- the property that makes the determinism-replay
 // corpus survive engine growth.

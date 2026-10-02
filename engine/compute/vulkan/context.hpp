@@ -8,8 +8,9 @@
 // vulkan_available() == false).
 //
 // No VkSurfaceKHR anywhere in this file or its .cpp, by construction --
-// camera/rendering/FramePool is S7 (Addendum A8), out of scope for every S6
-// task; this module never asks the platform for a window.
+// camera/rendering/FramePool is S7 (engine A2 deferred the FramePool, A8 the
+// camera lane), out of scope for every S6 task; this module never asks the
+// platform for a window.
 //
 // <volk.h> is included here deliberately: this pair of files (context.hpp/
 // .cpp) is the actual Vulkan boundary the S6 dependency rule (spec section

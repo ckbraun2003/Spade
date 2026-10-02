@@ -1,7 +1,7 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// C5: the world reference (engine design spec, "worlds loadable by path or
+// The world reference (engine design spec, "worlds loadable by path or
 // handle") -- a WorldDesc a caller can name either by FILE PATH or by an
 // already-resolved, in-memory value, plus resolve_world() to collapse either
 // spelling to the WorldDesc a Simulation is actually built from.
@@ -34,7 +34,7 @@
 
 namespace spade {
 
-// Either a path to a schema-v1 world file, or an already-resolved WorldDesc
+// Either a path to a world file (any version load_world_file reads), or an already-resolved WorldDesc
 // held in memory. The second alternative is what lets a caller who built a
 // world programmatically (WorldBuilder, a test fixture, a generated scene)
 // feed it through the same fleet constructor a file-backed caller uses.

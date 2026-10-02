@@ -34,7 +34,7 @@ enum class BackendKind : uint32_t {
 // kernel's local size is compiled into its SPIR-V (`OpExecutionMode <entry>
 // LocalSize N 1 1`), so the only sizes a backend can offer are the sizes the
 // BUILD compiled a module for: cmake/SpadeSlang.cmake's
-// spade_slang_kernel_variants() compiles each of the nine schedule kernels
+// spade_slang_kernel_variants() compiles each compute kernel (twelve today)
 // once per entry in this array, and compute/spirv_variants.hpp is the table
 // that results. Adding a size here without adding it there would produce a
 // value that validates and then fails at pipeline creation, so the two lists

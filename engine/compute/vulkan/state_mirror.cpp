@@ -287,8 +287,8 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     }
 
     // -----------------------------------------------------------------------
-    // The 18-entry registered walk: nine arrays plus their nine
-    // `.slot_to_world` siblings, in the same order state/arenas.hpp's
+    // The registered walk: every array plus its `.slot_to_world`
+    // sibling, in the same order state/arenas.hpp's
     // register_array() contributes them (elements, then the map).
     // -----------------------------------------------------------------------
     // NO LEAK ON A MID-LOOP FAILURE: each Entry is push_back()ed onto

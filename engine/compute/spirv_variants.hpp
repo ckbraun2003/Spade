@@ -14,7 +14,7 @@
 // structure.
 //
 // WHAT THE BUILD PRODUCES. cmake/SpadeSlang.cmake's
-// spade_slang_kernel_variants() compiles each of the nine schedule kernels
+// spade_slang_kernel_variants() compiles each compute kernel (twelve today)
 // once per size in {32, 64, 128} with `-DSPADE_WG=<size>`, and
 // engine/shaders/tools/embed_spirv.py emits ONE header per kernel holding all
 // three embedded arrays plus a `kSpvVariants_<name>` of this type. A kernel

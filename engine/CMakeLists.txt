@@ -1171,8 +1171,8 @@ spade_slang_write_kernel_manifest(spade_compute)
 # additions in one place at the tail of the SPADE_VULKAN block is what makes
 # that merge mechanical.
 #
-#   compute/vulkan/state_mirror.cpp  -- the device buffer table (18-entry
-#     registered walk + dryden_params), upload()/readback().
+#   compute/vulkan/state_mirror.cpp  -- the device buffer table (every
+#     registered walk entry + the derived buffers), upload()/readback().
 #   compute/vulkan/step_recorder.cpp -- the per-substep step command buffer,
 #     record-once-per-shape / submit-per-step.
 #   compute/vulkan/backend.cpp       -- VulkanBackend (compute/vulkan/
