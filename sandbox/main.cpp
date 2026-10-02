@@ -608,8 +608,8 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
         // Scene settings the inspector owns, applied to what actually renders.
         gpu_options.ground_grid = builder.grid;
         scene.lighting.sun_intensity = builder.sun_intensity;
-        // NORMALISED HERE RATHER THAN IN THE WIDGET. The shader does
-        // dot(n, -uSunDir) and assumes a unit vector; a dragged direction is
+        // NORMALISED HERE RATHER THAN IN THE WIDGET. Both paths shade with
+        // dot(n, sun_direction) and assume a unit vector; a dragged direction is
         // whatever the user left it at, and a non-unit one scales the whole
         // diffuse term -- which reads as the brightness slider being broken.
         if (glm::length(builder.sun_direction) > 1e-4f) {
