@@ -24,6 +24,9 @@ Each starts as its own spec and plan in the owning realm's `plans/`.
 | Regenerate four frame goldens so `render::Lighting{}`'s default sun is above the horizon | Rendering | `rendering/07-status.md` |
 | Add a GNSS golden scenario so GNSS reaches reference grade | Physics | `physics/07-status.md` |
 | The IMU/GNSS function-pair dedup proposal (or let the module API absorb it) | Core | `core/07-status.md` |
+| Saved scenes in the editor's first cut (save/load now, defer, or world-file only) | Interface | `interface/07-status.md` |
+| When to capture the `SL14b` v1 baselines before v1 is retired | Interface | `interface/07-status.md` |
+| GPU coverage on a one-machine gate: a missing device fails the run, or the run keeps skipping and names its skips | Test/Docs | `test-docs/07-status.md` |
 
 ## Work items
 
