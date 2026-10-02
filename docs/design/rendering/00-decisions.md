@@ -75,10 +75,13 @@ Also on the 2026-09 orphan list but cited nowhere in this tree, and probably KAT
 | `PA-4` | Ground grid, bounds box and spawn markers are presentation overlays behind `RenderOptions::overlays` | — | live | `raster_cpu.hpp` |
 | `PA-5` | Unbounded primitives (plane, heightfield) tessellate as a bounded grid fitted to world bounds | — | live | `tessellate.hpp` |
 
-## Engine addendum
+## Charter pillar and engine addendum
 
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
+| `P6` | Offscreen render boundary: Spade renders to an offscreen image that a host composites; headless is simply not rendering; stepping never depends on render state | approved 2026-08-06 (KAT-era charter) | superseded by `L5` (stepping never depends on rendering) and the camera model (`01-techniques-and-channels.md`). The offscreen, caller-owned image lives on as `PA-1` | `01-charter.md` §2 |
+| `A5` | The renderer may run on a second thread against the frame pool only. Degradation order: renders drop first; sensor synthesis inside stepping is never shed | 2026-08-10 | live as a rule. No engine frame pool exists yet; `render()` reads only its arguments, so any thread may call it with its own inputs | `02-engine.md` §9, §10 (threading contract) |
+| `A6` | Camera cost model: rendered camera cost ≈ drones × W×H × per-pixel technique cost per sample. A camera sensor is benched against its rate envelope when it is built; a miss triggers design review | 2026-08-10 | live; applies when a camera-sensor technique is built (`01-techniques-and-channels.md`, camera). The original assumed a ray-marched camera; the cost term is now per technique | `02-engine.md` §8 |
 | `A8` | The 25 Hz camera lane is host-synthesised analytic features, not pixels; rendered cameras come later | user-ruled 2026-08-10 | superseded by the engine model (a camera is a technique plus channels, and can be a sensor) | `02-engine.md` §8 |
 
 ## `RND` — new rulings
