@@ -101,6 +101,9 @@
 #include "sensors/gnss.hpp"
 #include "testing/scenario_file.hpp"
 #include "world/world_ref.hpp"
+#include "objects/behavior.hpp"
+#include "objects/behaviors/kinematic_mover.hpp"
+#include "world/builder.hpp"
 
 namespace {
 
@@ -3105,4 +3108,50 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
         }
     }
     EXPECT_EQ(sensors_polled, std::size_t{2}) << "quad_hover has two worlds, one IMU each";
+}
+
+// ---------------------------------------------------------------------------
+// A behavior registry attached to a Vulkan Simulation is REFUSED at step(),
+// never skipped. Behaviors are CPU-only today (the Vulkan chain has no slot
+// for them), so a Vulkan step with one attached would run a different
+// experiment from the CPU step with the same registry -- silently. The refusal
+// steps nothing; detaching the registry makes the same Simulation step again.
+// ---------------------------------------------------------------------------
+class GpuBehaviorRefusal : public GpuParityTest {};
+
+TEST_F(GpuBehaviorRefusal, VulkanStepRefusesAnAttachedBehaviorRegistry) {
+    if (!vulkan_available()) GTEST_SKIP() << "no Vulkan device";
+
+    const Result<spade::WorldDesc> world = spade::WorldBuilder()
+                                               .name("refusal")
+                                               .environment(spade::Environment{})
+                                               .capacities(spade::Capacities{1, 1, 1, 1})
+                                               .build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    Result<Simulation> sim = Simulation::create(WorldSetDesc{{inst}}, 2'000'000, 2,
+                                                BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+
+    BodySpawn body;
+    body.mass = 1.0f;
+    ASSERT_TRUE(sim->spawn(0, body).has_value());
+    ASSERT_TRUE(sim->flush_structural().has_value());
+
+    const spade::objects::KinematicMoverParams params{};
+    spade::objects::BehaviorRegistry registry;
+    ASSERT_TRUE(registry.register_behavior(spade::objects::kinematic_mover_desc(params)).has_value());
+    sim->set_behaviors(&registry);
+
+    const Result<void> refused = sim->step(1);
+    ASSERT_FALSE(refused.has_value()) << "a Vulkan step with behaviors attached must refuse";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable) << refused.error().context;
+    EXPECT_EQ(sim->tick().value, 0u) << "a refused step must not advance the tick";
+
+    sim->set_behaviors(nullptr);
+    const Result<void> stepped = sim->step(1);
+    ASSERT_TRUE(stepped.has_value()) << stepped.error().context;
+    EXPECT_EQ(sim->tick().value, 1u);
 }
