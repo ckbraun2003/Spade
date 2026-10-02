@@ -8,6 +8,8 @@
 |---|---|---|---|---|---|---|---|
 | release | `build-ninja/release` (main tree) | `df33f09` | **921** | **919** | **2** | **0** | 2026-10-02, `scripts\test.ps1 -Preset release`, 174.4 s |
 | debug | `build-ninja/debug` (main tree) | `df33f09` | **921** | **919** | **2** | **0** | 2026-10-02, the same `ctest` arguments in three `-I` legs (310 + 310 + 301, checked with `ctest -N`), 264.1 s |
+| release | `build-ninja/release` (main tree) | `88a3c8b` (the commit pushed to origin, plus docs) | **921** | **919** | **2** | **0** | 2026-10-02, lead, `scripts	est.ps1 -Preset release`, 161.3 s; 65 `gpu` ran |
+| debug | `build-ninja/debug` (main tree) | `88a3c8b` | **921** | **919** | **2** | **0** | 2026-10-02, lead, `scripts	est.ps1 -Preset debug`, 271.4 s; 65 `gpu` ran |
 
 - **Both skips are by design.** `Fp32Exp.FullDomainSweepEveryFloatArgument` runs only with `SPADE_FULL_EXP_SWEEP=1`. `SlangLayouts.DeliberatelyUnboundArraysHaveNoBinding` skips while no array is exempt from binding.
 - **GPU:** 65 tests carry `gpu`, and all 65 ran and passed on both presets on this box's device.
@@ -19,7 +21,7 @@
 
 | Ruling | Built | Evidence and gaps |
 |---|---|---|
-| `engine D11` | yes, except own CI | GTest/CTest, the replay spine (`replay.hpp`), the parity harness (`parity.hpp`) and the bench (`spade_bench`, `baselines.json`) all exist. There has been no hosted CI since 2026-09-18 (`.github/` is absent) |
+| `engine D11` | yes, except own CI | GTest/CTest, the replay spine (`replay.hpp`), the parity harness (`parity.hpp`) and the bench (`spade_bench`, `baselines.json`) all exist. "Own CI legs" is amended by `TD-11` (self-run Docker legs), which is not built yet (`../backlog.md`) |
 | `engine D12` (toolchain) | yes | MSVC + Ninja presets; CMake 4.2.0 on this box against a 3.28 floor |
 | `SL7` (guard) | yes | `TransferRegister.*`, 4 tests; 14 rows pinned; 1 row open (SPH fluid) |
 | `SL15b` (test half) | partly | `spade_sandbox --headless` exists; it is not part of the gate |
