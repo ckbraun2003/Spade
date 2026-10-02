@@ -598,7 +598,10 @@ void GlTargetSink::draw_overlay() {
             const Timings a = impl_->win_avg;
             const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
 
-            ImGui::Text("%ux%u    %.1f fps    %.1f ms", impl_->texture_width, impl_->texture_height,
+            // The FRAMEBUFFER size: what both paths render at. The texture
+            // size it used to show is set only by the CPU fallback's accept(),
+            // so on the GPU path it read 0x0.
+            ImGui::Text("%ux%u    %.1f fps    %.1f ms", impl_->fb_width, impl_->fb_height,
                         a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, a.total_ms);
             // The user's ask: memory beside the fps, same overlay, same cadence.
             ImGui::Text("memory  %.1f MB", mb);
