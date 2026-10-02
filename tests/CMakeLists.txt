@@ -382,117 +382,10 @@ endif()
 # component that isn't a real directory on the path to engine/.
 cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../engine")
 
-# SPADE_CONTENT_DIR (S7a Task R9, test_render_agreement.cpp): the ONE place
-# tests/ reaches outside this repo entirely, and ONLY for test-fixture DATA --
-# content/worlds/*.world.yaml (plain
-# Spade-schema world files, loaded through the SAME spade::world_from_yaml()
-# any other test uses).
-#
-# CORRECTED 2026-09-17. This sentence used to continue "...and
-# content/scenes/*.kscene (JSON documents; this suite reads only their
-# camera_bookmarks object)". THAT STOPPED BEING TRUE AT f26fb39b, which split
-# content/ into a LIBRARY and moved *.kscene to dev_project/ as PROJECT
-# content -- and the false half sat HERE, at the definition of the very
-# variable that resolved the broken path, for as long as thirty agreement
-# tests were red.
-#
-# ⭐ A FALSE CLAIM AT A DEFINITION IS WORSE THAN A FALSE CLAIM ANYWHERE ELSE:
-# it tells the next reader the binding was INTENTIONAL, and sends them to look
-# at the renderer instead. That is the same recruitment the failure message
-# was doing one layer down -- a plausible explanation gets acted on, while
-# silence gets investigated. Found by another realm reading this file, not by
-# the realm that owns it.
-#
-# The suite now OWNS its camera bookmarks (tests/fixtures/camera_bookmarks.json),
-# so no test RESOLVES A CAMERA through a project path.
-#
-# ⚠⚠ BUT COUNT THE REACHES HONESTLY, BECAUSE I FIRST WROTE THIS WRONG. An
-# earlier version of this paragraph said "SPADE_CONTENT_DIR is the one reach
-# again, as this comment always claimed it was." IT IS NOT. There are TWO
-# defines pointing outside this repo -- SPADE_CONTENT_DIR here and
-# SPADE_SCENES_DIR below -- and I added the second one myself an hour before
-# writing that sentence. Measured: `grep '\.\./\.\.' tests/CMakeLists.txt`
-# returns two. Correcting a false claim with a false claim is the defect this
-# very block exists to record, committed inside its own correction.
-#
-# THE TRUE STATEMENT NEEDS TWO CATEGORIES, and they are not the same kind:
-#   * MEASUREMENT reach -- SPADE_CONTENT_DIR, ONE, and every test that produces
-#     a number depends on it.
-#   * CONSISTENCY reach -- SPADE_SCENES_DIR, a SECOND, read by exactly one
-#     guard, which SKIPS when the tree is absent. No measurement depends on it,
-#     and a checkout without a Kat project runs the whole matrix without it.
-# The boundary narrowed in the way that matters -- no measurement crosses it --
-# and it did not narrow to one. Say which kind when you cite this.
-#
-# Task R9's brief requires measuring against
-# the ten SHIPPED worlds specifically -- their canonical home is content/,
-# not a second copy under tests/golden/worlds/ that could drift from what
-# actually ships, which matters because ruling SR-2 has Task C4 re-measuring
-# these same bands after the worlds are dressed with prefab instances: a copy
-# would need its own, separate update discipline to stay meaningful, and the
-# live directory does not. This is fixture DATA, not engine or kat CODE --
-# no `#include "kat`, no `kat_host`/`kat_abi` symbol, no spade:: CMake link
-# crosses this boundary, so tools/tests/test_engine_agnosticism.py's guard
-# (which scans for exactly those three things) has nothing to flag here; the
-# guard's own job is the C/C++ include graph and the CMake link graph, not
-# which YAML a test happens to read at run time. NORMALIZED for the same
-# reason SPADE_ENGINE_DIR is, immediately above.
-# ⚠⚠ 2026-09-28, THE EXTRACTION: `../../content` MEANT KAT'S content/ WHILE THIS
-# TREE WAS `kat/spade/tests/`. It is `spade/tests/` now, so `../..` escapes this
-# repository onto whatever sits beside it -- and neither content/ nor
-# dev_project/ exists in a Spade checkout at all.
-#
-# ⭐ THE COMMENT BELOW ALREADY ANTICIPATED THIS CASE AND SOLVED IT FOR THE OTHER
-# PATH: "tree missing -> SKIP (a standalone spade checkout has no Kat project,
-# and failing there would restore the dependency through the back door)". That
-# was written about SPADE_SCENES_DIR. The identical reach through
-# SPADE_CONTENT_DIR never got the same treatment, so the extraction turned an
-# anticipated hypothetical into thirty FAILING tests rather than thirty skipped
-# ones. An asymmetry between two paths that reach the same way outlives whoever
-# knew which one was guarded.
-#
-# Both are cache variables now, defaulting to a sibling Kat checkout, so a
-# contributor who has one keeps the coverage and a contributor who does not gets
-# a loud skip instead of a red suite.
-set(SPADE_KAT_CONTENT_DIR "${CMAKE_SOURCE_DIR}/../KAT/content" CACHE PATH
-    "Kat's content/ library (worlds, airframes, meshes) the render-agreement matrix reads. Absent -> those cases SKIP.")
-cmake_path(SET SPADE_CONTENT_DIR_NORMALIZED NORMALIZE "${SPADE_KAT_CONTENT_DIR}")
-
-# SPADE_SCENES_DIR (2026-09-17): scene documents are NO LONGER under content/.
-# `f26fb39b` ("content/ becomes a library, and a project DECLARES the one it
-# draws from") split the tree: content/ is now the standard LIBRARY (worlds,
-# airframes, meshes) and *.kscene moved to dev_project/scenes/ as PROJECT
-# content. content/worlds/ stayed, so load_shipped_world() kept working and
-# only the scene half broke -- which is why this went unnoticed.
-#
-# ⚠ READ BY EXACTLY ONE TEST -- AgreementFixture.BookmarksMatchTheShippedScenes,
-# the guard that checks this suite's own bookmark fixture still equals the
-# shipped one. NO test resolves a camera through this path.
-#
-# RULED 2026-09-17: a test must not depend on PROJECT content. `dev_project` is
-# a ROLE, not a fixture -- it is whichever project happens to be open on a box,
-# and every demo and test package is a full openable project, so a suite bound
-# to it is bound to something that cannot be stated or versioned and that breaks
-# the day someone opens something else. The suite therefore owns
-# tests/fixtures/camera_bookmarks.json, which NARROWS the boundary back to the
-# one reach the comment above always claimed, rather than widening it to two.
-#
-# The cost of owning a copy is drift, and the guard is what makes that cost
-# CHECKED rather than hoped. It distinguishes two absences deliberately: tree
-# missing -> SKIP (a standalone spade checkout has no Kat project, and failing
-# there would restore the dependency through the back door); tree present but a
-# scene or bookmark missing -> FAIL (that is a move, and a move is what cost
-# this suite thirty tests once already).
-set(SPADE_KAT_SCENES_DIR "${CMAKE_SOURCE_DIR}/../KAT/dev_project/scenes" CACHE PATH
-    "Kat's dev_project/scenes/ the bookmark-drift guard compares against. Absent -> that ONE test SKIPs, which it already did correctly.")
-cmake_path(SET SPADE_SCENES_DIR_NORMALIZED NORMALIZE "${SPADE_KAT_SCENES_DIR}")
-
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-    SPADE_CONTENT_DIR="${SPADE_CONTENT_DIR_NORMALIZED}"
-    SPADE_SCENES_DIR="${SPADE_SCENES_DIR_NORMALIZED}"
 )
 
 include(GoogleTest)
@@ -518,28 +411,13 @@ include(GoogleTest)
 # WORKING_DIRECTORY's collision problem -- see AppendSpadeLabels.cmake,
 # included below, for the SECOND, independent bug that made it necessary to
 # set LABELS a different way.
-# NO_PRETTY_VALUES (S7a Task R9 fix round 1, test_render_agreement.cpp's
-# AgreementMatrix suite -- the only TEST_P/INSTANTIATE_TEST_SUITE_P in this
-# whole binary, so this flag's blast radius is exactly that one suite):
-# GoogleTestAddTests.cmake's write_test_to_file() macro, BY DEFAULT, replaces
-# a value-parameterized test's own name suffix with GetParam()'s PRINTED
-# VALUE in the name CTest registers (`pretty_test_name`, GoogleTestAddTests.
-# cmake's own comment: "Remove value param name, if any, from test name") --
-# a documented, intentional CTest UX feature, not a bug, and not something
-# this project's test code can opt out of per-suite. Confirmed directly, not
-# guessed (task-R9-report.md's fix-round-1 section has the transcript):
-# `spade_tests.exe --gtest_list_tests` reports the REAL, custom name a
-# TestParamInfo generator assigns (e.g. `.../circuit_track_default`,
-# annotated `# GetParam() = "circuit-track|default"`), and THAT real name is
-# what `--gtest_filter` actually selects at run time (GoogleTestAddTests.cmake
-# itself: `add_test(<pretty-name> ... --gtest_filter=<REAL name> ...)`) -- so
-# execution and CI selection were already correct without this flag. What
-# was NOT correct without it: `ctest -N`/`ctest -R <custom-name>`, i.e. the
-# DISPLAYED and PATTERN-MATCHED name a human or a `-R` filter actually sees,
-# used the GetParam() value instead, making a custom name generator dead
-# from that surface even though it was live from every other one. This flag
-# makes CTest use the REAL name everywhere, closing that gap without needing
-# to touch AgreementMatrix's own parameterization at all.
+# NO_PRETTY_VALUES: by default GoogleTestAddTests.cmake registers a value-
+# parameterized test under GetParam()'s PRINTED VALUE instead of the name its
+# TestParamInfo generator assigns, so `ctest -N`/`ctest -R` would show a
+# different name from the one --gtest_filter selects. This makes CTest use the
+# real name everywhere. No TEST_P suite exists today (the one that needed this,
+# a KAT-world agreement matrix, left this suite on 2026-10-01); the flag stays
+# so the next one registers correctly without anyone rediscovering why.
 gtest_discover_tests(spade_tests
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     NO_PRETTY_VALUES
