@@ -1,6 +1,6 @@
 # Spade — charter
 
-**Owner:** lead. **Status:** approved by the user 2026-10-01 (`plans/2026-10-01-spade-restructure-design.md` §1). Changes to the laws need the user's signature.
+**Owner:** lead. **Status:** signed by the user 2026-10-02 (approved 2026-10-01; `plans/2026-10-01-spade-restructure-design.md` §1). Changes to the laws need the user's signature.
 
 ## Identity
 

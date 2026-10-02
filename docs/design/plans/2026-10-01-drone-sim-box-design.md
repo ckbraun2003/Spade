@@ -1,6 +1,6 @@
 # Drone sim box — design
 
-**Status:** approved in conversation 2026-10-01. **Purpose:** the sandbox's new default scene. It shows end to end, in the GUI, that what Spade claims to exist actually works — quadrotor, rotor model, integrator, Dryden turbulence, CPU stepping, and both render paths — and it makes any gap visible. User-directed exception to the restructure's feature pause (`2026-10-01-spade-restructure-design.md` §5).
+**Status:** SIGNED by the user 2026-10-02 (approved 2026-10-01), including the 2026-10-02 heatmap-slice amendment below. Built and verified: `2026-10-01-drone-sim-box-plan.md` Task 7. **Purpose:** the sandbox's new default scene. It shows end to end, in the GUI, that what Spade claims to exist actually works — quadrotor, rotor model, integrator, Dryden turbulence, CPU stepping, and both render paths — and it makes any gap visible. User-directed exception to the restructure's feature pause (`2026-10-01-spade-restructure-design.md` §5).
 
 ## What the user sees
 

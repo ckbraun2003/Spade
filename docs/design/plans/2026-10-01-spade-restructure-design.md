@@ -1,6 +1,6 @@
 # Spade restructure — design
 
-**Status:** DRAFT, approved section by section in conversation on 2026-10-01; awaiting review of this written form.
+**Status:** SIGNED by the user 2026-10-02 (approved section by section 2026-10-01). Executed by `2026-10-01-spade-restructure-plan.md`; open user decisions are in `../backlog.md`.
 **Author:** Spade lead session. **Scope:** identity, engine model, realm split, documentation library, KAT separation. Specs only — no engine code changes except the three defect fixes in section 5.
 
 ## Decisions taken (user, 2026-10-01)

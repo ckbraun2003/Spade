@@ -1,6 +1,6 @@
 # Spade — engine model
 
-**Owner:** lead (Core builds it). **Status:** approved by the user 2026-10-01 (`plans/2026-10-01-spade-restructure-design.md` §2). This is the target structure; each realm's `07-status.md` says how far the code is from it.
+**Owner:** lead (Core builds it). **Status:** signed by the user 2026-10-02 (approved 2026-10-01; `plans/2026-10-01-spade-restructure-design.md` §2). This is the target structure; each realm's `07-status.md` says how far the code is from it.
 
 ```
 Simulation ─ fixed dt, scheduler, module set, backend
