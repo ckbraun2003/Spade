@@ -23,7 +23,7 @@ Techniques, channels, cameras, the scene representation, the CPU, OpenGL and Vul
 
 ## Series
 
-- **Owned here:** `RS1`–`RS15`, `SR-*`, `PA-*` (the S7a render program's plan amendments), charter `P6`, engine `A5`, `A6` and `A8`, and new rulings `RND-n`.
+- **Owned here:** `RS1`–`RS15`, `SR-*`, `PA-*` (the S7a render program's plan amendments), charter `P6`, engine `A2`, `A5`, `A6` and `A8`, and new rulings `RND-n`.
 - **Shared:** `RS5` with Core. Core owns the world-file format; Rendering owns what its appearance fields mean.
 - **Quoted, not owned:** the laws `L1`–`L8` (`../00-charter.md`), and `SL9c` (the velocity draw mode) and `SL10` (the sandbox's same-path rule), whose homes the `SL` split assigns (`../README.md`).
 
