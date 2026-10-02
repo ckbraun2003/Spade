@@ -112,7 +112,11 @@ void main() {
         lit = base;                       // 1 = unlit, 2 = emissive
     } else {
         vec3 n = normalize(vNormal);
-        float ndl = max(dot(n, -uSunDir), 0.0);
+        // uSunDir points FROM the scene TOWARD the sun (LightingDesc's
+        // convention), so N.L is dot(n, +uSunDir) -- the same term as
+        // render/scene.hpp's shade_vertex_color(). Negating it lit every
+        // world-loaded scene from below on this path only.
+        float ndl = max(dot(n, uSunDir), 0.0);
         lit = base * (uAmbient + uSunColor * uSunIntensity * ndl);
     }
     fragColor = vec4(lit, 1.0);
