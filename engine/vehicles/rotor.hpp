@@ -36,7 +36,9 @@
 // the first consumer of this file and sits beside it.
 //
 // SCOPE, STATED UP FRONT (D5's second sentence). No BEMT, no blade elements,
-// no rotor wake or downwash field, no rotor-inertia gyroscopic term. Those
+// no rotor wake or downwash field, no rotor-inertia gyroscopic term. (There
+// is an analytic wake in vehicles/rotor_wake.hpp, but it is for drawing: it is
+// built from this element's inflow and nothing in the step reads it.) Those
 // are the P7 roadmap; RotorRow's reserved lanes are where their parameters
 // land so that adopting them does not move an existing field. Three more
 // boundaries of what this element is answerable for:
