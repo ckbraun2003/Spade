@@ -184,7 +184,7 @@ struct ShadedColor {
 
 // The zenith-to-horizon sky gradient (S7a Task R6, ruling SR-23; relocated
 // HERE at Task R8 for the identical reason shade_vertex_color() was above
-// it; made ELEVATION-based at Task VQ-A, fix round for the user's CK-2
+// it; made ELEVATION-based at Task VQ-A, a fix round for the user's
 // verdict). `ray_direction_world` is the WORLD-SPACE camera ray a
 // background/sky-miss pixel casts -- need NOT be pre-normalized (only its
 // direction matters; this function divides by its own length itself), so a
@@ -204,7 +204,7 @@ struct ShadedColor {
 // interpolated on a plain fraction of SCREEN ROW instead, which anchors the
 // horizon COLOUR to the bottom screen row and drifts from the ray-cast
 // horizon LINE the ground hit-test actually draws the moment the camera
-// pitches (measured directly in the CK-2 book's own frames).
+// pitches (measured directly in the review book's own frames).
 //
 // `horizon_fraction` is 0 straight up (elevation == 1, pure zenith) and
 // clamped to 1 AT and BELOW the true horizon (elevation <= 0) -- rather than
@@ -462,7 +462,7 @@ struct MeshData {
 // A world visual reference already resolved to its geometry. `ref` names the
 // same string one of WorldDesc::visual_refs carries; resolving ref -> file ->
 // MeshData is entirely the CALLER's job (glTF loading, asset lookup -- no
-// kat- or file-format-specific vocabulary belongs in this codebase).
+// consumer- or file-format-specific vocabulary belongs in this codebase).
 struct NamedMesh {
     std::string ref;
     MeshData mesh;

@@ -46,12 +46,11 @@
 //     tightly-packed (no `byteStride`) accessor data
 //   - sparse accessors
 //   - more than one entry in `meshes[]` -- only meshes[0] is read, matching
-//     tools/gen_meshes.py's own one-asset-per-file convention (every shipped
-//     .gltf under content/meshes/ carries exactly one mesh)
+//     the one-asset-per-file convention the mesh generators follow
 //
-// HS2 (engine stays kat-free): this module takes a std::filesystem::path. It
-// never learns what a `mesh:<family>/<name>` id is -- resolving an id to a
-// path is entirely the CALLER's job, kat-side.
+// NO ASSET IDS: this module takes a std::filesystem::path. It never learns
+// what an asset id such as `mesh:<family>/<name>` is -- resolving an id to a
+// path is entirely the CALLER's job (rendering/02-scene-and-appearance.md).
 //
 // DETERMINISM: loading the same file twice yields byte-identical MeshData.
 // Submesh order follows meshes[0].primitives[]'s own array order (arrays

@@ -39,8 +39,8 @@
 // restatement of the code under test.
 //
 // The two ported helpers (world_bounds_of/ground_plane_y, scene.cpp) get
-// their own dedicated cases below, each locking one heuristic from
-// dronesim/spade/raster.cpp's computeWorldBounds()/groundPlaneY() exactly:
+// their own dedicated cases below, each locking one heuristic from the
+// interim raster's computeWorldBounds()/groundPlaneY() exactly:
 // the default box for a world with no spatial data, the margin+min-size rule
 // otherwise, and the ground plane's identity-transform/+Y-normal-only match.
 // ---------------------------------------------------------------------------

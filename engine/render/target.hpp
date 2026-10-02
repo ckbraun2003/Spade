@@ -93,7 +93,7 @@ struct RenderOptions {
     // So the ENGINE ships it off and the SANDBOX turns it on. That is also the
     // better reading of the ask: "the default render WORLD" is the scene the
     // reference application opens into, not every consumer's RenderOptions.
-    // The editor viewport and the C5 host keep the pixels they have.
+    // Every other consumer keeps the pixels it has.
     bool ground_grid = false;
     GroundGridParams ground_grid_params{};
 

@@ -56,10 +56,9 @@
 // ===========================================================================
 // WHY A COMPUTE SHADER AND NOT A GRAPHICS PIPELINE
 //
-// The consumer is dronesim/spade/host.cpp's kathost_render -> kathost_frame:
-// a CPU-readable RGBA byte buffer with a stride, which the editor blits (it
-// renders nothing itself; editor/core/sim/session.h's FramePacket is a raw
-// `pixels` pointer plus an ownership token). Nothing presents to a surface.
+// The consumer is a caller-owned RenderTarget (render/target.hpp): a
+// CPU-readable byte buffer with a stride, which a host blits or hands on as a
+// frame. A camera sensor wants the same thing. Nothing presents to a surface.
 //
 // So this path needs NO swapchain, NO render pass, NO framebuffer and NO
 // VkSurfaceKHR -- it needs a dispatch that writes pixels into a storage buffer
