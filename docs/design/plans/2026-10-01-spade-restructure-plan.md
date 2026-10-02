@@ -57,7 +57,7 @@
 | Core | `02-engine.md` (step model, the schedule, state, many-worlds, snapshot, compute backend seam), `04-objects.md`, the world-file part of `03-world-and-render.md`, `sensor-arena-dedup.md`, `interleaving-shuffle.md` |
 | Physics | `02-engine.md` (physics decisions `D1`–`D6`, parity, the effects/aero roadmap), the physics rows of `07-status.md` and `08-lessons.md` |
 | Rendering | `03-world-and-render.md` (`RS*` and `SR-*`), the render rows of `07-status.md` and `08-lessons.md` |
-| Interface | `06-sandbox-and-v1.md` (`SL7`–`SL18`), `plan-c-sandbox.md` (moves to `interface/plans/` as superseded-by-editor), the charter's `SL2`/`SL2a`/`SL2b` |
+| Interface | `06-sandbox-and-v1.md` (`SL7`–`SL18`), `plan-c-sandbox.md` (stays in `superseded/`; `interface/plans/README.md` points to it as superseded by the editor direction — 2026-10-02), the charter's `SL2`/`SL2a`/`SL2b` |
 | Test/Docs | `07-status.md` (traceability, counts, the standing rules of §4), `08-lessons.md` (process and box lessons), `CONTRIBUTING.md`'s rules, `docs/v1-transfer-register.md` (stays where it is; referenced) |
 
 - [ ] **Step 1: `00-decisions.md`.** A table: `ID | ruling (one line) | signed | status | source`. One row for every legacy ID your realm is the home of. Status is `live`, `superseded by X`, or `repealed <date>`. A ruling the new charter changes, such as "state arrays frozen" or "fixed ten-pass schedule", is marked `superseded by L3` or `superseded by engine model`, not deleted. Then any new `<PREFIX>-n` rulings.
