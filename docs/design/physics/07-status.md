@@ -1,6 +1,6 @@
 # Physics — status
 
-**The only place that says what exists today.** Checked against the tree at `master` `7637f11` on 2026-10-01, by reading the code, CMake and tests. No build tree existed in this checkout, so nothing below is a measured test result. Test counts are `TEST` macros in the source, not a ctest tally. Unmerged branches are named where they change a row.
+**The only place that says what exists today.** Checked against the tree at `master` `7637f11` on 2026-10-01, by reading the code, CMake and tests. No build tree existed in this checkout, so nothing below is a measured test result. Test counts are `TEST` macros in the source, not a ctest tally. Unmerged branches are named where they change a row. The rotor-wake row was updated after its merge (`84e435b`).
 
 ## Specified vs built
 
@@ -20,7 +20,7 @@
 | IMU | **Built**, CPU and Vulkan | `sensors/imu.*`, `sensor_imu.slang`; `test_imu.cpp` (17) |
 | GNSS | **Built**, CPU and Vulkan | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
 | SPH field provider (`SL8`) | **Not built.** Paused by the restructure; the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
-| Rotor wake, visualisation (`PHY-3`) | **Written, unbuilt**, on `physics/rotor-wake` (`5c09050`): `vehicles/rotor_wake.*`, `test_rotor_wake.cpp` (15). Approved by the lead pending build slot #4 | — |
+| Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only, on master (merge `84e435b`). Measured at branch head `34291ba` in the Physics worktree's `build-ninja/release`: `RotorWake` 15/15; full suite 911 run, 0 failed, 33 skipped (31 KAT-reach, 2 by design) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (15) |
 | Golden corpus | `ballistic`, `bounce`, `quad_hover`, `shower`, `two_world_isolation` | `tests/golden/scenarios/` |
 | CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (30), `test_gpu_invariance.cpp` (14) |
 | Grades (`PHY-2`) | **Declared in prose only** (`04-verification.md`); the engine has no grade check yet (Core) | — |
@@ -40,7 +40,6 @@
 | **Rotor torque is uncorrected by inflow and ground** | Thrust is corrected; `Q = k_Q ω²` is not, so `Q` is not a power budget. Documented in `rotor.hpp`; it waits on BEMT |
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |
-| **KAT-citing comments in physics code** | `physics/forces.cpp`, `forces.hpp` and `tests/test_forces.cpp` cite KAT's `configs/physics.yaml` and two KAT source files for the componentwise drag convention. **Swept on `physics/rotor-wake`** (`34291ba`, comment-only), awaiting build and merge |
 | **GPU parity is developer-machine-only** | No gate has a device (`04-verification.md`) |
 
 ## Corrections to earlier records
