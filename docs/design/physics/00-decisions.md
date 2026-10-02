@@ -15,12 +15,12 @@
 | `SL8` | SPH is implemented to v2 discipline, not ported: CPU and GPU passes, neighbour search on the existing sorted grid, a `Fluid` component, a measured band. If no acceptable band exists, it is declared CPU-only, never given a widened band | signed 2026-09-17 | live, paused (restructure §5). It returns as a field provider (`01-fields-and-media.md`). The transfer-register row stays open | `06-sandbox-and-v1.md` §2.2 |
 | `D-S6-2` | A body's own `proxy_radius` overrides the world's default contact radius; `effective_proxy_radius()` is the one predicate both collision passes and the GPU kernels use | — (in-program decision, S6 Task 2) | live | `07-status.md` §1; `physics/contacts.hpp` |
 
-**Quoted here, homed elsewhere:** `engine D2` (fp32 and pinned reduction order, which is why op order is the parity contract) and the `D6` interface half, both Core's; `engine A9` (gravity applied inside Integrate) is Core's; `SL14c` (the 50,000-body fluid scene as a standing capability target) is Interface's; the SPIR-V rules `P1`–`P5` and `E1`/`E2` are Test/Docs's.
+**Quoted here, homed elsewhere:** `CORE-3` (the gaussian-draw band every stochastic physics kernel inherits); `engine D2` (fp32 and pinned reduction order, which is why op order is the parity contract) and the `D6` interface half, both Core's; `engine A9` (gravity applied inside Integrate) is Core's; `SL14c` (the 50,000-body fluid scene as a standing capability target) is Interface's; the SPIR-V rules `P1`–`P5` and `E1`/`E2` are Test/Docs's.
 
 ## Physics rulings
 
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
-| `PHY-1` | The gaussian draw is CPU↔GPU banded at its source, Box-Muller's `sqrt` (Vulkan allows ≤ 2.5 ulp). It is measured at max abs `4.77e-7` on 11 of 64 ring elements. Downstream bands (Dryden, IMU, GNSS) cite it rather than re-deriving a cause. Tightening is refused, because the platform cannot keep it. `GnssDrawsDivergeAcrossBackends_KNOWN_OPEN` keeps it honest | declared 2026-09-24 | live. If RNG grades are Core's, this row moves there | `01-charter.md` §4.1 |
+| `PHY-1` | (moved) The gaussian draw's CPU↔GPU band at its source | — | moved to Core 2026-10-01 as `CORE-3` (`../core/00-decisions.md`), because it is a band on an RNG primitive. The Dryden, IMU and GNSS bands cite it | `01-charter.md` §4.1 |
 | `PHY-2` | Grades of the physics modules, per backend: the table in `04-verification.md` | — | proposed | this library |
 | `PHY-3` | A field or effect that stepping does not read may be added at best-effort grade, as a pure function of published state. It may not be read by stepping until it declares a grade that meets the world's requirement, and for reference grade that means a CPU implementation with a golden. This is `charter P7`'s promotion rule, in engine-model terms | — | proposed; first instance: `vehicles::rotor_wake_velocity` | `../plans/2026-10-01-drone-sim-box-design.md` |

@@ -10,7 +10,7 @@ Camera sensors are Rendering's.
 ## Rules for every sensor
 
 - **Synthesis runs inside the step**, in the sensor phase after Integrate, on that sensor's own rate boundary. It is never shed under load.
-- **Noise comes from per-sensor seeded streams** (`rng::Stream`, domain-tagged). Gaussian draws are CPU↔GPU banded at the source (`PHY-1`), so a sensor's GPU band cites that, not a cause of its own.
+- **Noise comes from per-sensor seeded streams** (`rng::Stream`, domain-tagged). Gaussian draws are CPU↔GPU banded at the source (`CORE-3`, Core), so a sensor's GPU band cites that, not a cause of its own.
 - **Output is tick-stamped samples into the sensor's ring.** How a consumer stamps or fuses them is the consumer's business.
 - **The noise model is part of the row**, and a row change moves that family's digests only. That is why the arena stays split per family (`../superseded/2026-09-consolidation/sensor-arena-dedup.md`).
 
@@ -30,7 +30,7 @@ All of it is in `sensors/imu.hpp`.
 - **The fix:** a local-tangent-plane position and velocity in the world frame, at a low rate. There is no geodetic datum; a consumer that needs latitude and longitude owns the origin.
 - **Error:** a first-order Gauss-Markov bias with correlation time `bias_tau_s`, plus white noise (`σ_h`, `σ_v`). Velocity is an order of magnitude more accurate than position.
 
-All of it is in `sensors/gnss.hpp`. GNSS runs on both backends. Its GPU draws diverge from the CPU's within `PHY-1`'s band, which `GnssDrawsDivergeAcrossBackends_KNOWN_OPEN` asserts on purpose.
+All of it is in `sensors/gnss.hpp`. GNSS runs on both backends. Its GPU draws diverge from the CPU's within `CORE-3`'s band, which `GnssDrawsDivergeAcrossBackends_KNOWN_OPEN` asserts on purpose.
 
 ## Next sensors
 

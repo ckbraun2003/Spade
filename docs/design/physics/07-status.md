@@ -27,7 +27,7 @@
 
 ## Open items — needs a user decision
 
-1. **Sign `PHY-2`** (the grade table), `PHY-3` (the promotion rule for effects), and confirm `PHY-1`'s home. The gaussian band is about the RNG, which Core owns; Physics holds it because every consumer is a physics kernel.
+1. **Sign `PHY-2`** (the grade table) and `PHY-3` (the promotion rule for effects). The gaussian band `PHY-1` was moved to Core as `CORE-3` (lead's ruling, 2026-10-01).
 2. **The Jacobi dynamic-contact path:** adopt it (re-pin the affected bands and goldens, with provenance) or delete it. Today it is built and tested code that nothing runs.
 3. **When SPH resumes** as a field provider. The restructure pauses it until Core's module API and scheduler exist.
 
