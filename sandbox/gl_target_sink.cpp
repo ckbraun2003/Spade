@@ -791,8 +791,6 @@ void GlTargetSink::draw_drone_panel(DronePanelModel& model) {
         if (ImGui::Combo("backend", &backend, kBackends, 2)) {
             o.vulkan = backend == 1;
         }
-        // Read AFTER every widget above, so a drag in any of them counts.
-        model.ui_item_active = ImGui::IsAnyItemActive();
         if (!model.status.empty()) {
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "%s", model.status.c_str());
@@ -859,6 +857,12 @@ void GlTargetSink::draw_drone_panel(DronePanelModel& model) {
                     model.render_path);
     }
     ImGui::End();
+    // The debounce flag, set AFTER End() and every frame: inside the Begin()
+    // block it would freeze at its last value while the panel is collapsed
+    // (Begin returns false), and the click on the collapse arrow itself reads
+    // as an active item -- so a collapsed panel would hold back every rebuild
+    // until reopened. Read after all widgets, so a drag in any of them counts.
+    model.ui_item_active = ImGui::IsAnyItemActive();
 #else
     (void)model;
 #endif
