@@ -29,38 +29,38 @@
 
 ## `SR` — rulings of the S7a render program
 
-Reconstructed 2026-10-01 from their code citations (`SR-17`, `SR-17a`: 03 §15–16). **None is signed.** Each row is the ruling as the code states it.
+Reconstructed 2026-10-01 from their code citations (`SR-17`, `SR-17a`: 03 §15–16). Each row is the ruling as the code states it. **Signed as reconstructed on 2026-10-02 (user, via lead)**, except `SR-3`. Where citations disagree (below), the signature covers the reconstruction and the disagreement stays recorded.
 
 | ID | Ruling | Signed | Status | Source (enforced by) |
 |---|---|---|---|---|
-| `SR-2` | The agreement matrix measures bare geometry only; re-measure after dressing worlds | — | historical (KAT worlds) | agreement test header, removed at `ab2a21e` |
-| `SR-3` | Content unknown; listed as orphaned in 2026-09, cited nowhere | — | unknown | 03 §15.1 |
-| `SR-9` | One static draw item per split-program entry (a union leaf or a whole CSG root), in authoring order; `local_to_world` = float inverse of `world_to_local` | — | live | `scene_from_world`; `SceneFromWorld.*` |
-| `SR-11` | Submesh contract: empty submesh arrays mean one submesh at material 0; non-empty arrays are parallel and partition the indices | — | live | `MeshData`; `RasterCpu.EmptySubmeshArrays…`, `…ExplicitSubmeshes…` |
-| `SR-13` | Shaded mode culls back faces; *"wireframe mode does not — both sides draw"* | — | live | `raster_cpu.hpp`; `RasterCpu.ShadedModeRenders…`, `…WireframeModeDrawsBothWindings…` |
-| `SR-14` | No libm transcendental in engine source or golden-feeding test source; trig via `sin32`/`cos32`, `sqrt` allowed | — | live | `BitPortability.NoLibmTranscendentalInEngineOrGoldenTestSource` |
-| `SR-15` | Exact near/far triangle clipping on both mesh and overlay paths, never whole-triangle rejection | — | live | `clipTriangleNearFar`; `RasterCpu.SpawnMarkerOverlaySurvives…`, `…NearPlaneClipIsGeometricallyExact…` |
-| `SR-17` | The analytic infinite ground: standalone planes only, world-space, alongside the tessellated grid, bit-identical seam, unshadowed past the bounds | — | live, except clause 5 (superseded by `SR-17a`) | 03 §15 |
-| `SR-17a` | Every shaded surface blends toward the sky colour by view distance; a pure per-pixel function of three values; exact at strength 0 | scope user-ruled 2026-09-17 | live | 03 §16; the `shadowed_ground_with_caster_atmospheric` frame pair |
-| `SR-18` | Gouraud: Lambert N·L + ambient via the one `shade_vertex_color`, *"shade at the vertices"*, colour interpolated | — | live | `shade_vertex_color`; `RenderShading.LambertFaceTowardSun…` |
-| `SR-21` | Overlays get a depth bias toward the camera so a coincident ground mesh does not win the z-tie | — | live | `kOverlayDepthBias`; `OverlayDepthBias.*` |
-| `SR-22` | The analytic ground draws in shaded mode only; the sky draws in every mode | — | live | `draw_sky_and_ground_background`; `RenderShading.WireframeModeNeverDrawsTheAnalyticGround…` |
-| `SR-23` | The sky gradient is keyed on ray elevation, not screen row; one shared `sky_gradient_color` | — | live | `RenderShading.SkyColourAtTheTrueHorizonMatches…RulingSR23` |
-| `SR-24` | Shadows sample a perspective-correct world position, never a screen-affine one | — | live | `sample_shadow`; `ShadowPerspectiveCorrectness.*` |
-| `SR-25` | A shadow attenuates the sun term only; ambient is never shadowed | — | live | `ShadedColor`; `ShadowStep1.*` |
-| `SR-27` | Ray-march takes each hit's material from its owning leaf, not material 0 | — | live | `RaymarchSmoke.MaterialMisresolution…`; `AgreementGuard.Step1c*` |
-| `SR-28` | The ray-march surface epsilon is `1e-4`, so the reference's own error is negligible | — | live | `kRaymarchSurfaceEpsilon`; `RaymarchSmoke.SphereAnalyticSilhouette…` |
-| `SR-30` | Every agreement band proves its own detection surface, via the bare-ground probe, re-checked live; bands are per world and camera | — | live as a rule; no matrix enforces it until bands return | `03-verification.md`; `strip_to_ground_plane_only`, `AgreementProbe.*` |
-| `SR-31` | Agreement bands are versioned; a re-measure adds a version and never edits one | — | live as a rule; no bands file exists since `ab2a21e` | `03-verification.md` |
-| `SR-33`, `SR-35` | Default material 0.8 grey, not white; default sun off-axis `(0.4, 0.8, 0.6)`, not overhead. Never cited apart | — | live | `MaterialDesc`, `LightingDesc`; `RenderShading.DefaultMaterialUnderWorstCase…` |
-| `SR-34`, `SR-37` | "Standard resolution" (Task VQ-B). The resolution change is not in this tree; only a byte-exact perf hoist cites them | — | live, KAT-side (probably) | `BackgroundRayBasis` comment |
-| `SR-42` | *"C0 cannot merge without C4"*: a KAT-era merge-order rule, discharged by a user ruling | — | historical | `06-sandbox-and-v1.md` (`SL17`) |
-| `SR-54` | KAT Task C4 placed render-only props in nine KAT worlds | — | historical (KAT content) | — |
-| `SR-57` | A dimension note on a KAT gate mesh | — | historical (KAT content); quoted only in `tests/fixtures/render/gate-ring.gltf` | — |
+| `SR-2` | The agreement matrix measures bare geometry only; re-measure after dressing worlds | signed 2026-10-02 (user, via lead) | historical (KAT worlds) | agreement test header, removed at `ab2a21e` |
+| `SR-3` | Content unknown; listed as orphaned in 2026-09, cited nowhere | **unsigned**: there is no content to sign | unknown | 03 §15.1 |
+| `SR-9` | One static draw item per split-program entry (a union leaf or a whole CSG root), in authoring order; `local_to_world` = float inverse of `world_to_local` | signed 2026-10-02 (user, via lead) | live | `scene_from_world`; `SceneFromWorld.*` |
+| `SR-11` | Submesh contract: empty submesh arrays mean one submesh at material 0; non-empty arrays are parallel and partition the indices | signed 2026-10-02 (user, via lead) | live | `MeshData`; `RasterCpu.EmptySubmeshArrays…`, `…ExplicitSubmeshes…` |
+| `SR-13` | Shaded mode culls back faces; *"wireframe mode does not — both sides draw"* | signed 2026-10-02 (user, via lead) | live | `raster_cpu.hpp`; `RasterCpu.ShadedModeRenders…`, `…WireframeModeDrawsBothWindings…` |
+| `SR-14` | No libm transcendental in engine source or golden-feeding test source; trig via `sin32`/`cos32`, `sqrt` allowed | signed 2026-10-02 (user, via lead) | live | `BitPortability.NoLibmTranscendentalInEngineOrGoldenTestSource` |
+| `SR-15` | Exact near/far triangle clipping on both mesh and overlay paths, never whole-triangle rejection | signed 2026-10-02 (user, via lead) | live | `clipTriangleNearFar`; `RasterCpu.SpawnMarkerOverlaySurvives…`, `…NearPlaneClipIsGeometricallyExact…` |
+| `SR-17` | The analytic infinite ground: standalone planes only, world-space, alongside the tessellated grid, bit-identical seam, unshadowed past the bounds | signed 2026-10-02 (user, via lead) | live, except clause 5 (superseded by `SR-17a`) | 03 §15 |
+| `SR-17a` | Every shaded surface blends toward the sky colour by view distance; a pure per-pixel function of three values; exact at strength 0 | scope user-ruled 2026-09-17; signed 2026-10-02 (user, via lead) | live | 03 §16; the `shadowed_ground_with_caster_atmospheric` frame pair |
+| `SR-18` | Gouraud: Lambert N·L + ambient via the one `shade_vertex_color`, *"shade at the vertices"*, colour interpolated | signed 2026-10-02 (user, via lead) | live | `shade_vertex_color`; `RenderShading.LambertFaceTowardSun…` |
+| `SR-21` | Overlays get a depth bias toward the camera so a coincident ground mesh does not win the z-tie | signed 2026-10-02 (user, via lead) | live | `kOverlayDepthBias`; `OverlayDepthBias.*` |
+| `SR-22` | The analytic ground draws in shaded mode only; the sky draws in every mode | signed 2026-10-02 (user, via lead) | live | `draw_sky_and_ground_background`; `RenderShading.WireframeModeNeverDrawsTheAnalyticGround…` |
+| `SR-23` | The sky gradient is keyed on ray elevation, not screen row; one shared `sky_gradient_color` | signed 2026-10-02 (user, via lead) | live | `RenderShading.SkyColourAtTheTrueHorizonMatches…RulingSR23` |
+| `SR-24` | Shadows sample a perspective-correct world position, never a screen-affine one | signed 2026-10-02 (user, via lead) | live | `sample_shadow`; `ShadowPerspectiveCorrectness.*` |
+| `SR-25` | A shadow attenuates the sun term only; ambient is never shadowed | signed 2026-10-02 (user, via lead) | live | `ShadedColor`; `ShadowStep1.*` |
+| `SR-27` | Ray-march takes each hit's material from its owning leaf, not material 0 | signed 2026-10-02 (user, via lead) | live | `RaymarchSmoke.MaterialMisresolution…`; `AgreementGuard.Step1c*` |
+| `SR-28` | The ray-march surface epsilon is `1e-4`, so the reference's own error is negligible | signed 2026-10-02 (user, via lead) | live | `kRaymarchSurfaceEpsilon`; `RaymarchSmoke.SphereAnalyticSilhouette…` |
+| `SR-30` | Every agreement band proves its own detection surface, via the bare-ground probe, re-checked live; bands are per world and camera | signed 2026-10-02 (user, via lead) | live as a rule; no matrix enforces it until bands return | `03-verification.md`; `strip_to_ground_plane_only`, `AgreementProbe.*` |
+| `SR-31` | Agreement bands are versioned; a re-measure adds a version and never edits one | signed 2026-10-02 (user, via lead) | live as a rule; no bands file exists since `ab2a21e` | `03-verification.md` |
+| `SR-33`, `SR-35` | Default material 0.8 grey, not white; default sun off-axis `(0.4, 0.8, 0.6)`, not overhead. Never cited apart | signed 2026-10-02 (user, via lead) | live | `MaterialDesc`, `LightingDesc`; `RenderShading.DefaultMaterialUnderWorstCase…` |
+| `SR-34`, `SR-37` | "Standard resolution" (Task VQ-B). The resolution change is not in this tree; only a byte-exact perf hoist cites them | signed 2026-10-02 (user, via lead) | live, KAT-side (probably) | `BackgroundRayBasis` comment |
+| `SR-42` | *"C0 cannot merge without C4"*: a KAT-era merge-order rule, discharged by a user ruling | signed 2026-10-02 (user, via lead) | historical | `06-sandbox-and-v1.md` (`SL17`) |
+| `SR-54` | KAT Task C4 placed render-only props in nine KAT worlds | signed 2026-10-02 (user, via lead) | historical (KAT content) | — |
+| `SR-57` | A dimension note on a KAT gate mesh | signed 2026-10-02 (user, via lead) | historical (KAT content); quoted only in `tests/fixtures/render/gate-ring.gltf` | — |
 
 Also on the 2026-09 orphan list but cited nowhere in this tree, and probably KAT-side: `SR-10`, `SR-38`–`SR-41`, `SR-52`, `SR-58`.
 
-**Where citations disagree** (unresolved; fix when the code is touched):
+**Where citations disagree** (signed as reconstructed; fix the comments when the code is touched):
 - `SR-23`: dated to Task R6 in `scene.hpp`, to VQ-A elsewhere. A `raymarch.hpp` note still describes the old per-row gradient.
 - `SR-25`: also cited, in `agreement.hpp`, for "ray-march never casts shadows", which `raymarch.hpp` credits to a different amendment.
 - `SR-9`: the original mapping and its revision share the number. Three placeholder comments are from before the revision.
@@ -89,6 +89,6 @@ Also on the 2026-09 orphan list but cited nowhere in this tree, and probably KAT
 
 | ID | Ruling | Signed | Status | Source |
 |---|---|---|---|---|
-| `RND-1` | **One sun convention.** `sun_direction` points from the scene toward the sun; every path shades with `dot(n, +sun_direction)` | — | **in force in the code since `94deae3`; awaiting the user's signature** | restructure defect 4; `02-scene-and-appearance.md` |
-| `RND-2` | **A partial technique carries a partial name.** A backend that cannot draw a full frame exposes an entry point named for what it does draw (`render_background()`), never `render()` | — | proposed; already how `render/raster_gpu.hpp` is written | `01-techniques-and-channels.md` |
-| `RND-3` | **Grades:** CPU raster reference (fp64, declared); CPU ray-march reference for coverage; OpenGL best-effort; Vulkan raster banded once colour is guarded | — | proposed | `01-techniques-and-channels.md` |
+| `RND-1` | **One sun convention.** `sun_direction` points from the scene toward the sun; every path shades with `dot(n, +sun_direction)` | signed 2026-10-02 (user, via lead) | live; in the code since `94deae3` | restructure defect 4; `02-scene-and-appearance.md` |
+| `RND-2` | **A partial technique carries a partial name.** A backend that cannot draw a full frame exposes an entry point named for what it does draw (`render_background()`), never `render()` | signed 2026-10-02 (user, via lead) | live; `render/raster_gpu.hpp` already follows it | `01-techniques-and-channels.md` |
+| `RND-3` | **Grades:** CPU raster reference (fp64, declared); CPU ray-march reference for coverage; OpenGL best-effort; Vulkan raster banded once colour is guarded | signed 2026-10-02 (user, via lead) | live as the declared grades; no grade API exists in code yet (`../01-engine-model.md`) | `01-techniques-and-channels.md` |

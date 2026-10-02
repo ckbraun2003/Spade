@@ -1,6 +1,6 @@
 # Rendering — status
 
-**The only place that says what exists today.** Checked against the tree at `master` `0dd8bdc` on 2026-10-01 by reading the code and CMake, and updated 2026-10-02 for the merges at `94deae3` and `ab2a21e`. Measurements are under "Measured", each with its commit and build tree.
+**The only place that says what exists today.** **Re-checked against `master` `c94add9` on 2026-10-02** by reading the code, the CMake and the log since the first check (`0dd8bdc`). The only render-code changes since then are this realm's merges at `94deae3` and `ab2a21e`. Measurements are under "Measured", each with its commit and build tree.
 
 ## Specified vs built
 
@@ -23,10 +23,16 @@
 
 ## Open items — needs a user decision
 
-1. **Sign `RND-1`** (the sun convention). It has been in force in the code since `94deae3`.
-2. **The grade of each technique and backend** (`RND-3`, proposed in `01-techniques-and-channels.md`).
-3. **When the Vulkan raster resumes as a technique**, and whether the OpenGL backend stays as a technique of its own or retires once Vulkan can draw a full frame.
-4. **The orphaned `SR-nn` rows** in `00-decisions.md` are reconstructed from their code citations and are unsigned. They are the ruling as the code states it, not as anyone signed it.
+1. **When the Vulkan raster resumes as a technique**, and whether the OpenGL backend stays as a technique of its own or retires once Vulkan can draw a full frame.
+
+`RND-1`–`RND-3` and the reconstructed `SR` rows were signed on 2026-10-02 (`00-decisions.md`). `SR-3` stays unsigned: its content is unknown.
+
+## Next for Rendering
+
+1. **GL back-face culling** (`SR-13`). Unblocked: drone plan Task 7 passed with the builder and drone meshes outward-wound.
+2. **GL honours `RenderOptions`**: sky, analytic ground and grid at least, so the GL viewport stops drawing on a flat black clear.
+3. **A field channel for cameras**, replacing the drone heatmap's sandbox-side cells (`../backlog.md`).
+4. **The Vulkan raster as a technique**, once the user rules on item 1 above.
 
 ## Open items — debt
 
@@ -38,8 +44,8 @@
 | **GPU colour unguarded** | The Vulkan raster's only evidence is coverage. A colour oracle is required before it is selectable (`03-verification.md`) |
 | **No agreement bands on Spade's own worlds** | `../backlog.md` |
 | **No render-cadence invariance test** | It holds by construction. A Spade-side test is owed (`RS13`) |
-| **GL does not cull back faces** | `SR-13` says shaded mode culls back faces, and the CPU path does. `GlRenderer` never enables `GL_CULL_FACE`. So a mesh wound inward still draws on GL, lit through its inverted normals, while the CPU culls its near faces. That is how the sandbox builder's inward-wound sphere and cylinder went unnoticed on GL: their inverted normals cancelled the inverted sun. Interface fixed the winding (`c03bb94`) before the sun fix merged. **Culling on GL is still owed**, scheduled after drone plan Task 7's visual check: on correct meshes it is invisible, and anything that vanishes is a real winding bug |
-| **GL and CPU frames differ in content** | Because GL ignores `RenderOptions`, a scene looks different on the two paths beyond numerics: no sky, ground or shadows on GL |
+| **GL does not cull back faces** | `SR-13` says shaded mode culls back faces, and the CPU path does. `GlRenderer` never enables `GL_CULL_FACE`. So a mesh wound inward still draws on GL, lit through its inverted normals, while the CPU culls its near faces. That is how the sandbox builder's inward-wound sphere and cylinder went unnoticed on GL: their inverted normals cancelled the inverted sun. Interface fixed the winding (`c03bb94`) before the sun fix merged. **Culling on GL is still owed**, and now unblocked. On correct meshes it is invisible, so anything that vanishes is a real winding bug |
+| **GL and CPU frames differ in content** | Because GL ignores `RenderOptions`, a scene looks different on the two paths beyond numerics: no sky, ground or shadows on GL. The sandbox clears to a near-black colour under it |
 | **Stale comments** | `render/shadow.cpp` and `tests/test_render_shadow.cpp` say `LightingDesc`'s default sun is `(0,1,0)`. It has been `(0.4, 0.8, 0.6)` since the VQ-A fix |
 | **`SR-17` clause 6** | The infinite ground is unshadowed beyond `scene.bounds`. Accepted, not closed |
 
