@@ -38,7 +38,7 @@ A **camera** is a **technique** plus one or more **channels**. The same camera s
 | Field | None. The drone sim box draws its air-velocity heatmap from sandbox-side quads coloured by unlit palette materials, which shows the need (`../backlog.md`, "Field channels for cameras") |
 | Velocity | `DrawMode::velocity` is a debug colour encoding of body velocity, not a channel |
 
-A field channel samples a field the camera requests from the published frame state, then maps it to colour through a declared palette and range. The palette and its binning are part of the channel's definition, so a CPU frame of a field is exact and testable, as the drone heatmap's exact-pixel test already is.
+A field channel samples a field the camera requests from the published frame state, then maps it to colour through a declared palette and range. The palette and its binning are part of the channel's definition, so a CPU frame of a field is exact and testable, as the drone heatmap's exact-pixel test already is. **A field channel is data, not appearance:** no lighting, shadow or atmospheric term (`SR-17a`) may touch it. Today the CPU raster applies the atmospheric term to unlit materials too, so a caller drawing field cells must set its strength to 0.
 
 ## Camera
 
