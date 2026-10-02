@@ -26,6 +26,11 @@ Core owns the engine's foundation: the module API and the scheduler; state, snap
 | add a backend knob or touch the Vulkan recorder | `04-api-and-backend.md` "The backend seam" |
 | add a public API call | `04-api-and-backend.md` "The public API" |
 
+## What's next
+
+1. **The module-API spec** (`../backlog.md`, first row): modules, scheduler phases, regions, the field registry and grades, building `../01-engine-model.md`. It is done when today's ten passes run as built-in modules through the new scheduler with every golden unchanged. It also settles the open questions in `07-status.md`.
+2. **Translation lock on both backends** (`../backlog.md`, with Physics). The drone stand pins its vehicle with a CPU behavior, so Vulkan refuses it (`CORE-1`). A lock that runs on the GPU lets the stand use Vulkan.
+
 ## Series
 
 - **Owned:** `CORE-n`, plus the legacy rows listed in `00-decisions.md`: `engine D2`, `D6` (interface half), `D7`, `D8`, `D9`, `D12` (error half), `A1` (schedule half), `A3`, `A4`, `A7`, `A9`; `charter P1`–`P4`, `P8`, `SA3`; `SL3`–`SL6`; `RS5` (format half); `D-S5-1`.

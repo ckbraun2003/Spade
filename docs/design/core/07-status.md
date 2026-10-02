@@ -1,6 +1,6 @@
 # Core — status: specified vs built
 
-**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`3a48c4d`** (2026-10-02) for the rows Core's merges changed. The only measured results are the branch runs named in a row, each with its tree.
+**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`332a186`** (2026-10-02): nothing in Core's code changed after `8009587` except the merged install fix, so every row holds there. The only measured results are the branch runs named in a row, each with its tree.
 
 ## Specified vs built
 
