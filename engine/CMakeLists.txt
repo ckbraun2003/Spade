@@ -762,6 +762,7 @@ install(DIRECTORY sensors/ DESTINATION include/sensors FILES_MATCHING PATTERN "*
 # ------------------------------------------------------------------------------
 add_library(spade_vehicles STATIC
     vehicles/rotor.cpp
+    vehicles/rotor_wake.cpp
     vehicles/model_type.cpp
     vehicles/quadrotor.cpp
 )

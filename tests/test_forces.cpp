@@ -24,13 +24,10 @@
 // (apply_drag()):
 //
 //   quadratic      F = -1/2 * rho * Cd * A * |v_rel| * v_rel, WORLD frame.
-//   componentwise  kat's EXISTING drag convention -- see
-//                  configs/physics.yaml (worktree root), keys `drag_coeff`
-//                  and `drag_mode`, cross-checked below against
-//                  controller/dynamics/quadrotor.py's _drag_force_jit() and
-//                  interface/src/physics/quadrotor.cpp's drag_accel(). The
+//   componentwise  F_i = -c_i * |v_rel_i| * v_rel_i per BODY axis. The
 //                  DragComponentwiseSingleStepMatchesPhysicsYamlConvention
-//                  test is the one that pins this reading numerically.
+//                  test is the one that pins this reading numerically (its
+//                  name predates the standalone repository; see its comment).
 //
 // Both laws are exercised the same two ways every physics law in this test
 // tree is: an independent closed-form check (terminal velocity under gravity
@@ -197,41 +194,24 @@ TEST(ForceElements, DragQuadraticTerminalVelocityMatchesClosedForm) {
 }
 
 // ---------------------------------------------------------------------------
-// Componentwise mode: matches kat's existing drag convention.
+// Componentwise mode: F_i = -c * |v_i| * v_i on each BODY axis.
 //
-// configs/physics.yaml (worktree root), the `drag_coeff`/`drag_mode` keys:
-//
-//   drag_coeff: 0.0280 # drag coefficient (kg/m for quadratic/componentwise)
-//   drag_mode: componentwise # ... 'componentwise' (F_i=-cd*|v_i|*v_i)
-//
-// and the file's header comment on those same keys: "componentwise quadratic
-// drag, F_i = -cd*|v_i|*v_i per BODY axis (matches the sim's per-axis
-// VelocityDragCoefficients)" (S6 hygiene: the header comment used to drop the
-// minus sign; reconciled in configs/physics.yaml, see forces.cpp's matching
-// note). Cross-checked against the two engines that
-// implement it: controller/dynamics/quadrotor.py's _drag_force_jit()
-// "componentwise" branch (rotate v into body frame, apply
-// drag_coeff*|v_i|*v_i per axis) and interface/src/physics/quadrotor.cpp's
-// drag_accel() (`k * |vb_i|*vb_i` per axis, SUBTRACTED by its caller -- the
-// yaml's explicit minus sign, spelled as a subtraction there instead of a
-// literal '-').
-//
-// This test uses the yaml's own numbers (mass and drag_coeff straight from
-// configs/physics.yaml) so the check is against the real config, not a
-// stand-in. Velocity is nonzero and DISTINCT on all three axes so a bug that
-// coupled the axes (the exact defect the yaml's header comment says the
-// componentwise form exists to avoid -- see its "MEASURED 2026-07-29" note
-// on the magnitude-coupled form being wrong by up to 3.4x) would show up as
-// a wrong ratio between components, not just a wrong scale.
+// The coefficient, 0.0280 kg/m, is a small-quadrotor value. The test's name
+// predates the standalone repository, when this law was checked against a
+// consumer's config file; renaming it would rename a ctest case, so the name
+// stays. Velocity is nonzero and DISTINCT on all three axes, so a bug that
+// coupled the axes (scaling each component by the speed magnitude, as the
+// isotropic law does) shows up as a wrong ratio between components, not just
+// a wrong scale.
 // ---------------------------------------------------------------------------
 
 TEST(ForceElements, DragComponentwiseSingleStepMatchesPhysicsYamlConvention) {
-    constexpr float kDragCoeff = 0.0280f;  // configs/physics.yaml: drag_coeff
+    constexpr float kDragCoeff = 0.0280f;  // kg/m, a small-quadrotor value
     const WorldParams params = MakeParams(glm::vec3(0.0f), 1.225f, glm::vec3(0.0f));
     const ConstantMedium medium;
 
     BodyState body = MakeUnitBody();
-    body.mass = 0.700f;  // configs/physics.yaml: mass
+    body.mass = 0.700f;  // kg, the same small quadrotor
     body.vel = glm::vec3(12.0f, -7.5f, 3.25f);
     const DragBodyRow elem =
         MakeElem(0, drag_mode::componentwise, glm::vec3(kDragCoeff), /*area=*/0.0f /* unused in this mode */);
@@ -258,8 +238,8 @@ TEST(ForceElements, DragComponentwiseSingleStepMatchesPhysicsYamlConvention) {
 // componentwise law, run to a physical steady state under gravity. With
 // identity orientation and motion confined to one axis, componentwise mode
 // degenerates to a 1-D version of the quadratic law but WITHOUT the
-// rho/Cd/A split (configs/physics.yaml's drag_coeff is one lumped kg/m
-// coefficient, not rho*Cd*A) -- so its terminal velocity is
+// rho/Cd/A split (a componentwise coefficient is one lumped kg/m value,
+// not rho*Cd*A) -- so its terminal velocity is
 // v_t = sqrt(m*g / c), not sqrt(2*m*g / (rho*Cd*A)). A test that only ever
 // checked componentwise via a single evaluation could not tell "right
 // formula" from "right formula, wrong sign that happens to cancel once";
@@ -301,16 +281,15 @@ TEST(ForceElements, DragComponentwiseTerminalVelocityMatchesClosedForm) {
 // TwoIdenticalRunsAreByteIdentical only checks that two runs of the SAME
 // (possibly wrong) code agree with each other, not with an outside
 // reference. Componentwise mode is the one law whose whole reason for
-// existing is per-axis anisotropy expressed in the BODY frame (see its
-// configs/physics.yaml citation above), so it is the one regime a
+// existing is per-axis anisotropy expressed in the BODY frame (see
+// drag_mode::componentwise), so it is the one regime a
 // rotation-direction bug changes the answer for -- these two tests are that
 // regime, independently verified.
 //
-// `coeffs` below is HAND-SET, not from configs/physics.yaml: that file ships
-// one scalar drag_coeff (isotropic across axes by construction), so it alone
-// cannot exercise a per-axis law. DragBodyRow::coeffs being a vec3 -- not a
-// float -- is exactly what makes a hand-set anisotropic vector legitimate
-// test data here despite not coming from the shipped config.
+// `coeffs` below is HAND-SET and deliberately ANISOTROPIC: one scalar
+// coefficient repeated on all three axes cannot exercise a per-axis law.
+// DragBodyRow::coeffs being a vec3 -- not a float -- is exactly what makes a
+// hand-set anisotropic vector legitimate test data here.
 //
 // Both tests were confirmed to fail (and only these two, out of the full
 // suite) under each of two hand-introduced mutations -- swapping
@@ -407,8 +386,8 @@ TEST(ForceElements, DragComponentwiseWithRotatedOrientAndOffsetProducesExpectedT
 // Zero-wind vs with-wind asymmetry: drag responds to RELATIVE airspeed, not
 // ground speed, so a tailwind must reduce it and a headwind must increase
 // it relative to the still-air case -- a sign a bug that read `body.vel`
-// straight through (ignoring `medium.sample(...).wind` entirely, as kat's
-// own wind-less model does) could not produce by accident.
+// straight through (ignoring `medium.sample(...).wind` entirely, as a
+// wind-less drag model does) could not produce by accident.
 // ---------------------------------------------------------------------------
 
 TEST(ForceElements, DragQuadraticWindAsymmetryIsSane) {
