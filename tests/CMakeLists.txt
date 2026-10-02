@@ -1,82 +1,39 @@
 # ==============================================================================
 # READ THIS BEFORE ADDING A TEST HERE. Two facts about where these tests run,
-# both measured 2026-09-17, and neither visible from inside a test file.
+# neither visible from inside a test file.
 #
 # ------------------------------------------------------------------------------
-# 1. THIS SUITE WAS WRITTEN AGAINST KAT'S MAIN GATE, WHICH IT DID NOT REACH.
-#    THAT NO LONGER DESCRIBES THIS REPO -- READ THE UPDATE BELOW FIRST.
+# 1. WHAT RUNS THIS SUITE
 # ------------------------------------------------------------------------------
-# UPDATE, Spade's extraction into its own repo (2026-09-28): the paragraph
-# below is KEPT AS HISTORY, because it explains the SL1/SL2 severability
-# reasoning that still applies to Kat's own build. But its central claim --
-# that a test added here is invisible to this repo's own gate -- is NOW FALSE.
-# This file's parent, this repo's own root CMakeLists.txt, DOES
-# `add_subdirectory(tests)`, and `scripts/test.ps1`'s `-L spade` DOES run it.
-# Adding a test here and running scripts/test.ps1 is now the correct way to
-# exercise it.
+# The root CMakeLists.txt adds this directory, and scripts/test.ps1
+# (`ctest -L spade`) is the gate: green on both presets
+# (docs/design/test-docs/02-build-and-gate.md). There is no hosted CI. Every
+# TEST() is registered as its own ctest case below, so never run
+# spade_tests.exe directly.
 #
-# THE ORIGINAL CLAIM, for context (was true only while spade/ was nested
-# inside Kat, and describes KAT's tree, not this one):
-#   * Kat's repo root CMakeLists.txt had no `add_subdirectory(spade)` -- its
-#     six add_subdirectory calls were runtime, dronesim, components, editor,
-#     train, sdk;
-#   * `dronesim/CMakeLists.txt`'s `add_subdirectory(spade)` resolved to
-#     `dronesim/spade/` -- a DIFFERENT directory wearing the same word, holding
-#     the C5 host `kat_host_spade`, not this tree;
-#   * Kat's own root build obtains the engine as a BINARY, via
-#     `find_package(spade CONFIG REQUIRED)` (dronesim/spade/CMakeLists.txt)
-#     against a pre-installed prefix -- this is UNCHANGED by the extraction and
-#     still describes Kat's side of the boundary today;
-#   * this file was added only by the nested `spade/CMakeLists.txt`, whose own
-#     `project(Spade ...)` made it an independent top-level CMake project even
-#     while nested -- that much is still true now that it IS the top level.
-#
-# WHAT USED TO RUN IT FROM KAT'S SIDE: the `spade-linux` section of Kat's
-# `docker/run-ci-linux.sh` -- it configured `cmake -S spade`, built it, ran
-# `ctest --test-dir spade/build-ci -L spade --no-tests=error`, installed to
-# `spade/install-ci`, and smoked `tests/consumer` against that prefix. That
-# leg was removed 2026-09-28 when Spade was extracted into its own repo,
-# proving Spade was no longer Kat's gate's job. This block used to name
-# `.github/workflows/spade.yml` as "this suite's ONLY automated gate" before
-# that, too, was deleted (2026-09-18). Neither exists any more; scripts/test.ps1
-# is this repo's own gate now, and (per the update above) it does reach this
-# tree directly.
-#
-# Locally, build standalone via scripts/build.ps1 and this repo's own presets.
-#
-# ** IN KAT, DO NOT "FIX" THE SEPARATION DESCRIBED ABOVE BY ADDING
-# add_subdirectory(spade) TO ITS ROOT. ** That separation is not an oversight,
-# it is SL1/SL2 severability working: Kat consumes an INSTALLED Spade through
-# find_package, exactly as any external consumer does, which is the whole
-# property `tests/consumer/` exists to prove. Wiring this tree into Kat's root
-# build would make Kat's green depend on in-tree paths no third-party consumer
-# has, and would retire that proof. The gap this comment closes is not a build
-# defect -- it is that nothing previously told you a change here was invisible
-# to Kat's own loop.
+# Consumers build against an INSTALLED Spade through
+# `find_package(spade CONFIG)`, never against this tree; tests/consumer/ is
+# the worked example, and proves something no test here can: that the
+# installed tree is usable from outside. Nothing runs it today
+# (docs/design/backlog.md).
 #
 # ------------------------------------------------------------------------------
-# 2. THE GPU-GATED TESTS IN THIS LIST HAVE NEVER RUN IN CI. ANYWHERE.
+# 2. GPU COVERAGE IS DEVELOPER-MACHINE-ONLY. SAY SO WHEN YOU CITE IT.
 # ------------------------------------------------------------------------------
-# Five files -- test_compute_context.cpp, test_gpu_fp32_math.cpp,
-# test_gpu_invariance.cpp, test_gpu_parity.cpp, test_gpu_state_mirror.cpp --
-# hold 67 TEST sites between them. 61 open with
-# `if (!vulkan_available()) GTEST_SKIP();`.
+# Tests in Gpu* suites get the `gpu` label (AppendSpadeLabels.cmake) and open
+# with `if (!vulkan_available()) GTEST_SKIP();` (test-docs TD-6). No hosted CI
+# job this suite ever ran on had a GPU, so no gate has ever observed one of
+# them pass or fail; they run where a developer has a device. And
+# `--no-tests=error` only fires on ZERO REGISTERED tests, so a battery that
+# always skips is invisible to red/green. They are still the only check on
+# cross-backend determinism, which SL18 requires.
 #
-# spade.yml is the only automated path that runs this suite (fact 1) -- AND ITS
-# RUNNERS HAVE NO GPU, on both the Linux and Windows jobs, as that workflow's
-# own comment states. So those 61 SKIP, in both jobs, every run.
-# `--no-tests=error` only fires on ZERO REGISTERED tests, so a
-# permanently-skipping battery is invisible to red/green forever.
-#
-# ** GPU COVERAGE IN THIS REPOSITORY IS DEVELOPER-MACHINE-ONLY. ** Say so when
-# you cite it. These tests are real and worth keeping -- they are the only check
-# on cross-backend determinism, which SL18 requires -- but no gate has ever
-# observed one of them pass or fail.
-#
-# THE SIX THAT DO RUN ARE NOT AN OVERSIGHT, AND THEY ARE WHY THIS IS A DECLARED
-# LIMIT RATHER THAN A HOLE. Six sites in these files are deliberately NOT
-# device-gated, and every one is a CPU-side half that needs no device:
+# THE EIGHT THAT ALWAYS RUN ARE NOT AN OVERSIGHT, AND THEY ARE WHY THIS IS A
+# DECLARED LIMIT RATHER THAN A HOLE. These sites in the GPU test files are
+# deliberately NOT device-gated; each is a CPU-side half that needs no device:
+#   test_compute_context.cpp  ComputeBackendAvailability.ForcedUnavailableReturnsUnavailable
 #   test_gpu_invariance.cpp   WorkgroupSizeContract.AllowedSetMatchesCompiledVariants
+#                             WorkgroupSizeContract.UnsupportedSizeIsRejectedByName
 #                             BackendSeamReproof.CpuPathCorpusDigestsUnchangedAtTip
 #   test_gpu_parity.cpp       ParityCorpus.EveryCorpusScenarioIsInTheParitySet
 #                             ParityGeometry.HeterogeneousGeometrySetMatchesSoloRuns
@@ -84,11 +41,11 @@
 #   test_gpu_state_mirror.cpp BackendKnobInvariance.CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus
 #
 # ParityCorpus.EveryCorpusScenarioIsInTheParitySet is the load-bearing one: it
-# is a MEMBERSHIP FLOOR over the parity corpus, so CI still catches a scenario
-# silently dropping OUT of the set the GPU tests would compare -- even though
-# the comparisons themselves cannot run. What CI cannot see is whether the two
-# backends AGREE; what it can still see is that the question is still being
-# asked about every scenario. Keep that property if you touch these files.
+# is a MEMBERSHIP FLOOR over the parity corpus, so a device-less run still
+# catches a scenario silently dropping OUT of the set the GPU tests would
+# compare. What such a run cannot see is whether the two backends AGREE; what
+# it can still see is that the question is being asked about every scenario.
+# Keep that property if you touch these files.
 #
 # If you add a GPU-gated test: it is on you to run it on a machine with a
 # device, and to say in the commit that you did. Nothing downstream will.
@@ -366,8 +323,8 @@ endif()
 # scenarios, each carrying its own expected digest) and
 # tests/golden/worlds/*.world.yaml (the worlds they name) -- located by an
 # absolute path baked in at configure time rather than by a CWD-relative one.
-# gtest_discover_tests below does set WORKING_DIRECTORY, but the kat testing
-# spec's no-CWD rule is the right posture for a data file a test MUST find: a
+# gtest_discover_tests below does set WORKING_DIRECTORY, but the no-CWD rule
+# is the right posture for a data file a test MUST find: a
 # compile definition cannot be defeated by running the exe from elsewhere.
 #
 # SPADE_ENGINE_DIR / SPADE_TESTS_DIR (Task 20's test_m1b_bar.cpp): the same
@@ -402,7 +359,7 @@ include(GoogleTest)
 # split its own arguments -- has no concept of "inside PROPERTIES" as a
 # nested scope for. It recognizes ITS OWN keywords (WORKING_DIRECTORY among
 # them, see CMake's own Modules/GoogleTest.cmake) WHEREVER they appear in the
-# argument list, so the old call's `PROPERTIES LABELS "spade;T0"
+# argument list, so the old call's `PROPERTIES LABELS <labels>
 # WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} TIMEOUT 60` had its own
 # WORKING_DIRECTORY token silently reinterpreted as gtest_discover_tests()'s
 # TOP-LEVEL WORKING_DIRECTORY argument, prematurely terminating the
@@ -444,8 +401,8 @@ gtest_discover_tests(spade_tests
 # SECOND ROOT CAUSE, and why LABELS is set here instead of above (S5 T9
 # ticket B). Proved with a standalone repro script (this task's report has
 # the transcript) rather than by reading GoogleTestAddTests.cmake alone:
-# `PROPERTIES LABELS "spade;T0"` builds a CORRECTLY escaped list value
-# (`LABELS;spade\;T0`, the `\;` meaning "one element containing a literal
+# `PROPERTIES LABELS "spade;gpu"` builds a CORRECTLY escaped list value
+# (`LABELS;spade\;gpu`, the `\;` meaning "one element containing a literal
 # semicolon") all the way through gtest_discover_tests()'s own
 # cmake_parse_arguments call, through the -D-forwarded cache variable
 # GoogleTestAddTests.cmake's script-mode block re-reads, and into that
@@ -456,11 +413,11 @@ gtest_discover_tests(spade_tests
 # ${arg_TEST_PROPERTIES})`, an UNQUOTED variable expansion inside a function
 # call's argument list -- and CMake's unquoted-expansion argument-splitting
 # rule (distinct from list()/foreach(IN LISTS)'s own escape-aware iteration)
-# splits on EVERY literal `;` it finds, `\;` or not. "spade;T0" -- meant to
+# splits on EVERY literal `;` it finds, `\;` or not. "spade;gpu" -- meant to
 # survive as one PROPERTIES value -- flattens into two separate, unpaired
 # tokens, and the generated script ends up calling
-# `set_tests_properties(... LABELS spade T0)`: LABELS pairs with "spade"
-# only, "T0" dangles with no value and is silently dropped by
+# `set_tests_properties(... LABELS spade gpu)`: LABELS pairs with "spade"
+# only, "gpu" dangles with no value and is silently dropped by
 # set_tests_properties. This is a real limitation of GoogleTestAddTests.cmake
 # itself (upstream CMake, not this project's code) -- no keyword reordering
 # on our side can fix a bug inside its own internal forwarding.
@@ -475,7 +432,7 @@ gtest_discover_tests(spade_tests
 # inside that function) has already `set(spade_tests_TESTS ...)` -- a REAL
 # CMake list built by this module's own list-construction code, not
 # reconstructed through the broken unquoted-expansion path -- and calls
-# set_tests_properties() with a QUOTED "spade;T0" literal written directly in
+# set_tests_properties() with a QUOTED "spade;gpu" literal written directly in
 # THIS repo's own source text, which never needs the escape trick that
 # breaks: a quoted argument is never list-split, regardless of what
 # characters it contains.

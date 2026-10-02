@@ -11,7 +11,7 @@ implementation of anything. Every v1 system below is dispositioned as
 > §7's quarantine cannot execute over a live gap.
 
 **This file is the authority, not a copy.** It began as a transcription of the 24th
-spec's SL7 table (`docs/design/06-sandbox-and-v1.md` in this repo). The reason has
+spec's SL7 table (now `docs/design/superseded/2026-09-consolidation/06-sandbox-and-v1.md`). The reason has
 changed since: that spec is now tracked and present in every clone same as this file
 is, so the old gitignored/fresh-clone argument no longer holds. What still makes this
 file the authority rather than the spec's table is that only this one is
