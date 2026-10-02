@@ -50,6 +50,7 @@
 #include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
 
 #include "builder_scene.hpp"   // the builder's object model and its whole interaction
+#include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
@@ -64,15 +65,22 @@ void print_usage() {
     std::puts("  (no mode flag)        open a window on the default scene -- THE DEFAULT");
     std::puts("  --window              the same, stated explicitly");
     std::puts("  --headless            render one frame with no window and exit (the CI surface)");
+    std::puts("  --scene <name>        drone (default): the drone sim box; builder: the scene builder");
+    std::puts("  --view <name>         headless drone only: standard (default) or heatmap");
     std::puts("  --out <path>          write the frame as a binary PPM (default: no file, render only)");
     std::puts("  --width/--height <n>  frame size (headless 320x180, window 1280x720)");
     std::puts("  --no-vsync            do not wait for the display refresh");
     std::puts("  --smoke               drive the builder from a SCRIPT, assert, and exit");
     std::puts("                        non-zero if any check fails -- the re-runnable demo");
-    std::puts("  --no-grid             disable the infinite analytic ground grid");
+    std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --help                this text\n");
-    std::puts("In the window -- THE BUILDER:");
+    std::puts("In the window -- THE DRONE SIM BOX (default):");
+    std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
+    std::puts("  R              level      V standard <-> air-speed heatmap");
+    std::puts("  A/D around     E/Q over/under     W/S nearer/further (0.5-6 m)     drag orbit");
+    std::puts("  the panel      wind, turbulence, density, gravity, throttle, backend; readouts");
+    std::puts("In the window -- THE BUILDER (--scene builder):");
     std::puts("  LEFT click     place the selected primitive on the ground, or select an object");
     std::puts("  LEFT drag      move the selected object in the ground plane");
     std::puts("  RIGHT drag     orbit    scroll dolly    WASD pan    Q/E lower/raise");
@@ -143,7 +151,7 @@ void print_usage() {
 // and that is not a claim, it is what this function's signature enforces.
 [[nodiscard]] bool render_frame(const spade::render::RenderScene& scene,
                                 const spade::render::Camera& camera, uint32_t width,
-                                uint32_t height, bool grid, float blur,
+                                uint32_t height, const spade::render::RenderOptions& options,
                                 std::vector<uint8_t>& pixels, spade::sandbox::TargetSink& sink) {
     // PA-1: RenderTarget NEVER owns its pixel memory. The caller allocates and
     // hands it a span. This is the constraint the TargetSink seam (C1)
@@ -165,9 +173,6 @@ void print_usage() {
         .format = spade::render::PixelFormat::bgrx8,
     };
 
-    spade::render::RenderOptions options;
-    options.ground_grid = grid;
-    options.horizon_blend_strength = blur;
     const spade::Result<void> rendered = spade::render::render(scene, camera, options, target);
     if (!rendered) {
         std::fprintf(stderr, "spade_sandbox: render failed: %s\n", rendered.error().context.c_str());
@@ -457,30 +462,57 @@ template <typename RenderOne>
 // ---------------------------------------------------------------------------
 namespace {
 
-int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t height,
-                 bool grid, float blur, bool vsync, bool smoke) {
-    spade::render::RenderOptions gpu_options;
-    gpu_options.ground_grid = grid;
-    gpu_options.horizon_blend_strength = blur;
+// ⭐ GPU FIRST, CPU FALLBACK -- the user's ruling, implemented as a branch
+// rather than as a preference. If the GPU renderer refuses, we say WHY and
+// keep going on raster_cpu; we do not exit, because a fallback that aborts is
+// not a fallback. Shared by both scenes so they cannot disagree about it.
+[[nodiscard]] std::unique_ptr<spade::render_gl::GlRenderer> start_gpu(const spade::render::RenderScene& scene) {
+    std::unique_ptr<spade::render_gl::GlRenderer> gpu;
+    spade::Result<std::unique_ptr<spade::render_gl::GlRenderer>> made =
+        spade::render_gl::GlRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
+    if (made) {
+        gpu = std::move(*made);
+        spade::Result<void> uploaded = gpu->upload_scene(scene);
+        if (!uploaded) {
+            std::fprintf(stderr, "spade_sandbox: GPU upload failed, falling back to the CPU "
+                                 "rasteriser: %s\n",
+                         uploaded.error().context.c_str());
+            gpu.reset();
+        }
+    } else {
+        std::fprintf(stderr, "spade_sandbox: GPU renderer unavailable, using the CPU "
+                             "rasteriser: %s\n",
+                     made.error().context.c_str());
+    }
+    if (gpu) {
+        std::printf("spade_sandbox: GPU path ACTIVE -- %s, %s\n", gpu->renderer_name().c_str(),
+                    gpu->version_string().c_str());
+    } else {
+        std::printf("spade_sandbox: CPU fallback path (no GPU renderer)\n");
+    }
+    return gpu;
+}
+
+// Opens the window, or explains why not. ⚠⚠ THE REFUSAL IS THE DELIVERABLE,
+// NOT AN ERROR PATH: it names the cause and the caller exits non-zero. A
+// missing capability refuses, never degrades -- a window that silently fails
+// to appear is the worst possible outcome for someone judging whether the GUI
+// works.
+[[nodiscard]] std::unique_ptr<spade::sandbox::GlTargetSink> open_window(uint32_t width, uint32_t height,
+                                                                        bool vsync) {
     spade::sandbox::GlTargetSink::Options opts;
     opts.width = width;
     opts.height = height;
     opts.title = "spade sandbox";
     opts.vsync = vsync;
-
     std::string why_not;
     std::unique_ptr<spade::sandbox::GlTargetSink> sink =
         spade::sandbox::GlTargetSink::create(opts, &why_not);
     if (!sink) {
-        // ⚠⚠ THE REFUSAL IS THE DELIVERABLE, NOT AN ERROR PATH. It names the
-        // cause and it exits non-zero. A missing capability refuses, never
-        // degrades -- a window that silently fails to appear is the worst
-        // possible outcome for someone judging whether the GUI works.
         std::fprintf(stderr, "spade_sandbox: cannot open a window -- %s\n", why_not.c_str());
         std::fprintf(stderr, "spade_sandbox: --headless still works in this build.\n");
-        return 3;
+        return nullptr;
     }
-
     // ⚠⚠ WHICH GL IMPLEMENTATION ARE WE ACTUALLY ON. Printed unconditionally
     // rather than behind a flag, because it decides how every timing below is
     // read: on Microsoft's GDI GENERIC software GL, SwapBuffers is a CPU blit
@@ -491,36 +523,41 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
     std::printf("spade_sandbox: GL_RENDERER %s\n", gl.renderer.c_str());
     std::printf("spade_sandbox: GL_VERSION  %s\n", gl.version.c_str());
     std::printf("spade_sandbox: GL_VENDOR   %s\n", gl.vendor.c_str());
+    return sink;
+}
 
-    // ⭐ GPU FIRST, CPU FALLBACK -- the user's ruling, implemented as a
-    // branch rather than as a preference. If the GPU renderer refuses, we say
-    // WHY and keep going on raster_cpu; we do not exit, because a fallback that
-    // aborts is not a fallback.
-    std::unique_ptr<spade::render_gl::GlRenderer> gpu;
-    {
-        spade::Result<std::unique_ptr<spade::render_gl::GlRenderer>> made =
-            spade::render_gl::GlRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
-        if (made) {
-            gpu = std::move(*made);
-            spade::Result<void> uploaded = gpu->upload_scene(scene);
-            if (!uploaded) {
-                std::fprintf(stderr, "spade_sandbox: GPU upload failed, falling back to the CPU "
-                                     "rasteriser: %s\n",
-                             uploaded.error().context.c_str());
-                gpu.reset();
-            }
-        } else {
-            std::fprintf(stderr, "spade_sandbox: GPU renderer unavailable, using the CPU "
-                                 "rasteriser: %s\n",
-                         made.error().context.c_str());
-        }
+// Reported rather than inferred: "the window appeared" and "the loop ran"
+// are different claims, and only the second has a number.
+// ⭐ AND THE SPLIT GOES TO STDOUT AS WELL AS THE HUD, so the answer to
+// "why is it N fps" survives the window closing and can be captured from
+// a script. A number only a human can read by looking at it is not a
+// measurement anyone else can check.
+void print_exit_summary(const spade::sandbox::GlTargetSink& sink, uint32_t width, uint32_t height, bool vsync) {
+    const spade::sandbox::GlTargetSink::Timings life = sink.lifetime_timings();
+    std::printf("spade_sandbox: window closed after %llu frames\n",
+                static_cast<unsigned long long>(sink.presented()));
+    std::printf("spade_sandbox: mean frame %.2f ms (%.1f fps) at %ux%u, vsync %s\n",
+                life.total_ms, life.total_ms > 0.0f ? 1000.0f / life.total_ms : 0.0f, width,
+                height, vsync ? "on" : "off");
+    std::printf("spade_sandbox:   physics %.2f  render %.2f  convert %.2f  upload %.2f  ui %.2f  swap %.2f  ms\n",
+                life.physics_ms, life.render_ms, life.convert_ms, life.upload_ms, life.ui_ms, life.swap_ms);
+    std::printf("spade_sandbox:   working set %.1f MB\n",
+                static_cast<double>(spade::sandbox::GlTargetSink::working_set_bytes()) /
+                    (1024.0 * 1024.0));
+}
+
+int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t height,
+                 bool grid, float blur, bool vsync, bool smoke) {
+    spade::render::RenderOptions gpu_options;
+    gpu_options.ground_grid = grid;
+    gpu_options.horizon_blend_strength = blur;
+
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink = open_window(width, height, vsync);
+    if (!sink) {
+        return 3;
     }
-    if (gpu) {
-        std::printf("spade_sandbox: GPU path ACTIVE -- %s, %s\n", gpu->renderer_name().c_str(),
-                    gpu->version_string().c_str());
-    } else {
-        std::printf("spade_sandbox: CPU fallback path (no GPU renderer)\n");
-    }
+
+    std::unique_ptr<spade::render_gl::GlRenderer> gpu = start_gpu(scene);
 
     spade::sandbox::OrbitCamera camera;
     std::vector<uint8_t> pixels;
@@ -615,7 +652,6 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
         if (glm::length(builder.sun_direction) > 1e-4f) {
             scene.lighting.sun_direction = glm::normalize(builder.sun_direction);
         }
-        grid = builder.grid;
         // The application owns the render call, so it times its own cost.
         // Both paths are timed the SAME WAY and feed the SAME HUD, which is
         // what makes the two comparable at all.
@@ -636,7 +672,7 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
             // the split can attribute them.
             sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count(), 0.0f);
         } else {
-            const bool ok = render_frame(scene, rc, fw, fh, grid, blur, pixels, *sink);
+            const bool ok = render_frame(scene, rc, fw, fh, gpu_options, pixels, *sink);
             const auto r1 = std::chrono::steady_clock::now();
             sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
             if (!ok) {
@@ -664,23 +700,205 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
         }
     }
 
-    // Reported rather than inferred: "the window appeared" and "the loop ran"
-    // are different claims, and only the second has a number.
-    // ⭐ AND THE SPLIT GOES TO STDOUT AS WELL AS THE HUD, so the answer to
-    // "why is it N fps" survives the window closing and can be captured from
-    // a script. A number only a human can read by looking at it is not a
-    // measurement anyone else can check.
-    const spade::sandbox::GlTargetSink::Timings life = sink->lifetime_timings();
-    std::printf("spade_sandbox: window closed after %llu frames\n",
-                static_cast<unsigned long long>(sink->presented()));
-    std::printf("spade_sandbox: mean frame %.2f ms (%.1f fps) at %ux%u, vsync %s\n",
-                life.total_ms, life.total_ms > 0.0f ? 1000.0f / life.total_ms : 0.0f, width,
-                height, vsync ? "on" : "off");
-    std::printf("spade_sandbox:   render %.2f  convert %.2f  upload %.2f  ui %.2f  swap %.2f  ms\n",
-                life.render_ms, life.convert_ms, life.upload_ms, life.ui_ms, life.swap_ms);
-    std::printf("spade_sandbox:   working set %.1f MB\n",
-                static_cast<double>(spade::sandbox::GlTargetSink::working_set_bytes()) /
-                    (1024.0 * 1024.0));
+    print_exit_summary(*sink, width, height, vsync);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE DRONE SIM BOX -- the default scene. A quadrotor on a test stand, flown
+// in attitude through the engine's rotor model, with the air around it as an
+// optional heatmap. Every decision is in drone_sim.hpp / drone_view.hpp and is
+// asserted with no display; this is the wiring.
+// ---------------------------------------------------------------------------
+
+// An empty world (no ground): the drone hangs in air. The WorldDesc is an
+// out-parameter for the same reason build_builtin_scene's is -- the scene
+// borrows its sdf.
+[[nodiscard]] bool build_drone_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out) {
+    spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
+                                                .name("drone_sim_box")
+                                                .environment(spade::Environment{})
+                                                .capacities(spade::Capacities{1, 5, 1, 1})
+                                                .build();
+    if (!world) {
+        std::fprintf(stderr, "spade_sandbox: WorldBuilder::build failed: %s\n", world.error().context.c_str());
+        return false;
+    }
+    world_out = std::move(*world);
+    const spade::Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world_out, {});
+    if (!scene) {
+        std::fprintf(stderr, "spade_sandbox: scene_from_world failed: %s\n", scene.error().context.c_str());
+        return false;
+    }
+    out = *scene;
+    return true;
+}
+
+// The drone frame's draw list and options, shared by the window and headless.
+[[nodiscard]] spade::render::RenderOptions drone_frame(spade::render::RenderScene& scene,
+                                                       const spade::sandbox::DroneDrawBinding& binding,
+                                                       const spade::sandbox::DroneSim& drone,
+                                                       const glm::quat& orientation,
+                                                       const spade::render::Camera& camera, bool heatmap,
+                                                       float heatmap_max, float blur, float* observed_max) {
+    scene.dynamics.clear();
+    spade::sandbox::append_drone_items(binding, drone.params(), glm::vec3(0.0f), orientation, scene.dynamics);
+    if (heatmap) {
+        if (const auto field = spade::sandbox::air_field_from(drone)) {
+            const float seen = spade::sandbox::append_slice_items(
+                binding, spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f), orientation), *field, heatmap_max,
+                scene.dynamics);
+            if (observed_max != nullptr) *observed_max = seen;
+        }
+    }
+    spade::render::RenderOptions o;
+    o.overlays = false;     // no ground, no bounds worth drawing
+    o.ground_grid = false;  // and no ground for the grid to sit on
+    // The design's "shadows off in the heatmap view". A no-op in this scene
+    // either way: the shadow map is baked from statics at world load, the
+    // empty world has none, and dynamics (drone, cells) neither cast nor receive.
+    o.shadows = !heatmap;
+    // The heatmap's colour IS the datum, and the CPU path applies the
+    // atmospheric horizon term to every material, unlit included -- so with
+    // blur > 0 the cells would fade toward the sky by distance and stop
+    // matching the legend (and the GL path, which ignores options). A field
+    // channel is exempt from it (Rendering's rule).
+    o.horizon_blend_strength = heatmap ? 0.0f : blur;
+    return o;
+}
+
+int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) {
+    spade::Result<spade::sandbox::DroneSim> drone = spade::sandbox::DroneSim::create(spade::sandbox::DronePhysicsOptions{});
+    if (!drone) {
+        std::fprintf(stderr, "spade_sandbox: the drone stand would not build: %s\n", drone.error().context.c_str());
+        return 1;
+    }
+    spade::WorldDesc world;
+    spade::render::RenderScene scene;
+    if (!build_drone_scene(scene, world)) {
+        return 1;
+    }
+    const spade::sandbox::DroneDrawBinding binding = spade::sandbox::bind_drone_scene(scene, drone->params());
+
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink = open_window(width, height, vsync);
+    if (!sink) {
+        return 3;
+    }
+    // Uploaded once: the drone's meshes and the palette never change, only
+    // the per-frame draw items do.
+    std::unique_ptr<spade::render_gl::GlRenderer> gpu = start_gpu(scene);
+
+    spade::sandbox::DronePanelModel panel;
+    panel.edited = drone->options();
+    panel.render_path = gpu ? "GPU (OpenGL)" : "CPU raster";
+    sink->attach_drone(&panel);
+
+    spade::sandbox::OrbitCamera camera;
+    camera.target = glm::vec3(0.0f);
+    camera.yaw = 0.6f;
+    camera.pitch = 0.35f;
+    camera.distance = 1.8f;
+    std::vector<uint8_t> pixels;
+
+    while (!sink->should_close()) {
+        const spade::sandbox::FrameInput in = sink->poll();
+        if (in.want_close) {
+            break;
+        }
+        const float dt = sink->delta_seconds();
+        spade::sandbox::apply_drone_orbit(camera, in, dt);
+        spade::sandbox::nudge_attitude(drone->target, in, dt);
+        if (in.toggle_view_pressed && !in.ui_captured_keyboard) {
+            panel.view_heatmap = !panel.view_heatmap;
+        }
+        // Debounced inside: nothing happens while a slider is held.
+        (void)spade::sandbox::apply_panel_edits(*drone, panel);
+
+        const auto p0 = std::chrono::steady_clock::now();
+        if (const spade::Result<void> stepped = drone->advance(dt); !stepped) {
+            std::fprintf(stderr, "spade_sandbox: the drone step failed: %s\n", stepped.error().context.c_str());
+            return 1;
+        }
+        const auto p1 = std::chrono::steady_clock::now();
+        const float physics_ms = std::chrono::duration<float, std::milli>(p1 - p0).count();
+        panel.readouts = drone->readouts();
+        panel.target = drone->target;
+
+        const uint32_t fw = sink->framebuffer_width();
+        const uint32_t fh = sink->framebuffer_height();
+        if (fw == 0u || fh == 0u) {
+            continue;  // minimised: the stand keeps stepping, capped by the accumulator
+        }
+        const spade::render::Camera rc = camera.to_render_camera();
+        const spade::render::RenderOptions options =
+            drone_frame(scene, binding, *drone, panel.readouts.orientation, rc, panel.view_heatmap, panel.heatmap_max,
+                        blur, &panel.observed_max);
+
+        const auto r0 = std::chrono::steady_clock::now();
+        if (gpu) {
+            sink->begin_gpu_frame();
+            if (const spade::Result<void> drew = gpu->draw(scene, rc, options, fw, fh); !drew) {
+                std::fprintf(stderr, "spade_sandbox: GPU draw failed: %s\n", drew.error().context.c_str());
+                return 1;
+            }
+            const auto r1 = std::chrono::steady_clock::now();
+            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count(), physics_ms);
+        } else {
+            sink->note_physics_ms(physics_ms);
+            const bool ok = render_frame(scene, rc, fw, fh, options, pixels, *sink);
+            const auto r1 = std::chrono::steady_clock::now();
+            sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
+            if (!ok) {
+                return 1;
+            }
+        }
+    }
+    print_exit_summary(*sink, width, height, vsync);
+    return 0;
+}
+
+// --headless --scene drone: deterministic -- 250 fixed steps (0.5 s) with the
+// controller holding level, one CPU frame from a fixed camera.
+int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap, const char* out_path) {
+    spade::Result<spade::sandbox::DroneSim> drone = spade::sandbox::DroneSim::create(spade::sandbox::DronePhysicsOptions{});
+    if (!drone) {
+        std::fprintf(stderr, "spade_sandbox: the drone stand would not build: %s\n", drone.error().context.c_str());
+        return 1;
+    }
+    if (const spade::Result<void> stepped = drone->step_fixed(250); !stepped) {
+        std::fprintf(stderr, "spade_sandbox: the drone step failed: %s\n", stepped.error().context.c_str());
+        return 1;
+    }
+    spade::WorldDesc world;
+    spade::render::RenderScene scene;
+    if (!build_drone_scene(scene, world)) {
+        return 1;
+    }
+    const spade::sandbox::DroneDrawBinding binding = spade::sandbox::bind_drone_scene(scene, drone->params());
+
+    spade::render::Camera camera;
+    camera.position = glm::vec3(1.2f, 0.6f, 1.6f);
+    camera.orientation = glm::quatLookAt(glm::normalize(-camera.position), glm::vec3(0.0f, 1.0f, 0.0f));
+    float observed = 0.0f;
+    const spade::render::RenderOptions options =
+        drone_frame(scene, binding, *drone, drone->readouts().orientation, camera, heatmap, 0.0f, blur, &observed);
+
+    spade::sandbox::HeadlessTargetSink sink{out_path != nullptr ? std::string(out_path) : std::string{}};
+    std::vector<uint8_t> pixels;
+    if (!render_frame(scene, camera, width, height, options, pixels, sink)) {
+        return 1;
+    }
+    if (sink.failed()) {
+        std::fprintf(stderr, "spade_sandbox: could not write %s\n", out_path != nullptr ? out_path : "(no path)");
+        return 1;
+    }
+    const spade::sandbox::DroneReadouts r = drone->readouts();
+    std::printf("spade_sandbox: drone %s view, %ux%u after %llu steps%s%s\n", heatmap ? "heatmap" : "standard",
+                width, height, static_cast<unsigned long long>(r.tick), out_path != nullptr ? " -> " : "",
+                out_path != nullptr ? out_path : "");
+    if (heatmap) {
+        std::printf("spade_sandbox:   air speed 0 .. %.2f m/s across the slice\n", static_cast<double>(observed));
+    }
     return 0;
 }
 
@@ -706,12 +924,18 @@ int main(int argc, char** argv) {
     bool vsync = true;
     bool smoke = false;
     float blur = 0.0f;
+    const char* scene_name = nullptr;  // "drone" (the default) or "builder"
+    const char* view_name = nullptr;   // drone only: "standard" (default) or "heatmap"
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (std::strcmp(a, "--help") == 0) {
             print_usage();
             return 0;
+        } else if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
+            scene_name = argv[++i];
+        } else if (std::strcmp(a, "--view") == 0 && i + 1 < argc) {
+            view_name = argv[++i];
         } else if (std::strcmp(a, "--headless") == 0) {
             headless = true;
         } else if (std::strcmp(a, "--window") == 0) {
@@ -753,6 +977,34 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "spade_sandbox: --headless and --window are mutually exclusive\n");
         return 2;
     }
+    // THE DRONE SIM BOX IS THE DEFAULT SCENE; the builder stays one flag away,
+    // and --smoke scripts the builder, so it takes the builder whatever the
+    // default is -- but refuses an explicit request for anything else.
+    if (scene_name != nullptr && std::strcmp(scene_name, "drone") != 0 && std::strcmp(scene_name, "builder") != 0) {
+        std::fprintf(stderr, "spade_sandbox: --scene takes drone or builder, not '%s'\n", scene_name);
+        return 2;
+    }
+    if (smoke && scene_name != nullptr && std::strcmp(scene_name, "builder") != 0) {
+        std::fprintf(stderr, "spade_sandbox: --smoke scripts the builder scene; it cannot run --scene %s\n",
+                     scene_name);
+        return 2;
+    }
+    const bool drone_scene = !smoke && (scene_name == nullptr || std::strcmp(scene_name, "drone") == 0);
+    if (view_name != nullptr && std::strcmp(view_name, "standard") != 0 && std::strcmp(view_name, "heatmap") != 0) {
+        std::fprintf(stderr, "spade_sandbox: --view takes standard or heatmap, not '%s'\n", view_name);
+        return 2;
+    }
+    if (view_name != nullptr && !drone_scene) {
+        std::fprintf(stderr, "spade_sandbox: --view applies to the drone scene only\n");
+        return 2;
+    }
+    if (view_name != nullptr && !headless) {
+        // In the window V toggles the view; a flag that only sets the first
+        // frame would read as broken the moment it was pressed.
+        std::fprintf(stderr, "spade_sandbox: --view applies to --headless; in the window press V\n");
+        return 2;
+    }
+    const bool heatmap = view_name != nullptr && std::strcmp(view_name, "heatmap") == 0;
     if (!headless) {
         windowed = true;
     }
@@ -776,6 +1028,16 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "spade_sandbox: --out writes a single frame and applies to "
                              "--headless only\n");
         return 2;
+    }
+
+    if (drone_scene) {
+        if (windowed) {
+            std::printf("spade_sandbox: opening a %ux%u window on the drone sim box "
+                        "(--scene builder for the builder, --headless for the CI surface)\n",
+                        width, height);
+            return run_windowed_drone(width, height, blur, vsync);
+        }
+        return run_headless_drone(width, height, blur, heatmap, out_path);
     }
 
     // Declared HERE, before the scene, so it is destroyed AFTER it -- the
@@ -802,7 +1064,10 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> pixels;
     spade::render::Camera camera;
     camera.position = glm::vec3(0.0f, 2.0f, 8.0f);
-    if (!render_frame(scene, camera, width, height, grid, blur, pixels, sink)) {
+    spade::render::RenderOptions options;
+    options.ground_grid = grid;
+    options.horizon_blend_strength = blur;
+    if (!render_frame(scene, camera, width, height, options, pixels, sink)) {
         return 1;
     }
     if (sink.failed()) {

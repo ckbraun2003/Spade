@@ -34,6 +34,7 @@
 #include "gl_target_sink.hpp"
 
 #include "builder_scene.hpp"  // the builder's model -- pure, no UI in it
+#include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
 
 #include <algorithm>
 #include <chrono>
@@ -166,9 +167,12 @@ struct GlTargetSink::Impl {
     bool last_left_down = false;
     bool del_was_down = false;
     bool dup_was_down = false;
+    bool level_was_down = false;  // R
+    bool view_was_down = false;   // V
     // Non-owning. The application owns the model and outlives the sink;
     // the sink only reads and writes it while drawing a panel.
     BuilderScene* builder = nullptr;
+    DronePanelModel* drone = nullptr;
 
     ~Impl() {
         // Teardown in creation-reverse order, and each step guarded by the flag
@@ -373,7 +377,12 @@ FrameInput GlTargetSink::poll() {
     in.mouse_y = static_cast<float>(cy) * sy;
 
     const bool rdown = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-    if (rdown && !io.WantCaptureMouse) {
+    // The drone scene has nothing for the left button to select or move, so
+    // there EITHER button orbits.
+    const bool orbit_down =
+        rdown || (impl_->drone != nullptr &&
+                  glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+    if (orbit_down && !io.WantCaptureMouse) {
         if (impl_->dragging) {
             in.orbit_dx = static_cast<float>(cx - impl_->last_cursor_x);
             in.orbit_dy = static_cast<float>(cy - impl_->last_cursor_y);
@@ -439,6 +448,18 @@ FrameInput GlTargetSink::poll() {
         const bool dup = ctrl && glfwGetKey(impl_->window, GLFW_KEY_D) == GLFW_PRESS;
         in.duplicate_pressed = dup && !impl_->dup_was_down;
         impl_->dup_was_down = dup;
+
+        // The drone's attitude keys, mapped like a stick (orbit_camera.hpp's
+        // FrameInput states the signs): Up pushes the nose down.
+        in.attitude_pitch = held(GLFW_KEY_DOWN) - held(GLFW_KEY_UP);
+        in.attitude_roll = held(GLFW_KEY_RIGHT) - held(GLFW_KEY_LEFT);
+        in.attitude_yaw = held(GLFW_KEY_Z) - held(GLFW_KEY_X);
+        const bool level = glfwGetKey(impl_->window, GLFW_KEY_R) == GLFW_PRESS;
+        in.level_pressed = level && !impl_->level_was_down;
+        impl_->level_was_down = level;
+        const bool view = glfwGetKey(impl_->window, GLFW_KEY_V) == GLFW_PRESS;
+        in.toggle_view_pressed = view && !impl_->view_was_down;
+        impl_->view_was_down = view;
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.
@@ -592,16 +613,24 @@ void GlTargetSink::draw_overlay() {
             ImGui::Text("swap     %6.2f ms%s", a.swap_ms,
                         impl_->options.vsync ? "   (vsync: waiting is normal)" : "");
             ImGui::Separator();
-            ImGui::Text("RIGHT-drag orbit   scroll dolly   WASD pan   Q/E down/up");
-            ImGui::Text("LEFT click place/select, drag moves   Del removes");
+            if (impl_->drone != nullptr) {
+                ImGui::Text("arrows pitch/roll   Z/X yaw   R level   V heatmap");
+                ImGui::Text("A/D around   E/Q over/under   W/S nearer/further   drag orbit");
+            } else {
+                ImGui::Text("RIGHT-drag orbit   scroll dolly   WASD pan   Q/E down/up");
+                ImGui::Text("LEFT click place/select, drag moves   Del removes");
+            }
             ImGui::Text("F1 hide      Esc quit");
         }
         ImGui::End();
     }
-    // THE ONE PLACE THE BUILDER PANEL IS DRAWN, reached by both present
+    // THE ONE PLACE EACH SCENE'S PANEL IS DRAWN, reached by both present
     // paths because both of them call draw_overlay().
     if (impl_->builder != nullptr) {
         draw_builder_panel(*impl_->builder);
+    }
+    if (impl_->drone != nullptr) {
+        draw_drone_panel(*impl_->drone);
     }
 #endif
 }
@@ -721,6 +750,119 @@ void GlTargetSink::draw_builder_panel(BuilderScene& model) {
 void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
 #if SPADE_SANDBOX_HAS_GL
     impl_->builder = model;
+#else
+    (void)model;
+#endif
+}
+
+void GlTargetSink::attach_drone(DronePanelModel* model) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->drone = model;
+#else
+    (void)model;
+#endif
+}
+
+// The drone sim box's physics panel. Widgets write the model and nothing
+// else; drone_view.hpp's apply_panel_edits decides what an edit does (and
+// debounces it on ui_item_active, which this function reports).
+void GlTargetSink::draw_drone_panel(DronePanelModel& model) {
+#if SPADE_SANDBOX_HAS_GL
+    ImGui::SetNextWindowPos(ImVec2(12.0f, 250.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(330.0f, 560.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("drone sim box")) {
+        DronePhysicsOptions& o = model.edited;
+        ImGui::TextUnformatted("AIR AND WORLD  (applied when you let go)");
+        ImGui::SliderFloat("wind m/s", &o.wind_speed_mps, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("heading deg", &o.wind_heading_deg, 0.0f, 360.0f, "%.0f");
+        static constexpr const char* kLevels[] = {"none", "light", "moderate", "severe"};
+        int level = static_cast<int>(o.turbulence);
+        if (ImGui::Combo("turbulence", &level, kLevels, 4)) {
+            o.turbulence = static_cast<TurbulenceLevel>(level);
+        }
+        ImGui::SliderFloat("density kg/m3", &o.air_density, 0.5f, 1.5f, "%.3f");
+        ImGui::SliderFloat("gravity m/s2", &o.gravity, 0.0f, 20.0f, "%.2f");
+        float throttle_pct = o.throttle * 100.0f;
+        if (ImGui::SliderFloat("throttle % hover", &throttle_pct, 0.0f, 200.0f, "%.0f")) {
+            o.throttle = throttle_pct / 100.0f;
+        }
+        static constexpr const char* kBackends[] = {"CPU", "Vulkan"};
+        int backend = o.vulkan ? 1 : 0;
+        if (ImGui::Combo("backend", &backend, kBackends, 2)) {
+            o.vulkan = backend == 1;
+        }
+        if (!model.status.empty()) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "%s", model.status.c_str());
+            ImGui::PopTextWrapPos();
+        }
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("VIEW  (V toggles)");
+        int view = model.view_heatmap ? 1 : 0;
+        ImGui::RadioButton("standard", &view, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("air speed", &view, 1);
+        model.view_heatmap = view == 1;
+        bool auto_range = !(model.heatmap_max > 0.0f);
+        if (ImGui::Checkbox("auto range", &auto_range)) {
+            model.heatmap_max = auto_range ? 0.0f : std::max(model.observed_max, 1.0f);
+        }
+        if (!auto_range) {
+            ImGui::SliderFloat("range m/s", &model.heatmap_max, 0.5f, 40.0f, "%.1f");
+        }
+        if (model.view_heatmap) {
+            // The legend: the palette's bins left to right, 0 to the range top.
+            const float top = model.heatmap_max > 0.0f ? model.heatmap_max : model.observed_max;
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float w = ImGui::GetContentRegionAvail().x, h = 14.0f;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            for (uint32_t b = 0; b < kHeatmapBins; ++b) {
+                const glm::vec3 c = heatmap_color(b);
+                const float x0 = p.x + w * static_cast<float>(b) / static_cast<float>(kHeatmapBins);
+                const float x1 = p.x + w * static_cast<float>(b + 1) / static_cast<float>(kHeatmapBins);
+                dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, p.y + h),
+                                  ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)));
+            }
+            ImGui::Dummy(ImVec2(w, h));
+            ImGui::Text("0 m/s");
+            ImGui::SameLine(w - 60.0f);
+            ImGui::Text("%.1f m/s", static_cast<double>(top));
+        }
+
+        ImGui::Separator();
+        const DroneReadouts& r = model.readouts;
+        const AttitudeTarget a = attitude_from_quat(r.orientation);
+        const auto deg = [](float rad) { return static_cast<double>(glm::degrees(rad)); };
+        ImGui::Text("attitude  yaw %6.1f  pitch %6.1f  roll %6.1f deg", deg(a.yaw), deg(a.pitch), deg(a.roll));
+        ImGui::Text("target    yaw %6.1f  pitch %6.1f  roll %6.1f deg", deg(model.target.yaw),
+                    deg(model.target.pitch), deg(model.target.roll));
+        ImGui::Text("rates     %6.2f %6.2f %6.2f rad/s", static_cast<double>(r.omega_body.x),
+                    static_cast<double>(r.omega_body.y), static_cast<double>(r.omega_body.z));
+        // STATIC thrust (k_T w^2): in wind the engine's thrust is that times
+        // the inflow factor, so this is a commanded quantity, labelled as one.
+        for (std::size_t i = 0; i < r.rotor_omega.size(); ++i) {
+            ImGui::Text("rotor %zu   %6.0f rad/s   static thrust %5.2f N", i,
+                        static_cast<double>(r.rotor_omega[i]), static_cast<double>(r.rotor_thrust[i]));
+        }
+        ImGui::Text("commanded moment %6.3f %6.3f %6.3f N m", static_cast<double>(r.moment_cmd.x),
+                    static_cast<double>(r.moment_cmd.y), static_cast<double>(r.moment_cmd.z));
+        ImGui::Text("hover %4.0f rad/s   induced velocity %4.2f m/s", static_cast<double>(r.hover_omega),
+                    static_cast<double>(r.hover_induced_velocity));
+        ImGui::Text("IMU accel %6.2f %6.2f %6.2f m/s2", static_cast<double>(r.imu_accel.x),
+                    static_cast<double>(r.imu_accel.y), static_cast<double>(r.imu_accel.z));
+        ImGui::Text("IMU gyro  %6.2f %6.2f %6.2f rad/s", static_cast<double>(r.imu_gyro.x),
+                    static_cast<double>(r.imu_gyro.y), static_cast<double>(r.imu_gyro.z));
+        ImGui::Text("tick %llu   backend CPU   render %s", static_cast<unsigned long long>(r.tick),
+                    model.render_path);
+    }
+    ImGui::End();
+    // The debounce flag, set AFTER End() and every frame: inside the Begin()
+    // block it would freeze at its last value while the panel is collapsed
+    // (Begin returns false), and the click on the collapse arrow itself reads
+    // as an active item -- so a collapsed panel would hold back every rebuild
+    // until reopened. Read after all widgets, so a drag in any of them counts.
+    model.ui_item_active = ImGui::IsAnyItemActive();
 #else
     (void)model;
 #endif

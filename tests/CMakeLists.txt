@@ -245,6 +245,10 @@ if(SPADE_BUILD_SANDBOX)
         # mixer (checked against the engine, not only against their own
         # formulas), the accumulator cap and the rebuild carry.
         test_sandbox_drone.cpp
+        # The drone's view: the air field (medium + rotor wakes), the heatmap
+        # palette and slice, and the drone's real-size parts -- including one
+        # exact-pixel check through the CPU rasterizer.
+        test_sandbox_drone_view.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

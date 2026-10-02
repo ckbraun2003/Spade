@@ -463,8 +463,12 @@ TEST(SandboxBuilderMesh, EveryPrimitiveIsAUnitShape) {
 // also inverted and the two errors cancelled. A degenerate triangle fails here
 // too: its winding is zero and its normal is not a number.
 TEST(SandboxBuilderMesh, EveryTriangleFacesOutward) {
-    const spade::render::MeshData meshes[3] = {make_box_mesh(), make_sphere_mesh(), make_cylinder_mesh()};
-    for (int k = 0; k < 3; ++k) {
+    // The last two are the sized meshes the drone's parts use (a flat body
+    // box and a 1 cm rotor disc), so the size parameters keep the winding.
+    const spade::render::MeshData meshes[5] = {make_box_mesh(), make_sphere_mesh(), make_cylinder_mesh(),
+                                               make_box_mesh(glm::vec3(0.06f, 0.025f, 0.06f)),
+                                               make_cylinder_mesh(24u, 0.12f, 0.005f)};
+    for (int k = 0; k < 5; ++k) {
         const spade::render::MeshData& m = meshes[k];
         ASSERT_FALSE(m.indices.empty());
         for (size_t t = 0; t + 2 < m.indices.size(); t += 3) {

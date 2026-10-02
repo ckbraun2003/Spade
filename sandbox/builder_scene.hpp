@@ -96,7 +96,7 @@ struct BuilderScene {
     // Scene-wide render settings the inspector edits.
     bool grid = true;
     float sun_intensity = 1.0f;
-    glm::vec3 sun_direction{-0.35f, -0.86f, -0.37f};
+    glm::vec3 sun_direction{0.37139067f, 0.74278135f, 0.55708601f};  // toward the sun: (0.4, 0.8, 0.6) normalised
 
     // Scene-wide physics settings.
     float gravity = -9.81f;
@@ -383,12 +383,16 @@ inline void finish(render::MeshData& m) {
 
 }  // namespace detail
 
-[[nodiscard]] inline render::MeshData make_box_mesh() {
+// The size parameters exist so a LIT part can be built at its real dimensions
+// and placed with rotation and translation only: both shading paths transform
+// normals by mat3(model) with no inverse-transpose, so a non-uniformly scaled
+// box shades skewed. The defaults are the unit meshes the builder scales.
+[[nodiscard]] inline render::MeshData make_box_mesh(const glm::vec3& half = glm::vec3(0.5f)) {
     render::MeshData m;
-    const float h = 0.5f;
+    const float x = half.x, y = half.y, z = half.z;
     const glm::vec3 p[8] = {
-        {-h, -h, -h}, {h, -h, -h}, {h, h, -h}, {-h, h, -h},
-        {-h, -h, h},  {h, -h, h},  {h, h, h},  {-h, h, h},
+        {-x, -y, -z}, {x, -y, -z}, {x, y, -z}, {-x, y, -z},
+        {-x, -y, z},  {x, -y, z},  {x, y, z},  {-x, y, z},
     };
     // Counter-clockwise seen from outside.
     const int faces[6][4] = {
@@ -441,9 +445,10 @@ inline void finish(render::MeshData& m) {
     return m;
 }
 
-[[nodiscard]] inline render::MeshData make_cylinder_mesh(uint32_t sectors = 20u) {
+[[nodiscard]] inline render::MeshData make_cylinder_mesh(uint32_t sectors = 20u, float radius = 0.5f,
+                                                         float half_height = 0.5f) {
     render::MeshData m;
-    const float r = 0.5f, h = 0.5f;
+    const float r = radius, h = half_height;
     const float pi = 3.14159265358979323846f;
     auto ring = [&](uint32_t si, float y) {
         const float t = 2.0f * pi * static_cast<float>(si) / static_cast<float>(sectors);

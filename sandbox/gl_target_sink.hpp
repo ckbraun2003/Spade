@@ -37,6 +37,7 @@ namespace spade::sandbox {
 // object model (and glm's matrix headers) into every translation unit that
 // merely wants to open a window.
 struct BuilderScene;
+struct DronePanelModel;
 
 class GlTargetSink final : public TargetSink {
   public:
@@ -189,6 +190,11 @@ class GlTargetSink final : public TargetSink {
     // header freely -- the model travels, the toolkit does not.
     void attach_builder(BuilderScene* model) noexcept;
 
+    // The drone sim box's physics panel, attached the same way and for the
+    // same reasons as the builder. The panel only writes the model; what an
+    // edit DOES is decided by drone_view.hpp's apply_panel_edits.
+    void attach_drone(DronePanelModel* model) noexcept;
+
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.
     [[nodiscard]] static uint64_t working_set_bytes() noexcept;
@@ -209,6 +215,8 @@ class GlTargetSink final : public TargetSink {
     // the headless and CPU-fallback paths have no builder and still need
     // their numbers.
     void draw_builder_panel(BuilderScene& model);
+
+    void draw_drone_panel(DronePanelModel& model);
 
     struct Impl;
     explicit GlTargetSink(std::unique_ptr<Impl> impl);

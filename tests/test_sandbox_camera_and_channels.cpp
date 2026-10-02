@@ -308,3 +308,68 @@ TEST(SandboxOrbitCamera, PanMovesAlongTheGroundAndNeverTiltsTheTarget) {
     EXPECT_GT(cam.target.y, y_before) << "Q/E did not move the target vertically, so the height "
                                          "assertions above pass on a target that never moves at all";
 }
+
+// --------------------------------------------------------------------------
+// The drone sim box's orbit (apply_drone_orbit): the target is the drone and
+// never moves, and the keys that pan in the builder orbit instead.
+// --------------------------------------------------------------------------
+
+TEST(SandboxDroneOrbit, HoldingWOrSForTenSecondsStaysOnTheViewSphere) {
+    OrbitCamera cam;
+    cam.distance = 2.0f;
+    FrameInput in;
+    in.move_forward = 1.0f;  // W
+    for (int i = 0; i < 600; ++i) {
+        spade::sandbox::apply_drone_orbit(cam, in, 1.0f / 60.0f);
+        ASSERT_GE(cam.distance, spade::sandbox::kDroneMinDistance) << "frame " << i;
+    }
+    EXPECT_FLOAT_EQ(cam.distance, spade::sandbox::kDroneMinDistance) << "W never reached the near limit";
+
+    in.move_forward = -1.0f;  // S
+    for (int i = 0; i < 600; ++i) {
+        spade::sandbox::apply_drone_orbit(cam, in, 1.0f / 60.0f);
+        ASSERT_LE(cam.distance, spade::sandbox::kDroneMaxDistance) << "frame " << i;
+    }
+    EXPECT_FLOAT_EQ(cam.distance, spade::sandbox::kDroneMaxDistance) << "S never reached the far limit";
+
+    in.move_forward = 0.0f;
+    in.dolly = 1000.0f;  // the scroll wheel is clamped to the same sphere
+    spade::sandbox::apply_drone_orbit(cam, in, 1.0f / 60.0f);
+    EXPECT_GE(cam.distance, spade::sandbox::kDroneMinDistance);
+}
+
+TEST(SandboxDroneOrbit, TheKeysOrbitAndTheCameraAlwaysFacesTheDrone) {
+    OrbitCamera cam;
+    cam.target = glm::vec3(0.0f);
+    cam.distance = 2.0f;
+    const OrbitCamera start = cam;
+
+    FrameInput in;
+    in.move_right = 1.0f;  // D: around
+    in.move_up = 1.0f;     // E: over
+    in.orbit_dx = 30.0f;   // and a mouse drag on top
+    for (int i = 0; i < 120; ++i) {
+        spade::sandbox::apply_drone_orbit(cam, in, 1.0f / 60.0f);
+        EXPECT_EQ(cam.target, glm::vec3(0.0f)) << "the drone orbit moved its target";
+        const spade::render::Camera rc = cam.to_render_camera();
+        ASSERT_TRUE(finite(rc.orientation)) << "frame " << i;
+        const glm::vec3 forward = rc.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+        const glm::vec3 to_drone = glm::normalize(cam.target - rc.position);
+        ASSERT_GT(glm::dot(forward, to_drone), 0.9999f) << "frame " << i;
+    }
+    EXPECT_NE(cam.yaw, start.yaw) << "A/D did not orbit";
+    EXPECT_GT(cam.pitch, start.pitch) << "E did not raise the camera";
+    EXPECT_LE(cam.pitch, OrbitCamera::kPitchLimit);
+}
+
+TEST(SandboxDroneOrbit, DCarriesTheEyeToTheCamerasRight) {
+    OrbitCamera cam;
+    cam.target = glm::vec3(0.0f);
+    cam.distance = 2.0f;
+    const glm::vec3 right = cam.ground_right();
+    const glm::vec3 before = cam.eye_position();
+    FrameInput in;
+    in.move_right = 1.0f;
+    spade::sandbox::apply_drone_orbit(cam, in, 0.1f);
+    EXPECT_GT(glm::dot(cam.eye_position() - before, right), 0.0f);
+}

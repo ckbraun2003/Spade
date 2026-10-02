@@ -32,8 +32,10 @@
 
 .PARAMETER Scene
     Which demo scene to launch: drop, bounce, shower, gate, hover, wind,
-    flight, swarm (spade_viewer, v2 physics), or v1-fluid, v1-spheres,
-    v1-cubes (Sandbox, v1 regression references). Required.
+    flight, swarm (spade_viewer, v2 physics); v1-fluid, v1-spheres,
+    v1-cubes (Sandbox, v1 regression references); or sandbox (the drone sim
+    box) and sandbox-builder (spade_sandbox, the reference application).
+    Required.
 
 .PARAMETER Preset
     Which build to launch: 'debug' or 'release', matching build.ps1's
@@ -91,11 +93,24 @@ $V1SceneMap = @{
     'v1-spheres' = 'spheres'
     'v1-cubes'   = 'cubes'
 }
+# spade_sandbox.exe, the reference application: its own scene names go to its
+# --scene flag. 'sandbox' opens its default scene, the drone sim box.
+$SandboxSceneMap = @{
+    'sandbox'         = 'drone'
+    'sandbox-builder' = 'builder'
+}
 
 $IsV1Scene = $V1SceneMap.ContainsKey($Scene)
-if (-not $IsV1Scene -and ($V2Scenes -notcontains $Scene)) {
+$IsSandboxScene = $SandboxSceneMap.ContainsKey($Scene)
+if (-not $IsV1Scene -and -not $IsSandboxScene -and ($V2Scenes -notcontains $Scene)) {
     Write-Host "Unknown scene '$Scene'." -ForegroundColor Red
-    Write-Host "Valid scenes: $(($V2Scenes + $V1SceneMap.Keys) -join ', ')"
+    Write-Host "Valid scenes: $(($V2Scenes + $V1SceneMap.Keys + $SandboxSceneMap.Keys) -join ', ')"
+    exit 1
+}
+# The sandbox chooses its backend in its own physics panel (and refuses Vulkan
+# there with the reason), so a -Backend here would be a switch that does nothing.
+if ($IsSandboxScene -and $Backend -ne 'cpu') {
+    Write-Host "-Backend $Backend does not apply to '$Scene'; choose the backend in the sandbox's physics panel." -ForegroundColor Red
     exit 1
 }
 
@@ -139,6 +154,9 @@ if ($LASTEXITCODE -ne 0) {
 if ($IsV1Scene) {
     $ExeName  = 'Sandbox.exe'
     $ExeArgs  = @($V1SceneMap[$Scene])
+} elseif ($IsSandboxScene) {
+    $ExeName  = 'spade_sandbox.exe'
+    $ExeArgs  = @('--scene', $SandboxSceneMap[$Scene])
 } else {
     $ExeName  = 'spade_viewer.exe'
     # The viewer's own argv contract (engine/tools/viewer/main.cpp):
@@ -156,11 +174,15 @@ if (-not (Test-Path $ExePath)) {
 Write-Host ""
 Write-Host "=== Launching $ExeName : $Scene ($Preset) ===" -ForegroundColor Cyan
 Write-Host "Exe      : $ExePath"
-if (-not $IsV1Scene) {
+if (-not $IsV1Scene -and -not $IsSandboxScene) {
     Write-Host "Backend  : $Backend"
 }
 if ($IsV1Scene) {
     Write-Host "Controls : WASD + Space/Shift to fly, M to start/stop the simulation (starts PAUSED), C to toggle mouse capture, Esc or close the window to quit."
+} elseif ($Scene -eq 'sandbox') {
+    Write-Host "Controls : arrows pitch/roll, Z/X yaw, R level, V heatmap; A/D around, E/Q over/under, W/S nearer/further, drag orbit; F1 hides the HUD, Esc quits."
+} elseif ($IsSandboxScene) {
+    Write-Host "Controls : LEFT click place/select, LEFT drag moves, RIGHT drag orbits, WASD pan, Q/E down/up, Del deletes, Ctrl+D duplicates; Esc quits."
 } else {
     Write-Host "Controls : WASD + Space/Shift to fly, C to toggle mouse capture, Esc or close the window to quit."
 }
