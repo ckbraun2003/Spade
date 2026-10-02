@@ -250,6 +250,10 @@ inline void append_drone_items(const DroneDrawBinding& b, const vehicles::Quadro
 // pairs, the one whose plane faces the camera more squarely is shown. 2 m
 // across and 2.5 m along the thrust axis, reaching 0.75 m above the drone and
 // 1.75 m below it, because the downwash is what there is to see.
+//
+// THE ONE VIEW IT CANNOT SERVE: looking straight down the thrust axis, every
+// plane that contains it is edge-on, so the slice thins to a line. That is
+// inherent to showing the plumes in-plane, not a defect; orbit off the axis.
 struct SliceSpec {
     glm::vec3 center{0.0f};
     glm::vec3 right{1.0f, 0.0f, 0.0f};  // an arm axis
