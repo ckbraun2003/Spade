@@ -600,3 +600,4 @@ Write the two render cases' bodies using `render_through` in `tests/test_sandbox
 - [ ] `--headless` images for both views; check by eye.
 - [ ] Launch the window (`build-ninja\release\bin\spade_sandbox.exe`) and check the whole spec "What the user sees" list on the GL path and with GL forced off (CPU fallback): keys, camera clamp, both views, every panel control, Vulkan refusal message, readouts moving, no rebuild storm while dragging a slider, drone lit from above on both paths.
 - [ ] Cross-realm review of each task's diff; ask the user to try the scene.
+- [ ] (user request, 2026-10-02) Replace the desktop shortcut `Spade GUI.lnk` (still targets the KAT-era `Desktop\KAT\spade\build-gui\bin\spade_sandbox.exe`) with `Spade Builder.lnk` → `C:\Users\ckbra\desktop\spade\build-ninja\release\bin\spade_sandbox.exe`, working directory that `bin`, icon the exe, description listing the drone sim box controls.
