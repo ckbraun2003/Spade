@@ -601,6 +601,7 @@ Result<void> StepRecorder::record() {
     // its own copy of it (and from getting it subtly wrong at the seam between
     // the last sort stage and the sweep).
     const uint32_t sort_stages = sort_stage_count();
+    chain_ = RecordedChain{.sort_stages = sort_stages};
     // Per substep (S6 Task 8; step_recorder.hpp's header has the same tally as
     // a table): FOUR single-dispatch slots (MediumUpdate, CollisionStatic,
     // Integrate, SensorSynthesis) + the TWO-dispatch ForceElements chain
@@ -625,6 +626,7 @@ Result<void> StepRecorder::record() {
         vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, gen::kPushConstantOffset,
                             gen::kPushConstantSize, &params);
         vkCmdDispatch(cmd_, groups, 1, 1);
+        ++chain_.dispatches;
 
         ++dispatch_index;
         if (dispatch_index < total_dispatches) {
@@ -634,6 +636,7 @@ Result<void> StepRecorder::record() {
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
             vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                   0, 1, &barrier, 0, nullptr, 0, nullptr);
+            ++chain_.barriers;
         }
     };
 

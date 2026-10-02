@@ -613,3 +613,45 @@ TEST(BackendKnobInvariance, CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus
             << entry.data->name << ": this task must not move any committed golden digest";
     }
 }
+
+// ===========================================================================
+// The recorded chain: a barrier between every adjacent pair of dispatches,
+// and none after the last.
+//
+// Counted from what record() actually emitted, at 1, 2 and 5 substeps. Until
+// 2026-10-01 the recorder sized its "last dispatch" from a hand tally of
+// 8 + S per substep while the GNSS kernel made it 9 + S, so the last
+// `substeps` barriers of every recording were dropped -- including, at 2+
+// substeps, the one between Integrate and SensorSynthesis. Parity stayed
+// green on this box's driver, which is why this checks the recording itself.
+//
+// The 9 + S below is the per-substep tally in step_recorder.hpp's header:
+// MediumUpdate, rotors, drag, CollisionStatic, grid_build, S sort stages,
+// collision_dynamic, Integrate, sensor_imu, sensor_gnss. A kernel joining the
+// chain changes both.
+// ===========================================================================
+
+TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    for (const uint32_t substeps : {1u, 2u, 5u}) {
+        SCOPED_TRACE(::testing::Message() << "substeps = " << substeps);
+        StepShape shape{};
+        shape.world_count = 2;
+        shape.body_capacity = 8;
+        shape.element_capacity = 4;
+        shape.sensor_capacity = 2;
+        shape.substeps = substeps;
+        shape.h = 0.001f;
+
+        Result<std::unique_ptr<VulkanBackend>> backend =
+            VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape);
+        ASSERT_TRUE(backend.has_value()) << backend.error().context;
+
+        const spade::compute::RecordedChain chain = (*backend)->recorded_chain();
+        ASSERT_GT(chain.sort_stages, 0u) << "the shape should give the sort chain real stages";
+        EXPECT_EQ(chain.dispatches, substeps * (9u + chain.sort_stages));
+        EXPECT_EQ(chain.barriers, chain.dispatches - 1u)
+            << "every adjacent pair of dispatches needs a barrier, and none after the last";
+    }
+}

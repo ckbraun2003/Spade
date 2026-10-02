@@ -223,6 +223,10 @@ public:
     // itself, purely additive to this class's existing surface.
     [[nodiscard]] Result<PassDurationsNs> read_pass_durations_ns() const;
 
+    // What the recorder put into its command buffer at create() -- forwards to
+    // StepRecorder::recorded_chain(). A diagnostic for tests.
+    [[nodiscard]] RecordedChain recorded_chain() const noexcept;
+
 private:
     VulkanBackend();
 

@@ -341,6 +341,9 @@ public:
     // read any time after submit() has returned.
     [[nodiscard]] Result<PassDurationsNs> pass_durations_ns() const;
 
+    // What record() put into the command buffer (compute/backend.hpp).
+    [[nodiscard]] RecordedChain recorded_chain() const noexcept { return chain_; }
+
 private:
     StepRecorder() = default;
     void destroy() noexcept;
@@ -433,6 +436,9 @@ private:
     // (a device that cannot time compute work still gets a valid, merely
     // !supported() object -- see PassTimestamps's own class comment).
     std::unique_ptr<PassTimestamps> timestamps_;
+
+    // Counted by record(), never written anywhere else.
+    RecordedChain chain_{};
 };
 
 }  // namespace spade::compute

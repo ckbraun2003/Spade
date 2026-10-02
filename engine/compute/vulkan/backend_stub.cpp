@@ -136,4 +136,6 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
         Error{Code::unavailable, "VulkanBackend::read_pass_durations_ns: unreachable (SPADE_VULKAN=OFF)"});
 }
 
+RecordedChain VulkanBackend::recorded_chain() const noexcept { return {}; }
+
 }  // namespace spade::compute
