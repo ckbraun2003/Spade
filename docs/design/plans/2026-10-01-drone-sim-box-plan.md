@@ -596,8 +596,10 @@ Write the two render cases' bodies using `render_through` in `tests/test_sandbox
 
 ### Task 7: Verification (Lead)
 
-- [ ] Full suite, both presets, foreground: `scripts\test.ps1 -Preset release` and `-Preset debug`. Record the counts with the commit.
-- [ ] `--headless` images for both views; check by eye.
-- [ ] Launch the window (`build-ninja\release\bin\spade_sandbox.exe`) and check the whole spec "What the user sees" list on the GL path and with GL forced off (CPU fallback): keys, camera clamp, both views, every panel control, Vulkan refusal message, readouts moving, no rebuild storm while dragging a slider, drone lit from above on both paths.
+- [x] Full suite, both presets, foreground: `scripts\test.ps1 -Preset release` and `-Preset debug`. Record the counts with the commit.
+- [x] `--headless` images for both views; check by eye.
+- [x] Launch the window (`build-ninja\release\bin\spade_sandbox.exe`) and check the whole spec "What the user sees" list on the GL path and with GL forced off (CPU fallback): keys, camera clamp, both views, every panel control, Vulkan refusal message, readouts moving, no rebuild storm while dragging a slider, drone lit from above on both paths.
 - [ ] Cross-realm review of each task's diff; ask the user to try the scene.
-- [ ] (user request, 2026-10-02) Replace the desktop shortcut `Spade GUI.lnk` (still targets the KAT-era `Desktop\KAT\spade\build-gui\bin\spade_sandbox.exe`) with `Spade Builder.lnk` → `C:\Users\ckbra\desktop\spade\build-ninja\release\bin\spade_sandbox.exe`, working directory that `bin`, icon the exe, description listing the drone sim box controls.
+- [x] (user request, 2026-10-02) Replace the desktop shortcut `Spade GUI.lnk` (still targets the KAT-era `Desktop\KAT\spade\build-gui\bin\spade_sandbox.exe`) with `Spade Builder.lnk` → `C:\Users\ckbra\desktop\spade\build-ninja\release\bin\spade_sandbox.exe`, working directory that `bin`, icon the exe, description listing the drone sim box controls.
+
+**Result (2026-10-02, lead).** Main tree, release, `df33f09`: 921 total, 919 passed, 2 skipped (by design), 0 failed; 65 gpu tests ran (Test/Docs, slot #8; the debug leg follows). Headless frames from the main-tree binary show two 9.40 m/s downwash columns and a drone lit from above. Window on the GPU path (Iris Plus, GL 4.3), driven by key messages posted only to the sandbox window: `V` toggles the heatmap, the arrows pitch the drone through the controller (plumes and slice follow), `D` orbits, clean exit; 60-78 fps, physics under 0.1 ms/frame. Not exercised in the window: the Vulkan refusal message (unit-tested) and the CPU-fallback window (headless covers the CPU path). Cosmetic findings: the HUD's `0x0` on GPU (fixed on `interface/front-rotor`), GL's flat background (Rendering debt). `Spade Builder.lnk` created; `Spade GUI.lnk` removed.
