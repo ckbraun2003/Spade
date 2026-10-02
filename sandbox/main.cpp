@@ -746,7 +746,7 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
     if (heatmap) {
         if (const auto field = spade::sandbox::air_field_from(drone)) {
             const float seen = spade::sandbox::append_slice_items(
-                binding, spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f)), *field, heatmap_max,
+                binding, spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f), orientation), *field, heatmap_max,
                 scene.dynamics);
             if (observed_max != nullptr) *observed_max = seen;
         }

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <set>
@@ -122,7 +123,8 @@ TEST(SandboxDroneView, AHeatmapPixelIsExactlyItsPaletteColour) {
     field.medium.density = 1.225f;
     field.medium.wind = glm::vec3(4.0f, 0.0f, 0.0f);
     const float observed =
-        append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f)), field, 10.0f, scene.dynamics);
+        append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)), field,
+                           10.0f, scene.dynamics);
     EXPECT_FLOAT_EQ(observed, 4.0f);
     ASSERT_EQ(scene.dynamics.size(), static_cast<size_t>(kSliceCells) * kSliceCells);
     for (const auto& item : scene.dynamics) ASSERT_EQ(item.material_override, b.heatmap_base + 12u);
@@ -146,7 +148,8 @@ TEST(SandboxDroneView, TheHoverSliceSpansSeveralBins) {
     spade::render::RenderScene scene;
     ASSERT_NO_FATAL_FAILURE(drone_scene(world, b, scene));
     const float observed =
-        append_slice_items(b, camera_facing_slice(camera_on_z(3.0f), glm::vec3(0.0f)), *field, 0.0f, scene.dynamics);
+        append_slice_items(b, camera_facing_slice(camera_on_z(3.0f), glm::vec3(0.0f), drone->readouts().orientation),
+                           *field, 0.0f, scene.dynamics);
     EXPECT_GT(observed, 1.0f);
     std::set<uint32_t> bins;
     for (const auto& item : scene.dynamics) bins.insert(item.material_override - b.heatmap_base);
@@ -169,7 +172,8 @@ TEST(SandboxDroneView, StandardAndHeatmapViewsDiffer) {
     const spade::render::Camera camera = camera_on_z(1.5f);
     append_drone_items(b, drone->params(), glm::vec3(0.0f), drone->readouts().orientation, scene.dynamics);
     const std::vector<uint8_t> standard = render_cpu(scene, camera);
-    append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f)), *field, 0.0f, scene.dynamics);
+    append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f), drone->readouts().orientation), *field, 0.0f,
+                       scene.dynamics);
     const std::vector<uint8_t> heatmap = render_cpu(scene, camera);
     EXPECT_NE(standard, heatmap);
 }
@@ -205,19 +209,70 @@ TEST(SandboxDroneView, TheDronesPartsAreWhereTheAirframeSaysAndUnscaled) {
     }
 }
 
-TEST(SandboxDroneView, TheSliceFacesTheCameraAndStaysUpright) {
-    spade::render::Camera camera;
-    camera.position = glm::vec3(2.0f, 1.5f, -1.0f);
-    const SliceSpec s = camera_facing_slice(camera, glm::vec3(0.0f));
-    const glm::vec3 normal = glm::cross(s.right, s.up);
-    const glm::vec3 to_cam = glm::normalize(glm::vec3(camera.position.x, 0.0f, camera.position.z));
-    EXPECT_NEAR(glm::dot(normal, to_cam), 1.0f, 1e-5f);
-    EXPECT_EQ(s.up, glm::vec3(0.0f, 1.0f, 0.0f));
-    EXPECT_NEAR(s.right.y, 0.0f, 1e-7f);
+TEST(SandboxDroneView, TheSliceHoldsTheThrustAxisAndAnArmAndFacesTheCamera) {
+    for (const glm::quat q : {glm::quat(1.0f, 0.0f, 0.0f, 0.0f), attitude_quat(AttitudeTarget{0.7f, 0.3f, -0.5f})}) {
+        const glm::vec3 thrust = q * glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 arm_x = q * glm::vec3(1.0f, 0.0f, 0.0f);
+        const glm::vec3 arm_z = q * glm::vec3(0.0f, 0.0f, 1.0f);
+        for (const glm::vec3 cam_pos : {glm::vec3(2.0f, 1.5f, -1.0f), glm::vec3(-0.5f, 0.2f, 3.0f),
+                                        glm::vec3(1.0f, -2.0f, 1.0f)}) {
+            spade::render::Camera camera;
+            camera.position = cam_pos;
+            const SliceSpec s = camera_facing_slice(camera, glm::vec3(0.0f), q);
+            const glm::vec3 to_cam = glm::normalize(cam_pos);
+            EXPECT_NEAR(glm::length(s.up - thrust), 0.0f, 1e-6f);
+            const bool on_x = std::fabs(std::fabs(glm::dot(s.right, arm_x)) - 1.0f) < 1e-5f;
+            const bool on_z = std::fabs(std::fabs(glm::dot(s.right, arm_z)) - 1.0f) < 1e-5f;
+            EXPECT_TRUE(on_x || on_z) << "right is not an arm axis";
+            const glm::vec3 normal = glm::cross(s.right, s.up);
+            EXPECT_GE(glm::dot(normal, to_cam), 0.0f) << "the slice is seen from behind (mirrored)";
+            // The more square of the two pair planes: its normal is the other arm.
+            const glm::vec3 other = on_x ? arm_x : arm_z;  // the other plane's normal is +-this axis
+            EXPECT_GE(std::fabs(glm::dot(normal, to_cam)) + 1e-6f, std::fabs(glm::dot(other, to_cam)));
+            EXPECT_NEAR(glm::length(s.center - thrust * -0.5f), 0.0f, 1e-6f);
+        }
+    }
+    spade::render::Camera at_drone;  // camera on the drone itself: degenerate, must stay finite
+    const SliceSpec d = camera_facing_slice(at_drone, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    EXPECT_TRUE(std::isfinite(d.right.x) && std::isfinite(d.right.y) && std::isfinite(d.right.z));
+}
 
-    camera.position = glm::vec3(0.0f, 4.0f, 0.0f);  // straight overhead: degenerate, must stay finite
-    const SliceSpec top = camera_facing_slice(camera, glm::vec3(0.0f));
-    EXPECT_TRUE(std::isfinite(top.right.x) && std::isfinite(top.right.z));
+namespace {
+// The fastest air the slice shows more than 10 cm below the rotor plane.
+float max_speed_below_rotors(const AirField& field, const SliceSpec& s, const glm::vec3& drone_pos) {
+    float best = 0.0f;
+    for (uint32_t j = 0; j < kSliceCells; ++j) {
+        for (uint32_t i = 0; i < kSliceCells; ++i) {
+            const glm::vec3 p = slice_cell_center(s, i, j);
+            if (glm::dot(p - drone_pos, s.up) < -0.1f) best = std::max(best, glm::length(field.velocity(p)));
+        }
+    }
+    return best;
+}
+}  // namespace
+
+// The test the camera-on-Z cases hid: a camera-facing VERTICAL plane missed
+// both plumes 28-62 degrees from an arm (Physics measured 0.03 m/s below the
+// drone at 45). The body-aligned slice must catch a plume pair from every
+// azimuth, level and rolled.
+TEST(SandboxDroneView, TheSliceCatchesThePlumeFromEveryAzimuth) {
+    for (const float roll : {0.0f, 0.7853982f}) {
+        auto drone = DroneSim::create(DronePhysicsOptions{});
+        ASSERT_TRUE(drone.has_value());
+        drone->target = AttitudeTarget{0.0f, 0.0f, roll};
+        ASSERT_TRUE(drone->step_fixed(roll == 0.0f ? 200u : 1500u).has_value());
+        const glm::quat q = drone->readouts().orientation;
+        auto field = air_field_from(*drone);
+        ASSERT_TRUE(field.has_value());
+        for (const float deg : {0.0f, 30.0f, 45.0f, 60.0f, 90.0f}) {
+            const float a = glm::radians(deg);
+            spade::render::Camera camera;
+            camera.position = 3.0f * glm::vec3(std::sin(a), 0.2f, std::cos(a));
+            const SliceSpec s = camera_facing_slice(camera, glm::vec3(0.0f), q);
+            EXPECT_GT(max_speed_below_rotors(*field, s, glm::vec3(0.0f)), 5.0f)
+                << "azimuth " << deg << " deg, roll " << roll << " rad";
+        }
+    }
 }
 
 // --------------------------------------------------------------------------

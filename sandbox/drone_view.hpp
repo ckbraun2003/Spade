@@ -241,26 +241,39 @@ inline void append_drone_items(const DroneDrawBinding& b, const vehicles::Quadro
 // The heatmap slice
 // ---------------------------------------------------------------------------
 
-// A vertical plane through the drone that turns to face the camera
-// horizontally. 2 m wide and 2.5 m tall, reaching 0.75 m above the drone and
+// A plane through the drone ALIGNED WITH THE BODY: it holds the thrust axis
+// and one arm axis, so a rotor pair and both their plumes lie in it at any
+// attitude and from any camera azimuth. (A vertical camera-facing plane
+// contains the hubs only near an arm's axis: at 45 degrees it misses them by
+// 1.06 R while the far wake contracts to 0.71 R, and the downwash vanished
+// every 90 degrees of orbit -- Physics' review; the lead's ruling.) Of the two
+// pairs, the one whose plane faces the camera more squarely is shown. 2 m
+// across and 2.5 m along the thrust axis, reaching 0.75 m above the drone and
 // 1.75 m below it, because the downwash is what there is to see.
 struct SliceSpec {
     glm::vec3 center{0.0f};
-    glm::vec3 right{1.0f, 0.0f, 0.0f};
-    glm::vec3 up{0.0f, 1.0f, 0.0f};
+    glm::vec3 right{1.0f, 0.0f, 0.0f};  // an arm axis
+    glm::vec3 up{0.0f, 1.0f, 0.0f};     // the thrust axis
     float width = 2.0f;
     float height = 2.5f;
 };
 
-[[nodiscard]] inline SliceSpec camera_facing_slice(const render::Camera& camera, const glm::vec3& drone_pos) {
+[[nodiscard]] inline SliceSpec camera_facing_slice(const render::Camera& camera, const glm::vec3& drone_pos,
+                                                   const glm::quat& drone_orient) {
     SliceSpec s;
+    const glm::vec3 thrust = drone_orient * glm::vec3(0.0f, 1.0f, 0.0f);
+    const glm::vec3 arm_x = drone_orient * glm::vec3(1.0f, 0.0f, 0.0f);  // rotors 0 and 2
+    const glm::vec3 arm_z = drone_orient * glm::vec3(0.0f, 0.0f, 1.0f);  // rotors 1 and 3
     glm::vec3 to_cam = camera.position - drone_pos;
-    to_cam.y = 0.0f;
-    if (!(glm::length(to_cam) > 1e-6f)) to_cam = glm::vec3(0.0f, 0.0f, 1.0f);  // looking straight down
-    to_cam = glm::normalize(to_cam);
-    s.up = glm::vec3(0.0f, 1.0f, 0.0f);
-    s.right = glm::normalize(glm::cross(s.up, to_cam));
-    s.center = drone_pos + glm::vec3(0.0f, -0.5f, 0.0f);
+    to_cam = glm::length(to_cam) > 1e-6f ? glm::normalize(to_cam) : thrust;
+    // The 0/2 plane's normal is thrust x arm_x = -arm_z, and the 1/3 plane's
+    // is arm_x, so "faces the camera more squarely" compares these two.
+    s.right = std::fabs(glm::dot(arm_z, to_cam)) >= std::fabs(glm::dot(arm_x, to_cam)) ? arm_x : arm_z;
+    s.up = thrust;
+    // Seen from the camera's side, not the mirror image: the drawn normal
+    // cross(right, up) points at the camera.
+    if (glm::dot(glm::cross(s.right, s.up), to_cam) < 0.0f) s.right = -s.right;
+    s.center = drone_pos + s.up * -0.5f;
     return s;
 }
 
