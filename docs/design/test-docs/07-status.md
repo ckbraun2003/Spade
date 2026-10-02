@@ -37,12 +37,4 @@
 ## Debt
 
 - **The consumer smoke** (`tests/consumer/`) runs nowhere (`../backlog.md`, with Interface).
-- **Stale counts and claims in the front door:**
-  - `README.md` says 521 tests and 59 `gpu`; this tree has 897 and 63.
-  - `README.md` cites `docs/design/01-charter.md` and `02-engine.md`, which moved.
-  - `CONTRIBUTING.md` says "frozen at 18". Core measures 22 registered arrays (`../core/07-status.md`).
-  - The README says `world_version` is "currently 1" in one place and 2 in another; 2 is right.
-  - `CHANGELOG.md` says Spade is "developed inside the kat monorepo".
-  
-  Owed by R4 item 4.
 - **Test discovery writes into the source root.** `gtest_discover_tests()` runs in the tests' `WORKING_DIRECTORY` (the source root), so CMake 4.x leaves `cmake_test_discovery_<hash>.json` there. It is ignored (`.gitignore`); moving the working directory would change every test's CWD, and is not worth that today.
