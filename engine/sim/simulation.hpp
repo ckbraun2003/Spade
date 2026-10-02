@@ -589,6 +589,10 @@ public:
     // NOT A MID-STEP HAZARD: read once per step, where the SubstepContext is
     // built, so swapping registries between steps is well defined and swapping
     // one mid-step is impossible.
+    //
+    // CPU ONLY TODAY: on a Vulkan Simulation, step(n > 0) with a non-empty
+    // registry attached returns Code::unavailable and steps nothing, because
+    // the GPU chain cannot run behaviors and must not skip them.
     void set_behaviors(const objects::BehaviorRegistry* registry) noexcept {
         behaviors_ = registry;
     }

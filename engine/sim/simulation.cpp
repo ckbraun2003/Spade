@@ -15,6 +15,7 @@
 #include "compute/vulkan/backend.hpp"
 #include "core/rng.hpp"
 #include "core/validate.hpp"
+#include "objects/behavior.hpp"
 #include "physics/integrator.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -835,6 +836,17 @@ Result<void> Simulation::step(uint64_t n) {
     // this path -- the GPU is authoritative for these `n` steps.
     // -------------------------------------------------------------------
     if (vulkan_backend_) {
+        // Behaviors run only in the cpu schedule; the recorded GPU chain has no
+        // slot for them. So an attached registry is refused here, before
+        // anything moves, rather than skipped (SL6: a refusal, never a silent
+        // fallback). Any non-empty registry counts, including one whose
+        // behaviors all declare a record_gpu half, because nothing calls that
+        // half yet. step(0) above is unaffected: it runs no behaviors.
+        if (behaviors_ != nullptr && behaviors_->size() > 0) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "behaviors are CPU-only today; the Vulkan step cannot run "
+                                         "them and refuses rather than skipping them (SL6)"});
+        }
         if (Result<void> flushed = flush_structural(); !flushed) {
             return flushed;
         }
