@@ -158,11 +158,11 @@ inline constexpr float kTwoPi = 6.28318530717958647692f;
 //   row 0  state
 //   row 1  cached_gauss | has_cached
 //
-// Unlike layout.hpp's structs this one is not (yet) a GPU-mirrored std430
-// array element, so it is 8-byte aligned rather than padded to 16 -- an
-// array of Streams is a dense array of 16-byte records either way. If S6
-// mirrors streams to the device, the offsets asserted here are what the
-// generated Slang struct must reproduce.
+// A Stream is never an array of its own: it is embedded in registered rows
+// (DrydenState, ImuSensorRow, GnssSensorRow) that the Vulkan mirror uploads
+// byte for byte, so it is 8-byte aligned rather than padded to 16. The
+// offsets asserted here are what shaders/shared/layouts.slang's RngStream
+// reproduces.
 // ---------------------------------------------------------------------------
 struct Stream {
     uint64_t state = 0;         // the splitmix64 state; ALL of the entropy

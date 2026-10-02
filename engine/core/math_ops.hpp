@@ -7,11 +7,11 @@ namespace spade::math {
 
 // ---------------------------------------------------------------------------
 // Rigid-body math primitives underneath the engine's Integrate pass (engine
-// design spec D1/D2; design-specs/spade/02-engine.md S5 "Rigid
-// bodies (D1, D2)"). The full per-substep op order there is:
+// design D1/D2; docs/design/superseded/2026-09-consolidation/02-engine.md
+// "Rigid bodies (D1, D2)"). The full per-substep op order there is:
 //
 //   1. velocities integrated from the accumulated wrench (owned by the
-//      Integrate pass itself -- a later task, not this header);
+//      Integrate pass itself, physics/integrator.*, not this header);
 //   2. orientation advanced via the quaternion exponential map
 //      (integrate_orientation), exact for constant body-frame angular
 //      velocity over the substep;

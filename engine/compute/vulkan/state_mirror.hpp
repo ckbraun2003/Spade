@@ -228,7 +228,7 @@ private:
     VkDescriptorPool desc_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
 
-    std::vector<Entry> entries_;  // the 18-entry registered walk mirror
+    std::vector<Entry> entries_;  // one per registered walk entry
 
     // The DERIVED buffers -- none is part of the registered walk, all are
     // backend-internal (bindings.slang sections C and C'). Declared as Entry

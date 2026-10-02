@@ -98,8 +98,8 @@ public:
     VulkanBackend(VulkanBackend&&) noexcept;
     VulkanBackend& operator=(VulkanBackend&&) noexcept;
 
-    // Uploads every registered array (the full 18-entry walk: the nine
-    // arrays plus their nine `.slot_to_world` siblings -- state/arenas.hpp's
+    // Uploads every registered array (the full walk: every registered
+    // array plus its `.slot_to_world` sibling -- state/arenas.hpp's
     // ArenaSet::registry()) from `arenas` into this backend's device
     // buffers, staging through host-visible memory. Fails with
     // invalid_argument if `arenas`' shape (per-array elem_size/world_count/
@@ -183,8 +183,8 @@ public:
     // writes StepParams{.tick = first_tick + step_index} into a
     // persistently mapped, host-visible buffer (round 1, finding C2) --
     // see last_written_tick() below and compute/vulkan/step_recorder.hpp's
-    // StepParams doc comment for why this exists and what it does not yet
-    // do (bind to a descriptor, be read by a kernel). Fails with
+    // StepParams doc comment for why this exists. The buffer is bound, and
+    // the Integrate kernel reads it (compute/step_params.hpp's StepWitness). Fails with
     // Code::internal mapping VK_ERROR_DEVICE_LOST from the queue submit or
     // the fence wait, or Code::capacity_exceeded if a per-step allocation
     // (none today, reserved for a future dynamic path) fails.
@@ -193,9 +193,9 @@ public:
     // The tick most recently written into the per-step host-visible params
     // buffer (compute/vulkan/step_recorder.hpp's StepParams) -- what this
     // task's C2 fix test reads to prove the host-side write genuinely
-    // happens once per submit with the right value, without needing a
-    // kernel to consume it (GPU-visible consumption of this buffer is
-    // deliberately deferred to Task 6). 0 before the first step().
+    // happens once per submit with the right value, -- the host side; the
+    // device side is the StepWitness the Integrate kernel writes back.
+    // 0 before the first step().
     [[nodiscard]] uint64_t last_written_tick() const noexcept;
 
     // Reads every registered array's device buffer back into `arenas`,

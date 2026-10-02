@@ -322,7 +322,8 @@ void run_substep(const SubstepContext& ctx) noexcept;
 // OTHER stochastic system as well. So: no branch here, ever.
 void pass_medium_update(const SubstepContext&) noexcept;
 
-// BehaviorsKinematic -- DELIBERATELY INERT UNTIL THE REGISTRY LANDS (Task 8).
+// BehaviorsKinematic -- runs the attached BehaviorRegistry's kinematic slot;
+// inert when none is attached (every golden scenario).
 //
 // SL6 places this AFTER MediumUpdate and BEFORE ForceElements: a pose written
 // by a kinematic behavior must be set before anything reads it, and both
@@ -358,7 +359,8 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 // costs two pointer stores per world per substep and cannot go stale.
 void pass_force_elements(const SubstepContext&) noexcept;
 
-// BehaviorsForce -- DELIBERATELY INERT UNTIL THE REGISTRY LANDS (Task 8).
+// BehaviorsForce -- runs the attached BehaviorRegistry's force slot; inert
+// when none is attached (every golden scenario).
 //
 // SL6 places this AFTER ForceElements so behavior wrenches accumulate after the
 // rotors-then-drag order the golden corpus pins. Float addition is not

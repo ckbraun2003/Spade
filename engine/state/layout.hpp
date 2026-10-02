@@ -25,11 +25,10 @@
 // would have missed becomes a build error here.
 //
 // Provenance and lifetime of this file (engine design spec D9, §9
-// "Single-source layouts"): from S6 these structs are authored once as Slang
-// modules under engine/shaders/shared/ and this header is GENERATED from
-// slangc reflection. The asserts survive that handover unchanged -- they are
-// what makes the generated header's agreement with the hand-written
-// expectations checkable. Until then this hand-written header is the single
+// "Single-source layouts"): this hand-written header is the C++ source. Since
+// S6, engine/shaders/shared/layouts.slang mirrors these structs, and
+// compute/layout_check.cpp compiles static_asserts generated from slangc's
+// reflection that the two agree. This header remains the single C++
 // source, and duplicating any of these structs elsewhere in the tree is the
 // exact v1 defect (a 9-file struct duplication) the spec calls out.
 //
@@ -190,8 +189,8 @@ static_assert(sizeof(BodyState::pos) + sizeof(BodyState::proxy_radius) + sizeof(
 //   row 3  _reserved0 | <8 bytes tail padding>
 //
 // `body_count` MIRRORS the arena's live population for this world; ArenaSet
-// is type-agnostic and does not write it. The pass that owns spawn/despawn
-// publishes it (a later task) -- ArenaSet::live_count() is the authority.
+// is type-agnostic and does not write it. Simulation's structural-queue flush
+// publishes it (publish_body_counts) -- ArenaSet::live_count() is the authority.
 //
 // TAIL PADDING IS EXPLICIT AND INTENTIONAL: named fields end at byte 56 and
 // alignas(16) rounds sizeof to 64, which is exactly std430's array stride
