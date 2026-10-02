@@ -201,8 +201,11 @@ namespace detail {
     return b;
 }
 
-// The drone as nine draw items: body, four arms (the +X nose arm in its own
-// colour) and four rotor discs. Rotation and translation only.
+// The drone as nine draw items: body, four arms and four rotor discs.
+// Rotation and translation only. The front (+X, rotor 0) arm AND disc take the
+// nose colour: adjacent hubs are 0.255 m apart and the discs 0.24 m across, so
+// from above the discs all but hide the arms, and an arm alone cannot carry
+// the heading.
 inline void append_drone_items(const DroneDrawBinding& b, const vehicles::QuadrotorParams& params,
                                const glm::vec3& pos, const glm::quat& orient,
                                std::vector<render::DrawItem>& out) {
@@ -232,7 +235,7 @@ inline void append_drone_items(const DroneDrawBinding& b, const vehicles::Quadro
         render::DrawItem disc;
         disc.mesh_index = b.rotor_mesh;
         disc.local_to_world = pose * glm::translate(glm::mat4(1.0f), hub + glm::vec3(0.0f, kDroneRotorLift, 0.0f));
-        disc.material_override = b.rotor_material;
+        disc.material_override = i == 0 ? b.nose_material : b.rotor_material;
         out.push_back(disc);
     }
 }

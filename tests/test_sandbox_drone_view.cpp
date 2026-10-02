@@ -244,6 +244,7 @@ TEST(SandboxDroneView, TheDronesPartsAreWhereTheAirframeSaysAndUnscaled) {
     b.rotor_mesh = 3;
     b.nose_material = 7;
     b.arm_material = 8;
+    b.rotor_material = 9;
     std::vector<spade::render::DrawItem> items;
     append_drone_items(b, params, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), items);
     ASSERT_EQ(items.size(), 9u);  // body, then (arm, disc) per rotor
@@ -252,6 +253,8 @@ TEST(SandboxDroneView, TheDronesPartsAreWhereTheAirframeSaysAndUnscaled) {
         const auto& arm = items[1 + 2 * i];
         const auto& disc = items[2 + 2 * i];
         EXPECT_EQ(arm.material_override, i == 0 ? 7u : 8u) << "rotor " << i;
+        // The front disc carries the heading too: from above the discs hide the arms.
+        EXPECT_EQ(disc.material_override, i == 0 ? 7u : 9u) << "rotor " << i;
         // The arm mesh lies along +X from -L/2 to +L/2; its +X end must reach the hub.
         const glm::vec3 hub = spade::vehicles::quadrotor_arm_offset(params, i);
         const glm::vec3 tip = glm::vec3(arm.local_to_world * glm::vec4(0.5f * params.arm_length, 0.0f, 0.0f, 1.0f));
