@@ -75,6 +75,51 @@ TEST(SandboxDrone, TheMixerSignAgreesWithTheEngine) {
         for (int other = 0; other < 3; ++other) {
             if (other != axis) EXPECT_LT(std::fabs(w[other]), 1e-2f * std::fabs(w[axis])) << "axis " << axis;
         }
+        // And the size, so a factor-of-two slip in the mixer fails here too: the
+        // moment rises through the rotor lag as M (1 - e^{-t/tau}), so
+        // omega(t) = (M / I) (t - tau (1 - e^{-t/tau})).
+        const float t = 0.1f, tau = params.rotors[0].tau;
+        const float expected = M[axis] / params.inertia_diag[axis] * (t - tau * (1.0f - std::exp(-t / tau)));
+        EXPECT_NEAR(w[axis], expected, 0.1f * expected) << "axis " << axis;
+    }
+}
+
+TEST(SandboxDrone, TheMixerLimitsYawLastSoTiltKeepsItsAuthority) {
+    const auto params = drone_stand_params();
+    const float c = params.rotors[0].torque_coeff / params.rotors[0].thrust_coeff;
+    const float L = params.arm_length;
+    const float t_max = 15.0f;
+    const glm::vec3 M(0.3f, 1.2f, -0.2f);  // a yaw demand far past what the rotors can give
+    const auto T = mix_thrusts_yaw_last(9.80665f, M, L, c, t_max);
+    for (const float ti : T) {
+        EXPECT_GE(ti, 0.0f);
+        EXPECT_LE(ti, t_max);
+    }
+    EXPECT_NEAR(L * (T[3] - T[1]), M.x, 1e-5f) << "roll was traded away for yaw";
+    EXPECT_NEAR(L * (T[0] - T[2]), M.z, 1e-5f) << "pitch was traded away for yaw";
+    const float yaw = -c * (T[0] - T[1] + T[2] - T[3]);
+    EXPECT_GT(yaw, 0.0f) << "yaw was dropped rather than limited";
+    EXPECT_LT(yaw, M.y);
+
+    // Inside the range it is the plain mixer, exactly.
+    const glm::vec3 small(0.02f, 0.01f, -0.01f);
+    EXPECT_EQ(mix_thrusts_yaw_last(9.80665f, small, L, c, t_max), mix_thrusts(9.80665f, small, L, c));
+}
+
+TEST(SandboxDrone, ARotorWithNoTorqueCoefficientGivesNoYawRatherThanAnInfinity) {
+    const auto T = mix_thrusts(9.80665f, glm::vec3(0.01f, 0.5f, 0.01f), 0.18f, 0.0f);
+    for (const float ti : T) EXPECT_TRUE(std::isfinite(ti));
+    EXPECT_NEAR(T[0] + T[1] + T[2] + T[3], 9.80665f, 1e-4f);
+}
+
+TEST(SandboxDrone, TheAttitudeReadoutInvertsTheTarget) {
+    for (const AttitudeTarget t : {AttitudeTarget{0.6f, 0.0f, 0.0f}, AttitudeTarget{0.0f, 0.4f, 0.0f},
+                                   AttitudeTarget{0.0f, 0.0f, -0.4f}, AttitudeTarget{-2.5f, -0.9f, 1.0f},
+                                   AttitudeTarget{1.2f, kMaxTiltRad, kMaxTiltRad}}) {
+        const AttitudeTarget back = attitude_from_quat(attitude_quat(t));
+        EXPECT_NEAR(back.yaw, t.yaw, 1e-5f);
+        EXPECT_NEAR(back.pitch, t.pitch, 1e-5f);
+        EXPECT_NEAR(back.roll, t.roll, 1e-5f);
     }
 }
 

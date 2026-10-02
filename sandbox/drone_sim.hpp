@@ -28,6 +28,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <utility>
@@ -112,6 +113,20 @@ struct DroneReadouts {
            glm::angleAxis(t.roll, glm::vec3(1.0f, 0.0f, 0.0f));
 }
 
+// The inverse of attitude_quat, for the readouts: the same yaw (Y), pitch (Z),
+// roll (X) order, so a target and the attitude it produces read the same.
+// glm::eulerAngles uses a different order and would not.
+//   body +X in world = (cos y cos p, sin p, -sin y cos p)
+//   body +Y in world, y-component = cos p cos r;  body +Z = -cos p sin r
+[[nodiscard]] inline AttitudeTarget attitude_from_quat(const glm::quat& q) {
+    const glm::mat3 m = glm::mat3_cast(q);
+    AttitudeTarget t;
+    t.pitch = std::asin(std::clamp(m[0].y, -1.0f, 1.0f));
+    t.yaw = std::atan2(-m[0].z, m[0].x);
+    t.roll = std::atan2(-m[2].y, m[1].y);
+    return t;
+}
+
 // PD on the body-frame rotation error with rate damping, scaled by inertia:
 // natural frequency 6 rad/s, critically damped. Body frame in and out,
 // matching BodyState::omega_body and torque_acc.
@@ -126,14 +141,41 @@ struct DroneReadouts {
 // Moments to four thrusts around `total`, for vehicles/quadrotor.hpp's plus
 // layout (rotors 0..3 at +X, +Z, -X, -Z, spin +1 -1 +1 -1):
 //   M_x = L (T3 - T1),  M_z = L (T0 - T2),  M_y = -c (T0 - T1 + T2 - T3),
-// with c = k_Q / k_T, since Q = k_Q w^2 = c * k_T w^2.
+// with c = k_Q / k_T, since Q = k_Q w^2 = c * k_T w^2. A rotor with no torque
+// coefficient (c <= 0) gives no yaw authority, so the yaw term is dropped
+// rather than divided by zero.
 [[nodiscard]] inline std::array<float, 4> mix_thrusts(float total, const glm::vec3& moment, float arm,
                                                       float kq_over_kt) {
     const float q = 0.25f * total;
     const float mx = moment.x / (2.0f * arm);
     const float mz = moment.z / (2.0f * arm);
-    const float my = moment.y / (4.0f * kq_over_kt);
+    const float my = kq_over_kt > 0.0f ? moment.y / (4.0f * kq_over_kt) : 0.0f;
     return {q + mz - my, q - mx + my, q - mz - my, q + mx + my};
+}
+
+// As mix_thrusts, but with the yaw term limited so that, where roll and pitch
+// alone fit inside [0, t_max] per rotor, yaw cannot push any rotor out of it.
+// Yaw is the weak axis on a quadrotor (it rides on k_Q, ~1.6% of k_T here), so
+// an unlimited yaw demand saturates the clamps and starves roll and pitch while
+// the user holds a yaw key. Limiting it LAST keeps tilt authority. Where roll
+// and pitch already exceed the range, yaw is dropped and the per-rotor clamp
+// downstream does the rest.
+[[nodiscard]] inline std::array<float, 4> mix_thrusts_yaw_last(float total, const glm::vec3& moment, float arm,
+                                                               float kq_over_kt, float t_max) {
+    const std::array<float, 4> rp = mix_thrusts(total, glm::vec3(moment.x, 0.0f, moment.z), arm, kq_over_kt);
+    float my = kq_over_kt > 0.0f ? moment.y / (4.0f * kq_over_kt) : 0.0f;
+    // T_i = rp_i + s_i * my with s = (-1, +1, -1, +1); keep each in [0, t_max].
+    constexpr std::array<float, 4> s{-1.0f, 1.0f, -1.0f, 1.0f};
+    float lo = -std::numeric_limits<float>::infinity();
+    float hi = std::numeric_limits<float>::infinity();
+    for (std::size_t i = 0; i < 4; ++i) {
+        const float a = s[i] * (0.0f - rp[i]);   // bound from T_i >= 0
+        const float b = s[i] * (t_max - rp[i]);  // bound from T_i <= t_max
+        lo = std::max(lo, std::min(a, b));
+        hi = std::min(hi, std::max(a, b));
+    }
+    my = lo <= hi ? std::clamp(my, lo, hi) : 0.0f;
+    return {rp[0] - my, rp[1] + my, rp[2] - my, rp[3] + my};
 }
 
 namespace detail {
@@ -255,6 +297,7 @@ class DroneSim {
         // moment authority.
         const float omega_max =
             kMaxOmegaOverHover * vehicles::hover_command(params_, vehicles::kStandardGravity);
+        const float t_max = rotor0.thrust_coeff * omega_max * omega_max;
 
         AttitudeTarget t = target;
         t.pitch = std::clamp(t.pitch, -kMaxTiltRad, kMaxTiltRad);
@@ -265,7 +308,7 @@ class DroneSim {
             auto body = sim_->body(vehicle_.body);
             if (!body) return std::unexpected(body.error());
             moment_cmd_ = attitude_moment((*body)->orient, (*body)->omega_body, q_target, params_.inertia_diag);
-            const auto thrusts = mix_thrusts(total, moment_cmd_, params_.arm_length, kq_over_kt);
+            const auto thrusts = mix_thrusts_yaw_last(total, moment_cmd_, params_.arm_length, kq_over_kt, t_max);
             std::array<float, 4> omegas{};
             for (std::size_t r = 0; r < omegas.size(); ++r) {
                 omegas[r] = std::clamp(std::sqrt(std::max(thrusts[r], 0.0f) / rotor0.thrust_coeff), 0.0f, omega_max);
