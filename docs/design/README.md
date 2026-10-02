@@ -41,7 +41,7 @@ Each library has a `README.md`; `00-decisions.md` (the only place a decision's s
 | `D-S5-1`, `D-S6-2` | In-program execution decisions | Core, Physics |
 | `CORE-`, `PHY-`, `RND-`, `INT-`, `TD-` | New rulings, from 2026-10-01 | each realm's `00-decisions.md` |
 
-`*` marks a split ruling: each listed realm homes its own half. Assigned 2026-10-01 (restructure plan R3) from a full inventory of the 94 ID tokens in `superseded/2026-09-consolidation/`. The Interface rows land with Interface's library.
+`*` marks a split ruling: each listed realm homes its own half. Assigned 2026-10-01 (restructure plan R3) from a full inventory of the 94 ID tokens in `superseded/2026-09-consolidation/`; every row above is present in its realm's `00-decisions.md` as of 2026-10-02.
 
 ## Citing and signing
 
