@@ -113,6 +113,7 @@ add_executable(spade_tests
     test_gnss.cpp
     test_world_file.cpp
     test_determinism.cpp
+    test_sim_medium.cpp
     test_m1b_bar.cpp
     test_render_target.cpp
     test_render_scene.cpp
