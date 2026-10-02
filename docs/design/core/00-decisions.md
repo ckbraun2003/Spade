@@ -22,6 +22,7 @@
 | `charter P3` | The GPU path is Vulkan: headless compute, explicit synchronization | approved 2026-08-06 | live. Its GLFW sunset clause is stale (`SL14a`) | `01-charter.md` §2 |
 | `charter P4` | Fixed step only; no wall clock in the step path; seeded, domain-separated RNG; immutable `dt` | approved 2026-08-06 | superseded by `L1` | `01-charter.md` §2 |
 | `charter P8` | Snapshot, save and restore are first-class | approved 2026-08-06 | superseded by `L2` | `01-charter.md` §2 |
+| `charter SA3` | Conformance is graded by the three determinism grades of charter §4 (an amendment to KAT's errata) | approved 2026-08-06 | superseded by `L3` | `01-charter.md` §3 |
 | `SL3` | The object graph never affects buffer layout, pass order or any computed value; it is not registered state | signed 2026-09-17 | live | `superseded/2026-09-consolidation/04-objects.md` §1 |
 | `SL4` | Objects are generational handles with names and transforms; components hold configuration and slot references; attach and detach are structural | signed 2026-09-17 | live. Built differently: attach/detach are immediate; serialization is by name, not id (`07-status.md`) | `04-objects.md` §2 |
 | `SL5` | Component type ids are hand-assigned, dense and never renumbered; build only the types in use | signed 2026-09-17 | live | `04-objects.md` §3 |

@@ -28,7 +28,7 @@ Core owns the engine's foundation: the module API and the scheduler; state, snap
 
 ## Series
 
-- **Owned:** `CORE-n`, plus the legacy rows listed in `00-decisions.md`: `engine D2`, `D6` (interface half), `D7`, `D8`, `D9`, `D12` (error half), `A1` (schedule half), `A3`, `A4`, `A7`, `A9`; `charter P1`–`P4`, `P8`; `SL3`–`SL6`; `RS5` (format half); `D-S5-1`.
+- **Owned:** `CORE-n`, plus the legacy rows listed in `00-decisions.md`: `engine D2`, `D6` (interface half), `D7`, `D8`, `D9`, `D12` (error half), `A1` (schedule half), `A3`, `A4`, `A7`, `A9`; `charter P1`–`P4`, `P8`, `SA3`; `SL3`–`SL6`; `RS5` (format half); `D-S5-1`.
 - **Quoted, owned elsewhere:** the laws `L1`–`L8` (`../00-charter.md`); `engine D1`, `D3`–`D5`, `D6` (provider half) (Physics); `RS*` and `SR-*`, including `RS5`'s meaning half (Rendering); `SL1`, `SL2*`, `SL7`–`SL18` (Interface, Test/Docs, lead); KAT series (`../consumers.md`).
 
 ## Citing
