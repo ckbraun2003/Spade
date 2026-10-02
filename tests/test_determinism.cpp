@@ -346,8 +346,8 @@ template <class T>
 // THE DATA CORPUS -- tests/golden/scenarios/*.scenario.yaml.
 //
 // Located by SPADE_GOLDEN_DIR, an absolute path baked in at configure time, so
-// nothing here depends on the working directory (the kat testing spec's no-CWD
-// rule: a compile definition cannot be defeated by running the exe from
+// nothing here depends on the working directory (the no-CWD rule: a compile
+// definition cannot be defeated by running the exe from
 // elsewhere).
 //
 // THE DIRECTORY IS THE CORPUS. Every *.scenario.yaml in it is a member, so

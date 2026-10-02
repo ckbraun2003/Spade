@@ -1,6 +1,6 @@
 // Manual-only benchmark harness for the CPU rasterizer's fill cost --
-// base-package phase, workstream W6c (MV3's never-pinned measured throughput
-// table), 2026-09-08.
+// written 2026-09-08 to price a consumer's render-scale decision (KAT's
+// editor; docs/design/consumers.md).
 //
 // Same policy as bench_core.cpp / bench_sim.cpp: spade_bench is a standalone
 // executable, NOT registered with ctest, run by hand. Correctness of
@@ -10,15 +10,14 @@
 // ---------------------------------------------------------------------------
 // WHY THIS FILE EXISTS, AND WHAT DECISION IT SERVES
 // ---------------------------------------------------------------------------
-// The editor proposes raising its render-scale cap to device pixels (MV3 /
-// ruling BP11: "HD scope is sharp only"). That multiplies the rendered pixel
-// count. The editor realm measured its own half and found the PRESENT path
+// The consumer's editor proposed raising its render-scale cap to device
+// pixels. That multiplies the rendered pixel count. Its authors measured its own half and found the PRESENT path
 // (Qt's blit) tracks TARGET pixels, which the cap raise does not change:
 // present cost came back neutral at 1.03x. So the entire cost of the change
 // lands HERE, on the render side, and this file is the number the decision
 // turns on.
 //
-// THE RATIO THAT MATTERS IS 1.68x, NOT 2.25x. MV3 s.8 priced exactly one
+// THE RATIO THAT MATTERS IS 1.68x, NOT 2.25x. The consumer's spec priced one
 // 1892x1066 surface (2,016,872 px). The proposal renders 2256x1504
 // (3,393,024 px). 3393024/2016872 = 1.68. The 2.25x figure that circulated is
 // proposed-over-CURRENT (1504x1003), a true number against a denominator the
@@ -37,7 +36,7 @@
 // A frame budget is a WALL-CLOCK question. "Does the frame fit in 16.6 ms"
 // is not asking how much CPU time the thread was charged; it is asking
 // whether the frame finished. So every family below is real-time based, and
-// any row of this file's output pinned into MV3 must say so ON THE ROW --
+// any row of this file's output pinned into a spec must say so ON THE ROW --
 // not once in a preamble, because preambles get skimmed and a row reading
 // 1.014x beside a row reading 9.84x for the same benchmark is the entire
 // lesson.
@@ -46,7 +45,7 @@
 // WHAT WOULD MAKE THESE NUMBERS WRONG
 // ---------------------------------------------------------------------------
 // Stated here because a pinned figure with no falsification condition is not
-// a measurement, it is a memory -- and MV3's table has sat unpinned since
+// a measurement, it is a memory -- and the consumer's table sat unpinned after
 // sign-off precisely because a bare number could not be checked later.
 //
 //   * A DIFFERENT BOX. These are one machine's numbers. baselines.json's own
@@ -65,10 +64,10 @@
 //     by a human. No check will contradict a stale number here.
 //
 // ---------------------------------------------------------------------------
-// HOW TO REGENERATE -- MV3 CITES THIS FILE, NOT A NUMBER
+// HOW TO REGENERATE -- CITE THIS FILE, NOT A NUMBER
 // ---------------------------------------------------------------------------
-// The viewport & cameras spec's measured-throughput obligation is discharged by
-// pinning the METHOD rather than a figure. That is deliberate: MV3's table sat
+// A spec's measured-throughput obligation is discharged by pinning the METHOD
+// rather than a figure. That is deliberate: the consumer's table sat
 // unpinned from sign-off (2026-08-19) precisely because a bare number is
 // unfalsifiable later, and nothing in CI reads this directory's results -- so a
 // digit embedded in a spec today would repeat the original mistake with fresher
@@ -88,7 +87,7 @@
 // it was a QUEUE, and every fix in it reads like the last one.)
 //
 // The min-time floor is not optional. Without it a hand-rolled loop on this box
-// produced a 2.4x run-to-run spread; the editor realm hit exactly that and the
+// produced a 2.4x run-to-run spread; the consumer's editor hit exactly that and the
 // floor collapsed it to 1.08-1.27x. 1s is ~64x the ~15.6 ms Windows scheduler
 // tick, so no single preempted sample can dominate -- the same reasoning
 // baselines.json's `spread_policy` states for the sim families.
@@ -142,12 +141,12 @@
 // TREAT N SLOTS AS COSTING N x ONE SLOT. That is a conservative UPPER bound,
 // not a measurement -- both runs came in well under it (1.79x and 3.33x for a
 // 4x pixel increase), and sublinearity is what the implementation predicts:
-// dronesim/spade/host.cpp hoists buildLiveBodyPoses/buildLiveBodyMeshIndices/
-// update_dynamics OUT of the per-slot loop, so those run once per
-// kathost_render however many slots are live, and every extra slot re-renders
+// a consumer's camera host (KAT's sim host, docs/design/consumers.md) hoists
+// its pose/mesh-index building and update_dynamics OUT of the per-slot loop,
+// so those run once per host render call however many slots are live, and every extra slot re-renders
 // a scene already hot in cache. Both runs agree on the SIGN of that effect
 // even where they disagree on its size. What they do not support is any
-// specific number, and W7 must not be handed one.
+// specific number, and no consumer should be handed one.
 //
 // TO RESOLVE IT: re-run on a quiet box (nothing else building, >4 GB free),
 // reps>=5, and require BOTH monotonicity in slot count AND agreement between
@@ -162,30 +161,30 @@
 // ---------------------------------------------------------------------------
 //   1. BM_RenderBackgroundFill/<case>  -- an EMPTY scene: sky gradient only,
 //      no meshes, no statics, no overlays. This is the pure per-pixel write
-//      floor, and it is the deliberate mirror of the editor realm's own
+//      floor, and it is the deliberate mirror of the consumer editor's own
 //      fillRect control on the present side, so the two halves have a
 //      comparable floor rather than two unrelated baselines.
 //
 //   2. BM_RenderGroundPlane/<case>  -- one ground plane, the shape the
-//      base-package world actually has (content/worlds/base-ground.world.yaml
-//      is one `plane` SDF node and nothing else). This is the row the 1.68x
+//      consumer's base world actually has (one `plane` SDF node and nothing
+//      else). This is the row the 1.68x
 //      question is answered from.
 //
 //      Both sweep the FOUR resolutions the decision actually contains, not
-//      round numbers: 640x360 (MV3 s.3's secondary-slot size), 1504x1003
-//      (what this box renders today at cap 1.0), 1892x1066 (what MV3 s.8
-//      priced), and 2256x1504 (the device-pixel proposal).
+//      round numbers: 640x360 (the consumer's secondary-slot size), 1504x1003
+//      (what this box renders today at cap 1.0), 1892x1066 (what the consumer's
+//      spec priced), and 2256x1504 (the device-pixel proposal).
 //
 //   3. BM_RenderSlots/<n>  -- n independent targets rendered per iteration at
 //      the secondary-slot resolution, n in {1,2,3,4}.
 //
-//      UPDATED 2026-09-09, W6: CAMERA SLOTS NOW EXIST, and this family is no
-//      longer the loose proxy the paragraph here used to describe. G-5 was
-//      ruled (option 3), and dronesim/spade/host.cpp's kathost_render now
-//      holds kMaxCameraSlots camera/pool pairs and renders every configured
+//      UPDATED 2026-09-09: CAMERA SLOTS NOW EXIST, and this family is no
+//      longer the loose proxy the paragraph here used to describe. Slots were
+//      added on the consumer side (KAT's sim host): its render call now
+//      holds a fixed number of camera/pool pairs and renders every configured
 //      one. Crucially it hoists ALL the shared work out of the per-slot loop
-//      -- buildLiveBodyPoses, buildLiveBodyMeshIndices and update_dynamics
-//      each run ONCE per kathost_render however many slots are live -- so
+//      -- pose and mesh-index building and update_dynamics each run ONCE per
+//      host render call however many slots are live -- so
 //      what actually repeats per slot is exactly one spade::render::render()
 //      call, which is exactly what this loop does.
 //
@@ -198,8 +197,8 @@
 //      rather than a lower bound of unknown looseness.
 //
 //      Still not measured here, and still the honest gap: this benchmark
-//      links spade::render directly and cannot link kat_host_spade (HS2
-//      rule 2 -- no kat concept inside this engine), so cross-slot effects that
+//      links spade::render directly and cannot link a consumer's host (no
+//      consumer concept inside this engine, L7), so cross-slot effects that
 //      only exist at the host level (cache pressure from N live pixel
 //      buffers, pool growth under concurrent acquires) are outside its
 //      reach by construction, not by omission.
@@ -234,9 +233,9 @@ struct ResCase {
 };
 
 constexpr ResCase kResCases[] = {
-    {"640x360_secondary_slot", 640, 360},     // MV3 s.3's secondary-slot size
+    {"640x360_secondary_slot", 640, 360},     // the consumer's secondary-slot size
     {"1504x1003_current_cap1", 1504, 1003},   // what this box renders today
-    {"1892x1066_mv3_priced", 1892, 1066},     // the surface MV3 s.8 priced
+    {"1892x1066_mv3_priced", 1892, 1066},     // the surface the consumer's spec priced
     {"2256x1504_device_px", 2256, 1504},      // the device-pixel proposal
 };
 constexpr int kResCaseCount = static_cast<int>(sizeof(kResCases) / sizeof(kResCases[0]));
@@ -253,7 +252,7 @@ constexpr int kResCaseCount = static_cast<int>(sizeof(kResCases) / sizeof(kResCa
 }
 
 // A camera looking at the origin from a typical third-person distance -- the
-// same framing content/scenes/base-ground.kscene's "default" bookmark uses,
+// same framing the consumer's base scene's "default" bookmark uses,
 // so the benchmark renders roughly what a viewer actually sees.
 [[nodiscard]] Camera bench_camera() {
     Camera camera;
@@ -335,7 +334,7 @@ void BM_RenderGroundPlane(benchmark::State& state) {
 void BM_RenderSlots(benchmark::State& state) {
     const int slots = static_cast<int>(state.range(0));
     const uint32_t width = kResCases[0].width, height = kResCases[0].height;  // secondary-slot size
-    // W6: the label no longer says "no slot abi exists", because one does.
+    // The label no longer says "no slot abi exists", because one does.
     // It still says PROXY -- see the family's comment in this file's header
     // for exactly which per-slot costs sit outside a spade-only benchmark.
     state.SetLabel("640x360_per_slot__engine_only_excludes_host_bookkeeping");
