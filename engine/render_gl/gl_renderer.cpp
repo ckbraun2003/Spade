@@ -4,6 +4,7 @@
 #include "render_gl/gl_renderer.hpp"
 
 #include <cstddef>
+#include <cstring>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -36,6 +37,87 @@
 
 namespace spade::render_gl {
 namespace {
+
+// ---------------------------------------------------------------------------
+// This renderer's own GL entry points, loaded through the caller's
+// GlProcLoader into its Impl. glad's header gives the types and enums only:
+// no glad_gl* pointer and no gladLoad* call is referenced, so an installed
+// spade::render_gl exports no GL loader symbol to clash with a consumer's
+// own (Interface's plan 513e1b8). It is also not static mutable state.
+// ---------------------------------------------------------------------------
+#define SPADE_GL_FUNCTIONS(X) \
+    X(PFNGLGETSTRINGPROC, GetString) \
+    X(PFNGLATTACHSHADERPROC, AttachShader) \
+    X(PFNGLBINDBUFFERPROC, BindBuffer) \
+    X(PFNGLBINDBUFFERBASEPROC, BindBufferBase) \
+    X(PFNGLBINDVERTEXARRAYPROC, BindVertexArray) \
+    X(PFNGLBUFFERDATAPROC, BufferData) \
+    X(PFNGLBUFFERSUBDATAPROC, BufferSubData) \
+    X(PFNGLCLEARPROC, Clear) \
+    X(PFNGLCOMPILESHADERPROC, CompileShader) \
+    X(PFNGLCREATEPROGRAMPROC, CreateProgram) \
+    X(PFNGLCREATESHADERPROC, CreateShader) \
+    X(PFNGLCULLFACEPROC, CullFace) \
+    X(PFNGLDELETEBUFFERSPROC, DeleteBuffers) \
+    X(PFNGLDELETEPROGRAMPROC, DeleteProgram) \
+    X(PFNGLDELETESHADERPROC, DeleteShader) \
+    X(PFNGLDELETEVERTEXARRAYSPROC, DeleteVertexArrays) \
+    X(PFNGLDEPTHFUNCPROC, DepthFunc) \
+    X(PFNGLDEPTHMASKPROC, DepthMask) \
+    X(PFNGLDISABLEPROC, Disable) \
+    X(PFNGLDRAWARRAYSPROC, DrawArrays) \
+    X(PFNGLDRAWARRAYSINSTANCEDPROC, DrawArraysInstanced) \
+    X(PFNGLDRAWELEMENTSINSTANCEDPROC, DrawElementsInstanced) \
+    X(PFNGLENABLEPROC, Enable) \
+    X(PFNGLENABLEVERTEXATTRIBARRAYPROC, EnableVertexAttribArray) \
+    X(PFNGLFRONTFACEPROC, FrontFace) \
+    X(PFNGLGENBUFFERSPROC, GenBuffers) \
+    X(PFNGLGENVERTEXARRAYSPROC, GenVertexArrays) \
+    X(PFNGLGETINTEGERVPROC, GetIntegerv) \
+    X(PFNGLGETPROGRAMINFOLOGPROC, GetProgramInfoLog) \
+    X(PFNGLGETPROGRAMIVPROC, GetProgramiv) \
+    X(PFNGLGETSHADERINFOLOGPROC, GetShaderInfoLog) \
+    X(PFNGLGETSHADERIVPROC, GetShaderiv) \
+    X(PFNGLGETUNIFORMLOCATIONPROC, GetUniformLocation) \
+    X(PFNGLLINKPROGRAMPROC, LinkProgram) \
+    X(PFNGLPOLYGONMODEPROC, PolygonMode) \
+    X(PFNGLSHADERSOURCEPROC, ShaderSource) \
+    X(PFNGLUNIFORM1FPROC, Uniform1f) \
+    X(PFNGLUNIFORM1UIPROC, Uniform1ui) \
+    X(PFNGLUNIFORM2FPROC, Uniform2f) \
+    X(PFNGLUNIFORM2UIPROC, Uniform2ui) \
+    X(PFNGLUNIFORM3FVPROC, Uniform3fv) \
+    X(PFNGLUNIFORMMATRIX4FVPROC, UniformMatrix4fv) \
+    X(PFNGLUSEPROGRAMPROC, UseProgram) \
+    X(PFNGLVERTEXATTRIBPOINTERPROC, VertexAttribPointer) \
+    X(PFNGLVIEWPORTPROC, Viewport)
+
+struct GlApi {
+#define SPADE_GL_MEMBER(type, name) type name = nullptr;
+    SPADE_GL_FUNCTIONS(SPADE_GL_MEMBER)
+#undef SPADE_GL_MEMBER
+};
+
+// A loader hands back void*; GL wants function pointers. memcpy rather than
+// a cast between object and function pointers, which pedantic gcc flags.
+template <class Fn>
+[[nodiscard]] Fn as_function(void* p) {
+    static_assert(sizeof(Fn) == sizeof(void*), "function and object pointers differ in size here");
+    Fn fn = nullptr;
+    std::memcpy(&fn, &p, sizeof fn);
+    return fn;
+}
+
+// Fills `gl` from `loader`. Returns the first name the loader could not
+// resolve, or nullptr when every entry point resolved.
+[[nodiscard]] const char* load_gl(GlApi& gl, GlProcLoader loader) {
+#define SPADE_GL_LOAD(type, name)                               \
+    gl.name = as_function<type>(loader("gl" #name));            \
+    if (gl.name == nullptr) return "gl" #name;
+    SPADE_GL_FUNCTIONS(SPADE_GL_LOAD)
+#undef SPADE_GL_LOAD
+    return nullptr;
+}
 
 // ---------------------------------------------------------------------------
 // The shaders, embedded. See the header: v1 loads these from a CWD-relative
@@ -345,18 +427,18 @@ struct GpuMesh {
 };
 
 // `parts` are concatenated in order, so one GLSL helper serves two programs.
-[[nodiscard]] Result<GLuint> compile(GLenum stage, std::initializer_list<const char*> parts, const char* what) {
-    const GLuint sh = glCreateShader(stage);
-    glShaderSource(sh, static_cast<GLsizei>(parts.size()), parts.begin(), nullptr);
-    glCompileShader(sh);
+[[nodiscard]] Result<GLuint> compile(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts, const char* what) {
+    const GLuint sh = gl.CreateShader(stage);
+    gl.ShaderSource(sh, static_cast<GLsizei>(parts.size()), parts.begin(), nullptr);
+    gl.CompileShader(sh);
     GLint ok = GL_FALSE;
-    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    gl.GetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (ok != GL_TRUE) {
         GLint len = 0;
-        glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &len);
+        gl.GetShaderiv(sh, GL_INFO_LOG_LENGTH, &len);
         std::string log(static_cast<size_t>(len > 0 ? len : 1), '\0');
-        glGetShaderInfoLog(sh, len, nullptr, log.data());
-        glDeleteShader(sh);
+        gl.GetShaderInfoLog(sh, len, nullptr, log.data());
+        gl.DeleteShader(sh);
         // The driver's own log, forwarded verbatim. A shader failure reported
         // as "compile failed" sends the reader to guess; the log names a line.
         // `parts` are separate source strings, so a line is counted within
@@ -367,30 +449,30 @@ struct GpuMesh {
     return sh;
 }
 
-[[nodiscard]] Result<GLuint> link(std::initializer_list<const char*> vertex,
+[[nodiscard]] Result<GLuint> link(const GlApi& gl, std::initializer_list<const char*> vertex,
                                   std::initializer_list<const char*> fragment, const char* what) {
-    const Result<GLuint> vs = compile(GL_VERTEX_SHADER, vertex, what);
+    const Result<GLuint> vs = compile(gl, GL_VERTEX_SHADER, vertex, what);
     if (!vs) return std::unexpected(vs.error());
-    const Result<GLuint> fs = compile(GL_FRAGMENT_SHADER, fragment, what);
+    const Result<GLuint> fs = compile(gl, GL_FRAGMENT_SHADER, fragment, what);
     if (!fs) {
-        glDeleteShader(*vs);
+        gl.DeleteShader(*vs);
         return std::unexpected(fs.error());
     }
-    const GLuint program = glCreateProgram();
-    glAttachShader(program, *vs);
-    glAttachShader(program, *fs);
-    glLinkProgram(program);
-    glDeleteShader(*vs);
-    glDeleteShader(*fs);
+    const GLuint program = gl.CreateProgram();
+    gl.AttachShader(program, *vs);
+    gl.AttachShader(program, *fs);
+    gl.LinkProgram(program);
+    gl.DeleteShader(*vs);
+    gl.DeleteShader(*fs);
 
     GLint linked = GL_FALSE;
-    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    gl.GetProgramiv(program, GL_LINK_STATUS, &linked);
     if (linked != GL_TRUE) {
         GLint len = 0;
-        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
+        gl.GetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
         std::string log(static_cast<size_t>(len > 0 ? len : 1), '\0');
-        glGetProgramInfoLog(program, len, nullptr, log.data());
-        glDeleteProgram(program);
+        gl.GetProgramInfoLog(program, len, nullptr, log.data());
+        gl.DeleteProgram(program);
         return std::unexpected(Error{Code::internal, std::string("GlRenderer::create: link ") + what + ": " + log});
     }
     return program;
@@ -399,14 +481,14 @@ struct GpuMesh {
 // Grows `buffer` only when `data` outgrows it, else writes in place (v1's
 // contract, and the reason a steady-state frame does no reallocation).
 template <class T>
-void upload_in_place(GLuint buffer, size_t& capacity, const std::vector<T>& data) {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+void upload_in_place(const GlApi& gl, GLuint buffer, size_t& capacity, const std::vector<T>& data) {
+    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
     if (data.size() > capacity) {
-        glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(T)), data.data(),
+        gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(T)), data.data(),
                      GL_DYNAMIC_DRAW);
         capacity = data.size();
     } else if (!data.empty()) {
-        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(data.size() * sizeof(T)), data.data());
+        gl.BufferSubData(GL_SHADER_STORAGE_BUFFER, 0, static_cast<GLsizeiptr>(data.size() * sizeof(T)), data.data());
     }
 }
 
@@ -415,6 +497,8 @@ void upload_in_place(GLuint buffer, size_t& capacity, const std::vector<T>& data
 // ---------------------------------------------------------------------------
 
 struct GlRenderer::Impl {
+    // This renderer's own GL entry points; see GlApi.
+    GlApi gl;
     GLuint program = 0;
     std::vector<GpuMesh> meshes;
 
@@ -474,21 +558,21 @@ struct GlRenderer::Impl {
 
     ~Impl() {
         for (GpuMesh& m : meshes) {
-            if (m.ebo != 0) glDeleteBuffers(1, &m.ebo);
-            if (m.vbo_nrm != 0) glDeleteBuffers(1, &m.vbo_nrm);
-            if (m.vbo_pos != 0) glDeleteBuffers(1, &m.vbo_pos);
-            if (m.vao != 0) glDeleteVertexArrays(1, &m.vao);
+            if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
+            if (m.vbo_nrm != 0) gl.DeleteBuffers(1, &m.vbo_nrm);
+            if (m.vbo_pos != 0) gl.DeleteBuffers(1, &m.vbo_pos);
+            if (m.vao != 0) gl.DeleteVertexArrays(1, &m.vao);
         }
-        if (ssbo_field_colours != 0) glDeleteBuffers(1, &ssbo_field_colours);
-        if (ssbo_planes != 0) glDeleteBuffers(1, &ssbo_planes);
-        if (ssbo_speeds != 0) glDeleteBuffers(1, &ssbo_speeds);
-        if (ssbo_materials != 0) glDeleteBuffers(1, &ssbo_materials);
-        if (ssbo_overrides != 0) glDeleteBuffers(1, &ssbo_overrides);
-        if (ssbo_transforms != 0) glDeleteBuffers(1, &ssbo_transforms);
-        if (empty_vao != 0) glDeleteVertexArrays(1, &empty_vao);
-        if (field_program != 0) glDeleteProgram(field_program);
-        if (background_program != 0) glDeleteProgram(background_program);
-        if (program != 0) glDeleteProgram(program);
+        if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
+        if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
+        if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
+        if (ssbo_materials != 0) gl.DeleteBuffers(1, &ssbo_materials);
+        if (ssbo_overrides != 0) gl.DeleteBuffers(1, &ssbo_overrides);
+        if (ssbo_transforms != 0) gl.DeleteBuffers(1, &ssbo_transforms);
+        if (empty_vao != 0) gl.DeleteVertexArrays(1, &empty_vao);
+        if (field_program != 0) gl.DeleteProgram(field_program);
+        if (background_program != 0) gl.DeleteProgram(background_program);
+        if (program != 0) gl.DeleteProgram(program);
     }
 };
 
@@ -499,15 +583,17 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     if (loader == nullptr) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::create: null proc loader"});
     }
-    if (gladLoadGLLoader(reinterpret_cast<GLADloadproc>(loader)) == 0) {
-        return std::unexpected(Error{Code::unavailable,
-                                     "GlRenderer::create: could not load GL entry points -- is a GL "
-                                     "context current on this thread?"});
-    }
-
     auto impl = std::make_unique<Impl>();
-    const auto* rend = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-    const auto* vers = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    // Refused before any GL call: every pointer is checked first, and a
+    // null one would crash on use.
+    if (const char* missing = load_gl(impl->gl, loader); missing != nullptr) {
+        return std::unexpected(Error{Code::unavailable,
+                                     std::string("GlRenderer::create: the loader found no ") + missing +
+                                         " -- is a GL 4.3 context current on this thread?"});
+    }
+    const GlApi& gl = impl->gl;
+    const auto* rend = reinterpret_cast<const char*>(gl.GetString(GL_RENDERER));
+    const auto* vers = reinterpret_cast<const char*>(gl.GetString(GL_VERSION));
     impl->renderer_name = rend != nullptr ? rend : "(unknown)";
     impl->version_string = vers != nullptr ? vers : "(unknown)";
 
@@ -518,8 +604,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     // fall back to raster_cpu by switching on it -- which is exactly what the
     // user's "GPU default, CPU fallback" ruling asks of a caller.
     GLint major = 0, minor = 0;
-    glGetIntegerv(GL_MAJOR_VERSION, &major);
-    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    gl.GetIntegerv(GL_MAJOR_VERSION, &major);
+    gl.GetIntegerv(GL_MINOR_VERSION, &minor);
     if (major < 4 || (major == 4 && minor < 3)) {
         return std::unexpected(Error{
             Code::unavailable, "GlRenderer::create: needs OpenGL 4.3 for shader storage buffers; "
@@ -528,88 +614,89 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     }
 
     const Result<GLuint> mesh_program =
-        link({kGlslVersion, kCommonSrc, kVertexSrc}, {kGlslVersion, kCommonSrc, kFragmentSrc}, "mesh");
+        link(gl, {kGlslVersion, kCommonSrc, kVertexSrc}, {kGlslVersion, kCommonSrc, kFragmentSrc}, "mesh");
     if (!mesh_program) return std::unexpected(mesh_program.error());
     impl->program = *mesh_program;
-    const Result<GLuint> background_program = link({kGlslVersion, kBackgroundVertexSrc},
+    const Result<GLuint> background_program = link(gl, {kGlslVersion, kBackgroundVertexSrc},
                                                     {kGlslVersion, kCommonSrc, kBackgroundFragmentSrc}, "background");
     if (!background_program) return std::unexpected(background_program.error());
     impl->background_program = *background_program;
     const Result<GLuint> field_program =
-        link({kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field");
+        link(gl, {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field");
     if (!field_program) return std::unexpected(field_program.error());
     impl->field_program = *field_program;
 
     const GLuint p = impl->program;
-    impl->u_instance_base = glGetUniformLocation(p, "uInstanceBase");
-    impl->u_view_proj = glGetUniformLocation(p, "uViewProj");
-    impl->u_submesh_material = glGetUniformLocation(p, "uSubmeshMaterial");
-    impl->u_no_material = glGetUniformLocation(p, "uNoMaterial");
-    impl->u_sun_dir = glGetUniformLocation(p, "uSunDir");
-    impl->u_sun_color = glGetUniformLocation(p, "uSunColor");
-    impl->u_ambient = glGetUniformLocation(p, "uAmbient");
-    impl->u_sun_intensity = glGetUniformLocation(p, "uSunIntensity");
-    impl->u_mode = glGetUniformLocation(p, "uMode");
-    impl->u_velocity_scale = glGetUniformLocation(p, "uVelocityScale");
-    impl->u_cam_pos = glGetUniformLocation(p, "uCamPos");
-    impl->u_sky_zenith = glGetUniformLocation(p, "uSkyZenith");
-    impl->u_sky_horizon = glGetUniformLocation(p, "uSkyHorizon");
-    impl->u_horizon_strength = glGetUniformLocation(p, "uHorizonStrength");
-    impl->u_horizon_onset = glGetUniformLocation(p, "uHorizonOnset");
+    impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
+    impl->u_view_proj = gl.GetUniformLocation(p, "uViewProj");
+    impl->u_submesh_material = gl.GetUniformLocation(p, "uSubmeshMaterial");
+    impl->u_no_material = gl.GetUniformLocation(p, "uNoMaterial");
+    impl->u_sun_dir = gl.GetUniformLocation(p, "uSunDir");
+    impl->u_sun_color = gl.GetUniformLocation(p, "uSunColor");
+    impl->u_ambient = gl.GetUniformLocation(p, "uAmbient");
+    impl->u_sun_intensity = gl.GetUniformLocation(p, "uSunIntensity");
+    impl->u_mode = gl.GetUniformLocation(p, "uMode");
+    impl->u_velocity_scale = gl.GetUniformLocation(p, "uVelocityScale");
+    impl->u_cam_pos = gl.GetUniformLocation(p, "uCamPos");
+    impl->u_sky_zenith = gl.GetUniformLocation(p, "uSkyZenith");
+    impl->u_sky_horizon = gl.GetUniformLocation(p, "uSkyHorizon");
+    impl->u_horizon_strength = gl.GetUniformLocation(p, "uHorizonStrength");
+    impl->u_horizon_onset = gl.GetUniformLocation(p, "uHorizonOnset");
 
     const GLuint b = impl->background_program;
     Impl::BackgroundUniforms& bg = impl->bg;
-    bg.cam_pos = glGetUniformLocation(b, "uCamPos");
-    bg.right = glGetUniformLocation(b, "uRight");
-    bg.up = glGetUniformLocation(b, "uUp");
-    bg.forward = glGetUniformLocation(b, "uForward");
-    bg.inv_tan_half_fov = glGetUniformLocation(b, "uInvTanHalfFov");
-    bg.aspect = glGetUniformLocation(b, "uAspect");
-    bg.viewport = glGetUniformLocation(b, "uViewport");
-    bg.plane_count = glGetUniformLocation(b, "uPlaneCount");
-    bg.grid_enabled = glGetUniformLocation(b, "uGridEnabled");
-    bg.grid_color = glGetUniformLocation(b, "uGridColor");
-    bg.grid_spacing = glGetUniformLocation(b, "uGridSpacing");
-    bg.grid_half_width = glGetUniformLocation(b, "uGridHalfWidth");
-    bg.grid_width_growth = glGetUniformLocation(b, "uGridWidthGrowth");
-    bg.grid_fade_distance = glGetUniformLocation(b, "uGridFadeDistance");
-    bg.sky_zenith = glGetUniformLocation(b, "uSkyZenith");
-    bg.sky_horizon = glGetUniformLocation(b, "uSkyHorizon");
-    bg.horizon_strength = glGetUniformLocation(b, "uHorizonStrength");
-    bg.horizon_onset = glGetUniformLocation(b, "uHorizonOnset");
+    bg.cam_pos = gl.GetUniformLocation(b, "uCamPos");
+    bg.right = gl.GetUniformLocation(b, "uRight");
+    bg.up = gl.GetUniformLocation(b, "uUp");
+    bg.forward = gl.GetUniformLocation(b, "uForward");
+    bg.inv_tan_half_fov = gl.GetUniformLocation(b, "uInvTanHalfFov");
+    bg.aspect = gl.GetUniformLocation(b, "uAspect");
+    bg.viewport = gl.GetUniformLocation(b, "uViewport");
+    bg.plane_count = gl.GetUniformLocation(b, "uPlaneCount");
+    bg.grid_enabled = gl.GetUniformLocation(b, "uGridEnabled");
+    bg.grid_color = gl.GetUniformLocation(b, "uGridColor");
+    bg.grid_spacing = gl.GetUniformLocation(b, "uGridSpacing");
+    bg.grid_half_width = gl.GetUniformLocation(b, "uGridHalfWidth");
+    bg.grid_width_growth = gl.GetUniformLocation(b, "uGridWidthGrowth");
+    bg.grid_fade_distance = gl.GetUniformLocation(b, "uGridFadeDistance");
+    bg.sky_zenith = gl.GetUniformLocation(b, "uSkyZenith");
+    bg.sky_horizon = gl.GetUniformLocation(b, "uSkyHorizon");
+    bg.horizon_strength = gl.GetUniformLocation(b, "uHorizonStrength");
+    bg.horizon_onset = gl.GetUniformLocation(b, "uHorizonOnset");
 
-    glGenBuffers(1, &impl->ssbo_transforms);
-    glGenBuffers(1, &impl->ssbo_overrides);
-    glGenBuffers(1, &impl->ssbo_materials);
-    glGenBuffers(1, &impl->ssbo_speeds);
-    glGenBuffers(1, &impl->ssbo_planes);
-    glGenVertexArrays(1, &impl->empty_vao);
+    gl.GenBuffers(1, &impl->ssbo_transforms);
+    gl.GenBuffers(1, &impl->ssbo_overrides);
+    gl.GenBuffers(1, &impl->ssbo_materials);
+    gl.GenBuffers(1, &impl->ssbo_speeds);
+    gl.GenBuffers(1, &impl->ssbo_planes);
+    gl.GenVertexArrays(1, &impl->empty_vao);
 
     const GLuint f = impl->field_program;
     Impl::FieldUniforms& fu = impl->field;
-    fu.view_proj = glGetUniformLocation(f, "uViewProj");
-    fu.center = glGetUniformLocation(f, "uCenter");
-    fu.right = glGetUniformLocation(f, "uRight");
-    fu.up = glGetUniformLocation(f, "uUp");
-    fu.size = glGetUniformLocation(f, "uSize");
-    fu.cells = glGetUniformLocation(f, "uCells");
-    fu.cell_base = glGetUniformLocation(f, "uCellBase");
-    glGenBuffers(1, &impl->ssbo_field_colours);
+    fu.view_proj = gl.GetUniformLocation(f, "uViewProj");
+    fu.center = gl.GetUniformLocation(f, "uCenter");
+    fu.right = gl.GetUniformLocation(f, "uRight");
+    fu.up = gl.GetUniformLocation(f, "uUp");
+    fu.size = gl.GetUniformLocation(f, "uSize");
+    fu.cells = gl.GetUniformLocation(f, "uCells");
+    fu.cell_base = gl.GetUniformLocation(f, "uCellBase");
+    gl.GenBuffers(1, &impl->ssbo_field_colours);
 
     return std::unique_ptr<GlRenderer>(new GlRenderer(std::move(impl)));
 }
 
 Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     Impl& s = *impl_;
+    const GlApi& gl = s.gl;
 
     // Geometry uploads ONCE per mesh and lives until the mesh set changes --
     // v1's `if (meshComponent.VAO == 0)` branch, and the reason a frame costs
     // nothing per vertex.
     for (GpuMesh& m : s.meshes) {
-        if (m.ebo != 0) glDeleteBuffers(1, &m.ebo);
-        if (m.vbo_nrm != 0) glDeleteBuffers(1, &m.vbo_nrm);
-        if (m.vbo_pos != 0) glDeleteBuffers(1, &m.vbo_pos);
-        if (m.vao != 0) glDeleteVertexArrays(1, &m.vao);
+        if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
+        if (m.vbo_nrm != 0) gl.DeleteBuffers(1, &m.vbo_nrm);
+        if (m.vbo_pos != 0) gl.DeleteBuffers(1, &m.vbo_pos);
+        if (m.vao != 0) gl.DeleteVertexArrays(1, &m.vao);
     }
     s.meshes.clear();
     s.meshes.resize(scene.meshes.size());
@@ -626,31 +713,31 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
                                              " normals"});
         }
 
-        glGenVertexArrays(1, &dst.vao);
-        glBindVertexArray(dst.vao);
+        gl.GenVertexArrays(1, &dst.vao);
+        gl.BindVertexArray(dst.vao);
 
-        glGenBuffers(1, &dst.vbo_pos);
-        glBindBuffer(GL_ARRAY_BUFFER, dst.vbo_pos);
-        glBufferData(GL_ARRAY_BUFFER,
+        gl.GenBuffers(1, &dst.vbo_pos);
+        gl.BindBuffer(GL_ARRAY_BUFFER, dst.vbo_pos);
+        gl.BufferData(GL_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(src.positions.size() * sizeof(glm::vec3)),
                      src.positions.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+        gl.EnableVertexAttribArray(0);
+        gl.VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
 
-        glGenBuffers(1, &dst.vbo_nrm);
-        glBindBuffer(GL_ARRAY_BUFFER, dst.vbo_nrm);
-        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(src.normals.size() * sizeof(glm::vec3)),
+        gl.GenBuffers(1, &dst.vbo_nrm);
+        gl.BindBuffer(GL_ARRAY_BUFFER, dst.vbo_nrm);
+        gl.BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(src.normals.size() * sizeof(glm::vec3)),
                      src.normals.data(), GL_STATIC_DRAW);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+        gl.EnableVertexAttribArray(1);
+        gl.VertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
 
-        glGenBuffers(1, &dst.ebo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, dst.ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        gl.GenBuffers(1, &dst.ebo);
+        gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER, dst.ebo);
+        gl.BufferData(GL_ELEMENT_ARRAY_BUFFER,
                      static_cast<GLsizeiptr>(src.indices.size() * sizeof(uint32_t)),
                      src.indices.data(), GL_STATIC_DRAW);
 
-        glBindVertexArray(0);
+        gl.BindVertexArray(0);
 
         dst.index_count = static_cast<uint32_t>(src.indices.size());
         dst.submesh_first_index = src.submesh_first_index;
@@ -680,12 +767,12 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     if (s.gpu_materials.empty()) {
         s.gpu_materials.push_back(GpuMaterial{});  // index 0 is always valid
     }
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_materials);
-    glBufferData(GL_SHADER_STORAGE_BUFFER,
+    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_materials);
+    gl.BufferData(GL_SHADER_STORAGE_BUFFER,
                  static_cast<GLsizeiptr>(s.gpu_materials.size() * sizeof(GpuMaterial)),
                  s.gpu_materials.data(), GL_STATIC_DRAW);
     s.materials_capacity = s.gpu_materials.size();
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     return {};
 }
@@ -694,6 +781,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                               const render::RenderOptions& options, uint32_t width,
                               uint32_t height) {
     Impl& s = *impl_;
+    const GlApi& gl = s.gl;
 
     // L6: GL has no ray-marcher, and drawing a raster frame instead would be
     // a different technique under the same name.
@@ -778,17 +866,17 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     }
 
     // --- buffers: allocate once, then write in place -----------------------
-    upload_in_place(s.ssbo_transforms, s.transforms_capacity, s.instance_transforms);
-    upload_in_place(s.ssbo_overrides, s.overrides_capacity, s.instance_overrides);
-    upload_in_place(s.ssbo_speeds, s.speeds_capacity, s.instance_speeds);
-    upload_in_place(s.ssbo_planes, s.planes_capacity, s.gpu_planes);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    upload_in_place(gl, s.ssbo_transforms, s.transforms_capacity, s.instance_transforms);
+    upload_in_place(gl, s.ssbo_overrides, s.overrides_capacity, s.instance_overrides);
+    upload_in_place(gl, s.ssbo_speeds, s.speeds_capacity, s.instance_speeds);
+    upload_in_place(gl, s.ssbo_planes, s.planes_capacity, s.gpu_planes);
+    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s.ssbo_transforms);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s.ssbo_overrides);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s.ssbo_materials);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, s.ssbo_planes);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s.ssbo_speeds);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, s.ssbo_transforms);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, s.ssbo_overrides);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s.ssbo_materials);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, s.ssbo_planes);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s.ssbo_speeds);
 
     // --- camera ------------------------------------------------------------
     // The engine's camera space is right-handed with forward = -Z
@@ -805,10 +893,10 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     const float horizon_strength = shaded ? options.horizon_blend_strength : 0.0f;
     const render::Lighting& light = scene.lighting;
 
-    glViewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
-    glDepthMask(GL_TRUE);
-    glClear(GL_DEPTH_BUFFER_BIT);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gl.Viewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+    gl.DepthMask(GL_TRUE);
+    gl.Clear(GL_DEPTH_BUFFER_BIT);
+    gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     // --- background --------------------------------------------------------
     // Every pixel, before the meshes and with no depth: raster_cpu's
@@ -823,64 +911,64 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             static_cast<float>(1.0 / render::tan32(static_cast<double>(camera.fov_y_radians) * 0.5));
         const render::GroundGridParams& grid = options.ground_grid_params;
 
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glDisable(GL_CULL_FACE);
-        glUseProgram(s.background_program);
-        glUniform3fv(bg.cam_pos, 1, glm::value_ptr(camera.position));
-        glUniform3fv(bg.right, 1, glm::value_ptr(right));
-        glUniform3fv(bg.up, 1, glm::value_ptr(up));
-        glUniform3fv(bg.forward, 1, glm::value_ptr(forward));
-        glUniform1f(bg.inv_tan_half_fov, inv_tan_half_fov);
-        glUniform1f(bg.aspect, aspect);
-        glUniform2f(bg.viewport, static_cast<float>(width), static_cast<float>(height));
-        glUniform1ui(bg.plane_count, plane_count);
-        glUniform1ui(bg.grid_enabled, (shaded && options.ground_grid) ? 1u : 0u);
-        glUniform3fv(bg.grid_color, 1, glm::value_ptr(grid.color));
-        glUniform1f(bg.grid_spacing, grid.spacing);
-        glUniform1f(bg.grid_half_width, grid.line_half_width);
-        glUniform1f(bg.grid_width_growth, grid.width_growth);
-        glUniform1f(bg.grid_fade_distance, grid.fade_distance);
-        glUniform3fv(bg.sky_zenith, 1, glm::value_ptr(light.sky_zenith));
-        glUniform3fv(bg.sky_horizon, 1, glm::value_ptr(light.sky_horizon));
-        glUniform1f(bg.horizon_strength, horizon_strength);
-        glUniform1f(bg.horizon_onset, options.horizon_blend_onset);
-        glBindVertexArray(s.empty_vao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glDepthMask(GL_TRUE);
+        gl.Disable(GL_DEPTH_TEST);
+        gl.DepthMask(GL_FALSE);
+        gl.Disable(GL_CULL_FACE);
+        gl.UseProgram(s.background_program);
+        gl.Uniform3fv(bg.cam_pos, 1, glm::value_ptr(camera.position));
+        gl.Uniform3fv(bg.right, 1, glm::value_ptr(right));
+        gl.Uniform3fv(bg.up, 1, glm::value_ptr(up));
+        gl.Uniform3fv(bg.forward, 1, glm::value_ptr(forward));
+        gl.Uniform1f(bg.inv_tan_half_fov, inv_tan_half_fov);
+        gl.Uniform1f(bg.aspect, aspect);
+        gl.Uniform2f(bg.viewport, static_cast<float>(width), static_cast<float>(height));
+        gl.Uniform1ui(bg.plane_count, plane_count);
+        gl.Uniform1ui(bg.grid_enabled, (shaded && options.ground_grid) ? 1u : 0u);
+        gl.Uniform3fv(bg.grid_color, 1, glm::value_ptr(grid.color));
+        gl.Uniform1f(bg.grid_spacing, grid.spacing);
+        gl.Uniform1f(bg.grid_half_width, grid.line_half_width);
+        gl.Uniform1f(bg.grid_width_growth, grid.width_growth);
+        gl.Uniform1f(bg.grid_fade_distance, grid.fade_distance);
+        gl.Uniform3fv(bg.sky_zenith, 1, glm::value_ptr(light.sky_zenith));
+        gl.Uniform3fv(bg.sky_horizon, 1, glm::value_ptr(light.sky_horizon));
+        gl.Uniform1f(bg.horizon_strength, horizon_strength);
+        gl.Uniform1f(bg.horizon_onset, options.horizon_blend_onset);
+        gl.BindVertexArray(s.empty_vao);
+        gl.DrawArrays(GL_TRIANGLES, 0, 3);
+        gl.DepthMask(GL_TRUE);
     }
 
     // --- meshes ------------------------------------------------------------
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
+    gl.Enable(GL_DEPTH_TEST);
+    gl.DepthFunc(GL_LESS);
     if (wireframe) {
         // SR-13: wireframe culls nothing, so both windings draw the same edges.
-        glDisable(GL_CULL_FACE);
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        gl.Disable(GL_CULL_FACE);
+        gl.PolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     } else {
         // SR-13: shaded mode culls back faces, as raster_cpu does (velocity
         // too, through the same CPU function). Front is CCW seen from the
         // camera, the CPU's edge-function sign, so an outward-wound mesh
         // loses nothing and an inward-wound one shows its winding bug here.
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CCW);
+        gl.Enable(GL_CULL_FACE);
+        gl.CullFace(GL_BACK);
+        gl.FrontFace(GL_CCW);
     }
 
-    glUseProgram(s.program);
-    glUniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-    glUniform1ui(s.u_no_material, render::kNoMaterial);
-    glUniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
-    glUniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
-    glUniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
-    glUniform1f(s.u_sun_intensity, light.sun_intensity);
-    glUniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
-    glUniform1f(s.u_velocity_scale, options.velocity_scale_mps);
-    glUniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
-    glUniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
-    glUniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
-    glUniform1f(s.u_horizon_strength, horizon_strength);
-    glUniform1f(s.u_horizon_onset, options.horizon_blend_onset);
+    gl.UseProgram(s.program);
+    gl.UniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+    gl.Uniform1ui(s.u_no_material, render::kNoMaterial);
+    gl.Uniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
+    gl.Uniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
+    gl.Uniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
+    gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
+    gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
+    gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
+    gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
+    gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
+    gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
+    gl.Uniform1f(s.u_horizon_strength, horizon_strength);
+    gl.Uniform1f(s.u_horizon_onset, options.horizon_blend_onset);
 
     uint32_t draw_calls = 0;
     for (size_t i = 0; i < mesh_count; ++i) {
@@ -888,8 +976,8 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         if (count == 0u) continue;  // a mesh nothing instances costs nothing
 
         const GpuMesh& m = s.meshes[i];
-        glBindVertexArray(m.vao);
-        glUniform1ui(s.u_instance_base, s.batch_base[i]);
+        gl.BindVertexArray(m.vao);
+        gl.Uniform1ui(s.u_instance_base, s.batch_base[i]);
 
         // ONE DRAW PER SUBMESH, and submeshes exist because materials differ
         // within a mesh. Still O(meshes x submeshes) and never O(objects),
@@ -898,15 +986,15 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             const uint32_t first = m.submesh_first_index[sm];
             const uint32_t n = m.submesh_index_count[sm];
             if (n == 0u) continue;
-            glUniform1ui(s.u_submesh_material, m.submesh_material[sm]);
-            glDrawElementsInstanced(
+            gl.Uniform1ui(s.u_submesh_material, m.submesh_material[sm]);
+            gl.DrawElementsInstanced(
                 GL_TRIANGLES, static_cast<GLsizei>(n), GL_UNSIGNED_INT,
                 reinterpret_cast<const void*>(static_cast<uintptr_t>(first) * sizeof(uint32_t)),
                 static_cast<GLsizei>(count));
             ++draw_calls;
         }
     }
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     // --- field layers ------------------------------------------------------
     // Filled in every raster mode, because a layer is data. Depth-tested
@@ -919,29 +1007,29 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                 s.field_colours.emplace_back(render::field_cell_colour(layer.colour_map, value, top), 1.0f);
             }
         }
-        upload_in_place(s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_field_colours);
+        upload_in_place(gl, s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);
+        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_field_colours);
 
-        glDisable(GL_CULL_FACE);
-        glUseProgram(s.field_program);
-        glUniformMatrix4fv(s.field.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-        glBindVertexArray(s.empty_vao);
+        gl.Disable(GL_CULL_FACE);
+        gl.UseProgram(s.field_program);
+        gl.UniformMatrix4fv(s.field.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+        gl.BindVertexArray(s.empty_vao);
         GLuint base = 0;
         for (const render::FieldLayer& layer : scene.field_layers) {
-            glUniform3fv(s.field.center, 1, glm::value_ptr(layer.center));
-            glUniform3fv(s.field.right, 1, glm::value_ptr(layer.right));
-            glUniform3fv(s.field.up, 1, glm::value_ptr(layer.up));
-            glUniform2f(s.field.size, layer.width, layer.height);
-            glUniform2ui(s.field.cells, layer.cells_u, layer.cells_v);
-            glUniform1ui(s.field.cell_base, base);
+            gl.Uniform3fv(s.field.center, 1, glm::value_ptr(layer.center));
+            gl.Uniform3fv(s.field.right, 1, glm::value_ptr(layer.right));
+            gl.Uniform3fv(s.field.up, 1, glm::value_ptr(layer.up));
+            gl.Uniform2f(s.field.size, layer.width, layer.height);
+            gl.Uniform2ui(s.field.cells, layer.cells_u, layer.cells_v);
+            gl.Uniform1ui(s.field.cell_base, base);
             const GLuint cells = layer.cells_u * layer.cells_v;
-            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
+            gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
             base += cells;
         }
     }
-    glBindVertexArray(0);
-    glUseProgram(0);
+    gl.BindVertexArray(0);
+    gl.UseProgram(0);
 
     s.last_draw_calls = draw_calls;
     s.last_instances = total_instances;

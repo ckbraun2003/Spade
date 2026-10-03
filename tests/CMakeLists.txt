@@ -272,10 +272,11 @@ endif()
 # when the sandbox or v1 is built.
 #
 # GLFW_INCLUDE_NONE: glad declares GL here, and glfw3.h must not pull in
-# <GL/gl.h> beside it.
+# <GL/gl.h> beside it. glad is linked here, not through render_gl: the test
+# calls GL itself, and render_gl keeps its own private function table.
 if(SPADE_RENDER_GL AND TARGET glfw)
     target_sources(spade_tests PRIVATE test_gpu_gl_renderer.cpp)
-    target_link_libraries(spade_tests PRIVATE spade::render_gl glfw)
+    target_link_libraries(spade_tests PRIVATE spade::render_gl glfw glad)
     target_compile_definitions(spade_tests PRIVATE GLFW_INCLUDE_NONE)
 endif()
 

@@ -538,11 +538,21 @@ target_include_directories(spade_render_gl PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
 
-# glad is PUBLIC because the header does not expose it but the static library's
-# consumers must still resolve its symbols at link; glm is PUBLIC because the
-# header's signatures use it. spade::render brings the scene/target types the
-# whole API is expressed in.
-target_link_libraries(spade_render_gl PUBLIC spade::core spade::render glad glm)
+# No glad LINK: gl_renderer.cpp loads its GL entry points into a private table
+# through the caller's GlProcLoader, so the archive exports no glad symbol to
+# clash with a consumer's own loader. It takes glad's HEADER for the GL types
+# and enums only: a PRIVATE build-tree include, never part of the interface.
+# Linking the glad target, even PRIVATE, would put $<LINK_ONLY:glad> in the
+# interface, and install(EXPORT) refuses a non-exported target there.
+target_include_directories(spade_render_gl PRIVATE
+    $<BUILD_INTERFACE:$<TARGET_PROPERTY:glad,INTERFACE_INCLUDE_DIRECTORIES>>
+)
+
+# glm is PUBLIC because the header's signatures use it, wrapped in
+# $<BUILD_INTERFACE:...> for the install(EXPORT) reason spade_core's own glm
+# link gives. spade::render brings the scene/target types the API is
+# expressed in.
+target_link_libraries(spade_render_gl PUBLIC spade::core spade::render $<BUILD_INTERFACE:glm>)
 target_link_libraries(spade_render_gl PRIVATE
     $<BUILD_LOCAL_INTERFACE:spade_warnings>
 )

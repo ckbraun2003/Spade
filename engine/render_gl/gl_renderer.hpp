@@ -61,7 +61,9 @@ namespace spade::render_gl {
 
 // How the caller hands us GL entry points. Taking a loader rather than linking
 // one keeps this module free of GLFW: the sandbox passes glfwGetProcAddress,
-// a Qt host would pass its own, and neither dependency reaches in here.
+// a Qt host would pass its own, and neither dependency reaches in here. Each
+// GlRenderer loads what it calls into its own private table, so the module
+// exports no GL loader symbol to clash with the caller's own loader.
 using GlProcLoader = void* (*)(const char* name);
 
 class GlRenderer {

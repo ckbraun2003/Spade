@@ -197,6 +197,11 @@ class GpuGlRenderer : public ::testing::Test {
             GTEST_SKIP() << "no OpenGL 4.3 core context on this machine. " << g_last_glfw_error;
         }
         glfwMakeContextCurrent(window_);
+        // This test calls GL itself (framebuffer, readback), through glad.
+        // GlRenderer has its own private table and does not load glad for us.
+        if (gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress)) == 0) {
+            GTEST_SKIP() << "glad could not load GL entry points for the test's own calls";
+        }
 
         auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress));
         if (!made) {
@@ -640,6 +645,19 @@ TEST_F(GpuGlRenderer, RefusesRaymarch) {
 
 // L6: what GL does not draw is announced by name, so a caller can show it or
 // refuse GL. Host-only: no context needed, so this suite has no gpu label.
+// A loader that finds nothing is refused with unavailable, naming the first
+// missing entry point, before any GL call: with a table of null pointers, a
+// call would crash. Needs no context, so an out-of-tree consumer can check
+// that render_gl links without opening a window.
+TEST(GlRendererCreate, ANullLoaderIsRefusedBeforeAnyGlCall) {
+    const auto finds_nothing = [](const char*) -> void* { return nullptr; };
+    const auto made = GlRenderer::create(finds_nothing);
+    ASSERT_FALSE(made.has_value());
+    EXPECT_EQ(made.error().code, spade::Code::unavailable);
+    EXPECT_NE(made.error().context.find("glGetString"), std::string::npos)
+        << "the refusal must name the missing entry point: " << made.error().context;
+}
+
 TEST(GlRendererOptions, UnhonouredNamesWhatGlDoesNotDraw) {
     using Names = std::vector<std::string_view>;
     EXPECT_EQ(GlRenderer::unhonoured(RenderOptions{}), (Names{"shadows", "overlays"}))
