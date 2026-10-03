@@ -86,7 +86,7 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 - **DBE-010** Composing a scene into a world MUST be deterministic, and the scene order MUST enter the configuration hash.
 - **DBE-011** The research airframes MUST be rebuilt as part assemblies, and their measurements MUST become validation data with stated tolerances. Kat holds system data only, so the rebuild is an inverse fit within the parts' published ranges, validated on held-out flights.
 - **DBE-012** A recorded run MUST carry the compiled airframe it used, through Spade's replay configuration.
-- **DBE-013** A vehicle's pose and rates MUST reach Kat in the design frame. The principal-axis rotation MUST stay inside Spade.
+- **DBE-013** A vehicle's pose and rates MUST reach Kat in the design frame. The principal-axis rotation and the centre-of-mass offset MUST stay inside Spade: the model type carries both, spawn converts design-frame starts, and a vehicle-state read converts back (DBP-45, DBP-46).
 - **DBE-014** Kat MUST compile its scene into Spade's scene file. Spade's scene holds engine content only: a world reference, assets with poses, and vehicles with start poses and compiled models.
 - **DBE-015** Part files use Kat's convention (+Z thrust, X layout). The compiler's one rotation into Spade's convention MUST be an axis permutation with signs, so it adds no rounding.
 - **DBE-016** Kat runs the research-airframe fit on the Kat machine against Spade's published pure functions. The flight logs MUST stay on the Kat machine.
