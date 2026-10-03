@@ -147,6 +147,7 @@ TEST(Motor, FloatAndDoubleAreTheSameOperationsToFloatRounding) {
     const float r = 0.0625f;
     const double cur_d = motor_current(double{d}, double{v}, double{w}, double{k}, double{r});
     const float cur_f = motor_current(d, v, w, k, r);
+    ASSERT_GT(cur_d, 1.0) << "non-vacuity: (8 - 4) / 0.0625 = 64 A, not 0";
     EXPECT_NEAR(cur_f, cur_d, 4.0 * std::numeric_limits<float>::epsilon() * std::fabs(cur_d));
 }
 

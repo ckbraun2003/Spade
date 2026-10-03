@@ -146,6 +146,7 @@ TEST(PropulsionSteady, TheSteppedChainSettlesToTheSolver) {
         const double d = 0.6;
         const SteadyPoint target = steady_state_at_duty(c, d, kRho, 0.0, kSoc);
         ASSERT_EQ(target.flags, 0u);
+        ASSERT_GT(target.omega, 100.0) << "non-vacuity: the motor must be turning, or 0 = 0 would pass";
 
         const float kv = static_cast<float>(c.kv);
         const float r = static_cast<float>(c.resistance);

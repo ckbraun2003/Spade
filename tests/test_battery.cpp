@@ -207,6 +207,7 @@ TEST(BusSolve, FloatAndDoubleAgreeToFloatRounding) {
     std::vector<double> cd(4);
     const BusResult rf = bus_solve(16.0f, 0.0625f, 0.0f, 0.0f, mf, cf);
     const BusResultD rd = bus_solve(16.0, 0.0625, 0.0, 0.0, md, cd);
+    ASSERT_GT(rd.bus_voltage, 1.0) << "non-vacuity: the closed form gives 14 V, not 0";
     EXPECT_NEAR(rf.bus_voltage, rd.bus_voltage, 8.0 * std::numeric_limits<float>::epsilon() * rd.bus_voltage);
     EXPECT_NEAR(cf[0], cd[0], 1e-4 * std::fabs(cd[0]));
 }
