@@ -216,6 +216,8 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-23: Both battery clamps MUST act through one common duty scale per vehicle.
 - DBP-24: The battery SHOULD model polarization with one RC branch, with `β` computed at spawn.
 - DBP-25: Temperature effects MAY be added when the medium carries temperature (`engine D6`).
+- DBP-26: A 4-in-1 ESC's total current MUST clamp through the same common duty scale as DBP-23.
+- DBP-27: Part blocks MUST use the field names and units of §14.2.
 
 **Propeller tier**
 - DBP-30: The tier MUST compute thrust and torque from `C_T(J)` and `C_Q(J)` tables.
@@ -408,3 +410,86 @@ A tolerance is accepted when it comes from the data's own scatter. One read off 
    - whether the simulator's link adds a command delay, and how long (§11.7);
    - whether any log carries per-axis rate commands, which rotational validation needs.
 4. **Ownership of the fit. Decided by the user (2026-10-03): "Spade pushes, Kat pulls."** Kat runs the fit and the validation on the Kat machine (§11.1).
+
+## 14. Answers to Kat's spec points
+
+### 14.1 D-2: the ESC map or the inductance term
+
+The answer is in §11.4: the inductance term first. An ESC map comes only if that fails, as one bounded parameter.
+
+### 14.2 D-4: field names for the part blocks
+
+Names are snake_case. Units are SI, except `kv`, which keeps the datasheet's rpm/V. Each part also carries `mass` (kg) and a mount pose, `mount_pos` (m) and `mount_orient` (unit quaternion, w x y z), in the design frame (DBP-03).
+
+Today's names stay as they are: `thrust_coeff`, `torque_coeff`, `radius`, `tau` and `inertia_diag`. The momentum-theory variant and the lag still read them. A part block compiles into them where the table says so.
+
+**`motor`**
+
+| Field | Unit | Meaning |
+|---|---|---|
+| `kv` | rpm/V | speed constant, as the datasheet gives it; compiled to rad/(s·V) |
+| `resistance` | Ω | winding resistance, line to line, as datasheets give it |
+| `no_load_current` | A | no-load current |
+| `no_load_voltage` | V | the voltage `no_load_current` was measured at |
+| `current_max` | A | continuous current rating |
+| `pole_pairs` | count | magnet poles divided by 2 |
+| `inductance` | H | line to line; optional (DBP-18) |
+| `rotor_inertia` | kg·m² | bell and shaft, about the shaft |
+| `spin_dir` | +1 or −1 | today's `spin_dirs` entry for this rotor |
+| `stator` | text | identity only, for example "2207" |
+
+**`prop`**
+
+| Field | Unit | Meaning |
+|---|---|---|
+| `diameter` | m | compiles to today's `radius` = `diameter`/2 |
+| `pitch` | m | identity, and an input to a default table (DBP-34) |
+| `blades` | count | identity, and an input to a default table |
+| `inertia` | kg·m² | about the shaft; optional (DBP-16) |
+| `ct_static`, `cq_static` | none | `C_T` and `C_Q` at `J` = 0 |
+| `ct_table`, `cq_table` | list of `[J, value]` | measured tables, resampled at spawn (DBP-31) |
+
+The coefficients use the UIUC convention: `T = C_T·ρ·n²·D⁴` and `Q = C_Q·ρ·n²·D⁵`, with `n` in rev/s. A source that gives `C_P` converts with `C_Q = C_P/(2π)` when the part is authored.
+
+For the momentum-theory variant, the static coefficients compile into today's names:
+- `thrust_coeff = ct_static·ρ_ref·D⁴/(4π²)`;
+- `torque_coeff = cq_static·ρ_ref·D⁵/(4π²)`.
+
+Here `ρ_ref` is 1.225 kg/m³. That variant's static thrust does not scale with density today, which is its known limit.
+
+**`esc`**
+
+| Field | Unit | Meaning |
+|---|---|---|
+| `current_continuous` | A | continuous rating per channel; above it, a flag is set |
+| `current_burst` | A | burst rating per channel; the current clamps here |
+| `current_total` | A | total for a 4-in-1 across its channels; the sum clamps here, through the common duty scale (§4) |
+| `channels` | count | 1, or 4 for a 4-in-1 |
+| `on_resistance` | Ω | adds to the motor's `resistance` |
+| `braking` | true or false | active braking; sets `I_lo` (§3) |
+| `protocol` | text | identity only, for example "DShot600" |
+| `throttle_map` | none | optional, one parameter with the firmware's range (DBP-19) |
+
+The motor's clamp is the smaller of `current_max` and `current_burst`. The model keeps no thermal state, so a burst rating has no time limit here. The flag above `current_continuous` is how a builder sees it.
+
+**`battery`**
+
+| Field | Unit | Meaning |
+|---|---|---|
+| `cells_series` | count | `S` |
+| `cells_parallel` | count | `P` |
+| `cell_capacity` | Ah | per cell |
+| `cell_resistance` | Ω | internal resistance per cell |
+| `cell_voltage_nominal` | V | identity |
+| `cell_voltage_full` | V | the top of `ocv_table` |
+| `cell_voltage_cutoff` | V | the terminal-voltage clamp per cell (§4) |
+| `ocv_table` | list of `[SoC, V]` | per cell, resampled at spawn |
+| `c_rating` | 1/h | continuous discharge rating; the current clamp is `c_rating × capacity` |
+| `polarization_resistance`, `polarization_capacitance` | Ω, F | `R1` and `C1`, optional (DBP-24) |
+
+### 14.3 Drag: part primitives or a fitted value?
+
+**Answer: the lead's suggestion, with one exception.** A fitted airframe value, with the shapes as the prior, is right for an airframe that has its own flight data. The exception is an airframe whose simulator states its drag exactly.
+1. **The simulator states it.** `competition-700` gives `F_i = −0.028·|v_i|·v_i` exactly. Set that value; do not fit it. Then use the drag files (`drag_speed`, `drag_lateral`, `drag_aoa`) as a known-answer test of the fit itself. A fit that does not recover 0.028 within `u_c` has a defect in the fit, not in the drag.
+2. **The builder has only parts.** Sum the parts' projected areas per body axis, with a drag coefficient per primitive. This gives a per-axis componentwise drag element, graded best-effort. Drag does not add across parts in reality, because parts shield each other. So it is a prior, never a claim.
+3. **The airframe has its own data.** Fit the per-axis coefficients. The primitive sum is the starting point, with a range the builder states.
