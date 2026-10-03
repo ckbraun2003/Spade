@@ -84,6 +84,7 @@ add_executable(spade_tests
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp
+    test_render_agreement_matrix.cpp
     test_render_field.cpp
     test_objects_graph.cpp
     test_objects_component.cpp
@@ -382,7 +383,8 @@ target_compile_definitions(spade_tests PRIVATE
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     # Where opt-in test output goes: the build tree, never the source tree.
-    # Today only RasterGolden's frame dump (SPADE_RENDER_DUMP_FRAMES) writes here.
+    # Writers: RasterGolden's frame dump (SPADE_RENDER_DUMP_FRAMES) and
+    # AgreementMatrix's measurements (SPADE_AGREEMENT_MEASURE).
     SPADE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
 )
 
