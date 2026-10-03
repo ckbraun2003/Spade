@@ -66,10 +66,16 @@ void main() {
     uint idx = uInstanceBase + uint(gl_InstanceID);
     mat4 m = uModel[idx];
     vec4 world = m * vec4(aPos, 1.0);
-    // Normal matrix as mat3(m): correct for rigid transforms, which is what a
-    // body pose is. A non-uniform scale would need the inverse-transpose, and
-    // when a scaled instance first appears this is the line that is wrong.
-    vNormal = mat3(m) * aNrm;
+    // A normal transforms by the inverse-transpose, not by mat3(m), or a
+    // per-axis scale tilts it off its surface. The cofactor matrix is
+    // det * inverse-transpose; det's sign keeps a mirrored normal outward,
+    // and the fragment shader normalizes. render/scene.hpp's
+    // transform_normal() is the same rule; it also keeps mat3(m) for
+    // conformal matrices so CPU goldens stay bit-identical, which GL,
+    // having no goldens, does not need.
+    mat3 l = mat3(m);
+    mat3 cofactor = mat3(cross(l[1], l[2]), cross(l[2], l[0]), cross(l[0], l[1]));
+    vNormal = cofactor * aNrm * sign(dot(l[0], cofactor[0]));
     vInstance = idx;
     gl_Position = uViewProj * world;
 }
