@@ -36,9 +36,9 @@ struct LightBasis {
 
 // A fixed reference "up" hint, swapped to world +Z when `forward` is too
 // close to vertical for cross(worldUp, forward) to stay well-conditioned.
-// Not a hypothetical corner case: LightingDesc's own default sun_direction
-// is exactly (0,1,0) (world/builder.hpp), so a scene that never authors its
-// own lighting hits this branch on every call.
+// A straight-up sun, (0,1,0), takes this branch, and so does the zero-length
+// fallback below. LightingDesc's default is (0.4, 0.8, 0.6) since the VQ-A
+// fix (world/builder.hpp), so an unauthored world no longer reaches it.
 constexpr float kNearVerticalDot = 0.999f;
 
 // Guards glm::normalize() below against a zero (or exactly self-cancelling)
@@ -51,8 +51,8 @@ constexpr float kNearVerticalDot = 0.999f;
 // sun_direction, world/builder.hpp's own doc comment), but every fixture in
 // THIS program's own test corpus hand-builds a RenderScene directly and
 // bypasses that validation entirely -- exactly how this would actually be
-// reached. Falls back to LightingDesc's own default (straight up) rather
-// than propagating a NaN through the rest of this file.
+// reached. Falls back to straight up, (0,1,0), rather than propagating a
+// NaN through the rest of this file.
 constexpr float kMinSunDirectionLengthSq = 1e-12f;
 
 [[nodiscard]] LightBasis build_light_basis(const glm::vec3& sun_direction) {
