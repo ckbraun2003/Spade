@@ -238,6 +238,21 @@ TEST(ModuleSchedule, PlacementOrdersAPlacedWriterBeforeAnOrderedWriter) {
     EXPECT_EQ(names(*s), (Names{"p.pin", "o.move"}));
 }
 
+// Placement orders a pass against every pass of another placement in its
+// phase, so a last-placed WRITER (a force behavior that sets force_acc) after
+// ordered ACCUMULATORS needs no edge.
+TEST(ModuleSchedule, ALastPlacedWriterFollowsOrderedAccumulators) {
+    static constexpr QuantityAccess adds[] = {{"body.wrench", Access::accumulate}};
+    static constexpr QuantityAccess sets[] = {{"body.wrench", Access::write}};
+    static constexpr PassDecl acc[] = {{.name = "add", .phase = Phase::forces, .access = adds, .cpu = &noop}};
+    static constexpr PassDecl last[] = {
+        {.name = "set", .phase = Phase::forces, .placement = Placement::last, .access = sets, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "l", .passes = last}, {.name = "a", .passes = acc}};
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(names(*s), (Names{"a.add", "l.set"}));
+}
+
 TEST(ModuleSchedule, APlacementThatContradictsAHazardIsRefused) {
     // A first-placed READER and an ordered WRITER of one quantity: the hazard
     // wants the writer first, the placement wants the reader first.
@@ -634,7 +649,7 @@ add_library(spade_sim STATIC
 - [ ] **Step 5: Build and run the new tests**
 
 Run: `scripts\build.ps1 -Target spade_tests`, then `scripts\test.ps1 -Filter ModuleSchedule`
-Expected: 15 tests, all PASS.
+Expected: 17 tests, all PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -790,10 +805,12 @@ constexpr PassDecl kGnssPasses[] = {
     {.name = "synthesize", .phase = Phase::sensors, .access = kGnssAccess, .cpu = &physics::pass_sensor_gnss}};
 
 // Kinematic behaviors write poses before any field is sampled (Q2), so they
-// run first in Fields; force behaviors add after every built-in force. Both
-// declare what they touch, so the compiler checks them like any other pass.
+// run first in Fields; force behaviors run after every built-in force. Both
+// declare what they touch, so the compiler checks them like any other pass. A
+// force behavior may overwrite force_acc (the drone stand sets -m*g), so it
+// declares a write; being placed last orders it after the accumulators.
 constexpr QuantityAccess kKinematicAccess[] = {{"body.pose", Access::write}};
-constexpr QuantityAccess kForceBehaviorAccess[] = {{"body.wrench", Access::accumulate}};
+constexpr QuantityAccess kForceBehaviorAccess[] = {{"body.wrench", Access::write}};
 constexpr PassDecl kBehaviorPasses[] = {
     {.name = "kinematic", .phase = Phase::fields, .placement = Placement::first, .access = kKinematicAccess,
      .cpu = &physics::pass_behaviors_kinematic},
@@ -855,7 +872,7 @@ Add `sim/standard_modules.cpp` to `spade_sim` in `engine/CMakeLists.txt`, after 
 - [ ] **Step 5: Build and run**
 
 Run: `scripts\build.ps1 -Target spade_tests`, then `scripts\test.ps1 -Filter "ModuleSchedule|StandardModules"`
-Expected: 17 tests, all PASS.
+Expected: 19 tests, all PASS.
 
 - [ ] **Step 6: Commit**
 
