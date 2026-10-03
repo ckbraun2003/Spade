@@ -43,7 +43,7 @@
   - Core's leg run at `adae0dd` found it. I reproduced it at `da2fcf5` with the gcc check.
   - Rendering's `a77f6d6`, merged as `7ed7572`, fixed it.
   - The answer is the standing gcc check before review (`02-build-and-gate.md`).
-- **`SL2b`'s guard went red, then green** (Interface's plan `513e1b8`). Both commits are on `interface/sl2b-guard`, on master `d4c2030`, patch-identical to the reviewed pair. It is the first use of the leg's sandbox stage; both summaries read `sandbox on (consumer-smoke.sh --sandbox)`.
+- **`SL2b`'s guard went red, then green** (Interface's plan `513e1b8`). Both commits are in master via `4d5b178` (`interface/sl2b-guard`, on master `d4c2030`), patch-identical to the reviewed pair. It is the first use of the leg's sandbox stage; both summaries read `sandbox on (consumer-smoke.sh --sandbox)`.
   - **Red:** the build passed, so the red counts. Consumer ON then failed with "SL2b: the in-tree sandbox links spade::render_gl, but the installed package ... has no spade::render_gl".
   - **Green:** both consumers passed with the sandbox built against each prefix and run headless. Green also showed "render_gl OK: an empty loader is refused" and "render_gl-symbols ... ok (no glad symbol ...)".
 - **The agreement bands' `gcc-release` attestation** comes from the green run. All five d and d_probe values are bit-identical to the `msvc-release` pins in `agreement_bands.json`, compared as doubles. Only `msvc-debug` is still pending.
