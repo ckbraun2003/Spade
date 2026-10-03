@@ -1,6 +1,6 @@
 # Default sun above the horizon (`RND-5`): plan
 
-**Owner:** Rendering. **Status:** draft, for the lead's review. It runs once the Docker leg (`TD-11`) has merged and run end to end, because a regenerated golden is final only when that leg reproduces it (`TD-12`).
+**Owner:** Rendering. **Status:** done. The lead approved it with Q1–Q3 answered, and it merged at `a46bb86` on 2026-10-03 after the Docker gcc leg reproduced all four hashes. It runs once the Docker leg (`TD-11`) has merged and run end to end, because a regenerated golden is final only when that leg reproduces it (`TD-12`).
 
 ## Goal
 
