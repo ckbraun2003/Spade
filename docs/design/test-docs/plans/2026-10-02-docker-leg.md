@@ -61,6 +61,11 @@ One command on the development box builds a Linux/gcc image, builds a commit of 
     6. **the recipe fails:** its exit code is carried into the summary.
     7. **an unknown step:** usage, exit 2.
   - Controls: a build step that swallows its exit code fails 7 checks, and a leg that always exits 0 fails 5.
+  - **Later additions:**
+    - The leg runs the viewer guard at full length (`SPADE_FULL_VIEWER_TRAJECTORIES=1`, `6a788ce`).
+    - An `agreement` part collects Rendering's per-case `agreement:` lines for the band file's gcc attestation (`ae7667f`). A commit without the matrix has nothing to collect; one with it must give one line per registered case.
+    - The harness grew to 9 scenarios and 46 checks, all green: no matrix; 7 of 7 lines; 5 of 7 fails; agreement blocked by a failed build. `ae7667f`'s message says 45 checks, which is wrong; the run shows 46.
+    - Control: a count check that always passes fails 2 checks.
 - [ ] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
 - [ ] **5. Docs.**
   - `02-build-and-gate.md`: the script table and a "Docker leg" section saying what it covers and what it leaves out: v1, `gpu`, Debug, Windows.
