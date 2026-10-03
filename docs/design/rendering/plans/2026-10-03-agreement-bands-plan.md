@@ -1,6 +1,6 @@
 # Agreement bands on Spade's own worlds: plan
 
-**Owner:** Rendering, with Test/Docs for the band file's governance (`TD-2`) and the Docker leg. **Status:** draft, for the lead's review. It answers the backlog row "Spade-owned content for render agreement bands" (`../../backlog.md`).
+**Owner:** Rendering, with Test/Docs for the band file's governance (`TD-2`) and the Docker leg. **Status:** done, merged at `da2fcf5` on 2026-10-03. The lead answered Q1–Q3 (golden worlds only; cameras in the band file; Test/Docs owns the margin, signed off with four conditions). Measuring found two raster defects, so version 1 has 5 cases, not 7: see `../07-status.md`. It answers the backlog row "Spade-owned content for render agreement bands" (`../../backlog.md`).
 
 ## Goal
 

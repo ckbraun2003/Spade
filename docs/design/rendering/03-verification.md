@@ -8,7 +8,7 @@
 |---|---|---|
 | **Frame goldens** (`RS13`) | The CPU raster is byte-exact for a fixed scene, camera and options | `tests/golden/render/frames/manifest.json`, `tests/test_render_raster.cpp` (`RasterGolden.*`) |
 | **Tessellation and CSG goldens** (`RS13`) | Triangle emission is byte-identical per primitive, parameters and limits version | `tests/golden/render/{tessellation,csg}/manifest.json` |
-| **Agreement** (`RS4`) | The raster's silhouettes match the SDF that collision evaluates | `render/agreement.*`, `tests/test_render_agreement.cpp`; per-world bands when measured |
+| **Agreement** (`RS4`) | The raster's silhouettes match the SDF that collision evaluates | `render/agreement.*`, `tests/test_render_agreement.cpp`; the band matrix `tests/test_render_agreement_matrix.cpp` over `tests/golden/render/agreement_bands.json` |
 | **Seam tests** (`SR-17` clause 4) | The tessellated and analytic ground produce the same bytes | `tests/test_render_shading.cpp` |
 | **Cadence invariance** (`L5`) | Rendering zero times, once, or every tick leaves stepping byte-identical | **nothing in this repository yet.** It holds by construction (the renderer reads only its arguments), but the case that tested it lived on KAT's side. Debt in `07-status.md` |
 | **Bench** (`RS13`) | Per-frame CPU render cost at fixed size classes | `tests/bench/bench_render.cpp`, `tests/bench/baselines.json` (recorded, not gated) |
@@ -29,6 +29,8 @@
 - **Every band proves its detection surface** (`SR-30`). The reference is re-rendered with all geometry except the ground removed (`strip_to_ground_plane_only()`), and the case records and re-checks whether its band would catch that. A world with an infinite ground can saturate the frame, so that a band is non-discriminating. Such a band is labelled, never hidden.
 - **Bands are versioned** (`SR-31`). A re-measure adds a measurement version and bumps the active selector. It never edits a committed measurement in place, and every recorded number is checked live.
 - **Measured, then pinned, with provenance.** Bands are never invented.
+- **The matrix** (`AgreementMatrix`) runs on golden worlds this repository owns: `gate`, `maximal` and `shower`. Cameras live in the band file, so a changed camera is a new version. A case frames geometry against the flat sky, because a frame saturated by an infinite ground cannot discriminate. The band is `round_up(0.001, max(0.001, 1.5 d))` (TD-2, Test/Docs), and d must match bit for bit across msvc-release, msvc-debug and gcc-release. `SPADE_AGREEMENT_MEASURE` writes each case's values and frames under the build tree for a new version.
+- **A band never covers a known defect.** A disagreement the frames show to be a raster defect is recorded as debt and kept out of view, with a `_framing_note` saying so. It is not absorbed into a band.
 
 ## GPU paths
 
