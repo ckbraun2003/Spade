@@ -1,6 +1,6 @@
 # The Docker leg (`TD-11`, `TD-12`): plan
 
-**Owner:** Test/Docs, with Interface for the consumer half. **Status:** draft, for the lead's review. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
+**Owner:** Test/Docs, with Interface for the consumer half. **Status:** approved by the lead 2026-10-02 (`115e59b`); Tasks 1–3 done and approved, Task 4 waits for the round's merges so one run covers them. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
 
 ## Goal
 
@@ -37,15 +37,23 @@ One command on the development box builds a Linux/gcc image, builds a commit of 
 
 ## Tasks
 
-- [ ] **1. Image.** `scripts/docker-leg.Dockerfile` and the driver's `image` step. Proof: the image builds; `gcc-13 --version`, `cmake --version` and `python3 --version` print in a throwaway container; the image size is recorded. *Short slot, about 10 min.*
-- [ ] **2. Driver.** Sync, volume, fixed-name detached container, follow/stop, output directory, dirty-tree notice and disk refusal. Proof:
+- [x] **1. Image.** `scripts/docker-leg.Dockerfile` and the driver's `image` step. Proof: the image builds; `gcc-13 --version`, `cmake --version` and `python3 --version` print in a throwaway container; the image size is recorded. *Short slot, about 10 min.*
+  - Done in slot 5, 2026-10-03: `spade-docker-leg:ed5552f460d7`, 762 MB, built in 228 s. Versions: gcc-13 13.3.0-6ubuntu2~24.04.1, cmake 3.28.3, Python 3.12.3, ninja 1.11.1.
+- [x] **2. Driver.** Sync, volume, fixed-name detached container, follow/stop, output directory, dirty-tree notice and disk refusal. Proof:
   - sync the same commit twice, and a file's mtime is unchanged;
   - sync a commit that changes one file, and only that file's mtime moves;
   - zero files with CR in `/leg/src` where the blob has none;
   - a second driver started during a run follows the first;
   - the disk threshold refuses when set above the free space (a control).
   *Same short slot as Task 1.*
-- [ ] **3. In-container steps** (`scripts/docker-leg.sh`): configure, build (`-k 0`), test, consumer, summary and exit code. Proof: `bash -n`; on my branch alone, `-Step consumer` fails with "consumer-smoke.sh is not in <sha>" (the `TD-5` control).
+  - Done in slot 5. A re-sync left 0 of 358 mtimes changed. The probe commit `51ec3c5` (on no branch, `README.md` only) moved exactly one, `README.md`.
+  - No CR in `/leg/src`, and none in any tracked text blob. The control was a planted CR, which the container's grep finds.
+  - A second driver followed the running configure. Configure passed in 211 s, with peak memory 1.03 GB.
+  - The disk floor refused at `-MinFreeGB 999`.
+  - The slot found two defects, both fixed: a bare `tar` launched from Git Bash is GNU tar (fixed by calling Windows' `tar.exe` by path), and two watchers both ran `docker rm`.
+- [x] **3. In-container steps** (`scripts/docker-leg.sh`): configure, build (`-k 0`), test, consumer, summary and exit code. Proof: `bash -n`; on my branch alone, `-Step consumer` fails with "consumer-smoke.sh is not in <sha>" (the `TD-5` control).
+  - Done without a container: the roots are overridable (`DOCKER_LEG_ROOT`, `DOCKER_LEG_OUT`), and stand-in tools drove 7 scenarios under Git Bash, 35 checks, all green. The `TD-5` absence control is one of them.
+  - Controls: a build step that swallows its exit code fails 7 checks, and a leg that always exits 0 fails 5.
 - [ ] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
 - [ ] **5. Docs.**
   - `02-build-and-gate.md`: the script table and a "Docker leg" section saying what it covers and what it leaves out: v1, `gpu`, Debug, Windows.
