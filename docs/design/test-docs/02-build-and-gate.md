@@ -37,7 +37,7 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 
 | | |
 |---|---|
-| **Covers** | gcc-13 and CMake 3.28.3, the project's floor; Release with Vulkan, the sandbox and GL compiled; `ctest -L spade -LE gpu`; `tests/consumer` against a fresh install with `SPADE_VULKAN` ON (from the leg's own tree) and OFF (a library-only tree) |
+| **Covers** | gcc-13 and CMake 3.28.3, the project's floor; Release with Vulkan, the sandbox and GL compiled; `ctest -L spade -LE gpu`, with the viewer-trajectory guard at full length (`SPADE_FULL_VIEWER_TRAJECTORIES=1`; the gate checks a prefix); `tests/consumer` against a fresh install with `SPADE_VULKAN` ON (from the leg's own tree) and OFF (a library-only tree) |
 | **Leaves out** | v1 (`SPADE_BUILD_V1=OFF`: frozen, and never on a Linux leg); the `gpu` label, excluded rather than skipped (`TD-13`); Debug; Windows, which the gate covers; a window (no X11, so GLFW builds without a backend) |
 | **Tests a commit** | `git -c core.autocrlf=false archive <commit>`, because a plain archive on this box emits CRLF. Uncommitted changes are not in the leg, and the driver says so when there are any. The image is built from that commit's own `scripts/docker-leg.Dockerfile` and tagged by the file's content hash |
 | **State** | One Docker volume, `spade-docker-leg`: `/leg/src` (the commit, synced so unchanged files keep their mtimes and ninja stays incremental), `/leg/build` (dependencies in `_deps`, fetched once), `/leg/consumer`. `-Clean` drops it |

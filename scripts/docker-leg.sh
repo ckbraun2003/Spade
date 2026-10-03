@@ -114,6 +114,9 @@ do_build() {
 do_test() {
     ctest --test-dir "$build" -N -L spade | sed -n 's/^ *Test *#[0-9]*: //p' > "$out/tests.txt"
     gpu_excluded=$(ctest --test-dir "$build" -N -L gpu | sed -n 's/^Total Tests: //p')
+    # The viewer-trajectory guard checks a short prefix in the gate; here it
+    # checks every tick of every golden, on gcc (INT-4, TD-12).
+    SPADE_FULL_VIEWER_TRAJECTORIES=1 \
     ctest --test-dir "$build" -L spade -LE gpu --output-on-failure --no-tests=error \
         --output-junit "$out/ctest-junit.xml" 2>&1 | tee "$out/ctest.log"
     return "${PIPESTATUS[0]}"
@@ -179,6 +182,7 @@ for p in "${parts[@]}"; do passed "$p" || result=FAIL; done
     if [ -f "$out/ctest.log" ] && [ -n "${status[test]:-}" ]; then
         echo "tests       $(grep -E 'tests passed, [0-9]+ tests failed out of' "$out/ctest.log" | tail -n 1)"
         echo "gpu         ${gpu_excluded:-?} excluded with -LE gpu (TD-13)"
+        echo "viewer      full-length trajectories (SPADE_FULL_VIEWER_TRAJECTORIES=1)"
         echo "registered  $(wc -l < "$out/tests.txt") test names (tests.txt)"
         sed -n '/^The following tests did not run:/,/^$/p; /^The following tests FAILED:/,/^$/p' "$out/ctest.log"
     fi
