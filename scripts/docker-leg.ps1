@@ -143,7 +143,11 @@ Invoke-Checked 'git archive'
 $ctx = Join-Path $out 'image'
 if (Test-Path $ctx) { Remove-Item -Recurse -Force $ctx }
 New-Item -ItemType Directory -Force -Path $ctx | Out-Null
-& tar -xf $tar -C $ctx scripts/docker-leg.Dockerfile scripts/docker-leg.sh
+# Windows' own tar (bsdtar), by path: launched from Git Bash, a bare `tar` is
+# Git's GNU tar, which reads "C:\..." as a remote host and fails.
+$bsdtar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path $bsdtar)) { throw "$bsdtar not found (Windows 10 1803 or later ships it)" }
+& $bsdtar -xf $tar -C $ctx scripts/docker-leg.Dockerfile scripts/docker-leg.sh
 if ($LASTEXITCODE -ne 0) { throw "scripts/docker-leg.Dockerfile or scripts/docker-leg.sh is not in $sha" }
 Copy-Item (Join-Path $ctx 'scripts\docker-leg.sh') (Join-Path $out 'docker-leg.sh') -Force
 $dockerfile = Join-Path $ctx 'scripts\docker-leg.Dockerfile'
