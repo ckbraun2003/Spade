@@ -119,7 +119,28 @@ The engine stores a diagonal body-frame inertia. So the utility diagonalizes `I`
 
 **Outputs.** The total mass, the centre of mass, the principal moments and the design-to-body rotation. Each is rounded to fp32 once, at the end. The template expresses every mount pose in that body frame.
 
-**The rotation is published for the template.** When the principal axes differ from the design axes, every consumer of the design frame must apply it. That includes a flight package's commands and the IMU mount.
+**The rotation stays internal (Kat, 2026-10-03; replaces 92e3b71).** A flight package sees only the design frame, which is its flight controller's frame. The body frame is the engine's own. Three places carry the rotation, and nothing outside them sees it:
+
+| Where | What it does | Owner |
+|---|---|---|
+| The compile (model type) | Expresses every mount in the body frame: rotors, drag, IMU, GNSS. It stores the design-to-body rotation and the centre-of-mass offset on the model type | Physics (`engine D4` layer) |
+| `Simulation::spawn(world, model, VehicleSpawn)` | Takes the pose, velocity and rates of the design origin in the design frame, and converts them to the body's | Core |
+| A vehicle-state read (new, for example `vehicle_state(VehicleRef)`) | Returns the design origin's position, orientation, velocity and rates, in the design frame | Core |
+
+The conversions are rigid-body identities. `q_bd` (matrix `R_bd`) maps design-frame vectors to body-frame vectors. `c` is the centre of mass, measured from the design origin in the design frame.
+- orientation: `q_wd = q_wb ⊗ q_bd`;
+- position: `p_d = p_com − R_wd·c`;
+- velocity: `v_d = v_com + ω_w × (p_d − p_com)`, with `ω_w` the rates in the world frame;
+- rates: `ω_d = R_bdᵀ·ω_b`.
+
+Spawn applies the inverse of each.
+
+Some outputs need no conversion:
+- `set_rotor_commands` and the duty call address rotors by declaration index, which has no frame;
+- the IMU reports in its mount frame, whose pose the compile already re-expressed;
+- the GNSS reports a world-frame position.
+
+`body(BodyRef)` and `world_bodies()` stay raw body-frame reads, documented as the engine's frame. A flight package must not use them for a vehicle.
 
 **Validation.** A tensor must be symmetric and positive semidefinite, and it must satisfy the triangle inequality (`I₁ + I₂ ≥ I₃`). The utility refuses a part that fails, and it checks the composite the same way.
 
@@ -200,6 +221,10 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-41: All sums MUST run in double, in part declaration order, with one fp32 rounding per output.
 - DBP-42: The utility MUST refuse a part with non-positive mass, a non-finite value or an invalid tensor.
 - DBP-43: The utility MUST return principal moments and the design-to-body rotation, with the axis labelling of §6.
+- DBP-44: The compile MUST express every mount in the body frame.
+- DBP-45: The design-to-body rotation and the centre-of-mass offset MUST NOT appear outside the model type, spawn and the vehicle-state read.
+- DBP-46: Spawn MUST take a vehicle's pose, velocity and rates in the design frame.
+- DBP-47: The vehicle-state read MUST return pose, velocity and rates in the design frame.
 
 **Steady-state solver**
 - DBP-50: The solver MUST provide the forward and inverse modes of §7.
@@ -210,6 +235,16 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-60: Each stepped model MUST be reference grade on the CPU, with a corpus golden.
 - DBP-61: Each stepped model MUST be banded on Vulkan, with a measured band (`TD-2`), or it MUST declare Vulkan `absent`.
 - DBP-62: The noise-free models MUST NOT cite `CORE-3`; their bands MUST be measured on their own.
+
+**Validation (§11)**
+- DBP-70: The fit MUST keep each parameter within its catalog part's published range.
+- DBP-71: A parameter that ends at a range limit MUST be reported as a finding.
+- DBP-72: A published range MUST NOT be widened to improve a fit.
+- DBP-73: The fit MUST be deterministic: double precision, a fixed start, a fixed iteration cap and a fixed parameter order.
+- DBP-74: Validation data MUST NOT enter the fit.
+- DBP-75: The band MUST be `k·u_c` with `k = 2`.
+- DBP-76: `k` and the uncertainties MUST NOT be raised to make a point pass.
+- DBP-77: The suite MUST record the items of §11, step 8.
 
 ## 10. Grades and goldens
 
@@ -225,17 +260,40 @@ A golden here is a determinism record (`L4`). It says nothing about whether the 
 
 ## 11. Checking against a research airframe
 
-The research airframe is the one the joint spec names. Its check is a validation suite, separate from the goldens.
+The check is a validation suite, separate from the goldens. It runs on `competition-700` first, then `standard_x250` (Kat, 2026-10-03).
 
-1. **Data.** Use independent component data for parameters: motor `KV`, `R`, `I0`; battery cells; propeller `C_T` and `C_Q`. Use measured system data for checks: thrust-stand sweeps of thrust, torque, current and RPM against throttle, hover throttle and current, and voltage sag under a load step.
-2. **No fitting to the checked data.** Parameters come only from component data. The system data is held out.
-3. **Model values.** For each checked point, compute the model value with the steady-state solver, in double.
-4. **Tolerance.** The band is `k·u_c`, with `k = 2` (about 95%).
-   - `u_c = sqrt(u_meas² + u_param²)`.
-   - `u_meas` is the measurement's stated uncertainty, or the instrument's stated accuracy.
-   - `u_param` is the model's sensitivity to each parameter's stated uncertainty. Compute it by central differences in double, one parameter at a time, combined root-sum-square.
-5. **Recording.** The suite records the airframe, the data source, every parameter with its uncertainty, and each point's `u_c`.
-6. **No widening.** A point outside its band is a model finding. Never raise `k` or an uncertainty to make it pass (`TD-2`). A point with no stated uncertainty is reported, not asserted.
+**What the data is.** Kat has system data only, from a simulator black box (`airframe.json`), plus held-out flight logs (`legacy_logs`, `HIGHRES_IMU`). The values relayed for the first airframe are:
+
+| Quantity | Value | Maps to |
+|---|---|---|
+| Thrust curve | 12 points | the steady-state solver, forward mode, at zero airspeed |
+| Airspeed thrust loss | a curve | the solver at axial speed above zero |
+| Drag | 0.028 (unit to confirm) | the airframe's drag element, set directly, not fitted |
+| Mass | 0.7 kg | the composite total; compared, not fitted |
+| Inertia | [0.0025, 0.0021, 0.0043] kg·m², assumed by Kat | reported beside the composite's; not a target |
+| Motor time constant | 0.033 s | the chain's small-signal time constant at hover, `J_r/(Kt·Ke/R + ∂Q_load/∂ω)` |
+| `kappa` | 0.022 (unit to confirm; read as torque per thrust, m) | `Q/T` at hover, `C_Q·D/C_T` |
+
+There is no component data: no `KV`, `R`, `I0`, cell data, `C_T` or `C_Q`.
+
+The motor time constant and `kappa` are exactly the parameters of today's momentum-theory rotor: `tau` and `k_Q/k_T` (`vehicles/rotor.hpp`). So that rotor, fed these values directly, is a baseline in the black box's own model class. The fitted chain is then compared with both the data and the baseline. Because the curves come from a simulator, a good fit shows agreement with that simulator, not with a physical drone. The flight logs say more only if they come from real flights.
+
+**Method: an inverse fit, then held-out validation.**
+
+1. **Parts.** Choose parts from the catalog (Kat's first 5-inch catalog, with sources). Each parameter carries its published range from those sources.
+2. **Fit.** Fit the free parameters, each within its range, to the `airframe.json` targets above. The fit is a weighted least-squares problem in double. Each residual is divided by its point's uncertainty. A bounded Levenberg–Marquardt solve starts from the catalog's nominal values, with a fixed iteration cap and a fixed parameter order, so it is deterministic.
+3. **Range limits.** A parameter that ends at a limit of its published range is a finding. Report it; do not widen the range.
+4. **Uncertainty.** For black-box curves, `u_meas` is half the last printed digit, unless Kat states more. `u_param` comes from the fit's covariance, `(Aᵀ·W·A)⁻¹` with `A` the fit's Jacobian, propagated to each quantity by central differences in double. `u_c = sqrt(u_meas² + u_param²)`.
+5. **Validation.** The flight logs never enter the fit. For each logged sample, the model predicts specific force and angular acceleration from the logged commands and measured rates, with no integration. The accelerometer gives the first. Gyro rates differentiated over a window fixed in advance give the second. `u_meas` comes from the log's own noise, measured on a steady segment chosen before any residual is seen.
+6. **Tolerance.** The band is `k·u_c`, with `k = 2` (about 95%).
+7. **No widening.** A point outside its band is a model finding. Never raise `k` or an uncertainty to make a point pass (`TD-2`).
+8. **Recording.** The suite records:
+   - the airframe and the data pack's version;
+   - each catalog part with its source;
+   - each fitted value with its range and covariance;
+   - `k` and every point's residual and `u_c`.
+
+The validation step needs the logs to carry the actuator commands, time-aligned with `HIGHRES_IMU`. If the pack lacks them, step 5 cannot run as written (§13).
 
 ## 12. Not modelled
 
@@ -250,4 +308,7 @@ The research airframe is the one the joint spec names. Its check is a validation
 
 1. **Tier selection. Decided by the lead (2026-10-03): per-rotor data.** Momentum theory and the coefficient table are two variants of one rotor module. A role is for a tier that changes passes or state, such as BEMT.
 2. **The command API.** A duty command needs a host call beside `set_rotor_commands`. That is Core's and Interface's.
-3. **The joint spec's facts.** This draft assumes the joint spec names the research airframe and the builder's part catalog. Physics needs both before the validation suite and the defaults can be written.
+3. **The joint spec's facts. Partly answered by Kat (2026-10-03).** The airframes are `competition-700`, then `standard_x250`, and Kat is drafting the 5-inch catalog with sources. Still open:
+   - the units of `drag` and `kappa`, and the form of the airspeed thrust-loss curve;
+   - whether the data pack's logs carry actuator commands, time-aligned with `HIGHRES_IMU`;
+   - whether the logs come from real flights or from the same simulator.
