@@ -1299,6 +1299,7 @@ add_executable(spade_viewer
     tools/viewer/bridge.cpp
     tools/viewer/scenes.cpp
     tools/viewer/setup.cpp
+    tools/viewer/trajectory.cpp
 )
 
 # Same reasoning as spade_core/spade_state/... above: pinned per target, not
@@ -1315,6 +1316,11 @@ target_link_libraries(spade_viewer PRIVATE
     Spade
     spade::sim
 )
+
+# The trajectory mode reports process memory (GetProcessMemoryInfo).
+if(WIN32)
+    target_link_libraries(spade_viewer PRIVATE psapi)
+endif()
 
 # /W4 /WX for the whole target, EXCEPT tools/viewer/bridge.cpp below. Verified
 # by this target's first build: bridge.cpp -- the one TU that also includes

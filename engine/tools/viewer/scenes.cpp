@@ -606,14 +606,11 @@ namespace {
 
 namespace flight_profile {
 
-// The viewer's fixed step rate (bridge.cpp's kStepDtNs/kSubsteps -- 4 ms
-// step, 4 substeps -- is 250 steps/s). Not shared through a header (it is a
-// file-scope constant of bridge.cpp's own anonymous namespace, and scenes.cpp
-// deliberately never reaches into bridge.cpp's internals -- see this file's
-// header comment) so it is duplicated here as a DOCUMENTED literal: if the
-// viewer's step rate ever changes, this profile's tick boundaries must move
-// with it, and this comment is where a reader finds out why they look like
-// they did.
+// The viewer's fixed step rate (setup.hpp's kStepDtNs/kSubsteps -- 4 ms
+// step, 4 substeps -- is 250 steps/s). It is duplicated here as a DOCUMENTED
+// literal: if the viewer's step rate ever changes, this profile's tick
+// boundaries must move with it, and this comment is where a reader finds out
+// why they look like they did.
 constexpr uint64_t kTicksPerSecond = 250;
 
 // --- Phase A: takeoff -- a brief collective boost, then hold hover --------
