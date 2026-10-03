@@ -21,7 +21,7 @@
 | GNSS | **Built**, CPU and Vulkan. The CPU path has a golden, `gnss_tumble` (`PHY-6`) | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
 | SPH field provider (`SL8`) | **Not built.** Resumes right after Core's module API lands (`PHY-4`); the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
 | Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only (merge `84e435b`). Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`, merge `df33f09`) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (14) |
-| Golden corpus | `ballistic`, `bounce`, `gnss_tumble`, `quad_hover`, `shower`, `two_world_isolation`. `gnss_tumble` is the only one with GNSS receivers. Its digest is provisional until the Docker gcc leg reproduces it (`TD-12`) | `tests/golden/scenarios/` |
+| Golden corpus | `ballistic`, `bounce`, `gnss_tumble`, `quad_hover`, `shower`, `two_world_isolation`. `gnss_tumble` is the only one with GNSS receivers. The Docker gcc leg reproduced all six digests on its first full run (`fe4934a`), so `gnss_tumble` is final under `TD-12` | `tests/golden/scenarios/` |
 | CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (32), `test_gpu_invariance.cpp` (15) |
 | Grades (`PHY-2`, signed) | **Declared in prose only** (`04-verification.md`); the engine has no grade check yet (Core) | — |
 
@@ -29,7 +29,7 @@
 
 The three decisions this page held are ruled; the rulings live in `00-decisions.md`. No user decision is open in this realm.
 
-1. **A GNSS golden scenario: now** (`PHY-6`). Built as `gnss_tumble`. No existing digest moved. Under `TD-12` its digest is provisional until the Docker gcc leg reproduces it.
+1. **A GNSS golden scenario: now** (`PHY-6`). Built as `gnss_tumble`. No existing digest moved. The Docker gcc leg reproduced it (`fe4934a`), so it is final under `TD-12`.
 2. **The Jacobi dynamic-contact path: kept unwired** (`PHY-5`). It returns as an alternative contact module with its own declared grade once modules exist.
 3. **SPH: right after Core's module API lands** (`PHY-4`), as the first field provider that is not a built-in.
 
@@ -44,7 +44,7 @@ The three decisions this page held are ruled; the rulings live in `00-decisions.
 
 ## Next for Physics
 
-1. **The GNSS golden's cross-check** (`TD-12`): record the Docker gcc leg's result in `gnss_tumble`'s provenance when the leg exists.
+1. **Comment sweep:** old pass names in Physics files, after Core's module-API stage 2 merges.
 2. **The translation lock**, with Core: Physics's requirements are in `plans/2026-10-02-module-api-requirements.md`. Core builds the lock with the module API.
 3. **SPH as a field provider** (`PHY-4`, `SL8`), once the module API lands. Its plan goes in `plans/`.
 4. **Jacobi as a contact module** (`PHY-5`), once modules exist.
