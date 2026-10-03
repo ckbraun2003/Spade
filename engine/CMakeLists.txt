@@ -1033,10 +1033,10 @@ spade_slang_generated_layouts(spade_compute)
 # step recorder's copy-through stub for every un-ported schedule slot. Task 8
 # ports the last two (MediumUpdate and SensorSynthesis), so no slot binds a stub
 # any more; the two INERT slots (Gravity and Publish, empty functions on the CPU
-# too) now record NO DISPATCH AT ALL rather than a no-op one. See
-# compute/vulkan/step_recorder.hpp's slot table for that decision, and this
-# task's report for the accompanying retirement of spirv_scan.hpp's NO_OP
-# profile, which had no other instance.
+# too) recorded NO DISPATCH AT ALL rather than a no-op one; both passes have
+# since been removed (module-API plan, stage 1). This task's report records the
+# accompanying retirement of spirv_scan.hpp's NO_OP profile, which had no other
+# instance.
 
 # fp32_math_probe (S6 Task 4): the evaluation kernel for the fp32_math parity
 # batteries. Compiling it is also what compiles engine/shaders/fp32_math.slang
@@ -1049,13 +1049,11 @@ spade_slang_generated_layouts(spade_compute)
 spade_slang_kernel(spade_compute fp32_math_probe)
 
 # ------------------------------------------------------------------------------
-# S6 TASK 6 -- kernels wave A. Three real physics kernels replacing the stub in
-# three of the eight schedule dispatch slots (compute/vulkan/step_recorder.hpp's
-# slot table): the drag half of ForceElements, CollisionStatic, and Integrate.
-# (S6 hygiene forward-pointer: this section describes what TASK 6 itself
-# added, as a historical delta -- by S6 Task 8, below, all eight slots are
-# live; see compute/vulkan/timestamps.hpp's header for the current, up to
-# date eight-of-eight account.)
+# S6 TASK 6 -- kernels wave A. Three real physics kernels replacing the stub:
+# forces_drag (today's drag.forces), collision_static (static_contact.resolve)
+# and integrate (integrate.integrate). This section describes what TASK 6 itself
+# added, as a historical delta; compute/vulkan/step_recorder.hpp's recipe table
+# is the current account of which kernel each pass records.
 #
 # engine/shaders/sdf_eval.slang is NOT listed here and does not need to be: it
 # is a MODULE, not a kernel, and reaches SPIR-V only through
@@ -1108,9 +1106,9 @@ spade_slang_kernel_variants(spade_compute collision_fill)
 spade_slang_kernel_variants(spade_compute collision_gather)
 
 # ------------------------------------------------------------------------------
-# S6 TASK 8 -- kernels wave C, which completes all eight schedule passes.
+# S6 TASK 8 -- kernels wave C, which completed the GPU chain.
 #
-#   medium_update  the MediumUpdate pass: one thread per WORLD, advancing that
+#   medium_update  the dryden.advance pass: one thread per WORLD, advancing that
 #                  world's Dryden gust filter one substep (the filter is a
 #                  sequential recurrence within a world; worlds are the parallel
 #                  axis)
@@ -1119,7 +1117,7 @@ spade_slang_kernel_variants(spade_compute collision_gather)
 #                  order is "a numerical contract and not a preference" (both
 #                  accumulate into the same two float3 accumulators;
 #                  sim/standard_modules.cpp)
-#   sensor_imu     the SensorSynthesis pass: one thread per SENSOR slot, a THIRD
+#   sensor_imu     the imu.synthesize pass: one thread per SENSOR slot, a THIRD
 #                  dispatch grid, writing sensor rows and ring samples
 #
 # FOUR MODULES, NOT LISTED HERE AND NOT NEEDING TO BE, for sdf_eval.slang's
@@ -1141,10 +1139,10 @@ spade_slang_kernel_variants(spade_compute collision_gather)
 spade_slang_kernel_variants(spade_compute medium_update)
 spade_slang_kernel_variants(spade_compute rotors)
 spade_slang_kernel_variants(spade_compute sensor_imu)
-# The SensorSynthesis pass's SECOND dispatch, over the GNSS slot space. Declared
-# with variants for the same reason sensor_imu is: it is dispatched per sensor
-# slot, so BackendDesc::workgroup_size must select a module compiled for that
-# size rather than a fallback.
+# The gnss.synthesize pass, over the GNSS slot space. Declared with variants for
+# the same reason sensor_imu is: it is dispatched per sensor slot, so
+# BackendDesc::workgroup_size must select a module compiled for that size rather
+# than a fallback.
 spade_slang_kernel_variants(spade_compute sensor_gnss)
 
 # T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/

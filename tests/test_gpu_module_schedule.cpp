@@ -53,8 +53,9 @@ TEST(GpuModuleSchedule, TheRecorderRecordsTheSchedulesPassesInOrder) {
     EXPECT_EQ(chain->passes, kStandardGpuOrder);
 }
 
-// imu and gnss share no quantity, so swapping them in the set swaps them in
-// the schedule; the GPU must follow the schedule, not a remembered order.
+// imu and gnss both read body.pose but neither writes anything the other
+// touches, so swapping them in the set swaps them in the schedule; the GPU
+// must follow the schedule, not a remembered order.
 TEST(GpuModuleSchedule, ReorderedSensorsRecordInScheduleOrder) {
     if (!spade::compute::vulkan_available()) GTEST_SKIP();
     spade::modules::ModuleSet set = spade::modules::standard_modules();

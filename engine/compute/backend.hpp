@@ -208,7 +208,7 @@ enum class GpuRecipe : uint8_t {
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its
 // recipe. sim/ derives the list from the compiled schedule; compute/ records it.
 struct GpuPass {
-    std::string name;
+    std::string name{};
     GpuRecipe recipe = GpuRecipe::none;
 };
 
@@ -246,13 +246,13 @@ struct GpuPass {
 // missing name.
 // ---------------------------------------------------------------------------
 struct PassDuration {
-    std::string pass;  // "<module>.<pass>"
+    std::string pass{};  // "<module>.<pass>"
     double ns = 0.0;
 };
 
 struct PassDurationsNs {
     bool supported = false;
-    std::vector<PassDuration> passes;  // schedule order; empty when !supported
+    std::vector<PassDuration> passes{};  // schedule order; empty when !supported
 
     [[nodiscard]] std::optional<double> find(std::string_view pass) const noexcept {
         for (const PassDuration& p : passes) {
@@ -306,8 +306,8 @@ struct PassDurationsNs {
 struct RecordedChain {
     uint32_t dispatches = 0;   // vkCmdDispatch calls, across every substep
     uint32_t barriers = 0;     // vkCmdPipelineBarrier calls between them
-    uint32_t sort_stages = 0;  // bitonic stages per dynamic_contact.resolve pass
-    std::vector<std::string> passes;  // each GPU pass once, "<module>.<pass>", in recorded order
+    uint32_t sort_stages = 0;  // bitonic stages per collision_dynamic recipe
+    std::vector<std::string> passes{};  // each GPU pass once, "<module>.<pass>", as record() walked them
 };
 
 // ---------------------------------------------------------------------------

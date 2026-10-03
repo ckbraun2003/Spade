@@ -859,8 +859,8 @@ Result<void> Simulation::step(uint64_t n) {
     // this path -- the GPU is authoritative for these `n` steps.
     // -------------------------------------------------------------------
     if (vulkan_backend_) {
-        // Behaviors run only in the cpu schedule; the recorded GPU chain has no
-        // slot for them. So an attached registry is refused here, before
+        // Behaviors run only in the cpu schedule; their GPU recipes record
+        // nothing (CORE-1). So an attached registry is refused here, before
         // anything moves, rather than skipped (SL6: a refusal, never a silent
         // fallback). Any non-empty registry counts, including one whose
         // behaviors all declare a record_gpu half, because nothing calls that
@@ -1186,7 +1186,7 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             row.last_index = 0;
             row._reserved0 = 0;
             // LAST, like body_flags::active in init_body: until `kind` is set
-            // the row is inert to the SensorSynthesis pass, so a partially
+            // the row is inert to the sensor passes, so a partially
             // written row can never be sampled.
             row.kind = sensors::sensor_kind::imu;
             return {};
@@ -1247,7 +1247,7 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             row._p2 = 0.0f;
             row._reserved0 = 0;
             // LAST, like init_imu's: until `kind` is set the row is inert to
-            // the SensorSynthesis pass, so a partially written row can never be
+            // the sensor passes, so a partially written row can never be
             // sampled.
             row.kind = sensors::sensor_kind::gnss;
             return {};
@@ -1774,7 +1774,7 @@ Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpaw
     // a reserved row's zeroed `body_slot` is a legitimate world-local index
     // (body 0), and free_imu_sensors_of() identifies a body's sensors by exactly
     // that field. `kind` stays 0 (the arena's zero-fill), so the row is still
-    // inert to the SensorSynthesis pass until the boundary.
+    // inert to the sensor passes until the boundary.
     Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
     if (!rows) return std::unexpected(rows.error());
     (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;

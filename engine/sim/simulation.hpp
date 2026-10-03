@@ -547,9 +547,12 @@ public:
     // `module_set` is the module set this simulation runs (sim/module.hpp); the
     // default is today's engine. It is compiled once here into the schedule
     // every step runs, and refused with invalid_argument if it does not
-    // compile. Until the GPU chain is derived from the schedule (module-API
-    // plan, stage 2), a Vulkan simulation accepts only the standard set and
-    // refuses any other with unavailable.
+    // compile -- including a pass that names a GPU recipe (compute::GpuRecipe)
+    // with any CPU function but that recipe's own (modules::builtin_cpu_for),
+    // on every backend. On Vulkan the GPU records the compiled schedule's
+    // passes in its order (module-API plan, stage 2), so any set whose passes
+    // all name a recipe runs there; a pass with no recipe is refused with
+    // unavailable, naming "<module>.<pass>".
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
@@ -824,7 +827,7 @@ public:
     // initialization. Same two-phase shape as spawn() and add_drag_element():
     // the slot is reserved immediately (in call order, lowest-free-first), the
     // row is written at the next step boundary, and until then `kind` is
-    // sensor_kind::none so the SensorSynthesis pass skips it.
+    // sensor_kind::none so the sensor passes skip it.
     //
     // THE SENSOR'S rng STREAM IS SEEDED AT THE BOUNDARY, from the world's
     // registered WorldParams::seed and the sensor's WORLD-LOCAL slot
@@ -1362,7 +1365,7 @@ public:
 
     // This sensor's table row -- its mount pose, its configured sigmas, and its
     // live bias/phase/stream/cursor state. Read-only: the row is written by the
-    // structural queue and by the SensorSynthesis pass, nowhere else.
+    // structural queue and by the sensor passes, nowhere else.
     [[nodiscard]] Result<const sensors::ImuSensorRow*> imu_sensor(ImuSensorRef ref) const;
 
     [[nodiscard]] Result<uint32_t> live_imu_sensor_count(uint32_t world_index) const;
@@ -1384,7 +1387,7 @@ public:
     // This receiver's table row -- its lever arm, its configured sigmas, its
     // two derived coefficients, and its live bias/phase/stream/cursor state.
     // Read-only: the row is written by the structural queue and by the
-    // SensorSynthesis pass, nowhere else.
+    // sensor passes, nowhere else.
     [[nodiscard]] Result<const sensors::GnssSensorRow*> gnss_sensor(GnssSensorRef ref) const;
 
     [[nodiscard]] Result<uint32_t> live_gnss_sensor_count(uint32_t world_index) const;

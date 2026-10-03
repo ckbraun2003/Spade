@@ -71,8 +71,8 @@ public:
     // substeps: StepShape::substeps -- how many mark blocks the query pool
     // needs (see the class comment above). pass_names: the GPU passes in
     // recorded order; block index 0 is "before this substep's first pass",
-    // index N is "pass N-1 has just finished". Must be >= 1; a 0 is treated the
-    // same as "device cannot time this" (an empty query pool is not a legal
+    // index N is "pass N-1 has just finished". `substeps` must be >= 1; a 0 is
+    // treated the same as "device cannot time this" (an empty query pool is not a legal
     // VkQueryPoolCreateInfo::queryCount) rather than asserted, since a
     // degenerate shape is StepRecorder's problem to reject, not this
     // constructor's.

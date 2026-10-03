@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // sensor_gnss.slang -- GNSS fix synthesis on the device, ported
 // from engine/sensors/gnss.cpp's synthesize_gnss(). It is the gnss.synthesize
-// pass of the Sensors phase, beside imu.synthesize: the two share no quantity,
-// so the schedule may order them either way. (Before the module API they
+// pass of the Sensors phase, beside imu.synthesize: neither writes what the
+// other reads, so the schedule may order them either way. (Before the module API they
 // shared one SensorSynthesis slot as two dispatches of one pass.)
 //
 // WRITTEN BESIDE ITS CPU TWIN, sentence for sentence. That is the only method

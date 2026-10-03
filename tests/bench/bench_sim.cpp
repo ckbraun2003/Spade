@@ -256,7 +256,7 @@ void set_pass_duration_counters(benchmark::State& state, Simulation& sim) {
             return;
         }
     }
-    const auto ns = [&](const char* name) { return *d->find(name); };
+    const auto ns = [&](const char* name) { return d->find(name).value(); };  // present: checked above
 
     for (const spade::compute::PassDuration& pass : d->passes) {
         state.counters["gpu_pass." + pass.pass + "_ns"] = pass.ns;

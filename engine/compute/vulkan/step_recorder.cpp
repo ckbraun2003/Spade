@@ -568,6 +568,12 @@ Result<void> StepRecorder::record() {
         commands.push_back(Command{.substep = substep, .boundary = boundary});
     };
 
+    // The pass names as the walk below visits them, once (substep 0), for
+    // recorded_chain(). Taken from the walk rather than copied from passes_,
+    // so a test of the recorded order checks what was recorded.
+    std::vector<std::string> walked;
+    walked.reserve(passes_.size());
+
     for (uint32_t s = 0; s < shape_.substeps; ++s) {
         // S6 Task 10: "start of this substep" mark -- boundary 0 of this
         // substep's block. A no-op when timestamps_ is unsupported.
@@ -655,6 +661,7 @@ Result<void> StepRecorder::record() {
             // so reads back as a measured ~0 ns rather than an unmeasured
             // one). A no-op when unsupported.
             mark(s, i + 1);
+            if (s == 0) walked.push_back(passes_[i].name);
         }
     }
 
@@ -664,8 +671,7 @@ Result<void> StepRecorder::record() {
         if (commands[i].is_dispatch) last_dispatch = i;
     }
     chain_ = RecordedChain{.sort_stages = sort_stage_count()};
-    chain_.passes.reserve(passes_.size());
-    for (const GpuPass& pass : passes_) chain_.passes.push_back(pass.name);
+    chain_.passes = std::move(walked);
     for (std::size_t i = 0; i < commands.size(); ++i) {
         const Command& c = commands[i];
         if (!c.is_dispatch) {

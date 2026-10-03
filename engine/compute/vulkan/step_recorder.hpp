@@ -214,12 +214,12 @@ struct PassParams {
 // binds are cheap and recorded once, so the chain gains one vkCmdBindPipeline
 // per dispatch and nothing else.
 // ---------------------------------------------------------------------------
-// THREE DISPATCH GRIDS, NOT ONE (S6 Task 8 adds the fourth kind of extent).
-// Most passes run one thread per BODY SLOT; the CollisionDynamic chain runs its
-// build and sort stages per KEY-ARRAY ENTRY and its sweep per WORLD;
-// MediumUpdate runs per WORLD (reusing the sweep's grid); and SensorSynthesis
-// runs per SENSOR SLOT, which is its own extent because `imu_sensors` has its
-// own per-world capacity. See dispatch_groups_for()/groups_for() in the .cpp.
+// FOUR KINDS OF DISPATCH EXTENT, NOT ONE. Most recipes run one thread per BODY
+// SLOT; collision_dynamic runs its build and sort stages per KEY-ARRAY ENTRY and
+// its sweep per WORLD; medium_update runs per WORLD (reusing the sweep's grid);
+// and the two sensor recipes run per SENSOR SLOT, which is its own extent
+// because the sensor arenas have their own per-world capacity. See
+// dispatch_groups_for()/groups_for() in the .cpp.
 // ---------------------------------------------------------------------------
 class StepRecorder {
 public:
@@ -245,10 +245,8 @@ public:
         kPipelineMedium = 6,     // medium_update
         kPipelineRotors = 7,     // rotors
         kPipelineSensorImu = 8,  // sensor_imu
-        // The GPU-sensor leg's one addition: SensorSynthesis became a CHAIN
-        // when a second sensor kind arrived, exactly as physics/schedule.hpp
-        // predicted it would ("a second batched call HERE ... and not a second
-        // pass"). Appended rather than inserted so no existing enumerator moves.
+        // The GPU-sensor leg's one addition, for gnss.synthesize. Appended
+        // rather than inserted so no existing enumerator moves.
         kPipelineSensorGnss = 9, // sensor_gnss
         kPipelineCount = 10,
     };
@@ -419,7 +417,7 @@ private:
     uint32_t grid_groups_x_ = 0;   // ceil(grid_.entry_count / workgroup_size_)
     uint32_t world_groups_x_ = 0;  // ceil(shape_.world_count / workgroup_size_)
 
-    // S6 Task 8: SensorSynthesis's own extent. NOT derivable from either grid
+    // S6 Task 8: the sensor recipes' own extent. NOT derivable from either grid
     // above -- `imu_sensors` has its own per-world capacity, which a world set
     // may size independently of its body capacity (a 100-body world with one
     // IMU is the corpus's own shape), so a pass dispatched over the body grid
