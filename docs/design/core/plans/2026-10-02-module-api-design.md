@@ -1,6 +1,6 @@
 # Module API, scheduler and fields — design
 
-**Owner:** Core. **Status:** DRAFT for the lead's review, then the user's approval. No plan is written until the user approves this.
+**Owner:** Core. **Status:** approved by the user 2026-10-02 (as of `4d481eb`). The plan is `2026-10-02-module-api-plan.md`.
 **Builds:** `../../01-engine-model.md`'s foundation (`../../backlog.md`, step 3). **Rulings this rests on (user, 2026-10-02):** scope A (Q1), sample buffers (Q2), kinematic behaviors first in Fields (Q2), `CORE-4`.
 **Inputs:** Physics' requirements (`../../physics/plans/2026-10-02-module-api-requirements.md`); Interface's open items (`../../interface/01-editor.md`); Rendering's field channels (`../../rendering/01-techniques-and-channels.md`).
 
