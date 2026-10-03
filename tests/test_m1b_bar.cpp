@@ -169,6 +169,51 @@ template <class T>
     return out;
 }
 
+// The viewer files a digest depends on. tools/ is skipped by the scans below
+// because the viewer paces itself with the wall clock and draws through v1;
+// these four do neither. They are spade_viewer_scenes (engine/CMakeLists.txt)
+// and the headers it includes, and INT-4's guard (test_viewer_trajectories.cpp)
+// asserts digests computed through them, so the scans cover them as engine
+// code (TD-3). The list grows with that target.
+constexpr std::string_view kDigestFeedingToolFiles[] = {
+    "tools/viewer/bridge.hpp", "tools/viewer/scenes.cpp", "tools/viewer/setup.cpp",
+    "tools/viewer/setup.hpp"};
+
+// Every .hpp/.cpp under engine/ except tools/, plus kDigestFeedingToolFiles.
+// False, with `detail` set, when there is nothing to scan or a listed file is
+// missing.
+//
+// S5 final-review fix wave (I3a): a scan of ZERO files is not a pass -- it
+// means the source tree was not found (e.g. SPADE_ENGINE_DIR pointed nowhere
+// real), and "0 hits in 0 files" would otherwise report the same green PASS as
+// a genuine clean scan of the whole engine tree. A listed file that is missing
+// is the same hazard in miniature: the list has drifted from the tree, and the
+// scan would pass on less than it claims (TD-5).
+[[nodiscard]] bool collect_engine_sources(std::vector<fs::path>& files, std::string& detail) {
+    const fs::path root(SPADE_ENGINE_DIR);
+    files = collect_sources(root, {"tools"});
+    if (files.empty()) {
+        detail = "0 source files found under engine/ (tools/ excluded) -- the scan root is empty or "
+                 "missing, which would otherwise vacuously PASS; treating it as a failure instead";
+        return false;
+    }
+    for (const std::string_view relative : kDigestFeedingToolFiles) {
+        const fs::path p = root / fs::path(relative);
+        if (!fs::is_regular_file(p)) {
+            detail = "engine/" + std::string(relative) +
+                     " is listed in kDigestFeedingToolFiles but does not exist -- the list has drifted "
+                     "from engine/tools/viewer/, and the scan would otherwise pass without it";
+            return false;
+        }
+        files.push_back(p);
+    }
+    std::sort(files.begin(), files.end());  // collect_sources()'s deterministic-report-order contract
+    return true;
+}
+
+// How every scan below describes its engine half.
+constexpr std::string_view kEngineScope = "under engine/ (tools/ excluded but for its 4 digest-feeding files)";
+
 // Every line of `file`, 1-based line numbers implied by index + 1.
 [[nodiscard]] std::vector<std::string> read_lines(const fs::path& file) {
     std::ifstream in(file);
@@ -369,27 +414,18 @@ template <class T>
 // CWD-relative).
 
 // Bullet 1 -- FIXED-STEP: no wall-clock symbol anywhere under engine/
-// except tools/ (the viewer's documented pacing exemption).
+// except tools/ (the viewer's documented pacing exemption), and none in the
+// viewer files a digest depends on (kDigestFeedingToolFiles).
 [[nodiscard]] bool no_wallclock_symbols_in_engine_source(std::string& detail) {
-    const std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
-    // S5 final-review fix wave (I3a): a scan of ZERO files is not a pass --
-    // it means the source tree was not found (e.g. SPADE_ENGINE_DIR pointed
-    // nowhere real), and "0 hits in 0 files" would otherwise report the same
-    // green PASS as a genuine clean scan of the whole engine tree. Equivalent
-    // to ASSERT_FALSE(files.empty()), expressed as an early failing return
-    // because this helper returns bool rather than void.
-    if (files.empty()) {
-        detail = "0 source files found under engine/ (tools/ excluded) -- the scan root is empty or "
-                 "missing, which would otherwise vacuously PASS; treating it as a failure instead";
-        return false;
-    }
+    std::vector<fs::path> files;
+    if (!collect_engine_sources(files, detail)) return false;
     const std::vector<std::string> hits = scan_for_forbidden(
         files, {"chrono", "QueryPerformanceCounter", "QueryPerformanceFrequency", "GetSystemTime",
                 "GetLocalTime", "GetTickCount", "timeGetTime", "std::time(", "::time(", "_ftime",
                 "glfwGetTime"});
     if (hits.empty()) {
         std::ostringstream ok;
-        ok << "0 wall-clock references in " << files.size() << " source files under engine/ (tools/ excluded)";
+        ok << "0 wall-clock references in " << files.size() << " source files " << kEngineScope;
         detail = ok.str();
         return true;
     }
@@ -404,24 +440,16 @@ template <class T>
 // includes v1 (Spade/Spade.hpp or anything else under the `Spade/` tree)
 // outside tools/. See this file's header comment for the functional half.
 [[nodiscard]] bool no_v1_include_in_engine_or_test_source(std::string& detail) {
-    std::vector<fs::path> files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
+    std::vector<fs::path> files;
+    if (!collect_engine_sources(files, detail)) return false;
     const std::vector<fs::path> test_files = collect_sources(fs::path(SPADE_TESTS_DIR), {});
     files.insert(files.end(), test_files.begin(), test_files.end());
-
-    // S5 final-review fix wave (I3a): same vacuous-pass hazard as
-    // no_wallclock_symbols_in_engine_source() above -- see that function's
-    // comment. Equivalent to ASSERT_FALSE(files.empty()).
-    if (files.empty()) {
-        detail = "0 source files found under engine/ (tools/ excluded) + tests/ -- the scan roots are "
-                 "empty or missing, which would otherwise vacuously PASS; treating it as a failure instead";
-        return false;
-    }
 
     const std::vector<std::string> hits = scan_for_v1_includes(files);
     if (hits.empty()) {
         std::ostringstream ok;
-        ok << "0 v1 (Spade/*) includes in " << files.size()
-           << " source files under engine/ (tools/ excluded) + tests/";
+        ok << "0 v1 (Spade/*) includes in " << files.size() << " source files " << kEngineScope
+           << " + tests/";
         detail = ok.str();
         return true;
     }
@@ -435,8 +463,9 @@ template <class T>
 // ---------------------------------------------------------------------------
 // S5 T9 ticket C -- NO LIBM TRANSCENDENTAL anywhere under engine/
 // (tools/ excluded, the same render-only exemption bullet 1 above uses --
-// see this file's header comment and Ticket A's note in
-// tools/viewer/scenes.cpp: viewer code is not digest-feeding).
+// see this file's header comment). Since INT-4 the viewer files a digest
+// depends on are scanned too (kDigestFeedingToolFiles); Ticket A's note in
+// tools/viewer/scenes.cpp is why they already pass.
 // global-constraints.md's bit-portability rule names the forbidden calls
 // directly: "no libm transcendental (std::sin/cos/exp/log/pow) may execute
 // on any path that feeds registered state or the digest -- IEEE mandates
@@ -562,15 +591,8 @@ template <class T>
 }
 
 [[nodiscard]] bool no_libm_transcendental_in_engine_or_golden_test_source(std::string& detail) {
-    std::vector<fs::path> engine_files = collect_sources(fs::path(SPADE_ENGINE_DIR), {"tools"});
-    // S5 final-review fix wave (I3a): same vacuous-pass hazard as
-    // no_wallclock_symbols_in_engine_source() above -- see that function's
-    // comment. Equivalent to ASSERT_FALSE(files.empty()).
-    if (engine_files.empty()) {
-        detail = "0 source files found under engine/ (tools/ excluded) -- the scan root is empty or "
-                 "missing, which would otherwise vacuously PASS; treating it as a failure instead";
-        return false;
-    }
+    std::vector<fs::path> engine_files;
+    if (!collect_engine_sources(engine_files, detail)) return false;
 
     const std::vector<fs::path> golden_tests = collect_golden_feeding_test_sources();
     // S7a Task R5 fix wave (review IMPORTANT #4): the SAME vacuous-pass
@@ -614,8 +636,8 @@ template <class T>
                             /*strip_comments_first=*/true, /*require_non_identifier_before=*/true);
     if (hits.empty()) {
         std::ostringstream ok;
-        ok << "0 libm transcendental references in " << files.size() << " source files under engine/ "
-           << "(tools/ excluded, comments excluded) + " << golden_tests.size() << " golden-feeding test file(s)";
+        ok << "0 libm transcendental references in " << files.size() << " source files " << kEngineScope
+           << " (comments excluded) + " << golden_tests.size() << " golden-feeding test file(s)";
         detail = ok.str();
         return true;
     }
