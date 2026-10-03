@@ -1199,6 +1199,8 @@ TEST(RenderShading, AtmosphericTermIsMonotoneInDistanceDownAGroundColumn) {
 //    every frame golden where it was.
 // ===========================================================================
 
+namespace {
+
 // The outward normal of triangle (a, b, c) after `m` moves it: the cross
 // product of the moved edges, flipped when `m` mirrors (a mirror reverses
 // the winding, not the outward side).
@@ -1209,6 +1211,8 @@ TEST(RenderShading, AtmosphericTermIsMonotoneInDistanceDownAGroundColumn) {
     const float det = glm::determinant(glm::mat3(m));
     return glm::normalize(glm::cross(mb - ma, mc - ma)) * (det < 0.0f ? -1.0f : 1.0f);
 }
+
+}  // namespace
 
 TEST(RenderShading, TransformedNormalStaysPerpendicularToItsSurfaceUnderNonConformalTransforms) {
     // A tilted triangle in the plane x + z = 0, wound CCW about (1, 0, 1).
