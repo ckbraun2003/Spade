@@ -6,6 +6,8 @@ against an installed prefix with SPADE_VULKAN ON and OFF (scripts/consumer-smoke
   scripts\docker-leg.ps1                  # the whole leg on HEAD
   scripts\docker-leg.ps1 -Commit <rev>    # another commit
   scripts\docker-leg.ps1 -Step build      # one step: image|sync|configure|build|test|consumer
+                                          # (consumer configures and builds first, so it
+                                          #  installs the commit under test)
   scripts\docker-leg.ps1 -Follow          # re-attach to a running leg
   scripts\docker-leg.ps1 -Stop            # stop a running leg
   scripts\docker-leg.ps1 -Clean           # drop the volume: source, build trees, dependencies
