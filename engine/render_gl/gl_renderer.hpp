@@ -88,11 +88,16 @@ class GlRenderer {
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
     // SSBOs in place, and issues one instanced draw per mesh+submesh.
     //
-    // Renders into the CURRENTLY BOUND framebuffer at the given size. It does
-    // not clear beyond its own depth/colour needs and it does not present:
-    // both belong to whoever owns the window. It leaves depth testing and
-    // back-face culling (SR-13) enabled, so a caller drawing its own geometry
-    // afterwards sets the state it needs.
+    // Honours RenderOptions as raster_cpu does, except what unhonoured()
+    // names. A background pass draws the sky in every mode. In shaded mode it
+    // also draws the analytic ground, the grid and the atmospheric term
+    // (SR-17, SR-17a, SR-22). Meshes draw shaded, wireframe or velocity.
+    // Raymarch is refused with Code::unavailable: it is a CPU technique.
+    //
+    // Renders into the CURRENTLY BOUND framebuffer at the given size and
+    // covers every pixel. It does not present: that belongs to whoever owns
+    // the window. It changes depth, cull and polygon-mode state, so a caller
+    // drawing its own geometry afterwards sets the state it needs.
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);
@@ -109,7 +114,8 @@ class GlRenderer {
     // claim like that is exactly the kind this estate has learned to assert in
     // a test. After draw(), these report what the last frame actually issued --
     // so "one draw per mesh" is checkable by a caller with no display, against
-    // a scene whose instance count it chose.
+    // a scene whose instance count it chose. The background pass is one more
+    // draw per frame, whatever the scene, and is not counted.
     [[nodiscard]] uint32_t last_draw_calls() const noexcept;
     [[nodiscard]] uint32_t last_instances() const noexcept;
 
