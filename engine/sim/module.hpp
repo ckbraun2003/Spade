@@ -22,9 +22,8 @@ struct SubstepContext;
 namespace spade::modules {
 
 // A pass's CPU half: the same function-pointer type as physics::PassFn,
-// spelt here so this header does not include physics/schedule.hpp. That
-// header's per-world views hold spans of vehicles' rows, which need their
-// complete types wherever the views are instantiated.
+// spelt here so this header stays light and does not pull in
+// physics/schedule.hpp and everything it includes.
 using PassFn = void (*)(const physics::SubstepContext&) noexcept;
 
 // The engine model's six phases, run in this order every substep.

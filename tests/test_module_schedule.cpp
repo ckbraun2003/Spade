@@ -12,7 +12,6 @@
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
-#include "vehicles/rotor.hpp"  // RotorRow complete: schedule.hpp only forward-declares it
 #include "world/builder.hpp"
 #include "world/medium.hpp"
 

@@ -9,11 +9,6 @@
 #include "objects/component.hpp"
 #include "physics/schedule.hpp"
 #include "state/layout.hpp"
-// RotorRow's complete definition. schedule.hpp forward-declares it, which is
-// enough to DECLARE WorldSubstepView but not to index ctx.worlds -- a span's
-// element type must be complete for that. physics/schedule.cpp carries this
-// include for the identical reason; header-only, so it adds no link edge.
-#include "vehicles/rotor.hpp"
 
 namespace spade::objects {
 namespace {

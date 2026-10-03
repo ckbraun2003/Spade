@@ -2,7 +2,6 @@
 #include "sim/module.hpp"
 
 #include "physics/schedule.hpp"
-#include "vehicles/rotor.hpp"  // RotorRow complete: schedule.hpp only forward-declares it
 
 namespace spade::modules {
 namespace {

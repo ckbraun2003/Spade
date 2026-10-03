@@ -4,11 +4,6 @@
                                   // schedule.hpp only forward-declares it, and
                                   // this is the one TU that calls run_slot().
 #include "physics/integrator.hpp"
-#include "vehicles/rotor.hpp"  // RotorRow's complete definition -- schedule.hpp
-                                // only forward-declares it (S5 T9 seam ticket);
-                                // this TU is the one that walks `rotors` (below,
-                                // via vehicles::apply_rotors()), so it needs the
-                                // real type.
 
 // ---------------------------------------------------------------------------
 // The schedule, as data. See schedule.hpp for the §3 quote this file is a
