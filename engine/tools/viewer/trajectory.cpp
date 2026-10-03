@@ -34,9 +34,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <exception>
+#include <fstream>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -67,6 +69,20 @@ constexpr uint64_t kCentroidTicks = 250;
 // Ticks left out of the step-time statistics: the first steps pay one-time
 // costs (allocation, cold caches) that are not the scene's steady cost.
 constexpr uint64_t kTimingWarmupTicks = 100;
+
+// printf into a string. The file is built in memory and written once, so a
+// run that fails part way leaves no partial file behind.
+void appendf(std::string& out, const char* format, ...) {
+    char line[512];
+    std::va_list args;
+    va_start(args, format);
+    const int n = std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (n < 0 || static_cast<std::size_t>(n) >= sizeof(line)) {
+        throw std::runtime_error("a trajectory line did not fit in 512 bytes");
+    }
+    out.append(line, static_cast<std::size_t>(n));
+}
 
 struct ProcessMemory {
     uint64_t private_bytes = 0;
@@ -105,28 +121,28 @@ long long quantile(std::vector<long long> samples, double q) {
     return samples[rank];
 }
 
-void write_checkpoint(std::FILE* out, const spade::Simulation& sim, uint32_t world_count) {
-    std::fprintf(out, "checkpoint %llu %016llx", static_cast<unsigned long long>(sim.tick().value),
+void write_checkpoint(std::string& out, const spade::Simulation& sim, uint32_t world_count) {
+    appendf(out,"checkpoint %llu %016llx", static_cast<unsigned long long>(sim.tick().value),
                  static_cast<unsigned long long>(spade::testing::state_digest(sim)));
     for (uint32_t w = 0; w < world_count; ++w) {
-        std::fprintf(out, " %016llx", static_cast<unsigned long long>(spade::testing::world_digest(sim, w)));
+        appendf(out," %016llx", static_cast<unsigned long long>(spade::testing::world_digest(sim, w)));
     }
-    std::fputc('\n', out);
+    out += '\n';
 }
 
-void write_vehicles(std::FILE* out, const spade::Simulation& sim, const std::vector<spade::VehicleRef>& vehicles) {
+void write_vehicles(std::string& out, const spade::Simulation& sim, const std::vector<spade::VehicleRef>& vehicles) {
     for (std::size_t i = 0; i < vehicles.size(); ++i) {
         const spade::Result<const spade::BodyState*> body = sim.body(vehicles[i].body);
         if (!body) {
             throw std::runtime_error("vehicle " + std::to_string(i) + " has no body: " + body.error().context);
         }
         const glm::vec3 p = (*body)->pos;
-        std::fprintf(out, "vehicle %llu %zu %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value),
+        appendf(out,"vehicle %llu %zu %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value),
                      i, static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z));
     }
 }
 
-void write_centroids(std::FILE* out, const spade::Simulation& sim, uint32_t world_count) {
+void write_centroids(std::string& out, const spade::Simulation& sim, uint32_t world_count) {
     for (uint32_t w = 0; w < world_count; ++w) {
         const spade::Result<std::span<const spade::BodyState>> bodies = sim.world_bodies(w);
         if (!bodies) {
@@ -137,7 +153,7 @@ void write_centroids(std::FILE* out, const spade::Simulation& sim, uint32_t worl
             sum += b.pos;
         }
         const glm::vec3 c = bodies->empty() ? sum : sum / static_cast<float>(bodies->size());
-        std::fprintf(out, "centroid %llu %u %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value), w,
+        appendf(out,"centroid %llu %u %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value), w,
                      static_cast<double>(c.x), static_cast<double>(c.y), static_cast<double>(c.z));
     }
 }
@@ -145,30 +161,22 @@ void write_centroids(std::FILE* out, const spade::Simulation& sim, uint32_t worl
 }  // namespace
 
 int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path) {
-    std::FILE* out = std::fopen(path.c_str(), "wb");
-    if (out == nullptr) {
-        std::fprintf(stderr,
-                     "spade_viewer: cannot open '%s' for writing. Check that its directory exists and is "
-                     "writable, then run again.\n",
-                     path.c_str());
-        return 1;
-    }
-
+    std::string out;
     try {
         SceneRun run = make_simulation(scene, spade::compute::BackendDesc{});
         spade::Simulation& sim = run.sim;
         const uint32_t world_count = sim.layout().world_count;
         const ProcessMemory after_setup = process_memory();
 
-        std::fprintf(out, "# spade_viewer trajectory (INT-4, SL14b). Lines that start with \"perf\" vary per run.\n");
-        std::fprintf(out, "scene %s\nbackend cpu\ndt_ns %llu\nsubsteps %u\nticks %llu\nworlds %u\n", scene.name.c_str(),
+        appendf(out,"# spade_viewer trajectory (INT-4, SL14b). Lines that start with \"perf\" vary per run.\n");
+        appendf(out,"scene %s\nbackend cpu\ndt_ns %llu\nsubsteps %u\nticks %llu\nworlds %u\n", scene.name.c_str(),
                      static_cast<unsigned long long>(kStepDtNs), kSubsteps, static_cast<unsigned long long>(ticks),
                      world_count);
         for (std::size_t w = 0; w < scene.worlds.worlds.size(); ++w) {
-            std::fprintf(out, "world %zu seed %llu\n", w,
+            appendf(out,"world %zu seed %llu\n", w,
                          static_cast<unsigned long long>(scene.worlds.worlds[w].seed));
         }
-        std::fprintf(out, "bodies %zu vehicles %zu\n", scene.bodies.size(), scene.vehicles.size());
+        appendf(out,"bodies %zu vehicles %zu\n", scene.bodies.size(), scene.vehicles.size());
 
         uint64_t chain = spade::kFnv1a64Offset;
         std::vector<long long> step_ns;
@@ -206,31 +214,35 @@ int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path
                 step_ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
             }
         }
-        std::fprintf(out, "chain %llu %016llx\n", static_cast<unsigned long long>(ticks),
+        appendf(out,"chain %llu %016llx\n", static_cast<unsigned long long>(ticks),
                      static_cast<unsigned long long>(chain));
 
         const ProcessMemory at_end = process_memory();
-        std::fprintf(out, "perf step_ns_median %lld\n", quantile(step_ns, 0.5));
-        std::fprintf(out, "perf step_ns_p90 %lld\n", quantile(step_ns, 0.9));
-        std::fprintf(out, "perf step_samples %zu\n", step_ns.size());
-        std::fprintf(out, "perf private_bytes_after_setup %llu\n",
+        appendf(out,"perf step_ns_median %lld\n", quantile(step_ns, 0.5));
+        appendf(out,"perf step_ns_p90 %lld\n", quantile(step_ns, 0.9));
+        appendf(out,"perf step_samples %zu\n", step_ns.size());
+        appendf(out,"perf private_bytes_after_setup %llu\n",
                      static_cast<unsigned long long>(after_setup.private_bytes));
-        std::fprintf(out, "perf working_set_after_setup %llu\n",
+        appendf(out,"perf working_set_after_setup %llu\n",
                      static_cast<unsigned long long>(after_setup.working_set));
-        std::fprintf(out, "perf private_bytes_end %llu\n", static_cast<unsigned long long>(at_end.private_bytes));
-        std::fprintf(out, "perf working_set_end %llu\n", static_cast<unsigned long long>(at_end.working_set));
-        std::fprintf(out, "perf peak_working_set %llu\n", static_cast<unsigned long long>(at_end.peak_working_set));
+        appendf(out,"perf private_bytes_end %llu\n", static_cast<unsigned long long>(at_end.private_bytes));
+        appendf(out,"perf working_set_end %llu\n", static_cast<unsigned long long>(at_end.working_set));
+        appendf(out,"perf peak_working_set %llu\n", static_cast<unsigned long long>(at_end.peak_working_set));
     } catch (const std::exception& e) {
-        std::fclose(out);
         std::fprintf(stderr,
-                     "spade_viewer: the trajectory of scene '%s' failed: %s. The file '%s' is incomplete; "
+                     "spade_viewer: the trajectory of scene '%s' failed: %s. Nothing was written to '%s'; "
                      "fix the cause and run again.\n",
                      scene.name.c_str(), e.what(), path.c_str());
         return 1;
     }
 
-    if (std::fclose(out) != 0) {
-        std::fprintf(stderr, "spade_viewer: writing '%s' failed at close. Check free disk space, then run again.\n",
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(out.data(), static_cast<std::streamsize>(out.size()));
+    file.close();
+    if (!file) {
+        std::fprintf(stderr,
+                     "spade_viewer: cannot write '%s'. Check that its directory exists, is writable and has "
+                     "free space, then run again.\n",
                      path.c_str());
         return 1;
     }
