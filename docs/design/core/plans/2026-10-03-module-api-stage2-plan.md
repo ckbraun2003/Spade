@@ -36,8 +36,12 @@
 - **A pass with no recipe is refused on Vulkan.** The message contains `module set` and the pass's `<module>.<pass>` name.
 - **The identity is unchanged.** It spells names, versions and order, not functions or kernels, and the recipe is bound to the function. No identity constant moves.
 - **Timings are per pass.** `PassDurationsNs` becomes a list of `{pass name, ns}` in schedule order.
-  - The bench keeps its six counters by summing named passes: `gpu_force_elements_ns` = rotors + drag, and `gpu_sensor_synthesis_ns` = IMU + GNSS.
-  - `tests/bench/bench_sim.cpp` belongs to Test/Docs, so Test/Docs reviews that edit.
+  - The lookup is `std::optional<double> find(std::string_view pass) const noexcept`. A missing pass and a zero duration must not look alike (`TD-5`).
+  - The bench keeps its six counters, because `baselines.json` holds 42 values under those names. It fills them by summing named passes: `gpu_force_elements_ns` = rotors + drag, and `gpu_sensor_synthesis_ns` = IMU + GNSS.
+  - The bench also emits one counter per pass, `gpu_pass.<module>.<pass>_ns`, generated from the list. A new module's pass therefore shows up without editing the bench.
+  - If a name the six sums need is missing from the list, the bench fails with `SkipWithError`. Every built-in pass is always in the list, because the list comes from the schedule, not from row counts. A missing name therefore means a rename.
+  - `PassDurationsNs` is in an installed header, so the change gets a `CHANGELOG.md` line.
+  - Test/Docs reviewed and approved the bench side on 2026-10-03, with the two changes above folded in.
 - **`PassTimestamps` loses its hand-written moves.** It is only ever held by `unique_ptr`, the same lesson as defect 5.
 - **This plan departs from the stage-1 plan's outline of stage 2 in two places:**
   1. **The outline:** `PassDecl::gpu` would be a function that appends dispatches. **Here:** it is a recipe enum. A function would need the recorder's types in `sim/`, and `compute/` cannot call back into `sim/`. A developer-supplied recording waits for the GPU module ABI.
@@ -159,7 +163,9 @@ TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
 
 **Files:**
 - Modify `engine/compute/backend.hpp`:
-  - `PassDurationsNs` becomes `{ bool supported; std::vector<PassDuration> passes; uint32_t implausible_samples; double ns_of(std::string_view pass) const noexcept; }`, with `struct PassDuration { std::string pass; double ns; }`. `ns_of` returns 0 when the pass is absent.
+  - `PassDurationsNs` becomes `{ bool supported; std::vector<PassDuration> passes; uint32_t implausible_samples; std::optional<double> find(std::string_view pass) const noexcept; }`, with `struct PassDuration { std::string pass; double ns; }`.
+    - `find` returns `std::nullopt` when the pass is absent. There is deliberately no lookup that defaults to 0.
+    - The comment drops the Gravity/Publish paragraph. The two behavior passes are the brackets that now dispatch nothing.
   - `RecordedChain` gains `std::vector<std::string> passes`, listing each pass once in recorded order.
 - Modify `engine/compute/vulkan/backend.{hpp,cpp}` and `backend_stub.cpp`: the signature becomes `VulkanBackend::create(const BackendDesc&, const StepShape&, std::span<const GpuPass> passes)`.
 - Modify `engine/compute/vulkan/step_recorder.{hpp,cpp}`:
@@ -188,10 +194,18 @@ TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
   - pass `modules::gpu_passes(schedule_)` to `VulkanBackend::create`;
   - add `Result<compute::RecordedChain> vulkan_recorded_chain() const`, modelled on `vulkan_pass_durations_ns()` (`unavailable` on the CPU);
   - delete stage 1's whole-set comparison and its `kStandard`.
-- Modify `tests/bench/bench_sim.cpp:234-239` (Test/Docs reviews):
-  - `gpu_force_elements_ns` = `ns_of("rotor.forces") + ns_of("drag.forces")`;
-  - `gpu_sensor_synthesis_ns` = `ns_of("imu.synthesize") + ns_of("gnss.synthesize")`;
-  - each of the other four counters is one `ns_of`.
+- Modify `tests/bench/bench_sim.cpp:226-246` (Test/Docs approved this shape):
+  - For each entry in `d->passes`, set `state.counters["gpu_pass." + p.pass + "_ns"] = p.ns`.
+  - Keep the six counters, filled from a local `need(name)` that calls `d->find(name)`:
+    - `gpu_medium_update_ns` = `dryden.advance`;
+    - `gpu_force_elements_ns` = `rotor.forces` + `drag.forces`;
+    - `gpu_collision_static_ns` = `static_contact.resolve`;
+    - `gpu_collision_dynamic_ns` = `dynamic_contact.resolve`;
+    - `gpu_integrate_ns` = `integrate.integrate`;
+    - `gpu_sensor_synthesis_ns` = `imu.synthesize` + `gnss.synthesize`.
+  - If any needed name is absent, call `state.SkipWithError("pass '<name>' is not in the recorded chain")` and return, before setting any counter. This matches the file's posture for a failed reading.
+  - `implausible_samples` is emitted as today. `supported == false` still sets no counters.
+- Modify `CHANGELOG.md` (Unreleased): `Simulation::vulkan_pass_durations_ns()` reports one named duration per GPU pass in schedule order, replacing the eight fixed fields. The bench keeps its six counter names and adds `gpu_pass.*`.
 - Modify `tests/test_gpu_state_mirror.cpp`. Its five `VulkanBackend::create` calls (lines 243, 341, 542, 649 and 682) gain `kStandardGpuPasses`, a file-local `static const std::vector<GpuPass>` built from `gpu_passes(*compile_schedule(standard_modules()))`.
 - Modify `tests/test_determinism.cpp`: delete `Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder`. The recorder now follows the schedule by construction, and Task 2's recorded-names test pins it.
 - Modify `tests/test_module_schedule.cpp`:
@@ -201,7 +215,7 @@ TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
 
 **Interfaces:**
 - Consumes Task 1's `GpuRecipe`, `GpuPass`, `CompiledPass::gpu` and `gpu_passes`.
-- Produces `compute::PassDuration`, `PassDurationsNs::ns_of`, `RecordedChain::passes`, the new `VulkanBackend::create`, and `Simulation::vulkan_recorded_chain()`.
+- Produces `compute::PassDuration`, `PassDurationsNs::find`, `RecordedChain::passes`, the new `VulkanBackend::create`, and `Simulation::vulkan_recorded_chain()`.
 
 - [ ] **Step 1: Write the failing tests** in the new `tests/test_gpu_module_schedule.cpp`.
   - `test_module_schedule.cpp` is compiled with `SPADE_VULKAN` off as well, so it must not include a Vulkan header.
@@ -267,6 +281,8 @@ TEST(GpuModuleSchedule, DurationsAreOnePerPassByName) {
   - total = Task 1's total + 3 (the new `GpuModuleSchedule` tests) − 2 (the deleted `Schedule` test and the superseded stage-1 test), with the `gpu` count + 3.
   - The bench builds. Test/Docs runs it when it suits them; the tests do not wait on it.
 - [ ] **Step 5: Commit**, test first and then the implementation: `feat(core): the Vulkan step records the schedule's GPU passes; no hand-kept table`.
+  - The commit body must say: "Rotors and drag, and IMU and GNSS, now have their own timestamp brackets. `gpu_force_elements_ns` and `gpu_sensor_synthesis_ns` are sums and each include one extra mark's cost, so a bench baseline compared across this commit has moved its basis (`TD-8`)."
+  - Test/Docs names this commit in `baselines.json`'s `_meta` at its next re-seed.
 
 ### Task 3: Prose follows the code
 
