@@ -1,0 +1,132 @@
+# =============================================================================
+# Spade scenario file -- schema version 1.
+#
+# WHAT THIS IS: one determinism-corpus scenario, complete -- the world file it
+# instantiates, the per-world seeds and physics parameters, the step
+# decomposition, every spawn, every scripted input, and the 64-bit digest of
+# every registered state byte the run must end on.
+#
+# THE DIGEST IS THE GOLDEN. `expected_digest` is an FNV-1a 64 fold of the whole
+# registry walk at the final tick, as defined by engine/testing/replay.hpp's
+# state_digest(). It changes when -- and only when -- a pinned op order, an rng
+# construction, a state layout, the pass schedule, the array registration order,
+# or this scenario's own parameters change. Every one of those is a deliberate,
+# reviewable act; NONE is a drive-by. Moving this number without recording why
+# in this header defeats the point of committing it.
+#
+# UNITS are SI throughout -- metres, kilograms, seconds, radians, newtons -- in
+# a right-handed, Y-up frame.
+#
+# FLOATS carry 9 significant digits. That is exactly what an IEEE-754 binary32
+# needs to survive a decimal round trip without losing a bit, and this engine is
+# fp32 end to end: fewer digits would silently change the run.
+#
+# EVERY KEY BELOW IS REQUIRED except `models` (and a body's `drag_elements` and
+# `gnss_receivers`), and an UNKNOWN key is an ERROR at every level rather than a
+# warning -- a reader of this version must never silently drop a field a later
+# version added. `scenario_version` is the one upgrade path.
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# SCENARIO: gnss_tumble -- the corpus's GNSS scenario (PHY-6), and the golden
+# that makes the CPU GNSS path reference grade under L4. Two worlds from one
+# world file, one tumbling bare body in each, each carrying one GNSS receiver
+# on a lever arm. 400 steps of 5 ms at 4 substeps (1600 substeps, 2 s).
+#
+# WHAT IT COVERS THAT THE OTHER FIVE DO NOT
+#
+#   * THE GNSS SYNTHESIS PASS OVER LIVE ROWS, inside the digest. Every other
+#     corpus scenario leaves the GNSS arena empty, so until this file the
+#     receiver's rate clock, Gauss-Markov bias, white noise and ring were
+#     pinned by unit tests and a hand-built parity scenario, never by a golden.
+#   * THE RATE CLOCK. rate_divider 8 emits one fix every 8 substeps: 200 fixes
+#     per receiver, the last on the final substep. The ring holds 64, so it
+#     wraps three times, and the digest pins its final contents.
+#   * THE BIAS ON ITS OWN CLOCK. bias_tau_s = 1 s with a fix interval of
+#     8 x 1.25 ms = 10 ms, so the retention is exp(-0.01) and the bias is a
+#     live recursion, driven by sigma_bias = 0.8 m. (add_gnss_sensor()'s note
+#     says why the clock is the receiver's, not the substep's.)
+#   * THE LEVER ARM UNDER ROTATION. The antenna sits at (0.25, -0.5, 0.75) m
+#     on a body with three distinct inertias spinning about no principal axis,
+#     so the orientation, and with it the lever arm's world direction and its
+#     omega x r velocity, changes throughout the run.
+#
+# THE TWO WORLDS ARE IDENTICAL BUT FOR THEIR RNG ROOTS. No drag element and no
+# contact reaches either body, so their trajectories are bit-identical and only
+# the receivers' draws differ. A test asserts both halves: the same truth in
+# both worlds, and different fixes.
+#
+# THE WORLD HAS NO SDF GEOMETRY AT ALL (ballistic.world.yaml, reused, not
+# copied), and turbulence is `none`: the body rises under 1 m from its 50 m
+# launch, then falls to about 38 m, and nothing can touch it. Gravity and the
+# integrator's Euler term are the only dynamics, so the receiver is the
+# subject.
+#
+# IT NEVER RESEEDS. No input and no test path calls Simulation::reseed() on
+# this scenario, so its digest does not depend on whether reseed() reaches the
+# GNSS noise streams (Core's reseed-GNSS fix, 2026-10-02). The two changes
+# merge in either order without moving this number.
+#
+# PROVENANCE OF `expected_digest`
+#   NEW at PHY-6. Generated, not carried: no earlier digest exists.
+#   Read from Determinism.DigestsMatchTheCommittedGoldenCorpus, run against a
+#   placeholder, which reported only this scenario. The five existing corpus
+#   digests matched in that run and in the full suite after it.
+#   generated  2026-10-03
+#   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja,
+#              msvc-ninja-release
+#   tree       master 4b3f9f4 plus this change (branch physics/gnss-golden)
+#
+#   PROVISIONAL UNDER TD-12. A golden is final only when the Docker gcc leg
+#   (TD-11) reproduces it. That leg does not exist yet. When it runs, record
+#   its result here and drop this paragraph.
+#   msvc-ninja-debug: covered by the lead's gate run, not by this one.
+# -----------------------------------------------------------------------------
+
+scenario_version: 1
+name: "gnss_tumble"
+world: "../worlds/ballistic.world.yaml"
+
+# Two instances of ONE world file, identical but for their rng roots.
+instances:
+  - seed: 0x6E5507B1E0
+    contacts: {restitution_e: 0, friction_mu: 0, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.5}
+    turbulence: none
+  - seed: 0x6E5507B1E1
+    contacts: {restitution_e: 0, friction_mu: 0, baumgarte_beta: 0.200000003, slop: 0.00100000005, proxy_radius: 0.100000001}
+    grid: {cell_size: 0.5}
+    turbulence: none
+
+step: {dt_ns: 5000000, substeps: 4, steps: 400}
+
+# One body per world, launched up and sideways from 50 m, spinning about no
+# principal axis. Inertias 0.02, 0.03125 and 0.025 kg m^2 (inverted below),
+# all distinct, so omega moves under the Euler term rather than staying put.
+# Every value is exact in binary32.
+spawns:
+  - world: 0
+    body:
+      pos:              [0, 50, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [3, 4, -1.5]
+      omega_body:       [1.25, -2, 0.75]
+      mass:             1.5
+      inv_inertia_diag: [50, 32, 40]
+      gnss_receivers:
+        - {mount_pos: [0.25, -0.5, 0.75], rate_divider: 8, sigma_h: 1.5, sigma_v: 2.5, sigma_vel: 0.125, bias_tau_s: 1, sigma_bias: 0.800000012}
+  - world: 1
+    body:
+      pos:              [0, 50, 0]
+      orient:           [1, 0, 0, 0]
+      vel:              [3, 4, -1.5]
+      omega_body:       [1.25, -2, 0.75]
+      mass:             1.5
+      inv_inertia_diag: [50, 32, 40]
+      gnss_receivers:
+        - {mount_pos: [0.25, -0.5, 0.75], rate_divider: 8, sigma_h: 1.5, sigma_v: 2.5, sigma_vel: 0.125, bias_tau_s: 1, sigma_bias: 0.800000012}
+
+# No script: nothing acts on either body after launch.
+inputs: []
+
+expected_digest: "0x62704dc462d00bd1"

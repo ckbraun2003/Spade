@@ -76,12 +76,19 @@
 //   expected_digest: "0x...."  # the committed golden
 //
 // EVERY KEY IS REQUIRED except `models` (a scenario with no vehicles has no
-// models to declare), and an UNKNOWN KEY IS AN ERROR AT EVERY LEVEL -- the
-// world file's posture, adopted verbatim and for its reason: a v1 reader must
-// never silently drop a field a later version added. `scenario_version` is the
-// one upgrade path, and it is checked BEFORE the unknown-key sweep so that a
-// v2 file is answered with "this build reads version 1" rather than with a
-// true but useless complaint about the first key it did not recognize.
+// models to declare) and a body spawn's two attachment lists, `drag_elements`
+// and `gnss_receivers` (absent means none), and an UNKNOWN KEY IS AN ERROR AT
+// EVERY LEVEL -- the world file's posture, adopted verbatim and for its
+// reason: a v1 reader must never silently drop a field a later version added.
+// `scenario_version` is the one upgrade path, and it is checked BEFORE the
+// unknown-key sweep so that a v2 file is answered with "this build reads
+// version 1" rather than with a true but useless complaint about the first
+// key it did not recognize.
+//
+// `gnss_receivers` JOINED v1 WITHOUT A VERSION BUMP (PHY-6, 2026-10-02), and
+// the strictness is what makes that safe: a reader older than the key refuses
+// a file carrying it as an unknown key rather than dropping the receivers, and
+// a file without it parses exactly as it always did.
 //
 // ---------------------------------------------------------------------------
 // THE FIVE THINGS WORTH KNOWING BEFORE WRITING ONE
@@ -172,6 +179,7 @@ struct ScenarioSpawn {
     // kind == body
     BodySpawn body{};
     std::vector<DragElementSpawn> drag_elements;
+    std::vector<GnssSensorSpawn> gnss_receivers;
 
     // kind == vehicle
     uint32_t model_index = 0;  // index into ScenarioData::models
@@ -588,6 +596,48 @@ template <std::size_t N>
     return elements;
 }
 
+// A body's GNSS receivers: every GnssSensorSpawn field, each one required.
+// SHAPE ONLY. Whether the values are acceptable (rate_divider >= 1, finite
+// non-negative sigmas and tau) is decided once, by add_gnss_sensor() when
+// setup attaches the receiver, and its refusal comes back through
+// start_scenario() verbatim. A second copy of those rules here would be a
+// second site for one invariant.
+[[nodiscard]] inline Result<std::vector<GnssSensorSpawn>> parse_gnss_receivers(
+    const YAML::Node& node, std::string_view what) {
+    if (!node.IsSequence()) {
+        return std::unexpected(at(node, std::string(what) + " must be a sequence"));
+    }
+    std::vector<GnssSensorSpawn> receivers;
+    receivers.reserve(node.size());
+    for (std::size_t i = 0; i < node.size(); ++i) {
+        const std::string where = std::string(what) + "[" + dec(i) + "]";
+        const YAML::Node entry = node[i];
+        if (Result<void> r = check_map(entry, where,
+                                       {"mount_pos", "rate_divider", "sigma_h", "sigma_v",
+                                        "sigma_vel", "bias_tau_s", "sigma_bias"});
+            !r) {
+            return std::unexpected(r.error());
+        }
+        GnssSensorSpawn receiver;
+        const Result<glm::vec3> mount_pos = vec3_field(entry, "mount_pos", where);
+        if (!mount_pos) return std::unexpected(mount_pos.error());
+        receiver.mount_pos = *mount_pos;
+        const Result<uint32_t> rate_divider = uint_field<uint32_t>(entry, "rate_divider", where);
+        if (!rate_divider) return std::unexpected(rate_divider.error());
+        receiver.rate_divider = *rate_divider;
+        const char* const keys[] = {"sigma_h", "sigma_v", "sigma_vel", "bias_tau_s", "sigma_bias"};
+        float* const targets[] = {&receiver.sigma_h, &receiver.sigma_v, &receiver.sigma_vel,
+                                  &receiver.bias_tau_s, &receiver.sigma_bias};
+        for (std::size_t k = 0; k < std::size(keys); ++k) {
+            const Result<float> value = float_field(entry, keys[k], where);
+            if (!value) return std::unexpected(value.error());
+            *targets[k] = *value;
+        }
+        receivers.push_back(receiver);
+    }
+    return receivers;
+}
+
 [[nodiscard]] inline Result<vehicles::QuadrotorParams> parse_quadrotor(const YAML::Node& node,
                                                                        std::string_view what) {
     if (Result<void> r = check_map(node, what,
@@ -919,7 +969,8 @@ template <std::size_t N>
                 const YAML::Node body_node = entry["body"];
                 if (Result<void> r = check_map(body_node, body_what,
                                                {"pos", "orient", "vel", "omega_body", "mass",
-                                                "inv_inertia_diag", "drag_elements"});
+                                                "inv_inertia_diag", "drag_elements",
+                                                "gnss_receivers"});
                     !r) {
                     return std::unexpected(r.error());
                 }
@@ -945,8 +996,8 @@ template <std::size_t N>
                 spawn.body.mass = *mass;
                 spawn.body.inv_inertia_diag = *inv_inertia;
 
-                // OPTIONAL, and the one key in the schema whose absence means
-                // "none": most bodies carry no force elements at all, and
+                // OPTIONAL, and one of the two keys in the schema whose absence
+                // means "none": most bodies carry no force elements at all, and
                 // requiring `drag_elements: []` on all 114 of the corpus's
                 // bare spawns would be ceremony, not clarity.
                 if (has(body_node, "drag_elements")) {
@@ -955,6 +1006,15 @@ template <std::size_t N>
                                             body_what + ".drag_elements");
                     if (!drag) return std::unexpected(drag.error());
                     spawn.drag_elements = *drag;
+                }
+                // OPTIONAL for the same reason: only a body that carries a
+                // receiver says so.
+                if (has(body_node, "gnss_receivers")) {
+                    const Result<std::vector<GnssSensorSpawn>> receivers =
+                        parse_gnss_receivers(body_node["gnss_receivers"],
+                                             body_what + ".gnss_receivers");
+                    if (!receivers) return std::unexpected(receivers.error());
+                    spawn.gnss_receivers = *receivers;
                 }
             } else {
                 const std::string vehicle_what = what + ".vehicle";
@@ -1176,6 +1236,10 @@ template <std::size_t N>
                 for (const DragElementSpawn& drag : spawn.drag_elements) {
                     const Result<DragElementRef> element = sim.add_drag_element(*ref, drag);
                     if (!element) return std::unexpected(element.error());
+                }
+                for (const GnssSensorSpawn& receiver : spawn.gnss_receivers) {
+                    const Result<GnssSensorRef> sensor = sim.add_gnss_sensor(*ref, receiver);
+                    if (!sensor) return std::unexpected(sensor.error());
                 }
             } else {
                 const Result<VehicleRef> ref =

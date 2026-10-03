@@ -35,7 +35,7 @@
 | Rotor element | reference | banded | `quad_hover` golden; `parity::quad_hover` |
 | Dryden gust | reference | banded via `CORE-3` | `quad_hover` (moderate); `parity::medium` |
 | IMU | reference | banded via `CORE-3` | `quad_hover`'s IMU; unit tests |
-| GNSS | **not yet reference**: no golden scenario carries a receiver (one is ruled, `PHY-6`) | banded via `CORE-3` | unit tests; `parity::gnss_receiver`, `gnss_receiver_body` |
+| GNSS | reference (`PHY-6`); final when the Docker gcc leg reproduces the golden (`TD-12`) | banded via `CORE-3` | `gnss_tumble` golden; `parity::gnss_tumble`, `gnss_receiver`, `gnss_receiver_body` |
 | Dynamic contact, Jacobi | not placed | not placed | built and unit-tested, not in the schedule |
 | Rotor wake | best-effort, CPU only, not read by stepping (`PHY-3`) | — | `test_rotor_wake.cpp` |
 

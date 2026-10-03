@@ -55,7 +55,7 @@
 //     identical per-world digests. This is what "cross-world interaction is
 //     structurally impossible" means operationally.
 //
-// Plus the corpus itself: five scenarios, each a COMMITTED DATA FILE under
+// Plus the corpus itself: six scenarios, each a COMMITTED DATA FILE under
 // tests/golden/scenarios/ carrying its own digest, re-asserted here, so that an
 // unintended change to ANY pinned op order, rng construction, layout offset or
 // schedule position fails a test in this file rather than surfacing as a parity
@@ -1037,12 +1037,15 @@ TEST(Determinism, BatchedAndPerWorldCollisionDynamicAgreeOnTheCorpusBounceWorld)
 // vanished -- deleted in a merge, lost to a bad rebase, renamed out of the glob
 // -- would quietly stop being checked while every test stayed green. This is
 // the one place that says what the corpus IS.
-TEST(ScenarioCorpus, IsExactlyTheFiveCommittedScenarios) {
+//
+// SIX SINCE PHY-6 (2026-10-02): gnss_tumble joined, and this test was renamed
+// from IsExactlyTheFiveCommittedScenarios because its name stated the count.
+TEST(ScenarioCorpus, IsExactlyTheSixCommittedScenarios) {
     std::vector<std::string> names;
     for (const LoadedScenario& loaded : corpus()) names.push_back(loaded.data->name);
 
-    const std::vector<std::string> expected = {"ballistic", "bounce", "quad_hover", "shower",
-                                               "two_world_isolation"};  // filename order
+    const std::vector<std::string> expected = {"ballistic", "bounce", "gnss_tumble", "quad_hover",
+                                               "shower", "two_world_isolation"};  // filename order
     EXPECT_EQ(names, expected)
         << "the scenario corpus changed. Adding one is deliberate (commit the file and this "
            "list); losing one is not.";
@@ -1398,6 +1401,84 @@ TEST(Determinism, CorpusScenariosProduceFiniteAndPhysicallySaneStates) {
             ASSERT_OK(sensors);
             EXPECT_EQ(*sensors, 1u) << "world " << w;
         }
+    }
+
+    // gnss_tumble: one live receiver per world, on its own clock, reporting the
+    // antenna it is mounted on. The truth is recomputed in DOUBLE from the
+    // final body state -- the last fix is synthesized after the last
+    // Integrate, so that state is exactly what it read -- as "position + R r,
+    // velocity + omega x r", spelled here rather than read from gnss.cpp.
+    //
+    // THE BOUNDS ARE 6 SIGMA PER AXIS from the receiver's declared noise:
+    // position sqrt(sigma^2 + sigma_bias^2), velocity sigma_vel. Position at
+    // that width catches a gross error, not a lever arm. VELOCITY IS THE SHARP
+    // ONE: omega x r is about 2 m/s here against a 0.75 m/s bound, so a
+    // dropped or sign-flipped cross product fails it.
+    {
+        const spade::Result<Simulation> sim = run("gnss_tumble");
+        ASSERT_OK(sim);
+        every_live_body_is_sane(*sim, "gnss_tumble");
+
+        constexpr uint64_t kFixes = 1600 / 8;  // substeps / rate_divider
+        constexpr uint64_t kLastTick = 399;    // steps - 1, the step the last fix was synthesized in
+        const glm::dvec3 mount(0.25, -0.5, 0.75);
+        const double sigma_bias = 0.800000012;
+        const double pos_bound_h = 6.0 * std::sqrt(1.5 * 1.5 + sigma_bias * sigma_bias);
+        const double pos_bound_v = 6.0 * std::sqrt(2.5 * 2.5 + sigma_bias * sigma_bias);
+        const double vel_bound = 6.0 * 0.125;
+
+        spade::sensors::GnssFix newest_fix[2]{};
+        spade::BodyState body[2]{};
+        for (uint32_t w = 0; w < 2; ++w) {
+            const spade::Result<uint32_t> live = sim->live_gnss_sensor_count(w);
+            ASSERT_OK(live);
+            ASSERT_EQ(*live, 1u) << "world " << w;
+
+            const auto rows = sim->arenas().world_slice(sim->gnss_sensors_array(), w);
+            ASSERT_OK(rows);
+            const auto row = std::find_if(rows->begin(), rows->end(),
+                                          [](const spade::sensors::GnssSensorRow& r) { return r.kind != 0u; });
+            ASSERT_NE(row, rows->end()) << "world " << w;
+            EXPECT_EQ(row->last_index, kFixes) << "world " << w << ": the rate clock emitted the wrong number of fixes";
+            EXPECT_EQ(row->phase, 0u) << "world " << w << ": the final substep should have closed a fix period";
+
+            const auto ring = sim->arenas().world_slice(sim->gnss_ring_array(), w);
+            ASSERT_OK(ring);
+            const auto newest = std::find_if(ring->begin(), ring->end(),
+                                             [&](const spade::sensors::GnssFix& f) { return f.index == kFixes; });
+            ASSERT_NE(newest, ring->end()) << "world " << w << ": the newest fix is not in the ring";
+            EXPECT_EQ(newest->tick, kLastTick) << "world " << w;
+            newest_fix[w] = *newest;
+
+            const spade::Result<std::span<const spade::BodyState>> bodies = sim->world_bodies(w);
+            ASSERT_OK(bodies);
+            ASSERT_FALSE(bodies->empty()) << "world " << w;
+            body[w] = (*bodies)[0];
+            ASSERT_NE(body[w].flags & spade::physics::body_flags::active, 0u) << "world " << w;
+
+            const glm::dquat q(body[w].orient);
+            const glm::dvec3 lever = q * mount;
+            const glm::dvec3 omega_world = q * glm::dvec3(body[w].omega_body);
+            const glm::dvec3 pos_true = glm::dvec3(body[w].pos) + lever;
+            const glm::dvec3 vel_true = glm::dvec3(body[w].vel) + glm::cross(omega_world, lever);
+            const glm::dvec3 pos_err = glm::dvec3(newest->position) - pos_true;
+            const glm::dvec3 vel_err = glm::dvec3(newest->velocity) - vel_true;
+            EXPECT_LT(std::abs(pos_err.x), pos_bound_h) << "world " << w;
+            EXPECT_LT(std::abs(pos_err.y), pos_bound_v) << "world " << w;
+            EXPECT_LT(std::abs(pos_err.z), pos_bound_h) << "world " << w;
+            for (int k = 0; k < 3; ++k) {
+                EXPECT_LT(std::abs(vel_err[k]), vel_bound) << "world " << w << " velocity axis " << k;
+            }
+        }
+
+        // THE ISOLATION PAIR. The worlds differ only in their rng roots and no
+        // drag element reads the medium, so the truth is bit-identical and only
+        // the draws differ. Equal fixes would mean one stream fed both.
+        EXPECT_TRUE(body[0].pos == body[1].pos && body[0].vel == body[1].vel &&
+                    body[0].orient == body[1].orient && body[0].omega_body == body[1].omega_body)
+            << "the two worlds' bodies diverged, but nothing random reaches either one";
+        EXPECT_TRUE(newest_fix[0].position != newest_fix[1].position)
+            << "both worlds reported the same fix from different seeds";
     }
 }
 
@@ -2503,6 +2584,18 @@ namespace {
     return r ? std::string("<succeeded>") : r.error().context;
 }
 
+// The minimal scenario with one `gnss_receivers` entry on its body, spelled
+// `entry` (a flow mapping, or anything else a malformed case needs there).
+[[nodiscard]] std::string with_gnss_receiver(std::string_view entry) {
+    const std::string_view inertia = "      inv_inertia_diag: [100, 100, 100]\n";
+    return replaced(minimal_scenario_text(), inertia,
+                    std::string(inertia) + "      gnss_receivers:\n        - " + std::string(entry) + "\n");
+}
+
+constexpr std::string_view kGnssReceiverEntry =
+    "{mount_pos: [0.25, -0.5, 0.75], rate_divider: 2, sigma_h: 1.5, sigma_v: 2.5, sigma_vel: 0.125, "
+    "bias_tau_s: 1, sigma_bias: 0.5}";
+
 }  // namespace
 
 TEST(ScenarioFile, LoadsWhatTheDocumentSays) {
@@ -2538,6 +2631,7 @@ TEST(ScenarioFile, LoadsWhatTheDocumentSays) {
     EXPECT_EQ(data.spawns[0].body.pos, glm::vec3(0.0f, 2.0f, 0.0f));
     EXPECT_EQ(data.spawns[0].body.mass, 1.0f);
     EXPECT_TRUE(data.spawns[0].drag_elements.empty());
+    EXPECT_TRUE(data.spawns[0].gnss_receivers.empty());  // absent means none
 
     ASSERT_EQ(data.inputs.size(), 1u);
     EXPECT_EQ(data.inputs[0].tick, 3u);
@@ -2608,6 +2702,63 @@ TEST(ScenarioFile, AcceptsComponentwiseDragElementsOnABodySpawn) {
     // just parsed.
     const spade::Result<uint64_t> digest = spade::testing::run_scenario(loaded->scenario);
     ASSERT_OK(digest);
+}
+
+// parse_gnss_receivers() (PHY-6): every field read exactly, and the receiver
+// actually ATTACHED by setup -- live, carrying those values, and emitting on
+// its own clock (10 substeps at rate_divider 2 is five fixes).
+TEST(ScenarioFile, AttachesGnssReceiversToABodySpawn) {
+    const spade::Result<LoadedScenario> loaded =
+        load_scratch_scenario("gnss_receiver", with_gnss_receiver(kGnssReceiverEntry));
+    ASSERT_OK(loaded);
+
+    ASSERT_EQ(loaded->data->spawns.size(), 1u);
+    ASSERT_EQ(loaded->data->spawns[0].gnss_receivers.size(), 1u);
+    const spade::GnssSensorSpawn& parsed = loaded->data->spawns[0].gnss_receivers[0];
+    EXPECT_EQ(parsed.mount_pos, glm::vec3(0.25f, -0.5f, 0.75f));
+    EXPECT_EQ(parsed.rate_divider, 2u);
+    EXPECT_EQ(parsed.sigma_h, 1.5f);
+    EXPECT_EQ(parsed.sigma_v, 2.5f);
+    EXPECT_EQ(parsed.sigma_vel, 0.125f);
+    EXPECT_EQ(parsed.bias_tau_s, 1.0f);
+    EXPECT_EQ(parsed.sigma_bias, 0.5f);
+
+    spade::Result<Simulation> sim = spade::testing::start_scenario(loaded->scenario);
+    ASSERT_OK(sim);
+    ASSERT_OK(spade::testing::advance_scenario(loaded->scenario, *sim, loaded->scenario.steps));
+    const spade::Result<uint32_t> live = sim->live_gnss_sensor_count(0);
+    ASSERT_OK(live);
+    ASSERT_EQ(*live, 1u);
+
+    const auto rows = sim->arenas().world_slice(sim->gnss_sensors_array(), 0);
+    ASSERT_OK(rows);
+    const auto row = std::find_if(rows->begin(), rows->end(),
+                                  [](const spade::sensors::GnssSensorRow& r) { return r.kind != 0u; });
+    ASSERT_NE(row, rows->end());
+    EXPECT_EQ(row->mount_pos, parsed.mount_pos);
+    EXPECT_EQ(row->rate_divider, 2u);
+    EXPECT_EQ(row->sigma_h, 1.5f);
+    EXPECT_EQ(row->sigma_v, 2.5f);
+    EXPECT_EQ(row->sigma_vel, 0.125f);
+    EXPECT_EQ(row->bias_tau_s, 1.0f);
+    EXPECT_EQ(row->sigma_bias, 0.5f);
+    EXPECT_EQ(row->last_index, 5u) << "10 substeps at rate_divider 2";
+}
+
+// A receiver whose SHAPE is right but whose values the engine refuses loads,
+// and is then refused by add_gnss_sensor() when setup attaches it -- never
+// dropped. The loader deliberately does not re-check the values (one site per
+// invariant), so this is where that refusal is shown to arrive.
+TEST(ScenarioFile, AGnssReceiverTheEngineRefusesFailsSetupRatherThanVanishing) {
+    const spade::Result<LoadedScenario> loaded = load_scratch_scenario(
+        "gnss_refused", with_gnss_receiver(replaced(std::string(kGnssReceiverEntry), "rate_divider: 2",
+                                                    "rate_divider: 0")));
+    ASSERT_OK(loaded);
+    ASSERT_EQ(loaded->data->spawns[0].gnss_receivers.size(), 1u);
+
+    const spade::Result<Simulation> sim = spade::testing::start_scenario(loaded->scenario);
+    ASSERT_FALSE(sim.has_value()) << "setup attached a receiver with rate_divider 0";
+    EXPECT_EQ(code_of(sim), code(spade::Code::invalid_argument)) << sim.error().context;
 }
 
 // EVERY REJECTION: one document, one defect each.
@@ -2685,6 +2836,43 @@ TEST(ScenarioFile, RejectsEveryMalformedDocument) {
                   "      omega_body: [0, 0, 0]\n"
                   "      rotor_omega: hover\n"),
          spade::Code::invalid_argument, "0 declared models"},
+        // gnss_receivers (PHY-6): optional, but strict once present.
+        {"a GNSS receiver with an unknown key",
+         with_gnss_receiver(replaced(std::string(kGnssReceiverEntry), "sigma_bias: 0.5}",
+                                     "sigma_bias: 0.5, sigma_clock: 1}")),
+         spade::Code::invalid_argument, "unknown key 'sigma_clock'"},
+        {"a GNSS receiver missing a key",
+         with_gnss_receiver(replaced(std::string(kGnssReceiverEntry), ", sigma_bias: 0.5", "")),
+         spade::Code::invalid_argument, "missing required key 'sigma_bias'"},
+        {"GNSS receivers that are not a sequence",
+         replaced(with_gnss_receiver(kGnssReceiverEntry), "      gnss_receivers:\n        - ",
+                  "      gnss_receivers: "),
+         spade::Code::invalid_argument, "gnss_receivers must be a sequence"},
+        {"a GNSS receiver with a negative rate divider",
+         with_gnss_receiver(replaced(std::string(kGnssReceiverEntry), "rate_divider: 2", "rate_divider: -2")),
+         spade::Code::invalid_argument, "is not a non-negative decimal or 0x-hex integer"},
+        {"a GNSS receiver with a non-finite sigma",
+         with_gnss_receiver(replaced(std::string(kGnssReceiverEntry), "sigma_h: 1.5", "sigma_h: nan")),
+         spade::Code::invalid_argument, "is not finite"},
+        // Body spawns only: a vehicle's sensors come from its model type.
+        {"GNSS receivers on a vehicle spawn",
+         replaced(base,
+                  "    body:\n"
+                  "      pos: [0, 2, 0]\n"
+                  "      orient: [1, 0, 0, 0]\n"
+                  "      vel: [0, 0, 0]\n"
+                  "      omega_body: [0, 0, 0]\n"
+                  "      mass: 1\n"
+                  "      inv_inertia_diag: [100, 100, 100]\n",
+                  "    vehicle:\n"
+                  "      model: 0\n"
+                  "      pos: [0, 2, 0]\n"
+                  "      orient: [1, 0, 0, 0]\n"
+                  "      vel: [0, 0, 0]\n"
+                  "      omega_body: [0, 0, 0]\n"
+                  "      rotor_omega: hover\n"
+                  "      gnss_receivers: []\n"),
+         spade::Code::invalid_argument, "unknown key 'gnss_receivers'"},
         {"a world file that is not there",
          replaced(base, "bounce.world.yaml", "no_such_world.world.yaml"), spade::Code::io_error,
          "no_such_world.world.yaml"},

@@ -596,7 +596,7 @@ namespace {
 
 TEST(BackendKnobInvariance, CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus) {
     const std::vector<spade::testing::LoadedScenario> loaded = corpus();
-    ASSERT_EQ(loaded.size(), std::size_t{5}) << "the golden corpus is expected to carry five scenarios";
+    ASSERT_EQ(loaded.size(), std::size_t{6}) << "the golden corpus is expected to carry six scenarios";
 
     for (const spade::testing::LoadedScenario& entry : loaded) {
         const Result<uint64_t> implicit_digest = spade::testing::run_scenario(entry.scenario);

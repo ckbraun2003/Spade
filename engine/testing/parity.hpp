@@ -1576,6 +1576,44 @@ inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
 inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 }  // namespace gnss_receiver_body
 
+// ---------------------------------------------------------------------------
+// gnss_tumble -- the corpus GNSS scenario (PHY-6), measured, not borrowed.
+//
+// 2 worlds x 1600 substeps, one receiver per world at rate_divider 8 (200 fixes
+// each), the body tumbling torque-free.
+//
+// MEASURED 2026-10-03 under a pre-registered zero band, so the failure report
+// was the measurement. Device: Intel Iris Plus Graphics, Vulkan, this box;
+// msvc-ninja-release; tree master 4b3f9f4 plus this change, bands at zero.
+//     bodies pos, vel, omega_body, specific_force   0 (bit-exact)
+//     bodies orient       abs 9.54e-07  rel 2.43e-05  (worst: world 0, w)
+//     gnss_sensors bias   abs 5.96e-08  rel 2.01e-07  (1 ulp at |bias| 0.63 m)
+//     gnss_sensors noise.cached                      0 (bit-exact)
+//     gnss_ring position  abs 7.63e-06  rel 5.24e-06  (2 ulp at 36 m)
+//     gnss_ring velocity  abs 2.38e-06  rel 2.16e-06  (5 ulp at 4 m/s)
+//
+// Two causes reach the fix, and this run does not separate them. The body's
+// orientation enters through the lever arm; it is the only body quantity that
+// diverges, as gnss_receiver_body found. The gaussian draws enter through the
+// noise and the bias; CORE-3 owns that band, so it is cited here, not
+// re-derived. The bias stayed at 1 ulp over 200 fixes; gnss_receiver's note on
+// a compounding bias still applies to a longer run.
+//
+// Bands are 4x measured, rounded up to one significant figure. A quantity
+// measured exactly zero stays at zero.
+// ---------------------------------------------------------------------------
+namespace gnss_tumble {
+inline constexpr ToleranceBand kPos{0.0f, 0.0f};
+inline constexpr ToleranceBand kVel{0.0f, 0.0f};
+inline constexpr ToleranceBand kOrient{4.0e-6f, 1.0e-4f};
+inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
+inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+inline constexpr ToleranceBand kGnssBias{3.0e-7f, 9.0e-7f};
+inline constexpr ToleranceBand kCachedGauss{0.0f, 0.0f};
+inline constexpr ToleranceBand kGnssPosition{4.0e-5f, 3.0e-5f};
+inline constexpr ToleranceBand kGnssVelocity{1.0e-5f, 9.0e-6f};
+}  // namespace gnss_tumble
+
 }  // namespace bands
 
 }  // namespace spade::testing

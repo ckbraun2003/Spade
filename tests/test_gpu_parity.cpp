@@ -544,6 +544,11 @@ constexpr CorpusScenario kCorpusScenarios[] = {
     {"bounce",
      "VERBATIM: four worlds, a four-rung restitution ladder, one body each, no turbulence, no "
      "rotors, no sensors. The contact torture case, and the one that was already bit-identical."},
+    {"gnss_tumble",
+     "PHY-6: two worlds identical but for their seeds, one torque-free tumbling body each carrying a "
+     "GNSS receiver on a lever arm, 400 steps x 4 substeps at rate_divider 8 (200 fixes, the ring "
+     "wraps). The ONLY corpus scenario with a live GNSS row: the rate clock, the Gauss-Markov bias, "
+     "the white noise and the rotating lever arm, through sensor_gnss.slang."},
     {"quad_hover",
      "VERBATIM as of S6 Task 8, and the scenario wave C exists for: a registered ModelType spawning "
      "one body + four rotor rows + a drag body + an IMU mount per world, two worlds, `turbulence: "
@@ -952,9 +957,9 @@ TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     // this suite exists to make -- so a scenario silently leaving the parity set
     // has nowhere to hide.
     EXPECT_EQ(std::size(kCorpusScenarios), on_disk.size());
-    EXPECT_EQ(std::size(kCorpusScenarios), std::size_t{5})
-        << "the corpus is ballistic, bounce, quad_hover, shower and two_world_isolation, and ALL FIVE "
-        << "are in the parity set as of S6 Task 8";
+    EXPECT_EQ(std::size(kCorpusScenarios), std::size_t{6})
+        << "the corpus is ballistic, bounce, gnss_tumble, quad_hover, shower and two_world_isolation, "
+        << "and ALL SIX are in the parity set (gnss_tumble since PHY-6)";
 }
 
 // ===========================================================================
@@ -1331,6 +1336,38 @@ TEST_F(GpuParityTest, QuadHoverMatchesTheCpuWithinBands) {
                          rotor_bands(kRotorOmega)),
                     imu_bands(kBias, kCachedGauss, kAccel, kGyro)),
                &expect_quad_hover_flew_and_sensed);
+}
+
+// ===========================================================================
+// gnss_tumble -- THE CORPUS FILE, VERBATIM (PHY-6). The first corpus scenario
+// with a live GNSS row, so the first time sensor_gnss.slang is compared over a
+// scenario whose CPU run is a golden. The bands are parity.hpp's gnss_tumble
+// namespace: measured on this scenario, not borrowed from the hand-built
+// gnss_receiver run above (a band answers for the run it was measured on).
+// ===========================================================================
+TEST_F(GpuParityTest, GnssTumbleMatchesTheCpuWithinBands) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("gnss_tumble");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+
+    using namespace spade::testing::bands::gnss_tumble;
+    run_parity(loaded->scenario,
+               "gnss_tumble (2 receivers x 400 steps x 4 substeps at rate_divider 8)",
+               join(join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()),
+                    gnss_bands(kGnssBias, kCachedGauss, kGnssPosition, kGnssVelocity)),
+               [](const Simulation& cpu, const Simulation& gpu, std::string_view label) {
+                   // THE PREMISE: one live receiver per world on BOTH legs, so
+                   // a failure reads as "no receiver" rather than as a column
+                   // of "compared nothing" lines.
+                   for (uint32_t w = 0; w < 2; ++w) {
+                       const Result<uint32_t> cpu_live = cpu.live_gnss_sensor_count(w);
+                       const Result<uint32_t> gpu_live = gpu.live_gnss_sensor_count(w);
+                       ASSERT_TRUE(cpu_live.has_value() && gpu_live.has_value());
+                       EXPECT_EQ(*cpu_live, 1u) << label << ": world " << w << " has no live cpu receiver";
+                       EXPECT_EQ(*gpu_live, 1u) << label << ": world " << w << " has no live gpu receiver";
+                   }
+               });
 }
 
 // ===========================================================================
