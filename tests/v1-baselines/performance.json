@@ -1,0 +1,94 @@
+{
+    "what":  "Physics step time and process memory of spade_viewer --trajectory (CPU, Release). Reference only.",
+    "captured":  "2026-10-03T00:22:43-04:00",
+    "commit":  "511bc39104e3711da207988fc03dd72e230702a5",
+    "machine":  {
+                    "computer":  "DESKTOP-N7QJD3C",
+                    "os":  "Microsoft Windows 11 Home",
+                    "gpu":  [
+                                "Intel(R) Iris(R) Plus Graphics (driver 31.0.101.2125)"
+                            ]
+                },
+    "scenes":  {
+                   "drop":  {
+                                "step_ns_median":  24600,
+                                "step_ns_p90":  35400,
+                                "step_samples":  2900,
+                                "private_bytes_after_setup":  1085440,
+                                "working_set_after_setup":  6144000,
+                                "private_bytes_end":  1134592,
+                                "working_set_end":  6291456,
+                                "peak_working_set":  6291456
+                            },
+                   "bounce":  {
+                                  "step_ns_median":  25400,
+                                  "step_ns_p90":  36800,
+                                  "step_samples":  2900,
+                                  "private_bytes_after_setup":  1114112,
+                                  "working_set_after_setup":  6176768,
+                                  "private_bytes_end":  1196032,
+                                  "working_set_end":  6348800,
+                                  "peak_working_set":  6348800
+                              },
+                   "shower":  {
+                                  "step_ns_median":  17558700,
+                                  "step_ns_p90":  32652500,
+                                  "step_samples":  2900,
+                                  "private_bytes_after_setup":  2215936,
+                                  "working_set_after_setup":  7147520,
+                                  "private_bytes_end":  2125824,
+                                  "working_set_end":  7229440,
+                                  "peak_working_set":  7278592
+                              },
+                   "gate":  {
+                                "step_ns_median":  20600,
+                                "step_ns_p90":  34700,
+                                "step_samples":  2900,
+                                "private_bytes_after_setup":  1081344,
+                                "working_set_after_setup":  6144000,
+                                "private_bytes_end":  1122304,
+                                "working_set_end":  6283264,
+                                "peak_working_set":  6283264
+                            },
+                   "hover":  {
+                                 "step_ns_median":  6200,
+                                 "step_ns_p90":  10300,
+                                 "step_samples":  2900,
+                                 "private_bytes_after_setup":  1081344,
+                                 "working_set_after_setup":  6164480,
+                                 "private_bytes_end":  1138688,
+                                 "working_set_end":  6303744,
+                                 "peak_working_set":  6303744
+                             },
+                   "wind":  {
+                                "step_ns_median":  5600,
+                                "step_ns_p90":  8100,
+                                "step_samples":  2900,
+                                "private_bytes_after_setup":  1081344,
+                                "working_set_after_setup":  6172672,
+                                "private_bytes_end":  1138688,
+                                "working_set_end":  6311936,
+                                "peak_working_set":  6311936
+                            },
+                   "flight":  {
+                                  "step_ns_median":  7100,
+                                  "step_ns_p90":  9000,
+                                  "step_samples":  2900,
+                                  "private_bytes_after_setup":  1101824,
+                                  "working_set_after_setup":  6189056,
+                                  "private_bytes_end":  1175552,
+                                  "working_set_end":  6344704,
+                                  "peak_working_set":  6344704
+                              },
+                   "swarm":  {
+                                 "step_ns_median":  22800,
+                                 "step_ns_p90":  38800,
+                                 "step_samples":  2900,
+                                 "private_bytes_after_setup":  1134592,
+                                 "working_set_after_setup":  6221824,
+                                 "private_bytes_end":  1249280,
+                                 "working_set_end":  6418432,
+                                 "peak_working_set":  6418432
+                             }
+               }
+}
