@@ -46,6 +46,11 @@ The first three rows need no module API. They can be built and tested now, which
 - Motor torque: `Q_m = Kt·(I − I0)` (N·m). `I0` is the no-load current. It stands in for friction and iron loss, and it never turns the shaft backwards.
 - Shaft: `J_r·dω/dt = Q_m − Q_load(ω)`. `J_r` is the polar inertia of the motor bell plus the propeller. `Q_load` comes from the propeller tier (§5), or is `k_Q·ω²` with today's momentum-theory tier.
 
+**Phase inductance (recommended by §11's fit).** At speed, the winding's reactance `X = p·ω·L` stops being small next to `R`. `p` is the pole-pair count and `L` the phase inductance. With the drive voltage in phase with the back-EMF (no timing advance), only the in-phase part of the current makes torque:
+- `I_q = (d·V_bus − Ke·ω)·R / (R² + X²)`.
+
+So the model is the resistive one with `R` replaced by `R_eff(ω) = R + X²/R`. That keeps the bus solve closed-form, because `ω` is held at its start-of-substep value. It also makes `τ_m` speed-dependent, so `α` is computed per substep with `core/fp32_math`'s `exp`, as the rotor lag does today. Timing advance, which real ESCs use, reduces the effect. It is a part property with a published range, not a fit freedom.
+
 **Limits.**
 - Current clamps to `[I_lo, I_max]`. `I_max` is the smaller of the motor's and the ESC's rating. `I_lo` is 0 for an ESC without active braking and `−I_max` with it.
 - The duty clamps to [0, 1]. A non-finite command reads as 0.
@@ -173,7 +178,8 @@ A vehicle with no motor rows runs today's order unchanged, so no golden moves.
 
 **Division sites.** These are listed because Vulkan's division is device-dependent:
 - `1/R`, `1/Kt`, `α` and `β` are precomputed at spawn;
-- the step keeps one division per vehicle (the bus solve) and one per rotor (`J`).
+- the step keeps one division per vehicle (the bus solve) and one per rotor (`J`);
+- with phase inductance, it adds one per motor (`1/R_eff`).
 
 Both are banded on Vulkan. Transcendentals on the step path come only from `core/fp32_math`.
 
@@ -195,11 +201,13 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-10: The motor MUST take a per-rotor duty command in [0, 1].
 - DBP-11: The motor MUST take `KV`, winding resistance, no-load current, current limit and polar inertia as builder parameters.
 - DBP-12: The ESC MUST take its on-resistance, its current rating and its braking mode as builder parameters.
-- DBP-13: The shaft update MUST be the exponential update of §3, with `α` computed at spawn.
+- DBP-13: The shaft update MUST be the exponential update of §3, with `α` computed once at spawn for a constant impedance and per substep, with `core/fp32_math`, for a speed-dependent one.
 - DBP-14: The body MUST receive the motor's torque as the rotor's reaction.
 - DBP-15: The shaft speed MUST NOT go below 0.
 - DBP-16: The model SHOULD estimate the propeller's share of the polar inertia from its mass and diameter when the builder gives none.
 - DBP-17: The model MAY take a maximum shaft speed, clamped and flagged like the current.
+- DBP-18: The motor SHOULD model phase inductance through `R_eff(ω)` (§3), with pole pairs and phase inductance as builder parameters.
+- DBP-19: An ESC throttle map MAY be added only as one parameter with the firmware's published range, never as a free table.
 
 **Battery**
 - DBP-20: The battery MUST take series count, parallel count, cell capacity, cell resistance, cell cutoff voltage, current rating and an OCV table as builder parameters.
@@ -244,8 +252,11 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-74: Validation data MUST NOT enter the fit.
 - DBP-75: The band MUST be `k·u_c` with `k = 2`.
 - DBP-76: `k` and the uncertainties MUST NOT be raised to make a point pass.
-- DBP-77: The suite MUST record the items of §11, step 10.
+- DBP-77: The run MUST record the items of §11.6, step 10.
 - DBP-78: The held-out split MUST be fixed and recorded before the first fit runs.
+- DBP-79: The fit MUST NOT pool files made with different thrust tables.
+- DBP-80: The fit MUST fit only identifiable combinations, and every other parameter MUST take its catalog value and be reported as not tested.
+- DBP-81: A command latency MUST enter the comparison as a delay that Kat states, and MUST NOT be fitted into the motor.
 
 ## 10. Grades and goldens
 
@@ -265,50 +276,111 @@ The check is a validation suite, separate from the goldens. It runs on `competit
 
 **What it validates against.** Every number here comes from the AI Grand Prix VQ1 simulator, a black box, not from hardware. The check therefore shows agreement with that simulator. It says nothing about a physical drone.
 
-**What the data is.** Kat has system data only: the simulator's `airframe.json`, and flight logs from the same simulator. The values for the first airframe are:
+### 11.1 Who owns what
 
-| Quantity | Value | Maps to |
-|---|---|---|
-| Thrust curve | 12 points | the steady-state solver, forward mode, at zero airspeed |
-| Airspeed thrust loss | a curve | the solver at axial speed above zero |
-| Drag | 0.028 N·s²/m², per body axis: `F_i = −c·|v_i|·v_i` | Spade's componentwise drag element (`physics/forces.hpp`, coefficient in kg/m, the same unit), set directly, not fitted |
-| Mass | 0.7 kg | the composite total; compared, not fitted |
-| Inertia | [0.0025, 0.0021, 0.0043] kg·m², assumed by Kat | reported beside the composite's; not a target |
-| Motor time constant | 0.033 s | the chain's small-signal time constant at hover, `J_r/(Kt·Ke/R + ∂Q_load/∂ω)` |
-| `kappa` | 0.022 m, `k_Q/k_T` | `Q/T` at hover, `C_Q·D/C_T` |
+The user ruled on 2026-10-03: "Spade pushes, Kat pulls."
+- **Kat owns the fit and the validation run.** Both run on the Kat machine, against Spade's published pure functions (DBP-01). The flight logs never leave that machine.
+- **Physics owns the models**, the answer on the ESC map (§11.4) and the judgment of the tolerances (§11.7).
+- §11.6 states Physics's requirements on the fit. Kat applies them.
+- The pure functions are built after the user approves the joint spec, before module-API stage 4.
 
-The drag law and the units come from the legacy `quadrotor.py` (lines 60–64 and 179). The legacy yaml labels `kappa` dimensionless; that label is wrong.
+### 11.2 The data
 
-There is no component data: no `KV`, `R`, `I0`, cell data, `C_T` or `C_Q`.
+Kat has system data only: the simulator's `airframe.json`, and flight logs from the same simulator. For the first airframe:
 
-The motor time constant and `kappa` are exactly the parameters of today's momentum-theory rotor: `tau` and `k_Q/k_T` (`vehicles/rotor.hpp`). So that rotor, fed these values directly, is a baseline in the black box's own model class. The fitted chain is compared with both the data and the baseline.
+| Quantity | Value | Provenance | Use |
+|---|---|---|---|
+| Thrust curve | 12 points | the simulator | fit target |
+| Airspeed loss | `f(s) = clamp(1 − k·s^p, 0.35, 1)`, `k = 0.00028`, `p = 2`, `s` = world speed | legacy `quadrotor.py:137-143`; applied to static thrust, at fixed throttle | held-out check, axial flight only (§11.7) |
+| Drag | 0.028 N·s²/m², per body axis, `F_i = −c·|v_i|·v_i` | legacy `quadrotor.py:60-64`, `:179` | Spade's componentwise drag element (`physics/forces.hpp`, kg/m, the same unit); set, not fitted |
+| Mass | 0.7 kg | `airframe.json` | from the parts (Kat's decision); compared, not fitted |
+| Inertia | [0.0025, 0.0021, 0.0043] kg·m² | NeuroBEM, not measured | from the parts; reported beside the composite's |
+| Motor time constant | 0.033 s | NeuroBEM, not measured | compared with the measured step response (§11.7) |
+| `kappa` | 0.022 m, `k_Q/k_T` | the simulator; about twice the catalog's 9–12 mm | from the parts; the yaw mismatch is a known finding |
 
-**The flight data with commands.** Some flights carry their commands. The probe logs in `legacy_logs/logs/deploy/` (`axial_thrust`, `axis_roll_probe`, `axis_sweep` and others) have these columns:
-- `t`, `phase`;
-- position `x`, `y`, `z` and velocity `vx`, `vy`, `vz`;
-- orientation `qw`, `qx`, `qy`, `qz`;
-- `cmd_norm` and `cmd_acc`, a time-aligned collective command. The data pack defines both.
+There is no component data: no `KV`, `R`, `I0`, `L`, cell data, `C_T` or `C_Q`. The legacy yaml labels `kappa` dimensionless; that label is wrong.
 
-Per-axis rate commands are not confirmed. The data pack lists each file's columns and row count.
+The motor time constant and `kappa` are exactly the parameters of today's momentum-theory rotor: `tau` and `k_Q/k_T` (`vehicles/rotor.hpp`). So that rotor, fed these values directly, is a baseline in the black box's own model class.
 
-**Method: an inverse fit, then held-out validation.**
+**Commands.** The fit uses `cmd_norm`, the time-aligned collective command in the deploy probe logs. Per-axis rate commands are not confirmed.
 
-1. **Split.** Fix the held-out split before the first fit runs, and record it. Kat proposes one with the data pack.
-2. **Parts.** Choose parts from the catalog (Kat's first 5-inch catalog, with sources). Each parameter carries its published range from those sources.
-3. **Fit.** Fit the free parameters, each within its range, to the `airframe.json` targets above. The fit is a weighted least-squares problem in double. Each residual is divided by its point's uncertainty. A bounded Levenberg–Marquardt solve starts from the catalog's nominal values, with a fixed iteration cap and a fixed parameter order, so it is deterministic.
+**Two thrust tables.** Six of the eight probe files were made with an older thrust table. Only the `inplane_sweep` files match today's. A fit must never pool files from two tables, because that fits two black boxes as one. Each file is used only against the table that produced it, and the run records which.
+
+**The split (Kat's, fixed by whole files).**
+- FIT, build A: `thrust_staircase`, `force_direction`, `axial_thrust`, `inplane_sweep`, `drag_speed`, `drag_lateral`, `drag_aoa`, `high_tilt_aero`, `axis_sweep`, `axis_sign_probe`.
+- HOLDOUT-A: `thrust_step`, `axial_thrust2`, `inplane_sweep2`, `axis_roll_probe`, and the 14 flights from 07-30 after 02:08.
+- HOLDOUT-B (August): drift only. It is reported, never asserted.
+- 11 flights are excluded, each with its reason in the data pack.
+
+### 11.3 Kat's fit so far, and what it shows
+
+- With datasheet `R`, no catalog set fits: the RMS error is 3.6–42 m/s².
+- With `R_eff` at 3–7 times `R` and an rpm cap, RMS reaches 0.4–0.9 m/s². The 0.264–0.55 throttle band still errs by 2.8–5.1%.
+- The best set is a 6-inch tri-blade prop, a 2207 2450 KV motor and 4S, with `R_eff` about 3 times `R` and a cap near 18.3 krpm.
+
+A constant `R_eff` and a hard cap are fit freedoms with no part behind them. They are also the signature of phase inductance (§3), which no catalog part yet carries:
+- `R_eff(ω) = R + (p·ω·L)²/R` grows with the square of speed. A constant multiplier then gives too much droop at low throttle and too little at high, which is where the 2.8–5.1% error sits.
+- It flattens thrust at high speed, which is the soft form of an rpm cap.
+- With assumed but typical 2207 values (`R` 50–70 mΩ, `L` 10–20 µH, 7 pole pairs), `R_eff/R` is about 2–8 at 9 krpm and 5–30 at 18.3 krpm. Kat's fitted 3–7 sits inside that range. These inputs are assumptions until the catalog gives `L`.
+
+### 11.4 Kat's question: an ESC map or an inductance term?
+
+**Answer: the inductance term first. Add an ESC map only if that fails, and then as one bounded parameter, never a free table.**
+1. Inductance is a part property with a datasheet value and a range. It explains both freedoms Kat had to add, so it should replace them rather than join them.
+2. It keeps the solve closed-form: `R` becomes `R_eff(ω)`, and no new state is added (§3).
+3. A free throttle-to-output map can match any thrust curve. Fitting one turns the 12-point curve into a copy of itself, so the curve stops being evidence.
+4. A real ESC or flight controller does apply a throttle map: thrust linearization. If one is needed, it is a one-parameter curve with the firmware's published range, set from the part's configuration, not fitted freely.
+5. The test that settles it: Kat refits with `L` in its published range, datasheet `R`, no `R_eff` multiplier and no cap. If that meets the tolerances of §11.7, the question is closed.
+
+A 1% fit is not required. Kat's own proposed tolerances are 3% and 5%.
+
+### 11.5 What the data cannot identify
+
+Kat's list is right. Each group below enters the data only as a product or a sum, so the data fixes the combination and not its parts:
+- `k_T` and `ω`, because no log has rpm;
+- mass and `k_T`, because thrust enters as acceleration;
+- `KV` and `V_bus`;
+- motor `R` and battery `R`, with collective commands only;
+- `J_r` and `R_eff`, which enter only through the time constant;
+- `k_Q`, inertia, sag and blade count, which no fitted file excites.
+
+Physics adds `L` and `k_T`: without rpm, the scale of `ω`, and so of `p·ω·L`, rides on `k_T`.
+
+The rule that follows: fit only identifiable combinations. Every other parameter takes its catalog value and is reported as "not tested by this data". It is also left out of the covariance, which is otherwise singular in those directions.
+
+### 11.6 Physics's requirements on the fit
+
+Kat runs these steps. DBP-70 to DBP-78 state them as requirements.
+1. **Split.** Fix the split before the first fit, and record it.
+2. **Parts.** Choose parts from the catalog (Kat's first 5-inch catalog, with sources). Each parameter carries its published range.
+3. **Fit.** Fit the identifiable combinations, within their ranges, to the FIT files of one thrust table. The fit is weighted least squares in double, with each residual divided by its point's uncertainty. A bounded Levenberg–Marquardt solve starts from the catalog's nominal values, with a fixed iteration cap and a fixed parameter order, so it is deterministic.
 4. **Range limits.** A parameter that ends at a limit of its published range is a finding. Report it; do not widen the range.
-5. **Uncertainty.** For `airframe.json` values, `u_meas` is half the last printed digit, unless Kat states more. `u_param` comes from the fit's covariance, `(Aᵀ·W·A)⁻¹` with `A` the fit's Jacobian, propagated to each quantity by central differences in double. `u_c = sqrt(u_meas² + u_param²)`.
-6. **Validation, translational.** The held-out probe logs never enter the fit. For each sample, the model predicts acceleration from the logged collective command, orientation and velocity. The command passes through the fitted chain, and drag comes from the logged velocity. The logged velocity, differentiated over a window fixed in advance, gives the comparison. `u_meas` comes from the log's own noise, measured on a steady segment chosen before any residual is seen.
-7. **Validation, rotational.** This waits until per-axis rate commands are confirmed in a log. Without them, the attitude dynamics cannot be checked by equation error.
+5. **Uncertainty.** `u_meas` comes from the data's own scatter, measured on segments chosen before any residual is seen. For `airframe.json` values it is half the last printed digit, unless Kat states more. `u_param` comes from the fit's covariance, `(Aᵀ·W·A)⁻¹` with `A` the fit's Jacobian, propagated by central differences in double. `u_c = sqrt(u_meas² + u_param²)`.
+6. **Validation, translational.** The HOLDOUT-A files never enter the fit. For each sample, the model predicts acceleration from `cmd_norm`, the logged orientation and the logged velocity. The logged velocity, differentiated over a window fixed in advance, gives the comparison.
+7. **Validation, rotational.** This waits until per-axis rate commands are confirmed in a log.
 8. **Tolerance.** The band is `k·u_c`, with `k = 2` (about 95%).
 9. **No widening.** A point outside its band is a model finding. Never raise `k` or an uncertainty to make a point pass (`TD-2`).
-10. **Recording.** The suite records:
-    - the airframe, the data pack's version and the held-out split;
+10. **Recording.** The run records:
+    - the airframe, the data pack's version, each file's thrust table, and the split;
     - each catalog part with its source;
-    - each fitted value with its range and covariance;
+    - each fitted value with its range and covariance, and each pinned parameter;
     - `k` and every point's residual and `u_c`.
 
-A log without commands cannot be validated by equation error. The suite lists such logs and does not assert on them.
+### 11.7 Kat's proposed tolerances, judged
+
+A tolerance is accepted when it comes from the data's own scatter. One read off the best fit's residuals is circular and is rejected (`TD-4`). The thrust bands pass that test: the current best fit errs 2.8–5.1% in the 0.264–0.55 band, so a ±3% band there would fail it today.
+
+| Proposed | Judgment |
+|---|---|
+| Thrust ±3% at throttle 0.264–0.55, ±5% at 0.65–1.0 | Accept, once each band is shown to be 2·u_c from scatter, not chosen |
+| Hover throttle 0.264 ± 0.005 | Accept, if ±0.005 is the logs' hover scatter |
+| t63 50 ± 15 ms | Centre on the measured median, 46 ms, and take the band from the 40–61 ms spread. It is a weak discriminator, about ±30% |
+| `f(26.3)` = 0.80 ± 0.04, `f(33.3)` = 0.69 ± 0.07 | Accept, for axial flight only. The centres are the law's own values, 0.806 and 0.690. The model's loss comes from `C_T(J)`, the axial component alone, so it predicts no loss in edgewise flight. Edgewise points are a scope finding (§12), not a failure of the axial model |
+| Step ratio 1.00 ± 0.08 | Accept, if from scatter |
+
+**The time constant.** The simulator's own lag is 0.033 s (from NeuroBEM), but the measured t63 is about 46 ms. If part of that difference is command latency, the latency belongs to the simulator's link, not to the motor. It enters the comparison as a fixed command delay that Kat states. It is never fitted into the motor.
+
+**The fixed-throttle loss.** At 18.3 m/s, Kat's 6-inch prop gives `C_T/C_T0` = 0.67 at fixed rpm, but the simulator gives `f` = 0.906. At fixed duty, the motor speeds up as the prop unloads, so the chain recovers much of the loss. The motor-and-prop chain predicts that recovery without being fitted to it, so it is a strong held-out check.
 
 ## 12. Not modelled
 
@@ -329,8 +401,10 @@ A log without commands cannot be validated by equation error. The suite lists su
    - The deploy probe logs carry a time-aligned collective command.
    - The source is the AI Grand Prix VQ1 simulator, not hardware.
 
+   Kat's data pack summary then answered the airspeed-loss law, the command column (`cmd_norm`) and the split (§11.2).
+
    Still open:
-   - the form of the airspeed thrust-loss curve;
-   - the meaning of `cmd_norm` and `cmd_acc`, which the data pack defines;
-   - whether any log carries per-axis rate commands, which rotational validation needs;
-   - the held-out split, which Kat proposes with the data pack.
+   - the catalog's phase inductance and pole pairs for each motor, which the inductance refit needs (§11.4);
+   - whether the simulator's link adds a command delay, and how long (§11.7);
+   - whether any log carries per-axis rate commands, which rotational validation needs.
+4. **Ownership of the fit. Decided by the user (2026-10-03): "Spade pushes, Kat pulls."** Kat runs the fit and the validation on the Kat machine (§11.1).
