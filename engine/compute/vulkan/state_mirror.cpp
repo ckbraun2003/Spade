@@ -540,10 +540,11 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // because zero is this buffer's meaningful empty state.
     // -----------------------------------------------------------------------
     {
-        std::vector<Entry*> derived{&self->dryden_params_, &self->sdf_nodes_,      &self->sdf_transforms_,
-                                    &self->sdf_ranges_,    &self->step_witness_,   &self->contact_params_,
-                                    &self->grid_params_,   &self->grid_entries_,
-                                    &self->body_snapshot_};
+        // Every derived buffer with a device half; step_params_ has none.
+        std::vector<Entry*> derived;
+        for (Entry* e : self->derived_entries()) {
+            if (e->device_buffer != VK_NULL_HANDLE) derived.push_back(e);
+        }
         for (Entry* e : derived) {
             if (e->byte_size > 0) std::memset(e->staging_mapped, 0, static_cast<std::size_t>(e->byte_size));
         }
@@ -588,19 +589,14 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     for (const Entry& e : self->entries_) {
         if (e.has_binding) add_binding(e.binding, e.device_buffer, e.byte_size);
     }
-    add_binding(self->dryden_params_.binding, self->dryden_params_.device_buffer, self->dryden_params_.byte_size);
-    add_binding(self->sdf_nodes_.binding, self->sdf_nodes_.device_buffer, self->sdf_nodes_.byte_size);
-    add_binding(self->sdf_transforms_.binding, self->sdf_transforms_.device_buffer,
-                self->sdf_transforms_.byte_size);
-    add_binding(self->sdf_ranges_.binding, self->sdf_ranges_.device_buffer, self->sdf_ranges_.byte_size);
-    // step_params binds its STAGING buffer -- it has no device half at all
-    // (state_mirror.hpp's member note).
-    add_binding(self->step_params_.binding, self->step_params_.staging_buffer, self->step_params_.byte_size);
-    add_binding(self->step_witness_.binding, self->step_witness_.device_buffer, self->step_witness_.byte_size);
-    add_binding(self->contact_params_.binding, self->contact_params_.device_buffer,
-                self->contact_params_.byte_size);
-    add_binding(self->grid_params_.binding, self->grid_params_.device_buffer, self->grid_params_.byte_size);
-    add_binding(self->grid_entries_.binding, self->grid_entries_.device_buffer, self->grid_entries_.byte_size);
+    // The derived buffers, from the one list (state_mirror.hpp). step_params_
+    // binds its STAGING buffer -- it has no device half at all.
+    for (Entry* e : self->derived_entries()) {
+        add_binding(e->binding, e->device_buffer != VK_NULL_HANDLE ? e->device_buffer : e->staging_buffer,
+                    e->byte_size);
+    }
+
+    self->bound_binding_count_ = static_cast<uint32_t>(layout_bindings.size());
 
     VkDescriptorSetLayoutCreateInfo set_layout_info{};
     set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -992,7 +988,7 @@ void StateMirror::destroy_entry(VkDevice device, Entry& e) noexcept {
 }
 
 void StateMirror::destroy() noexcept {
-    if (device_ == VK_NULL_HANDLE) return;  // moved-from or never fully constructed
+    if (device_ == VK_NULL_HANDLE) return;  // never fully constructed
 
     if (desc_pool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device_, desc_pool_, nullptr);
@@ -1004,15 +1000,7 @@ void StateMirror::destroy() noexcept {
         set_layout_ = VK_NULL_HANDLE;
     }
 
-    destroy_entry(device_, dryden_params_);
-    destroy_entry(device_, sdf_nodes_);
-    destroy_entry(device_, sdf_transforms_);
-    destroy_entry(device_, sdf_ranges_);
-    destroy_entry(device_, step_params_);
-    destroy_entry(device_, step_witness_);
-    destroy_entry(device_, contact_params_);
-    destroy_entry(device_, grid_params_);
-    destroy_entry(device_, grid_entries_);
+    for (Entry* e : derived_entries()) destroy_entry(device_, *e);
     for (Entry& e : entries_) destroy_entry(device_, e);
     entries_.clear();
 
@@ -1027,76 +1015,6 @@ void StateMirror::destroy() noexcept {
     }
 
     device_ = VK_NULL_HANDLE;
-}
-
-StateMirror::StateMirror(StateMirror&& other) noexcept
-    : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
-      physical_device_(std::exchange(other.physical_device_, VK_NULL_HANDLE)),
-      queue_(std::exchange(other.queue_, VK_NULL_HANDLE)),
-      pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
-      cmd_(std::exchange(other.cmd_, VK_NULL_HANDLE)),
-      fence_(std::exchange(other.fence_, VK_NULL_HANDLE)),
-      set_layout_(std::exchange(other.set_layout_, VK_NULL_HANDLE)),
-      desc_pool_(std::exchange(other.desc_pool_, VK_NULL_HANDLE)),
-      set_(std::exchange(other.set_, VK_NULL_HANDLE)),
-      entries_(std::move(other.entries_)),
-      dryden_params_(std::move(other.dryden_params_)),
-      sdf_nodes_(std::move(other.sdf_nodes_)),
-      sdf_transforms_(std::move(other.sdf_transforms_)),
-      sdf_ranges_(std::move(other.sdf_ranges_)),
-      step_params_(std::move(other.step_params_)),
-      step_witness_(std::move(other.step_witness_)),
-      contact_params_(std::move(other.contact_params_)),
-      grid_params_(std::move(other.grid_params_)),
-      grid_entries_(std::move(other.grid_entries_)),
-      upload_count_(other.upload_count_) {
-    other.entries_.clear();
-    other.dryden_params_ = Entry{};
-    other.sdf_nodes_ = Entry{};
-    other.sdf_transforms_ = Entry{};
-    other.sdf_ranges_ = Entry{};
-    other.step_params_ = Entry{};
-    other.step_witness_ = Entry{};
-    other.contact_params_ = Entry{};
-    other.grid_params_ = Entry{};
-    other.grid_entries_ = Entry{};
-}
-
-StateMirror& StateMirror::operator=(StateMirror&& other) noexcept {
-    if (this != &other) {
-        destroy();
-        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
-        physical_device_ = std::exchange(other.physical_device_, VK_NULL_HANDLE);
-        queue_ = std::exchange(other.queue_, VK_NULL_HANDLE);
-        pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
-        cmd_ = std::exchange(other.cmd_, VK_NULL_HANDLE);
-        fence_ = std::exchange(other.fence_, VK_NULL_HANDLE);
-        set_layout_ = std::exchange(other.set_layout_, VK_NULL_HANDLE);
-        desc_pool_ = std::exchange(other.desc_pool_, VK_NULL_HANDLE);
-        set_ = std::exchange(other.set_, VK_NULL_HANDLE);
-        entries_ = std::move(other.entries_);
-        dryden_params_ = std::move(other.dryden_params_);
-        sdf_nodes_ = std::move(other.sdf_nodes_);
-        sdf_transforms_ = std::move(other.sdf_transforms_);
-        sdf_ranges_ = std::move(other.sdf_ranges_);
-        step_params_ = std::move(other.step_params_);
-        step_witness_ = std::move(other.step_witness_);
-        contact_params_ = std::move(other.contact_params_);
-        grid_params_ = std::move(other.grid_params_);
-        grid_entries_ = std::move(other.grid_entries_);
-        upload_count_ = other.upload_count_;
-        other.entries_.clear();
-        other.dryden_params_ = Entry{};
-        other.sdf_nodes_ = Entry{};
-        other.sdf_transforms_ = Entry{};
-        other.sdf_ranges_ = Entry{};
-        other.step_params_ = Entry{};
-        other.step_witness_ = Entry{};
-        other.contact_params_ = Entry{};
-        other.grid_params_ = Entry{};
-        other.grid_entries_ = Entry{};
-    }
-    return *this;
 }
 
 StateMirror::~StateMirror() { destroy(); }

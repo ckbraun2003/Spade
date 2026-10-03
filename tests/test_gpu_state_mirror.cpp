@@ -18,6 +18,7 @@
 
 #include "compute/backend.hpp"
 #include "compute/vulkan/backend.hpp"
+#include "bindings.gen.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
 #include "sim/simulation.hpp"
@@ -654,4 +655,31 @@ TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchP
         EXPECT_EQ(chain.barriers, chain.dispatches - 1u)
             << "every adjacent pair of dispatches needs a barrier, and none after the last";
     }
+}
+
+// ===========================================================================
+// The descriptor set binds every binding the generated registry declares.
+//
+// Until 2026-10-02 the mirror created body_snapshot (binding 22) but left it
+// out of its hand-kept add_binding list (and out of destroy() and the moves),
+// so the set had 25 of 26 bindings and every Vulkan StateMirror leaked that
+// buffer pair. Nothing dispatched a kernel that reads binding 22, so no parity
+// test could notice.
+// ===========================================================================
+
+TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
+    if (!vulkan_available()) GTEST_SKIP();
+
+    StepShape shape{};
+    shape.world_count = 2;
+    shape.body_capacity = 8;
+    shape.element_capacity = 4;
+    shape.sensor_capacity = 2;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+
+    Result<std::unique_ptr<VulkanBackend>> backend =
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape);
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    EXPECT_EQ((*backend)->bound_binding_count(), spade::compute::gen::kBindingCount_state);
 }

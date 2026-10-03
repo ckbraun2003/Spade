@@ -134,4 +134,6 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->recorder->recorded_chain(); }
 
+uint32_t VulkanBackend::bound_binding_count() const noexcept { return impl_->mirror->bound_binding_count(); }
+
 }  // namespace spade::compute

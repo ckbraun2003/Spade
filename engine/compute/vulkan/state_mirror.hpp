@@ -57,6 +57,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -79,8 +80,10 @@ public:
     ~StateMirror();
     StateMirror(const StateMirror&) = delete;
     StateMirror& operator=(const StateMirror&) = delete;
-    StateMirror(StateMirror&&) noexcept;
-    StateMirror& operator=(StateMirror&&) noexcept;
+    // Not movable: only ever held by unique_ptr (VulkanBackend::Impl). A
+    // hand-written move had to name every member and silently skipped one.
+    StateMirror(StateMirror&&) = delete;
+    StateMirror& operator=(StateMirror&&) = delete;
 
     // Copies every entry of `arenas`' registered walk into its matching
     // device buffer, staging through host-visible memory. invalid_argument
@@ -88,6 +91,10 @@ public:
     // capacity_per_world -- in that check order) does not match what this
     // mirror was created for.
     [[nodiscard]] Result<void> upload(const ArenaSet& arenas);
+
+    // How many bindings create() wrote into the descriptor set. A diagnostic:
+    // it should equal the generated registry's gen::kBindingCount_state.
+    [[nodiscard]] uint32_t bound_binding_count() const noexcept { return bound_binding_count_; }
 
     // The reverse of upload(): device buffers -> `arenas`. Same shape check,
     // same failure taxonomy. On any failure, no destination byte for the
@@ -229,6 +236,7 @@ private:
     VkDescriptorSet set_ = VK_NULL_HANDLE;
 
     std::vector<Entry> entries_;  // one per registered walk entry
+    uint32_t bound_binding_count_ = 0;
 
     // The DERIVED buffers -- none is part of the registered walk, all are
     // backend-internal (bindings.slang sections C and C'). Declared as Entry
@@ -271,6 +279,15 @@ private:
     //
     // Derived, never uploaded and never read back, exactly like grid_entries_.
     Entry body_snapshot_;
+
+    // THE ONE LIST of the derived buffers above. create() zero-fills and binds
+    // from it and destroy() tears down from it, so a derived buffer cannot be
+    // created in one place and forgotten in another. Until 2026-10-02 those
+    // were three hand-kept lists, and body_snapshot_ was missing from two.
+    [[nodiscard]] std::array<Entry*, 10> derived_entries() noexcept {
+        return {&dryden_params_, &sdf_nodes_,     &sdf_transforms_, &sdf_ranges_,   &step_params_,
+                &step_witness_,  &contact_params_, &grid_params_,   &grid_entries_, &body_snapshot_};
+    }
 
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer
     // here is device-local with a host-visible staging partner and an explicit

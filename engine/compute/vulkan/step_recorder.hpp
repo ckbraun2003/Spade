@@ -300,8 +300,10 @@ public:
     ~StepRecorder();
     StepRecorder(const StepRecorder&) = delete;
     StepRecorder& operator=(const StepRecorder&) = delete;
-    StepRecorder(StepRecorder&&) noexcept;
-    StepRecorder& operator=(StepRecorder&&) noexcept;
+    // Not movable: only ever held by unique_ptr (VulkanBackend::Impl). A
+    // hand-written move had to name every member and silently skipped one.
+    StepRecorder(StepRecorder&&) = delete;
+    StepRecorder& operator=(StepRecorder&&) = delete;
 
     // Submits the ALREADY-RECORDED per-substep dispatch chain `n` times (one
     // submit per step, the SAME VkCommandBuffer every time -- no
