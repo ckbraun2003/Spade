@@ -100,20 +100,22 @@ naming the child. A caller that wants re-rooting does it explicitly.
 A behavior is data: a name, one of **two fixed slots**, declared read/write
 masks, a required `execute_cpu` and an optional `record_gpu`.
 
-The two slots and their positions are the ruling, not a convenience:
+The two slots are placed passes of the built-in `behaviors` module
+(`sim/standard_modules.cpp`), and their positions are the ruling, not a
+convenience:
 
-- **`BehaviorsKinematic`** runs after `MediumUpdate` and **before**
-  `ForceElements`, so a pose written by a kinematic behavior is set before
-  anything reads it — both collision passes do.
-- **`BehaviorsForce`** runs **after** `ForceElements`, so behavior wrenches
-  accumulate after the rotors-then-drag order the golden corpus pins. Float
-  addition is not associative; running before would change `force_acc`'s last
-  bits.
+- **Kinematic behaviors** run **first in the Fields phase**, before any field
+  is sampled and before every force and contact pass, so a pose written by a
+  kinematic behavior is set before anything reads it.
+- **Force behaviors** run **last in the Forces phase**, after the rotor and drag
+  modules, so behavior wrenches never perturb the rotors-then-drag order the
+  golden corpus pins. Float addition is not associative. A force behavior may
+  overwrite `force_acc`, so it declares a write; being placed last is what
+  orders it after the accumulators.
 
-The substep schedule is therefore ten passes, not `physics/schedule.hpp`'s
-original eight. Both slots are inert when no registry is attached, which is every
-golden-corpus scenario — so the corpus keeps re-proving that inertness on every
-run rather than it having been a one-time observation.
+Both slots are inert when no registry is attached, which is every golden-corpus
+scenario, so the corpus keeps re-proving that inertness on every run rather than
+it having been a one-time observation.
 
 **Registration order is execution order** within a slot: two behaviors touching
 the same accumulator must compose in a defined sequence or the result is not
