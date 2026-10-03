@@ -11,7 +11,7 @@ After this lands, Kat's compiler can turn a part-built airframe into a `ModelTyp
 
 `Result<CompiledAirframe> compile_airframe(const AirframeSpec&)`
 
-It takes, all in the design frame:
+It takes an `AirframeSpec` (question 3, below), all in the design frame:
 - every mass as a `PartInertia`;
 - each rotor's hub position, its orientation (thrust along local +Y) and its spin direction;
 - one propulsion chain shared by every rotor (`PropulsionChain`), and the rotor's polar inertia;
@@ -40,6 +40,37 @@ It returns:
    - any field `ModelType::validate()` rejects.
 
 A small addition to `propulsion_steady.hpp` exposes the time constant: `steady_state_time_constant(chain, duty, density, v_axial, soc, rotor_inertia)`.
+
+## Kat's four questions, answered (2026-10-03)
+
+**1. Determinism.** The same `AirframeSpec` gives a bit-identical `ModelType` on every machine.
+- Every step is double arithmetic in a fixed order, with one float rounding per output.
+- The only non-arithmetic call is `sqrt`, which IEEE 754 rounds correctly. No libm transcendental is on the path (`TD-3`).
+- The solver's bisections and the time constant's central difference have fixed iteration counts and fixed steps.
+- A test pins the identity of a reference airframe's compiled model. The MSVC gate and the Docker gcc leg must both reproduce it, so the claim is measured, not argued.
+
+That needs two things from Core, both asked for:
+- a public `model_identity(const ModelType&)`, the per-model fold behind the snapshot's model-registry identity (Core's task C), which Kat hashes;
+- the canonical sign rule for `design_to_principal` (the first non-zero of w, x, y, z positive) moved beside `ModelType`. Then the compile and `register_model` apply one rule (`TD-9`), and a compiled model's identity equals its registered one.
+
+**2. Provenance.** The fit report tags each derived quantity:
+- `from_parts`: mass, centre of mass, principal moments, design rotation, every mount;
+- `fitted`: the momentum rotor's `k_T`, `k_Q` and `tau`;
+- `estimated`: drag, when the spec gives none. It is the parts' projected areas per body axis times a drag coefficient per shape, graded best-effort (spec section 14.3);
+- `given`: drag when supplied, the proxy radius, and sensor noise.
+
+Kat's builder shows the tags.
+
+**3. Input.** `AirframeSpec` is a Spade struct that Kat fills. Spade never reads Kat's part files (D-3). It is made of:
+- part blocks with the spec's section 14.2 field names and units (`motor`, `prop`, `esc`, `battery`), each with its mass, its mount pose and an optional shape;
+- airframe parts (frame, arms, avionics) as `PartInertia`.
+
+The compile turns every block's mass into a part, so the inertia counts everything once.
+
+**4. Refusals, all at once.**
+- `check_airframe(const AirframeSpec&)` returns every problem as a list of `{code, part kind, index, field, message}`. It is empty for a valid spec.
+- `compile_airframe` calls it first. On any problem, its `Result` error carries the whole list, joined, so Spade's `Result` convention holds. Kat calls `check_airframe` for the structured list.
+- So that each check stays in one place (`TD-9`), `composite_inertia` gains a form that collects every part's problems. `compile_airframe` and `check_airframe` both use it.
 
 ## What it is not
 
