@@ -206,14 +206,18 @@
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include "render/csg_mesh.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "world/builder.hpp"
 
 namespace {
 
@@ -370,6 +374,50 @@ void BM_RenderSlots(benchmark::State& state) {
         benchmark::Counter(pixels * static_cast<double>(state.iterations()), benchmark::Counter::kIsRate);
 }
 
+// CSG meshing of an 8 m shell, shower's bowl (sphere r 4 minus sphere r 3.8 at
+// y 0.4), at a cell size given in mm, with no floor or cap on the cell count.
+// Counters: cells per axis, triangles, and the folded share
+// (render/csg_mesh.hpp). It measured kCsgMeshDefaults.cell_size's choice
+// (rendering/plans/2026-10-03-raster-defects-plan.md, B1); 169 mm is the old
+// fixed 48 cells. Recorded, not gated.
+void BM_CsgMeshShell(benchmark::State& state) {
+    spade::WorldBuilder b;
+    b.name("bench-csg-shell")
+        .capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    b.sphere(4.0f).sphere(3.8f, spade::SdfPose{.position = {0.0f, 0.4f, 0.0f}}).subtract();
+    const spade::Result<spade::WorldDesc> world = b.build();
+    if (!world) {
+        state.SkipWithError(world.error().context.c_str());
+        return;
+    }
+    const auto root = static_cast<uint32_t>(world->sdf.nodes.size() - 1u);
+    const spade::Result<spade::render::Aabb> bounds = spade::render::csg_subtree_world_bounds(
+        world->sdf, root, spade::render::Aabb{.min = glm::vec3(-10.0f), .max = glm::vec3(10.0f)});
+    if (!bounds) {
+        state.SkipWithError(bounds.error().context.c_str());
+        return;
+    }
+    spade::render::CsgMeshLimits limits;
+    limits.cell_size = static_cast<float>(state.range(0)) / 1000.0f;
+    limits.min_cells_per_axis = 1;
+    limits.max_cells_per_axis = 1024;
+    spade::render::MeshData mesh;
+    for (auto _ : state) {
+        spade::Result<spade::render::MeshData> made = spade::render::mesh_csg_subtree(world->sdf, root, *bounds, limits);
+        if (!made) {
+            state.SkipWithError(made.error().context.c_str());
+            return;
+        }
+        mesh = std::move(*made);
+        benchmark::DoNotOptimize(mesh.positions.data());
+    }
+    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(world->sdf, root, mesh);
+    state.counters["cells"] = static_cast<double>(spade::render::csg_cells_per_axis(*bounds, limits));
+    state.counters["triangles"] = static_cast<double>(folds.triangles);
+    state.counters["folded_pct"] =
+        100.0 * static_cast<double>(folds.folded) / static_cast<double>(std::max(folds.triangles, 1u));
+}
+
 }  // namespace
 
 // ->UseRealTime() on every family: see this file's header. A frame budget is a
@@ -377,6 +425,7 @@ void BM_RenderSlots(benchmark::State& state) {
 BENCHMARK(BM_RenderBackgroundFill)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderGroundPlane)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderSlots)->DenseRange(1, 4, 1)->UseRealTime();
+BENCHMARK(BM_CsgMeshShell)->Arg(169)->Arg(80)->Arg(50)->Unit(benchmark::kMillisecond)->Iterations(3)->UseRealTime();
 
 // NO BENCHMARK_MAIN() HERE -- same reason bench_sim.cpp states: spade_bench is
 // one executable built from several benchmark TUs, and benchmark::benchmark_main

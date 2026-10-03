@@ -443,8 +443,11 @@ constexpr bool kFlipZ = true;
         limits.max_cells_per_axis < limits.min_cells_per_axis) {
         return 0u;
     }
-    (void)longest;
-    return limits.min_cells_per_axis;  // stub: the old fixed count, until the fix commit
+    const float wanted = std::ceil(longest / limits.cell_size);
+    if (!(wanted < static_cast<float>(limits.max_cells_per_axis))) {
+        return limits.max_cells_per_axis;
+    }
+    return std::max(limits.min_cells_per_axis, static_cast<uint32_t>(std::max(wanted, 0.0f)));
 }
 
 // The subtree [subtree_start(root), root] as its own program, so eval() and
@@ -465,9 +468,32 @@ uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& lim
 }
 
 CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh) {
-    (void)extract_subtree(program, root_node);
-    (void)mesh;
-    return {};  // stub: finds nothing, until the fix commit
+    CsgFoldReport report;
+    if (root_node >= program.nodes.size()) {
+        return report;
+    }
+    const SdfProgram subtree = extract_subtree(program, root_node);
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(std::numeric_limits<float>::lowest());
+    for (size_t t = 0; t + 2u < mesh.indices.size(); t += 3u) {
+        const glm::vec3& a = mesh.positions[mesh.indices[t]];
+        const glm::vec3& b = mesh.positions[mesh.indices[t + 1u]];
+        const glm::vec3& c = mesh.positions[mesh.indices[t + 2u]];
+        const glm::vec3 n = glm::cross(b - a, c - a);
+        if (!(glm::dot(n, n) > 0.0f)) {
+            continue;  // degenerate: it has no facing to judge
+        }
+        ++report.triangles;
+        if (glm::dot(n, gradient(subtree, (a + b + c) / 3.0f)) < 0.0f) {
+            ++report.folded;
+            lo = glm::min(lo, glm::min(a, glm::min(b, c)));
+            hi = glm::max(hi, glm::max(a, glm::max(b, c)));
+        }
+    }
+    if (report.folded > 0u) {
+        report.bounds = Aabb{.min = lo, .max = hi};
+    }
+    return report;
 }
 
 Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node, const Aabb& subtree_bounds,
