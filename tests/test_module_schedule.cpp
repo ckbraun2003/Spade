@@ -7,7 +7,9 @@
 #include <string_view>
 #include <vector>
 
+#include "physics/schedule.hpp"
 #include "sim/module.hpp"
+#include "vehicles/rotor.hpp"  // RotorRow complete: schedule.hpp only forward-declares it
 
 namespace {
 
@@ -220,4 +222,39 @@ TEST(ModuleSchedule, IdentityIsSpeltOutAndChangesWithVersionOrOrder) {
                                   {.name = "alpha", .version = 1, .passes = one}};
     EXPECT_NE(compile_schedule(bumped)->identity, s->identity);
     EXPECT_NE(compile_schedule(swapped)->identity, s->identity);
+}
+
+// Spec section 4's table: the standard set compiles to today's order, with the
+// two documented changes (kinematic behaviors before Dryden; the empty
+// Gravity and Publish passes gone).
+TEST(StandardModules, CompileToTodaysOrder) {
+    const spade::modules::ModuleSet set = spade::modules::standard_modules();
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(names(*s), (Names{"behaviors.kinematic", "dryden.advance", "rotor.forces", "drag.forces",
+                                "behaviors.force", "static_contact.resolve", "dynamic_contact.resolve",
+                                "integrate.integrate", "imu.synthesize", "gnss.synthesize"}));
+}
+
+// Without drag's edge, set order (drag before rotor: the golden walk's order)
+// would run drag first and move every golden with a rotor. The edge is
+// load-bearing, so dropping it must change both the order and the identity.
+TEST(StandardModules, DroppingDragsEdgeChangesTheOrderAndTheIdentity) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    const auto with_edge = compile_schedule(set);
+    ASSERT_TRUE(with_edge.has_value()) << with_edge.error().context;
+
+    static constexpr QuantityAccess drag_access[] = {{"body.pose", Access::read},
+                                                     {"body.wrench", Access::accumulate},
+                                                     {"dryden.state", Access::read}};
+    static constexpr PassDecl drag_no_edge[] = {
+        {.name = "forces", .phase = Phase::forces, .access = drag_access, .cpu = &spade::physics::pass_drag}};
+    ASSERT_EQ(set[0].name, "drag");
+    set[0].passes = drag_no_edge;
+
+    const auto without = compile_schedule(set);
+    ASSERT_TRUE(without.has_value()) << without.error().context;
+    EXPECT_EQ(names(*without)[2], "drag.forces");
+    EXPECT_EQ(names(*without)[3], "rotor.forces");
+    EXPECT_NE(without->identity, with_edge->identity);
 }
