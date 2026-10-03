@@ -383,10 +383,11 @@ inline void finish(render::MeshData& m) {
 
 }  // namespace detail
 
-// The size parameters exist so a LIT part can be built at its real dimensions
-// and placed with rotation and translation only: both shading paths transform
-// normals by mat3(model) with no inverse-transpose, so a non-uniformly scaled
-// box shades skewed. The defaults are the unit meshes the builder scales.
+// The size parameters let a LIT part be built at its real dimensions and placed
+// with rotation and translation only, so its frame stays conformal. Since
+// 1cac77a both shading paths use the cofactor for a non-conformal frame, so a
+// scaled box also shades correctly. The defaults are the unit meshes the
+// builder scales.
 [[nodiscard]] inline render::MeshData make_box_mesh(const glm::vec3& half = glm::vec3(0.5f)) {
     render::MeshData m;
     const float x = half.x, y = half.y, z = half.z;
