@@ -567,8 +567,9 @@ TEST(SlangSpirv, FloatControlsPinned) {
                 // different way -- see SpirvModule::integer_only for why.
                 EXPECT_EQ(scan.contractable_ops, std::size_t{0})
                     << module << ": declared integer-only but carries " << scan.contractable_ops
-                    << " floating-point arithmetic ops -- has float math entered the sort comparator? "
-                    << "The key order must stay the CPU's integer one (physics/grid.cpp:329-335)";
+                    << " floating-point arithmetic ops -- float math has entered a module declared to have "
+                    << "none (grid_sort's comparator, a fill or a copy kernel); either remove it or drop "
+                    << "integer_only so PARITY's contractable-op instrument applies";
                 EXPECT_GT(scan.store_count, std::size_t{0})
                     << module << ": no OpStore found -- the embedded module is empty or truncated, "
                     << "which is what the contractable-op count would otherwise have caught";

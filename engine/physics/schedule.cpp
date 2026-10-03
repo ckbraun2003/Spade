@@ -23,10 +23,8 @@ void pass_medium_update(const SubstepContext& ctx) noexcept {
     }
 }
 
-// The ForceElements chain, split into its two modules' passes. Each world's
-// bodies still receive rotors' wrench before drag's: the loops run world by
-// world, and worlds share no body, so splitting the per-world call pair into
-// two all-world loops changes no accumulation order.
+// The field providers (module-API stage 3), in Fields: each writes its fields
+// into every world's sample row, before any reader runs.
 void pass_environment_sample(const SubstepContext& ctx) noexcept {
     for (const WorldSubstepView& w : ctx.worlds) {
         const WorldParams& p = *w.params;
@@ -47,6 +45,11 @@ void pass_dryden_sample(const SubstepContext& ctx) noexcept {
     }
 }
 
+// The ForceElements chain, split into its two modules' passes. Each world's
+// bodies still receive rotors' wrench before drag's: the loops run world by
+// world, and worlds share no body, so splitting the per-world call pair into
+// two all-world loops changes no accumulation order.
+//
 // Rotors and drag read the medium the providers stored this substep. The model
 // functions take a Medium, so they are unchanged; the stored values are the
 // bits DrydenMedium would have computed inline.
