@@ -8,10 +8,12 @@
 // vehicles/rotor_wake.hpp, fed from each rotor's live row. There is no
 // obstruction by the frame -- honest for what the engine models.
 //
-// WHY THE DRONE'S PARTS ARE MESHES AT THEIR REAL SIZE. Both shading paths
-// transform normals by mat3(model) with no inverse-transpose, so a lit part
-// must be placed with rotation and translation only. Only the heatmap cells,
-// which are unlit, are scaled.
+// WHY THE DRONE'S PARTS ARE MESHES AT THEIR REAL SIZE. Placed with rotation
+// and translation only, every lit part has a conformal frame. Since 1cac77a,
+// transform_normal() (render/scene.hpp) and the GL vertex shader use the
+// cofactor for a non-conformal frame, so a scaled lit part would also shade
+// correctly; conformal frames keep the arithmetic the frame goldens pin. Only
+// the heatmap cells, which are unlit, are scaled.
 //
 // Display-free like drone_sim.hpp, so tests/test_sandbox_drone_view.cpp
 // asserts it with no window (SL15b).

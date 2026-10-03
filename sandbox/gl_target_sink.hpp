@@ -171,6 +171,11 @@ class GlTargetSink final : public TargetSink {
     //
     void present_overlay(float render_ms, float physics_ms);
 
+    // The HUD line that names what the active path does not draw
+    // (render_gap.hpp), or "" for none. Held until replaced, so the
+    // application sets it whenever the path or the options can change.
+    void set_gap_line(std::string line);
+
     // Attach the builder's model, or nullptr to detach. While attached, the
     // hierarchy and inspector are drawn by WHICHEVER path presents the frame
     // and written back into.

@@ -34,6 +34,7 @@
 #include <fstream>
 #include <ios>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -44,6 +45,7 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
+#include "render_gap.hpp"
 #include "target_sink.hpp"
 
 using spade::WorldBuilder;
@@ -247,4 +249,18 @@ TEST(SandboxTargetSink, TheWrittenPpmRoundTripsToTheEmittedFrame) {
 
     EXPECT_EQ(payload, sink.emitted_rgb()) << "the bytes on disk are not the frame the sink emitted";
     std::filesystem::remove(out, ec);
+}
+
+// SL10: the GPU path's gap is shown on the HUD, not hidden. The line names
+// exactly what GlRenderer::unhonoured() returned, in its order.
+TEST(SandboxTargetSink, TheGapLineNamesEveryUnhonouredOption) {
+    const std::vector<std::string_view> gap = {"shadows", "overlays"};
+    EXPECT_EQ(spade::sandbox::render_gap_line(gap), "GL does not draw: shadows, overlays");
+    const std::vector<std::string_view> one = {"mode"};
+    EXPECT_EQ(spade::sandbox::render_gap_line(one), "GL does not draw: mode");
+}
+
+// A path with no gap draws no line: an empty string, not a label with no list.
+TEST(SandboxTargetSink, NoGapDrawsNoLine) {
+    EXPECT_EQ(spade::sandbox::render_gap_line({}), "");
 }
