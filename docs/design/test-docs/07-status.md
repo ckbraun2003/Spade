@@ -1,6 +1,6 @@
 # Test/Docs — status
 
-**The only place that describes what exists today in this realm.** Checked against master at `7badaf1` (2026-10-03) plus this realm's branches unless a row says otherwise. The Windows counts below are from the lead's batch gate at `3605ddf`; the Docker leg's are from `fe4934a`, which contains `7badaf1`. Every count carries its tree and commit (`TD-8`).
+**The only place that describes what exists today in this realm.** Checked against master at `7be670b` (2026-10-03) unless a row says otherwise. The Windows counts below are from the lead's batch gate at `3605ddf`. The Docker leg's are from `fe4934a` and `b82b72e`; `b82b72e` is in master, and the suite counts quoted below were re-checked against its 987 registered names. Every count carries its tree and commit (`TD-8`).
 
 ## Baseline (restructure plan R5)
 
@@ -23,14 +23,19 @@
 - **How it got here from the first measurement** (release, `7637f11`, 897 / 895 / 2 / 0, with a sibling `../KAT` checkout present): KAT-reach removed 31 cases that read KAT's content and added 3 `AgreementProbe`; then the drone box added 33 (`SandboxDrone*`), the rotor wake 14 (`RotorWake`), Core's medium sampling and defect fixes 4, and builder winding 1. Measured by name, not by subtraction. The suite no longer reads anything outside this repository, so the total no longer depends on the machine.
 - **Build times** at `-ParallelLevel 1`: release from a fresh checkout, including dependency fetch, 1006.5 s; release incrementally from `2237048` to `df33f09`, 493.4 s; debug from scratch, 649.9 s including configure.
 
-## The Docker leg's first run (`TD-11`, `TD-12`)
+## The Docker leg's runs (`TD-11`, `TD-12`)
 
-`scripts\docker-leg.ps1` in the `spade-docker-leg:ed5552f460d7` image: gcc-13 13.3.0, CMake 3.28.3, Release, `-j1`, `--memory 3g`. The commit is `fe4934a`, a local integration commit that was never pushed: master `7badaf1` plus `test-docs/docker-leg`, `test-docs/viewer-canary` and `interface/consumer-smoke`. Run on 2026-10-03.
+`scripts\docker-leg.ps1` in the `spade-docker-leg:ed5552f460d7` image: gcc-13 13.3.0, CMake 3.28.3, Release, `-j1`, `--memory 3g`.
+- The first run, on 2026-10-03, was on `fe4934a`, a local integration commit that was never pushed: master `7badaf1` plus `test-docs/docker-leg`, `test-docs/viewer-canary` and `interface/consumer-smoke`.
+- The first green run on committed code was on `b82b72e`: `RND-5`'s B, rebased on master `fa33656`, which carries Interface's brace fix. It is in master via `a46bb86`. Rendering ran it in slot 14.
 
 | Run | configure | build | test | agreement | consumer ON | consumer OFF | Total | Peak memory |
 |---|---|---|---|---|---|---|---|---|
 | `fe4934a` as committed | PASS, 5 s | **FAIL**, 1031 s: 1 of 263 steps | blocked | blocked | blocked | PASS, 236 s | 1272 s | 845 MB |
 | `fe4934a` + braces at `tests/test_sandbox_drone.cpp:76`, in the container only | PASS, 3 s | PASS, 13 s | **908 run: 906 passed, 2 skipped, 0 failed**, 55 s | no matrix in this commit | PASS, 62 s | PASS, 45 s | 178 s | 362 MB |
+| **`b82b72e`, committed, no local change** | PASS, 7 s | PASS, 849 s (a near-full rebuild), `build-errors.txt` empty | **908 run: 906 passed, 2 skipped, 0 failed**, 64 s | no matrix in this commit | PASS, 79 s | PASS, 144 s | 1143 s | 775 MB |
+
+- **Green on committed code:** `b82b72e` built and passed every part with nothing patched. It reproduced `RND-5`'s regenerated frame hashes, which makes that regeneration final (`TD-12`); Rendering's `0c0a8b2` cites the run. Its summary is in Rendering's worktree, `build-docker/b82b72ede453/`.
 
 - **The one gcc error:** `tests/test_sandbox_drone.cpp:76:16` `-Werror=dangling-else`, a gtest `EXPECT_LT` inside an unbraced `if`. It is Interface's, routed by the lead. Every other translation unit compiles under `-Wall -Wextra -Wpedantic -Werror`.
 - **`TD-12`, first cross-check since the split:**
@@ -58,8 +63,8 @@
 | `TD-1` golden governance | partly | 6 scenarios, 7 worlds and 3 render manifests, each with provenance. `gnss_tumble` joined at `0ce4ff5` (`PHY-6`) on the existing `ballistic` world, and the Docker leg reproduced its digest at `fe4934a`, so it is no longer provisional. The 8 viewer trajectories (`tests/golden/viewer/`, `INT-4`, `0935c6f`) are goldens too, asserted by `Viewer/ViewerTrajectory.*` (`0835e32`); the perishable captures beside them are an archive, not goldens (`tests/v1-baselines/`). A regeneration is final once the leg reproduces it (`TD-12`) |
 | `TD-6` device gating | yes | Every `Gpu*` suite gets `gpu`; 78 at `3605ddf` on Windows, 79 registered at `fe4934a` |
 | `TD-7` the gate | yes | `scripts\test.ps1` on both presets, on the development box only (`TD-11`) |
-| `TD-11` Docker leg | yes | `scripts\docker-leg.ps1`, `docker-leg.sh` and `docker-leg.Dockerfile`, with Interface's `scripts/consumer-smoke.sh`. It ran end to end at `fe4934a` (above). It runs when a slot is given, not on every commit |
-| `TD-12` golden cross-check | yes | First run at `fe4934a`: 6 scenario digests, the render goldens and 8 viewer trajectories reproduce on gcc. The gate still cannot see a Linux-only divergence between leg runs |
+| `TD-11` Docker leg | yes | `scripts\docker-leg.ps1`, `docker-leg.sh` and `docker-leg.Dockerfile`, with Interface's `scripts/consumer-smoke.sh`. It ran end to end at `fe4934a`, and green on committed code at `b82b72e` (above). It runs when a slot is given, not on every commit |
+| `TD-12` golden cross-check | yes | First run at `fe4934a`: 6 scenario digests, the render goldens and 8 viewer trajectories reproduce on gcc. `RND-5`'s regeneration was reproduced at `b82b72e`. The gate still cannot see a Linux-only divergence between leg runs |
 | `TD-13` GPU coverage | yes, as policy | All 78 `gpu` tests ran on both presets at `3605ddf`; none skipped. The Docker leg excludes them with `-LE gpu` (79 at `fe4934a`). Nothing mechanical enforces it: `scripts\test.ps1` exits 0 with skips, so each report names any skipped `gpu` test (`02-build-and-gate.md`) |
 
 ## Ruled by the user (2026-10-02)
@@ -77,7 +82,8 @@ GPU coverage on a one-machine gate, the third open question, is `TD-13`. No user
 
 ## What's next
 
-1. **Put the leg to work.** Rendering's `RND-5` regeneration is final only once the leg reproduces it. Rendering's agreement bands need its `gcc-release` attestation, which the leg's `agreement` part collects.
-2. **A green leg on the committed tree,** once Interface's brace fix for `test_sandbox_drone.cpp:76` lands.
-3. **GPU coverage** (`TD-13`) is ruled and written into `02-build-and-gate.md`. What remains is practice, not code: every gate report states how many `gpu` tests ran and names any skip, and the Docker leg's report states that it excluded them.
-4. **The bench baselines' next re-seed** names Core's module-API stage 2 commit in `_meta`. That commit splits the rotor/drag and IMU/GNSS timing brackets, so `gpu_force_elements_ns` and `gpu_sensor_synthesis_ns` each include one extra timestamp mark (`TD-8`).
+1. **The leg's next jobs:**
+   - Interface's `SL2b` proof, red with `-Step consumer`, then green with `all`, with the sandbox stage on;
+   - Rendering's agreement bands, which need the `gcc-release` attestation that the leg's `agreement` part collects.
+2. **GPU coverage** (`TD-13`) is ruled and written into `02-build-and-gate.md`. What remains is practice, not code: every gate report states how many `gpu` tests ran and names any skip, and the Docker leg's report states that it excluded them.
+3. **The bench baselines' next re-seed** names Core's module-API stage 2 commit in `_meta`. That commit splits the rotor/drag and IMU/GNSS timing brackets, so `gpu_force_elements_ns` and `gpu_sensor_synthesis_ns` each include one extra timestamp mark (`TD-8`).
