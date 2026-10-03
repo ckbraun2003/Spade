@@ -1,5 +1,6 @@
 #include "sim/simulation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -263,9 +264,23 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // Module-API plan stage 1: the GPU recorder still runs its own pass
         // table, which is the standard set's. Any other set would run a
         // different experiment on the GPU than on the CPU, silently (L6).
-        static const uint64_t kStandardIdentity =
-            modules::compile_schedule(modules::standard_modules())->identity;
-        if (compiled->identity != kStandardIdentity) {
+        //
+        // The passes are compared one by one, CPU function included, not by
+        // identity alone: the identity hashes names, versions and order, so a
+        // set that keeps a standard name with another function would match it
+        // and the GPU would run the stock kernel in its place.
+        static const Result<modules::CompiledSchedule> kStandard =
+            modules::compile_schedule(modules::standard_modules());
+        if (!kStandard) {
+            return std::unexpected(internal("the standard module set does not compile: " +
+                                            kStandard.error().context));
+        }
+        const auto same_pass = [](const modules::CompiledPass& x, const modules::CompiledPass& y) {
+            return x.module == y.module && x.pass == y.pass && x.phase == y.phase && x.cpu == y.cpu;
+        };
+        if (compiled->identity != kStandard->identity ||
+            !std::equal(compiled->passes.begin(), compiled->passes.end(), kStandard->passes.begin(),
+                        kStandard->passes.end(), same_pass)) {
             return std::unexpected(Error{Code::unavailable,
                                          "a module set other than the standard set runs only on the CPU until "
                                          "the GPU chain is derived from the schedule (module-API plan, stage 2)"});
