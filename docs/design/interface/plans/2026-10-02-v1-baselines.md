@@ -1,6 +1,6 @@
 # The v1 baselines (`INT-4`, `SL14b`): spec and plan
 
-**Owner:** Interface. **Status:** draft, for the lead's review. Three decisions are open (see "Decisions"). `INT-4` (signed 2026-10-02): capture `SL14b`'s baselines now, while v1 still builds and runs. **Done when** (`../../backlog.md`): the baselines are committed, with how they were captured. Comparing successors against them is later work (`SL14b`'s P6), not this plan.
+**Owner:** Interface. **Status:** approved by the lead 2026-10-02, with all three decisions taken (see "Decisions"); storage amended the same day by Test/Docs's governance ruling. Tasks 1–2 done. `INT-4` (signed 2026-10-02): capture `SL14b`'s baselines now, while v1 still builds and runs. **Done when** (`../../backlog.md`): the baselines are committed, with how they were captured. Comparing successors against them is later work (`SL14b`'s P6), not this plan.
 
 **v1 is not touched.** Nothing in `src/ include/ examples/ assets/` changes, and no capture shim goes into v1. The perishable baselines are taken from outside the running tools. The one code change is in `engine/tools/viewer/` (Interface's, v2 tool code), and only for the durable half.
 
@@ -55,26 +55,37 @@ The perishable column needs **no code at all**. It's a harness that runs the too
 - This is the first step of the harvest `03-v1-retirement.md` already requires, since the successors need exactly this function.
 
 **2. Add a headless mode:** `spade_viewer <scene> cpu --trajectory <file> [--ticks N]`, default N = 3000 (12 s; flight crosses its gate at about 7.9 s). No window opens and v1 is not initialised. Per tick it calls the hook and then `step(1)`, as the window loop does. It writes:
-- **a header:** scene, commit, backend, dt, substeps, N and seeds;
-- **checkpoints:** every 25 ticks, the tick, `state_digest`, and each world's `world_digest`;
-- **a chain digest:** folded over every tick's `state_digest`, so a divergence anywhere is detected and located to within 25 ticks;
+- **a header:** scene, backend, dt, substeps, N and seeds. The harness adds the provenance lines: capture time, commit and reason (`TD-1`);
+- **checkpoints:** every 25 ticks, the tick, the running chain digest (every tick's `state_digest` folded up to that tick), `state_digest`, and each world's `world_digest`. The running chain catches a divergence at any tick and makes every prefix checkable;
 - **observables:** a few per scene, so a reader can check the trajectory looks right. For example, each world's body-centroid height every 250 ticks, the vehicle positions, and the gate-crossing tick for flight. The characterisations recorded in `scenes.cpp` (wind peaks near 3.4 s; flight's gate at about 7.86 s) are checked against these;
-- **performance:** per-`step(1)` time (median and p90 over ticks 100..N), plus private bytes and working set after setup and at the end. The clock is read around `step()` in the tool, never inside it (`L1`). Machine, GPU, driver and compiler are recorded as `tests/bench/baselines.json`'s `_meta` does, and the numbers are reference only, like that file.
+- **performance, on stdout, not in the file:** per-`step(1)` time (median and p90 over ticks 100..N), plus private bytes and working set after setup and at the end. The harness collects them into the archive's `performance.json`, so the trajectory file stays byte-stable. The clock is read around `step()` in the tool, never inside it (`L1`). Machine, GPU, driver and compiler are recorded as `tests/bench/baselines.json`'s `_meta` does, and the numbers are reference only, like that file.
 
 *Deviation from `SL14b`'s text ("via `spade_bench`"):* `spade_bench` can't build `scenes.cpp` without reaching into a v1-gated tool, and it measures no memory. The viewer's headless mode uses the same constructors, the same setup and the same dt.
 
-### C. Storage
+### C. Storage (Test/Docs's ruling, 2026-10-02)
 
-`tests/golden/v1-baselines/` (Test/Docs governs `tests/golden/`):
-- `README.md`: characterisation of all eleven scenes, provenance (commit, machine, toolchain, GPU and driver, date), exactly how each item was captured, and the asymmetries `SL14b` names.
-- `viewer/<scene>/t<seconds>.png`
-- `sandbox/<scene>/<moment>.png`
-- `viewer/<scene>.trajectory.txt`
-- `performance.json`
+The two kinds of data go to two homes, because in this repo "golden" means CPU-sourced and asserted (`TD-1`).
+
+**`tests/golden/viewer/`: the trajectory goldens.**
+- `<scene>.trajectory.txt`, one per viewer scene. Each file's header is its provenance record.
+- `README.md`: what they are and how `TD-1` governs a regeneration. Understand why a file moved first; never shorten, skip or drop checkpoints; no per-platform copies; final once the Docker gcc leg reproduces it (`TD-12`).
+- `scenes.cpp` and `setup.cpp` build as the `spade_viewer_scenes` library in every configuration, with `spade_fp_strict` and `spade_warnings`. The viewer links it, and the guard will. On MSVC `spade_fp_strict` adds nothing, so this box's trajectories cannot move.
+
+**`tests/v1-baselines/`: the archive, recorded once, never asserted, never regenerated.** If something in it is wrong after quarantine, annotate its README instead of re-capturing.
+- `README.md`: characterisation of all eleven scenes, provenance (commit, machine, toolchain, GPU and driver, date), how each item was captured, and the asymmetries `SL14b` names.
+- `viewer/<scene>/t<seconds>.png` and `sandbox/<scene>/<moment>.png`, each with `capture.json` and `stdout.txt`.
+- `performance.json`: the trajectory runs' step time and memory.
 
 PNGs are written by the harness through .NET's `System.Drawing`, so there's no new dependency. That's 44 frames, an estimated 3–10 MB at native resolution (decision 2).
 
 ## Decisions
+
+**Taken by the lead on 2026-10-02: yes to all three.**
+- Decision 1 has two conditions: the extraction is its own commit, shown to be a pure move with `git diff --color-moved=zebra`; and `03-v1-retirement.md` says `setup.cpp` is harvested, not quarantined.
+- Decision 3 is capped at 5 s or less per scene case on debug, and 40 s or less across the 8 cases.
+  - Each case checks the committed checkpoints up to its own N, chosen from a debug measurement.
+  - With `SPADE_FULL_VIEWER_TRAJECTORIES=1`, the same cases run all 3000 ticks. The Docker leg sets it.
+  - No new label; one ctest case per scene.
 
 1. **The viewer edit for the durable half** (part B).
    - Recommended: yes. `engine/tools/viewer/` is Interface's v2 tool code, the extraction is a pure move, and the new mode is opt-in.
@@ -108,8 +119,8 @@ Task 1's dry run settles which case applies, and I'll tell the lead which before
 
 Branch `interface/v1-baselines` in `../spade-wt/interface`. The baselines and their README are committed on that branch, since they come from its tools.
 
-- [ ] **1. The harness** (part A). It needs no build of its own. The dry run uses any built `bin/`. The real capture (Task 3) runs the worktree's `build-ninja/release` binaries, rebuilt at the branch commit in Task 2's slot, so the baselines name the commit that produced them. Proof: a dry run of `drop` and `Sandbox spheres`, including the motion check, the blank check and the `-Force` refusal. *Short slot: one viewer window and one Sandbox window, about 1 min each, no input.*
-- [ ] **2. Extract setup, and the headless mode** (part B; only if decision 1 is yes). Proof:
+- [x] **1. The harness** (part A). It needs no build of its own. The dry run uses any built `bin/`. The real capture (Task 3) runs the worktree's `build-ninja/release` binaries, rebuilt at the branch commit in Task 2's slot, so the baselines name the commit that produced them. Proof: a dry run of `drop` and `Sandbox spheres`, including the motion check, the blank check and the `-Force` refusal. *Short slot: one viewer window and one Sandbox window, about 1 min each, no input.*
+- [x] **2. Extract setup, and the headless mode** (part B; only if decision 1 is yes). Proof:
   - it builds under /W4 /WX;
   - the extraction diff is a pure move;
   - two `--trajectory` runs are byte-identical apart from the timing and memory lines;
@@ -117,7 +128,7 @@ Branch `interface/v1-baselines` in `../spade-wt/interface`. The baselines and th
   - the observables match the recorded characterisations.
   
   *Short slot: an incremental `spade_viewer` build of about 5 min, then about 2 min of headless runs.*
-- [ ] **3. The capture run:** all 11 scenes with part A, and the 8 headless runs with part B. Then commit `tests/golden/v1-baselines/`. *One slot, about 15 min, with the desktop unlocked.*
+- [ ] **3. The capture run:** all 11 scenes with part A, and the 8 headless runs with part B. Then commit `tests/golden/viewer/` and `tests/v1-baselines/`. *One slot, about 15 min, with the desktop unlocked. It starts with the incremental build of the storage changes; no build runs during the capture itself.*
 - [ ] **4. Docs.**
   - `03-v1-retirement.md`: the order step "capture baselines" done, with a link, and the deviation from "via `spade_bench`".
   - `07-status.md`: the `SL14b` row.
