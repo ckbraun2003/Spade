@@ -789,13 +789,13 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
                                                        const spade::render::Camera& camera, bool heatmap,
                                                        float heatmap_max, float blur, float* observed_max) {
     scene.dynamics.clear();
+    scene.field_layers.clear();
     spade::sandbox::append_drone_items(binding, drone.params(), glm::vec3(0.0f), orientation, scene.dynamics);
     if (heatmap) {
         if (const auto field = spade::sandbox::air_field_from(drone)) {
-            const float seen = spade::sandbox::append_slice_items(
-                binding, spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f), orientation), *field, heatmap_max,
-                scene.dynamics);
-            if (observed_max != nullptr) *observed_max = seen;
+            scene.field_layers.push_back(spade::sandbox::slice_layer(
+                spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f), orientation), *field, heatmap_max,
+                observed_max));
         }
     }
     spade::render::RenderOptions o;
@@ -803,13 +803,13 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
     o.ground_grid = false;  // and no ground for the grid to sit on
     // The design's "shadows off in the heatmap view". A no-op in this scene
     // either way: the shadow map is baked from statics at world load, the
-    // empty world has none, and dynamics (drone, cells) neither cast nor receive.
+    // empty world has none, the drone's parts neither cast nor receive, and a
+    // field layer takes no shadow.
     o.shadows = !heatmap;
-    // The heatmap's colour IS the datum, and the CPU path applies the
-    // atmospheric horizon term to every material, unlit included -- so with
-    // blur > 0 the cells would fade toward the sky by distance and stop
-    // matching the legend (and the GL path, which ignores options). A field
-    // channel is exempt from it (Rendering's rule).
+    // The layer itself never takes the atmospheric term (field_layer.hpp,
+    // SR-17a). The drone's parts drop it in the heatmap view too, so the
+    // whole frame reads against a clean sky, as it did before the move to
+    // field layers.
     o.horizon_blend_strength = heatmap ? 0.0f : blur;
     return o;
 }
