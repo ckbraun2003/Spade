@@ -32,10 +32,17 @@ None open. The sensor dedup was ruled on 2026-10-02: the module API absorbs it (
 ## Next
 
 - **The drone builder, Core's part** (`plans/2026-10-03-drone-builder-core-plan.md`, approved). It has four tasks:
-  - A: `transform_of` public;
-  - B: the design frame (spawn and `vehicle_state`);
-  - C: snapshot format v3 with the model registry's identity;
-  - D: the scene-file schema.
+  - A: `transform_of` public. **Merged `65c2295`** (Windows 1072, 0 failed; gcc leg PASS at `57d6ccd`).
+  - B: the design frame (spawn and `vehicle_state`), plus `vehicles::canonical_design_rotation`.
+  - C: snapshot format v3 with the model registry's identity, plus the public `vehicles::model_identity`.
+  - D: the scene-file schema (`scene/scene_file`), and the YAML text helpers shared through `world/detail/yaml_text.hpp`.
+- **Paused 2026-10-03, at the lead's call.** B, C and D are written, reviewed and **not yet built**. They form one chain on `a911c1b`:
+  - `core/design-frame` `50355f7`;
+  - `core/snapshot-v3` `8e28283`;
+  - `core/scene-schema` `43b5c64`.
+  - Reviews: Physics on B, Interface on D, Test/Docs on the scenario-reader part of D.
+  - Next: the lead's slot 21. Rebase the chain onto master; red, then green, for B, C and D in order. D's first green run writes `tests/golden/scenes/gate_run.scene.yaml` under a provenance stub: fill in the provenance and commit it. Then one full suite (expected master + 27) and one gcc leg at D's head.
+  - Physics' `physics/airframe-compile` and Interface's `interface/scene-compose` carry copies of these commits until the chain merges.
 - **Module API, stage 4: modules own their state** (`CORE-4`). Its plan follows the drone-builder work.
   - The spec was approved 2026-10-02 (`plans/2026-10-02-module-api-design.md`).
   - Stages 1, 2 and 3 are merged (`062e1fa`, `dca7cfb`, `42b352a`).
