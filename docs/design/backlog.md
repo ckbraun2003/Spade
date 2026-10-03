@@ -5,7 +5,7 @@ What isn't built yet, why, and what proves it done. One row per item. A realm's 
 ## Suggested order (lead, 2026-10-02)
 
 1. **Test/Docs: the Docker CI leg** (`TD-11`). It is small, it closes the consumer-smoke gap, and it gates every golden regeneration below (`TD-12`). **Built** (`44a4925`); its first run (`fe4934a`) was the first `TD-12` cross-check.
-2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`, built `0ce4ff5`, final under `TD-12` after the first Docker gcc run), the v1 baselines (`INT-4`, done `0935c6f`), then the `Lighting{}` regeneration once the Docker leg exists (`RND-5`). Rendering's GL parity work is done: back-face culling (`ec973ed`) and `RenderOptions` (`0a5e1a1`); GL still draws no shadows or overlays.
+2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`, built `0ce4ff5`, final under `TD-12` after the first Docker gcc run), the v1 baselines (`INT-4`, done `0935c6f`), then the `Lighting{}` regeneration (`RND-5`, merged `a46bb86`, reproduced on gcc). Rendering's GL parity work is done: back-face culling (`ec973ed`) and `RenderOptions` (`0a5e1a1`); GL still draws no shadows or overlays.
 3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.  Stage 1 of 6 merged (`062e1fa`).
 4. **On top of the module API:** SPH as a field provider (`PHY-4`), field channels for cameras, then the Vulkan raster as a technique (`RND-4`), and the editor spec (`INT-3`).
 
@@ -45,7 +45,6 @@ No user decision is open.
 
 | Item | Owner | Why it's open | Done when |
 |---|---|---|---|
-| Default-sun regeneration (`RND-5`) | Rendering | `render::Lighting{}`'s default sun is below the horizon | Default flipped; four frame goldens regenerated with provenance, cross-checked by the Docker leg |
 | Module API, scheduler phases, regions, field registry, grades | Core (then Physics, Rendering) | The engine model (`01-engine-model.md`) is signed but not built; today's schedule is a fixed ten-pass array | Today's passes run as built-in modules through the new scheduler, with every golden unchanged |
 | Translation-lock constraint on both backends | Core / Physics | The drone stand pins with CPU behaviors, so Vulkan is refused there | The drone sim box runs on Vulkan with its position held |
 | SPH fluid as a field provider (`PHY-4`) | Physics | The one open v1 transfer row (`docs/v1-transfer-register.md`); v1 stays in the tree until it closes | Row closed with a v2 implementation and a declared grade |
