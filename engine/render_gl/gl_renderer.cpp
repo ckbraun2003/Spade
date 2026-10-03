@@ -916,8 +916,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         for (const render::FieldLayer& layer : scene.field_layers) {
             const float top = render::resolved_range_max(layer);
             for (const float value : layer.values) {
-                const uint32_t bin = render::field_bin(layer.colour_map, value, top);
-                s.field_colours.emplace_back(render::field_bin_colour(layer.colour_map, bin), 1.0f);
+                s.field_colours.emplace_back(render::field_cell_colour(layer.colour_map, value, top), 1.0f);
             }
         }
         upload_in_place(s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);

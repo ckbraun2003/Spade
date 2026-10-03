@@ -18,9 +18,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -592,6 +594,36 @@ TEST_F(GpuGlRenderer, FieldLayerMatchesTheCpuWithinItsMeasuredBand) {
     EXPECT_LE(max_interior, kBandInterior) << "interior pixels differ from the CPU by up to " << max_interior
                                            << " levels; " << interior << " interior pixels, on " << device;
     EXPECT_LE(max_all, kBandAll) << "some pixel differs from the CPU by " << max_all << " levels, on " << device;
+}
+
+// The no-data colour on GL too: a NaN or infinite sample is grey (0.5),
+// never bin 0's colour. Black sky, so "not black" means "layer".
+TEST_F(GpuGlRenderer, FieldLayerShowsNonFiniteSamplesAsNoData) {
+    RenderScene scene;
+    scene.materials = {Material{}};
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+    spade::render::FieldLayer layer;
+    layer.width = 2.0f;
+    layer.height = 2.0f;
+    layer.cells_u = 2;
+    layer.values = {std::nanf(""), -std::numeric_limits<float>::infinity()};
+    scene.field_layers = {layer};
+    const std::vector<uint8_t> rgba = draw_and_read(scene, comparable_options());
+    ASSERT_EQ(rgba.size(), kPixels * 4u);
+    size_t covered = 0, not_grey = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        if (is_black(rgba, p)) continue;
+        ++covered;
+        for (size_t ch = 0; ch < 3u; ++ch) {
+            if (std::abs(static_cast<int>(rgba[p * 4u + ch]) - 128) > 1) {
+                ++not_grey;
+                break;
+            }
+        }
+    }
+    EXPECT_GT(covered, 0u) << "the layer must be visible";
+    EXPECT_EQ(not_grey, 0u) << "layer pixels that are not the no-data grey";
 }
 
 // Ray-marching is a different technique (render/raymarch) that GL does not
