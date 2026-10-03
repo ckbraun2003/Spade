@@ -78,6 +78,7 @@ add_executable(spade_tests
     test_determinism.cpp
     test_sim_medium.cpp
     test_module_schedule.cpp
+    test_design_frame.cpp
     test_m1b_bar.cpp
     test_render_target.cpp
     test_render_scene.cpp
