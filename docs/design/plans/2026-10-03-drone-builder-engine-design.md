@@ -19,7 +19,8 @@ Spade scene ──compose (Spade utility)──> runnable world ──> Simulati
 ```
 
 - Kat compiles an assembly of parts into Spade's public descriptions. In engine-model terms, the compiler is a template (`../01-engine-model.md`).
-- Each part arrives with a mount pose in the body frame. Spade never sees slots, presets or brands.
+- Each part arrives with a mount pose in the design frame. Spade never sees slots, presets or brands.
+- Kat sees only the design frame, which is the flight controller's frame. Spade keeps the design-to-principal rotation internal: the compile expresses mounts in the body frame, and host reads of a vehicle return the design frame.
 - Tuning (rates, gains, idle) stays in Kat's flight package. Spade's motor model takes a command input.
 
 ## 3. World and scene
@@ -74,7 +75,7 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 ## 7. Requirements
 
 - **DB-001** A part description MUST give every value in SI units as fp32.
-- **DB-002** A part description MUST give its mount pose in the body frame.
+- **DB-002** A part description MUST give its mount pose in the design frame.
 - **DB-003** The order of parts in a vehicle MUST be fixed, because it sets the fp32 accumulation order.
 - **DB-004** A table in a part (a motor curve, CT or CQ by advance ratio) MUST be a fixed-size sample set with a stated interpolation.
 - **DB-005** A part model MUST carry a version, and the version MUST enter the configuration hash.
@@ -83,7 +84,8 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 - **DB-008** No model may break or fail. A model at a limit MUST clamp and MUST publish an over-limit flag.
 - **DB-009** The builder's figures MUST come from the same pure functions the step calls.
 - **DB-010** Composing a scene into a world MUST be deterministic, and the scene order MUST enter the configuration hash.
-- **DB-011** The research airframes MUST be rebuilt as part assemblies, and their measurements MUST become validation data with stated tolerances.
+- **DB-011** The research airframes MUST be rebuilt as part assemblies, and their measurements MUST become validation data with stated tolerances. Kat holds system data only, so the rebuild is an inverse fit within the parts' published ranges, validated on held-out flights.
+- **DB-013** A vehicle's pose and rates MUST reach Kat in the design frame. The principal-axis rotation MUST stay inside Spade.
 - **DB-012** A recorded run MUST carry the compiled airframe it used, through Spade's replay configuration.
 
 ## 8. Open points
