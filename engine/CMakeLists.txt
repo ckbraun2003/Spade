@@ -1298,6 +1298,7 @@ add_executable(spade_viewer
     tools/viewer/main.cpp
     tools/viewer/bridge.cpp
     tools/viewer/scenes.cpp
+    tools/viewer/setup.cpp
 )
 
 # Same reasoning as spade_core/spade_state/... above: pinned per target, not
