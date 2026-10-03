@@ -47,6 +47,22 @@ struct SdfPose {
     float scale = 1.0f;
 };
 
+// The SdfTransform a primitive placed at `pose` gets: WorldBuilder's own
+// arithmetic, public so the scene composer (spade::scene) poses an asset bit for
+// bit as the builder poses a primitive.
+//
+// THE IDENTITY POSE IS SdfTransform{} EXACTLY -- the builder's transform 0, whose
+// translation is +0. The analytic path below would give -(m * 0) = -0 there, and
+// config_hash folds those bytes, so the identity (compared with ==, so a -0
+// position counts) is returned before any arithmetic.
+//
+// Otherwise, in this order: invalid_argument for a non-finite position, scale or
+// quaternion length; for a scale <= 0 (uniform scale only); for a zero-length
+// quaternion. Then the transform is built analytically, never via glm::inverse:
+// inv(T * R * S) = (1/s) R^T * translate(-position), with the rotation divided by
+// its length first. Compiled under spade_fp_strict, so no product is contracted.
+[[nodiscard]] Result<SdfTransform> transform_of(const SdfPose& pose);
+
 // A named pose in the world. Spawn points are how a scenario says "put the
 // vehicle here" without hard-coding coordinates in the caller.
 struct SpawnPoint {
