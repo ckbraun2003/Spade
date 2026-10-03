@@ -85,7 +85,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+# `powershell -File` passes "a,b" as ONE string, so split it here.
+$Scene = @($Scene | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+
+$root =(Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 if (-not $BinDir) { $BinDir = Join-Path $root 'build-ninja\release\bin' }
 if (-not $OutDir) { $OutDir = Join-Path $root 'tests\golden\v1-baselines' }
 
@@ -256,6 +259,9 @@ function Invoke-Scene($p) {
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $proc = Start-Process -FilePath $exe -ArgumentList $p.Args -WorkingDirectory $BinDir -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError (Join-Path $dir 'stderr.txt')
+    # Reading Handle now keeps the process handle open, so ExitCode is still
+    # readable after the process exits.
+    [void]$proc.Handle
     $script:lastSample = -1000
 
     # Waits until $untilMs on the scene clock, sampling memory once a second and
@@ -351,6 +357,7 @@ function Invoke-Scene($p) {
         }
 
         # Close the way a user would, and let stdout flush.
+        $rec.close_ms = $clock.ElapsedMilliseconds
         [void]$proc.CloseMainWindow()
         if (-not $proc.WaitForExit(20000)) {
             $proc.Kill()
@@ -373,11 +380,20 @@ function Invoke-Scene($p) {
         for ($k = $from; $k -lt $lines.Count; $k++) {
             if ($lines[$k] -match '^FPS: ([0-9.]+) \| Mem: ([0-9.]+) MB') { $fps += [double]$matches[1]; $mem += [double]$matches[2] }
         }
-        $rec.stdout_during_play = [ordered]@{ lines = $fps.Count; fps_median = (Get-Median $fps); mem_mb_median = (Get-Median $mem) }
+        # v1's printed FPS counts frames per CLAMPED second (Engine.cpp:604 caps
+        # dt at 0.05 s), so it never reads below about 20. The Sandbox prints
+        # one line per frame, so lines per wall second is the real frame rate.
+        $frameHz = $null
+        if ($rec.Contains('close_ms') -and $rec.Contains('play_seen_ms') -and $rec.close_ms -gt $rec.play_seen_ms) {
+            $frameHz = [Math]::Round($fps.Count / (($rec.close_ms - $rec.play_seen_ms) / 1000.0), 2)
+        }
+        $rec.stdout_during_play = [ordered]@{ lines = $fps.Count; frames_per_wall_second = $frameHz
+                                              v1_fps_median = (Get-Median $fps); mem_mb_median = (Get-Median $mem) }
     } else {
         $fps = @()
         foreach ($l in $lines) { if ($l -match '^fps: ([0-9.]+) \|') { $fps += [double]$matches[1] } }
-        $rec.stdout = [ordered]@{ lines = $fps.Count; fps_median = (Get-Median $fps) }
+        # The same clamped v1 counter; reference only, never a frame rate below 20.
+        $rec.stdout = [ordered]@{ lines = $fps.Count; v1_fps_median = (Get-Median $fps) }
     }
     $rec.ok = $ok
     ($rec | ConvertTo-Json -Depth 6) | Out-File -Encoding utf8 (Join-Path $dir 'capture.json')
