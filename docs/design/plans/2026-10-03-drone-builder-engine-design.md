@@ -74,19 +74,22 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 
 ## 7. Requirements
 
-- **DB-001** A part description MUST give every value in SI units as fp32.
-- **DB-002** A part description MUST give its mount pose in the design frame.
-- **DB-003** The order of parts in a vehicle MUST be fixed, because it sets the fp32 accumulation order.
-- **DB-004** A table in a part (a motor curve, CT or CQ by advance ratio) MUST be a fixed-size sample set with a stated interpolation.
-- **DB-005** A part model MUST carry a version, and the version MUST enter the configuration hash.
-- **DB-006** A part description MUST NOT carry random seeds. Spade derives every noise stream from the world seed.
-- **DB-007** Each physics model MUST have a CPU implementation. A GPU implementation MUST pin its operation order, or the model MUST declare its GPU grade `absent`.
-- **DB-008** No model may break or fail. A model at a limit MUST clamp and MUST publish an over-limit flag.
-- **DB-009** The builder's figures MUST come from the same pure functions the step calls.
-- **DB-010** Composing a scene into a world MUST be deterministic, and the scene order MUST enter the configuration hash.
-- **DB-011** The research airframes MUST be rebuilt as part assemblies, and their measurements MUST become validation data with stated tolerances. Kat holds system data only, so the rebuild is an inverse fit within the parts' published ranges, validated on held-out flights.
-- **DB-013** A vehicle's pose and rates MUST reach Kat in the design frame. The principal-axis rotation MUST stay inside Spade.
-- **DB-012** A recorded run MUST carry the compiled airframe it used, through Spade's replay configuration.
+- **DBE-001** A part description MUST give every value in SI units as fp32.
+- **DBE-002** A part description MUST give its mount pose in the design frame.
+- **DBE-003** The order of parts in a vehicle MUST be fixed, because it sets the fp32 accumulation order.
+- **DBE-004** A table in a part (a motor curve, CT or CQ by advance ratio) MUST be a fixed-size sample set with a stated interpolation.
+- **DBE-005** A part model MUST carry a version, and the version MUST enter the configuration hash.
+- **DBE-006** A part description MUST NOT carry random seeds. Spade derives every noise stream from the world seed.
+- **DBE-007** Each physics model MUST have a CPU implementation. A GPU implementation MUST pin its operation order, or the model MUST declare its GPU grade `absent`.
+- **DBE-008** No model may break or fail. A model at a limit MUST clamp and MUST publish an over-limit flag.
+- **DBE-009** The builder's figures MUST come from the same pure functions the step calls.
+- **DBE-010** Composing a scene into a world MUST be deterministic, and the scene order MUST enter the configuration hash.
+- **DBE-011** The research airframes MUST be rebuilt as part assemblies, and their measurements MUST become validation data with stated tolerances. Kat holds system data only, so the rebuild is an inverse fit within the parts' published ranges, validated on held-out flights.
+- **DBE-012** A recorded run MUST carry the compiled airframe it used, through Spade's replay configuration.
+- **DBE-013** A vehicle's pose and rates MUST reach Kat in the design frame. The principal-axis rotation MUST stay inside Spade.
+- **DBE-014** Kat MUST compile its scene into Spade's scene file. Spade's scene holds engine content only: a world reference, assets with poses, and vehicles with start poses and compiled models.
+- **DBE-015** Part files use Kat's convention (+Z thrust, X layout). The compiler's one rotation into Spade's convention MUST be an axis permutation with signs, so it adds no rounding.
+- **DBE-016** Kat runs the research-airframe fit on the Kat machine against Spade's published pure functions. The flight logs MUST stay on the Kat machine.
 
 ## 8. Open points
 
