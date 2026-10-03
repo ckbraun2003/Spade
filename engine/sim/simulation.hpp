@@ -23,6 +23,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
+#include "sim/module.hpp"
 #include "sim/world_set.hpp"
 #include "state/arenas.hpp"
 #include "state/snapshot.hpp"
@@ -542,9 +543,20 @@ public:
     // Simulation own a VulkanBackend (see vulkan_backend_ below) and routes
     // step() through it -- see step()'s own doc comment for the split.
     // ---------------------------------------------------------------------
+    //
+    // `module_set` is the module set this simulation runs (sim/module.hpp); the
+    // default is today's engine. It is compiled once here into the schedule
+    // every step runs, and refused with invalid_argument if it does not
+    // compile. Until the GPU chain is derived from the schedule (module-API
+    // plan, stage 2), a Vulkan simulation accepts only the standard set and
+    // refuses any other with unavailable.
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
-                                                   const compute::BackendDesc& backend = {});
+                                                   const compute::BackendDesc& backend = {},
+                                                   const modules::ModuleSet& module_set = modules::standard_modules());
+
+    // The compiled module schedule this simulation steps with.
+    [[nodiscard]] const modules::CompiledSchedule& schedule() const noexcept { return schedule_; }
 
     // Declared here, DEFINED in simulation.cpp (not `= default` inline):
     // vulkan_backend_ is a unique_ptr<compute::VulkanBackend> and
@@ -1081,7 +1093,7 @@ public:
     // shrunk to "pair the blob with a COMPATIBLE world set", and that is now
     // enforced rather than merely documented.
     //
-    // THE THREE LAYERS OF CHECK, and why none of them subsumes another:
+    // THE LAYERS OF CHECK, and why none of them subsumes another:
     //   * WORLD COUNT and the schema hash catch a SHAPE mismatch -- different
     //     arrays, element sizes, capacities or world count. They say nothing
     //     about VALUES, so two sets differing only in restitution pass them
@@ -1093,8 +1105,12 @@ public:
     //     in the blob, 2x4 in the registry" is a more useful sentence than
     //     "you paired the wrong blob". So the only blob it can reject is one
     //     the state layer would have accepted.
+    //   * The configuration identity (module-API plan stage 1) catches a blob
+    //     taken under another module set, module version or schedule: the
+    //     snapshot header's configuration_identity must equal schedule().identity,
+    //     or the restore is invalid_argument naming the module set.
     //   * The blob parse and the section-by-section match catch a corrupt or
-    //     foreign blob. All three run before anything is written.
+    //     foreign blob. All of these run before anything is written.
     //
     // WHAT IT STILL CANNOT CATCH, stated rather than claimed away: a
     // Simulation created from a desc that hashes the same is accepted, which is
@@ -1614,6 +1630,7 @@ private:
     float h_ = 0.0f;
 
     const objects::BehaviorRegistry* behaviors_ = nullptr;  // borrowed; see set_behaviors()
+    modules::CompiledSchedule schedule_;                       // compiled once, in create()
 
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;

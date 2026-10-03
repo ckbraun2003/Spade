@@ -191,6 +191,15 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
+// INTERIM (module-API plan, stage 1, 2026-10-02): physics/schedule.cpp's
+// kSchedule is gone. The CPU runs the compiled module schedule
+// (sim/module.hpp, sim/standard_modules.cpp), and this table mirrors the
+// STANDARD set's compiled order, which
+// Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder pins. Stage 2
+// derives the GPU chain from the schedule and deletes this table; until then,
+// read "kSchedule" below as "the compiled standard set", and the CPU's empty
+// Gravity and Publish passes as removed.
+//
 // Schedule slot -> what it records. THE ORDER IS physics/schedule.cpp's
 // kSchedule, verbatim, and these two tables are the one place the
 // correspondence is written down; step_recorder.hpp's header comment is their

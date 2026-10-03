@@ -1,5 +1,6 @@
 #include "sim/simulation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -242,7 +243,7 @@ Simulation::Simulation(Simulation&&) = default;
 Simulation& Simulation::operator=(Simulation&&) = default;
 
 Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, uint32_t substeps,
-                                      const compute::BackendDesc& backend) {
+                                      const compute::BackendDesc& backend, const modules::ModuleSet& module_set) {
     if (dt_ns == 0) {
         return std::unexpected(invalid("Simulation::create: dt_ns must be > 0"));
     }
@@ -255,6 +256,35 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // is a drift no digest could distinguish from a physics change.
         return std::unexpected(invalid("Simulation::create: dt_ns must be divisible by substeps "
                                        "(the substep duration must be an exact integer of ns)"));
+    }
+
+    Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
+    if (!compiled) return std::unexpected(compiled.error());
+    if (backend.kind == compute::BackendKind::vulkan) {
+        // Module-API plan stage 1: the GPU recorder still runs its own pass
+        // table, which is the standard set's. Any other set would run a
+        // different experiment on the GPU than on the CPU, silently (L6).
+        //
+        // The passes are compared one by one, CPU function included, not by
+        // identity alone: the identity hashes names, versions and order, so a
+        // set that keeps a standard name with another function would match it
+        // and the GPU would run the stock kernel in its place.
+        static const Result<modules::CompiledSchedule> kStandard =
+            modules::compile_schedule(modules::standard_modules());
+        if (!kStandard) {
+            return std::unexpected(internal("the standard module set does not compile: " +
+                                            kStandard.error().context));
+        }
+        const auto same_pass = [](const modules::CompiledPass& x, const modules::CompiledPass& y) {
+            return x.module == y.module && x.pass == y.pass && x.phase == y.phase && x.cpu == y.cpu;
+        };
+        if (compiled->identity != kStandard->identity ||
+            !std::equal(compiled->passes.begin(), compiled->passes.end(), kStandard->passes.begin(),
+                        kStandard->passes.end(), same_pass)) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "a module set other than the standard set runs only on the CPU until "
+                                         "the GPU chain is derived from the schedule (module-API plan, stage 2)"});
+        }
     }
 
     const Result<WorldSetLayout> layout = validate_world_set(desc);
@@ -290,6 +320,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);
+    sim.schedule_ = std::move(*compiled);
 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
@@ -832,7 +863,7 @@ Result<void> Simulation::step(uint64_t n) {
     // sound today), upload the device mirror if the flush (or create()'s
     // initial vulkan_dirty_ == true) made it stale, submit all `n` steps in
     // one VulkanBackend::step() call, read the result back, and advance the
-    // tick by `n`. The cpu schedule (physics::run_substep) never runs on
+    // tick by `n`. The cpu schedule (schedule_, the compiled modules) never runs on
     // this path -- the GPU is authoritative for these `n` steps.
     // -------------------------------------------------------------------
     if (vulkan_backend_) {
@@ -906,12 +937,16 @@ Result<void> Simulation::step(uint64_t n) {
         // k (Tick counts steps, not substeps).
         ctx.tick = tick_;
 
+        // The compiled module schedule (sim/module.hpp), in order, every
+        // substep. The order is the parity contract; create() fixed it.
         for (uint32_t s = 0; s < substeps_; ++s) {
-            physics::run_substep(ctx);
+            for (const modules::CompiledPass& pass : schedule_.passes) {
+                pass.cpu(ctx);
+            }
         }
 
-        // Tick counts STEPS, not substeps -- see pass_publish()'s note on §3's
-        // shorthand. One increment, after the last substep.
+        // Tick counts STEPS, not substeps (engine A9). One increment, after the
+        // last substep.
         ++tick_;
     }
 
@@ -2184,7 +2219,7 @@ Result<SnapshotBlob> Simulation::snapshot() const {
                                        "spawn/despawn ops are not part of the registry walk. Call "
                                        "step() or flush_structural() first."));
     }
-    return save(arenas_, tick_);
+    return save(arenas_, tick_, schedule_.identity);
 }
 
 // ---------------------------------------------------------------------------
@@ -2349,6 +2384,15 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // BEFORE the restore, never after: see check_replay_config() above. This is
     // the only path from a Simulation into spade::restore(), so there is no
     // second door a blob could come through unchecked.
+    // L2: a blob taken under another module set, module version or schedule
+    // would replay different physics here. The identity rides in the snapshot
+    // header (module-API plan Ruling 1), not in the digested replay_config row.
+    if (blob.configuration_identity() != schedule_.identity) {
+        return std::unexpected(invalid("restore: blob was taken under a different module set or schedule "
+                                       "(identity " + std::to_string(blob.configuration_identity()) +
+                                       ", this simulation runs " + std::to_string(schedule_.identity) +
+                                       "); restoring it here could replay different physics"));
+    }
     if (Result<void> config = check_replay_config(blob); !config) {
         return config;
     }
