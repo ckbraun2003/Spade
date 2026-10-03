@@ -36,22 +36,25 @@ done
 case $step in sync|all|configure|build|test|consumer) ;; *) usage ;; esac
 case $jobs in ''|*[!0-9]*) usage ;; esac
 
-src=/leg/src
-build=/leg/build
-out=/out
+# The roots are overridable only so the step logic can be exercised outside a
+# container (with stand-in tools); the driver never sets them.
+root=${DOCKER_LEG_ROOT:-/leg}
+out=${DOCKER_LEG_OUT:-/out}
+src=$root/src
+build=$root/build
 
 # ---- sync: /out/src.tar -> /leg/src ----------------------------------------
 # rsync without -t: a file whose content is unchanged is skipped and keeps its
 # old mtime, so ninja rebuilds only what the new commit changed.
 if [ "$step" = sync ]; then
     set -e
-    rm -rf /leg/stage
-    mkdir -p /leg/stage "$src"
-    tar -xf "$out/src.tar" -C /leg/stage
+    rm -rf "$root/stage"
+    mkdir -p "$root/stage" "$src"
+    tar -xf "$out/src.tar" -C "$root/stage"
     commit=$(cat "$out/commit")
-    rsync -rl --checksum --delete /leg/stage/ "$src/"
-    rm -rf /leg/stage
-    printf '%s\n' "$commit" > /leg/commit
+    rsync -rl --checksum --delete "$root/stage/" "$src/"
+    rm -rf "$root/stage"
+    printf '%s\n' "$commit" > "$root/commit"
     echo "docker-leg: synced $commit into $src"
     exit 0
 fi
@@ -59,7 +62,7 @@ fi
 exec > >(tee -a "$out/leg.log") 2>&1
 tee_pid=$!
 
-commit=$(cat /leg/commit 2>/dev/null || echo unknown)
+commit=$(cat "$root/commit" 2>/dev/null || echo unknown)
 summary=$out/summary.txt
 declare -A status seconds
 parts=()
@@ -124,7 +127,7 @@ do_consumer() {
         echo "docker-leg: FAIL consumer: scripts/consumer-smoke.sh is not in $commit"
         return 1
     fi
-    local args=(--vulkan "$mode" --work /leg/consumer --jobs "$jobs")
+    local args=(--vulkan "$mode" --work "$root/consumer" --jobs "$jobs")
     [ "$mode" = ON ] && args+=(--from-build "$build")
     [ -d "$build/_deps" ] && args+=(--deps "$build/_deps")
     bash "$smoke" "${args[@]}"
@@ -165,7 +168,7 @@ for p in "${parts[@]}"; do passed "$p" || result=FAIL; done
     echo "step        $step, jobs $jobs, $((SECONDS - t_start)) s"
     echo "toolchain   $(gcc-13 --version | head -n 1); $(cmake --version | head -n 1)"
     echo "memory      limit $(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo unknown), peak $(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo unknown) bytes"
-    echo "disk        $(df -h /leg | awk 'NR==2 {print $4 " free in the VM, " $5 " used"}')"
+    echo "disk        $(df -h "$root" | awk 'NR==2 {print $4 " free in the VM, " $5 " used"}')"
     for p in "${parts[@]}"; do
         printf '%-13s %s, %s s\n' "$p" "${status[$p]}" "${seconds[$p]}"
     done
