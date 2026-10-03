@@ -14,6 +14,7 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 
 **Format changes a consumer sees:**
 - **Snapshot format v2** (module API stage 1, merged `062e1fa`). The header grows to 40 bytes and carries the configuration identity: the module set, versions and compiled order. A v1 blob is refused with the version message. A blob restores only into a simulation with the same identity (`L2`). KAT passes blobs through without parsing them, so a KAT session ring that holds v1 blobs cannot restore them after the upgrade.
+- **Module API stage 3** (merged `42b352a`). The standard module set gains an `environment` module and a `dryden.sample` pass, so its configuration identity changes. A snapshot taken before this merge is refused on restore. The snapshot format itself is unchanged.
 
 **What lives in KAT, not here:**
 - The sim-host contract **C5** and its adapter (`dronesim/spade/`): the mapping from a drone description to Spade constructs, plus KAT-side timing and stamping.

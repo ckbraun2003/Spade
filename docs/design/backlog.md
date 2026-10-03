@@ -6,7 +6,7 @@ What isn't built yet, why, and what proves it done. One row per item. A realm's 
 
 1. **Test/Docs: the Docker CI leg** (`TD-11`). It is small, it closes the consumer-smoke gap, and it gates every golden regeneration below (`TD-12`). **Built** (`44a4925`); its first run (`fe4934a`) was the first `TD-12` cross-check.
 2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`, built `0ce4ff5`, final under `TD-12` after the first Docker gcc run), the v1 baselines (`INT-4`, done `0935c6f`), then the `Lighting{}` regeneration (`RND-5`, merged `a46bb86`, reproduced on gcc). Rendering's GL parity work is done: back-face culling (`ec973ed`) and `RenderOptions` (`0a5e1a1`); GL still draws no shadows or overlays.
-3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.  Stages 1 and 2 of 6 merged (`062e1fa`, `dca7cfb`).
+3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.  Stages 1 to 3 of 6 merged (`062e1fa`, `dca7cfb`, `42b352a`).
 4. **On top of the module API:** SPH as a field provider (`PHY-4`), field channels for cameras, then the Vulkan raster as a technique (`RND-4`), and the editor spec (`INT-3`).
 
 Each starts as its own spec and plan in the owning realm's `plans/`.
