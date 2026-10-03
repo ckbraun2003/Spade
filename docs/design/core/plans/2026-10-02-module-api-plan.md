@@ -61,7 +61,7 @@ The six stages of spec §14 run in sequence, and each merges on its own. Stage 2
   - `struct PassDecl { std::string_view name; Phase phase; Placement placement; std::span<const QuantityAccess> access; std::span<const std::string_view> after; physics::PassFn cpu; }`;
   - `struct ModuleDesc { std::string_view name; uint32_t version; std::span<const PassDecl> passes; }`;
   - `using ModuleSet = std::vector<ModuleDesc>`;
-  - `struct CompiledPass { std::string_view module; std::string_view pass; Phase phase; physics::PassFn cpu; }`;
+  - `struct CompiledPass { std::string module; std::string pass; Phase phase; physics::PassFn cpu; }`. The names are owned, so a set built from temporary strings cannot leave them dangling inside `Simulation`;
   - `struct CompiledSchedule { std::vector<CompiledPass> passes; uint64_t identity; }`;
   - `Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules)`.
 
@@ -217,6 +217,39 @@ TEST(ModuleSchedule, FirstAndLastPlacementBracketTheOrderedPasses) {
     EXPECT_EQ(names(*s), (Names{"m.top", "m.mid", "m.end"}));
 }
 
+TEST(ModuleSchedule, TwoConflictingPassesOfOnePlacementAreRefused) {
+    static constexpr QuantityAccess writes[] = {{"body.pose", Access::write}};
+    static constexpr PassDecl a[] = {
+        {.name = "pin", .phase = Phase::fields, .placement = Placement::first, .access = writes, .cpu = &noop}};
+    static constexpr PassDecl b[] = {
+        {.name = "pin", .phase = Phase::fields, .placement = Placement::first, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "a", .passes = a}, {.name = "b", .passes = b}};
+    EXPECT_EQ(code_of(compile_schedule(set)), spade::Code::invalid_argument);
+}
+
+TEST(ModuleSchedule, PlacementOrdersAPlacedWriterBeforeAnOrderedWriter) {
+    static constexpr QuantityAccess writes[] = {{"body.pose", Access::write}};
+    static constexpr PassDecl ordered[] = {{.name = "move", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+    static constexpr PassDecl placed[] = {
+        {.name = "pin", .phase = Phase::fields, .placement = Placement::first, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "o", .passes = ordered}, {.name = "p", .passes = placed}};
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(names(*s), (Names{"p.pin", "o.move"}));
+}
+
+TEST(ModuleSchedule, APlacementThatContradictsAHazardIsRefused) {
+    // A first-placed READER and an ordered WRITER of one quantity: the hazard
+    // wants the writer first, the placement wants the reader first.
+    static constexpr QuantityAccess reads[] = {{"body.pose", Access::read}};
+    static constexpr QuantityAccess writes[] = {{"body.pose", Access::write}};
+    static constexpr PassDecl r[] = {
+        {.name = "look", .phase = Phase::fields, .placement = Placement::first, .access = reads, .cpu = &noop}};
+    static constexpr PassDecl w[] = {{.name = "move", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "r", .passes = r}, {.name = "w", .passes = w}};
+    EXPECT_EQ(code_of(compile_schedule(set)), spade::Code::invalid_argument);
+}
+
 TEST(ModuleSchedule, UnknownQuantitiesAreRefused) {
     static constexpr QuantityAccess misspelt[] = {{"body.wrnch", Access::accumulate}};
     static constexpr QuantityAccess no_owner[] = {{"ghost.x", Access::read}};
@@ -288,6 +321,7 @@ Expected: FAIL to compile, with `sim/module.hpp` not found.
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -307,7 +341,9 @@ enum class Access : uint8_t { read, write, accumulate };
 
 // Where a pass sits inside its phase beyond what hazards and edges decide.
 // Behaviors use it: kinematic behaviors first in Fields, force behaviors last
-// in Forces.
+// in Forces. A placed pass still declares its access: placement orders it
+// against passes of another placement, and two passes of the SAME placement
+// that conflict need an edge like any others.
 enum class Placement : uint8_t { first = 0, ordered = 1, last = 2 };
 
 // A quantity is a core quantity (kCoreQuantities) or "<module>.<name>" for a
@@ -338,9 +374,11 @@ struct ModuleDesc {
 
 using ModuleSet = std::vector<ModuleDesc>;
 
+// Owned names: a Simulation keeps its CompiledSchedule for life, and the set
+// it was compiled from may have been built from temporary strings.
 struct CompiledPass {
-    std::string_view module;
-    std::string_view pass;
+    std::string module;
+    std::string pass;
     Phase phase = Phase::fields;
     physics::PassFn cpu = nullptr;
 };
@@ -353,7 +391,8 @@ struct CompiledSchedule {
 // Orders every pass of `modules`:
 //   1. phases in Phase order;
 //   2. inside a phase: placement groups (first, ordered, last); a reader after
-//      every writer and accumulator of what it reads; `after` edges;
+//      every writer and accumulator of what it reads; `after` edges; two
+//      writers, or a writer and an accumulator, of one placement need an edge;
 //   3. ties by module-set order, then declaration order.
 // invalid_argument for: a module name that is empty, contains '.', or repeats;
 // a pass with no name or no CPU function, or declared twice; an unknown
@@ -513,7 +552,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 for (const QuantityAccess& qb : b.access) {
                     if (qa.quantity != qb.quantity) continue;
                     if (needs_edge(qa.access, qb.access)) {
-                        if (!edge_path[i][j] && !edge_path[j][i]) {
+                        // A different placement already orders the pair.
+                        if (a.placement == b.placement && !edge_path[i][j] && !edge_path[j][i]) {
                             return std::unexpected(invalid(nodes[i].full + " and " + nodes[j].full + " both write '" +
                                                            std::string(qa.quantity) +
                                                            "' with no edge between them"));
@@ -558,7 +598,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         done[best] = true;
         for (const std::size_t s : succs[best]) --indegree[s];
         const Node& nd = nodes[best];
-        out.passes.push_back(CompiledPass{modules[nd.module].name, nd.pass->name, nd.pass->phase, nd.pass->cpu});
+        out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
+                                          nd.pass->phase, nd.pass->cpu});
     }
 
     uint64_t h = rng::kFnv1aOffsetBasis;
@@ -593,7 +634,7 @@ add_library(spade_sim STATIC
 - [ ] **Step 5: Build and run the new tests**
 
 Run: `scripts\build.ps1 -Target spade_tests`, then `scripts\test.ps1 -Filter ModuleSchedule`
-Expected: 12 tests, all PASS.
+Expected: 15 tests, all PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -749,11 +790,15 @@ constexpr PassDecl kGnssPasses[] = {
     {.name = "synthesize", .phase = Phase::sensors, .access = kGnssAccess, .cpu = &physics::pass_sensor_gnss}};
 
 // Kinematic behaviors write poses before any field is sampled (Q2), so they
-// run first in Fields; force behaviors add after every built-in force.
+// run first in Fields; force behaviors add after every built-in force. Both
+// declare what they touch, so the compiler checks them like any other pass.
+constexpr QuantityAccess kKinematicAccess[] = {{"body.pose", Access::write}};
+constexpr QuantityAccess kForceBehaviorAccess[] = {{"body.wrench", Access::accumulate}};
 constexpr PassDecl kBehaviorPasses[] = {
-    {.name = "kinematic", .phase = Phase::fields, .placement = Placement::first,
+    {.name = "kinematic", .phase = Phase::fields, .placement = Placement::first, .access = kKinematicAccess,
      .cpu = &physics::pass_behaviors_kinematic},
-    {.name = "force", .phase = Phase::forces, .placement = Placement::last, .cpu = &physics::pass_behaviors_force},
+    {.name = "force", .phase = Phase::forces, .placement = Placement::last, .access = kForceBehaviorAccess,
+     .cpu = &physics::pass_behaviors_force},
 };
 
 constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write}};
@@ -810,7 +855,7 @@ Add `sim/standard_modules.cpp` to `spade_sim` in `engine/CMakeLists.txt`, after 
 - [ ] **Step 5: Build and run**
 
 Run: `scripts\build.ps1 -Target spade_tests`, then `scripts\test.ps1 -Filter "ModuleSchedule|StandardModules"`
-Expected: 14 tests, all PASS.
+Expected: 17 tests, all PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -890,6 +935,18 @@ TEST(ModuleSimulation, ADeveloperModulePlugsInOnTheCpu) {
     ASSERT_TRUE(h.has_value() && f.has_value());
     EXPECT_EQ((*h)->vel, glm::vec3(0.0f)) << "the module's lift cancels gravity exactly";
     EXPECT_LT((*f)->vel.y, 0.0f) << "without the module the body falls";
+}
+
+TEST(ModuleSimulation, ScheduleNamesOutliveTheStringsThatNamedThem) {
+    std::string name = "hover";
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = name, .passes = kHoverPasses});
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    name.assign("xxxxx");  // a view into `name` would now read "xxxxx"
+    bool found = false;
+    for (const auto& pass : sim->schedule().passes) found = found || pass.module == "hover";
+    EXPECT_TRUE(found) << "the compiled schedule must own its module names";
 }
 
 TEST(ModuleSimulation, ANonStandardSetOnVulkanIsRefusedUntilStage2) {
@@ -1068,6 +1125,22 @@ TEST(ModuleSnapshot, RestoreIntoTheSameSetSucceeds) {
 In `tests/test_snapshot.cpp`, add the round-trip of the new field at the state layer:
 
 ```cpp
+// A blob written before the module API is format version 1. It is refused
+// with the version message, never misread as a 40-byte header. (A v2 blob with
+// its version field set back to 1 stands in for one.)
+TEST(SnapshotFormat, AVersionOneBlobIsRefusedWithTheVersionMessage) {
+    spade::StateRegistry registry;
+    const auto blob = spade::save(registry, spade::Tick{1});
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const uint32_t v1 = 1;
+    std::memcpy(bytes.data() + offsetof(spade::SnapshotHeader, version), &v1, sizeof(v1));
+    const auto reread = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    ASSERT_FALSE(reread.has_value());
+    EXPECT_EQ(reread.error().code, spade::Code::schema_mismatch);
+    EXPECT_NE(reread.error().context.find("format version 1"), std::string::npos) << reread.error().context;
+}
+
 TEST(SnapshotFormat, TheConfigurationIdentityRoundTripsThroughTheHeader) {
     spade::StateRegistry registry;
     const auto blob = spade::save(registry, spade::Tick{7}, 0x1234'5678'9ABC'DEF0ULL);
@@ -1116,7 +1189,7 @@ Expected: all PASS, with every golden unchanged. The state digest does not read 
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit engine/state/snapshot.hpp engine/state/snapshot.cpp engine/sim/simulation.cpp tests/test_module_schedule.cpp tests/test_snapshot.cpp -m "feat(core): snapshots carry the module set's identity, and restore refuses another (L2)"
+git commit engine/state/snapshot.hpp engine/state/snapshot.cpp engine/sim/simulation.cpp tests/test_module_schedule.cpp tests/test_snapshot.cpp -m "feat(core): snapshots carry the module set's identity, and restore refuses another (L2)" -m "Snapshot format v1 -> v2. A v1 blob is refused with the version message, so KAT's session ring cannot restore a blob written before this change; the lead updates consumers.md at merge."
 ```
 
 ### Task 5: Docs follow the code
@@ -1126,7 +1199,7 @@ git commit engine/state/snapshot.hpp engine/state/snapshot.cpp engine/sim/simula
 - Modify: `docs/design/core/02-state-and-snapshot.md` (snapshot format v2)
 
 - [ ] **Step 1:** In `02-state-and-snapshot.md`'s "Snapshot and restore" section, change the format line to read: the header carries the format version (2), schema hash, tick, world count, array count and the configuration identity (the module set and its compiled order); restore refuses another identity.
-- [ ] **Step 2:** In `07-status.md`, change the "Scheduler phases" row to: **built for the CPU (plan stage 1)**, with passes from the standard module set compiled into six phases; the GPU recorder still keeps its own table until stage 2. Change the "Modules declare…" row to: **passes only** so far. Add the stage 1 merge commit.
+- [ ] **Step 2:** In `07-status.md`, change the "Scheduler phases" row to: **built for the CPU (plan stage 1)**, with passes from the standard module set compiled into six phases; the GPU recorder still keeps its own table until stage 2. Change the "Modules declare…" row to: **passes only** so far. Add the stage 1 merge commit. Under "Deferred on purpose", add: `replay_config` does not yet carry the configuration identity, which lives in the snapshot header (plan Ruling 1). It can move into `replay_config` with the next deliberate golden regeneration.
 - [ ] **Step 3:** Tell the lead that the snapshot format is now v2, for `../../consumers.md` (Plan Ruling 1).
 - [ ] **Step 4: Commit** (main tree, path-scoped): `git commit docs/design/core/02-state-and-snapshot.md docs/design/core/07-status.md -m "docs(core): status and snapshot format follow module-API stage 1"`
 
