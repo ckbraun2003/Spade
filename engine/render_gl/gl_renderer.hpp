@@ -50,6 +50,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "core/error.hpp"
 #include "render/scene.hpp"
@@ -86,21 +88,34 @@ class GlRenderer {
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
     // SSBOs in place, and issues one instanced draw per mesh+submesh.
     //
-    // Renders into the CURRENTLY BOUND framebuffer at the given size. It does
-    // not clear beyond its own depth/colour needs and it does not present:
-    // both belong to whoever owns the window. It leaves depth testing and
-    // back-face culling (SR-13) enabled, so a caller drawing its own geometry
-    // afterwards sets the state it needs.
+    // Honours RenderOptions as raster_cpu does, except what unhonoured()
+    // names. A background pass draws the sky in every mode. In shaded mode it
+    // also draws the analytic ground, the grid and the atmospheric term
+    // (SR-17, SR-17a, SR-22). Meshes draw shaded, wireframe or velocity.
+    // Raymarch is refused with Code::unavailable: it is a CPU technique.
+    //
+    // Renders into the CURRENTLY BOUND framebuffer at the given size and
+    // covers every pixel. It does not present: that belongs to whoever owns
+    // the window. It changes depth, cull and polygon-mode state, so a caller
+    // drawing its own geometry afterwards sets the state it needs.
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);
+
+    // Names the options in `options` that draw() will not draw, so the gap is
+    // announced, not silent (L6). Each name is the RenderOptions field it
+    // concerns: "shadows", "overlays", or "mode" for a mode draw() refuses.
+    // A caller shows the list, or refuses GL when it needs one of them.
+    // Needs no GL context.
+    [[nodiscard]] static std::vector<std::string_view> unhonoured(const render::RenderOptions& options);
 
     // ⭐ THE MECHANISM, MADE MEASURABLE RATHER THAN CLAIMED. The entire case
     // for this module is "draw calls scale with meshes, not objects", and a
     // claim like that is exactly the kind this estate has learned to assert in
     // a test. After draw(), these report what the last frame actually issued --
     // so "one draw per mesh" is checkable by a caller with no display, against
-    // a scene whose instance count it chose.
+    // a scene whose instance count it chose. The background pass is one more
+    // draw per frame, whatever the scene, and is not counted.
     [[nodiscard]] uint32_t last_draw_calls() const noexcept;
     [[nodiscard]] uint32_t last_instances() const noexcept;
 
