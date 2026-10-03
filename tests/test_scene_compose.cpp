@@ -543,6 +543,19 @@ TEST(SceneCompose, AWorldHashMismatchIsRefusedNamingBothHashes) {
     EXPECT_TRUE(contains(why, "re-pin")) << why;
 }
 
+// world_hash() validates the world it hashes, so a world no WorldBuilder or
+// loader would produce is refused before anything is composed.
+TEST(SceneCompose, AWorldThatDoesNotValidateIsRefused) {
+    spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.assets.push_back(visual_asset("marker", spade::SdfPose{}, "marker", "default"));
+    world.capacities.bodies = 0;  // validate_world_desc refuses a zero capacity
+    const auto composed = spade::scene::compose(scene, world);
+    ASSERT_FALSE(composed.has_value());
+    EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(composed.error().context, "does not validate")) << composed.error().context;
+}
+
 TEST(SceneCompose, ASceneMaterialMayNotReuseAWorldMaterialsName) {
     const spade::WorldDesc world = ground_world();  // palette: "default"
     SceneDesc scene = scene_over(world);

@@ -10,7 +10,6 @@
 #include <cstddef>
 #include <exception>
 #include <limits>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -60,25 +59,26 @@ bool is_identity(const SdfTransform& t) {
 // so a repeat can only be the world's own.
 [[nodiscard]] Result<uint32_t> resolve_material(const std::vector<MaterialDesc>& palette,
                                                 const std::string& name, const std::string& user) {
-    std::optional<std::size_t> found;
+    const std::size_t none = palette.size();
+    std::size_t found = none;
     for (std::size_t i = 0; i < palette.size(); ++i) {
         if (palette[i].name != name) {
             continue;
         }
-        if (found) {
+        if (found != none) {
             return std::unexpected(invalid(user + " names material '" + name +
                                            "', which the world's palette holds twice (indices " +
-                                           std::to_string(*found) + " and " + std::to_string(i) +
+                                           std::to_string(found) + " and " + std::to_string(i) +
                                            "); rename one of them in the world file"));
         }
         found = i;
     }
-    if (!found) {
+    if (found == none) {
         return std::unexpected(invalid(user + " names material '" + name +
                                        "', which neither the world's palette nor the scene's materials "
                                        "hold; add it to the scene's materials or correct the name"));
     }
-    return static_cast<uint32_t>(*found);
+    return static_cast<uint32_t>(found);
 }
 
 // Joins one asset's collider to the composed program (compose.hpp, step 4).
@@ -235,21 +235,19 @@ Result<ComposedScene> compose(const SceneDesc& scene, const WorldDesc& world) {
     uint64_t need_force_elements = 0;
     uint64_t need_sensors = 0;
     for (const SceneVehicle& v : scene.vehicles) {
-        std::optional<std::size_t> model;
-        for (std::size_t i = 0; i < scene.models.size() && !model; ++i) {
-            if (scene.models[i].name == v.model) {
-                model = i;
-            }
+        std::size_t model = 0;
+        while (model < scene.models.size() && scene.models[model].name != v.model) {
+            ++model;
         }
-        if (!model) {
+        if (model == scene.models.size()) {
             // validate_scene() refuses this first; kept so an index can never be
             // out of range.
             return std::unexpected(invalid(where + "vehicle '" + v.name + "' names unknown model '" + v.model + "'"));
         }
-        const vehicles::ModelType& m = scene.models[*model];
+        const vehicles::ModelType& m = scene.models[model];
         need_force_elements += m.rotors.size() + m.drag_bodies.size();
         need_sensors += m.imu_mounts.size();
-        out.vehicles.push_back(VehiclePlacement{v.name, static_cast<uint32_t>(*model), v.start});
+        out.vehicles.push_back(VehiclePlacement{v.name, static_cast<uint32_t>(model), v.start});
     }
 
     // 6. Capacities (SCN-007).

@@ -105,8 +105,8 @@ add_executable(spade_tests
     # INT-4: replays spade_viewer's eight scenes (spade_viewer_scenes, v1-free)
     # against the trajectory goldens in golden/viewer/. One case per scene.
     test_viewer_trajectories.cpp
-    # spade::scene's arithmetic helpers: the asset-pose composition and the
-    # design-to-principal turn (the drone-builder joint spec, section 3).
+    # spade::scene's composer: compose_transform, compose, compose_file and
+    # instantiate (the drone-builder joint spec, section 3).
     test_scene_compose.cpp
 )
 
