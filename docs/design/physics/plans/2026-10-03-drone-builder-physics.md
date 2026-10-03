@@ -83,7 +83,7 @@ When the current is at a limit, the motor torque is constant. The update is then
 
 `V_bus = (V_oc − V_1 + R0·Σ dᵢ·Keᵢ·ωᵢ/Rᵢ − R0·Σ_fixed dⱼ·Iⱼ) / (1 + R0·Σ dᵢ²/Rᵢ)`
 
-Index `i` runs over the motors not at a limit, and `j` over the motors held at one. The sums run in rotor declaration order. A motor whose current reaches a limit moves to the fixed sum, and the solve repeats. It repeats at most once per motor.
+Index `i` runs over the motors not at a limit, and `j` over the motors held at one. The sums run in rotor-slot order, which is deterministic because slot allocation is registered state (`2026-10-03-propulsion-rows-plan.md` section 3; this said "declaration order" until 2026-10-03). A motor whose current reaches a limit moves to the fixed sum, and the solve repeats. It repeats at most once per motor.
 
 **Limits.**
 - Battery current clamps at its rating (C-rate × capacity).
@@ -161,7 +161,7 @@ Some outputs need no conversion:
 
 ## 8. Operation order
 
-Op order is the parity contract (`engine D2`). The rotor pass, in Forces, runs these steps per vehicle, rotors in declaration order:
+Op order is the parity contract (`engine D2`). The rotor pass, in Forces, runs these steps per vehicle, rotors in rotor-slot order:
 
 1. Mount geometry (today's step 1).
 2. Axial inflow `V_ax` (today's step 4, moved earlier, because the load torque needs it).
@@ -211,7 +211,7 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 
 **Battery**
 - DBP-20: The battery MUST take series count, parallel count, cell capacity, cell resistance, cell cutoff voltage, current rating and an OCV table as builder parameters.
-- DBP-21: The bus voltage MUST come from the closed-form solve of §4, with sums in rotor declaration order.
+- DBP-21: The bus voltage MUST come from the closed-form solve of §4, with sums in rotor-slot order.
 - DBP-22: The battery current MUST NOT exceed its rating, and the terminal voltage MUST NOT fall below cutoff.
 - DBP-23: Both battery clamps MUST act through one common duty scale per vehicle.
 - DBP-24: The battery SHOULD model polarization with one RC branch, with `β` computed at spawn.
