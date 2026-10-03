@@ -134,24 +134,30 @@ class GpuGlRenderer : public ::testing::Test {
         if (glfw_initialised_) glfwTerminate();
     }
 
-    // Clears to black, draws `scene` with default options, and counts the
-    // pixels that are no longer black.
-    [[nodiscard]] size_t covered_pixels(const RenderScene& scene) {
+    // Clears to black, draws `scene` with default options, and reads back
+    // RGBA8, bottom row first. Empty if the renderer refused.
+    [[nodiscard]] std::vector<uint8_t> draw_and_read(const RenderScene& scene) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         if (auto up = renderer_->upload_scene(scene); !up) {
             ADD_FAILURE() << up.error().context;
-            return 0;
+            return {};
         }
         if (auto drew = renderer_->draw(scene, camera_on_plus_z(), RenderOptions{}, kWidth, kHeight); !drew) {
             ADD_FAILURE() << drew.error().context;
-            return 0;
+            return {};
         }
         std::vector<uint8_t> rgba(static_cast<size_t>(kWidth) * kHeight * 4u);
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
         EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        return rgba;
+    }
+
+    // How many pixels `scene` turns from black.
+    [[nodiscard]] size_t covered_pixels(const RenderScene& scene) {
+        const std::vector<uint8_t> rgba = draw_and_read(scene);
         size_t covered = 0;
         for (size_t i = 0; i < rgba.size(); i += 4u) {
             if (rgba[i] != 0u || rgba[i + 1u] != 0u || rgba[i + 2u] != 0u) ++covered;
@@ -182,6 +188,43 @@ TEST_F(GpuGlRenderer, CullsAReversedTriangle) {
     const size_t covered = covered_pixels(make_scene(make_single_triangle(/*reversed=*/true)));
     EXPECT_EQ(covered, 0u) << "a reversed-winding triangle must be back-face culled (SR-13)";
     EXPECT_EQ(renderer_->last_draw_calls(), 1u) << "culled by GL, not skipped by the draw loop";
+}
+
+// Normals take the inverse-transpose (render/scene.hpp's transform_normal()).
+// A triangle in the plane x + z = 0, scaled 2x along x, faces (1, 0, 2); mat3(m)
+// would say (2, 0, 1). The sun lies in the true surface, so the true N.L is 0
+// and every covered pixel is the ambient term alone: 0.2 of white, 51. The old
+// normal puts N.L at 0.6, which reads as 204.
+TEST_F(GpuGlRenderer, LightsANonUniformlyScaledSurfaceByItsTrueNormal) {
+    MeshData mesh;
+    mesh.positions = {glm::vec3(-1.0f, -1.0f, 1.0f), glm::vec3(1.0f, -1.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f)};
+    mesh.normals.assign(3, glm::normalize(glm::vec3(1.0f, 0.0f, 1.0f)));
+    mesh.indices = {0, 1, 2};
+    RenderScene scene;
+    scene.meshes.push_back(std::move(mesh));
+    scene.materials = {Material{.base_color = glm::vec4(1.0f), .shading = 0u}};
+    glm::mat4 stretch(1.0f);
+    stretch[0][0] = 2.0f;
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = stretch});
+    scene.lighting.sun_direction = glm::normalize(glm::vec3(2.0f, 0.0f, -1.0f));
+    scene.lighting.sun_color = glm::vec3(1.0f);
+    scene.lighting.sun_intensity = 1.0f;
+    scene.lighting.ambient_color = glm::vec3(0.2f);
+    // A black sky keeps "not black" meaning "covered" once GL draws the sky.
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+
+    const std::vector<uint8_t> rgba = draw_and_read(scene);
+    size_t covered = 0;
+    for (size_t i = 0; i < rgba.size(); i += 4u) {
+        if (rgba[i] == 0u && rgba[i + 1u] == 0u && rgba[i + 2u] == 0u) continue;
+        ++covered;
+        for (size_t ch = 0; ch < 3u; ++ch) {
+            ASSERT_NEAR(static_cast<int>(rgba[i + ch]), 51, 2)
+                << "pixel " << i / 4u << " channel " << ch << ": lit by a normal that is off its surface";
+        }
+    }
+    EXPECT_GT(covered, 0u) << "the scaled triangle must be visible";
 }
 
 }  // namespace

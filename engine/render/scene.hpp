@@ -75,12 +75,21 @@
 namespace spade::render {
 
 // Transforms a LOCAL unit surface normal to WORLD space and re-normalizes
-// (S7a Task R6). For a rigid + UNIFORM-scale local_to_world (SdfTransform's
-// own contract, world/sdf.hpp), mat3(local_to_world) applied to a local
-// direction yields that direction correctly ROTATED and then scaled by the
-// uniform factor (the same relationship world/sdf.hpp's own gradient_world
-// derivation states for the SDF gradient) -- normalizing removes that scale,
-// leaving exactly the rotated normal.
+// (S7a Task R6). A normal transforms by the INVERSE-TRANSPOSE of
+// local_to_world's linear part: under a non-uniform scale, mat3(local_to_world)
+// tilts a normal off its surface and the lambert term goes wrong.
+//
+// Two branches, one answer:
+//   * CONFORMAL (rotation times a uniform scale, mirrored or not; SdfTransform's
+//     own contract, world/sdf.hpp): the inverse-transpose is parallel to
+//     mat3(local_to_world), so that is used unchanged. Every rigid and uniformly
+//     scaled frame, every frame golden among them, stays bit-identical to
+//     before the inverse-transpose existed. The tolerance only absorbs the
+//     rounding a quaternion-built rotation carries; skipping a correction that
+//     small moves a normal by less than fp32 shading can see.
+//   * ANYTHING ELSE (per-axis scale, shear): the cofactor matrix, which is
+//     det * inverse-transpose. Multiplying by det's sign keeps the normal on
+//     the outward side of a mirrored surface.
 //
 // Used IDENTICALLY by two call sites that must agree bit-for-bit (SR-17's
 // load-bearing seam): the tessellated-mesh per-vertex normal transform
@@ -91,7 +100,20 @@ namespace spade::render {
 // local_to_world and the SAME local normal, so the two paths' shading
 // agrees exactly, not merely approximately.
 [[nodiscard]] inline glm::vec3 transform_normal(const glm::mat4& local_to_world, const glm::vec3& local_normal) {
-    return glm::normalize(glm::mat3(local_to_world) * local_normal);
+    const glm::mat3 m(local_to_world);
+    const float k0 = glm::dot(m[0], m[0]);
+    const float k1 = glm::dot(m[1], m[1]);
+    const float k2 = glm::dot(m[2], m[2]);
+    const float tol = 1e-5f * std::max({k0, k1, k2});
+    const bool conformal = std::abs(k0 - k1) <= tol && std::abs(k1 - k2) <= tol &&
+                           std::abs(glm::dot(m[0], m[1])) <= tol && std::abs(glm::dot(m[1], m[2])) <= tol &&
+                           std::abs(glm::dot(m[0], m[2])) <= tol;
+    if (conformal) {
+        return glm::normalize(m * local_normal);
+    }
+    const glm::mat3 cofactor(glm::cross(m[1], m[2]), glm::cross(m[2], m[0]), glm::cross(m[0], m[1]));
+    const float det_sign = glm::dot(m[0], cofactor[0]) < 0.0f ? -1.0f : 1.0f;
+    return glm::normalize(cofactor * local_normal) * det_sign;
 }
 
 struct Material {

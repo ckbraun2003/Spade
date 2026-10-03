@@ -1190,3 +1190,83 @@ TEST(RenderShading, AtmosphericTermIsMonotoneInDistanceDownAGroundColumn) {
         << "the most distant ground row is " << farthest << " from the unblended colour and the nearest is "
         << nearest << " -- the term is not varying with distance";
 }
+
+// ===========================================================================
+// 5. Normals under a non-conformal transform (rendering 07-status debt).
+//    transform_normal() takes the inverse-transpose, so a per-axis scale or
+//    a shear leaves a normal perpendicular to its surface; a conformal
+//    transform keeps the old mat3() result bit for bit, which is what keeps
+//    every frame golden where it was.
+// ===========================================================================
+
+namespace {
+
+// The outward normal of triangle (a, b, c) after `m` moves it: the cross
+// product of the moved edges, flipped when `m` mirrors (a mirror reverses
+// the winding, not the outward side).
+[[nodiscard]] glm::vec3 moved_face_normal(const glm::mat4& m, glm::vec3 a, glm::vec3 b, glm::vec3 c) {
+    const glm::vec3 ma(m * glm::vec4(a, 1.0f));
+    const glm::vec3 mb(m * glm::vec4(b, 1.0f));
+    const glm::vec3 mc(m * glm::vec4(c, 1.0f));
+    const float det = glm::determinant(glm::mat3(m));
+    return glm::normalize(glm::cross(mb - ma, mc - ma)) * (det < 0.0f ? -1.0f : 1.0f);
+}
+
+}  // namespace
+
+TEST(RenderShading, TransformedNormalStaysPerpendicularToItsSurfaceUnderNonConformalTransforms) {
+    // A tilted triangle in the plane x + z = 0, wound CCW about (1, 0, 1).
+    const glm::vec3 a(-1.0f, -1.0f, 1.0f), b(1.0f, -1.0f, -1.0f), c(0.0f, 1.0f, 0.0f);
+    const glm::vec3 local_normal = glm::normalize(glm::cross(b - a, c - a));
+
+    glm::mat4 shear(1.0f);
+    shear[1][0] = 0.6f;  // x += 0.6 y
+    const glm::mat4 rotate_then_scale =
+        glm::mat4_cast(glm::quat(0x1.ee8dd4p-1f, 0.0f, 0x1.0907dcp-2f, 0.0f)) *
+        glm::mat4(glm::vec4(2.0f, 0.0f, 0.0f, 0.0f), glm::vec4(0.0f, 0.5f, 0.0f, 0.0f),
+                  glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), glm::vec4(0.3f, 0.2f, 0.1f, 1.0f));
+    const struct {
+        const char* name;
+        glm::mat4 m;
+    } cases[] = {
+        {"per-axis scale (2, 1, 1)", glm::mat4(glm::vec4(2.0f, 0.0f, 0.0f, 0.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.0f),
+                                               glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f))},
+        {"rotation times per-axis scale, translated", rotate_then_scale},
+        {"shear", shear},
+        {"mirrored per-axis scale (-2, 1, 1)",
+         glm::mat4(glm::vec4(-2.0f, 0.0f, 0.0f, 0.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.0f),
+                   glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f))},
+    };
+    for (const auto& tc : cases) {
+        const glm::vec3 expected = moved_face_normal(tc.m, a, b, c);
+        const glm::vec3 got = spade::render::transform_normal(tc.m, local_normal);
+        EXPECT_GT(glm::dot(got, expected), 0.99999f)
+            << tc.name << ": transform_normal gave (" << got.x << ", " << got.y << ", " << got.z
+            << ") but the moved surface faces (" << expected.x << ", " << expected.y << ", " << expected.z << ")";
+    }
+}
+
+TEST(RenderShading, TransformedNormalUnderAConformalTransformIsBitIdenticalToTheRotatedNormal) {
+    // The goldens' own poses: identity, the cylinder frame's quaternion spin,
+    // that spin with a uniform scale, and a mirror. For each, the answer must
+    // be exactly normalize(mat3(m) * n), the pre-inverse-transpose formula.
+    const glm::quat spin(0x1.ee8dd4p-1f, 0.0f, 0x1.0907dcp-2f, 0.0f);
+    glm::mat4 spun = glm::mat4_cast(spin);
+    spun[3] = glm::vec4(1.5f, 0.3f, 0.5f, 1.0f);
+    glm::mat4 spun_scaled = glm::mat4_cast(spin) * glm::mat4(glm::mat3(1.7f));
+    spun_scaled[3] = glm::vec4(-0.4f, 0.0f, 2.0f, 1.0f);
+    const glm::mat4 mirror(glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.0f),
+                           glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    const glm::mat4 poses[] = {glm::mat4(1.0f), spun, spun_scaled, mirror};
+    const glm::vec3 normals[] = {glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
+                                 glm::normalize(glm::vec3(0.3f, -0.8f, 0.52f))};
+    for (size_t p = 0; p < std::size(poses); ++p) {
+        for (const glm::vec3& n : normals) {
+            const glm::vec3 old_formula = glm::normalize(glm::mat3(poses[p]) * n);
+            const glm::vec3 got = spade::render::transform_normal(poses[p], n);
+            EXPECT_EQ(got.x, old_formula.x) << "pose " << p;
+            EXPECT_EQ(got.y, old_formula.y) << "pose " << p;
+            EXPECT_EQ(got.z, old_formula.z) << "pose " << p;
+        }
+    }
+}
