@@ -12,11 +12,11 @@
 #include "world/medium.hpp"
 
 // ---------------------------------------------------------------------------
-// Force elements -- the ForceElements pass (engine design spec S3 "the step
-// model": MediumUpdate -> ForceElements -> Gravity -> CollisionStatic ->
-// CollisionDynamic -> Integrate -> SensorSynthesis -> Publish; see
-// physics/integrator.hpp's header for why Gravity does not itself touch
-// force_acc). This header is the first of what will be several element KINDS
+// Force elements -- the drag.forces pass, in the Forces phase after rotor.forces
+// (sim/standard_modules.cpp; before the module API, spec S3's one ForceElements
+// pass held both). Gravity is no force element and no pass adds it to
+// force_acc: Integrate applies it (physics/integrator.hpp's header says why,
+// and how). This header is the first of what will be several element KINDS
 // -- rotors are Task 17; contacts live in physics/contacts.* per the
 // coordinator's split of this same target's source list. DragBody is the
 // only kind this task ships (YAGNI).
@@ -150,7 +150,7 @@ static_assert(sizeof(DragBodyRow::body_slot) + sizeof(DragBodyRow::enabled) + si
               "DragBodyRow has implicit padding: every byte must belong to a named field");
 
 // ---------------------------------------------------------------------------
-// apply_drag() -- the ForceElements pass's DragBody contribution. For every
+// apply_drag() -- the drag.forces pass's DragBody contribution. For every
 // enabled element whose body is active, accumulates a drag force and torque
 // into that body's force_acc (WORLD frame) / torque_acc (BODY frame).
 //
@@ -162,7 +162,7 @@ static_assert(sizeof(DragBodyRow::body_slot) + sizeof(DragBodyRow::enabled) + si
 //
 // `h` is UNUSED: this is pure per-substep force accumulation, and neither
 // drag law depends on the substep length. It is kept in the signature for
-// uniformity with the ForceElements pass's other element kinds (per the
+// uniformity with the other force-element kinds, such as rotors (per the
 // coordinator's resolution) -- a future kind with its own internal dynamics
 // (e.g. motor spin-up lag) will need it even though DragBody does not.
 //

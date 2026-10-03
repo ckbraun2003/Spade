@@ -18,9 +18,9 @@
 // ground effect. BEMT + flow-field coupling = roadmap behind P7"; spec S6
 // "Vehicles -- the model-type layer").
 //
-// It runs inside the SAME ForceElements pass as physics/forces.hpp's DragBody
-// (spec S3: MediumUpdate -> ForceElements -> Gravity -> CollisionStatic ->
-// CollisionDynamic -> Integrate -> SensorSynthesis -> Publish), accumulates
+// It runs as rotor.forces, in the Forces phase just before drag.forces
+// (physics/forces.hpp's DragBody; sim/standard_modules.cpp pins that order).
+// Like drag, it accumulates
 // into the same two BodyState accumulators, and follows the same registered-
 // state discipline. What is new here is that a rotor carries STATE of its own
 // -- the lagged shaft speed omega -- so this pass both reads and writes its
@@ -314,7 +314,7 @@
 //
 // z IS THE WORLD-SDF DISTANCE AT THE ROTOR STATION (D5: "ground effect from
 // the WORLD SDF -- the collision field IS the proximity query"). One eval()
-// of the same program CollisionStatic tests against; no second representation
+// of the same program static contact tests against; no second representation
 // of the ground, no ray cast, no per-world "floor height" parameter. Two
 // honest consequences of that reuse:
 //
@@ -642,7 +642,7 @@ static_assert(sizeof(RotorRow::body_slot) + sizeof(RotorRow::enabled) + sizeof(R
 [[nodiscard]] float rotor_lag_alpha(float h, float tau) noexcept;
 
 // ---------------------------------------------------------------------------
-// apply_rotors() -- the ForceElements pass's RotorElement contribution.
+// apply_rotors() -- the rotor.forces pass's RotorElement contribution.
 //
 // For every enabled rotor whose body is active: advances that rotor's `omega`
 // one substep toward `omega_cmd`, then accumulates the resulting thrust into

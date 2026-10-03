@@ -13,7 +13,7 @@
 #include "state/layout.hpp"
 
 // ---------------------------------------------------------------------------
-// The CollisionDynamic pass (engine design spec D3 "sorted-grid for
+// The dynamic_contact.resolve pass (engine design spec D3 "sorted-grid for
 // dynamic-dynamic", D8 "the collision grid hashes (world_id, cell); sorted
 // domains are global; range checks make cross-world interaction structurally
 // impossible", section 5 "Collision"). Every active body is a SPHERE PROXY of
@@ -21,10 +21,10 @@
 // mass-weighted impulse (restitution + Coulomb friction) plus a Baumgarte-style
 // positional split.
 //
-// WHERE THIS SITS IN THE SCHEDULE. Section 3 pins the per-substep sequence:
+// WHERE THIS SITS IN THE SCHEDULE. The module schedule's six phases, per substep:
 //
-//     MediumUpdate -> ForceElements -> Gravity -> CollisionStatic ->
-//     CollisionDynamic -> Integrate -> SensorSynthesis -> Publish
+//     Fields -> Forces -> Constraints/Contacts (static, then dynamic) ->
+//     Integrate -> Sensors -> Publish (sim/standard_modules.cpp)
 //
 // so this runs AFTER resolve_static_contacts() and BEFORE integrate_bodies(),
 // on the velocity the previous substep's Integrate produced. Running after the
@@ -389,7 +389,7 @@ struct GridCellRun {
 //
 // THAT SPLIT IS EXACT RATHER THAN AN OPTIMIZATION, and it is the reason this
 // record is two vectors' worth of floats and not a second BodyState array: the
-// CollisionDynamic pass writes `pos` and `vel` AND NOTHING ELSE, so `mass`,
+// dynamic_contact.resolve pass writes `pos` and `vel` AND NOTHING ELSE, so `mass`,
 // `proxy_radius` and `flags` cannot change during it and a shadow copy of them
 // would be a copy of something already immutable. The GPU mirror therefore
 // needs a shadow buffer of two float3s per body rather than a second

@@ -8,16 +8,16 @@
 #include "world/sdf.hpp"
 
 // ---------------------------------------------------------------------------
-// The CollisionStatic pass (engine design spec D3 "analytic SDF worlds", §5
+// The static_contact.resolve pass (engine design spec D3 "analytic SDF worlds", §5
 // "Collision"). Every active body is tested against the world's signed
 // distance field as a SPHERE PROXY, and a penetrating body gets one impulse
 // (restitution + Coulomb friction) plus a Baumgarte-style positional
 // correction.
 //
-// WHERE THIS SITS IN THE SCHEDULE. §3 pins the per-substep pass sequence:
+// WHERE THIS SITS IN THE SCHEDULE. The module schedule's six phases, per substep:
 //
-//     MediumUpdate -> ForceElements -> Gravity -> CollisionStatic ->
-//     CollisionDynamic -> Integrate -> SensorSynthesis -> Publish
+//     Fields -> Forces -> Constraints/Contacts (static, then dynamic) ->
+//     Integrate -> Sensors -> Publish (sim/standard_modules.cpp)
 //
 // so resolve_static_contacts() runs BEFORE integrate_bodies(), on the velocity
 // the PREVIOUS substep's Integrate produced. That ordering is what makes the
@@ -91,7 +91,7 @@
 //     vel*h, which is what the unused `h` parameter below is reserved for) are
 //     the cheap fix if a world ever needs one.
 //
-// Body-vs-body contact is Task 12 (CollisionDynamic) and is not in this file.
+// Body-vs-body contact is dynamic_contact.resolve (physics/grid.*), not this file.
 // ---------------------------------------------------------------------------
 
 namespace spade::physics {
@@ -112,7 +112,7 @@ namespace spade::physics {
 // the full layout discipline HERE so the S6 Slang mirror has something pinned
 // to mirror. THE GRADUATION PATH: when the schedule makes this a
 // device-resident per-world row (an indexed param buffer alongside
-// WorldParams, which is what happens when CollisionStatic becomes a GPU
+// WorldParams, which is what happens when static contact becomes a GPU
 // dispatch), it moves to layout.hpp / the Slang shared module and these
 // asserts move with it unchanged. Until then this is the single source.
 //
@@ -249,7 +249,7 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // ---------------------------------------------------------------------------
 // THE PER-BODY PROXY OVERRIDE (D-S6-2). One PAIR of functions -- a plain-float
 // rule and a BodyState-reading convenience over it -- so every reader of "this
-// body's radius" (CollisionStatic in contacts.cpp, CollisionDynamic in
+// body's radius" (static contact in contacts.cpp, dynamic contact in
 // grid.cpp, AND the vehicle-spawn preconditions in sim/simulation.cpp, which
 // have a model's DECLARED radius but no BodyState yet to read one from) shares
 // the SAME rule and cannot drift apart on what a 0 means.

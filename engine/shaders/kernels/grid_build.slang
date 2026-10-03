@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// grid_build.slang (S6 Task 7) -- STAGE 1 OF THREE of the CollisionDynamic
+// grid_build.slang (S6 Task 7) -- STAGE 1 OF THREE of the dynamic_contact.resolve
 // pass: one sorted key per active, in-range body. The port of
 // physics/grid.cpp:362-381 (the CPU pass's BUILD loop), v1's GridBuild.comp.
 //

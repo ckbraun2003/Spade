@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // collision_dynamic.slang (S6 Task 7) -- STAGE 3 OF THREE of the
-// CollisionDynamic pass: the SWEEP. The port of physics/grid.cpp:391-484 (the
+// dynamic_contact.resolve pass: the SWEEP. The port of physics/grid.cpp:391-484 (the
 // OFFSETS and RESOLVE stages) plus resolve_pair() (grid.cpp:89-260), v1's
 // GridOffsets.comp + GridCollision.comp.
 //

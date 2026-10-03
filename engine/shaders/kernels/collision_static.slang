@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// collision_static.slang (S6 Task 6) -- the CollisionStatic pass, ported from
+// collision_static.slang (S6 Task 6) -- the static_contact.resolve pass, ported from
 // engine/physics/contacts.cpp's resolve_static_contacts(). One thread per
 // GLOBAL body slot: sample the world SDF at the body's position, and if the
 // sphere proxy penetrates, apply one impulse (restitution + Coulomb friction)

@@ -15,7 +15,7 @@
 #include "state/layout.hpp"
 
 // ---------------------------------------------------------------------------
-// THE IMU -- the SensorSynthesis pass (engine design spec §3 "The step model":
+// THE IMU -- the imu.synthesize pass (engine design spec §3 "The step model":
 // "SensorSynthesis // only on sensor-rate boundaries; writes sensor output
 // rings", and §5's "Specific force (acceleration minus gravity, body frame) is
 // captured inside Integrate for the IMU pass -- computed once, not
@@ -408,7 +408,7 @@ static_assert(4 * sizeof(uint32_t) + sizeof(glm::vec3) + sizeof(float) + sizeof(
 }
 
 // ---------------------------------------------------------------------------
-// synthesize_imu() -- the SensorSynthesis pass's IMU contribution, for ONE
+// synthesize_imu() -- the imu.synthesize pass's work, for ONE
 // world. Advances every live sensor's rate divider by one substep and, for
 // those that reach a rate boundary, draws noise, advances the bias random walk,
 // and writes one tick-stamped sample into that sensor's ring.

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// grid_sort.slang (S6 Task 7) -- STAGE 2 OF THREE of the CollisionDynamic
+// grid_sort.slang (S6 Task 7) -- STAGE 2 OF THREE of the dynamic_contact.resolve
 // pass: ONE compare-exchange stage of a bitonic sorting network over the key
 // array grid_build.slang just wrote. The port of physics/grid.cpp:383-389 --
 // the CPU's single `std::sort(entries, grid_entry_less)` -- and of v1's

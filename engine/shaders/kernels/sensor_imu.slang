@@ -20,7 +20,7 @@
 // this file needs one.
 //
 // Seven of the schedule's dispatches run one thread per BODY slot, and the
-// CollisionDynamic chain adds a per-key-entry and a per-WORLD grid. This pass
+// dynamic-contact chain adds a per-key-entry and a per-WORLD grid. This pass
 // is dispatched over the `imu_sensors` slot space (world_count *
 // sensor_capacity), because that is the array whose rows it advances and the
 // axis along which the work is genuinely independent: each sensor owns its own

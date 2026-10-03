@@ -72,7 +72,7 @@
 //     every body in a world), so a per-MODEL radius had nothing to read it.
 //     D-S6-2 closed that: Simulation::spawn(world, ModelTypeId, VehicleSpawn)
 //     now writes this value into the spawned body's BodyState::proxy_radius
-//     (state/layout.hpp), and CollisionStatic/CollisionDynamic read it there,
+//     (state/layout.hpp), and both contact passes read it there,
 //     per body, via physics::effective_proxy_radius() (physics/contacts.hpp)
 //     -- falling back to the world's default when a model leaves this field at
 //     its own 0.0f default. It was always validated at authoring time (a
@@ -201,7 +201,7 @@ struct ModelType {
     BodyTemplate body{};
     // m, >= 0. CONSUMED as of D-S6-2 (see the header note): every vehicle
     // spawn() writes this value into its body's BodyState::proxy_radius
-    // (state/layout.hpp), which is what CollisionStatic and CollisionDynamic
+    // (state/layout.hpp), which is what both contact passes
     // then read via physics::effective_proxy_radius(). Left at its 0.0f
     // default, a model's bodies fall back to the WORLD's ContactParams::
     // proxy_radius -- the same answer this field gave before it was consumed.

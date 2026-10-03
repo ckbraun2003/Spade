@@ -88,7 +88,7 @@ void pass_behaviors_kinematic(const SubstepContext& ctx) noexcept {
     }
 }
 
-// BehaviorsForce -- after ForceElements, so behavior wrenches never perturb the
+// behaviors.force -- last in Forces, so behavior wrenches never perturb the
 // pinned rotors-then-drag float accumulation. See schedule.hpp.
 void pass_behaviors_force(const SubstepContext& ctx) noexcept {
     if (ctx.behaviors != nullptr) {

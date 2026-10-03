@@ -369,9 +369,9 @@ static_assert(4 * sizeof(uint32_t) + 2 * (sizeof(glm::vec3) + sizeof(float)) +
 }
 
 // ---------------------------------------------------------------------------
-// synthesize_gnss() -- the SensorSynthesis pass's GNSS contribution, for ONE
-// world's spans. The SECOND batched call in that pass, not a second pass:
-// physics/schedule.hpp ruled that shape before this sensor existed.
+// synthesize_gnss() -- the gnss.synthesize pass's work, for ONE
+// world's spans. It is its own pass in the Sensors phase, beside
+// imu.synthesize; the two share no quantity, so neither's numbers depend on the order.
 //
 // NINE STANDARD NORMALS PER EMITTED FIX, ALWAYS -- bias-walk, position-white,
 // velocity-white, each x/y/z -- whatever the sigmas are, so that the stream
