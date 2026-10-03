@@ -226,3 +226,20 @@ TEST(RenderField, AMalformedLayerIsRefused) {
     EXPECT_EQ(drew.error().code, spade::Code::invalid_argument);
     EXPECT_EQ(storage[0], 0xAAu) << "nothing drew";
 }
+
+// The lead's review of 3605ddf: a NaN or infinite sample draws in the
+// no-data colour, never as the minimum, and the caller can count them.
+TEST(RenderField, NonFiniteSamplesDrawInTheNoDataColour) {
+    RenderScene scene = lit_scene();
+    FieldLayer layer = two_cell_layer();
+    layer.values = {std::nanf(""), std::numeric_limits<float>::infinity()};
+    scene.field_layers = {layer};
+    const std::vector<uint8_t> frame = render_bgrx(scene, camera_at(glm::vec3(0.0f, 0.0f, 3.0f)), appearance_on());
+    ASSERT_FALSE(frame.empty());
+    const Bgr no_data = to_bgr(layer.colour_map.no_data_colour);
+    EXPECT_EQ(pixel_at(frame, 60, 60), no_data) << "NaN";
+    EXPECT_EQ(pixel_at(frame, 100, 60), no_data) << "infinity";
+    EXPECT_NE(no_data, to_bgr(spade::render::field_bin_colour(layer.colour_map, 0u)))
+        << "no data must not look like bin 0";
+    EXPECT_EQ(spade::render::count_non_finite(layer), 2u);
+}

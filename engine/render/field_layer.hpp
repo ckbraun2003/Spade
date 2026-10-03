@@ -3,8 +3,9 @@
 //
 // The caller samples the field and hands the values in, so the renderer
 // never reads the simulation (L5). The layer is data, not appearance: every
-// pixel is exactly its bin's palette colour, with no lighting, shadow or
-// atmospheric term (SR-17a), and it draws from both sides.
+// pixel is exactly its bin's palette colour, or the no-data colour for a
+// non-finite sample, with no lighting, shadow or atmospheric term (SR-17a).
+// It draws from both sides.
 //
 // The palette and binning came from the drone sim box's heatmap
 // (sandbox/drone_view.hpp) with their arithmetic unchanged, so its
@@ -60,6 +61,9 @@ struct FieldColourMap {
     uint32_t bins = 32;
     float range_min = 0.0f;  // the bottom of bin 0
     float range_max = 0.0f;  // the top of the last bin; at or below range_min, the layer's own maximum
+    // A NaN or infinite sample draws in this colour, so bad data stays
+    // visible. Neutral grey: viridis holds no grey, so it cannot read as a value.
+    glm::vec3 no_data_colour{0.5f, 0.5f, 0.5f};
 };
 
 // A world-space rectangle of cells_u x cells_v cells, `width` metres along
@@ -120,6 +124,24 @@ struct FieldLayer {
 // The colour a bin draws in: the palette at the centre of the bin's span.
 [[nodiscard]] inline glm::vec3 field_bin_colour(const FieldColourMap& map, uint32_t bin) {
     return palette_colour(map.palette, (static_cast<float>(bin) + 0.5f) / static_cast<float>(map.bins));
+}
+
+// The colour a cell draws in. Both paths draw through this: a non-finite
+// sample takes no_data_colour, because field_bin() would put it in bin 0,
+// where it reads as the minimum.
+[[nodiscard]] inline glm::vec3 field_cell_colour(const FieldColourMap& map, float value, float range_max) {
+    if (!std::isfinite(value)) return map.no_data_colour;
+    return field_bin_colour(map, field_bin(map, value, range_max));
+}
+
+// How many samples are NaN or infinite, for a caller to report beside the
+// picture (a legend, a HUD line).
+[[nodiscard]] inline std::size_t count_non_finite(const FieldLayer& layer) {
+    std::size_t n = 0;
+    for (const float v : layer.values) {
+        if (!std::isfinite(v)) ++n;
+    }
+    return n;
 }
 
 // A malformed layer is refused before anything draws (L6), never drawn in part.
