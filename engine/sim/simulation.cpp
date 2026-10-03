@@ -1,6 +1,5 @@
 #include "sim/simulation.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -272,30 +271,10 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
                                                                     "' has no GPU kernel; it runs only on the CPU"});
             }
         }
-        // Module-API plan stage 1: the GPU recorder still runs its own pass
-        // table, which is the standard set's. Any other set would run a
-        // different experiment on the GPU than on the CPU, silently (L6).
-        //
-        // The passes are compared one by one, CPU function included, not by
-        // identity alone: the identity hashes names, versions and order, so a
-        // set that keeps a standard name with another function would match it
-        // and the GPU would run the stock kernel in its place.
-        static const Result<modules::CompiledSchedule> kStandard =
-            modules::compile_schedule(modules::standard_modules());
-        if (!kStandard) {
-            return std::unexpected(internal("the standard module set does not compile: " +
-                                            kStandard.error().context));
-        }
-        const auto same_pass = [](const modules::CompiledPass& x, const modules::CompiledPass& y) {
-            return x.module == y.module && x.pass == y.pass && x.phase == y.phase && x.cpu == y.cpu;
-        };
-        if (compiled->identity != kStandard->identity ||
-            !std::equal(compiled->passes.begin(), compiled->passes.end(), kStandard->passes.begin(),
-                        kStandard->passes.end(), same_pass)) {
-            return std::unexpected(Error{Code::unavailable,
-                                         "a module set other than the standard set runs only on the CPU until "
-                                         "the GPU chain is derived from the schedule (module-API plan, stage 2)"});
-        }
+        // Every other pass has a kernel, and the GPU records the schedule's own
+        // order (VulkanBackend::create() below is handed gpu_passes()), so any
+        // set whose passes all name a recipe runs the same experiment on both
+        // backends.
     }
 
     const Result<WorldSetLayout> layout = validate_world_set(desc);
@@ -655,11 +634,13 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
         // (compute/vulkan/step_recorder.hpp's PassParams doc comment has the
-        // ruling), so VulkanBackend::create() takes only the shape. Per-world
-        // material still reaches the device -- see the contact_params and
-        // grid_params uploads a few lines further down.
+        // ruling), so VulkanBackend::create() takes the shape and the GPU chain
+        // -- the compiled schedule's passes, in order (module-API plan, stage
+        // 2). Per-world material still reaches the device -- see the
+        // contact_params and grid_params uploads a few lines further down.
+        const std::vector<compute::GpuPass> gpu_chain = modules::gpu_passes(sim.schedule_);
         Result<std::unique_ptr<compute::VulkanBackend>> vulkan_backend =
-            compute::VulkanBackend::create(backend, shape);
+            compute::VulkanBackend::create(backend, shape, gpu_chain);
         if (!vulkan_backend) return std::unexpected(vulkan_backend.error());
         sim.vulkan_backend_ = std::move(*vulkan_backend);
 
@@ -1017,6 +998,14 @@ Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {
                                      "vulkan_pass_durations_ns: this Simulation runs on the cpu backend"});
     }
     return vulkan_backend_->read_pass_durations_ns();
+}
+
+Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_recorded_chain: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->recorded_chain();
 }
 
 Result<void> Simulation::flush_structural() {

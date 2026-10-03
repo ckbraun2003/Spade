@@ -21,6 +21,7 @@
 #include "bindings.gen.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
+#include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "state/arenas.hpp"
@@ -142,6 +143,15 @@ using spade::compute::StepShape;
 using spade::compute::VulkanBackend;
 using spade::compute::vulkan_available;
 
+// The GPU chain a default Simulation records: the standard module set's
+// compiled passes (module-API plan, stage 2). This file builds VulkanBackends
+// directly, so it hands them the same list Simulation::create() would.
+[[nodiscard]] const std::vector<spade::compute::GpuPass>& standard_gpu_passes() {
+    static const std::vector<spade::compute::GpuPass> passes =
+        spade::modules::gpu_passes(*spade::modules::compile_schedule(spade::modules::standard_modules()));
+    return passes;
+}
+
 // ---------------------------------------------------------------------------
 // The gpu test fixture (this task's brief): wires compute::set_error_sink()
 // to ADD_FAILURE() so a validation-layer message during any test in THIS
@@ -240,7 +250,7 @@ TEST_F(GpuStateMirrorTest, RoundTripUploadReadbackWithoutSteppingIsByteIdentical
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
 
     Result<std::unique_ptr<VulkanBackend>> backend =
-        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim));
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim), standard_gpu_passes());
     ASSERT_TRUE(backend.has_value()) << backend.error().context;
 
     // "Every registered array" (state/arenas.hpp's ArenaSet::registry()) --
@@ -338,7 +348,7 @@ TEST_F(GpuStateMirrorTest, StepParamsTickWrittenPerSubmit) {
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
 
     Result<std::unique_ptr<VulkanBackend>> backend =
-        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim));
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim), standard_gpu_passes());
     ASSERT_TRUE(backend.has_value()) << backend.error().context;
 
     EXPECT_EQ((*backend)->last_written_tick(), 0u) << "before the first step(), the buffer is still its zeroed init";
@@ -539,7 +549,7 @@ TEST_F(GpuStateMirrorTest, AbsurdShapeAllocationFailureIsReportedNotCrashed) {
     shape.batch_dynamic_collision = false;
 
     const Result<std::unique_ptr<VulkanBackend>> backend =
-        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape);
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
     ASSERT_FALSE(backend.has_value()) << "an absurd shape must not silently succeed";
     // capacity_exceeded (VK_ERROR_OUT_OF_DEVICE_MEMORY/_HOST_MEMORY) is the
     // expected mapping (state_mirror.cpp's map_vk_error); `internal` is
@@ -646,7 +656,7 @@ TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchP
         shape.h = 0.001f;
 
         Result<std::unique_ptr<VulkanBackend>> backend =
-            VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape);
+            VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
         ASSERT_TRUE(backend.has_value()) << backend.error().context;
 
         const spade::compute::RecordedChain chain = (*backend)->recorded_chain();
@@ -679,7 +689,7 @@ TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
     shape.h = 0.001f;
 
     Result<std::unique_ptr<VulkanBackend>> backend =
-        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape);
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
     ASSERT_TRUE(backend.has_value()) << backend.error().context;
     EXPECT_EQ((*backend)->bound_binding_count(), spade::compute::gen::kBindingCount_state);
 }

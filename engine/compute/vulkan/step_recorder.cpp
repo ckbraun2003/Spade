@@ -1,7 +1,6 @@
 #include "compute/vulkan/step_recorder.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstring>
 #include <iterator>
@@ -190,92 +189,6 @@ namespace {
     return group_count <= out_max_group_count;
 }
 
-// ---------------------------------------------------------------------------
-// INTERIM (module-API plan, stage 1, 2026-10-02): physics/schedule.cpp's
-// kSchedule is gone. The CPU runs the compiled module schedule
-// (sim/module.hpp, sim/standard_modules.cpp), and this table mirrors the
-// STANDARD set's compiled order, which
-// Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder pins. Stage 2
-// derives the GPU chain from the schedule and deletes this table; until then,
-// read "kSchedule" below as "the compiled standard set", and the CPU's empty
-// Gravity and Publish passes as removed.
-//
-// Schedule slot -> what it records. THE ORDER IS physics/schedule.cpp's
-// kSchedule, verbatim, and these two tables are the one place the
-// correspondence is written down; step_recorder.hpp's header comment is their
-// prose form.
-//
-// TWO SLOTS RECORD NOTHING, AND `kNoDispatch` SAYS SO BY NAME (S6 Task 8) --
-// where through Task 7 they bound a stub pipeline that provably did nothing.
-// Gravity and Publish are INERT BY DESIGN on both backends (schedule.cpp's own
-// pass_gravity()/pass_publish() are empty functions; gravity is applied inside
-// Integrate), so the honest recording for them is no commands at all. They stay
-// in the table so the correspondence with spec section 3's eight names remains
-// literal.
-//
-// TWO SLOTS ARE CHAINS, which a one-pipeline-per-slot table cannot express;
-// record() special-cases both by index, and their entries here name the chain's
-// FIRST pipeline so the table stays a faithful "what does this slot start with"
-// and never silently reads as "this slot is one dispatch".
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// THIS TABLE MODELS SPEC SECTION 3'S EIGHT PASSES, NOT THE CPU SCHEDULE'S TEN.
-//
-// physics/schedule.cpp's kSchedule carries TEN slots as of the 24th spec's SL6
-// (Plan A Task 7): §3's eight, plus BehaviorsKinematic (before ForceElements)
-// and BehaviorsForce (after it). Neither is represented here, and that is
-// deliberate rather than an oversight -- SL6 refuses a behavior without a
-// record_gpu half from a GPU-authoritative world outright, so what the GPU
-// shape should be is the behavior registry's decision to make, not a pair of
-// no-dispatch slots added ahead of it. Adding them now would also cost two
-// PassDurationsNs fields and two timestamp query slots per substep to measure
-// two things that record nothing.
-//
-// THE SLOT INDICES BELOW ARE THIS TABLE'S, THEREFORE, AND NO LONGER THE CPU
-// SCHEDULE'S. In kSchedule, ForceElements is index 2 and CollisionDynamic is 5.
-//
-// WHAT KEEPS THE DIVERGENCE HONEST: test_determinism.cpp's
-// Schedule.RemovingTheBehaviorSlotsLeavesSpecSectionThreeExactly, which asserts
-// that striking the Behaviors* slots out of kSchedule leaves §3's eight names
-// in §3's order. That is precisely the property this table assumes, and until
-// it was written nothing checked it -- the recorder never reads kSchedule, so
-// the schedule grew from eight to ten with every GPU test green.
-// ---------------------------------------------------------------------------
-constexpr uint32_t kNoDispatch = 0xFFFFFFFFu;
-
-constexpr uint32_t kForceElementsSlot = 1;     // rotors -> forces_drag (S6 Task 8)
-constexpr uint32_t kSensorSynthesisSlot = 6;   // sensor_imu -> sensor_gnss (GPU-sensor leg)
-constexpr uint32_t kCollisionDynamicSlot = 4;  // grid_build -> grid_sort xS -> collision_dynamic
-
-constexpr std::array<uint32_t, 8> kPassPipeline = {
-    StepRecorder::kPipelineMedium,            // 0 MediumUpdate      -- per-WORLD grid
-    StepRecorder::kPipelineRotors,            // 1 ForceElements     -- CHAIN; see kForceElementsSlot
-    kNoDispatch,                              // 2 Gravity           -- inert by design
-    StepRecorder::kPipelineCollision,         // 3 CollisionStatic
-    StepRecorder::kPipelineGridBuild,         // 4 CollisionDynamic  -- CHAIN; see kCollisionDynamicSlot
-    StepRecorder::kPipelineIntegrate,         // 5 Integrate
-    StepRecorder::kPipelineSensorImu,         // 6 SensorSynthesis   -- CHAIN; see kSensorSynthesisSlot
-    kNoDispatch,                              // 7 Publish           -- inert by design
-};
-
-// Which dispatch EXTENT each slot runs over, indexed identically. A second
-// table beside the first, rather than a switch inside record(), because "which
-// extent does this pass run over" is exactly the kind of per-slot fact that
-// belongs next to "which kernel does it bind" -- and because Task 8 made it a
-// genuine four-way choice rather than "the body grid, except slot 4".
-enum class PassGrid : uint32_t { body, world, sensor, grid_entry, none };
-
-constexpr std::array<PassGrid, 8> kPassGrid = {
-    PassGrid::world,       // 0 MediumUpdate     -- one thread per world
-    PassGrid::body,        // 1 ForceElements    -- BOTH chain members are per-body
-    PassGrid::none,        // 2 Gravity
-    PassGrid::body,        // 3 CollisionStatic
-    PassGrid::grid_entry,  // 4 CollisionDynamic -- the chain's first two stages; the sweep is per-world
-    PassGrid::body,        // 5 Integrate
-    PassGrid::sensor,      // 6 SensorSynthesis  -- one thread per sensor slot
-    PassGrid::none,        // 7 Publish
-};
-
 // log2 of a power of two, for the bitonic stage count. `segment` comes from
 // grid_domain_of() and is a power of two >= 1 by construction.
 [[nodiscard]] uint32_t log2_pow2(uint32_t segment) {
@@ -293,7 +206,18 @@ constexpr std::array<PassGrid, 8> kPassGrid = {
 Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, const StepShape& shape,
                                                              VkDescriptorSetLayout set_layout,
                                                              VkDescriptorSet set, void* step_params_mapped,
-                                                             uint32_t workgroup_size) {
+                                                             uint32_t workgroup_size,
+                                                             std::span<const GpuPass> passes) {
+    // A pass with no recipe has no GPU kernel: recording the rest would run a
+    // different experiment from the CPU, silently (L6). Refused before any
+    // resource is built.
+    for (const GpuPass& pass : passes) {
+        if (pass.recipe == GpuRecipe::none) {
+            return std::unexpected(Error{Code::invalid_argument, "StepRecorder::create: pass '" + pass.name +
+                                                                     "' has no GPU kernel (GpuRecipe::none)"});
+        }
+    }
+
     if (step_params_mapped == nullptr) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "StepRecorder::create: step_params_mapped is null (StateMirror owns "
@@ -342,6 +266,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     self->shape_ = shape;
     self->step_params_mapped_ = step_params_mapped;
     self->workgroup_size_ = workgroup_size;
+    self->passes_.assign(passes.begin(), passes.end());
     self->dispatch_groups_x_ = dispatch_groups_for(shape, workgroup_size);
 
     // S6 Task 7: the CollisionDynamic chain's own shape, decided ONCE here for
@@ -366,7 +291,11 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     // itself never fails on a capability gap -- only a genuine Vulkan failure
     // allocating the (tiny) query pool on a device that DOES claim support
     // propagates here, exactly like every other resource this factory builds.
-    Result<std::unique_ptr<PassTimestamps>> timestamps = PassTimestamps::create(ctx, shape.substeps);
+    std::vector<std::string> pass_names;
+    pass_names.reserve(self->passes_.size());
+    for (const GpuPass& pass : self->passes_) pass_names.push_back(pass.name);
+    Result<std::unique_ptr<PassTimestamps>> timestamps =
+        PassTimestamps::create(ctx, shape.substeps, std::move(pass_names));
     if (!timestamps) {
         return std::unexpected(timestamps.error());
     }
@@ -415,7 +344,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     // rather than as nine near-identical if-statements because the previous
     // shape had every call site repeating the same four-line error dance, and
     // because the slot->kernel correspondence is the fact worth being able to
-    // read in one place (kPassPipeline above maps SCHEDULE slots onto these).
+    // read in one place (record()'s recipe switch maps passes onto these).
     const struct {
         PipelineSlot slot;
         const SpirvVariantSet& variants;
@@ -576,20 +505,17 @@ Result<void> StepRecorder::record() {
     // device (PassTimestamps::record_reset()'s own doc comment).
     timestamps_->record_reset(cmd_);
 
-    // The per-substep chain, `shape_.substeps` times, walking spec section 3's
-    // eight passes slot by slot (MediumUpdate .. Publish) -- which is kSchedule
-    // MINUS SL6's two behavior slots; see kNoDispatch's comment above. Each slot
-    // records what kPassPipeline/kPassGrid name for it, EXCEPT the two CHAIN
-    // slots (1 ForceElements and 4 CollisionDynamic) and the two INERT ones
-    // (2 Gravity and 7 Publish), which record nothing at all.
+    // The per-substep chain, `shape_.substeps` times, walking the schedule's
+    // GPU passes (passes_) in order. Each pass records what its recipe names
+    // (step_recorder.hpp's recipe table); the two behavior recipes record
+    // nothing at all.
     //
     // A memory barrier after every dispatch except the very last one of the
     // WHOLE recorded chain: that covers the inter-pass hazard within one
-    // substep, the inter-STAGE hazard inside the sort chain, the rotors->drag
-    // hazard inside slot 1 (both write the same two accumulators, in that
-    // order), and the inter-substep hazard between one substep's last dispatch
-    // and the next substep's MediumUpdate -- uniformly, rather than
-    // special-casing any of them.
+    // substep (including rotors->drag, which write the same two accumulators,
+    // in that order), the inter-STAGE hazard inside the sort chain, and the
+    // inter-substep hazard between one substep's last dispatch and the next
+    // substep's first -- uniformly, rather than special-casing any of them.
     //
     // EVERY PassParams FIELD HERE IS SHAPE OR DISPATCH DATA, NOT STEP DATA
     // (what makes recording this once, rather than per-step, correct):
@@ -613,8 +539,8 @@ Result<void> StepRecorder::record() {
     // emitted. Until 2026-10-01 it came from a hand tally of dispatches per
     // substep that went stale when SensorSynthesis became a two-kernel chain,
     // and the last `substeps` barriers of every recording were silently
-    // dropped. Barrier placement relative to the timestamp marks is unchanged,
-    // so the per-pass timings mean what they meant before.
+    // dropped. A pass's timestamp mark follows its last dispatch's barrier, as
+    // it always has.
     struct Command {
         bool is_dispatch = false;
         uint32_t pipeline = 0;  // dispatch: PipelineSlot
@@ -642,135 +568,93 @@ Result<void> StepRecorder::record() {
         commands.push_back(Command{.substep = substep, .boundary = boundary});
     };
 
-    // The extent each PassGrid names, resolved once. A degenerate shape yields
-    // zeros here, and a vkCmdDispatch with a zero group count is legal and
-    // executes nothing -- see the chain note below for why recording it anyway
-    // is the right answer.
-    const auto groups_of = [&](PassGrid grid) -> uint32_t {
-        switch (grid) {
-            case PassGrid::body: return dispatch_groups_x_;
-            case PassGrid::world: return world_groups_x_;
-            case PassGrid::sensor: return sensor_groups_x_;
-            case PassGrid::grid_entry: return grid_groups_x_;
-            case PassGrid::none: break;
-        }
-        return 0u;
-    };
-
     for (uint32_t s = 0; s < shape_.substeps; ++s) {
         // S6 Task 10: "start of this substep" mark -- boundary 0 of this
-        // substep's 9-slot block. A no-op when timestamps_ is unsupported.
+        // substep's block. A no-op when timestamps_ is unsupported.
         mark(s, 0);
 
-        for (uint32_t pass = 0; pass < 8u; ++pass) {
+        for (uint32_t i = 0; i < passes_.size(); ++i) {
             PassParams params = base;
             params.substep = s;
 
-            if (kPassPipeline[pass] == kNoDispatch) {
-                // The two INERT slots (S6 Task 8). Nothing is recorded -- not
-                // a stub dispatch, not a barrier, not a pipeline bind. See
-                // kPassPipeline's comment: the CPU's pass_gravity() and
-                // pass_publish() are empty functions, so an empty recording is
-                // the faithful mirror and a provably-inert dispatch was not.
-            } else if (pass == kForceElementsSlot) {
-                // -----------------------------------------------------------
-                // THE ForceElements CHAIN (S6 Task 8) -- physics/schedule.cpp's
-                // pass_force_elements(), which calls apply_rotors() and THEN
-                // apply_drag() and says at the call site why the order is "a
-                // numerical contract and not a preference": both accumulate
-                // into the same two float3 accumulators, and fp32 addition is
-                // not associative. The barrier `emit` places between them is
-                // what makes drag's read of `force_acc` see rotors' write.
-                //
-                // BOTH MEMBERS RUN ON THE BODY GRID, which is why this chain
-                // needs no grid bookkeeping of its own -- unlike
-                // CollisionDynamic's, whose three stages span two different
-                // extents.
-                // -----------------------------------------------------------
-                emit(kPipelineRotors, params, dispatch_groups_x_);
-                emit(kPipelineDrag, params, dispatch_groups_x_);
-            } else if (pass == kSensorSynthesisSlot) {
-                // -----------------------------------------------------------
-                // THE SensorSynthesis CHAIN -- physics/schedule.cpp's
-                // pass_sensor_synthesis(), which calls synthesize_imu() and
-                // THEN synthesize_gnss().
-                //
-                // AND THE ORDER IS NOT A CONTRACT HERE, WHICH IS THE OPPOSITE
-                // OF THE ForceElements CHAIN ABOVE AND WORTH SAYING SO NOBODY
-                // INFERS THE RULE FROM THE SHAPE. Rotors-then-drag is a
-                // numerical contract because both accumulate into the same
-                // float3 accumulators and fp32 addition is not associative.
-                // These two share nothing: disjoint arrays, per-row rng streams
-                // seeded under different domain tags, and `bodies` read-only by
-                // both. state_digest folds the registry walk in REGISTRATION
-                // order rather than dispatch order, so swapping these two lines
-                // moves no digest either.
-                //
-                // The barrier `emit` places between them is therefore NOT
-                // load-bearing here, unlike in the chain above. It is left in
-                // place because it costs one pipeline barrier per substep and
-                // removing it would make this the one dispatch pair in the file
-                // whose safety depends on an argument rather than on a barrier.
-                //
-                // BOTH MEMBERS RUN ON THE SENSOR GRID: one sensor_capacity
-                // sizes both arenas, so a single extent covers the pair.
-                // -----------------------------------------------------------
-                emit(kPipelineSensorImu, params, groups_of(PassGrid::sensor));
-                emit(kPipelineSensorGnss, params, groups_of(PassGrid::sensor));
-            } else if (pass != kCollisionDynamicSlot) {
-                emit(kPassPipeline[pass], params, groups_of(kPassGrid[pass]));
-            } else {
-                // -----------------------------------------------------------
-                // THE CollisionDynamic CHAIN -- physics/grid.cpp's five-stage
-                // shape, as three kernels:
-                //
-                //   1. grid_build          one thread per key-array entry
-                //   2. grid_sort  x stages one thread per entry, one dispatch
-                //                          per (k, j) stage of the bitonic
-                //                          network
-                //   3. collision_dynamic   one thread per WORLD (the sweep is
-                //                          sequential within a world -- that
-                //                          kernel's header has the parity
-                //                          argument)
-                //
-                // RECORDED ONCE, like everything else in this function. The
-                // stage loop below is a HOST-side unroll of grid_sort.slang's
-                // textbook double loop, so the network is baked into the
-                // command buffer and nothing about it is decided per submit. A
-                // multi-dispatch pass with barriers between its stages is
-                // still a recording (spec section 9's record-once discipline
-                // is about not re-recording per step, not about a
-                // one-dispatch-per-pass shape).
-                //
-                // A DEGENERATE SHAPE RECORDS THE SAME CHAIN WITH EMPTY GRIDS
-                // rather than a different chain: a world set with no worlds
-                // (or no body capacity) yields grid_groups_x_ == 0 /
-                // world_groups_x_ == 0, and vkCmdDispatch with a zero group
-                // count is legal and executes nothing. Recording it anyway
-                // keeps the recorded shape a pure function of `shape_` with no
-                // special case to get wrong, and costs a handful of commands
-                // that never run.
-                // -----------------------------------------------------------
-                emit(kPipelineGridBuild, params, grid_groups_x_);
-
-                for (uint32_t k = 2; k <= grid_.segment; k <<= 1) {
-                    for (uint32_t j = k >> 1; j > 0; j >>= 1) {
-                        PassParams stage = params;
-                        stage.sort_k = k;
-                        stage.sort_j = j;
-                        emit(kPipelineGridSort, stage, grid_groups_x_);
+            switch (passes_[i].recipe) {
+                case GpuRecipe::none:
+                    // create() refused it; unreachable.
+                    return std::unexpected(Error{Code::internal, "StepRecorder::record: pass '" +
+                                                                     passes_[i].name + "' has no GPU kernel"});
+                case GpuRecipe::behaviors_kinematic:
+                case GpuRecipe::behaviors_force:
+                    // Nothing is recorded -- not a stub dispatch, not a
+                    // barrier, not a pipeline bind (CORE-1; see the header's
+                    // recipe table).
+                    break;
+                case GpuRecipe::medium_update:
+                    emit(kPipelineMedium, params, world_groups_x_);
+                    break;
+                case GpuRecipe::rotors:
+                    emit(kPipelineRotors, params, dispatch_groups_x_);
+                    break;
+                case GpuRecipe::drag:
+                    emit(kPipelineDrag, params, dispatch_groups_x_);
+                    break;
+                case GpuRecipe::collision_static:
+                    emit(kPipelineCollision, params, dispatch_groups_x_);
+                    break;
+                case GpuRecipe::collision_dynamic:
+                    // -------------------------------------------------------
+                    // physics/grid.cpp's five-stage shape, as three kernels:
+                    //
+                    //   1. grid_build          one thread per key-array entry
+                    //   2. grid_sort  x stages one thread per entry, one
+                    //                          dispatch per (k, j) stage of
+                    //                          the bitonic network
+                    //   3. collision_dynamic   one thread per WORLD (the sweep
+                    //                          is sequential within a world --
+                    //                          that kernel's header has the
+                    //                          parity argument)
+                    //
+                    // RECORDED ONCE, like everything else in this function.
+                    // The stage loop below is a HOST-side unroll of
+                    // grid_sort.slang's textbook double loop, so the network
+                    // is baked into the command buffer and nothing about it is
+                    // decided per submit.
+                    //
+                    // A DEGENERATE SHAPE RECORDS THE SAME CHAIN WITH EMPTY
+                    // GRIDS rather than a different chain: a world set with no
+                    // worlds (or no body capacity) yields grid_groups_x_ == 0 /
+                    // world_groups_x_ == 0, and vkCmdDispatch with a zero
+                    // group count is legal and executes nothing. Recording it
+                    // anyway keeps the recorded shape a pure function of
+                    // `shape_` and the pass list.
+                    // -------------------------------------------------------
+                    emit(kPipelineGridBuild, params, grid_groups_x_);
+                    for (uint32_t k = 2; k <= grid_.segment; k <<= 1) {
+                        for (uint32_t j = k >> 1; j > 0; j >>= 1) {
+                            PassParams stage = params;
+                            stage.sort_k = k;
+                            stage.sort_j = j;
+                            emit(kPipelineGridSort, stage, grid_groups_x_);
+                        }
                     }
-                }
-
-                emit(kPipelineCollisionDynamic, params, world_groups_x_);
+                    emit(kPipelineCollisionDynamic, params, world_groups_x_);
+                    break;
+                case GpuRecipe::integrate:
+                    emit(kPipelineIntegrate, params, dispatch_groups_x_);
+                    break;
+                case GpuRecipe::sensor_imu:
+                    emit(kPipelineSensorImu, params, sensor_groups_x_);
+                    break;
+                case GpuRecipe::sensor_gnss:
+                    emit(kPipelineSensorGnss, params, sensor_groups_x_);
+                    break;
             }
 
-            // S6 Task 10: "slot `pass` just finished" mark -- boundary
-            // `pass + 1` of this substep's block, common to every branch
-            // above (including the inert one, whose mark simply brackets zero
-            // intervening commands and so reads back as a measured ~0 ns
-            // rather than an unmeasured one). A no-op when unsupported.
-            mark(s, pass + 1);
+            // S6 Task 10: "pass i just finished" mark -- boundary i + 1 of this
+            // substep's block, common to every recipe (including the two that
+            // record nothing, whose mark brackets zero intervening commands and
+            // so reads back as a measured ~0 ns rather than an unmeasured
+            // one). A no-op when unsupported.
+            mark(s, i + 1);
         }
     }
 
@@ -780,6 +664,8 @@ Result<void> StepRecorder::record() {
         if (commands[i].is_dispatch) last_dispatch = i;
     }
     chain_ = RecordedChain{.sort_stages = sort_stage_count()};
+    chain_.passes.reserve(passes_.size());
+    for (const GpuPass& pass : passes_) chain_.passes.push_back(pass.name);
     for (std::size_t i = 0; i < commands.size(); ++i) {
         const Command& c = commands[i];
         if (!c.is_dispatch) {

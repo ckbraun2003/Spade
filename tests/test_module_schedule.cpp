@@ -347,22 +347,11 @@ TEST(ModuleSimulation, ScheduleNamesOutliveTheStringsThatNamedThem) {
     EXPECT_TRUE(found) << "the compiled schedule must own its module names";
 }
 
-TEST(ModuleSimulation, ANonStandardSetOnVulkanIsRefusedUntilStage2) {
-    spade::modules::ModuleSet set = spade::modules::standard_modules();
-    set.push_back({.name = "hover", .passes = kHoverPasses});
-    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
-                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
-                                               set);
-    ASSERT_FALSE(sim.has_value());
-    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
-    EXPECT_NE(sim.error().context.find("module set"), std::string::npos) << sim.error().context;
-}
-
 // The identity hashes names, versions and order, not function pointers, so a
 // set that keeps the standard names but swaps in another rotor function has the
-// standard identity. Stage 1's GPU recorder would still run the stock rotor
-// kernel, so the refusal must compare the passes themselves (L6). Found by the
-// stage-1 whole-branch review.
+// standard identity. The GPU must not run the stock rotor kernel in its place
+// (L6): a pass without a recipe has no kernel, and the recipe can only be
+// claimed with the built-in function. Found by the stage-1 whole-branch review.
 TEST(ModuleSimulation, AStandardNamedSetWithAnotherFunctionIsRefusedOnVulkan) {
     static constexpr QuantityAccess rotor_access[] = {{"body.pose", Access::read},
                                                       {"body.wrench", Access::accumulate},

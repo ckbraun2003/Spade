@@ -68,7 +68,8 @@ VulkanBackend::~VulkanBackend() = default;
 VulkanBackend::VulkanBackend(VulkanBackend&&) noexcept = default;
 VulkanBackend& VulkanBackend::operator=(VulkanBackend&&) noexcept = default;
 
-Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc&, const StepShape&) {
+Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc&, const StepShape&,
+                                                             std::span<const GpuPass>) {
     return std::unexpected(
         Error{Code::unavailable,
               "the vulkan compute backend was not compiled into this build (SPADE_VULKAN=OFF)"});

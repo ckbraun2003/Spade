@@ -2,8 +2,8 @@
 
 // ---------------------------------------------------------------------------
 // timestamps.hpp (S6 Task 10) -- per-pass GPU timing via Vulkan timestamp
-// queries, so the bench sweep's "how fast is each of the 8 passes" numbers
-// are measured rather than guessed (task brief, quoting spec section 9).
+// queries, so the bench sweep's "how fast is each pass" numbers are measured
+// rather than guessed (task brief, quoting spec section 9).
 //
 // RECORD-ONCE COMPLIANCE. compute/vulkan/step_recorder.hpp's StepRecorder
 // records its whole per-substep dispatch chain EXACTLY ONCE (at create()) and
@@ -31,32 +31,27 @@
 // record_reset()/record_mark() regardless of device capability -- exactly
 // what StepRecorder now does (its own header/impl carry the wiring).
 //
-// EIGHT NAMED PASSES, spec section 3's order verbatim (MediumUpdate,
-// ForceElements, Gravity, CollisionStatic, CollisionDynamic, Integrate,
-// SensorSynthesis, Publish) -- the same eight names step_recorder.hpp's
-// kPassPipeline/kPassGrid tables keep literal, and for the same reason. NOT
-// kSchedule's full ten: SL6's two behavior slots are unmodelled on this
-// backend by design, so no field or query slot is spent measuring them. See
-// step_recorder.cpp's kNoDispatch comment. Two of the eight (Gravity, Publish) are INERT BY DESIGN on
-// both backends (no dispatch is ever recorded for them -- see
-// step_recorder.cpp's kNoDispatch), so their boundary marks bracket zero
-// intervening work and their durations report as (measured, not merely
-// assumed) ~0 ns -- structurally, not by omission, which is why
-// PassDurationsNs still carries a field for each of them: dropping the field
-// would silently turn "measured zero" back into "assumed zero".
+// ONE BRACKET PER GPU PASS, NAMED (module-API plan, stage 2). The passes are
+// the compiled schedule's, in schedule order, each named "<module>.<pass>" --
+// the same list StepRecorder records. A pass whose recipe dispatches nothing
+// (the two behavior passes) still gets its bracket, so it reports a MEASURED
+// ~0 ns rather than an absent one.
 //
 // ONE MARK BLOCK PER SUBSTEP. A shape's recorded chain repeats
 // `shape.substeps` times (StepRecorder::record()'s own substep loop), and
-// this object needs one 9-slot block (1 "start of this substep" mark + one
-// "this schedule slot just finished" mark per of the 8 slots) per repetition,
-// because the pass boundaries themselves repeat. read_durations_ns() sums
-// each pass's duration ACROSS every substep in the recording -- "how long did
-// CollisionDynamic run, in total, for one full step()" is the number a bench
-// counter wants, not a single substep's slice of it.
+// this object needs one block of (passes + 1) marks -- 1 "start of this
+// substep" mark + one "this pass just finished" mark per pass -- per
+// repetition, because the pass boundaries themselves repeat.
+// read_durations_ns() sums each pass's duration ACROSS every substep in the
+// recording -- "how long did dynamic_contact.resolve run, in total, for one
+// full step()" is the number a bench counter wants, not a single substep's
+// slice of it.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include <volk.h>
 
@@ -66,11 +61,6 @@
 
 namespace spade::compute {
 
-// One 9-slot block of query indices per substep: index 0 is "before this
-// substep's first pass", index N (1..8) is "schedule slot N-1 (kSchedule's
-// order) has just finished recording its dispatches for this substep".
-inline constexpr uint32_t kPassTimestampMarksPerSubstep = 9;
-
 class PassTimestamps {
 public:
     // ctx: non-owning, exactly like every other vulkan/ helper (VulkanContext
@@ -78,8 +68,10 @@ public:
     // the device handle and the timestampPeriod scale it needs, both read out
     // of `ctx` once here.
     //
-    // substeps: StepShape::substeps -- how many 9-slot blocks the query pool
-    // needs (see the class comment above). Must be >= 1; a 0 is treated the
+    // substeps: StepShape::substeps -- how many mark blocks the query pool
+    // needs (see the class comment above). pass_names: the GPU passes in
+    // recorded order; block index 0 is "before this substep's first pass",
+    // index N is "pass N-1 has just finished". Must be >= 1; a 0 is treated the
     // same as "device cannot time this" (an empty query pool is not a legal
     // VkQueryPoolCreateInfo::queryCount) rather than asserted, since a
     // degenerate shape is StepRecorder's problem to reject, not this
@@ -88,16 +80,18 @@ public:
     // ALWAYS SUCCEEDS FOR THE CAPABILITY CHECK ITSELF: a device/queue that
     // cannot time compute work is not an error (see the class comment's
     // skip-gracefully posture) -- the returned object is simply
-    // !supported(). Only a genuine Vulkan failure creating the (tiny, at most
-    // 3 * 9 = 27 query) pool on a device that DOES claim support propagates
-    // as Code::internal, matching every other resource this tree creates.
-    [[nodiscard]] static Result<std::unique_ptr<PassTimestamps>> create(VulkanContext& ctx, uint32_t substeps);
+    // !supported(). Only a genuine Vulkan failure creating the (small:
+    // substeps * (passes + 1) queries) pool on a device that DOES claim
+    // support propagates as Code::internal, matching every other resource
+    // this tree creates.
+    [[nodiscard]] static Result<std::unique_ptr<PassTimestamps>> create(VulkanContext& ctx, uint32_t substeps,
+                                                                       std::vector<std::string> pass_names);
 
+    // Held only by unique_ptr, so neither copyable nor movable: no hand-written
+    // move to fall behind a new member (the defect-5 lesson).
     ~PassTimestamps();
     PassTimestamps(const PassTimestamps&) = delete;
     PassTimestamps& operator=(const PassTimestamps&) = delete;
-    PassTimestamps(PassTimestamps&&) noexcept;
-    PassTimestamps& operator=(PassTimestamps&&) noexcept;
 
     // False iff this device/queue could not time compute work (see the class
     // comment) -- every recording method below is then a no-op and
@@ -115,7 +109,7 @@ public:
     // Records one timestamp write at the CURRENT point in `cmd`'s command
     // stream. `substep` is which of the shape's repeated blocks this mark
     // belongs to (0 .. substeps-1); `boundary` is 0 for "start of this
-    // substep" or 1..8 for "kSchedule slot boundary-1 just finished". A
+    // substep" or 1..passes for "pass boundary-1 just finished". A
     // no-op when !supported() -- nothing is written to `cmd` at all, which is
     // the zero-cost half of the class comment's contract.
     void record_mark(VkCommandBuffer cmd, uint32_t substep, uint32_t boundary) const;
@@ -127,8 +121,10 @@ public:
     // contract), because the query pool's contents are exactly what that
     // submit's own execution just wrote.
     //
-    // All-zero with `supported == false` when this object was created
-    // unsupported -- never Code::unavailable, so a caller does not have to
+    // One PassDuration per pass name, in recorded order. An empty list with
+    // `supported == false` when this object was created unsupported -- never
+    // a list of zeros that could be read as measured, and never
+    // Code::unavailable, so a caller does not have to
     // branch before asking (the same "always answer, let the flag carry the
     // fact" posture VulkanContext::supports_int64() documents for itself).
     [[nodiscard]] Result<PassDurationsNs> read_durations_ns() const;
@@ -140,6 +136,8 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueryPool pool_ = VK_NULL_HANDLE;
     uint32_t substeps_ = 0;
+    std::vector<std::string> pass_names_;
+    uint32_t marks_per_substep_ = 1;  // pass_names_.size() + 1
     // VkPhysicalDeviceLimits::timestampPeriod -- nanoseconds per tick this
     // device's timestamps count in (NOT guaranteed to be 1.0; Intel Iris Plus
     // reports its own value, read once at create() time).

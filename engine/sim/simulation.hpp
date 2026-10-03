@@ -685,6 +685,13 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<compute::PassDurationsNs> vulkan_pass_durations_ns() const;
 
+    // What the Vulkan step recorded (compute/backend.hpp's RecordedChain): the
+    // dispatch and barrier counts and the GPU passes by name, in recorded
+    // order. A diagnostic, like vulkan_pass_durations_ns(): `unavailable` on
+    // the cpu backend. Tests use it to check that the GPU chain is the
+    // compiled schedule's.
+    [[nodiscard]] Result<compute::RecordedChain> vulkan_recorded_chain() const;
+
     // ---------------------------------------------------------------------
     // step -- advance `n` steps.
     //

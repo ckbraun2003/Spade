@@ -10,8 +10,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace spade::compute {
 
@@ -211,11 +213,11 @@ struct GpuPass {
 };
 
 // ---------------------------------------------------------------------------
-// PassDurationsNs (S6 Task 10) -- per-pass GPU timing, one field per
-// physics/schedule.cpp's kSchedule slot, in that literal order (matching
-// compute/vulkan/step_recorder.hpp's kPassPipeline/kPassGrid tables and this
-// task's compute/vulkan/timestamps.hpp). Nanoseconds, summed across every
-// substep of the most recently completed step.
+// PassDurationsNs (S6 Task 10; named per pass since module-API stage 2) --
+// per-pass GPU timing, one entry per pass of the recorded GPU chain, in
+// schedule order, named "<module>.<pass>" (compute/vulkan/timestamps.hpp).
+// Nanoseconds, summed across every substep of the most recently completed
+// step.
 //
 // WHY THIS LIVES HERE AND NOT IN compute/step_params.hpp, THE OTHER
 // Vulkan-free header sim/simulation.hpp already includes. StepParams/
@@ -233,24 +235,31 @@ struct GpuPass {
 // header with zero Vulkan dependency of its own.
 //
 // `supported == false` means the device/queue could not time compute work at
-// all (compute/vulkan/timestamps.hpp's skip-gracefully posture) -- every
-// other field is then a reported 0.0 that must not be read as "measured
-// zero". Gravity and Publish are inert on both backends (no dispatch is ever
-// recorded for either slot -- step_recorder.cpp's kNoDispatch), so their two
-// fields report a genuinely MEASURED ~0 ns whenever `supported` is true,
-// which is a different fact from every other field being unmeasured when it
-// is false.
+// all (compute/vulkan/timestamps.hpp's skip-gracefully posture) -- `passes`
+// is then EMPTY, never a list of zeros that could be read as "measured zero".
+// The two behavior passes dispatch nothing, so their entries report a
+// genuinely MEASURED ~0 ns whenever `supported` is true.
+//
+// LOOK A PASS UP WITH find(), WHICH HAS NO DEFAULT. A pass that is not in the
+// list (a renamed module, say) and a pass that took no time must not look
+// alike (TD-5), so there is deliberately no lookup that returns 0 for a
+// missing name.
 // ---------------------------------------------------------------------------
+struct PassDuration {
+    std::string pass;  // "<module>.<pass>"
+    double ns = 0.0;
+};
+
 struct PassDurationsNs {
     bool supported = false;
-    double medium_update_ns = 0.0;
-    double force_elements_ns = 0.0;
-    double gravity_ns = 0.0;
-    double collision_static_ns = 0.0;
-    double collision_dynamic_ns = 0.0;
-    double integrate_ns = 0.0;
-    double sensor_synthesis_ns = 0.0;
-    double publish_ns = 0.0;
+    std::vector<PassDuration> passes;  // schedule order; empty when !supported
+
+    [[nodiscard]] std::optional<double> find(std::string_view pass) const noexcept {
+        for (const PassDuration& p : passes) {
+            if (p.pass == pass) return p.ns;
+        }
+        return std::nullopt;
+    }
 
     // ⛔ THERE IS NO host_fence_wait_ns FIELD HERE, AND THE ABSENCE IS A
     // RULING. L307 (2) added one -- a host-side wall-clock timer around vkWaitForFences in
@@ -292,11 +301,13 @@ struct PassDurationsNs {
 // What the Vulkan step recorder put into its one recorded command buffer, as
 // counted while recording it. A diagnostic, like PassDurationsNs: tests read
 // it to check that every adjacent pair of dispatches has a barrier between
-// them, which a parity run on a forgiving driver cannot see.
+// them, which a parity run on a forgiving driver cannot see, and that the
+// chain follows the compiled schedule.
 struct RecordedChain {
     uint32_t dispatches = 0;   // vkCmdDispatch calls, across every substep
     uint32_t barriers = 0;     // vkCmdPipelineBarrier calls between them
-    uint32_t sort_stages = 0;  // bitonic stages per CollisionDynamic pass
+    uint32_t sort_stages = 0;  // bitonic stages per dynamic_contact.resolve pass
+    std::vector<std::string> passes;  // each GPU pass once, "<module>.<pass>", in recorded order
 };
 
 // ---------------------------------------------------------------------------

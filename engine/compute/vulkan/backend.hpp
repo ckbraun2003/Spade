@@ -82,8 +82,14 @@ public:
     // reaches the device -- see upload_contact_params()/upload_grid_params()
     // below, both PER-WORLD, uploaded once by Simulation::create() after this
     // call succeeds.
+    //
+    // `passes` is the GPU chain to record, in schedule order: sim/module.hpp's
+    // gpu_passes() of the Simulation's compiled schedule. compute/ keeps no
+    // pass table of its own (module-API plan, stage 2). A pass with
+    // GpuRecipe::none is refused with Code::invalid_argument.
     [[nodiscard]] static Result<std::unique_ptr<VulkanBackend>> create(const BackendDesc& desc,
-                                                                        const StepShape& shape);
+                                                                        const StepShape& shape,
+                                                                        std::span<const GpuPass> passes);
 
     // Declared, not defaulted, here: Impl is only forward-declared in this
     // header (see the file header note above), and an implicitly-defined

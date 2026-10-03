@@ -3,71 +3,52 @@
 // ---------------------------------------------------------------------------
 // step_recorder.hpp (S6 Task 5; kernels wave A wired in by Task 6) -- the step
 // command buffer: PassParams (the push-constant block every dispatch carries)
-// and StepRecorder (the object that dispatches spec section 3's 8-pass chain
-// once per step, stage-scoped barriers between passes, submit-per-step).
+// and StepRecorder (the object that dispatches the compiled schedule's GPU
+// passes once per step, stage-scoped barriers between passes,
+// submit-per-step).
 //
-// INTERIM (module-API plan, stage 1, 2026-10-02): physics/schedule.cpp's
-// kSchedule is gone. The CPU runs the compiled module schedule
-// (sim/module.hpp, sim/standard_modules.cpp), and this table mirrors the
-// STANDARD set's compiled order, which
-// Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder pins. Stage 2
-// derives the GPU chain from the schedule and deletes this table; until then,
-// read "kSchedule" below as "the compiled standard set", and the CPU's empty
-// Gravity and Publish passes as removed.
+// THE CHAIN IS THE SCHEDULE'S (module-API plan, stage 2). create() is handed
+// the compiled schedule's passes in order, each with its GpuRecipe
+// (compute/backend.hpp), and record() walks that list every substep. There is
+// no pass table here any more: a recipe is the one place a pass maps to its
+// kernels, and the schedule is the one place the order is decided.
 //
-// "SECTION 3's EIGHT", not "the schedule's ten": physics/schedule.cpp's
-// kSchedule grew two inert SL6 behavior slots (Plan A Task 7) that this class
-// deliberately does not model. step_recorder.cpp's kNoDispatch comment carries
-// the reasoning and names the test that keeps the divergence deliberate.
+//   recipe              records                       grid
+//   behaviors_kinematic nothing (CORE-1)              --
+//   medium_update       medium_update                 per WORLD: the Dryden
+//                                                     filter is a sequential
+//                                                     recurrence within a world
+//   rotors              rotors                        per BODY
+//   drag                forces_drag                   per BODY
+//   behaviors_force     nothing (CORE-1)              --
+//   collision_static    collision_static              per BODY (sphere proxy
+//                                                     vs world SDF)
+//   collision_dynamic   grid_build                    per KEY-ARRAY ENTRY
+//                       + grid_sort x stages          per KEY-ARRAY ENTRY
+//                       + collision_dynamic           per WORLD
+//   integrate           integrate                     per BODY
+//   sensor_imu          sensor_imu                    per SENSOR SLOT
+//   sensor_gnss         sensor_gnss                   per SENSOR SLOT
 //
-// ---------------------------------------------------------------------------
-// ALL EIGHT SLOTS ARE REAL AS OF S6 TASK 8, AND THE STUB IS RETIRED. Spec
-// section 3's eight passes -- kSchedule's ten less its two behavior slots --
-// bind, in order (slot numbers below are THIS table's, not kSchedule's):
+// Rotors then drag is a NUMERICAL contract when both are in the set: both
+// accumulate into the same two float3 accumulators and fp32 addition is not
+// associative. The schedule orders them (drag declares `after rotor.forces`),
+// and the barrier between every adjacent pair of dispatches makes drag's read
+// of force_acc see rotors' write.
 //
-//   0 MediumUpdate      medium_update    -- REAL (S6 Task 8). One thread per
-//                                          WORLD: the Dryden filter is a
-//                                          sequential recurrence within a world
-//                                          and worlds are the parallel axis.
-//   1 ForceElements     rotors           -- REAL, and the SECOND slot that is a
-//                       + forces_drag      CHAIN rather than a single dispatch.
-//                                          The order is physics/schedule.cpp's
-//                                          and is a NUMERICAL contract, not a
-//                                          preference: both kernels accumulate
-//                                          into the same two float3
-//                                          accumulators (that file says so at
-//                                          the call site).
-//   2 Gravity           -- NO DISPATCH -- INERT BY DESIGN, on BOTH backends:
-//                                          gravity is applied inside Integrate
-//                                          (physics/integrator.hpp), and the
-//                                          CPU's pass_gravity() is an empty
-//                                          function for exactly this reason.
-//                                          The slot is kept in this table so
-//                                          the correspondence with spec section
-//                                          3's eight names stays literal, which
-//                                          is the same choice schedule.cpp made
-//                                          and documented -- but nothing is
-//                                          recorded for it.
-//   3 CollisionStatic   collision_static -- REAL (sphere proxy vs world SDF)
-//   4 CollisionDynamic  grid_build       -- REAL as of S6 Task 7: build the
-//                       + grid_sort xS     sorted-grid keys, run the bitonic
-//                       + collision_dynamic network over them one stage per
-//                                          dispatch, then sweep.
-//   5 Integrate         integrate        -- REAL
-//   6 SensorSynthesis   sensor_imu       -- REAL (S6 Task 8). One thread per
-//                                          SENSOR slot -- a third dispatch
-//                                          grid, over the array this pass
-//                                          actually writes.
-//   7 Publish           -- NO DISPATCH -- inert on the CPU twin too
+// The two behavior recipes record nothing. With no registry attached the
+// behavior passes do nothing on the CPU either, and with one attached the
+// Vulkan step refuses (CORE-1, sim/simulation.cpp), so an empty recording is
+// the faithful mirror.
 //
-// THE STUB KERNEL IS GONE (S6 Task 8), AND ITS ABSENCE IS A DELIVERABLE. Slots
-// 2 and 7 used to dispatch pipeline_smoke -- Task 3's smoke kernel, respelled
-// by Task 5's review round 2 into a literal bit copy so that dispatching it
-// changed nothing. With the last two real passes ported, no slot needs a
-// placeholder, and a dispatch that provably does nothing is worse than no
-// dispatch: it costs a pipeline, a bind, a push constant, a barrier and a grid
-// per substep, and it invites a reader to ask what it is for. So the two inert
-// slots now record NOTHING, and engine/shaders/kernels/pipeline_smoke.slang,
+// THE STUB KERNEL IS GONE (S6 Task 8), AND ITS ABSENCE IS A DELIVERABLE. The
+// old Gravity and Publish passes (since removed) used to dispatch
+// pipeline_smoke -- Task 3's smoke kernel, respelled by Task 5's review round
+// 2 into a literal bit copy so that dispatching it changed nothing. A
+// dispatch that provably does nothing is worse than no dispatch: it costs a
+// pipeline, a bind, a push constant, a barrier and a grid per substep, and it
+// invites a reader to ask what it is for. So a pass with nothing to do records
+// NOTHING, and engine/shaders/kernels/pipeline_smoke.slang,
 // its CMake entry, its kSpirvModules row and engine/testing/spirv_scan.hpp's
 // NO_OP profile (whose only instance it was) are deleted with it. This task's
 // report carries that decision and flags it for review.
@@ -83,6 +64,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <vector>
 
 #include <volk.h>
 
@@ -210,27 +193,17 @@ struct PassParams {
 // reads as one coarse dependency per PASS BOUNDARY, not one finely-scoped
 // barrier per buffer per dispatch.
 //
-// "ONE DISPATCH PER SCHEDULE SLOT" HAS NOT BEEN TRUE SINCE S6 TASK 7, AND IS
-// FURTHER FROM IT AFTER TASK 8. The tally, per substep:
+// DISPATCHES PER PASS, per substep: one for each recipe that records, except
+// collision_dynamic (2 + sort_stage_count()) and the two behavior recipes (0).
+// The standard set therefore records 9 + sort_stage_count() per substep.
 //
-//     slot 0  MediumUpdate      1                    (per-WORLD grid)
-//     slot 1  ForceElements     2                    rotors, then drag
-//     slot 2  Gravity           0                    inert -- nothing recorded
-//     slot 3  CollisionStatic   1
-//     slot 4  CollisionDynamic  2 + sort_stage_count()
-//     slot 5  Integrate         1
-//     slot 6  SensorSynthesis   2                    sensor_imu, sensor_gnss (per-SENSOR grid)
-//     slot 7  Publish           0                    inert -- nothing recorded
-//                              ---
-//                               9 + sort_stage_count()
-//
-// This table is documentation, not an input: record() finds the last dispatch
+// That tally is documentation, not an input: record() finds the last dispatch
 // from what it actually emitted, and recorded_chain() reports the counts
 // (tests/test_gpu_state_mirror.cpp checks both against this tally).
 //
-// The barrier rule above is unchanged and covers all three kinds of hazard --
-// between passes, between the sort chain's stages, and between rotors and drag
-// inside slot 1 -- by the same clause, rather than special-casing any of them.
+// The barrier rule above covers every kind of hazard -- between passes,
+// between the sort chain's stages, and between rotors and drag -- by the same
+// clause, rather than special-casing any of them.
 // ---------------------------------------------------------------------------
 // TEN PIPELINES, ONE LAYOUT (four at S6 Task 6, three more at Task 7, three
 // more at Task 8, less the retired stub, plus sensor_gnss). Every kernel this class dispatches is
@@ -250,14 +223,13 @@ struct PassParams {
 // ---------------------------------------------------------------------------
 class StepRecorder {
 public:
-    // Every kernel this class dispatches. PUBLIC only so step_recorder.cpp's
-    // file-scope slot->pipeline table (kPassPipeline, the one place the
-    // schedule/pipeline correspondence is written down) can name them; nothing
-    // outside this translation unit has any business with these values.
+    // Every kernel this class dispatches. record()'s recipe switch is the one
+    // place a recipe maps onto these; nothing outside step_recorder.cpp has any
+    // business with these values.
     //
-    // kPipelineStub IS GONE (S6 Task 8): no slot binds a placeholder any more,
-    // and the two inert slots record no dispatch at all. See this header's slot
-    // table for the argument.
+    // kPipelineStub IS GONE (S6 Task 8): nothing binds a placeholder, and the
+    // two behavior recipes record no dispatch at all. See this header's
+    // recipe table.
     enum PipelineSlot : uint32_t {
         kPipelineDrag = 0,       // forces_drag
         kPipelineCollision = 1,  // collision_static
@@ -299,12 +271,19 @@ public:
     // compute/backend.hpp's kSupportedWorkgroupSizes (no kernel variant was
     // compiled for it) or if the device's maxComputeWorkGroupInvocations /
     // maxComputeWorkGroupSize[0] cannot run it.
+    //
+    // `passes` is the GPU chain, in schedule order (sim/module.hpp's
+    // gpu_passes()); it is copied. A pass with GpuRecipe::none is refused with
+    // Code::invalid_argument, never skipped: it would leave the GPU running a
+    // different experiment from the CPU (L6). Simulation::create() refuses such
+    // a set first, by name; this is the closer guard for a direct caller.
     [[nodiscard]] static Result<std::unique_ptr<StepRecorder>> create(VulkanContext& ctx,
                                                                         const StepShape& shape,
                                                                         VkDescriptorSetLayout set_layout,
                                                                         VkDescriptorSet set,
                                                                         void* step_params_mapped,
-                                                                        uint32_t workgroup_size);
+                                                                        uint32_t workgroup_size,
+                                                                        std::span<const GpuPass> passes);
 
     ~StepRecorder();
     StepRecorder(const StepRecorder&) = delete;
@@ -363,16 +342,16 @@ private:
     StepRecorder() = default;
     void destroy() noexcept;
 
-    // Records the fixed per-substep dispatch chain into `cmd_` ONCE -- called
-    // from create(), never again. Binds the descriptor set once, then for
-    // each substep/pass pair binds that slot's pipeline, pushes a PassParams
-    // (substep baked in, shape- and run-constant otherwise) and dispatches,
-    // with a barrier between every adjacent pair short of the very last
-    // dispatch.
+    // Records the per-substep dispatch chain into `cmd_` ONCE -- called from
+    // create(), never again. Binds the descriptor set once, then for each
+    // substep/pass pair binds the pipeline(s) the pass's recipe names, pushes
+    // a PassParams (substep baked in, shape- and run-constant otherwise) and
+    // dispatches, with a barrier between every adjacent pair short of the very
+    // last dispatch.
     //
-    // NO LONGER 8 DISPATCHES PER SUBSTEP as of S6 Task 7: the CollisionDynamic
-    // slot expands into 2 + sort_stages() dispatches (build, one per bitonic
-    // stage, sweep). The chain is still recorded exactly once for the object's
+    // NOT ONE DISPATCH PER PASS: collision_dynamic expands into
+    // 2 + sort_stages() dispatches (build, one per bitonic stage, sweep), and
+    // the two behavior recipes record none. The chain is still recorded exactly once for the object's
     // life -- a multi-dispatch pass with barriers between its stages is still
     // a recording, and every stage's (k, j) is shape data baked into its own
     // push constant.
@@ -408,8 +387,8 @@ private:
     VkFence fence_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;   // non-owning; StateMirror owns the pool/set
 
-    // Index order is PipelineSlot's, which is what kPassPipeline maps a
-    // schedule slot onto.
+    // Index order is PipelineSlot's, which record()'s recipe switch maps a
+    // pass onto.
     VkShaderModule shaders_[kPipelineCount] = {};
     VkPipeline pipelines_[kPipelineCount] = {};
 
@@ -451,6 +430,9 @@ private:
     // (a device that cannot time compute work still gets a valid, merely
     // !supported() object -- see PassTimestamps's own class comment).
     std::unique_ptr<PassTimestamps> timestamps_;
+
+    // The GPU chain record() walks every substep (create()'s `passes`).
+    std::vector<GpuPass> passes_;
 
     // Counted by record(), never written anywhere else.
     RecordedChain chain_{};
