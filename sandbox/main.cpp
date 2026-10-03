@@ -47,7 +47,9 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
+#if SPADE_SANDBOX_HAS_GPU
 #include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
+#endif
 
 #include "builder_scene.hpp"   // the builder's object model and its whole interaction
 #include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
@@ -56,6 +58,43 @@
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
 
 namespace {
+
+#if SPADE_SANDBOX_HAS_GPU
+using GpuRenderer = spade::render_gl::GlRenderer;
+#else
+// ⚠ BUILT WITH SPADE_RENDER_GL=OFF: THERE IS NO GPU RENDERER, AND THIS TYPE
+// DOES NOT PRETEND TO BE ONE. create() refuses with the cause, so start_gpu()
+// announces the CPU path exactly as it does when a driver refuses (a missing
+// capability is announced, never silent), and every `if (gpu)` below is false
+// for the whole run. The other members exist only so those branches compile:
+// the constructor is private and create() never succeeds, so none of them can
+// run. One guard here instead of one at every GPU call.
+class GpuRenderer {
+  public:
+    [[nodiscard]] static spade::Result<std::unique_ptr<GpuRenderer>> create(void* (*)(const char*)) {
+        return std::unexpected(off());
+    }
+    [[nodiscard]] spade::Result<void> upload_scene(const spade::render::RenderScene&) {
+        return std::unexpected(off());
+    }
+    [[nodiscard]] spade::Result<void> draw(const spade::render::RenderScene&, const spade::render::Camera&,
+                                           const spade::render::RenderOptions&, uint32_t, uint32_t) {
+        return std::unexpected(off());
+    }
+    [[nodiscard]] uint32_t last_draw_calls() const noexcept { return 0u; }
+    [[nodiscard]] uint32_t last_instances() const noexcept { return 0u; }
+    [[nodiscard]] const std::string& renderer_name() const noexcept { return none_; }
+    [[nodiscard]] const std::string& version_string() const noexcept { return none_; }
+
+  private:
+    GpuRenderer() = default;
+    [[nodiscard]] static spade::Error off() {
+        return spade::Error{spade::Code::unavailable,
+                            "this sandbox was built with SPADE_RENDER_GL=OFF, so it has no GPU renderer"};
+    }
+    std::string none_;
+};
+#endif
 
 constexpr uint32_t kDefaultWidth = 320;
 constexpr uint32_t kDefaultHeight = 180;
@@ -234,7 +273,7 @@ template <typename RenderOne>
 [[nodiscard]] int run_smoke(spade::sandbox::GlTargetSink& sink,
                             spade::sandbox::BuilderScene& builder,
                             spade::render::RenderScene& scene,
-                            spade::render_gl::GlRenderer* gpu, RenderOne&& render_one) {
+                            GpuRenderer* gpu, RenderOne&& render_one) {
     using spade::sandbox::FrameInput;
     SmokeTally t;
 
@@ -466,10 +505,10 @@ namespace {
 // rather than as a preference. If the GPU renderer refuses, we say WHY and
 // keep going on raster_cpu; we do not exit, because a fallback that aborts is
 // not a fallback. Shared by both scenes so they cannot disagree about it.
-[[nodiscard]] std::unique_ptr<spade::render_gl::GlRenderer> start_gpu(const spade::render::RenderScene& scene) {
-    std::unique_ptr<spade::render_gl::GlRenderer> gpu;
-    spade::Result<std::unique_ptr<spade::render_gl::GlRenderer>> made =
-        spade::render_gl::GlRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
+[[nodiscard]] std::unique_ptr<GpuRenderer> start_gpu(const spade::render::RenderScene& scene) {
+    std::unique_ptr<GpuRenderer> gpu;
+    spade::Result<std::unique_ptr<GpuRenderer>> made =
+        GpuRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
     if (made) {
         gpu = std::move(*made);
         spade::Result<void> uploaded = gpu->upload_scene(scene);
@@ -557,7 +596,7 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
         return 3;
     }
 
-    std::unique_ptr<spade::render_gl::GlRenderer> gpu = start_gpu(scene);
+    std::unique_ptr<GpuRenderer> gpu = start_gpu(scene);
 
     spade::sandbox::OrbitCamera camera;
     std::vector<uint8_t> pixels;
@@ -786,7 +825,7 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
     }
     // Uploaded once: the drone's meshes and the palette never change, only
     // the per-frame draw items do.
-    std::unique_ptr<spade::render_gl::GlRenderer> gpu = start_gpu(scene);
+    std::unique_ptr<GpuRenderer> gpu = start_gpu(scene);
 
     spade::sandbox::DronePanelModel panel;
     panel.edited = drone->options();
