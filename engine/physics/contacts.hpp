@@ -311,8 +311,9 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // beta-fraction positional correction) is expressed directly in velocity and
 // position space and is dimensionally independent of dt. It stays in the
 // signature deliberately, for two reasons: it makes this pass's shape match
-// integrate_bodies(span, params, h) so the schedule can call every pass
-// uniformly, and the two natural refinements to this model -- a restitution
+// integrate_bodies(span, gravity, h) (and its WorldParams forwarder) so the
+// schedule can call every pass uniformly, and the two natural refinements to
+// this model -- a restitution
 // cutoff below ~2*g*h to suppress micro-bounces, and speculative contacts that
 // look ahead vel*h to catch tunnelling at low proxy radii -- both need it.
 // Adding either would change the pinned op order and is out of scope here.

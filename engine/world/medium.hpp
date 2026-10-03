@@ -278,8 +278,9 @@ public:
 // each world, in the dryden.advance pass -- in the Fields phase, so before
 // any reader (sim/standard_modules.cpp; only placement-first kinematic
 // behaviors run ahead of it, and they touch no medium state)
-// -- and therefore BEFORE any force element reads
-// sample(). Calling it twice per substep halves the correlation time and
+// -- and therefore BEFORE the dryden.sample pass writes sample()'s
+// expression into the world's wind field, which every force element then
+// reads (module-API stage 3). Calling it twice per substep halves the correlation time and
 // inflates the number of gust draws; calling it zero times freezes the gust
 // for that substep. Both are silent, so the pass that owns the schedule owns
 // this invariant.
@@ -561,8 +562,11 @@ void dryden_advance(DrydenState& state, const DrydenParams& params, float h) noe
 // WorldParams row and a position, with no world id, so the binding to "which
 // world's filter row" has to live in the object. ConstantMedium can be a
 // single instance shared by every world precisely because it is stateless;
-// this one is two pointers, constructed by the pass that is about to sample
-// one world, and it must not outlive the arena the row lives in.
+// this one is two pointers, constructed for one world's read --
+// Simulation::sample_medium() is the host's -- and it must not outlive the
+// arena the row lives in. The step itself no longer builds one: the
+// dryden.sample pass writes this expression into the world's field row
+// (module-API stage 3).
 //
 // That is also exactly the shape the S6 GPU mirror wants (medium.hpp's
 // "future implementations must stay expressible as DATA" note): the row is an

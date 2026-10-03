@@ -284,8 +284,10 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 // Rotor forces, then drag -- the force elements, one module each. Both add
 // into the same two float accumulators, so their order is a parity contract
 // (rotors first; drag declares `after: rotor.forces`). Each reads the medium
-// through a per-world DrydenMedium view built on the stack, never cached, so a
-// snapshot restore cannot leave one pointing at stale rows.
+// from its world's field row through a SampledMedium view built on the stack:
+// the density and wind the providers below wrote this substep (module-API
+// stage 3). The row is rewritten every substep, so a snapshot restore cannot
+// leave it stale for a reader.
 void pass_rotor_forces(const SubstepContext&) noexcept;
 void pass_drag(const SubstepContext&) noexcept;
 

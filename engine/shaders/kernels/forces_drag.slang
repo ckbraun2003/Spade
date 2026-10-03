@@ -48,8 +48,8 @@
 // SUBSTANTIVE CHANGE IN THAT WAVE.
 //
 // The CPU samples the air through the Medium seam:
-//     sample = medium.sample(params, body.pos)   // DrydenMedium
-//            = { params.air_density, params.wind + dryden_turbulence(...) }
+//     sample = medium.sample(params, body.pos)   // SampledMedium (stage 3)
+//            = the field row's { density, mean wind + dryden_turbulence(...) }
 //
 // THROUGH S6 TASK 7 THIS KERNEL READ `air_density` and `wind` STRAIGHT OUT OF
 // WorldParams AND ADDED NO GUST, because the MediumUpdate pass that advances
@@ -59,19 +59,19 @@
 // sim/simulation.cpp REFUSED any other world outright, with Code::unavailable
 // naming this pass, rather than step it with the gusts silently absent.
 //
-// Task 8 ports MediumUpdate, so the omission and the refusal both go. This
-// kernel now calls dryden.slang's dryden_medium_sample() -- the SAME function
-// rotors.slang calls, spelled once, so the two force kernels cannot disagree
-// about what the air is doing in a substep, exactly as the CPU hands both
-// passes a DrydenMedium built from the same advanced row, once per world, by
-// physics/schedule.cpp's pass_rotor_forces() and pass_drag().
+// Task 8 ported MediumUpdate, so the omission and the refusal both went. Since
+// module-API stage 3 this kernel reads the world's field row -- density and
+// wind written once per substep by field_environment and field_dryden -- the
+// SAME row rotors.slang reads, so the two force kernels cannot disagree about
+// what the air is doing, exactly as both CPU passes read it through
+// SampledMedium (physics/sampled_medium.hpp).
 //
-// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: dryden.advance
-// (Fields) before drag.forces (Forces), with a memory barrier between every
-// adjacent dispatch -- so the `dryden` row this kernel samples is the one THIS
-// substep's dryden.advance advanced, which is precisely the CPU's contract
-// (world/medium.hpp: "dryden_advance() must be called EXACTLY ONCE PER SUBSTEP
-// for each world ... and therefore BEFORE any force element reads sample()").
+// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: dryden.advance,
+// then dryden.sample (both Fields), then drag.forces (Forces), with a memory
+// barrier between every adjacent dispatch -- so the wind this kernel reads is
+// the one THIS substep's advanced filter produced, which is precisely the
+// CPU's contract (world/medium.hpp: "dryden_advance() must be called EXACTLY
+// ONCE PER SUBSTEP for each world").
 //
 // ===========================================================================
 // GLM EXPRESSIONS are mirrored literally, as in integrate.slang; see

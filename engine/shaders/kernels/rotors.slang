@@ -68,11 +68,11 @@
 //
 // ===========================================================================
 // THE MEDIUM IS THE REAL ONE NOW (S6 Task 8's whole point for this file). The
-// CPU samples DrydenMedium at the ROTOR STATION; dryden.slang's
-// dryden_medium_sample() is that sample, spelled once and shared with
-// forces_drag.slang so the two force kernels cannot disagree about what the air
-// is doing in the same substep -- exactly as the CPU hands both passes ONE
-// DrydenMedium constructed once per world. Position is not a parameter because
+// CPU samples the medium at the ROTOR STATION; since module-API stage 3 both
+// backends read it from the world's field row, written once per substep in
+// Fields and shared with forces_drag.slang, so the two force kernels cannot
+// disagree about the air in a substep -- as both CPU passes read the row
+// through SampledMedium. Position is not a parameter because
 // it is not one on the CPU either (a frozen-field POINT model, medium.hpp
 // section 4): rotor.cpp samples at `p_rotor` and forces.cpp at `body.pos`, and
 // both return the identical value today. The seam is kept on the CPU side for
