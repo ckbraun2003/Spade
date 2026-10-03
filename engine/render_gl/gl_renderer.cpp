@@ -518,6 +518,11 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     return {};
 }
 
+std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions& options) {
+    (void)options;
+    return {};  // stub: the test commit fails against it
+}
+
 uint32_t GlRenderer::last_draw_calls() const noexcept { return impl_->last_draw_calls; }
 uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instances; }
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }

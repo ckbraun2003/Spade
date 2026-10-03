@@ -50,6 +50,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "core/error.hpp"
 #include "render/scene.hpp"
@@ -94,6 +96,13 @@ class GlRenderer {
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);
+
+    // Names the options in `options` that draw() will not draw, so the gap is
+    // announced, not silent (L6). Each name is the RenderOptions field it
+    // concerns: "shadows", "overlays", or "mode" for a mode draw() refuses.
+    // A caller shows the list, or refuses GL when it needs one of them.
+    // Needs no GL context.
+    [[nodiscard]] static std::vector<std::string_view> unhonoured(const render::RenderOptions& options);
 
     // ⭐ THE MECHANISM, MADE MEASURABLE RATHER THAN CLAIMED. The entire case
     // for this module is "draw calls scale with meshes, not objects", and a
