@@ -28,6 +28,17 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | Editor saves | World files only: `INT-3` |
 | The `SL14b` v1 baselines | Capture now: `INT-4` |
 
+## Ruled by the user, 2026-10-03
+
+| Decision | Ruling | Where it lands |
+|---|---|---|
+| Module-API scope (Core Q1) | Foundation only; regions, objects in stepping and world file v3 are specified, then built later | `core/plans/2026-10-02-module-api-design.md` |
+| How responders read fields (Core Q2) | Sample buffers; kinematic behaviors run first in Fields | the same spec |
+| The module-API spec | Approved at `4d481eb`, with a requirements section to add | the same spec |
+| The engineering style guide | Adopt it now | `../style/engineering-style-guide.md` |
+| A joint drone-builder spec with Kat | Write it now, in parallel with the round; the user approves it before anything is built | `plans/2026-10-03-drone-builder-engine-design.md` |
+| World and scene | Mirror Kat. A world holds physics, environment, regions and static terrain. A scene holds a world reference plus placed objects (assets, vehicles, start poses). This changes the engine model's terms and amends `INT-3` to "the editor saves scenes". Both edits land with the joint spec | `01-engine-model.md`, `interface/00-decisions.md` |
+
 No user decision is open.
 
 ## Work items
