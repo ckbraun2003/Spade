@@ -509,6 +509,88 @@ TEST_F(GpuGlRenderer, VelocityModeColoursEachInstanceBySpeed) {
     EXPECT_EQ(renderer_->last_draw_calls(), 1u) << "two instances of one mesh are still one draw";
 }
 
+// FC-4: GL draws the same field layer as raster_cpu, within a band measured
+// and then pinned. The atmospheric term is on, and neither path may apply it
+// to the layer (FC-2). As with the background band, cell borders can land a
+// pixel apart, so the second maximum covers interior pixels only: those whose
+// 3x3 neighbourhood on the CPU frame is one colour.
+TEST_F(GpuGlRenderer, FieldLayerMatchesTheCpuWithinItsMeasuredBand) {
+    // Provisional until measured: see the commit that pins them.
+    constexpr int kBandAll = 0;
+    constexpr int kBandInterior = 0;
+
+    RenderScene scene;
+    scene.materials = {Material{}};
+    // A flat sky, so sky pixels are interior too: a gradient changes every row.
+    scene.lighting.sky_zenith = glm::vec3(0.3f, 0.4f, 0.6f);
+    scene.lighting.sky_horizon = glm::vec3(0.3f, 0.4f, 0.6f);
+    spade::render::FieldLayer layer;  // about 60% of the frame from 5 m
+    layer.width = 6.0f;
+    layer.height = 4.5f;
+    layer.cells_u = 8;
+    layer.cells_v = 6;
+    for (uint32_t j = 0; j < layer.cells_v; ++j) {
+        for (uint32_t i = 0; i < layer.cells_u; ++i) {
+            layer.values.push_back(static_cast<float>(i * 3u + j * 5u));
+        }
+    }
+    layer.colour_map.bins = 16;  // range_max 0: the layer's own maximum
+    RenderScene no_layer = scene;
+    scene.field_layers = {layer};
+    RenderOptions options = comparable_options();
+    options.horizon_blend_strength = 1.0f;
+    options.horizon_blend_onset = 0.5f;
+
+    const std::vector<uint8_t> gl = draw_and_read(scene, options);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera_on_plus_z(), options);
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(no_layer, camera_on_plus_z(), options);
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    ASSERT_EQ(cpu.size(), kPixels * 4u);
+
+    size_t covered = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        if (!same_pixel(cpu, cpu_bare, p)) ++covered;
+    }
+    ASSERT_GT(covered, kPixels / 4u) << "the layer must cover a good part of the frame";
+
+    int max_all = 0, max_interior = 0;
+    size_t interior = 0;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+            int diff = 0;
+            for (size_t ch = 0; ch < 3u; ++ch) {
+                diff = std::max(diff, std::abs(static_cast<int>(gl[p * 4u + ch]) - static_cast<int>(cpu[p * 4u + ch])));
+            }
+            max_all = std::max(max_all, diff);
+            bool is_interior = true;
+            for (int dy = -1; dy <= 1 && is_interior; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = std::clamp(x + dx, 0, kWidth - 1);
+                    const int ny = std::clamp(y + dy, 0, kHeight - 1);
+                    const size_t q = static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx);
+                    if (cpu[q * 4u] != cpu[p * 4u] || cpu[q * 4u + 1u] != cpu[p * 4u + 1u] ||
+                        cpu[q * 4u + 2u] != cpu[p * 4u + 2u]) {
+                        is_interior = false;
+                        break;
+                    }
+                }
+            }
+            if (is_interior) {
+                max_interior = std::max(max_interior, diff);
+                ++interior;
+            }
+        }
+    }
+    ASSERT_GT(interior, kPixels / 2u) << "most of the frame must be interior, or the second band says little";
+    RecordProperty("max_all", max_all);
+    RecordProperty("max_interior", max_interior);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    EXPECT_LE(max_interior, kBandInterior) << "interior pixels differ from the CPU by up to " << max_interior
+                                           << " levels; " << interior << " interior pixels, on " << device;
+    EXPECT_LE(max_all, kBandAll) << "some pixel differs from the CPU by " << max_all << " levels, on " << device;
+}
+
 // Ray-marching is a different technique (render/raymarch) that GL does not
 // have, so draw() refuses it rather than drawing something else (L6).
 TEST_F(GpuGlRenderer, RefusesRaymarch) {

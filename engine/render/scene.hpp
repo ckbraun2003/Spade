@@ -67,6 +67,7 @@
 
 #include "core/error.hpp"
 #include "core/fp32_math.hpp"   // math::sin32/cos32 (S7a Task R8) -- tan32() below, SR-14
+#include "render/field_layer.hpp"  // FieldLayer, RenderScene::field_layers
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
@@ -571,6 +572,10 @@ struct RenderScene {
     // way, RenderOptions::shadows has nothing to sample against and render()
     // treats every pixel as unshadowed, identically to shadows being off.
     std::optional<ShadowMap> static_shadow;
+    // Fields drawn as camera channels (render/field_layer.hpp). The caller
+    // samples each field and fills these; the raster modes draw them, and the
+    // ray-march mode does not. Empty unless a caller adds one.
+    std::vector<FieldLayer> field_layers;
 };
 
 // Builds a RenderScene from a validated WorldDesc plus its already-resolved
