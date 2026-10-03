@@ -767,7 +767,11 @@ void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
 }
 
 void GlTargetSink::set_gap_line(std::string line) {
+#if SPADE_SANDBOX_HAS_GL
     impl_->gap_line = std::move(line);
+#else
+    (void)line;
+#endif
 }
 
 void GlTargetSink::attach_drone(DronePanelModel* model) noexcept {
