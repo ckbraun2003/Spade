@@ -283,7 +283,10 @@ install(TARGETS spade_world
     INCLUDES DESTINATION include
 )
 
-install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp")
+# world/detail/ is internal: yaml_text.hpp names yaml-cpp types, which no installed
+# header may expose (the yaml-cpp note above).
+install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp"
+    PATTERN "detail" EXCLUDE)
 
 # ------------------------------------------------------------------------------
 # spade_state: the state backbone (Task 6) -- layout.hpp's shared PODs with

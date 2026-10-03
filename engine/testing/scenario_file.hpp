@@ -29,6 +29,7 @@
 #include "sim/world_set.hpp"
 #include "testing/replay.hpp"
 #include "vehicles/quadrotor.hpp"
+#include "world/detail/yaml_text.hpp"
 #include "world/world_file.hpp"
 
 // ---------------------------------------------------------------------------
@@ -113,7 +114,7 @@
 //
 // 3. FLOATS ARE 9-SIGNIFICANT-DIGIT %.9g FORMS, parsed with std::from_chars on
 //    the raw scalar string -- never yaml-cpp's as<float>(), never strtof.
-//    world_file.cpp's long note is the authority; the short version is that 9
+//    world/detail/yaml_text.hpp's long note is the authority; the short version is that 9
 //    digits is exactly FLT_DECIMAL_DIG (every binary32 survives the round
 //    trip) and that [charconv] is the one conversion the standard defines with
 //    NO locale dependence, while as<float>() runs through an iostream and
@@ -239,242 +240,46 @@ struct LoadedScenario {
 namespace scenario_detail {
 
 // ===========================================================================
-// THE PARSE PRIMITIVES.
-//
-// These are world/world_file.cpp's, deliberately: same shapes, same
-// diagnostics, same locale-free number path. They are COPIED rather than
-// shared because world_file.cpp's live in an anonymous namespace inside a .cpp
-// -- sharing them would mean exporting a parsing toolkit from the engine's
-// public surface, or installing a test header, and neither is worth it for
-// nine small functions. If a third parser ever appears, THAT is the moment to
-// promote them to a real header; two is not.
+// THE PARSE PRIMITIVES are world/detail/yaml_text.hpp's, shared with the world
+// file and the scene file: same shapes, same diagnostics, same locale-free
+// number path. They were copied here until the scene file became the third
+// parser and they were promoted. Three are wrapped for this file's schema:
+//   - check_map blames the scenario schema;
+//   - parse_uint and uint_field accept a 0x-hex literal, for `seed` and
+//     `expected_digest` (yaml_text.hpp's parse_uint note says why only this
+//     reader does).
 // ===========================================================================
 
-template <std::integral T>
-[[nodiscard]] inline std::string dec(T value) {
-    char buf[24];
-    const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), value, 10);
-    return std::string(buf, r.ec == std::errc{} ? r.ptr : buf);
-}
+using yaml_text::at;
+using yaml_text::dec;
+using yaml_text::field;
+using yaml_text::float_field;
+using yaml_text::floats_field;
+using yaml_text::has;
+using yaml_text::mark_of;
+using yaml_text::parse_float;
+using yaml_text::parse_floats;
+using yaml_text::path_text;
+using yaml_text::quat_field;
+using yaml_text::scalar;
+using yaml_text::string_field;
+using yaml_text::vec3_field;
 
-// std::filesystem::path::string() can throw on a path the native narrow
-// encoding cannot represent, and nothing may be thrown out of a Spade-shaped
-// API. world_file.cpp's helper, verbatim.
-[[nodiscard]] inline std::string path_text(const std::filesystem::path& path) noexcept {
-    try {
-        return path.string();
-    } catch (...) {
-        return "<unprintable path>";
-    }
-}
-
-[[nodiscard]] inline std::string mark_of(const YAML::Node& node) {
-    const YAML::Mark mark = node.Mark();
-    if (mark.is_null()) return {};
-    return " (line " + dec(mark.line + 1) + ", column " + dec(mark.column + 1) + ")";
-}
-
-[[nodiscard]] inline Error at(const YAML::Node& node, std::string message) {
-    return Error{Code::invalid_argument, std::move(message) + mark_of(node)};
-}
-
-// A mapping with EVERY key accounted for. Unknown keys and duplicate keys are
-// both rejected: the first would let a v2 field pass unnoticed through a v1
-// reader, the second is a silent last-one-wins in every YAML library there is.
 [[nodiscard]] inline Result<void> check_map(const YAML::Node& node, std::string_view what,
                                             std::initializer_list<std::string_view> allowed) {
-    if (!node.IsMap()) {
-        return std::unexpected(at(node, std::string(what) + " must be a mapping"));
-    }
-    std::vector<std::string> seen;
-    seen.reserve(allowed.size());
-    for (YAML::const_iterator it = node.begin(); it != node.end(); ++it) {
-        if (!it->first.IsScalar()) {
-            return std::unexpected(at(it->first, "non-scalar key in " + std::string(what)));
-        }
-        const std::string key = it->first.Scalar();
-        if (std::find(allowed.begin(), allowed.end(), std::string_view(key)) == allowed.end()) {
-            return std::unexpected(at(it->first, "unknown key '" + key + "' in " + std::string(what) +
-                                                     " -- scenario schema v" +
-                                                     dec(kScenarioFileVersion) +
-                                                     " does not define it"));
-        }
-        if (std::find(seen.begin(), seen.end(), key) != seen.end()) {
-            return std::unexpected(
-                at(it->first, "duplicate key '" + key + "' in " + std::string(what)));
-        }
-        seen.push_back(key);
-    }
-    return {};
-}
-
-[[nodiscard]] inline Result<YAML::Node> field(const YAML::Node& map, const char* key,
-                                              std::string_view what) {
-    const YAML::Node child = map[key];
-    if (!child.IsDefined() || child.IsNull()) {
-        return std::unexpected(
-            at(map, "missing required key '" + std::string(key) + "' in " + std::string(what)));
-    }
-    return child;
-}
-
-[[nodiscard]] inline bool has(const YAML::Node& map, const char* key) {
-    const YAML::Node child = map[key];
-    return child.IsDefined() && !child.IsNull();
-}
-
-[[nodiscard]] inline Result<std::string> scalar(const YAML::Node& node, std::string_view what) {
-    if (!node.IsScalar()) {
-        return std::unexpected(at(node, std::string(what) + " must be a scalar"));
-    }
-    return node.Scalar();
-}
-
-// node.Scalar() then from_chars, NEVER node.as<float>(). See point 3 of this
-// header's note, and world_file.cpp's long-form version of it.
-[[nodiscard]] inline Result<float> parse_float(const YAML::Node& node, std::string_view what) {
-    const Result<std::string> text = scalar(node, what);
-    if (!text) return std::unexpected(text.error());
-    std::string_view body(*text);
-    // from_chars rejects a leading '+'; the corpus never writes one, but a hand
-    // editor may, and refusing "+1.5" would be pedantry with no payoff.
-    if (!body.empty() && body.front() == '+') body.remove_prefix(1);
-
-    float value = 0.0f;
-    const std::from_chars_result r = std::from_chars(body.data(), body.data() + body.size(), value);
-    if (r.ec == std::errc::result_out_of_range) {
-        return std::unexpected(at(node, std::string(what) + ": '" + *text +
-                                            "' is outside the range of a 32-bit float"));
-    }
-    if (r.ec != std::errc{} || r.ptr != body.data() + body.size()) {
-        return std::unexpected(
-            at(node, std::string(what) + ": '" + *text + "' is not a decimal number"));
-    }
-    if (!finite(value)) {
-        return std::unexpected(at(node, std::string(what) + ": '" + *text +
-                                            "' is not finite; an infinity or a NaN in a scenario is "
-                                            "always an authoring error"));
-    }
-    return value;
+    return yaml_text::check_map(node, what, allowed,
+                                "scenario schema v" + dec(kScenarioFileVersion));
 }
 
 template <std::unsigned_integral T>
 [[nodiscard]] inline Result<T> parse_uint(const YAML::Node& node, std::string_view what) {
-    const Result<std::string> text = scalar(node, what);
-    if (!text) return std::unexpected(text.error());
-    std::string_view body(*text);
-    if (!body.empty() && body.front() == '+') body.remove_prefix(1);
-
-    // Hex is accepted for `seed` and for `expected_digest`, which are the two
-    // fields a human reads as bit patterns rather than as quantities; every
-    // other integer in the schema is a count and is written in decimal. The
-    // prefix decides the base, so nothing is ambiguous.
-    //
-    // THE ONE DELIBERATE DIVERGENCE FROM world_file.cpp's parse_uint(), worth
-    // stating rather than leaving for a future diff to wonder about: that
-    // copy is decimal-only (base 10, unconditionally) and its "not a
-    // non-negative decimal integer" message has no hex clause. That is not a
-    // missed feature over there -- world_file.cpp's own `seed` field
-    // (Environment::seed) is a real round-trip: world_to_yaml()'s emit()
-    // always writes it with dec(), never a hex literal, so world_from_yaml()
-    // never needs to read one back. A scenario file is never written by this
-    // engine (scenario_file.hpp is read-only test support, "never installed
-    // or shipped" -- docs/design/test-docs/01-verification.md), so its `seed`/`expected_digest`
-    // fields are hand-authored, and hex is the natural spelling for a value a
-    // human reads as bits (a digest, a seed transcribed from a debug print)
-    // -- hence the accommodation exists on THIS side of the copy and not the
-    // other. If a future edit to either parse_uint ever needs to bring the
-    // two back in sync, this is the one place they are meant to disagree.
-    int base = 10;
-    if (body.size() > 2 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) {
-        base = 16;
-        body.remove_prefix(2);
-    }
-
-    T value = 0;
-    const std::from_chars_result r =
-        std::from_chars(body.data(), body.data() + body.size(), value, base);
-    if (r.ec == std::errc::result_out_of_range) {
-        return std::unexpected(at(node, std::string(what) + ": '" + *text + "' does not fit in " +
-                                            dec(sizeof(T) * 8) + " unsigned bits"));
-    }
-    if (r.ec != std::errc{} || r.ptr != body.data() + body.size()) {
-        return std::unexpected(at(node, std::string(what) + ": '" + *text +
-                                            "' is not a non-negative decimal or 0x-hex integer"));
-    }
-    return value;
-}
-
-template <std::size_t N>
-[[nodiscard]] inline Result<std::array<float, N>> parse_floats(const YAML::Node& node,
-                                                               std::string_view what) {
-    if (!node.IsSequence()) {
-        return std::unexpected(
-            at(node, std::string(what) + " must be a sequence of " + dec(N) + " numbers"));
-    }
-    if (node.size() != N) {
-        return std::unexpected(at(node, std::string(what) + " must hold exactly " + dec(N) +
-                                            " numbers, found " + dec(node.size())));
-    }
-    std::array<float, N> out{};
-    for (std::size_t i = 0; i < N; ++i) {
-        const Result<float> value = parse_float(node[i], std::string(what) + "[" + dec(i) + "]");
-        if (!value) return std::unexpected(value.error());
-        out[i] = *value;
-    }
-    return out;
-}
-
-// --- composed field readers; `what` is the containing mapping's dotted path --
-
-[[nodiscard]] inline Result<float> float_field(const YAML::Node& map, const char* key,
-                                               std::string_view what) {
-    const Result<YAML::Node> node = field(map, key, what);
-    if (!node) return std::unexpected(node.error());
-    return parse_float(*node, std::string(what) + "." + key);
+    return yaml_text::parse_uint<T>(node, what, /*allow_hex=*/true);
 }
 
 template <std::unsigned_integral T>
 [[nodiscard]] inline Result<T> uint_field(const YAML::Node& map, const char* key,
                                           std::string_view what) {
-    const Result<YAML::Node> node = field(map, key, what);
-    if (!node) return std::unexpected(node.error());
-    return parse_uint<T>(*node, std::string(what) + "." + key);
-}
-
-template <std::size_t N>
-[[nodiscard]] inline Result<std::array<float, N>> floats_field(const YAML::Node& map,
-                                                               const char* key,
-                                                               std::string_view what) {
-    const Result<YAML::Node> node = field(map, key, what);
-    if (!node) return std::unexpected(node.error());
-    return parse_floats<N>(*node, std::string(what) + "." + key);
-}
-
-[[nodiscard]] inline Result<std::string> string_field(const YAML::Node& map, const char* key,
-                                                      std::string_view what) {
-    const Result<YAML::Node> node = field(map, key, what);
-    if (!node) return std::unexpected(node.error());
-    return scalar(*node, std::string(what) + "." + key);
-}
-
-// Optional field readers -- for the handful of keys whose absence means "the
-// engine's default", each named in the schema comment where it is read.
-[[nodiscard]] inline Result<glm::vec3> vec3_field(const YAML::Node& map, const char* key,
-                                                  std::string_view what) {
-    const Result<std::array<float, 3>> v = floats_field<3>(map, key, what);
-    if (!v) return std::unexpected(v.error());
-    return glm::vec3((*v)[0], (*v)[1], (*v)[2]);
-}
-
-// [w, x, y, z] in the file, which is glm::quat's constructor order. NOT
-// re-normalized here: the spawn path normalizes, and silently fixing a file
-// would hide an authoring error the engine is willing to report.
-[[nodiscard]] inline Result<glm::quat> quat_field(const YAML::Node& map, const char* key,
-                                                  std::string_view what) {
-    const Result<std::array<float, 4>> q = floats_field<4>(map, key, what);
-    if (!q) return std::unexpected(q.error());
-    return glm::quat((*q)[0], (*q)[1], (*q)[2], (*q)[3]);
+    return yaml_text::uint_field<T>(map, key, what, /*allow_hex=*/true);
 }
 
 // ===========================================================================

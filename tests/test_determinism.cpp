@@ -2706,6 +2706,10 @@ TEST(ScenarioFile, RejectsEveryMalformedDocument) {
          spade::Code::schema_mismatch, "version 2"},
         {"an unknown top-level key", base + "extra_key: 3\n", spade::Code::invalid_argument,
          "unknown key 'extra_key'"},
+        // ...and blames THIS file's schema: the shared check_map
+        // (world/detail/yaml_text.hpp) is told which schema by its caller.
+        {"an unknown key names the scenario schema", base + "extra_key: 3\n",
+         spade::Code::invalid_argument, "scenario schema v1 does not define it"},
         {"an unknown nested key",
          replaced(base, "grid: {cell_size: 0.5}", "grid: {cell_size: 0.5, cell_pad: 1}"),
          spade::Code::invalid_argument, "unknown key 'cell_pad'"},
