@@ -1,6 +1,6 @@
 # The Docker leg (`TD-11`, `TD-12`): plan
 
-**Owner:** Test/Docs, with Interface for the consumer half. **Status:** approved by the lead 2026-10-02 (`115e59b`); Tasks 1–3 done and approved, Task 4 waits for the round's merges so one run covers them. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
+**Owner:** Test/Docs, with Interface for the consumer half. **Status:** approved by the lead 2026-10-02 (`115e59b`); all five tasks done. Task 4's run (2026-10-03, `fe4934a`) was approved by the lead; the branch is for review. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
 
 ## Goal
 
@@ -66,8 +66,12 @@ One command on the development box builds a Linux/gcc image, builds a commit of 
     - An `agreement` part collects Rendering's per-case `agreement:` lines for the band file's gcc attestation (`ae7667f`). A commit without the matrix has nothing to collect; one with it must give one line per registered case.
     - The harness grew to 9 scenarios and 46 checks, all green: no matrix; 7 of 7 lines; 5 of 7 fails; agreement blocked by a failed build. `ae7667f`'s message says 45 checks, which is wrong; the run shows 46.
     - Control: a count check that always passes fails 2 checks.
-- [ ] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
-- [ ] **5. Docs.**
+- [x] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
+  - Done 2026-10-03 at `fe4934a`, which adds `test-docs/viewer-canary` to the commit. The measurements are in `../07-status.md`, "The Docker leg's first run".
+  - The whole run took 1272 s, not the 60–75 min estimated. The build failed in 1 of 263 steps: Interface's `tests/test_sandbox_drone.cpp:76`, `-Werror=dangling-else`. Consumer OFF passed.
+  - With that line braced in the container only, every part passed: 906 of 908 tests, consumer ON and OFF, and the `TD-12` cross-check of the scenario digests, the render goldens and the full-length viewer trajectories.
+  - The canary's mutation control went red, then green. Peak memory was 845 MB.
+- [x] **5. Docs.**
   - `02-build-and-gate.md`: the script table and a "Docker leg" section saying what it covers and what it leaves out: v1, `gpu`, Debug, Windows.
   - `07-status.md`: the `TD-11` row and the first run's results with provenance.
   - `01-verification.md` and the `07-status.md` debt line: "No gate runs it yet" becomes the leg (the lead's nit).
