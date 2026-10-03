@@ -358,6 +358,33 @@ TEST(ModuleSimulation, ANonStandardSetOnVulkanIsRefusedUntilStage2) {
     EXPECT_NE(sim.error().context.find("module set"), std::string::npos) << sim.error().context;
 }
 
+// The identity hashes names, versions and order, not function pointers, so a
+// set that keeps the standard names but swaps in another rotor function has the
+// standard identity. Stage 1's GPU recorder would still run the stock rotor
+// kernel, so the refusal must compare the passes themselves (L6). Found by the
+// stage-1 whole-branch review.
+TEST(ModuleSimulation, AStandardNamedSetWithAnotherFunctionIsRefusedOnVulkan) {
+    static constexpr QuantityAccess rotor_access[] = {{"body.pose", Access::read},
+                                                      {"body.wrench", Access::accumulate},
+                                                      {"rotor.state", Access::write},
+                                                      {"dryden.state", Access::read}};
+    static constexpr PassDecl my_rotor[] = {
+        {.name = "forces", .phase = Phase::forces, .access = rotor_access, .cpu = &hover_pass}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (spade::modules::ModuleDesc& m : set) {
+        if (m.name == "rotor") m.passes = my_rotor;
+    }
+    ASSERT_EQ(compile_schedule(set)->identity, compile_schedule(spade::modules::standard_modules())->identity)
+        << "the precondition: the identity cannot see the substituted function";
+
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
+                                               set);
+    ASSERT_FALSE(sim.has_value()) << "a substituted pass must not run the stock GPU kernel silently";
+    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
+    EXPECT_NE(sim.error().context.find("module set"), std::string::npos) << sim.error().context;
+}
+
 TEST(ModuleSimulation, AnInvalidSetIsRefusedAtCreate) {
     static constexpr QuantityAccess misspelt[] = {{"body.wrnch", Access::accumulate}};
     static constexpr PassDecl bad[] = {{.name = "x", .phase = Phase::forces, .access = misspelt, .cpu = &noop}};
