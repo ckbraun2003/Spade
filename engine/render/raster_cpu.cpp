@@ -1410,12 +1410,42 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     }
 }
 
+// Field layers (render/field_layer.hpp): each cell is two flat triangles in
+// its bin's palette colour. A layer is data, so no lighting, shadow or
+// atmospheric term touches it (SR-17a), and draw_world_triangle() culls
+// nothing, so both sides draw. Corners come from the shared lattice, so
+// neighbouring cells meet without cracks.
+void draw_field_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    for (const FieldLayer& layer : scene.field_layers) {
+        const float top = resolved_range_max(layer);
+        for (uint32_t j = 0; j < layer.cells_v; ++j) {
+            for (uint32_t i = 0; i < layer.cells_u; ++i) {
+                const float value = layer.values[static_cast<size_t>(j) * layer.cells_u + i];
+                const glm::vec3 c = field_bin_colour(layer.colour_map, field_bin(layer.colour_map, value, top));
+                const uint8_t r = to_byte(c.r), g = to_byte(c.g), b = to_byte(c.b);
+                const Vec3 p00 = vec3d(field_cell_corner(layer, i, j));
+                const Vec3 p10 = vec3d(field_cell_corner(layer, i + 1u, j));
+                const Vec3 p11 = vec3d(field_cell_corner(layer, i + 1u, j + 1u));
+                const Vec3 p01 = vec3d(field_cell_corner(layer, i, j + 1u));
+                draw_world_triangle(fb, vc, p00, p10, p11, r, g, b);
+                draw_world_triangle(fb, vc, p00, p11, p01, r, g, b);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
                      RenderTarget& target, std::vector<float>* shadow_scratch) {
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
+    }
+    // A malformed field layer is refused before any pixel is written (L6).
+    for (const FieldLayer& layer : scene.field_layers) {
+        if (Result<void> valid = validate_field_layer(layer); !valid) {
+            return valid;
+        }
     }
     // S7a Task R8: raymarch is an exact SDF sphere-tracer, not a rasterizer
     // -- it shares this file's target-validation entry point (above) but
@@ -1518,6 +1548,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     for (const DrawItem& item : scene.dynamics) {
         draw_mesh_item(fb, vc, scene, item, options, shadow);
     }
+    draw_field_layers(fb, vc, scene);
 
     if (options.overlays) {
         draw_ground_grid(fb, vc, scene);

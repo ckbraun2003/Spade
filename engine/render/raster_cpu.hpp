@@ -78,12 +78,14 @@
 
 namespace spade::render {
 
-// Errors: invalid_argument if `target` fails validate_target(). Once that
-// passes, `options.mode == DrawMode::raymarch` (S7a Task R8) forwards to
-// render_raymarch() (render/raymarch.hpp) instead of this file's own
-// rasterizer -- `shadow_scratch` and `options.shadows`/`options.overlays`
-// are not consulted on that path (raymarch has no shadows or overlays by
-// design; see raymarch.hpp's own header for why).
+// Errors: invalid_argument if `target` fails validate_target(), or if a
+// field layer fails validate_field_layer(); both refuse before any pixel is
+// written. Once those pass, `options.mode == DrawMode::raymarch` (S7a Task
+// R8) forwards to render_raymarch() (render/raymarch.hpp) instead of this
+// file's own rasterizer -- `shadow_scratch`, `options.shadows`/
+// `options.overlays` and `scene.field_layers` are not consulted on that path
+// (raymarch has no shadows or overlays by design; see raymarch.hpp's own
+// header for why). The raster modes draw field layers after the meshes.
 //
 // `shadow_scratch` (S7a Task R7, fix round 1, review IMPORTANT I3): an
 // OPTIONAL caller-owned buffer render() may use for its own per-frame

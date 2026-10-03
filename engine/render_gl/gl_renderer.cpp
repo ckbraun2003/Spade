@@ -275,6 +275,46 @@ void main() {
 }
 )GLSL";
 
+// Field layers (render/field_layer.hpp): one instance per cell, six vertices
+// per cell, no vertex buffer. Corners use field_cell_corner()'s expression,
+// so neighbouring cells meet without cracks, as on the CPU.
+constexpr const char* kFieldVertexSrc = R"GLSL(
+layout(std430, binding = 5) readonly buffer FieldColours { vec4 uCellColour[]; };
+
+uniform mat4 uViewProj;
+uniform vec3 uCenter;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform vec2 uSize;      // width and height, metres
+uniform uvec2 uCells;    // cells_u, cells_v
+uniform uint uCellBase;  // this layer's first entry in uCellColour
+
+flat out vec3 vColour;
+
+const uvec2 kCorner[6] = uvec2[6](uvec2(0u, 0u), uvec2(1u, 0u), uvec2(1u, 1u),
+                                  uvec2(0u, 0u), uvec2(1u, 1u), uvec2(0u, 1u));
+
+void main() {
+    uint cell = uint(gl_InstanceID);
+    uvec2 ij = uvec2(cell % uCells.x, cell / uCells.x) + kCorner[gl_VertexID];
+    float u = float(ij.x) / float(uCells.x) - 0.5;
+    float v = float(ij.y) / float(uCells.y) - 0.5;
+    vec3 p = uCenter + uRight * (u * uSize.x) + uUp * (v * uSize.y);
+    vColour = uCellColour[uCellBase + cell].rgb;
+    gl_Position = uViewProj * vec4(p, 1.0);
+}
+)GLSL";
+
+// Data, not appearance: the bin colour as it is, with no light or atmosphere.
+constexpr const char* kFieldFragmentSrc = R"GLSL(
+flat in vec3 vColour;
+out vec4 fragColor;
+
+void main() {
+    fragColor = vec4(vColour, 1.0);
+}
+)GLSL";
+
 // 32 bytes, explicitly padded. See the shader comment above.
 struct GpuMaterial {
     glm::vec4 base_color{0.72f, 0.72f, 0.74f, 1.0f};
@@ -394,6 +434,12 @@ struct GlRenderer::Impl {
     GLuint background_program = 0;
     GLuint empty_vao = 0;
 
+    // Field layers: their own program, and one colour per cell, all layers
+    // end to end in one buffer.
+    GLuint field_program = 0;
+    GLuint ssbo_field_colours = 0;
+    size_t field_colours_capacity = 0;
+
     // Scratch, reused every frame so a frame allocates nothing steady-state.
     std::vector<glm::mat4> instance_transforms;
     std::vector<uint32_t> instance_overrides;
@@ -402,6 +448,7 @@ struct GlRenderer::Impl {
     std::vector<uint32_t> batch_count;  // per mesh: how many
     std::vector<GpuMaterial> gpu_materials;
     std::vector<GpuGroundPlane> gpu_planes;
+    std::vector<glm::vec4> field_colours;
 
     uint32_t last_draw_calls = 0;
     uint32_t last_instances = 0;
@@ -421,6 +468,10 @@ struct GlRenderer::Impl {
         GLint sky_zenith = -1, sky_horizon = -1, horizon_strength = -1, horizon_onset = -1;
     } bg;
 
+    struct FieldUniforms {
+        GLint view_proj = -1, center = -1, right = -1, up = -1, size = -1, cells = -1, cell_base = -1;
+    } field;
+
     ~Impl() {
         for (GpuMesh& m : meshes) {
             if (m.ebo != 0) glDeleteBuffers(1, &m.ebo);
@@ -428,12 +479,14 @@ struct GlRenderer::Impl {
             if (m.vbo_pos != 0) glDeleteBuffers(1, &m.vbo_pos);
             if (m.vao != 0) glDeleteVertexArrays(1, &m.vao);
         }
+        if (ssbo_field_colours != 0) glDeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) glDeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) glDeleteBuffers(1, &ssbo_speeds);
         if (ssbo_materials != 0) glDeleteBuffers(1, &ssbo_materials);
         if (ssbo_overrides != 0) glDeleteBuffers(1, &ssbo_overrides);
         if (ssbo_transforms != 0) glDeleteBuffers(1, &ssbo_transforms);
         if (empty_vao != 0) glDeleteVertexArrays(1, &empty_vao);
+        if (field_program != 0) glDeleteProgram(field_program);
         if (background_program != 0) glDeleteProgram(background_program);
         if (program != 0) glDeleteProgram(program);
     }
@@ -482,6 +535,10 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
                                                     {kGlslVersion, kCommonSrc, kBackgroundFragmentSrc}, "background");
     if (!background_program) return std::unexpected(background_program.error());
     impl->background_program = *background_program;
+    const Result<GLuint> field_program =
+        link({kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field");
+    if (!field_program) return std::unexpected(field_program.error());
+    impl->field_program = *field_program;
 
     const GLuint p = impl->program;
     impl->u_instance_base = glGetUniformLocation(p, "uInstanceBase");
@@ -527,6 +584,17 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     glGenBuffers(1, &impl->ssbo_speeds);
     glGenBuffers(1, &impl->ssbo_planes);
     glGenVertexArrays(1, &impl->empty_vao);
+
+    const GLuint f = impl->field_program;
+    Impl::FieldUniforms& fu = impl->field;
+    fu.view_proj = glGetUniformLocation(f, "uViewProj");
+    fu.center = glGetUniformLocation(f, "uCenter");
+    fu.right = glGetUniformLocation(f, "uRight");
+    fu.up = glGetUniformLocation(f, "uUp");
+    fu.size = glGetUniformLocation(f, "uSize");
+    fu.cells = glGetUniformLocation(f, "uCells");
+    fu.cell_base = glGetUniformLocation(f, "uCellBase");
+    glGenBuffers(1, &impl->ssbo_field_colours);
 
     return std::unique_ptr<GlRenderer>(new GlRenderer(std::move(impl)));
 }
@@ -643,6 +711,12 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     }
     if (width == 0u || height == 0u) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::draw: zero framebuffer size"});
+    }
+    // A malformed field layer is refused before any state changes (L6).
+    for (const render::FieldLayer& layer : scene.field_layers) {
+        if (Result<void> valid = render::validate_field_layer(layer); !valid) {
+            return valid;
+        }
     }
     const bool shaded = options.mode == render::DrawMode::shaded;
     const bool wireframe = options.mode == render::DrawMode::wireframe;
@@ -832,9 +906,43 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             ++draw_calls;
         }
     }
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    // --- field layers ------------------------------------------------------
+    // Filled in every raster mode, because a layer is data. Depth-tested
+    // against the meshes, culling nothing, so both sides draw.
+    if (!scene.field_layers.empty()) {
+        s.field_colours.clear();
+        for (const render::FieldLayer& layer : scene.field_layers) {
+            const float top = render::resolved_range_max(layer);
+            for (const float value : layer.values) {
+                const uint32_t bin = render::field_bin(layer.colour_map, value, top);
+                s.field_colours.emplace_back(render::field_bin_colour(layer.colour_map, bin), 1.0f);
+            }
+        }
+        upload_in_place(s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_field_colours);
+
+        glDisable(GL_CULL_FACE);
+        glUseProgram(s.field_program);
+        glUniformMatrix4fv(s.field.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+        glBindVertexArray(s.empty_vao);
+        GLuint base = 0;
+        for (const render::FieldLayer& layer : scene.field_layers) {
+            glUniform3fv(s.field.center, 1, glm::value_ptr(layer.center));
+            glUniform3fv(s.field.right, 1, glm::value_ptr(layer.right));
+            glUniform3fv(s.field.up, 1, glm::value_ptr(layer.up));
+            glUniform2f(s.field.size, layer.width, layer.height);
+            glUniform2ui(s.field.cells, layer.cells_u, layer.cells_v);
+            glUniform1ui(s.field.cell_base, base);
+            const GLuint cells = layer.cells_u * layer.cells_v;
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
+            base += cells;
+        }
+    }
     glBindVertexArray(0);
     glUseProgram(0);
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     s.last_draw_calls = draw_calls;
     s.last_instances = total_instances;

@@ -84,6 +84,7 @@ add_executable(spade_tests
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp
+    test_render_field.cpp
     test_objects_graph.cpp
     test_objects_component.cpp
     test_objects_determinism.cpp
