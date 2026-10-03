@@ -21,10 +21,13 @@
 namespace {
 
 // The standard set's compiled order. The two behavior passes record nothing,
-// but they are passes of the chain and are timed like any other.
+// and neither do the two field-sample passes until the GPU samples fields
+// (module-API stage 3, Task 3), but they are passes of the chain and are timed
+// like any other.
 const std::vector<std::string> kStandardGpuOrder = {
-    "behaviors.kinematic", "dryden.advance",          "rotor.forces",        "drag.forces",    "behaviors.force",
-    "static_contact.resolve", "dynamic_contact.resolve", "integrate.integrate", "imu.synthesize", "gnss.synthesize"};
+    "behaviors.kinematic",    "dryden.advance",          "dryden.sample",       "environment.sample",
+    "rotor.forces",           "drag.forces",             "behaviors.force",     "static_contact.resolve",
+    "dynamic_contact.resolve", "integrate.integrate",     "imu.synthesize",      "gnss.synthesize"};
 
 [[nodiscard]] spade::compute::BackendDesc vulkan() { return {.kind = spade::compute::BackendKind::vulkan}; }
 
@@ -67,7 +70,7 @@ TEST(GpuModuleSchedule, ReorderedSensorsRecordInScheduleOrder) {
     const auto chain = sim->vulkan_recorded_chain();
     ASSERT_TRUE(chain.has_value()) << chain.error().context;
     std::vector<std::string> expected = kStandardGpuOrder;
-    std::swap(expected[8], expected[9]);
+    std::swap(expected[10], expected[11]);
     EXPECT_EQ(chain->passes, expected);
 }
 

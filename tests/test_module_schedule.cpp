@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -250,9 +251,10 @@ TEST(StandardModules, CompileToTodaysOrder) {
     const spade::modules::ModuleSet set = spade::modules::standard_modules();
     const auto s = compile_schedule(set);
     ASSERT_TRUE(s.has_value()) << s.error().context;
-    EXPECT_EQ(names(*s), (Names{"behaviors.kinematic", "dryden.advance", "rotor.forces", "drag.forces",
-                                "behaviors.force", "static_contact.resolve", "dynamic_contact.resolve",
-                                "integrate.integrate", "imu.synthesize", "gnss.synthesize"}));
+    EXPECT_EQ(names(*s), (Names{"behaviors.kinematic", "dryden.advance", "dryden.sample", "environment.sample",
+                                "rotor.forces", "drag.forces", "behaviors.force", "static_contact.resolve",
+                                "dynamic_contact.resolve", "integrate.integrate", "imu.synthesize",
+                                "gnss.synthesize"}));
 }
 
 // Without drag's edge, set order (drag before rotor: the golden walk's order)
@@ -273,8 +275,10 @@ TEST(StandardModules, DroppingDragsEdgeChangesTheOrderAndTheIdentity) {
 
     const auto without = compile_schedule(set);
     ASSERT_TRUE(without.has_value()) << without.error().context;
-    EXPECT_EQ(names(*without)[2], "drag.forces");
-    EXPECT_EQ(names(*without)[3], "rotor.forces");
+    // After the four Fields passes (behaviors.kinematic, dryden.advance,
+    // dryden.sample, environment.sample).
+    EXPECT_EQ(names(*without)[4], "drag.forces");
+    EXPECT_EQ(names(*without)[5], "rotor.forces");
     EXPECT_NE(without->identity, with_edge->identity);
 }
 
@@ -538,4 +542,102 @@ TEST(ModuleFields, AProviderModuleWithNoPassWritingItsFieldIsRefused) {
     const auto s = compile_schedule(set);
     ASSERT_FALSE(s.has_value());
     EXPECT_NE(s.error().context.find("field.hum"), std::string::npos) << s.error().context;
+}
+
+// test_module_schedule.cpp, after the hover helpers. Pass functions reach their field through a
+// file-static offset, set from the compiled schedule before create().
+namespace {
+uint32_t g_offset = 0;
+float g_seen_height = -1.0f;
+std::array<float, 8> g_seen_bands{};
+
+[[nodiscard]] uint32_t offset_of(const spade::modules::CompiledSchedule& s, std::string_view name) {
+    for (const auto& f : s.fields) if (f.name == name) return f.offset;
+    ADD_FAILURE() << "no field " << name;
+    return 0;
+}
+void lift_to_42(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const auto& w : ctx.worlds) w.bodies[0].pos.y = 42.0f;
+}
+void sample_height(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const auto& w : ctx.worlds) w.fields[g_offset] = w.bodies[0].pos.y;
+}
+void read_height(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const auto& w : ctx.worlds) g_seen_height = w.fields[g_offset];
+}
+void sample_bands(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const auto& w : ctx.worlds)
+        for (uint32_t i = 0; i < 8; ++i) w.fields[g_offset + i] = 0.5f * static_cast<float>(i);
+}
+void read_bands(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const auto& w : ctx.worlds)
+        for (uint32_t i = 0; i < 8; ++i) g_seen_bands[i] = w.fields[g_offset + i];
+}
+}  // namespace
+
+// The mover (an ordered Fields writer of body.pose) and the provider (a Fields reader of body.pose)
+// are ordered by their hazard, so with ONE substep the provider must see 42, not the spawn's 0.
+TEST(ModuleFields, AProviderSeesThePoseWrittenEarlierInFieldsTheSameSubstep) {
+    static constexpr QuantityAccess move[] = {{"body.pose", Access::write}};
+    static constexpr QuantityAccess sample[] = {{"body.pose", Access::read}, {"field.height", Access::write}};
+    static constexpr QuantityAccess read[] = {{"field.height", Access::read}};
+    static constexpr spade::modules::FieldDecl height[] = {{.name = "height", .kind = spade::modules::FieldKind::scalar, .unit = "m"}};
+    static constexpr PassDecl mover[] = {{.name = "lift", .phase = Phase::fields, .access = move, .cpu = &lift_to_42}};
+    static constexpr PassDecl probe[] = {
+        {.name = "sample", .phase = Phase::fields, .access = sample, .cpu = &sample_height},
+        {.name = "read", .phase = Phase::forces, .access = read, .cpu = &read_height}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "probe", .passes = probe, .fields = height});   // declared BEFORE the mover in set order
+    set.push_back({.name = "mover", .passes = mover});
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    g_offset = offset_of(*s, "height");
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 1, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->spawn(0, spade::BodySpawn{}).has_value());
+    ASSERT_TRUE(sim->step(1).has_value());
+    EXPECT_EQ(g_seen_height, 42.0f);
+}
+
+TEST(ModuleFields, ABandFieldRoundTripsOnTheCpu) {
+    static constexpr QuantityAccess sample[] = {{"field.hum", Access::write}};
+    static constexpr QuantityAccess read[] = {{"field.hum", Access::read}};
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::bands, .bands = 8, .unit = "dB"}};
+    static constexpr PassDecl acoustic[] = {
+        {.name = "sample", .phase = Phase::fields, .access = sample, .cpu = &sample_bands},
+        {.name = "read", .phase = Phase::forces, .access = read, .cpu = &read_bands}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "acoustic", .passes = acoustic, .fields = hum});
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    g_offset = offset_of(*s, "hum");
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 1, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (uint32_t i = 0; i < 8; ++i) EXPECT_EQ(g_seen_bands[i], 0.5f * static_cast<float>(i)) << "band " << i;
+}
+
+TEST(ModuleFields, ABandFieldIsRefusedOnVulkanByName) {
+    static constexpr QuantityAccess sample[] = {{"field.hum", Access::write}};
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::bands, .bands = 8, .unit = "dB"}};
+    static constexpr PassDecl acoustic[] = {{.name = "sample", .phase = Phase::fields, .access = sample, .cpu = &sample_bands}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "acoustic", .passes = acoustic, .fields = hum});
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 1,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan}, set);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_NE(sim.error().context.find("acoustic.sample"), std::string::npos) << sim.error().context;
+}
+
+TEST(StandardModules, ProvideGravityDensityAndWindAtFixedOffsets) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->fields.size(), 3u);
+    EXPECT_EQ(s->fields[0].name, "gravity");
+    EXPECT_EQ(s->fields[0].offset, spade::modules::kFieldGravityOffset);
+    EXPECT_EQ(s->fields[1].name, "density");
+    EXPECT_EQ(s->fields[1].offset, spade::modules::kFieldDensityOffset);
+    EXPECT_EQ(s->fields[2].name, "wind");
+    EXPECT_EQ(s->fields[2].offset, spade::modules::kFieldWindOffset);
+    EXPECT_EQ(s->field_stride, spade::modules::kFieldBuiltinFloats);
 }
