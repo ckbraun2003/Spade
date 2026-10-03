@@ -20,7 +20,11 @@ All three are PowerShell, run in the foreground, and keep to ASCII (non-ASCII br
 
 ## The gate
 
-`TD-7`: green means `scripts\test.ps1` green on **both** presets, with the counts reported per `TD-8`. There is no hosted CI. The gate therefore runs on one machine, one toolchain (MSVC) and one GPU, and it says so when it reports. The second toolchain and the consumer smoke are owed (`07-status.md`).
+`TD-7`: green means `scripts\test.ps1` green on **both** presets, with the counts reported per `TD-8`. There is no hosted CI (`TD-11`). The gate therefore runs on one machine, one toolchain (MSVC) and one GPU, and it says so when it reports.
+
+**GPU coverage** (`TD-13`). On the development box the `gpu`-labelled tests run as part of the gate. A `gpu` test that skips is reported by name and does not count toward green, even though `scripts\test.ps1` exits 0 with skips. A run on a machine without a device therefore cannot make the gate green. The Docker leg excludes the label explicitly (`-LE gpu`) rather than letting those tests skip.
+
+**The second toolchain and the consumer smoke** are ruled as one self-run Docker leg (`TD-11`): Linux, gcc, CPU-only, release. It runs `ctest -L spade -LE gpu`, and builds and runs `tests/consumer` against an installed prefix with `SPADE_VULKAN` ON and OFF. A regenerated golden is final only once that leg reproduces it (`TD-12`). The leg is not built yet (`07-status.md`, `../backlog.md`).
 
 `--no-tests=error` fires only when **zero** tests are registered. A battery that always skips stays invisible to it, which is why skips are reported by name.
 
