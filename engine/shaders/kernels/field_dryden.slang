@@ -19,7 +19,6 @@ void field_dryden(uint3 tid : SV_DispatchThreadID) {
     if (world >= pass_params.world_count) {
         return;
     }
-    FieldSampleRow row = field_samples[world];
-    row.wind = world_params[world].wind + dryden_turbulence(dryden[world], dryden_params[world]);
-    field_samples[world] = row;
+    // Only this pass's field: gravity and density belong to environment.sample.
+    field_samples[world].wind = world_params[world].wind + dryden_turbulence(dryden[world], dryden_params[world]);
 }

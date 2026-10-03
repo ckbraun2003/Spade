@@ -1162,7 +1162,7 @@ spade_slang_kernel_variants(spade_compute field_environment)
 spade_slang_kernel_variants(spade_compute field_dryden)
 
 # T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/
-# spade_slang_kernel_variants() call above (fp32_math_probe through sensor_gnss)
+# spade_slang_kernel_variants() call above (fp32_math_probe through field_dryden)
 # -- see SpadeSlang.cmake's
 #
 # This comment USED TO SAY "ELEVEN in total" and "moved kCompiledSpirvKernelCount

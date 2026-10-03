@@ -20,7 +20,7 @@
 // new state. Two consequences worth stating out loud:
 //
 //   * GRAVITY IS APPLIED HERE, NOT READ FROM force_acc. This function adds
-//     `params.gravity` to the acceleration itself (step 3 below) rather than
+//     `gravity` to the acceleration itself (step 3 below) rather than
 //     expecting another pass to have folded m*g into force_acc. That is the
 //     op order this task was specified against, and it is what makes the
 //     specific-force capture exact rather than a subtraction. No pass may
@@ -89,7 +89,7 @@ inline constexpr uint32_t active = 1u << 0;
 // including their accumulators, which are NOT cleared for a skipped body.
 //
 // FRAMES (the contract this pass imposes on its callers):
-//   pos, vel, force_acc, params.gravity   world frame
+//   pos, vel, force_acc, gravity          world frame
 //   orient                                body -> world, unit quaternion
 //   omega_body, inv_inertia_diag,
 //   torque_acc, specific_force            body frame

@@ -16,8 +16,7 @@ void field_environment(uint3 tid : SV_DispatchThreadID) {
     if (world >= pass_params.world_count) {
         return;
     }
-    FieldSampleRow row = field_samples[world];
-    row.gravity = world_params[world].gravity;
-    row.density = world_params[world].air_density;
-    field_samples[world] = row;
+    // Only this pass's fields: the row's wind belongs to dryden.sample.
+    field_samples[world].gravity = world_params[world].gravity;
+    field_samples[world].density = world_params[world].air_density;
 }

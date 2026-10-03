@@ -148,8 +148,9 @@ struct CompiledSchedule {
 // a pass with no name or no CPU function, or declared twice; a GPU recipe
 // paired with any CPU function but builtin_cpu_for(recipe); a field with no
 // name, a '.' in its name, a bad kind or band count, or declared twice; a
-// built-in field with another kind or unit; a provider module with no pass
-// that writes its field; a write of "field.<name>" outside its provider; an unknown
+// built-in field with another kind or unit; a module named "field"; a provider
+// module with no pass that writes its field; a write of "field.<name>" outside
+// its provider, or outside the Fields phase; an unknown
 // quantity; an edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.

@@ -1,4 +1,4 @@
-// The standard module set: today's engine as modules (plan stages 1-2). Every
+// The standard module set: today's engine as modules (plan stages 1-3). Every
 // pass names the GPU recipe of its own CPU function (builtin_cpu_for below).
 #include "sim/module.hpp"
 

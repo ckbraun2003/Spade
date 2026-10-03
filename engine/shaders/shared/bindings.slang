@@ -180,8 +180,8 @@
 //    ALL THREE HAVE READERS AS OF S6 TASK 8, which closes the last of this
 //    file's "staged ahead of its consumer" notes. dryden_params was staged at
 //    Task 5 and is read by kernels/medium_update.slang (the advance) and by
-//    BOTH force kernels through dryden.slang's dryden_medium_sample() (the
-//    gust); contact_params has been read by CollisionStatic since Task 6 and by
+//    kernels/field_dryden.slang (the gust, written to the field row since
+//    module-API stage 3); contact_params has been read by CollisionStatic since Task 6 and by
 //    CollisionDynamic since Task 7; grid_params was staged at Task 6b and is
 //    read by grid_build.slang.
 //

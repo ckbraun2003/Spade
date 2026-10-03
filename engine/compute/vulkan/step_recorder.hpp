@@ -197,7 +197,10 @@ struct PassParams {
 //
 // DISPATCHES PER PASS, per substep: one for each recipe that records, except
 // collision_dynamic (2 + sort_stage_count()) and the two behavior recipes (0).
-// The standard set therefore records 9 + sort_stage_count() per substep.
+// The standard set therefore records 11 + sort_stage_count() per substep:
+// medium_update, field_dryden, field_environment, rotors, forces_drag,
+// collision_static, grid_build, the sort stages, collision_dynamic, integrate,
+// sensor_imu and sensor_gnss.
 //
 // That tally is documentation, not an input: record() finds the last dispatch
 // from what it actually emitted, and recorded_chain() reports the counts

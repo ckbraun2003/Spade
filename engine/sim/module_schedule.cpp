@@ -163,11 +163,22 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                                                    "declares, or <module>.<name> for a module in the set)"));
                 }
                 if (const std::string_view field = field_name_of(qa.quantity);
-                    !field.empty() && qa.access != Access::read && field_owner.find(field)->second != m) {
-                    return std::unexpected(invalid(full + ": writes " + std::string(qa.quantity) +
-                                                   ", which module '" +
-                                                   std::string(modules[field_owner.find(field)->second].name) +
-                                                   "' provides; only a field's provider writes it"));
+                    !field.empty() && qa.access != Access::read) {
+                    if (field_owner.find(field)->second != m) {
+                        return std::unexpected(invalid(full + ": writes " + std::string(qa.quantity) +
+                                                       ", which module '" +
+                                                       std::string(modules[field_owner.find(field)->second].name) +
+                                                       "' provides; only a field's provider writes it"));
+                    }
+                    // A provider writes in Fields, before any reader (spec
+                    // section 6). A later write would leave an earlier-phase
+                    // reader the previous substep's row: zeros on the first
+                    // step, another timeline's after restore().
+                    if (p.phase != Phase::fields) {
+                        return std::unexpected(invalid(full + ": writes " + std::string(qa.quantity) +
+                                                       " outside the Fields phase; a provider writes its field "
+                                                       "in Fields, before any reader"));
+                    }
                 }
             }
             by_name.emplace(full, nodes.size());

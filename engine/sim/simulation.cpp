@@ -792,7 +792,7 @@ Result<void> Simulation::rebuild_views() {
         // row, the body/element partitions, the turbulence filter state AND its
         // parameters -- is subscripted by the SAME `w` here, and this is the
         // only place any of them is bound. That is the whole guarantee that
-        // ForceElements samples a DrydenMedium built from world w's filter
+        // dryden.sample writes world w's field row from world w's filter
         // alongside world w's WorldParams row: one world's air with another's
         // gusts is not expressible, rather than being a runtime assert away.
         //
@@ -2782,7 +2782,7 @@ Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 p
     const Result<std::span<const DrydenState>> dryden = arenas_.array(dryden_id_);
     if (!dryden) return std::unexpected(dryden.error());
     // Paired by the same world index rebuild_views() uses, so this is the
-    // DrydenMedium the ForceElements pass builds for this world.
+    // expression dryden.sample writes into this world's wind field.
     const DrydenMedium medium((*dryden)[world_index], configs_[world_index].turbulence);
     return medium.sample(**params, pos);
 }

@@ -79,8 +79,8 @@
 //
 // DIVISION AND SQRT SITES IN THIS FILE: exactly one, `glm::length(v_rel)` in
 // the quadratic branch (forces.cpp:82). No division anywhere in this kernel.
-// dryden.slang and rng.slang list their own, and reach here through the medium
-// sample.
+// Since module-API stage 3 the medium arrives as stored field samples, so no
+// other module's division reaches this kernel.
 // ---------------------------------------------------------------------------
 
 // `import layouts` AS WELL AS `import bindings`: Slang's `import` is NOT
@@ -98,8 +98,8 @@ import bindings;
 // of S6 Task 8 -- see mirrors.slang's header for the T7 review finding (minor
 // M3) that forced the extraction and for the per-helper glm citations.
 import mirrors;
-// dryden_medium_sample() -- the DrydenMedium sample this pass reads, shared
-// with rotors.slang (S6 Task 8). See the header note.
+// MediumSample's home. The medium itself is read from the field row (stage 3);
+// see the header note.
 import dryden;
 
 // state/arenas.hpp's kInvalidWorld; physics/integrator.hpp's
