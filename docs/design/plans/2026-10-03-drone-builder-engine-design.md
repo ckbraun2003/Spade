@@ -95,6 +95,6 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 
 | Point | Owner | Note |
 |---|---|---|
-| Scene file schema | Core (schema) with Interface (editor) | Core is in module API stage 1. The lead drafts and Core reviews |
+| Scene file schema | Core (schema) with Interface (editor) | Drafted: `../interface/plans/2026-10-03-scene-file-draft.md` (SCN-001..008). Core reviews. How the vehicle list enters the configuration hash is Core's call (SCN-006): ReplayConfig moves every vehicle golden |
 | Engine-model and `INT-3` text | lead, Interface | Land with the joint spec's approval |
 | Band layout for `acoustic` and `rf` | Physics, Core | Fixed per field, part of the field's type |
