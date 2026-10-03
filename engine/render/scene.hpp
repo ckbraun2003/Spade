@@ -577,6 +577,10 @@ struct RenderScene {
     // samples each field and fills these; the raster modes draw them, and the
     // ray-march mode does not. Empty unless a caller adds one.
     std::vector<FieldLayer> field_layers;
+    // What scene_from_world() could not build faithfully, one sentence each,
+    // for the caller to show (L6). Today: a CSG wall thinner than about two
+    // grid cells, which draws with holes (render/csg_mesh.hpp).
+    std::vector<std::string> warnings;
 };
 
 // Builds a RenderScene from a validated WorldDesc plus its already-resolved

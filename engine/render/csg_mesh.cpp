@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -435,17 +436,45 @@ constexpr bool kFlipX = true;
 constexpr bool kFlipY = false;
 constexpr bool kFlipZ = true;
 
+// csg_mesh.hpp's grid rule: max(min, ceil(longest / cell_size)), capped at
+// max. 0 for limits that cannot give a grid.
+[[nodiscard]] uint32_t cells_for_extent(float longest, const CsgMeshLimits& limits) {
+    if (!(limits.cell_size > 0.0f) || limits.min_cells_per_axis == 0u ||
+        limits.max_cells_per_axis < limits.min_cells_per_axis) {
+        return 0u;
+    }
+    (void)longest;
+    return limits.min_cells_per_axis;  // stub: the old fixed count, until the fix commit
+}
+
+// The subtree [subtree_start(root), root] as its own program, so eval() and
+// gradient() see this subtree alone (see mesh_csg_subtree()'s comment).
+[[nodiscard]] SdfProgram extract_subtree(const SdfProgram& program, uint32_t root_node) {
+    const uint32_t start = subtree_start(program, root_node);
+    SdfProgram subtree;
+    subtree.nodes.assign(program.nodes.begin() + start, program.nodes.begin() + root_node + 1);
+    subtree.transforms = program.transforms;
+    return subtree;
+}
+
 }  // namespace
+
+uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& limits) {
+    const glm::vec3 extent = subtree_bounds.max - subtree_bounds.min + glm::vec3(2.0f * limits.aabb_margin);
+    return cells_for_extent(std::max({extent.x, extent.y, extent.z}), limits);
+}
+
+CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh) {
+    (void)extract_subtree(program, root_node);
+    (void)mesh;
+    return {};  // stub: finds nothing, until the fix commit
+}
 
 Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node, const Aabb& subtree_bounds,
                                    const CsgMeshLimits& limits) {
     if (root_node >= program.nodes.size()) {
         return std::unexpected(Error{Code::invalid_argument, "mesh_csg_subtree: root_node out of range"});
     }
-    if (limits.cells_per_axis == 0) {
-        return std::unexpected(Error{Code::invalid_argument, "mesh_csg_subtree: cells_per_axis must be > 0"});
-    }
-
     // Evaluate the SUBTREE ALONE, not the whole program: this subtree sits
     // inside a larger union with the rest of the world's geometry (a gate
     // stands on a ground plane, say), and evaluating the full program near
@@ -476,9 +505,6 @@ Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node,
         return std::unexpected(peak.error());
     }
 
-    const uint32_t cells = limits.cells_per_axis;
-    const uint32_t verts_per_axis = cells + 1;
-
     // The padding margin is `limits.aabb_margin`, EXCEPT when `root_node`
     // is itself a smooth_union: sdf.cpp's own bound on the blend (min(a,b)
     // - k/4 <= d <= min(a,b)) means the true surface can sit up to k/4
@@ -506,6 +532,14 @@ Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node,
     const glm::vec3 lo = subtree_bounds.min - margin;
     const glm::vec3 hi = subtree_bounds.max + margin;
     const glm::vec3 extent = hi - lo;
+
+    const uint32_t cells = cells_for_extent(std::max({extent.x, extent.y, extent.z}), limits);
+    if (cells == 0u) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "mesh_csg_subtree: the limits give no cells (cell_size, min_cells_per_axis and "
+                                     "max_cells_per_axis must be positive, with min <= max)"});
+    }
+    const uint32_t verts_per_axis = cells + 1;
 
     const auto corner_pos = [&](uint32_t i, uint32_t j, uint32_t k) -> glm::vec3 {
         return lo + extent * glm::vec3(static_cast<float>(i) / static_cast<float>(cells),

@@ -49,11 +49,36 @@ namespace spade::render {
 // Fixed constant table -- NEVER adaptive, NEVER camera- or resolution-
 // dependent (see the file comment above and tessellate.hpp's identical rule
 // for kTessellationDefaults).
+//
+// The grid is sized from a WORLD-SPACE cell, so a large subtree is not meshed
+// more coarsely than a small one (a fixed 48 cells per subtree made an 8 m
+// shell's cells 0.17 m). A subtree gets max(min_cells_per_axis,
+// ceil(longest padded extent / cell_size)) cells per axis, capped at
+// max_cells_per_axis. Small subtrees keep the old 48.
 struct CsgMeshLimits {
-    uint32_t cells_per_axis = 48;
+    float cell_size = 0.05f;           // metres along the longest axis
+    uint32_t min_cells_per_axis = 48;  // the old fixed count: small subtrees lose no detail
+    uint32_t max_cells_per_axis = 160; // bounds load time and memory for a large subtree
     float aabb_margin = 0.05f;
 };
 inline constexpr CsgMeshLimits kCsgMeshDefaults{};
+
+// Cells per axis for a subtree with these bounds (before the margin), by the
+// rule above. 0 when the limits are invalid.
+[[nodiscard]] uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& limits);
+
+// Folded triangles: their geometric normal points against the subtree's SDF
+// gradient at the centroid. Surface nets folds a wall thinner than about two
+// cells, because both faces share one cell's vertex, and a folded triangle is
+// culled as a back face. scene_from_world() turns a nonzero count into a
+// warning that names the subtree and where the fold is (L6).
+struct CsgFoldReport {
+    uint32_t folded = 0;     // triangles that fold
+    uint32_t triangles = 0;  // all triangles judged (degenerate ones are skipped)
+    Aabb bounds{};           // world-space box around the folded triangles; empty when none fold
+};
+[[nodiscard]] CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node,
+                                                  const MeshData& mesh);
 
 // Splits a validated postfix program (PRECONDITION: program.validate() has
 // succeeded -- matching world/sdf.hpp's own eval()/gradient()/sample()
@@ -122,8 +147,8 @@ struct SubtreeSplit {
 // MeshData comment): a CSG mesh is single-material, exactly
 // tessellate_primitive()'s own producer contract.
 //
-// Errors: invalid_argument for `root_node` out of range, `limits.
-// cells_per_axis == 0`, or anything the internal re-validation of the
+// Errors: invalid_argument for `root_node` out of range, limits for which
+// csg_cells_per_axis() is 0, or anything the internal re-validation of the
 // extracted subtree program rejects (unreachable for a subtree of an
 // already-validated `program`, kept as a defensive Result for the same
 // reason csg_subtree_world_bounds() above is one).
