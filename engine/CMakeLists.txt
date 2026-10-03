@@ -793,6 +793,11 @@ add_library(spade_vehicles STATIC
     vehicles/rotor_wake.cpp
     vehicles/model_type.cpp
     vehicles/quadrotor.cpp
+    vehicles/motor.cpp
+    vehicles/battery.cpp
+    vehicles/propeller.cpp
+    vehicles/composite_inertia.cpp
+    vehicles/propulsion_steady.cpp
 )
 add_library(spade::vehicles ALIAS spade_vehicles)
 set_target_properties(spade_vehicles PROPERTIES EXPORT_NAME vehicles)

@@ -66,6 +66,11 @@ add_executable(spade_tests
     test_dryden.cpp
     test_rotor.cpp
     test_rotor_wake.cpp
+    test_motor.cpp
+    test_battery.cpp
+    test_propeller.cpp
+    test_composite_inertia.cpp
+    test_propulsion_steady.cpp
     test_quadrotor.cpp
     test_imu.cpp
     test_gnss.cpp
