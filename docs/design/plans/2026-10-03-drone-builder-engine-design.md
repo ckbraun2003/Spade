@@ -62,9 +62,9 @@ The builder shows live figures (all-up weight, thrust-to-weight, hover throttle,
 
 | Spade work | Needs | Order |
 |---|---|---|
-| Composite-inertia utility; static functions | nothing new | can start after the joint spec is approved |
+| Composite-inertia utility; the models' pure functions; steady-state solver | nothing new | can start after the joint spec is approved |
 | Scene file and composition utility | the world/scene terms | with the joint spec; before the editor spec |
-| Propeller tier (CT, CQ by advance ratio) | roles and tiers (module API stage 5) | after stage 5 |
+| Propeller tier (CT, CQ by advance ratio) | per-rotor data in the rotor module (module API stage 4); not a role | after stage 4 |
 | Motor/ESC and battery modules | modules own state (stage 4) | after stage 4 |
 | Acoustic and radio fields | field registry (stage 3), field channels | contract now; build later |
 | Parts as objects with components | objects in stepping | with the editor step |
