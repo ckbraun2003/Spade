@@ -365,9 +365,12 @@ TEST_F(GpuGlRenderer, DrawsTheAnalyticGroundInShadedModeOnly) {
 // "interior" pixels only, whose 3x3 neighbourhood on the CPU frame holds no
 // grid-line pixel and no sky/ground change.
 TEST_F(GpuGlRenderer, BackgroundMatchesTheCpuWithinItsMeasuredBand) {
-    // Provisional until measured: see the commit that pins them.
-    constexpr int kBandAll = 0;
-    constexpr int kBandInterior = 0;
+    // Measured 2026-10-03 at 087c3c3, 160x120, on Intel Iris Plus Graphics
+    // (driver 31.0.101.2125): at most 1 level over all 19200 pixels, and 1
+    // over the 15821 interior ones. Pinned at the measurement. Another device
+    // may differ; re-measure there before widening (03-verification).
+    constexpr int kBandAll = 1;
+    constexpr int kBandInterior = 1;
 
     const RenderScene scene = make_ground_scene();
     RenderScene sky_only = scene;
@@ -430,10 +433,11 @@ TEST_F(GpuGlRenderer, BackgroundMatchesTheCpuWithinItsMeasuredBand) {
     ASSERT_GT(interior, kPixels / 2u) << "most of the frame must be interior, or the second band says little";
     RecordProperty("max_all", max_all);
     RecordProperty("max_interior", max_interior);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     EXPECT_LE(max_interior, kBandInterior)
         << "interior pixels (no grid line or horizon within 1 px) differ from the CPU by up to " << max_interior
-        << " levels; " << interior << " interior pixels";
-    EXPECT_LE(max_all, kBandAll) << "some pixel differs from the CPU by " << max_all << " levels";
+        << " levels; " << interior << " interior pixels, on " << device;
+    EXPECT_LE(max_all, kBandAll) << "some pixel differs from the CPU by " << max_all << " levels, on " << device;
 }
 
 // SR-17a on mesh fragments: every shaded surface blends toward the sky by
@@ -456,16 +460,19 @@ TEST_F(GpuGlRenderer, AtmosphericTermBlendsMeshPixelsAndIsExactAtZero) {
     const std::vector<uint8_t> frame_on = draw_and_read(scene, on);
     ASSERT_EQ(frame_off.size(), kPixels * 4u);
     ASSERT_EQ(frame_on.size(), kPixels * 4u);
-    size_t mesh = 0;
+    // Counts, not one EXPECT per pixel, so a failure prints three lines.
+    size_t mesh = 0, inexact_at_zero = 0, unblended = 0;
     for (size_t p = 0; p < kPixels; ++p) {
         if (same_pixel(frame_off, sky, p)) continue;
         ++mesh;
-        EXPECT_EQ(frame_off[p * 4u], 255u) << "pixel " << p << ": strength 0 must leave unlit red exact";
-        EXPECT_EQ(frame_off[p * 4u + 2u], 0u) << "pixel " << p;
-        EXPECT_LT(frame_on[p * 4u], 200u) << "pixel " << p << ": strength 1 must blend red toward the sky";
-        EXPECT_GT(frame_on[p * 4u + 2u], 55u) << "pixel " << p;
+        if (frame_off[p * 4u] != 255u || frame_off[p * 4u + 1u] != 0u || frame_off[p * 4u + 2u] != 0u) {
+            ++inexact_at_zero;
+        }
+        if (!(frame_on[p * 4u] < 200u && frame_on[p * 4u + 2u] > 55u)) ++unblended;
     }
     EXPECT_GT(mesh, 0u) << "the triangle must be visible";
+    EXPECT_EQ(inexact_at_zero, 0u) << "of " << mesh << " mesh pixels: strength 0 must leave unlit red exact";
+    EXPECT_EQ(unblended, 0u) << "of " << mesh << " mesh pixels: strength 1 must blend red toward the blue sky";
 }
 
 // raster_cpu's velocity_ramp(): blue at rest, red at velocity_scale_mps and
@@ -483,21 +490,22 @@ TEST_F(GpuGlRenderer, VelocityModeColoursEachInstanceBySpeed) {
     options.velocity_scale_mps = 20.0f;
     const std::vector<uint8_t> rgba = draw_and_read(scene, options);
     ASSERT_EQ(rgba.size(), kPixels * 4u);
-    size_t blue = 0, red = 0;
+    size_t blue = 0, red = 0, wrong = 0;
     for (size_t p = 0; p < kPixels; ++p) {
         if (is_black(rgba, p)) continue;
         const bool left = (p % kWidth) < static_cast<size_t>(kWidth) / 2u;
         const uint8_t r = rgba[p * 4u], g = rgba[p * 4u + 1u], b = rgba[p * 4u + 2u];
-        if (left) {
-            EXPECT_TRUE(r == 0u && g == 0u && b == 255u) << "pixel " << p << " at rest must be blue";
+        if (left && r == 0u && g == 0u && b == 255u) {
             ++blue;
-        } else {
-            EXPECT_TRUE(r == 255u && g == 0u && b == 0u) << "pixel " << p << " above the scale must be red";
+        } else if (!left && r == 255u && g == 0u && b == 0u) {
             ++red;
+        } else {
+            ++wrong;
         }
     }
-    EXPECT_GT(blue, 0u);
-    EXPECT_GT(red, 0u);
+    EXPECT_GT(blue, 0u) << "the instance at rest must draw blue";
+    EXPECT_GT(red, 0u) << "the instance above the scale must draw red";
+    EXPECT_EQ(wrong, 0u) << "pixels that are not their instance's ramp colour";
     EXPECT_EQ(renderer_->last_draw_calls(), 1u) << "two instances of one mesh are still one draw";
 }
 
