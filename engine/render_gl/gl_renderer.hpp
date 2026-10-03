@@ -92,7 +92,9 @@ class GlRenderer {
     // names. A background pass draws the sky in every mode. In shaded mode it
     // also draws the analytic ground, the grid and the atmospheric term
     // (SR-17, SR-17a, SR-22). Meshes draw shaded, wireframe or velocity.
-    // Raymarch is refused with Code::unavailable: it is a CPU technique.
+    // Field layers draw filled in every mode, as raster_cpu draws them.
+    // Raymarch is refused with Code::unavailable: it is a CPU technique. So
+    // is a malformed field layer, with Code::invalid_argument.
     //
     // Renders into the CURRENTLY BOUND framebuffer at the given size and
     // covers every pixel. It does not present: that belongs to whoever owns
@@ -114,8 +116,8 @@ class GlRenderer {
     // claim like that is exactly the kind this estate has learned to assert in
     // a test. After draw(), these report what the last frame actually issued --
     // so "one draw per mesh" is checkable by a caller with no display, against
-    // a scene whose instance count it chose. The background pass is one more
-    // draw per frame, whatever the scene, and is not counted.
+    // a scene whose instance count it chose. The background pass and each
+    // field layer are one more draw apiece, and are not counted.
     [[nodiscard]] uint32_t last_draw_calls() const noexcept;
     [[nodiscard]] uint32_t last_instances() const noexcept;
 
