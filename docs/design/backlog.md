@@ -40,7 +40,13 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | The joint drone-builder spec | Approved 2026-10-03 (Kat `c9683af3`; Spade's `plans/2026-10-03-drone-builder-engine-design.md` and `physics/plans/2026-10-03-drone-builder-physics.md`). Building starts in the order below | work items below |
 | World and scene | Mirror Kat. A world holds physics, environment, regions and static terrain. A scene holds a world reference plus placed objects (assets, vehicles, start poses). This changes the engine model's terms and amends `INT-3` to "the editor saves scenes". Both edits land with the joint spec | `01-engine-model.md`, `interface/00-decisions.md` |
 
-No user decision is open.
+## Open user decisions
+
+| Decision | Raised by | Where it's recorded |
+|---|---|---|
+| Sign `RND-6`: the raster draws a heightfield only within the world bounds, and `RS4` holds there | Rendering | `rendering/00-decisions.md` (proposed row), `rendering/plans/2026-10-03-raster-defects-plan.md` (A2) |
+| An analytic heightfield background past the world bounds, the way `SR-17` draws planes. It amends `SR-17`'s "standalone planes only", and its seam is banded, not bit-exact | Rendering | `rendering/plans/2026-10-03-raster-defects-plan.md` (A1) |
+| Ray-march CSG subtrees in the raster instead of meshing them at load: exact agreement, but every frame pays per pixel. It replaces `RS3`'s "CSG meshed at load" | Rendering | `rendering/plans/2026-10-03-raster-defects-plan.md` (B2) |
 
 ## Work items
 
@@ -56,4 +62,5 @@ No user decision is open.
 | Drone builder: model functions and mass properties | Physics | Approved joint spec; Kat's airframe fit runs against them | Motor/ESC, battery and propeller pure functions, the composite-inertia utility and the steady-state solver, built and tested before module API stage 4 (DBP-01..52) |
 | Drone builder: `spade::scene` | Core (schema), Interface (composer) | Kat sends scenes, and the editor saves them | The scene file loads, round-trips and composes into a runnable world (SCN-001..009); snapshot v3 carries the model-registry identity; `consumers.md` records it |
 | Drone builder: stateful motor and battery modules | Physics, with Core | Needs module API stage 4 | Motor/ESC and battery rows step on both backends with their goldens and bands; a duty-command call and a design-frame state read exist (DBE-013) |
+| CSG world-space cell size and the two-cell wall warning (B1, B3) | Rendering | csg_mesh's fixed 48 cells per subtree fold or lose walls about one cell thick (`rendering/07-status.md` debt) | A world-space cell size with a cap; a validation warning names any wall thinner than two cells; the CSG goldens regenerated through `TD-1` and `TD-12` |
 | `SR-3`'s content | Rendering | Every cited `SR-nn` now has a row; `SR-3`'s ruling text could not be reconstructed | Its content is found or the citation is retired |
