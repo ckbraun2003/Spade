@@ -33,6 +33,7 @@ models:                                     # compiled vehicle models, registere
     param_schema_id: 1
     visual_ref: kat/5in_frame
     design_to_principal: [1, 0, 0, 0]       # unit quaternion (w, x, y, z); always written
+    com_offset: [0, 0, 0]                   # centre of mass from the design origin, design frame, m; always written
     body: {mass: 0.62, inertia_diag: [0.0021, 0.0038, 0.0023]}
     proxy_radius: 0.12
     rotors:                                 # fixed order (DBE-003)
@@ -53,9 +54,11 @@ vehicles:                                   # in scene order
 spare: {bodies: 1, force_elements: 0, sensors: 0, contacts: 0}  # optional on read; always written
 ```
 
-- **A model** is `vehicles::ModelType` plus two fields that ModelType gains (Core's ruling, 2026-10-03):
+- **A model** is `vehicles::ModelType` plus three fields that ModelType gains (Core's rulings, 2026-10-03):
   - `version` (`uint32_t`, at least 1). It lands with the model-registry identity (SCN-006). Until then, the scene carries it and the loader validates it.
-  - `design_to_principal`: the rotation from the design frame to the principal-axis body frame, identity when they agree. Kat's compiler knows it, because it writes mounts in the body frame. `body.inertia_diag` is the principal moments, as in `BodyTemplate`. The design-frame vehicle read (module-API stage 4) undoes the rotation (`DBE-013`).
+  - `design_to_principal`: the rotation from the design frame to the principal-axis body frame, identity when they agree. Kat's compiler knows it, because it writes mounts in the body frame. `body.inertia_diag` is the principal moments, as in `BodyTemplate`.
+  - `com_offset`: the centre of mass from the design origin, in the design frame, in metres; `[0, 0, 0]` when they coincide. Always written.
+  - Both are applied only by `Simulation::spawn()` and the vehicle-state read, which Core owns (`DBP-45` to `DBP-47`). A scene's starts and every host read stay in the design frame (`DBE-013`).
 - **A start** is `VehicleSpawn`, spelt as the world file spells poses.
 - **An asset's pose** is `SdfPose` (`position`, `orientation`, `scale`), spelt as the world file's props and spawn points are. Its scale is uniform, as SDF evaluation needs.
 - **The world hash** is FNV-1a 64 over the canonical text the world-file writer produces from the loaded world, `write(load(file))`, not over the file's raw bytes.
@@ -97,7 +100,7 @@ The scene composes into one runnable world, in this order:
 5. **The world's physics records.** Turbulence, contact and grid records belong to the world and land in Core's world file v3, with the module set and regions. The scene never carries them. Scenario files keep their per-instance values, which v3 turns into overrides of a world default.
 6. **Frames.**
    - A start orientation is the design frame in Spade's axes (Y up). The compiler has already turned Kat's +Z-thrust axes with a signed permutation (`DBE-015`).
-   - Each model's `design_to_principal` carries the rotation into the principal-axis body frame, and Spade applies it internally (`DBE-013`).
+   - Each model's `design_to_principal` and `com_offset` take a design-frame start into the principal body frame. Only `spawn()` and the vehicle-state read apply them (`DBP-45` to `DBP-47`, Core's); the composer passes starts through in the design frame (`DBE-013`).
 
 ## What the editor needs from it (Interface)
 
@@ -116,4 +119,4 @@ The scene composes into one runnable world, in this order:
 - **SCN-006** The model registry (each model's definition and version, in registration order) MUST enter the snapshot's configuration identity, and restore MUST refuse another (`L2`). The vehicle list and spawn order are registered state and enter every digest. Core owns the mechanism (`core/02`).
 - **SCN-007** For each capacity field (bodies, force elements, sensors, contacts), composition MUST set the world's count plus the scene contents' need plus the scene's `spare` count. Each `spare` count MUST default to 0 on read.
 - **SCN-008** A scene MUST hold engine content only: no slots, presets, brands or tuning (`DBE-014`).
-- **SCN-009** Each model MUST carry `version` (at least 1) and `design_to_principal` (a unit quaternion). Materials MUST be referenced by name, never by palette index.
+- **SCN-009** Each model MUST carry `version` (at least 1), `design_to_principal` (a unit quaternion) and `com_offset` (metres, design frame). Materials MUST be referenced by name, never by palette index.

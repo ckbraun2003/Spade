@@ -39,11 +39,9 @@ namespace spade {
 
 namespace spade::scene {
 
-// The composer's two arithmetic helpers, each with a fixed operation order and
-// an exact short-cut (see "Composition"). Declared here so task 3's review
-// has fixed targets.
+// The composer's arithmetic helper, with a fixed operation order and exact
+// short-cuts (see "Composition"). Built and tested (spade::scene).
 [[nodiscard]] SdfTransform compose_transform(const SdfTransform& collider, const SdfTransform& asset_pose);
-[[nodiscard]] VehicleSpawn design_to_principal(const VehicleSpawn& start_design, const glm::quat& q_d2p);
 
 struct SceneDesc;  // the parsed scene file (Core's schema)
 [[nodiscard]] Result<SceneDesc> load_scene_file(const std::filesystem::path& path);
@@ -51,7 +49,7 @@ struct SceneDesc;  // the parsed scene file (Core's schema)
 
 struct VehiclePlacement {
     uint32_t model = 0;   // index into ComposedScene::models
-    VehicleSpawn start;   // already in the principal body frame (DBE-013)
+    VehicleSpawn start;   // in the design frame: spawn() converts it (DBP-45, DBP-46)
 };
 
 struct ComposedScene {
@@ -105,11 +103,7 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
      - If any contributor does, the array is materialized to full length: the world's implicit 0s, each asset's resolved indices, and 0 for each `union_` node, whose material is unused.
    - **Visual:** it becomes a `PropDesc`: the mesh reference, the asset's pose, and the material index resolved by name.
 4. **Models**, copied in the `models:` section's order. Registration gives `ModelTypeId` *i* + 1 to `models[i]`.
-5. **Vehicles**, in scene order. Each model name becomes an index; an unknown name is refused. Each start is turned into the principal body frame by `design_to_principal(start, model.design_to_principal)` (`DBE-013`):
-   - orientation: `orient_principal = orient_design ⊗ conj(q_d2p)`;
-   - body rates: `omega_body_principal = rotate(q_d2p, omega_body_design)`;
-   - velocity is world-frame and unchanged; `rotor_omega` is unchanged;
-   - an exactly-identity `q_d2p` returns the start untouched, so an airframe whose axes already agree spawns bit-identical to a direct `spawn()` today.
+5. **Vehicles**, in scene order. Each model name becomes an index; an unknown name is refused. Each start is handed to `spawn()` in the design frame, unchanged. `spawn()` applies the model's `design_to_principal` and `com_offset`, and the vehicle-state read undoes them (`DBP-45` to `DBP-47`, Core's; Core's correction, 2026-10-03). The conversion moves the position by the centre-of-mass offset as well as turning the frame, so it is not the composer's.
 6. **Capacities** (`SCN-007`). For each field, the composed count is the world's count, plus the contents' need, plus `spare`.
    - Bodies: one per vehicle.
    - Force elements: each vehicle's model's rotors plus drag bodies.
@@ -135,7 +129,7 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
 - **Union semantics:** at sample points, the composed SDF equals min(world SDF, asset SDF in the asset's frame × the asset's scale).
 - **Identity pose:** an asset at the identity pose leaves its transforms bitwise unchanged (short-cut (a)).
 - **Pinned to the builder:** a one-primitive collider at the origin, composed at a non-identity pose, gives SDF bytes and a `config_hash` identical to `WorldBuilder` authoring that primitive at that pose (short-cut (b) and `transform_of()`).
-- **Design-to-principal:** a model with an identity `q_d2p` spawns bitwise as `spawn()` with the same start does today. A non-identity `q_d2p` turns the orientation and the body rates as stated, and leaves velocity and `rotor_omega` alone.
+- **Starts pass through:** `instantiate()` hands each start to `spawn()` bitwise as the scene wrote it.
 - **Order:**
   - swapping two assets changes `config_hash`;
   - swapping two different vehicles (another model or start) changes the first state digest; swapping identical ones moves nothing;
@@ -150,7 +144,7 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
 
 - **The user's approval of the joint spec.** Nothing is built before it.
 - **Core:**
-  - `ModelType` gains `version` and `design_to_principal`;
+  - `ModelType` gains `version`, `design_to_principal` and `com_offset`, and `spawn()` and the vehicle-state read apply them (`DBP-45` to `DBP-47`);
   - `transform_of(const SdfPose&)` becomes public in `world/`, and `WorldBuilder` calls it;
   - the snapshot's model-registry identity (`SCN-006`, snapshot format v3);
   - world file v3 for the physics records, later. Until then they come from `WorldInstanceDesc`, as today.
@@ -160,6 +154,6 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
 
 1. The `spade::scene` target, its headers and install rules (`SL2`), as tabled above. `tests/consumer` links it, and `consumer-smoke.sh` lists it.
 2. `scene_file`: reader, canonical writer and round-trip tests. Core reviews the schema code.
-3. `transform_of()` in `world/` (Core reviews), then `compose`, `compose_transform` and `design_to_principal`, with the tests above.
+3. `transform_of()` in `world/` (Core reviews), then `compose`, with the tests above. `compose_transform` is built and tested (`interface/scene-composer`).
 4. `instantiate`, porting the viewer's setup order (`engine/tools/viewer/setup.cpp`).
 5. The viewer scenes as scene files, asserting their goldens: the successor check.
