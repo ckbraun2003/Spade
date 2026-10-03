@@ -812,4 +812,35 @@ TEST(GnssLifecycle, TheDeclaredSensorCapacityBoundsEachArenaNotTheirSum) {
               code(spade::Code::capacity_exceeded));
 }
 
+
+// ---------------------------------------------------------------------------
+// reseed() re-derives EVERY stream from the new world seed (engine A3: reset
+// is restore plus reseed), and a receiver's noise stream is one of them. The
+// row is checked directly: after reseed it must be exactly the stream a
+// receiver spawned under the new seed would start with. Until 2026-10-02
+// reseed walked only the IMU arena, so GNSS kept drawing from the old seed.
+// ---------------------------------------------------------------------------
+TEST(GnssReseed, ReseedRederivesAReceiversNoiseStream) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+    const spade::Result<GnssSensorRef> ref = sim->add_gnss_sensor(*body, distinct_receiver());
+    ASSERT_OK(ref);
+    ASSERT_OK(sim->flush_structural());
+    ASSERT_OK(sim->step(5));  // move the stream off its starting point
+
+    ASSERT_OK(sim->reseed(0xA3F00DULL));
+    const spade::Result<const spade::WorldParams*> params = sim->world_params(0);
+    ASSERT_OK(params);
+
+    // One world, so the global slot is the world-local slot the stream is keyed on.
+    const spade::Result<const spade::sensors::GnssSensorRow*> row = sim->gnss_sensor(*ref);
+    ASSERT_OK(row);
+    EXPECT_EQ((*row)->noise, spade::sensors::gnss_noise_stream((*params)->seed, ref->slot))
+        << "after reseed, the receiver must draw from the new world seed";
+}
+
 }  // namespace
