@@ -4,4 +4,5 @@ Active Rendering plans, one file each, named `YYYY-MM-DD-<topic>.md`. The drone 
 
 - `2026-10-02-gl-render-options.md`: GL honours `RenderOptions` (sky, analytic ground, grid, the atmospheric term, wireframe). Done, merged at `0a5e1a1`.
 - `2026-10-03-field-channel-plan.md`: a camera draws a registered field as a channel, on the CPU and GL. Part A is done (merged at `3605ddf`). Step 3 is Interface's. Part B waits on Core's stage 3.
-- `2026-10-03-default-sun-plan.md`: `RND-5`, the default sun above the horizon, with four frame goldens regenerated and reproduced by the Docker leg. Draft, for the lead's review.
+- `2026-10-03-default-sun-plan.md`: `RND-5`, the default sun above the horizon, with four frame goldens regenerated and reproduced by the Docker leg. Approved; commit B waits on the Docker leg.
+- `2026-10-03-agreement-bands-plan.md`: agreement bands on Spade's own worlds (`RS4`, `SR-30`, `SR-31`, `TD-2`), replacing the 30 cases that moved to KAT. Draft, for the lead's review.
