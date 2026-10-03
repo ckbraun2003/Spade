@@ -10,6 +10,7 @@
 #include "compute/sdf_program.hpp"
 #include "compute/step_params.hpp"
 #include "physics/contacts.hpp"
+#include "physics/field_row.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
 #include "sensors/gnss.hpp"
@@ -470,6 +471,14 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
             !made) {
             return std::unexpected(made.error());
         }
+    }
+
+    // The field sample rows (binding 26, module-API stage 3), one per world.
+    if (Result<void> made = make_derived(self->field_samples_, "field_samples",
+                                          static_cast<uint32_t>(sizeof(spade::physics::FieldSampleRow)),
+                                          shape.world_count, gen::kBinding_field_samples);
+        !made) {
+        return std::unexpected(made.error());
     }
 
     // -----------------------------------------------------------------------
@@ -940,6 +949,23 @@ Result<void> StateMirror::read_step_witness(std::span<std::byte> out_bytes) {
         return copied;
     }
     std::memcpy(out_bytes.data(), step_witness_.staging_mapped, expected);
+    return {};
+}
+
+Result<void> StateMirror::read_field_samples(std::span<std::byte> out_bytes) {
+    const std::size_t expected = static_cast<std::size_t>(field_samples_.byte_size);
+    if (out_bytes.size() != expected) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "StateMirror::read_field_samples: expected " + std::to_string(expected) +
+                                         " bytes, got " + std::to_string(out_bytes.size())});
+    }
+    if (expected == 0) return {};
+    std::vector<Entry*> targets{&field_samples_};
+    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+        !copied) {
+        return copied;
+    }
+    std::memcpy(out_bytes.data(), field_samples_.staging_mapped, expected);
     return {};
 }
 

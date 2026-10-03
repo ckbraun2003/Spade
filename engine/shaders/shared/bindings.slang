@@ -180,8 +180,8 @@
 //    ALL THREE HAVE READERS AS OF S6 TASK 8, which closes the last of this
 //    file's "staged ahead of its consumer" notes. dryden_params was staged at
 //    Task 5 and is read by kernels/medium_update.slang (the advance) and by
-//    BOTH force kernels through dryden.slang's dryden_medium_sample() (the
-//    gust); contact_params has been read by CollisionStatic since Task 6 and by
+//    kernels/field_dryden.slang (the gust, written to the field row since
+//    module-API stage 3); contact_params has been read by CollisionStatic since Task 6 and by
 //    CollisionDynamic since Task 7; grid_params was staged at Task 6b and is
 //    read by grid_build.slang.
 //
@@ -323,6 +323,14 @@ import layouts;
 // dispatch. Shadowing the two fields this pass mutates is what makes the
 // iteration a Jacobi one rather than a race.
 [[vk::binding(22, 0)]] RWStructuredBuffer<GatherBodyRow> body_snapshot;
+
+// Every world's field sample row (module-API stage 3; layouts.slang's
+// FieldSampleRow), indexed by world. Written by field_environment and
+// field_dryden in the Fields phase, read by rotors, forces_drag and integrate
+// later in the same substep. DERIVED, like grid_entries: never uploaded,
+// zero-filled at create, read back only by Simulation::field_samples() (a
+// diagnostic). Binding 26 because 25 was the last in use.
+[[vk::binding(26, 0)]] RWStructuredBuffer<FieldSampleRow> field_samples;
 
 // ---------------------------------------------------------------------------
 // E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound

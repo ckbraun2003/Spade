@@ -63,6 +63,8 @@
 #include "collision_fill.spv.gen.hpp"
 #include "collision_gather.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
+#include "field_dryden.spv.gen.hpp"
+#include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
 #include "grid_build.spv.gen.hpp"
@@ -192,6 +194,13 @@ const RegistryEntry kExpectedRegistry[] = {
     // writes. Shadowing the two fields this pass mutates is what makes the
     // iteration Jacobi rather than a race.
     {"body_snapshot", gen::kBinding_body_snapshot},
+    // Module-API stage 3: every world's field sample row (layouts.slang's
+    // FieldSampleRow) -- gravity, density and wind, written once per substep
+    // by the two field-sample kernels and read by rotors, drag and integrate.
+    // DERIVED for grid_entries' reason: written by a dispatch, read inside the
+    // same substep, never uploaded, read back only by the field_samples()
+    // diagnostic.
+    {"field_samples", gen::kBinding_field_samples},
 };
 
 // How many entries of kExpectedRegistry are DERIVED (not part of the
@@ -199,7 +208,7 @@ const RegistryEntry kExpectedRegistry[] = {
 // spelled as a literal in the count assertion below, so the assertion reads as
 // the sentence it is meant to be: the BOUND arrays + five siblings + the
 // derived buffers, and nothing else.
-constexpr std::size_t kDerivedBufferCount = 10;
+constexpr std::size_t kDerivedBufferCount = 11;
 
 }  // namespace
 
@@ -248,7 +257,10 @@ constexpr std::size_t kDerivedBufferCount = 10;
 // would produce a green build: zero static_asserts all pass. The count is the
 // only thing that distinguishes "checked everything" from "checked nothing".
 TEST(SlangLayouts, GeneratedHeaderChecksEveryMirroredStruct) {
-    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{22});
+    // TWENTY-THREE WITH THE FIELD SAMPLE ROW (module-API stage 3):
+    // FieldSampleRow, mirroring physics::FieldSampleRow (physics/field_row.hpp),
+    // alignas(16) on the C++ side for GatherBodyRow's reason above.
+    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{23});
     EXPECT_EQ(spade::compute::layout_check_mirrored_struct_count(), gen::kMirroredStructCount);
 }
 
@@ -515,6 +527,17 @@ const SpirvModule kSpirvModules[] = {
     //                  nine draws, exactly as sensor_imu reaches it through
     //                  twelve.
     {gen::kSpvVariants_sensor_gnss, spade::testing::SpirvProfile::parity},
+    //   field_environment  environment.sample: copies gravity and density into
+    //                      the field row. NO FLOAT ARITHMETIC BY CONSTRUCTION
+    //                      -- loads and stores only -- so it takes grid_sort's
+    //                      integer_only instrument: still PARITY, its
+    //                      non-vacuity proved by its stores, and any float
+    //                      arithmetic that enters it later fails the gate.
+    //   field_dryden       dryden.sample: mean wind plus dryden_turbulence(),
+    //                      the multiplies and adds medium_update's row feeds.
+    //                      It reaches no sqrt and no OpFDiv.
+    {gen::kSpvVariants_field_environment, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
+    {gen::kSpvVariants_field_dryden, spade::testing::SpirvProfile::parity},
 };
 
 }  // namespace
@@ -820,8 +843,9 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
     // was maintained and the sentence describing it was not, so the sentence
     // quietly became the less trustworthy of the two. It is written relative to
     // the constant now, so it cannot drift again. 12 as of the GPU-sensor leg
-    // (sensor_gnss joined the schedule).
-    constexpr std::size_t kScheduleKernels = 12;
+    // (sensor_gnss joined the schedule); 14 with the two field-sample kernels
+    // (module-API stage 3).
+    constexpr std::size_t kScheduleKernels = 14;
     constexpr std::size_t kSingleVariantKernels = 1;  // fp32_math_probe
 
     std::size_t scanned = 0;

@@ -182,6 +182,12 @@ public:
     // compute/grid_entry.hpp's grid_domain_of().
     [[nodiscard]] std::size_t grid_entries_byte_size() const noexcept;
 
+    // Every world's field sample row (module-API stage 3): a diagnostic in
+    // read_grid_entries()' shape. `out_bytes` must be exactly
+    // field_samples_byte_size(), world_count physics::FieldSampleRow.
+    [[nodiscard]] Result<void> read_field_samples(std::span<std::byte> out_bytes);
+    [[nodiscard]] std::size_t field_samples_byte_size() const noexcept;
+
     // Submits `n` steps of the ALREADY-RECORDED per-substep dispatch chain --
     // the SAME command buffer every time, never re-recorded (S6 Task 5
     // review round 1, finding C1) -- starting at `first_tick` (today:

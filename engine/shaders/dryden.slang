@@ -6,18 +6,18 @@
 //
 // A MODULE, NOT A KERNEL, exactly like fp32_math.slang and sdf_eval.slang: it
 // declares no entry point and reaches SPIR-V only through the kernels that
-// import it. THREE do, and the split is the CPU's own:
+// import it. TWO do, and the split is the CPU's own:
 //
 //     kernels/medium_update.slang  dryden_advance()      -- the dryden.advance pass
-//     kernels/forces_drag.slang    dryden_turbulence()   -- the medium SAMPLE the
-//     kernels/rotors.slang         dryden_turbulence()      force passes read
+//     kernels/field_dryden.slang   dryden_turbulence()   -- the dryden.sample pass,
+//                                                           writing the wind field
 //
-// That is the schedule's own arrangement: dryden.advance (Fields) advances the
-// filter once per world per substep, and the Forces passes (rotor.forces,
-// drag.forces) then construct a DrydenMedium over the ALREADY-ADVANCED row and
-// sample it. The recorded dispatch chain is the schedule's (Fields before
-// Forces, with a memory barrier between every adjacent pair), so the gust a
-// force element reads on the device is the same substep's gust the CPU
+// That is the schedule's own arrangement: dryden.advance advances the filter
+// once per world per substep, dryden.sample then writes the mean wind plus
+// the gust into the world's field row, both in Fields, and the force kernels
+// read that row in Forces (module-API stage 3). The recorded dispatch chain is
+// the schedule's, with a memory barrier between every adjacent pair, so the
+// gust a force element reads on the device is the same substep's gust the CPU
 // reads.
 //
 // ===========================================================================
@@ -318,11 +318,11 @@ float3 dryden_turbulence(DrydenState state, DrydenParams params) {
 // DrydenMedium::sample(), which is `{params.air_density, params.wind +
 // dryden_turbulence(*state_, *params_)}`.
 //
-// SPELLED ONCE, HERE, rather than twice in forces_drag.slang and rotors.slang:
-// both force kernels sample the same medium in the same substep and must agree
-// bit for bit about what the air is doing, exactly as both CPU force passes are
-// handed a DrydenMedium built from the same advanced row, once per world, by
-// physics/schedule.cpp's pass_rotor_forces() and pass_drag().
+// SPELLED ONCE, HERE. Since module-API stage 3 no kernel calls it: the
+// dryden.sample pass (kernels/field_dryden.slang) writes its wind expression
+// into the world's field row once per substep, and both force kernels read the
+// row, exactly as both CPU force passes read the row through SampledMedium.
+// It stays as the device statement of DrydenMedium::sample()'s expression.
 //
 // POSITION IS NOT A PARAMETER, deliberately -- and that is the CPU's signature
 // too: both ConstantMedium::sample and DrydenMedium::sample take `glm::vec3`

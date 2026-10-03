@@ -48,8 +48,8 @@
 // SUBSTANTIVE CHANGE IN THAT WAVE.
 //
 // The CPU samples the air through the Medium seam:
-//     sample = medium.sample(params, body.pos)   // DrydenMedium
-//            = { params.air_density, params.wind + dryden_turbulence(...) }
+//     sample = medium.sample(params, body.pos)   // SampledMedium (stage 3)
+//            = the field row's { density, mean wind + dryden_turbulence(...) }
 //
 // THROUGH S6 TASK 7 THIS KERNEL READ `air_density` and `wind` STRAIGHT OUT OF
 // WorldParams AND ADDED NO GUST, because the MediumUpdate pass that advances
@@ -59,19 +59,19 @@
 // sim/simulation.cpp REFUSED any other world outright, with Code::unavailable
 // naming this pass, rather than step it with the gusts silently absent.
 //
-// Task 8 ports MediumUpdate, so the omission and the refusal both go. This
-// kernel now calls dryden.slang's dryden_medium_sample() -- the SAME function
-// rotors.slang calls, spelled once, so the two force kernels cannot disagree
-// about what the air is doing in a substep, exactly as the CPU hands both
-// passes a DrydenMedium built from the same advanced row, once per world, by
-// physics/schedule.cpp's pass_rotor_forces() and pass_drag().
+// Task 8 ported MediumUpdate, so the omission and the refusal both went. Since
+// module-API stage 3 this kernel reads the world's field row -- density and
+// wind written once per substep by field_environment and field_dryden -- the
+// SAME row rotors.slang reads, so the two force kernels cannot disagree about
+// what the air is doing, exactly as both CPU passes read it through
+// SampledMedium (physics/sampled_medium.hpp).
 //
-// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: dryden.advance
-// (Fields) before drag.forces (Forces), with a memory barrier between every
-// adjacent dispatch -- so the `dryden` row this kernel samples is the one THIS
-// substep's dryden.advance advanced, which is precisely the CPU's contract
-// (world/medium.hpp: "dryden_advance() must be called EXACTLY ONCE PER SUBSTEP
-// for each world ... and therefore BEFORE any force element reads sample()").
+// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: dryden.advance,
+// then dryden.sample (both Fields), then drag.forces (Forces), with a memory
+// barrier between every adjacent dispatch -- so the wind this kernel reads is
+// the one THIS substep's advanced filter produced, which is precisely the
+// CPU's contract (world/medium.hpp: "dryden_advance() must be called EXACTLY
+// ONCE PER SUBSTEP for each world").
 //
 // ===========================================================================
 // GLM EXPRESSIONS are mirrored literally, as in integrate.slang; see
@@ -79,8 +79,8 @@
 //
 // DIVISION AND SQRT SITES IN THIS FILE: exactly one, `glm::length(v_rel)` in
 // the quadratic branch (forces.cpp:82). No division anywhere in this kernel.
-// dryden.slang and rng.slang list their own, and reach here through the medium
-// sample.
+// Since module-API stage 3 the medium arrives as stored field samples, so no
+// other module's division reaches this kernel.
 // ---------------------------------------------------------------------------
 
 // `import layouts` AS WELL AS `import bindings`: Slang's `import` is NOT
@@ -98,8 +98,8 @@ import bindings;
 // of S6 Task 8 -- see mirrors.slang's header for the T7 review finding (minor
 // M3) that forced the extraction and for the per-helper glm citations.
 import mirrors;
-// dryden_medium_sample() -- the DrydenMedium sample this pass reads, shared
-// with rotors.slang (S6 Task 8). See the header note.
+// MediumSample's home. The medium itself is read from the field row (stage 3);
+// see the header note.
 import dryden;
 
 // state/arenas.hpp's kInvalidWorld; physics/integrator.hpp's
@@ -152,10 +152,11 @@ void forces_drag(uint3 tid : SV_DispatchThreadID) {
     // optimization: the CPU samples per element at `body.pos`, and this is a
     // frozen-field POINT model that ignores position entirely (medium.hpp
     // section 4), so every one of those samples returns the identical value.
-    const MediumSample medium =
-        dryden_medium_sample(world_params[world], dryden[world], dryden_params[world]);
-    const float density = medium.density;
-    const float3 v_rel = vel - medium.wind;
+    // Read from this world's field samples (module-API stage 3), written in
+    // Fields by field_environment and field_dryden: the same bits
+    // dryden_medium_sample() would compute here.
+    const float density = field_samples[world].density;
+    const float3 v_rel = vel - field_samples[world].wind;
 
     float3 force_acc = bodies[slot].force_acc;
     float3 torque_acc = bodies[slot].torque_acc;

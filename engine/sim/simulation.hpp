@@ -1336,6 +1336,14 @@ public:
     // index outside the set.
     [[nodiscard]] Result<MediumSample> sample_medium(uint32_t world_index, glm::vec3 pos) const;
 
+    // A world's field sample row as the last substep left it (module-API stage
+    // 3): the compiled schedule's field_stride floats, the built-ins at the
+    // offsets in physics/field_row.hpp, every other field at its registry
+    // offset. A diagnostic -- it copies -- for tests that check a provider
+    // wrote what a reader then read. invalid_argument for a world outside the
+    // set. On Vulkan it reads the device's row back: the built-in prefix only.
+    [[nodiscard]] Result<std::vector<float>> field_samples(uint32_t world_index) const;
+
     // --- sensors ----------------------------------------------------------
 
     // ---------------------------------------------------------------------
@@ -1645,6 +1653,10 @@ private:
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;
     physics::GridScratch scratch_;
+    // Every world's field sample row, world-major, schedule_.field_stride floats
+    // each. Scratch like scratch_: not registered, not in any blob or digest,
+    // rewritten by the Fields phase's providers every substep before any reader.
+    std::vector<float> field_rows_;
 
     // ---------------------------------------------------------------------
     // S6 Task 5: the vulkan-path backend. Null iff this Simulation was

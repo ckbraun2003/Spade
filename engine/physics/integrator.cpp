@@ -7,11 +7,11 @@
 
 namespace spade::physics {
 
-void integrate_bodies(std::span<BodyState> bodies, const WorldParams& params, float h) noexcept {
-    // Hoisted once: it is per-world, not per-body, and hoisting it keeps the
-    // per-body op sequence below identical to what a GPU thread executes
-    // (which reads its world's param row once, before the body loop body).
-    const glm::vec3 gravity = params.gravity;
+void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h) noexcept {
+    // `gravity` is per-world, not per-body: the caller reads it once (the
+    // schedule's Integrate pass, from the gravity field), which keeps the
+    // per-body op sequence below identical to what a GPU thread executes (it
+    // reads its world's field row once, before the body loop body).
 
     for (BodyState& body : bodies) {
         // Inert slots -- freed, tombstoned, or never spawned -- are skipped

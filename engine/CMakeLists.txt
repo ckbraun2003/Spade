@@ -1154,9 +1154,15 @@ spade_slang_kernel_variants(spade_compute sensor_imu)
 # BackendDesc::workgroup_size must select a module compiled for that size rather
 # than a fallback.
 spade_slang_kernel_variants(spade_compute sensor_gnss)
+# Module-API stage 3: the two field providers' kernels, one thread per WORLD.
+# field_environment copies gravity and density into each world's field sample
+# row; field_dryden writes the wind (mean wind plus the gust, after
+# medium_update). Variants for the same reason as every per-dispatch kernel.
+spade_slang_kernel_variants(spade_compute field_environment)
+spade_slang_kernel_variants(spade_compute field_dryden)
 
 # T11 fix-wave (review W7b): must come AFTER every spade_slang_kernel()/
-# spade_slang_kernel_variants() call above (fp32_math_probe through sensor_gnss)
+# spade_slang_kernel_variants() call above (fp32_math_probe through field_dryden)
 # -- see SpadeSlang.cmake's
 #
 # This comment USED TO SAY "ELEVEN in total" and "moved kCompiledSpirvKernelCount

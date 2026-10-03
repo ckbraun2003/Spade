@@ -115,6 +115,13 @@ Result<void> VulkanBackend::read_grid_entries(std::span<std::byte>) {
 // no device at all.
 std::size_t VulkanBackend::grid_entries_byte_size() const noexcept { return 0; }
 
+Result<void> VulkanBackend::read_field_samples(std::span<std::byte>) {
+    return std::unexpected(
+        Error{Code::unavailable, "VulkanBackend::read_field_samples: unreachable (SPADE_VULKAN=OFF)"});
+}
+
+std::size_t VulkanBackend::field_samples_byte_size() const noexcept { return 0; }
+
 Result<void> VulkanBackend::step(uint64_t, uint64_t) {
     return std::unexpected(Error{Code::unavailable, "VulkanBackend::step: unreachable (SPADE_VULKAN=OFF)"});
 }

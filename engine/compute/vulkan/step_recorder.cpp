@@ -11,6 +11,8 @@
 #include "bindings.gen.hpp"
 #include "collision_dynamic.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
+#include "field_dryden.spv.gen.hpp"
+#include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
 #include "grid_build.spv.gen.hpp"
 #include "grid_sort.spv.gen.hpp"
@@ -360,6 +362,8 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
         {kPipelineRotors, gen::kSpvVariants_rotors},
         {kPipelineSensorImu, gen::kSpvVariants_sensor_imu},
         {kPipelineSensorGnss, gen::kSpvVariants_sensor_gnss},
+        {kPipelineFieldEnvironment, gen::kSpvVariants_field_environment},
+        {kPipelineFieldDryden, gen::kSpvVariants_field_dryden},
     };
     static_assert(std::size(kPipelineSources) == kPipelineCount,
                   "every PipelineSlot needs exactly one kernel variant set");
@@ -652,6 +656,12 @@ Result<void> StepRecorder::record() {
                     break;
                 case GpuRecipe::sensor_gnss:
                     emit(kPipelineSensorGnss, params, sensor_groups_x_);
+                    break;
+                case GpuRecipe::environment_sample:
+                    emit(kPipelineFieldEnvironment, params, world_groups_x_);
+                    break;
+                case GpuRecipe::dryden_sample:
+                    emit(kPipelineFieldDryden, params, world_groups_x_);
                     break;
             }
 

@@ -131,6 +131,14 @@ std::size_t VulkanBackend::grid_entries_byte_size() const noexcept {
     return impl_->mirror->grid_entries_byte_size();
 }
 
+Result<void> VulkanBackend::read_field_samples(std::span<std::byte> out_bytes) {
+    return impl_->mirror->read_field_samples(out_bytes);
+}
+
+std::size_t VulkanBackend::field_samples_byte_size() const noexcept {
+    return impl_->mirror->field_samples_byte_size();
+}
+
 Result<void> VulkanBackend::step(uint64_t n, uint64_t first_tick) { return impl_->recorder->submit(n, first_tick); }
 
 Result<void> VulkanBackend::readback(ArenaSet& arenas) { return impl_->mirror->readback(arenas); }

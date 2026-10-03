@@ -582,6 +582,23 @@ struct GatherBodyRow {
 };
 
 // ---------------------------------------------------------------------------
+// FieldSampleRow -- ONE WORLD'S FIELD SAMPLES (module-API stage 3): the values
+// the field providers write once per substep in the Fields phase, and the
+// readers (rotors, forces_drag, integrate) read in later phases. The built-in
+// prefix only: gravity, density, wind, at the offsets physics/field_row.hpp
+// names. NOT REGISTERED STATE: rewritten every substep before any reader, so
+// nothing carries across substeps and no snapshot holds it.
+// ---------------------------------------------------------------------------
+// @cpp-type   spade::physics::FieldSampleRow
+// @cpp-header physics/field_row.hpp
+struct FieldSampleRow {
+    float3 gravity;  //  0..11  m/s^2
+    float  density;  // 12..15  kg/m^3
+    float3 wind;     // 16..27  m/s (mean wind plus this substep's gust)
+    float  _pad;     // 28..31
+};
+
+// ---------------------------------------------------------------------------
 // StepParams -- the PER-STEP host write (S6 Task 5 review round 1, finding C2;
 // consumed on the device for the first time by S6 Task 6). One 8-byte row, one
 // element: the host rewrites it before every vkQueueSubmit, which is exactly

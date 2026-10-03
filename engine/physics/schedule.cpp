@@ -4,6 +4,7 @@
                                   // schedule.hpp only forward-declares it, and
                                   // this is the one TU that calls run_slot().
 #include "physics/integrator.hpp"
+#include "physics/sampled_medium.hpp"
 
 // ---------------------------------------------------------------------------
 // The passes, as functions. The order they run in is the compiled module
@@ -26,16 +27,39 @@ void pass_medium_update(const SubstepContext& ctx) noexcept {
 // bodies still receive rotors' wrench before drag's: the loops run world by
 // world, and worlds share no body, so splitting the per-world call pair into
 // two all-world loops changes no accumulation order.
+void pass_environment_sample(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        const WorldParams& p = *w.params;
+        w.fields[kFieldGravityOffset + 0] = p.gravity.x;
+        w.fields[kFieldGravityOffset + 1] = p.gravity.y;
+        w.fields[kFieldGravityOffset + 2] = p.gravity.z;
+        w.fields[kFieldDensityOffset] = p.air_density;
+    }
+}
+
+void pass_dryden_sample(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        // DrydenMedium::sample()'s expression, verbatim (world/medium.cpp).
+        const glm::vec3 wind = w.params->wind + dryden_turbulence(*w.dryden, *w.dryden_params);
+        w.fields[kFieldWindOffset + 0] = wind.x;
+        w.fields[kFieldWindOffset + 1] = wind.y;
+        w.fields[kFieldWindOffset + 2] = wind.z;
+    }
+}
+
+// Rotors and drag read the medium the providers stored this substep. The model
+// functions take a Medium, so they are unchanged; the stored values are the
+// bits DrydenMedium would have computed inline.
 void pass_rotor_forces(const SubstepContext& ctx) noexcept {
     for (const WorldSubstepView& w : ctx.worlds) {
-        const DrydenMedium medium(*w.dryden, *w.dryden_params);
+        const SampledMedium medium(w.fields);
         vehicles::apply_rotors(w.bodies, w.rotors, *w.sdf, medium, *w.params, ctx.h);
     }
 }
 
 void pass_drag(const SubstepContext& ctx) noexcept {
     for (const WorldSubstepView& w : ctx.worlds) {
-        const DrydenMedium medium(*w.dryden, *w.dryden_params);
+        const SampledMedium medium(w.fields);
         apply_drag(w.bodies, w.drag_elements, medium, *w.params, ctx.h);
     }
 }
@@ -78,7 +102,11 @@ void pass_collision_dynamic(const SubstepContext& ctx) noexcept {
 
 void pass_integrate(const SubstepContext& ctx) noexcept {
     for (const WorldSubstepView& w : ctx.worlds) {
-        integrate_bodies(w.bodies, *w.params, ctx.h);
+        // Gravity is a field (engine A9: Integrate applies it, nothing else
+        // does), copied from WorldParams by environment.sample this substep.
+        const glm::vec3 gravity(w.fields[kFieldGravityOffset + 0], w.fields[kFieldGravityOffset + 1],
+                                w.fields[kFieldGravityOffset + 2]);
+        integrate_bodies(w.bodies, gravity, ctx.h);
     }
 }
 

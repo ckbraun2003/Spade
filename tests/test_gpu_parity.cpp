@@ -1311,8 +1311,8 @@ TEST_F(GpuParityTest, TwoWorldIsolationMatchesTheCpuWithinBands) {
 //     final tick, and the comparison is of the last 64 samples).
 //   * THE THREE FORCE SOURCES INTERACTING. The gust feeds BOTH the rotors'
 //     axial-inflow term and the drag body, in one substep, through one shared
-//     medium sample -- which is exactly the coupling forces_drag.slang and
-//     rotors.slang share dryden.slang's dryden_medium_sample() to guarantee.
+//     medium sample -- which is exactly the coupling the field row guarantees:
+//     forces_drag.slang and rotors.slang both read the wind field_dryden wrote.
 //
 // THE SIGMAS ARE ZERO ON THIS SENSOR (the corpus file authors sigma_a, sigma_g,
 // sigma_ba and sigma_bg all 0), and that does NOT make the noise path untested:

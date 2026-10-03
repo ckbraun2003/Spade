@@ -1,4 +1,4 @@
-// The standard module set: today's engine as modules (plan stages 1-2). Every
+// The standard module set: today's engine as modules (plan stages 1-3). Every
 // pass names the GPU recipe of its own CPU function (builtin_cpu_for below).
 #include "sim/module.hpp"
 
@@ -7,15 +7,35 @@
 namespace spade::modules {
 namespace {
 
+// Dryden provides the wind field: the mean wind plus this substep's gust,
+// sampled after the filter advances (the read of dryden.state orders it).
+constexpr FieldDecl kDrydenFields[] = {{.name = "wind", .kind = FieldKind::vec3, .unit = "m/s"}};
 constexpr QuantityAccess kDrydenAccess[] = {{"dryden.state", Access::write}};
+constexpr QuantityAccess kDrydenSampleAccess[] = {
+    {"dryden.state", Access::read}, {"world.params", Access::read}, {"field.wind", Access::write}};
 constexpr PassDecl kDrydenPasses[] = {
     {.name = "advance", .phase = Phase::fields, .access = kDrydenAccess, .cpu = &physics::pass_medium_update,
-     .gpu = compute::GpuRecipe::medium_update}};
+     .gpu = compute::GpuRecipe::medium_update},
+    {.name = "sample", .phase = Phase::fields, .access = kDrydenSampleAccess, .cpu = &physics::pass_dryden_sample,
+     .gpu = compute::GpuRecipe::dryden_sample}};
+
+// The environment provides gravity and density, copied from the world's params.
+// Stateless; appended to the set, so no module's set index moves.
+constexpr FieldDecl kEnvironmentFields[] = {{.name = "gravity", .kind = FieldKind::vec3, .unit = "m/s^2"},
+                                            {.name = "density", .kind = FieldKind::scalar, .unit = "kg/m^3"}};
+constexpr QuantityAccess kEnvironmentSampleAccess[] = {
+    {"world.params", Access::read}, {"field.gravity", Access::write}, {"field.density", Access::write}};
+constexpr PassDecl kEnvironmentPasses[] = {{.name = "sample",
+                                            .phase = Phase::fields,
+                                            .access = kEnvironmentSampleAccess,
+                                            .cpu = &physics::pass_environment_sample,
+                                            .gpu = compute::GpuRecipe::environment_sample}};
 
 constexpr QuantityAccess kRotorAccess[] = {{"body.pose", Access::read},
                                            {"body.wrench", Access::accumulate},
                                            {"rotor.state", Access::write},
-                                           {"dryden.state", Access::read}};
+                                           {"field.density", Access::read},
+                                           {"field.wind", Access::read}};
 constexpr PassDecl kRotorPasses[] = {
     {.name = "forces", .phase = Phase::forces, .access = kRotorAccess, .cpu = &physics::pass_rotor_forces,
      .gpu = compute::GpuRecipe::rotors}};
@@ -23,7 +43,8 @@ constexpr PassDecl kRotorPasses[] = {
 // Rotors then drag is an fp32 accumulation order the goldens pin.
 constexpr QuantityAccess kDragAccess[] = {{"body.pose", Access::read},
                                           {"body.wrench", Access::accumulate},
-                                          {"dryden.state", Access::read}};
+                                          {"field.density", Access::read},
+                                          {"field.wind", Access::read}};
 constexpr std::string_view kDragAfter[] = {"rotor.forces"};
 constexpr PassDecl kDragPasses[] = {{.name = "forces",
                                      .phase = Phase::forces,
@@ -76,7 +97,7 @@ constexpr PassDecl kDynamicPasses[] = {{.name = "resolve",
 constexpr QuantityAccess kIntegrateAccess[] = {{"body.pose", Access::write},
                                                {"body.wrench", Access::write},
                                                {"body.specific_force", Access::write},
-                                               {"world.params", Access::read}};
+                                               {"field.gravity", Access::read}};
 constexpr PassDecl kIntegratePasses[] = {
     {.name = "integrate", .phase = Phase::integrate, .access = kIntegrateAccess, .cpu = &physics::pass_integrate,
      .gpu = compute::GpuRecipe::integrate}};
@@ -89,7 +110,7 @@ ModuleSet standard_modules() {
     // the modules), then the stateless ones.
     return {
         {.name = "drag", .passes = kDragPasses},
-        {.name = "dryden", .passes = kDrydenPasses},
+        {.name = "dryden", .passes = kDrydenPasses, .fields = kDrydenFields},
         {.name = "imu", .passes = kImuPasses},
         {.name = "rotor", .passes = kRotorPasses},
         {.name = "gnss", .passes = kGnssPasses},
@@ -97,6 +118,7 @@ ModuleSet standard_modules() {
         {.name = "static_contact", .passes = kStaticPasses},
         {.name = "dynamic_contact", .passes = kDynamicPasses},
         {.name = "integrate", .passes = kIntegratePasses},
+        {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields},
     };
 }
 
@@ -113,6 +135,8 @@ PassFn builtin_cpu_for(compute::GpuRecipe recipe) noexcept {
         case compute::GpuRecipe::integrate: return &physics::pass_integrate;
         case compute::GpuRecipe::sensor_imu: return &physics::pass_sensor_imu;
         case compute::GpuRecipe::sensor_gnss: return &physics::pass_sensor_gnss;
+        case compute::GpuRecipe::environment_sample: return &physics::pass_environment_sample;
+        case compute::GpuRecipe::dryden_sample: return &physics::pass_dryden_sample;
     }
     return nullptr;
 }

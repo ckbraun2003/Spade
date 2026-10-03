@@ -29,6 +29,8 @@
 //   integrate           integrate                     per BODY
 //   sensor_imu          sensor_imu                    per SENSOR SLOT
 //   sensor_gnss         sensor_gnss                   per SENSOR SLOT
+//   environment_sample  field_environment             per WORLD
+//   dryden_sample       field_dryden                  per WORLD
 //
 // Rotors then drag is a NUMERICAL contract when both are in the set: both
 // accumulate into the same two float3 accumulators and fp32 addition is not
@@ -195,7 +197,10 @@ struct PassParams {
 //
 // DISPATCHES PER PASS, per substep: one for each recipe that records, except
 // collision_dynamic (2 + sort_stage_count()) and the two behavior recipes (0).
-// The standard set therefore records 9 + sort_stage_count() per substep.
+// The standard set therefore records 11 + sort_stage_count() per substep:
+// medium_update, field_dryden, field_environment, rotors, forces_drag,
+// collision_static, grid_build, the sort stages, collision_dynamic, integrate,
+// sensor_imu and sensor_gnss.
 //
 // That tally is documentation, not an input: record() finds the last dispatch
 // from what it actually emitted, and recorded_chain() reports the counts
@@ -248,7 +253,10 @@ public:
         // The GPU-sensor leg's one addition, for gnss.synthesize. Appended
         // rather than inserted so no existing enumerator moves.
         kPipelineSensorGnss = 9, // sensor_gnss
-        kPipelineCount = 10,
+        // Module-API stage 3: the two field providers.
+        kPipelineFieldEnvironment = 10,  // field_environment
+        kPipelineFieldDryden = 11,       // field_dryden
+        kPipelineCount = 12,
     };
 
     // NO RunParams ARGUMENT AS OF S6 TASK 6b: PassParams no longer carries
