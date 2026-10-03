@@ -465,6 +465,13 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glClear(GL_DEPTH_BUFFER_BIT);
+    // SR-13: shaded mode culls back faces, as raster_cpu does. Front is CCW
+    // seen from the camera, the same convention as the CPU's edge-function
+    // sign, so an outward-wound mesh loses nothing and an inward-wound one
+    // shows its winding bug here as well as on the CPU.
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
 
     glUseProgram(s.program);
     glUniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
