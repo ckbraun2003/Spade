@@ -36,18 +36,27 @@
 
     The durable half (part B) runs first for each viewer scene: the viewer's
     headless mode, `spade_viewer <scene> cpu --trajectory <file>`, with no
-    window and no v1. It writes the scene's trajectory baseline.
+    window and no v1. Its file is a CPU golden (TD-1) that the trajectory
+    guard asserts, so it goes under -GoldenDir, and the harness writes its
+    provenance (commit, time, -Reason) into the file's header. The run's
+    timings and memory are per-run numbers, so they go to performance.json in
+    the archive instead.
 
-    Output, per scene, under -OutDir:
-      viewer/<scene>.trajectory.txt
-      viewer/<scene>/   t0.png t1.png t3.png t8.png   stdout.txt  capture.json
-      sandbox/<scene>/  paused.png play2.png play5.png play10.png
-                        stdout.txt  capture.json
+    Two homes, ruled by Test/Docs on 2026-10-02:
+      -GoldenDir (tests/golden/viewer/)   <scene>.trajectory.txt
+      -OutDir    (tests/v1-baselines/)    an archive: recorded once, never
+                                          asserted, never regenerated
+        performance.json
+        viewer/<scene>/   t0.png t1.png t3.png t8.png   stdout.txt  capture.json
+        sandbox/<scene>/  paused.png play2.png play5.png play10.png
+                          stdout.txt  capture.json
     t0 is the first non-blank frame; the others are seconds after it. For the
     Sandbox, playN is N seconds after motion was first seen.
 
     An existing scene directory or trajectory file is REFUSED unless -Force is
     given, in which case it is deleted first, so every capture is fresh.
+    Replacing a trajectory golden also needs -Reason: TD-1 asks every
+    regeneration to say what changed and why.
 
     Exit status: 0 every scene captured; 1 a scene failed (each is named);
     2 usage or refusal, before anything is launched.
@@ -62,16 +71,24 @@
     Default: build-ninja/release/bin under this checkout.
 
 .PARAMETER OutDir
-    Where scene directories are written. Default: tests/golden/v1-baselines.
+    The archive: frames, capture records and performance.json.
+    Default: tests/v1-baselines.
+
+.PARAMETER GoldenDir
+    Where trajectory goldens are written. Default: tests/golden/viewer.
 
 .PARAMETER Part
     all (default), frames (part A only) or trajectories (part B only).
+
+.PARAMETER Reason
+    Why the trajectories are captured; written into each golden's header.
+    Default: "first capture (INT-4)". Required when -Force replaces a golden.
 
 .PARAMETER Force
     Replace scene directories and trajectory files that already exist.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File engine\tools\viewer\capture-v1-baselines.ps1 -Scene drop,sandbox:spheres -OutDir $env:TEMP\v1-dry
+    powershell -ExecutionPolicy Bypass -File engine\tools\viewer\capture-v1-baselines.ps1 -Scene drop,sandbox:spheres -OutDir $env:TEMP\v1-dry -GoldenDir $env:TEMP\v1-dry\golden
 #>
 [CmdletBinding()]
 param(
@@ -79,7 +96,9 @@ param(
                           'sandbox:fluid', 'sandbox:spheres', 'sandbox:cubes'),
     [string] $BinDir,
     [string] $OutDir,
+    [string] $GoldenDir,
     [string] $Part = 'all',
+    [string] $Reason = 'first capture (INT-4)',
     [switch] $Force
 )
 
@@ -88,9 +107,10 @@ $ErrorActionPreference = 'Stop'
 # `powershell -File` passes "a,b" as ONE string, so split it here.
 $Scene = @($Scene | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 
-$root =(Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 if (-not $BinDir) { $BinDir = Join-Path $root 'build-ninja\release\bin' }
-if (-not $OutDir) { $OutDir = Join-Path $root 'tests\golden\v1-baselines' }
+if (-not $OutDir) { $OutDir = Join-Path $root 'tests\v1-baselines' }
+if (-not $GoldenDir) { $GoldenDir = Join-Path $root 'tests\golden\viewer' }
 
 $viewerScenes = @('drop', 'bounce', 'shower', 'gate', 'hover', 'wind', 'flight', 'swarm')
 $sandboxScenes = @('fluid', 'spheres', 'cubes')
@@ -122,9 +142,12 @@ foreach ($p in $plan) {
     if (-not (Test-Path $exe)) { Refuse "$exe does not exist. Build it, or pass -BinDir." }
     $dir = Join-Path $OutDir (Join-Path $p.Tool $p.Name)
     if ($doFrames -and (Test-Path $dir) -and -not $Force) { Refuse "$dir exists. Pass -Force to replace it." }
-    $traj = Join-Path $OutDir "viewer\$($p.Name).trajectory.txt"
-    if ($doTrajectories -and $p.Tool -eq 'viewer' -and (Test-Path $traj) -and -not $Force) {
-        Refuse "$traj exists. Pass -Force to replace it."
+    $traj = Join-Path $GoldenDir "$($p.Name).trajectory.txt"
+    if ($doTrajectories -and $p.Tool -eq 'viewer' -and (Test-Path $traj)) {
+        if (-not $Force) { Refuse "$traj exists. Pass -Force to replace it." }
+        if (-not $PSBoundParameters.ContainsKey('Reason')) {
+            Refuse "$traj is a golden. Replacing it needs -Reason `"<what changed and why>`" (TD-1)."
+        }
     }
 }
 
@@ -406,34 +429,62 @@ function Get-Median([double[]] $v) {
     return $s[[int][Math]::Floor(($s.Count - 1) / 2)]
 }
 
+# The commit the goldens name. A dirty tree is said in the header, not hidden.
+$dirty = ''
+try { if (@(& git -C $root status --porcelain 2>$null).Count -gt 0) { $dirty = ' with uncommitted changes' } } catch { $dirty = '' }
+$captured = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
+$oneLineReason = ($Reason -replace '[\r\n]+', ' ').Trim()
+
 # Part B for one viewer scene: the headless trajectory, written by the viewer.
+# Returns the run's "perf" numbers, or $null on failure.
 function Invoke-Trajectory($p) {
-    $file = Join-Path $OutDir "viewer\$($p.Name).trajectory.txt"
-    New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
+    $file = Join-Path $GoldenDir "$($p.Name).trajectory.txt"
+    New-Item -ItemType Directory -Force $GoldenDir | Out-Null
     if (Test-Path $file) { Remove-Item -Force $file }
+    $out = Join-Path $env:TEMP "capture-v1-baselines-$($p.Name).stdout.txt"
     $err = Join-Path $env:TEMP "capture-v1-baselines-$($p.Name).stderr.txt"
     $proc = Start-Process -FilePath (Join-Path $BinDir 'spade_viewer.exe') -WorkingDirectory $BinDir -NoNewWindow `
-        -Wait -PassThru -ArgumentList @($p.Name, 'cpu', '--trajectory', $file) -RedirectStandardError $err
+        -Wait -PassThru -ArgumentList @($p.Name, 'cpu', '--trajectory', $file) `
+        -RedirectStandardOutput $out -RedirectStandardError $err
     if ($proc.ExitCode -ne 0) {
         Write-Host (Get-Content $err -Raw)
-        return $false
+        return $null
     }
-    return $true
+
+    # TD-1: the golden's own header is its provenance record.
+    $header = "# provenance: captured $captured from commit $sourceHead$dirty by engine/tools/viewer/capture-v1-baselines.ps1`n" +
+              "# reason: $oneLineReason`n"
+    $body = [IO.File]::ReadAllText($file)
+    [IO.File]::WriteAllText($file, $header + $body, (New-Object System.Text.UTF8Encoding($false)))
+
+    $perf = [ordered]@{}
+    foreach ($l in (Get-Content $out)) {
+        if ($l -match '^perf (\S+) (\S+)$') { $perf[$matches[1]] = [double]$matches[2] }
+    }
+    return $perf
 }
 
 $failed = @()
 if ($doTrajectories) {
+    $performance = [ordered]@{
+        what = 'Physics step time and process memory of spade_viewer --trajectory (CPU, Release). Reference only.'
+        captured = $captured; commit = "$sourceHead$dirty"; machine = $machine; scenes = [ordered]@{}
+    }
     foreach ($p in ($plan | Where-Object { $_.Tool -eq 'viewer' })) {
         $label = "trajectory/$($p.Name)"
         Write-Host "capture-v1-baselines: $label ..."
         $t = Get-Date
-        if (Invoke-Trajectory $p) {
+        $perf = Invoke-Trajectory $p
+        if ($null -ne $perf) {
+            $performance.scenes[$p.Name] = $perf
             Write-Host ('capture-v1-baselines: {0} ok, {1:N0} s' -f $label, ((Get-Date) - $t).TotalSeconds)
         } else {
             Write-Host "capture-v1-baselines: FAIL $label. The viewer's message is above. Fix it, then run again with -Force."
             $failed += $label
         }
     }
+    New-Item -ItemType Directory -Force $OutDir | Out-Null
+    ($performance | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 (Join-Path $OutDir 'performance.json')
 }
 if ($doFrames) {
     foreach ($p in $plan) {
@@ -453,5 +504,5 @@ if ($failed.Count -gt 0) {
     Write-Host "capture-v1-baselines: $($failed.Count) capture(s) failed: $($failed -join ', ')"
     exit 1
 }
-Write-Host "capture-v1-baselines: every capture ($Part) is in $OutDir"
+Write-Host "capture-v1-baselines: every capture ($Part) is done: archive in $OutDir, trajectory goldens in $GoldenDir"
 exit 0
