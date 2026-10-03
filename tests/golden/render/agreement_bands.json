@@ -6,9 +6,9 @@
   "active_measurement_version": "1",
   "measurements": {
     "1": {
-      "_provenance": "PENDING: cases and cameras chosen, not yet measured. Measured values come from a run with SPADE_AGREEMENT_MEASURE set, which writes them under <build>/tests/test-output/agreement/.",
+      "_provenance": "Measured 2026-10-03 on msvc-release (msvc-ninja-release, the Rendering worktree's tree) at a93b43f plus this commit's band file, 160x120, with SPADE_AGREEMENT_MEASURE set. Margin: Test/Docs' TD-2 rule, re-derived and signed off per case by Test/Docs on 2026-10-03. Every d and d_probe x 19200 is a whole pixel count. First framings: 7 cases; three were dropped and two reframed after their frames showed two raster defects, not framing faults (07-status debt): maximal's heightfield (PA-5) and shower's thin shell on the CSG grid. msvc-debug and gcc-release attestations follow in their own commit, with no band changed.",
       "attested": {
-        "msvc-release": "pending",
+        "msvc-release": "measured 2026-10-03 at a93b43f",
         "msvc-debug": "pending",
         "gcc-release": "pending"
       },
@@ -32,14 +32,16 @@
           },
           "probe": "ground_only",
           "d": {
-            "msvc-release": null,
+            "msvc-release": 0.0078125,
             "msvc-debug": null,
             "gcc-release": null
           },
-          "d_probe": null,
-          "band": null,
-          "probe_over_band": null,
-          "detects_total_deletion": null
+          "d_probe": 0.04572916666666667,
+          "band": 0.012,
+          "probe_over_band": 3.81,
+          "detects_total_deletion": true,
+          "covered_raster": 10318,
+          "covered_raymarch": 10196
         },
         {
           "world": "gate",
@@ -55,14 +57,16 @@
           },
           "probe": "ground_only",
           "d": {
-            "msvc-release": null,
+            "msvc-release": 0.00796875,
             "msvc-debug": null,
             "gcc-release": null
           },
-          "d_probe": null,
-          "band": null,
-          "probe_over_band": null,
-          "detects_total_deletion": null
+          "d_probe": 0.054427083333333334,
+          "band": 0.012,
+          "probe_over_band": 4.54,
+          "detects_total_deletion": true,
+          "covered_raster": 8405,
+          "covered_raymarch": 8262
         },
         {
           "world": "maximal",
@@ -78,14 +82,17 @@
           },
           "probe": "empty",
           "d": {
-            "msvc-release": null,
+            "msvc-release": 0.0011458333333333333,
             "msvc-debug": null,
             "gcc-release": null
           },
-          "d_probe": null,
-          "band": null,
-          "probe_over_band": null,
-          "detects_total_deletion": null
+          "d_probe": 0.019375,
+          "band": 0.002,
+          "probe_over_band": 9.69,
+          "detects_total_deletion": true,
+          "covered_raster": 372,
+          "covered_raymarch": 374,
+          "_framing_note": "Below the terrain's highest point, looking up past the horizon: the CSG cluster against the sky, no terrain in view. Deliberately keeps the heightfield out of frame: the raster draws it only within the world bounds (PA-5), so it cannot agree beyond them (07-status debt). These bands say nothing about the heightfield."
         },
         {
           "world": "maximal",
@@ -101,14 +108,17 @@
           },
           "probe": "empty",
           "d": {
-            "msvc-release": null,
+            "msvc-release": 0.0021354166666666665,
             "msvc-debug": null,
             "gcc-release": null
           },
-          "d_probe": null,
-          "band": null,
-          "probe_over_band": null,
-          "detects_total_deletion": null
+          "d_probe": 0.13723958333333333,
+          "band": 0.004,
+          "probe_over_band": 34.31,
+          "detects_total_deletion": true,
+          "covered_raster": 2635,
+          "covered_raymarch": 2676,
+          "_framing_note": "Looking up at the torus and the cut cylinder against the sky. Keeps the heightfield out of frame, as csg_against_sky does."
         },
         {
           "world": "shower",
@@ -124,14 +134,17 @@
           },
           "probe": "empty",
           "d": {
-            "msvc-release": null,
+            "msvc-release": 0.0028125,
             "msvc-debug": null,
             "gcc-release": null
           },
-          "d_probe": null,
-          "band": null,
-          "probe_over_band": null,
-          "detects_total_deletion": null
+          "d_probe": 0.24552083333333333,
+          "band": 0.005,
+          "probe_over_band": 49.1,
+          "detects_total_deletion": true,
+          "covered_raster": 4714,
+          "covered_raymarch": 4768,
+          "_framing_note": "Looking up at the bowl's thick underside; the thin rim faces away. Deliberately keeps the shell's thin region out of view: at 0.2-0.6 m it is about one cell on the 48-cell CSG grid, so surface nets leaves holes and mixed winding there (07-status debt). This band says nothing about the shell's inside or rim."
         }
       ]
     }
