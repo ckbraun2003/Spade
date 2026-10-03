@@ -44,6 +44,20 @@ The three decisions this page held are ruled; the rulings live in `00-decisions.
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors, and a Vulkan step now refuses an attached registry (`CORE-1`) rather than skipping it. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |
 
+## In progress (paused 2026-10-03)
+
+**The airframe compile (`DBP-44`) and the `DBP-26` fix.** Plan: `plans/2026-10-03-airframe-compile-plan.md`.
+- **Branch:** `physics/airframe-compile`, head `3c35ed4`. It is master `65c2295` plus Core's design-frame and model-identity commits, cherry-picked. Then come the tests against stubs (`ce2aa5c`), the implementation (`0ac9a65`) and a comment fixup (`3c35ed4`, to be squashed).
+- **Written, not built:**
+  - `vehicles/airframe_compile.*`;
+  - `bus_solve` with the ESC total limit and the `esc_total_limited` flag;
+  - `composite_inertia_issues`;
+  - `steady_state_time_constant`;
+  - their tests.
+- **Checked:** gcc `-fsyntax-only` passes on the four engine files. A Python port puts the fitted τ within 0.74% of a stepped response.
+- **Not checked:** gcc on the four test files (`test_airframe_compile.cpp`, `test_battery.cpp`, `test_composite_inertia.cpp`, `test_propulsion_steady.cpp`). The model-identity pin is 0 until a slot measures it.
+- **Next:** gcc each test file in its own container, squash the fixup, then ask the lead for a slot. Core's chain merges first. `DBP-26` stays "not built" above until this branch merges.
+
 ## Next for Physics
 
 1. **Comment sweep:** old pass names in Physics files, after Core's module-API stage 2 merges.
