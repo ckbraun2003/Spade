@@ -2403,9 +2403,8 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
 // ---------------------------------------------------------------------------
 //
 // See the doc comment in simulation.hpp for the full argument -- in particular
-// for WHY the three writes below are the complete list. The short form: the
-// world seed is read at exactly three sites in the engine, and this function is
-// the mirror image of all three.
+// for why the blocks below are the complete list: one block per system that
+// derives a stream from the world seed.
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::reseed(uint64_t scene_seed) {
@@ -2429,6 +2428,10 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     // non-zero bytes into every subsequent snapshot of a slot nothing owns.
     Result<std::span<const uint32_t>> sensor_map = arenas_.slot_to_world(imu_id_);
     if (!sensor_map) return std::unexpected(sensor_map.error());
+    Result<std::span<sensors::GnssSensorRow>> gnss_rows = arenas_.array(gnss_id_);
+    if (!gnss_rows) return std::unexpected(gnss_rows.error());
+    Result<std::span<const uint32_t>> gnss_map = arenas_.slot_to_world(gnss_id_);
+    if (!gnss_map) return std::unexpected(gnss_map.error());
 
     // Worlds in INDEX order, and each world's sensors in ascending slot order.
     // Nothing here depends on the iteration order (each write is a pure function
@@ -2455,6 +2458,10 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
             // and the ring itself are HISTORY and stay exactly as they are --
             // see the header: a reseed changes the future draws, not the past.
             (*sensors_rows)[slot].noise = sensors::imu_noise_stream(row.seed, slot - begin);
+        }
+        for (uint32_t slot = begin; slot < end; ++slot) {
+            if ((*gnss_map)[slot] != w) continue;
+            (*gnss_rows)[slot].noise = sensors::gnss_noise_stream(row.seed, slot - begin);
         }
     }
 
