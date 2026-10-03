@@ -5,8 +5,8 @@ What isn't built yet, why, and what proves it done. One row per item. A realm's 
 ## Suggested order (lead, 2026-10-02)
 
 1. **Test/Docs: the Docker CI leg** (`TD-11`). It is small, it closes the consumer-smoke gap, and it gates every golden regeneration below (`TD-12`).
-2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`), the v1 baselines (`INT-4`), then the `Lighting{}` regeneration once the Docker leg exists (`RND-5`). Rendering's GL parity work (back-face culling, honouring `RenderOptions`) can run alongside.
-3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.
+2. **Quick wins that need no new architecture:** the GNSS golden (`PHY-6`, built `0ce4ff5`), the v1 baselines (`INT-4`, done `0935c6f`), then the `Lighting{}` regeneration once the Docker leg exists (`RND-5`). Rendering's GL parity work is done: back-face culling (`ec973ed`) and `RenderOptions` (`0a5e1a1`); GL still draws no shadows or overlays.
+3. **Core: the engine model's foundation** — module API, scheduler phases, regions, field registry, grades — with **the translation lock** inside it, which lifts the drone sim box's Vulkan refusal.  Stage 1 of 6 merged (`062e1fa`).
 4. **On top of the module API:** SPH as a field provider (`PHY-4`), field channels for cameras, then the Vulkan raster as a technique (`RND-4`), and the editor spec (`INT-3`).
 
 Each starts as its own spec and plan in the owning realm's `plans/`.
