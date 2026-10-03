@@ -16,7 +16,7 @@ Symplectic Euler: velocities from the accumulated wrench, then pose. The quatern
 ## Contact (`engine D3`, `D-S6-2`)
 
 - **Static:** each body is a sphere proxy against the world SDF. Depth is `φ(p) < r`, and the normal is the SDF gradient (analytic where it exists, otherwise a pinned central-difference stencil). The response is an impulse with restitution, Coulomb friction and clamped Baumgarte correction. The radius is the body's own `proxy_radius`, or the world default (`D-S6-2`). `physics/contacts.*`.
-- **Dynamic:** v1's sorted-grid pipeline, atomics-free, with exact cell-ID compare (v1's hash-bucket bug fixed). Pairs resolve by Gauss-Seidel across all worlds. A Jacobi variant (`resolve_dynamic_contacts_jacobi`, plus the `collision_fill`/`collision_gather` kernels) is built but not wired in: switching to it changes pinned numbers. `physics/grid.*`.
+- **Dynamic:** v1's sorted-grid pipeline, atomics-free, with exact cell-ID compare (v1's hash-bucket bug fixed). Pairs resolve by Gauss-Seidel across all worlds. A Jacobi variant (`resolve_dynamic_contacts_jacobi`, plus the `collision_fill`/`collision_gather` kernels) is built but not wired in: switching to it changes pinned numbers. It stays unwired and returns as an alternative contact module with its own grade once modules exist (`PHY-5`). `physics/grid.*`.
 - **Limits, stated in `contacts.hpp`:**
   - the response is linear only: no contact torque, so nothing rolls or tips;
   - one contact per body per substep, with no manifold;

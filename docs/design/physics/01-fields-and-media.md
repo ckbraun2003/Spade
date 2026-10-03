@@ -31,7 +31,7 @@ SPH is the v1 transfer register's one open row (`../../v1-transfer-register.md`)
 - **How:** neighbour search on the existing sorted grid (no second spatial structure), then density and pressure-force passes, with a `Fluid` component carrying `rest_density`, `stiffness` and `viscosity`. `ComponentTypeId::fluid` (9) is already reserved.
 - **Grade:** reference on the CPU with a golden. On the GPU it is banded with a measured band, or the GPU path is declared absent. **A band is never widened to admit it** (`SL8`).
 - **Reference:** v1's `[SYSTEM]FluidDensity.comp` and `[SYSTEM]FluidForce.comp` (GPU-only, no determinism story), read for the physics, not ported.
-- **Paused** until the module API and scheduler exist (restructure §5). Its plan is written then, in `plans/`.
+- **Paused** until the module API and scheduler exist (restructure §5), and resumes right after the module API lands, as the first field provider that is not a built-in (`PHY-4`). Its plan is written then, in `plans/`.
 
 ## Effects that stepping does not read (`PHY-3`)
 

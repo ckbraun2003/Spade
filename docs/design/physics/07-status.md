@@ -1,6 +1,6 @@
 # Physics — status
 
-**The only place that says what exists today.** Checked against the tree at `master` `332a186` on 2026-10-02, by reading the code, CMake and tests. Per-file counts are `TEST` macros in the source. The measured suite is Test/Docs's baseline: 921 tests on both presets at `df33f09`, every physics and GPU test passing (`../test-docs/07-status.md`).
+**The only place that says what exists today.** Checked against the tree at `master` `332a186` on 2026-10-02, by reading the code, CMake and tests, and re-checked at `42ce419`: nothing outside `docs/` changed between the two. Per-file counts are `TEST` macros in the source. The measured suite is the lead's run at `88a3c8b`: 921 tests on both presets, 919 passed, 2 skipped by design, 0 failed, and all 65 `gpu` tests ran (`../test-docs/07-status.md`).
 
 ## Specified vs built
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | Integrator (`engine D1`) | **Built**, CPU and Vulkan | `physics/integrator.*`, `integrate.slang`; `test_integrator.cpp` (11) |
 | Static contact, sphere proxy vs SDF (`engine D3`, `D-S6-2`) | **Built**, CPU and Vulkan. Linear response only, one contact per body, no CCD | `physics/contacts.*`, `collision_static.slang`; `test_contacts.cpp` (17) |
-| Dynamic contact, sorted grid (`engine D3`) | **Built**, Gauss-Seidel, CPU and Vulkan. The Jacobi variant is built and tested but **not wired** (CPU `resolve_dynamic_contacts_jacobi`; GPU `collision_fill`/`collision_gather` compiled, not dispatched) | `physics/grid.*`, `grid_build`/`grid_sort`/`collision_dynamic.slang`; `test_grid.cpp` (26) |
+| Dynamic contact, sorted grid (`engine D3`) | **Built**, Gauss-Seidel, CPU and Vulkan. The Jacobi variant is built and tested but **not wired** (CPU `resolve_dynamic_contacts_jacobi`; GPU `collision_fill`/`collision_gather` compiled, not dispatched), and stays so until it returns as a contact module (`PHY-5`) | `physics/grid.*`, `grid_build`/`grid_sort`/`collision_dynamic.slang`; `test_grid.cpp` (26) |
 | Capsule proxies (`engine D3`) | **Not built** | — |
 | Mesh and convex colliders | **Not built** (roadmap) | — |
 | Drag, aero T0 (quadratic, componentwise) | **Built**, CPU and Vulkan | `physics/forces.*`, `forces_drag.slang`; `test_forces.cpp` (13) |
@@ -19,17 +19,19 @@
 | Medium temperature (`engine D6`) | **Not built** | — |
 | IMU | **Built**, CPU and Vulkan | `sensors/imu.*`, `sensor_imu.slang`; `test_imu.cpp` (17) |
 | GNSS | **Built**, CPU and Vulkan | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
-| SPH field provider (`SL8`) | **Not built.** Paused by the restructure; the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
+| SPH field provider (`SL8`) | **Not built.** Resumes right after Core's module API lands (`PHY-4`); the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
 | Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only (merge `84e435b`). Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`, merge `df33f09`) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (14) |
-| Golden corpus | `ballistic`, `bounce`, `quad_hover`, `shower`, `two_world_isolation` | `tests/golden/scenarios/` |
+| Golden corpus | `ballistic`, `bounce`, `quad_hover`, `shower`, `two_world_isolation`. None carries a GNSS receiver; a GNSS scenario is ruled (`PHY-6`) and not built yet | `tests/golden/scenarios/` |
 | CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (31), `test_gpu_invariance.cpp` (14) |
 | Grades (`PHY-2`, signed) | **Declared in prose only** (`04-verification.md`); the engine has no grade check yet (Core) | — |
 
-## Open items — needs a user decision
+## Ruled by the user (2026-10-02)
 
-1. **A GNSS golden scenario.** No corpus scenario carries a receiver, so the CPU GNSS is not reference grade under `L4` (`PHY-2`). Adding one moves no existing digest.
-2. **The Jacobi dynamic-contact path:** adopt it (re-pin the affected bands and goldens, with provenance) or delete it. Today it is built and tested code that nothing runs.
-3. **When SPH resumes** as a field provider. The restructure pauses it until Core's module API and scheduler exist.
+The three decisions this page held are ruled; the rulings live in `00-decisions.md`. No user decision is open in this realm.
+
+1. **A GNSS golden scenario: now** (`PHY-6`). No corpus scenario carries a receiver yet, so the CPU GNSS is not reference grade under `L4`. Adding one moves no existing digest. Under `TD-12` its digest is provisional until the Docker gcc leg reproduces it.
+2. **The Jacobi dynamic-contact path: kept unwired** (`PHY-5`). It returns as an alternative contact module with its own declared grade once modules exist.
+3. **SPH: right after Core's module API lands** (`PHY-4`), as the first field provider that is not a built-in.
 
 ## Open items — debt
 
@@ -39,13 +41,13 @@
 | **Rotor torque is uncorrected by inflow and ground** | Thrust is corrected; `Q = k_Q ω²` is not, so `Q` is not a power budget. Documented in `rotor.hpp`; it waits on BEMT |
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors, and a Vulkan step now refuses an attached registry (`CORE-1`) rather than skipping it. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |
-| **GPU parity runs only where the gate has a device** | On this box all 65 `gpu` tests run inside `scripts\test.ps1`; a machine without a device skips them. Whether the gate should require a device is Test/Docs's open decision |
 
 ## Next for Physics
 
-1. **SPH as a field provider** (`SL8`), once Core's module API and scheduler exist. Its plan goes in `plans/`.
-2. **The translation lock**, with Core: a constraint on both backends that lets the drone stand run on Vulkan.
-3. **The two user decisions above:** the GNSS golden, and the Jacobi path.
+1. **The GNSS golden** (`PHY-6`): a corpus scenario with a receiver, so the CPU GNSS becomes reference grade.
+2. **Physics's requirements for Core's module-API spec:** SPH as a field provider, and the translation lock (a constraint on both backends that lets the drone stand run on Vulkan). Core owns the decisions; Physics states what each needs. The translation lock is built with the module API.
+3. **SPH as a field provider** (`PHY-4`, `SL8`), once the module API lands. Its plan goes in `plans/`.
+4. **Jacobi as a contact module** (`PHY-5`), once modules exist.
 
 ## Corrections to earlier records
 
