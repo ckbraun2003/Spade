@@ -80,25 +80,29 @@ WorldBuilder& WorldBuilder::visual(std::string ref) {
 // SDF nodes
 // ---------------------------------------------------------------------------
 
-uint32_t WorldBuilder::add_transform(const SdfPose& pose) {
-    const bool is_identity = pose.position == glm::vec3(0.0f) && pose.scale == 1.0f &&
-                             pose.rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-    if (is_identity) {
-        return 0;
+namespace {
+
+[[nodiscard]] bool is_identity_pose(const SdfPose& pose) noexcept {
+    return pose.position == glm::vec3(0.0f) && pose.scale == 1.0f &&
+           pose.rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+}
+
+}  // namespace
+
+Result<SdfTransform> transform_of(const SdfPose& pose) {
+    if (is_identity_pose(pose)) {
+        return SdfTransform{};
     }
 
     const float qlen = glm::length(pose.rotation);
     if (!finite(pose.position) || !finite(pose.scale) || !finite(qlen)) {
-        fail("SDF node pose has non-finite components");
-        return 0;
+        return std::unexpected(invalid("SDF node pose has non-finite components"));
     }
     if (!(pose.scale > 0.0f)) {
-        fail("SDF node pose scale must be > 0 (uniform scale only)");
-        return 0;
+        return std::unexpected(invalid("SDF node pose scale must be > 0 (uniform scale only)"));
     }
     if (!(qlen > 0.0f)) {
-        fail("SDF node pose rotation is a degenerate quaternion");
-        return 0;
+        return std::unexpected(invalid("SDF node pose rotation is a degenerate quaternion"));
     }
 
     // Stored pre-inverted (see SdfTransform). Built analytically rather than via
@@ -111,8 +115,21 @@ uint32_t WorldBuilder::add_transform(const SdfPose& pose) {
     t.world_to_local = glm::mat4(m);
     t.world_to_local[3] = glm::vec4(c, 1.0f);
     t.scale = pose.scale;
+    return t;
+}
 
-    desc_.sdf.transforms.push_back(t);
+uint32_t WorldBuilder::add_transform(const SdfPose& pose) {
+    // The identity shares transform 0 (pushed by the constructor) rather than
+    // pushing a copy, so every unposed primitive points at one row.
+    if (is_identity_pose(pose)) {
+        return 0;
+    }
+    const Result<SdfTransform> t = transform_of(pose);
+    if (!t) {
+        fail(t.error().context);
+        return 0;
+    }
+    desc_.sdf.transforms.push_back(*t);
     return static_cast<uint32_t>(desc_.sdf.transforms.size() - 1);
 }
 
