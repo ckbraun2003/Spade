@@ -93,6 +93,9 @@ add_executable(spade_tests
     test_render_velocity.cpp
     test_objects_spawn_helpers.cpp
     test_transfer_register.cpp
+    # INT-4: replays spade_viewer's eight scenes (spade_viewer_scenes, v1-free)
+    # against the trajectory goldens in golden/viewer/. One case per scene.
+    test_viewer_trajectories.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -315,6 +318,9 @@ target_link_libraries(spade_tests PRIVATE
     yaml-cpp::yaml-cpp
     nlohmann_json::nlohmann_json
     GTest::gtest_main
+    # The viewer's scenes and setup, for test_viewer_trajectories.cpp. Built in
+    # every configuration and v1-free (engine/CMakeLists.txt).
+    spade_viewer_scenes
 )
 
 # spade::compute + volk + Vulkan::Headers (S6 Task 1): same
