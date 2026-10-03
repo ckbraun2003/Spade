@@ -153,6 +153,33 @@ TEST(CompositeInertia, AnAsymmetricAirframeIsDiagonalizedByARightHandedRotation)
     }
 }
 
+// THE DEGENERATE CASE. With Ixx = Izz the principal axes in the x-z plane are
+// not unique, and rounding noise in the xz product (here 1e-16 of the
+// diagonal, the size a 90-degree turn leaves in double) must not pick a pair
+// for us. Rotated away, it gives a 45-degree body frame; zeroed, it gives the
+// design axes, which is the honest answer. This test fails if the 1e-12
+// noise rule in composite_inertia.cpp's Jacobi is removed.
+TEST(CompositeInertia, EqualMomentsWithRoundingNoiseKeepTheDesignAxes) {
+    PartInertia t;
+    t.shape = PartShape::tensor;
+    t.mass = 1.0;
+    t.tensor = glm::dmat3(0.0);
+    t.tensor[0][0] = 2e-3;
+    t.tensor[1][1] = 3e-3;
+    t.tensor[2][2] = 2e-3;
+    t.tensor[0][2] = 4e-19;  // column 0, row 2: the xz product
+    t.tensor[2][0] = 4e-19;
+    const std::vector<PartInertia> parts = {t};
+    const auto c = composite_inertia(parts);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->design_to_body.w, 1.0f);
+    EXPECT_EQ(c->design_to_body.x, 0.0f);
+    EXPECT_EQ(c->design_to_body.y, 0.0f);
+    EXPECT_EQ(c->design_to_body.z, 0.0f);
+    EXPECT_EQ(c->principal_moments.x, 2e-3f);
+    EXPECT_EQ(c->principal_moments.z, 2e-3f);
+}
+
 TEST(CompositeInertia, RefusesInvalidParts) {
     EXPECT_FALSE(composite_inertia({}).has_value()) << "no parts";
     const std::vector<PartInertia> ok = {part(PartShape::sphere, 1.0, glm::dvec3(0.0), glm::dvec3(0.1, 0.0, 0.0))};
