@@ -38,6 +38,8 @@
 | GNSS | reference (`PHY-6`); the golden is final, reproduced by the Docker gcc leg (`TD-12`, `fe4934a`) | banded via `CORE-3` | `gnss_tumble` golden; `parity::gnss_tumble`, `gnss_receiver`, `gnss_receiver_body` |
 | Dynamic contact, Jacobi | not placed | not placed | built and unit-tested, not in the schedule |
 | Rotor wake | best-effort, CPU only, not read by stepping (`PHY-3`) | — | `test_rotor_wake.cpp` |
+| Drone builder: motor, battery, propeller | not placed: pure functions, unit-tested; reference with a golden once the rows exist (`DBP-60`) | not placed; banded once the kernels exist (`DBP-61`) | `test_motor.cpp`, `test_battery.cpp`, `test_propeller.cpp` |
+| Drone builder: composite inertia, steady-state solver | reference by closed forms; host utilities, never in the step | — | `test_composite_inertia.cpp`, `test_propulsion_steady.cpp` |
 
 A world's grade is its weakest module's (`L3`). Until the grade check exists (Core), this table is the declaration.
 
