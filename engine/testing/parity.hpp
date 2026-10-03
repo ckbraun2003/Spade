@@ -635,7 +635,7 @@ inline constexpr ToleranceBand kSpecificForce{2.0e-5f, 2.0e-5f};
 // contact model does not sit still, and contacts.cpp says so itself: the
 // resting state is "an ACTIVELY BALANCED" fixed point, where every substep
 // Integrate sinks the body by one substep of gravity (g*h = 9.8e-03 m/s) and
-// the next CollisionStatic cancels it with an impulse. Its velocity is
+// the next static_contact.resolve cancels it with an impulse. Its velocity is
 // therefore a LIMIT CYCLE whose entire amplitude is ~1e-02 m/s, and 8.7e-05 is
 // under one percent of one substep's gravity increment -- the two runs are in
 // the same cycle, offset by a fraction of a substep. Dividing a sub-percent
@@ -644,7 +644,7 @@ inline constexpr ToleranceBand kSpecificForce{2.0e-5f, 2.0e-5f};
 // here, is 8.7e-05 m/s in a scenario whose bodies fall at up to 7 m/s.
 //
 // THE CORROBORATION THAT THIS IS NOT A CONTACT-KERNEL BUG: `bounce` below runs
-// the SAME CollisionStatic kernel for the same 900 steps over a four-rung
+// the SAME static_contact.resolve kernel for the same 900 steps over a four-rung
 // restitution ladder WITH friction -- divisions and square roots included --
 // and is BIT-IDENTICAL to the CPU in every quantity. A defect in the impulse,
 // the friction cap or the Baumgarte correction would have to show up there
@@ -904,7 +904,7 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 }  // namespace heterogeneous_geometry_set
 
 // ===========================================================================
-// S6 TASK 7 -- CollisionDynamic (the sorted-grid body-body pass). Three
+// S6 TASK 7 -- the sorted-grid body-body pass (dynamic_contact.resolve). Three
 // scenarios, and the reason there are three is the same reason there were five
 // before: the divergence is a property of the RUN.
 //

@@ -156,7 +156,7 @@ const RegistryEntry kExpectedRegistry[] = {
     // host owns, uploaded from configuration rather than walked out of the
     // ArenaSet. bindings.slang sections C and C' record why each exists.
     {"dryden_params", gen::kBinding_dryden_params},
-    // S6 Task 6: the flattened per-world SDF programs CollisionStatic walks,
+    // S6 Task 6: the flattened per-world SDF programs static_contact.resolve walks,
     // the per-STEP tick exchange (host write + the kernel's witness), and the
     // PER-WORLD contact material (per world, not per run: the golden corpus's
     // `bounce` is a four-rung restitution ladder).
@@ -179,7 +179,7 @@ const RegistryEntry kExpectedRegistry[] = {
     // is neither uploaded nor read back on the step path: the build, the sort
     // stages and the sweep all live inside one dynamic_contact.resolve pass.
     {"grid_entries", gen::kBinding_grid_entries},
-    // The CollisionDynamic GATHER's start-of-iteration shadow of pos, vel,
+    // The dynamic_contact.resolve GATHER's start-of-iteration shadow of pos, vel,
     // mass and the effective proxy radius -- one row per grid ENTRY, the
     // device analogue of GridScratch::snapshot. DERIVED for the same reason
     // grid_entries is: written by a dispatch inside the pass, never uploaded,
@@ -219,7 +219,7 @@ constexpr std::size_t kDerivedBufferCount = 10;
 //
 // EIGHTEEN AS OF S6 TASK 6, which added five: SdfNodeRow, SdfTransformRow and
 // SdfWorldRange (the device image of every world's static SDF program, which
-// CollisionStatic walks -- compute/sdf_program.hpp), plus StepParams and
+// static_contact.resolve walks -- compute/sdf_program.hpp), plus StepParams and
 // StepWitness (the per-step tick exchange, whose device half Task 5's review
 // deferred to this task -- compute/step_params.hpp).
 //
@@ -443,7 +443,7 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_forces_drag, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_collision_static, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_integrate, spade::testing::SpirvProfile::parity},
-    // S6 Task 7's three, the CollisionDynamic chain, all under PARITY for
+    // S6 Task 7's three, the dynamic_contact.resolve chain, all under PARITY for
     // wave A's reasons. Two of them are worth a word each:
     //
     //   grid_build carries the only floating-point arithmetic in the broad

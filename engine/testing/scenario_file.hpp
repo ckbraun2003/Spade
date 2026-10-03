@@ -108,7 +108,7 @@
 //    seed, material, grid and turbulence of every world, because a golden
 //    digest is only meaningful against an exactly-pinned set -- and because
 //    heterogeneous instances are the point (bounce's four worlds differ in
-//    restitution, and that is what puts CollisionDynamic on its per-world
+//    restitution, and that is what puts dynamic_contact.resolve on its per-world
 //    branch).
 //
 // 3. FLOATS ARE 9-SIGNIFICANT-DIGIT %.9g FORMS, parsed with std::from_chars on
