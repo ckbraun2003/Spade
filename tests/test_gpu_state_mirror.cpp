@@ -636,8 +636,9 @@ TEST(BackendKnobInvariance, CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus
 // substeps, the one between Integrate and SensorSynthesis. Parity stayed
 // green on this box's driver, which is why this checks the recording itself.
 //
-// The 9 + S below is the per-substep tally in step_recorder.hpp's header:
-// MediumUpdate, rotors, drag, CollisionStatic, grid_build, S sort stages,
+// The 11 + S below is the standard set's per-substep tally in step_recorder.hpp's
+// header: medium_update, the two field-sample kernels (module-API stage 3),
+// rotors, drag, collision_static, grid_build, S sort stages,
 // collision_dynamic, Integrate, sensor_imu, sensor_gnss. A kernel joining the
 // chain changes both.
 // ===========================================================================
@@ -661,7 +662,7 @@ TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchP
 
         const spade::compute::RecordedChain chain = (*backend)->recorded_chain();
         ASSERT_GT(chain.sort_stages, 0u) << "the shape should give the sort chain real stages";
-        EXPECT_EQ(chain.dispatches, substeps * (9u + chain.sort_stages));
+        EXPECT_EQ(chain.dispatches, substeps * (11u + chain.sort_stages));
         EXPECT_EQ(chain.barriers, chain.dispatches - 1u)
             << "every adjacent pair of dispatches needs a barrier, and none after the last";
     }

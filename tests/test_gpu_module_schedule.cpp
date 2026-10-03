@@ -6,6 +6,9 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
+#include <cmath>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,9 +24,7 @@
 namespace {
 
 // The standard set's compiled order. The two behavior passes record nothing,
-// and neither do the two field-sample passes until the GPU samples fields
-// (module-API stage 3, Task 3), but they are passes of the chain and are timed
-// like any other.
+// but they are passes of the chain and are timed like any other.
 const std::vector<std::string> kStandardGpuOrder = {
     "behaviors.kinematic",    "dryden.advance",          "dryden.sample",       "environment.sample",
     "rotor.forces",           "drag.forces",             "behaviors.force",     "static_contact.resolve",
@@ -86,4 +87,64 @@ TEST(GpuModuleSchedule, DurationsAreOnePerPassByName) {
     for (const auto& p : d->passes) names.push_back(p.pass);
     EXPECT_EQ(names, kStandardGpuOrder);
     EXPECT_FALSE(d->find("no_such.pass").has_value()) << "a missing pass must not read as a zero duration";
+}
+
+// ---------------------------------------------------------------------------
+// Module-API stage 3: the GPU samples fields. Two worlds with different
+// gravity, density and wind, so a sample written to or read from the wrong
+// world's row cannot pass. Gravity and density are copies, so the device row
+// matches the CPU row bitwise; wind carries Dryden's GPU band, which the
+// parity suite already gates through every rotor and drag force, so here it
+// only has to be present and finite.
+// ---------------------------------------------------------------------------
+namespace {
+
+[[nodiscard]] spade::WorldSetDesc two_different_turbulent_worlds() {
+    spade::WorldSetDesc set;
+    const float gravity_y[] = {-9.80665f, -3.72076f};
+    const float density[] = {1.225f, 0.0200f};
+    for (uint32_t w = 0; w < 2; ++w) {
+        spade::Environment env;
+        env.gravity = glm::vec3(0.0f, gravity_y[w], 0.0f);
+        env.air_density = density[w];
+        env.wind = glm::vec3(2.0f + static_cast<float>(w), 0.0f, -1.0f);
+        spade::WorldInstanceDesc inst;
+        inst.world = spade::WorldBuilder()
+                         .name(w == 0 ? "earth" : "mars")
+                         .environment(env)
+                         .capacities(spade::Capacities{1, 1, 1, 1})
+                         .build()
+                         .value();
+        inst.seed = 0xF1E1D5u + w;
+        inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::moderate);
+        set.worlds.push_back(inst);
+    }
+    return set;
+}
+
+}  // namespace
+
+TEST(GpuModuleSchedule, StoredFieldSamplesMatchTheCpuCopiesBitwise) {
+    if (!spade::compute::vulkan_available()) GTEST_SKIP();
+    auto cpu = spade::Simulation::create(two_different_turbulent_worlds(), 2'000'000, 2);
+    auto gpu = spade::Simulation::create(two_different_turbulent_worlds(), 2'000'000, 2, vulkan());
+    ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    ASSERT_TRUE(cpu->step(1).has_value());
+    ASSERT_TRUE(gpu->step(1).has_value());
+    for (uint32_t w = 0; w < 2; ++w) {
+        const auto c = cpu->field_samples(w);
+        const auto g = gpu->field_samples(w);
+        ASSERT_TRUE(c.has_value()) << c.error().context;
+        ASSERT_TRUE(g.has_value()) << g.error().context;
+        ASSERT_GE(g->size(), std::size_t{spade::modules::kFieldBuiltinFloats});
+        for (uint32_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(std::bit_cast<uint32_t>((*c)[i]), std::bit_cast<uint32_t>((*g)[i]))
+                << "world " << w << " float " << i << " (gravity, density: copies)";
+        }
+        for (uint32_t i = spade::modules::kFieldWindOffset; i < spade::modules::kFieldWindOffset + 3; ++i) {
+            EXPECT_TRUE(std::isfinite((*g)[i])) << "world " << w << " wind float " << i;
+            EXPECT_NE((*g)[i], 0.0f) << "world " << w << " wind float " << i << ": the device row was never written";
+        }
+    }
 }
