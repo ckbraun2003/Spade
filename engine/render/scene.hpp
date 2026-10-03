@@ -123,9 +123,10 @@ struct Material {
 };
 
 struct Lighting {
-    // Normalised, world space, points TOWARD the sun. This default is below the horizon and is kept
-    // only because hand-built frame goldens shade under it (docs/design/rendering/07-status.md).
-    glm::vec3 sun_direction{-0.35f, -0.86f, -0.37f};
+    // Normalised, world space, points TOWARD the sun (RND-1). The default is the world's own,
+    // normalised by the expression scene_from_world() uses, so a hand-built scene and a default
+    // world shade alike and the two defaults cannot drift (RND-5).
+    glm::vec3 sun_direction = glm::normalize(LightingDesc{}.sun_direction);
     glm::vec3 sun_color{1.0f, 0.98f, 0.94f};
     float sun_intensity = 1.0f;
     glm::vec3 ambient_color{0.30f, 0.34f, 0.42f};
