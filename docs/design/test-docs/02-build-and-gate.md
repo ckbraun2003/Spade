@@ -86,7 +86,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
   - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
   - at `ec6e2da` the fixed file passed, and so did two headers.
 - **Cost:** about a minute per heavy test file on this box (126 s for three files).
-- **When to run it:** it needs no slot. It shares the box's memory, though, so don't run it while a leg holds the slot.
+- **When to run it:** it needs no slot. It shares the box's memory, though, so never run it while a leg holds the slot, and run one check container at a time.
 
 ## This machine
 
