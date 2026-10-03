@@ -153,7 +153,7 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
 ## Tasks, after approval
 
 1. The `spade::scene` target, its headers and install rules (`SL2`), as tabled above. `tests/consumer` links it, and `consumer-smoke.sh` lists it.
-2. `scene_file`: reader, canonical writer and round-trip tests. Core reviews the schema code.
-3. `transform_of()` in `world/` (Core reviews), then `compose`, with the tests above. `compose_transform` is built and tested (`interface/scene-composer`).
+2. Dropped: Core writes `scene_file` (`SceneDesc`, the reader, the canonical writer, `world_hash`) as Core's Task D, and Interface reviews it against `compose()`'s needs (the lead's ruling, 2026-10-03, settling the overlap with Core's drone-builder plan).
+3. After Core's `transform_of()` in `world/` (Core's Task A): `compose` and `compose_file`, with the tests above. `compose_transform` is built and tested (`interface/scene-composer`).
 4. `instantiate`, porting the viewer's setup order (`engine/tools/viewer/setup.cpp`).
 5. The viewer scenes as scene files, asserting their goldens: the successor check.
