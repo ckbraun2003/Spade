@@ -93,6 +93,8 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
 | Symptom | Cause | Response |
 |---|---|---|
 | A build or test run dies with no error | Backgrounded jobs get killed here | Run in the foreground. Split long runs into legs that provably cover the whole suite (check with `ctest -N`) |
+| Docker answers HTTP 500, or `docker desktop status` stays "starting" | Docker's WSL VM stopped under memory pressure. A cold start under pressure took about 11 min on 2026-10-03 | `docker desktop restart`, then wait at least 15 min without intervening. `docker desktop start` is a no-op while the app runs. Stopping, `wsl --shutdown` or force-quitting mid-start made it worse (`07-status.md`); escalate one step at a time, through the lead |
+| A leg's watcher is killed for low memory | The harness reaps background commands under memory pressure | The detached container carries on; collect it with `docker-leg.ps1 -Follow` |
 | A build is killed or crawls | Memory-bound: about 7.6 GB, shared by several sessions | `-ParallelLevel 1` (the default). Builds are scheduled one at a time by the lead |
 | A revert "does not fix" the thing it should | `Copy-Item` keeps the old timestamp, so ninja sees no work | `touch` the file after restoring it |
 | Nondeterminism appears from nowhere | A full disk truncated a file | Check free space before debugging determinism |

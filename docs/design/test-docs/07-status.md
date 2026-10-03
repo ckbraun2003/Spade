@@ -52,6 +52,14 @@
 - **`SL2b`'s guard went red, then green** (Interface's plan `513e1b8`). Both commits are in master via `4d5b178` (`interface/sl2b-guard`, on master `d4c2030`), patch-identical to the reviewed pair. It is the first use of the leg's sandbox stage; both summaries read `sandbox on (consumer-smoke.sh --sandbox)`.
   - **Red:** the build passed, so the red counts. Consumer ON then failed with "SL2b: the in-tree sandbox links spade::render_gl, but the installed package ... has no spade::render_gl".
   - **Green:** both consumers passed with the sandbox built against each prefix and run headless. Green also showed "render_gl OK: an empty loader is refused" and "render_gl-symbols ... ok (no glad symbol ...)".
+- **Docker engine outage, 2026-10-03, unresolved at the pause:**
+  - **18:18 local:** Docker's WSL VM stopped, most likely from memory pressure (Physics was compiling four TUs in parallel with 0.9 GB free). The engine answered HTTP 500, and Docker Desktop looped on "still waiting for init control API".
+  - **18:53, `docker desktop restart`,** after the lead's gate: the engine came back, slowly. It answered about 11 minutes later, 510 s into the wait loop.
+  - **19:03, the escalation (my mistake):** I judged it stuck and ran `docker desktop stop` (which hung 300 s), `wsl --shutdown`, then force-quit and relaunched the app at 19:09. That knocked down the engine just as it was ready.
+  - **Since then,** the bootstrap (`wsl.exe -d docker-desktop -u root -e wsl-bootstrap run ...`) exits `0xc00000fd` about 80 s in. The data disk is detected intact ("existing ext4 file system").
+  - **19:22, `docker desktop start`,** is a no-op while the app runs ("Docker Desktop is already running").
+  - **At the pause:** the app is running, the engine is stopped and both WSL distros are stopped. The `spade-docker-leg` volume and image should be intact on the data disk.
+  - **Next:** `docker desktop restart` with a wait budget of at least 15 minutes and no intervention, or the box-level options (restart the WSL service, update WSL, reboot), which are the user's call through the lead.
 - **The agreement bands' `gcc-release` attestation** comes from the green run. All five d and d_probe values are bit-identical to the `msvc-release` pins in `agreement_bands.json`, compared as doubles. Only `msvc-debug` is still pending.
 
 - **The one gcc error:** `tests/test_sandbox_drone.cpp:76:16` `-Werror=dangling-else`, a gtest `EXPECT_LT` inside an unbraced `if`. It is Interface's, routed by the lead. Every other translation unit compiles under `-Wall -Wextra -Wpedantic -Werror`.
