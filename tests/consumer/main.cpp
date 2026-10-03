@@ -12,14 +12,10 @@
 // that file documents. See CMakeLists.txt in this directory for how it is
 // configured against a scratch install prefix.
 //
-// !! NOTHING CURRENTLY RUNS THIS PROGRAM. It used to be driven by
-// .github/workflows/spade.yml (deleted 2026-09-18) and then by a consumer
-// project's own CI legs, which stopped covering it on 2026-09-28 when Spade
-// became its own repository. The PROGRAM is still correct and still the right
-// check; the leg
-// that invokes it has to be rebuilt in this repo's own gate. Recorded in
-// CONTRIBUTING.md as owed rather than left to be discovered by someone
-// wondering why an obviously-important smoke never fails.
+// The self-run Docker leg (TD-11) runs this program through
+// scripts/consumer-smoke.sh, against a prefix installed with SPADE_VULKAN OFF
+// and again with it ON. Before that leg existed (2026-09-18 to 2026-10-03),
+// nothing ran it.
 //
 // THE WORLD-FILE ROUND TRIP BELOW IS LOAD-BEARING, NOT DECORATION: the
 // original version of this file built a WorldDesc directly via WorldBuilder
@@ -39,13 +35,19 @@
 #include <cstdio>
 #include <filesystem>
 
+#include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
 
+#include "scene/compose.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
 #include "world/world_file.hpp"
+
+#if SPADE_CONSUMER_HAS_RENDER_GL
+int check_render_gl();  // gl_check.cpp
+#endif
 
 int main() {
     // One world: a ground plane, nothing else -- enough for a body to exist
@@ -127,5 +129,24 @@ int main() {
         static_cast<double>((*state)->pos.x), static_cast<double>((*state)->pos.y),
         static_cast<double>((*state)->pos.z), static_cast<double>((*state)->vel.x),
         static_cast<double>((*state)->vel.y), static_cast<double>((*state)->vel.z));
+
+    // spade::scene, installed: an asset at the identity pose leaves its
+    // collider's transform unchanged (compose_transform's short-cut (a)).
+    spade::SdfTransform collider{};
+    collider.world_to_local[3] = glm::vec4(1.0f, 2.0f, 3.0f, 1.0f);
+    collider.scale = 2.0f;
+    const spade::SdfTransform posed = spade::scene::compose_transform(collider, spade::SdfTransform{});
+    if (!(posed.world_to_local == collider.world_to_local && posed.scale == collider.scale)) {
+        std::fprintf(stderr, "spade::scene::compose_transform changed a collider at the identity pose\n");
+        return 1;
+    }
+    std::printf("spade::scene OK: compose_transform kept the collider at the identity pose\n");
+
+#if SPADE_CONSUMER_HAS_RENDER_GL
+    // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).
+    if (check_render_gl() != 0) {
+        return 1;
+    }
+#endif
     return 0;
 }

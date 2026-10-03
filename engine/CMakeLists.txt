@@ -536,6 +536,7 @@ add_library(spade::render_gl ALIAS spade_render_gl)
 
 target_include_directories(spade_render_gl PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
 )
 
 # No glad LINK: gl_renderer.cpp loads its GL entry points into a private table
@@ -557,6 +558,21 @@ target_link_libraries(spade_render_gl PRIVATE
     $<BUILD_LOCAL_INTERFACE:spade_warnings>
 )
 target_compile_features(spade_render_gl PUBLIC cxx_std_23)
+
+# Installed and exported as spade::render_gl, an optional module present when
+# SPADE_RENDER_GL is on (the lead, 2026-10-03). The editor's GL path (RND-4)
+# must be reachable from an installed Spade: SL2b lets the sandbox use only what
+# the engine installs, and a consumer like Kat's editor needs the same path.
+# Its interface holds only exported targets, so install(EXPORT) accepts it.
+# tests/consumer links it beside a second glad, and consumer-smoke.sh checks
+# that the archive defines and needs no glad symbol.
+set_target_properties(spade_render_gl PROPERTIES EXPORT_NAME render_gl)
+install(TARGETS spade_render_gl
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY render_gl/ DESTINATION include/render_gl FILES_MATCHING PATTERN "*.hpp")
 endif()
 
 # ------------------------------------------------------------------------------
@@ -801,6 +817,40 @@ install(TARGETS spade_vehicles
 )
 
 install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN "*.hpp")
+
+# ------------------------------------------------------------------------------
+# spade_scene: composing a scene (a world reference plus assets and vehicles)
+# into a runnable world -- the drone-builder joint spec, section 3, approved by
+# the user 2026-10-03. Core owns the module's meaning (the world model);
+# Interface implements it (docs/design/interface/plans/
+# 2026-10-03-scene-composer-plan.md). Installed and exported, because Kat
+# composes scenes too and links only installed targets (SL2b).
+#
+# It links spade::world and spade::sim only; vehicles::ModelType reaches it
+# through sim. spade_fp_strict, because the composed transforms land in the
+# SDF program that config_hash folds.
+# ------------------------------------------------------------------------------
+add_library(spade_scene STATIC
+    scene/compose.cpp
+)
+add_library(spade::scene ALIAS spade_scene)
+set_target_properties(spade_scene PROPERTIES EXPORT_NAME scene)
+target_include_directories(spade_scene PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(spade_scene
+    PUBLIC spade::world spade::sim
+    PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings> $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+target_compile_features(spade_scene PUBLIC cxx_std_23)
+
+install(TARGETS spade_scene
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
 # spade_compute (S6 Task 1): the v2 Vulkan compute backend scaffold --

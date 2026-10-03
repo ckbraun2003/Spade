@@ -35,9 +35,13 @@
 # library tree is kept between runs (ninja is incremental), since nothing
 # inside it can mask an install defect.
 #
+# The Docker leg (scripts/docker-leg.sh) reads the Usage block that --help
+# prints to detect --sandbox, so the flag must stay listed there.
+#
 # Usage:
 #   scripts/consumer-smoke.sh --vulkan ON|OFF --work DIR
 #                             [--from-build DIR] [--deps DIR] [--jobs N]
+#                             [--sandbox]
 #
 #   --vulkan ON|OFF   The SPADE_VULKAN mode to install and consume.
 #   --work DIR        Where every tree goes (created if missing). The source
@@ -50,6 +54,15 @@
 #                     FETCHCONTENT_SOURCE_DIR_<NAME>; without it, dependencies
 #                     are fetched over the network.
 #   --jobs N          Build parallelism (default 1).
+#   --sandbox         Also run the SL2b guard against the same prefix:
+#                     - probe: a TU including an installed header must compile,
+#                       and one including testing/replay.hpp (never installed)
+#                       must fail, or the prefix leaks headers and the guard is
+#                       blind;
+#                     - render_gl: if the prefix has spade_render_gl, its
+#                       archive must neither define nor need any glad symbol;
+#                     - the sandbox, built from sandbox/standalone against the
+#                       prefix and run --headless.
 #
 # Exit status: 0 pass; 1 a stage failed (the last line names it); 2 usage.
 #
@@ -73,10 +86,12 @@ work=""
 from_build=""
 deps=""
 jobs=1
+sandbox=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
+        --sandbox) sandbox=1; shift ;;
         --vulkan|--work|--from-build|--deps|--jobs)
             [ $# -ge 2 ] || die_usage "$1 needs a value"
             case "$1" in
@@ -119,6 +134,8 @@ mode="$(echo "$vulkan" | tr 'A-Z' 'a-z')"
 build="$work/build-vk$mode"
 prefix="$work/prefix-vk$mode"
 consumer="$work/consumer-vk$mode"
+sandbox_build="$work/sandbox-vk$mode"
+probe="$work/probe-vk$mode"
 
 # One -DFETCHCONTENT_SOURCE_DIR_<NAME> per <name>-src in --deps. <NAME> is the
 # FetchContent_Declare name upper-cased with hyphens kept (YAML-CPP,
@@ -156,7 +173,7 @@ stage() {
 # A module added to the install rules but not here makes the install stage fail
 # on the missing archive, so this list cannot drift into a silent pass.
 lib_targets=(spade_core spade_state spade_world spade_objects spade_physics
-             spade_render spade_sim spade_vehicles)
+             spade_render spade_sim spade_vehicles spade_scene)
 [ "$vulkan" = ON ] && lib_targets+=(spade_compute)
 
 from_build_mode() {
@@ -184,7 +201,7 @@ else
     install_from="$build"
 fi
 
-rm -rf "$prefix" "$consumer" || { echo "consumer-smoke: FAIL clean (vulkan=$vulkan): cannot remove $prefix or $consumer"; exit 1; }
+rm -rf "$prefix" "$consumer" "$sandbox_build" "$probe" || { echo "consumer-smoke: FAIL clean (vulkan=$vulkan): cannot remove an old tree under $work. Check its permissions, then run again."; exit 1; }
 stage install cmake --install "$install_from" --prefix "$prefix"
 
 stage consumer-configure cmake -S "$src/tests/consumer" -B "$consumer" -G Ninja --no-warn-unused-cli \
@@ -205,5 +222,56 @@ esac
 
 stage consumer-build cmake --build "$consumer" --parallel "$jobs"
 stage consumer-run "$consumer/spade_consumer_smoke"
+
+if [ "$sandbox" = 1 ]; then
+    # --- The SL2b guard ---------------------------------------------------------
+    # The probe proves the prefix can tell installed from uninstalled. Without
+    # it, a prefix that leaked every engine header would let any sandbox pass.
+    mkdir -p "$probe"
+    printf '#include "core/error.hpp"\n' > "$probe/installed.cpp"
+    printf '#include "testing/replay.hpp"\n' > "$probe/uninstalled.cpp"
+    probe_installed() {
+        "${CXX:-c++}" -std=c++23 -fsyntax-only -I"$prefix/include" "$probe/installed.cpp"
+    }
+    stage probe-installed-header probe_installed
+    if "${CXX:-c++}" -std=c++23 -fsyntax-only -I"$prefix/include" "$probe/uninstalled.cpp" 2> "$probe/uninstalled.err"; then
+        echo "consumer-smoke: FAIL probe-uninstalled-header (vulkan=$vulkan): testing/replay.hpp compiled against the prefix, so the prefix leaks headers and the SL2b guard is blind. Find the install rule that ships testing/, then run again."
+        exit 1
+    fi
+    if ! grep -q 'replay.hpp' "$probe/uninstalled.err"; then
+        echo "consumer-smoke: FAIL probe-uninstalled-header (vulkan=$vulkan): the probe failed, but not on the missing header. See $probe/uninstalled.err."
+        exit 1
+    fi
+    echo "consumer-smoke: probe-uninstalled-header vulkan=$vulkan ok (refused, as it must be)"
+
+    # render_gl, when installed, must keep glad to itself: a consumer that links
+    # its own loader must not meet a second copy of glad's symbols.
+    gl_lib="$(find "$prefix" -name 'libspade_render_gl.a' | head -n 1)"
+    if [ -n "$gl_lib" ]; then
+        if nm -g "$gl_lib" 2>/dev/null | grep -E ' [A-Za-z] _?glad' > "$probe/glad-symbols.txt"; then
+            echo "consumer-smoke: FAIL render_gl-symbols (vulkan=$vulkan): $gl_lib defines or needs glad symbols ($(wc -l < "$probe/glad-symbols.txt") lines, see $probe/glad-symbols.txt). A consumer with its own glad would clash."
+            exit 1
+        fi
+        echo "consumer-smoke: render_gl-symbols vulkan=$vulkan ok (no glad symbol in $gl_lib)"
+    fi
+
+    # The tree that produced the prefix decides whether the sandbox's GPU path
+    # must be installable (its SPADE_RENDER_GL); the standalone build checks it.
+    expect_gpu="$(sed -n 's/^SPADE_RENDER_GL:BOOL=//p' "$install_from/CMakeCache.txt")"
+    stage sandbox-configure cmake -S "$src/sandbox/standalone" -B "$sandbox_build" -G Ninja --no-warn-unused-cli \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH="$prefix" \
+        -DSPADE_SANDBOX_EXPECT_GPU="${expect_gpu:-OFF}" \
+        ${dep_args[@]+"${dep_args[@]}"}
+    sandbox_spade_dir="$(sed -n 's/^spade_DIR:PATH=//p' "$sandbox_build/CMakeCache.txt")"
+    case "$sandbox_spade_dir" in
+        "$prefix"/*) echo "consumer-smoke: sandbox find_package(spade) -> $sandbox_spade_dir" ;;
+        *)
+            echo "consumer-smoke: FAIL sandbox-configure (vulkan=$vulkan): spade_DIR=${sandbox_spade_dir:-unset} is not under $prefix"
+            exit 1 ;;
+    esac
+    stage sandbox-build cmake --build "$sandbox_build" --parallel "$jobs" --target spade_sandbox
+    stage sandbox-run "$sandbox_build/bin/spade_sandbox" --headless
+fi
 
 echo "consumer-smoke: PASS vulkan=$vulkan"

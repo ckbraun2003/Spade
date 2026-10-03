@@ -15,11 +15,10 @@
 # repo that would fail to link if such a dependency's symbols are not reachable
 # from the installed tree.
 #
-# .github/workflows/spade.yml used to drive this (install the engine build,
-# then configure+build+run this project against that prefix) but was deleted
-# 2026-09-18; scripts/test.ps1 is this repo's gate now, though it does not run
-# this out-of-tree smoke either -- see main.cpp for what this project actually
-# does.
+# The self-run Docker leg (TD-11) drives this project through
+# scripts/consumer-smoke.sh: install the engine build, then configure, build
+# and run this project against that prefix, with SPADE_VULKAN OFF and ON. See
+# main.cpp for what it checks.
 # ------------------------------------------------------------------------------
 cmake_minimum_required(VERSION 3.28)
 project(spade_consumer_smoke LANGUAGES CXX)
@@ -101,6 +100,29 @@ target_compile_features(spade_consumer_smoke PRIVATE cxx_std_23)
 # spadeConfig.cmake.in's check expects, it does not itself consume it.
 target_link_libraries(spade_consumer_smoke PRIVATE
     spade::sim
+    spade::scene
     spade::vehicles
     glm::glm
 )
+
+# ------------------------------------------------------------------------------
+# spade::render_gl -- OPTIONAL: present when the prefix was built with
+# SPADE_RENDER_GL on (engine/CMakeLists.txt). When it is, gl_check.cpp links it
+# beside this project's OWN glad, as a consumer with its own GL code would. A
+# clean link is the proof that render_gl exports no glad symbol to clash with
+# (the lead's condition for installing it, 2026-10-03). glad is pinned to the
+# tag vendor/CMakeLists.txt uses, copied for the same reason as glm above.
+# ------------------------------------------------------------------------------
+if(TARGET spade::render_gl)
+    enable_language(C)
+    FetchContent_Declare(
+        glad
+        GIT_REPOSITORY https://github.com/libigl/libigl-glad.git
+        GIT_TAG        651a425101365aa6e8504988ef9bb363d066c5ee
+    )
+    FetchContent_MakeAvailable(glad)
+    target_sources(spade_consumer_smoke PRIVATE gl_check.cpp)
+    target_compile_definitions(spade_consumer_smoke PRIVATE SPADE_CONSUMER_HAS_RENDER_GL=1)
+    target_link_libraries(spade_consumer_smoke PRIVATE spade::render_gl glad)
+    message(STATUS "spade_consumer_smoke: spade::render_gl found; linking it beside a second glad")
+endif()
