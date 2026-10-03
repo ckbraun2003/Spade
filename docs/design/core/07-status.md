@@ -27,8 +27,11 @@
 
 ## Needs a user decision
 
-- **Sensor dispatch duplication.** `Simulation` carries six IMU/GNSS function pairs that differ only by type. `superseded/2026-09-consolidation/sensor-arena-dedup.md` proposes two things: retire amendment `a0f81cde`, which would put every sensor in one kind-tagged arena, and remove the duplication with one compile-time template instead, which moves no bytes and no digest. That proposal was never ruled on, and nothing has started. The module API will also reshape this, so the ruling may simply be "fold it into the module-API spec".
-- **The next Core spec** (module API, scheduler, regions; `../backlog.md`, first row) will bring its own questions. One is already visible: whether kinematic behaviors run first in Forces or last in Fields (`01-modules-and-scheduler.md`).
+None open. The sensor dedup was ruled on 2026-10-02: the module API absorbs it (`CORE-4`).
+
+## Next
+
+- **The module-API spec** (`../backlog.md`, item 3): module API and registry, scheduler phases, regions, the field registry, grades and the grade check at `create()`, with the translation lock inside it. It will bring its own questions to the user before any plan. Already visible: whether kinematic behaviors run first in Forces or last in Fields (`01-modules-and-scheduler.md`), and the six IMU/GNSS function pairs in `Simulation`, which collapse when sensors become modules (`CORE-4`).
 
 ## Debt
 
