@@ -26,10 +26,20 @@ struct Node {
     return (a == Access::write && b != Access::read) || (b == Access::write && a != Access::read);
 }
 
-[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules) noexcept {
+// "field.<name>" -> "<name>"; empty for any other quantity.
+constexpr std::string_view kFieldPrefix = "field.";
+[[nodiscard]] std::string_view field_name_of(std::string_view q) noexcept {
+    return q.starts_with(kFieldPrefix) ? q.substr(kFieldPrefix.size()) : std::string_view{};
+}
+
+using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field name -> declaring module
+
+[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
+                                  const FieldOwners& fields) noexcept {
     for (const std::string_view core : kCoreQuantities) {
         if (q == core) return true;
     }
+    if (q.starts_with(kFieldPrefix)) return fields.contains(field_name_of(q));
     const std::size_t dot = q.find('.');
     if (dot == std::string_view::npos || dot == 0 || dot + 1 == q.size()) return false;
     const std::string_view owner = q.substr(0, dot);
@@ -37,6 +47,26 @@ struct Node {
         if (m.name == owner) return true;
     }
     return false;
+}
+
+// The built-in fields' fixed shapes (module.hpp). The GPU row depends on them.
+struct BuiltinField {
+    std::string_view name;
+    FieldKind kind;
+    std::string_view unit;
+    uint32_t offset;
+};
+constexpr BuiltinField kBuiltinFields[] = {
+    {"gravity", FieldKind::vec3, "m/s^2", kFieldGravityOffset},
+    {"density", FieldKind::scalar, "kg/m^3", kFieldDensityOffset},
+    {"wind", FieldKind::vec3, "m/s", kFieldWindOffset},
+};
+
+[[nodiscard]] const BuiltinField* builtin_field(std::string_view name) noexcept {
+    for (const BuiltinField& b : kBuiltinFields) {
+        if (b.name == name) return &b;
+    }
+    return nullptr;
 }
 
 [[nodiscard]] uint64_t fold_byte(uint64_t h, uint8_t b) noexcept {
@@ -60,10 +90,50 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     std::vector<Node> nodes;
     std::map<std::string, std::size_t, std::less<>> by_name;
 
+    // THE FIELD REGISTRY (stage 3), built first so that a pass's "field.<name>"
+    // access resolves against it. One provider per field: this stage has one
+    // region, the whole world (spec section 6).
+    FieldOwners field_owner;
+    for (std::size_t m = 0; m < modules.size(); ++m) {
+        const ModuleDesc& mod = modules[m];
+        for (const FieldDecl& f : mod.fields) {
+            const std::string where = "field '" + std::string(f.name) + "' (module '" + std::string(mod.name) + "')";
+            if (f.name.empty() || f.name.find('.') != std::string_view::npos) {
+                return std::unexpected(
+                    invalid("module '" + std::string(mod.name) + "': a field needs a name with no '.'"));
+            }
+            if (static_cast<uint8_t>(f.kind) > static_cast<uint8_t>(FieldKind::bands)) {
+                return std::unexpected(invalid(where + ": unknown kind"));
+            }
+            if (f.kind == FieldKind::bands && (f.bands == 0 || f.bands > kMaxFieldBands)) {
+                return std::unexpected(invalid(where + ": a band field needs 1 to " +
+                                               std::to_string(kMaxFieldBands) + " bands, not " +
+                                               std::to_string(f.bands)));
+            }
+            if (f.kind != FieldKind::bands && f.bands != 0) {
+                return std::unexpected(invalid(where + ": only a band field takes a band count"));
+            }
+            if (const BuiltinField* b = builtin_field(f.name); b != nullptr && (f.kind != b->kind || f.unit != b->unit)) {
+                return std::unexpected(invalid(where + " is built in: it must be " +
+                                               (b->kind == FieldKind::vec3 ? "vec3" : "scalar") + " in " +
+                                               std::string(b->unit)));
+            }
+            if (const auto it = field_owner.find(f.name); it != field_owner.end()) {
+                return std::unexpected(invalid("field '" + std::string(f.name) + "' is declared by module '" +
+                                               std::string(modules[it->second].name) + "' and module '" +
+                                               std::string(mod.name) + "'; a field has one provider"));
+            }
+            field_owner.emplace(std::string(f.name), m);
+        }
+    }
+
     for (std::size_t m = 0; m < modules.size(); ++m) {
         const ModuleDesc& mod = modules[m];
         if (mod.name.empty() || mod.name.find('.') != std::string_view::npos) {
             return std::unexpected(invalid("module " + std::to_string(m) + ": a module needs a name with no '.'"));
+        }
+        if (mod.name == "field") {
+            return std::unexpected(invalid("module 'field': the name is reserved for the field quantities"));
         }
         for (std::size_t k = 0; k < m; ++k) {
             if (modules[k].name == mod.name) {
@@ -87,13 +157,53 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 return std::unexpected(invalid(full + ": declared twice"));
             }
             for (const QuantityAccess& qa : p.access) {
-                if (!known_quantity(qa.quantity, modules)) {
+                if (!known_quantity(qa.quantity, modules, field_owner)) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
-                                                   "' (a core quantity, or <module>.<name> for a module in the set)"));
+                                                   "' (a core quantity, field.<name> for a field a module "
+                                                   "declares, or <module>.<name> for a module in the set)"));
+                }
+                if (const std::string_view field = field_name_of(qa.quantity);
+                    !field.empty() && qa.access != Access::read && field_owner.find(field)->second != m) {
+                    return std::unexpected(invalid(full + ": writes " + std::string(qa.quantity) +
+                                                   ", which module '" +
+                                                   std::string(modules[field_owner.find(field)->second].name) +
+                                                   "' provides; only a field's provider writes it"));
                 }
             }
             by_name.emplace(full, nodes.size());
             nodes.push_back(Node{m, d, &p, std::move(full)});
+        }
+    }
+
+    // Every declared field has a pass in its provider module that writes it.
+    for (const auto& [field, m] : field_owner) {
+        const std::string q = std::string(kFieldPrefix) + field;
+        bool written = false;
+        for (const PassDecl& p : modules[m].passes) {
+            for (const QuantityAccess& qa : p.access) written = written || (qa.quantity == q && qa.access == Access::write);
+        }
+        if (!written) {
+            return std::unexpected(invalid("module '" + std::string(modules[m].name) + "' provides " + q +
+                                           " but none of its passes writes it"));
+        }
+    }
+
+    // The registry's layout: the built-ins at their fixed places, then every
+    // other field in set order, from the end of the built-in prefix.
+    std::vector<CompiledField> fields;
+    for (const BuiltinField& b : kBuiltinFields) {
+        if (const auto it = field_owner.find(b.name); it != field_owner.end()) {
+            fields.push_back(CompiledField{std::string(b.name), b.kind, b.kind == FieldKind::vec3 ? 3u : 1u,
+                                           b.offset, std::string(b.unit)});
+        }
+    }
+    uint32_t field_stride = kFieldBuiltinFloats;
+    for (const ModuleDesc& mod : modules) {
+        for (const FieldDecl& f : mod.fields) {
+            if (builtin_field(f.name) != nullptr) continue;
+            const uint32_t count = f.kind == FieldKind::bands ? f.bands : (f.kind == FieldKind::vec3 ? 3u : 1u);
+            fields.push_back(CompiledField{std::string(f.name), f.kind, count, field_stride, std::string(f.unit)});
+            field_stride += count;
         }
     }
 
@@ -210,6 +320,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_byte(h, static_cast<uint8_t>(p.phase));
     }
     out.identity = h;
+    out.fields = std::move(fields);
+    out.field_stride = field_stride;
     return out;
 }
 

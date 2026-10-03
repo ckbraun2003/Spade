@@ -2,9 +2,9 @@
 //
 // A MODULE is a descriptor: a name, a version and the passes it contributes.
 // create() compiles a module set into ONE ordered pass list with
-// compile_schedule(). Stages 1-2 of the plan: passes, each naming the built-in
-// GPU kernel that matches its CPU function. State, fields, grades and roles join
-// the descriptor in later stages.
+// compile_schedule(). Stages 1-3 of the plan: passes, each naming the built-in
+// GPU kernel that matches its CPU function, and the fields a module provides.
+// State, grades and roles join the descriptor in later stages.
 #pragma once
 
 #include <cstddef>
@@ -44,9 +44,9 @@ enum class Access : uint8_t { read, write, accumulate };
 // that conflict need an edge like any others.
 enum class Placement : uint8_t { first = 0, ordered = 1, last = 2 };
 
-// A quantity is a core quantity (kCoreQuantities) or "<module>.<name>" for a
-// module in the set. Anything else is refused, so a misspelling cannot drop a
-// hazard.
+// A quantity is a core quantity (kCoreQuantities), "field.<name>" for a field
+// a module in the set declares, or "<module>.<name>" for a module in the set.
+// Anything else is refused, so a misspelling cannot drop a hazard.
 inline constexpr std::string_view kCoreQuantities[] = {"body.pose", "body.wrench", "body.specific_force",
                                                        "world.params"};
 
@@ -67,10 +67,41 @@ struct PassDecl {
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
 };
 
+// A FIELD is a value a provider writes once per world per substep, in the
+// Fields phase, and readers read in later phases (the module-API spec, section
+// 6). The module that declares a field is its provider: one of its passes
+// writes "field.<name>", and nothing else may.
+//
+// Its value is one float (scalar), three (vec3), or a fixed array of `bands`
+// floats -- the acoustic and RF fields' frequency bands (drone-builder design,
+// section 4).
+enum class FieldKind : uint8_t { scalar = 0, vec3 = 1, bands = 2 };
+inline constexpr uint32_t kMaxFieldBands = 32;
+
+struct FieldDecl {
+    std::string_view name;  // no '.'; unique in the set
+    FieldKind kind = FieldKind::scalar;
+    uint32_t bands = 0;     // FieldKind::bands only: 1 .. kMaxFieldBands
+    std::string_view unit;  // SI, spelt in ASCII ("m/s^2")
+};
+
+// The built-in fields sit at fixed places at the front of every world's sample
+// row, whether or not the set provides them, so the GPU row's layout and a
+// developer field's offset never depend on which built-ins are present. A
+// module that declares one must use exactly its kind and unit:
+//   gravity  vec3    m/s^2   floats 0..2
+//   density  scalar  kg/m^3  float  3
+//   wind     vec3    m/s     floats 4..6   (float 7 is padding)
+inline constexpr uint32_t kFieldGravityOffset = 0;
+inline constexpr uint32_t kFieldDensityOffset = 3;
+inline constexpr uint32_t kFieldWindOffset = 4;
+inline constexpr uint32_t kFieldBuiltinFloats = 8;
+
 struct ModuleDesc {
-    std::string_view name;  // no '.'
+    std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
     std::span<const PassDecl> passes{};
+    std::span<const FieldDecl> fields{};  // the fields this module provides
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -85,9 +116,24 @@ struct CompiledPass {
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
 };
 
+// One field of the compiled registry: where its `count` floats sit in a world's
+// sample row.
+struct CompiledField {
+    std::string name;
+    FieldKind kind = FieldKind::scalar;
+    uint32_t count = 0;   // 1, 3, or its bands
+    uint32_t offset = 0;  // in floats, from the start of the row
+    std::string unit;
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
+    // The field registry: the built-ins first (gravity, density, wind, those the
+    // set provides), then every other field in set order. Not part of the
+    // identity: fields are declarations, like access.
+    std::vector<CompiledField> fields{};
+    uint32_t field_stride = kFieldBuiltinFloats;  // floats per world's sample row
 };
 
 // Orders every pass of `modules`:
@@ -98,7 +144,10 @@ struct CompiledSchedule {
 //   3. ties by module-set order, then declaration order.
 // invalid_argument for: a module name that is empty, contains '.', or repeats;
 // a pass with no name or no CPU function, or declared twice; a GPU recipe
-// paired with any CPU function but builtin_cpu_for(recipe); an unknown
+// paired with any CPU function but builtin_cpu_for(recipe); a field with no
+// name, a '.' in its name, a bad kind or band count, or declared twice; a
+// built-in field with another kind or unit; a provider module with no pass
+// that writes its field; a write of "field.<name>" outside its provider; an unknown
 // quantity; an edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.
