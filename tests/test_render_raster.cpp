@@ -4,7 +4,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <span>
@@ -1348,7 +1351,42 @@ const Aabb kGoldenTessellationBounds{.min = glm::vec3(-5.0f), .max = glm::vec3(5
 // tests/golden/render/tessellation/manifest.json's identical convention.
 constexpr const char* kExpectedTessellationLimitsVersion = "kTessellationDefaults@1";
 
+// Lets a reviewer look at a deliberate regeneration, not only count it.
+// With SPADE_RENDER_DUMP_FRAMES set, each golden frame checked below is
+// written as a binary PPM to <build>/tests/test-output/render-frames/. It is
+// off by default and writes only into the build tree. A failed write goes
+// to stderr, never into a test result, so it cannot change one.
+//
+// C4996 is silenced for this one call, as env_gate_is_set() in
+// test_fp32_math.cpp does: a read-only check made once, on the test thread.
+void dump_frame_if_asked(const std::string& frame_name, const std::vector<uint8_t>& bgrx) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const bool asked = std::getenv("SPADE_RENDER_DUMP_FRAMES") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!asked) return;
+    const std::filesystem::path dir = std::filesystem::path(SPADE_TEST_OUTPUT_DIR) / "render-frames";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path path = dir / (frame_name + ".ppm");
+    std::ofstream out(path, std::ios::binary);
+    out << "P6\n" << kGoldenWidth << ' ' << kGoldenHeight << "\n255\n";
+    for (size_t i = 0; i + 3u < bgrx.size(); i += 4u) {
+        const char rgb[3] = {static_cast<char>(bgrx[i + 2u]), static_cast<char>(bgrx[i + 1u]),
+                             static_cast<char>(bgrx[i])};
+        out.write(rgb, 3);
+    }
+    if (ec || !out) {
+        std::fprintf(stderr, "SPADE_RENDER_DUMP_FRAMES: could not write %s\n", path.string().c_str());
+    }
+}
+
 void check_against_manifest(const std::string& frame_name, const std::vector<uint8_t>& pixels) {
+    dump_frame_if_asked(frame_name, pixels);
     const std::filesystem::path path = golden_manifest_path();
     ASSERT_TRUE(std::filesystem::exists(path)) << path.string();
 
