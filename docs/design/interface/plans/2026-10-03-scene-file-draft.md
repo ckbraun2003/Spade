@@ -1,6 +1,6 @@
 # The Spade scene file: draft schema
 
-**Owner:** Core owns the schema. The lead drafts it, with Interface for the editor's needs. **Status:** draft for the lead, then Core's review. It aligns with Kat's scene shape when that arrives. **Joint spec:** `../../plans/2026-10-03-drone-builder-engine-design.md` §3 and `DBE-014`.
+**Owner:** Core owns the schema. The lead drafts it, with Interface for the editor's needs. **Status:** approved by the lead as the base (2026-10-03), with the decisions answered below; for Core's review. It aligns with Kat's scene shape when that arrives. **Joint spec:** `../../plans/2026-10-03-drone-builder-engine-design.md` §3 and `DBE-014`.
 
 ## What a scene is
 
@@ -24,7 +24,7 @@ scene_version: 1
 name: gate_run
 world:
   file: ../worlds/flight_field.world.yaml   # relative to this file
-  hash: 9c41d0e2a7b3f518                    # FNV-1a 64 of the world's canonical text
+  hash: 9c41d0e2a7b3f518                    # FNV-1a 64 of the world file's canonical text only
 materials:                                  # appended after the world's palette
   - {name: gate_orange, base_color: [0.95, 0.45, 0.10, 1.0], shading: lambert}
 models:                                     # compiled vehicle models, by name
@@ -49,11 +49,14 @@ vehicles:                                   # in scene order
     model: kat_5in
     start: {position: [0.0, 0.3, -8.0], orientation: [1, 0, 0, 0],
             velocity: [0, 0, 0], omega_body: [0, 0, 0], rotor_omega: 0.0}
+spare: {bodies: 1, elements: 0, sensors: 0} # optional; each defaults to 0
 ```
 
 - A model's fields are `vehicles::ModelType`.
 - A start's fields are `VehicleSpawn`.
 - An asset's pose is `SdfPose`, so its scale is uniform, as SDF evaluation needs.
+- **The world hash covers the world file's canonical text only.** It does not cover the meshes, textures or other files the world references by name; those are render data and never reach the step (`L5`).
+- `spare` reserves slots for objects that appear at runtime, such as a payload a vehicle drops. Each count defaults to 0.
 
 ## Composition
 
@@ -66,9 +69,13 @@ The scene composes into one runnable world, in this order:
 3. **Add the vehicles.**
    - Each model is registered once, in order of first use.
    - Each vehicle is spawned in scene order with its start state.
-4. **Size the capacities exactly from the scene:** bodies, force elements (rotors and drag bodies) and sensors. With no spare slots, every arena slot is live, which the viewer's invariant already needs.
+4. **Size the capacities from the scene:** bodies, force elements (rotors and drag bodies) and sensors, plus the `spare` counts. With no spares every arena slot is live. With spares, a reader counts live bodies (`Simulation::live_body_count()`), not arena slots.
 
 ## Decisions for the lead and Core
+
+**Answered by the lead on 2026-10-03:**
+- Decisions 1, 2, 3, 5 and 6 as recommended. Models are inline: Kat's prefabs stay Kat's, and its compiler writes them inline.
+- Decision 4: SCN-006 is a requirement, and the mechanism is Core's (below).
 
 1. **The world reference.**
    - Recommended: a path plus a content hash, refused on mismatch (`L6`). One world serves many scenes.
@@ -79,8 +86,8 @@ The scene composes into one runnable world, in this order:
 3. **Seeds.**
    - Recommended: none in the scene. A world instance's seed is a run parameter, so a batch can vary seeds over one scene (`L8`). The world's `environment.seed` stays the default.
 4. **The configuration hash.** `config_hash(WorldSetDesc)` covers the composed SDF program, so asset order is already in it. Vehicles are registered and spawned at runtime, so neither their models' versions nor their order is hashed today. `DBE-005` and `DBE-010` need both.
-   - Proposal: fold the scene's vehicle list (model parameters and version, start states, order) into `ReplayConfig`.
-   - This is Core's call; it sits on the module API's configuration work.
+   - **The mechanism is Core's.** `ReplayConfig` is folded into every golden digest, so adding vehicles to it moves `quad_hover` and every vehicle golden. Module-API stage 1 kept the module identity out of it for the same reason.
+   - Two routes: an identity in the snapshot header, as stage 1 did for modules; or `ReplayConfig` at the next deliberate golden regeneration.
 5. **The world's physics records.** Turbulence, contact and grid parameters live in `WorldInstanceDesc` today, set in code, and are not in the world file. Under the split they belong to the world, so they wait on Core's world file v3 (module set, regions), not on the scene.
 6. **Frames.**
    - A start orientation is the design frame in Spade's axes (Y up). The compiler has already turned Kat's +Z-thrust axes with a signed permutation (`DBE-015`).
@@ -95,11 +102,11 @@ The scene composes into one runnable world, in this order:
 
 ## Requirements
 
-- **SCN-001** A scene MUST name its world by a path relative to the scene file, and MUST pin the world by its content hash. A mismatch MUST be refused with the cause.
+- **SCN-001** A scene MUST name its world by a path relative to the scene file, and MUST pin the world by the hash of the world file's canonical text. The hash MUST NOT cover files the world references. A mismatch MUST be refused with the cause.
 - **SCN-002** A scene file MUST be canonical text: its bytes MUST be a pure function of its content, and every float MUST round-trip bit for bit.
 - **SCN-003** Loading MUST reject unknown, missing and duplicate keys. It MUST validate through one function that the scene builder also calls.
 - **SCN-004** Names MUST be unique within each section.
 - **SCN-005** Composition MUST add asset colliders and spawn vehicles in scene order, and MUST be deterministic (`DBE-010`).
-- **SCN-006** The scene's vehicle list, with model versions and order, MUST enter the configuration hash (`DBE-005`, `DBE-010`).
-- **SCN-007** Composition MUST size the world's capacities exactly from the scene.
+- **SCN-006** The scene's vehicle list, with model versions and order, MUST enter the run's configuration identity (`DBE-005`, `DBE-010`). Core chooses the mechanism.
+- **SCN-007** Composition MUST size the world's capacities from the scene's contents plus its `spare` counts. Each `spare` count MUST default to 0.
 - **SCN-008** A scene MUST hold engine content only: no slots, presets, brands or tuning (`DBE-014`).
