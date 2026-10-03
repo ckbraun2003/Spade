@@ -1,7 +1,7 @@
-// spade::scene's arithmetic helpers (scene/compose.hpp): the asset-pose
-// composition and the design-to-principal frame turn. Plan:
+// spade::scene's asset-pose helper (scene/compose.hpp): an asset's collider
+// transform posed by the asset. Plan:
 // docs/design/interface/plans/2026-10-03-scene-composer-plan.md, with Core's
-// review. These need none of the scene-file types, so they land first; the
+// review. It needs none of the scene-file types, so it lands first; the
 // composer's own tests follow with Core's schema and transform_of().
 
 #include <gtest/gtest.h>
@@ -14,21 +14,15 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "scene/compose.hpp"
-#include "sim/simulation.hpp"
 #include "world/sdf.hpp"
 
 namespace {
 
 using spade::SdfTransform;
-using spade::VehicleSpawn;
 
 // The bytes config_hash folds: two transforms are "the same" only if these are.
 bool same_bytes(const SdfTransform& a, const SdfTransform& b) {
     return std::memcmp(&a, &b, sizeof(SdfTransform)) == 0;
-}
-
-bool same_bytes(const VehicleSpawn& a, const VehicleSpawn& b) {
-    return std::memcmp(&a, &b, sizeof(VehicleSpawn)) == 0;
 }
 
 // A pose as WorldBuilder stores it: world_to_local = transpose(R) / s with the
@@ -100,59 +94,4 @@ TEST(SceneComposeTransform, ComposingTwiceGivesTheSameBytes) {
     const SdfTransform asset = builder_style(glm::vec3(2.0f, 0.5f, -3.0f), kTilt, 0.8f);
     EXPECT_TRUE(same_bytes(spade::scene::compose_transform(collider, asset),
                            spade::scene::compose_transform(collider, asset)));
-}
-
-// An airframe whose design and principal axes agree spawns exactly as a
-// direct spawn() with the same start does today.
-TEST(SceneDesignToPrincipal, AnIdentityRotationLeavesTheStartBitwise) {
-    VehicleSpawn start;
-    start.pos = glm::vec3(0.0f, 0.3f, -8.0f);
-    start.orient = kTilt;
-    start.vel = glm::vec3(1.0f, -0.0f, 2.0f);
-    start.omega_body = glm::vec3(0.1f, -0.0f, 0.3f);
-    start.rotor_omega = 452.0f;
-    EXPECT_TRUE(same_bytes(spade::scene::design_to_principal(start, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)), start));
-}
-
-// -q is the same rotation as q, so the negated identity also leaves the start
-// bitwise, rather than flipping the orientation's sign.
-TEST(SceneDesignToPrincipal, ANegatedIdentityRotationLeavesTheStartBitwise) {
-    VehicleSpawn start;
-    start.orient = kTilt;
-    start.omega_body = glm::vec3(0.1f, -0.0f, 0.3f);
-    EXPECT_TRUE(same_bytes(spade::scene::design_to_principal(start, glm::quat(-1.0f, 0.0f, 0.0f, 0.0f)), start));
-}
-
-// Core's rule (2026-10-03): orientation  orient_design x conj(q),
-// body rates  rotate(q, omega_design); velocity is world-frame and stays,
-// and so does rotor_omega.
-TEST(SceneDesignToPrincipal, ItTurnsOrientationAndBodyRatesAndNothingElse) {
-    VehicleSpawn start;
-    start.pos = glm::vec3(0.0f, 0.3f, -8.0f);
-    start.orient = kTilt;
-    start.vel = glm::vec3(1.0f, 0.0f, 2.0f);
-    start.omega_body = glm::vec3(0.1f, 0.2f, 0.3f);
-    start.rotor_omega = 452.0f;
-    const glm::quat q = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-
-    const VehicleSpawn out = spade::scene::design_to_principal(start, q);
-    const glm::quat want_orient = start.orient * glm::conjugate(q);
-    const glm::vec3 want_omega = q * start.omega_body;
-    EXPECT_NEAR(std::fabs(glm::dot(out.orient, want_orient)), 1.0f, 1e-6f);
-    EXPECT_NEAR(glm::length(out.omega_body - want_omega), 0.0f, 1e-6f);
-    EXPECT_EQ(out.pos, start.pos);
-    EXPECT_EQ(out.vel, start.vel);
-    EXPECT_EQ(out.rotor_omega, start.rotor_omega);
-}
-
-// The turn and its inverse undo each other, so no frame is lost on the way.
-TEST(SceneDesignToPrincipal, TheInverseRotationUndoesIt) {
-    VehicleSpawn start;
-    start.orient = kTilt;
-    start.omega_body = glm::vec3(0.1f, 0.2f, 0.3f);
-    const glm::quat q = glm::angleAxis(0.9f, glm::normalize(glm::vec3(1.0f, 0.2f, 0.5f)));
-    const VehicleSpawn back =
-        spade::scene::design_to_principal(spade::scene::design_to_principal(start, q), glm::conjugate(q));
-    EXPECT_NEAR(std::fabs(glm::dot(back.orient, start.orient)), 1.0f, 1e-6f);
-    EXPECT_NEAR(glm::length(back.omega_body - start.omega_body), 0.0f, 1e-6f);
 }

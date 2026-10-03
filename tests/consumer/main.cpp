@@ -35,7 +35,7 @@
 #include <cstdio>
 #include <filesystem>
 
-#include <glm/gtc/quaternion.hpp>
+#include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
 
 #include "scene/compose.hpp"
@@ -130,19 +130,17 @@ int main() {
         static_cast<double>((*state)->pos.z), static_cast<double>((*state)->vel.x),
         static_cast<double>((*state)->vel.y), static_cast<double>((*state)->vel.z));
 
-    // spade::scene, installed: a quarter turn about +Y moves a design-frame
-    // body rate about +X onto the principal frame's -Z axis.
-    spade::VehicleSpawn start;
-    start.omega_body = glm::vec3(1.0f, 0.0f, 0.0f);
-    const spade::VehicleSpawn turned =
-        spade::scene::design_to_principal(start, glm::angleAxis(1.5707964f, glm::vec3(0.0f, 1.0f, 0.0f)));
-    if (!(turned.omega_body.z < -0.999f)) {
-        std::fprintf(stderr, "spade::scene::design_to_principal gave omega_body=(%f, %f, %f)\n",
-                     static_cast<double>(turned.omega_body.x), static_cast<double>(turned.omega_body.y),
-                     static_cast<double>(turned.omega_body.z));
+    // spade::scene, installed: an asset at the identity pose leaves its
+    // collider's transform unchanged (compose_transform's short-cut (a)).
+    spade::SdfTransform collider{};
+    collider.world_to_local[3] = glm::vec4(1.0f, 2.0f, 3.0f, 1.0f);
+    collider.scale = 2.0f;
+    const spade::SdfTransform posed = spade::scene::compose_transform(collider, spade::SdfTransform{});
+    if (!(posed.world_to_local == collider.world_to_local && posed.scale == collider.scale)) {
+        std::fprintf(stderr, "spade::scene::compose_transform changed a collider at the identity pose\n");
         return 1;
     }
-    std::printf("spade::scene OK: design_to_principal turned the body rate onto -Z\n");
+    std::printf("spade::scene OK: compose_transform kept the collider at the identity pose\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).

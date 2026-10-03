@@ -6,16 +6,17 @@
 // module's meaning, because it is the world model; Interface implements it.
 // Plan: docs/design/interface/plans/2026-10-03-scene-composer-plan.md.
 //
-// This first cut holds the composer's two arithmetic helpers, which need none
-// of the scene-file types. compose(), compose_file() and instantiate() follow
-// when Core lands transform_of() and the scene-file schema (SceneDesc).
+// This first cut holds the asset-pose helper, which needs none of the
+// scene-file types. compose(), compose_file() and instantiate() follow when
+// Core lands transform_of() and the scene-file schema (SceneDesc).
+//
+// A vehicle's start stays in its design frame here: instantiate() hands it to
+// Simulation::spawn() unchanged, and spawn applies the model's design-to-body
+// rotation and centre-of-mass offset (DBP-45, DBP-46; Core owns spawn).
 // ---------------------------------------------------------------------------
 #pragma once
 
-#include <glm/gtc/quaternion.hpp>
-
-#include "sim/simulation.hpp"  // VehicleSpawn
-#include "world/sdf.hpp"       // SdfTransform
+#include "world/sdf.hpp"  // SdfTransform
 
 namespace spade::scene {
 
@@ -34,15 +35,5 @@ namespace spade::scene {
 // "Exactly the identity" compares values, so a -0 entry counts as 0: the
 // builder stores the identity pose's translation as -0.
 [[nodiscard]] SdfTransform compose_transform(const SdfTransform& collider, const SdfTransform& asset_pose);
-
-// Turns a vehicle's start from its design frame into its principal-axis body
-// frame (DBE-013), using the model's design_to_principal rotation q:
-//   orientation  orient_design x conj(q)
-//   body rates   rotate(q, omega_body_design)
-// Velocity is world-frame and unchanged, and so are the position and
-// rotor_omega. An exactly-identity q, (1, 0, 0, 0) or (-1, 0, 0, 0), returns
-// the start untouched, so an airframe whose axes already agree spawns
-// bit-identical to a direct spawn().
-[[nodiscard]] VehicleSpawn design_to_principal(const VehicleSpawn& start_design, const glm::quat& q_d2p);
 
 }  // namespace spade::scene
