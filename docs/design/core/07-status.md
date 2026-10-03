@@ -1,6 +1,6 @@
 # Core — status: specified vs built
 
-**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`332a186`** (2026-10-02): nothing in Core's code changed after `8009587` except the merged install fix, so every row holds there. The module rows, the snapshot row and the debt were updated at **`062e1fa`** (2026-10-03), the merge of module-API stage 1. The GPU-chain and per-pass refusal rows were updated at **`dca7cfb`** (2026-10-03), the merge of stage 2. The only measured results are the branch runs named in a row, each with its tree.
+**Owner:** Core. The only Core document that describes the present. Checked against the tree at **master `0dd8bdc`** (2026-10-01) by reading the code and CMake, and re-checked at **`332a186`** (2026-10-02): nothing in Core's code changed after `8009587` except the merged install fix, so every row holds there. The module rows, the snapshot row and the debt were updated at **`062e1fa`** (2026-10-03), the merge of module-API stage 1. The GPU-chain and per-pass refusal rows were updated at **`dca7cfb`** (2026-10-03), the merge of stage 2, and the field row at **`42b352a`** (2026-10-03), the merge of stage 3. The only measured results are the branch runs named in a row, each with its tree.
 
 ## Specified vs built
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | Modules declare state, fields, components, passes, grades | **Passes only** (module-API stage 1, merged `062e1fa`). A `ModuleDesc` declares passes with phase, placement, access and edges. `Simulation::create()` takes a module set, which defaults to the standard set of nine built-ins, and still registers every array itself | `sim/module.hpp`, `sim/standard_modules.cpp` |
 | Scheduler phases, placement by reads/writes | **Built for the CPU** (plan stage 1). `compile_schedule` orders a module set's passes into the six phases by declared access, placement and edges. It refuses a conflict, a dangling edge or a cycle. The standard set compiles to the old ten-pass order, and the CPU step runs the compiled list. Measured on the branch tree (`spade-wt/core`, msvc-ninja-release) at `25f3c8a`: full suite 959 total, 0 failed, 2 skipped, all 70 `Gpu*` passed, no golden moved | `sim/module_schedule.cpp` |
-| GPU chain derived from the schedule | **Yes** (module-API stage 2, merged `dca7cfb`). Each pass names a GPU recipe, a built-in kernel, and may name only its own CPU function's recipe (`compile_schedule` refuses anything else). `Simulation::create()` hands `gpu_passes(schedule)` to the backend, and the recorder walks it every substep. The standard set records the same dispatches and barriers as before, 9 + S per substep. Timings are per pass, by name. Measured on the branch: full suite 992 total, 0 failed, 2 skipped, all 82 `Gpu*` passed (msvc-ninja-release); the gcc-13 Docker leg passed on `ec37857` | `compute/vulkan/step_recorder.cpp`, `sim/standard_modules.cpp` |
+| GPU chain derived from the schedule | **Yes** (module-API stage 2, merged `dca7cfb`). Each pass names a GPU recipe, a built-in kernel, and may name only its own CPU function's recipe (`compile_schedule` refuses anything else). `Simulation::create()` hands `gpu_passes(schedule)` to the backend, and the recorder walks it every substep. The standard set records 11 + S dispatches per substep since stage 3, which added the two field-sample kernels; until then it recorded the same dispatches and barriers as before stage 2, 9 + S. Timings are per pass, by name. Measured on the branch: full suite 992 total, 0 failed, 2 skipped, all 82 `Gpu*` passed (msvc-ninja-release); the gcc-13 Docker leg passed on `ec37857` | `compute/vulkan/step_recorder.cpp`, `sim/standard_modules.cpp` |
 | Registered, world-partitioned state | **Yes.** 11 arrays, 22 walk entries with their `slot_to_world` siblings. Lowest-free-slot allocation | `state/arenas.*`, `state/registry.*` |
 | Snapshot, restore refusing a different config | **Yes.** Format version 2. The header carries the module set's configuration identity, and `Simulation::restore` refuses another one. The config hash lives in the `replay_config` row, which is pinned at walk position 16 | `state/snapshot.*`, `sim/simulation.*` |
 | Reseed (`engine A3`), cursor split (`engine A4`) | **Yes** | `Simulation::reseed`, sensor rows |
@@ -16,7 +16,7 @@
 | Many worlds, batching invariance | **Yes**, tested | `sim/`, `physics/grid.*` |
 | World description, file schema v2 | **Yes**, with v1 upgrade on load | `world/builder.*`, `world/world_file.*` |
 | Regions | **No.** Nothing in the code or the KAT-era docs. The world is the only partition | — |
-| Field registry and sampling | **No registry.** One field family (medium), one provider per world (Dryden over a constant), position-independent. `Simulation::sample_medium(world, pos)` reads it from the host (merged `ceb4aef`) | `world/medium.*`, `sim/simulation.*` |
+| Field registry and sampling | **Built for gravity, density and wind** (module-API stage 3, merged `42b352a`). A module declares the fields it provides: scalar, vec3, or a band array of 1 to 32 floats. `compile_schedule` refuses a read with no provider, two providers, a built-in of another kind or unit, and a write outside the provider or outside Fields. Two providers, `environment.sample` and `dryden.sample`, write each world's scratch sample row once per substep in Fields, on both backends (11 + S dispatches). Rotors, drag and Integrate read it, bitwise the old inline values. Position-dependent providers and per-point sample points wait for SPH. `Simulation::sample_medium(world, pos)` still reads the provider's CPU function on current state. Measured on the branch: full suite 1013 total, 0 failed, 2 skipped, 83 `Gpu*` passed; the gcc-13 leg passed on `b425a2a` | `world/medium.*`, `sim/simulation.*` |
 | Object graph, frozen component ids, JSON | **Yes**, but not wired into stepping: `Simulation` holds no `ObjectGraph` | `objects/` |
 | Attach/detach queue to step boundaries (`SL4`) | **No.** They mutate at once. Harmless until objects take part in stepping | `objects/graph.*` |
 | Behaviors | **CPU only**, as the two placed passes of the `behaviors` module: kinematic first in Fields, force last in Forces. Read/write masks are declared but not consumed. `record_gpu` is stored and never called | `objects/behavior.*` |
@@ -31,10 +31,15 @@ None open. The sensor dedup was ruled on 2026-10-02: the module API absorbs it (
 
 ## Next
 
-- **Module API, stage 3: fields and sample buffers** (`plans/2026-10-03-module-api-stage3-plan.md`, approved). It starts once Physics' `integrator.hpp` comment sweep lands.
+- **The drone builder, Core's part** (`plans/2026-10-03-drone-builder-core-plan.md`, approved). It has four tasks:
+  - A: `transform_of` public;
+  - B: the design frame (spawn and `vehicle_state`);
+  - C: snapshot format v3 with the model registry's identity;
+  - D: the scene-file schema.
+- **Module API, stage 4: modules own their state** (`CORE-4`). Its plan follows the drone-builder work.
   - The spec was approved 2026-10-02 (`plans/2026-10-02-module-api-design.md`).
-  - Stage 1 is merged (`062e1fa`), and so is stage 2 (`dca7cfb`).
-  - Stages 4 to 6 follow: modules owning state (where the IMU/GNSS pairs collapse, `CORE-4`), grades and roles, and the translation lock.
+  - Stages 1, 2 and 3 are merged (`062e1fa`, `dca7cfb`, `42b352a`).
+  - Stages 5 and 6 follow: grades and roles, then the translation lock.
 
 ## Debt
 

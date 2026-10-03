@@ -9,6 +9,7 @@
 - **Slots are assigned deterministically.** The lowest free slot is taken, in call order, and a freed slot is zeroed. Buffer order follows slot assignment, never object-graph order (`SL3`).
 - **Registration order is the schema.** The registry walk defines snapshot section order and digest order. New arrays are appended. Doing so changes the schema hash, not the blob format version.
 - **Modules register their own state.** This replaces the KAT-era rule that the state arrays were frozen. Derived GPU storage (mirrors, grid keys, scratch) is never registered.
+- **Field sample rows are scratch** (module-API stage 3). Each world's row of field samples, such as gravity, density and wind, is rewritten by its providers in the Fields phase of every substep, before any reader runs. So it is not registered, not in any snapshot, and not in any digest. A restored run recomputes it in its first substep.
 - **Element layouts are std430 PODs.** Field offsets are pinned with `static_assert`s, and Slang mirrors them through generated checks (`engine D9`). A POD's layout is a wire contract, so it is not reordered.
 
 ## Many worlds

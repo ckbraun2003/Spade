@@ -4,6 +4,22 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API, stage 3: fields and sample buffers (2026-10-03)
+
+- **Fields.** A module declares the fields it provides (`ModuleDesc::fields`): scalar, vec3, or a band array of 1 to 32 floats for the acoustic and RF fields to come. A pass reads or writes `field.<name>`. `compile_schedule` refuses:
+  - a read with no provider;
+  - two providers of one field;
+  - a built-in field declared with another kind or unit;
+  - a write outside the provider module or outside the Fields phase.
+- **Gravity, density and wind are fields.**
+  - The new stateless `environment` module (`environment.sample`) and the Dryden module's `dryden.sample` write each world's sample row once per substep, on both backends.
+  - Rotors, drag and Integrate read it: the same values, bit for bit.
+  - `Simulation::field_samples(world)` is a diagnostic read of a row.
+  - `physics::integrate_bodies` gains an overload taking gravity by value; the `WorldParams` overload forwards to it.
+- **The Vulkan chain is 11 + S dispatches per substep:** two field-sample kernels, `field_environment` and `field_dryden`. The bench reports them as `gpu_pass.*` counters.
+- **The standard set's configuration identity changed** (a new module and pass), so a snapshot taken before this change is refused by `Simulation::restore` (`docs/design/consumers.md`).
+- **Merged as `42b352a`.** Measured on the branch at `b425a2a`: 1013 tests, 0 failed, 2 skipped by design, all 83 GPU tests passed; the gcc-13 leg passed. No golden moved.
+
 ### Module API, stage 2: the GPU chain is the schedule's (2026-10-03)
 
 - **The Vulkan step records the compiled module schedule.** Each pass names a GPU recipe (`compute::GpuRecipe`), a built-in kernel, and may name only the recipe of its own CPU function. Any module set whose passes all have one runs on Vulkan in the schedule's order. A pass with none is refused at `Simulation::create()`, by name. `Simulation::vulkan_recorded_chain()` reports what was recorded. `compute::VulkanBackend::create()` now takes the GPU chain to record (`modules::gpu_passes()` of a compiled schedule) as a third argument.
