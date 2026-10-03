@@ -602,6 +602,8 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     add_binding(self->grid_params_.binding, self->grid_params_.device_buffer, self->grid_params_.byte_size);
     add_binding(self->grid_entries_.binding, self->grid_entries_.device_buffer, self->grid_entries_.byte_size);
 
+    self->bound_binding_count_ = static_cast<uint32_t>(layout_bindings.size());
+
     VkDescriptorSetLayoutCreateInfo set_layout_info{};
     set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_layout_info.bindingCount = static_cast<uint32_t>(layout_bindings.size());

@@ -89,6 +89,10 @@ public:
     // mirror was created for.
     [[nodiscard]] Result<void> upload(const ArenaSet& arenas);
 
+    // How many bindings create() wrote into the descriptor set. A diagnostic:
+    // it should equal the generated registry's gen::kBindingCount_state.
+    [[nodiscard]] uint32_t bound_binding_count() const noexcept { return bound_binding_count_; }
+
     // The reverse of upload(): device buffers -> `arenas`. Same shape check,
     // same failure taxonomy. On any failure, no destination byte for the
     // array that failed (or any array after it in the walk) is written --
@@ -229,6 +233,7 @@ private:
     VkDescriptorSet set_ = VK_NULL_HANDLE;
 
     std::vector<Entry> entries_;  // one per registered walk entry
+    uint32_t bound_binding_count_ = 0;
 
     // The DERIVED buffers -- none is part of the registered walk, all are
     // backend-internal (bindings.slang sections C and C'). Declared as Entry

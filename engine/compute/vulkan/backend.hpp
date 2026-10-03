@@ -227,6 +227,10 @@ public:
     // StepRecorder::recorded_chain(). A diagnostic for tests.
     [[nodiscard]] RecordedChain recorded_chain() const noexcept;
 
+    // How many bindings the state mirror wrote into the descriptor set --
+    // forwards to StateMirror::bound_binding_count(). A diagnostic for tests.
+    [[nodiscard]] uint32_t bound_binding_count() const noexcept;
+
 private:
     VulkanBackend();
 
