@@ -173,7 +173,7 @@ stage() {
 # A module added to the install rules but not here makes the install stage fail
 # on the missing archive, so this list cannot drift into a silent pass.
 lib_targets=(spade_core spade_state spade_world spade_objects spade_physics
-             spade_render spade_sim spade_vehicles)
+             spade_render spade_sim spade_vehicles spade_scene)
 [ "$vulkan" = ON ] && lib_targets+=(spade_compute)
 
 from_build_mode() {

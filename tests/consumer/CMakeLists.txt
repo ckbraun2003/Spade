@@ -100,6 +100,7 @@ target_compile_features(spade_consumer_smoke PRIVATE cxx_std_23)
 # spadeConfig.cmake.in's check expects, it does not itself consume it.
 target_link_libraries(spade_consumer_smoke PRIVATE
     spade::sim
+    spade::scene
     spade::vehicles
     glm::glm
 )

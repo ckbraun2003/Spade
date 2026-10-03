@@ -35,8 +35,10 @@
 #include <cstdio>
 #include <filesystem>
 
+#include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
+#include "scene/compose.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "world/builder.hpp"
@@ -127,6 +129,20 @@ int main() {
         static_cast<double>((*state)->pos.x), static_cast<double>((*state)->pos.y),
         static_cast<double>((*state)->pos.z), static_cast<double>((*state)->vel.x),
         static_cast<double>((*state)->vel.y), static_cast<double>((*state)->vel.z));
+
+    // spade::scene, installed: a quarter turn about +Y moves a design-frame
+    // body rate about +X onto the principal frame's -Z axis.
+    spade::VehicleSpawn start;
+    start.omega_body = glm::vec3(1.0f, 0.0f, 0.0f);
+    const spade::VehicleSpawn turned =
+        spade::scene::design_to_principal(start, glm::angleAxis(1.5707964f, glm::vec3(0.0f, 1.0f, 0.0f)));
+    if (!(turned.omega_body.z < -0.999f)) {
+        std::fprintf(stderr, "spade::scene::design_to_principal gave omega_body=(%f, %f, %f)\n",
+                     static_cast<double>(turned.omega_body.x), static_cast<double>(turned.omega_body.y),
+                     static_cast<double>(turned.omega_body.z));
+        return 1;
+    }
+    std::printf("spade::scene OK: design_to_principal turned the body rate onto -Z\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).

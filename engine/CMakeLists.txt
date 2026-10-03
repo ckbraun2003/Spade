@@ -819,6 +819,40 @@ install(TARGETS spade_vehicles
 install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
+# spade_scene: composing a scene (a world reference plus assets and vehicles)
+# into a runnable world -- the drone-builder joint spec, section 3, approved by
+# the user 2026-10-03. Core owns the module's meaning (the world model);
+# Interface implements it (docs/design/interface/plans/
+# 2026-10-03-scene-composer-plan.md). Installed and exported, because Kat
+# composes scenes too and links only installed targets (SL2b).
+#
+# It links spade::world and spade::sim only; vehicles::ModelType reaches it
+# through sim. spade_fp_strict, because the composed transforms land in the
+# SDF program that config_hash folds.
+# ------------------------------------------------------------------------------
+add_library(spade_scene STATIC
+    scene/compose.cpp
+)
+add_library(spade::scene ALIAS spade_scene)
+set_target_properties(spade_scene PROPERTIES EXPORT_NAME scene)
+target_include_directories(spade_scene PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(spade_scene
+    PUBLIC spade::world spade::sim
+    PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings> $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+target_compile_features(spade_scene PUBLIC cxx_std_23)
+
+install(TARGETS spade_scene
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
+
+# ------------------------------------------------------------------------------
 # spade_compute (S6 Task 1): the v2 Vulkan compute backend scaffold --
 # compute/backend.hpp's BackendKind/BackendDesc descriptors (no Vulkan
 # header; any consumer can use them without pulling in Vulkan at all) and
