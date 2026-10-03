@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
-// medium_update.slang (S6 Task 8) -- the MediumUpdate pass, ported from
-// engine/physics/schedule.cpp's pass_medium_update(). Slot 0 of the schedule,
-// and the first dispatch of every substep.
+// medium_update.slang (S6 Task 8) -- the dryden.advance pass, ported from
+// engine/physics/schedule.cpp's pass_medium_update(). A Fields pass, and in the
+// standard set the first dispatch of every substep.
 //
 // The whole pass is one line on the CPU:
 //

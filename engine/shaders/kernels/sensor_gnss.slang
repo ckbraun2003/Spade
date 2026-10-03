@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// sensor_gnss.slang -- the SensorSynthesis pass's GNSS contribution, ported
+// sensor_gnss.slang -- GNSS fix synthesis on the device, ported
 // from engine/sensors/gnss.cpp's synthesize_gnss(). It is the gnss.synthesize
 // pass of the Sensors phase, beside imu.synthesize: the two share no quantity,
 // so the schedule may order them either way. (Before the module API they

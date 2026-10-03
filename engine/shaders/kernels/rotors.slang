@@ -1,12 +1,12 @@
 // ---------------------------------------------------------------------------
-// rotors.slang (S6 Task 8) -- the RotorElement half of the ForceElements pass,
+// rotors.slang (S6 Task 8) -- the rotor.forces pass (RotorElement forces),
 // ported from engine/vehicles/rotor.cpp's apply_rotors(). The op order in that
 // file's numbered steps 1-7 IS the parity contract (rotor.hpp's own note:
 // "this file is only its evaluation order, which is the CPU<->GPU parity
 // contract (P1/P2, D11)"), and every step below cites the lines it mirrors.
 //
 // ===========================================================================
-// IT IS THE FIRST OF TWO DISPATCHES IN ONE SCHEDULE SLOT, AND THE ORDER IS A
+// IT RUNS BEFORE drag.forces (forces_drag.slang), AND THE ORDER IS A
 // NUMERICAL CONTRACT
 //
 // The schedule runs, per world, rotor.forces before drag.forces:

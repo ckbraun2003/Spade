@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// forces_drag.slang (S6 Task 6) -- the DragBody half of the ForceElements pass,
+// forces_drag.slang (S6 Task 6) -- the drag.forces pass (DragBody forces),
 // ported from engine/physics/forces.cpp's apply_drag().
 //
 // ===========================================================================
