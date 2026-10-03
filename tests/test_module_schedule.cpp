@@ -7,9 +7,14 @@
 #include <string_view>
 #include <vector>
 
+#include "compute/backend.hpp"
 #include "physics/schedule.hpp"
 #include "sim/module.hpp"
+#include "sim/simulation.hpp"
+#include "sim/world_set.hpp"
 #include "vehicles/rotor.hpp"  // RotorRow complete: schedule.hpp only forward-declares it
+#include "world/builder.hpp"
+#include "world/medium.hpp"
 
 namespace {
 
@@ -272,4 +277,94 @@ TEST(StandardModules, DroppingDragsEdgeChangesTheOrderAndTheIdentity) {
     EXPECT_EQ(names(*without)[2], "drag.forces");
     EXPECT_EQ(names(*without)[3], "rotor.forces");
     EXPECT_NE(without->identity, with_edge->identity);
+}
+
+namespace {
+
+// A developer module: one pass that holds body 0 of every world up against
+// gravity by adding m*(-g) to force_acc. Mass 2 (a power of two) makes the
+// cancellation in Integrate exact.
+void hover_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    for (const spade::physics::WorldSubstepView& w : ctx.worlds) {
+        spade::BodyState& b = w.bodies[0];
+        b.force_acc += -b.mass * w.params->gravity;
+    }
+}
+constexpr QuantityAccess kHoverAccess[] = {{"body.wrench", Access::accumulate}};
+constexpr PassDecl kHoverPasses[] = {
+    {.name = "lift", .phase = Phase::forces, .access = kHoverAccess, .cpu = &hover_pass}};
+
+[[nodiscard]] spade::WorldSetDesc one_body_world() {
+    auto world = spade::WorldBuilder()
+                     .name("m")
+                     .environment(spade::Environment{})
+                     .capacities(spade::Capacities{1, 1, 1, 1})
+                     .build();
+    spade::WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    return spade::WorldSetDesc{{inst}};
+}
+
+}  // namespace
+
+TEST(ModuleSimulation, TheDefaultSetIsTheStandardSet) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto standard = compile_schedule(spade::modules::standard_modules());
+    EXPECT_EQ(sim->schedule().identity, standard->identity);
+}
+
+TEST(ModuleSimulation, ADeveloperModulePlugsInOnTheCpu) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = kHoverPasses});
+    auto held = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    auto falling = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(held.has_value()) << held.error().context;
+    ASSERT_TRUE(falling.has_value()) << falling.error().context;
+    spade::BodySpawn body;
+    body.mass = 2.0f;
+    const auto held_ref = held->spawn(0, body);
+    const auto falling_ref = falling->spawn(0, body);
+    ASSERT_TRUE(held_ref.has_value() && falling_ref.has_value());
+    ASSERT_TRUE(held->step(10).has_value());
+    ASSERT_TRUE(falling->step(10).has_value());
+    const auto h = held->body(*held_ref);
+    const auto f = falling->body(*falling_ref);
+    ASSERT_TRUE(h.has_value() && f.has_value());
+    EXPECT_EQ((*h)->vel, glm::vec3(0.0f)) << "the module's lift cancels gravity exactly";
+    EXPECT_LT((*f)->vel.y, 0.0f) << "without the module the body falls";
+}
+
+TEST(ModuleSimulation, ScheduleNamesOutliveTheStringsThatNamedThem) {
+    std::string name = "hover";
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = name, .passes = kHoverPasses});
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    name.assign("xxxxx");  // a view into `name` would now read "xxxxx"
+    bool found = false;
+    for (const auto& pass : sim->schedule().passes) found = found || pass.module == "hover";
+    EXPECT_TRUE(found) << "the compiled schedule must own its module names";
+}
+
+TEST(ModuleSimulation, ANonStandardSetOnVulkanIsRefusedUntilStage2) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = kHoverPasses});
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
+                                               set);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
+    EXPECT_NE(sim.error().context.find("module set"), std::string::npos) << sim.error().context;
+}
+
+TEST(ModuleSimulation, AnInvalidSetIsRefusedAtCreate) {
+    static constexpr QuantityAccess misspelt[] = {{"body.wrnch", Access::accumulate}};
+    static constexpr PassDecl bad[] = {{.name = "x", .phase = Phase::forces, .access = misspelt, .cpu = &noop}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "bad", .passes = bad});
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::invalid_argument);
 }
