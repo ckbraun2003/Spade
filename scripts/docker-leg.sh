@@ -122,6 +122,30 @@ do_test() {
     return "${PIPESTATUS[0]}"
 }
 
+# Rendering's agreement matrix prints one `agreement: ...` line per case on
+# every run (d and d_probe at %.17g, toolchain named), but ctest shows a
+# passing test's output only with -V. So its cases are re-run verbosely to
+# collect the lines for the band file's gcc-release attestation. A commit
+# without the matrix has nothing to collect; one with it must give a line per
+# registered case (TD-5). Whether the cases pass is the test part's business.
+agreement_pattern='^Active/AgreementMatrix\.'
+do_agreement() {
+    local registered found
+    registered=$(ctest --test-dir "$build" -N -R "$agreement_pattern" | sed -n 's/^Total Tests: //p')
+    if [ "${registered:-0}" = 0 ]; then
+        : > "$out/agreement.txt"
+        agreement_note="no agreement matrix in this commit"
+        echo "docker-leg: $agreement_note"
+        return 0
+    fi
+    ctest --test-dir "$build" -R "$agreement_pattern" -V 2>&1 \
+        | sed 's/^[0-9]*: //' | grep '^agreement: ' > "$out/agreement.txt"
+    found=$(wc -l < "$out/agreement.txt")
+    agreement_note="$found line(s) for $registered registered case(s) (agreement.txt)"
+    echo "docker-leg: $agreement_note"
+    [ "$found" -eq "$registered" ]
+}
+
 # The consumer half is Interface's recipe; a commit without it fails (TD-5).
 do_consumer() {
     local mode=$1
@@ -143,6 +167,7 @@ echo "docker-leg: memory limit $(cat /sys/fs/cgroup/memory.max 2>/dev/null || ec
 echo "docker-leg: started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 gpu_excluded=
+agreement_note=
 t_start=$SECONDS
 
 if [ "$step" = all ] || [ "$step" = configure ]; then
@@ -155,6 +180,8 @@ fi
 if [ "$step" = all ] || [ "$step" = test ]; then
     if [ "$step" = all ] && ! passed build; then block test build
     else run_part test do_test; fi
+    if [ "$step" = all ] && ! passed build; then block agreement build
+    else run_part agreement do_agreement; fi
 fi
 if [ "$step" = all ] || [ "$step" = consumer ]; then
     if [ "$step" = all ] && ! passed build; then block "consumer ON" build
@@ -184,6 +211,7 @@ for p in "${parts[@]}"; do passed "$p" || result=FAIL; done
         echo "gpu         ${gpu_excluded:-?} excluded with -LE gpu (TD-13)"
         echo "viewer      full-length trajectories (SPADE_FULL_VIEWER_TRAJECTORIES=1)"
         echo "registered  $(wc -l < "$out/tests.txt") test names (tests.txt)"
+        echo "agreement   ${agreement_note:-not collected}"
         sed -n '/^The following tests did not run:/,/^$/p; /^The following tests FAILED:/,/^$/p' "$out/ctest.log"
     fi
 } > "$summary"
