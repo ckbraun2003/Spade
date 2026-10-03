@@ -35,7 +35,13 @@
 - **The state mirror is derived storage.** It uploads and reads back every registered array, and calls nothing that registers state.
 - **Record once per shape.** The whole substep chain is recorded once and resubmitted per step. The only per-step input is the tick, written through a persistently mapped buffer.
 - **A barrier between every adjacent pair of dispatches, none after the last.** The last dispatch is found from what was emitted, never from a tally (`CORE-2`).
-- **The chain is derived from the schedule** (target, `01-modules-and-scheduler.md`). Today it is a separate table.
+- **The chain is derived from the schedule** (module-API stage 2, `01-modules-and-scheduler.md`).
+  - Each pass names a GPU recipe (`compute::GpuRecipe`), a built-in kernel the recorder knows how to dispatch.
+  - A pass may name only the recipe of its own CPU function (`modules::builtin_cpu_for`), so the GPU never runs a different experiment from the CPU. `compile_schedule` refuses any other pairing on every backend.
+  - A pass with no recipe is refused on Vulkan at `create()`, by name.
+  - The recorder walks the compiled schedule's GPU passes (`modules::gpu_passes`) every substep. One recipe may record several dispatches (`collision_dynamic`'s build, sort stages and sweep) or none (the behavior recipes, `CORE-1`).
+  - Per-pass timings are reported by pass name.
+  - Developer kernels wait for the GPU module ABI.
 
 Kernels and their parity bands belong to the module that owns them (Physics for physics passes, Rendering for raster). The SPIR-V rules and the parity harness belong to Test/Docs.
 
