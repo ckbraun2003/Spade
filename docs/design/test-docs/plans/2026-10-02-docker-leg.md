@@ -52,7 +52,14 @@ One command on the development box builds a Linux/gcc image, builds a commit of 
   - The disk floor refused at `-MinFreeGB 999`.
   - The slot found two defects, both fixed: a bare `tar` launched from Git Bash is GNU tar (fixed by calling Windows' `tar.exe` by path), and two watchers both ran `docker rm`.
 - [x] **3. In-container steps** (`scripts/docker-leg.sh`): configure, build (`-k 0`), test, consumer, summary and exit code. Proof: `bash -n`; on my branch alone, `-Step consumer` fails with "consumer-smoke.sh is not in <sha>" (the `TD-5` control).
-  - Done without a container: the roots are overridable (`DOCKER_LEG_ROOT`, `DOCKER_LEG_OUT`), and stand-in tools drove 7 scenarios under Git Bash, 35 checks, all green. The `TD-5` absence control is one of them.
+  - Done without a container: the roots are overridable (`DOCKER_LEG_ROOT`, `DOCKER_LEG_OUT`), and stand-in tools (`cmake`, `ctest`, `gcc-13`, `consumer-smoke.sh`) drove 7 scenarios under Git Bash, 35 checks, all green. The harness stays out of the repo, by the lead's decision. The scenarios:
+    1. **all pass:** exit 0; every part PASS; the test totals, the excluded-`gpu` count, the registered names and the skipped test by name all reach the summary.
+    2. **build fails:** exit 1; test and consumer ON are BLOCKED by build, and consumer OFF still runs. The error is listed repo-relative (`engine/...:12:5: error: ...`) with no absolute source prefix, and the `FAILED:` line is kept.
+    3. **configure fails:** build is blocked by configure, test is blocked by build, and consumer OFF still runs.
+    4. **tests fail** (ctest exit 8): both consumer parts still run, and the failed test is named.
+    5. **`consumer-smoke.sh` absent:** both consumer parts fail, and the log names the missing script and the commit (`TD-5`).
+    6. **the recipe fails:** its exit code is carried into the summary.
+    7. **an unknown step:** usage, exit 2.
   - Controls: a build step that swallows its exit code fails 7 checks, and a leg that always exits 0 fails 5.
 - [ ] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
 - [ ] **5. Docs.**
