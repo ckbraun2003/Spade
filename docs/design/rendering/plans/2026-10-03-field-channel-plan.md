@@ -1,6 +1,6 @@
 # Field channel for cameras: plan
 
-**Owner:** Rendering, with Core for sampling and Interface for the drone heatmap. **Status:** draft, for the lead's review. This is item 2 of "Next for Rendering" (`../07-status.md`). It answers the backlog row "Field channels for cameras" (`../../backlog.md`).
+**Owner:** Rendering, with Core for sampling and Interface for the drone heatmap. **Status:** approved; Q1–Q3 answered by the lead on 2026-10-03 (Part A now; the slipstream field after stage 3, through `PHY-3`; per-pixel targets out of scope). Part A merged at `3605ddf`. This is item 2 of "Next for Rendering" (`../07-status.md`). It answers the backlog row "Field channels for cameras" (`../../backlog.md`).
 
 ## Goal
 

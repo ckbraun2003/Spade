@@ -35,10 +35,10 @@ A **camera** is a **technique** plus one or more **channels**. The same camera s
 | Colour, BGRX8 | Built on every backend |
 | Depth | Each backend has an internal depth buffer, but none exports it |
 | Object ID | None |
-| Field | None. The drone sim box draws its air-velocity heatmap from sandbox-side quads coloured by unlit palette materials, which shows the need (`../backlog.md`, "Field channels for cameras") |
+| Field | A field layer (`render/field_layer.hpp`, `3605ddf`): a world-space slice with one sample per cell, drawn on the CPU and GL. The caller supplies the samples until Core's stage 3 can sample a registered field (`plans/2026-10-03-field-channel-plan.md`, Part B) |
 | Velocity | `DrawMode::velocity` is a debug colour encoding of body velocity, not a channel |
 
-A field channel samples a field the camera requests from the published frame state, then maps it to colour through a declared palette and range. The palette and its binning are part of the channel's definition, so a CPU frame of a field is exact and testable, as the drone heatmap's exact-pixel test already is. **A field channel is data, not appearance:** no lighting, shadow or atmospheric term (`SR-17a`) may touch it. Today the CPU raster applies the atmospheric term to unlit materials too, so a caller drawing field cells must set its strength to 0.
+A field channel samples a field the camera requests from the published frame state, then maps it to colour through a declared palette and range. The palette and its binning are part of the channel's definition, so a CPU frame of a field is exact and testable, as the drone heatmap's exact-pixel test already is. **A field channel is data, not appearance:** no lighting, shadow or atmospheric term (`SR-17a`) may touch it. Field layers bypass materials, so both paths draw them exempt. An unlit material still takes the atmospheric term, so draw field data as a field layer, never as unlit meshes.
 
 ## Camera
 
