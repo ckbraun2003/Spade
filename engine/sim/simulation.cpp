@@ -261,6 +261,17 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
     if (!compiled) return std::unexpected(compiled.error());
     if (backend.kind == compute::BackendKind::vulkan) {
+        // A pass with no GPU kernel would be missing from the GPU chain: the
+        // GPU would run a different experiment from the CPU (L6). Refuse it by
+        // name. (A recipe can only be named with its own CPU function --
+        // compile_schedule checked that.)
+        for (const modules::CompiledPass& pass : compiled->passes) {
+            if (pass.gpu == compute::GpuRecipe::none) {
+                return std::unexpected(Error{Code::unavailable, "module set: pass '" + pass.module + "." +
+                                                                    pass.pass +
+                                                                    "' has no GPU kernel; it runs only on the CPU"});
+            }
+        }
         // Module-API plan stage 1: the GPU recorder still runs its own pass
         // table, which is the standard set's. Any other set would run a
         // different experiment on the GPU than on the CPU, silently (L6).

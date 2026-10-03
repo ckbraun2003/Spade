@@ -79,6 +79,10 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             if (static_cast<std::size_t>(p.phase) >= kPhaseCount) {
                 return std::unexpected(invalid(full + ": unknown phase"));
             }
+            if (p.gpu != compute::GpuRecipe::none && p.cpu != builtin_cpu_for(p.gpu)) {
+                return std::unexpected(
+                    invalid("pass '" + full + "' names a built-in GPU kernel but carries another CPU function"));
+            }
             if (by_name.contains(full)) {
                 return std::unexpected(invalid(full + ": declared twice"));
             }
@@ -186,9 +190,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         for (const std::size_t s : succs[best]) --indegree[s];
         const Node& nd = nodes[best];
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
-                                          nd.pass->phase, nd.pass->cpu});
+                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu});
     }
 
+    // The recipe is not folded: it is bound to the CPU function (checked above),
+    // and the identity spells names, versions and order, not functions.
     uint64_t h = rng::kFnv1aOffsetBasis;
     for (const ModuleDesc& m : modules) {
         h = fold_str(h, m.name);
@@ -204,6 +210,13 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_byte(h, static_cast<uint8_t>(p.phase));
     }
     out.identity = h;
+    return out;
+}
+
+std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
+    std::vector<compute::GpuPass> out;
+    out.reserve(schedule.passes.size());
+    for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu});
     return out;
 }
 

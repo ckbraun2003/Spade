@@ -182,6 +182,34 @@ struct StepShape {
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
 };
 
+// A built-in kernel the step recorder knows how to dispatch: a module pass
+// names one to say "this is what my CPU function does, on the GPU". The pass
+// may only name the recipe of its own CPU function (sim/module.hpp's
+// builtin_cpu_for), so the GPU never runs a different experiment from the CPU.
+// The two behavior recipes dispatch nothing: with no registry attached the
+// behavior passes do nothing on either backend, and with one attached the
+// Vulkan step refuses (CORE-1).
+enum class GpuRecipe : uint8_t {
+    none = 0,  // no GPU kernel: the pass runs only on the CPU
+    behaviors_kinematic,
+    medium_update,
+    rotors,
+    drag,
+    behaviors_force,
+    collision_static,
+    collision_dynamic,
+    integrate,
+    sensor_imu,
+    sensor_gnss,
+};
+
+// One pass of the GPU chain, in schedule order: "<module>.<pass>" and its
+// recipe. sim/ derives the list from the compiled schedule; compute/ records it.
+struct GpuPass {
+    std::string name;
+    GpuRecipe recipe = GpuRecipe::none;
+};
+
 // ---------------------------------------------------------------------------
 // PassDurationsNs (S6 Task 10) -- per-pass GPU timing, one field per
 // physics/schedule.cpp's kSchedule slot, in that literal order (matching

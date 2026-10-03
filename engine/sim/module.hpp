@@ -2,8 +2,9 @@
 //
 // A MODULE is a descriptor: a name, a version and the passes it contributes.
 // create() compiles a module set into ONE ordered pass list with
-// compile_schedule(). Stage 1 of the plan: passes only. State, fields, grades,
-// roles and GPU recordings join the descriptor in later stages.
+// compile_schedule(). Stages 1-2 of the plan: passes, each naming the built-in
+// GPU kernel that matches its CPU function. State, fields, grades and roles join
+// the descriptor in later stages.
 #pragma once
 
 #include <cstddef>
@@ -13,6 +14,7 @@
 #include <string_view>
 #include <vector>
 
+#include "compute/backend.hpp"
 #include "core/error.hpp"
 
 namespace spade::physics {
@@ -60,6 +62,9 @@ struct PassDecl {
     std::span<const QuantityAccess> access{};
     std::span<const std::string_view> after{};  // "<module>.<pass>"
     PassFn cpu = nullptr;
+    // The built-in kernel that does what `cpu` does, on the GPU; `none` runs
+    // only on the CPU, and Vulkan refuses the set at create().
+    compute::GpuRecipe gpu = compute::GpuRecipe::none;
 };
 
 struct ModuleDesc {
@@ -77,6 +82,7 @@ struct CompiledPass {
     std::string pass;
     Phase phase = Phase::fields;
     PassFn cpu = nullptr;
+    compute::GpuRecipe gpu = compute::GpuRecipe::none;
 };
 
 struct CompiledSchedule {
@@ -91,7 +97,8 @@ struct CompiledSchedule {
 //      writers, or a writer and an accumulator, of one placement need an edge;
 //   3. ties by module-set order, then declaration order.
 // invalid_argument for: a module name that is empty, contains '.', or repeats;
-// a pass with no name or no CPU function, or declared twice; an unknown
+// a pass with no name or no CPU function, or declared twice; a GPU recipe
+// paired with any CPU function but builtin_cpu_for(recipe); an unknown
 // quantity; an edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.
@@ -104,5 +111,15 @@ struct CompiledSchedule {
 
 // Today's engine as modules. The default module set of Simulation::create().
 [[nodiscard]] ModuleSet standard_modules();
+
+// The CPU function a GPU recipe stands for; nullptr for `none`. A pass that
+// names a recipe must carry exactly this function (compile_schedule refuses
+// anything else), so the two backends run one experiment.
+[[nodiscard]] PassFn builtin_cpu_for(compute::GpuRecipe recipe) noexcept;
+
+// Every compiled pass as "<module>.<pass>" and its recipe, in schedule order --
+// the chain the Vulkan step records. Passes with no recipe are included; the
+// caller refuses them.
+[[nodiscard]] std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule);
 
 }  // namespace spade::modules
