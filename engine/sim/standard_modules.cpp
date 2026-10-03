@@ -40,10 +40,12 @@ constexpr PassDecl kGnssPasses[] = {
     {.name = "synthesize", .phase = Phase::sensors, .access = kGnssAccess, .cpu = &physics::pass_sensor_gnss}};
 
 // Kinematic behaviors write poses before any field is sampled (Q2), so they
-// run first in Fields; force behaviors add after every built-in force. Both
-// declare what they touch, so the compiler checks them like any other pass.
+// run first in Fields; force behaviors run after every built-in force. Both
+// declare what they touch, so the compiler checks them like any other pass. A
+// force behavior may overwrite force_acc (the drone stand sets -m*g), so it
+// declares a write; being placed last orders it after the accumulators.
 constexpr QuantityAccess kKinematicAccess[] = {{"body.pose", Access::write}};
-constexpr QuantityAccess kForceBehaviorAccess[] = {{"body.wrench", Access::accumulate}};
+constexpr QuantityAccess kForceBehaviorAccess[] = {{"body.wrench", Access::write}};
 constexpr PassDecl kBehaviorPasses[] = {
     {.name = "kinematic", .phase = Phase::fields, .placement = Placement::first, .access = kKinematicAccess,
      .cpu = &physics::pass_behaviors_kinematic},

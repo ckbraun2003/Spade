@@ -168,6 +168,21 @@ TEST(ModuleSchedule, PlacementOrdersAPlacedWriterBeforeAnOrderedWriter) {
     EXPECT_EQ(names(*s), (Names{"p.pin", "o.move"}));
 }
 
+// Placement orders a pass against every pass of another placement in its
+// phase, so a last-placed WRITER (a force behavior that sets force_acc) after
+// ordered ACCUMULATORS needs no edge.
+TEST(ModuleSchedule, ALastPlacedWriterFollowsOrderedAccumulators) {
+    static constexpr QuantityAccess adds[] = {{"body.wrench", Access::accumulate}};
+    static constexpr QuantityAccess sets[] = {{"body.wrench", Access::write}};
+    static constexpr PassDecl acc[] = {{.name = "add", .phase = Phase::forces, .access = adds, .cpu = &noop}};
+    static constexpr PassDecl last[] = {
+        {.name = "set", .phase = Phase::forces, .placement = Placement::last, .access = sets, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "l", .passes = last}, {.name = "a", .passes = acc}};
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(names(*s), (Names{"a.add", "l.set"}));
+}
+
 TEST(ModuleSchedule, APlacementThatContradictsAHazardIsRefused) {
     // A first-placed READER and an ordered WRITER of one quantity: the hazard
     // wants the writer first, the placement wants the reader first.
