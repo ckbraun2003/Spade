@@ -1,6 +1,6 @@
 # Spade — engine model
 
-**Owner:** lead (Core builds it). **Status:** signed by the user 2026-10-02 (approved 2026-10-01; `plans/2026-10-01-spade-restructure-design.md` §2). This is the target structure; each realm's `07-status.md` says how far the code is from it.
+**Owner:** lead (Core builds it). **Status:** signed by the user 2026-10-02 (approved 2026-10-01; `plans/2026-10-01-spade-restructure-design.md` §2).  World/scene split signed 2026-10-03 with the joint drone-builder spec. This is the target structure; each realm's `07-status.md` says how far the code is from it.
 
 ```
 Simulation ─ fixed dt, scheduler, module set, backend
@@ -8,7 +8,11 @@ Simulation ─ fixed dt, scheduler, module set, backend
      ├─ Regions ── volumes that bind FIELDS
      ├─ Objects ── transform + components, some of which are RESPONDERS
      └─ Cameras ── objects with a technique and channels
+
+Scene ─ a world file reference + placed objects (assets, vehicles, start states)
 ```
+
+**World and scene** (user ruling, 2026-10-03, mirroring Kat). A **world file** holds physics and environment only: the module set, regions and their fields, gravity and medium, and static terrain. A **scene** holds a world reference plus the objects placed in it: assets such as tracks and props, and vehicles with their start states. One world file serves many scenes. A running world is a scene composed onto its world file (`plans/2026-10-03-drone-builder-engine-design.md` §3).
 
 ## Concepts
 

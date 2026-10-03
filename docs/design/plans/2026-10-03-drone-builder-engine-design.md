@@ -1,6 +1,6 @@
 # Drone builder: the Spade engine side
 
-**Owner:** lead, with Physics, Core and Interface. **Status:** draft for the joint spec. The user approves the joint spec before anything here is built.
+**Owner:** lead, with Physics, Core and Interface. **Status:** approved by the user 2026-10-03, with the joint spec (Kat `c9683af3`, `design-specs/integration/drone-builder.md`).
 **Joint spec:** KAT `design-specs/integration/drone-builder.md`. Kat owns the parts, the catalog, the builder and the compiler. Spade owns the physics and the world model.
 **Physics sections:** `../physics/plans/2026-10-03-drone-builder-physics.md`.
 **Rulings this rests on (user, 2026-10-03):** the joint spec, and the world/scene split (`../backlog.md`, "Ruled by the user, 2026-10-03").
