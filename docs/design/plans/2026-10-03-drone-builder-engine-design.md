@@ -95,6 +95,6 @@ Module API stage 1 of 6 is in progress (`../core/plans/2026-10-02-module-api-pla
 
 | Point | Owner | Note |
 |---|---|---|
-| Scene file schema | Core (schema) with Interface (editor) | Drafted: `../interface/plans/2026-10-03-scene-file-draft.md` (SCN-001..008). Core reviews. How the vehicle list enters the configuration hash is Core's call (SCN-006): ReplayConfig moves every vehicle golden |
+| Scene file schema | Core (schema) with Interface (editor) | Drafted and approved by Core as the base: `../interface/plans/2026-10-03-scene-file-draft.md` at `4294f9b` (SCN-001..009). SCN-006 is a model-registry identity in the snapshot header, which makes snapshot format v3 when built; it moves into ReplayConfig at the next deliberate golden regeneration |
 | Engine-model and `INT-3` text | lead, Interface | Land with the joint spec's approval |
 | Band layout for `acoustic` and `rf` | Physics, Core | Fixed per field, part of the field's type |
