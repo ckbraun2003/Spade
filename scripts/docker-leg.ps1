@@ -14,8 +14,9 @@ It tests a COMMIT, never the working tree: uncommitted changes are not in the le
 Every step except image first syncs that commit into the spade-docker-leg volume,
 so the leg always builds what it names. The leg runs in a detached container named
 spade-docker-leg: closing the terminal does not stop it, and running this script
-again re-attaches instead of starting a second one. Run it in the foreground and
-stay with it; -Stop if you must leave.
+again re-attaches instead of starting a second one, so a watcher may be stopped
+(Ctrl+C, a tool timeout) and resumed with -Follow at no cost to the leg. Run it in
+the foreground and stay with it; -Stop if you must leave.
 
 Output: build-docker\<short-sha>\ (leg.log, build.log, build-errors.txt, ctest.log,
 ctest-junit.xml, tests.txt, summary.txt). Exit code: the leg's (0 pass, 1 fail).
@@ -65,8 +66,9 @@ function Get-LegLabels {
 function Watch-Leg {
     $labels = Get-LegLabels
     Write-Host ("docker-leg: following the leg on {0}, step {1}" -f $labels['spade.commit'], $labels['spade.step'])
-    # Out-Host: the log goes to the console, not into this function's return value.
-    & docker logs --follow $Name | Out-Host
+    # The last 100 lines, then live: a re-attach does not replay a whole build
+    # (leg.log has everything). Out-Host keeps the log out of the return value.
+    & docker logs --follow --tail 100 $Name | Out-Host
     $code = [int]((& docker wait $Name) -join '')
     & docker rm $Name | Out-Null
     $out = $labels['spade.out']
