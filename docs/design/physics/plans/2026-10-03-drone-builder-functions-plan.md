@@ -11,7 +11,7 @@ After this plan lands, Kat can fit against Spade's motor, battery and propeller 
 | In | Out (and why) |
 |---|---|
 | Motor and ESC pure functions, with the inductance term (DBP-01, 02, 10–19) | Stateful motor and battery rows, flags in registered state, the duty host call (DBP-05, 06, 10's command path): module-API stage 4 |
-| Battery pure functions and the bus solve, with both battery clamps (DBP-20–26) | GPU kernels, goldens and bands (DBP-60–62): they follow the rows |
+| Battery pure functions and the bus solve, with both battery clamps (DBP-20–25; *DBP-26 was claimed here but not built, corrected 2026-10-03*) | GPU kernels, goldens and bands (DBP-60–62): they follow the rows |
 | Propeller coefficient tier (DBP-30–33) | A default table from pitch and blades (DBP-34, MAY) |
 | Composite-inertia utility (DBP-40–43) | The frame seam: compile, spawn, vehicle-state read (DBP-44–47): the model type is stage 4; spawn and the read are Core's |
 | Steady-state solver, forward and inverse (DBP-50–52) | The momentum-theory variant in the solver: the fit uses the coefficient tier |
