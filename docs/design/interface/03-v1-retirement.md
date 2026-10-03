@@ -25,7 +25,7 @@ The rows are in the register; the reasons are in `00-decisions.md`. In short: th
 
 **Quarantine, not deletion.** The v1 paths, `engine/tools/viewer/` and the `SPADE_BUILD_V1` option move to `legacy/` as pure renames with zero edits. GLFW and ImGui move from the v1 gate to the sandbox gate; GLAD leaves the build. "Cut off" is enforced: no build wiring references `legacy/`, nothing links it, no test includes it, and a ratchet guard fails on a seeded reach back in. The render spec's older "deleted" wording (`RS10b`) is dead text.
 
-**Harvest first.** `engine/tools/viewer/scenes.cpp` is v2 code, not v1; only `bridge.cpp` touches the old engine. Its eight scene constructors are ported forward as successor presets before the directory moves.
+**Harvest first.** `engine/tools/viewer/scenes.cpp` is v2 code, not v1; only `bridge.cpp` touches the old engine. Its eight scene constructors are ported forward as successor presets before the directory moves. So is `setup.cpp`, the viewer's simulation setup, which `INT-4` moved out of `bridge.cpp` unchanged. Both build as the v1-free `spade_viewer_scenes` library, which the trajectory guard also links. They are harvested forward, not quarantined.
 
 ## Successor scenes, and the step that cannot be repeated (`SL14b`, `SL14c`)
 
@@ -40,5 +40,12 @@ Each of the eleven retired scenes gets a successor preset that exercises the sam
 Render time is not comparable on either population; the CPU path is slower than hardware GL by design.
 
 **The ordering is the binding constraint.** Baselines can only be captured from the live v1 tools, so the sequence is: characterise each scene, capture baselines, build the successors, compare, and only then quarantine. Once v1 is cut from the build the left-hand side of every comparison is gone for good.
+
+**The baselines are captured** (`INT-4`, 2026-10-03, merged `0935c6f`; plan `plans/2026-10-02-v1-baselines.md`). The characterisation and capture steps are done:
+- **Functional:** the eight viewer scenes' trajectories are CPU goldens in `tests/golden/viewer/` (`TD-1`). They come from the viewer's own setup, stepped headless (`spade_viewer <scene> cpu --trajectory`).
+- **Visual:** reference frames of all eleven scenes, at wall-clock moments, are in the archive `tests/v1-baselines/`. The archive is never asserted and never regenerated.
+- **Performance:** physics step time and memory for the viewer scenes, and the `Sandbox`'s real frame rate and memory, are in the same archive.
+
+**One deviation from the axes table:** the viewer scenes' step time and memory come from the viewer's headless mode, not `spade_bench`. The bench cannot build `scenes.cpp` without reaching into a v1-gated tool, and it measures no memory. The headless mode uses the same constructors, setup and step.
 
 The 50,000-body fluid scene stays as a permanent preset and a stated capability target, labelled a capability demonstration, never a parity or regression claim (`SL14c`).

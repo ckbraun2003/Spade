@@ -1,6 +1,6 @@
 # The v1 baselines (`INT-4`, `SL14b`): spec and plan
 
-**Owner:** Interface. **Status:** approved by the lead 2026-10-02, with all three decisions taken (see "Decisions"); storage amended the same day by Test/Docs's governance ruling. Tasks 1–2 done. `INT-4` (signed 2026-10-02): capture `SL14b`'s baselines now, while v1 still builds and runs. **Done when** (`../../backlog.md`): the baselines are committed, with how they were captured. Comparing successors against them is later work (`SL14b`'s P6), not this plan.
+**Owner:** Interface. **Status:** approved by the lead 2026-10-02, with all three decisions taken (see "Decisions"); storage amended the same day by Test/Docs's governance ruling. Tasks 1–4 done: captured 2026-10-03, merged `0935c6f`. Task 5, the guard, is in progress. `INT-4` (signed 2026-10-02): capture `SL14b`'s baselines now, while v1 still builds and runs. **Done when** (`../../backlog.md`): the baselines are committed, with how they were captured. Comparing successors against them is later work (`SL14b`'s P6), not this plan.
 
 **v1 is not touched.** Nothing in `src/ include/ examples/ assets/` changes, and no capture shim goes into v1. The perishable baselines are taken from outside the running tools. The one code change is in `engine/tools/viewer/` (Interface's, v2 tool code), and only for the durable half.
 
@@ -128,8 +128,8 @@ Branch `interface/v1-baselines` in `../spade-wt/interface`. The baselines and th
   - the observables match the recorded characterisations.
   
   *Short slot: an incremental `spade_viewer` build of about 5 min, then about 2 min of headless runs.*
-- [ ] **3. The capture run:** all 11 scenes with part A, and the 8 headless runs with part B. Then commit `tests/golden/viewer/` and `tests/v1-baselines/`. *One slot, about 15 min, with the desktop unlocked. It starts with the incremental build of the storage changes; no build runs during the capture itself.*
-- [ ] **4. Docs.**
+- [x] **3. The capture run:** all 11 scenes with part A, and the 8 headless runs with part B. Then commit `tests/golden/viewer/` and `tests/v1-baselines/`. *One slot, about 15 min, with the desktop unlocked. It starts with the incremental build of the storage changes; no build runs during the capture itself.*
+- [x] **4. Docs.**
   - `03-v1-retirement.md`: the order step "capture baselines" done, with a link, and the deviation from "via `spade_bench`".
   - `07-status.md`: the `SL14b` row.
   - `00-decisions.md`: `INT-4` "done".
