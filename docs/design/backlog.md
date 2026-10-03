@@ -35,7 +35,7 @@ No user decision is open.
 | Item | Owner | Why it's open | Done when |
 |---|---|---|---|
 | Docker CI leg (`TD-11`, `TD-12`) | Test/Docs, with Interface for the consumer | No CI and no second toolchain since the split. `tests/consumer` was run by hand on 2026-10-02 for the `SPADE_VULKAN=OFF` install (`3a48c4d`); Core's local `tasks/core-offtree.ps1` is a starting point | One script builds the Linux/gcc image, runs `ctest -L spade -LE gpu` on release, and builds and runs `tests/consumer` against an installed prefix with Vulkan ON and OFF |
-| GNSS golden scenario (`PHY-6`) | Physics | GNSS's CPU path has no golden, so it is not reference grade | A GNSS scenario sits in `tests/golden/scenarios/` with its provenance, and every existing digest is unchanged |
+| GNSS golden scenario (`PHY-6`) | Physics | Built: `gnss_tumble`, merged at `0ce4ff5`. Its digest is provisional under `TD-12` | The Docker gcc leg reproduces the `gnss_tumble` digest. Then remove this row |
 | `SL14b` v1 baselines (`INT-4`) | Interface | v1 must be captured before it can be retired | Baselines committed with how they were captured |
 | Default-sun regeneration (`RND-5`) | Rendering | `render::Lighting{}`'s default sun is below the horizon | Default flipped; four frame goldens regenerated with provenance, cross-checked by the Docker leg |
 | Module API, scheduler phases, regions, field registry, grades | Core (then Physics, Rendering) | The engine model (`01-engine-model.md`) is signed but not built; today's schedule is a fixed ten-pass array | Today's passes run as built-in modules through the new scheduler, with every golden unchanged |
