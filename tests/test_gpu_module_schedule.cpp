@@ -93,9 +93,8 @@ TEST(GpuModuleSchedule, DurationsAreOnePerPassByName) {
 // Module-API stage 3: the GPU samples fields. Two worlds with different
 // gravity, density and wind, so a sample written to or read from the wrong
 // world's row cannot pass. Gravity and density are copies, so the device row
-// matches the CPU row bitwise; wind carries Dryden's GPU band, which the
-// parity suite already gates through every rotor and drag force, so here it
-// only has to be present and finite.
+// matches the CPU row bitwise; wind carries Dryden's GPU band, a few ulps, so it
+// matches within a tolerance far below the 1 m/s that separates the worlds.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -144,7 +143,10 @@ TEST(GpuModuleSchedule, StoredFieldSamplesMatchTheCpuCopiesBitwise) {
         }
         for (uint32_t i = spade::modules::kFieldWindOffset; i < spade::modules::kFieldWindOffset + 3; ++i) {
             EXPECT_TRUE(std::isfinite((*g)[i])) << "world " << w << " wind float " << i;
-            EXPECT_NE((*g)[i], 0.0f) << "world " << w << " wind float " << i << ": the device row was never written";
+            // Dryden's GPU band is a few ulps of state; the two worlds' mean
+            // winds differ by 1 m/s in x, so a wind written to (or read from)
+            // the other world's row cannot land within this.
+            EXPECT_NEAR((*g)[i], (*c)[i], 1e-3f) << "world " << w << " wind float " << i;
         }
     }
 }

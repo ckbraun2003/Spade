@@ -534,6 +534,22 @@ TEST(ModuleFields, ABandCountOutsideOneToTheMaximumIsRefused) {
     }
 }
 
+// A provider writes in Fields, before any reader (spec section 6). A write in a
+// later phase would leave an earlier-phase reader the previous substep's row --
+// zeros on the first step, another timeline's after restore() -- so it is
+// refused at compile, naming the field and the pass. (Stage-3 review.)
+TEST(ModuleFields, AFieldWrittenOutsideTheFieldsPhaseIsRefused) {
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::scalar, .unit = "dB"}};
+    static constexpr QuantityAccess writes[] = {{"field.hum", Access::write}};
+    static constexpr PassDecl p[] = {{.name = "sample", .phase = Phase::forces, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "acoustic", .passes = p, .fields = hum}};
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("field.hum"), std::string::npos) << s.error().context;
+    EXPECT_NE(s.error().context.find("acoustic.sample"), std::string::npos) << s.error().context;
+}
+
 TEST(ModuleFields, AProviderModuleWithNoPassWritingItsFieldIsRefused) {
     static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::scalar, .unit = "dB"}};
     static constexpr PassDecl p[] = {{.name = "idle", .phase = Phase::fields, .cpu = &noop}};
