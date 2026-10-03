@@ -1093,7 +1093,7 @@ public:
     // shrunk to "pair the blob with a COMPATIBLE world set", and that is now
     // enforced rather than merely documented.
     //
-    // THE THREE LAYERS OF CHECK, and why none of them subsumes another:
+    // THE LAYERS OF CHECK, and why none of them subsumes another:
     //   * WORLD COUNT and the schema hash catch a SHAPE mismatch -- different
     //     arrays, element sizes, capacities or world count. They say nothing
     //     about VALUES, so two sets differing only in restitution pass them
@@ -1105,8 +1105,12 @@ public:
     //     in the blob, 2x4 in the registry" is a more useful sentence than
     //     "you paired the wrong blob". So the only blob it can reject is one
     //     the state layer would have accepted.
+    //   * The configuration identity (module-API plan stage 1) catches a blob
+    //     taken under another module set, module version or schedule: the
+    //     snapshot header's configuration_identity must equal schedule().identity,
+    //     or the restore is invalid_argument naming the module set.
     //   * The blob parse and the section-by-section match catch a corrupt or
-    //     foreign blob. All three run before anything is written.
+    //     foreign blob. All of these run before anything is written.
     //
     // WHAT IT STILL CANNOT CATCH, stated rather than claimed away: a
     // Simulation created from a desc that hashes the same is accepted, which is

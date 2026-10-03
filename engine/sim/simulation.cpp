@@ -2204,7 +2204,7 @@ Result<SnapshotBlob> Simulation::snapshot() const {
                                        "spawn/despawn ops are not part of the registry walk. Call "
                                        "step() or flush_structural() first."));
     }
-    return save(arenas_, tick_);
+    return save(arenas_, tick_, schedule_.identity);
 }
 
 // ---------------------------------------------------------------------------
@@ -2369,6 +2369,15 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // BEFORE the restore, never after: see check_replay_config() above. This is
     // the only path from a Simulation into spade::restore(), so there is no
     // second door a blob could come through unchecked.
+    // L2: a blob taken under another module set, module version or schedule
+    // would replay different physics here. The identity rides in the snapshot
+    // header (module-API plan Ruling 1), not in the digested replay_config row.
+    if (blob.configuration_identity() != schedule_.identity) {
+        return std::unexpected(invalid("restore: blob was taken under a different module set or schedule "
+                                       "(identity " + std::to_string(blob.configuration_identity()) +
+                                       ", this simulation runs " + std::to_string(schedule_.identity) +
+                                       "); restoring it here could replay different physics"));
+    }
     if (Result<void> config = check_replay_config(blob); !config) {
         return config;
     }

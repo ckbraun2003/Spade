@@ -34,9 +34,9 @@
 // arena bytes without resyncing produces a set whose NEXT allocation diverges
 // from the uninterrupted run, silently.
 //
-// FORMAT (version 1). Little of it is negotiable; all of it is versioned.
+// FORMAT (version 2). Little of it is negotiable; all of it is versioned.
 //
-//   SnapshotHeader                       32 bytes
+//   SnapshotHeader                       40 bytes
 //   for each registered array, in walk order:
 //       SnapshotSectionHeader            24 bytes
 //       name                             name_length bytes, not NUL-terminated
@@ -111,7 +111,10 @@ inline constexpr uint32_t kSnapshotMagic =
 // misread -- which includes adding a header field, since the header is fixed
 // size. There is deliberately no migration path (YAGNI): a version this build
 // does not know is rejected, not converted.
-inline constexpr uint32_t kSnapshotVersion = 1;
+//
+// Version 2 (2026-10-02, module-API plan stage 1) added
+// SnapshotHeader::configuration_identity. A version-1 blob is refused.
+inline constexpr uint32_t kSnapshotVersion = 2;
 
 // Refusal ceiling for a whole blob, in bytes. Its job is not to be a policy
 // (1 TiB is far past anything the engine will snapshot) but to make the size
@@ -120,7 +123,7 @@ inline constexpr uint32_t kSnapshotVersion = 1;
 inline constexpr uint64_t kMaxSnapshotBytes = uint64_t{1} << 40;
 
 // ---------------------------------------------------------------------------
-// The fixed 32-byte blob header. Read and written by memcpy of its object
+// The fixed 40-byte blob header. Read and written by memcpy of its object
 // representation, so the static_asserts below are the format -- an implicit
 // padding byte here would be a silent format change.
 //
@@ -137,20 +140,26 @@ struct SnapshotHeader {
     uint64_t tick;         // Tick::value at which the snapshot was taken
     uint32_t world_count;  // world_set_size() of that registry
     uint32_t array_count;  // number of sections that follow
+    // v2: the configuration that produced the state -- a Simulation's compiled
+    // module schedule identity (sim/module.hpp). 0 for a bare registry save.
+    // The state layer stores it; Simulation::restore() refuses a mismatch (L2).
+    uint64_t configuration_identity;
 };
 
 static_assert(std::is_standard_layout_v<SnapshotHeader>);
 static_assert(std::is_trivially_copyable_v<SnapshotHeader>);
-static_assert(sizeof(SnapshotHeader) == 32, "snapshot header is a fixed 32-byte prefix");
+static_assert(sizeof(SnapshotHeader) == 40, "snapshot header is a fixed 40-byte prefix");
 static_assert(offsetof(SnapshotHeader, magic) == 0);
 static_assert(offsetof(SnapshotHeader, version) == 4);
 static_assert(offsetof(SnapshotHeader, schema_hash) == 8);
 static_assert(offsetof(SnapshotHeader, tick) == 16);
 static_assert(offsetof(SnapshotHeader, world_count) == 24);
 static_assert(offsetof(SnapshotHeader, array_count) == 28);
+static_assert(offsetof(SnapshotHeader, configuration_identity) == 32);
 static_assert(sizeof(SnapshotHeader::magic) + sizeof(SnapshotHeader::version) +
                       sizeof(SnapshotHeader::schema_hash) + sizeof(SnapshotHeader::tick) +
-                      sizeof(SnapshotHeader::world_count) + sizeof(SnapshotHeader::array_count) ==
+                      sizeof(SnapshotHeader::world_count) + sizeof(SnapshotHeader::array_count) +
+                      sizeof(SnapshotHeader::configuration_identity) ==
                   sizeof(SnapshotHeader),
               "SnapshotHeader has implicit padding: the byte image would not match the field list");
 
@@ -237,7 +246,7 @@ public:
     // filesystem failure, including a failure that only surfaces at close.
     [[nodiscard]] Result<void> write_file(const std::filesystem::path& path) const;
 
-    // The validated header, by value (it is 32 bytes and read out of the
+    // The validated header, by value (it is 40 bytes and read out of the
     // buffer on each call, so it can never drift from the bytes).
     [[nodiscard]] SnapshotHeader header() const noexcept;
 
@@ -246,6 +255,7 @@ public:
     [[nodiscard]] Tick tick() const noexcept { return Tick{header().tick}; }
     [[nodiscard]] uint32_t world_count() const noexcept { return header().world_count; }
     [[nodiscard]] uint32_t array_count() const noexcept { return header().array_count; }
+    [[nodiscard]] uint64_t configuration_identity() const noexcept { return header().configuration_identity; }
 
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return bytes_; }
     [[nodiscard]] std::size_t size() const noexcept { return bytes_.size(); }
@@ -289,12 +299,13 @@ private:
 // own invariants (a null pointer for a non-empty array). It cannot fail for
 // any reason to do with the VALUES in the arrays -- bytes are opaque here.
 // ---------------------------------------------------------------------------
-[[nodiscard]] Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick);
+[[nodiscard]] Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick,
+                                        uint64_t configuration_identity = 0);
 
 // Convenience for the common caller: an ArenaSet's registry is its whole
 // state. Saving needs no arena cooperation at all (nothing derived is
 // written), which is exactly the asymmetry with restore() below.
-[[nodiscard]] Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick);
+[[nodiscard]] Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick, uint64_t configuration_identity = 0);
 
 // ---------------------------------------------------------------------------
 // restore, byte level -- overwrite each registered array with the blob's

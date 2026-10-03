@@ -342,7 +342,7 @@ Result<SnapshotBlob> SnapshotBlob::from_bytes(std::vector<std::byte> bytes) {
 SnapshotHeader SnapshotBlob::header() const noexcept {
     // from_bytes() established that bytes_ is at least a header long, and no
     // public operation can shorten it -- with exactly one exception: a
-    // MOVED-FROM blob, whose vector is validly empty. Reading 32 bytes out of
+    // MOVED-FROM blob, whose vector is validly empty. Reading 40 bytes out of
     // that would be an overread reachable through the public API, so the size
     // is re-checked here and a moved-from blob reports a zeroed header. Every
     // consumer then fails cleanly (magic 0 is not ours, version 0 is not one
@@ -428,7 +428,7 @@ uint32_t world_set_size(const StateRegistry& registry) noexcept {
 // save
 // ---------------------------------------------------------------------------
 
-Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick) {
+Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick, uint64_t configuration_identity) {
     if (registry.size() > std::numeric_limits<uint32_t>::max()) {
         return std::unexpected(capacity_err("registry has more arrays than the format can describe"));
     }
@@ -493,6 +493,7 @@ Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick) {
         .tick = tick.value,
         .world_count = world_set_size(registry),
         .array_count = static_cast<uint32_t>(registry.size()),
+        .configuration_identity = configuration_identity,
     };
     append_pod(out, head);
 
@@ -521,7 +522,9 @@ Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick) {
     return SnapshotBlob::from_bytes(std::move(out));
 }
 
-Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick) { return save(arenas.registry(), tick); }
+Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick, uint64_t configuration_identity) {
+    return save(arenas.registry(), tick, configuration_identity);
+}
 
 // ---------------------------------------------------------------------------
 // restore
