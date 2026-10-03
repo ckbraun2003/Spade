@@ -66,13 +66,12 @@ void main() {
     uint idx = uInstanceBase + uint(gl_InstanceID);
     mat4 m = uModel[idx];
     vec4 world = m * vec4(aPos, 1.0);
-    // A normal transforms by the inverse-transpose, not by mat3(m), or a
-    // per-axis scale tilts it off its surface. The cofactor matrix is
-    // det * inverse-transpose; det's sign keeps a mirrored normal outward,
-    // and the fragment shader normalizes. render/scene.hpp's
-    // transform_normal() is the same rule; it also keeps mat3(m) for
-    // conformal matrices so CPU goldens stay bit-identical, which GL,
-    // having no goldens, does not need.
+    // Use the inverse-transpose: mat3(m) tilts normals under a per-axis scale.
+    // The cofactor matrix is det * inverse-transpose. Det's sign keeps a
+    // mirrored normal outward, and the fragment shader normalizes.
+    // render/scene.hpp's transform_normal() uses the same rule. It keeps
+    // mat3(m) for conformal matrices so CPU goldens stay bit-identical.
+    // GL has no goldens, so it does not need that branch.
     mat3 l = mat3(m);
     mat3 cofactor = mat3(cross(l[1], l[2]), cross(l[2], l[0]), cross(l[0], l[1]));
     vNormal = cofactor * aNrm * sign(dot(l[0], cofactor[0]));

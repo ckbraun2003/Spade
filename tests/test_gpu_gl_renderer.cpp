@@ -210,6 +210,9 @@ TEST_F(GpuGlRenderer, LightsANonUniformlyScaledSurfaceByItsTrueNormal) {
     scene.lighting.sun_color = glm::vec3(1.0f);
     scene.lighting.sun_intensity = 1.0f;
     scene.lighting.ambient_color = glm::vec3(0.2f);
+    // A black sky keeps "not black" meaning "covered" once GL draws the sky.
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
 
     const std::vector<uint8_t> rgba = draw_and_read(scene);
     size_t covered = 0;
