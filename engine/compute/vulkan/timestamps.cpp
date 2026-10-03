@@ -41,15 +41,15 @@ constexpr double kImplausibleSampleNs = 1e9;
     }
 }
 
-// 8 real slots (kSchedule's own count) + 1 leading "start of substep" mark.
-constexpr uint32_t kSlotsPerSubstep = 8;
-
 }  // namespace
 
-Result<std::unique_ptr<PassTimestamps>> PassTimestamps::create(VulkanContext& ctx, uint32_t substeps) {
+Result<std::unique_ptr<PassTimestamps>> PassTimestamps::create(VulkanContext& ctx, uint32_t substeps,
+                                                               std::vector<std::string> pass_names) {
     auto self = std::unique_ptr<PassTimestamps>(new PassTimestamps());
     self->device_ = ctx.device();
     self->substeps_ = substeps;
+    self->marks_per_substep_ = static_cast<uint32_t>(pass_names.size()) + 1u;
+    self->pass_names_ = std::move(pass_names);
 
     // DEGENERATE SHAPE: a 0-substep recording needs no query pool at all, and
     // VkQueryPoolCreateInfo::queryCount == 0 is not legal input -- treated
@@ -92,7 +92,7 @@ Result<std::unique_ptr<PassTimestamps>> PassTimestamps::create(VulkanContext& ct
     VkQueryPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
     pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    pool_info.queryCount = substeps * kPassTimestampMarksPerSubstep;
+    pool_info.queryCount = substeps * self->marks_per_substep_;
     if (VkResult r = vkCreateQueryPool(self->device_, &pool_info, nullptr, &self->pool_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkCreateQueryPool (PassTimestamps)"));
     }
@@ -102,7 +102,7 @@ Result<std::unique_ptr<PassTimestamps>> PassTimestamps::create(VulkanContext& ct
 
 void PassTimestamps::record_reset(VkCommandBuffer cmd) const {
     if (pool_ == VK_NULL_HANDLE) return;
-    vkCmdResetQueryPool(cmd, pool_, 0, substeps_ * kPassTimestampMarksPerSubstep);
+    vkCmdResetQueryPool(cmd, pool_, 0, substeps_ * marks_per_substep_);
 }
 
 void PassTimestamps::record_mark(VkCommandBuffer cmd, uint32_t substep, uint32_t boundary) const {
@@ -116,18 +116,17 @@ void PassTimestamps::record_mark(VkCommandBuffer cmd, uint32_t substep, uint32_t
     // it is the unambiguous choice: consecutive marks are then guaranteed
     // monotonically non-decreasing, which is what read_durations_ns() below
     // subtracts on trust.
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, pool_,
-                        substep * kPassTimestampMarksPerSubstep + boundary);
+    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, pool_, substep * marks_per_substep_ + boundary);
 }
 
 Result<PassDurationsNs> PassTimestamps::read_durations_ns() const {
     PassDurationsNs out{};
     if (pool_ == VK_NULL_HANDLE) {
-        return out;  // supported == false, every field 0.0 -- the documented posture
+        return out;  // supported == false, no passes -- the documented posture
     }
     out.supported = true;
 
-    const uint32_t count = substeps_ * kPassTimestampMarksPerSubstep;
+    const uint32_t count = substeps_ * marks_per_substep_;
     std::vector<uint64_t> ticks(count, 0);
     if (VkResult r = vkGetQueryPoolResults(device_, pool_, 0, count, ticks.size() * sizeof(uint64_t),
                                             ticks.data(), sizeof(uint64_t),
@@ -136,11 +135,11 @@ Result<PassDurationsNs> PassTimestamps::read_durations_ns() const {
         return std::unexpected(map_vk_error(r, "vkGetQueryPoolResults (PassTimestamps)"));
     }
 
-    // Sum, per schedule slot, across every substep's own 9-mark block. Marks
-    // are recorded in program order (block[0] == "start of this substep",
-    // block[N] == "slot N-1 just finished" for N in 1..8), so slot i's
-    // duration is the gap between CONSECUTIVE marks, block[i+1] - block[i] --
-    // NOT block[i+1] - block[0], which would accumulate every earlier slot's
+    // Sum, per pass, across every substep's own mark block. Marks are recorded
+    // in program order (block[0] == "start of this substep", block[N] ==
+    // "pass N-1 just finished" for N in 1..passes), so pass i's duration is
+    // the gap between CONSECUTIVE marks, block[i+1] - block[i] -- NOT
+    // block[i+1] - block[0], which would accumulate every earlier pass's
     // time into each later one. DEFENSIVELY clamped at 0 rather than allowed
     // to underflow into an enormous unsigned wraparound: record_mark()'s
     // ALL_COMMANDS_BIT choice above should make end >= start impossible, but
@@ -157,11 +156,12 @@ Result<PassDurationsNs> PassTimestamps::read_durations_ns() const {
     const uint64_t mask =
         (timestamp_valid_bits_ >= 64u) ? ~0ull : ((1ull << timestamp_valid_bits_) - 1ull);
 
-    double totals[kSlotsPerSubstep] = {};
+    const uint32_t pass_count = marks_per_substep_ - 1u;
+    std::vector<double> totals(pass_count, 0.0);
     uint32_t implausible = 0;
     for (uint32_t s = 0; s < substeps_; ++s) {
-        const uint64_t* block = &ticks[static_cast<std::size_t>(s) * kPassTimestampMarksPerSubstep];
-        for (uint32_t slot = 0; slot < kSlotsPerSubstep; ++slot) {
+        const uint64_t* block = &ticks[static_cast<std::size_t>(s) * marks_per_substep_];
+        for (uint32_t slot = 0; slot < pass_count; ++slot) {
             const uint64_t start = block[slot] & mask;
             const uint64_t end = block[slot + 1] & mask;
 
@@ -192,14 +192,8 @@ Result<PassDurationsNs> PassTimestamps::read_durations_ns() const {
     }
     out.implausible_samples = implausible;
 
-    out.medium_update_ns = totals[0];
-    out.force_elements_ns = totals[1];
-    out.gravity_ns = totals[2];
-    out.collision_static_ns = totals[3];
-    out.collision_dynamic_ns = totals[4];
-    out.integrate_ns = totals[5];
-    out.sensor_synthesis_ns = totals[6];
-    out.publish_ns = totals[7];
+    out.passes.reserve(pass_count);
+    for (uint32_t i = 0; i < pass_count; ++i) out.passes.push_back(PassDuration{pass_names_[i], totals[i]});
     return out;
 }
 
@@ -212,24 +206,5 @@ void PassTimestamps::destroy() noexcept {
 }
 
 PassTimestamps::~PassTimestamps() { destroy(); }
-
-PassTimestamps::PassTimestamps(PassTimestamps&& other) noexcept
-    : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
-      pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
-      substeps_(other.substeps_),
-      timestamp_period_ns_(other.timestamp_period_ns_),
-      timestamp_valid_bits_(other.timestamp_valid_bits_) {}
-
-PassTimestamps& PassTimestamps::operator=(PassTimestamps&& other) noexcept {
-    if (this != &other) {
-        destroy();
-        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
-        pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
-        substeps_ = other.substeps_;
-        timestamp_period_ns_ = other.timestamp_period_ns_;
-        timestamp_valid_bits_ = other.timestamp_valid_bits_;
-    }
-    return *this;
-}
 
 }  // namespace spade::compute

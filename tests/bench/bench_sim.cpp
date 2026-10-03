@@ -86,15 +86,26 @@
 // file's include path at all in that build.
 //
 // PER-PASS COUNTERS. Each GPU benchmark also reads
-// Simulation::vulkan_pass_durations_ns() once, after the timed loop, and
-// reports six of PassDurationsNs's eight fields as named counters --
-// medium_update/force_elements/collision_static/collision_dynamic/integrate/
-// sensor_synthesis, each in nanoseconds. Gravity and Publish are omitted, NOT
-// because they are uninteresting but because they are PROVABLY zero: both are
-// inert-by-design on both backends (no dispatch is ever recorded for either
-// schedule slot -- compute/vulkan/step_recorder.cpp's kNoDispatch), the same
-// reasoning that keeps them out of step_recorder's own pipeline table, applied
-// one level up to reporting rather than dispatching.
+// Simulation::vulkan_pass_durations_ns() once, after the timed loop. Since
+// module-API stage 2 that is one named duration per GPU pass of the compiled
+// schedule, and it is reported two ways, each in nanoseconds:
+//
+//   * ONE COUNTER PER PASS, gpu_pass.<module>.<pass>_ns, generated from the
+//     list -- so a new module's pass shows up here without anyone editing this
+//     file, and the two behavior passes (which record nothing) show their
+//     measured ~0 rather than being left out.
+//   * THE SIX HISTORICAL COUNTERS, kept by name because bench/baselines.json
+//     records 42 values under them: gpu_medium_update_ns, gpu_force_elements_ns
+//     (rotor.forces + drag.forces), gpu_collision_static_ns,
+//     gpu_collision_dynamic_ns, gpu_integrate_ns and gpu_sensor_synthesis_ns
+//     (imu.synthesize + gnss.synthesize). The two sums each include one more
+//     timestamp mark's cost than before stage 2, when each pair shared a
+//     bracket (TD-8).
+//
+// A PASS ONE OF THE SIX NEEDS THAT IS NOT IN THE LIST IS AN ERROR, NOT A
+// ZERO (TD-5). Every built-in pass is always in the list -- it comes from the
+// schedule, not from row counts -- so absence means a module or pass was
+// renamed, and the counter would otherwise silently read 0 or lose a term.
 //
 // WHAT THE COUNTERS MEASURE, PRECISELY. compute/vulkan/timestamps.hpp's
 // PassTimestamps resets and rewrites its query pool on EVERY GPU submit
@@ -208,10 +219,11 @@ constexpr uint32_t kSubsteps = 1;
 
 // S6 Task 10: shared by both GPU families below (BM_StepPlainBodiesGpu,
 // BM_StepQuadWorldsGpu) -- reads Simulation::vulkan_pass_durations_ns() and,
-// if the query succeeded and this device could time compute work, sets six
-// named counters from it. See the file header's "PER-PASS COUNTERS" section
-// for the unit (nanoseconds), why Gravity/Publish are omitted, and what
-// "reads the LAST GPU submit" means for these two steady-state scenes.
+// if the query succeeded and this device could time compute work, sets one
+// counter per pass and the six historical sums. See the file header's
+// "PER-PASS COUNTERS" section for the unit (nanoseconds), why a missing pass
+// is an error, and what "reads the LAST GPU submit" means for these two
+// steady-state scenes.
 //
 // A FAILED OR UNSUPPORTED READING SETS NO COUNTERS AT ALL, rather than
 // forcing zeros into the JSON output: `!d` means a real Vulkan error reading
@@ -231,12 +243,30 @@ void set_pass_duration_counters(benchmark::State& state, Simulation& sim) {
     if (!d->supported) {
         return;
     }
-    state.counters["gpu_medium_update_ns"] = d->medium_update_ns;
-    state.counters["gpu_force_elements_ns"] = d->force_elements_ns;
-    state.counters["gpu_collision_static_ns"] = d->collision_static_ns;
-    state.counters["gpu_collision_dynamic_ns"] = d->collision_dynamic_ns;
-    state.counters["gpu_integrate_ns"] = d->integrate_ns;
-    state.counters["gpu_sensor_synthesis_ns"] = d->sensor_synthesis_ns;
+
+    // Every name the six sums need, checked BEFORE any counter is set, so a
+    // rename skips the benchmark with its name rather than reporting a partial
+    // or zero breakdown.
+    constexpr const char* kNeeded[] = {"dryden.advance",          "rotor.forces",        "drag.forces",
+                                       "static_contact.resolve",  "dynamic_contact.resolve",
+                                       "integrate.integrate",     "imu.synthesize",      "gnss.synthesize"};
+    for (const char* name : kNeeded) {
+        if (!d->find(name).has_value()) {
+            state.SkipWithError(("pass '" + std::string(name) + "' is not in the recorded chain").c_str());
+            return;
+        }
+    }
+    const auto ns = [&](const char* name) { return d->find(name).value(); };  // present: checked above
+
+    for (const spade::compute::PassDuration& pass : d->passes) {
+        state.counters["gpu_pass." + pass.pass + "_ns"] = pass.ns;
+    }
+    state.counters["gpu_medium_update_ns"] = ns("dryden.advance");
+    state.counters["gpu_force_elements_ns"] = ns("rotor.forces") + ns("drag.forces");
+    state.counters["gpu_collision_static_ns"] = ns("static_contact.resolve");
+    state.counters["gpu_collision_dynamic_ns"] = ns("dynamic_contact.resolve");
+    state.counters["gpu_integrate_ns"] = ns("integrate.integrate");
+    state.counters["gpu_sensor_synthesis_ns"] = ns("imu.synthesize") + ns("gnss.synthesize");
 
     // L307 (2): THE INSTRUMENT'S OWN HEALTH, BESIDE THE NUMBERS IT PRODUCED.
     // Non-zero means at least one pass sample exceeded kImplausibleSampleNs

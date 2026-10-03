@@ -23,7 +23,6 @@
 
 #include "physics/integrator.hpp"
 #include "physics/schedule.hpp"
-#include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "state/snapshot.hpp"
@@ -492,26 +491,6 @@ using spade::testing::ScenarioSpawn;
 // ===========================================================================
 // 1. The schedule is the spec's schedule
 // ===========================================================================
-
-// Until plan stage 2 derives the GPU chain from the schedule, the recorder
-// keeps its own slot table (compute/vulkan/step_recorder.cpp, kPassPipeline).
-// This pins the compiled standard set, minus the CPU-only behavior passes, to
-// that table's dispatch order.
-TEST(Schedule, TheCompiledStandardSetFollowsTheGpuRecordersOrder) {
-    const auto s = spade::modules::compile_schedule(spade::modules::standard_modules());
-    ASSERT_TRUE(s.has_value()) << s.error().context;
-    std::vector<std::string> cpu;
-    for (const auto& p : s->passes) {
-        if (p.module == "behaviors") continue;
-        cpu.push_back(std::string(p.module) + "." + std::string(p.pass));
-    }
-    // MediumUpdate; ForceElements = rotors then drag; CollisionStatic;
-    // CollisionDynamic; Integrate; SensorSynthesis = imu then gnss.
-    const std::vector<std::string> gpu = {"dryden.advance",         "rotor.forces",       "drag.forces",
-                                          "static_contact.resolve", "dynamic_contact.resolve",
-                                          "integrate.integrate",    "imu.synthesize",     "gnss.synthesize"};
-    EXPECT_EQ(cpu, gpu);
-}
 
 // There is no Gravity pass: integrate_bodies() applies gravity itself (engine
 // A9), so anything else that also accumulated m*g would double it. A body

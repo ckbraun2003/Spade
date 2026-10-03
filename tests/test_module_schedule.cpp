@@ -347,22 +347,11 @@ TEST(ModuleSimulation, ScheduleNamesOutliveTheStringsThatNamedThem) {
     EXPECT_TRUE(found) << "the compiled schedule must own its module names";
 }
 
-TEST(ModuleSimulation, ANonStandardSetOnVulkanIsRefusedUntilStage2) {
-    spade::modules::ModuleSet set = spade::modules::standard_modules();
-    set.push_back({.name = "hover", .passes = kHoverPasses});
-    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
-                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
-                                               set);
-    ASSERT_FALSE(sim.has_value());
-    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
-    EXPECT_NE(sim.error().context.find("module set"), std::string::npos) << sim.error().context;
-}
-
 // The identity hashes names, versions and order, not function pointers, so a
 // set that keeps the standard names but swaps in another rotor function has the
-// standard identity. Stage 1's GPU recorder would still run the stock rotor
-// kernel, so the refusal must compare the passes themselves (L6). Found by the
-// stage-1 whole-branch review.
+// standard identity. The GPU must not run the stock rotor kernel in its place
+// (L6): a pass without a recipe has no kernel, and the recipe can only be
+// claimed with the built-in function. Found by the stage-1 whole-branch review.
 TEST(ModuleSimulation, AStandardNamedSetWithAnotherFunctionIsRefusedOnVulkan) {
     static constexpr QuantityAccess rotor_access[] = {{"body.pose", Access::read},
                                                       {"body.wrench", Access::accumulate},
@@ -438,4 +427,50 @@ TEST(ModuleSnapshot, RestoreIntoTheSameSetSucceeds) {
     const auto blob = source->snapshot();
     ASSERT_TRUE(blob.has_value());
     EXPECT_TRUE(target->restore(*blob).has_value());
+}
+
+// Stage 2: a pass names the built-in GPU kernel (its recipe) that does on the
+// GPU what its CPU function does. The recipe is honest only with that function.
+TEST(StandardModules, EveryPassNamesARecipePairedWithItsOwnFunction) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    for (const auto& p : s->passes) {
+        EXPECT_NE(p.gpu, spade::compute::GpuRecipe::none) << p.module << "." << p.pass;
+        EXPECT_EQ(p.cpu, spade::modules::builtin_cpu_for(p.gpu)) << p.module << "." << p.pass;
+    }
+}
+
+TEST(ModuleSchedule, ARecipeWithAnotherCpuFunctionIsRefused) {
+    static constexpr PassDecl liar[] = {{.name = "lift", .phase = Phase::forces, .access = kHoverAccess,
+                                         .cpu = &hover_pass, .gpu = spade::compute::GpuRecipe::rotors}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = liar});
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("hover.lift"), std::string::npos) << s.error().context;
+}
+
+// The refusal happens in create() before any device is opened, so this runs
+// on a machine without a GPU.
+TEST(ModuleSimulation, ADeveloperPassWithNoRecipeIsRefusedOnVulkanByName) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = kHoverPasses});
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
+                                               set);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
+    EXPECT_NE(sim.error().context.find("hover.lift"), std::string::npos) << sim.error().context;
+}
+
+TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const auto g = spade::modules::gpu_passes(*s);
+    ASSERT_EQ(g.size(), s->passes.size());
+    for (size_t i = 0; i < g.size(); ++i) {
+        EXPECT_EQ(g[i].name, s->passes[i].module + "." + s->passes[i].pass);
+        EXPECT_EQ(g[i].recipe, s->passes[i].gpu);
+    }
 }

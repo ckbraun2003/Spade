@@ -30,7 +30,8 @@ VulkanBackend::~VulkanBackend() = default;
 VulkanBackend::VulkanBackend(VulkanBackend&&) noexcept = default;
 VulkanBackend& VulkanBackend::operator=(VulkanBackend&&) noexcept = default;
 
-Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& desc, const StepShape& shape) {
+Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& desc, const StepShape& shape,
+                                                             std::span<const GpuPass> passes) {
     // ARGUMENT VALIDATION BEFORE RESOURCE ACQUISITION (S6 Task 9b). Checked
     // ahead of VulkanContext::create() deliberately, and the ordering is a
     // contract rather than a style preference:
@@ -58,6 +59,16 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
                                          "for (cmake/SpadeSlang.cmake)."});
     }
 
+    // A pass with no GPU kernel, checked before any device is touched for the
+    // same reason: it is wrong on every machine. (StepRecorder::create() keeps
+    // the closer guard.)
+    for (const GpuPass& pass : passes) {
+        if (pass.recipe == GpuRecipe::none) {
+            return std::unexpected(Error{Code::invalid_argument, "VulkanBackend::create: pass '" + pass.name +
+                                                                     "' has no GPU kernel (GpuRecipe::none)"});
+        }
+    }
+
     Result<std::unique_ptr<VulkanContext>> ctx = VulkanContext::create(desc);
     if (!ctx) return std::unexpected(ctx.error());
 
@@ -70,7 +81,7 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     // never be bound. See StateMirror::step_params_mapped().
     Result<std::unique_ptr<StepRecorder>> recorder =
         StepRecorder::create(**ctx, shape, (*mirror)->descriptor_set_layout(), (*mirror)->descriptor_set(),
-                             (*mirror)->step_params_mapped(), desc.workgroup_size);
+                             (*mirror)->step_params_mapped(), desc.workgroup_size, passes);
     if (!recorder) return std::unexpected(recorder.error());
 
     // std::unique_ptr<VulkanBackend>(new VulkanBackend()): the default

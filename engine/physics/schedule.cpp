@@ -6,8 +6,9 @@
 #include "physics/integrator.hpp"
 
 // ---------------------------------------------------------------------------
-// The schedule, as data. See schedule.hpp for the §3 quote this file is a
-// transcription of, and for what each pass is and is not allowed to do.
+// The passes, as functions. The order they run in is the compiled module
+// schedule's (sim/module.hpp, sim/standard_modules.cpp); schedule.hpp says what
+// each pass is and is not allowed to do.
 // ---------------------------------------------------------------------------
 
 namespace spade::physics {

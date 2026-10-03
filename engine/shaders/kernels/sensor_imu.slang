@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
-// sensor_imu.slang (S6 Task 8) -- the SensorSynthesis pass, ported from
+// sensor_imu.slang (S6 Task 8) -- the imu.synthesize pass, ported from
 // engine/sensors/imu.cpp's synthesize_imu() (declared at sensors/imu.hpp:442).
-// Slot 6 of the schedule, and the last dispatch of a substep that does anything
-// at all.
+// A pass of the Sensors phase, beside gnss.synthesize: neither writes what
+// the other reads, so the schedule may order them either way.
 //
 // TWO-INSTANT SYNTHESIS PLUS A RING WRITE, and the two instants are the port's
 // most important inherited property rather than a wrinkle. sensors/imu.hpp

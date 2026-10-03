@@ -4,6 +4,11 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API, stage 2: the GPU chain is the schedule's (2026-10-03)
+
+- **The Vulkan step records the compiled module schedule.** Each pass names a GPU recipe (`compute::GpuRecipe`), a built-in kernel, and may name only the recipe of its own CPU function. Any module set whose passes all have one runs on Vulkan in the schedule's order. A pass with none is refused at `Simulation::create()`, by name. `Simulation::vulkan_recorded_chain()` reports what was recorded. `compute::VulkanBackend::create()` now takes the GPU chain to record (`modules::gpu_passes()` of a compiled schedule) as a third argument.
+- **`Simulation::vulkan_pass_durations_ns()` reports one named duration per GPU pass**, in schedule order (`PassDurationsNs::passes`, looked up with `find()`, which has no default), replacing the eight fixed fields. The bench keeps its six counter names, adds `gpu_pass.<module>.<pass>_ns`, and fails on a missing pass. Rotors and drag, and IMU and GNSS, now have a bracket each, so the two summed counters include one more timestamp mark than before.
+
 ### Module API, stage 1: modules and the scheduler (2026-10-02 to 2026-10-03)
 
 - **Modules, compiled into one schedule.** A module (`sim/module.hpp`) is a name, a version and its passes. Each pass declares its phase, its placement, what it reads, writes or accumulates, and any `after` edges. `modules::compile_schedule()` orders a module set into the engine model's six phases, and refuses a conflict between two writers, an unknown quantity, a dangling edge or a cycle. `modules::standard_modules()` is today's engine as nine modules and compiles to the old pass order. The CPU step runs the compiled list.

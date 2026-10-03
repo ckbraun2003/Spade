@@ -12,13 +12,13 @@
 //     kernels/forces_drag.slang    dryden_turbulence()   -- the medium SAMPLE the
 //     kernels/rotors.slang         dryden_turbulence()      force passes read
 //
-// That is physics/schedule.cpp's own arrangement: pass_medium_update() advances
-// the filter once per world per substep, and pass_force_elements() then
-// constructs a DrydenMedium over the ALREADY-ADVANCED row and samples it. The
-// recorded dispatch chain preserves the order (MediumUpdate is slot 0,
-// ForceElements slot 1, with a memory barrier between every adjacent pair), so
-// the gust a force element reads on the device is the same substep's gust the
-// CPU reads.
+// That is the schedule's own arrangement: dryden.advance (Fields) advances the
+// filter once per world per substep, and the Forces passes (rotor.forces,
+// drag.forces) then construct a DrydenMedium over the ALREADY-ADVANCED row and
+// sample it. The recorded dispatch chain is the schedule's (Fields before
+// Forces, with a memory barrier between every adjacent pair), so the gust a
+// force element reads on the device is the same substep's gust the CPU
+// reads.
 //
 // ===========================================================================
 // PARITY: medium.cpp's op order IS the contract, and this file is its
@@ -321,8 +321,8 @@ float3 dryden_turbulence(DrydenState state, DrydenParams params) {
 // SPELLED ONCE, HERE, rather than twice in forces_drag.slang and rotors.slang:
 // both force kernels sample the same medium in the same substep and must agree
 // bit for bit about what the air is doing, exactly as both CPU force passes are
-// handed ONE DrydenMedium constructed once per world by
-// physics/schedule.cpp's pass_force_elements().
+// handed a DrydenMedium built from the same advanced row, once per world, by
+// physics/schedule.cpp's pass_rotor_forces() and pass_drag().
 //
 // POSITION IS NOT A PARAMETER, deliberately -- and that is the CPU's signature
 // too: both ConstantMedium::sample and DrydenMedium::sample take `glm::vec3`
