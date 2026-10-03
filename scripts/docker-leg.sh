@@ -14,6 +14,10 @@
 #                  its dependencies stay in /leg/build/_deps between runs
 #   /leg/consumer  scripts/consumer-smoke.sh's work directory (Interface)
 #
+# `consumer` configures and builds before its two calls: consumer ON installs
+# from /leg/build, which must be the commit under test, not whatever commit
+# last built there. `all` adds the test parts to that.
+#
 # A part that fails does not stop the parts that don't depend on it. The exit
 # code is 0 only if every part of the step passed; summary.txt lists each part.
 set -u
@@ -157,6 +161,15 @@ do_consumer() {
     local args=(--vulkan "$mode" --work "$root/consumer" --jobs "$jobs")
     [ "$mode" = ON ] && args+=(--from-build "$build")
     [ -d "$build/_deps" ] && args+=(--deps "$build/_deps")
+    # The SL2b sandbox stage, when this commit's recipe offers it: its --help
+    # lists `--sandbox` (Interface keeps that line for this). An older commit
+    # runs without it, and the summary says so either way.
+    if bash "$smoke" --help 2>/dev/null | grep -q -- '--sandbox'; then
+        args+=(--sandbox)
+        sandbox_note="on (consumer-smoke.sh --sandbox)"
+    else
+        sandbox_note="not offered by this commit's consumer-smoke.sh"
+    fi
     bash "$smoke" "${args[@]}"
 }
 
@@ -168,13 +181,18 @@ echo "docker-leg: started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 gpu_excluded=
 agreement_note=
+sandbox_note=
 t_start=$SECONDS
 
-if [ "$step" = all ] || [ "$step" = configure ]; then
+# all and consumer chain configure -> build -> what needs a built tree.
+chained=no
+case $step in all|consumer) chained=yes ;; esac
+
+if [ "$chained" = yes ] || [ "$step" = configure ]; then
     run_part configure do_configure
 fi
-if [ "$step" = all ] || [ "$step" = build ]; then
-    if [ "$step" = all ] && ! passed configure; then block build configure
+if [ "$chained" = yes ] || [ "$step" = build ]; then
+    if [ "$chained" = yes ] && ! passed configure; then block build configure
     else run_part build do_build; fi
 fi
 if [ "$step" = all ] || [ "$step" = test ]; then
@@ -183,8 +201,8 @@ if [ "$step" = all ] || [ "$step" = test ]; then
     if [ "$step" = all ] && ! passed build; then block agreement build
     else run_part agreement do_agreement; fi
 fi
-if [ "$step" = all ] || [ "$step" = consumer ]; then
-    if [ "$step" = all ] && ! passed build; then block "consumer ON" build
+if [ "$chained" = yes ]; then
+    if ! passed build; then block "consumer ON" build
     else run_part "consumer ON" do_consumer ON; fi
     run_part "consumer OFF" do_consumer OFF
 fi
@@ -213,6 +231,9 @@ for p in "${parts[@]}"; do passed "$p" || result=FAIL; done
         echo "registered  $(wc -l < "$out/tests.txt") test names (tests.txt)"
         echo "agreement   ${agreement_note:-not collected}"
         sed -n '/^The following tests did not run:/,/^$/p; /^The following tests FAILED:/,/^$/p' "$out/ctest.log"
+    fi
+    if [ -n "$sandbox_note" ]; then
+        echo "sandbox     $sandbox_note"
     fi
 } > "$summary"
 echo
