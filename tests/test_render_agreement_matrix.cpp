@@ -58,15 +58,18 @@ using spade::render::RenderOptions;
 using spade::render::RenderScene;
 using spade::render::RenderTarget;
 
+// Every member has a default initializer, so a designated initializer may
+// omit any of them: gcc's -Wmissing-field-initializers flags an omitted
+// member that has none, and the Docker leg builds with -Werror.
 struct MatrixCase {
-    std::string world;
-    std::string camera_name;
+    std::string world{};
+    std::string camera_name{};
     glm::vec3 position{0.0f};
     float yaw = 0.0f;
     float pitch = 0.0f;
-    std::string probe;   // "ground_only" or "empty"
-    Json band;           // a number once pinned, null before
-    std::string error;   // set when the band file could not be read: the case fails with it
+    std::string probe{};   // "ground_only" or "empty"
+    Json band{};           // a number once pinned, null before
+    std::string error{};   // set when the band file could not be read: the case fails with it
 };
 
 [[nodiscard]] std::filesystem::path bands_path() {
