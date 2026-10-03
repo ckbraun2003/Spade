@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// collision_gather.slang -- the CollisionDynamic pass as a JACOBI GATHER, one
+// collision_gather.slang -- dynamic contact as a JACOBI GATHER (unwired, PHY-5), one
 // thread per grid ENTRY.
 //
 // A SEPARATE FILE RATHER THAN TWO MORE ENTRY POINTS IN collision_dynamic.slang,

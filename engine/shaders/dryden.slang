@@ -8,7 +8,7 @@
 // declares no entry point and reaches SPIR-V only through the kernels that
 // import it. THREE do, and the split is the CPU's own:
 //
-//     kernels/medium_update.slang  dryden_advance()      -- the MediumUpdate pass
+//     kernels/medium_update.slang  dryden_advance()      -- the dryden.advance pass
 //     kernels/forces_drag.slang    dryden_turbulence()   -- the medium SAMPLE the
 //     kernels/rotors.slang         dryden_turbulence()      force passes read
 //

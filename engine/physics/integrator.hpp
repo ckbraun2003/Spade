@@ -10,10 +10,10 @@
 // bodies"). One substep of semi-implicit (symplectic) Euler over a world's
 // body span, plus the specific-force capture the IMU pass consumes.
 //
-// WHERE THIS SITS IN THE SCHEDULE. §3 pins the per-substep pass sequence:
+// WHERE THIS SITS IN THE SCHEDULE. The module schedule's six phases, per substep:
 //
-//     MediumUpdate -> ForceElements -> Gravity -> CollisionStatic ->
-//     CollisionDynamic -> Integrate -> SensorSynthesis -> Publish
+//     Fields -> Forces -> Constraints/Contacts (static, then dynamic) ->
+//     Integrate -> Sensors -> Publish (sim/standard_modules.cpp)
 //
 // so by the time Integrate runs, `force_acc`/`torque_acc` hold the whole
 // substep's accumulated wrench and Integrate's only job is to turn it into
@@ -21,13 +21,13 @@
 //
 //   * GRAVITY IS APPLIED HERE, NOT READ FROM force_acc. This function adds
 //     `params.gravity` to the acceleration itself (step 3 below) rather than
-//     expecting a Gravity pass to have folded m*g into force_acc. That is the
+//     expecting another pass to have folded m*g into force_acc. That is the
 //     op order this task was specified against, and it is what makes the
-//     specific-force capture exact rather than a subtraction. The schedule's
-//     Gravity pass must therefore NOT also add m*g to force_acc, or gravity
-//     is applied twice. Reconciling the schedule with this choice belongs to
-//     the task that builds the pass schedule; until then, callers of
-//     integrate_bodies() own that invariant.
+//     specific-force capture exact rather than a subtraction. No pass may
+//     also add m*g to force_acc, or gravity is applied twice. The module
+//     schedule has no gravity pass (engine A9), and
+//     Schedule.GravityIsAppliedExactlyOnce pins that Integrate is the one
+//     site that applies it.
 //   * ACCUMULATORS ARE CLEARED HERE (step 7), so the next substep's force
 //     passes start from zero. A body skipped for being inactive keeps its
 //     accumulators untouched -- see the flags note below.
@@ -100,7 +100,7 @@ inline constexpr uint32_t active = 1u << 0;
 // the body-frame `inv_inertia_diag`, so all three share the frame the inertia
 // tensor is diagonal in. The accumulator asymmetry -- world-frame forces,
 // body-frame torques -- is intentional, so the torque producers (the
-// ForceElements and Collision passes) owe body-frame torques.
+// force passes and the contact passes) owe body-frame torques.
 //
 // UNITS: pos m, vel m/s, orient unitless, omega_body rad/s, mass kg,
 // inv_inertia_diag 1/(kg m^2), force_acc N, torque_acc N m, specific_force

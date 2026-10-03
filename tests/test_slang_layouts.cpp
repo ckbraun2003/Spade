@@ -177,7 +177,7 @@ const RegistryEntry kExpectedRegistry[] = {
     // of physics/grid.hpp's GridScratch, and the second device-WRITTEN buffer
     // in the set that is not registered state (step_witness is the other). It
     // is neither uploaded nor read back on the step path: the build, the sort
-    // stages and the sweep all live inside one CollisionDynamic pass.
+    // stages and the sweep all live inside one dynamic_contact.resolve pass.
     {"grid_entries", gen::kBinding_grid_entries},
     // The CollisionDynamic GATHER's start-of-iteration shadow of pos, vel,
     // mass and the effective proxy radius -- one row per grid ENTRY, the
@@ -506,7 +506,7 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_medium_update, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_rotors, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_sensor_imu, spade::testing::SpirvProfile::parity},
-    //   sensor_gnss    the SensorSynthesis pass's second dispatch. PARITY like
+    //   sensor_gnss    the gnss.synthesize pass. PARITY like
     //                  sensor_imu, and for a sharper reason: its Gauss-Markov
     //                  coefficients are precomputed on the CPU, so this module
     //                  contains no exp and no OpFDiv at all -- the bias advance

@@ -275,10 +275,10 @@ public:
 //
 // THE SCHEDULE CONTRACT, spelled out because it is not enforceable by the
 // type system: dryden_advance() must be called EXACTLY ONCE PER SUBSTEP for
-// each world, in the MediumUpdate pass -- the first pass of the substep
-// sequence (engine design spec section 3: MediumUpdate -> ForceElements ->
-// Gravity -> CollisionStatic -> CollisionDynamic -> Integrate ->
-// SensorSynthesis -> Publish) -- and therefore BEFORE any force element reads
+// each world, in the dryden.advance pass -- in the Fields phase, so before
+// any reader (sim/standard_modules.cpp; only placement-first kinematic
+// behaviors run ahead of it, and they touch no medium state)
+// -- and therefore BEFORE any force element reads
 // sample(). Calling it twice per substep halves the correlation time and
 // inflates the number of gust draws; calling it zero times freezes the gust
 // for that substep. Both are silent, so the pass that owns the schedule owns
@@ -515,7 +515,7 @@ struct DrydenSecondOrderCoeffs {
 [[nodiscard]] float dryden_step_ratio(float h, float reference_airspeed, float scale_length) noexcept;
 
 // ---------------------------------------------------------------------------
-// One substep of the three filters. THE MediumUpdate pass for this medium.
+// One substep of the three filters. THE dryden.advance pass for this medium.
 //
 // Call exactly once per substep per world, BEFORE any force element samples
 // the medium -- see the schedule contract in section 4 of the header note.

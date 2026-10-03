@@ -31,10 +31,10 @@ namespace {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// synthesize_gnss() -- the SensorSynthesis pass's GNSS contribution, for ONE
-// world's spans. physics/schedule.cpp calls this immediately after
-// synthesize_imu(), as a SECOND BATCHED CALL in the same pass rather than a
-// second pass: schedule.hpp:426 ruled that shape before this sensor existed.
+// synthesize_gnss() -- the gnss.synthesize pass's work, for ONE
+// world's spans. physics/schedule.cpp's pass_sensor_gnss() calls it, in the
+// Sensors phase beside imu.synthesize. (Before the module API it was a second
+// batched call in one SensorSynthesis pass; the two share no quantity.)
 //
 // ===========================================================================
 // NINE DRAWS PER EMITTED FIX, AND NINE IS ODD, AND THAT IS FINE

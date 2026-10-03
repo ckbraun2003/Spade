@@ -45,7 +45,7 @@ class BehaviorRegistry;
 // records, never a call sequence written by hand.
 //
 // A PASS TAKES THE WHOLE WORLD SET, NOT ONE WORLD. §3's execute_cpu(WorldSpan)
-// signature is deliberate and this header follows it: CollisionDynamic is a
+// signature is deliberate and this header follows it: dynamic_contact.resolve is a
 // SINGLE sorted-grid sweep keyed on (world_id, cell) (D8), so it cannot be
 // expressed as a per-world callback, while the other passes iterate the world
 // span serially ("The CPU twin iterates worlds serially with identical per-world
@@ -92,7 +92,7 @@ struct WorldSubstepView {
     const WorldParams* params = nullptr;         // this world's row of the param array
     // This world's body partition. NO SEPARATE PER-BODY RADIUS SPAN LIVES
     // HERE (D-S6-2): each BodyState already carries its own `proxy_radius`
-    // (state/layout.hpp), so CollisionStatic and CollisionDynamic read it
+    // (state/layout.hpp), so both contact passes read it
     // directly off the elements of THIS span via physics::effective_proxy_
     // radius() -- one obvious place, rather than a second span a pass would
     // have to index in lockstep with this one. THE OWNERSHIP SPLIT: a
@@ -110,7 +110,7 @@ struct WorldSubstepView {
     // This world's material/solver record. `proxy_radius` here is the
     // FALLBACK a per-body override (`bodies[i].proxy_radius`, above) defers
     // to when it is the 0 sentinel -- see physics::effective_proxy_radius()
-    // (physics/contacts.hpp), which both CollisionStatic and CollisionDynamic
+    // (physics/contacts.hpp), which both contact passes, static and dynamic,
     // call so the two passes cannot disagree about a body's size.
     ContactParams contacts{};
     GridParams grid{};                           // this world's broad-phase cell size
@@ -118,7 +118,7 @@ struct WorldSubstepView {
     // This world's sensor table and its output-ring storage (Task 19).
     // MUTABLE, unlike drag_elements: a sensor row carries its own rate-divider
     // phase, bias random walk, rng stream and ring write cursor, all of which
-    // the SensorSynthesis pass advances. `imu_ring` holds exactly
+    // the imu.synthesize pass advances. `imu_ring` holds exactly
     // imu_sensors.size() * sensors::kRingDepth samples -- sensor i owns the
     // window starting at i * kRingDepth (sensors/imu.hpp: the ring reference is
     // implicit in the slot).
@@ -135,7 +135,7 @@ struct WorldSubstepView {
     // This world's rotor partition (Task 18). MUTABLE, unlike drag_elements
     // and for the same reason imu_sensors is: a rotor row carries its own
     // lagged shaft speed and the command it is lagging toward, and the
-    // RotorElement half of the ForceElements pass advances both
+    // rotor.forces pass advances both
     // (vehicles/rotor.hpp section 5).
     //
     // WHY A vehicles/ TYPE APPEARS IN A physics/ HEADER, since spec S3's tree
@@ -164,7 +164,7 @@ struct SubstepContext {
     std::span<const WorldSubstepView> worlds;
 
     // The WHOLE bodies array and its slot->world map, all worlds, in slot
-    // order -- what the batched CollisionDynamic sweep takes (D8: "one dispatch
+    // order -- what the batched dynamic-contact sweep takes (D8: "one dispatch
     // steps N worlds"). Index i of both spans is global arena slot i.
     std::span<BodyState> all_bodies;
     std::span<const uint32_t> all_slot_to_world;
@@ -173,7 +173,7 @@ struct SubstepContext {
     // copied into each step's context by Simulation::step(). The distinction
     // matters: the value is a function of CONFIG alone and is fixed for the
     // Simulation's lifetime, so this can never become a state-dependent branch
-    // in the step loop. See the CollisionDynamic pass below for what it selects
+    // in the step loop. See dynamic_contact.resolve below for what it selects
     // and why both branches are numerically identical.
     bool batch_dynamic_collision = false;
     ContactParams dynamic_contacts{};  // meaningful only when batch_dynamic_collision
@@ -208,7 +208,7 @@ struct SubstepContext {
     // the behavior slots reads this.
     float dt_s = 0.0f;
 
-    // The STEP being executed -- what SensorSynthesis stamps its samples with.
+    // The STEP being executed -- what the sensor passes stamp their samples with.
     //
     // NOT A CLOCK. Tick is the engine's only notion of time (core/time.hpp) and
     // this is a copy of the Simulation's counter, taken once per step; nothing
@@ -242,11 +242,11 @@ using PassFn = void (*)(const SubstepContext&) noexcept;
 // interface, two implementations".
 // ---------------------------------------------------------------------------
 
-// MediumUpdate -- advance every world's Dryden gust filter by one substep.
+// dryden.advance -- advance every world's Dryden gust filter by one substep.
 //
-// FIRST, AND EXACTLY ONCE PER SUBSTEP. world/medium.hpp states the contract
+// IN FIELDS, AND EXACTLY ONCE PER SUBSTEP. world/medium.hpp states the contract
 // this pass exists to honour: "dryden_advance() must be called EXACTLY ONCE PER
-// SUBSTEP for each world, in the MediumUpdate pass ... and therefore BEFORE any
+// SUBSTEP for each world, in the dryden.advance pass ... and therefore BEFORE any
 // force element reads sample(). Calling it twice per substep halves the
 // correlation time and inflates the number of gust draws; calling it zero times
 // freezes the gust for that substep. Both are silent, so the pass that owns the
@@ -260,19 +260,19 @@ using PassFn = void (*)(const SubstepContext&) noexcept;
 // OTHER stochastic system as well. So: no branch here, ever.
 void pass_medium_update(const SubstepContext&) noexcept;
 
-// BehaviorsKinematic -- runs the attached BehaviorRegistry's kinematic slot;
+// behaviors.kinematic -- runs the attached BehaviorRegistry's kinematic slot;
 // inert when none is attached (every golden scenario).
 //
-// SL6 places this AFTER MediumUpdate and BEFORE ForceElements: a pose written
+// The module schedule places this FIRST in Fields (user ruling Q2): a pose written
 // by a kinematic behavior must be set before anything reads it, and both
 // collision passes read poses. Placing it later would let a body collide
 // against the position it held last substep.
 //
-// Inert here in the same sense the Gravity slot above is inert, and for a
-// different reason: Gravity is empty because its work happens inside Integrate,
-// while this is empty because the thing that fills it does not exist yet. Both
-// are represented rather than absent so the schedule stays one reviewable
-// object. See pass_behaviors_force below for the proof obligation both share.
+// Inert because the thing that fills it does not exist yet. It is represented
+// rather than absent so the schedule stays one reviewable object. (Before the
+// module API it shared that reason with an empty Gravity slot; the module
+// schedule has no gravity pass.) See pass_behaviors_force below for the proof
+// obligation.
 void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 
 // Rotor forces, then drag -- the force elements, one module each. Both add
@@ -283,10 +283,10 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 void pass_rotor_forces(const SubstepContext&) noexcept;
 void pass_drag(const SubstepContext&) noexcept;
 
-// BehaviorsForce -- runs the attached BehaviorRegistry's force slot; inert
+// behaviors.force -- runs the attached BehaviorRegistry's force slot; inert
 // when none is attached (every golden scenario).
 //
-// SL6 places this AFTER ForceElements so behavior wrenches accumulate after the
+// SL6 places this LAST in Forces so behavior wrenches accumulate after the
 // rotors-then-drag order the golden corpus pins. Float addition is not
 // associative, so running before would change force_acc's last bits -- a
 // difference no test of either element alone can see, and one that would
@@ -300,10 +300,10 @@ void pass_drag(const SubstepContext&) noexcept;
 // satisfied by re-blessing a scenario file.
 void pass_behaviors_force(const SubstepContext&) noexcept;
 
-// CollisionStatic -- every world's active bodies against its world SDF.
+// static_contact.resolve -- every world's active bodies against its world SDF.
 void pass_collision_static(const SubstepContext&) noexcept;
 
-// CollisionDynamic -- the sorted-grid body-body sweep.
+// dynamic_contact.resolve -- the sorted-grid body-body sweep.
 //
 // TWO FORMS, ONE ANSWER. When every world shares a ContactParams and a
 // GridParams (WorldSetLayout::uniform_dynamic_params, decided once at create()
