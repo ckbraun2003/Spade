@@ -37,6 +37,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>  // std::move -- the WorldDesc moves into the caller's storage
 #include <vector>
 
@@ -55,6 +56,7 @@
 #include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
+#include "render_gap.hpp"      // the HUD line naming what the GPU path does not draw
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
 
 namespace {
@@ -85,6 +87,9 @@ class GpuRenderer {
     [[nodiscard]] uint32_t last_instances() const noexcept { return 0u; }
     [[nodiscard]] const std::string& renderer_name() const noexcept { return none_; }
     [[nodiscard]] const std::string& version_string() const noexcept { return none_; }
+    [[nodiscard]] static std::vector<std::string_view> unhonoured(const spade::render::RenderOptions&) {
+        return {};
+    }
 
   private:
     GpuRenderer() = default;
@@ -694,6 +699,9 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
         // The application owns the render call, so it times its own cost.
         // Both paths are timed the SAME WAY and feed the SAME HUD, which is
         // what makes the two comparable at all.
+        // SL10: the HUD names what the active path does not draw, every frame,
+        // because the options and the path can both change.
+        sink->set_gap_line(gpu ? spade::sandbox::render_gap_line(GpuRenderer::unhonoured(gpu_options)) : std::string{});
         const auto r0 = std::chrono::steady_clock::now();
         if (gpu) {
             sink->begin_gpu_frame();
@@ -873,6 +881,8 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
             drone_frame(scene, binding, *drone, panel.readouts.orientation, rc, panel.view_heatmap, panel.heatmap_max,
                         blur, &panel.observed_max);
 
+        // SL10: the HUD names what the active path does not draw.
+        sink->set_gap_line(gpu ? spade::sandbox::render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
         const auto r0 = std::chrono::steady_clock::now();
         if (gpu) {
             sink->begin_gpu_frame();

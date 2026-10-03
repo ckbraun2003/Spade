@@ -42,6 +42,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ⚠ OUTSIDE THE GL GUARD ON PURPOSE. The user asked for a memory figure, and
@@ -173,6 +174,9 @@ struct GlTargetSink::Impl {
     // the sink only reads and writes it while drawing a panel.
     BuilderScene* builder = nullptr;
     DronePanelModel* drone = nullptr;
+
+    // What the active path does not draw ("" for none); see set_gap_line().
+    std::string gap_line;
 
     ~Impl() {
         // Teardown in creation-reverse order, and each step guarded by the flag
@@ -605,6 +609,10 @@ void GlTargetSink::draw_overlay() {
                         a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, a.total_ms);
             // The user's ask: memory beside the fps, same overlay, same cadence.
             ImGui::Text("memory  %.1f MB", mb);
+            // SL10: the GPU path's gap is shown, not hidden.
+            if (!impl_->gap_line.empty()) {
+                ImGui::TextUnformatted(impl_->gap_line.c_str());
+            }
             ImGui::Separator();
             // WHERE THE FRAME WENT. The point of showing all five rather than a
             // total: they have different remedies, and one of them is not a cost.
@@ -756,6 +764,10 @@ void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
 #else
     (void)model;
 #endif
+}
+
+void GlTargetSink::set_gap_line(std::string line) {
+    impl_->gap_line = std::move(line);
 }
 
 void GlTargetSink::attach_drone(DronePanelModel* model) noexcept {
