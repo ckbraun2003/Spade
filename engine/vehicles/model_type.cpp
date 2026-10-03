@@ -39,6 +39,17 @@ Result<void> ModelType::validate() const {
     }
     const std::string at = "model type '" + name + "': ";
 
+    // --- version and design frame (DBE-005, DBP-44) --------------------------
+    if (version == 0) {
+        return std::unexpected(invalid(at + "version must be >= 1"));
+    }
+    if (!orientable(design_to_principal)) {
+        return std::unexpected(invalid(at + "design_to_principal must be finite with non-zero length"));
+    }
+    if (!finite(com_offset)) {
+        return std::unexpected(invalid(at + "com_offset must be finite"));
+    }
+
     // --- body template ------------------------------------------------------
     if (!(body.mass > 0.0f) || !finite(body.mass)) {
         // physics/integrator.cpp DIVIDES by mass (step 1) and does not guard
@@ -168,6 +179,19 @@ Result<void> ModelType::validate() const {
     }
 
     return {};
+}
+
+glm::quat canonical_design_rotation(const glm::quat& q) noexcept {
+    if (q.w == 1.0f && q.x == 0.0f && q.y == 0.0f && q.z == 0.0f) {
+        return q;
+    }
+    glm::quat n = glm::normalize(q);
+    const bool flip = n.w < 0.0f ||
+                      (n.w == 0.0f && (n.x < 0.0f || (n.x == 0.0f && (n.y < 0.0f || (n.y == 0.0f && n.z < 0.0f)))));
+    if (flip) {
+        n = -n;
+    }
+    return n;
 }
 
 }  // namespace spade::vehicles

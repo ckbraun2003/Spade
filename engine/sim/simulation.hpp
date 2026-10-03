@@ -23,6 +23,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
+#include "sim/design_frame.hpp"
 #include "sim/module.hpp"
 #include "sim/world_set.hpp"
 #include "state/arenas.hpp"
@@ -314,6 +315,12 @@ struct VehicleRef {
 // wants unequal initial speeds spawns at rest and commands them, paying the
 // lag.
 // ---------------------------------------------------------------------------
+// THE DESIGN FRAME (drone-builder DBP-46). pos, orient, vel and omega_body are
+// the state of the model's DESIGN origin, in its design axes: spawn() converts
+// them into the body row (centre of mass, principal axes) through the model's
+// design_to_principal and com_offset (sim/design_frame.hpp). For a model whose
+// frames coincide -- every model with the default identity and zero -- they are
+// the body's own state, bit for bit.
 struct VehicleSpawn {
     glm::vec3 pos{0.0f};
     glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};  // (w, x, y, z) at construction; normalized by spawn
@@ -1227,6 +1234,15 @@ public:
     // Handy typed accessors for the two arrays a caller is likely to read back.
     [[nodiscard]] Result<std::span<const BodyState>> world_bodies(uint32_t world_index) const;
     [[nodiscard]] Result<const BodyState*> body(BodyRef ref) const;
+
+    // A vehicle's state in its DESIGN frame (drone-builder DBP-47): the design
+    // origin's world position and velocity, the design-to-world orientation, and
+    // the angular rate in design axes -- the inverse of the conversion spawn()
+    // applies (sim/design_frame.hpp). For a model whose frames coincide this is
+    // the body row's pos, orient, vel and omega_body, bit for bit.
+    // invalid_argument for a ref with no model (vehicle_ref_at() returns those)
+    // or a stale body, with model()'s and body()'s own messages.
+    [[nodiscard]] Result<FrameState> vehicle_state(const VehicleRef& vehicle) const;
     [[nodiscard]] Result<uint32_t> live_body_count(uint32_t world_index) const;
 
     // The world's OWN declared body capacity -- what spawn() enforces, which is

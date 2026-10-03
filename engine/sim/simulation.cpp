@@ -1814,6 +1814,9 @@ Result<ModelTypeId> Simulation::register_model(vehicles::ModelType model) {
     if (Result<void> valid = model.validate(); !valid) {
         return std::unexpected(valid.error());
     }
+    // q and -q are one rotation; stored normalized with a fixed sign, two models
+    // that differ only there spawn identical rows. Not on the step path.
+    model.design_to_principal = vehicles::canonical_design_rotation(model.design_to_principal);
     if (models_.size() >= std::numeric_limits<uint32_t>::max() - 1u) {
         return std::unexpected(Error{Code::capacity_exceeded, "register_model: model id space is full"});
     }
@@ -2020,19 +2023,24 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // own reserved slot), and it is fixed anyway because the queue IS the
     // determinism contract: a flush applies ops front to back, so the sequence
     // a spawn contributes must be a function of the model alone.
+    // THE DESIGN FRAME (DBP-46): `where` is the design origin's state; the body
+    // row holds the centre of mass in principal axes. A model whose frames
+    // coincide passes `where` through untouched (sim/design_frame.hpp).
+    const FrameState start = to_body_state(FrameState{where.pos, where.orient, where.vel, where.omega_body},
+                                           model.design_to_principal, model.com_offset);
     StructuralOp body_op;
     body_op.kind = OpKind::init_body;
     body_op.world_index = world_index;
     body_op.slot = *body_slot;
-    body_op.body.pos = where.pos;
+    body_op.body.pos = start.pos;
     // D-S6-2: the model OWNS its bodies' contact-proxy radius. Left at the
     // model's own 0.0f default, this writes 0 -- the sentinel that defers to
     // the world's ContactParams::proxy_radius, i.e. exactly what a model that
     // never customized its proxy produced before this field was consumed.
     body_op.body_proxy_radius = model.proxy_radius;
-    body_op.body.orient = where.orient;
-    body_op.body.vel = where.vel;
-    body_op.body.omega_body = where.omega_body;
+    body_op.body.orient = start.orient;
+    body_op.body.vel = start.vel;
+    body_op.body.omega_body = start.omega;
     body_op.body.mass = model.body.mass;
     // The model carries the INERTIA; BodyState stores its inverse. Inverted
     // here, in one place. Validated componentwise > 0 by ModelType::validate(),
@@ -2541,6 +2549,15 @@ Result<std::span<const BodyState>> Simulation::world_bodies(uint32_t world_index
     const Result<uint32_t> world = checked_world(world_index);
     if (!world) return std::unexpected(world.error());
     return arenas_.world_slice(bodies_id_, world_index);
+}
+
+Result<FrameState> Simulation::vehicle_state(const VehicleRef& vehicle) const {
+    const Result<const vehicles::ModelType*> found = model(vehicle.model);
+    if (!found) return std::unexpected(found.error());
+    const Result<const BodyState*> row = body(vehicle.body);
+    if (!row) return std::unexpected(row.error());
+    const FrameState state{(*row)->pos, (*row)->orient, (*row)->vel, (*row)->omega_body};
+    return to_design_state(state, (*found)->design_to_principal, (*found)->com_offset);
 }
 
 Result<const BodyState*> Simulation::body(BodyRef ref) const {

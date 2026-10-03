@@ -197,6 +197,18 @@ struct ModelType {
     std::string name;                  // non-empty; identity for a human, not for the engine
     uint32_t param_schema_id = 0;      // which parameter schema these values were authored against
     std::string visual_ref;            // viewer/editor mesh reference; NOT read by the engine
+    uint32_t version = 1;              // the compiled model's version (DBE-005); >= 1
+
+    // THE DESIGN FRAME (drone-builder physics DBP-44..47). The model is
+    // compiled into its principal body frame -- every mount below is expressed
+    // there -- but a vehicle is spawned and read in its DESIGN frame, the
+    // flight controller's. These two say how the frames relate; only this
+    // struct, Simulation::spawn() and Simulation::vehicle_state() see them
+    // (DBP-45; sim/design_frame.hpp has the conversion). The defaults -- the
+    // identity and zero -- make the frames coincide, which every model built
+    // before the design frame existed does.
+    glm::quat design_to_principal{1.0f, 0.0f, 0.0f, 0.0f};  // q_bd: design-frame vectors -> body frame
+    glm::vec3 com_offset{0.0f};  // the centre of mass from the design origin, design frame, m
 
     BodyTemplate body{};
     // m, >= 0. CONSUMED as of D-S6-2 (see the header note): every vehicle
@@ -240,5 +252,13 @@ struct ModelType {
     // -----------------------------------------------------------------------
     [[nodiscard]] Result<void> validate() const;
 };
+
+// The design-to-principal rotation as a model stores it: `q` normalized, and
+// negated if the first non-zero of (w, x, y, z) is negative, so q and -q -- one
+// rotation -- are one value. The identity is returned bit for bit. The one rule
+// (TD-9) that Simulation::register_model() and the airframe compiler both
+// apply, so a model's stored rotation never depends on which sign its author
+// wrote.
+[[nodiscard]] glm::quat canonical_design_rotation(const glm::quat& q) noexcept;
 
 }  // namespace spade::vehicles
