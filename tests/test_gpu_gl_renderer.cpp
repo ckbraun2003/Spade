@@ -515,9 +515,12 @@ TEST_F(GpuGlRenderer, VelocityModeColoursEachInstanceBySpeed) {
 // pixel apart, so the second maximum covers interior pixels only: those whose
 // 3x3 neighbourhood on the CPU frame is one colour.
 TEST_F(GpuGlRenderer, FieldLayerMatchesTheCpuWithinItsMeasuredBand) {
-    // Provisional until measured: see the commit that pins them.
-    constexpr int kBandAll = 0;
-    constexpr int kBandInterior = 0;
+    // Measured 2026-10-03 at a89d8ca, 160x120, on Intel Iris Plus Graphics
+    // (GL 4.3, driver 31.0.101.2125): at most 1 level over all 19200 pixels,
+    // and 1 over the 15960 interior ones; no border pixel changed cell.
+    // Pinned at the measurement. Re-measure on another device before widening.
+    constexpr int kBandAll = 1;
+    constexpr int kBandInterior = 1;
 
     RenderScene scene;
     scene.materials = {Material{}};
