@@ -375,6 +375,9 @@ target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    # Where opt-in test output goes: the build tree, never the source tree.
+    # Today only RasterGolden's frame dump (SPADE_RENDER_DUMP_FRAMES) writes here.
+    SPADE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
 )
 
 include(GoogleTest)
