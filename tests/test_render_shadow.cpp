@@ -257,14 +257,12 @@ TEST(BuildStaticShadowMap, IsDeterministicAcrossTwoCalls) {
     EXPECT_EQ(a->light_view_proj, b->light_view_proj);
 }
 
-// LightingDesc's own default sun_direction (world/builder.hpp) is exactly
-// (0,1,0) -- straight up -- which is precisely the degenerate case
-// shadow.cpp's build_light_basis() guards (cross(worldUp, forward) is
-// undefined when forward IS worldUp). This scene never sets `lighting`
-// explicitly, so it exercises that guard directly via RenderScene's own
-// struct default (scene.hpp: sun_direction{-0.35,-0.86,-0.37}, ALSO close
-// enough to vertical -- |dot| ~0.86, actually below the 0.999 guard
-// threshold) -- use an explicit (0,1,0) sun to hit the guard for certain.
+// A straight-up sun, (0,1,0), is the degenerate case shadow.cpp's
+// build_light_basis() guards: cross(worldUp, forward) is undefined when
+// forward IS worldUp. Neither default reaches it. LightingDesc's is
+// (0.4, 0.8, 0.6) (world/builder.hpp), and RenderScene's struct default,
+// (-0.35, -0.86, -0.37), has |dot| ~0.86, below the 0.999 threshold. So
+// this case sets (0,1,0) explicitly to hit the guard for certain.
 TEST(BuildStaticShadowMap, StraightUpSunDoesNotProduceAGarbageOrNanMap) {
     RenderScene scene;
     scene.materials = {Material{}};
