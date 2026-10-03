@@ -13,6 +13,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "render/field_layer.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
@@ -92,20 +93,23 @@ TEST(SandboxDroneView, AtHoverTheDownwashIsBelowTheRotors) {
     EXPECT_GT(glm::length(below_rotor0), glm::length(above_rotor0));
 }
 
-TEST(SandboxDroneView, SpeedBinsCoverTheRangeAndSurviveAZeroMaximum) {
-    EXPECT_EQ(speed_bin(0.0f, 10.0f), 0u);
-    EXPECT_EQ(speed_bin(10.0f, 10.0f), kHeatmapBins - 1);
-    EXPECT_EQ(speed_bin(50.0f, 10.0f), kHeatmapBins - 1);
-    EXPECT_EQ(speed_bin(3.0f, 0.0f), 0u);
-    EXPECT_EQ(speed_bin(3.0f, std::nanf("")), 0u);
-    EXPECT_EQ(speed_bin(4.0f, 10.0f), 12u);  // 4/10 * 32 = 12.8
-}
-
-TEST(SandboxDroneView, ViridisHitsItsEndStops) {
-    EXPECT_EQ(viridis(0.0f), glm::vec3(68.0f, 1.0f, 84.0f) / 255.0f);
-    EXPECT_EQ(viridis(1.0f), glm::vec3(253.0f, 231.0f, 37.0f) / 255.0f);
-    EXPECT_EQ(viridis(-3.0f), viridis(0.0f));
-    EXPECT_EQ(viridis(7.0f), viridis(1.0f));
+// The palette and the binning are Rendering's now, tested in
+// test_render_field.cpp. What is left to pin here is this scene's choice of
+// map: viridis in 32 bins from 0 m/s, topped by the manual range or by the
+// layer's own maximum.
+TEST(SandboxDroneView, TheHeatmapMapIsViridisIn32BinsFromZero) {
+    const spade::render::FieldColourMap automatic = heatmap_colour_map(0.0f);
+    EXPECT_EQ(automatic.bins, kHeatmapBins);
+    EXPECT_EQ(automatic.range_min, 0.0f);
+    EXPECT_EQ(automatic.range_max, 0.0f) << "no manual range: the layer's own maximum";
+    EXPECT_EQ(heatmap_colour_map(-1.0f).range_max, 0.0f);
+    const std::vector<glm::vec3>& stops = automatic.palette.stops;
+    ASSERT_EQ(stops.size(), spade::render::viridis_palette().stops.size());
+    EXPECT_EQ(stops.front(), glm::vec3(68.0f, 1.0f, 84.0f));
+    EXPECT_EQ(stops.back(), glm::vec3(253.0f, 231.0f, 37.0f));
+    const spade::render::FieldColourMap manual = heatmap_colour_map(10.0f);
+    EXPECT_EQ(manual.range_max, 10.0f);
+    EXPECT_EQ(spade::render::field_bin(manual, 4.0f, 10.0f), 12u);  // 4/10 * 32 = 12.8, as before the move
 }
 
 // A uniform field (rotors stopped, 4 m/s of wind, a manual 10 m/s range) puts
@@ -122,16 +126,18 @@ TEST(SandboxDroneView, AHeatmapPixelIsExactlyItsPaletteColour) {
     AirField field;
     field.medium.density = 1.225f;
     field.medium.wind = glm::vec3(4.0f, 0.0f, 0.0f);
-    const float observed =
-        append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)), field,
-                           10.0f, scene.dynamics);
+    float observed = 0.0f;
+    const spade::render::FieldLayer layer = slice_layer(
+        camera_facing_slice(camera, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)), field, 10.0f, &observed);
     EXPECT_FLOAT_EQ(observed, 4.0f);
-    ASSERT_EQ(scene.dynamics.size(), static_cast<size_t>(kSliceCells) * kSliceCells);
-    for (const auto& item : scene.dynamics) ASSERT_EQ(item.material_override, b.heatmap_base + 12u);
+    ASSERT_EQ(layer.values.size(), static_cast<size_t>(kSliceCells) * kSliceCells);
+    const float top = spade::render::resolved_range_max(layer);
+    for (const float v : layer.values) ASSERT_EQ(spade::render::field_bin(layer.colour_map, v, top), 12u);
+    scene.field_layers.push_back(layer);
 
     const std::vector<uint8_t> px = render_cpu(scene, camera);
     const size_t at = (static_cast<size_t>(kH / 2) * kW + kW / 2) * 4u;
-    const glm::vec3 want = heatmap_color(12u);
+    const glm::vec3 want = spade::render::field_bin_colour(layer.colour_map, 12u);
     EXPECT_EQ(px[at + 0], spade::render::to_byte(want.b));
     EXPECT_EQ(px[at + 1], spade::render::to_byte(want.g));
     EXPECT_EQ(px[at + 2], spade::render::to_byte(want.r));
@@ -163,7 +169,8 @@ TEST(SandboxDroneView, EachPixelShowsTheCellItsRayHits) {
     const float range = 12.0f;
     const SliceSpec s = camera_facing_slice(camera, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
     ASSERT_EQ(s.right, glm::vec3(1.0f, 0.0f, 0.0f));
-    append_slice_items(b, s, field, range, scene.dynamics);
+    const spade::render::FieldLayer layer = slice_layer(s, field, range);
+    scene.field_layers.push_back(layer);
     const std::vector<uint8_t> px = render_cpu(scene, camera);
 
     const double f = 1.0 / std::tan(0.5 * static_cast<double>(camera.fov_y_radians));
@@ -185,8 +192,10 @@ TEST(SandboxDroneView, EachPixelShowsTheCellItsRayHits) {
         ASSERT_GT(cj - std::floor(cj), 0.1);
         ASSERT_LT(cj - std::floor(cj), 0.9);
         const auto i = static_cast<uint32_t>(ci), j = static_cast<uint32_t>(cj);
-        bins[k] = speed_bin(glm::length(field.velocity(slice_cell_center(s, i, j))), range);
-        const glm::vec3 want = heatmap_color(bins[k]);
+        bins[k] = spade::render::field_bin(layer.colour_map,
+                                           glm::length(field.velocity(spade::render::field_cell_center(layer, i, j))),
+                                           range);
+        const glm::vec3 want = spade::render::field_bin_colour(layer.colour_map, bins[k]);
         const size_t at = (static_cast<size_t>(y) * kW + x) * 4u;
         EXPECT_EQ(px[at + 0], spade::render::to_byte(want.b)) << "pixel " << x << " cell " << i << "," << j;
         EXPECT_EQ(px[at + 1], spade::render::to_byte(want.g)) << "pixel " << x << " cell " << i << "," << j;
@@ -201,16 +210,14 @@ TEST(SandboxDroneView, TheHoverSliceSpansSeveralBins) {
     ASSERT_TRUE(drone->step_fixed(200).has_value());
     auto field = air_field_from(*drone);
     ASSERT_TRUE(field.has_value());
-    spade::WorldDesc world;
-    DroneDrawBinding b;
-    spade::render::RenderScene scene;
-    ASSERT_NO_FATAL_FAILURE(drone_scene(world, b, scene));
-    const float observed =
-        append_slice_items(b, camera_facing_slice(camera_on_z(3.0f), glm::vec3(0.0f), drone->readouts().orientation),
-                           *field, 0.0f, scene.dynamics);
+    float observed = 0.0f;
+    const spade::render::FieldLayer layer = slice_layer(
+        camera_facing_slice(camera_on_z(3.0f), glm::vec3(0.0f), drone->readouts().orientation), *field, 0.0f, &observed);
     EXPECT_GT(observed, 1.0f);
+    const float top = spade::render::resolved_range_max(layer);
+    EXPECT_EQ(top, observed) << "auto range: the top is this frame's fastest cell";
     std::set<uint32_t> bins;
-    for (const auto& item : scene.dynamics) bins.insert(item.material_override - b.heatmap_base);
+    for (const float v : layer.values) bins.insert(spade::render::field_bin(layer.colour_map, v, top));
     EXPECT_GT(bins.size(), 4u) << "a hovering drone's slice should not be one colour";
     EXPECT_TRUE(bins.count(0u)) << "still air above the drone should be the bottom bin";
     EXPECT_TRUE(bins.count(kHeatmapBins - 1)) << "auto range: the fastest cell is the top bin";
@@ -230,8 +237,8 @@ TEST(SandboxDroneView, StandardAndHeatmapViewsDiffer) {
     const spade::render::Camera camera = camera_on_z(1.5f);
     append_drone_items(b, drone->params(), glm::vec3(0.0f), drone->readouts().orientation, scene.dynamics);
     const std::vector<uint8_t> standard = render_cpu(scene, camera);
-    append_slice_items(b, camera_facing_slice(camera, glm::vec3(0.0f), drone->readouts().orientation), *field, 0.0f,
-                       scene.dynamics);
+    scene.field_layers.push_back(
+        slice_layer(camera_facing_slice(camera, glm::vec3(0.0f), drone->readouts().orientation), *field, 0.0f));
     const std::vector<uint8_t> heatmap = render_cpu(scene, camera);
     EXPECT_NE(standard, heatmap);
 }
@@ -301,11 +308,12 @@ TEST(SandboxDroneView, TheSliceHoldsTheThrustAxisAndAnArmAndFacesTheCamera) {
 namespace {
 // The fastest air the slice shows more than 10 cm below the rotor plane.
 float max_speed_below_rotors(const AirField& field, const SliceSpec& s, const glm::vec3& drone_pos) {
+    const spade::render::FieldLayer layer = slice_layer(s, field, 0.0f);
     float best = 0.0f;
     for (uint32_t j = 0; j < kSliceCells; ++j) {
         for (uint32_t i = 0; i < kSliceCells; ++i) {
-            const glm::vec3 p = slice_cell_center(s, i, j);
-            if (glm::dot(p - drone_pos, s.up) < -0.1f) best = std::max(best, glm::length(field.velocity(p)));
+            const glm::vec3 p = spade::render::field_cell_center(layer, i, j);
+            if (glm::dot(p - drone_pos, s.up) < -0.1f) best = std::max(best, layer.values[j * kSliceCells + i]);
         }
     }
     return best;

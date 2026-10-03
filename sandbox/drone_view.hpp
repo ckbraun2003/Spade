@@ -32,6 +32,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "render/field_layer.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
 #include "vehicles/quadrotor.hpp"
@@ -39,7 +40,7 @@
 #include "vehicles/rotor_wake.hpp"
 #include "world/medium.hpp"
 
-#include "builder_scene.hpp"  // make_box_mesh / make_cylinder_mesh / detail::push_tri
+#include "builder_scene.hpp"  // make_box_mesh / make_cylinder_mesh
 #include "drone_sim.hpp"
 #include "orbit_camera.hpp"   // FrameInput
 
@@ -91,39 +92,21 @@ struct AirField {
 // The colour scale
 // ---------------------------------------------------------------------------
 
+// The palette and the binning live in render/field_layer.hpp now (the field
+// channel, Rendering's plan step 1). They moved from here with their
+// arithmetic unchanged. This scene only chooses the map: viridis in 32 bins
+// from 0 m/s, topped by the manual range or, when there is none, by this
+// frame's fastest cell.
 inline constexpr uint32_t kHeatmapBins = 32;
 inline constexpr uint32_t kSliceCells = 64;
 
-// Viridis, piecewise-linear over its nine standard control points
-// (#440154 #482878 #3E4A89 #31688E #26828E #1F9E89 #35B779 #6DCD59 #FDE725).
-// sRGB bytes / 255, used as linear colour: the renderer has no transfer
-// function, so these are the bytes that reach the screen.
-[[nodiscard]] inline glm::vec3 viridis(float t) {
-    static constexpr std::array<std::array<float, 3>, 9> kStops{{
-        {68.0f, 1.0f, 84.0f}, {72.0f, 40.0f, 120.0f}, {62.0f, 74.0f, 137.0f},
-        {49.0f, 104.0f, 142.0f}, {38.0f, 130.0f, 142.0f}, {31.0f, 158.0f, 137.0f},
-        {53.0f, 183.0f, 121.0f}, {109.0f, 205.0f, 89.0f}, {253.0f, 231.0f, 37.0f},
-    }};
-    const float x = std::clamp(t, 0.0f, 1.0f) * static_cast<float>(kStops.size() - 1);
-    const auto i = std::min(static_cast<std::size_t>(x), kStops.size() - 2);
-    const float u = x - static_cast<float>(i);
-    const auto& a = kStops[i];
-    const auto& b = kStops[i + 1];
-    return glm::vec3(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u) / 255.0f;
-}
-
-// 0..kHeatmapBins-1. Total: a non-positive or non-finite maximum (rotors
-// stopped in still air, the first frame) is bin 0, never a division by zero.
-[[nodiscard]] inline uint32_t speed_bin(float speed, float max_speed) noexcept {
-    if (!(max_speed > 0.0f) || !(speed > 0.0f)) return 0u;
-    const float x = speed / max_speed * static_cast<float>(kHeatmapBins);
-    if (!(x < static_cast<float>(kHeatmapBins - 1))) return kHeatmapBins - 1;
-    return static_cast<uint32_t>(x);
-}
-
-// The colour bin b is drawn in: the centre of its span.
-[[nodiscard]] inline glm::vec3 heatmap_color(uint32_t bin) {
-    return viridis((static_cast<float>(bin) + 0.5f) / static_cast<float>(kHeatmapBins));
+[[nodiscard]] inline render::FieldColourMap heatmap_colour_map(float manual_max) {
+    render::FieldColourMap map;
+    map.palette = render::viridis_palette();
+    map.bins = kHeatmapBins;
+    map.range_min = 0.0f;
+    map.range_max = manual_max > 0.0f ? manual_max : 0.0f;  // 0: the layer's own maximum
+    return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,9 +115,8 @@ inline constexpr uint32_t kSliceCells = 64;
 
 // Indices into a RenderScene, appended once by bind_drone_scene.
 struct DroneDrawBinding {
-    uint32_t body_mesh = 0, arm_mesh = 0, rotor_mesh = 0, quad_mesh = 0;
+    uint32_t body_mesh = 0, arm_mesh = 0, rotor_mesh = 0;
     uint32_t body_material = 0, arm_material = 0, nose_material = 0, rotor_material = 0;
-    uint32_t heatmap_base = 0;  // first of kHeatmapBins unlit materials
 };
 
 // Real-size part dimensions, metres. The airframe's own numbers (arm length,
@@ -147,19 +129,6 @@ inline constexpr float kDroneRotorLift = kDroneArmHalfSection + kDroneRotorHalfT
 
 namespace detail {
 
-// A unit quad in the XY plane, facing both ways: the CPU shaded path culls
-// back faces, and the slice is seen from whichever side the camera is on.
-[[nodiscard]] inline render::MeshData make_double_sided_quad() {
-    render::MeshData m;
-    const glm::vec3 a(-0.5f, -0.5f, 0.0f), b(0.5f, -0.5f, 0.0f), c(0.5f, 0.5f, 0.0f), d(-0.5f, 0.5f, 0.0f);
-    push_tri(m, a, b, c);
-    push_tri(m, a, c, d);
-    push_tri(m, a, c, b);
-    push_tri(m, a, d, c);
-    finish(m);
-    return m;
-}
-
 [[nodiscard]] inline render::Material lambert(float r, float g, float b) {
     render::Material m;
     m.base_color = glm::vec4(r, g, b, 1.0f);
@@ -169,8 +138,8 @@ namespace detail {
 
 }  // namespace detail
 
-// Appends the drone's meshes (at `params`' real dimensions) and materials, and
-// the kHeatmapBins unlit palette materials. Call ONCE per scene.
+// Appends the drone's meshes (at `params`' real dimensions) and materials.
+// Call ONCE per scene. The heatmap needs neither: it is a field layer.
 [[nodiscard]] inline DroneDrawBinding bind_drone_scene(render::RenderScene& scene,
                                                        const vehicles::QuadrotorParams& params) {
     DroneDrawBinding b;
@@ -181,8 +150,6 @@ namespace detail {
         make_box_mesh(glm::vec3(0.5f * params.arm_length, kDroneArmHalfSection, kDroneArmHalfSection)));
     b.rotor_mesh = static_cast<uint32_t>(scene.meshes.size());
     scene.meshes.push_back(make_cylinder_mesh(24u, params.rotors[0].radius, kDroneRotorHalfThickness));
-    b.quad_mesh = static_cast<uint32_t>(scene.meshes.size());
-    scene.meshes.push_back(detail::make_double_sided_quad());
 
     b.body_material = static_cast<uint32_t>(scene.materials.size());
     scene.materials.push_back(detail::lambert(0.18f, 0.18f, 0.20f));
@@ -192,14 +159,6 @@ namespace detail {
     scene.materials.push_back(detail::lambert(0.85f, 0.20f, 0.15f));
     b.rotor_material = static_cast<uint32_t>(scene.materials.size());
     scene.materials.push_back(detail::lambert(0.15f, 0.55f, 0.85f));
-
-    b.heatmap_base = static_cast<uint32_t>(scene.materials.size());
-    for (uint32_t i = 0; i < kHeatmapBins; ++i) {
-        render::Material m;
-        m.base_color = glm::vec4(heatmap_color(i), 1.0f);
-        m.shading = 1u;  // unlit: the colour IS the datum
-        scene.materials.push_back(m);
-    }
     return b;
 }
 
@@ -286,46 +245,36 @@ struct SliceSpec {
     return s;
 }
 
-// The centre of cell (i, j), i across and j up, in world space.
-[[nodiscard]] inline glm::vec3 slice_cell_center(const SliceSpec& s, uint32_t i, uint32_t j) {
-    const float n = static_cast<float>(kSliceCells);
-    const float u = (static_cast<float>(i) + 0.5f) / n - 0.5f;
-    const float v = (static_cast<float>(j) + 0.5f) / n - 0.5f;
-    return s.center + s.right * (u * s.width) + s.up * (v * s.height);
-}
-
-// Appends kSliceCells^2 cells. Speeds are sampled first, then binned, so the
-// automatic range is THIS frame's maximum. `manual_max > 0` fixes the range
-// instead. Returns the largest speed sampled (the legend's top in auto mode).
-inline float append_slice_items(const DroneDrawBinding& b, const SliceSpec& s, const AirField& field,
-                                float manual_max, std::vector<render::DrawItem>& out) {
-    std::array<float, kSliceCells * kSliceCells> speed{};
-    float observed = 0.0f;
+// The slice as a field layer of kSliceCells^2 air speeds, each sampled at
+// render::field_cell_center(), so a cell's value is the air where the
+// renderer draws that cell. The engine draws it (RenderScene::field_layers):
+// unlit, double-sided and depth-tested. The samples are still this scene's
+// own sum, because the slipstream is not a registered field (option (b) of
+// Rendering's plan). `manual_max > 0` fixes the range; otherwise it is this
+// frame's fastest cell. `observed` receives that fastest speed, the legend's
+// top in auto mode.
+[[nodiscard]] inline render::FieldLayer slice_layer(const SliceSpec& s, const AirField& field, float manual_max,
+                                                    float* observed = nullptr) {
+    render::FieldLayer layer;
+    layer.center = s.center;
+    layer.right = s.right;
+    layer.up = s.up;
+    layer.width = s.width;
+    layer.height = s.height;
+    layer.cells_u = kSliceCells;
+    layer.cells_v = kSliceCells;
+    layer.colour_map = heatmap_colour_map(manual_max);
+    layer.values.resize(static_cast<std::size_t>(kSliceCells) * kSliceCells);
+    float fastest = 0.0f;
     for (uint32_t j = 0; j < kSliceCells; ++j) {
         for (uint32_t i = 0; i < kSliceCells; ++i) {
-            const float v = glm::length(field.velocity(slice_cell_center(s, i, j)));
-            speed[j * kSliceCells + i] = v;
-            if (v > observed) observed = v;
+            const float v = glm::length(field.velocity(render::field_cell_center(layer, i, j)));
+            layer.values[static_cast<std::size_t>(j) * kSliceCells + i] = v;
+            if (v > fastest) fastest = v;
         }
     }
-    const float range = manual_max > 0.0f ? manual_max : observed;
-
-    const glm::vec3 normal = glm::cross(s.right, s.up);
-    const glm::mat4 basis(glm::vec4(s.right, 0.0f), glm::vec4(s.up, 0.0f), glm::vec4(normal, 0.0f),
-                          glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    const glm::mat4 cell_scale = glm::scale(glm::mat4(1.0f), glm::vec3(s.width / static_cast<float>(kSliceCells),
-                                                                       s.height / static_cast<float>(kSliceCells), 1.0f));
-    out.reserve(out.size() + kSliceCells * kSliceCells);
-    for (uint32_t j = 0; j < kSliceCells; ++j) {
-        for (uint32_t i = 0; i < kSliceCells; ++i) {
-            render::DrawItem cell;
-            cell.mesh_index = b.quad_mesh;
-            cell.local_to_world = glm::translate(glm::mat4(1.0f), slice_cell_center(s, i, j)) * basis * cell_scale;
-            cell.material_override = b.heatmap_base + speed_bin(speed[j * kSliceCells + i], range);
-            out.push_back(cell);
-        }
-    }
-    return observed;
+    if (observed != nullptr) *observed = fastest;
+    return layer;
 }
 
 // ---------------------------------------------------------------------------

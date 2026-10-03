@@ -832,8 +832,9 @@ void GlTargetSink::draw_drone_panel(DronePanelModel& model) {
             const ImVec2 p = ImGui::GetCursorScreenPos();
             const float w = ImGui::GetContentRegionAvail().x, h = 14.0f;
             ImDrawList* dl = ImGui::GetWindowDrawList();
+            const render::FieldColourMap map = heatmap_colour_map(0.0f);
             for (uint32_t b = 0; b < kHeatmapBins; ++b) {
-                const glm::vec3 c = heatmap_color(b);
+                const glm::vec3 c = render::field_bin_colour(map, b);
                 const float x0 = p.x + w * static_cast<float>(b) / static_cast<float>(kHeatmapBins);
                 const float x1 = p.x + w * static_cast<float>(b + 1) / static_cast<float>(kHeatmapBins);
                 dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, p.y + h),
