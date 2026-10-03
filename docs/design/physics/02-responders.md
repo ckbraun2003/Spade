@@ -51,6 +51,17 @@ A `ModelType` is a body template, collision proxy, force elements, sensor mounts
 - the rotor and drag elements are catalog responders;
 - `make_quadrotor` (plus layout, Y-up, nose +X, spins +−+−; the moment equations are in `vehicles/quadrotor.hpp` §2) becomes a **template** on the public API, owned by Interface.
 
+## Drone builder models (pure functions)
+
+The builder's propulsion chain and its airframe utility are built as pure functions, not yet as stepped modules. The spec is `plans/2026-10-03-drone-builder-physics.md`; each header carries the model.
+
+- **Motor and ESC** (`vehicles/motor.hpp`): an average-value brushless motor behind a duty-cycle ESC, with the phase-inductance term `R_eff(ω) = R + (pωL)²/R`. The shaft update is exact for the electrical part, using the rotor lag's own `α`.
+- **Battery and bus** (`vehicles/battery.hpp`): a Thevenin pack with one RC branch. Every motor shares the bus through a closed-form solve; the pack's current rating and cutoff act through one common duty scale.
+- **Propeller tier** (`vehicles/propeller.hpp`): `C_T(J)` and `C_Q(J)` on a uniform advance-ratio grid. Unlike today's rotor, its torque follows inflow.
+- **Composite inertia** (`vehicles/composite_inertia.hpp`) and the **steady-state solver** (`vehicles/propulsion_steady.hpp`) are host utilities in double.
+
+Every algebraic function has float and double overloads from one source. The step will use float; the solver and Kat's fit use double, so their figures differ by fp32 rounding only (`DBP-52`'s settling test bounds it).
+
 ## Not built
 
 Buoyancy (it waits for a density field worth reading), `LiftSurface`, capsule and mesh proxies, rotor gyroscopics, and the engine-side translation lock the drone stand needs (`../backlog.md`; it is a constraint, Core and Physics).

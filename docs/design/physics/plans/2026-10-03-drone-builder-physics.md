@@ -61,7 +61,7 @@ So the model is the resistive one with `R` replaced by `R_eff(ω) = R + X²/R`. 
 - `ω_∞ = Kv·(d·V_bus − R·(I0 + Q_load/Kt))`, the speed the motor would settle at under that load;
 - `ω ← ω_∞ + (ω − ω_∞)·α`, with `α = exp(−h/τ_m)`.
 
-`α` depends only on fixed parameters and the fixed substep. It is computed once at spawn, in double, and rounded once, the GNSS coefficients' pattern. The step path then only multiplies.
+`α` is the rotor lag's own factor, computed with `core/fp32_math`'s `exp32` (`TD-3`), the GNSS coefficients' pattern. It is computed once at spawn when `R_eff` is constant, and per substep with the inductance term. *Corrected 2026-10-03: this paragraph first said "in double", which would put libm's `exp` on a path that feeds state.*
 
 When the current is at a limit, the motor torque is constant. The update is then `ω ← ω + h·(Q_m − Q_load)/J_r`.
 
@@ -75,7 +75,7 @@ When the current is at a limit, the motor torque is constant. The update is then
 
 - Pack: `S` cells in series and `P` in parallel. Capacity is `P × C_cell` (Ah). The series resistance `R0` is `S·R_cell/P` (Ω).
 - Open-circuit voltage: `V_oc = S × OCV(SoC)`. `OCV` is a per-cell table on a uniform state-of-charge grid. Authored points are resampled onto that grid at spawn, in double, and rounded once.
-- Sag: an instant drop `R0·I_b`, plus a polarization voltage `V_1` in an RC branch (`R1`, `C1`). `V_1` relaxes with `β = exp(−h/(R1·C1))`, which is precomputed at spawn.
+- Sag: an instant drop `R0·I_b`, plus a polarization voltage `V_1` in an RC branch (`R1`, `C1`). `V_1` relaxes with `β = exp(−h/(R1·C1))`, computed once at spawn with `exp32`.
 - Terminal voltage: `V_t = V_oc − V_1 − R0·I_b`.
 - Charge: `SoC ← SoC − I_b·h/(3600·capacity)`, exact for a current held over the substep.
 
@@ -177,8 +177,8 @@ Op order is the parity contract (`engine D2`). The rotor pass, in Forces, runs t
 A vehicle with no motor rows runs today's order unchanged, so no golden moves.
 
 **Division sites.** These are listed because Vulkan's division is device-dependent:
-- `1/R`, `1/Kt`, `α` and `β` are precomputed at spawn;
-- the step keeps one division per vehicle (the bus solve) and one per rotor (`J`);
+- `1/Kt` and `β` are precomputed at spawn, and so is `α` when `R_eff` is constant;
+- the step keeps one division per vehicle (the bus solve) and two per rotor (`J`, and the table position);
 - with phase inductance, it adds one per motor (`1/R_eff`).
 
 Both are banded on Vulkan. Transcendentals on the step path come only from `core/fp32_math`.
