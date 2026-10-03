@@ -169,6 +169,11 @@ add_executable(spade_tests
 # BackendSeamReproof.CpuPathCorpusDigestsUnchangedAtTip, is host-only and never
 # skips -- the cpu-path corpus-digest re-proof needs no device, exactly like
 # ParityCorpus/ParityGeometry/ParityChaos above.
+#
+# test_gpu_module_schedule.cpp (module-API plan, stage 2) checks that the
+# Vulkan step records the compiled schedule's passes. It includes
+# compute/vulkan/context.hpp for vulkan_available(), so it lives here rather
+# than in test_module_schedule.cpp, which builds with SPADE_VULKAN off too.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -177,6 +182,7 @@ if(SPADE_VULKAN)
         test_gpu_state_mirror.cpp
         test_gpu_parity.cpp
         test_gpu_invariance.cpp
+        test_gpu_module_schedule.cpp
     )
 endif()
 
