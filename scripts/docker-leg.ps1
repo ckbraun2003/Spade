@@ -70,11 +70,17 @@ function Watch-Leg {
     # (leg.log has everything). Out-Host keeps the log out of the return value.
     & docker logs --follow --tail 100 $Name | Out-Host
     $code = [int]((& docker wait $Name) -join '')
-    & docker rm $Name | Out-Null
+    # Two watchers both get here; whichever is second finds the removal under
+    # way. Windows PowerShell turns redirected native stderr into errors under
+    # 'Stop', hence the local 'Continue'.
+    $ErrorActionPreference = 'Continue'
+    & docker rm $Name 2>$null | Out-Null
+    $ErrorActionPreference = 'Stop'
     $out = $labels['spade.out']
     $free = Get-FreeGB
-    if ($out -and (Test-Path (Join-Path $out 'summary.txt'))) {
-        Add-Content -Path (Join-Path $out 'summary.txt') `
+    $summary = if ($out) { Join-Path $out 'summary.txt' } else { $null }
+    if ($summary -and (Test-Path $summary) -and -not (Select-String -Path $summary -Pattern '^host ' -Quiet)) {
+        Add-Content -Path $summary `
             -Value ("host        {0} GB free on {1} after the run" -f $free, $env:LOCALAPPDATA.Substring(0, 2))
     }
     Write-Host ("docker-leg: exit {0}; {1} GB free on the host; output in {2}" -f $code, $free, $out)
