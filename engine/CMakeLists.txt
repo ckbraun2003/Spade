@@ -1114,11 +1114,11 @@ spade_slang_kernel_variants(spade_compute collision_gather)
 #                  world's Dryden gust filter one substep (the filter is a
 #                  sequential recurrence within a world; worlds are the parallel
 #                  axis)
-#   rotors         the RotorElement half of ForceElements -- the FIRST of two
-#                  dispatches in slot 1, ahead of forces_drag, because
-#                  physics/schedule.cpp's own comment makes that order "a
-#                  numerical contract and not a preference" (both accumulate
-#                  into the same two float3 accumulators)
+#   rotors         the rotor.forces pass -- recorded ahead of forces_drag
+#                  because drag.forces declares `after rotor.forces`, and that
+#                  order is "a numerical contract and not a preference" (both
+#                  accumulate into the same two float3 accumulators;
+#                  sim/standard_modules.cpp)
 #   sensor_imu     the SensorSynthesis pass: one thread per SENSOR slot, a THIRD
 #                  dispatch grid, writing sensor rows and ring samples
 #

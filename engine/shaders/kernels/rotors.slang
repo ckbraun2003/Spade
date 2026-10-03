@@ -9,17 +9,17 @@
 // IT IS THE FIRST OF TWO DISPATCHES IN ONE SCHEDULE SLOT, AND THE ORDER IS A
 // NUMERICAL CONTRACT
 //
-// physics/schedule.cpp's pass_force_elements() runs, per world:
+// The schedule runs, per world, rotor.forces before drag.forces:
 //
-//     vehicles::apply_rotors(...);   // <- this kernel
-//     apply_drag(...);               // <- forces_drag.slang
+//     vehicles::apply_rotors(...);   // <- this kernel (pass_rotor_forces)
+//     apply_drag(...);               // <- forces_drag.slang (pass_drag)
 //
-// and its own comment says why that order is not a preference: "Both calls
-// accumulate into the same two float accumulators, so the order is a numerical
-// contract and not a preference". Slot 1 of the recorded chain is therefore a
-// CHAIN of two dispatches -- rotors, barrier, drag -- exactly as slot 4 is a
-// chain of the broad phase's three stages. The barrier between them is what
-// makes drag's read of `force_acc` see this kernel's writes.
+// and drag declares `after rotor.forces` because that order is not a
+// preference: both accumulate into the same two float accumulators, so the
+// order is a numerical contract (sim/standard_modules.cpp). The recorded chain
+// follows the schedule -- rotors, barrier, drag -- and the barrier between them
+// is what makes drag's read of `force_acc` see this kernel's writes, exactly as
+// the barriers order the broad phase's three stages.
 //
 // ===========================================================================
 // ONE THREAD PER BODY, NOT PER ROTOR -- forces_drag.slang's decision, for
@@ -372,9 +372,9 @@ void rotor_forces(uint3 tid : SV_DispatchThreadID) {
     const float3 body_omega = bodies[slot].omega_body;
     const float h = pass_params.h;
 
-    // physics/schedule.cpp:37 -- ONE medium per world per substep, sampled from
-    // the ALREADY-ADVANCED Dryden row (MediumUpdate is slot 0 of the chain, with
-    // a barrier between). Hoisted out of the fold exactly as the CPU hoists the
+    // physics/schedule.cpp's pass_rotor_forces() -- ONE medium per world per
+    // substep, sampled from the ALREADY-ADVANCED Dryden row (dryden.advance runs
+    // in Fields, with a barrier between). Hoisted out of the fold as the CPU hoists the
     // DrydenMedium construction out of apply_rotors().
     const MediumSample medium =
         dryden_medium_sample(world_params[world], dryden[world], dryden_params[world]);

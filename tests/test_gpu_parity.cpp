@@ -2639,7 +2639,7 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
 //
 // THE KEYS ARE THE AUTHORED ONES, EXACTLY, and this is the property that makes
 // the cases deterministic rather than approximately so. CollisionDynamic runs
-// BEFORE Integrate within a substep (physics/schedule.cpp's kSchedule), and
+// BEFORE Integrate within a substep (Constraints before Integrate), and
 // these worlds are built from ballistic.world.yaml, whose SDF is EMPTY -- so
 // with one step of one substep, nothing has moved any body by the time
 // grid_build reads `pos`: no static contact fires, no drag element exists, and
@@ -2765,7 +2765,7 @@ void expect_sorted_keys_match(const std::vector<spade::compute::GridEntryRow>& d
 // already moved every body -- so it reads POST-step positions. The device
 // keys THIS function returns reflect PRE-Integrate positions instead:
 // CollisionDynamic (grid_build) runs BEFORE Integrate within the same
-// substep (physics/schedule.cpp's kSchedule), so by the time step(1) returns
+// substep (Constraints before Integrate), so by the time step(1) returns
 // the device's key array was already built from the positions bodies had at
 // the START of this step. Every test in this section spawns bodies AT REST
 // (BodySpawn{} defaults vel to zero), so the only motion between the two

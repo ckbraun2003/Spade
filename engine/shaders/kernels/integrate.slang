@@ -176,8 +176,8 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
     bodies[slot].specific_force = glm_quat_rotate(glm_quat_conjugate(orient), accel_ext);
 
     // 3. Linear velocity. Gravity enters the dynamics HERE and only here --
-    //    the Gravity pass slot is inert on both backends (integrator.cpp:78-81,
-    //    physics/schedule.cpp's pass_gravity()).
+    //    there is no gravity pass on either backend (integrator.cpp:78-81;
+    //    Schedule.GravityIsAppliedExactlyOnce pins it).
     const float3 vel = bodies[slot].vel + (accel_ext + gravity) * h;
     bodies[slot].vel = vel;
 

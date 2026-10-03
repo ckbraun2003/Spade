@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // sensor_gnss.slang -- the SensorSynthesis pass's GNSS contribution, ported
-// from engine/sensors/gnss.cpp's synthesize_gnss(). It shares slot 6 of the
-// schedule with sensor_imu: a SECOND DISPATCH in the same pass, which is the
-// shape physics/schedule.hpp:426 ruled before this sensor existed ("A second
-// kind becomes a second batched call HERE ... and not a second pass").
+// from engine/sensors/gnss.cpp's synthesize_gnss(). It is the gnss.synthesize
+// pass of the Sensors phase, beside imu.synthesize: the two share no quantity,
+// so the schedule may order them either way. (Before the module API they
+// shared one SensorSynthesis slot as two dispatches of one pass.)
 //
 // WRITTEN BESIDE ITS CPU TWIN, sentence for sentence. That is the only method
 // that makes two implementations agree bit-for-bit, and sensor_imu.slang /

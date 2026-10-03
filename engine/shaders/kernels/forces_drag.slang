@@ -63,13 +63,13 @@
 // kernel now calls dryden.slang's dryden_medium_sample() -- the SAME function
 // rotors.slang calls, spelled once, so the two force kernels cannot disagree
 // about what the air is doing in a substep, exactly as the CPU hands both
-// passes ONE DrydenMedium constructed once per world by
-// physics/schedule.cpp's pass_force_elements().
+// passes a DrydenMedium built from the same advanced row, once per world, by
+// physics/schedule.cpp's pass_rotor_forces() and pass_drag().
 //
-// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: MediumUpdate is
-// slot 0, ForceElements slot 1, with a memory barrier between every adjacent
-// dispatch -- so the `dryden` row this kernel samples is the one THIS substep's
-// MediumUpdate advanced, which is precisely the CPU's schedule contract
+// THE ORDERING THAT MAKES IT CORRECT is the recorded chain's: dryden.advance
+// (Fields) before drag.forces (Forces), with a memory barrier between every
+// adjacent dispatch -- so the `dryden` row this kernel samples is the one THIS
+// substep's dryden.advance advanced, which is precisely the CPU's contract
 // (world/medium.hpp: "dryden_advance() must be called EXACTLY ONCE PER SUBSTEP
 // for each world ... and therefore BEFORE any force element reads sample()").
 //
