@@ -324,6 +324,14 @@ import layouts;
 // iteration a Jacobi one rather than a race.
 [[vk::binding(22, 0)]] RWStructuredBuffer<GatherBodyRow> body_snapshot;
 
+// Every world's field sample row (module-API stage 3; layouts.slang's
+// FieldSampleRow), indexed by world. Written by field_environment and
+// field_dryden in the Fields phase, read by rotors, forces_drag and integrate
+// later in the same substep. DERIVED, like grid_entries: never uploaded,
+// zero-filled at create, read back only by Simulation::field_samples() (a
+// diagnostic). Binding 26 because 25 was the last in use.
+[[vk::binding(26, 0)]] RWStructuredBuffer<FieldSampleRow> field_samples;
+
 // ---------------------------------------------------------------------------
 // E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound
 // because a kernel now reads it.

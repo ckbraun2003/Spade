@@ -2793,10 +2793,19 @@ Result<std::vector<float>> Simulation::field_samples(uint32_t world_index) const
                                        " is outside a set of " + std::to_string(layout_.world_count)));
     }
     if (vulkan_backend_) {
-        // The GPU does not sample fields yet: its kernels still compute the
-        // medium inline (module-API stage 3, Task 3 adds the device rows).
-        return std::unexpected(Error{Code::unavailable,
-                                     "field_samples: the Vulkan backend does not sample fields yet"});
+        // The device rows hold the built-in prefix only (no developer field
+        // can run on Vulkan: its provider has no recipe), one FieldSampleRow
+        // per world. A diagnostic read: one device->host copy.
+        const std::size_t bytes = vulkan_backend_->field_samples_byte_size();
+        std::vector<physics::FieldSampleRow> rows(bytes / sizeof(physics::FieldSampleRow));
+        if (Result<void> read = vulkan_backend_->read_field_samples(
+                std::span<std::byte>(reinterpret_cast<std::byte*>(rows.data()), bytes));
+            !read) {
+            return std::unexpected(read.error());
+        }
+        std::vector<float> out(physics::kFieldBuiltinFloats);
+        std::memcpy(out.data(), &rows[world_index], sizeof(physics::FieldSampleRow));
+        return out;
     }
     const std::size_t stride = schedule_.field_stride;
     const auto begin = field_rows_.begin() + static_cast<std::ptrdiff_t>(world_index * stride);

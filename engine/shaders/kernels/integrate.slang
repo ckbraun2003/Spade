@@ -153,9 +153,10 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
         return;
     }
 
-    // integrator.cpp:14 -- hoisted once, per world, exactly as the CPU hoists
-    // it outside the body loop.
-    const float3 gravity = world_params[world].gravity;
+    // The gravity field (module-API stage 3), copied from WorldParams by
+    // field_environment this substep -- hoisted once, per world, exactly as the
+    // CPU reads it once outside the body loop.
+    const float3 gravity = field_samples[world].gravity;
     const float h = pass_params.h;
 
     const float3 force_acc = bodies[slot].force_acc;

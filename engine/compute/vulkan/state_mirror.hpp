@@ -177,6 +177,15 @@ public:
         return static_cast<std::size_t>(grid_entries_.byte_size);
     }
 
+    // Every world's field sample row (binding 26, module-API stage 3) as the
+    // last substep left it: world_count physics::FieldSampleRow. A diagnostic
+    // in read_grid_entries()'s shape, for Simulation::field_samples();
+    // `out_bytes` must be exactly field_samples_byte_size().
+    [[nodiscard]] Result<void> read_field_samples(std::span<std::byte> out_bytes);
+    [[nodiscard]] std::size_t field_samples_byte_size() const noexcept {
+        return static_cast<std::size_t>(field_samples_.byte_size);
+    }
+
     [[nodiscard]] VkDescriptorSetLayout descriptor_set_layout() const noexcept { return set_layout_; }
     [[nodiscard]] VkDescriptorSet descriptor_set() const noexcept { return set_; }
 
@@ -280,13 +289,20 @@ private:
     // Derived, never uploaded and never read back, exactly like grid_entries_.
     Entry body_snapshot_;
 
+    // field_samples_ (binding 26, module-API stage 3) -- one FieldSampleRow per
+    // world, written by the field-sample kernels and read later in the same
+    // substep. Derived like grid_entries_; read back only by
+    // read_field_samples().
+    Entry field_samples_;
+
     // THE ONE LIST of the derived buffers above. create() zero-fills and binds
     // from it and destroy() tears down from it, so a derived buffer cannot be
     // created in one place and forgotten in another. Until 2026-10-02 those
     // were three hand-kept lists, and body_snapshot_ was missing from two.
-    [[nodiscard]] std::array<Entry*, 10> derived_entries() noexcept {
-        return {&dryden_params_, &sdf_nodes_,     &sdf_transforms_, &sdf_ranges_,   &step_params_,
-                &step_witness_,  &contact_params_, &grid_params_,   &grid_entries_, &body_snapshot_};
+    [[nodiscard]] std::array<Entry*, 11> derived_entries() noexcept {
+        return {&dryden_params_,  &sdf_nodes_,   &sdf_transforms_, &sdf_ranges_,
+                &step_params_,    &step_witness_, &contact_params_, &grid_params_,
+                &grid_entries_,   &body_snapshot_, &field_samples_};
     }
 
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer

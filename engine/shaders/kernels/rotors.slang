@@ -373,11 +373,12 @@ void rotor_forces(uint3 tid : SV_DispatchThreadID) {
     const float h = pass_params.h;
 
     // physics/schedule.cpp's pass_rotor_forces() -- ONE medium per world per
-    // substep, sampled from the ALREADY-ADVANCED Dryden row (dryden.advance runs
-    // in Fields, with a barrier between). Hoisted out of the fold as the CPU hoists the
-    // DrydenMedium construction out of apply_rotors().
-    const MediumSample medium =
-        dryden_medium_sample(world_params[world], dryden[world], dryden_params[world]);
+    // substep: this world's field samples, written in Fields by
+    // field_environment and field_dryden (module-API stage 3), with a barrier
+    // between. They are the bits dryden_medium_sample() would compute here.
+    MediumSample medium;
+    medium.density = field_samples[world].density;
+    medium.wind = field_samples[world].wind;
 
     float3 force_acc = bodies[slot].force_acc;
     float3 torque_acc = bodies[slot].torque_acc;

@@ -152,10 +152,11 @@ void forces_drag(uint3 tid : SV_DispatchThreadID) {
     // optimization: the CPU samples per element at `body.pos`, and this is a
     // frozen-field POINT model that ignores position entirely (medium.hpp
     // section 4), so every one of those samples returns the identical value.
-    const MediumSample medium =
-        dryden_medium_sample(world_params[world], dryden[world], dryden_params[world]);
-    const float density = medium.density;
-    const float3 v_rel = vel - medium.wind;
+    // Read from this world's field samples (module-API stage 3), written in
+    // Fields by field_environment and field_dryden: the same bits
+    // dryden_medium_sample() would compute here.
+    const float density = field_samples[world].density;
+    const float3 v_rel = vel - field_samples[world].wind;
 
     float3 force_acc = bodies[slot].force_acc;
     float3 torque_acc = bodies[slot].torque_acc;

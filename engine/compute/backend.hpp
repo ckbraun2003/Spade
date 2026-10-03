@@ -203,8 +203,8 @@ enum class GpuRecipe : uint8_t {
     integrate,
     sensor_imu,
     sensor_gnss,
-    environment_sample,  // field providers (module-API stage 3); until the GPU
-    dryden_sample,       // samples fields, they record nothing (step_recorder.hpp)
+    environment_sample,  // the field providers (module-API stage 3): each
+    dryden_sample,       // writes every world's field sample row
 };
 
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its

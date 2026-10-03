@@ -29,8 +29,8 @@
 //   integrate           integrate                     per BODY
 //   sensor_imu          sensor_imu                    per SENSOR SLOT
 //   sensor_gnss         sensor_gnss                   per SENSOR SLOT
-//   environment_sample  nothing yet (stage 3 Task 3)  --
-//   dryden_sample       nothing yet (stage 3 Task 3)  --
+//   environment_sample  field_environment             per WORLD
+//   dryden_sample       field_dryden                  per WORLD
 //
 // Rotors then drag is a NUMERICAL contract when both are in the set: both
 // accumulate into the same two float3 accumulators and fp32 addition is not
@@ -250,7 +250,10 @@ public:
         // The GPU-sensor leg's one addition, for gnss.synthesize. Appended
         // rather than inserted so no existing enumerator moves.
         kPipelineSensorGnss = 9, // sensor_gnss
-        kPipelineCount = 10,
+        // Module-API stage 3: the two field providers.
+        kPipelineFieldEnvironment = 10,  // field_environment
+        kPipelineFieldDryden = 11,       // field_dryden
+        kPipelineCount = 12,
     };
 
     // NO RunParams ARGUMENT AS OF S6 TASK 6b: PassParams no longer carries

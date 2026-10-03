@@ -1341,7 +1341,7 @@ public:
     // offsets in physics/field_row.hpp, every other field at its registry
     // offset. A diagnostic -- it copies -- for tests that check a provider
     // wrote what a reader then read. invalid_argument for a world outside the
-    // set; unavailable on the Vulkan backend until the GPU samples fields.
+    // set. On Vulkan it reads the device's row back: the built-in prefix only.
     [[nodiscard]] Result<std::vector<float>> field_samples(uint32_t world_index) const;
 
     // --- sensors ----------------------------------------------------------
