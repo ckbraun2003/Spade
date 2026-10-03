@@ -21,7 +21,7 @@
 - No allocation in a step. The sample rows are sized at `create()`.
 - The sample buffer is scratch. It is not in the registry, the walk (`kWalkEntryCount` stays 22), `schema_hash` or any digest.
 - Refuse, never skip (`L6`). A field read with no provider, two providers of one field, and a provider with no GPU kernel on Vulkan (stage 2's rule) are all refused at `create()`, by name.
-- Physics' model functions (`apply_rotors`, `apply_drag`) keep their signatures, because they are the pure functions the builder calls (`DBE-009`). `integrate_bodies` takes gravity by value; Physics reviews that change.
+- Physics' model functions (`apply_rotors`, `apply_drag`) keep their signatures, because they are the pure functions the builder calls (`DBE-009`). `integrate_bodies` gains an overload that takes gravity by value, and the `WorldParams` overload forwards to it (Physics' review, 2026-10-03).
 - `-Wall -Wextra -Wpedantic` clean under gcc, and warning-free under MSVC.
 - Builds and tests run only in a slot the lead hands out, in the foreground. Code lives in `../spade-wt/core`, on branch `core/modules-stage3`. Commit only named paths. Never push.
 
@@ -43,7 +43,8 @@
 - **Sample points are declared but resolve per world.** The spec's per-body and per-element points matter only for a position-dependent provider (SPH, later, with Physics), and this stage refuses that kind of provider. Readers here read the world's row.
 - **Rotors and drag read through `SampledMedium`**, a `final` `Medium` whose `sample(params, pos)` returns `{row.density, row.wind}`. `apply_rotors` and `apply_drag` are unchanged. When SPH arrives, readers move to point-indexed sampling with Physics.
 - **Integrate reads `field.gravity`.**
-  - `integrate_bodies(span<BodyState>, glm::vec3 gravity, float h)` replaces the `const WorldParams&` overload, which only ever read `params.gravity` (integrator.cpp:14).
+  - A new overload, `integrate_bodies(span<BodyState>, glm::vec3 gravity, float h)`, does the work. The `const WorldParams&` overload, which only ever read `params.gravity` (integrator.cpp:14), stays as a one-line inline forwarder to it. Its 28 test call sites across 8 files are untouched (Physics' review, 2026-10-03).
+  - `pass_integrate` calls the vec3 overload with the field row's gravity, and integrate's `world.params` declaration is dropped, because gravity was its only read of it.
   - The sandbox's `pin_force` keeps reading `WorldParams::gravity`, which is still true state. Its owner can switch it later.
 - **Undeclared reads are fixed.** `rotor.forces` and `drag.forces` read the medium but declared no read of it. They now declare reads of `field.density` and `field.wind`.
 - **Every commit stays green; the GPU follows in two steps.**
@@ -174,11 +175,14 @@ TEST(ModuleFields, AProviderModuleWithNoPassWritingItsFieldIsRefused) {
   - `pass_rotor_forces` and `pass_drag` construct `SampledMedium(w.fields)` in place of `DrydenMedium(...)`.
   - `pass_integrate` passes the row's gravity.
 - Create: `engine/physics/sampled_medium.hpp`: `SampledMedium final : Medium`, a header-only view over a row.
-- Modify: `engine/physics/integrator.{hpp,cpp}` (Physics reviews). `integrate_bodies(std::span<BodyState>, glm::vec3 gravity, float h)`. Its one caller moves.
+- Modify: `engine/physics/integrator.{hpp,cpp}` (Physics reviews).
+  - Add `integrate_bodies(std::span<BodyState>, glm::vec3 gravity, float h)`, holding the body that was the `WorldParams` overload's.
+  - The `WorldParams` overload becomes an inline forwarder, `integrate_bodies(bodies, params.gravity, h)`, so its 28 test call sites do not change.
+  - **Rebase first:** Physics' comment sweep touches `integrator.hpp:24/27`. It lands after stage 2 merges and before this task.
 - Modify: `engine/sim/standard_modules.cpp`.
   - Add the stateless `environment` module and the `dryden.sample` pass. They declare the three built-in fields and write them, and they are paired with their CPU functions and recipes.
   - The `environment` module is appended to the set, so no existing module's set index moves.
-  - Add the field reads to rotor, drag and integrate. Integrate keeps its `world.params` read for anything else it touches.
+  - Add the field reads to rotor, drag and integrate. Integrate's `world.params` read is replaced by `field.gravity`, its only use of `WorldParams` (integrator.cpp:14).
 - Modify: `engine/compute/backend.hpp` and `engine/compute/vulkan/step_recorder.cpp`. Add the recipes `environment_sample` and `dryden_sample`, recorded, for now, like the behavior recipes: a timestamp bracket and no dispatch. The GPU kernels still compute the medium inline, so nothing on the GPU reads a sample yet.
 - Modify these tests:
   - `tests/test_gpu_module_schedule.cpp`: `kStandardGpuOrder` gains `dryden.sample` and `environment.sample` after `dryden.advance`.
@@ -194,7 +198,7 @@ TEST(ModuleFields, AProviderModuleWithNoPassWritingItsFieldIsRefused) {
 - Produces:
   - `physics::pass_environment_sample` and `physics::pass_dryden_sample`;
   - `physics::SampledMedium`;
-  - the new `integrate_bodies` signature;
+  - the new `integrate_bodies(span, glm::vec3, float)` overload, with the `WorldParams` one kept as its forwarder;
   - `Simulation::field_samples(world)`;
   - the recipes `GpuRecipe::environment_sample` and `GpuRecipe::dryden_sample`.
 
@@ -402,11 +406,15 @@ TEST_F(GpuParityTest, StoredFieldSamplesMatchTheCpuCopiesBitwise) {
 
 ### Task 4: Prose follows the code
 
-- Code comments: `medium.hpp`'s note that consumers call `sample()` inline; schedule.hpp's pass descriptions; rotors.slang's and forces_drag.slang's medium notes. Keep the line counts in the `.slang` files.
+- Code comments:
+  - `medium.hpp`'s note that consumers call `sample()` inline;
+  - schedule.hpp's pass descriptions;
+  - rotors.slang's and forces_drag.slang's medium notes, keeping the `.slang` files' line counts;
+  - `physics/contacts.hpp:314`, which quotes `integrate_bodies`' old signature (Physics' review).
 - Docs, on master after the merge:
   - `core/07-status.md`: "Field registry and sampling" becomes **Built for gravity, density and wind**, with the band kind and position-dependent providers noted as later work.
   - `core/02-state-and-snapshot.md`: the sample buffer is scratch, and is named as such.
-  - `CHANGELOG.md`: `field_samples()`, the field declarations, `integrate_bodies`' signature, and the 11 + S chain.
+  - `CHANGELOG.md`: `field_samples()`, the field declarations, the new `integrate_bodies` overload, and the 11 + S chain.
 - [ ] Commit: `docs(core): field comments follow the sample buffer`.
 
 ## Notes for later stages
