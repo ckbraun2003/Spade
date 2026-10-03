@@ -73,7 +73,11 @@ TEST(SandboxDrone, TheMixerSignAgreesWithTheEngine) {
         const glm::vec3 w = (*sim->body(v->body))->omega_body;
         EXPECT_GT(w[axis], 0.0f) << "axis " << axis;
         for (int other = 0; other < 3; ++other) {
-            if (other != axis) EXPECT_LT(std::fabs(w[other]), 1e-2f * std::fabs(w[axis])) << "axis " << axis;
+            // Braced: gtest's EXPECT_* expands to an if/else, so an unbraced
+            // `if` around it trips gcc's -Werror=dangling-else.
+            if (other != axis) {
+                EXPECT_LT(std::fabs(w[other]), 1e-2f * std::fabs(w[axis])) << "axis " << axis;
+            }
         }
         // And the size, so a factor-of-two slip in the mixer fails here too: the
         // moment rises through the rotor lag as M (1 - e^{-t/tau}), so
