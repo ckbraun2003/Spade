@@ -439,3 +439,49 @@ TEST(ModuleSnapshot, RestoreIntoTheSameSetSucceeds) {
     ASSERT_TRUE(blob.has_value());
     EXPECT_TRUE(target->restore(*blob).has_value());
 }
+
+// Stage 2: a pass names the built-in GPU kernel (its recipe) that does on the
+// GPU what its CPU function does. The recipe is honest only with that function.
+TEST(StandardModules, EveryPassNamesARecipePairedWithItsOwnFunction) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    for (const auto& p : s->passes) {
+        EXPECT_NE(p.gpu, spade::compute::GpuRecipe::none) << p.module << "." << p.pass;
+        EXPECT_EQ(p.cpu, spade::modules::builtin_cpu_for(p.gpu)) << p.module << "." << p.pass;
+    }
+}
+
+TEST(ModuleSchedule, ARecipeWithAnotherCpuFunctionIsRefused) {
+    static constexpr PassDecl liar[] = {{.name = "lift", .phase = Phase::forces, .access = kHoverAccess,
+                                         .cpu = &hover_pass, .gpu = spade::compute::GpuRecipe::rotors}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = liar});
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("hover.lift"), std::string::npos) << s.error().context;
+}
+
+// The refusal happens in create() before any device is opened, so this runs
+// on a machine without a GPU.
+TEST(ModuleSimulation, ADeveloperPassWithNoRecipeIsRefusedOnVulkanByName) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "hover", .passes = kHoverPasses});
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
+                                               set);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::unavailable);
+    EXPECT_NE(sim.error().context.find("hover.lift"), std::string::npos) << sim.error().context;
+}
+
+TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const auto g = spade::modules::gpu_passes(*s);
+    ASSERT_EQ(g.size(), s->passes.size());
+    for (size_t i = 0; i < g.size(); ++i) {
+        EXPECT_EQ(g[i].name, s->passes[i].module + "." + s->passes[i].pass);
+        EXPECT_EQ(g[i].recipe, s->passes[i].gpu);
+    }
+}
