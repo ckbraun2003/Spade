@@ -88,7 +88,9 @@ class GlRenderer {
     //
     // Renders into the CURRENTLY BOUND framebuffer at the given size. It does
     // not clear beyond its own depth/colour needs and it does not present:
-    // both belong to whoever owns the window.
+    // both belong to whoever owns the window. It leaves depth testing and
+    // back-face culling (SR-13) enabled, so a caller drawing its own geometry
+    // afterwards sets the state it needs.
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);

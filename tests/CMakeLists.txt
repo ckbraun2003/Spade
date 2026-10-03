@@ -253,6 +253,20 @@ if(SPADE_BUILD_SANDBOX)
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
 
+# GlRenderer on a real GL context (SR-13 back-face culling first). GPU-gated:
+# its suite is GpuGlRenderer, so it carries the `gpu` label, runs on the
+# development box and skips by name where no display or GL 4.3 context exists
+# (TD-13). It needs spade_render_gl and the glfw target, which is fetched only
+# when the sandbox or v1 is built.
+#
+# GLFW_INCLUDE_NONE: glad declares GL here, and glfw3.h must not pull in
+# <GL/gl.h> beside it.
+if(SPADE_RENDER_GL AND TARGET glfw)
+    target_sources(spade_tests PRIVATE test_gpu_gl_renderer.cpp)
+    target_link_libraries(spade_tests PRIVATE spade::render_gl glfw)
+    target_compile_definitions(spade_tests PRIVATE GLFW_INCLUDE_NONE)
+endif()
+
 # spade_fp_strict (plain link, not BUILD_LOCAL_INTERFACE -- spade_tests is an
 # executable, not an installed/exported target, so there is no export-set
 # concern to guard against): test TUs re-derive reference arithmetic of their
