@@ -837,11 +837,39 @@ TEST(SnapshotFormat, AVersionOneBlobIsRefusedWithTheVersionMessage) {
     EXPECT_NE(reread.error().context.find("format version 1"), std::string::npos) << reread.error().context;
 }
 
+// Format v3 (Core's drone-builder plan, Task C) added the model registry's
+// identity; a v2 blob is refused with the version message, as v1 is.
+TEST(SnapshotFormat, AVersionTwoBlobIsRefusedWithTheVersionMessage) {
+    spade::StateRegistry registry;
+    const auto blob = spade::save(registry, spade::Tick{1});
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const uint32_t v2 = 2;
+    std::memcpy(bytes.data() + offsetof(spade::SnapshotHeader, version), &v2, sizeof(v2));
+    const auto reread = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    ASSERT_FALSE(reread.has_value());
+    EXPECT_EQ(reread.error().code, spade::Code::schema_mismatch);
+    EXPECT_NE(reread.error().context.find("format version 2"), std::string::npos) << reread.error().context;
+}
+
+TEST(SnapshotFormat, TheModelRegistryIdentityRoundTripsThroughTheHeader) {
+    spade::StateRegistry registry;
+    const auto blob = spade::save(registry, spade::Tick{7}, 0x1111'2222'3333'4444ULL, 0x5555'6666'7777'8888ULL);
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    EXPECT_EQ(blob->version(), 3u);
+    EXPECT_EQ(blob->model_registry_identity(), 0x5555'6666'7777'8888ULL);
+    const auto reread = spade::SnapshotBlob::from_bytes(
+        std::vector<std::byte>(blob->bytes().begin(), blob->bytes().end()));
+    ASSERT_TRUE(reread.has_value()) << reread.error().context;
+    EXPECT_EQ(reread->configuration_identity(), 0x1111'2222'3333'4444ULL);
+    EXPECT_EQ(reread->model_registry_identity(), 0x5555'6666'7777'8888ULL);
+}
+
 TEST(SnapshotFormat, TheConfigurationIdentityRoundTripsThroughTheHeader) {
     spade::StateRegistry registry;
     const auto blob = spade::save(registry, spade::Tick{7}, 0x1234'5678'9ABC'DEF0ULL);
     ASSERT_TRUE(blob.has_value()) << blob.error().context;
-    EXPECT_EQ(blob->version(), 2u);
+    EXPECT_EQ(blob->version(), spade::kSnapshotVersion);
     EXPECT_EQ(blob->configuration_identity(), 0x1234'5678'9ABC'DEF0ULL);
     const auto reread = spade::SnapshotBlob::from_bytes(
         std::vector<std::byte>(blob->bytes().begin(), blob->bytes().end()));

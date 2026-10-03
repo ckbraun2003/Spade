@@ -64,8 +64,9 @@
 //   * A VEHICLE IS STATE, NOT AN OBJECT. Spawn/despawn round trips are
 //     digest-identical run to run, a despawn releases every rotor, drag and
 //     sensor slot it took, and a snapshot restored into a FRESH Simulation --
-//     one that has never registered a model or spawned anything -- keeps
-//     flying on the restored shaft speeds and commands.
+//     one that has registered the same model (configuration, SCN-006) but
+//     never spawned anything -- keeps flying on the restored shaft speeds and
+//     commands.
 //
 // WHY THE MOMENT TESTS USE tau = 0 AND THE HOVER TESTS DO NOT. tau = 0 is
 // rotor.hpp's documented "no lag" degenerate (alpha = 1), and it is what turns
@@ -1447,10 +1448,11 @@ TEST(Quadrotor, DespawningAVehicleReleasesEveryRotorDragAndSensorSlotItTook) {
 }
 
 // THE REPLAY GUARANTEE, for a flying vehicle. The resumed Simulation is FRESH:
-// it has never registered a model, never spawned anything, and never issues a
-// rotor command. If the shaft speeds or the commands in force were not
-// registered state, the restored vehicle would spin down and fall out of the
-// digest immediately.
+// it has registered the same model -- the model registry is configuration, and
+// restore() refuses a blob taken under another (snapshot format v3, SCN-006) --
+// but it has never spawned anything and never issues a rotor command. If the
+// shaft speeds or the commands in force were not registered state, the
+// restored vehicle would spin down and fall out of the digest immediately.
 TEST(Quadrotor, AFlyingVehicleSurvivesASnapshotIntoASimulationThatNeverSpawnedIt) {
     const QuadrotorParams params = test_quad(0.02f, 0.9f);
     const float hover = spade::vehicles::hover_command(params);
@@ -1489,11 +1491,16 @@ TEST(Quadrotor, AFlyingVehicleSurvivesASnapshotIntoASimulationThatNeverSpawnedIt
     const spade::Result<SnapshotBlob> blob = interrupted->snapshot();
     ASSERT_OK(blob);
 
-    // A FRESH Simulation: no model registered, no spawn, no command. Everything
-    // the vehicle needs must come out of the blob.
+    // A FRESH Simulation: the same model registered (configuration), but no
+    // spawn and no command. Everything the vehicle needs must come out of the
+    // blob.
     spade::Result<Simulation> resumed = Simulation::create(*desc, 1'000'000, 1);
     ASSERT_OK(resumed);
-    EXPECT_EQ(resumed->model_count(), 0u);
+    ASSERT_OK(resumed->register_model(*model));
+    EXPECT_EQ(resumed->model_count(), 1u);
+    const spade::Result<uint32_t> spawned = resumed->live_body_count(0);
+    ASSERT_OK(spawned);
+    EXPECT_EQ(*spawned, 0u) << "nothing spawned before the restore";
     ASSERT_OK(resumed->restore(*blob));
     EXPECT_EQ(resumed->tick().value, 200u);
     ASSERT_OK(resumed->step(200));
