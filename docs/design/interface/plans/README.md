@@ -4,7 +4,11 @@ Active Interface plans go here, dated (`YYYY-MM-DD-<topic>.md`).
 
 ## Active
 
-- **The drone sim box** is the lead's plan (Tasks 4–6 are Interface's): `../../plans/2026-10-01-drone-sim-box-plan.md`, with its design beside it.
+- **The v1 baselines** (`INT-4`, `SL14b`): `2026-10-02-v1-baselines.md`, spec and plan in one; draft for the lead's review.
+
+## Done
+
+- **The drone sim box** is the lead's plan (Tasks 4–6 were Interface's, built and verified): `../../plans/2026-10-01-drone-sim-box-plan.md`, with its design beside it.
 
 ## History
 
