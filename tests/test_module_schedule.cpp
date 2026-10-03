@@ -474,3 +474,68 @@ TEST(ModuleSchedule, GpuPassesFollowTheSchedule) {
         EXPECT_EQ(g[i].recipe, s->passes[i].gpu);
     }
 }
+
+// Stage 3: modules declare the fields they provide (scalar, vec3 or a fixed
+// band array); a read of `field.<name>` resolves against those declarations.
+TEST(ModuleFields, ABuiltinFieldDeclaredWithAnotherKindIsRefused) {
+    static constexpr spade::modules::FieldDecl wind[] = {{.name = "wind", .kind = spade::modules::FieldKind::scalar, .unit = "m/s"}};
+    static constexpr QuantityAccess writes[] = {{"field.wind", Access::write}};
+    static constexpr PassDecl p[] = {{.name = "sample", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "gusts", .passes = p, .fields = wind}};
+    EXPECT_EQ(code_of(compile_schedule(set)), spade::Code::invalid_argument);
+}
+
+TEST(ModuleFields, AReadOfAFieldNoModuleProvidesIsRefused) {
+    static constexpr QuantityAccess reads[] = {{"field.salinity", Access::read}};
+    static constexpr PassDecl p[] = {{.name = "probe", .phase = Phase::forces, .access = reads, .cpu = &noop}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "probe", .passes = p});
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_NE(s.error().context.find("field.salinity"), std::string::npos) << s.error().context;
+}
+
+TEST(ModuleFields, TwoProvidersOfOneFieldAreRefused) {
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::scalar, .unit = "dB"}};
+    static constexpr QuantityAccess writes[] = {{"field.hum", Access::write}};
+    static constexpr PassDecl p[] = {{.name = "sample", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "a", .passes = p, .fields = hum}, {.name = "b", .passes = p, .fields = hum}};
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_NE(s.error().context.find("hum"), std::string::npos) << s.error().context;
+}
+
+TEST(ModuleFields, ABandFieldTakesItsCountAfterTheBuiltins) {
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::bands, .bands = 8, .unit = "dB"}};
+    static constexpr QuantityAccess writes[] = {{"field.hum", Access::write}};
+    static constexpr PassDecl p[] = {{.name = "sample", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "acoustic", .passes = p, .fields = hum});
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(s->fields.back().name, "hum");
+    EXPECT_EQ(s->fields.back().offset, spade::modules::kFieldBuiltinFloats);
+    EXPECT_EQ(s->fields.back().count, 8u);
+    EXPECT_EQ(s->field_stride, spade::modules::kFieldBuiltinFloats + 8u);
+}
+
+TEST(ModuleFields, ABandCountOutsideOneToTheMaximumIsRefused) {
+    for (const uint32_t n : {0u, spade::modules::kMaxFieldBands + 1u}) {
+        const spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::bands, .bands = n, .unit = "dB"}};
+        static constexpr QuantityAccess writes[] = {{"field.hum", Access::write}};
+        static constexpr PassDecl p[] = {{.name = "sample", .phase = Phase::fields, .access = writes, .cpu = &noop}};
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back({.name = "acoustic", .passes = p, .fields = hum});
+        EXPECT_EQ(code_of(compile_schedule(set)), spade::Code::invalid_argument) << "bands = " << n;
+    }
+}
+
+TEST(ModuleFields, AProviderModuleWithNoPassWritingItsFieldIsRefused) {
+    static constexpr spade::modules::FieldDecl hum[] = {{.name = "hum", .kind = spade::modules::FieldKind::scalar, .unit = "dB"}};
+    static constexpr PassDecl p[] = {{.name = "idle", .phase = Phase::fields, .cpu = &noop}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "acoustic", .passes = p, .fields = hum});
+    const auto s = compile_schedule(set);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_NE(s.error().context.find("field.hum"), std::string::npos) << s.error().context;
+}
