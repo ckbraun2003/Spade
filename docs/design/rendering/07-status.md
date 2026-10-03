@@ -1,6 +1,6 @@
 # Rendering — status
 
-**The only place that says what exists today.** **Re-checked against `master` `3605ddf` on 2026-10-03.** Since the check at `c94add9`, the only render-code changes are this realm's merges `ec973ed`, `1cac77a`, `0a5e1a1`, `875b040` (comments) and `3605ddf`. The user's 2026-10-02 rulings (`RND-4`, `RND-5`, `TD-13`) are folded in. Measurements are under "Measured", each with its commit and build tree.
+**The only place that says what exists today.** **Re-checked against `master` `c0fa53d` on 2026-10-03.** Since the check at `c94add9`, the only render-code changes are this realm's merges `ec973ed`, `1cac77a`, `0a5e1a1`, `875b040` (comments), `3605ddf` and `c0fa53d`. The user's 2026-10-02 rulings (`RND-4`, `RND-5`, `TD-13`) are folded in. Measurements are under "Measured", each with its commit and build tree.
 
 ## Specified vs built
 
@@ -36,7 +36,6 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 
 1. **The default-sun regeneration** (`RND-5`), after the Docker gcc leg's first run (`TD-11`, `TD-12`). See the debt row below.
 2. **The field channel, the rest.**
-   - Non-finite samples get a "no data" colour (debt row below).
    - Interface moves the drone heatmap onto `field_layers` (plan step 3).
    - Part B binds Core's stage 3 sampling.
 3. **The Vulkan raster as a technique** (`RND-4`), after field channels and the module API, with colour guarded before it is selectable.
@@ -45,13 +44,12 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 
 | Item | Detail |
 |---|---|
-| **`render::Lighting{}`'s default sun is below the horizon** | `{-0.35, -0.86, -0.37}` points away from the sun under `RND-1`. Four hand-built frame goldens shade under it: `box_shaded_with_overlays`, `cylinder_static_dynamic_box_top_down`, `shadowed_ground_with_caster` and its `_atmospheric` pair. **Ruled by `RND-5`:** flip it with one deliberate regeneration once the Docker gcc leg exists, because a regenerated golden is final only when that leg reproduces it (`TD-12`). World-loaded scenes are unaffected, because `LightingDesc`'s default `(0.4, 0.8, 0.6)` is correct |
+| **`render::Lighting{}`'s default sun is below the horizon** | `{-0.35, -0.86, -0.37}` points away from the sun under `RND-1`. Four hand-built frame goldens shade under it: `box_shaded_with_overlays`, `cylinder_static_dynamic_box_top_down`, `shadowed_ground_with_caster` and its `_atmospheric` pair. **Ruled by `RND-5`:** flip it with one deliberate regeneration once the Docker gcc leg exists, because a regenerated golden is final only when that leg reproduces it (`TD-12`). **In progress** (`plans/2026-10-03-default-sun-plan.md`): `rendering/default-sun` flips it to `normalize(LightingDesc{}.sun_direction)`. Its commit B (`841bf41`) holds the four MSVC hashes under `_pending_rnd5`, and the lead reviewed the before and after frames. It merges after the Docker leg reproduces all four. World-loaded scenes are unaffected, because `LightingDesc`'s default `(0.4, 0.8, 0.6)` is correct |
 | **Installed headers that cannot compile** (found by Core) | `render/vulkan/background_pass.hpp` includes `compute/vulkan/context.hpp`, and through it volk. `install(DIRECTORY render/ ...)` installs it in every configuration, so a consumer that includes it fails to compile. It is latent while nothing includes it. When the Vulkan raster returns as a technique, either exclude `render/vulkan/` from the install or keep that header Vulkan-free |
 | **GPU colour unguarded** | The Vulkan raster's only evidence is coverage. A colour oracle is required before it is selectable (`03-verification.md`). GL's background and field layers now have one each: `GpuGlRenderer.BackgroundMatchesTheCpuWithinItsMeasuredBand` and `GpuGlRenderer.FieldLayerMatchesTheCpuWithinItsMeasuredBand`, regression guards pinned on one device (see "Measured"). GL's mesh shading has none, and differs by design: GL lights per pixel, the CPU per vertex (`SR-18`). Every GL or Vulkan render test is `gpu`-labelled. **Under `TD-13`:** these tests run on the development box, a skip is reported by name and does not count toward a green gate, and the Docker leg excludes them with `-LE gpu` |
 | **No agreement bands on Spade's own worlds** | `../backlog.md` |
 | **No render-cadence invariance test** | It holds by construction. A Spade-side test is owed (`RS13`) |
 | **GL draws no shadows or overlays** | `GlRenderer::unhonoured()` names both for a caller to show or refuse (`L6`). For `RenderOptions{}` it returns `{"shadows", "overlays"}`. The sandbox HUD shows the list while GL is the path (Interface, `afdbdf5`) |
-| **Non-finite field samples draw as bin 0** (lead's review of `3605ddf`) | `field_bin()` puts a NaN or infinite sample in bin 0, so bad upstream data draws as the minimum colour and goes unseen. Give it a distinct "no data" colour, or count it for the caller to show |
 | **`SR-17` clause 6** | The infinite ground is unshadowed beyond `scene.bounds`. Accepted, not closed |
 
 ## Closed
@@ -63,6 +61,7 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 - 2026-10-03, `0a5e1a1`: **GL ignored `RenderOptions`.** See the OpenGL row above. Six `GpuGlRenderer` cases and one host case (`GlRendererOptions`) failed before and pass after.
 - 2026-10-03, `875b040`: **stale comments.** `render/shadow.cpp` and `tests/test_render_shadow.cpp` said `LightingDesc`'s default sun is `(0,1,0)`; they now say which suns reach the near-vertical guard.
 - 2026-10-03, `3605ddf`: **no field channel.** Field layers are built (see the field channel row above). Three `RenderField` draw cases and the GL band case failed before and pass after. The drone heatmap's 11 cases pass unchanged.
+- 2026-10-03, `c0fa53d`: **non-finite field samples drew as bin 0** (the lead's review of `3605ddf`). A NaN or infinite sample now draws in `FieldColourMap::no_data_colour`, a neutral grey that viridis does not contain, on the CPU and GL. `count_non_finite()` gives the caller a count to show. `RenderField.NonFiniteSamplesDrawInTheNoDataColour` and `GpuGlRenderer.FieldLayerShowsNonFiniteSamplesAsNoData` failed before and pass after.
 
 ## Measured
 
@@ -73,6 +72,8 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 | `02c1a96` (`rendering/gl-culling`, before merge) | same tree | 923 total, 921 passed, 2 skipped (the standing two), 0 failed. 67 `gpu` tests ran |
 | `c1fc309` (`rendering/gl-render-options`, on `rendering/normals-scale`, rebased on `4d4f7a5`) | same tree | 939 total, 937 passed, 2 skipped (the standing two), 0 failed. 77 `gpu` tests ran. 939 = 929 on `4d4f7a5` + 10 |
 | `de30813` (`rendering/field-channel`, rebased on `afdbdf5`) | same tree | 978 total, 976 passed, 2 skipped (the standing two), 0 failed. 78 `gpu` tests ran. 978 = 971 on `afdbdf5` + 7 |
+| `5685c7c` (`rendering/field-no-data`, rebased on `aeaef92`) | same tree | 988 total, 986 passed, 2 skipped (the standing two), 0 failed. 79 `gpu` tests ran. 988 = 986 on `aeaef92` + 2 |
+| `841bf41` (`rendering/default-sun`, commit B, on `aeaef92`; **not merged**, pending the Docker leg) | same tree | 986 total, 984 passed, 2 skipped (the standing two), 0 failed. 78 `gpu` tests ran. With the flip and the new manifest, no test other than the four regenerated frames moved |
 
 These were measured on the branches, not on the merged `master`, which also carries other realms' merges. `test-docs/07-status.md` holds the suite's baseline.
 
