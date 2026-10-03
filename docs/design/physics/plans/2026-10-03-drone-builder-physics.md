@@ -244,7 +244,8 @@ IDs are `DBP-nn`. "Builder parameters" means the values a part's datasheet or th
 - DBP-74: Validation data MUST NOT enter the fit.
 - DBP-75: The band MUST be `k·u_c` with `k = 2`.
 - DBP-76: `k` and the uncertainties MUST NOT be raised to make a point pass.
-- DBP-77: The suite MUST record the items of §11, step 8.
+- DBP-77: The suite MUST record the items of §11, step 10.
+- DBP-78: The held-out split MUST be fixed and recorded before the first fit runs.
 
 ## 10. Grades and goldens
 
@@ -262,38 +263,52 @@ A golden here is a determinism record (`L4`). It says nothing about whether the 
 
 The check is a validation suite, separate from the goldens. It runs on `competition-700` first, then `standard_x250` (Kat, 2026-10-03).
 
-**What the data is.** Kat has system data only, from a simulator black box (`airframe.json`), plus held-out flight logs (`legacy_logs`, `HIGHRES_IMU`). The values relayed for the first airframe are:
+**What it validates against.** Every number here comes from the AI Grand Prix VQ1 simulator, a black box, not from hardware. The check therefore shows agreement with that simulator. It says nothing about a physical drone.
+
+**What the data is.** Kat has system data only: the simulator's `airframe.json`, and flight logs from the same simulator. The values for the first airframe are:
 
 | Quantity | Value | Maps to |
 |---|---|---|
 | Thrust curve | 12 points | the steady-state solver, forward mode, at zero airspeed |
 | Airspeed thrust loss | a curve | the solver at axial speed above zero |
-| Drag | 0.028 (unit to confirm) | the airframe's drag element, set directly, not fitted |
+| Drag | 0.028 N·s²/m², per body axis: `F_i = −c·|v_i|·v_i` | Spade's componentwise drag element (`physics/forces.hpp`, coefficient in kg/m, the same unit), set directly, not fitted |
 | Mass | 0.7 kg | the composite total; compared, not fitted |
 | Inertia | [0.0025, 0.0021, 0.0043] kg·m², assumed by Kat | reported beside the composite's; not a target |
 | Motor time constant | 0.033 s | the chain's small-signal time constant at hover, `J_r/(Kt·Ke/R + ∂Q_load/∂ω)` |
-| `kappa` | 0.022 (unit to confirm; read as torque per thrust, m) | `Q/T` at hover, `C_Q·D/C_T` |
+| `kappa` | 0.022 m, `k_Q/k_T` | `Q/T` at hover, `C_Q·D/C_T` |
+
+The drag law and the units come from the legacy `quadrotor.py` (lines 60–64 and 179). The legacy yaml labels `kappa` dimensionless; that label is wrong.
 
 There is no component data: no `KV`, `R`, `I0`, cell data, `C_T` or `C_Q`.
 
-The motor time constant and `kappa` are exactly the parameters of today's momentum-theory rotor: `tau` and `k_Q/k_T` (`vehicles/rotor.hpp`). So that rotor, fed these values directly, is a baseline in the black box's own model class. The fitted chain is then compared with both the data and the baseline. Because the curves come from a simulator, a good fit shows agreement with that simulator, not with a physical drone. The flight logs say more only if they come from real flights.
+The motor time constant and `kappa` are exactly the parameters of today's momentum-theory rotor: `tau` and `k_Q/k_T` (`vehicles/rotor.hpp`). So that rotor, fed these values directly, is a baseline in the black box's own model class. The fitted chain is compared with both the data and the baseline.
+
+**The flight data with commands.** Some flights carry their commands. The probe logs in `legacy_logs/logs/deploy/` (`axial_thrust`, `axis_roll_probe`, `axis_sweep` and others) have these columns:
+- `t`, `phase`;
+- position `x`, `y`, `z` and velocity `vx`, `vy`, `vz`;
+- orientation `qw`, `qx`, `qy`, `qz`;
+- `cmd_norm` and `cmd_acc`, a time-aligned collective command. The data pack defines both.
+
+Per-axis rate commands are not confirmed. The data pack lists each file's columns and row count.
 
 **Method: an inverse fit, then held-out validation.**
 
-1. **Parts.** Choose parts from the catalog (Kat's first 5-inch catalog, with sources). Each parameter carries its published range from those sources.
-2. **Fit.** Fit the free parameters, each within its range, to the `airframe.json` targets above. The fit is a weighted least-squares problem in double. Each residual is divided by its point's uncertainty. A bounded Levenberg–Marquardt solve starts from the catalog's nominal values, with a fixed iteration cap and a fixed parameter order, so it is deterministic.
-3. **Range limits.** A parameter that ends at a limit of its published range is a finding. Report it; do not widen the range.
-4. **Uncertainty.** For black-box curves, `u_meas` is half the last printed digit, unless Kat states more. `u_param` comes from the fit's covariance, `(Aᵀ·W·A)⁻¹` with `A` the fit's Jacobian, propagated to each quantity by central differences in double. `u_c = sqrt(u_meas² + u_param²)`.
-5. **Validation.** The flight logs never enter the fit. For each logged sample, the model predicts specific force and angular acceleration from the logged commands and measured rates, with no integration. The accelerometer gives the first. Gyro rates differentiated over a window fixed in advance give the second. `u_meas` comes from the log's own noise, measured on a steady segment chosen before any residual is seen.
-6. **Tolerance.** The band is `k·u_c`, with `k = 2` (about 95%).
-7. **No widening.** A point outside its band is a model finding. Never raise `k` or an uncertainty to make a point pass (`TD-2`).
-8. **Recording.** The suite records:
-   - the airframe and the data pack's version;
-   - each catalog part with its source;
-   - each fitted value with its range and covariance;
-   - `k` and every point's residual and `u_c`.
+1. **Split.** Fix the held-out split before the first fit runs, and record it. Kat proposes one with the data pack.
+2. **Parts.** Choose parts from the catalog (Kat's first 5-inch catalog, with sources). Each parameter carries its published range from those sources.
+3. **Fit.** Fit the free parameters, each within its range, to the `airframe.json` targets above. The fit is a weighted least-squares problem in double. Each residual is divided by its point's uncertainty. A bounded Levenberg–Marquardt solve starts from the catalog's nominal values, with a fixed iteration cap and a fixed parameter order, so it is deterministic.
+4. **Range limits.** A parameter that ends at a limit of its published range is a finding. Report it; do not widen the range.
+5. **Uncertainty.** For `airframe.json` values, `u_meas` is half the last printed digit, unless Kat states more. `u_param` comes from the fit's covariance, `(Aᵀ·W·A)⁻¹` with `A` the fit's Jacobian, propagated to each quantity by central differences in double. `u_c = sqrt(u_meas² + u_param²)`.
+6. **Validation, translational.** The held-out probe logs never enter the fit. For each sample, the model predicts acceleration from the logged collective command, orientation and velocity. The command passes through the fitted chain, and drag comes from the logged velocity. The logged velocity, differentiated over a window fixed in advance, gives the comparison. `u_meas` comes from the log's own noise, measured on a steady segment chosen before any residual is seen.
+7. **Validation, rotational.** This waits until per-axis rate commands are confirmed in a log. Without them, the attitude dynamics cannot be checked by equation error.
+8. **Tolerance.** The band is `k·u_c`, with `k = 2` (about 95%).
+9. **No widening.** A point outside its band is a model finding. Never raise `k` or an uncertainty to make a point pass (`TD-2`).
+10. **Recording.** The suite records:
+    - the airframe, the data pack's version and the held-out split;
+    - each catalog part with its source;
+    - each fitted value with its range and covariance;
+    - `k` and every point's residual and `u_c`.
 
-The validation step needs the logs to carry the actuator commands, time-aligned with `HIGHRES_IMU`. If the pack lacks them, step 5 cannot run as written (§13).
+A log without commands cannot be validated by equation error. The suite lists such logs and does not assert on them.
 
 ## 12. Not modelled
 
@@ -308,7 +323,14 @@ The validation step needs the logs to carry the actuator commands, time-aligned 
 
 1. **Tier selection. Decided by the lead (2026-10-03): per-rotor data.** Momentum theory and the coefficient table are two variants of one rotor module. A role is for a tier that changes passes or state, such as BEMT.
 2. **The command API.** A duty command needs a host call beside `set_rotor_commands`. That is Core's and Interface's.
-3. **The joint spec's facts. Partly answered by Kat (2026-10-03).** The airframes are `competition-700`, then `standard_x250`, and Kat is drafting the 5-inch catalog with sources. Still open:
-   - the units of `drag` and `kappa`, and the form of the airspeed thrust-loss curve;
-   - whether the data pack's logs carry actuator commands, time-aligned with `HIGHRES_IMU`;
-   - whether the logs come from real flights or from the same simulator.
+3. **The joint spec's facts. Answered by Kat (2026-10-03), and folded into §11.**
+   - The airframes are `competition-700`, then `standard_x250`.
+   - Drag is componentwise, in N·s²/m². `kappa` is `k_Q/k_T`, in metres.
+   - The deploy probe logs carry a time-aligned collective command.
+   - The source is the AI Grand Prix VQ1 simulator, not hardware.
+
+   Still open:
+   - the form of the airspeed thrust-loss curve;
+   - the meaning of `cmd_norm` and `cmd_acc`, which the data pack defines;
+   - whether any log carries per-axis rate commands, which rotational validation needs;
+   - the held-out split, which Kat proposes with the data pack.
