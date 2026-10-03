@@ -55,10 +55,12 @@ A **module** is a descriptor plus functions. It declares:
 Each substep runs six phases in order: **Fields → Forces → Constraints/Contacts → Integrate → Sensors → Publish** (`../../01-engine-model.md`).
 
 - **Placement.** A pass runs in the phase it names. `create()` compiles the module set into one ordered pass list.
+- **Access kinds.** A pass declares each quantity it touches as **read**, **write** or **accumulate** (adds to it, never clears it, as rotors and drag do to `force_acc`).
 - **Order inside a phase**, in priority:
-  1. **Hazards.** A pass that reads what another pass writes runs after it.
-  2. **Ordering edges.** A pass may declare `after: <module>.<pass>`. This is how an accumulation order is pinned: two passes that both add to `force_acc` must keep a fixed order, because fp32 addition is not associative. Drag declares `after: rotor.forces`.
+  1. **Hazards.** A pass that only reads a quantity runs after every pass that writes or accumulates it. Two passes that both write a quantity (a read-modify-write counts as a write) must be ordered by an edge, and so must a writer and an accumulator; otherwise `create()` refuses them as ambiguous. Two accumulators of the same quantity are not a hazard.
+  2. **Ordering edges.** A pass may declare `after: <module>.<pass>`. Edges pin an accumulation order, because fp32 addition is not associative: drag declares `after: rotor.forces`. Without that edge, set order would put drag first (§3's walk order) and the goldens would move. They also order two writers: dynamic contact declares `after: contact.static`, since both correct `pos` and `vel`.
   3. **Set order.** Ties fall back to module-set order, then declaration order.
+- **Behavior positions.** Kinematic behaviors run first in Fields, and force behaviors last in Forces, by position, after every accumulator. Integrate reads `force_acc` after all of them.
 - **Refusals.** A cycle, or a pass that names a phase or an edge that does not exist, makes `create()` return `invalid_argument`.
 - **The order is configuration.** The compiled list of module and pass names goes into the configuration hash, so a restore under a different order is refused.
 - **Derived structures.** A module may build a structure that is not registered state (scratch), for example the sorted grid. Other modules read it through a declared read. The same structure may be built more than once in a substep, as one build pass per use. SPH will build the grid in Fields while dynamic contact keeps its own build in Constraints/Contacts, because static contact moves positions in between (Physics' requirement). This step keeps the one existing build inside dynamic contact.
@@ -87,13 +89,13 @@ Each substep runs six phases in order: **Fields → Forces → Constraints/Conta
 - **The registry** names each field, its value type and its unit: `gravity` (vec3, m/s²), `density` (float, kg/m³), `wind` (vec3, m/s). A provider declares which fields it supplies; a reader declares which it reads.
 - **Providers this step.** `gravity` and `density` come from the world's environment (constant). `wind` comes from Dryden: the mean wind plus the current gust, so turbulence level `none` is the constant case.
 - **Regions.** This step builds only the whole-world region. Every field has one provider per world. The full region model is §11.
-- **Sample buffers (Q2).** A reader declares its sample points as per body, per element (a rotor's position) or per world. The per-world capacity follows from that declaration (the body capacity, the element capacity, or one), so nothing new is authored.
-  - A provider that declares itself position-independent is sampled **once per world**. That is every provider this step, so today's costs and values stand.
-  - In the Fields phase, after the kinematic behaviors, each provider writes its samples into the world's sample buffer, and readers read them by index in later phases.
-  - Points are positions at the start of the substep, before contact and Integrate move anything. That is the instant `Medium::sample` reads today.
+- **Sample buffers (Q2).** A reader declares its sample points as per body, per element (a rotor's position) or per world, and reads `sample(field, point)`. The per-world capacity follows from that declaration (the body capacity, the element capacity, or one), so nothing new is authored.
+  - **Readers never know the provider's kind.** The registry decides how a point's value is stored. A provider that declares itself position-independent is sampled once per world, and the registry answers every point in that world with that one value. That is every provider this step, so today's costs and values stand. A position-dependent provider (SPH) fills one value per point. The reader's code is the same either way.
+  - In the Fields phase, after the kinematic behaviors, each provider writes its samples, and readers read them in later phases.
+  - Points are the positions after the kinematic behaviors, before contact and Integrate move anything. That is the instant `Medium::sample` reads today.
   - On the GPU, each provider has one sample kernel. No reader's kernel knows which provider answered.
 - **Goldens.** Dryden's sample is the same operations on the same inputs, now stored; rotors, drag and Integrate read stored values bit-identical to what they computed inline. Gravity is today's `WorldParams::gravity`.
-- **Host reads.** `Simulation::sample_medium()` becomes a field read: it returns the stored sample as the last step left it.
+- **Host reads.** `Simulation::sample_medium(world, pos)` calls the provider's CPU sample function on the current state, the same path §10's camera samples use. It does not read the step's buffer. Before the first step it returns the mean wind plus the initial gust, as today, and it can answer any point once a provider depends on position.
 - **A provider with state** reads its own registered state and any derived structure it declares (SPH's neighbour sums over the grid). Its sample kernel binds those buffers.
 
 ## 7. Roles
@@ -107,7 +109,7 @@ A **role** is a slot that exactly one module in the set must fill: `dynamic_cont
 
 ## 8. Grades
 
-- **Declaration.** Each module declares a grade per backend: `reference`, `banded`, `best-effort` or `absent`. `absent` means there is no implementation on that backend; Physics' "no GPU path" for SPH is the first real use (`PHY-4`).
+- **Declaration.** Each module declares a grade per backend: `reference`, `banded`, `best-effort` or `absent`. `absent` means there is no implementation on that backend; Physics' "no GPU path" for SPH is the first real use (`PHY-4`). A Vulkan declaration of `reference` is refused at registration, because the GPU is never a golden source (`L4`).
 - **A simulation's grade** on its backend is the lowest grade in its module set.
 - **The check.** `create()` takes an optional minimum grade. A set below it is refused with `Code::unavailable`, naming the module that fell short (`L3`, `L6`). An `absent` module on the chosen backend is always refused. With no minimum given, any grade except `absent` is accepted, so existing callers are unaffected.
 - **The built-ins' declarations** are Physics' and Rendering's to make (`../../physics/04-verification.md`). Core supplies the mechanism and the check.
@@ -119,6 +121,7 @@ A **role** is a slot that exactly one module in the set must fill: `dynamic_cont
 - **State.** The lock module registers one row per body slot: an anchor (vec3) and an axis mask (world x, y, z). It is not in the standard set, so worlds without a lock register nothing and keep their walk.
 - **API.** `lock_translation(body, axes)` and `unlock(body)`. Both are queued to the step boundary. The lock row is a body-attached row (§3), so despawning the body frees it. The anchor is the body's position when the lock is applied. **If the lock module is not in the set, the call is refused with `Code::unavailable`** (`L6`): a world that asks for a lock and cannot provide one is never left silently unlocked.
 - **Integrate.** It computes today's update exactly as now, then selects per locked axis: `pos = anchor`, `vel = 0`, and specific force `s = −g` on that axis (free axes keep `force_acc / m`), with `specific_force = Rᵀs`. The unlocked arithmetic is not restructured, on the CPU or in `integrate.slang`, so worlds without a lock compute today's bits. A held body's IMU reads `−Rᵀg` (+1 g "up") from any mass. Contact's position correction on a locked axis is overwritten, so the anchor holds bitwise.
+- **This step's limit: contact against a locked body.** The contact solve treats a locked body as free, with its finite mass, and the lock then discards that body's response. So a body that hits a held one gets neither a wall's response nor a free body's. A locked body taken as infinite mass in the contact solve is later work, with joints. The contact test asserts today's behaviour, so the limit is pinned rather than discovered.
 - **GPU.** The lock rows have a fixed binding in the generated registry. A set without the lock module binds an empty buffer and records Integrate with the lock select switched off, so its kernel computes today's bits.
 - **Grade.** CPU reference, with a new golden: a held quadrotor flying a script, with its IMU reading +g. Vulkan banded, with `pos` and `vel` bit-exact because they are written, not integrated. Tested masks: all three axes, and y free (the climb rail). Other masks are legal.
 - **Then** the drone box drops its two behaviors for the lock and stops refusing Vulkan (Interface's change, after this lands).
@@ -147,12 +150,14 @@ Publish stays empty in this step, but its role is fixed now: it is the one point
 - **The gate:** every golden digest unchanged and every parity band unchanged, on the standard set, CPU and Vulkan.
 - **Schedule:**
   - the standard set compiles to the table in §4;
-  - a cycle, an unknown phase or a dangling edge is refused;
+  - dropping drag's `after: rotor.forces` edge changes the compiled order and the configuration hash;
+  - a cycle, an unknown phase, a dangling edge, or a writer and an accumulator with no edge between them is refused;
   - changing the order changes the configuration hash.
+- **Restore (`L2`):** a snapshot restored into a different module set, module version, role choice or schedule is refused.
 - **GPU chain:**
   - the recorded dispatch list equals the schedule's GPU passes;
   - the `CORE-2` barrier test holds.
-- **Fields:** stored samples equal today's inline values bitwise; a kinematic pose written in Fields is seen by sampling in the same substep.
+- **Fields:** stored samples equal today's inline values bitwise; a kinematic pose written in Fields is seen by sampling in the same substep; `sample_medium` before the first step returns the mean wind plus the initial gust.
 - **Grades and roles:**
   - a set below the minimum is refused, naming the module;
   - an `absent` module on Vulkan is refused;
@@ -161,7 +166,7 @@ Publish stays empty in this step, but its role is fixed now: it is the one point
   - the new golden;
   - full-lock IMU `−Rᵀg` from a non-power-of-two mass;
   - a y-free rail;
-  - a contact against a locked body;
+  - a contact against a locked body: the anchor holds bitwise, and the other body's response is the finite-mass solve (the §9 limit);
   - Vulkan `pos` and `vel` bit-exact;
   - a lock with no lock module refused.
 - **A developer module:** a CPU-only test module plugs in through the same API, steps on the CPU, and is refused on Vulkan.
