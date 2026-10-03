@@ -1,0 +1,131 @@
+{
+    "scene":  "cubes",
+    "tool":  "sandbox",
+    "exe":  "C:\\Users\\ckbra\\Desktop\\spade-wt\\interface\\build-ninja\\release\\bin\\Sandbox.exe",
+    "exe_sha256":  "21a28909734775e4409cb17d6d6b27f03758550176feb74b4bb81df09033468b",
+    "exe_mtime":  "2026-10-02T03:57:06.6109929Z",
+    "args":  [
+                 "cubes"
+             ],
+    "source_head":  "511bc39104e3711da207988fc03dd72e230702a5",
+    "machine":  {
+                    "computer":  "DESKTOP-N7QJD3C",
+                    "os":  "Microsoft Windows 11 Home",
+                    "gpu":  [
+                                "Intel(R) Iris(R) Plus Graphics (driver 31.0.101.2125)"
+                            ]
+                },
+    "started_utc":  "2026-10-03T04:25:50.9811512Z",
+    "frames":  [
+                   {
+                       "file":  "paused.png",
+                       "at_ms":  666,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play2.png",
+                       "at_ms":  6816,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play5.png",
+                       "at_ms":  9846,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play10.png",
+                       "at_ms":  14664,
+                       "method":  "printwindow"
+                   }
+               ],
+    "memory":  [
+                   [
+                       29,
+                       409600,
+                       2043904
+                   ],
+                   [
+                       1106,
+                       108195840,
+                       165052416
+                   ],
+                   [
+                       2559,
+                       109559808,
+                       166404096
+                   ],
+                   [
+                       3662,
+                       115859456,
+                       174583808
+                   ],
+                   [
+                       4707,
+                       117112832,
+                       176156672
+                   ],
+                   [
+                       5816,
+                       117112832,
+                       176418816
+                   ],
+                   [
+                       6928,
+                       117002240,
+                       176697344
+                   ],
+                   [
+                       7941,
+                       117002240,
+                       176893952
+                   ],
+                   [
+                       8956,
+                       117002240,
+                       177221632
+                   ],
+                   [
+                       10060,
+                       117002240,
+                       177418240
+                   ],
+                   [
+                       11169,
+                       117002240,
+                       177745920
+                   ],
+                   [
+                       12276,
+                       117002240,
+                       178073600
+                   ],
+                   [
+                       13386,
+                       117002240,
+                       178335744
+                   ]
+               ],
+    "notes":  [
+
+              ],
+    "window_ms":  256,
+    "first_frame_ms":  503,
+    "paused_motion":  0,
+    "play_attempts":  [
+                          {
+                              "hold_ms":  60,
+                              "motion":  0.075520833333333329
+                          }
+                      ],
+    "play_seen_ms":  4311,
+    "play_stdout_line":  98,
+    "close_ms":  14665,
+    "exit_code":  0,
+    "stdout_during_play":  {
+                               "lines":  38,
+                               "frames_per_wall_second":  3.67,
+                               "v1_fps_median":  24.2285,
+                               "mem_mb_median":  111.582
+                           },
+    "ok":  true
+}

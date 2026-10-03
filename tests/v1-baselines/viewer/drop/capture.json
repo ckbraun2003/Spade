@@ -1,0 +1,101 @@
+{
+    "scene":  "drop",
+    "tool":  "viewer",
+    "exe":  "C:\\Users\\ckbra\\Desktop\\spade-wt\\interface\\build-ninja\\release\\bin\\spade_viewer.exe",
+    "exe_sha256":  "630832ec0c90b05bfefa0f4d21c201053c4b998e963118074031b2a88f662797",
+    "exe_mtime":  "2026-10-03T04:21:35.0874684Z",
+    "args":  [
+                 "drop",
+                 "cpu"
+             ],
+    "source_head":  "511bc39104e3711da207988fc03dd72e230702a5",
+    "machine":  {
+                    "computer":  "DESKTOP-N7QJD3C",
+                    "os":  "Microsoft Windows 11 Home",
+                    "gpu":  [
+                                "Intel(R) Iris(R) Plus Graphics (driver 31.0.101.2125)"
+                            ]
+                },
+    "started_utc":  "2026-10-03T04:23:52.0109298Z",
+    "frames":  [
+                   {
+                       "file":  "t0.png",
+                       "at_ms":  1205,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "t1.png",
+                       "at_ms":  2307,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "t3.png",
+                       "at_ms":  4312,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "t8.png",
+                       "at_ms":  9304,
+                       "method":  "printwindow"
+                   }
+               ],
+    "memory":  [
+                   [
+                       94,
+                       2768896,
+                       13545472
+                   ],
+                   [
+                       1240,
+                       76836864,
+                       115499008
+                   ],
+                   [
+                       2313,
+                       77365248,
+                       116334592
+                   ],
+                   [
+                       3354,
+                       77316096,
+                       116580352
+                   ],
+                   [
+                       4432,
+                       77316096,
+                       116805632
+                   ],
+                   [
+                       5538,
+                       77316096,
+                       117067776
+                   ],
+                   [
+                       6565,
+                       77234176,
+                       117252096
+                   ],
+                   [
+                       7576,
+                       77234176,
+                       117448704
+                   ],
+                   [
+                       8719,
+                       77234176,
+                       117776384
+                   ]
+               ],
+    "notes":  [
+
+              ],
+    "window_ms":  564,
+    "first_frame_ms":  1078,
+    "close_ms":  9305,
+    "exit_code":  0,
+    "stdout":  {
+                   "lines":  8,
+                   "v1_fps_median":  313
+               },
+    "ok":  true
+}

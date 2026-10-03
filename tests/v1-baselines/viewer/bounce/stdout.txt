@@ -1,0 +1,8 @@
+fps: 537 | bodies: 4 | backend: cpu
+fps: 652 | bodies: 4 | backend: cpu
+fps: 911 | bodies: 4 | backend: cpu
+fps: 772 | bodies: 4 | backend: cpu
+fps: 651 | bodies: 4 | backend: cpu
+fps: 388 | bodies: 4 | backend: cpu
+fps: 210 | bodies: 4 | backend: cpu
+fps: 665 | bodies: 4 | backend: cpu

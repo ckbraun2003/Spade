@@ -1,0 +1,2 @@
+fps: 20 | bodies: 1000 | backend: cpu
+fps: 20 | bodies: 1000 | backend: cpu

@@ -1,0 +1,145 @@
+{
+    "scene":  "spheres",
+    "tool":  "sandbox",
+    "exe":  "C:\\Users\\ckbra\\Desktop\\spade-wt\\interface\\build-ninja\\release\\bin\\Sandbox.exe",
+    "exe_sha256":  "21a28909734775e4409cb17d6d6b27f03758550176feb74b4bb81df09033468b",
+    "exe_mtime":  "2026-10-02T03:57:06.6109929Z",
+    "args":  [
+                 "spheres"
+             ],
+    "source_head":  "511bc39104e3711da207988fc03dd72e230702a5",
+    "machine":  {
+                    "computer":  "DESKTOP-N7QJD3C",
+                    "os":  "Microsoft Windows 11 Home",
+                    "gpu":  [
+                                "Intel(R) Iris(R) Plus Graphics (driver 31.0.101.2125)"
+                            ]
+                },
+    "started_utc":  "2026-10-03T04:25:31.8865008Z",
+    "frames":  [
+                   {
+                       "file":  "paused.png",
+                       "at_ms":  1013,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play2.png",
+                       "at_ms":  9555,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play5.png",
+                       "at_ms":  12408,
+                       "method":  "printwindow"
+                   },
+                   {
+                       "file":  "play10.png",
+                       "at_ms":  17516,
+                       "method":  "printwindow"
+                   }
+               ],
+    "memory":  [
+                   [
+                       27,
+                       409600,
+                       2043904
+                   ],
+                   [
+                       1129,
+                       108093440,
+                       164933632
+                   ],
+                   [
+                       2235,
+                       108093440,
+                       164933632
+                   ],
+                   [
+                       3339,
+                       107892736,
+                       164937728
+                   ],
+                   [
+                       4435,
+                       107892736,
+                       164937728
+                   ],
+                   [
+                       5528,
+                       111624192,
+                       169463808
+                   ],
+                   [
+                       6880,
+                       116506624,
+                       175419392
+                   ],
+                   [
+                       7895,
+                       117030912,
+                       176140288
+                   ],
+                   [
+                       9556,
+                       117030912,
+                       176533504
+                   ],
+                   [
+                       10730,
+                       117030912,
+                       176664576
+                   ],
+                   [
+                       11820,
+                       117030912,
+                       176992256
+                   ],
+                   [
+                       12852,
+                       117030912,
+                       177188864
+                   ],
+                   [
+                       13945,
+                       117030912,
+                       177451008
+                   ],
+                   [
+                       15058,
+                       117030912,
+                       177713152
+                   ],
+                   [
+                       16165,
+                       117030912,
+                       178040832
+                   ]
+               ],
+    "notes":  [
+
+              ],
+    "window_ms":  493,
+    "first_frame_ms":  798,
+    "paused_motion":  0,
+    "play_attempts":  [
+                          {
+                              "hold_ms":  60,
+                              "motion":  0
+                          },
+                          {
+                              "hold_ms":  120,
+                              "motion":  0.082899305555555552
+                          }
+                      ],
+    "play_seen_ms":  6853,
+    "play_stdout_line":  61,
+    "close_ms":  17516,
+    "exit_code":  0,
+    "stdout_during_play":  {
+                               "lines":  31,
+                               "frames_per_wall_second":  2.91,
+                               "v1_fps_median":  22.739,
+                               "mem_mb_median":  111.609
+                           },
+    "ok":  true
+}
