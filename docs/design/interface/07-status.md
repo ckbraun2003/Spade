@@ -47,7 +47,7 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 
 | Item | Detail |
 |---|---|
-| **`SL2b` has no guard** | The rule is kept by review. The guard (a seeded reach into an engine internal must fail it) is `SL18` obligation 6, Test/Docs's harness and this realm's subject |
+| **`SL2b` has no guard** | The rule is kept by review. The guard (a seeded reach into an engine internal must fail it) is `SL18` obligation 6, Test/Docs's harness and this realm's subject. **Evidence that the include path does not enforce it:** in a `SPADE_RENDER_GL=OFF` tree, master's `sandbox/main.cpp` still compiled its `#include "render_gl/gl_renderer.hpp"`, because the header resolves through the `engine/` include root that `spade::core` exports in the build tree (`engine/CMakeLists.txt:118-121`). It failed only at link (LNK2019, four `GlRenderer` symbols). A build-tree compile can therefore see headers that are not installed; the guard has to check against the installed set (slot 2, 2026-10-02) |
 | **`SL2`'s module count** | The ruling says eleven modules; the tree installs nine targets. Correct the count, or name the missing two |
 | **No versioning policy** (`SL2a`) | `0.2.0` has a changelog but no stated rule for when the version moves |
 | **No gate runs the consumer** | Shared with Test/Docs (`TD-11`, `../backlog.md`). Restructure defect 3 (a `SPADE_VULKAN=OFF` install shipping a header that includes uninstalled `compute/` headers) is fixed on master (`3a48c4d`). The fix was shown only by Core's hand run; the Docker leg is what keeps it fixed |
