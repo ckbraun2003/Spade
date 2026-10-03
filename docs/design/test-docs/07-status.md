@@ -36,6 +36,11 @@
 | **`b82b72e`, committed, no local change** | PASS, 7 s | PASS, 849 s (a near-full rebuild), `build-errors.txt` empty | **908 run: 906 passed, 2 skipped, 0 failed**, 64 s | no matrix in this commit | PASS, 79 s | PASS, 144 s | 1143 s | 775 MB |
 
 - **Green on committed code:** `b82b72e` built and passed every part with nothing patched. It reproduced `RND-5`'s regenerated frame hashes, which makes that regeneration final (`TD-12`); Rendering's `0c0a8b2` cites the run. Its summary is in Rendering's worktree, `build-docker/b82b72ede453/`.
+- **Master was gcc-red from `da2fcf5` to `7ed7572`.**
+  - `da2fcf5` merged Rendering's agreement matrix, whose `tests/test_render_agreement_matrix.cpp` fails `-Werror=missing-field-initializers` at :95, :97 and :100. MSVC does not warn.
+  - Core's leg run at `adae0dd` found it. I reproduced it at `da2fcf5` with the gcc check.
+  - Rendering's `a77f6d6`, merged as `7ed7572`, fixed it.
+  - The answer is the standing gcc check before review (`02-build-and-gate.md`).
 
 - **The one gcc error:** `tests/test_sandbox_drone.cpp:76:16` `-Werror=dangling-else`, a gtest `EXPECT_LT` inside an unbraced `if`. It is Interface's, routed by the lead. Every other translation unit compiles under `-Wall -Wextra -Wpedantic -Werror`.
 - **`TD-12`, first cross-check since the split:**

@@ -48,6 +48,46 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 
 A red leg is reported per realm with the failing `file:line`, and each realm fixes its own code. Measured times and peak memory are in `07-status.md`.
 
+## The gcc check before review
+
+**Before "ready for review", every C++ file a branch adds or changes is compiled with gcc-13 in the leg's image, and the message says so.** This is the lead's standing practice from 2026-10-03, after master was gcc-red from `da2fcf5` to `7ed7572` over a warning MSVC never raised.
+
+- **It is a syntax check** (`-fsyntax-only` with the engine's `-Wall -Wextra -Wpedantic -Werror`). It catches front-end warnings such as `dangling-else` and `missing-field-initializers`. It does not catch warnings that need the optimiser, such as `-Wmaybe-uninitialized`; only a leg run finds those.
+- **Some files it cannot check honestly.** A file that depends on generated headers newer than the leg volume's (any change under `engine/shaders/`), or on a target's own compile definitions, is named in the message instead, and the lead schedules a leg run before merge.
+
+From the worktree root, in Git Bash, with the files to check after the `_`:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
+  -v spade-docker-leg:/leg:ro -v "$(pwd -W):/src:ro" \
+  "$(docker images -q spade-docker-leg | head -n 1)" bash -c '
+  mkdir -p /tmp/s && cp -r /src/engine /src/sandbox /src/tests /tmp/s && cd /tmp/s
+  D=/leg/build/_deps; rc=0
+  for f in "$@"; do
+    tu=$f; case $f in *.hpp) printf "#include \"/tmp/s/%s\"\n" "$f" > /tmp/hdr.cpp; tu=/tmp/hdr.cpp ;; esac
+    g++-13 -std=gnu++23 -fsyntax-only -Wall -Wextra -Wpedantic -Werror -ffp-contract=off \
+      -DGLM_ENABLE_EXPERIMENTAL -DGLFW_INCLUDE_NONE -DYAML_CPP_STATIC_DEFINE \
+      -DSPADE_ENGINE_DIR=\"/src/engine\" -DSPADE_GOLDEN_DIR=\"/src/tests/golden\" \
+      -DSPADE_TESTS_DIR=\"/src/tests\" -DSPADE_TEST_OUTPUT_DIR=\"/tmp/test-output\" \
+      -Iengine -Isandbox -Iengine/tools/viewer -I/leg/build/engine/generated/spade_slang \
+      -I$D/glm-src -I$D/glad-src/include -I$D/glfw-src/include -I$D/imgui-src -I$D/imgui-src/backends \
+      -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
+      -isystem $D/googletest-src/googletest/include -isystem $D/benchmark-src/include \
+      "$tu" && echo "gcc ok:   $f" || { echo "gcc FAIL: $f"; rc=1; }
+  done; exit $rc' _ tests/test_example.cpp engine/render/example.hpp
+```
+
+- **What it does:**
+  - mounts the worktree and the leg's volume, both read-only; the volume supplies the dependency headers and the generated headers from the last leg run;
+  - copies the sources inside, because reading headers through the Windows mount is slow;
+  - prints `gcc ok:` or `gcc FAIL:` per file, and exits non-zero if any file fails;
+  - checks each header through a one-line translation unit that includes it.
+- **Proved red, then green,** on 2026-10-03:
+  - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
+  - at `ec6e2da` the fixed file passed, and so did two headers.
+- **Cost:** about a minute per heavy test file on this box (126 s for three files).
+- **When to run it:** it needs no slot. It shares the box's memory, though, so don't run it while a leg holds the slot.
+
 ## This machine
 
 | Symptom | Cause | Response |
