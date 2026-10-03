@@ -131,9 +131,20 @@ void solve_at(T scale, T v_source, T r0, std::span<const BusMotorT<T>> motors, s
     ib_out = ib;
 }
 
+// The ESC side's total: sum |I_k| over the usable motors, in slot order.
 template <typename T>
-[[nodiscard]] BusResultT<T> bus(T v_source, T r_series, T ib_max, T v_cut, std::span<const BusMotorT<T>> motors,
-                                std::span<T> currents) noexcept {
+[[nodiscard]] T motor_side_total(std::span<const BusMotorT<T>> motors, std::span<const T> currents) noexcept {
+    T total = T(0);
+    for (std::size_t k = 0; k < motors.size(); ++k) {
+        if (!motor_usable(motors[k])) continue;
+        total += currents[k] < T(0) ? -currents[k] : currents[k];
+    }
+    return total;
+}
+
+template <typename T>
+[[nodiscard]] BusResultT<T> bus(T v_source, T r_series, T ib_max, T v_cut, T esc_max,
+                                std::span<const BusMotorT<T>> motors, std::span<T> currents) noexcept {
     BusResultT<T> out;
     if (motors.size() > kMaxBusMotors || currents.size() < motors.size() || !is_finite(v_source)) {
         for (T& i : currents) i = T(0);
@@ -143,6 +154,7 @@ template <typename T>
     const T r0 = (is_finite(r_series) && r_series > T(0)) ? r_series : T(0);
     const bool has_ib_max = is_finite(ib_max) && ib_max > T(0);
     const bool has_cut = is_finite(v_cut) && v_cut > T(0);
+    const bool has_esc = is_finite(esc_max) && esc_max > T(0);
 
     T v = T(0);
     T ib = T(0);
@@ -151,8 +163,9 @@ template <typename T>
 
     const bool over_current = has_ib_max && ib > ib_max;
     const bool under_voltage = has_cut && v < v_cut;
+    const bool over_esc = has_esc && motor_side_total(motors, std::span<const T>(currents)) > esc_max;
     T scale = T(1);
-    if (over_current || under_voltage) {
+    if (over_current || under_voltage || over_esc) {
         T lo = T(0);
         T hi = T(1);
         for (int it = 0; it < 24; ++it) {
@@ -161,7 +174,8 @@ template <typename T>
             T ibm = T(0);
             uint32_t fm = 0;
             solve_at(mid, v_source, r0, motors, currents, vm, ibm, fm);
-            const bool ok = (!has_ib_max || ibm <= ib_max) && (!has_cut || vm >= v_cut);
+            const bool ok = (!has_ib_max || ibm <= ib_max) && (!has_cut || vm >= v_cut) &&
+                            (!has_esc || motor_side_total(motors, std::span<const T>(currents)) <= esc_max);
             if (ok) {
                 lo = mid;
             } else {
@@ -173,6 +187,7 @@ template <typename T>
         solve_at(scale, v_source, r0, motors, currents, v, ib, flags);
         if (over_current) flags |= propulsion_flags::battery_current_limited;
         if (under_voltage) flags |= propulsion_flags::battery_cutoff;
+        if (over_esc) flags |= propulsion_flags::esc_total_limited;
     }
     out.bus_voltage = is_finite(v) ? v : T(0);
     out.battery_current = is_finite(ib) ? ib : T(0);
@@ -275,11 +290,23 @@ double battery_terminal_voltage(double v_oc, double v1, double r0, double curren
 
 BusResult bus_solve(float v_source, float r_series, float battery_current_max, float cutoff_voltage,
                     std::span<const BusMotor> motors, std::span<float> currents) noexcept {
-    return bus(v_source, r_series, battery_current_max, cutoff_voltage, motors, currents);
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0f, motors, currents);
 }
 BusResultD bus_solve(double v_source, double r_series, double battery_current_max, double cutoff_voltage,
                      std::span<const BusMotorD> motors, std::span<double> currents) noexcept {
-    return bus(v_source, r_series, battery_current_max, cutoff_voltage, motors, currents);
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0, motors, currents);
+}
+BusResult bus_solve(float v_source, float r_series, float battery_current_max, float cutoff_voltage,
+                    float esc_current_total_max, std::span<const BusMotor> motors,
+                    std::span<float> currents) noexcept {
+    (void)esc_current_total_max;  // STUB: the ESC limit is ignored until the next commit
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0f, motors, currents);
+}
+BusResultD bus_solve(double v_source, double r_series, double battery_current_max, double cutoff_voltage,
+                     double esc_current_total_max, std::span<const BusMotorD> motors,
+                     std::span<double> currents) noexcept {
+    (void)esc_current_total_max;  // STUB: the ESC limit is ignored until the next commit
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0, motors, currents);
 }
 
 }  // namespace spade::vehicles

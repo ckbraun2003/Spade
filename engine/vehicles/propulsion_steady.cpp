@@ -51,7 +51,7 @@ struct Eval {
                                  ? c.pack_polarization_resistance
                                  : 0.0);
     const double cutoff = s * c.cell_cutoff_voltage;
-    const BusResultD bus = bus_solve(v_source, r_series, c.pack_current_max, cutoff,
+    const BusResultD bus = bus_solve(v_source, r_series, c.pack_current_max, cutoff, c.esc_current_total_max,
                                      std::span<const BusMotorD>(motors.data(), c.motors_on_bus),
                                      std::span<double>(currents.data(), c.motors_on_bus));
     e.flags |= bus.flags;
@@ -148,6 +148,10 @@ SteadyPoint steady_state_for_thrust(const PropulsionChain& chain, double thrust,
         }
     }
     return steady_state_at_duty(chain, 0.5 * (lo + hi), density, v_axial, soc);
+}
+
+double steady_state_time_constant(const PropulsionChain&, double, double, double, double, double) noexcept {
+    return 0.0;  // STUB until the next commit
 }
 
 }  // namespace spade::vehicles

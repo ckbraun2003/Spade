@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <span>
+#include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -64,6 +67,21 @@ struct CompositeInertia {
     glm::quat design_to_body{1.0f, 0.0f, 0.0f, 0.0f};
     glm::dmat3 inertia_design{0.0};               // kg m^2 about c, design frame, double, for inspection
 };
+
+// One problem with one part: its index in the span, the field at fault and a
+// message that reads after "part <index> ".
+struct PartIssue {
+    std::size_t index = 0;
+    std::string field;
+    std::string message;
+};
+
+// Every problem with every part, in part order then field order; empty when
+// every part is valid. The same checks composite_inertia() applies, from the
+// same function, so the two cannot disagree. The composite's own check (a
+// principal moment that is not positive) needs the parts summed, so only
+// composite_inertia() reports it.
+[[nodiscard]] std::vector<PartIssue> composite_inertia_issues(std::span<const PartInertia> parts);
 
 // The inertia of one primitive about its own centre of mass, in its local
 // frame. PartShape::tensor returns `tensor` unchanged.

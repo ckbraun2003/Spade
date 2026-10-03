@@ -71,6 +71,7 @@ add_executable(spade_tests
     test_propeller.cpp
     test_composite_inertia.cpp
     test_propulsion_steady.cpp
+    test_airframe_compile.cpp
     test_quadrotor.cpp
     test_imu.cpp
     test_gnss.cpp

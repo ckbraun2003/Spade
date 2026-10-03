@@ -180,6 +180,23 @@ TEST(CompositeInertia, EqualMomentsWithRoundingNoiseKeepTheDesignAxes) {
     EXPECT_EQ(c->principal_moments.z, 2e-3f);
 }
 
+// The collect-all form lists every problem, in part then field order, from the
+// same checks composite_inertia() refuses on.
+TEST(CompositeInertia, IssuesListEveryBadPart) {
+    std::vector<PartInertia> parts = {part(PartShape::sphere, 1.0, glm::dvec3(0.0), glm::dvec3(0.1, 0.0, 0.0)),
+                                      part(PartShape::point, 0.0, glm::dvec3(kNaN, 0.0, 0.0)),
+                                      part(PartShape::box, 1.0, glm::dvec3(0.0), glm::dvec3(0.1, 0.0, 0.1))};
+    const std::vector<PartIssue> issues = composite_inertia_issues(parts);
+    ASSERT_EQ(issues.size(), 3u);
+    EXPECT_EQ(issues[0].index, 1u);
+    EXPECT_EQ(issues[0].field, "mass");
+    EXPECT_EQ(issues[1].index, 1u);
+    EXPECT_EQ(issues[1].field, "position");
+    EXPECT_EQ(issues[2].index, 2u);
+    EXPECT_EQ(issues[2].field, "size");
+    EXPECT_TRUE(composite_inertia_issues(std::vector<PartInertia>{parts[0]}).empty());
+}
+
 TEST(CompositeInertia, RefusesInvalidParts) {
     EXPECT_FALSE(composite_inertia({}).has_value()) << "no parts";
     const std::vector<PartInertia> ok = {part(PartShape::sphere, 1.0, glm::dvec3(0.0), glm::dvec3(0.1, 0.0, 0.0))};

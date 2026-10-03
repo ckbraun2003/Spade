@@ -105,65 +105,78 @@ void eigenvalues(const glm::dmat3& t, double out[3]) noexcept {
     return e[0] + e[1] >= e[2] - tol && e[0] + e[2] >= e[1] - tol && e[1] + e[2] >= e[0] - tol;
 }
 
-[[nodiscard]] Result<void> check_part(const PartInertia& p, std::size_t k) {
-    if (!is_finite(p.mass) || !(p.mass > 0.0)) return std::unexpected(part_error(k, "has a mass that is not positive"));
-    for (int i = 0; i < 3; ++i) {
-        if (!is_finite(p.position[i])) return std::unexpected(part_error(k, "has a non-finite position"));
+// Every problem with one part, appended to `out`. The single site for these
+// checks (TD-9): composite_inertia() refuses on the first, and
+// composite_inertia_issues() hands back them all.
+void collect_part(const PartInertia& p, std::size_t k, std::vector<PartIssue>& out) {
+    const auto issue = [&](const char* field, const char* message) { out.push_back(PartIssue{k, field, message}); };
+    if (!is_finite(p.mass) || !(p.mass > 0.0)) issue("mass", "has a mass that is not positive");
+    if (!is_finite(p.position.x) || !is_finite(p.position.y) || !is_finite(p.position.z)) {
+        issue("position", "has a non-finite position");
     }
     const double qn = p.orientation.w * p.orientation.w + p.orientation.x * p.orientation.x +
                       p.orientation.y * p.orientation.y + p.orientation.z * p.orientation.z;
-    if (!is_finite(qn) || !(qn > 0.0)) {
-        return std::unexpected(part_error(k, "has a zero or non-finite orientation"));
-    }
+    if (!is_finite(qn) || !(qn > 0.0)) issue("orientation", "has a zero or non-finite orientation");
     const auto positive = [](double x) { return std::isfinite(x) && x > 0.0; };
     const auto non_negative = [](double x) { return std::isfinite(x) && x >= 0.0; };
     switch (p.shape) {
         case PartShape::point:
             break;
         case PartShape::sphere:
-            if (!positive(p.size.x)) return std::unexpected(part_error(k, "is a sphere without a positive radius"));
+            if (!positive(p.size.x)) issue("size", "is a sphere without a positive radius");
             break;
         case PartShape::box:
             if (!positive(p.size.x) || !positive(p.size.y) || !positive(p.size.z)) {
-                return std::unexpected(part_error(k, "is a box without three positive extents"));
+                issue("size", "is a box without three positive extents");
             }
             break;
         case PartShape::cylinder:
         case PartShape::tube:
             if (!positive(p.size.x) || !non_negative(p.size.y)) {
-                return std::unexpected(part_error(k, "needs a positive radius and a non-negative length"));
+                issue("size", "needs a positive radius and a non-negative length");
             }
             break;
         case PartShape::tensor: {
             double scale = 0.0;
+            bool finite_tensor = true;
             for (int c = 0; c < 3; ++c)
                 for (int r = 0; r < 3; ++r) {
-                    if (!is_finite(p.tensor[c][r])) {
-                        return std::unexpected(part_error(k, "has a non-finite tensor"));
-                    }
+                    if (!is_finite(p.tensor[c][r])) finite_tensor = false;
                     scale = std::fmax(scale, std::fabs(p.tensor[c][r]));
                 }
+            if (!finite_tensor) {
+                issue("tensor", "has a non-finite tensor");
+                break;
+            }
+            bool symmetric = true;
             for (int c = 0; c < 3; ++c)
                 for (int r = c + 1; r < 3; ++r) {
-                    if (std::fabs(p.tensor[c][r] - p.tensor[r][c]) > 1e-12 * scale) {
-                        return std::unexpected(part_error(k, "has a tensor that is not symmetric"));
-                    }
+                    if (std::fabs(p.tensor[c][r] - p.tensor[r][c]) > 1e-12 * scale) symmetric = false;
                 }
+            if (!symmetric) {
+                issue("tensor", "has a tensor that is not symmetric");
+                break;
+            }
             double e[3];
             eigenvalues(p.tensor, e);
             if (!physical(e, false)) {
-                return std::unexpected(part_error(
-                    k, "has a tensor that is not positive semidefinite or breaks the triangle inequality"));
+                issue("tensor", "has a tensor that is not positive semidefinite or breaks the triangle inequality");
             }
             break;
         }
         default:
-            return std::unexpected(part_error(k, "has an unknown shape"));
+            issue("shape", "has an unknown shape");
     }
-    return {};
 }
 
 }  // namespace
+
+std::vector<PartIssue> composite_inertia_issues(std::span<const PartInertia> parts) {
+    std::vector<PartIssue> out;
+    for (std::size_t k = 0; k < parts.size(); ++k) collect_part(parts[k], k, out);
+    if (out.size() > 1) out.resize(1);  // STUB: only the first issue until the next commit
+    return out;
+}
 
 glm::dmat3 part_inertia_local(const PartInertia& p) noexcept {
     const double m = p.mass;
@@ -213,8 +226,8 @@ glm::dmat3 part_inertia_local(const PartInertia& p) noexcept {
 
 Result<CompositeInertia> composite_inertia(std::span<const PartInertia> parts) {
     if (parts.empty()) return std::unexpected(Error{Code::invalid_argument, "composite_inertia: no parts"});
-    for (std::size_t k = 0; k < parts.size(); ++k) {
-        if (Result<void> r = check_part(parts[k], k); !r) return std::unexpected(r.error());
+    if (const std::vector<PartIssue> issues = composite_inertia_issues(parts); !issues.empty()) {
+        return std::unexpected(part_error(issues.front().index, issues.front().message));
     }
 
     // Mass and centre of mass, in declaration order.

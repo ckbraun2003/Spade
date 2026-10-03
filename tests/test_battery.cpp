@@ -212,6 +212,35 @@ TEST(BusSolve, FloatAndDoubleAgreeToFloatRounding) {
     EXPECT_NEAR(cf[0], cd[0], 1e-4 * std::fabs(cd[0]));
 }
 
+// DBP-26: a 4-in-1 ESC's total motor-side current, held through the same
+// common duty scale as the pack's limits.
+TEST(BusSolve, TheEscTotalLimitScalesEveryDutyByOneFactor) {
+    const std::vector<BusMotorD> motors(4, BusMotorD{0.9, 2.0, 0.075, 0.0, 200.0});
+    std::vector<double> currents(4);
+    const double total = 120.0;
+    const BusResultD r = bus_solve(16.4, 0.02, 0.0, 0.0, total, motors, currents);
+    EXPECT_NE(r.flags & pf::esc_total_limited, 0u);
+    EXPECT_EQ(r.flags & pf::battery_current_limited, 0u) << "no pack limit was given";
+    EXPECT_LT(r.duty_scale, 1.0);
+    double sum = 0.0;
+    for (const double i : currents) sum += std::fabs(i);
+    EXPECT_LE(sum, total);
+    EXPECT_GT(sum, total * (1.0 - 1e-5)) << "24 bisection steps land just under the limit";
+    for (std::size_t k = 1; k < 4; ++k) EXPECT_EQ(currents[k], currents[0]) << "one common scale";
+}
+
+TEST(BusSolve, TheSixArgumentFormIsTheSevenWithNoEscLimit) {
+    const std::vector<BusMotorD> motors(4, BusMotorD{0.9, 2.0, 0.075, 0.0, 200.0});
+    std::vector<double> a(4);
+    std::vector<double> b(4);
+    const BusResultD six = bus_solve(16.4, 0.02, 60.0, 0.0, motors, a);
+    const BusResultD seven = bus_solve(16.4, 0.02, 60.0, 0.0, 0.0, motors, b);
+    EXPECT_EQ(six.bus_voltage, seven.bus_voltage);
+    EXPECT_EQ(six.duty_scale, seven.duty_scale);
+    EXPECT_EQ(six.flags, seven.flags);
+    EXPECT_EQ(a, b);
+}
+
 TEST(BusSolve, DegenerateInputsDrawNothing) {
     std::vector<double> currents(2, 99.0);
     const std::vector<BusMotorD> motors(2, BusMotorD{0.5, 6.0, 0.075, 0.0, 50.0});

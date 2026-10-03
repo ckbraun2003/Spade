@@ -137,4 +137,16 @@ inline constexpr std::size_t kMaxBusMotors = 64;
                                    double cutoff_voltage, std::span<const BusMotorD> motors,
                                    std::span<double> currents) noexcept;
 
+// The same solve with a 4-in-1 ESC's total-current rating (DBP-26): the sum of
+// the motor-side currents, sum |I_k|, is held at `esc_current_total_max`
+// through the SAME common duty scale and the same 24-step bisection, and sets
+// propulsion_flags::esc_total_limited. A non-finite or non-positive value
+// means "none". The six-argument overloads above are this with "none".
+[[nodiscard]] BusResult bus_solve(float v_source, float r_series, float battery_current_max, float cutoff_voltage,
+                                  float esc_current_total_max, std::span<const BusMotor> motors,
+                                  std::span<float> currents) noexcept;
+[[nodiscard]] BusResultD bus_solve(double v_source, double r_series, double battery_current_max,
+                                   double cutoff_voltage, double esc_current_total_max,
+                                   std::span<const BusMotorD> motors, std::span<double> currents) noexcept;
+
 }  // namespace spade::vehicles
