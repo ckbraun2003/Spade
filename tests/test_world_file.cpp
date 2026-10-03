@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <locale>
 #include <string>
 #include <string_view>
@@ -1727,4 +1728,64 @@ TEST(WorldSetFrom, DescRefWithDuplicateSpawnNamesIsRejectedLikeAFileWould) {
     ASSERT_FALSE(from_desc.has_value());
     EXPECT_EQ(code_of(from_desc), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(from_desc), "duplicate spawn point name 'start'")) << why(from_desc);
+}
+
+// ===========================================================================
+// transform_of(SdfPose) -- the builder's pose-to-transform arithmetic, public
+// (Core's drone-builder plan, Task A), so the scene composer poses an asset
+// exactly as WorldBuilder poses a primitive.
+//
+// PINNED ON THE COMMITTED BYTES, not on a second computation: maximal.world.yaml
+// stores the transforms maximal_world() built, so transform_of must reproduce
+// each of them bit for bit. Transform 0 is the trap worth naming -- the
+// builder's identity pose is SdfTransform{}, whose translation is +0, while the
+// analytic path would produce -(m * 0) = -0, and config_hash folds those bytes.
+// ===========================================================================
+
+TEST(TransformOf, ReproducesMaximalWorldYamlsCommittedTransforms) {
+    const spade::Result<WorldDesc> committed = spade::load_world_file(world_golden_path("maximal"));
+    ASSERT_TRUE(committed.has_value()) << committed.error().context;
+
+    // The poses maximal_world() builds, in its call order: the plane takes the
+    // identity (transform 0), then sphere, box, cylinder, capsule, torus and
+    // heightfield push transforms 1..6. The prop stores a pose, not a transform.
+    const SdfPose poses[] = {
+        SdfPose{},
+        pose(glm::vec3(1.25f, -0.5f, 2.0f), glm::normalize(glm::quat(0.600000024f, 0.800000012f, 0.0f, 0.0f)), 1.75f),
+        pose(glm::vec3(-3.0f, 0.75f, 0.25f), glm::quat(0.5f, 0.5f, 0.5f, 0.5f), 0.400000006f),
+        pose(glm::vec3(2.0f, 0.0f, -1.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 1.0f),
+        pose(glm::vec3(0.0f, 2.0f, 0.0f), glm::normalize(glm::quat(0.0f, 1.0f, 0.0f, 0.0f)), 2.25f),
+        pose(glm::vec3(0.0f, 1.79999995f, 0.0f), glm::normalize(glm::quat(0.0f, 0.0f, 0.707106781f, 0.707106781f)),
+             1.0f),
+        pose(glm::vec3(0.0f, -4.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 3.0f),
+    };
+    ASSERT_EQ(committed->sdf.transforms.size(), std::size(poses));
+    for (std::size_t i = 0; i < std::size(poses); ++i) {
+        const spade::Result<spade::SdfTransform> t = spade::transform_of(poses[i]);
+        ASSERT_TRUE(t.has_value()) << "transform " << i << ": " << t.error().context;
+        EXPECT_EQ(std::memcmp(&*t, &committed->sdf.transforms[i], sizeof(spade::SdfTransform)), 0)
+            << "transform " << i << " differs from maximal.world.yaml's committed bytes";
+    }
+}
+
+TEST(TransformOf, TheIdentityPoseIsTransformZeroWithPositiveZeros) {
+    const spade::Result<spade::SdfTransform> t = spade::transform_of(SdfPose{});
+    ASSERT_TRUE(t.has_value()) << t.error().context;
+    const spade::SdfTransform zero{};
+    EXPECT_EQ(std::memcmp(&*t, &zero, sizeof(zero)), 0) << "the identity's translation must be +0, not -0";
+}
+
+TEST(TransformOf, RefusesWhatTheBuilderRefuses) {
+    SdfPose non_finite;
+    non_finite.position.x = std::numeric_limits<float>::infinity();
+    SdfPose flat;
+    flat.scale = 0.0f;
+    SdfPose degenerate;
+    degenerate.position = glm::vec3(1.0f, 0.0f, 0.0f);
+    degenerate.rotation = glm::quat(0.0f, 0.0f, 0.0f, 0.0f);
+    for (const SdfPose& bad : {non_finite, flat, degenerate}) {
+        const spade::Result<spade::SdfTransform> t = spade::transform_of(bad);
+        ASSERT_FALSE(t.has_value());
+        EXPECT_EQ(t.error().code, spade::Code::invalid_argument);
+    }
 }
