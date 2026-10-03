@@ -1421,7 +1421,7 @@ void draw_field_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         for (uint32_t j = 0; j < layer.cells_v; ++j) {
             for (uint32_t i = 0; i < layer.cells_u; ++i) {
                 const float value = layer.values[static_cast<size_t>(j) * layer.cells_u + i];
-                const glm::vec3 c = field_bin_colour(layer.colour_map, field_bin(layer.colour_map, value, top));
+                const glm::vec3 c = field_cell_colour(layer.colour_map, value, top);
                 const uint8_t r = to_byte(c.r), g = to_byte(c.g), b = to_byte(c.b);
                 const Vec3 p00 = vec3d(field_cell_corner(layer, i, j));
                 const Vec3 p10 = vec3d(field_cell_corner(layer, i + 1u, j));
