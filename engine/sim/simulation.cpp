@@ -17,6 +17,7 @@
 #include "core/validate.hpp"
 #include "objects/behavior.hpp"
 #include "physics/integrator.hpp"
+#include "vehicles/model_identity.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
 
@@ -2231,7 +2232,7 @@ Result<SnapshotBlob> Simulation::snapshot() const {
                                        "spawn/despawn ops are not part of the registry walk. Call "
                                        "step() or flush_structural() first."));
     }
-    return save(arenas_, tick_, schedule_.identity);
+    return save(arenas_, tick_, schedule_.identity, vehicles::model_registry_identity(models_));
 }
 
 // ---------------------------------------------------------------------------
@@ -2404,6 +2405,16 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
                                        "(identity " + std::to_string(blob.configuration_identity()) +
                                        ", this simulation runs " + std::to_string(schedule_.identity) +
                                        "); restoring it here could replay different physics"));
+    }
+    // Snapshot format v3: the model registry, in registration order (L2). The
+    // rows a vehicle spawned carry its model's values; the registry is what a
+    // later spawn, vehicle_state() or a viewer consults, so a blob is only
+    // meaningful beside the registry it was taken under.
+    if (const uint64_t registry = vehicles::model_registry_identity(models_); blob.model_registry_identity() != registry) {
+        return std::unexpected(invalid("restore: blob was taken under a different model registry (identity " +
+                                       std::to_string(blob.model_registry_identity()) +
+                                       ", this simulation's is " + std::to_string(registry) +
+                                       "); register the same models, in the same order, before restoring"));
     }
     if (Result<void> config = check_replay_config(blob); !config) {
         return config;

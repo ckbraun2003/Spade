@@ -1091,10 +1091,9 @@ public:
     // material, grid and turbulence records, the environment and the step
     // decomposition all come from the (WorldSetDesc, dt_ns, substeps) THIS
     // Simulation was created with, and a blob carries none of them. Neither is
-    // the MODEL REGISTRY (register_model(); the ids a replay uses must come
-    // from re-registering the same models in the same order -- that one is
-    // still an unchecked caller obligation, because model types are not
-    // registered state and have no identity in the walk).
+    // the MODEL REGISTRY (register_model(); the caller re-registers the same
+    // models in the same order before restoring -- and since snapshot format
+    // v3 that is CHECKED: see the model-registry identity below).
     //
     // WHAT CHANGED (ticket M-1) IS THAT A MISMATCH IS NO LONGER SILENT. The
     // `replay_config` array (see ReplayConfig above) carries this run's
@@ -1126,6 +1125,11 @@ public:
     //     taken under another module set, module version or schedule: the
     //     snapshot header's configuration_identity must equal schedule().identity,
     //     or the restore is invalid_argument naming the module set.
+    //   * The model-registry identity (snapshot format v3) catches a blob taken
+    //     under other models, versions or registration order: the header's
+    //     model_registry_identity must equal vehicles/model_identity.hpp's fold of
+    //     this Simulation's registry, or the restore is invalid_argument naming
+    //     the model registry.
     //   * The blob parse and the section-by-section match catch a corrupt or
     //     foreign blob. All of these run before anything is written.
     //

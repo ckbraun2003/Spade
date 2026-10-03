@@ -428,7 +428,8 @@ uint32_t world_set_size(const StateRegistry& registry) noexcept {
 // save
 // ---------------------------------------------------------------------------
 
-Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick, uint64_t configuration_identity) {
+Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick, uint64_t configuration_identity,
+                          uint64_t model_registry_identity) {
     if (registry.size() > std::numeric_limits<uint32_t>::max()) {
         return std::unexpected(capacity_err("registry has more arrays than the format can describe"));
     }
@@ -494,6 +495,7 @@ Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick, uint64_t con
         .world_count = world_set_size(registry),
         .array_count = static_cast<uint32_t>(registry.size()),
         .configuration_identity = configuration_identity,
+        .model_registry_identity = model_registry_identity,
     };
     append_pod(out, head);
 
@@ -522,8 +524,9 @@ Result<SnapshotBlob> save(const StateRegistry& registry, Tick tick, uint64_t con
     return SnapshotBlob::from_bytes(std::move(out));
 }
 
-Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick, uint64_t configuration_identity) {
-    return save(arenas.registry(), tick, configuration_identity);
+Result<SnapshotBlob> save(const ArenaSet& arenas, Tick tick, uint64_t configuration_identity,
+                          uint64_t model_registry_identity) {
+    return save(arenas.registry(), tick, configuration_identity, model_registry_identity);
 }
 
 // ---------------------------------------------------------------------------

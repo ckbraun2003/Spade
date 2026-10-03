@@ -793,6 +793,7 @@ add_library(spade_vehicles STATIC
     vehicles/rotor.cpp
     vehicles/rotor_wake.cpp
     vehicles/model_type.cpp
+    vehicles/model_identity.cpp
     vehicles/quadrotor.cpp
     vehicles/motor.cpp
     vehicles/battery.cpp

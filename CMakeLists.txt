@@ -13,7 +13,7 @@ cmake_minimum_required(VERSION 3.28)
 # (Task 21 close-out). This is Spade-the-project's own release number, not a
 # data-format tag, and neither of those is touched by this bump: the
 # snapshot format has its own real, existing version today
-# (state/snapshot.hpp's kSnapshotVersion, currently 1), and the eventual
+# (state/snapshot.hpp's kSnapshotVersion), and the eventual
 # world-FILE format's version is an S5 concept -- the YAML world file does
 # not exist yet, so there is no "world_version" symbol anywhere in this tree
 # to separately version.
