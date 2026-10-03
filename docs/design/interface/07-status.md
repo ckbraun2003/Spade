@@ -19,7 +19,7 @@
 | Object-centric editor (`SL12`) and scene sources (`SL13`) | **Not built.** Paused by the restructure until the editor spec (old plan tasks C3–C8) | — |
 | v1 quarantine (`SL14a`, `engine D10`) | **Not executed, and blocked**: the register's SPH row is open. v1 is present and untouched; `SPADE_BUILD_V1` defaults ON; there is no `legacy/` | `CMakeLists.txt`; `../../v1-transfer-register.md` |
 | Successor scenes and baselines (`SL14b`, `SL14c`) | **Baselines captured** (`INT-4`, 2026-10-03, merged `0935c6f`). The eight viewer scenes' trajectories are CPU goldens (`TD-1`); frames of all eleven scenes, capture records and performance numbers are an archive that is never regenerated. The guard asserts them: one case per scene, within 5 s each on debug, and all 3000 ticks with `SPADE_FULL_VIEWER_TRAJECTORIES=1` (`aeaef92`). **Successor presets: not started** | `tests/golden/viewer/`, `tests/v1-baselines/`; `engine/tools/viewer/` (`setup.cpp`, `--trajectory`, `capture-v1-baselines.ps1`, the `spade_viewer_scenes` library) |
-| The scene file (drone-builder joint spec §3; `INT-3` to be amended) | **Draft schema approved** by the lead and Core (`4294f9b`): a world reference pinned by hash, inline models, assets, vehicles, `spare`; `SCN-001`–`SCN-009`. The composer is plan-only: it waits for the user's approval of the joint spec. Nothing is built | `plans/2026-10-03-scene-file-draft.md` |
+| The scene file (drone-builder joint spec §3; `INT-3` as amended) | **Schema approved** by the lead and Core (`4294f9b`), and the joint spec by the user (2026-10-03, `f90d588`): a world reference pinned by hash, inline models, assets, vehicles, `spare`; `SCN-001`–`SCN-009`. The composer's plan is approved; it is built after Core lands `transform_of()` and the schema code. Nothing is built yet | `plans/2026-10-03-scene-file-draft.md` |
 | Quadrotor template (`engine D4`, template half) | **Not built.** The quadrotor is engine code (`vehicles/quadrotor.*`, Physics); the drone box's controller and mixer are written as template material | — |
 | Demos | `scripts/demo.ps1 -Scene sandbox` (the drone sim box) and `-Scene sandbox-builder` launch `spade_sandbox`, beside the `spade_viewer` and v1 `Sandbox` scenes | `scripts/demo.ps1` |
 
@@ -27,11 +27,11 @@
 
 In the backlog's order (`../backlog.md`, "Suggested order"):
 
-1. **The scene composer plan** (`SCN-005`, `SCN-007`): a plan only, reviewed by Core. It is built after the user approves the drone-builder joint spec.
+1. **The scene composer** (`SCN-005`, `SCN-007`). The joint spec is approved (2026-10-03). It is built once Core lands `transform_of()` and the scene-file schema code; its tests start first.
 2. **Lift the drone box's Vulkan refusal** once Core's translation lock lands on both backends.
 3. **The editor spec** (`INT-3`), after Core's module API.
    - The sandbox grows into Spade's editor (`01-editor.md`, "The target"). Old plan tasks C3–C8 are the starting inventory, rethought in engine-model terms.
-   - The editor will save scenes (the scene-file draft); `INT-3`'s text is amended when the joint spec is approved.
+   - The editor saves scenes (`INT-3` as amended 2026-10-03).
 
 
 ## Open items — needs a user decision

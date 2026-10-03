@@ -30,15 +30,15 @@
 
 ## The target: an editor in engine-model terms
 
-The editor is the object-centric tool `SL12` describes, rebuilt in the engine model's terms (`../01-engine-model.md`): it composes worlds from regions, objects and modules; it places templates; it switches a module's fidelity tier or backend on a running world; and it inspects state, fields and channels. `SL13`'s three scene sources (presets, test scenarios, saved editor scenes) carry over. Saved scenes are world files (`world/world_file.hpp`), with no editor-specific format (`INT-3`, which supersedes `SL13`'s own-JSON, never-`.world.yaml` clause).
+The editor is the object-centric tool `SL12` describes, rebuilt in the engine model's terms (`../01-engine-model.md`): it composes worlds from regions, objects and modules; it places templates; it switches a module's fidelity tier or backend on a running world; and it inspects state, fields and channels. `SL13`'s three scene sources (presets, test scenarios, saved editor scenes) carry over. Saved scenes are scene files: a world reference pinned by hash, plus assets, vehicles and their start states (`INT-3` as amended 2026-10-03; Core's schema, `plans/2026-10-03-scene-file-draft.md`). Worlds stay world files (`world/world_file.hpp`). There is no editor-specific format, and `INT-3` supersedes `SL13`'s own-JSON, never-`.world.yaml` clause.
 
 It waits for its own spec (restructure §5; `../backlog.md`, "Sandbox → editor"). The old plan's task list (C3 scene picker, C4 hierarchy and inspector, C5 add object and component, C6 live controls, C7 pause and step, C8 the purity guard) is the starting inventory, not the plan. Its deferrals (asset browser, CPU/GPU lockstep view, debug draw, SDF views, scrub) are still the honest list of what would make it feel like an editor rather than a debugger. It also deferred saved scenes; `INT-3` puts them in the first cut. See `plans/README.md`.
 
-Three things the spec must decide rather than discover:
+Two things the spec must decide rather than discover:
 - **Structural edits on a running world.** Object-graph changes queue to step boundaries once objects take part in stepping (engine model, inherited obligations). Today the graph mutates immediately and nothing holds one while stepping.
 - **A reserved type in a menu.** `ComponentTypeId::fluid` is declared for SPH but cannot be constructed. Availability belongs beside the type table (Core), so every enumerator — a menu, a loader, a CLI listing — shows it as reserved with its reason instead of offering it.
-- **What a saved scene holds.** `INT-3` makes saved scenes world files, and a world file serialises a `WorldDesc`:
-  - the SDF program and its transforms, spawn points, environment and capacities;
-  - render-only materials, lighting and props.
 
-  It carries no objects, components or modules, which is most of what the editor composes. So `INT-3` means the world-file schema has to grow. That schema is **Core's** (`../02-realms.md`), and the growth sits on Core's object and module model. That is the dependency the editor already has (`../backlog.md`, suggested order item 4, after the module API), so the order does not change.
+**Settled since (2026-10-03): what a saved scene holds.** A world file serialises only a `WorldDesc`, with no objects, components or modules. The user's world/scene ruling settles where the editor's objects go:
+- The scene file holds them: a world reference, assets and vehicles (`plans/2026-10-03-scene-file-draft.md`, `SCN-001` to `SCN-009`, Core's schema).
+- `spade::scene` composes a scene into a runnable world (`plans/2026-10-03-scene-composer-plan.md`).
+- Components and modules on scene objects arrive when objects take part in stepping. The schema needs no new version for that, only a new composer.
