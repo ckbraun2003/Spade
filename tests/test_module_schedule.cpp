@@ -368,3 +368,48 @@ TEST(ModuleSimulation, AnInvalidSetIsRefusedAtCreate) {
     ASSERT_FALSE(sim.has_value());
     EXPECT_EQ(sim.error().code, spade::Code::invalid_argument);
 }
+
+TEST(ModuleSnapshot, ABlobCarriesTheScheduleIdentity) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto blob = sim->snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    EXPECT_EQ(blob->configuration_identity(), sim->schedule().identity);
+}
+
+TEST(ModuleSnapshot, RestoreIntoAnotherModuleSetIsRefused) {
+    spade::modules::ModuleSet with_hover = spade::modules::standard_modules();
+    with_hover.push_back({.name = "hover", .passes = kHoverPasses});
+    auto source = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, with_hover);
+    auto target = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(source.has_value() && target.has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    const auto restored = target->restore(*blob);
+    ASSERT_FALSE(restored.has_value());
+    EXPECT_EQ(restored.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(restored.error().context.find("module set"), std::string::npos) << restored.error().context;
+}
+
+TEST(ModuleSnapshot, RestoreUnderAnotherModuleVersionIsRefused) {
+    spade::modules::ModuleSet a = spade::modules::standard_modules();
+    spade::modules::ModuleSet b = spade::modules::standard_modules();
+    a.push_back({.name = "hover", .version = 1, .passes = kHoverPasses});
+    b.push_back({.name = "hover", .version = 2, .passes = kHoverPasses});
+    auto source = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, a);
+    auto target = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, b);
+    ASSERT_TRUE(source.has_value() && target.has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value());
+    EXPECT_FALSE(target->restore(*blob).has_value());
+}
+
+TEST(ModuleSnapshot, RestoreIntoTheSameSetSucceeds) {
+    auto source = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    auto target = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(source.has_value() && target.has_value());
+    ASSERT_TRUE(source->step(3).has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value());
+    EXPECT_TRUE(target->restore(*blob).has_value());
+}

@@ -820,3 +820,31 @@ TEST(SnapshotFindSection, ReportsAMissingNameAndAMalformedBlobDifferently) {
     EXPECT_EQ(rejected.error().code, found.error().code)
         << "find_section and restore must agree about whether a blob parses";
 }
+
+// A blob written before the module API is format version 1. It is refused
+// with the version message, never misread as a 40-byte header. (A v2 blob with
+// its version field set back to 1 stands in for one.)
+TEST(SnapshotFormat, AVersionOneBlobIsRefusedWithTheVersionMessage) {
+    spade::StateRegistry registry;
+    const auto blob = spade::save(registry, spade::Tick{1});
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const uint32_t v1 = 1;
+    std::memcpy(bytes.data() + offsetof(spade::SnapshotHeader, version), &v1, sizeof(v1));
+    const auto reread = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    ASSERT_FALSE(reread.has_value());
+    EXPECT_EQ(reread.error().code, spade::Code::schema_mismatch);
+    EXPECT_NE(reread.error().context.find("format version 1"), std::string::npos) << reread.error().context;
+}
+
+TEST(SnapshotFormat, TheConfigurationIdentityRoundTripsThroughTheHeader) {
+    spade::StateRegistry registry;
+    const auto blob = spade::save(registry, spade::Tick{7}, 0x1234'5678'9ABC'DEF0ULL);
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    EXPECT_EQ(blob->version(), 2u);
+    EXPECT_EQ(blob->configuration_identity(), 0x1234'5678'9ABC'DEF0ULL);
+    const auto reread = spade::SnapshotBlob::from_bytes(
+        std::vector<std::byte>(blob->bytes().begin(), blob->bytes().end()));
+    ASSERT_TRUE(reread.has_value()) << reread.error().context;
+    EXPECT_EQ(reread->configuration_identity(), 0x1234'5678'9ABC'DEF0ULL);
+}
