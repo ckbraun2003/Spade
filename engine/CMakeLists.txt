@@ -1284,6 +1284,26 @@ install(FILES
 )
 
 # ------------------------------------------------------------------------------
+# spade_viewer_scenes (INT-4): the viewer's eight scenes and their setup, as a
+# v1-free library. Built in EVERY configuration, not only with SPADE_BUILD_V1:
+# the trajectory guard in spade_tests replays these scenes against the goldens
+# in tests/golden/viewer/, and the Docker leg runs that guard with v1 off. The
+# scenes feed golden digests, so they compile under spade_fp_strict like every
+# other digest-feeding target (TD-3). Not installed: this is tool code, which
+# the v1 harvest ports into successor scenes.
+# ------------------------------------------------------------------------------
+add_library(spade_viewer_scenes STATIC
+    tools/viewer/scenes.cpp
+    tools/viewer/setup.cpp
+)
+target_compile_features(spade_viewer_scenes PUBLIC cxx_std_23)
+target_include_directories(spade_viewer_scenes PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tools/viewer)
+target_link_libraries(spade_viewer_scenes
+    PUBLIC spade::sim
+    PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings> $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+
+# ------------------------------------------------------------------------------
 # spade_viewer (Task 14): the strangler viewer -- v1's frozen OpenGL renderer
 # fed by v2 Simulation state, one demo scene at a time
 # (scripts/demo.ps1). A TOOL, not a library: not installed, not
@@ -1297,8 +1317,6 @@ if(SPADE_BUILD_V1)
 add_executable(spade_viewer
     tools/viewer/main.cpp
     tools/viewer/bridge.cpp
-    tools/viewer/scenes.cpp
-    tools/viewer/setup.cpp
     tools/viewer/trajectory.cpp
 )
 
@@ -1315,6 +1333,7 @@ target_compile_features(spade_viewer PUBLIC cxx_std_23)
 target_link_libraries(spade_viewer PRIVATE
     Spade
     spade::sim
+    spade_viewer_scenes
 )
 
 # The trajectory mode reports process memory (GetProcessMemoryInfo).
