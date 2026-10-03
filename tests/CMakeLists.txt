@@ -75,6 +75,7 @@ add_executable(spade_tests
     test_imu.cpp
     test_gnss.cpp
     test_world_file.cpp
+    test_scene_file.cpp
     test_determinism.cpp
     test_sim_medium.cpp
     test_module_schedule.cpp

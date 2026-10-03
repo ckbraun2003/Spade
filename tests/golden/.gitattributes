@@ -3,6 +3,9 @@
 #   *.world.yaml     tests/test_world_file.cpp compares each one against a
 #                    fresh spade::world_to_yaml() emission, which always writes
 #                    LF.
+#   *.scene.yaml     tests/test_scene_file.cpp compares each one against a
+#                    fresh spade::scene::scene_to_yaml() emission, which also
+#                    always writes LF.
 #   *.scenario.yaml  tests/test_determinism.cpp loads each one and runs it
 #                    against the digest the file itself carries. Line endings
 #                    do not reach a digest, but these files are authored,
@@ -21,3 +24,4 @@
 # remember it. `git check-attr text eol -- <path>` is how to confirm coverage.
 *.world.yaml text eol=lf
 *.scenario.yaml text eol=lf
+*.scene.yaml text eol=lf
