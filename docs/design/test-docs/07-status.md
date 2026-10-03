@@ -27,7 +27,7 @@
 | `SL15b` (test half) | partly | `spade_sandbox --headless` exists; it is not part of the gate |
 | `SL18` | partly | Obligation 5 is met. Obligations 6–9 wait on the editor (Interface), 4 on SPH (Physics), and 3's cross-backend half is checked on a developer machine only |
 | SPIR-V rules | yes | `test_slang_layouts.cpp`: 10 tests (`SlangLayouts.*` 6, `SlangSpirv.*` 4), none device-gated |
-| `TD-1` golden governance | partly | 5 scenarios, 7 worlds and 3 render manifests, each with provenance. The cross-check that makes a regeneration final is `TD-12`'s, not built yet |
+| `TD-1` golden governance | partly | 6 scenarios, 7 worlds and 3 render manifests, each with provenance. `gnss_tumble` joined at `0ce4ff5` (`PHY-6`) on the existing `ballistic` world; its digest is provisional under `TD-12` until the Docker leg reproduces it. The cross-check that makes a regeneration final is `TD-12`'s, not built yet |
 | `TD-6` device gating | yes | Every `Gpu*` suite gets `gpu`; 65 at `88a3c8b` |
 | `TD-7` the gate | yes | `scripts\test.ps1` on both presets, on the development box only (`TD-11`) |
 | `TD-11` Docker leg | no | Ruled 2026-10-02; no image, script or Dockerfile exists. First in the backlog's order (`../backlog.md`) |
