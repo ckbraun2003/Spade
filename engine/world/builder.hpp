@@ -259,6 +259,13 @@ struct WorldDesc {
 // ---------------------------------------------------------------------------
 [[nodiscard]] Result<uint32_t> validate_world_desc(const WorldDesc& desc);
 
+// One material's own rules, the single definition validate_world_desc() and
+// the scene file's validate_scene() both apply (TD-9): a non-empty name, a
+// finite base_color, a known shading. invalid_argument whose context starts
+// with `label` ("material 3", "scene material 0"). Uniqueness is the caller's:
+// a world indexes its palette, a scene names its materials.
+[[nodiscard]] Result<void> validate_material(const MaterialDesc& material, std::string_view label);
+
 // ---------------------------------------------------------------------------
 // WorldBuilder
 // ---------------------------------------------------------------------------

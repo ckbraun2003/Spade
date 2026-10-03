@@ -286,6 +286,25 @@ WorldBuilder& WorldBuilder::material_for_last_node(uint32_t material_index) {
 }
 
 // ---------------------------------------------------------------------------
+// validate_material() -- one material's rules, shared by validate_world_desc()
+// and the scene file (TD-9). See the contract in builder.hpp.
+// ---------------------------------------------------------------------------
+
+Result<void> validate_material(const MaterialDesc& material, std::string_view label) {
+    // Non-empty, same rule as visual_refs and PropDesc::mesh_ref.
+    if (material.name.empty()) {
+        return std::unexpected(invalid(std::string(label) + " has an empty name"));
+    }
+    if (!finite(material.base_color)) {
+        return std::unexpected(invalid(std::string(label) + " has a non-finite base_color"));
+    }
+    if (static_cast<uint32_t>(material.shading) >= kMaterialShadingCount) {
+        return std::unexpected(invalid(std::string(label) + " has an unknown shading value"));
+    }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
 // validate_world_desc() -- the one validation, shared by build() and by the
 // world-file loader. See the contract in builder.hpp.
 // ---------------------------------------------------------------------------
@@ -372,19 +391,9 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
         return std::unexpected(invalid("world must have at least one material (index 0)"));
     }
     for (size_t i = 0; i < desc.materials.size(); ++i) {
-        const MaterialDesc& m = desc.materials[i];
-        // Non-empty, same rule as visual_refs and PropDesc::mesh_ref, NOT
-        // uniqueness -- materials are referenced by index, never by name.
-        if (m.name.empty()) {
-            return std::unexpected(invalid("material " + std::to_string(i) + " has an empty name"));
-        }
-        if (!finite(m.base_color)) {
-            return std::unexpected(
-                invalid("material " + std::to_string(i) + " has a non-finite base_color"));
-        }
-        if (static_cast<uint32_t>(m.shading) >= kMaterialShadingCount) {
-            return std::unexpected(
-                invalid("material " + std::to_string(i) + " has an unknown shading value"));
+        // Not uniqueness -- materials are referenced by index, never by name.
+        if (Result<void> r = validate_material(desc.materials[i], "material " + std::to_string(i)); !r) {
+            return std::unexpected(r.error());
         }
     }
 

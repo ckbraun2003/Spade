@@ -836,12 +836,19 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # 2026-10-03-scene-composer-plan.md). Installed and exported, because Kat
 # composes scenes too and links only installed targets (SL2b).
 #
-# It links spade::world and spade::sim only; vehicles::ModelType reaches it
+# It links spade::world and spade::sim; vehicles::ModelType reaches it
 # through sim. spade_fp_strict, because the composed transforms land in the
 # SDF program that config_hash folds.
+#
+# scene/scene_file.cpp is Core's schema (SCN-001..009, the drone-builder plan's
+# Task D): it parses and emits YAML, so it links yaml-cpp PRIVATE and
+# $<BUILD_INTERFACE:...>-wrapped, for spade_world's reasons (the yaml-cpp note
+# above). An installed consumer gets yaml-cpp through spade::world, which
+# spadeConfig.cmake gives it; tests/consumer parses a scene to prove that link.
 # ------------------------------------------------------------------------------
 add_library(spade_scene STATIC
     scene/compose.cpp
+    scene/scene_file.cpp
 )
 add_library(spade::scene ALIAS spade_scene)
 set_target_properties(spade_scene PROPERTIES EXPORT_NAME scene)
@@ -851,7 +858,10 @@ target_include_directories(spade_scene PUBLIC
 )
 target_link_libraries(spade_scene
     PUBLIC spade::world spade::sim
-    PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings> $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+    PRIVATE
+        $<BUILD_INTERFACE:yaml-cpp::yaml-cpp>
+        $<BUILD_LOCAL_INTERFACE:spade_warnings>
+        $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
 )
 target_compile_features(spade_scene PUBLIC cxx_std_23)
 

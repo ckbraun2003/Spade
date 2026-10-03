@@ -34,11 +34,13 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <string>
 
 #include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
 
 #include "scene/compose.hpp"
+#include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "world/builder.hpp"
@@ -141,6 +143,31 @@ int main() {
         return 1;
     }
     std::printf("spade::scene OK: compose_transform kept the collider at the identity pose\n");
+
+    // The scene file, installed. Parsing a scene pulls scene_file.o out of the
+    // installed spade_scene archive, and with it spade_scene's own need for
+    // yaml-cpp: the world-file round trip's reason, above, one target up.
+    constexpr const char* kScene =
+        "scene_version: 1\n"
+        "name: \"consumer_smoke\"\n"
+        "world: {file: \"consumer_smoke.world.yaml\", hash: \"0x0000000000000001\"}\n"
+        "materials: []\n"
+        "models: []\n"
+        "assets: [{name: \"marker\", pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1},\n"
+        "          collider: {sdf: {transforms: [], nodes: [], node_materials: []}},\n"
+        "          visual: {mesh_ref: \"marker\", material: \"default\"}}]\n"
+        "vehicles: []\n";
+    const spade::Result<spade::scene::SceneDesc> scene = spade::scene::scene_from_yaml(kScene);
+    if (!scene) {
+        std::fprintf(stderr, "spade::scene::scene_from_yaml failed: %s\n", scene.error().context.c_str());
+        return 1;
+    }
+    const spade::Result<std::string> scene_text = spade::scene::scene_to_yaml(*scene);
+    if (!scene_text || !spade::scene::scene_from_yaml(*scene_text)) {
+        std::fprintf(stderr, "spade::scene::scene_to_yaml did not round-trip the scene\n");
+        return 1;
+    }
+    std::printf("spade::scene OK: a scene file round-tripped through scene_from_yaml and scene_to_yaml\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).
