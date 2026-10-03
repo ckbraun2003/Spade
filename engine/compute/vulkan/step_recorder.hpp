@@ -6,6 +6,15 @@
 // and StepRecorder (the object that dispatches spec section 3's 8-pass chain
 // once per step, stage-scoped barriers between passes, submit-per-step).
 //
+// INTERIM (module-API plan, stage 1, 2026-10-02): physics/schedule.cpp's
+// kSchedule is gone. The CPU runs the compiled module schedule
+// (sim/module.hpp, sim/standard_modules.cpp), and this table mirrors the
+// STANDARD set's compiled order, which
+// Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder pins. Stage 2
+// derives the GPU chain from the schedule and deletes this table; until then,
+// read "kSchedule" below as "the compiled standard set", and the CPU's empty
+// Gravity and Publish passes as removed.
+//
 // "SECTION 3's EIGHT", not "the schedule's ten": physics/schedule.cpp's
 // kSchedule grew two inert SL6 behavior slots (Plan A Task 7) that this class
 // deliberately does not model. step_recorder.cpp's kNoDispatch comment carries

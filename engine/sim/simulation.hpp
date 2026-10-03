@@ -23,6 +23,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
+#include "sim/module.hpp"
 #include "sim/world_set.hpp"
 #include "state/arenas.hpp"
 #include "state/snapshot.hpp"
@@ -542,9 +543,20 @@ public:
     // Simulation own a VulkanBackend (see vulkan_backend_ below) and routes
     // step() through it -- see step()'s own doc comment for the split.
     // ---------------------------------------------------------------------
+    //
+    // `module_set` is the module set this simulation runs (sim/module.hpp); the
+    // default is today's engine. It is compiled once here into the schedule
+    // every step runs, and refused with invalid_argument if it does not
+    // compile. Until the GPU chain is derived from the schedule (module-API
+    // plan, stage 2), a Vulkan simulation accepts only the standard set and
+    // refuses any other with unavailable.
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
-                                                   const compute::BackendDesc& backend = {});
+                                                   const compute::BackendDesc& backend = {},
+                                                   const modules::ModuleSet& module_set = modules::standard_modules());
+
+    // The compiled module schedule this simulation steps with.
+    [[nodiscard]] const modules::CompiledSchedule& schedule() const noexcept { return schedule_; }
 
     // Declared here, DEFINED in simulation.cpp (not `= default` inline):
     // vulkan_backend_ is a unique_ptr<compute::VulkanBackend> and
@@ -1614,6 +1626,7 @@ private:
     float h_ = 0.0f;
 
     const objects::BehaviorRegistry* behaviors_ = nullptr;  // borrowed; see set_behaviors()
+    modules::CompiledSchedule schedule_;                       // compiled once, in create()
 
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;

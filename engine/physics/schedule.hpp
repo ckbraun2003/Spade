@@ -36,43 +36,13 @@ class BehaviorRegistry;
 }  // namespace spade::objects
 
 // ---------------------------------------------------------------------------
-// THE SUBSTEP PASS SCHEDULE (engine design spec §3 "The step model").
-//
-// §3 is quoted here verbatim because this file's entire job is to be that
-// quote, executable:
-//
-//     // per substep, in this order, always:
-//     MediumUpdate       // Dryden gust states advance (seeded, per world)
-//     ForceElements      // rotors -> drag -> lift surfaces (each element type
-//                        //   = one batched pass)
-//     Gravity
-//     CollisionStatic    // dynamic proxies vs world SDF: distance + gradient
-//                        //   -> contact impulses
-//     CollisionDynamic   // sorted-grid pair path (exact cell compare)
-//     Integrate          // symplectic Euler + quaternion exp-map; captures
-//                        //   specific force for sensors
-//     SensorSynthesis    // only on sensor-rate boundaries; writes sensor
-//                        //   output rings
-//     Publish            // tick counter++, snapshot ring hook, frame-state
-//                        //   copy point
-//
-// "THE SCHEDULE OBJECT IS DATA; PASSES CANNOT REORDER THEMSELVES" (§3). That
-// sentence is the reason substep_schedule() returns a span over a fixed,
-// file-scope array of {name, function} records rather than the step loop simply
-// calling the passes in a row. The difference is not stylistic:
-//
-//   * the ORDER is one reviewable, testable object -- test_determinism.cpp
-//     asserts every name in sequence against the spec text above (plus SL6's
-//     two behavior slots; see kSubstepPassCount), so a reordering is a red
-//     test rather than a physics regression found weeks later in a parity
-//     diff;
-//   * a pass is a plain function pointer over a context struct, which is the
-//     shape §3's "every pass is one interface, two implementations --
-//     execute_cpu(WorldSpan) and record_gpu(CommandRecorder&)" grows into at
-//     S6: the record_gpu half becomes a second function pointer in the same
-//     record, and the schedule array does not change;
-//   * nothing downstream can inject a pass, skip one, or run them in a
-//     different order, because there is no API to do so.
+// THE SUBSTEP PASSES. Each function below is one built-in module's CPU pass
+// (sim/standard_modules.cpp). Which phase it runs in, what it reads and
+// writes, and which passes it must follow are declared there, and
+// sim/module.hpp's compile_schedule() turns a module set into the one ordered
+// list every substep runs. The order is a parity contract (fp32 addition is
+// not associative), so it is data the compiler checks and the identity hash
+// records, never a call sequence written by hand.
 //
 // A PASS TAKES THE WHOLE WORLD SET, NOT ONE WORLD. §3's execute_cpu(WorldSpan)
 // signature is deliberate and this header follows it: CollisionDynamic is a
@@ -244,7 +214,7 @@ struct SubstepContext {
     // this is a copy of the Simulation's counter, taken once per step; nothing
     // here reads a wall clock. Every substep of step k carries k, because Tick
     // counts STEPS and Simulation::step() increments it after the last substep
-    // (see pass_publish()'s note on §3's shorthand). A consumer that needs
+    // (engine A9). A consumer that needs
     // sub-step resolution reads the sample's monotonically increasing
     // SampleIndex, which is what it is for.
     Tick tick{};
@@ -260,39 +230,10 @@ struct SubstepContext {
 // ---------------------------------------------------------------------------
 using PassFn = void (*)(const SubstepContext&) noexcept;
 
-struct Pass {
-    std::string_view name;
-    PassFn run;
-};
-
-// The ten passes, in order. Fixed at compile time; there is no API to add,
-// remove or reorder one.
-//
-// EIGHT OF THE TEN ARE §3'S, VERBATIM. The other two are the 24th spec's SL6
-// behavior slots, and they are here rather than inserted dynamically for
-// exactly the reason the line above states: §3 says the schedule is fixed at
-// compile time and its order is a parity contract, so "a behavior declares a
-// schedule position" could never have meant runtime insertion. The user ruled
-// TWO FIXED SLOTS instead, and their positions are the ruling:
-//
-//   BehaviorsKinematic -- after MediumUpdate, BEFORE ForceElements, so a pose
-//     written by a kinematic behavior is set before anything reads it,
-//     including both collision passes.
-//   BehaviorsForce -- AFTER ForceElements, so behavior wrenches accumulate
-//     after the rotors-then-drag order the golden corpus pins. Float addition
-//     is not associative; running before would change force_acc's last bits.
-//
-// Both are INERT until the behavior registry lands, and their inertness is a
-// proof obligation, not an intention -- see the two pass comments below.
-inline constexpr std::size_t kSubstepPassCount = 10;
-
-[[nodiscard]] std::span<const Pass> substep_schedule() noexcept;
-
-// Runs the whole schedule once, in order. Equivalent to iterating
-// substep_schedule() and calling each entry -- and that equivalence is asserted
-// by a test, so the convenience wrapper cannot drift away from the declared
-// order it is a shorthand for.
-void run_substep(const SubstepContext& ctx) noexcept;
+// THE ORDER LIVES IN THE MODULES. These passes are the built-in modules' CPU
+// functions; sim/standard_modules.cpp declares each one's phase, access and
+// edges, and sim/module.hpp's compile_schedule() orders them. There is no
+// fixed pass array any more (module-API plan, stage 1).
 
 // ---------------------------------------------------------------------------
 // The passes themselves. Declared individually (rather than left as anonymous
@@ -334,32 +275,13 @@ void pass_medium_update(const SubstepContext&) noexcept;
 // object. See pass_behaviors_force below for the proof obligation both share.
 void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 
-// ForceElements -- accumulate every force element's wrench into its body.
-//
-// TWO ELEMENT KINDS, IN §3'S ORDER: RotorElement (vehicles/rotor.hpp, Task 17,
-// wired here by Task 18) then DragBody (physics/forces.hpp, Task 15). Lift
-// surfaces are post-v2 and become a third batched call in this same function.
-//
-// THE ORDER IS THE SPEC'S AND IT IS A PARITY CONTRACT, not a preference. §3
-// says "rotors -> drag -> lift surfaces", and both kinds accumulate into the
-// SAME two float accumulators with `+=`. Float addition is not associative, so
-// applying drag before rotors would produce a different force_acc in the last
-// bits -- a difference no test of either element alone can see, and one that
-// would surface at S6 as a CPU/GPU parity mystery. Hence: rotors first,
-// always, and the golden corpus is what pins it.
-//
-// Reads the medium through a per-world DrydenMedium view constructed HERE,
-// on the stack, from this world's filter row and parameters. That is a
-// deliberate choice over caching the views in the Simulation: a cached view is
-// two raw pointers that a snapshot restore would have to be remembered to
-// rebind, and "remembered to" is how replay guarantees die. Constructing it
-// costs two pointer stores per world per substep and cannot go stale.
-void pass_force_elements(const SubstepContext&) noexcept;
-
+// Rotor forces, then drag -- the force elements, one module each. Both add
+// into the same two float accumulators, so their order is a parity contract
+// (rotors first; drag declares `after: rotor.forces`). Each reads the medium
+// through a per-world DrydenMedium view built on the stack, never cached, so a
+// snapshot restore cannot leave one pointing at stale rows.
 void pass_rotor_forces(const SubstepContext&) noexcept;
 void pass_drag(const SubstepContext&) noexcept;
-void pass_sensor_imu(const SubstepContext&) noexcept;
-void pass_sensor_gnss(const SubstepContext&) noexcept;
 
 // BehaviorsForce -- runs the attached BehaviorRegistry's force slot; inert
 // when none is attached (every golden scenario).
@@ -369,7 +291,7 @@ void pass_sensor_gnss(const SubstepContext&) noexcept;
 // associative, so running before would change force_acc's last bits -- a
 // difference no test of either element alone can see, and one that would
 // surface later as a CPU/GPU parity mystery. Same reasoning, same contract, as
-// the "rotors -> drag" ordering documented on pass_force_elements above.
+// the "rotors -> drag" ordering documented on pass_rotor_forces above.
 //
 // With nothing registered this MUST be a provable no-op, and the proof is the
 // golden corpus: Determinism.DigestsMatchTheCommittedGoldenCorpus and, more
@@ -377,25 +299,6 @@ void pass_sensor_gnss(const SubstepContext&) noexcept;
 // whose four digests are spelled independently in C++ and therefore cannot be
 // satisfied by re-blessing a scenario file.
 void pass_behaviors_force(const SubstepContext&) noexcept;
-
-// Gravity -- REPRESENTED BUT INERT. THIS PASS DELIBERATELY DOES NOTHING.
-//
-// Gravity application lives inside Integrate (Task 9 op-order contract); this
-// pass slot is retained for schedule-shape parity with spec §3 and MUST NOT
-// also accumulate m*g.
-//
-// The long form, from physics/integrator.hpp's own header: integrate_bodies()
-// adds `params.gravity` to the acceleration directly rather than reading m*g
-// out of force_acc, "and it is what makes the specific-force capture exact
-// rather than a subtraction. The schedule's Gravity pass must therefore NOT
-// also add m*g to force_acc, or gravity is applied twice." Deleting this slot
-// instead of emptying it would have been the other defensible choice; keeping
-// it is what makes this file a transcription of §3 rather than a rewrite of it,
-// so that a reader diffing the two finds §3's eight names present and in order
-// -- now interleaved with SL6's two behavior slots, which §3 predates -- and
-// this comment explaining the one of the eight that is empty. A test asserts
-// the emptiness (a body under gravity falls by exactly one g, not two).
-void pass_gravity(const SubstepContext&) noexcept;
 
 // CollisionStatic -- every world's active bodies against its world SDF.
 void pass_collision_static(const SubstepContext&) noexcept;
@@ -419,57 +322,18 @@ void pass_collision_static(const SubstepContext&) noexcept;
 // enforcement.
 void pass_collision_dynamic(const SubstepContext&) noexcept;
 
-// Integrate -- one substep of symplectic Euler per world. Applies gravity (see
-// pass_gravity above), captures specific force, and CLEARS the accumulators so
-// the next substep's force passes start from zero.
+// Integrate -- one substep of symplectic Euler per world. Applies gravity itself
+// (engine A9: there is no separate gravity pass, so nothing may also add m*g),
+// captures specific force, and CLEARS the accumulators so the next substep's
+// force passes start from zero.
 void pass_integrate(const SubstepContext&) noexcept;
 
-// SensorSynthesis -- §3: "only on sensor-rate boundaries; writes sensor output
-// rings". Task 19 filled the slot the schedule had been holding for it, and it
-// is ONE function body's worth of change to this file, exactly as intended.
-//
-// AFTER Integrate, AND THAT ORDERING IS THE WHOLE POINT: the accelerometer's
-// physical input is BodyState::specific_force, which integrate_bodies()
-// captures inside the substep it belongs to (spec §5: "computed once, not
-// reconstructed"). Running this pass before Integrate would sample the previous
-// substep's forces against this substep's attitude.
-//
-// Iterates worlds serially, each world's sensors in slot order, and calls
-// sensors::synthesize_imu() and then sensors::synthesize_gnss(). A second kind
-// became a second batched call HERE, the way ForceElements will grow rotors and
-// lift surfaces, and not a second pass -- this paragraph predicted that shape
-// before GNSS existed and the prediction held.
-//
-// THE TWO CALLS COMMUTE (see schedule.cpp): disjoint arrays, separate rng
-// domains, and state_digest folds in registration order rather than call order.
-// What does NOT commute is this pass's position after Integrate, for the reason
-// the paragraph above gives.
-void pass_sensor_synthesis(const SubstepContext&) noexcept;
-
-// Publish -- NO-OP STUB; the S6 hook point.
-//
-// §3 gives this pass three jobs: "tick counter++, snapshot ring hook,
-// frame-state copy point". None of the three belongs here yet, and one of them
-// never will:
-//
-//   * THE TICK COUNTER IS NOT INCREMENTED HERE, and that is a correction to
-//     §3's shorthand rather than an omission. Tick counts STEPS (core/time.hpp:
-//     "a monotonic count of physics steps"), while this pass runs once per
-//     SUBSTEP -- incrementing here would tick `substeps` times per step and
-//     make every snapshot header, every replay resume point and every
-//     structural-queue boundary disagree with the API's own step count.
-//     Simulation::step() owns the increment, once per step, after the last
-//     substep.
-//   * THE SNAPSHOT RING is the editor's continuous-rewind buffer (§4: "async
-//     double-buffered staging copies every K ticks"), which is a GPU-path
-//     object; on the CPU twin an on-demand Simulation::snapshot() is the whole
-//     story.
-//   * THE FRAME-STATE COPY POINT is the render/readback seam, which arrives
-//     with the Vulkan backend at S6.
-//
-// It stays in the schedule because it is the one place those three hooks may
-// ever attach, and having them attach at a declared point is the difference
-// between a schedule and a call sequence.
-void pass_publish(const SubstepContext&) noexcept;
+// IMU, then GNSS -- sensor synthesis, one module each, in the Sensors phase,
+// AFTER Integrate: the accelerometer's input is BodyState::specific_force,
+// which Integrate captures inside the substep it belongs to. The two commute
+// (disjoint arrays, separately tagged streams, and state_digest folds in
+// registration order), so their order is readability, not contract.
+void pass_sensor_imu(const SubstepContext&) noexcept;
+void pass_sensor_gnss(const SubstepContext&) noexcept;
 
 }  // namespace spade::physics
