@@ -12,25 +12,22 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "state/layout.hpp"
+#include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
 
-// vehicles::RotorRow -- forward-declared, not included (S5 T9 schedule seam
-// ticket, mechanical per the T18 reviewer's sketch): WorldSubstepView::rotors
-// below is a std::span<vehicles::RotorRow>, and a span of an incomplete type
-// is valid until element access -- this header never dereferences a rotor,
-// only names the type for the span's declaration. The complete definition is
-// pulled in by physics/schedule.cpp, the one TU that actually walks
-// `rotors` (via vehicles::apply_rotors()). Proven with both compilers via
-// CI (this task's report has the run); revert-and-document if a compiler
-// disagreed -- see this comment's own presence for which outcome landed.
-namespace spade::vehicles {
-struct RotorRow;
-}  // namespace spade::vehicles
+// vehicles/rotor.hpp is included because a span of an incomplete type breaks MSVC.
+// WorldSubstepView::rotors below is a std::span<vehicles::RotorRow>. Until
+// 2026-10-03 RotorRow was only forward-declared here, and MSVC rejected some
+// uses of that span, such as indexing ctx.worlds (C2036, "unknown size"), in
+// any TU that had not included rotor.hpp itself. schedule.cpp and
+// objects/behaviors/kinematic_mover.cpp each carried that include as a
+// workaround. Core found it. rotor.hpp includes nothing from physics/schedule, so
+// there is no cycle, and spade_sim (which compiles schedule.cpp) already links
+// spade::vehicles.
 
-// objects::BehaviorRegistry -- forward-declared for exactly the reason
-// RotorRow above is, and with an extra one: objects/behavior.hpp names
-// SubstepContext, so including it here would be a CYCLE. SubstepContext below
+// objects::BehaviorRegistry -- forward-declared because including it here
+// would be a CYCLE: objects/behavior.hpp names SubstepContext. SubstepContext below
 // holds only a POINTER to a registry and this header never dereferences one;
 // physics/schedule.cpp, the single TU that calls run_slot(), includes the real
 // header. objects/behavior.hpp forward-declares SubstepContext symmetrically.
