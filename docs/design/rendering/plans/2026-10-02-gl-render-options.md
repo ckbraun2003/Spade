@@ -1,6 +1,6 @@
 # GL honours `RenderOptions`: plan
 
-**Owner:** Rendering. **Status:** draft, for the lead's review. This is item 2 of "Next for Rendering" (`../07-status.md`). It branches as `rendering/gl-render-options` once `rendering/gl-culling` (`SR-13`) has merged.
+**Owner:** Rendering. **Status:** done. The lead approved it with Q1–Q3 answered, and it merged at `0a5e1a1` on 2026-10-03. This is item 2 of "Next for Rendering" (`../07-status.md`). It branches as `rendering/gl-render-options` once `rendering/gl-culling` (`SR-13`) has merged.
 
 ## Goal
 
