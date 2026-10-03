@@ -106,6 +106,7 @@ A **role** is a slot that exactly one module in the set must fill: `dynamic_cont
 - Each alternative declares its own grade and carries its own golden and bands. Choosing an alternative never re-pins another alternative's numbers.
 - A set that fills a required role twice, or not at all, is refused at `create()`.
 - A scenario names its choice, defaulting to the standard set's.
+- *Clarified 2026-10-03 (`../../plans/2026-10-03-drone-builder-engine-design.md`):* a tier that is only data, such as propeller CT and CQ tables, is per-row data inside its module, not a role. A role is for a tier that changes passes or state, such as blade-element (BEMT) aero.
 
 ## 8. Grades
 
