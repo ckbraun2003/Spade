@@ -863,7 +863,7 @@ Result<PassDurationsNs> StepRecorder::pass_durations_ns() const { return timesta
 // ---------------------------------------------------------------------------
 
 void StepRecorder::destroy() noexcept {
-    if (device_ == VK_NULL_HANDLE) return;  // moved-from or never fully constructed
+    if (device_ == VK_NULL_HANDLE) return;  // never fully constructed
 
     // step_params_mapped_ is NON-OWNING as of S6 Task 6 -- StateMirror owns
     // that buffer and its mapping, and outlives this object (backend.cpp's
@@ -896,56 +896,6 @@ void StepRecorder::destroy() noexcept {
     }
 
     device_ = VK_NULL_HANDLE;
-}
-
-StepRecorder::StepRecorder(StepRecorder&& other) noexcept
-    : device_(std::exchange(other.device_, VK_NULL_HANDLE)),
-      queue_(std::exchange(other.queue_, VK_NULL_HANDLE)),
-      pipeline_layout_(std::exchange(other.pipeline_layout_, VK_NULL_HANDLE)),
-      pool_(std::exchange(other.pool_, VK_NULL_HANDLE)),
-      cmd_(std::exchange(other.cmd_, VK_NULL_HANDLE)),
-      fence_(std::exchange(other.fence_, VK_NULL_HANDLE)),
-      set_(std::exchange(other.set_, VK_NULL_HANDLE)),
-      step_params_mapped_(std::exchange(other.step_params_mapped_, nullptr)),
-      shape_(other.shape_),
-      workgroup_size_(other.workgroup_size_),
-      dispatch_groups_x_(other.dispatch_groups_x_),
-      grid_(other.grid_),
-      grid_groups_x_(other.grid_groups_x_),
-      world_groups_x_(other.world_groups_x_),
-      sensor_groups_x_(other.sensor_groups_x_),
-      timestamps_(std::move(other.timestamps_)) {
-    for (uint32_t i = 0; i < kPipelineCount; ++i) {
-        shaders_[i] = std::exchange(other.shaders_[i], VK_NULL_HANDLE);
-        pipelines_[i] = std::exchange(other.pipelines_[i], VK_NULL_HANDLE);
-    }
-}
-
-StepRecorder& StepRecorder::operator=(StepRecorder&& other) noexcept {
-    if (this != &other) {
-        destroy();
-        device_ = std::exchange(other.device_, VK_NULL_HANDLE);
-        queue_ = std::exchange(other.queue_, VK_NULL_HANDLE);
-        pipeline_layout_ = std::exchange(other.pipeline_layout_, VK_NULL_HANDLE);
-        pool_ = std::exchange(other.pool_, VK_NULL_HANDLE);
-        cmd_ = std::exchange(other.cmd_, VK_NULL_HANDLE);
-        fence_ = std::exchange(other.fence_, VK_NULL_HANDLE);
-        set_ = std::exchange(other.set_, VK_NULL_HANDLE);
-        step_params_mapped_ = std::exchange(other.step_params_mapped_, nullptr);
-        shape_ = other.shape_;
-        workgroup_size_ = other.workgroup_size_;
-        dispatch_groups_x_ = other.dispatch_groups_x_;
-        grid_ = other.grid_;
-        grid_groups_x_ = other.grid_groups_x_;
-        world_groups_x_ = other.world_groups_x_;
-        sensor_groups_x_ = other.sensor_groups_x_;
-        timestamps_ = std::move(other.timestamps_);
-        for (uint32_t i = 0; i < kPipelineCount; ++i) {
-            shaders_[i] = std::exchange(other.shaders_[i], VK_NULL_HANDLE);
-            pipelines_[i] = std::exchange(other.pipelines_[i], VK_NULL_HANDLE);
-        }
-    }
-    return *this;
 }
 
 StepRecorder::~StepRecorder() { destroy(); }
