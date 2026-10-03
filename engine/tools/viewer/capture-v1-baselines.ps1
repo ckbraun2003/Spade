@@ -419,8 +419,15 @@ function Invoke-Scene($p) {
         $rec.stdout = [ordered]@{ lines = $fps.Count; v1_fps_median = (Get-Median $fps) }
     }
     $rec.ok = $ok
-    ($rec | ConvertTo-Json -Depth 6) | Out-File -Encoding utf8 (Join-Path $dir 'capture.json')
+    Write-Json $rec 6 (Join-Path $dir 'capture.json')
     return $ok
+}
+
+# UTF-8 without a BOM. Windows PowerShell 5.1's Out-File -Encoding utf8 writes a
+# BOM, which strict JSON readers (Python's json.load) reject.
+function Write-Json($value, [int] $depth, [string] $path) {
+    $text = ($value | ConvertTo-Json -Depth $depth) + "`n"
+    [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Get-Median([double[]] $v) {
@@ -485,7 +492,7 @@ if ($doTrajectories) {
         }
     }
     New-Item -ItemType Directory -Force $OutDir | Out-Null
-    ($performance | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 (Join-Path $OutDir 'performance.json')
+    Write-Json $performance 5 (Join-Path $OutDir 'performance.json')
 }
 if ($doFrames) {
     foreach ($p in $plan) {
