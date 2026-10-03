@@ -20,9 +20,9 @@ namespace spade::viewer {
 inline constexpr uint64_t kTrajectoryDefaultTicks = 3000;
 
 // Steps `scene` on the CPU backend for `ticks` ticks and writes the trajectory
-// file to `path`. The format is documented in trajectory.cpp. Every line is
-// deterministic except those that start with "perf". Returns 0, or 1 after
-// printing what failed to stderr.
+// file to `path`; the format is in trajectory.cpp. Every line of the file is
+// deterministic. Step timings and memory go to stdout as "perf" lines.
+// Returns 0, or 1 after printing what failed to stderr.
 [[nodiscard]] int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path);
 
 }  // namespace spade::viewer

@@ -1,7 +1,9 @@
 // ---------------------------------------------------------------------------
 // trajectory.cpp -- see trajectory.hpp.
 //
-// THE FILE, line by line (text, LF, one record per line):
+// THE FILE, line by line (text, LF, one record per line). It is a CPU golden
+// (TD-1): everything in it is a pure function of the scene and the engine, so
+// two runs at one commit match byte for byte.
 //
 //   # <comment>
 //   scene <name>
@@ -12,23 +14,24 @@
 //   worlds <n>
 //   world <w> seed <seed>                    one per world
 //   bodies <n> vehicles <n>
-//   checkpoint <tick> <state> <world 0> ...  every 25 ticks, and the last;
+//   checkpoint <tick> <chain> <state> <world 0> ...
+//                                            every 25 ticks, and the last;
 //                                            16-hex-digit digests
-//                                            (testing/replay.hpp)
+//                                            (testing/replay.hpp). <chain>
+//                                            folds the state digest of every
+//                                            tick up to and including <tick>
 //   vehicle <tick> <i> <x> <y> <z>           every 25 ticks, each vehicle, m
 //   centroid <tick> <w> <x> <y> <z>          every 250 ticks, and the last,
 //                                            each world's mean body position, m
-//   chain <ticks> <digest>                   every tick's state digest, folded
-//   perf <name> <value>                      reference only; varies per run
 //
-// Everything except the perf lines is a pure function of the scene and the
-// engine, so two runs at one commit must match byte for byte. The chain
-// digest catches a divergence at ANY tick; the checkpoints then locate it to
-// within 25 ticks. The vehicle and centroid lines let a reader check that the
-// motion matches the scene's recorded characterisation (scenes.cpp).
+// The running chain catches a divergence at ANY tick, and it makes every
+// prefix checkable: a check that stops at tick N compares every checkpoint up
+// to N. The vehicle and centroid lines let a reader check the motion against
+// the scene's recorded characterisation (scenes.cpp).
 //
-// The clock is read around step(1) only, to time it; nothing stepped reads
-// it (L1).
+// Step timings and memory are NOT in the file, because they vary per run. They
+// go to stdout as "perf <name> <value>" lines. The clock is read around
+// step(1) only, to time it; nothing stepped reads it (L1).
 // ---------------------------------------------------------------------------
 #include "trajectory.hpp"
 
@@ -121,11 +124,11 @@ long long quantile(std::vector<long long> samples, double q) {
     return samples[rank];
 }
 
-void write_checkpoint(std::string& out, const spade::Simulation& sim, uint32_t world_count) {
-    appendf(out,"checkpoint %llu %016llx", static_cast<unsigned long long>(sim.tick().value),
-                 static_cast<unsigned long long>(spade::testing::state_digest(sim)));
+void write_checkpoint(std::string& out, const spade::Simulation& sim, uint32_t world_count, uint64_t chain) {
+    appendf(out, "checkpoint %llu %016llx %016llx", static_cast<unsigned long long>(sim.tick().value),
+            static_cast<unsigned long long>(chain), static_cast<unsigned long long>(spade::testing::state_digest(sim)));
     for (uint32_t w = 0; w < world_count; ++w) {
-        appendf(out," %016llx", static_cast<unsigned long long>(spade::testing::world_digest(sim, w)));
+        appendf(out, " %016llx", static_cast<unsigned long long>(spade::testing::world_digest(sim, w)));
     }
     out += '\n';
 }
@@ -137,7 +140,7 @@ void write_vehicles(std::string& out, const spade::Simulation& sim, const std::v
             throw std::runtime_error("vehicle " + std::to_string(i) + " has no body: " + body.error().context);
         }
         const glm::vec3 p = (*body)->pos;
-        appendf(out,"vehicle %llu %zu %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value),
+        appendf(out, "vehicle %llu %zu %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value),
                      i, static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z));
     }
 }
@@ -153,7 +156,7 @@ void write_centroids(std::string& out, const spade::Simulation& sim, uint32_t wo
             sum += b.pos;
         }
         const glm::vec3 c = bodies->empty() ? sum : sum / static_cast<float>(bodies->size());
-        appendf(out,"centroid %llu %u %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value), w,
+        appendf(out, "centroid %llu %u %.9g %.9g %.9g\n", static_cast<unsigned long long>(sim.tick().value), w,
                      static_cast<double>(c.x), static_cast<double>(c.y), static_cast<double>(c.z));
     }
 }
@@ -168,15 +171,15 @@ int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path
         const uint32_t world_count = sim.layout().world_count;
         const ProcessMemory after_setup = process_memory();
 
-        appendf(out,"# spade_viewer trajectory (INT-4, SL14b). Lines that start with \"perf\" vary per run.\n");
-        appendf(out,"scene %s\nbackend cpu\ndt_ns %llu\nsubsteps %u\nticks %llu\nworlds %u\n", scene.name.c_str(),
+        appendf(out, "# spade_viewer trajectory (INT-4, SL14b): a CPU golden. Format: engine/tools/viewer/trajectory.cpp.\n");
+        appendf(out, "scene %s\nbackend cpu\ndt_ns %llu\nsubsteps %u\nticks %llu\nworlds %u\n", scene.name.c_str(),
                      static_cast<unsigned long long>(kStepDtNs), kSubsteps, static_cast<unsigned long long>(ticks),
                      world_count);
         for (std::size_t w = 0; w < scene.worlds.worlds.size(); ++w) {
-            appendf(out,"world %zu seed %llu\n", w,
+            appendf(out, "world %zu seed %llu\n", w,
                          static_cast<unsigned long long>(scene.worlds.worlds[w].seed));
         }
-        appendf(out,"bodies %zu vehicles %zu\n", scene.bodies.size(), scene.vehicles.size());
+        appendf(out, "bodies %zu vehicles %zu\n", scene.bodies.size(), scene.vehicles.size());
 
         uint64_t chain = spade::kFnv1a64Offset;
         std::vector<long long> step_ns;
@@ -188,7 +191,7 @@ int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path
             }
             chain = fold_digest(chain, spade::testing::state_digest(sim));
             if (t % kCheckpointTicks == 0 || t == ticks) {
-                write_checkpoint(out, sim, world_count);
+                write_checkpoint(out, sim, world_count, chain);
                 write_vehicles(out, sim, run.vehicle_refs);
             }
             if (t % kCentroidTicks == 0 || t == ticks) {
@@ -214,20 +217,16 @@ int write_trajectory(const Scene& scene, uint64_t ticks, const std::string& path
                 step_ns.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
             }
         }
-        appendf(out,"chain %llu %016llx\n", static_cast<unsigned long long>(ticks),
-                     static_cast<unsigned long long>(chain));
-
+        // Per-run numbers go to stdout, so the golden file stays byte-stable.
         const ProcessMemory at_end = process_memory();
-        appendf(out,"perf step_ns_median %lld\n", quantile(step_ns, 0.5));
-        appendf(out,"perf step_ns_p90 %lld\n", quantile(step_ns, 0.9));
-        appendf(out,"perf step_samples %zu\n", step_ns.size());
-        appendf(out,"perf private_bytes_after_setup %llu\n",
-                     static_cast<unsigned long long>(after_setup.private_bytes));
-        appendf(out,"perf working_set_after_setup %llu\n",
-                     static_cast<unsigned long long>(after_setup.working_set));
-        appendf(out,"perf private_bytes_end %llu\n", static_cast<unsigned long long>(at_end.private_bytes));
-        appendf(out,"perf working_set_end %llu\n", static_cast<unsigned long long>(at_end.working_set));
-        appendf(out,"perf peak_working_set %llu\n", static_cast<unsigned long long>(at_end.peak_working_set));
+        std::printf("perf step_ns_median %lld\n", quantile(step_ns, 0.5));
+        std::printf("perf step_ns_p90 %lld\n", quantile(step_ns, 0.9));
+        std::printf("perf step_samples %zu\n", step_ns.size());
+        std::printf("perf private_bytes_after_setup %llu\n", static_cast<unsigned long long>(after_setup.private_bytes));
+        std::printf("perf working_set_after_setup %llu\n", static_cast<unsigned long long>(after_setup.working_set));
+        std::printf("perf private_bytes_end %llu\n", static_cast<unsigned long long>(at_end.private_bytes));
+        std::printf("perf working_set_end %llu\n", static_cast<unsigned long long>(at_end.working_set));
+        std::printf("perf peak_working_set %llu\n", static_cast<unsigned long long>(at_end.peak_working_set));
     } catch (const std::exception& e) {
         std::fprintf(stderr,
                      "spade_viewer: the trajectory of scene '%s' failed: %s. Nothing was written to '%s'; "
