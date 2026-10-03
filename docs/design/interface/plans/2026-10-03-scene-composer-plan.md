@@ -1,6 +1,6 @@
 # The scene composer: plan
 
-**Owner:** Interface (the composer), with Core reviewing, because it touches the world model. **Status:** plan only. Nothing is built until the user approves the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`). **Schema:** `2026-10-03-scene-file-draft.md` (Core's; approved as the base). This plan covers `SCN-005` and `SCN-007`.
+**Owner:** Core owns the `spade::scene` module: the schema and what composition means, because it is the world model (`02-realms`). Interface implements the composer, and Core reviews it (the lead, 2026-10-03). **Status:** plan only. Nothing is built until the user approves the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`). **Schema:** `2026-10-03-scene-file-draft.md` (Core's; approved as the base). This plan covers `SCN-005` and `SCN-007`.
 
 ## What it does
 
@@ -13,14 +13,18 @@ world file ──load──> WorldDesc ─┴─compose──> ComposedScene ─
 
 `compose` is a pure function of its two inputs. `instantiate` registers and spawns in a fixed order. Both are deterministic (`DBE-010`).
 
-## Where it lives (decision for the lead and Core)
+## Where it lives (decided by the lead, 2026-10-03)
 
-Kat composes scenes too (joint spec §2: "Spade scene ──compose (Spade utility)──> runnable world"). So the composer cannot be sandbox code: `SL2b` keeps the sandbox off the installed surface, and Kat links only installed targets.
+Kat composes scenes too (joint spec §2: "Spade scene ──compose (Spade utility)──> runnable world"). So the composer cannot be sandbox code: `SL2b` keeps the sandbox off the installed surface, and Kat links only installed targets. It is a new installed module, exported under `SL2`:
 
-- **Recommended:** a new installed module, `spade::scene` (`engine/scene/`), exported under `SL2`.
-  - `scene_file.{hpp,cpp}`: the schema's reader and canonical writer. The schema is Core's, so Core reviews this file.
-  - `compose.{hpp,cpp}`: the composer. Interface owns it.
-- **Alternative:** put both into `spade::world`. That module is Core's, and it would grow a dependency on `vehicles`.
+| | |
+|---|---|
+| Directory | `engine/scene/` |
+| Public headers | `scene/scene_file.hpp` (the schema: `SceneDesc`, the reader and the canonical writer); `scene/compose.hpp` (`ComposedScene`, `compose`, `compose_file`, `SceneRun`, `instantiate`) |
+| CMake target | `spade_scene`, a static library with the alias `spade::scene` and `EXPORT_NAME scene`, in the `spadeTargets` export set |
+| Links | `PUBLIC spade::world spade::sim` only (`vehicles::ModelType` reaches it through `spade::sim`). `PRIVATE $<BUILD_LOCAL_INTERFACE:spade_warnings>` and `$<BUILD_LOCAL_INTERFACE:spade_fp_strict>`, as every digest-feeding target has |
+| Install | `install(TARGETS spade_scene EXPORT spadeTargets ...)` and `install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")` |
+| Consumers | `tests/consumer` links `spade::scene` and composes one scene, so the installed package is proven. `scripts/consumer-smoke.sh` adds `spade_scene` to its library target list. `SL2`'s installed-module count becomes ten |
 
 ## The interface
 
@@ -118,7 +122,7 @@ Batching (`L8`) composes several scenes over one world, and builds a `WorldSetDe
 
 ## Tasks, after approval
 
-1. The `spade::scene` module and its install rules (`SL2`). The consumer smoke links it.
+1. The `spade::scene` target, its headers and install rules (`SL2`), as tabled above. `tests/consumer` links it, and `consumer-smoke.sh` lists it.
 2. `scene_file`: reader, canonical writer and round-trip tests. Core reviews the schema code.
 3. `compose`, with the tests above.
 4. `instantiate`, porting the viewer's setup order (`engine/tools/viewer/setup.cpp`).
