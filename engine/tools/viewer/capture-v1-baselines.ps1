@@ -429,9 +429,9 @@ function Get-Median([double[]] $v) {
     return $s[[int][Math]::Floor(($s.Count - 1) / 2)]
 }
 
-# The commit the goldens name. A dirty tree is said in the header, not hidden.
 # The commit the goldens name. Uncommitted edits to TRACKED files are said in
 # the header, not hidden; untracked files cannot change the binary.
+$dirty = ''
 try { if (@(& git -C $root status --porcelain --untracked-files=no 2>$null).Count -gt 0) { $dirty = ' with uncommitted changes' } } catch { $dirty = '' }
 $captured = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
 $oneLineReason = ($Reason -replace '[\r\n]+', ' ').Trim()
