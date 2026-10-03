@@ -319,7 +319,10 @@ struct GpuMesh {
         glDeleteShader(sh);
         // The driver's own log, forwarded verbatim. A shader failure reported
         // as "compile failed" sends the reader to guess; the log names a line.
-        return std::unexpected(Error{Code::internal, std::string(what) + " shader: " + log});
+        // `parts` are separate source strings, so a line is counted within
+        // its own part on drivers that prefix the string index.
+        const char* kind = stage == GL_VERTEX_SHADER ? " vertex" : " fragment";
+        return std::unexpected(Error{Code::internal, std::string(what) + kind + " shader: " + log});
     }
     return sh;
 }
