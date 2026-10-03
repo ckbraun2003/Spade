@@ -114,6 +114,15 @@ TEST(SceneDesignToPrincipal, AnIdentityRotationLeavesTheStartBitwise) {
     EXPECT_TRUE(same_bytes(spade::scene::design_to_principal(start, glm::quat(1.0f, 0.0f, 0.0f, 0.0f)), start));
 }
 
+// -q is the same rotation as q, so the negated identity also leaves the start
+// bitwise, rather than flipping the orientation's sign.
+TEST(SceneDesignToPrincipal, ANegatedIdentityRotationLeavesTheStartBitwise) {
+    VehicleSpawn start;
+    start.orient = kTilt;
+    start.omega_body = glm::vec3(0.1f, -0.0f, 0.3f);
+    EXPECT_TRUE(same_bytes(spade::scene::design_to_principal(start, glm::quat(-1.0f, 0.0f, 0.0f, 0.0f)), start));
+}
+
 // Core's rule (2026-10-03): orientation  orient_design x conj(q),
 // body rates  rotate(q, omega_design); velocity is world-frame and stays,
 // and so does rotor_omega.

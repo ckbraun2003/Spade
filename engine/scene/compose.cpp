@@ -16,8 +16,11 @@ bool is_identity(const SdfTransform& t) {
     return t.world_to_local == glm::mat4(1.0f) && t.scale == 1.0f;
 }
 
+// -q is the same rotation as q, so w == -1 is the identity too. Without this,
+// (-1, 0, 0, 0) would turn the orientation into -orient: the same attitude, in
+// other bits than a direct spawn() (Core's review, 2026-10-03).
 bool is_identity(const glm::quat& q) {
-    return q.w == 1.0f && q.x == 0.0f && q.y == 0.0f && q.z == 0.0f;
+    return (q.w == 1.0f || q.w == -1.0f) && q.x == 0.0f && q.y == 0.0f && q.z == 0.0f;
 }
 
 }  // namespace

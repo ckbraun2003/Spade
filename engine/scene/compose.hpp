@@ -40,8 +40,9 @@ namespace spade::scene {
 //   orientation  orient_design x conj(q)
 //   body rates   rotate(q, omega_body_design)
 // Velocity is world-frame and unchanged, and so are the position and
-// rotor_omega. An exactly-identity q returns the start untouched, so an
-// airframe whose axes already agree spawns bit-identical to a direct spawn().
+// rotor_omega. An exactly-identity q, (1, 0, 0, 0) or (-1, 0, 0, 0), returns
+// the start untouched, so an airframe whose axes already agree spawns
+// bit-identical to a direct spawn().
 [[nodiscard]] VehicleSpawn design_to_principal(const VehicleSpawn& start_design, const glm::quat& q_d2p);
 
 }  // namespace spade::scene
