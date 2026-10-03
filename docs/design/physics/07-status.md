@@ -1,6 +1,6 @@
 # Physics — status
 
-**The only place that says what exists today.** Checked against the tree at `master` `332a186` on 2026-10-02, by reading the code, CMake and tests, and re-checked at `42ce419`: nothing outside `docs/` changed between the two. Per-file counts are `TEST` macros in the source. The measured suite is the lead's run at `88a3c8b`: 921 tests on both presets, 919 passed, 2 skipped by design, 0 failed, and all 65 `gpu` tests ran (`../test-docs/07-status.md`).
+**The only place that says what exists today.** Checked against the tree at `master` `332a186` on 2026-10-02, by reading the code, CMake and tests, and re-checked at `42ce419`: nothing outside `docs/` changed between the two. Per-file counts are `TEST` macros in the source. The measured suite is the lead's run at `88a3c8b`: 921 tests on both presets, 919 passed, 2 skipped by design, 0 failed, and all 65 `gpu` tests ran (`../test-docs/07-status.md`). The GNSS golden's branch measured 925 tests on release: 923 passed, 2 skipped by design, 0 failed, 67 `gpu` ran (`physics/gnss-golden`, 2026-10-03).
 
 ## Specified vs built
 
@@ -18,18 +18,18 @@
 | Medium: density, wind, Dryden (`engine D6`) | **Built**, CPU and Vulkan. Position-independent | `world/medium.*`, `medium_update.slang`, `dryden.slang`; `test_dryden.cpp` (22), `test_rng_medium.cpp` (26) |
 | Medium temperature (`engine D6`) | **Not built** | — |
 | IMU | **Built**, CPU and Vulkan | `sensors/imu.*`, `sensor_imu.slang`; `test_imu.cpp` (17) |
-| GNSS | **Built**, CPU and Vulkan | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
+| GNSS | **Built**, CPU and Vulkan. The CPU path has a golden, `gnss_tumble` (`PHY-6`) | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
 | SPH field provider (`SL8`) | **Not built.** Resumes right after Core's module API lands (`PHY-4`); the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
 | Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only (merge `84e435b`). Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`, merge `df33f09`) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (14) |
-| Golden corpus | `ballistic`, `bounce`, `quad_hover`, `shower`, `two_world_isolation`. None carries a GNSS receiver; a GNSS scenario is ruled (`PHY-6`) and not built yet | `tests/golden/scenarios/` |
-| CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (31), `test_gpu_invariance.cpp` (14) |
+| Golden corpus | `ballistic`, `bounce`, `gnss_tumble`, `quad_hover`, `shower`, `two_world_isolation`. `gnss_tumble` is the only one with GNSS receivers. Its digest is provisional until the Docker gcc leg reproduces it (`TD-12`) | `tests/golden/scenarios/` |
+| CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (32), `test_gpu_invariance.cpp` (15) |
 | Grades (`PHY-2`, signed) | **Declared in prose only** (`04-verification.md`); the engine has no grade check yet (Core) | — |
 
 ## Ruled by the user (2026-10-02)
 
 The three decisions this page held are ruled; the rulings live in `00-decisions.md`. No user decision is open in this realm.
 
-1. **A GNSS golden scenario: now** (`PHY-6`). No corpus scenario carries a receiver yet, so the CPU GNSS is not reference grade under `L4`. Adding one moves no existing digest. Under `TD-12` its digest is provisional until the Docker gcc leg reproduces it.
+1. **A GNSS golden scenario: now** (`PHY-6`). Built as `gnss_tumble`. No existing digest moved. Under `TD-12` its digest is provisional until the Docker gcc leg reproduces it.
 2. **The Jacobi dynamic-contact path: kept unwired** (`PHY-5`). It returns as an alternative contact module with its own declared grade once modules exist.
 3. **SPH: right after Core's module API lands** (`PHY-4`), as the first field provider that is not a built-in.
 
@@ -44,8 +44,8 @@ The three decisions this page held are ruled; the rulings live in `00-decisions.
 
 ## Next for Physics
 
-1. **The GNSS golden** (`PHY-6`): a corpus scenario with a receiver, so the CPU GNSS becomes reference grade.
-2. **Physics's requirements for Core's module-API spec:** SPH as a field provider, and the translation lock (a constraint on both backends that lets the drone stand run on Vulkan). Core owns the decisions; Physics states what each needs. The translation lock is built with the module API.
+1. **The GNSS golden's cross-check** (`TD-12`): record the Docker gcc leg's result in `gnss_tumble`'s provenance when the leg exists.
+2. **The translation lock**, with Core: Physics's requirements are in `plans/2026-10-02-module-api-requirements.md`. Core builds the lock with the module API.
 3. **SPH as a field provider** (`PHY-4`, `SL8`), once the module API lands. Its plan goes in `plans/`.
 4. **Jacobi as a contact module** (`PHY-5`), once modules exist.
 

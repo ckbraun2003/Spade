@@ -320,6 +320,15 @@ TEST_F(GpuInvarianceTest, ShowerBitIdenticalAcrossWorkgroupSizes) {
     expect_workgroup_size_invariance(loaded->scenario, "shower");
 }
 
+// PHY-6: the corpus's GNSS scenario, so sensor_gnss.slang over live rows is
+// held to the same workgroup-size bit-identity as every other kernel.
+TEST_F(GpuInvarianceTest, GnssTumbleBitIdenticalAcrossWorkgroupSizes) {
+    if (!vulkan_available()) GTEST_SKIP();
+    const Result<LoadedScenario> loaded = load_scenario("gnss_tumble");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    expect_workgroup_size_invariance(loaded->scenario, "gnss_tumble");
+}
+
 // ===========================================================================
 // THE KNOB'S ALLOWED SET, AND WHAT HAPPENS OUTSIDE IT (S6 Task 9b).
 //
@@ -741,7 +750,7 @@ TEST(BackendSeamReproof, CpuPathCorpusDigestsUnchangedAtTip) {
         }
     }
     std::sort(paths.begin(), paths.end());
-    ASSERT_EQ(paths.size(), std::size_t{5}) << "the golden corpus is expected to carry five scenarios";
+    ASSERT_EQ(paths.size(), std::size_t{6}) << "the golden corpus is expected to carry six scenarios";
 
     for (const std::filesystem::path& path : paths) {
         const Result<LoadedScenario> loaded = spade::testing::scenario_from_yaml(path);
