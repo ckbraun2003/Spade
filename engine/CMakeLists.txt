@@ -536,6 +536,7 @@ add_library(spade::render_gl ALIAS spade_render_gl)
 
 target_include_directories(spade_render_gl PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
 )
 
 # No glad LINK: gl_renderer.cpp loads its GL entry points into a private table
@@ -557,6 +558,21 @@ target_link_libraries(spade_render_gl PRIVATE
     $<BUILD_LOCAL_INTERFACE:spade_warnings>
 )
 target_compile_features(spade_render_gl PUBLIC cxx_std_23)
+
+# Installed and exported as spade::render_gl, an optional module present when
+# SPADE_RENDER_GL is on (the lead, 2026-10-03). The editor's GL path (RND-4)
+# must be reachable from an installed Spade: SL2b lets the sandbox use only what
+# the engine installs, and a consumer like Kat's editor needs the same path.
+# Its interface holds only exported targets, so install(EXPORT) accepts it.
+# tests/consumer links it beside a second glad, and consumer-smoke.sh checks
+# that the archive defines and needs no glad symbol.
+set_target_properties(spade_render_gl PROPERTIES EXPORT_NAME render_gl)
+install(TARGETS spade_render_gl
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY render_gl/ DESTINATION include/render_gl FILES_MATCHING PATTERN "*.hpp")
 endif()
 
 # ------------------------------------------------------------------------------
