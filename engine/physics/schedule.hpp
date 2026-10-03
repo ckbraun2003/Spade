@@ -356,6 +356,11 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 // costs two pointer stores per world per substep and cannot go stale.
 void pass_force_elements(const SubstepContext&) noexcept;
 
+void pass_rotor_forces(const SubstepContext&) noexcept;
+void pass_drag(const SubstepContext&) noexcept;
+void pass_sensor_imu(const SubstepContext&) noexcept;
+void pass_sensor_gnss(const SubstepContext&) noexcept;
+
 // BehaviorsForce -- runs the attached BehaviorRegistry's force slot; inert
 // when none is attached (every golden scenario).
 //

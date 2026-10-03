@@ -103,4 +103,7 @@ struct CompiledSchedule {
 // as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
+// Today's engine as modules. The default module set of Simulation::create().
+[[nodiscard]] ModuleSet standard_modules();
+
 }  // namespace spade::modules

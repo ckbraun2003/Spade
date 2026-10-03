@@ -673,6 +673,7 @@ install(DIRECTORY physics/ DESTINATION include/physics FILES_MATCHING PATTERN "*
 add_library(spade_sim STATIC
     physics/schedule.cpp
     sim/module_schedule.cpp
+    sim/standard_modules.cpp
     # objects/spawn_helpers.cpp (SL9e, Plan A Task 11) -- HEADER DIRECTORY AND
     # COMPILING TARGET DELIBERATELY DIFFER, exactly as physics/schedule.cpp's
     # do a line above, and here it is not a preference but the only option:

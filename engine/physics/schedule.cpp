@@ -47,6 +47,38 @@ void pass_force_elements(const SubstepContext& ctx) noexcept {
     }
 }
 
+// The ForceElements chain, split into its two modules' passes. Each world's
+// bodies still receive rotors' wrench before drag's: the loops run world by
+// world, and worlds share no body, so splitting the per-world call pair into
+// two all-world loops changes no accumulation order.
+void pass_rotor_forces(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        const DrydenMedium medium(*w.dryden, *w.dryden_params);
+        vehicles::apply_rotors(w.bodies, w.rotors, *w.sdf, medium, *w.params, ctx.h);
+    }
+}
+
+void pass_drag(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        const DrydenMedium medium(*w.dryden, *w.dryden_params);
+        apply_drag(w.bodies, w.drag_elements, medium, *w.params, ctx.h);
+    }
+}
+
+// SensorSynthesis, split the same way. IMU and GNSS read bodies as const and
+// write disjoint arrays from separately tagged streams, so they commute.
+void pass_sensor_imu(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        sensors::synthesize_imu(w.bodies, w.imu_sensors, w.imu_ring, ctx.tick.value);
+    }
+}
+
+void pass_sensor_gnss(const SubstepContext& ctx) noexcept {
+    for (const WorldSubstepView& w : ctx.worlds) {
+        sensors::synthesize_gnss(w.bodies, w.gnss_sensors, w.gnss_ring, ctx.tick.value);
+    }
+}
+
 void pass_gravity(const SubstepContext&) noexcept {
     // INTENTIONALLY EMPTY. Gravity application lives inside Integrate (Task 9
     // op-order contract); this pass slot is retained for schedule-shape parity
