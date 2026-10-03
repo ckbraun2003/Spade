@@ -2,7 +2,7 @@
 
 **Owner:** Physics. **Status:** draft for the lead's review, 2026-10-03. It holds Spade's physics sections of the joint drone-builder spec with Kat, which the user confirmed on 2026-10-03.
 **Source:** the lead's brief of 2026-10-03. The joint spec's own text is not on this machine, so where this draft needs a fact from it, it names the gap (§13).
-**Depends on:** Core's module API (`../../core/plans/2026-10-02-module-api-design.md`). Stateful rows need its stage 4; tiers need its stage 5.
+**Depends on:** Core's module API (`../../core/plans/2026-10-02-module-api-design.md`). Stateful rows need its stage 4. Grade declarations need its stage 5. The propeller tier is per-rotor data, not a role (§13).
 
 After reading this page, a reader can build the four models a drone builder needs from Spade, say which module-API stage each waits on, and check each one against a real airframe.
 
@@ -32,7 +32,7 @@ Four rulings from the owners shape every model:
 | Steady-state solver | Host function, not in the step | Nothing | reference, by closed forms | not applicable |
 | Motor and ESC | A row per rotor, body-attached; runs in the rotor pass | Stage 4 | reference, with a golden | banded |
 | Battery | A row per vehicle, body-attached; runs in the rotor pass | Stage 4 | reference, with a golden | banded |
-| Propeller tier (coefficient tables) | An alternative to today's momentum-theory propulsor | Stage 5 | reference, with a golden | banded |
+| Propeller tier (coefficient tables) | A variant of the rotor module, chosen per rotor beside momentum theory | Stage 4 (its per-rotor data) | reference, with a golden | banded |
 
 The first three rows need no module API. They can be built and tested now, which de-risks the stateful work.
 
@@ -118,6 +118,8 @@ The primitives are a point mass, a solid sphere, a solid box, a solid cylinder a
 The engine stores a diagonal body-frame inertia. So the utility diagonalizes `I` with a cyclic Jacobi method in double. That method makes no rotation for a matrix that is already diagonal, so a symmetric airframe keeps its design axes exactly. Each principal axis takes the label of the design axis it is nearest to, signed to keep a right-handed frame.
 
 **Outputs.** The total mass, the centre of mass, the principal moments and the design-to-body rotation. Each is rounded to fp32 once, at the end. The template expresses every mount pose in that body frame.
+
+**The rotation is published for the template.** When the principal axes differ from the design axes, every consumer of the design frame must apply it. That includes a flight package's commands and the IMU mount.
 
 **Validation.** A tensor must be symmetric and positive semidefinite, and it must satisfy the triangle inequality (`I₁ + I₂ ≥ I₃`). The utility refuses a part that fails, and it checks the composite the same way.
 
@@ -246,6 +248,6 @@ The research airframe is the one the joint spec names. Its check is a validation
 
 ## 13. Open questions
 
-1. **Tier selection.** Should the propeller tier be a role (one tier for the whole simulation) or per-rotor data, so one world can mix drones? Physics recommends per-rotor data, so a role is unnecessary here. Core and the lead decide.
+1. **Tier selection. Decided by the lead (2026-10-03): per-rotor data.** Momentum theory and the coefficient table are two variants of one rotor module. A role is for a tier that changes passes or state, such as BEMT.
 2. **The command API.** A duty command needs a host call beside `set_rotor_commands`. That is Core's and Interface's.
 3. **The joint spec's facts.** This draft assumes the joint spec names the research airframe and the builder's part catalog. Physics needs both before the validation suite and the defaults can be written.
