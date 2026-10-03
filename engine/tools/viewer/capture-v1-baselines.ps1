@@ -34,15 +34,20 @@
     scene LOOKS like -- geometry, motion between moments, materials -- which is
     SL14b's visual axis ("never a pixel diff").
 
+    The durable half (part B) runs first for each viewer scene: the viewer's
+    headless mode, `spade_viewer <scene> cpu --trajectory <file>`, with no
+    window and no v1. It writes the scene's trajectory baseline.
+
     Output, per scene, under -OutDir:
+      viewer/<scene>.trajectory.txt
       viewer/<scene>/   t0.png t1.png t3.png t8.png   stdout.txt  capture.json
       sandbox/<scene>/  paused.png play2.png play5.png play10.png
                         stdout.txt  capture.json
     t0 is the first non-blank frame; the others are seconds after it. For the
     Sandbox, playN is N seconds after motion was first seen.
 
-    An existing scene directory is REFUSED unless -Force is given, in which case
-    it is deleted first, so every capture lands in a fresh directory.
+    An existing scene directory or trajectory file is REFUSED unless -Force is
+    given, in which case it is deleted first, so every capture is fresh.
 
     Exit status: 0 every scene captured; 1 a scene failed (each is named);
     2 usage or refusal, before anything is launched.
@@ -59,8 +64,11 @@
 .PARAMETER OutDir
     Where scene directories are written. Default: tests/golden/v1-baselines.
 
+.PARAMETER Part
+    all (default), frames (part A only) or trajectories (part B only).
+
 .PARAMETER Force
-    Replace scene directories that already exist.
+    Replace scene directories and trajectory files that already exist.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File engine\tools\viewer\capture-v1-baselines.ps1 -Scene drop,sandbox:spheres -OutDir $env:TEMP\v1-dry
@@ -71,6 +79,7 @@ param(
                           'sandbox:fluid', 'sandbox:spheres', 'sandbox:cubes'),
     [string] $BinDir,
     [string] $OutDir,
+    [string] $Part = 'all',
     [switch] $Force
 )
 
@@ -102,11 +111,18 @@ foreach ($s in $Scene) {
         $plan += [pscustomobject]@{ Tool = 'viewer'; Name = $s; Exe = 'spade_viewer.exe'; Args = @($s, 'cpu') }
     }
 }
+if (@('all', 'frames', 'trajectories') -notcontains $Part) { Refuse "unknown -Part '$Part'. Use all, frames or trajectories." }
+$doFrames = $Part -ne 'trajectories'
+$doTrajectories = $Part -ne 'frames'
 foreach ($p in $plan) {
     $exe = Join-Path $BinDir $p.Exe
-    if (-not (Test-Path $exe)) { Refuse "$exe does not exist (build it, or pass -BinDir)" }
+    if (-not (Test-Path $exe)) { Refuse "$exe does not exist. Build it, or pass -BinDir." }
     $dir = Join-Path $OutDir (Join-Path $p.Tool $p.Name)
-    if ((Test-Path $dir) -and -not $Force) { Refuse "$dir exists; pass -Force to replace it" }
+    if ($doFrames -and (Test-Path $dir) -and -not $Force) { Refuse "$dir exists. Pass -Force to replace it." }
+    $traj = Join-Path $OutDir "viewer\$($p.Name).trajectory.txt"
+    if ($doTrajectories -and $p.Tool -eq 'viewer' -and (Test-Path $traj) -and -not $Force) {
+        Refuse "$traj exists. Pass -Force to replace it."
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -374,22 +390,52 @@ function Get-Median([double[]] $v) {
     return $s[[int][Math]::Floor(($s.Count - 1) / 2)]
 }
 
+# Part B for one viewer scene: the headless trajectory, written by the viewer.
+function Invoke-Trajectory($p) {
+    $file = Join-Path $OutDir "viewer\$($p.Name).trajectory.txt"
+    New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
+    if (Test-Path $file) { Remove-Item -Force $file }
+    $err = Join-Path $env:TEMP "capture-v1-baselines-$($p.Name).stderr.txt"
+    $proc = Start-Process -FilePath (Join-Path $BinDir 'spade_viewer.exe') -WorkingDirectory $BinDir -NoNewWindow `
+        -Wait -PassThru -ArgumentList @($p.Name, 'cpu', '--trajectory', $file) -RedirectStandardError $err
+    if ($proc.ExitCode -ne 0) {
+        Write-Host (Get-Content $err -Raw)
+        return $false
+    }
+    return $true
+}
+
 $failed = @()
-foreach ($p in $plan) {
-    $label = "$($p.Tool)/$($p.Name)"
-    Write-Host "capture-v1-baselines: $label ..."
-    $t = Get-Date
-    if (Invoke-Scene $p) {
-        Write-Host ('capture-v1-baselines: {0} ok, {1:N0} s' -f $label, ((Get-Date) - $t).TotalSeconds)
-    } else {
-        $why = (Get-Content (Join-Path $OutDir "$($p.Tool)\$($p.Name)\capture.json") -Raw | ConvertFrom-Json).failure
-        Write-Host "capture-v1-baselines: FAIL $label -- $why"
-        $failed += $label
+if ($doTrajectories) {
+    foreach ($p in ($plan | Where-Object { $_.Tool -eq 'viewer' })) {
+        $label = "trajectory/$($p.Name)"
+        Write-Host "capture-v1-baselines: $label ..."
+        $t = Get-Date
+        if (Invoke-Trajectory $p) {
+            Write-Host ('capture-v1-baselines: {0} ok, {1:N0} s' -f $label, ((Get-Date) - $t).TotalSeconds)
+        } else {
+            Write-Host "capture-v1-baselines: FAIL $label. The viewer's message is above. Fix it, then run again with -Force."
+            $failed += $label
+        }
+    }
+}
+if ($doFrames) {
+    foreach ($p in $plan) {
+        $label = "$($p.Tool)/$($p.Name)"
+        Write-Host "capture-v1-baselines: $label ..."
+        $t = Get-Date
+        if (Invoke-Scene $p) {
+            Write-Host ('capture-v1-baselines: {0} ok, {1:N0} s' -f $label, ((Get-Date) - $t).TotalSeconds)
+        } else {
+            $why = (Get-Content (Join-Path $OutDir "$($p.Tool)\$($p.Name)\capture.json") -Raw | ConvertFrom-Json).failure
+            Write-Host "capture-v1-baselines: FAIL $label -- $why. See its capture.json, then run again with -Force."
+            $failed += $label
+        }
     }
 }
 if ($failed.Count -gt 0) {
-    Write-Host "capture-v1-baselines: $($failed.Count) scene(s) failed: $($failed -join ', ')"
+    Write-Host "capture-v1-baselines: $($failed.Count) capture(s) failed: $($failed -join ', ')"
     exit 1
 }
-Write-Host "capture-v1-baselines: all $($plan.Count) scene(s) captured into $OutDir"
+Write-Host "capture-v1-baselines: every capture ($Part) is in $OutDir"
 exit 0
