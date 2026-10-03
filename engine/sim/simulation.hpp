@@ -1132,7 +1132,7 @@ public:
     // perturb the first four's roots.
     //
     // ---------------------------------------------------------------------
-    // WHAT IT REWRITES, AND WHY THE LIST IS EXACTLY THESE THREE THINGS
+    // WHAT IT REWRITES
     //
     // The world seed is NOT read by the step loop. It is read ONCE by each
     // system that derives a stream from it, and from then on the DERIVED
@@ -1158,18 +1158,18 @@ public:
     //      the new stream exactly like one added after it. World-local, like
     //      the spawn path's, so a world's noise still does not depend on where
     //      that world sits in the set.
+    //   4. Every LIVE GnssSensorRow::noise -- derived at OpKind::init_gnss via
+    //      sensors::gnss_noise_stream(), re-derived exactly as the IMU's are.
     //
-    // AND NOTHING ELSE -- a checkable claim, not a hope. WorldParams::seed is
-    // read at exactly three sites in the engine (create()'s row write,
-    // dryden_init(), and imu_noise_stream() at init_imu), and an rng::Stream
-    // is only ever constructed from a world seed at the latter two; every
-    // other stochastic value in the engine is a draw from one of those two
-    // streams, so re-deriving them re-randomizes everything downstream by
-    // construction. A future system that derives a THIRD stream from the world
-    // seed belongs in this list, and the A3 conformance test in
-    // tests/test_m1b_bar.cpp is what will catch its absence: a system left
-    // behind keeps its old stream, so a reseeded run would still agree with
-    // the un-reseeded one on that system's contribution.
+    // THE LIST IS reseed()'s BODY, one block per system that derives a stream
+    // from the world seed; every other stochastic value is a draw from one of
+    // those streams. A new seeded system adds its block there and a test that
+    // checks its stream directly, as Imu.ReseedRederivesALiveSensorsStream...
+    // and GnssReseed.ReseedRederivesAReceiversNoiseStream do. (Until
+    // 2026-10-02 this comment counted "exactly three" seed sites and pointed
+    // at test_m1b_bar.cpp's A3 cases as the backstop; GNSS was a fourth site,
+    // and those worlds carry no receiver, so nothing failed.) The module API
+    // replaces this hand-kept list: each module declares its seeded streams.
     //
     // WHAT IT DOES NOT TOUCH: THE PAST. Ring contents, ring cursors
     // (last_index), rate-divider phase and the accumulated bias states all
