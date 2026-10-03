@@ -34,6 +34,8 @@
 | `fe4934a` as committed | PASS, 5 s | **FAIL**, 1031 s: 1 of 263 steps | blocked | blocked | blocked | PASS, 236 s | 1272 s | 845 MB |
 | `fe4934a` + braces at `tests/test_sandbox_drone.cpp:76`, in the container only | PASS, 3 s | PASS, 13 s | **908 run: 906 passed, 2 skipped, 0 failed**, 55 s | no matrix in this commit | PASS, 62 s | PASS, 45 s | 178 s | 362 MB |
 | **`b82b72e`, committed, no local change** | PASS, 7 s | PASS, 849 s (a near-full rebuild), `build-errors.txt` empty | **908 run: 906 passed, 2 skipped, 0 failed**, 64 s | no matrix in this commit | PASS, 79 s | PASS, 144 s | 1143 s | 775 MB |
+| `SL2b` red: `81515dd`, `-Step consumer` | PASS, 6 s | PASS, 802 s | not in this step | not in this step | **FAIL** at sandbox-configure, as intended, 70 s | PASS, sandbox on, 245 s | 1123 s | 643 MB |
+| **`SL2b` green: `af6eb7b`, all** | PASS, 6 s | PASS, 0 s | **916 run: 914 passed, 2 skipped, 0 failed**, 84 s | **5 lines for 5 cases** | PASS, sandbox on, 185 s | PASS, sandbox on, 133 s | 409 s | 419 MB |
 
 - **Green on committed code:** `b82b72e` built and passed every part with nothing patched. It reproduced `RND-5`'s regenerated frame hashes, which makes that regeneration final (`TD-12`); Rendering's `0c0a8b2` cites the run. Its summary is in Rendering's worktree, `build-docker/b82b72ede453/`.
 - **Master was gcc-red from `da2fcf5` to `7ed7572`.**
@@ -41,6 +43,10 @@
   - Core's leg run at `adae0dd` found it. I reproduced it at `da2fcf5` with the gcc check.
   - Rendering's `a77f6d6`, merged as `7ed7572`, fixed it.
   - The answer is the standing gcc check before review (`02-build-and-gate.md`).
+- **`SL2b`'s guard went red, then green** (Interface's plan `513e1b8`). Both commits are on `interface/sl2b-guard`, on master `d4c2030`, patch-identical to the reviewed pair. It is the first use of the leg's sandbox stage; both summaries read `sandbox on (consumer-smoke.sh --sandbox)`.
+  - **Red:** the build passed, so the red counts. Consumer ON then failed with "SL2b: the in-tree sandbox links spade::render_gl, but the installed package ... has no spade::render_gl".
+  - **Green:** both consumers passed with the sandbox built against each prefix and run headless. Green also showed "render_gl OK: an empty loader is refused" and "render_gl-symbols ... ok (no glad symbol ...)".
+- **The agreement bands' `gcc-release` attestation** comes from the green run. All five d and d_probe values are bit-identical to the `msvc-release` pins in `agreement_bands.json`, compared as doubles. Only `msvc-debug` is still pending.
 
 - **The one gcc error:** `tests/test_sandbox_drone.cpp:76:16` `-Werror=dangling-else`, a gtest `EXPECT_LT` inside an unbraced `if`. It is Interface's, routed by the lead. Every other translation unit compiles under `-Wall -Wextra -Wpedantic -Werror`.
 - **`TD-12`, first cross-check since the split:**
