@@ -653,6 +653,13 @@ Result<void> StepRecorder::record() {
                 case GpuRecipe::sensor_gnss:
                     emit(kPipelineSensorGnss, params, sensor_groups_x_);
                     break;
+                case GpuRecipe::environment_sample:
+                case GpuRecipe::dryden_sample:
+                    // Nothing is recorded YET (module-API stage 3, Task 2):
+                    // the GPU kernels still compute the medium and gravity
+                    // inline, so nothing on the GPU reads a sample. Task 3
+                    // gives these recipes their kernels.
+                    break;
             }
 
             // S6 Task 10: "pass i just finished" mark -- boundary i + 1 of this

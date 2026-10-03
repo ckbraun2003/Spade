@@ -584,6 +584,8 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     sim.views_.resize(layout->world_count);
+    // The field sample rows, sized once and zero-filled (module-API stage 3).
+    sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
     // run per body slot in the whole set.
@@ -809,6 +811,8 @@ Result<void> Simulation::rebuild_views() {
         view.body_slot_to_world = body_map->subspan(body_begin, layout_.body_capacity);
         view.dryden = &(*dryden)[w];
         view.dryden_params = &configs_[w].turbulence;
+        view.fields = std::span<float>(field_rows_).subspan(static_cast<std::size_t>(w) * schedule_.field_stride,
+                                                            schedule_.field_stride);
         view.sdf = &configs_[w].sdf;
         view.contacts = configs_[w].contacts;
         view.grid = configs_[w].grid;
@@ -2781,6 +2785,22 @@ Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 p
     // DrydenMedium the ForceElements pass builds for this world.
     const DrydenMedium medium((*dryden)[world_index], configs_[world_index].turbulence);
     return medium.sample(**params, pos);
+}
+
+Result<std::vector<float>> Simulation::field_samples(uint32_t world_index) const {
+    if (world_index >= layout_.world_count) {
+        return std::unexpected(invalid("field_samples: world " + std::to_string(world_index) +
+                                       " is outside a set of " + std::to_string(layout_.world_count)));
+    }
+    if (vulkan_backend_) {
+        // The GPU does not sample fields yet: its kernels still compute the
+        // medium inline (module-API stage 3, Task 3 adds the device rows).
+        return std::unexpected(Error{Code::unavailable,
+                                     "field_samples: the Vulkan backend does not sample fields yet"});
+    }
+    const std::size_t stride = schedule_.field_stride;
+    const auto begin = field_rows_.begin() + static_cast<std::ptrdiff_t>(world_index * stride);
+    return std::vector<float>(begin, begin + static_cast<std::ptrdiff_t>(stride));
 }
 
 }  // namespace spade

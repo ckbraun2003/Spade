@@ -29,6 +29,8 @@
 //   integrate           integrate                     per BODY
 //   sensor_imu          sensor_imu                    per SENSOR SLOT
 //   sensor_gnss         sensor_gnss                   per SENSOR SLOT
+//   environment_sample  nothing yet (stage 3 Task 3)  --
+//   dryden_sample       nothing yet (stage 3 Task 3)  --
 //
 // Rotors then drag is a NUMERICAL contract when both are in the set: both
 // accumulate into the same two float3 accumulators and fp32 addition is not

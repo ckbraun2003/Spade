@@ -16,6 +16,7 @@
 
 #include "compute/backend.hpp"
 #include "core/error.hpp"
+#include "physics/field_row.hpp"
 
 namespace spade::physics {
 struct SubstepContext;
@@ -92,10 +93,11 @@ struct FieldDecl {
 //   gravity  vec3    m/s^2   floats 0..2
 //   density  scalar  kg/m^3  float  3
 //   wind     vec3    m/s     floats 4..6   (float 7 is padding)
-inline constexpr uint32_t kFieldGravityOffset = 0;
-inline constexpr uint32_t kFieldDensityOffset = 3;
-inline constexpr uint32_t kFieldWindOffset = 4;
-inline constexpr uint32_t kFieldBuiltinFloats = 8;
+// (The values live in physics/field_row.hpp, beside the passes that use them.)
+inline constexpr uint32_t kFieldGravityOffset = physics::kFieldGravityOffset;
+inline constexpr uint32_t kFieldDensityOffset = physics::kFieldDensityOffset;
+inline constexpr uint32_t kFieldWindOffset = physics::kFieldWindOffset;
+inline constexpr uint32_t kFieldBuiltinFloats = physics::kFieldBuiltinFloats;
 
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities

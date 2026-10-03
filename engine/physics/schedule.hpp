@@ -7,6 +7,7 @@
 
 #include "core/time.hpp"
 #include "physics/contacts.hpp"
+#include "physics/field_row.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
 #include "sensors/gnss.hpp"
@@ -151,6 +152,11 @@ struct WorldSubstepView {
     // dependency arrow still points down: vehicles/ knows nothing about the
     // schedule, and spade_physics itself does not compile this header.
     std::span<vehicles::RotorRow> rotors;
+
+    // This world's field sample row (physics/field_row.hpp): the compiled
+    // schedule's field_stride floats. Scratch, not state -- the Fields phase's
+    // provider passes write it every substep before any reader reads it.
+    std::span<float> fields;
 };
 
 // ---------------------------------------------------------------------------
@@ -282,6 +288,15 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 // snapshot restore cannot leave one pointing at stale rows.
 void pass_rotor_forces(const SubstepContext&) noexcept;
 void pass_drag(const SubstepContext&) noexcept;
+
+// The built-in field providers (module-API stage 3), in Fields. Each writes its
+// fields into every world's sample row:
+//   pass_environment_sample  gravity and density, copied from WorldParams;
+//   pass_dryden_sample       wind = WorldParams::wind + the world's Dryden gust,
+//                            the expression DrydenMedium::sample() returns.
+// Both are position-independent: one value per world.
+void pass_environment_sample(const SubstepContext&) noexcept;
+void pass_dryden_sample(const SubstepContext&) noexcept;
 
 // behaviors.force -- runs the attached BehaviorRegistry's force slot; inert
 // when none is attached (every golden scenario).
