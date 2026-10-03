@@ -6,3 +6,4 @@ Active Rendering plans, one file each, named `YYYY-MM-DD-<topic>.md`. The drone 
 - `2026-10-03-field-channel-plan.md`: a camera draws a registered field as a channel, on the CPU and GL. Part A is done (merged at `3605ddf`). Step 3 is Interface's. Part B waits on Core's stage 3.
 - `2026-10-03-default-sun-plan.md`: `RND-5`, the default sun above the horizon, with four frame goldens regenerated and reproduced by the Docker leg. Done, merged at `a46bb86`.
 - `2026-10-03-agreement-bands-plan.md`: agreement bands on Spade's own worlds (`RS4`, `SR-30`, `SR-31`, `TD-2`), replacing the 30 cases that moved to KAT. Done, merged at `da2fcf5` (5 cases; two defects recorded as debt).
+- `2026-10-03-raster-defects-plan.md`: root causes and fix options for the two defects the agreement matrix found (heightfield past the world bounds; CSG walls about one cell thick). Draft, for the lead's review.
