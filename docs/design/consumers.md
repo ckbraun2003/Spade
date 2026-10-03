@@ -12,6 +12,9 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | World description | the world-file format (`world_version`, owned by Core) |
 | Session ring and replay | the snapshot format (`kSnapshotVersion`, owned by Core) |
 
+**Format changes a consumer sees:**
+- **Snapshot format v2** (module API stage 1, merged `062e1fa`). The header grows to 40 bytes and carries the configuration identity: the module set, versions and compiled order. A v1 blob is refused with the version message. A blob restores only into a simulation with the same identity (`L2`). KAT passes blobs through without parsing them, so a KAT session ring that holds v1 blobs cannot restore them after the upgrade.
+
 **What lives in KAT, not here:**
 - The sim-host contract **C5** and its adapter (`dronesim/spade/`): the mapping from a drone description to Spade constructs, plus KAT-side timing and stamping.
 - KAT's content: worlds, scenes, meshes.
@@ -39,7 +42,9 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | `SL16` (KAT half) | KAT-side vocabulary of the 24th spec | record; the Spade half is in `test-docs/00-decisions.md` |
 | `interleaving-shuffle.md` (§13.3, open) | A KAT runtime proposal; Spade only supplies `state_digest` | KAT's to decide (`superseded/2026-09-consolidation/interleaving-shuffle.md`) |
 
-**Moving to KAT:** the 30 render-agreement cases and the scene-drift guard that read KAT's worlds from `../KAT` (restructure plan R4). Spade rebuilds its agreement bands on its own content (`backlog.md`).
+**Moved to KAT** (Kat `2a7b63cc`, 2026-10-03): the 30 render-agreement cases and the bookmark check, now against Spade's installed public render API only, with their data owned by Kat. Kat's sim-host tests no longer read Spade's `tests/golden`; nothing in Kat reads a Spade checkout. Spade rebuilds its agreement bands on its own content (`backlog.md`).
+
+**The drone builder** is a joint spec with Kat (`plans/2026-10-03-drone-builder-engine-design.md`). Spade pushes and Kat pulls, by the user's ruling of 2026-10-03.
 
 ## Other consumers
 
