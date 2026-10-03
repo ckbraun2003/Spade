@@ -1,6 +1,6 @@
 # The Docker leg (`TD-11`, `TD-12`): plan
 
-**Owner:** Test/Docs, with Interface for the consumer half. **Status:** draft, for the lead's review. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
+**Owner:** Test/Docs, with Interface for the consumer half. **Status:** approved by the lead 2026-10-02 (`115e59b`); all five tasks done. Task 4's run (2026-10-03, `fe4934a`) was approved by the lead; the branch is for review. This is item 1 of "What's next" (`../07-status.md`) and first in the backlog's order. Branch: `test-docs/docker-leg`, in `../spade-wt/test-docs`.
 
 ## Goal
 
@@ -37,17 +37,41 @@ One command on the development box builds a Linux/gcc image, builds a commit of 
 
 ## Tasks
 
-- [ ] **1. Image.** `scripts/docker-leg.Dockerfile` and the driver's `image` step. Proof: the image builds; `gcc-13 --version`, `cmake --version` and `python3 --version` print in a throwaway container; the image size is recorded. *Short slot, about 10 min.*
-- [ ] **2. Driver.** Sync, volume, fixed-name detached container, follow/stop, output directory, dirty-tree notice and disk refusal. Proof:
+- [x] **1. Image.** `scripts/docker-leg.Dockerfile` and the driver's `image` step. Proof: the image builds; `gcc-13 --version`, `cmake --version` and `python3 --version` print in a throwaway container; the image size is recorded. *Short slot, about 10 min.*
+  - Done in slot 5, 2026-10-03: `spade-docker-leg:ed5552f460d7`, 762 MB, built in 228 s. Versions: gcc-13 13.3.0-6ubuntu2~24.04.1, cmake 3.28.3, Python 3.12.3, ninja 1.11.1.
+- [x] **2. Driver.** Sync, volume, fixed-name detached container, follow/stop, output directory, dirty-tree notice and disk refusal. Proof:
   - sync the same commit twice, and a file's mtime is unchanged;
   - sync a commit that changes one file, and only that file's mtime moves;
   - zero files with CR in `/leg/src` where the blob has none;
   - a second driver started during a run follows the first;
   - the disk threshold refuses when set above the free space (a control).
   *Same short slot as Task 1.*
-- [ ] **3. In-container steps** (`scripts/docker-leg.sh`): configure, build (`-k 0`), test, consumer, summary and exit code. Proof: `bash -n`; on my branch alone, `-Step consumer` fails with "consumer-smoke.sh is not in <sha>" (the `TD-5` control).
-- [ ] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
-- [ ] **5. Docs.**
+  - Done in slot 5. A re-sync left 0 of 358 mtimes changed. The probe commit `51ec3c5` (on no branch, `README.md` only) moved exactly one, `README.md`.
+  - No CR in `/leg/src`, and none in any tracked text blob. The control was a planted CR, which the container's grep finds.
+  - A second driver followed the running configure. Configure passed in 211 s, with peak memory 1.03 GB.
+  - The disk floor refused at `-MinFreeGB 999`.
+  - The slot found two defects, both fixed: a bare `tar` launched from Git Bash is GNU tar (fixed by calling Windows' `tar.exe` by path), and two watchers both ran `docker rm`.
+- [x] **3. In-container steps** (`scripts/docker-leg.sh`): configure, build (`-k 0`), test, consumer, summary and exit code. Proof: `bash -n`; on my branch alone, `-Step consumer` fails with "consumer-smoke.sh is not in <sha>" (the `TD-5` control).
+  - Done without a container: the roots are overridable (`DOCKER_LEG_ROOT`, `DOCKER_LEG_OUT`), and stand-in tools (`cmake`, `ctest`, `gcc-13`, `consumer-smoke.sh`) drove 7 scenarios under Git Bash, 35 checks, all green. The harness stays out of the repo, by the lead's decision. The scenarios:
+    1. **all pass:** exit 0; every part PASS; the test totals, the excluded-`gpu` count, the registered names and the skipped test by name all reach the summary.
+    2. **build fails:** exit 1; test and consumer ON are BLOCKED by build, and consumer OFF still runs. The error is listed repo-relative (`engine/...:12:5: error: ...`) with no absolute source prefix, and the `FAILED:` line is kept.
+    3. **configure fails:** build is blocked by configure, test is blocked by build, and consumer OFF still runs.
+    4. **tests fail** (ctest exit 8): both consumer parts still run, and the failed test is named.
+    5. **`consumer-smoke.sh` absent:** both consumer parts fail, and the log names the missing script and the commit (`TD-5`).
+    6. **the recipe fails:** its exit code is carried into the summary.
+    7. **an unknown step:** usage, exit 2.
+  - Controls: a build step that swallows its exit code fails 7 checks, and a leg that always exits 0 fails 5.
+  - **Later additions:**
+    - The leg runs the viewer guard at full length (`SPADE_FULL_VIEWER_TRAJECTORIES=1`, `6a788ce`).
+    - An `agreement` part collects Rendering's per-case `agreement:` lines for the band file's gcc attestation (`ae7667f`). A commit without the matrix has nothing to collect; one with it must give one line per registered case.
+    - The harness grew to 9 scenarios and 46 checks, all green: no matrix; 7 of 7 lines; 5 of 7 fails; agreement blocked by a failed build. `ae7667f`'s message says 45 checks, which is wrong; the run shows 46.
+    - Control: a count check that always passes fails 2 checks.
+- [x] **4. First full run** on a local integration commit (my branch plus `interface/consumer-smoke`), never pushed. Report the gcc, `-Werror` and portability failures per realm with `file:line`, and don't fix them. Send Interface the consumer log. A red suite is a result, not a blocker. *Exclusive slot: an estimated 60–75 min the first time (image 5, fetch and configure 5, build 35–45 at `-j1`, tests 5, consumer 10–15), then 10–20 min for an incremental run.* Those figures are guesses until this run measures them.
+  - Done 2026-10-03 at `fe4934a`, which adds `test-docs/viewer-canary` to the commit. The measurements are in `../07-status.md`, "The Docker leg's first run".
+  - The whole run took 1272 s, not the 60–75 min estimated. The build failed in 1 of 263 steps: Interface's `tests/test_sandbox_drone.cpp:76`, `-Werror=dangling-else`. Consumer OFF passed.
+  - With that line braced in the container only, every part passed: 906 of 908 tests, consumer ON and OFF, and the `TD-12` cross-check of the scenario digests, the render goldens and the full-length viewer trajectories.
+  - The canary's mutation control went red, then green. Peak memory was 845 MB.
+- [x] **5. Docs.**
   - `02-build-and-gate.md`: the script table and a "Docker leg" section saying what it covers and what it leaves out: v1, `gpu`, Debug, Windows.
   - `07-status.md`: the `TD-11` row and the first run's results with provenance.
   - `01-verification.md` and the `07-status.md` debt line: "No gate runs it yet" becomes the leg (the lead's nit).

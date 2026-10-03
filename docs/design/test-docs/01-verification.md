@@ -8,7 +8,7 @@
 - **Labels** (`TD-10`). Every test carries `spade`, and a test in a `Gpu*` suite also gets `gpu` (`tests/AppendSpadeLabels.cmake`). Select or exclude with `ctest -L gpu` / `-LE gpu`.
 - **Timeouts.** 60 s per test. Overrides are per test and carry their reason beside them: the opt-in full `exp` sweep (900 s), the shower-pile chaos control (180 s), `Gpu*` (180 s).
 - **Layout.** One `test_<subject>.cpp` per concern. Test support lives in `engine/testing/` (`replay.hpp`, `scenario_file.hpp`, `parity.hpp`, `spirv_scan.hpp`): header-only, compiled into the tests, never installed.
-- **Device-gated tests** follow `TD-6` and `TD-13`. On the development box they run as part of the gate, and a skip there is named and does not count toward green. On a machine without a device they skip, and the Docker leg excludes them with `-LE gpu` (`TD-11`, not built yet).
+- **Device-gated tests** follow `TD-6` and `TD-13`. On the development box they run as part of the gate, and a skip there is named and does not count toward green. On a machine without a device they skip, and the Docker leg excludes them with `-LE gpu` (`TD-11`).
 
 **What a determinism test cannot see.** Two runs in one process read the same uninitialised memory and agree. A NaN is perfectly reproducible. Determinism proves reproducibility, not correctness, so a determinism test is never the only test of a pass.
 
@@ -28,7 +28,7 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 
 - **Scenario corpus.** `tests/golden/scenarios/*.scenario.yaml`, each naming a world in `tests/golden/worlds/`, an input script, a step count and its own `expected_digest` with a provenance block. Loaded by `scenario_file.hpp`. The digest is an FNV-1a fold over the state registry's walk (`replay.hpp`). Membership is pinned (`ScenarioCorpus.*`), so a scenario cannot drop out unnoticed.
 - **Render goldens.** `tests/golden/render/{frames,csg,tessellation}/manifest.json`: SHA-256 pins with changelog keys. Their content is Rendering's.
-- **Regenerating** follows `TD-1`, and a regeneration is final only once the Docker gcc leg reproduces it (`TD-12`; the leg is not built yet). The CPU is the only golden source (`L4`).
+- **Regenerating** follows `TD-1`, and a regeneration is final only once the Docker gcc leg reproduces it (`TD-12`; `02-build-and-gate.md`). The CPU is the only golden source (`L4`).
 
 ## Parity harness
 
@@ -51,4 +51,4 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 
 ## Consumer smoke
 
-`tests/consumer/` is an out-of-tree project that does `find_package(spade CONFIG)`, loads a world file and steps it. It proves the **installed** tree is usable, which no in-tree test can. Nothing runs it yet; the Docker leg will, with `SPADE_VULKAN` ON and OFF (`TD-11`, `../backlog.md`).
+`tests/consumer/` is an out-of-tree project that does `find_package(spade CONFIG)`, loads a world file and steps it. It proves the **installed** tree is usable, which no in-tree test can. The gate does not run it; the Docker leg does, with `SPADE_VULKAN` ON and OFF, through Interface's `scripts/consumer-smoke.sh` (`TD-11`, `02-build-and-gate.md`). Before the leg it ran only by hand: Core's run found restructure defect 3 (red at `b7616c1`, green at `6d40740`).
