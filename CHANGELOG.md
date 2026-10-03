@@ -4,6 +4,14 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API, stage 1: modules and the scheduler (2026-10-02 to 2026-10-03)
+
+- **Modules, compiled into one schedule.** A module (`sim/module.hpp`) is a name, a version and its passes. Each pass declares its phase, its placement, what it reads, writes or accumulates, and any `after` edges. `modules::compile_schedule()` orders a module set into the engine model's six phases, and refuses a conflict between two writers, an unknown quantity, a dangling edge or a cycle. `modules::standard_modules()` is today's engine as nine modules and compiles to the old pass order. The CPU step runs the compiled list.
+- **`Simulation::create()` takes a module set.** A new last parameter, `module_set`, follows `backend` and defaults to `modules::standard_modules()`, so existing calls are unchanged. An invalid set is refused at `create()`. `Simulation::schedule()` returns the compiled schedule. Until stage 2, a set other than the standard one is refused on Vulkan.
+- **Snapshot format v2, with the configuration identity.** The snapshot header now carries the configuration identity: an FNV-1a fold over the module set's names and versions and the compiled pass order. `Simulation::restore()` refuses a blob taken under another module set. A version-1 blob is refused with the version message, so snapshots written before this change cannot be restored (`docs/design/consumers.md`).
+- **`physics/schedule.hpp` is pass functions only.** `kSchedule`, `run_substep` and `substep_schedule` are gone. The rotor/drag and IMU/GNSS pairs are now separate passes. Gravity and Publish, which were empty, are removed.
+- **Merged as `062e1fa`.** Measured on the branch at `25f3c8a`: 959 tests, 0 failed, 2 skipped by design, all 70 GPU tests passed. No golden moved.
+
 ### The restructure (2026-10-01 to 2026-10-02)
 
 - **A design library of Spade's own.** `docs/design/` now opens on a charter (laws `L1`–`L8`), an engine model (modules, fields, regions, responders, grades) and a realm map, with one library per realm: `core/`, `physics/`, `rendering/`, `interface/`, `test-docs/`. Every legacy ruling ID has exactly one home row in a realm's `00-decisions.md`. The KAT-era documents moved, unedited, to `docs/design/superseded/`.
