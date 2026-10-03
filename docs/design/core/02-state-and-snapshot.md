@@ -20,9 +20,20 @@
 
 ## Snapshot and restore (`L2`)
 
-- **Format.** A header (magic `SPSN`, format version, schema hash, tick, world count, array count) is followed by one section per array, keyed by name. Blobs are untrusted input and are validated before anything is written.
+- **Format.** The blob starts with a header carrying:
+  - magic `SPSN`;
+  - format version (2);
+  - schema hash;
+  - tick;
+  - world count;
+  - array count;
+  - configuration identity: an FNV-1a fold over the module set, taking each module's name and version in set order, then each compiled pass's name and phase in compiled order (`sim/module.hpp`, `compile_schedule`).
+
+  One section per array follows, keyed by name. Blobs are untrusted input and are validated before anything is written. A version-1 blob is refused with the version message.
 - **Snapshot refuses a non-empty structural queue** rather than dropping it.
-- **Restore refuses a different configuration.** The configuration hash is stored in a registered row, and restore compares it byte for byte. Restore discards the structural queue. `dt`, substeps and the module set are configuration: they are not in the blob, and they must match.
+- **Restore refuses a different configuration.** The configuration hash is stored in a registered row, and restore compares it byte for byte. Before that check, `Simulation::restore` refuses a blob whose configuration identity differs from its own module set's. Restore discards the structural queue. `dt`, substeps and the module set are configuration. The blob carries only their fingerprints, and they must match:
+  - `dt` and substeps through the configuration hash;
+  - the module set through the header's identity.
 - **Reset is restore plus reseed** (`engine A3`). `reseed(seed)` re-derives every stream from a new world seed after a restore, so a reset does not replay the same noise.
 - **Cursor state is in the blob; poll cursors are not** (`engine A4`). Ring write cursors, biases and streams are registered state. A caller's `since_index` is the caller's to keep.
 
@@ -32,6 +43,7 @@
 - **What it excludes.** Spawn lists and render-only data: visual references, materials, lighting, props and per-node materials.
 - **New fields must declare themselves.** A size guard on `WorldDesc` stops compilation until a new field is either hashed or explicitly excluded.
 - **Target.** The module set and the in-phase pass order join the hash (`01-modules-and-scheduler.md`).
+- **Today** they are checked through the snapshot header's configuration identity instead. `replay_config` is digested, so changing what it holds would move every golden. The identity moves into the hash with the next deliberate golden regeneration (module-API plan, Ruling 1).
 
 ## Randomness
 
