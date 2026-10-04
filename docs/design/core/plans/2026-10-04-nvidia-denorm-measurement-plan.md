@@ -34,17 +34,21 @@ It is configured only in a dedicated build tree, for example `build-ninja/releas
 
 ## The measurement
 
-- **M1. Probe kernels (Physics).**
-  - One test-only kernel, built only under the option, runs each fp32 operation class on inputs whose operands or results are subnormal. Each result is compared bit for bit with the CPU twin (x86 SSE, FTZ and DAZ off).
-  - The classes:
-    - load/store pass-through;
-    - add and subtract;
-    - multiply; fused and unfused multiply-add (as the kernels spell it);
-    - divide; sqrt;
-    - min, max, abs, negate; compares;
-    - float↔int conversion;
-    - Spade's own `exp32`/`log32`/`sin32` (`fp32_math`), whose subnormal paths `test_fp32_math.cpp` already enumerates.
-  - For each class, report one of: identical, inputs flushed (DAZ-like), outputs flushed (FTZ-like), or other (show the bits).
+- **M1. Probe kernels (Physics; class list from Physics' grep of every kernel's code lines, 2026-10-04).**
+  - **Already covered; run unchanged in the measurement build:** `fp32_math_probe.slang` and the 13 `GpuFp32Math` tests already diff `exp32`, `log32`, `sin32`, `cos32`, `log32_div` and correctly rounded division bit for bit against the host, at both subnormal boundaries.
+  - **New probe modes**, on the same `probe_runner`, for the primitive classes the kernels actually emit. Each is compared bit for bit with the CPU twin (x86 SSE, FTZ and DAZ off):
+    - load/store pass-through; add and subtract; multiply; abs and negate (PTX has `.ftz` forms of each); min and max;
+    - **mul then add**, both `NoContraction`, with a subnormal product. fma is never emitted: `-fp-mode precise` marks every contractable op, and the SPIR-V scan forbids sum-of-products opcodes. This also shows whether the driver honours `NoContraction`, since a fused and an unfused result differ here;
+    - **floor of a ±subnormal, then the int conversion.** `grid_build.slang` takes the cell index as `floor(pos / cell_size)`: preserved, floor(−denorm) is −1; flushed, it is −0 and the cell is 0. A flipped broadphase cell is the largest state consequence of any class;
+    - **compares against zero** (`<`, `>`, `==`) with ±subnormal operands, which feed contact and penetration sign tests and clamps. A flushed −denorm compares equal to 0;
+    - **max/min/clamp(x, 0)** with a subnormal x: 32 sites, in the rotor and command clamps;
+    - **sqrt of a subnormal, and division by a subnormal** (1/length: inf or finite). These are the glm mirrors: `length()` in drag and collision, and the quaternion normalize in integrate.
+  - **Cut:** int→float, which cannot produce a subnormal. float→int truncation of a subnormal is 0 either way; `floor` above is the case that matters.
+  - **Harness rules.**
+    - Inputs are loaded as uint and `asfloat`-ed, and outputs are `asuint`-ed, so no compiler constant-folds a literal subnormal under its own rules.
+    - Every class gets a control row on normal operands. A difference that also shows on normal operands is accuracy (div or sqrt ULP), not denormals.
+  - For each class, report one of: identical; inputs flushed (DAZ-like); outputs flushed (FTZ-like); accuracy (the control row differs too); or other (show the bits).
+  - **Out of physics scope:** `round()` and the 16 divisions in `raster_background.slang` are Rendering's; M2 covers them through the render gpu tests. No kernel does half-precision arithmetic.
 - **M2. The gpu suite (Core).** All 83 `Gpu*` tests in the unpinned build on the 3060 Ti. For each: pass or fail, and on failure, the quantity, element and bits that differ. The parity framework already reports these.
 - **M3. Cross-check (Core).** Map each M2 failure to an M1 class. A failure that maps to no class is a finding of its own.
 
