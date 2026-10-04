@@ -9,7 +9,7 @@
       "_provenance": "Measured 2026-10-03 on msvc-release (msvc-ninja-release, the Rendering worktree's tree) at a93b43f plus this commit's band file, 160x120, with SPADE_AGREEMENT_MEASURE set. Margin: Test/Docs' TD-2 rule, re-derived and signed off per case by Test/Docs on 2026-10-03. Every d and d_probe x 19200 is a whole pixel count. First framings: 7 cases; three were dropped and two reframed after their frames showed two raster defects, not framing faults (07-status debt): maximal's heightfield (PA-5) and shower's thin shell on the CSG grid. msvc-debug and gcc-release attestations follow in their own commit, with no band changed.",
       "attested": {
         "msvc-release": "measured 2026-10-03 at a93b43f",
-        "msvc-debug": "pending",
+        "msvc-debug": "measured 2026-10-03 at 65c2295 (the lead's debug-preset gate, SPADE_AGREEMENT_MEASURE): every d and d_probe bit-identical to msvc-release",
         "gcc-release": "measured 2026-10-03 at af6eb7b (Docker leg, Test/Docs; gcc-13 13.3.0, Release): every d and d_probe bit-identical to msvc-release"
       },
       "_attested_note": "Test/Docs' condition 1: d must be bit-identical across these toolchains. Version 1 pins from msvc-release; msvc-debug comes from the lead's debug-preset gate and gcc-release from the Docker leg, each run with SPADE_AGREEMENT_MEASURE set, and lands as an attestation commit that changes no band. Do not cite these bands as cross-checked while any entry is pending.",
@@ -33,7 +33,7 @@
           "probe": "ground_only",
           "d": {
             "msvc-release": 0.0078125,
-            "msvc-debug": null,
+            "msvc-debug": 0.0078125,
             "gcc-release": 0.0078125
           },
           "d_probe": 0.04572916666666667,
@@ -58,7 +58,7 @@
           "probe": "ground_only",
           "d": {
             "msvc-release": 0.00796875,
-            "msvc-debug": null,
+            "msvc-debug": 0.00796875,
             "gcc-release": 0.00796875
           },
           "d_probe": 0.054427083333333334,
@@ -83,7 +83,7 @@
           "probe": "empty",
           "d": {
             "msvc-release": 0.0011458333333333333,
-            "msvc-debug": null,
+            "msvc-debug": 0.0011458333333333333,
             "gcc-release": 0.0011458333333333333
           },
           "d_probe": 0.019375,
@@ -109,7 +109,7 @@
           "probe": "empty",
           "d": {
             "msvc-release": 0.0021354166666666665,
-            "msvc-debug": null,
+            "msvc-debug": 0.0021354166666666665,
             "gcc-release": 0.0021354166666666665
           },
           "d_probe": 0.13723958333333333,
@@ -135,7 +135,7 @@
           "probe": "empty",
           "d": {
             "msvc-release": 0.0028125,
-            "msvc-debug": null,
+            "msvc-debug": 0.0028125,
             "gcc-release": 0.0028125
           },
           "d_probe": 0.24552083333333333,
