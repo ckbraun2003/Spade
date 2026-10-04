@@ -11,10 +11,14 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Simulation, worlds, vehicles, sensors, rendering | the installed `spade::` targets |
 | World description | the world-file format (`world_version`, owned by Core) |
 | Session ring and replay | the snapshot format (`kSnapshotVersion`, owned by Core) |
+| Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
 - **Snapshot format v2** (module API stage 1, merged `062e1fa`). The header grows to 40 bytes and carries the configuration identity: the module set, versions and compiled order. A v1 blob is refused with the version message. A blob restores only into a simulation with the same identity (`L2`). KAT passes blobs through without parsing them, so a KAT session ring that holds v1 blobs cannot restore them after the upgrade.
 - **Module API stage 3** (merged `42b352a`). The standard module set gains an `environment` module and a `dryden.sample` pass, so its configuration identity changes. A snapshot taken before this merge is refused on restore. The snapshot format itself is unchanged.
+- **Design frame** (drone builder, Task B, merged `7532259`). A model type carries its design frame: `design_to_principal` and `com_offset`. `spawn` takes and `vehicle_state` returns poses in the design frame. The default is the identity frame, which changes nothing bit for bit.
+- **Snapshot format v3** (drone builder, Task C, merged `7d46b6d`). The header grows to 48 bytes and carries the model registry's identity: each registered model's identity (`vehicles::model_identity`) in registration order. A blob restores only into a Simulation that has registered the same models in the same order. Register them before `restore()`, even in a fresh Simulation. A v2 blob is refused with the version message.
+- **Scene file** (drone builder, Task D, merged `43eac56`). A new format: a scene holds a world reference plus placed assets and vehicles. It names its world by `world_hash()`, and composing it against another world is refused (`SCN-001`). Its text is canonical (`SCN-002`). Models register in the scene's `models` order (`SCN-005`). The first golden is `tests/golden/scenes/gate_run.scene.yaml`.
 
 **What lives in KAT, not here:**
 - The sim-host contract **C5** and its adapter (`dronesim/spade/`): the mapping from a drone description to Spade constructs, plus KAT-side timing and stamping.
