@@ -198,4 +198,11 @@ private:
 // succeeds (this program's Iris device).
 [[nodiscard]] bool vulkan_available() noexcept;
 
+// Whether this build's kernels pin fp32 denormal preservation (DenormPreserve
+// 32), so that a device without the capability is refused. True in every
+// build anyone installs. False only in the test-only NVIDIA measurement build
+// (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md), whose
+// kernels request no denormal mode and whose devices are admitted unpinned.
+[[nodiscard]] bool fp32_denormals_pinned() noexcept;
+
 }  // namespace spade::compute

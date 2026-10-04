@@ -1,5 +1,6 @@
 #include "compute/vulkan/context.hpp"
 
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <utility>
@@ -239,12 +240,38 @@ bool vulkan_available() noexcept {
     if (have_device) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(first_device, &properties);
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+        // THE TEST-ONLY MEASUREMENT BUILD (docs/design/core/plans/
+        // 2026-10-04-nvidia-denorm-measurement-plan.md; the user's "measure
+        // first" ruling). Its kernels are compiled WITHOUT DenormPreserve, so
+        // requesting nothing is legal on any device, and the device is admitted
+        // to be measured. Never an installed build: CMake refuses to install
+        // or to be a subproject with the option on.
+        static_cast<void>(properties);
+        usable = true;
+#else
         usable = device_preserves_fp32_denormals(first_device, properties.apiVersion);
+#endif
     }
 
     vkDestroyInstance(instance, nullptr);
     return usable;
 }
+
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+// The measurement build's marker: a non-static array, so the archive always
+// carries these bytes, and the install scanner proves no installed archive does.
+extern const char kSpadeUnpinnedDenormsMarker[];
+const char kSpadeUnpinnedDenormsMarker[] = "SPADE_MEASURE_UNPINNED_DENORMS";
+
+bool fp32_denormals_pinned() noexcept {
+    return false;
+}
+#else
+bool fp32_denormals_pinned() noexcept {
+    return true;
+}
+#endif
 
 Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& desc) {
     // vulkan_available() IS the unavailable-path source of truth -- the
@@ -386,6 +413,17 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     // nothing wrong -- the resource is architecturally absent from this
     // environment, which is exactly what that code means (core/error.hpp), and
     // is what lets a caller that can degrade or skip switch on it.
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+    // THE TEST-ONLY MEASUREMENT BUILD admits the device (see vulkan_available()
+    // above), but still reads the capability and says so in every log, so a
+    // measurement run names what it measured.
+    if (!device_preserves_fp32_denormals(physical_device, properties.apiVersion)) {
+        std::fprintf(stderr,
+                     "[spade] measurement build: '%s' reports no fp32 denormal preservation; admitted "
+                     "with the denormal mode not requested\n",
+                     properties.deviceName);
+    }
+#else
     if (!device_preserves_fp32_denormals(physical_device, properties.apiVersion)) {
         // BOTH VARIANTS NAME shaderDenormPreserveFloat32 VERBATIM, and that is
         // a contract, not phrasing: it is the one token that appears in this
@@ -417,6 +455,7 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
                 "twin preserves denormals and GPU results must be bit-identical to it; requesting "
                 "that mode here would be undefined behaviour, not a reported error."});
     }
+#endif
 
     // S6 Task 8's probe, RECORDED but NOT a requirement -- the one capability
     // question this engine asks and then works around rather than refusing on.

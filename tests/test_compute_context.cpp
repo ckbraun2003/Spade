@@ -146,8 +146,16 @@ TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
     }
 
     ASSERT_EQ(denorms.preserve_f32, VK_FALSE);
-    EXPECT_FALSE(vulkan_available()) << "'" << denorms.name << "' cannot preserve fp32 denormals";
     BackendDesc desc{.kind = BackendKind::vulkan};
+    if (!spade::compute::fp32_denormals_pinned()) {
+        // The test-only measurement build: kernels request no denormal mode, so
+        // the device is admitted, unpinned, to be measured.
+        EXPECT_TRUE(vulkan_available()) << "the measurement build must admit '" << denorms.name << "'";
+        auto admitted = VulkanContext::create(desc);
+        ASSERT_TRUE(admitted.has_value()) << admitted.error().context;
+        return;
+    }
+    EXPECT_FALSE(vulkan_available()) << "'" << denorms.name << "' cannot preserve fp32 denormals";
     auto result = VulkanContext::create(desc);
     ASSERT_FALSE(result.has_value()) << "VulkanContext::create admitted '" << denorms.name
                                      << "', which cannot preserve fp32 denormals";
