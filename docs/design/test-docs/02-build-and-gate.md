@@ -41,7 +41,7 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | **Leaves out** | v1 (`SPADE_BUILD_V1=OFF`: frozen, and never on a Linux leg); the `gpu` label, excluded rather than skipped (`TD-13`); Debug; Windows, which the gate covers; a window (no X11, so GLFW builds without a backend) |
 | **Tests a commit** | `git -c core.autocrlf=false archive <commit>`, because a plain archive on this box emits CRLF. Uncommitted changes are not in the leg, and the driver says so when there are any. The image is built from that commit's own `scripts/docker-leg.Dockerfile` and tagged by the file's content hash |
 | **State** | One Docker volume, `spade-docker-leg`: `/leg/src` (the commit, synced so unchanged files keep their mtimes and ninja stays incremental), `/leg/build` (dependencies in `_deps`, fetched once), `/leg/consumer`. `-Clean` drops it |
-| **Runs** | Detached, in a container named `spade-docker-leg`, with no swap. The defaults are `--memory 3g` and `-j1`, the old box's; on this machine run it with `-Memory 6g -Jobs 4` ("This machine", below). Closing the terminal does not stop it. Running the driver again re-attaches rather than starting a second leg, and `-Stop` ends it. It holds the lead's Docker slot for the whole run; stay with it in the foreground |
+| **Runs** | Detached, in a container named `spade-docker-leg`, with no swap. The defaults are `--memory 3g` and `-j1`, the old box's; on this machine run it with `-Memory 8g -Jobs 8` ("This machine", below). Closing the terminal does not stop it. Running the driver again re-attaches rather than starting a second leg, and `-Stop` ends it. One leg runs at a time, since there is one container name and one volume. Stay with it in the foreground |
 | **Order** | configure, build (`ninja -k 0`, so one run lists every failing file), test, agreement, consumer ON, consumer OFF. `-Step consumer` also configures and builds first, so consumer ON installs the commit under test and never a tree some earlier commit built. A failed part blocks only the parts that need it. The exit code is 0 only if every part passed |
 | **Output** | `build-docker\<short-sha>\`: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
 | **Refuses** | Under 4 GB free on the host drive (`-MinFreeGB`), since a full disk truncates files mid-build |
@@ -86,13 +86,16 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
   - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
   - at `ec6e2da` the fixed file passed, and so did two headers.
 - **Cost:** about a minute per heavy test file on the old box (126 s for three files).
-- **When to run it:** it needs no slot. Run one check container at a time per tree, with up to four files in it (`docs/design/consumers.md`, "Shared build machine"). Never run it during a leg's build step: that step rewrites the volume's generated headers, which the check reads.
+- **When to run it:** whenever it's needed, with as many files as you like. The one exception for now: never run it during a leg's build step. That step rewrites the generated headers in the one leg volume, and the check reads them. The exception goes away when the leg gets a container and volume per run.
 
 ## This machine
 
 **Since 2026-10-04 Spade builds on a new machine:** 32 GB, 16 threads, an RTX 3060 Ti, and Docker Desktop with 16 GB. Kat's tree shares it.
-- **The build budget** is in `docs/design/consumers.md`, "Shared build machine": it says how many heavy jobs run at once, and how much memory must be free first. The lead grants every slot.
-- **Spade's settings for a heavy job:** an MSVC build is `scripts\build.ps1 -ParallelLevel 4`, and the Docker leg is `docker-leg.ps1 -Memory 6g -Jobs 4`. Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **No slots and no budget:** build and test as the work needs (`docs/design/consumers.md`, "Shared build machine"). The user lifted every memory-based limit on 2026-10-04.
+- **Settings:**
+  - Pass `-ParallelLevel 8` to `scripts\build.ps1`; the script's own default is still 1.
+  - Run the Docker leg with `-Memory 8g -Jobs 8`.
+  - Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 

@@ -96,7 +96,7 @@
 | `TD-1` golden governance | partly | 6 scenarios, 7 worlds and 3 render manifests, each with provenance. `gnss_tumble` joined at `0ce4ff5` (`PHY-6`) on the existing `ballistic` world, and the Docker leg reproduced its digest at `fe4934a`, so it is no longer provisional. The 8 viewer trajectories (`tests/golden/viewer/`, `INT-4`, `0935c6f`) are goldens too, asserted by `Viewer/ViewerTrajectory.*` (`0835e32`); the perishable captures beside them are an archive, not goldens (`tests/v1-baselines/`). A regeneration is final once the leg reproduces it (`TD-12`) |
 | `TD-6` device gating | yes | Every `Gpu*` suite gets `gpu`; 83 at `65c2295` |
 | `TD-7` the gate | yes | `scripts\test.ps1` on both presets, on the development box only (`TD-11`) |
-| `TD-11` Docker leg | yes | `scripts\docker-leg.ps1`, `docker-leg.sh` and `docker-leg.Dockerfile`, with Interface's `scripts/consumer-smoke.sh`. It ran end to end at `fe4934a`, green on committed code at `b82b72e`, and green on the new machine at `c73a8d5` (above). It runs when a slot is given, not on every commit |
+| `TD-11` Docker leg | yes | `scripts\docker-leg.ps1`, `docker-leg.sh` and `docker-leg.Dockerfile`, with Interface's `scripts/consumer-smoke.sh`. It ran end to end at `fe4934a`, green on committed code at `b82b72e`, and green on the new machine at `c73a8d5` (above). It runs when the work needs it, not on every commit |
 | `TD-12` golden cross-check | yes | First run at `fe4934a`: 6 scenario digests, the render goldens and 8 viewer trajectories reproduce on gcc. `RND-5`'s regeneration was reproduced at `b82b72e`, and everything again on the new machine at `c73a8d5`. The gate still cannot see a Linux-only divergence between leg runs |
 | `TD-13` GPU coverage | yes, as policy | All 83 `gpu` tests ran on both presets at `65c2295`; none skipped. The Docker leg excludes them with `-LE gpu` (83 at `c73a8d5`, its latest run). Nothing mechanical enforces it: `scripts\test.ps1` exits 0 with skips, so each report names any skipped `gpu` test (`02-build-and-gate.md`) |
 
@@ -116,7 +116,7 @@ GPU coverage on a one-machine gate, the third open question, is `TD-13`. No user
 ## What's next
 
 1. **The leg's next jobs** (both earlier ones, `SL2b`'s proof and the agreement bands' `gcc-release` attestation, are done):
-   - Core's leg at the head of its B-C-D chain, which the lead slots;
+   - Core's leg at the head of its B-C-D chain;
    - `interface/scene-composer`, once the lead merges it, since it adds `spade_scene` to the consumer smoke's install list.
 2. **GPU coverage** (`TD-13`) is ruled and written into `02-build-and-gate.md`. What remains is practice, not code: every gate report states how many `gpu` tests ran and names any skip, and the Docker leg's report states that it excluded them.
 3. **The bench baselines' next re-seed** names Core's module-API stage 2 commit in `_meta`. That commit splits the rotor/drag and IMU/GNSS timing brackets, so `gpu_force_elements_ns` and `gpu_sensor_synthesis_ns` each include one extra timestamp mark (`TD-8`).
