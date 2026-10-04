@@ -1,6 +1,6 @@
 # The two raster defects the agreement matrix found: plan
 
-**Owner:** Rendering. **Status:** draft, for the lead's review. Both defects are debt rows in `../07-status.md`, found by the agreement matrix's first framings (`2026-10-03-agreement-bands-plan.md`). Each fix touches a signed ruling or golden output, so this plan states the root cause and the options before any code.
+**Owner:** Rendering. **Status:** ruled. A2 is signed as `RND-6` (user, 2026-10-04), and A1 is in the backlog. B1 with B3's warning is built on `rendering/csg-cell-size`: 0.05 m cells, capped at 160 per axis (the lead, 2026-10-04). B2 is being planned by the user's ruling of 2026-10-04. Both defects are debt rows in `../07-status.md`, found by the agreement matrix's first framings (`2026-10-03-agreement-bands-plan.md`). Each fix touches a signed ruling or golden output, so this plan states the root cause and the options before any code.
 
 ## Defect A: an infinite heightfield is drawn only within the world bounds
 

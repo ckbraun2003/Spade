@@ -21,6 +21,8 @@ A **camera** is a **technique** plus one or more **channels**. The same camera s
 | Raster | Vulkan compute (`render/vulkan/`) | Fast, and a future camera sensor without a window | **banded**: coverage against the CPU (`compare_silhouettes`) plus a colour oracle, which does not exist yet |
 | Ray-trace | none | Not designed yet | — |
 
+**Grade note (`RND-6`, signed 2026-10-04):** every raster backend draws a heightfield only within the world bounds, as `PA-5` grids it, and `RS4` holds there. Past the bounds the SDF, and collision, have terrain that the raster does not draw. An analytic heightfield background (A1, backlog) would lift this note.
+
 **Rules for every technique:**
 - **A pure function of its inputs.** No clock, no RNG, no static mutable state. The same scene, camera and options give the same pixels on that backend.
 - **One shading model.** `shade_vertex_color()` and `sky_gradient_color()` in `render/scene.hpp` are the one definition of a lit pixel. A backend ports them; it does not reinvent them. One sun convention on every path (`RND-1`).
