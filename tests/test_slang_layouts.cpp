@@ -616,7 +616,7 @@ TEST(SlangSpirv, FloatControlsPinned) {
             // takes.
             //
             // Inverted in the measurement build (kDenormPolicy, above).
-            if (kDenormPolicy == spade::testing::DenormPolicy::preserve) {
+            if constexpr (kDenormPolicy == spade::testing::DenormPolicy::preserve) {
                 EXPECT_TRUE(scan.denorm_preserve_fp32)
                     << module << ": fp32 denormals are not pinned to preserve; is the module "
                     << "compiled -denorm-mode-fp32 preserve? (cmake/SpadeSlang.cmake)";
