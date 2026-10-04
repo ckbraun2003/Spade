@@ -38,12 +38,16 @@ for target in "$@"; do
         rc=1
         continue
     fi
+    # Each lib*/ directory searched as itself: a `find -path` pattern built
+    # from the prefix would read a Windows path's backslashes as escapes.
     found=0
-    while IFS= read -r archive; do
-        found=1
-        scan_archive "$archive"
-    done < <(find "$target" -path "$target/lib*" -type f \
-                  \( -name libspade_compute.a -o -name spade_compute.lib \) 2>/dev/null)
+    for libdir in "$target"/lib*; do
+        [ -d "$libdir" ] || continue
+        while IFS= read -r archive; do
+            found=1
+            scan_archive "$archive"
+        done < <(find "$libdir" -type f \( -name libspade_compute.a -o -name spade_compute.lib \))
+    done
     if [ "$found" = 0 ]; then
         echo "denorm-marker-scan: FAIL $target: no spade_compute archive under lib*/ (an empty prefix never passes)"
         rc=1
