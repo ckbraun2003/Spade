@@ -43,7 +43,118 @@ public:
     ScopedForceNoVulkan& operator=(const ScopedForceNoVulkan&) = delete;
 };
 
+// Whether SPADE_FORCE_NO_VULKAN=1 is set for this process. _dupenv_s on MSVC,
+// where /W4 /WX rejects std::getenv (C4996).
+[[nodiscard]] bool forced_no_vulkan() {
+#ifdef _MSC_VER
+    char* value = nullptr;
+    std::size_t length = 0;
+    const bool forced = _dupenv_s(&value, &length, "SPADE_FORCE_NO_VULKAN") == 0 && value != nullptr &&
+                        std::string_view(value) == "1";
+    std::free(value);
+    return forced;
+#else
+    const char* value = std::getenv("SPADE_FORCE_NO_VULKAN");
+    return value != nullptr && std::string_view(value) == "1";
+#endif
+}
+
+// The default device's fp32-denormal capability, read straight from the
+// driver: NOT through vulkan_available(), whose answer is what the refusal
+// test below checks.
+struct DefaultDeviceDenorms {
+    bool device = false;     // a loader and a default device answered
+    bool queryable = false;  // the device reports Vulkan >= 1.2, so float controls can be queried
+    VkBool32 preserve_f32 = VK_FALSE;
+    std::string name;
+};
+
+[[nodiscard]] DefaultDeviceDenorms read_default_device_denorms() {
+    DefaultDeviceDenorms out;
+    if (volkInitialize() != VK_SUCCESS) return out;
+
+    VkApplicationInfo app_info{};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "spade_test_denorm_read";
+    app_info.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo instance_info{};
+    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instance_info.pApplicationInfo = &app_info;
+    VkInstance instance = VK_NULL_HANDLE;
+    if (vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) return out;
+    volkLoadInstanceOnly(instance);
+
+    uint32_t count = 1;
+    VkPhysicalDevice device = VK_NULL_HANDLE;
+    const VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count, &device);
+    if ((enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) && count > 0 && device != VK_NULL_HANDLE) {
+        out.device = true;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device, &properties);
+        out.name = properties.deviceName;
+        if (properties.apiVersion >= VK_API_VERSION_1_2) {
+            out.queryable = true;
+            VkPhysicalDeviceFloatControlsProperties float_controls{};
+            float_controls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+            VkPhysicalDeviceProperties2 properties2{};
+            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties2.pNext = &float_controls;
+            vkGetPhysicalDeviceProperties2(device, &properties2);
+            out.preserve_f32 = float_controls.shaderDenormPreserveFloat32;
+        }
+    }
+    vkDestroyInstance(instance, nullptr);
+    return out;
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// THE REFUSAL, ON REAL HARDWARE (docs/design/core/plans/
+// 2026-10-04-nvidia-denorm-measurement-plan.md, step 2). Every spade kernel
+// declares DenormPreserve 32, and requesting that on a device whose
+// shaderDenormPreserveFloat32 is false is undefined behaviour, so such a device
+// is refused: the predicate says no and create() returns Code::unavailable.
+//
+// It runs where the default device reports shaderDenormPreserveFloat32 = false
+// (this program's RTX 3060 Ti) and skips elsewhere, naming the capability.
+// The skip cannot hide a regression: the capability is read straight from the
+// driver, independent of the engine, and before skipping on a device that does
+// preserve, the test requires the engine to admit it. A broken read that
+// skipped everywhere would fail there instead.
+//
+// On a one-device box the refusal comes from the predicate, whose message
+// names the capability in words ("cannot preserve fp32 denormals") and never
+// as the token shaderDenormPreserveFloat32; that token belongs to create()'s
+// per-device check (ComputeBackendAvailability.ForcedUnavailableReturnsUnavailable
+// pins the split).
+// ---------------------------------------------------------------------------
+TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
+    if (forced_no_vulkan()) GTEST_SKIP() << "SPADE_FORCE_NO_VULKAN=1";
+    const DefaultDeviceDenorms denorms = read_default_device_denorms();
+    if (!denorms.device) GTEST_SKIP() << "no Vulkan loader or physical device";
+    if (!denorms.queryable) {
+        GTEST_SKIP() << "the default device reports Vulkan < 1.2, so shaderDenormPreserveFloat32 cannot "
+                        "be queried";
+    }
+    if (denorms.preserve_f32 == VK_TRUE) {
+        ASSERT_TRUE(vulkan_available()) << "'" << denorms.name
+                                        << "' reports shaderDenormPreserveFloat32 = true, yet the engine "
+                                           "refuses it; this skip would hide that";
+        GTEST_SKIP() << "the default device ('" << denorms.name
+                     << "') reports shaderDenormPreserveFloat32 = true; this test needs one that does not";
+    }
+
+    ASSERT_EQ(denorms.preserve_f32, VK_FALSE);
+    EXPECT_FALSE(vulkan_available()) << "'" << denorms.name << "' cannot preserve fp32 denormals";
+    BackendDesc desc{.kind = BackendKind::vulkan};
+    auto result = VulkanContext::create(desc);
+    ASSERT_FALSE(result.has_value()) << "VulkanContext::create admitted '" << denorms.name
+                                     << "', which cannot preserve fp32 denormals";
+    EXPECT_EQ(result.error().code, Code::unavailable);
+    EXPECT_NE(result.error().context.find("cannot preserve fp32 denormals"), std::string::npos)
+        << result.error().context;
+}
 
 // ---------------------------------------------------------------------------
 // Device-executing: ctest label "gpu" (AppendSpadeLabels.cmake's Gpu*.*
