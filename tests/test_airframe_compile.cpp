@@ -330,14 +330,14 @@ TEST(AirframeCompile, DragIsEstimatedFromThePartsOrTakenAsGiven) {
 }
 
 // DETERMINISM (Kat's question 1). The reference quad's compiled model has one
-// identity, here and on every platform. PROVISIONAL until the Docker gcc leg
-// reproduces it (TD-12's discipline, applied to a compiled model).
+// identity, here and on every platform. FINAL under TD-12's discipline: the
+// Docker gcc leg reproduced the MSVC value at 3e4b589.
 TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
     const auto a = compile_airframe(reference_quad());
     const auto b = compile_airframe(reference_quad());
     ASSERT_TRUE(a.has_value() && b.has_value());
     EXPECT_EQ(model_identity(a->model), model_identity(b->model)) << "the same spec, compiled twice";
-    // Measured on msvc-ninja-release at 1b61a41 (2026-10-04); gcc leg pending.
+    // msvc-ninja-release at 1b61a41; gcc-13 leg at 3e4b589 (2026-10-04).
     constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;
     EXPECT_EQ(model_identity(a->model), kPinned) << std::hex << model_identity(a->model);
 }
