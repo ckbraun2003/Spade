@@ -150,8 +150,17 @@ SteadyPoint steady_state_for_thrust(const PropulsionChain& chain, double thrust,
     return steady_state_at_duty(chain, 0.5 * (lo + hi), density, v_axial, soc);
 }
 
-double steady_state_time_constant(const PropulsionChain&, double, double, double, double, double) noexcept {
-    return 0.0;  // STUB until the next commit
+double steady_state_time_constant(const PropulsionChain& chain, double duty, double density, double v_axial,
+                                  double soc, double rotor_inertia) noexcept {
+    if (!chain_valid(chain) || !is_finite(rotor_inertia) || !(rotor_inertia > 0.0)) return 0.0;
+    const SteadyPoint p = steady_state_at_duty(chain, duty, density, v_axial, soc);
+    if ((p.flags & propulsion_flags::no_bracket) != 0u || !(p.omega > 0.0)) return 0.0;
+    const double step = 1e-4 * p.omega;
+    const double ahead = evaluate(chain, p.duty, density, v_axial, soc, p.omega + step).balance;
+    const double behind = evaluate(chain, p.duty, density, v_axial, soc, p.omega - step).balance;
+    const double slope = (ahead - behind) / (2.0 * step);
+    if (!is_finite(slope) || !(slope < 0.0)) return 0.0;
+    return rotor_inertia / -slope;
 }
 
 }  // namespace spade::vehicles

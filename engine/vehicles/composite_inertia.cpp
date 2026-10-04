@@ -174,7 +174,6 @@ void collect_part(const PartInertia& p, std::size_t k, std::vector<PartIssue>& o
 std::vector<PartIssue> composite_inertia_issues(std::span<const PartInertia> parts) {
     std::vector<PartIssue> out;
     for (std::size_t k = 0; k < parts.size(); ++k) collect_part(parts[k], k, out);
-    if (out.size() > 1) out.resize(1);  // STUB: only the first issue until the next commit
     return out;
 }
 

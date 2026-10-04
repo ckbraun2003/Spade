@@ -299,14 +299,12 @@ BusResultD bus_solve(double v_source, double r_series, double battery_current_ma
 BusResult bus_solve(float v_source, float r_series, float battery_current_max, float cutoff_voltage,
                     float esc_current_total_max, std::span<const BusMotor> motors,
                     std::span<float> currents) noexcept {
-    (void)esc_current_total_max;  // STUB: the ESC limit is ignored until the next commit
-    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0f, motors, currents);
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, esc_current_total_max, motors, currents);
 }
 BusResultD bus_solve(double v_source, double r_series, double battery_current_max, double cutoff_voltage,
                      double esc_current_total_max, std::span<const BusMotorD> motors,
                      std::span<double> currents) noexcept {
-    (void)esc_current_total_max;  // STUB: the ESC limit is ignored until the next commit
-    return bus(v_source, r_series, battery_current_max, cutoff_voltage, 0.0, motors, currents);
+    return bus(v_source, r_series, battery_current_max, cutoff_voltage, esc_current_total_max, motors, currents);
 }
 
 }  // namespace spade::vehicles
