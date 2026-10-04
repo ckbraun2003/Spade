@@ -47,6 +47,13 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 
 **The drone builder** is a joint spec with Kat (`plans/2026-10-03-drone-builder-engine-design.md`). Spade pushes and Kat pulls, by the user's ruling of 2026-10-03.
 
+**Shared build machine** (agreed by the Spade and Kat leads, 2026-10-04). Both trees build on one box (32 GB, 16 threads).
+- A heavy job is one MSVC build at `-ParallelLevel 4`, one Docker container capped at 6 GB, or a full gate run.
+- At most four run at once: two for Spade, two for Kat. Each lead grants only within its own share. A tree borrows the other's idle slot only by asking that lead.
+- Before starting a heavy job, check that at least 8 GB of physical memory is free. The WSL VM (`vmmem`) counts as used.
+- gcc syntax-only containers are not heavy jobs, but each tree runs one at a time.
+- Only Kat writes `build-host/` and `install-host/` in this checkout (Kat's `spade-prefix.ps1`). Spade builds use `build-ninja/` and the worktrees' own directories.
+
 ## Other consumers
 
 None yet. A vehicle-dynamics or F1-style consumer would assemble its domain the same way: templates and modules on the public API, with no engine changes for its domain.

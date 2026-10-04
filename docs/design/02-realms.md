@@ -23,5 +23,5 @@
 
 - **Docs-only work** happens in the main tree.
 - **Code work** happens in a per-realm git worktree (`../spade-wt/<realm>`, its own build directory), on a branch the lead reviews and merges.
-- **Builds** run in the foreground, one at a time, in slots the lead hands out.
+- **Builds** run in the foreground, in slots the lead hands out. Spade shares its build machine with Kat under one budget (`consumers.md`, "Shared build machine").
 - **Nothing is pushed** without the user's word.
