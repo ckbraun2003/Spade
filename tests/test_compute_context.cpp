@@ -147,14 +147,14 @@ TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
 
     ASSERT_EQ(denorms.preserve_f32, VK_FALSE);
     BackendDesc desc{.kind = BackendKind::vulkan};
-    if (!spade::compute::fp32_denormals_pinned()) {
-        // The test-only measurement build: kernels request no denormal mode, so
-        // the device is admitted, unpinned, to be measured.
-        EXPECT_TRUE(vulkan_available()) << "the measurement build must admit '" << denorms.name << "'";
-        auto admitted = VulkanContext::create(desc);
-        ASSERT_TRUE(admitted.has_value()) << admitted.error().context;
-        return;
-    }
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+    // The test-only measurement build (the same CMake option defines this on
+    // spade_tests and spade_compute): kernels request no denormal mode, so the
+    // device is admitted, unpinned, to be measured.
+    EXPECT_TRUE(vulkan_available()) << "the measurement build must admit '" << denorms.name << "'";
+    auto admitted = VulkanContext::create(desc);
+    ASSERT_TRUE(admitted.has_value()) << admitted.error().context;
+#else
     EXPECT_FALSE(vulkan_available()) << "'" << denorms.name << "' cannot preserve fp32 denormals";
     auto result = VulkanContext::create(desc);
     ASSERT_FALSE(result.has_value()) << "VulkanContext::create admitted '" << denorms.name
@@ -162,6 +162,7 @@ TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
     EXPECT_EQ(result.error().code, Code::unavailable);
     EXPECT_NE(result.error().context.find("cannot preserve fp32 denormals"), std::string::npos)
         << result.error().context;
+#endif
 }
 
 // ---------------------------------------------------------------------------

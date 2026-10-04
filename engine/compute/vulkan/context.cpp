@@ -1,10 +1,13 @@
 #include "compute/vulkan/context.hpp"
 
-#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <utility>
 #include <vector>
+
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+#include <cstdio>  // the measurement build's admission log line
+#endif
 
 namespace spade::compute {
 
@@ -263,14 +266,6 @@ bool vulkan_available() noexcept {
 // carries these bytes, and the install scanner proves no installed archive does.
 extern const char kSpadeUnpinnedDenormsMarker[];
 const char kSpadeUnpinnedDenormsMarker[] = "SPADE_MEASURE_UNPINNED_DENORMS";
-
-bool fp32_denormals_pinned() noexcept {
-    return false;
-}
-#else
-bool fp32_denormals_pinned() noexcept {
-    return true;
-}
 #endif
 
 Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& desc) {
