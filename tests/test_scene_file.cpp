@@ -604,6 +604,20 @@ TEST(SceneFile, TheValidatorRefusesWhatTheSceneAloneDecides) {
         {"a non-finite asset position", [=](SceneDesc& s) { s.assets[0].pose.position.y = kNaN; }, "finite"},
         {"a malformed collider", [](SceneDesc& s) { s.assets[0].collider.nodes[0].transform = 7; },
          "collider"},
+        // What the SDF text encoding cannot carry: a scene must be expressible
+        // as its file, or a save and reload composes to another config_hash.
+        {"an operator node carrying a primitive kind",
+         [](SceneDesc& s) {
+             spade::SdfNode join = op(SdfOp::union_);
+             join.kind = 3;
+             s.assets[0].collider.nodes = {s.assets[0].collider.nodes[0], s.assets[0].collider.nodes[0], join};
+             s.assets[0].collider_materials.clear();
+         },
+         "non-zero primitive kind"},
+        {"a node with non-zero padding", [](SceneDesc& s) { s.assets[0].collider.nodes[0]._pad = 1; },
+         "non-zero padding"},
+        {"a transform with non-zero padding",
+         [](SceneDesc& s) { s.assets[0].collider.transforms[0]._pad[0] = 1.0f; }, "non-zero padding"},
         {"collider material indices", [](SceneDesc& s) { s.assets[0].collider.node_materials = {0}; },
          "by name"},
         {"too few collider material names", [](SceneDesc& s) { s.assets[0].collider_materials.push_back("m"); },
