@@ -21,8 +21,9 @@
 | GNSS | **Built**, CPU and Vulkan. The CPU path has a golden, `gnss_tumble` (`PHY-6`) | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
 | SPH field provider (`SL8`) | **Not built.** Resumes right after Core's module API lands (`PHY-4`); the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
 | Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only (merge `84e435b`). Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`, merge `df33f09`) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (14) |
-| Drone builder: motor and ESC, battery and bus, propeller tier (`DBP-01`..`33`, except `DBP-26`) | **Built as pure functions**, float and double, CPU. `DBP-26`, the 4-in-1 ESC's total-current clamp, is **not built**; it lands with the airframe compile. Not in the step: the stateful rows wait on module-API stage 4, the kernels and goldens on the rows | `vehicles/motor.*`, `battery.*`, `propeller.*`, `propulsion_flags.hpp`; `test_motor.cpp` (13), `test_battery.cpp` (16), `test_propeller.cpp` (8) |
-| Drone builder: composite inertia, steady-state solver (`DBP-40`..`43`, `50`..`52`) | **Built**, host utilities in double, never in the step | `vehicles/composite_inertia.*`, `propulsion_steady.*`; `test_composite_inertia.cpp` (7), `test_propulsion_steady.cpp` (7) |
+| Drone builder: motor and ESC, battery and bus, propeller tier (`DBP-01`..`33`) | **Built as pure functions**, float and double, CPU. `DBP-26`, the 4-in-1 ESC's total-current clamp, came with the airframe compile: `bus_solve` takes `esc_current_total_max` through the same common duty scale and sets `esc_total_limited`. Not in the step: the stateful rows wait on module-API stage 4, the kernels and goldens on the rows | `vehicles/motor.*`, `battery.*`, `propeller.*`, `propulsion_flags.hpp`; `test_motor.cpp` (13), `test_battery.cpp` (18), `test_propeller.cpp` (8) |
+| Drone builder: composite inertia, steady-state solver (`DBP-40`..`43`, `50`..`52`) | **Built**, host utilities in double, never in the step. `composite_inertia_issues` lists every bad part; `steady_state_time_constant` gives the chain's small-signal τ | `vehicles/composite_inertia.*`, `propulsion_steady.*`; `test_composite_inertia.cpp` (8), `test_propulsion_steady.cpp` (8) |
+| Drone builder: the airframe compile (`DBP-44`) | **Built**, a host utility in double. Mass, inertia and mounts come exactly from the parts. The momentum rotor's `k_T`, `k_Q` and τ are fitted to the chain at hover (best-effort). Drag is estimated from parts when none is given. The reference quad's `model_identity` pin is provisional until the Docker gcc leg reproduces it | `vehicles/airframe_compile.*`; `test_airframe_compile.cpp` (10) |
 | Golden corpus | `ballistic`, `bounce`, `gnss_tumble`, `quad_hover`, `shower`, `two_world_isolation`. `gnss_tumble` is the only one with GNSS receivers. The Docker gcc leg reproduced all six digests on its first full run (`fe4934a`), so `gnss_tumble` is final under `TD-12` | `tests/golden/scenarios/` |
 | CPU↔GPU parity and invariance | **Built**; bands per scenario, measured on the developer GPU | `testing/parity.hpp`; `test_gpu_parity.cpp` (32), `test_gpu_invariance.cpp` (15) |
 | Grades (`PHY-2`, signed) | **Declared in prose only** (`04-verification.md`); the engine has no grade check yet (Core) | — |
@@ -44,30 +45,16 @@ The three decisions this page held are ruled; the rulings live in `00-decisions.
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors, and a Vulkan step now refuses an attached registry (`CORE-1`) rather than skipping it. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |
 
-## In progress (paused 2026-10-03)
-
-**The airframe compile (`DBP-44`) and the `DBP-26` fix.** Plan: `plans/2026-10-03-airframe-compile-plan.md`.
-- **Branch:** `physics/airframe-compile`, head `3c35ed4`. It is master `65c2295` plus Core's design-frame and model-identity commits, cherry-picked. Then come the tests against stubs (`ce2aa5c`), the implementation (`0ac9a65`) and a comment fixup (`3c35ed4`, to be squashed).
-- **Written, not built:**
-  - `vehicles/airframe_compile.*`;
-  - `bus_solve` with the ESC total limit and the `esc_total_limited` flag;
-  - `composite_inertia_issues`;
-  - `steady_state_time_constant`;
-  - their tests.
-- **Checked:** gcc `-fsyntax-only` passes on the four engine files. A Python port puts the fitted τ within 0.74% of a stepped response.
-- **Not checked:** gcc on the four test files (`test_airframe_compile.cpp`, `test_battery.cpp`, `test_composite_inertia.cpp`, `test_propulsion_steady.cpp`). The model-identity pin is 0 until a slot measures it.
-- **Next:** gcc each test file in its own container, squash the fixup, then ask the lead for a slot. Core's chain merges first. `DBP-26` stays "not built" above until this branch merges.
-
 ## Next for Physics
 
-1. **Comment sweep:** old pass names in Physics files, after Core's module-API stage 2 merges.
+1. **The NVIDIA denormal probe kernel**, M1 of Core's `../core/plans/2026-10-04-nvidia-denorm-measurement-plan.md`.
 2. **The translation lock**, with Core: Physics's requirements are in `plans/2026-10-02-module-api-requirements.md`. Core builds the lock with the module API.
 3. **SPH as a field provider** (`PHY-4`, `SL8`), once the module API lands. Its plan goes in `plans/`.
 4. **Jacobi as a contact module** (`PHY-5`), once modules exist.
 
 ## Corrections to earlier records
 
-- 2026-10-03: the builder functions were recorded as built for `DBP-01`..`33`, and their plan claimed `DBP-20`..`26`. `DBP-26`, the 4-in-1 ESC's total-current clamp, was never built: `bus_solve` has only the pack-current and cutoff limits. It is being added on `physics/airframe-compile`.
+- 2026-10-03: the builder functions were recorded as built for `DBP-01`..`33`, and their plan claimed `DBP-20`..`26`. `DBP-26`, the 4-in-1 ESC's total-current clamp, was never built: `bus_solve` had only the pack-current and cutoff limits. It was added with the airframe compile on 2026-10-04.
 
 - 2026-10-02: the rotor-wake suite was reported as 15 tests; it is 14.
 
