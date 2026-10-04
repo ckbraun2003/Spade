@@ -337,6 +337,7 @@ TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
     const auto b = compile_airframe(reference_quad());
     ASSERT_TRUE(a.has_value() && b.has_value());
     EXPECT_EQ(model_identity(a->model), model_identity(b->model)) << "the same spec, compiled twice";
-    constexpr uint64_t kPinned = 0x0000000000000000ull;  // measured on msvc-ninja-release; see the commit
+    // Measured on msvc-ninja-release at 1b61a41 (2026-10-04); gcc leg pending.
+    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;
     EXPECT_EQ(model_identity(a->model), kPinned) << std::hex << model_identity(a->model);
 }
