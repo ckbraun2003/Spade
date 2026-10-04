@@ -40,18 +40,24 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | The joint drone-builder spec | Approved 2026-10-03 (Kat `c9683af3`; Spade's `plans/2026-10-03-drone-builder-engine-design.md` and `physics/plans/2026-10-03-drone-builder-physics.md`). Building starts in the order below | work items below |
 | World and scene | Mirror Kat. A world holds physics, environment, regions and static terrain. A scene holds a world reference plus placed objects (assets, vehicles, start poses). This changes the engine model's terms and amends `INT-3` to "the editor saves scenes". Both edits land with the joint spec | `01-engine-model.md`, `interface/00-decisions.md` |
 
+## Ruled by the user, 2026-10-04
+
+| Decision | Ruling | Where it lands |
+|---|---|---|
+| `RND-6`: the raster draws a heightfield only within the world bounds, and `RS4` holds there | Signed | `rendering/00-decisions.md` (`RND-6` signed), the A2 grade note |
+| An analytic heightfield background past the world bounds (A1, amends `SR-17`) | Backlog. Do it before terrain reaches real scenes | work item below |
+| Ray-march CSG subtrees in the raster instead of meshing them at load (B2, replaces `RS3`) | Plan it now. The plan comes back for the user's signature on replacing `RS3`. B1 (world-space cell size) lands first regardless | work item below |
+
 ## Open user decisions
 
-| Decision | Raised by | Where it's recorded |
-|---|---|---|
-| Sign `RND-6`: the raster draws a heightfield only within the world bounds, and `RS4` holds there | Rendering | `rendering/00-decisions.md` (proposed row), `rendering/plans/2026-10-03-raster-defects-plan.md` (A2) |
-| An analytic heightfield background past the world bounds, the way `SR-17` draws planes. It amends `SR-17`'s "standalone planes only", and its seam is banded, not bit-exact | Rendering | `rendering/plans/2026-10-03-raster-defects-plan.md` (A1) |
-| Ray-march CSG subtrees in the raster instead of meshing them at load: exact agreement, but every frame pays per pixel. It replaces `RS3`'s "CSG meshed at load" | Rendering | `rendering/plans/2026-10-03-raster-defects-plan.md` (B2) |
+None open.
 
 ## Work items
 
 | Item | Owner | Why it's open | Done when |
 |---|---|---|---|
+| Ray-marched CSG in the raster and GL (B2) | Rendering | The user ruled on 2026-10-04 to plan it now. Meshing at load (`RS3`) loses walls about one cell thick | A plan, approved, including the `RS3` replacement for the user's signature |
+| Analytic heightfield background past the world bounds (A1) | Rendering | Backlog by the user's ruling of 2026-10-04. Past the bounds the SDF and collision have terrain the raster does not draw (`RND-6`) | Before terrain reaches real scenes: a plan, then the `SR-17` amendment signed and built |
 | Module API, scheduler phases, regions, field registry, grades | Core (then Physics, Rendering) | The engine model (`01-engine-model.md`) is signed but not built; today's schedule is a fixed ten-pass array | Today's passes run as built-in modules through the new scheduler, with every golden unchanged |
 | Translation-lock constraint on both backends | Core / Physics | The drone stand pins with CPU behaviors, so Vulkan is refused there | The drone sim box runs on Vulkan with its position held |
 | SPH fluid as a field provider (`PHY-4`) | Physics | The one open v1 transfer row (`docs/v1-transfer-register.md`); v1 stays in the tree until it closes | Row closed with a v2 implementation and a declared grade |
