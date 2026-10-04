@@ -26,7 +26,7 @@ The dominant defect family. A guard that cannot fail looks exactly like one that
 ## Determinism
 
 - **An init-time draw is the least forgiving consumer.** A 1-ulp libm difference passed through per-step noise gain and vanished, but landed whole in state at tick 0. Three of four scenarios passed by luck (old §1.1, `TD-3`).
-- **The GPU's libm is its transcendental intrinsics,** and this box's iGPU flushes denormals unless told not to (old §1.2, SPIR-V rules).
+- **The GPU's libm is its transcendental intrinsics,** and the old box's iGPU flushed denormals unless told not to (old §1.2, SPIR-V rules).
 - **A single-process determinism test cannot see uninitialised memory,** and a NaN is deterministic (old §1.4, §5.3).
 - **`std::hash` in a digested field** is not stable across implementations (old §5.4).
 

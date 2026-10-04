@@ -41,7 +41,7 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | **Leaves out** | v1 (`SPADE_BUILD_V1=OFF`: frozen, and never on a Linux leg); the `gpu` label, excluded rather than skipped (`TD-13`); Debug; Windows, which the gate covers; a window (no X11, so GLFW builds without a backend) |
 | **Tests a commit** | `git -c core.autocrlf=false archive <commit>`, because a plain archive on this box emits CRLF. Uncommitted changes are not in the leg, and the driver says so when there are any. The image is built from that commit's own `scripts/docker-leg.Dockerfile` and tagged by the file's content hash |
 | **State** | One Docker volume, `spade-docker-leg`: `/leg/src` (the commit, synced so unchanged files keep their mtimes and ninja stays incremental), `/leg/build` (dependencies in `_deps`, fetched once), `/leg/consumer`. `-Clean` drops it |
-| **Runs** | Detached, in a container named `spade-docker-leg`, with `--memory 3g` and no swap, at `-j1`. Closing the terminal does not stop it. Running the driver again re-attaches rather than starting a second leg, and `-Stop` ends it. It holds an exclusive build slot for the whole run; stay with it in the foreground |
+| **Runs** | Detached, in a container named `spade-docker-leg`, with no swap. The defaults are `--memory 3g` and `-j1`, the old box's; on this machine run it with `-Memory 6g -Jobs 4` ("This machine", below). Closing the terminal does not stop it. Running the driver again re-attaches rather than starting a second leg, and `-Stop` ends it. It holds the lead's Docker slot for the whole run; stay with it in the foreground |
 | **Order** | configure, build (`ninja -k 0`, so one run lists every failing file), test, agreement, consumer ON, consumer OFF. `-Step consumer` also configures and builds first, so consumer ON installs the commit under test and never a tree some earlier commit built. A failed part blocks only the parts that need it. The exit code is 0 only if every part passed |
 | **Output** | `build-docker\<short-sha>\`: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
 | **Refuses** | Under 4 GB free on the host drive (`-MinFreeGB`), since a full disk truncates files mid-build |
@@ -85,23 +85,30 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
 - **Proved red, then green,** on 2026-10-03:
   - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
   - at `ec6e2da` the fixed file passed, and so did two headers.
-- **Cost:** about a minute per heavy test file on this box (126 s for three files).
-- **When to run it:** it needs no slot. It shares the box's memory, though, so never run it while a leg holds the slot, and run one check container at a time.
+- **Cost:** about a minute per heavy test file on the old box (126 s for three files).
+- **When to run it:** it needs no slot. Run one check container at a time per tree, with up to four files in it (`docs/design/consumers.md`, "Shared build machine"). Never run it during a leg's build step: that step rewrites the volume's generated headers, which the check reads.
 
 ## This machine
 
+**Since 2026-10-04 Spade builds on a new machine:** 32 GB, 16 threads, an RTX 3060 Ti, and Docker Desktop with 16 GB. Kat's tree shares it.
+- **The build budget** is in `docs/design/consumers.md`, "Shared build machine": it says how many heavy jobs run at once, and how much memory must be free first. The lead grants every slot.
+- **Spade's settings for a heavy job:** an MSVC build is `scripts\build.ps1 -ParallelLevel 4`, and the Docker leg is `docker-leg.ps1 -Memory 6g -Jobs 4`. Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
+- **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
+
 | Symptom | Cause | Response |
 |---|---|---|
-| A build or test run dies with no error | Backgrounded jobs get killed here | Run in the foreground. Split long runs into legs that provably cover the whole suite (check with `ctest -N`) |
-| Docker answers HTTP 500, or `docker desktop status` stays "starting" | Docker's WSL VM stopped under memory pressure. A cold start under pressure took about 11 min on 2026-10-03 | `docker desktop restart`, then wait at least 15 min without intervening. `docker desktop start` is a no-op while the app runs. Stopping, `wsl --shutdown` or force-quitting mid-start made it worse (`07-status.md`); escalate one step at a time, through the lead |
-| A leg's watcher is killed for low memory | The harness reaps background commands under memory pressure | The detached container carries on; collect it with `docker-leg.ps1 -Follow` |
-| A build is killed or crawls | Memory-bound: about 7.6 GB, shared by several sessions | `-ParallelLevel 1` (the default). Builds are scheduled one at a time by the lead |
+| A build or test run dies with no error | The old box killed backgrounded jobs | Run in the foreground. Split long runs into legs that provably cover the whole suite (check with `ctest -N`) |
+| `git` is not recognized in PowerShell | Git is not on the PowerShell tool's PATH on this machine; Git Bash has it | Prepend `C:\Program Files\Git\cmd` to `$env:Path` in that command, for that process only: `$env:Path = "C:\Program Files\Git\cmd;" + $env:Path`. `docker-leg.ps1` needs git. The machine's PATH is left alone; changing it is the user's call |
+| `docker-leg.ps1` stops at the image build's first line | `2>&1` on the driver: Windows PowerShell turns docker's progress on stderr into a terminating error | Don't redirect the driver's stderr |
+| Old box: Docker answers HTTP 500, or `docker desktop status` stays "starting" | Docker's WSL VM stopped under memory pressure. A cold start under pressure took about 11 min on 2026-10-03 | `docker desktop restart`, then wait at least 15 min without intervening. `docker desktop start` is a no-op while the app runs. Stopping, `wsl --shutdown` or force-quitting mid-start made it worse (`07-status.md`); escalate one step at a time, through the lead |
+| A leg's watcher dies (a tool timeout, or the old box's memory pressure) | The watcher only streams the log | The detached container carries on; collect it with `docker-leg.ps1 -Follow` |
 | A revert "does not fix" the thing it should | `Copy-Item` keeps the old timestamp, so ninja sees no work | `touch` the file after restoring it |
 | Nondeterminism appears from nowhere | A full disk truncated a file | Check free space before debugging determinism |
 | PowerShell logs look garbled | `*>` writes UTF-16 | Redirect through `Out-File -Encoding utf8`, or run from bash |
 | An exit-code predicate is always false | PowerShell `if (cmd)` tests output, not the exit code | Use bash for exit-code predicates |
 
-The first build of a fresh checkout fetches dependencies and took 1006 s for release at `-ParallelLevel 1` (`07-status.md`).
+The first build of a fresh checkout fetches dependencies. On the old box, release took 1006 s at `-ParallelLevel 1`. On this machine, the Docker leg's first configure took 77 s with the fetch, and its first full build took 229 s at `-j4` (`07-status.md`).
 
 ## Pushing
 
