@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -199,6 +200,13 @@ uint64_t first_digest(const ComposedScene& composed) {
 
 bool contains(const std::string& text, const std::string& part) {
     return text.find(part) != std::string::npos;
+}
+
+// A hash as the scene file spells it: "0x" and 16 lowercase hex digits.
+std::string hex64(uint64_t value) {
+    char text[19];
+    std::snprintf(text, sizeof text, "0x%016llx", static_cast<unsigned long long>(value));
+    return text;
 }
 
 // A scratch directory of the test's own, emptied first.
@@ -410,6 +418,37 @@ TEST(SceneCompose, OneNamedNodeFillsNodeMaterialsWithTheDefaultElsewhere) {
     EXPECT_EQ(composed.world.materials[1].name, "gate_orange");
 }
 
+// A world that already names its nodes' materials keeps them, and every node
+// the scene appends after it gets the default.
+TEST(SceneCompose, AWorldsOwnNodeMaterialsAreKeptAndExtended) {
+    const spade::WorldDesc world = ground_builder()
+                                       .material(spade::MaterialDesc{})
+                                       .material(named_material("steel"))
+                                       .material_for_last_node(1)  // the plane
+                                       .build()
+                                       .value();
+    ASSERT_EQ(world.sdf.node_materials, (std::vector<uint32_t>{1}));
+    SceneDesc scene = scene_over(world);
+    scene.assets.push_back(collider_asset("ball", pose_at(glm::vec3(0.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f)));
+    const ComposedScene composed = spade::scene::compose(scene, world).value();
+    EXPECT_EQ(composed.world.sdf.node_materials, (std::vector<uint32_t>{1, 0, 0}));  // plane, sphere, union
+}
+
+// Once filled, the array stays full length: a plain asset after a named one
+// adds the default for its nodes and its union.
+TEST(SceneCompose, APlainAssetAfterANamedOneGetsTheDefault) {
+    const spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.materials.push_back(named_material("gate_orange"));  // index 1
+    SceneAsset named = collider_asset("named", pose_at(glm::vec3(-1.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f));
+    named.collider_materials = {"gate_orange"};
+    scene.assets.push_back(named);
+    scene.assets.push_back(collider_asset("plain", pose_at(glm::vec3(1.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f)));
+    const ComposedScene composed = spade::scene::compose(scene, world).value();
+    // plane, named sphere, union, plain sphere, union
+    EXPECT_EQ(composed.world.sdf.node_materials, (std::vector<uint32_t>{0, 1, 0, 0, 0}));
+}
+
 // A visual becomes a prop at the asset's pose, its material resolved by name;
 // an asset with no collider leaves the SDF program as it was.
 TEST(SceneCompose, AVisualBecomesAPropAtTheAssetsPose) {
@@ -539,8 +578,23 @@ TEST(SceneCompose, AWorldHashMismatchIsRefusedNamingBothHashes) {
     ASSERT_FALSE(composed.has_value());
     EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
     const std::string& why = composed.error().context;
-    EXPECT_TRUE(contains(why, "hash")) << why;
+    EXPECT_TRUE(contains(why, hex64(scene.world.hash))) << why;                     // the pinned hash
+    EXPECT_TRUE(contains(why, hex64(spade::scene::world_hash(world).value()))) << why;  // the given world's
     EXPECT_TRUE(contains(why, "re-pin")) << why;
+}
+
+// The validator runs before the hash check: a scene that is both invalid and
+// pinned to another world is refused for being invalid.
+TEST(SceneCompose, TheValidatorRunsBeforeTheHashCheck) {
+    const spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.vehicles.push_back(vehicle("q1", "no_such_model", glm::vec3(0.0f, 2.0f, 0.0f)));
+    scene.world.hash ^= 1u;
+    const auto composed = spade::scene::compose(scene, world);
+    ASSERT_FALSE(composed.has_value());
+    EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(composed.error().context, "no_such_model")) << composed.error().context;
+    EXPECT_FALSE(contains(composed.error().context, "hash")) << composed.error().context;
 }
 
 // world_hash() validates the world it hashes, so a world no WorldBuilder or
@@ -556,15 +610,26 @@ TEST(SceneCompose, AWorldThatDoesNotValidateIsRefused) {
     EXPECT_TRUE(contains(composed.error().context, "does not validate")) << composed.error().context;
 }
 
+// SCN-004: a scene material may not reuse a world material's name, whether or
+// not anything in the scene refers to it.
 TEST(SceneCompose, ASceneMaterialMayNotReuseAWorldMaterialsName) {
     const spade::WorldDesc world = ground_world();  // palette: "default"
-    SceneDesc scene = scene_over(world);
-    scene.materials.push_back(named_material("default"));
-    scene.assets.push_back(visual_asset("marker", spade::SdfPose{}, "marker", "default"));
-    const auto composed = spade::scene::compose(scene, world);
-    ASSERT_FALSE(composed.has_value());
-    EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
-    EXPECT_TRUE(contains(composed.error().context, "reuses the name")) << composed.error().context;
+    SceneDesc referenced = scene_over(world);
+    referenced.materials.push_back(named_material("default"));
+    referenced.assets.push_back(visual_asset("marker", spade::SdfPose{}, "marker", "default"));
+    const auto by_reference = spade::scene::compose(referenced, world);
+    ASSERT_FALSE(by_reference.has_value());
+    EXPECT_EQ(by_reference.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(by_reference.error().context, "reuses the name")) << by_reference.error().context;
+
+    SceneDesc unreferenced = scene_over(world);
+    unreferenced.materials.push_back(named_material("default"));
+    unreferenced.assets.push_back(
+        collider_asset("ball", pose_at(glm::vec3(0.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f)));
+    const auto unused = spade::scene::compose(unreferenced, world);
+    ASSERT_FALSE(unused.has_value());
+    EXPECT_EQ(unused.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(unused.error().context, "reuses the name")) << unused.error().context;
 }
 
 TEST(SceneCompose, AnUnknownMaterialNameIsRefusedForAVisualAndForANode) {
@@ -595,12 +660,22 @@ TEST(SceneCompose, AMaterialNameTheWorldHoldsTwiceIsRefusedOnlyWhenUsed) {
     unused.assets.push_back(collider_asset("ball", pose_at(glm::vec3(0.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f)));
     EXPECT_TRUE(spade::scene::compose(unused, world).has_value());
 
-    SceneDesc used = scene_over(world);
-    used.assets.push_back(visual_asset("beam", spade::SdfPose{}, "beam", "steel"));
-    const auto composed = spade::scene::compose(used, world);
-    ASSERT_FALSE(composed.has_value());
-    EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
-    EXPECT_TRUE(contains(composed.error().context, "twice")) << composed.error().context;
+    // The palette is [steel, steel], with no "default": the build adds one only
+    // to an empty palette. Both kinds of reference are refused.
+    SceneDesc by_visual = scene_over(world);
+    by_visual.assets.push_back(visual_asset("beam", spade::SdfPose{}, "beam", "steel"));
+    SceneDesc by_node = scene_over(world);
+    SceneAsset named = collider_asset("post", pose_at(glm::vec3(0.0f, 1.0f, 0.0f), kTilt, 1.0f), sphere_collider(0.5f));
+    named.collider_materials = {"steel"};
+    by_node.assets.push_back(named);
+    for (const SceneDesc* used : {&by_visual, &by_node}) {
+        const auto composed = spade::scene::compose(*used, world);
+        ASSERT_FALSE(composed.has_value());
+        EXPECT_EQ(composed.error().code, spade::Code::invalid_argument);
+        const std::string& why = composed.error().context;
+        EXPECT_TRUE(contains(why, "'steel'")) << why;
+        EXPECT_TRUE(contains(why, "indices 0 and 1")) << why;
+    }
 }
 
 // compose() runs validate_scene() itself, because a SceneDesc can be built in
@@ -740,6 +815,23 @@ TEST(SceneInstantiate, StartsReachSpawnAsTheSceneWroteThem) {
     ASSERT_TRUE(by_hand.flush_structural().has_value());
 
     EXPECT_EQ(spade::testing::state_digest(run->sim), spade::testing::state_digest(by_hand));
+}
+
+// Every model is registered in the models: section's order, used or not, so
+// a vehicle of the second model carries ModelTypeId 2.
+TEST(SceneInstantiate, EveryModelIsRegisteredInOrderEvenIfUnused) {
+    const spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.models.push_back(quad_model("alpha"));
+    scene.models.push_back(quad_model("beta"));
+    scene.vehicles.push_back(vehicle("b", "beta", glm::vec3(0.0f, 2.0f, 0.0f)));
+    const ComposedScene composed = spade::scene::compose(scene, world).value();
+
+    const auto run = spade::scene::instantiate(composed, instance_of(composed.world), kDtNs, kSubsteps);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ(run->sim.model_count(), 2u);
+    ASSERT_EQ(run->vehicles.size(), 1u);
+    EXPECT_EQ(run->vehicles[0].model.value, 2u);
 }
 
 // Vehicle order is configuration: two different vehicles swapped change the

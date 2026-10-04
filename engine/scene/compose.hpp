@@ -85,10 +85,12 @@ struct ComposedScene {
 //      are appended with their primitives' transform indices offset, and one
 //      union_ joins them to the program before them (none for the first
 //      geometry of an empty program). Node materials resolve by name against
-//      the combined palette: if no asset names one, the world's
-//      node_materials is kept as it was; otherwise the array is filled to
-//      full length, with 0 for every node nothing names. A visual becomes a
-//      PropDesc at the asset's pose;
+//      the combined palette. An empty node_materials stays empty while no
+//      asset names a material, so a plain scene keeps the world's bytes. Once
+//      the array is full length (the world's own, or filled at the first named
+//      node with 0 for every node before it), each appended node adds its
+//      resolved index, or 0 where nothing names one, and each union_ adds 0.
+//      A visual becomes a PropDesc at the asset's pose;
 //   5. models are copied in order, and each vehicle's model name becomes an
 //      index into them;
 //   6. capacities (SCN-007): each field is the world's count, plus what the
@@ -103,8 +105,9 @@ struct ComposedScene {
 // Codes: invalid_argument (the scene does not validate, a world-hash
 // mismatch, a material name that is reused, unknown or ambiguous, or a
 // composed world that does not validate); capacity_exceeded (a capacity
-// beyond 2^32 - 1, or an SDF program deeper than kMaxSdfDepth once
-// composed); and whatever world_hash() and transform_of() return.
+// beyond 2^32 - 1, an SDF program that would hold more than 2^32 - 1
+// transforms, or one deeper than kMaxSdfDepth once composed); and whatever
+// world_hash() and transform_of() return.
 [[nodiscard]] Result<ComposedScene> compose(const SceneDesc& scene, const WorldDesc& world);
 
 // Loads the scene file, loads the world it names (world.file, relative to the
