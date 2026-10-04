@@ -207,7 +207,9 @@
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -380,12 +382,16 @@ void BM_RenderSlots(benchmark::State& state) {
 // (render/csg_mesh.hpp). It measured kCsgMeshDefaults.cell_size's choice
 // (rendering/plans/2026-10-03-raster-defects-plan.md, B1); 169 mm is the old
 // fixed 48 cells. Recorded, not gated.
-void BM_CsgMeshShell(benchmark::State& state) {
+[[nodiscard]] spade::Result<spade::WorldDesc> shell_world() {
     spade::WorldBuilder b;
     b.name("bench-csg-shell")
         .capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
     b.sphere(4.0f).sphere(3.8f, spade::SdfPose{.position = {0.0f, 0.4f, 0.0f}}).subtract();
-    const spade::Result<spade::WorldDesc> world = b.build();
+    return b.build();
+}
+
+void BM_CsgMeshShell(benchmark::State& state) {
+    const spade::Result<spade::WorldDesc> world = shell_world();
     if (!world) {
         state.SkipWithError(world.error().context.c_str());
         return;
@@ -418,6 +424,92 @@ void BM_CsgMeshShell(benchmark::State& state) {
         100.0 * static_cast<double>(folds.folded) / static_cast<double>(std::max(folds.triangles, 1u));
 }
 
+// One frame of the shell above: the raster draws its B1 mesh (draw 0), the
+// frame is ray-marched (draw 1), or the raster draws the old fixed 48-cell
+// mesh (draw 2). The camera is outside the shell (view 0) or inside its bowl
+// (view 1). It prices B2, ray-marched CSG in the raster
+// (rendering/plans/2026-10-04-b2-raymarched-csg-plan.md). covered_pct is the
+// share of pixels the shell covers. Recorded, not gated.
+void BM_CsgFrame(benchmark::State& state) {
+    constexpr const char* kDrawLabels[] = {"raster_b1_mesh_", "raymarch_", "raster_48_cell_mesh_"};
+    const int draw = static_cast<int>(state.range(0));
+    const bool raymarch = draw == 1;
+    const bool inside = state.range(1) == 1;
+    const ResCase& c = kResCases[state.range(2)];
+    state.SetLabel(std::string(kDrawLabels[draw]) + (inside ? "inside_" : "outside_") + c.label);
+
+    const spade::Result<spade::WorldDesc> world = shell_world();
+    if (!world) {
+        state.SkipWithError(world.error().context.c_str());
+        return;
+    }
+    const spade::Result<RenderScene> scene = spade::render::scene_from_world(*world, {});
+    if (!scene) {
+        state.SkipWithError(scene.error().context.c_str());
+        return;
+    }
+    RenderScene drawn = *scene;
+    if (draw == 2) {
+        const auto root = static_cast<uint32_t>(world->sdf.nodes.size() - 1u);
+        const spade::Result<spade::render::Aabb> bounds =
+            spade::render::csg_subtree_world_bounds(world->sdf, root, scene->bounds);
+        if (!bounds) {
+            state.SkipWithError(bounds.error().context.c_str());
+            return;
+        }
+        spade::render::CsgMeshLimits old_limits;
+        old_limits.min_cells_per_axis = 48;
+        old_limits.max_cells_per_axis = 48;
+        spade::Result<spade::render::MeshData> old_mesh =
+            spade::render::mesh_csg_subtree(world->sdf, root, *bounds, old_limits);
+        if (!old_mesh) {
+            state.SkipWithError(old_mesh.error().context.c_str());
+            return;
+        }
+        drawn.meshes[drawn.statics.at(0).mesh_index] = std::move(*old_mesh);
+    }
+    Camera camera;
+    camera.position = inside ? glm::vec3(0.0f, -1.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 12.0f);
+    RenderOptions options = bench_options();
+    if (raymarch) {
+        options.mode = DrawMode::raymarch;
+    }
+
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, c.width, c.height);
+    std::vector<float> shadow_scratch;
+    for (auto _ : state) {
+        const auto result = spade::render::render(drawn, camera, options, target, &shadow_scratch);
+        if (!result) {
+            state.SkipWithError("render() failed");
+            return;
+        }
+        benchmark::DoNotOptimize(target.pixels.data());
+        benchmark::ClobberMemory();
+    }
+
+    // Covered: a pixel that differs from the same view with the shell removed.
+    RenderScene bare = drawn;
+    bare.statics.clear();
+    std::vector<uint8_t> bare_storage;
+    RenderTarget bare_target = make_target(bare_storage, c.width, c.height);
+    if (!spade::render::render(bare, camera, bench_options(), bare_target, nullptr)) {
+        state.SkipWithError("render() failed on the bare frame");
+        return;
+    }
+    size_t covered = 0;
+    for (size_t i = 0; i + 3u < storage.size(); i += 4u) {
+        if (!std::equal(storage.begin() + static_cast<std::ptrdiff_t>(i),
+                        storage.begin() + static_cast<std::ptrdiff_t>(i + 3u),
+                        bare_storage.begin() + static_cast<std::ptrdiff_t>(i))) {
+            ++covered;
+        }
+    }
+    const double pixels = static_cast<double>(c.width) * static_cast<double>(c.height);
+    state.counters["pixels"] = pixels;
+    state.counters["covered_pct"] = 100.0 * static_cast<double>(covered) / pixels;
+}
+
 }  // namespace
 
 // ->UseRealTime() on every family: see this file's header. A frame budget is a
@@ -426,6 +518,7 @@ BENCHMARK(BM_RenderBackgroundFill)->DenseRange(0, kResCaseCount - 1, 1)->UseReal
 BENCHMARK(BM_RenderGroundPlane)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderSlots)->DenseRange(1, 4, 1)->UseRealTime();
 BENCHMARK(BM_CsgMeshShell)->Arg(169)->Arg(80)->Arg(50)->Unit(benchmark::kMillisecond)->Iterations(3)->UseRealTime();
+BENCHMARK(BM_CsgFrame)->ArgsProduct({{0, 1, 2}, {0, 1}, {0, 1}})->Unit(benchmark::kMillisecond)->UseRealTime();
 
 // NO BENCHMARK_MAIN() HERE -- same reason bench_sim.cpp states: spade_bench is
 // one executable built from several benchmark TUs, and benchmark::benchmark_main
