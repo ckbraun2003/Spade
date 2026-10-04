@@ -820,6 +820,11 @@ Result<void> validate_scene(const SceneDesc& scene) {
         if (const Result<uint32_t> depth = collider.validate(); !depth) {
             return std::unexpected(Error{depth.error().code, where + "collider: " + depth.error().context});
         }
+        // A scene must be expressible as its own file (SCN-002), or a save and
+        // reload composes to another config_hash.
+        if (Result<void> r = yaml_text::check_sdf_representable(collider, where + "collider SDF", schema()); !r) {
+            return r;
+        }
         if (!a.collider_materials.empty() && a.collider_materials.size() != collider.nodes.size()) {
             return std::unexpected(invalid(where + "collider_materials must be empty or name one material per "
                                                    "collider node (" +

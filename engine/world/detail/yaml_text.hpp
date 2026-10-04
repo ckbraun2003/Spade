@@ -618,4 +618,45 @@ inline void append_sdf_nodes(std::string& out, std::span<const SdfNode> nodes,
     return out;
 }
 
+// REPRESENTABILITY. The SDF encoding carries a node's discriminated identity
+// (`prim` XOR `op`), its transform index and its four params, and a
+// transform's matrix and scale -- nothing else. The fields it does not carry
+// are an operator node's `kind` (sdf.hpp: unused on an operator) and the
+// std430 padding both PODs hold. Both are zero in everything WorldBuilder
+// builds and every loader returns, so refusing a non-zero one costs nothing
+// and keeps the round trip bit-exact: what cannot be written cannot be
+// silently dropped. One check for both formats that use the encoding: the
+// world file's writer and the scene file's validator.
+//
+// invalid_argument whose context reads "<who> node 3 has non-zero padding,
+// which <schema> does not carry", and likewise for an operator's kind and a
+// transform's padding.
+[[nodiscard]] inline Result<void> check_sdf_representable(const SdfProgram& program, std::string_view who,
+                                                          std::string_view schema) {
+    for (std::size_t i = 0; i < program.nodes.size(); ++i) {
+        const SdfNode& node = program.nodes[i];
+        if (node._pad != 0) {
+            return std::unexpected(Error{Code::invalid_argument, std::string(who) + " node " + dec(i) +
+                                                                     " has non-zero padding, which " +
+                                                                     std::string(schema) + " does not carry"});
+        }
+        if (node.op != static_cast<uint32_t>(SdfOp::none) && node.kind != 0) {
+            return std::unexpected(
+                Error{Code::invalid_argument,
+                      std::string(who) + " operator node " + dec(i) +
+                          " carries a non-zero primitive kind, which " + std::string(schema) +
+                          " does not carry (an operator's `kind` is unused; the builder always leaves it 0)"});
+        }
+    }
+    for (std::size_t i = 0; i < program.transforms.size(); ++i) {
+        const SdfTransform& t = program.transforms[i];
+        if (t._pad[0] != 0.0f || t._pad[1] != 0.0f || t._pad[2] != 0.0f) {
+            return std::unexpected(Error{Code::invalid_argument, std::string(who) + " transform " + dec(i) +
+                                                                     " has non-zero padding, which " +
+                                                                     std::string(schema) + " does not carry"});
+        }
+    }
+    return {};
+}
+
 }  // namespace spade::yaml_text
