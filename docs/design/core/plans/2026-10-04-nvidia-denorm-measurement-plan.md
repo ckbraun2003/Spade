@@ -1,6 +1,6 @@
 # Measure fp32 denormal behaviour on NVIDIA (the RTX 3060 Ti) — plan
 
-**Owner:** Core, with Physics (probe kernels) and Test/Docs (the build flag and the scanner). **Ruling:** the user's, 2026-10-04: "Measure NVIDIA first" (`../../backlog.md`, `7909561`). **Status:** draft for the lead, Physics and Test/Docs to check before any code.
+**Owner:** Core, with Physics (probe kernels) and Test/Docs (the build flag and the scanner). **Ruling:** the user's, 2026-10-04: "Measure NVIDIA first" (`../../backlog.md`, `7909561`). **Status:** approved by the lead (2026-10-04), with the three additions marked "lead" below.
 
 ## Why
 
@@ -30,6 +30,7 @@ It is configured only in a dedicated build tree, for example `build-ninja/releas
 4. **The install guard (Test/Docs).**
    - With the option ON, the first install rule is `install(CODE "message(FATAL_ERROR ...)")`, so an install from this tree fails before copying anything.
    - The scanner (`consumer-smoke.sh`, or a leg step) asserts that the installed `spade_compute` archive and headers carry no trace of the option. One option is a marker string compiled only under it.
+5. **The configure guard (Test/Docs; lead).** With the option ON, configure refuses unless Spade is the top-level project (`PROJECT_IS_TOP_LEVEL`). A consumer that pulls Spade in through `add_subdirectory` or FetchContent never installs, so the install guard alone would not stop it.
 
 ## The measurement
 
@@ -50,13 +51,14 @@ It is configured only in a dedicated build tree, for example `build-ninja/releas
 ## The report, and what follows it
 
 `docs/design/core/2026-10-04-nvidia-denorm-report.md` holds:
-- the driver and device;
+- the driver and device, with the driver version pinned in every table;
 - the M1 table;
 - the M2 table;
-- the M3 map.
+- the M3 map;
+- **its evidence limits (lead).** A probe kernel and the real kernels may compile differently, because NVIDIA's compiler may pick different instructions in context. So M2, on the real kernels, is the stronger evidence, and M1 explains it. Neither speaks for another driver version.
 
 Then exactly one of:
-- **Every class identical and M2 green:** propose a measured admission rule for the user's signature. For example, "admit a device without `shaderDenormPreserveFloat32` when a probe kernel run at context creation shows the classes the engine uses preserve denormals with the mode not requested." The proposal names its cost: an undefined-by-spec behaviour, held by measurement.
+- **Every class identical and M2 green:** propose a measured admission rule for the user's signature. For example, "admit a device without `shaderDenormPreserveFloat32` when a probe kernel run at context creation shows the classes the engine uses preserve denormals with the mode not requested." The proposal names its cost: an undefined-by-spec behaviour, held by measurement. It must also say what happens on a driver change (lead): either re-probe at every context creation (and state the cost), or admit by driver version.
 - **Otherwise:** the list of operations that differ, and what each would take (kernel changes, a narrower rule, or none).
 
 ## Order
@@ -64,6 +66,8 @@ Then exactly one of:
 1. Test/Docs: the option, the Slang flag, inverted P3, the install guard and the scanner. Gate: the default build is unchanged, i.e. a full suite, the gcc leg, and `FloatControlsPinned` green as today.
 2. Core: the admission bypass under the definition, with two new tests on a device that reports no fp32 denormal preservation (this box):
    - in the default build, `create()` still refuses with `Code::unavailable`, naming `shaderDenormPreserveFloat32`. No test pins that on real hardware today, because the Iris preserves.
+     - It runs only on a device that reports no fp32 denormal preservation, and elsewhere skips with a reason naming the capability.
+     - So that the skip cannot hide a regression on this box (lead), it first asserts that the capability bit is false, read directly from the device, and only then expects the refusal.
    - in the unpinned build, `create()` admits the device and reports that it runs unpinned.
 3. Physics: the probe kernel and its test.
 4. Core: run M1 and M2 on the 3060 Ti, then write the report.
