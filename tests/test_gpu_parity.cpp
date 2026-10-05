@@ -959,6 +959,16 @@ TEST(ParityPredicate, SumFormAtTheBoundary) {
     EXPECT_FALSE(element_within(1.0f, nan, ToleranceBand{1.0f, 1.0f}));
 }
 
+// TD-14's pin of a measurement: 4x, rounded UP to one significant figure.
+TEST(ParityPredicate, ThePinIsFourTimesRoundedUpToOneFigure) {
+    using spade::testing::pin_of;
+    EXPECT_EQ(pin_of(2.3e-6f), 1.0e-5f);   // 9.2e-6 -> 1e-5
+    EXPECT_EQ(pin_of(5.0e-7f), 2.0e-6f);   // exactly 2e-6
+    EXPECT_EQ(pin_of(3.2e-6f), 2.0e-5f);   // 1.28e-5 -> 2e-5
+    EXPECT_EQ(pin_of(8.94e-8f), 4.0e-7f);  // M2's two_world_isolation pos -> the plan's 4e-7
+    EXPECT_EQ(pin_of(0.0f), 0.0f) << "an exact measurement is not pinned at 4 x 0";
+}
+
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;
     std::error_code ec;

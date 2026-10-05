@@ -178,6 +178,12 @@ struct QuantityReport {
 
     float max_abs = 0.0f;  // largest |cpu - gpu| over every compared component
     float max_rel = 0.0f;  // largest |cpu - gpu| / |cpu|, over components with cpu != 0
+    // TD-14's measurement, split at kNearZeroCutoff: A, the largest
+    // |cpu - gpu| where |cpu| < the cutoff, and R, the largest relative error
+    // where |cpu| >= it. A band is pinned at {4A, 4R}, each rounded up to one
+    // significant figure (pin_of()), the larger over every device of record.
+    float near_zero_abs = 0.0f;  // A
+    float far_rel = 0.0f;        // R
 
     // Where the largest ABSOLUTE error was, and what the two sides held there.
     std::size_t worst_element = 0;
@@ -203,6 +209,22 @@ struct QuantityReport {
 
     [[nodiscard]] bool within_band() const noexcept { return elements_outside_band == 0 && !nan_seen; }
 };
+
+// TD-14's near-zero cutoff s_q, in the quantity's SI unit: below it an
+// element's error counts toward A (absolute), at or above it toward R
+// (relative). One value for every quantity, as the policy states it.
+inline constexpr float kNearZeroCutoff = 1.0e-3f;
+
+// TD-14's pin of a measured maximum: 4x, rounded UP to one significant
+// figure (4 * 2.3e-6 = 9.2e-6 -> 1e-5). 0 stays 0: a quantity measured
+// exactly equal goes to the floor or to an argued exact band, not to 4 * 0.
+[[nodiscard]] inline float pin_of(float measured) noexcept {
+    if (!(measured > 0.0f)) return 0.0f;
+    const double x = 4.0 * static_cast<double>(measured);
+    const double decade = std::pow(10.0, std::floor(std::log10(x)));
+    double digit = std::ceil(x / decade - 1e-9);
+    return static_cast<float>(digit * decade);
+}
 
 struct ParityReport {
     std::vector<QuantityReport> quantities;
@@ -240,6 +262,10 @@ struct ParityReport {
                             q.quantity.c_str(), q.elements_compared, static_cast<double>(q.max_abs),
                             static_cast<double>(q.max_rel), static_cast<double>(q.band.abs),
                             static_cast<double>(q.band.rel), q.within_band() ? "within" : "OUTSIDE");
+                // The TD-14 measurement line, grep-able as "td14 ".
+                std::printf("    td14 A=%.3e R=%.3e  pin {%.0e, %.0e}\n", static_cast<double>(q.near_zero_abs),
+                            static_cast<double>(q.far_rel), static_cast<double>(pin_of(q.near_zero_abs)),
+                            static_cast<double>(pin_of(q.far_rel)));
             }
             if (!q.within_band()) {
                 std::printf("    worst: element %zu component %u  cpu=%.9e gpu=%.9e  (%zu elements outside%s)\n",
@@ -275,14 +301,15 @@ namespace parity_detail {
 // The same bytes, as the 32-bit word they are, for QuantityKind::bits.
 // memcpy rather than a reinterpret_cast for the identical strict-aliasing
 // reason load_float() uses one.
-// The per-element predicate, on the error: whether `abs_err` = |gpu - cpu|
-// is within `band` of a CPU value `cpu`. A NaN error fails.
+// THE PER-ELEMENT PREDICATE (TD-14), on the error: `abs_err` = |gpu - cpu|
+// passes when abs_err <= abs + rel * |cpu|. The two halves ADD: the absolute
+// half carries the near-zero regime (alone at cpu == 0, where an exact-zero
+// band is exactly the bit-equality demand), the relative half the large one,
+// and an error between them is judged against their sum. It replaced the
+// disjunction (abs_ok || rel_ok), which it never refuses where that passed
+// and which is at most 2x stricter. A NaN error fails: NaN <= x is false.
 [[nodiscard]] inline bool error_within(float abs_err, float cpu, ToleranceBand band) noexcept {
-    if (std::isnan(abs_err)) return false;
-    const float rel_err = cpu != 0.0f ? abs_err / std::fabs(cpu) : 0.0f;
-    const bool abs_ok = abs_err <= band.abs;
-    const bool rel_ok = (cpu != 0.0f) && (rel_err <= band.rel);
-    return abs_ok || rel_ok;
+    return abs_err <= band.abs + band.rel * std::fabs(cpu);
 }
 
 // The same, on one float of one element. A NaN on either side fails.
@@ -436,34 +463,21 @@ namespace parity_detail {
                     q.worst_gpu = b;
                 }
                 if (rel_err > q.max_rel) q.max_rel = rel_err;
+                if (std::fabs(a) < kNearZeroCutoff) {
+                    if (abs_err > q.near_zero_abs) q.near_zero_abs = abs_err;
+                } else if (rel_err > q.far_rel) {
+                    q.far_rel = rel_err;
+                }
 
                 // ---------------------------------------------------------
-                // THE RELATIVE HALF ONLY APPLIES WHERE A RELATIVE ERROR
-                // EXISTS (S6 Task 6 review round 1, finding C2).
-                //
-                // `rel_err` is defined as 0 when the CPU value is exactly 0,
-                // because there is nothing to divide by. Feeding THAT 0 into
-                // the disjunction below made `rel_ok` unconditionally true for
-                // every cpu == 0 component -- even against a band of 0 -- so
-                // any quantity whose CPU side happened to be zero passed no
-                // matter what the GPU produced. That silently defeated three
-                // separate checks this file relies on: the force_acc/
-                // torque_acc rows (whose whole point is that both sides are
-                // exactly (0,0,0) after every step, and whose call site says
-                // "no band should hide it"), `bounce`'s all-zero bands (only
-                // the rows with a non-zero CPU value were genuinely enforced),
-                // and free-slot mis-write detection (a free arena slot reads
-                // as zeroes on the CPU side by construction, so a kernel
-                // scribbling into one would have passed).
-                //
-                // Requiring `a != 0` makes the two halves say what they mean:
-                // the ABSOLUTE half carries the near-zero regime (including
-                // exact zero, where `abs_err <= band.abs` with band.abs == 0
-                // is exactly the bit-equality demand intended), and the
-                // RELATIVE half carries the large-magnitude regime.
-                //
-                // NaN-safe by construction, unchanged: a NaN error is `<=`
-                // nothing, so it fails both halves.
+                // TD-14's predicate (parity_detail::error_within): the error
+                // passes when it is within abs + rel * |cpu|. At cpu == 0 the
+                // relative half contributes nothing, so the ABSOLUTE half
+                // carries exact zeros alone -- which keeps the S6 Task 6
+                // review's finding C2 closed: a zero band on a cpu == 0
+                // component (force_acc, torque_acc, a free slot a kernel must
+                // not scribble into) demands bit equality, and no relative
+                // term can hide a GPU value there.
                 // ---------------------------------------------------------
                 if (!parity_detail::element_within(a, b, entry.band)) element_outside = true;
             }
