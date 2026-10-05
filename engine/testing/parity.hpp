@@ -165,6 +165,14 @@ enum class QuantityKind : uint32_t {
 // offsetof() at the call site, where the type IS in scope, so nothing here is a
 // hand-typed number.
 // ---------------------------------------------------------------------------
+// TD-14's near-zero cutoff s_q, in the quantity's SI unit: below it an
+// element's error counts toward A (absolute), at or above it toward R
+// (relative). This is the default. A row may declare its quantity's own cutoff
+// (BandEntry::near_zero_cutoff), DERIVED from the quantity's absolute
+// resolution over the 1e-4 relative target, and its record states the
+// derivation and the measurement that would fail at the default.
+inline constexpr float kNearZeroCutoff = 1.0e-3f;
+
 struct BandEntry {
     std::string_view array;     // registered array name, e.g. "bodies"
     std::string_view quantity;  // human name for the report, e.g. "pos"
@@ -172,6 +180,7 @@ struct BandEntry {
     uint32_t components = 1;    // how many consecutive floats
     QuantityKind kind = QuantityKind::components;
     ToleranceBand band{};
+    float near_zero_cutoff = kNearZeroCutoff;  // this row's s_q (see kNearZeroCutoff)
 };
 
 using BandTable = std::span<const BandEntry>;
@@ -190,6 +199,7 @@ struct QuantityReport {
     // significant figure (pin_of()), the larger over every device of record.
     float near_zero_abs = 0.0f;  // A
     float far_rel = 0.0f;        // R
+    float near_zero_cutoff = kNearZeroCutoff;  // the s_q that split them
 
     // Where the largest ABSOLUTE error was, and what the two sides held there.
     std::size_t worst_element = 0;
@@ -216,15 +226,12 @@ struct QuantityReport {
     [[nodiscard]] bool within_band() const noexcept { return elements_outside_band == 0 && !nan_seen; }
 };
 
-// TD-14's near-zero cutoff s_q, in the quantity's SI unit: below it an
-// element's error counts toward A (absolute), at or above it toward R
-// (relative). One value for every quantity, as the policy states it.
-inline constexpr float kNearZeroCutoff = 1.0e-3f;
 
-// TD-14's floor, by halves: four ulps at s_q (4 x 2^-33 = 4.66e-10) and four
-// ulps relative (4 x 2^-23 = 4.77e-7), each rounded up. No float row that is
-// not argued structural may be tighter in either half (compare_arrays refuses
-// it), and a measured pin is raised to them (pin_of() gives the raw 4x).
+// TD-14's floor, by halves: four ulps at s_q (at the default, 4 x 2^-33 =
+// 4.66e-10) and four ulps relative (4 x 2^-23 = 4.77e-7), each rounded up. No
+// float row that is not argued structural may be tighter in either half
+// (compare_arrays refuses it), and a measured pin is raised to them (pin_of()
+// gives the raw 4x). A row that declares its own s_q takes floor_abs_at() of it.
 inline constexpr float kFloorAbs = 5.0e-10f;
 inline constexpr float kFloorRel = 5.0e-7f;
 
@@ -243,6 +250,13 @@ inline constexpr float kFloorRel = 5.0e-7f;
     double digit = static_cast<double>(static_cast<int>(ratio));
     if (ratio - digit > 1e-9) digit += 1.0;  // round UP, ignoring the decade's own rounding
     return static_cast<float>(digit * decade);
+}
+
+// The floor's abs half at a row's s_q: four ulps relative at the cutoff,
+// rounded up (pin_of's 4x of 2^-23 x s_q). floor_abs_at(kNearZeroCutoff) is
+// kFloorAbs; floor_abs_at(1) is 5e-7.
+[[nodiscard]] inline float floor_abs_at(float near_zero_cutoff) noexcept {
+    return pin_of(near_zero_cutoff * 1.1920929e-7f);  // 2^-23
 }
 
 struct ParityReport {
@@ -282,10 +296,14 @@ struct ParityReport {
                             static_cast<double>(q.max_rel), static_cast<double>(q.band.abs),
                             static_cast<double>(q.band.rel), q.within_band() ? "within" : "OUTSIDE");
                 // The TD-14 measurement line, grep-able as "td14 ".
-                std::printf("    td14 A=%.3e R=%.3e  pin {%.0e, %.0e}\n", static_cast<double>(q.near_zero_abs),
+                std::printf("    td14 A=%.3e R=%.3e  pin {%.0e, %.0e}", static_cast<double>(q.near_zero_abs),
                             static_cast<double>(q.far_rel),
-                            static_cast<double>(std::max(pin_of(q.near_zero_abs), kFloorAbs)),
+                            static_cast<double>(std::max(pin_of(q.near_zero_abs), floor_abs_at(q.near_zero_cutoff))),
                             static_cast<double>(std::max(pin_of(q.far_rel), kFloorRel)));
+                if (q.near_zero_cutoff != kNearZeroCutoff) {
+                    std::printf("  s_q=%g (declared)", static_cast<double>(q.near_zero_cutoff));
+                }
+                std::printf("\n");
             }
             if (!q.within_band()) {
                 std::printf("    worst: element %zu component %u  cpu=%.9e gpu=%.9e  (%zu elements outside%s)\n",
@@ -411,11 +429,17 @@ namespace parity_detail {
                                              "compare_arrays: quantity '" + std::string(entry.quantity) +
                                                  "' is marked structural but carries a non-zero band"});
             }
-            if (!entry.band.structural && (entry.band.abs < kFloorAbs || entry.band.rel < kFloorRel)) {
+            if (!(entry.near_zero_cutoff > 0.0f) || !std::isfinite(entry.near_zero_cutoff)) {
                 return std::unexpected(Error{Code::invalid_argument,
                                              "compare_arrays: quantity '" + std::string(entry.quantity) +
-                                                 "' has a band tighter than TD-14's floor {5e-10, 5e-7} -- "
-                                                 "raise the pin to the floor's halves"});
+                                                 "' declares a near-zero cutoff that is not positive and finite"});
+            }
+            if (!entry.band.structural &&
+                (entry.band.abs < floor_abs_at(entry.near_zero_cutoff) || entry.band.rel < kFloorRel)) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "compare_arrays: quantity '" + std::string(entry.quantity) +
+                                                 "' has a band tighter than TD-14's floor (four ulps at its s_q, "
+                                                 "5e-7 relative) -- raise the pin to the floor's halves"});
             }
         }
         // A bit-exact row with a non-zero band would read as "these integers
@@ -432,6 +456,7 @@ namespace parity_detail {
         q.array = std::string(entry.array);
         q.quantity = std::string(entry.quantity);
         q.band = entry.band;
+        q.near_zero_cutoff = entry.near_zero_cutoff;
         q.kind_is_quaternion = entry.kind == QuantityKind::quaternion;
         q.kind_is_bits = entry.kind == QuantityKind::bits;
 
@@ -505,7 +530,7 @@ namespace parity_detail {
                     q.worst_gpu = b;
                 }
                 if (rel_err > q.max_rel) q.max_rel = rel_err;
-                if (std::fabs(a) < kNearZeroCutoff) {
+                if (std::fabs(a) < entry.near_zero_cutoff) {
                     if (abs_err > q.near_zero_abs) q.near_zero_abs = abs_err;
                 } else if (rel_err > q.far_rel) {
                     q.far_rel = rel_err;

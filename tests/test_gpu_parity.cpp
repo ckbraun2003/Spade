@@ -1202,7 +1202,8 @@ TEST(ParityPredicate, ARowMayDeclareItsQuantitysOwnCutoff) {
         compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{5.0e-7f, 5.0e-7f}, 1.0f));
     ASSERT_TRUE(declared.has_value()) << declared.error().context;
     EXPECT_EQ(declared->quantities[0].near_zero_cutoff, 1.0f);
-    const Result<ParityReport> by_default = compare_arrays(a->arenas(), b->arenas(), row(spade::testing::bands::kFloor, spade::testing::kNearZeroCutoff));
+    const Result<ParityReport> by_default = compare_arrays(
+        a->arenas(), b->arenas(), row(spade::testing::bands::kFloor, spade::testing::kNearZeroCutoff));
     ASSERT_TRUE(by_default.has_value()) << by_default.error().context;
     EXPECT_EQ(by_default->quantities[0].near_zero_cutoff, spade::testing::kNearZeroCutoff);
 }
