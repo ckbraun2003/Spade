@@ -424,14 +424,16 @@ void BM_CsgMeshShell(benchmark::State& state) {
         100.0 * static_cast<double>(folds.folded) / static_cast<double>(std::max(folds.triangles, 1u));
 }
 
-// One frame of the shell above: the raster draws its B1 mesh (draw 0), the
-// frame is ray-marched (draw 1), or the raster draws the old fixed 48-cell
-// mesh (draw 2). The camera is outside the shell (view 0) or inside its bowl
-// (view 1). It prices B2, ray-marched CSG in the raster
+// One frame of the shell above, drawn four ways. The raster draws its B1
+// mesh (draw 0), the frame is ray-marched (draw 1), the raster draws the old
+// fixed 48-cell mesh (draw 2), or the raster ray-marches the shell (draw 3,
+// B2, what scene_from_world() now gives). Draws 0 and 2 empty
+// csg_subtrees, so the raster falls back to the mesh. The camera is outside
+// the shell (view 0) or inside its bowl (view 1). It prices B2
 // (rendering/plans/2026-10-04-b2-raymarched-csg-plan.md). covered_pct is the
 // share of pixels the shell covers. Recorded, not gated.
 void BM_CsgFrame(benchmark::State& state) {
-    constexpr const char* kDrawLabels[] = {"raster_b1_mesh_", "raymarch_", "raster_48_cell_mesh_"};
+    constexpr const char* kDrawLabels[] = {"raster_b1_mesh_", "raymarch_", "raster_48_cell_mesh_", "raster_b2_"};
     const int draw = static_cast<int>(state.range(0));
     const bool raymarch = draw == 1;
     const bool inside = state.range(1) == 1;
@@ -449,6 +451,9 @@ void BM_CsgFrame(benchmark::State& state) {
         return;
     }
     RenderScene drawn = *scene;
+    if (draw == 0 || draw == 2) {
+        drawn.csg_subtrees.clear();
+    }
     if (draw == 2) {
         const auto root = static_cast<uint32_t>(world->sdf.nodes.size() - 1u);
         const spade::Result<spade::render::Aabb> bounds =
@@ -491,6 +496,7 @@ void BM_CsgFrame(benchmark::State& state) {
     // Covered: a pixel that differs from the same view with the shell removed.
     RenderScene bare = drawn;
     bare.statics.clear();
+    bare.csg_subtrees.clear();
     std::vector<uint8_t> bare_storage;
     RenderTarget bare_target = make_target(bare_storage, c.width, c.height);
     if (!spade::render::render(bare, camera, bench_options(), bare_target, nullptr)) {
@@ -518,7 +524,7 @@ BENCHMARK(BM_RenderBackgroundFill)->DenseRange(0, kResCaseCount - 1, 1)->UseReal
 BENCHMARK(BM_RenderGroundPlane)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderSlots)->DenseRange(1, 4, 1)->UseRealTime();
 BENCHMARK(BM_CsgMeshShell)->Arg(169)->Arg(80)->Arg(50)->Unit(benchmark::kMillisecond)->Iterations(3)->UseRealTime();
-BENCHMARK(BM_CsgFrame)->ArgsProduct({{0, 1, 2}, {0, 1}, {0, 1}})->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_CsgFrame)->ArgsProduct({{0, 1, 2, 3}, {0, 1}, {0, 1}})->Unit(benchmark::kMillisecond)->UseRealTime();
 
 // NO BENCHMARK_MAIN() HERE -- same reason bench_sim.cpp states: spade_bench is
 // one executable built from several benchmark TUs, and benchmark::benchmark_main

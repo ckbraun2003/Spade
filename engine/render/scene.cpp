@@ -373,6 +373,14 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
                 // single-material) should use.
                 .material_override = node_material_override(root_node),
             });
+            // Shaded and velocity modes ray-march the subtree within the box
+            // its mesh was sampled over (RS3); the mesh above stays for
+            // wireframe and shadow casting.
+            scene.csg_subtrees.push_back(CsgSubtree{
+                .program = csg_subtree_program(world.sdf, root_node),
+                .bounds = csg_subtree_sample_box(world.sdf, root_node, *subtree_bounds),
+                .draw_item = static_cast<uint32_t>(scene.statics.size() - 1u),
+            });
         }
     }
 

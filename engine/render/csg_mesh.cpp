@@ -450,9 +450,9 @@ constexpr bool kFlipZ = true;
     return std::max(limits.min_cells_per_axis, static_cast<uint32_t>(std::max(wanted, 0.0f)));
 }
 
-// The subtree [subtree_start(root), root] as its own program, so eval() and
-// gradient() see this subtree alone (see mesh_csg_subtree()'s comment).
-[[nodiscard]] SdfProgram extract_subtree(const SdfProgram& program, uint32_t root_node) {
+}  // namespace
+
+SdfProgram csg_subtree_program(const SdfProgram& program, uint32_t root_node) {
     const uint32_t start = subtree_start(program, root_node);
     SdfProgram subtree;
     subtree.nodes.assign(program.nodes.begin() + start, program.nodes.begin() + root_node + 1);
@@ -460,7 +460,36 @@ constexpr bool kFlipZ = true;
     return subtree;
 }
 
-}  // namespace
+Aabb csg_subtree_sample_box(const SdfProgram& program, uint32_t root_node, const Aabb& subtree_bounds,
+                            const CsgMeshLimits& limits) {
+    // The padding margin is `limits.aabb_margin`, EXCEPT when `root_node`
+    // is itself a smooth_union: sdf.cpp's own bound on the blend (min(a,b)
+    // - k/4 <= d <= min(a,b)) means the true surface can sit up to k/4
+    // beyond wherever `subtree_bounds` puts it, and a FIXED aabb_margin is
+    // not a bound against an arbitrary k (review IMPORTANT #2 -- this
+    // task's own committed smooth_union golden uses k=0.25, k/4=0.0625,
+    // already past the 0.05 default). This is deliberately independent of
+    // csg_subtree_world_bounds()'s OWN k/4 dilation for a smooth_union
+    // ANYWHERE in the subtree (subtree_extent(), above): that dilation
+    // tightens the STARTING bound for resolution's sake and only ever
+    // widens `subtree_bounds` for a caller who actually uses it; this check
+    // is the sample box's own defence against a caller who does not
+    // (a hand-picked bound, a future call site), so the root's own blend
+    // radius is never silently clipped no matter how `subtree_bounds` was
+    // produced.
+    float aabb_margin = limits.aabb_margin;
+    if (root_node < program.nodes.size()) {
+        const SdfNode& root = program.nodes[root_node];
+        if (root.op == static_cast<uint32_t>(SdfOp::smooth_union)) {
+            const float k = root.params.x;
+            if (k > 0.0f) {
+                aabb_margin = std::max(aabb_margin, k * 0.25f);
+            }
+        }
+    }
+    const glm::vec3 margin(aabb_margin);
+    return Aabb{.min = subtree_bounds.min - margin, .max = subtree_bounds.max + margin};
+}
 
 uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& limits) {
     const glm::vec3 extent = subtree_bounds.max - subtree_bounds.min + glm::vec3(2.0f * limits.aabb_margin);
@@ -472,7 +501,7 @@ CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_nod
     if (root_node >= program.nodes.size()) {
         return report;
     }
-    const SdfProgram subtree = extract_subtree(program, root_node);
+    const SdfProgram subtree = csg_subtree_program(program, root_node);
     glm::vec3 lo(std::numeric_limits<float>::max());
     glm::vec3 hi(std::numeric_limits<float>::lowest());
     for (size_t t = 0; t + 2u < mesh.indices.size(); t += 3u) {
@@ -518,10 +547,7 @@ Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node,
     // staying in sync. `transforms` is copied WHOLE (not sliced) because the
     // extracted nodes' `transform` fields are indices into the ORIGINAL
     // program's transform table and must keep resolving to the same entries.
-    const uint32_t start = subtree_start(program, root_node);
-    SdfProgram subtree;
-    subtree.nodes.assign(program.nodes.begin() + start, program.nodes.begin() + root_node + 1);
-    subtree.transforms = program.transforms;
+    const SdfProgram subtree = csg_subtree_program(program, root_node);
     const Result<uint32_t> peak = subtree.validate();
     if (!peak) {
         // Unreachable for a subtree of an already-validated `program` (see
@@ -531,32 +557,11 @@ Result<MeshData> mesh_csg_subtree(const SdfProgram& program, uint32_t root_node,
         return std::unexpected(peak.error());
     }
 
-    // The padding margin is `limits.aabb_margin`, EXCEPT when `root_node`
-    // is itself a smooth_union: sdf.cpp's own bound on the blend (min(a,b)
-    // - k/4 <= d <= min(a,b)) means the true surface can sit up to k/4
-    // beyond wherever `subtree_bounds` puts it, and a FIXED aabb_margin is
-    // not a bound against an arbitrary k (review IMPORTANT #2 -- this
-    // task's own committed smooth_union golden uses k=0.25, k/4=0.0625,
-    // already past the 0.05 default). This is deliberately independent of
-    // csg_subtree_world_bounds()'s OWN k/4 dilation for a smooth_union
-    // ANYWHERE in the subtree (subtree_extent(), above): that dilation
-    // tightens the STARTING bound for resolution's sake and only ever
-    // widens `subtree_bounds` for a caller who actually uses it; this check
-    // is `mesh_csg_subtree()`'s own defence against a caller who does not
-    // (a hand-picked bound, a future call site), so the root's own blend
-    // radius is never silently clipped no matter how `subtree_bounds` was
-    // produced.
-    float aabb_margin = limits.aabb_margin;
-    const SdfNode& root = program.nodes[root_node];
-    if (root.op == static_cast<uint32_t>(SdfOp::smooth_union)) {
-        const float k = root.params.x;
-        if (k > 0.0f) {
-            aabb_margin = std::max(aabb_margin, k * 0.25f);
-        }
-    }
-    const glm::vec3 margin(aabb_margin);
-    const glm::vec3 lo = subtree_bounds.min - margin;
-    const glm::vec3 hi = subtree_bounds.max + margin;
+    // Sampled over the padded box (csg_subtree_sample_box()'s comment says
+    // why a smooth_union root pads by k/4).
+    const Aabb box = csg_subtree_sample_box(program, root_node, subtree_bounds, limits);
+    const glm::vec3 lo = box.min;
+    const glm::vec3 hi = box.max;
     const glm::vec3 extent = hi - lo;
 
     const uint32_t cells = cells_for_extent(std::max({extent.x, extent.y, extent.z}), limits);

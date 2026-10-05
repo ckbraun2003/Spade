@@ -253,9 +253,13 @@
 // normalization (std::sqrt, IEEE-mandated and fine), not trig.
 // ---------------------------------------------------------------------------
 
+#include <glm/mat3x3.hpp>
+#include <glm/vec3.hpp>
+
 #include "core/error.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "world/sdf.hpp"
 
 namespace spade::render {
 
@@ -310,6 +314,43 @@ inline constexpr uint32_t kRaymarchMaxSteps = 1024;
 // fixture comfortably (a tighter epsilon needs more steps to reach, in
 // general) -- see the table above.
 inline constexpr float kRaymarchSurfaceEpsilon = 1e-4f;
+
+// ---------------------------------------------------------------------------
+// The reference's rays and its sphere trace, shared with the CPU raster.
+// The raster ray-marches CSG subtrees with these same functions (RS3 as
+// signed 2026-10-05, raster_cpu.cpp's draw_csg_subtrees()), so its rays and
+// its march are bit-identical to the reference's.
+
+// One frame's ray invariants, computed once per frame.
+struct RayGrid {
+    glm::vec3 origin{0.0f};
+    glm::mat3 cam_to_world{1.0f};
+    float f = 1.0f;  // 1 / tan(fov_y / 2), through tan32() in double
+    float aspect = 1.0f;
+    uint32_t width = 0, height = 0;
+};
+[[nodiscard]] RayGrid ray_grid(const Camera& camera, uint32_t width, uint32_t height);
+
+// The ray through pixel (x, y)'s centre. Both directions are unit length,
+// and -dir_cam.z is cos(theta), which converts depth to radial distance.
+struct CameraRay {
+    glm::vec3 dir_cam{0.0f, 0.0f, -1.0f};
+    glm::vec3 dir_world{0.0f, 0.0f, -1.0f};
+};
+[[nodiscard]] CameraRay camera_ray(const RayGrid& grid, uint32_t x, uint32_t y);
+
+struct MarchHit {
+    bool hit = false;
+    float t = 0.0f;      // radial distance along the ray
+    glm::vec3 p{0.0f};   // the converged point, when `hit`
+};
+// Sphere-traces `program` along origin + dir * t, from t_start until a hit
+// (distance <= kRaymarchSurfaceEpsilon), t passing t_end, or
+// kRaymarchMaxSteps. A ray that starts inside the solid marches through it
+// first and reports no hit there (FRUSTUM PARITY, above). `dir` must be
+// unit length.
+[[nodiscard]] MarchHit sphere_trace(const SdfProgram& program, const glm::vec3& origin, const glm::vec3& dir,
+                                    float t_start, float t_end);
 
 // Sphere-traces `scene.sdf` per pixel (S7a Task R8) into `target` -- the
 // exact alternative to raster_cpu.cpp's tessellated render() for
