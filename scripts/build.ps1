@@ -28,8 +28,8 @@
     and reporting success.
 
 .PARAMETER ParallelLevel
-    Compile jobs, 1..64, default 1. The box is memory-bound and its failure
-    mode is a silent OOM kill, so all-cores is not expressible here.
+    Compile jobs, 1..64, default 8. All-cores (0) is not expressible here: on
+    the old, memory-bound box its failure mode was a silent OOM kill.
 
 .PARAMETER Clean
     Delete the preset's build directory before configuring, forcing a fresh
@@ -65,12 +65,12 @@ param(
     # for why.
     [string] $BuildDir,
 
-    # ValidateRange, not [int]: `--parallel 0` means ALL CORES, and that is the
-    # one value that must never be expressible on a box whose failure mode is
-    # a silent OOM kill. Before this parameter existed the script ran a bare
-    # `cmake --build`, which is ninja's all-cores default.
+    # ValidateRange, not [int]: `--parallel 0` means ALL CORES, which the old
+    # box (about 7.6 GB) answered with a silent OOM kill. Before this parameter
+    # existed the script ran a bare `cmake --build`, ninja's all-cores default.
+    # 8 suits the current machine (32 GB, 16 threads; 2026-10-04).
     [ValidateRange(1,64)]
-    [int] $ParallelLevel = 1,
+    [int] $ParallelLevel = 8,
 
     [switch] $Clean
 )

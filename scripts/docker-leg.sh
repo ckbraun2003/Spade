@@ -1,18 +1,33 @@
 #!/usr/bin/env bash
 # The Docker leg's in-container steps (TD-11, TD-12). scripts\docker-leg.ps1
-# runs this copy, taken from the archive of the commit under test, as
+# runs the copy from the archive of the commit under test as
 #
-#   bash /out/docker-leg.sh <sync|all|configure|build|test|consumer> [--jobs N]
+#   bash /out/docker-leg.sh <all|configure|build|test|consumer> [--jobs N]
 #
-# with the spade-docker-leg volume at /leg and the host's
+# and its own copy (docker-leg-driver.sh) for the steps that arrange the
+# volume, since an older commit's copy may predate them:
+#
+#   bash /out/docker-leg-driver.sh seed [--from VOLUME]
+#   bash /out/docker-leg-driver.sh sync
+#
+# with the run's volume (spade-docker-leg-<run>) at /leg and the host's
 # build-docker\<short-sha>\ at /out:
 #
 #   /out/src.tar   the commit's files, LF (git -c core.autocrlf=false archive)
 #   /leg/src       those files, synced so unchanged files keep their mtimes
 #   /leg/commit    the commit's full hash
+#   /leg/previous  what /leg/commit held before the last sync
+#   /leg/seed      how the volume began: empty, or a copy of which volume at
+#                  which commit
 #   /leg/build     the Release tree, every option at its default except V1;
 #                  its dependencies stay in /leg/build/_deps between runs
 #   /leg/consumer  scripts/consumer-smoke.sh's work directory (Interface)
+#
+# `seed` runs once, on a new volume. With --from it copies build, src, consumer
+# and commit from the idle volume mounted at /seed, keeping every mtime: the
+# outputs stay newer than the sources they were built from, and the sync that
+# follows gives each file the new commit changed a fresh mtime, so ninja
+# rebuilds exactly that. Without --from the volume starts empty.
 #
 # `consumer` configures and builds before its two calls: consumer ON installs
 # from /leg/build, which must be the commit under test, not whatever commit
@@ -24,6 +39,7 @@ set -u
 
 usage() {
     echo "usage: docker-leg.sh <sync|all|configure|build|test|consumer> [--jobs N]" >&2
+    echo "       docker-leg.sh seed [--from VOLUME]" >&2
     exit 2
 }
 
@@ -31,13 +47,15 @@ usage() {
 step=$1
 shift
 jobs=1
+from=
 while [ $# -gt 0 ]; do
     case $1 in
         --jobs) [ $# -ge 2 ] || usage; jobs=$2; shift 2 ;;
+        --from) [ $# -ge 2 ] && [ "$step" = seed ] || usage; from=$2; shift 2 ;;
         *) usage ;;
     esac
 done
-case $step in sync|all|configure|build|test|consumer) ;; *) usage ;; esac
+case $step in seed|sync|all|configure|build|test|consumer) ;; *) usage ;; esac
 case $jobs in ''|*[!0-9]*) usage ;; esac
 
 # The roots are overridable only so the step logic can be exercised outside a
@@ -46,18 +64,58 @@ root=${DOCKER_LEG_ROOT:-/leg}
 out=${DOCKER_LEG_OUT:-/out}
 src=$root/src
 build=$root/build
+seed_root=${DOCKER_LEG_SEED:-/seed}
+
+# ---- seed: /seed -> /leg, once, on a new volume -----------------------------
+if [ "$step" = seed ]; then
+    if [ -e "$src" ] || [ -e "$build" ]; then
+        echo "docker-leg: $root already holds a tree; a volume is seeded only when new" >&2
+        exit 1
+    fi
+    if [ -z "$from" ]; then
+        origin="empty (no seed)"
+    elif [ ! -f "$seed_root/build/CMakeCache.txt" ]; then
+        origin="empty ($from had no configured build to copy)"
+    else
+        set -e
+        for d in build src consumer commit; do
+            if [ -e "$seed_root/$d" ]; then cp -a "$seed_root/$d" "$root/"; fi
+        done
+        set +e
+        origin="a copy of $from at $(cat "$seed_root/commit" 2>/dev/null || echo 'an unrecorded commit')"
+    fi
+    printf '%s\n' "$origin" > "$root/seed"
+    echo "docker-leg: the volume starts as $origin"
+    exit 0
+fi
 
 # ---- sync: /out/src.tar -> /leg/src ----------------------------------------
 # rsync without -t: a file whose content is unchanged is skipped and keeps its
-# old mtime, so ninja rebuilds only what the new commit changed.
+# old mtime, so ninja rebuilds only what the new commit changed. A file it does
+# write gets the clock's time, which must be later than every output in the
+# build tree, or ninja keeps the stale object. A clock that stepped back (the
+# WSL VM after the host sleeps) or a seed built under a later clock breaks
+# that, so those files are then stamped one second past the newest output.
 if [ "$step" = sync ]; then
     set -e
     rm -rf "$root/stage"
     mkdir -p "$root/stage" "$src"
     tar -xf "$out/src.tar" -C "$root/stage"
     commit=$(cat "$out/commit")
-    rsync -rl --checksum --delete "$root/stage/" "$src/"
+    rsync -rl --checksum --delete --out-format='%n' "$root/stage/" "$src/" > "$root/synced.txt"
     rm -rf "$root/stage"
+    newest=
+    if [ -d "$build" ]; then newest=$(find "$build" -type f -printf '%Ts\n' | sort -n | tail -n 1); fi
+    now=$(date +%s)
+    if [ "${newest:-0}" -ge "$now" ]; then
+        stamped=0
+        while IFS= read -r f; do
+            if [ -f "$src/$f" ]; then touch -d "@$((newest + 1))" "$src/$f"; stamped=$((stamped + 1)); fi
+        done < "$root/synced.txt"
+        echo "docker-leg: the newest output in $build ($newest) is not older than the clock ($now);" \
+             "stamped the $stamped file(s) this sync wrote at $((newest + 1))"
+    fi
+    if [ -f "$root/commit" ]; then cp "$root/commit" "$root/previous"; else echo nothing > "$root/previous"; fi
     printf '%s\n' "$commit" > "$root/commit"
     echo "docker-leg: synced $commit into $src"
     exit 0

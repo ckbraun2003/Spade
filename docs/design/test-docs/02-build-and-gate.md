@@ -8,11 +8,12 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 
 | Script | What it does | Parameters |
 |---|---|---|
-| `scripts\build.ps1` | Imports the MSVC environment, configures the preset if needed, builds | `-Preset debug\|release` (default release), `-Target <one>`, `-BuildDir <configured tree>`, `-ParallelLevel 1..64` (default 1), `-Clean` |
+| `scripts\build.ps1` | Imports the MSVC environment, configures the preset if needed, builds | `-Preset debug\|release` (default release), `-Target <one>`, `-BuildDir <configured tree>`, `-ParallelLevel 1..64` (default 8), `-Clean` |
 | `scripts\test.ps1` | `ctest -L spade --output-on-failure --no-tests=error` against a built preset | `-Preset`, `-Filter <regex>` |
 | `scripts\demo.ps1` | Builds if needed and launches one viewer scene | `-Scene <name>`, `-Preset`, `-Backend cpu\|vulkan` |
-| `scripts\docker-leg.ps1` | The Docker leg (below): builds and tests one commit on Linux/gcc in a container, then the consumer smoke | `-Commit <rev>` (default `HEAD`), `-Step all\|image\|sync\|configure\|build\|test\|consumer`, `-Memory` (default `3g`), `-Jobs` (default 1), `-Follow`, `-Stop`, `-Clean` |
-| `scripts/docker-leg.sh` | The leg's steps inside the container; the driver runs the copy from the commit under test | `<step> [--jobs N]` |
+| `scripts\docker-leg.ps1` | The Docker leg (below): builds and tests one commit on Linux/gcc in a container, then the consumer smoke | `-Commit <rev>` (default `HEAD`), `-Run <id>` (default the commit's short sha), `-Step all\|image\|sync\|configure\|build\|test\|consumer`, `-Memory` (default `8g`), `-Jobs` (default 8), `-NoSeed`, `-Follow`, `-Stop`, `-Clean`, `-Prune [-Keep N]` (default 4) |
+| `scripts/docker-leg.sh` | The leg's steps inside the container. The driver runs the commit's copy for the step, and its own copy for `seed` and `sync` | `<step> [--jobs N]`, `seed [--from VOLUME]` |
+| `scripts/gcc-check.sh` | The gcc check before review (below), from Git Bash | `<file>...`; `GCC_CHECK_VOLUME=<volume>` picks the volume |
 | `scripts/consumer-smoke.sh` | **Interface's.** Installs Spade into a fresh prefix, then builds and runs `tests/consumer` against it | `--vulkan ON\|OFF --work DIR [--from-build DIR] [--deps DIR] [--jobs N]` |
 
 ## Presets and options
@@ -40,10 +41,12 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | **Covers** | gcc-13 and CMake 3.28.3, the project's floor; Release with Vulkan, the sandbox and GL compiled; `ctest -L spade -LE gpu`, with the viewer-trajectory guard at full length (`SPADE_FULL_VIEWER_TRAJECTORIES=1`; the gate checks a prefix); `tests/consumer` against a fresh install with `SPADE_VULKAN` ON (from the leg's own tree) and OFF (a library-only tree), plus the `SL2b` sandbox stage when the commit's `consumer-smoke.sh --help` offers `--sandbox`; the summary says whether it ran |
 | **Leaves out** | v1 (`SPADE_BUILD_V1=OFF`: frozen, and never on a Linux leg); the `gpu` label, excluded rather than skipped (`TD-13`); Debug; Windows, which the gate covers; a window (no X11, so GLFW builds without a backend) |
 | **Tests a commit** | `git -c core.autocrlf=false archive <commit>`, because a plain archive on this box emits CRLF. Uncommitted changes are not in the leg, and the driver says so when there are any. The image is built from that commit's own `scripts/docker-leg.Dockerfile` and tagged by the file's content hash |
-| **State** | One Docker volume, `spade-docker-leg`: `/leg/src` (the commit, synced so unchanged files keep their mtimes and ninja stays incremental), `/leg/build` (dependencies in `_deps`, fetched once), `/leg/consumer`. `-Clean` drops it |
-| **Runs** | Detached, in a container named `spade-docker-leg`, with no swap. The defaults are `--memory 3g` and `-j1`, the old box's; on this machine run it with `-Memory 8g -Jobs 8` ("This machine", below). Closing the terminal does not stop it. Running the driver again re-attaches rather than starting a second leg, and `-Stop` ends it. One leg runs at a time, since there is one container name and one volume. Stay with it in the foreground |
+| **State** | One Docker volume per run, `spade-docker-leg-<run>`; the run is the commit's short sha unless `-Run` names it. The volume holds `/leg/src` (the commit, synced so unchanged files keep their mtimes and ninja stays incremental), `/leg/build` (dependencies in `_deps`), `/leg/consumer`, and `/leg/seed` and `/leg/previous`, which record where the volume came from. `-Clean` drops the run's volume; `-Prune -Keep N` drops idle leg volumes beyond the newest N and never one a container uses |
+| **Seeds** | A new volume starts as a copy of the newest leg volume no running container uses: build, source, consumer tree and commit, every mtime kept. It then rebuilds only what the commit changed and fetches nothing. The sync after it stamps every file it writes past the newest output if the clock is not ahead of them, so a seed built under a later clock (or a WSL clock that stepped back) cannot leave a stale object. `-NoSeed` starts empty |
+| **Runs** | Detached, in a container named like its volume, with `--memory 8g` and `-j8` by default and no swap. Legs on different commits run side by side. Closing the terminal does not stop a leg; running the driver again for the same run re-attaches rather than starting a second leg, and `-Stop` ends it. `-Follow` and `-Stop` act on the only leg, or on the one `-Run` (or `-Commit`) names. The driver's own `docker-leg.sh` seeds and syncs, since an older commit's copy predates those steps; the commit's copy runs the step. Stay with a leg in the foreground |
+| **`TD-12`** | A leg that makes a regenerated golden final runs on a fresh volume (`-NoSeed`), so no object in it predates the commit |
 | **Order** | configure, build (`ninja -k 0`, so one run lists every failing file), test, agreement, consumer ON, consumer OFF. `-Step consumer` also configures and builds first, so consumer ON installs the commit under test and never a tree some earlier commit built. A failed part blocks only the parts that need it. The exit code is 0 only if every part passed |
-| **Output** | `build-docker\<short-sha>\`: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
+| **Output** | `build-docker\<short-sha>\`, or `build-docker\<short-sha>-<run>\` for a named run: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk, and the volume: how it began and what it held before the run), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
 | **Refuses** | Under 4 GB free on the host drive (`-MinFreeGB`), since a full disk truncates files mid-build |
 
 A red leg is reported per realm with the failing `file:line`, and each realm fixes its own code. Measured times and peak memory are in `07-status.md`.
@@ -55,47 +58,29 @@ A red leg is reported per realm with the failing `file:line`, and each realm fix
 - **It is a syntax check** (`-fsyntax-only` with the engine's `-Wall -Wextra -Wpedantic -Werror`). It catches front-end warnings such as `dangling-else` and `missing-field-initializers`. It does not catch warnings that need the optimiser, such as `-Wmaybe-uninitialized`; only a leg run finds those.
 - **Some files it cannot check honestly.** A file that depends on generated headers newer than the leg volume's (any change under `engine/shaders/`), or on a target's own compile definitions, is named in the message instead, and the lead schedules a leg run before merge.
 
-From the worktree root, in Git Bash, with the files to check after the `_`:
+From the worktree root, in Git Bash:
 
 ```bash
-MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
-  -v spade-docker-leg:/leg:ro -v "$(pwd -W):/src:ro" \
-  "$(docker images -q spade-docker-leg | head -n 1)" bash -c '
-  mkdir -p /tmp/s && cp -r /src/engine /src/sandbox /src/tests /tmp/s && cd /tmp/s
-  D=/leg/build/_deps; rc=0
-  for f in "$@"; do
-    tu=$f; case $f in *.hpp) printf "#include \"/tmp/s/%s\"\n" "$f" > /tmp/hdr.cpp; tu=/tmp/hdr.cpp ;; esac
-    g++-13 -std=gnu++23 -fsyntax-only -Wall -Wextra -Wpedantic -Werror -ffp-contract=off \
-      -DGLM_ENABLE_EXPERIMENTAL -DGLFW_INCLUDE_NONE -DYAML_CPP_STATIC_DEFINE \
-      -DSPADE_ENGINE_DIR=\"/src/engine\" -DSPADE_GOLDEN_DIR=\"/src/tests/golden\" \
-      -DSPADE_TESTS_DIR=\"/src/tests\" -DSPADE_TEST_OUTPUT_DIR=\"/tmp/test-output\" \
-      -Iengine -Isandbox -Iengine/tools/viewer -I/leg/build/engine/generated/spade_slang \
-      -I$D/glm-src -I$D/glad-src/include -I$D/glfw-src/include -I$D/imgui-src -I$D/imgui-src/backends \
-      -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
-      -isystem $D/googletest-src/googletest/include -isystem $D/benchmark-src/include \
-      "$tu" && echo "gcc ok:   $f" || { echo "gcc FAIL: $f"; rc=1; }
-  done; exit $rc' _ tests/test_example.cpp engine/render/example.hpp
+scripts/gcc-check.sh tests/test_example.cpp engine/render/example.hpp
 ```
 
 - **What it does:**
-  - mounts the worktree and the leg's volume, both read-only; the volume supplies the dependency headers and the generated headers from the last leg run;
+  - picks the newest leg volume that no running container uses, so it never reads a volume a leg is building, and prints that volume and its commit; `GCC_CHECK_VOLUME=<volume>` picks one instead;
+  - mounts the worktree and that volume, both read-only; the volume supplies the dependency headers and the generated headers from its last leg run;
   - copies the sources inside, because reading headers through the Windows mount is slow;
   - prints `gcc ok:` or `gcc FAIL:` per file, and exits non-zero if any file fails;
   - checks each header through a one-line translation unit that includes it.
-- **Proved red, then green,** on 2026-10-03:
+- **Its compile line was proved red, then green,** on 2026-10-03, when it was still a command pasted from this page:
   - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
   - at `ec6e2da` the fixed file passed, and so did two headers.
-- **Cost:** about a minute per heavy test file on the old box (126 s for three files).
-- **When to run it:** whenever it's needed, with as many files as you like. The one exception for now: never run it during a leg's build step. That step rewrites the generated headers in the one leg volume, and the check reads them. The exception goes away when the leg gets a container and volume per run.
+- **Cost:** about a minute per heavy test file on the old box (126 s for three files); on this machine, 11 s for one heavy test file and one header.
+- **When to run it:** whenever it's needed, with as many files as you like, beside any number of legs. It refuses (exit 2) only when no leg volume is idle.
 
 ## This machine
 
 **Since 2026-10-04 Spade builds on a new machine:** 32 GB, 16 threads, an RTX 3060 Ti, and Docker Desktop with 16 GB. Kat's tree shares it.
 - **No slots and no budget:** build and test as the work needs (`docs/design/consumers.md`, "Shared build machine"). The user lifted every memory-based limit on 2026-10-04.
-- **Settings:**
-  - Pass `-ParallelLevel 8` to `scripts\build.ps1`; the script's own default is still 1.
-  - Run the Docker leg with `-Memory 8g -Jobs 8`.
-  - Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **Settings:** the scripts' defaults suit this machine (`scripts\build.ps1 -ParallelLevel 8`; the Docker leg `-Memory 8g -Jobs 8`). Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 
