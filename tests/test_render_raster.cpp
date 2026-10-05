@@ -1539,6 +1539,92 @@ TEST(RasterGolden, ShadowedGroundWithCasterMatchesCommittedManifest) {
     check_against_manifest("shadowed_ground_with_caster", pixels);
 }
 
+// Golden F: ray-marched CSG (RS3, replacement signed 2026-10-05;
+// rendering/plans/2026-10-04-b2-raymarched-csg-plan.md, step 2). The other
+// goldens are hand-built, so none has a CSG subtree. This one comes through
+// scene_from_world(), the only path that makes them: a slab with a round
+// hole and a smooth-union blob, both marched, beside a tessellated ball on
+// a ground plane, with sun shadows. Pending TD-12 until the Docker leg
+// reproduces the hash (manifest's _pending_td12_b2).
+namespace {
+
+// Rotates a Y-axis cylinder onto Z. Literal components, as for the golden
+// cameras above: no trigonometry feeds a golden's inputs (SR-14).
+const glm::quat kGoldenYToZ(0.70710678f, 0.70710678f, 0.0f, 0.0f);
+
+[[nodiscard]] RenderScene golden_scene_csg() {
+    using spade::MaterialDesc;
+    using spade::SdfPose;
+    spade::WorldBuilder b;
+    b.name("raster-golden-csg")
+        .capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1})
+        .material(MaterialDesc{.name = "ground", .base_color = {0.55f, 0.55f, 0.5f, 1.0f}})
+        .material(MaterialDesc{.name = "slab", .base_color = {0.8f, 0.3f, 0.2f, 1.0f}})
+        .material(MaterialDesc{.name = "blob", .base_color = {0.2f, 0.35f, 0.8f, 1.0f}})
+        .material(MaterialDesc{.name = "ball", .base_color = {0.25f, 0.7f, 0.3f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(0);
+    // Each subtree's nodes share one material: B2 shades a subtree in one (Q4).
+    b.box(glm::vec3(0.9f, 0.7f, 0.12f), SdfPose{.position = {-1.0f, 0.7f, -0.6f}}).material_for_last_node(1);
+    b.cylinder(0.3f, 0.5f, SdfPose{.position = {-1.0f, 0.75f, -0.6f}, .rotation = kGoldenYToZ})
+        .material_for_last_node(1);
+    b.subtract().material_for_last_node(1);
+    b.union_();
+    b.sphere(0.45f, SdfPose{.position = {0.9f, 0.45f, -0.2f}}).material_for_last_node(2);
+    b.sphere(0.3f, SdfPose{.position = {1.3f, 0.85f, -0.2f}}).material_for_last_node(2);
+    b.smooth_union(0.25f).material_for_last_node(2);
+    b.union_();
+    b.sphere(0.3f, SdfPose{.position = {0.0f, 0.3f, 0.8f}}).material_for_last_node(3);
+    b.union_();
+    const Result<spade::WorldDesc> world = b.build();
+    if (!world) {
+        ADD_FAILURE() << "build failed: " << world.error().context;
+        return RenderScene{};
+    }
+    Result<RenderScene> scene = spade::render::scene_from_world(*world, {});
+    if (!scene) {
+        ADD_FAILURE() << "scene_from_world failed: " << scene.error().context;
+        return RenderScene{};
+    }
+    // A subtree's program is its own copy (csg_subtree_program()), so the
+    // scene keeps no pointer into `world`, which ends here.
+    return std::move(*scene);
+}
+
+}  // namespace
+
+TEST(RasterGolden, CsgSlabAndBlobRayMarchedMatchesCommittedManifest) {
+    RenderScene scene = golden_scene_csg();
+    ASSERT_EQ(scene.csg_subtrees.size(), 2u) << "the slab and the blob are CSG subtrees";
+    ASSERT_TRUE(scene.static_shadow.has_value());
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 1.0f, 4.5f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+    options.shadows = true;
+
+    const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
+        << "sanity floor: this scene/camera must actually show something before its hash means anything";
+
+    // Permanent guards, as the shadow golden keeps its own: the frame must
+    // be the march's and must carry shadows, so a regression that drew the
+    // subtrees from their meshes again, or dropped shadows, cannot hide
+    // behind an unrelated hash.
+    {
+        RenderOptions no_shadows = options;
+        no_shadows.shadows = false;
+        EXPECT_NE(pixels, render_golden(scene, camera, no_shadows))
+            << "this golden must be sensitive to RenderOptions::shadows";
+
+        RenderScene meshed = scene;
+        meshed.csg_subtrees.clear();  // the raster then draws the subtrees' meshes
+        EXPECT_NE(pixels, render_golden(meshed, camera, options)) << "this golden must be the ray-march's frame";
+    }
+
+    check_against_manifest("csg_slab_and_blob_shaded", pixels);
+}
+
 // ===========================================================================
 // 8. Task R5b (controller ruling SR-15): exact near/far triangle clipping.
 // Before this task, draw_world_triangle and draw_mesh_triangle_shaded both
