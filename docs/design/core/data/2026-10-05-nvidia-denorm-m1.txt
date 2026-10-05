@@ -1,0 +1,29 @@
+M1 (Physics), physics/denorm-probe @ 650310b (fix ef12d32) on test-docs/denorm-flag d9b4cb8, run on a local throwaway merge with Core's admission.
+Device: NVIDIA GeForce RTX 3060 Ti, driver 572.83 (driverVersion 0x8F14C000). denormPreserveF32=0, denormFlushToZeroF32=0, independence=1.
+Kernels: no fp32 denormal mode, -fp-mode precise.
+
+class          cases control  kept in-ftz out-ftz either both contr acc other | inputs    outputs
+pass-through      30     18     30      0      0      0    0     0   0    0 | preserved -
+add              900    316    646    166      8     80    0     0   0    0 | FLUSHED   FLUSHED
+sub              900    316    646    166      8     80    0     0   0    0 | FLUSHED   FLUSHED
+mul              900    312    728     64     12     96    0     0   0    0 | FLUSHED   FLUSHED
+abs               30     18     20     10      0      0    0     0   0    0 | FLUSHED   -
+neg               30     18     20     10      0      0    0     0   0    0 | FLUSHED   -
+min              900    324    600    300      0      0    0     0   0    0 | FLUSHED   -
+max              900    324    600    300      0      0    0     0   0    0 | FLUSHED   -
+mul-then-add   27000   5660  18172   3282    286   5230   30     0   0    0 | FLUSHED   FLUSHED
+floor             30     18     30      0      0      0    0     0   0    0 | preserved -
+floor->int        30     18     30      0      0      0    0     0   0    0 | preserved -
+compares         900    324    590    310      0      0    0     0   0    0 | FLUSHED   -
+clamp          13980   3078   7510   6470      0      0    0     0   0    0 | FLUSHED   -
+sqrt              30     18     19     10      0      0    0     0   1    0 | FLUSHED   -
+div              900    296    444    360     28     60    0     0   8    0 | FLUSHED   FLUSHED
+("-": the class cannot tell an output flush apart.) It passes all four rules: no "other", no differing control case, no empty class, no contraction.
+
+Findings (Physics):
+1. Loads and stores keep subnormals. Every arithmetic op flushes, as a sign-preserving FTZ+DAZ: add, sub, mul and div on inputs and outputs; abs, neg, min, max, clamp, compares and sqrt on inputs. -denorm < 0 is false; abs(-denorm) = +0; max(denorm, 0) = 0; sqrt(denorm) = 0.
+2. NoContraction is honoured: 0 of 27,000 mul-then-add cases match std::fma, including the (1+2^-12)^2 - 1 cases. The product is flushed on its own before the add.
+3. floor and float->int keep subnormals: floor(-denorm) = -1. The cell flip comes one step earlier: pos/cell_size is a division, a subnormal quotient flushes to -0, floor gives -0, and the cell is 0, not -1. Only for |pos| < 2^-126 * cell_size. LEAD WITH THIS, phrased that way.
+4. Not denormals: NVIDIA fp32 div and sqrt are not correctly rounded on NORMAL operands (within Vulkan's allowance). 8 div cases and 1 sqrt case are 1 ulp off. (1+2^-12)/3 gives 0x3EAAB556 against host 0x3EAAB555; sqrt(1.5*2^-126) gives 0x201CC470 against 0x201CC471. A denormal fix does not remove these parity differences.
+5. M2's log32(denorm_min) fits finding 1: log32's pre-scale multiplies a subnormal, and the multiply flushes its input.
+Harness: red was a stub (a + b for every mode). Default build 1100/1100 with GpuDenormProbe absent. gcc -fsyntax-only is clean with the definition on.

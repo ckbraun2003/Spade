@@ -1,0 +1,999 @@
+﻿Running main() from C:\Users\Cameron\Desktop\Projects\Spade\build-ninja\release\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = Gpu*
+[==========] Running 84 tests from 11 test suites.
+[----------] Global test environment set-up.
+[----------] 7 tests from GpuContext
+[ RUN      ] GpuContext.ADeviceThatCannotPreserveFp32DenormalsIsRefused
+.\bin\spade_tests.exe : [spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; 
+admitted with the denormal mode not requested
+At line:1 char:400
++ ... nned; $out = .\bin\spade_tests.exe --gtest_filter="Gpu*" 2>&1; $out | ...
++                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([spade] measure...e not requested:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[       OK ] GpuContext.ADeviceThatCannotPreserveFp32DenormalsIsRefused (210 ms)
+[ RUN      ] GpuContext.CreatesOnAvailableDevice
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuContext] device_name=NVIDIA GeForce RTX 3060 Ti api_version=1.4.303
+[       OK ] GpuContext.CreatesOnAvailableDevice (83 ms)
+[ RUN      ] GpuContext.Int64ProbeMatchesTheDevice
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuContext] shaderInt64 advertised=1 device=NVIDIA GeForce RTX 3060 Ti
+[       OK ] GpuContext.Int64ProbeMatchesTheDevice (78 ms)
+[ RUN      ] GpuContext.DebugMessengerExistsIffValidationLayerIsPresent
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuContext] validation_layer_present=0 has_debug_messenger=0
+[       OK ] GpuContext.DebugMessengerExistsIffValidationLayerIsPresent (79 ms)
+[ RUN      ] GpuContext.ComputeAndTransferQueuesAreValid
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuContext.ComputeAndTransferQueuesAreValid (84 ms)
+[ RUN      ] GpuContext.DeviceIndexOutOfRangeIsInvalidArgument
+[       OK ] GpuContext.DeviceIndexOutOfRangeIsInvalidArgument (15 ms)
+[ RUN      ] GpuContext.MoveTransfersOwnershipAndLeavesSourceInert
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuContext.MoveTransfersOwnershipAndLeavesSourceInert (77 ms)
+[----------] 7 tests from GpuContext (629 ms total)
+
+[----------] 13 tests from GpuFp32Math
+[ RUN      ] GpuFp32Math.ReportsTheDeviceAndItsFloatControls
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] device=NVIDIA GeForce RTX 3060 Ti  api=1.4.303  driver=NVIDIA (572.83)  driverVersion=0x8F14C000
+[GpuFp32Math] float controls: denormPreserveF32=0 denormFlushToZeroF32=0 roundingModeRTEF32=1 signedZeroInfNanPreserveF32=1 denormBehaviorIndependence=1
+[GpuFp32Math] maxComputeWorkGroupCount[0]=2147483647  probe chunk=2097152 results (32768 groups)
+[       OK ] GpuFp32Math.ReportsTheDeviceAndItsFloatControls (254 ms)
+[ RUN      ] GpuFp32Math.KernelConstantsAreBitIdenticalToTheHostConstants
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] KernelConstants: n=32  mismatches=0
+[       OK ] GpuFp32Math.KernelConstantsAreBitIdenticalToTheHostConstants (93 ms)
+[ RUN      ] GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Log32DivOverEveryCallSitePair: n=8388608  mismatches=0  chunks=8
+[GpuFp32Math] Log32DivOverAGeneralNormalLattice: n=1048576  mismatches=0  chunks=1
+[       OK ] GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide (1629 ms)
+[ RUN      ] GpuFp32Math.Log32MatchesTheHostBitForBitOverEveryNextFloatArgument
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Log32EveryNextFloatArgument: n=16777215  mismatches=0  chunks=8
+[       OK ] GpuFp32Math.Log32MatchesTheHostBitForBitOverEveryNextFloatArgument (2486 ms)
+[ RUN      ] GpuFp32Math.Log32MatchesTheHostBitForBitAcrossTheWholeNormalRange
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Log32WholeNormalRange: n=520192  mismatches=0  chunks=1
+[GpuFp32Math] Log32ExactPowersOfTwo: n=254  mismatches=0  chunks=1
+[       OK ] GpuFp32Math.Log32MatchesTheHostBitForBitAcrossTheWholeNormalRange (176 ms)
+[ RUN      ] GpuFp32Math.Exp32MatchesTheHostBitForBitAcrossTheReductionBoundary
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Exp32ReductionBoundary: n=16777216  mismatches=0  chunks=8
+[       OK ] GpuFp32Math.Exp32MatchesTheHostBitForBitAcrossTheReductionBoundary (2533 ms)
+[ RUN      ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubnormalTail
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117537]  arg=0xC2AEAC50 (-87.3365479)  gpu=0x00000000 (0)  host=0x007FFFE6 (1.17549071e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117539]  arg=0xC2AEAC51 (-87.3365555)  gpu=0x00000000 (0)  host=0x007FFFA6 (1.17548174e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117541]  arg=0xC2AEAC52 (-87.3365631)  gpu=0x00000000 (0)  host=0x007FFF66 (1.17547277e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117543]  arg=0xC2AEAC53 (-87.3365707)  gpu=0x00000000 (0)  host=0x007FFF26 (1.1754638e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117545]  arg=0xC2AEAC54 (-87.3365784)  gpu=0x00000000 (0)  host=0x007FFEE6 (1.17545483e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117547]  arg=0xC2AEAC55 (-87.336586)  gpu=0x00000000 (0)  host=0x007FFEA6 (1.17544587e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117549]  arg=0xC2AEAC56 (-87.3365936)  gpu=0x00000000 (0)  host=0x007FFE66 (1.1754369e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117551]  arg=0xC2AEAC57 (-87.3366013)  gpu=0x00000000 (0)  host=0x007FFE26 (1.17542793e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117553]  arg=0xC2AEAC58 (-87.3366089)  gpu=0x00000000 (0)  host=0x007FFDE6 (1.17541896e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117555]  arg=0xC2AEAC59 (-87.3366165)  gpu=0x00000000 (0)  host=0x007FFDA6 (1.17540999e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117557]  arg=0xC2AEAC5A (-87.3366241)  gpu=0x00000000 (0)  host=0x007FFD66 (1.17540102e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117559]  arg=0xC2AEAC5B (-87.3366318)  gpu=0x00000000 (0)  host=0x007FFD26 (1.17539206e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117561]  arg=0xC2AEAC5C (-87.3366394)  gpu=0x00000000 (0)  host=0x007FFCE6 (1.17538309e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117563]  arg=0xC2AEAC5D (-87.336647)  gpu=0x00000000 (0)  host=0x007FFCA6 (1.17537412e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117565]  arg=0xC2AEAC5E (-87.3366547)  gpu=0x00000000 (0)  host=0x007FFC66 (1.17536515e-38)
+[GpuFp32Math] MISMATCH Exp32LargestQuotientsAndSubnormalTail[6117567]  arg=0xC2AEAC5F (-87.3366623)  gpu=0x00000000 (0)  host=0x007FFC26 (1.17535618e-38)
+[GpuFp32Math] Exp32LargestQuotientsAndSubnormalTail: n=10485762  mismatches=2180453  chunks=6
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(637): error: Expected equality of these values:
+  tally.mismatches
+    Which is: 2180453
+  0u
+    Which is: 0
+
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubnormalTail (1649 ms)
+[ RUN      ] GpuFp32Math.Exp32MatchesTheHostBitForBitAcrossTheWholeFiniteDomainAndBothSaturationEdges
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740187]  arg=0xC2AEAD00 (-87.3378906)  gpu=0x00000000 (0)  host=0x007FD3EE (1.17391341e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740189]  arg=0xC2AEAE00 (-87.3398438)  gpu=0x00000000 (0)  host=0x007F9414 (1.17162284e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740191]  arg=0xC2AEAF00 (-87.3417969)  gpu=0x00000000 (0)  host=0x007F545A (1.16933677e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740193]  arg=0xC2AEB000 (-87.34375)  gpu=0x00000000 (0)  host=0x007F14BF (1.16705503e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740195]  arg=0xC2AEB100 (-87.3457031)  gpu=0x00000000 (0)  host=0x007ED544 (1.16477778e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740197]  arg=0xC2AEB200 (-87.3476562)  gpu=0x00000000 (0)  host=0x007E95EA (1.16250515e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740199]  arg=0xC2AEB300 (-87.3496094)  gpu=0x00000000 (0)  host=0x007E56AF (1.16023687e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740201]  arg=0xC2AEB400 (-87.3515625)  gpu=0x00000000 (0)  host=0x007E1793 (1.15797294e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740203]  arg=0xC2AEB500 (-87.3535156)  gpu=0x00000000 (0)  host=0x007DD897 (1.15571348e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740205]  arg=0xC2AEB600 (-87.3554688)  gpu=0x00000000 (0)  host=0x007D99BA (1.15345837e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740207]  arg=0xC2AEB700 (-87.3574219)  gpu=0x00000000 (0)  host=0x007D5AFE (1.15120789e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740209]  arg=0xC2AEB800 (-87.359375)  gpu=0x00000000 (0)  host=0x007D1C60 (1.14896161e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740211]  arg=0xC2AEB900 (-87.3613281)  gpu=0x00000000 (0)  host=0x007CDDE1 (1.14671967e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740213]  arg=0xC2AEBA00 (-87.3632812)  gpu=0x00000000 (0)  host=0x007C9F82 (1.14448221e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740215]  arg=0xC2AEBB00 (-87.3652344)  gpu=0x00000000 (0)  host=0x007C6142 (1.14224911e-38)
+[GpuFp32Math] MISMATCH Exp32WholeFiniteDomainStrided[8740217]  arg=0xC2AEBC00 (-87.3671875)  gpu=0x00000000 (0)  host=0x007C2320 (1.1400202e-38)
+[GpuFp32Math] Exp32WholeFiniteDomainStrided: n=8757250  mismatches=8517  chunks=5
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(663): error: Expected equality of these values:
+  strided.mismatches
+    Which is: 8517
+  0u
+    Which is: 0
+
+[GpuFp32Math] Exp32OverflowBoundary: n=8193  mismatches=0  chunks=1
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[0]  arg=0xC2CFE1B5 (-103.940834)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[1]  arg=0xC2CFE1B6 (-103.940842)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[2]  arg=0xC2CFE1B7 (-103.940849)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[3]  arg=0xC2CFE1B8 (-103.940857)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[4]  arg=0xC2CFE1B9 (-103.940865)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[5]  arg=0xC2CFE1BA (-103.940872)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[6]  arg=0xC2CFE1BB (-103.94088)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[7]  arg=0xC2CFE1BC (-103.940887)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[8]  arg=0xC2CFE1BD (-103.940895)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[9]  arg=0xC2CFE1BE (-103.940903)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[10]  arg=0xC2CFE1BF (-103.94091)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[11]  arg=0xC2CFE1C0 (-103.940918)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[12]  arg=0xC2CFE1C1 (-103.940926)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[13]  arg=0xC2CFE1C2 (-103.940933)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[14]  arg=0xC2CFE1C3 (-103.940941)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32UnderflowBoundary[15]  arg=0xC2CFE1C4 (-103.940948)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] Exp32UnderflowBoundary: n=8193  mismatches=4096  chunks=1
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(684): error: Expected equality of these values:
+  underflow.mismatches
+    Which is: 4096
+  0u
+    Which is: 0
+
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitAcrossTheWholeFiniteDomainAndBothSaturationEdges (1427 ms)
+[ RUN      ] GpuFp32Math.Sin32MatchesTheHostBitForBitOverEveryBoxMullerAngle
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Sin32EveryBoxMullerAngle: n=16777216  mismatches=0  chunks=8
+[       OK ] GpuFp32Math.Sin32MatchesTheHostBitForBitOverEveryBoxMullerAngle (2745 ms)
+[ RUN      ] GpuFp32Math.Cos32MatchesTheHostBitForBitOverEveryBoxMullerAngle
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Cos32EveryBoxMullerAngle: n=16777216  mismatches=0  chunks=8
+[       OK ] GpuFp32Math.Cos32MatchesTheHostBitForBitOverEveryBoxMullerAngle (2749 ms)
+[ RUN      ] GpuFp32Math.SinCos32MatchTheHostBitForBitAcrossTheAccuracyDomainAndThePinnedRegion
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] Sin32AccuracyDomain: n=1000001  mismatches=0  chunks=1
+[GpuFp32Math] Cos32AccuracyDomain: n=1000001  mismatches=0  chunks=1
+[GpuFp32Math] Sin32HugeArguments: n=204290  mismatches=0  chunks=1
+[GpuFp32Math] Cos32HugeArguments: n=204290  mismatches=0  chunks=1
+[       OK ] GpuFp32Math.SinCos32MatchTheHostBitForBitAcrossTheAccuracyDomainAndThePinnedRegion (533 ms)
+[ RUN      ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADeterministicLattice
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] corpus theta (L=200.0 m, V=5.0 m/s, h=0.001 s) = 2.50000012e-05
+[GpuFp32Math] corpus theta (L=200.0 m, V=5.0 m/s, h=0.001 s) = 2.50000012e-05
+[GpuFp32Math] corpus theta (L=50.0 m, V=5.0 m/s, h=0.001 s) = 0.000100000005
+[GpuFp32Math] Exp32CorpusLive: n=6  mismatches=0  chunks=1
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[135]  arg=0xC2CFF19F (-103.971916)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[136]  arg=0xC2CFF184 (-103.97171)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[137]  arg=0xC2CFF169 (-103.971504)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[138]  arg=0xC2CFF14E (-103.971298)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[139]  arg=0xC2CFF132 (-103.971085)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[140]  arg=0xC2CFF117 (-103.970879)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[141]  arg=0xC2CFF0FC (-103.970673)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[142]  arg=0xC2CFF0E1 (-103.970467)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[143]  arg=0xC2CFF0C5 (-103.970253)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[144]  arg=0xC2CFF0AA (-103.970047)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[145]  arg=0xC2CFF08F (-103.969841)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[146]  arg=0xC2CFF074 (-103.969635)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[147]  arg=0xC2CFF058 (-103.969421)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[148]  arg=0xC2CFF03D (-103.969215)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[149]  arg=0xC2CFF022 (-103.969009)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32DeterministicLattice[150]  arg=0xC2CFF007 (-103.968803)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] Exp32DeterministicLattice: n=1000001  mismatches=79978  chunks=1
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(838): error: Expected equality of these values:
+  lattice.mismatches
+    Which is: 79978
+  0u
+    Which is: 0
+
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADeterministicLattice (262 ms)
+[ RUN      ] GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuFp32Math] MISMATCH Log32EdgeCases[8]  arg=0x00000001 (1.40129846e-45)  gpu=0xC2D15498 (-104.665222)  host=0xC2CE8ED0 (-103.278931)
+[GpuFp32Math] MISMATCH Log32EdgeCases[9]  arg=0x00000002 (2.80259693e-45)  gpu=0xC2D15498 (-104.665222)  host=0xC2CD2BEC (-102.585785)
+[GpuFp32Math] MISMATCH Log32EdgeCases[10]  arg=0x00400000 (5.87747175e-39)  gpu=0xC2D15498 (-104.665222)  host=0xC2B00F34 (-88.0296936)
+[GpuFp32Math] MISMATCH Log32EdgeCases[11]  arg=0x007FFFFF (1.17549421e-38)  gpu=0xC2D15498 (-104.665222)  host=0xC2AEAC50 (-87.3365479)
+[GpuFp32Math] MISMATCH Log32EdgeCases[14]  arg=0x00400000 (5.87747175e-39)  gpu=0xC2D15498 (-104.665222)  host=0xC2B00F34 (-88.0296936)
+[GpuFp32Math] Log32EdgeCases: n=19  mismatches=5  chunks=1
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(892): error: Expected equality of these values:
+  log_tally.mismatches
+    Which is: 5
+  0u
+    Which is: 0
+
+[GpuFp32Math] MISMATCH Exp32EdgeCases[13]  arg=0xC2CFF1B4 (-103.972076)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[14]  arg=0xC2AEAC50 (-87.3365479)  gpu=0x00000000 (0)  host=0x007FFFE6 (1.17549071e-38)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[15]  arg=0xC2B00000 (-88)  gpu=0x00000000 (0)  host=0x0041EDC4 (6.05460149e-39)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[16]  arg=0xC2BE0000 (-95)  gpu=0x00000000 (0)  host=0x00000F64 (5.52111595e-42)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[17]  arg=0xC2C80000 (-100)  gpu=0x00000000 (0)  host=0x0000001B (3.78350585e-44)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[18]  arg=0xC2CE0000 (-103)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Exp32EdgeCases[19]  arg=0xC2CFCCCD (-103.900002)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] Exp32EdgeCases: n=29  mismatches=7  chunks=1
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(909): error: Expected equality of these values:
+  exp_tally.mismatches
+    Which is: 7
+  0u
+    Which is: 0
+
+[GpuFp32Math] MISMATCH Sin32EdgeCases[27]  arg=0x00000001 (1.40129846e-45)  gpu=0x00000000 (0)  host=0x00000001 (1.40129846e-45)
+[GpuFp32Math] MISMATCH Sin32EdgeCases[28]  arg=0x80000001 (-1.40129846e-45)  gpu=0x00000000 (0)  host=0x80000001 (-1.40129846e-45)
+[GpuFp32Math] Sin32EdgeCases: n=29  mismatches=2  chunks=1
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_fp32_math.cpp(928): error: Expected equality of these values:
+  sin_tally.mismatches
+    Which is: 2
+  0u
+    Which is: 0
+
+[GpuFp32Math] Cos32EdgeCases: n=29  mismatches=0  chunks=1
+[  FAILED  ] GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost (98 ms)
+[----------] 13 tests from GpuFp32Math (16640 ms total)
+
+[----------] 1 test from GpuU64
+[ RUN      ] GpuU64.ShiftMatchesTheHostAtEveryDistance
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuU64] ShiftMatchesTheHostAtEveryDistance: n=640  mismatches=0
+[       OK ] GpuU64.ShiftMatchesTheHostAtEveryDistance (80 ms)
+[----------] 1 test from GpuU64 (80 ms total)
+
+[----------] 7 tests from GpuStateMirrorTest
+[ RUN      ] GpuStateMirrorTest.RoundTripUploadReadbackWithoutSteppingIsByteIdentical
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.RoundTripUploadReadbackWithoutSteppingIsByteIdentical (1302 ms)
+[ RUN      ] GpuStateMirrorTest.StructuralOpBetweenStepsForcesReupload
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.StructuralOpBetweenStepsForcesReupload (122 ms)
+[ RUN      ] GpuStateMirrorTest.StepParamsTickWrittenPerSubmit
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.StepParamsTickWrittenPerSubmit (118 ms)
+[ RUN      ] GpuStateMirrorTest.VulkanStepTouchesOnlyTheExpectedArrays
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.VulkanStepTouchesOnlyTheExpectedArrays (110 ms)
+[ RUN      ] GpuStateMirrorTest.AbsurdShapeAllocationFailureIsReportedNotCrashed
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[GpuStateMirror] absurd-shape failure: code=1 context=Vulkan allocation failed (VkResult -2) during vkAllocateMemory
+[       OK ] GpuStateMirrorTest.AbsurdShapeAllocationFailureIsReportedNotCrashed (88 ms)
+[ RUN      ] GpuStateMirrorTest.RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair (311 ms)
+[ RUN      ] GpuStateMirrorTest.DescriptorSetBindsEveryRegistryBinding
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuStateMirrorTest.DescriptorSetBindsEveryRegistryBinding (100 ms)
+[----------] 7 tests from GpuStateMirrorTest (2155 ms total)
+
+[----------] 24 tests from GpuParityTest
+[ RUN      ] GpuParityTest.GnssReceiverMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gnss_receiver (1 receiver x 200 substeps at rate_divider 1) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+gnss_sensors   phase                 1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   bias                  1  9.31322575e-09  7.86450357e-07   1.99999999e-08  1.99999999e-06   within
+gnss_sensors   noise.state           1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.cached          1  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+gnss_sensors   noise.flag            1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   last_index            1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      position             64  2.38418579e-07  9.25464064e-07   3.99999999e-06  3.99999999e-06   within
+gnss_ring      velocity             64  1.19209290e-07  9.35879783e-08   9.99999997e-07  4.99999999e-07   within
+gnss_ring      sigma_h              64  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      sigma_v              64  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      index                64  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      tick                 64  0 (exact)       n/a              bit-exact       n/a              within
+
+[       OK ] GpuParityTest.GnssReceiverMatchesTheCpuWithinBands (178 ms)
+[ RUN      ] GpuParityTest.GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gnss_bias_discriminator (tau=1e-6, retention underflowed to zero) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+gnss_sensors   phase                 1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   last_index            1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.state           1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.flag            1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.cached          1  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+gnss_sensors   bias                  1  5.96046448e-08  6.82732804e-08   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 0 component 0  cpu=8.730303645e-01 gpu=8.730303049e-01  (1 elements outside)
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+gnss_bias_discriminator (tau=1e-6, retention underflowed to zero): 'bias' is outside its pinned band -- measured max |abs| 5.9604644775390625e-08, max rel 6.8273280362518562e-08, pinned (0, 0); 1 of 1 elements
+
+[  FAILED  ] GpuParityTest.GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws (161 ms)
+[ RUN      ] GpuParityTest.GnssDrawsDivergeAcrossBackends_KNOWN_OPEN
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gnss_draws KNOWN-OPEN (tau=1e-6, zero lever arm, whole ring) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+gnss_sensors   phase                 1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   last_index            1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.state           1  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      index                64  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      position             64  4.76837158e-07  1.06963546e-06   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 62 component 2  cpu=3.421702862e+00 gpu=3.421702385e+00  (19 elements outside)
+
+[       OK ] GpuParityTest.GnssDrawsDivergeAcrossBackends_KNOWN_OPEN (153 ms)
+[ RUN      ] GpuParityTest.GnssReceiverBodyStateIsMeasuredNotAssumed
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gnss_receiver BODY STATE (the inputs kGnssPosition/kGnssVelocity read) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         vel                   2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         orient                2  1.19209290e-07  1.19651716e-07   4.00000005e-07  3.99999999e-06   within
+    unit-norm: max ||q| - 1| = 5.960464478e-08 (both sides)
+bodies         omega_body            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force        2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc             2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+
+[       OK ] GpuParityTest.GnssReceiverBodyStateIsMeasuredNotAssumed (153 ms)
+[ RUN      ] GpuParityTest.BallisticMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: ballistic (200 steps x 5 substeps, gust + drag + integrate) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   4  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         vel                   4  1.19209290e-07  8.14619057e-08   4.99999999e-07  4.99999999e-07   within
+bodies         orient                4  1.19209290e-07  3.40011781e-07   3.99999999e-06  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 5.960464478e-08 (both sides)
+bodies         omega_body            4  4.76837158e-07  1.17207003e-06   7.99999998e-06  1.99999995e-05   within
+bodies         specific_force        4  4.76837158e-07  4.15805772e-07   1.99999995e-05  1.99999995e-05   within
+bodies         force_acc             4  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            4  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         1  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          1  1.78813934e-07  1.37007273e-05   1.99999999e-06  5.99999985e-05   within
+
+[       OK ] GpuParityTest.BallisticMatchesTheCpuWithinBands (251 ms)
+[ RUN      ] GpuParityTest.GateFleetMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  20  3.20374966e-06  6.44065658e-05   1.99999999e-06  9.99999975e-06   OUTSIDE
+    worst: element 0 component 0  cpu=2.479006797e-01 gpu=2.478974760e-01  (1 elements outside)
+bodies         vel                  20  1.60813332e-04  1.18368240e-02   3.99999990e-04  9.99999975e-06   within
+bodies         orient               20  1.19209290e-07  7.15825479e-07   3.99999999e-06  3.99999990e-05   within
+    unit-norm: max ||q| - 1| = 1.192092896e-07 (both sides)
+bodies         omega_body           20  0.00000000e+00  0.00000000e+00   3.99999998e-08  1.99999999e-06   within
+bodies         specific_force       20  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            20  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           20  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          4  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         4  5.96046448e-08  6.95424234e-08   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           4  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          4  1.19209290e-07  2.38535932e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes): 'pos' is outside its pinned band -- measured max |abs| 3.2037496566772461e-06, max rel 6.4406565797980875e-05, pinned (1.9999999949504854e-06, 9.9999997473787516e-06); 1 of 20 elements
+
+[  FAILED  ] GpuParityTest.GateFleetMatchesTheCpuWithinBands (504 ms)
+[ RUN      ] GpuParityTest.BounceMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: bounce (4-rung restitution ladder x 900 steps, contacts) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         vel                  16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         orient               16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body           16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force       16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           16  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          4  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         4  1.19209290e-07  1.09411850e-07   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           4  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          4  4.76837158e-07  3.67831689e-07   1.99999999e-06  5.99999985e-05   within
+
+[       OK ] GpuParityTest.BounceMatchesTheCpuWithinBands (439 ms)
+[ RUN      ] GpuParityTest.TwoWorldIsolationMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: two_world_isolation (2 overlapping worlds x 300 steps x 2 substeps, per-world gusts) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  32  8.94069672e-08  7.64162337e-07   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 6 component 1  cpu=3.584776819e-01 gpu=3.584775925e-01  (8 elements outside)
+bodies         vel                  32  2.79396772e-09  4.28633106e+14   5.00000014e-28  1.99999995e-04   OUTSIDE
+    worst: element 4 component 1  cpu=-8.405701257e-03 gpu=-8.405704051e-03  (8 elements outside)
+bodies         orient               32  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body           32  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force       32  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            32  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           32  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  4.76837158e-07  2.12123311e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+two_world_isolation (2 overlapping worlds x 300 steps x 2 substeps, per-world gusts): 'pos' is outside its pinned band -- measured max |abs| 8.9406967163085938e-08, max rel 7.6416233696363633e-07, pinned (0, 0); 8 of 32 elements
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+two_world_isolation (2 overlapping worlds x 300 steps x 2 substeps, per-world gusts): 'vel' is outside its pinned band -- measured max |abs| 2.7939677238464355e-09, max rel 428633105629184, pinned (5.0000001362260058e-28, 0.00019999999494757503); 8 of 32 elements
+
+    cpu dryden: world0.u=9.410875440e-01 world1.u=-1.404952705e-01
+    gpu dryden: world0.u=9.410875440e-01 world1.u=-1.404952407e-01
+[  FAILED  ] GpuParityTest.TwoWorldIsolationMatchesTheCpuWithinBands (311 ms)
+[ RUN      ] GpuParityTest.QuadHoverMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: quad_hover (2 vehicles x 900 steps x 2 substeps, rotors + IMU + gusts) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   2  7.45058060e-09  9.03571845e-07   1.99999995e-05  3.99999999e-06   within
+bodies         vel                   2  4.76837158e-07  6.20490596e-07   1.99999999e-06  9.99999975e-06   within
+bodies         orient                2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force        2  9.53674316e-07  5.99229679e-07   1.99999999e-06  3.99999999e-06   within
+bodies         force_acc             2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  4.17232513e-07  1.46266314e-06   1.99999999e-06  5.99999985e-05   within
+rotors         omega                10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+imu_sensors    phase                 2  0 (exact)       n/a              bit-exact       n/a              within
+imu_sensors    bias_a                2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+imu_sensors    bias_g                2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+imu_sensors    noise.state           2  0 (exact)       n/a              bit-exact       n/a              within
+imu_sensors    noise.cached          2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+imu_sensors    noise.flag            2  0 (exact)       n/a              bit-exact       n/a              within
+imu_sensors    last_index            2  0 (exact)       n/a              bit-exact       n/a              within
+imu_ring       accel               128  9.53674316e-07  6.66157916e-07   7.99999998e-06  3.99999999e-06   within
+imu_ring       gyro                128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+imu_ring       index               128  0 (exact)       n/a              bit-exact       n/a              within
+imu_ring       tick                128  0 (exact)       n/a              bit-exact       n/a              within
+
+    cpu quad_hover: rotor0.omega=4.456286926e+02 specific_force_mag=8.705389023e+00 sensor0.last_index=1800
+    gpu quad_hover: rotor0.omega=4.456286926e+02 specific_force_mag=8.705389023e+00 sensor0.last_index=1800
+[       OK ] GpuParityTest.QuadHoverMatchesTheCpuWithinBands (489 ms)
+[ RUN      ] GpuParityTest.GnssTumbleMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: gnss_tumble (2 receivers x 400 steps x 4 substeps at rate_divider 8) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         vel                   8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         orient                8  2.98023224e-07  7.86818532e-07   3.99999999e-06  9.99999975e-05   within
+    unit-norm: max ||q| - 1| = 5.960464478e-08 (both sides)
+bodies         omega_body            8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force        8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc             8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            8  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  4.32133675e-07  3.75877426e-06   1.99999999e-06  5.99999985e-05   within
+gnss_sensors   phase                 2  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   bias                  2  1.49011612e-08  2.01321427e-07   3.00000011e-07  8.99999975e-07   within
+gnss_sensors   noise.state           2  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   noise.cached          2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+gnss_sensors   noise.flag            2  0 (exact)       n/a              bit-exact       n/a              within
+gnss_sensors   last_index            2  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      position            128  1.43051147e-06  3.49148604e-06   3.99999990e-05  2.99999992e-05   within
+gnss_ring      velocity            128  9.53674316e-07  1.16482101e-06   9.99999975e-06  9.00000032e-06   within
+gnss_ring      sigma_h             128  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      sigma_v             128  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      index               128  0 (exact)       n/a              bit-exact       n/a              within
+gnss_ring      tick                128  0 (exact)       n/a              bit-exact       n/a              within
+
+[       OK ] GpuParityTest.GnssTumbleMatchesTheCpuWithinBands (319 ms)
+[ RUN      ] GpuParityTest.IntegrateKernelReadsThePerStepTickBuffer
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuParityTest.IntegrateKernelReadsThePerStepTickBuffer (106 ms)
+[ RUN      ] GpuParityTest.TwoActiveBodiesInAWorldStepAndMatchTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: contact_pair (2 overlapping bodies, unequal masses, 600 steps) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   5  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         vel                   5  9.53674316e-07  6.09507026e-07   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 0 component 1  cpu=1.564665079e+00 gpu=1.564664125e+00  (2 elements outside)
+bodies         orient                5  5.96046448e-08  4.02647657e-07   9.99999997e-07  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 5.960464478e-08 (both sides)
+bodies         omega_body            5  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force        5  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc             5  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            5  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         1  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          1  1.19209290e-07  1.48098025e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+contact_pair (2 overlapping bodies, unequal masses, 600 steps): 'vel' is outside its pinned band -- measured max |abs| 9.5367431640625e-07, max rel 6.0950702618356445e-07, pinned (0, 0); 2 of 5 elements
+
+[  FAILED  ] GpuParityTest.TwoActiveBodiesInAWorldStepAndMatchTheCpu (277 ms)
+[ RUN      ] GpuParityTest.ComponentwiseDragMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: drag_componentwise (400 steps x 2 substeps, per-axis body-frame drag law) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   4  4.76837158e-07  2.31258980e-07   3.99999999e-06  1.99999999e-06   within
+bodies         vel                   4  2.38418579e-06  3.30607719e-07   3.99999999e-06  1.99999999e-06   within
+bodies         orient                4  4.17232513e-07  1.12094597e-06   1.99999999e-06  9.99999975e-06   within
+    unit-norm: max ||q| - 1| = 1.192092896e-07 (both sides)
+bodies         omega_body            4  3.93390656e-06  2.18485957e-06   7.99999998e-06  3.99999999e-06   within
+bodies         specific_force        4  9.53674316e-06  3.02727722e-06   3.99999990e-05  1.99999995e-05   within
+bodies         force_acc             4  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            4  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         1  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          1  1.19209290e-07  1.11190623e-07   1.99999999e-06  5.99999985e-05   within
+
+[       OK ] GpuParityTest.ComponentwiseDragMatchesTheCpuWithinBands (243 ms)
+[ RUN      ] GpuParityTest.ApplyWrenchForcesReupload
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuParityTest.ApplyWrenchForcesReupload (113 ms)
+[ RUN      ] GpuParityTest.RotorCommandsForceReupload
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuParityTest.RotorCommandsForceReupload (113 ms)
+[ RUN      ] GpuParityTest.ReseedForcesReupload
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuParityTest.ReseedForcesReupload (103 ms)
+[ RUN      ] GpuParityTest.StructuralOpsAreCoveredTransitively
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuParityTest.StructuralOpsAreCoveredTransitively (101 ms)
+[ RUN      ] GpuParityTest.RestoredRunResumesAndMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: restore_resume (vulkan restored at tick 300, resumed to 700, vs uninterrupted cpu) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  10  4.76837158e-07  9.65104252e-03   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=3.267495632e+00 gpu=3.267495155e+00  (2 elements outside)
+bodies         vel                  10  1.66893005e-06  8.14276882e-06   1.00000001e-07  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=2.049585432e-01 gpu=2.049568743e-01  (2 elements outside)
+bodies         orient               10  1.19209290e-07  3.15190874e-07   1.99999999e-06  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 1.192092896e-07 (both sides)
+bodies         omega_body           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force       10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  2.38418579e-07  6.00942315e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+restore_resume: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0096510425209999084, pinned (0, 0); 2 of 10 elements. A GROSS divergence here means the restore was discarded and the device stepped stale state.
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(2010): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+restore_resume: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 8.1427688201074488e-06, pinned (1.0000000116860974e-07, 0); 2 of 10 elements. A GROSS divergence here means the restore was discarded and the device stepped stale state.
+
+[  FAILED  ] GpuParityTest.RestoredRunResumesAndMatchesTheCpuWithinBands (219 ms)
+[ RUN      ] GpuParityTest.HeterogeneousGeometrySetMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                   2  1.35302544e-05  5.50444284e-03   1.99999999e-06  9.99999975e-06   OUTSIDE
+    worst: element 1 component 0  cpu=7.023340464e-01 gpu=7.023205161e-01  (1 elements outside)
+bodies         vel                   2  4.43458557e-05  4.14786208e-03   9.99999975e-06  9.99999975e-06   OUTSIDE
+    worst: element 1 component 0  cpu=1.771813512e+00 gpu=1.771769166e+00  (1 elements outside)
+bodies         orient                2  5.96046448e-08  2.51645048e-07   1.99999999e-06  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force        2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc             2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc            2  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  2.38418579e-07  2.02740523e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps): 'pos' is outside its pinned band -- measured max |abs| 1.3530254364013672e-05, max rel 0.0055044428445398808, pinned (1.9999999949504854e-06, 9.9999997473787516e-06); 1 of 2 elements
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_parity.cpp(492): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps): 'vel' is outside its pinned band -- measured max |abs| 4.4345855712890625e-05, max rel 0.004147862084209919, pinned (9.9999997473787516e-06, 9.9999997473787516e-06); 1 of 2 elements
+
+[  FAILED  ] GpuParityTest.HeterogeneousGeometrySetMatchesTheCpuWithinBands (375 ms)
+[ RUN      ] GpuParityTest.ShowerMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: shower (100 bodies in a bowl, 400 steps x 2 substeps, BATCHED grid) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                 128  3.57627869e-07  5.55622228e-06   1.99999999e-06  1.99999995e-05   within
+bodies         vel                 128  4.76837158e-07  3.44615037e-05   1.99999995e-05  1.99999995e-04   within
+bodies         orient              128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body          128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force      128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc           128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc          128  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         1  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           1  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          1  2.38418579e-07  7.81083074e-08   1.99999999e-06  5.99999985e-05   within
+
+    contacting pairs at the final tick: cpu=92 gpu=92
+[       OK ] GpuParityTest.ShowerMatchesTheCpuWithinBands (2066 ms)
+[ RUN      ] GpuParityTest.ShowerLadderMatchesTheCpuWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: shower_ladder (2 worlds x 100 bodies, differing restitution, 400 steps x 2 substeps, PER-WORLD grid) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                 256  3.57627869e-07  1.11658692e-05   1.99999999e-06  3.99999990e-05   within
+bodies         vel                 256  9.53674316e-06  4.39425465e-03   1.99999995e-05  3.99999990e-04   within
+bodies         orient              256  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+    unit-norm: max ||q| - 1| = 0.000000000e+00 (both sides)
+bodies         omega_body          256  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force      256  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc           256  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc          256  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  2.38418579e-07  1.01725720e-06   1.99999999e-06  5.99999985e-05   within
+
+    contacting pairs at the final tick: cpu=105 gpu=105
+[       OK ] GpuParityTest.ShowerLadderMatchesTheCpuWithinBands (2209 ms)
+[ RUN      ] GpuParityTest.QuadHoverIsBitIdenticalAcrossTwoGpuRuns
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== GPU determinism: quad_hover (rotors + IMU + gusts) ===
+    run 1  before=0x95dfa830b882bc9f  after=0xacd469cb149bc212
+    run 2  before=0x95dfa830b882bc9f  after=0xacd469cb149bc212
+[       OK ] GpuParityTest.QuadHoverIsBitIdenticalAcrossTwoGpuRuns (979 ms)
+[ RUN      ] GpuParityTest.ShowerIsBitIdenticalAcrossTwoGpuRuns
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== GPU determinism: shower (100-body Gauss-Seidel pile) ===
+    run 1  before=0x1168ce1538d28cf9  after=0x765086d080974224
+    run 2  before=0x1168ce1538d28cf9  after=0x765086d080974224
+[       OK ] GpuParityTest.ShowerIsBitIdenticalAcrossTwoGpuRuns (3962 ms)
+[ RUN      ] GpuParityTest.ImuRingPollAfterGpuStepsMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+    ring poll world 0 sensor 0: n=64 dropped=1736 worst|accel|=9.536743164e-07 worst|gyro|=0.000000000e+00
+    ring poll world 1 sensor 0: n=64 dropped=1736 worst|accel|=9.536743164e-07 worst|gyro|=0.000000000e+00
+[       OK ] GpuParityTest.ImuRingPollAfterGpuStepsMatchesTheCpu (468 ms)
+[----------] 24 tests from GpuParityTest (14303 ms total)
+
+[----------] 4 tests from GpuGridSort
+[ RUN      ] GpuGridSort.AlreadySortedKeySetMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSort.AlreadySortedKeySetMatchesTheCpu (107 ms)
+[ RUN      ] GpuGridSort.ReversedKeySetMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSort.ReversedKeySetMatchesTheCpu (108 ms)
+[ RUN      ] GpuGridSort.AllEqualCellsFallsBackToTheSlotTiebreak
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSort.AllEqualCellsFallsBackToTheSlotTiebreak (104 ms)
+[ RUN      ] GpuGridSort.OneWorldEmptyMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSort.OneWorldEmptyMatchesTheCpu (103 ms)
+[----------] 4 tests from GpuGridSort (423 ms total)
+
+[----------] 1 test from GpuBehaviorRefusal
+[ RUN      ] GpuBehaviorRefusal.VulkanStepRefusesAnAttachedBehaviorRegistry
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuBehaviorRefusal.VulkanStepRefusesAnAttachedBehaviorRegistry (102 ms)
+[----------] 1 test from GpuBehaviorRefusal (102 ms total)
+
+[----------] 10 tests from GpuInvarianceTest
+[ RUN      ] GpuInvarianceTest.BallisticBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: ballistic ===
+    workgroup_size=32    tick=200     before=0xe989aad7a789a181  after=0xcd95f466a33f4cf8
+    workgroup_size=64    tick=200     before=0xe989aad7a789a181  after=0xcd95f466a33f4cf8
+    workgroup_size=128   tick=200     before=0xe989aad7a789a181  after=0xcd95f466a33f4cf8
+[       OK ] GpuInvarianceTest.BallisticBitIdenticalAcrossWorkgroupSizes (3241 ms)
+[ RUN      ] GpuInvarianceTest.BounceBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: bounce ===
+    workgroup_size=32    tick=900     before=0x3ab4f73a8269f0e6  after=0x0c54bc19a59ba3e5
+    workgroup_size=64    tick=900     before=0x3ab4f73a8269f0e6  after=0x0c54bc19a59ba3e5
+    workgroup_size=128   tick=900     before=0x3ab4f73a8269f0e6  after=0x0c54bc19a59ba3e5
+[       OK ] GpuInvarianceTest.BounceBitIdenticalAcrossWorkgroupSizes (1394 ms)
+[ RUN      ] GpuInvarianceTest.QuadHoverBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: quad_hover ===
+    workgroup_size=32    tick=900     before=0x95dfa830b882bc9f  after=0xacd469cb149bc212
+    workgroup_size=64    tick=900     before=0x95dfa830b882bc9f  after=0xacd469cb149bc212
+    workgroup_size=128   tick=900     before=0x95dfa830b882bc9f  after=0xacd469cb149bc212
+[       OK ] GpuInvarianceTest.QuadHoverBitIdenticalAcrossWorkgroupSizes (1670 ms)
+[ RUN      ] GpuInvarianceTest.ShowerBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: shower ===
+    workgroup_size=32    tick=400     before=0x1168ce1538d28cf9  after=0x765086d080974224
+    workgroup_size=64    tick=400     before=0x1168ce1538d28cf9  after=0x765086d080974224
+    workgroup_size=128   tick=400     before=0x1168ce1538d28cf9  after=0x765086d080974224
+[       OK ] GpuInvarianceTest.ShowerBitIdenticalAcrossWorkgroupSizes (6155 ms)
+[ RUN      ] GpuInvarianceTest.GnssTumbleBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: gnss_tumble ===
+    workgroup_size=32    tick=400     before=0x27cd73e132a80a66  after=0xdd40c0dc6b3c0e55
+    workgroup_size=64    tick=400     before=0x27cd73e132a80a66  after=0xdd40c0dc6b3c0e55
+    workgroup_size=128   tick=400     before=0x27cd73e132a80a66  after=0xdd40c0dc6b3c0e55
+[       OK ] GpuInvarianceTest.GnssTumbleBitIdenticalAcrossWorkgroupSizes (1166 ms)
+[ RUN      ] GpuInvarianceTest.TwoWorldIsolationBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: two_world_isolation ===
+    workgroup_size=32    tick=300     before=0x9c70613c6365ef11  after=0x9fe558f48bff07ca
+    workgroup_size=64    tick=300     before=0x9c70613c6365ef11  after=0x9fe558f48bff07ca
+    workgroup_size=128   tick=300     before=0x9c70613c6365ef11  after=0x9fe558f48bff07ca
+[       OK ] GpuInvarianceTest.TwoWorldIsolationBitIdenticalAcrossWorkgroupSizes (1027 ms)
+[ RUN      ] GpuInvarianceTest.HeterogeneousGeometrySetBitIdenticalAcrossWorkgroupSizes
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== A7 workgroup_size invariance: heterogeneous_geometry_set (2 worlds, differing SDF) ===
+    workgroup_size=32    tick=900     before=0xe9a778a380cad90b  after=0xe94b92a268cced7a
+    workgroup_size=64    tick=900     before=0xe9a778a380cad90b  after=0xe94b92a268cced7a
+    workgroup_size=128   tick=900     before=0xe9a778a380cad90b  after=0xe94b92a268cced7a
+[       OK ] GpuInvarianceTest.HeterogeneousGeometrySetBitIdenticalAcrossWorkgroupSizes (1711 ms)
+[ RUN      ] GpuInvarianceTest.TwoWorldIsolationWorldsMatchSoloRunsOnGpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== GPU batching invariance: two_world_isolation world 0 ===
+    embedded=0xcc466f56605aa3ee  solo=0xcc466f56605aa3ee
+=== GPU batching invariance: two_world_isolation world 1 ===
+    embedded=0x7028e93068cecd27  solo=0x7028e93068cecd27
+[       OK ] GpuInvarianceTest.TwoWorldIsolationWorldsMatchSoloRunsOnGpu (879 ms)
+[ RUN      ] GpuInvarianceTest.CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: cross-backend restore: CPU snapshot @ tick 300 -> vulkan target, resumed to 700, vs uninterrupted CPU reference (band: restore_resume, reused -- same scenario/timing as its measurement) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  10  4.76837158e-07  9.65104252e-03   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=3.267495632e+00 gpu=3.267495155e+00  (2 elements outside)
+bodies         vel                  10  1.66893005e-06  8.14276882e-06   1.00000001e-07  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=2.049585432e-01 gpu=2.049568743e-01  (2 elements outside)
+bodies         orient               10  1.19209290e-07  3.15190874e-07   1.99999999e-06  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 1.192092896e-07 (both sides)
+bodies         omega_body           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force       10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  2.38418579e-07  6.00942315e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+cpu->vulkan restore: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0096510425209999084, pinned (0, 0); 2 of 10 elements
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(912): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+cpu->vulkan restore: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 8.1427688201074488e-06, pinned (1.0000000116860974e-07, 0); 2 of 10 elements
+
+[  FAILED  ] GpuInvarianceTest.CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands (368 ms)
+[ RUN      ] GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+
+=== CPU<->GPU parity: cross-backend restore: vulkan snapshot @ tick 300 -> cpu target, resumed to 700, vs uninterrupted vulkan reference (band: restore_resume, reused -- same scenario/timing as its measurement) ===
+array          quantity          elems  measured |abs|  measured rel     pinned abs      pinned rel       verdict
+bodies         pos                  10  4.76837158e-07  9.74509306e-03   0.00000000e+00  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=3.267495155e+00 gpu=3.267495632e+00  (2 elements outside)
+bodies         vel                  10  1.66893005e-06  1.00000000e+00   1.00000001e-07  0.00000000e+00   OUTSIDE
+    worst: element 5 component 1  cpu=2.049568743e-01 gpu=2.049585432e-01  (2 elements outside)
+bodies         orient               10  1.19209290e-07  3.05988948e-07   1.99999999e-06  1.99999995e-05   within
+    unit-norm: max ||q| - 1| = 1.192092896e-07 (both sides)
+bodies         omega_body           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         specific_force       10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         force_acc            10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+bodies         torque_acc           10  0.00000000e+00  0.00000000e+00   0.00000000e+00  0.00000000e+00   within
+dryden         stream.state          2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         stream.cached         2  0.00000000e+00  0.00000000e+00   4.99999999e-07  4.99999999e-07   within
+dryden         stream.flag           2  0 (exact)       n/a              bit-exact       n/a              within
+dryden         filter_state          2  2.38418579e-07  6.00942656e-07   1.99999999e-06  5.99999985e-05   within
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+vulkan->cpu restore: 'pos' is outside its pinned band -- measured max |abs| 4.76837158203125e-07, max rel 0.0097450930625200272, pinned (0, 0); 2 of 10 elements
+
+C:\Users\Cameron\Desktop\Projects\spade-wt\core\tests\test_gpu_invariance.cpp(974): error: Value of: q.within_band()
+  Actual: false
+Expected: true
+vulkan->cpu restore: 'vel' is outside its pinned band -- measured max |abs| 1.6689300537109375e-06, max rel 1, pinned (1.0000000116860974e-07, 0); 2 of 10 elements
+
+[  FAILED  ] GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands (758 ms)
+[----------] 10 tests from GpuInvarianceTest (18375 ms total)
+
+[----------] 2 tests from GpuGridSortDeepTest
+[ RUN      ] GpuGridSortDeepTest.Deep128KeyBatchedNetworkMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSortDeepTest.Deep128KeyBatchedNetworkMatchesTheCpu (164 ms)
+[ RUN      ] GpuGridSortDeepTest.SegmentedPerWorldPartitionMatchesTheCpu
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuGridSortDeepTest.SegmentedPerWorldPartitionMatchesTheCpu (148 ms)
+[----------] 2 tests from GpuGridSortDeepTest (313 ms total)
+
+[----------] 4 tests from GpuModuleSchedule
+[ RUN      ] GpuModuleSchedule.TheRecorderRecordsTheSchedulesPassesInOrder
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuModuleSchedule.TheRecorderRecordsTheSchedulesPassesInOrder (158 ms)
+[ RUN      ] GpuModuleSchedule.ReorderedSensorsRecordInScheduleOrder
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuModuleSchedule.ReorderedSensorsRecordInScheduleOrder (148 ms)
+[ RUN      ] GpuModuleSchedule.DurationsAreOnePerPassByName
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuModuleSchedule.DurationsAreOnePerPassByName (151 ms)
+[ RUN      ] GpuModuleSchedule.StoredFieldSamplesMatchTheCpuCopiesBitwise
+[spade] measurement build: 'NVIDIA GeForce RTX 3060 Ti' reports no fp32 denormal preservation; admitted with the 
+denormal mode not requested
+[       OK ] GpuModuleSchedule.StoredFieldSamplesMatchTheCpuCopiesBitwise (135 ms)
+[----------] 4 tests from GpuModuleSchedule (594 ms total)
+
+[----------] 11 tests from GpuGlRenderer
+[ RUN      ] GpuGlRenderer.DrawsAnOutwardFacingTriangle
+[       OK ] GpuGlRenderer.DrawsAnOutwardFacingTriangle (134 ms)
+[ RUN      ] GpuGlRenderer.CullsAReversedTriangle
+[       OK ] GpuGlRenderer.CullsAReversedTriangle (51 ms)
+[ RUN      ] GpuGlRenderer.LightsANonUniformlyScaledSurfaceByItsTrueNormal
+[       OK ] GpuGlRenderer.LightsANonUniformlyScaledSurfaceByItsTrueNormal (48 ms)
+[ RUN      ] GpuGlRenderer.WireframeDrawsBothWindingsIdentically
+[       OK ] GpuGlRenderer.WireframeDrawsBothWindingsIdentically (72 ms)
+[ RUN      ] GpuGlRenderer.DrawsTheAnalyticGroundInShadedModeOnly
+[       OK ] GpuGlRenderer.DrawsTheAnalyticGroundInShadedModeOnly (57 ms)
+[ RUN      ] GpuGlRenderer.BackgroundMatchesTheCpuWithinItsMeasuredBand
+[       OK ] GpuGlRenderer.BackgroundMatchesTheCpuWithinItsMeasuredBand (56 ms)
+[ RUN      ] GpuGlRenderer.AtmosphericTermBlendsMeshPixelsAndIsExactAtZero
+[       OK ] GpuGlRenderer.AtmosphericTermBlendsMeshPixelsAndIsExactAtZero (61 ms)
+[ RUN      ] GpuGlRenderer.VelocityModeColoursEachInstanceBySpeed
+[       OK ] GpuGlRenderer.VelocityModeColoursEachInstanceBySpeed (57 ms)
+[ RUN      ] GpuGlRenderer.FieldLayerMatchesTheCpuWithinItsMeasuredBand
+[       OK ] GpuGlRenderer.FieldLayerMatchesTheCpuWithinItsMeasuredBand (49 ms)
+[ RUN      ] GpuGlRenderer.FieldLayerShowsNonFiniteSamplesAsNoData
+[       OK ] GpuGlRenderer.FieldLayerShowsNonFiniteSamplesAsNoData (43 ms)
+[ RUN      ] GpuGlRenderer.RefusesRaymarch
+[       OK ] GpuGlRenderer.RefusesRaymarch (44 ms)
+[----------] 11 tests from GpuGlRenderer (678 ms total)
+
+[----------] Global test environment tear-down
+[==========] 84 tests from 11 test suites ran. (54297 ms total)
+[  PASSED  ] 72 tests.
+[  FAILED  ] 12 tests, listed below:
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubnormalTail
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitAcrossTheWholeFiniteDomainAndBothSaturationEdges
+[  FAILED  ] GpuFp32Math.Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADeterministicLattice
+[  FAILED  ] GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost
+[  FAILED  ] GpuParityTest.GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws
+[  FAILED  ] GpuParityTest.GateFleetMatchesTheCpuWithinBands
+[  FAILED  ] GpuParityTest.TwoWorldIsolationMatchesTheCpuWithinBands
+[  FAILED  ] GpuParityTest.TwoActiveBodiesInAWorldStepAndMatchTheCpu
+[  FAILED  ] GpuParityTest.RestoredRunResumesAndMatchesTheCpuWithinBands
+[  FAILED  ] GpuParityTest.HeterogeneousGeometrySetMatchesTheCpuWithinBands
+[  FAILED  ] GpuInvarianceTest.CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands
+[  FAILED  ] GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands
+
+12 FAILED TESTS
