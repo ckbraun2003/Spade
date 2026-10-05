@@ -452,7 +452,7 @@ The views read only Publish (`L5`, the engine model). `airflow.publish` writes a
 | Item | Source |
 |---|---|
 | Airspeed, α and β | The **free-stream** relative wind the vehicle's aero actually used, so the HUD shows what the force laws saw: the mean over the vehicle's rotors of the air their inflow read, minus `v_body`. That is Dryden in M3 (option A) and option B's probe-and-subtract value from M4 (§3.2). `aero_breakdown` carries each element's air-relative velocity as used. **Not** a Publish point at the body centre: on `hover.scene`'s quad the discs' inner edges are 5 cm from the centre, inside the Peskin kernel's support, so that point reads the vehicle's own downwash, about `v_h` ≈ 4.3 m/s at hover *(estimate)* (Interface, 2026-10-05) |
-| Angle of attack and sideslip, the formulas | `v_a = Rᵀ(v_body − u_air)` in body axes: nose +X, up +Y, right +Z = forward × up (`sandbox/drone_sim.hpp:116-117`: pitch about Z, roll about X). `α = atan2(−v_a.y, v_a.x)`, positive nose-up into the relative wind; `β = asin(v_a.z / |v_a|)`, positive with the relative wind from the right (the aerospace convention). In steady level forward flight in still air, `α` equals the pitch. Shown as "—" below 0.5 m/s. The HUD states its convention; Kat's is not recorded anywhere in this repo, so agreeing it goes through the lead (`consumers.md`) *(unconfirmed until Kat answers)* |
+| Angle of attack and sideslip: **the reference convention** | Spade's convention is the reference, and Kat adopts it from `consumers.md` (Kat had none recorded; the lead, 2026-10-05). Exactly:<br>• `v` is the air-relative velocity of the body in body axes (nose +X, up +Y, right +Z): `v = Rᵀ(v_body − u_air)` (axes: `sandbox/drone_sim.hpp:116-117`, pitch about Z, roll about X; right = forward × up);<br>• `α = atan2(−v_y, v_x)`, positive nose-up against the relative wind;<br>• `β = asin(v_z / |v|)`, positive with the relative wind from the right;<br>• radians in the API (the HUD shows degrees).<br>**Low airspeed:** both angles are undefined at `|v|` = 0, so `α = β = 0` when `|v|` < 0.1 m/s, and the HUD shows "—" there. Why 0.1 m/s: below it the angles describe the free-stream estimate's own error, not the flight (that estimate is good to centimetres per second at best, so at 0.1 m/s an angle can already be off by a tenth of a radian); it is under any speed at which an angle means something to control or aero (a hovering quad's drift); and both formulas are still well conditioned there in fp32, so nothing numerical sets the threshold. In steady level forward flight in still air, `α` equals the pitch |
 | Local air at the body | A Publish point at the body centre, labelled as such: it includes the vehicle's own wake |
 | The airspeed sensor, if one is mounted | Its reading (§3.5), labelled as the sensor's |
 | Ground speed, and the wind at the body | Body state; the Publish point |
@@ -500,7 +500,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 - **API Kat would see:** the world file declares the airflow region (box, `dx`, cells, mode and tracked body, `j`, `n_V`, `u_design`, `ε`, dye, tier) under world file v3 (`module-api-design.md` §11). New calls: `add_airspeed_sensor`, `poll_airspeed`, the aero breakdown read, and Publish point requests. `sample_medium` becomes position-dependent inside a region, and on Vulkan it is refused there (§4.4).
 - **Snapshots** grow by about 40 MiB per world at 128³, which matters for Kat's session ring.
 - **Determinism:** the CPU path is reference grade with a golden, so Kat's CPU replays stay bit-exact.
-- **The lead adds a `consumers.md` entry** when the module merges.
+- **The lead adds a `consumers.md` entry** when the module merges. The α/β convention (§6: `v` in body axes, `α = atan2(−v_y, v_x)`, `β = asin(v_z/|v|)`, radians, both 0 below 0.1 m/s) goes into `consumers.md` when the HUD and the aero breakdown land, and Kat adopts it from there.
 
 ## 8. Open questions for Cameron
 
@@ -564,7 +564,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 - That the Vulkan raster needs nothing now: **confirmed.**
 
 **Interface** (confirmed 2026-10-05, with its amendments folded into §3.5, §6 and §9)
-- The HUD items and the α and β conventions: **amended**: airspeed, α and β from the free-stream air the aero used, not a body-centre point; the signs stated (aerospace); Kat's convention still to come through the lead.
+- The HUD items and the α and β conventions: **amended**: airspeed, α and β from the free-stream air the aero used, not a body-centre point; the signs stated (aerospace); Spade's convention is the reference Kat adopts (the lead, 2026-10-05; §6).
 - The `airflow` scene with a host position loop on Vulkan: **confirmed,** with the loop's rate measured (M1, M3) and the scene's files waiting on world file v3.
 - The live smoke's `airflow` main and its checks: **amended**: every check made falsifiable (`wind`, `ground`, `forward`, the volume channels), and no device named.
 - `INT-2` for the airflow panel: **confirmed,** through the editor's single rebuild path, with the fluid field carried only when the grid is unchanged.
