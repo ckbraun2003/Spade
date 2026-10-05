@@ -58,19 +58,19 @@ assets: []
 vehicles:
   - name: "gate_0"
     model: "gate_body"
-    start: {position: [-0.300000012, 1.79999995, -6], orientation: [1, 0, 0, 0], velocity: [0, 9.80665016, 6], omega_body: [0, 0, 0], rotor_omega: 0}
+    start: {position: [-0.300000012, 1.79999995, -6], orientation: [1, 0, 0, 0], velocity: [0, 4.90332508, 6], omega_body: [0, 0, 0], rotor_omega: 0}
   - name: "gate_1"
     model: "gate_body"
-    start: {position: [0.200000003, 1.79999995, -6.5], orientation: [1, 0, 0, 0], velocity: [0, 12.7486448, 5], omega_body: [0, 0, 0], rotor_omega: 0}
+    start: {position: [0.200000003, 1.79999995, -6.5], orientation: [1, 0, 0, 0], velocity: [0, 6.37432241, 5], omega_body: [0, 0, 0], rotor_omega: 0}
   - name: "gate_2"
     model: "gate_body"
-    start: {position: [0, 1.79999995, -5], orientation: [1, 0, 0, 0], velocity: [0, 7.84532022, 6.25], omega_body: [0, 0, 0], rotor_omega: 0}
+    start: {position: [0, 1.79999995, -5], orientation: [1, 0, 0, 0], velocity: [0, 3.92266011, 6.25], omega_body: [0, 0, 0], rotor_omega: 0}
   - name: "gate_3"
     model: "gate_body"
-    start: {position: [-0.25, 1.79999995, -8], orientation: [1, 0, 0, 0], velocity: [0, 15.6906404, 5], omega_body: [0, 0, 0], rotor_omega: 0}
+    start: {position: [-0.25, 1.79999995, -8], orientation: [1, 0, 0, 0], velocity: [0, 7.84532022, 5], omega_body: [0, 0, 0], rotor_omega: 0}
   - name: "gate_4"
     model: "gate_body"
-    start: {position: [0.300000012, 1.79999995, -7], orientation: [1, 0, 0, 0], velocity: [0, 9.80665016, 7], omega_body: [0, 0, 0], rotor_omega: 0}
+    start: {position: [0.300000012, 1.79999995, -7], orientation: [1, 0, 0, 0], velocity: [0, 4.90332508, 7], omega_body: [0, 0, 0], rotor_omega: 0}
 
 # Slots reserved for objects that appear at runtime, added to the world's
 # capacities when the scene is composed.
