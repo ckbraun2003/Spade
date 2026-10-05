@@ -3,7 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
+#include <cstdio>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -408,6 +412,14 @@ TEST(ModuleSnapshot, RestoreIntoAnotherModuleSetIsRefused) {
     ASSERT_FALSE(restored.has_value());
     EXPECT_EQ(restored.error().code, spade::Code::invalid_argument);
     EXPECT_NE(restored.error().context.find("module set"), std::string::npos) << restored.error().context;
+    // Both identities in hex, as every other 64-bit identity in this tree is
+    // written (stage 4, Task 2; the stage-1 review's minor).
+    for (const uint64_t id : {blob->configuration_identity(), target->schedule().identity}) {
+        std::array<char, 24> hex{};
+        std::snprintf(hex.data(), hex.size(), "0x%016llx", static_cast<unsigned long long>(id));
+        EXPECT_NE(restored.error().context.find(hex.data()), std::string::npos)
+            << hex.data() << " in: " << restored.error().context;
+    }
 }
 
 TEST(ModuleSnapshot, RestoreUnderAnotherModuleVersionIsRefused) {
@@ -675,7 +687,7 @@ constexpr spade::modules::ArrayDecl kTallyArrays[] = {{.name = "tally_counts", .
 constexpr uint64_t kStandardIdentity = 0x3303cfc86821f502ULL;
 // schema_hash() of one_body_world()'s registry at 2 ms and 2 substeps. Task 2
 // pins the registered walk with it.
-[[maybe_unused]] constexpr uint64_t kOneBodySchema = 0x1f60a6fef22e254aULL;
+constexpr uint64_t kOneBodySchema = 0x1f60a6fef22e254aULL;
 
 [[nodiscard]] spade::Result<CompiledSchedule> standard_plus(const ModuleDesc& extra) {
     spade::modules::ModuleSet set = spade::modules::standard_modules();
@@ -683,9 +695,10 @@ constexpr uint64_t kStandardIdentity = 0x3303cfc86821f502ULL;
     return compile_schedule(set);
 }
 
-// Refused with invalid_argument, by a message that names `what`.
-[[nodiscard]] testing::AssertionResult refused_naming(const spade::Result<CompiledSchedule>& r,
-                                                      std::string_view what) {
+// Refused with invalid_argument, by a message that names `what`: a compile, or
+// a Simulation::create().
+template <class T>
+[[nodiscard]] testing::AssertionResult refused_naming(const spade::Result<T>& r, std::string_view what) {
     if (r.has_value()) return testing::AssertionFailure() << "accepted; expected a refusal naming '" << what << "'";
     if (r.error().code != spade::Code::invalid_argument) {
         return testing::AssertionFailure() << "code " << static_cast<int>(r.error().code) << ": " << r.error().context;
@@ -777,4 +790,149 @@ TEST(ModuleSchedule, APassNameWithADotOrAnUnknownPhaseIsRefused) {
     static constexpr PassDecl unphased[] = {{.name = "x", .phase = static_cast<Phase>(6), .cpu = &noop}};
     EXPECT_TRUE(refused_naming(standard_plus({.name = "probe", .passes = dotted}), "probe.a.b"));
     EXPECT_TRUE(refused_naming(standard_plus({.name = "probe", .passes = unphased}), "probe.x"));
+}
+
+// Stage 4, Task 2: create() registers every module array from the declarations.
+// The core registers its four itself; the legacy modules' arrays go before
+// replay_config in set order, and every other module array after gnss_ring.
+namespace {
+
+[[nodiscard]] std::vector<std::string> walk_names(const spade::Simulation& sim) {
+    std::vector<std::string> out;
+    sim.arenas().registry().for_each_array([&](const spade::RegisteredArray& a) { out.push_back(a.name); });
+    return out;
+}
+
+// The standard set with one module's arrays replaced.
+[[nodiscard]] spade::modules::ModuleSet standard_with_state(std::string_view module,
+                                                            std::span<const spade::modules::ArrayDecl> state) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) {
+        if (m.name == module) m.state = state;
+    }
+    return set;
+}
+
+}  // namespace
+
+TEST(ModuleState, TheStandardWalkIsTodaysTwentyTwoEntries) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    std::vector<std::string> expected;
+    for (const std::string& a : spade::modules::walk_order(sim->schedule())) {
+        expected.push_back(a);
+        expected.push_back(a + std::string(spade::kSlotToWorldSuffix));
+    }
+    const std::vector<std::string> walk = walk_names(*sim);
+    EXPECT_EQ(walk, expected);
+    ASSERT_EQ(walk.size(), 22u) << "today's walk: eleven arrays and their maps";
+    EXPECT_EQ(walk[16], "replay_config") << "ReplayConfig.OccupiesItsPinnedWalkPosition's index";
+    EXPECT_EQ(spade::schema_hash(sim->arenas().registry()), kOneBodySchema) << "master's value";
+}
+
+TEST(ModuleState, ADevelopersArrayIsAppendedAfterTheStandardWalk) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "tally", .state = kTallyArrays});
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto walk = walk_names(*sim);
+    ASSERT_EQ(walk.size(), 24u);
+    EXPECT_EQ(walk[16], "replay_config");
+    EXPECT_EQ(walk[22], "tally_counts");
+    EXPECT_EQ(walk[23], "tally_counts.slot_to_world");
+
+    // Found by name, one zero-filled per_world row, typed only as its own size.
+    const auto index = sim->module_array("tally_counts");
+    ASSERT_TRUE(index.has_value()) << index.error().context;
+    const auto bytes = sim->arenas().bytes(*index);
+    ASSERT_TRUE(bytes.has_value()) << bytes.error().context;
+    EXPECT_EQ(bytes->size(), sizeof(TallyRow)) << "one world, one row";
+    EXPECT_TRUE(std::ranges::all_of(*bytes, [](std::byte b) { return b == std::byte{0}; }));
+    EXPECT_TRUE(sim->arenas().typed<TallyRow>(*index).has_value());
+    const auto wrong = sim->arenas().typed<uint64_t>(*index);
+    ASSERT_FALSE(wrong.has_value());
+    EXPECT_EQ(wrong.error().code, spade::Code::invalid_argument);
+    const auto missing = sim->module_array("tally_count");
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error().code, spade::Code::not_found);
+    EXPECT_NE(missing.error().context.find("tally_count"), std::string::npos) << missing.error().context;
+}
+
+TEST(ModuleState, LegacyModulesRegisterBeforeReplayConfigInSetOrder) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    ASSERT_EQ(set[2].name, "imu");
+    ASSERT_EQ(set[3].name, "rotor");
+    std::swap(set[2], set[3]);
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto walk = walk_names(*sim);
+    ASSERT_EQ(walk.size(), 22u);
+    EXPECT_EQ(walk[10], "rotors");
+    EXPECT_EQ(walk[12], "imu_sensors");
+    EXPECT_EQ(walk[14], "imu_ring");
+    EXPECT_EQ(walk[16], "replay_config");
+}
+
+// The engine's typed calls (add_gnss_sensor, set_rotor_commands, ...) use the
+// seven built-in arrays, so a set must declare each exactly as the standard set
+// does: its row size, extent, owner and depth (open question 1, approved).
+TEST(ModuleState, ASetWithoutABuiltinArrayOrWithAnotherRowSizeIsRefused) {
+    using spade::modules::ArrayDecl;
+    using spade::modules::Extent;
+    using spade::modules::attached_row_size;
+    using spade::modules::row_size;
+    const auto create = [](const spade::modules::ModuleSet& set) {
+        return spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    };
+
+    spade::modules::ModuleSet no_gnss = spade::modules::standard_modules();
+    std::erase_if(no_gnss, [](const ModuleDesc& m) { return m.name == "gnss"; });
+    EXPECT_TRUE(refused_naming(create(no_gnss), "gnss_sensors"));
+    spade::modules::ModuleSet no_drag = spade::modules::standard_modules();
+    std::erase_if(no_drag, [](const ModuleDesc& m) { return m.name == "drag"; });
+    EXPECT_TRUE(refused_naming(create(no_drag), "drag_bodies"));
+
+    static constexpr ArrayDecl small_rotors[] = {{.name = "rotors", .elem_size = 16, .extent = Extent::per_element}};
+    EXPECT_TRUE(refused_naming(create(standard_with_state("rotor", small_rotors)), "rotors"));
+
+    // Beyond the row size: another extent, depth or owner is another array.
+    static constexpr ArrayDecl body_dryden[] = {
+        {.name = "dryden", .elem_size = row_size<spade::DrydenState>(), .extent = Extent::per_body}};
+    static constexpr ArrayDecl shallow_imu[] = {
+        {.name = "imu_sensors",
+         .elem_size = attached_row_size<spade::sensors::ImuSensorRow>(),
+         .extent = Extent::per_sensor},
+        {.name = "imu_ring",
+         .elem_size = row_size<spade::sensors::ImuSample>(),
+         .extent = Extent::per_row,
+         .owner = "imu_sensors",
+         .depth = 1}};
+    static constexpr ArrayDecl gnss_ring_on_imu[] = {
+        {.name = "gnss_sensors",
+         .elem_size = attached_row_size<spade::sensors::GnssSensorRow>(),
+         .extent = Extent::per_sensor},
+        {.name = "gnss_ring",
+         .elem_size = row_size<spade::sensors::GnssFix>(),
+         .extent = Extent::per_row,
+         .owner = "imu_sensors",
+         .depth = spade::sensors::kRingDepth}};
+    EXPECT_TRUE(refused_naming(create(standard_with_state("dryden", body_dryden)), "dryden"));
+    EXPECT_TRUE(refused_naming(create(standard_with_state("imu", shallow_imu)), "imu_ring"));
+    EXPECT_TRUE(refused_naming(create(standard_with_state("gnss", gnss_ring_on_imu)), "gnss_ring"))
+        << "the same shape, owned by another array";
+}
+
+// The converse of OnlyTheLegacyArraysMayCarryTheLegacyMarker: a legacy array
+// declared by a module without the marker would register after replay_config
+// and move the walk, so it is refused by name.
+TEST(ModuleState, ALegacyArrayIsDeclaredOnlyUnderTheLegacyMarker) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) {
+        if (m.name == "rotor") m.legacy_walk = false;
+    }
+    const auto r = compile_schedule(set);
+    EXPECT_TRUE(refused_naming(r, "array 'rotors'"));
+    EXPECT_TRUE(refused_naming(r, "module 'rotor'"));
+    EXPECT_TRUE(standard_plus({.name = "probe", .legacy_walk = true}).has_value())
+        << "the control: the marker on a module with no arrays registers nothing";
 }
