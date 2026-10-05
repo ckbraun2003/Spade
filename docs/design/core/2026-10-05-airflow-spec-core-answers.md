@@ -174,6 +174,22 @@ Which of the spec's state is which:
 
 ## For the lead and Cameron
 
+### Time to a first GPU airflow, by where stage 7 sits
+
+These are estimates from one day's measured pace, not promises. Stage 4's Tasks 1 to 6, plus a follow-up fix, took about one working day on 2026-10-05. Each task, implemented test-first with both MSVC presets and a gcc leg, took roughly 1 to 1.5 hours elapsed. Review and merge queues add calendar time of their own; merges were frozen for part of that day.
+
+- **Option A: 4 → 5 → 6 → 7 (Core's recommendation).**
+  - Stage 5 (grades, roles, availability) and stage 6 (the lock, with the fixed-binding pattern and a new held-quad golden) are about 10 to 12 tasks, so about 1.5 to 2 working days.
+  - Stage 7 is then about 8 tasks, so about 1 to 1.5 days.
+  - **Core's path to a first GPU airflow: about 2.5 to 3.5 working days after stage 4.** Airflow then ships with a grade, through the shared binding pattern, with nothing to rework.
+- **Option B: stage 7 first (the spec's §9 order).**
+  - Stage 7, building the fixed-binding pattern itself, is about 9 to 10 tasks, so about 1.5 to 2 days.
+  - **Core's path: about 1.5 to 2 working days after stage 4, roughly 1 to 1.5 days sooner.**
+  - The costs come later:
+    - stage 6 must adapt to stage 7's pattern (about half a day of rework);
+    - until stage 5, airflow on Vulkan has no grade, so its admission is an ad hoc refusal or announcement rather than a declared grade.
+- **The solver may be the longer pole either way.** Physics' airflow work (the kernels, the CPU reference, measuring its bands under TD-14) runs in parallel with Core's stages. If it takes longer than Core's path, the difference between A and B shrinks or disappears, and A costs nothing in time to a first airflow.
+
 1. **Where stage 7 sits.** Core recommends 4 → 5 → 6 → 7: airflow on Vulkan needs stage 6's fixed bindings and stage 5's grades. §9 puts the Core work (M2) before stages 5 and 6 (M5). Keeping §9's order means stage 7 builds the fixed-binding pattern itself, and stage 6 reuses it. This decides how soon "GPU asap" arrives.
 2. **The scratch kind in stage 4.** It is not built, though the stage-4 note and §9 assume it. Core's lean: add it to stage 4 before merge, per body and per world, so `PHY-7` and item 2 declare their scratch instead of hand-registering it. The alternative: merge as is, and add it in stage 7.
 3. **A spec amendment for Cameron.** Device residency ends the arena's role as the one authoritative store. A hashed module configuration changes what the identity and `config_hash` cover. Neither is in the approved module-API spec. Q8 also needs Cameron's word, because it changes `PHY-4`'s timing.
