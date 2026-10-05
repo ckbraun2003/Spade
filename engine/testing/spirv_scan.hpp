@@ -50,7 +50,8 @@
 //         3060 Ti supports neither mode.
 //       - What it costs: subnormal magnitudes only. Both devices on record
 //         flush by default (the Iris Plus, recorded in S6 Task 4, and the
-//         3060 Ti, measured in 2026-10-04-nvidia-denorm-report.md), and
+//         3060 Ti, measured in docs/design/core/2026-10-04-nvidia-denorm-
+//         report.md), and
 //         fp32_math's subnormal paths are integer forms that do not depend on
 //         the mode (the banded-parity plan's T1). The CPU twin preserves, and
 //         the difference is banded, never assumed away (TD-14).
