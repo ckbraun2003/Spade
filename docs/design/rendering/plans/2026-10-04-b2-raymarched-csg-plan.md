@@ -22,14 +22,16 @@ It fixes defect B at the root. A sphere tracer never steps past a surface, so a 
 What it shows:
 - **The CPU raster's cost of a mesh is mostly per triangle.** B1's mesh of this shell has about 320 000 triangles. Over the background, it adds 113–153 ms a frame at 640x360 and 173–206 ms at 1504x1003, about 0.35–0.65 µs per triangle. The old 48-cell mesh (27 000 triangles) added 14–22 ms at 640x360. At 1504x1003 it added 33 ms outside and 155 ms inside, where filling the whole frame dominates. **So B1, as on `rendering/csg-cell-size`, makes a frame with a large CSG subtree 1.2–5.4x dearer on the CPU raster**, most at low resolution. The B1 bench measured load time only, so this is new.
 - **A ray-march's cost is per pixel.** Every pixel hits in the inside view, and the march costs 0.40 µs per pixel at both sizes. The outside view marches every sky ray to the 1000 m far plane, which costs 0.51–0.55 µs per pixel.
-- **B2 marches only the subtree's screen rectangle, and clips each ray to the subtree's bounds.** So a B2 frame costs about the frame without the subtree, plus the rectangle's pixels at about 0.4–0.5 µs each. These are estimates from the table, not measurements of B2. The outside rows assume the rectangle is about twice the shell's coverage:
+- **B2 marches only the subtree's screen rectangle, and clips each ray to the subtree's bounds.** So a B2 frame costs about the frame without the subtree, plus the rectangle's pixels at about 0.4–0.5 µs each. The estimates came from the table, assuming an outside rectangle about twice the shell's coverage. Step 1 measured B2 itself (`BM_CsgFrame` draw 3, `rendering/b2-raster` at `8785b42`, the same box and method). Its own B1 rerun is in brackets; reruns vary by up to 20%:
 
-| View | Size | B1 mesh, measured | B2, estimated |
-|---|---|---|---|
-| Outside (rectangle about 30% of the frame) | 640x360 | 171 | about 55 |
-| Inside | 640x360 | 131 | about 110 |
-| Outside | 1504x1003 | 281 | about 340 |
-| Inside | 1504x1003 | 314 | about 700 |
+| View | Size | B1 mesh, measured | B2, estimated | B2, measured at step 1 |
+|---|---|---|---|---|
+| Outside (rectangle about 30% of the frame) | 640x360 | 171 (172) | about 55 | 62.2 |
+| Inside | 640x360 | 131 (181) | about 110 | 124 |
+| Outside | 1504x1003 | 281 (336) | about 340 | 404 |
+| Inside | 1504x1003 | 314 (352) | about 700 | 791 |
+
+The measurements run 10–20% over the estimates: B2 pays a box clip and a double-precision depth per marched pixel. B2's coverage of the outside view, 14.47%, matches the reference's 14.47%, where B1's mesh covered 13.85% and the 48-cell mesh 12.23%.
 
 - **Where each wins on the CPU.** A mesh costs about 0.35–0.65 µs per triangle, and B2 about 0.4–0.5 µs per marched pixel. So, roughly, B2 is cheaper when the subtree's screen rectangle has fewer pixels than its mesh has triangles. For this 8 m shell (320 000 triangles), B2 always wins at 640x360, and at 1504x1003 it wins while the rectangle stays under about 20% of the frame. A gate-sized 2 m subtree gets the 48-cell floor, about 30 000 triangles (`gate_square`'s shape has 30 400 at 48 cells). So B2 loses once it fills more than about 2% of a 1504x1003 frame.
 - **The step cost grows with the subtree.** Each step evaluates the whole subtree. The shell has 3 nodes and `maximal`'s CSG subtree has 9, so expect a step to cost roughly 3x more there.
