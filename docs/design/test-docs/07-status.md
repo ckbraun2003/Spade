@@ -1,6 +1,6 @@
 # Test/Docs — status
 
-**The only place that describes what exists today in this realm.** Checked against master at `65c2295` (2026-10-03) unless a row says otherwise. The latest Windows counts are from the lead's batch gate at `65c2295`, on the old box. The Docker leg's runs each name their commit; all are in master. The latest is `c73a8d5`, the first run on the new machine (2026-10-04). Every count carries its tree and commit (`TD-8`).
+**The only place that describes what exists today in this realm.** Checked against master at `65c2295` (2026-10-03) unless a row says otherwise. The latest Windows counts are Test/Docs' gate at `e146575` (2026-10-05), the first with the RTX 3060 Ti admitted. The Docker leg's runs each name their commit; all are in master. The latest is `c73a8d5`, the first run on the new machine (2026-10-04). Every count carries its tree and commit (`TD-8`).
 
 ## Baseline (restructure plan R5)
 
@@ -14,10 +14,13 @@
 | debug | `build-ninja/debug` (main tree) | `3605ddf` | **978** | **976** | **2** | **0** | 2026-10-03, lead, `scripts\test.ps1 -Preset debug`, 413.6 s; 78 `gpu` ran |
 | release | `build-ninja/release` (main tree) | `65c2295` (a later batch gate) | **1072** | **1070** | **2** | **0** | 2026-10-03, lead, `scripts\test.ps1 -Preset release`, 217.3 s; 83 `gpu` ran |
 | debug | `build-ninja/debug` (main tree) | `65c2295` | **1072** | **1070** | **2** | **0** | 2026-10-03, lead, `scripts\test.ps1 -Preset debug`, 411.0 s; 83 `gpu` ran |
+| release | `build-ninja/release` (Test/Docs worktree) | `e146575` (T4 merged: the RTX 3060 Ti admitted) | **1267** | **1265** | **2** | **0** | 2026-10-05, `scripts\test.ps1 -Preset release`, 489.2 s; 104 `gpu` ran |
+| debug | `build-ninja/debug` (Test/Docs worktree) | `e146575` | **1267** | **1265** | **2** | **0** | 2026-10-05, the same `ctest` arguments in three parts: `-LE gpu` (1163, 598.5 s), then `-L gpu` as `GpuParityTest.[A-H]` (12, 105.1 s) and the rest (92, 275.6 s); 104 `gpu` ran |
 
 - **Both skips are by design.** `Fp32Exp.FullDomainSweepEveryFloatArgument` runs only with `SPADE_FULL_EXP_SWEEP=1`. `SlangLayouts.DeliberatelyUnboundArraysHaveNoBinding` skips while no array is exempt from binding.
-- **GPU:** 83 tests carry `gpu` at `65c2295`, and all 83 ran and passed on both presets on the old box's device (`TD-13`).
-- **The two presets register the same 1072 test names** at `65c2295` (sorted `ctest -N -L spade` lists compared byte for byte).
+- **GPU:** 104 tests carry `gpu` at `e146575`, and all 104 ran and passed on both presets on the RTX 3060 Ti, none skipped (`TD-13`; the section below). At `65c2295`, 83 ran on the old box's device.
+- **The two presets register the same 1267 test names** at `e146575`, as they did 1072 at `65c2295` (sorted `ctest -N -L spade` lists compared byte for byte). The step from 1072 to 1267 is not yet broken down by name.
+- **The debug gate no longer fits one tool call.** At `e146575` its non-`gpu` part alone took 598.5 s, at the 10-minute limit, so it runs in parts. The tests and arguments are the same; only the selection is split.
 - **From 978 to 1072, by name** (`3605ddf` to `65c2295`): 98 added, 4 removed.
   - Added by suite: `Motor` 13, `ModuleFields` 10, `Battery` 9, `Viewer/ViewerTrajectory` 8, `Propeller` 8, then 7 each for `PropulsionSteady`, `CompositeInertia` and `BusSolve`. Then `SceneComposeTransform` 5, `Active/AgreementMatrix` 5, `GpuModuleSchedule` 4, `TransformOf` 3, `SimFields` 3, 2 each for `StandardModules` and `ModuleSchedule`, and 1 each for `SandboxDroneView`, `RenderField`, `ModuleSimulation`, `GpuGlRenderer` and `GlRendererCreate`.
   - Removed: `ModuleSimulation.ANonStandardSetOnVulkanIsRefusedUntilStage2` (stage 2 landed), the two `SandboxDroneView` heatmap tests the field layer replaced, and `Schedule.TheCompiledStandardSetFollowsTheGpuRecordersOrder`.
@@ -29,31 +32,20 @@
 - **How it got here from the first measurement** (release, `7637f11`, 897 / 895 / 2 / 0, with a sibling `../KAT` checkout present): KAT-reach removed 31 cases that read KAT's content and added 3 `AgreementProbe`; then the drone box added 33 (`SandboxDrone*`), the rotor wake 14 (`RotorWake`), Core's medium sampling and defect fixes 4, and builder winding 1. Measured by name, not by subtraction. The suite no longer reads anything outside this repository, so the total no longer depends on the machine.
 - **Build times** on the old box at `-ParallelLevel 1`: release from a fresh checkout, including dependency fetch, 1006.5 s; release incrementally from `2237048` to `df33f09`, 493.4 s; debug from scratch, 649.9 s including configure.
 
-## GPU coverage on this machine (`TD-13`, interim reading)
+## GPU coverage on this machine (`TD-13`)
 
-**72 of the 83 `gpu` tests skip on this machine; the 11 `GpuGlRenderer` tests run and pass.** Measured on 2026-10-05:
-- **The run:** MSVC release, `ctest -L gpu -V`, in the Test/Docs worktree at `f669c8c`. That is master `82b2c5f` plus the parallel-legs and denorm-flag branches, which change no GPU code. The 72 are the whole `Gpu*` compute surface.
-- **Why they skip:** the RTX 3060 Ti reports `shaderDenormPreserveFloat32 = false`. Every kernel requests `DenormPreserve 32`, so `VulkanContext` refuses the device and `vulkan_available()` returns false.
-- **Each skip prints no reason.** They are bare `GTEST_SKIP()`s at `tests/test_compute_context.cpp:59` and `:99`, among others, so the log alone cannot say why. The names below are the record.
-- **The measurement that settles admission** is Core's plan, `../core/plans/2026-10-04-nvidia-denorm-measurement-plan.md`. Its test-only build (`SPADE_MEASURE_UNPINNED_DENORMS`) admits the device.
+**All 104 `gpu` tests run and pass on the RTX 3060 Ti, on both presets, at `e146575` (2026-10-05).** None skips.
+- **The device**, as the `gpu` fixture prints it: "NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no)".
+- **By suite:** `GpuGlRenderer` 28, `GpuParityTest` 25, `GpuFp32Math` 13, `GpuInvarianceTest` 10, `GpuContext` 9, `GpuStateMirrorTest` 7, `GpuGridSort` 4, `GpuModuleSchedule` 4, `GpuGridSortDeepTest` 2, `GpuBehaviorRefusal` 1, `GpuU64` 1.
+- **How it was counted:** the names from `ctest -N -L gpu`, and each result read from that run's `LastTest.log`, where a `[  SKIPPED ]` would expose a skip that ctest counts as passed. There were none.
+- **Time:** in release the `gpu` tests took 370.9 s of the 489.2 s, with `GpuParityTest` 230.7 s of that.
 
-**The ruling:** the user, 2026-10-05: "Label, don't block." It is an interim reading of `TD-13`, not an amendment (`00-decisions.md`).
-- A gate on this machine reports "green on CPU and gcc, GPU unverified (72 refused)", and merges continue.
-- A change to kernels or GPU paths says so in its merge note, and is re-verified once a device can run it.
+**`TD-13`'s interim reading has ended.** On 2026-10-04 and 2026-10-05 the default build refused the RTX 3060 Ti, which cannot preserve fp32 denormals. 72 of the 83 `gpu` tests skipped, and the user's interim reading, "Label, don't block", let gates report "GPU unverified (72 refused)". The banded-parity plan (`../core/plans/2026-10-05-banded-parity-plan.md`) removed the cause:
+- no kernel requests a denormal mode (`SPIR-V rule P3`, T2);
+- the bands follow `TD-14` (T3);
+- any Vulkan 1.1 device is admitted (`CORE-5`, T4, merged as `e146575`).
 
-**The 72**, by suite:
-  - `GpuParityTest` (24): `GnssReceiverMatchesTheCpuWithinBands`, `GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws`, `GnssDrawsDivergeAcrossBackends_KNOWN_OPEN`, `GnssReceiverBodyStateIsMeasuredNotAssumed`, `BallisticMatchesTheCpuWithinBands`, `GateFleetMatchesTheCpuWithinBands`, `BounceMatchesTheCpuWithinBands`, `TwoWorldIsolationMatchesTheCpuWithinBands`, `QuadHoverMatchesTheCpuWithinBands`, `GnssTumbleMatchesTheCpuWithinBands`, `IntegrateKernelReadsThePerStepTickBuffer`, `TwoActiveBodiesInAWorldStepAndMatchTheCpu`, `ComponentwiseDragMatchesTheCpuWithinBands`, `ApplyWrenchForcesReupload`, `RotorCommandsForceReupload`, `ReseedForcesReupload`, `StructuralOpsAreCoveredTransitively`, `RestoredRunResumesAndMatchesTheCpuWithinBands`, `HeterogeneousGeometrySetMatchesTheCpuWithinBands`, `ShowerMatchesTheCpuWithinBands`, `ShowerLadderMatchesTheCpuWithinBands`, `QuadHoverIsBitIdenticalAcrossTwoGpuRuns`, `ShowerIsBitIdenticalAcrossTwoGpuRuns`, `ImuRingPollAfterGpuStepsMatchesTheCpu`.
-  - `GpuFp32Math` (13): `ReportsTheDeviceAndItsFloatControls`, `KernelConstantsAreBitIdenticalToTheHostConstants`, `CorrectlyRoundedDivisionMatchesTheHostDivide`, `Log32MatchesTheHostBitForBitOverEveryNextFloatArgument`, `Log32MatchesTheHostBitForBitAcrossTheWholeNormalRange`, `Exp32MatchesTheHostBitForBitAcrossTheReductionBoundary`, `Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubnormalTail`, `Exp32MatchesTheHostBitForBitAcrossTheWholeFiniteDomainAndBothSaturationEdges`, `Sin32MatchesTheHostBitForBitOverEveryBoxMullerAngle`, `Cos32MatchesTheHostBitForBitOverEveryBoxMullerAngle`, `SinCos32MatchTheHostBitForBitAcrossTheAccuracyDomainAndThePinnedRegion`, `Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADeterministicLattice`, `EdgeCasesAreBitIdenticalToTheHost`.
-  - `GpuInvarianceTest` (10): `BallisticBitIdenticalAcrossWorkgroupSizes`, `BounceBitIdenticalAcrossWorkgroupSizes`, `QuadHoverBitIdenticalAcrossWorkgroupSizes`, `ShowerBitIdenticalAcrossWorkgroupSizes`, `GnssTumbleBitIdenticalAcrossWorkgroupSizes`, `TwoWorldIsolationBitIdenticalAcrossWorkgroupSizes`, `HeterogeneousGeometrySetBitIdenticalAcrossWorkgroupSizes`, `TwoWorldIsolationWorldsMatchSoloRunsOnGpu`, `CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands`, `VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands`.
-  - `GpuStateMirrorTest` (7): `RoundTripUploadReadbackWithoutSteppingIsByteIdentical`, `StructuralOpBetweenStepsForcesReupload`, `StepParamsTickWrittenPerSubmit`, `VulkanStepTouchesOnlyTheExpectedArrays`, `AbsurdShapeAllocationFailureIsReportedNotCrashed`, `RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair`, `DescriptorSetBindsEveryRegistryBinding`.
-  - `GpuContext` (6): `CreatesOnAvailableDevice`, `Int64ProbeMatchesTheDevice`, `DebugMessengerExistsIffValidationLayerIsPresent`, `ComputeAndTransferQueuesAreValid`, `DeviceIndexOutOfRangeIsInvalidArgument`, `MoveTransfersOwnershipAndLeavesSourceInert`.
-  - `GpuGridSort` (4): `AlreadySortedKeySetMatchesTheCpu`, `ReversedKeySetMatchesTheCpu`, `AllEqualCellsFallsBackToTheSlotTiebreak`, `OneWorldEmptyMatchesTheCpu`.
-  - `GpuModuleSchedule` (4): `TheRecorderRecordsTheSchedulesPassesInOrder`, `ReorderedSensorsRecordInScheduleOrder`, `DurationsAreOnePerPassByName`, `StoredFieldSamplesMatchTheCpuCopiesBitwise`.
-  - `GpuGridSortDeepTest` (2): `Deep128KeyBatchedNetworkMatchesTheCpu`, `SegmentedPerWorldPartitionMatchesTheCpu`.
-  - `GpuBehaviorRefusal` (1): `VulkanStepRefusesAnAttachedBehaviorRegistry`.
-  - `GpuU64` (1): `ShiftMatchesTheHostAtEveryDistance`.
-
-Core's refusal test, merged in `cc63c97`, makes 84 `gpu` tests: the leg at `0e2b9cb` excluded 84 with `-LE gpu`, against 83 at `82b2c5f`. It skips only on a device that does preserve. On this one it runs and expects the refusal, and Core reports it green here; the lead's batch gate will give the counts at the merged master.
+The 72 refused tests are listed by name in this file's history (`b08d139`).
 
 ## The Docker leg's runs (`TD-11`, `TD-12`)
 
@@ -124,7 +116,7 @@ Core's refusal test, merged in `cc63c97`, makes 84 `gpu` tests: the leg at `0e2b
 | `TD-7` the gate | yes | `scripts\test.ps1` on both presets, on the development box only (`TD-11`) |
 | `TD-11` Docker leg | yes | `scripts\docker-leg.ps1`, `docker-leg.sh` and `docker-leg.Dockerfile`, with Interface's `scripts/consumer-smoke.sh`. It ran end to end at `fe4934a`, green on committed code at `b82b72e`, and green on the new machine at `c73a8d5` (above). It runs when the work needs it, not on every commit. Each run has its own container and volume, so legs run side by side and gcc checks run beside them (`plans/2026-10-04-parallel-legs.md`, with its red/green record) |
 | `TD-12` golden cross-check | yes | First run at `fe4934a`: 6 scenario digests, the render goldens and 8 viewer trajectories reproduce on gcc. `RND-5`'s regeneration was reproduced at `b82b72e`, and everything again on the new machine at `c73a8d5`. The gate still cannot see a Linux-only divergence between leg runs |
-| `TD-13` GPU coverage | yes, as policy; read as "label, don't block" on this machine (user, 2026-10-05) | On the old box all 83 `gpu` tests ran on both presets at `65c2295`, with none skipped. On this machine 72 are refused and 11 run (above), so gates here report "GPU unverified (72 refused)" until the denorm outcome. The Docker leg excludes them with `-LE gpu` (84 at `0e2b9cb`). Nothing mechanical enforces it: `scripts\test.ps1` exits 0 with skips, so each report names any skipped `gpu` test (`02-build-and-gate.md`) |
+| `TD-13` GPU coverage | yes | Since `e146575` (T4) all 104 `gpu` tests run and pass on the RTX 3060 Ti, on both presets (above). The interim reading of 2026-10-05, "label, don't block", has ended (`00-decisions.md`). On the old box all 83 ran at `65c2295`. The Docker leg excludes them with `-LE gpu`. Nothing mechanical enforces it: `scripts\test.ps1` exits 0 with skips, so each report names any skipped `gpu` test (`02-build-and-gate.md`) |
 
 ## Ruled by the user (2026-10-02)
 
@@ -133,7 +125,7 @@ The two decisions this page held are ruled; the rulings live in `00-decisions.md
 1. **The second toolchain** is the Docker gcc leg: a regenerated golden is final only once that leg reproduces it (`TD-12`).
 2. **Hosted CI** is not restored. CI is self-run in Docker on this box, which amends `engine D11` (`TD-11`).
 
-GPU coverage on a one-machine gate, the third open question, is `TD-13`. On 2026-10-05 the user gave `TD-13` an interim reading for this machine, "Label, don't block" (`00-decisions.md`). No user decision is open in this realm.
+GPU coverage on a one-machine gate, the third open question, is `TD-13`. Its interim reading of 2026-10-05, "Label, don't block", ended when T4 admitted the RTX 3060 Ti (`00-decisions.md`). No user decision is open in this realm.
 
 ## Debt
 
@@ -146,6 +138,6 @@ GPU coverage on a one-machine gate, the third open question, is `TD-13`. On 2026
    - the old box's 7 GPU entries are kept, labelled with that box, because the GPU families cannot run here (above);
    - `_meta` names Core's module-API stage 2 commit, `198eab1` (merged as `dca7cfb`), which moved the GPU timing basis (`TD-8`).
 
-   A GPU seed waits for a device the default build admits.
-2. **GPU coverage** (`TD-13`): every gate report states how many `gpu` tests ran and names any skip. On this machine it reports "GPU unverified (72 refused)" under the interim reading, until the denorm measurement settles admission.
+   A GPU seed waits for a device the default build admits. Since `e146575` it admits the RTX 3060 Ti, so the seed can be taken in a quiet window the lead announces.
+2. **GPU coverage** (`TD-13`): every gate report states how many `gpu` tests ran and names any skip. Since `e146575` all 104 run here, so a skip is a finding again.
 3. **The leg** runs when the work needs it. Each run has its own volume (`plans/2026-10-04-parallel-legs.md`), and a golden made final under `TD-12` uses a fresh volume (`-NoSeed`).
