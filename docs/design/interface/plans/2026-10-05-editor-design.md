@@ -1,131 +1,173 @@
 # The editor, first cut — design
 
-**Owner:** Interface. **Status:** draft for the user's approval (`INT-3`); the decisions in §9 are his, and nothing is built from this until he approves it. **Builds:** `../01-editor.md` ("The target") and `../../backlog.md` ("Sandbox → editor"). **Rulings this rests on:** `INT-2` (rebuild debounced, carry state), `INT-3` as amended 2026-10-03 (the editor saves scenes; worlds stay world files), `SL2b` (only the installed API), `SL15b` (headless first), the world/scene split (`../../01-engine-model.md`). **Inputs:** the scene file (`2026-10-03-scene-file-draft.md`, `SCN-001`–`SCN-009`, built), the composer (`2026-10-03-scene-composer-plan.md`, built), the module-API design (`../../core/plans/2026-10-02-module-api-design.md`), the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`, `DBE-013`, `DBE-014`).
+**Owner:** Interface. **Status:** draft, revised for the user's decisions D1–D4 (2026-10-05, §9). Nothing is built from it until he approves the revision. **Builds:** `../01-editor.md` ("The target") and `../../backlog.md` ("Sandbox → editor"). **Rulings this rests on:** `INT-2` (rebuild debounced, carry state), `INT-3` as amended 2026-10-03 (the editor saves scenes), `SL2b` (only the installed API), `SL13` (three scene sources), `SL15b` (headless first), the world/scene split (`../../01-engine-model.md`). **Inputs:** the scene file (`2026-10-03-scene-file-draft.md`, `SCN-001`–`SCN-009`, built), the composer (`2026-10-03-scene-composer-plan.md`, built), the world file (`world/world_file.hpp`, built), the module-API design (`../../core/plans/2026-10-02-module-api-design.md`), the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`, `DBE-013`, `DBE-014`).
 
 ## 1. Goal and done-when
 
-The sandbox becomes Spade's editor: the place a developer opens a scene, changes what is in it, runs it, and saves it. A scene is the engine's own format (a world reference plus assets and vehicles), so the scene the editor saves is the scene Kat sends and the scene a batch run composes.
+The sandbox becomes Spade's editor, on the Unity pattern: a library of models and assets, placed into scenes, every parameter configurable in an inspector, and worlds created, edited and saved. A scene is the engine's own format (a world reference plus models, assets and vehicles), so the scene the editor saves is the scene Kat sends and the scene a batch run composes. The editor configures models; it never builds a new one from parts, which is Kat's builder's job.
 
 **Done when:**
 1. The editor opens any valid scene file, and saving it unchanged writes its canonical text, so a file Spade or Kat wrote comes back byte for byte (`SCN-002`).
-2. A user can place, select, move, re-pose, duplicate and delete assets and vehicles, and every edit can be undone.
-3. Run, pause and single-step work on the edited scene, through `compose()` and `instantiate()`; an edit while running rebuilds the run, debounced, and carries vehicle state across (`INT-2`).
-4. Save writes a valid scene file that `compose_file()` composes; an invalid scene is never written.
-5. Every operation in 1–4 runs headless from the command line and is tested without a display (`SL15b`).
-6. The live smoke tours the editor as a main function, so its recording shows each of the above.
+2. A user places models and assets from the library, and can select, move, re-pose, duplicate and delete them; every edit can be undone.
+3. The inspector shows and edits every parameter of a placed model and asset, and shows each validation problem at its field.
+4. A user creates a new world, opens an existing one, edits and configures it, and saves it as a world file; the open scene follows the world's new hash.
+5. Run, pause and single-step work on the edited scene and world, through `compose()` and `instantiate()`; an edit while running rebuilds the run, debounced, and carries vehicle state across (`INT-2`).
+6. Every operation in 1–5 runs headless from the command line and is tested without a display (`SL15b`).
+7. The live smoke tours the editor as a main function, so its recording shows each of the above.
 
 ## 2. Scope
 
 | In the first cut | Specified here, built later |
 |---|---|
-| A document: one scene, its selection and its undo history | Components and modules on scene objects (with objects in stepping, module-API §11) |
-| Scene sources (`SL13`): built-in scenes, test scenarios and saved scenes, all as scene files (§9 D3) | Editing a world (its environment, regions, terrain) — see §9 D4 |
-| Assets: primitive colliders (box, sphere, cylinder, capsule) with a visual | Asset browser over meshes and materials |
-| Vehicles: placed from the scene's models, or from the quadrotor template | Editing a model's parameters (Kat's builder owns airframes) |
-| Run, pause, single-step; debounced rebuild with carry | Scrub with snapshot restore |
-| Save, Save As, Open, undo and redo | CPU/Vulkan lockstep view, physics debug draw, SDF slices |
-| The hierarchy, the inspector, the scene settings | A component menu (needs Core's availability table, module-API stage 5). It lists every type from that table and shows `fluid` as reserved with its reason, never as an option (`../01-editor.md`) |
+| Two documents, a scene and its world, each with its selection, undo history and dirty state | Components and modules on scene objects (with objects in stepping, module-API §11) |
+| The library: built-in items (the quadrotor template, the primitive assets) and a folder of library files | An asset browser over meshes and textures |
+| Vehicles from library models; the kind is general, and drones are the only kind today | Further vehicle kinds: each arrives with its own model type (Core) and inspector table |
+| The inspector: every parameter of a model, an asset, a vehicle's start, a world | Adding or removing a model's parts (rotors, drag bodies, IMU mounts): never in the editor, always Kat's builder |
+| Worlds: new from a template, open, edit, configure, save | World physics records that world file v2 cannot hold (turbulence, contacts, grid): saved with the world once world file v3 does (§6) |
+| Scene sources (`SL13`): built-in scenes, test scenarios and saved scenes, all as scene files | Regions and objects in worlds (world file v3, module-API §11) |
+| Run, pause, single-step; debounced rebuild with carry | Scrub with snapshot restore; CPU/Vulkan lockstep view; physics debug draw; SDF slices |
+| Save, Save As, Open, undo and redo, for both documents | A component menu (needs Core's availability table, module-API stage 5). It lists every type from that table and shows `fluid` as reserved with its reason, never as an option (`../01-editor.md`) |
 
-## 3. The document
+## 3. The documents
 
-The editor edits a **document**, never the running simulation.
+The editor edits **documents**, never a running simulation.
 
-- **The document is a `scene::SceneDesc`** plus the path it came from, the selection, and the undo history. It holds no engine state of its own, so what the user edits is exactly what is saved.
-- **The world is referenced, not edited.** The document loads the world its scene names (relative to the scene file, by hash, as `compose_file()` does) and shows it, but its edits change only the scene.
-- **Every edit is a function** `Result<void> apply(Document&, const Edit&)` over the `SceneDesc`, in a display-free header (`sandbox/editor_document.hpp`). It validates the result with `validate_scene()` before committing it: an edit the scene file could not carry is refused with the validator's message and leaves the document unchanged.
-- **Undo and redo** keep whole `SceneDesc` copies, one per committed edit. A scene is small (a world reference plus tens of objects), so copies are cheap and an undo can never disagree with the edit it reverses. The history is bounded (a fixed count, stated in code).
-- **Names are the identity.** Assets and vehicles are addressed by their unique names (`SCN-004`), so a selection, an undo and a carried vehicle state survive a reorder.
+- **The scene document is a `scene::SceneDesc`** plus its path, selection and undo history. **The world document is a `WorldDesc`** plus the same. Neither holds engine state of its own, so what the user edits is exactly what is saved.
+- **Every edit is a function** `Result<void> apply(Document&, const Edit&)` in a display-free header (`sandbox/editor_document.hpp`). It validates the result before committing it: a scene with `validate_scene()`, a world with `validate_world_desc()`, a model with `ModelType::issues()`. An edit the file could not carry is refused with the validator's message and leaves the document unchanged.
+- **Undo and redo** keep whole copies, one per committed edit, per document. Scenes and worlds are small (tens of objects, an SDF program of tens of nodes), so copies are cheap and an undo can never disagree with the edit it reverses. Each history is bounded (a fixed count, stated in code).
+- **Names are the identity.** Models, assets and vehicles are addressed by their unique names (`SCN-004`), so a selection, an undo and a carried vehicle state survive a reorder.
+- **The two documents meet only through the hash.** The scene names its world by path and `world_hash()` (`SCN-001`). §6 says how a world edit reaches the scene.
 
-## 4. Editing
+## 4. The library and the inspector
 
-Each operation is an `Edit` the window's widgets and the command line both produce.
+**The library** (Cameron, D2: "an asset/model library, with all parameters configurable … Think unity").
 
-- **Assets:** add (a primitive at a pose, with a collider of that primitive and a visual of the matching mesh and a material), select, move (the builder's ground drag), set pose (position, orientation, uniform scale), rename, recolour (a scene material), duplicate, delete, reorder.
-- **Vehicles:** add (a model and a design-frame start pose), select, move, set start (pose, velocity, rates, rotor speed), rename, duplicate, delete, reorder. A vehicle's start stays in the design frame, as the scene holds it (`DBE-013`).
-- **Models:** a vehicle may use any model the scene declares. The editor can add the quadrotor template's model to a scene that has none (§9 D2). It does not edit a model's parameters.
-- **Materials:** add or rename a scene material; a name the world's palette already has is refused at compose time, and the inspector says so when it happens.
-- **Order is visible.** The hierarchy lists assets and vehicles in scene order, because order enters the configuration hash (`SCN-005`, `DBE-010`); reordering is an edit like any other.
-- **The builder's interactions carry over** (pick, drag, place on the ground, delete, duplicate), now acting on scene assets rather than render-only objects.
+- **Items:** models and assets. Built-in items ship with the editor: the quadrotor template, and the primitive assets (box, sphere, cylinder, capsule). Further items are library files in a library folder: one model, or one asset, in the scene file's own syntax (§7, a need for Core).
+- **The panel** lists items by kind: vehicle models grouped by vehicle kind (drones today), then assets. The kind comes from the model, so a new kind needs no change to the panel.
+- **Placing copies.** Placing a model adds a copy of it to the scene's `models` (if the scene does not hold it yet) and a vehicle that uses it; placing an asset adds a copy to the scene's `assets`. A scene never refers to a library file, so it stays self-contained, as `SCN-008` and Kat's scenes require.
+- **Placement** is the builder's interaction, carried over: pick a point on the ground or a surface, drop the item there, drag it in the ground plane.
+
+**The inspector** shows the selection's every parameter:
+
+- **A vehicle:** its name, its model, and its start in the design frame (pose, velocity, rates, rotor speed), as the scene holds it (`DBE-013`).
+- **Its model:** every `ModelType` field: the body (mass, inertia), the design frame (`design_to_principal`, `com_offset`), the proxy radius, each rotor's pose, spin, lag, radius and coefficients, each drag body's, each IMU mount's pose and noise, and the visual reference.
+- **An asset:** its name, pose, collider (each primitive's parameters and transform) and its materials, and its visual.
+- **The world** (§6) when nothing in the scene is selected.
+- **Problems at their fields.** The inspector validates a model with `ModelType::issues()`, which names every problem with its element, index and field, so each one shows at the field it is about. An invalid value does not commit.
+- **Parameters, never parts.** The inspector edits the values of a model's existing parts and never adds or removes a part. A model with a different structure is a new model, and new models come from Kat's builder (Cameron, D2: "You cannot build new models in spade editor").
+- **Shared models.** Vehicles name their model, so a model edit changes every vehicle using it; the inspector lists them. **Make unique** copies the model under a new name for the selected vehicle alone (§9 Q1).
+- **Back to the library.** **Save to library** writes the configured model or asset as a library file (§9 Q2).
+- **Commit on release** (`INT-2`): a field commits when the user lets go of it.
 
 ## 5. Running
 
-- **Run** composes the document (`compose()` on the scene and its loaded world), instantiates it (`instantiate()`), and steps it at the fixed step the drone box uses. Pause stops stepping; single-step advances one step.
-- **An edit while running rebuilds** (`INT-2`): when the user lets go of a control, the editor composes and instantiates the edited scene, and carries each vehicle's state by name (pose, velocity, rates, rotor speeds) through `vehicle_state()` and the new spawn. A vehicle the edit removed is dropped; one it added starts at its start pose.
-- **A refused rebuild keeps the running simulation** and shows the reason (a `compose()` or `create()` error, verbatim) and leaves the document edited, so the user can fix it. Running never changes the document.
-- **Structural edits on a running world** (`../01-editor.md`'s open item) are settled for this cut by the rule above: the editor never mutates a running `Simulation`; it rebuilds from the document. Queued structural edits wait for objects in stepping (module-API §11).
+- **Run** composes the documents (`compose()` on the scene and the world document), instantiates the result (`instantiate()`), and steps it at the drone box's fixed step. Pause stops stepping; single-step advances one step.
+- **An edit while running rebuilds** (`INT-2`): when the user lets go of a control, the editor composes and instantiates the edited documents and carries each vehicle's state by name (pose, velocity, rates, rotor speeds) through `vehicle_state()` and the new spawn. A vehicle the edit removed is dropped; one it added starts at its start pose.
+- **A refused rebuild keeps the running simulation** and shows the reason (a `compose()` or `create()` error, verbatim), and leaves the documents edited, so the user can fix them. Running never changes a document.
+- **Structural edits on a running world** (`../01-editor.md`'s open item) are settled for this cut by the rule above: the editor never mutates a running `Simulation`; it rebuilds from the documents. Queued structural edits wait for objects in stepping (module-API §11).
 
-## 6. Saving and opening
+## 6. Worlds
 
-- **Save** validates and writes the document with Core's canonical writer (`scene_to_yaml()`), atomically (a temporary file renamed over the target), so a failed save never leaves a half-written scene. The scene's world reference keeps its path and hash.
+Cameron, D4: "You can create new worlds, edit/configure/save existing worlds."
+
+- **New world** starts from a template: an empty world with a ground plane, or a copy of any world file. It is unsaved until Save As names it.
+- **Open** reads a world file with `load_world_file()`. Opening a scene opens its world as the world document.
+- **Configure:** the name, the environment (gravity, wind, air density, temperature, seed), the capacities, the material palette, the lighting, the spawn points and the props, each in the inspector.
+- **Edit the static geometry.** A world's terrain is a compiled SDF program, not a recipe (`world_file.hpp`), so the editor edits that program directly:
+  - edit any node's parameters (a primitive's size, a transform);
+  - add a primitive, joined to the terrain by a union;
+  - remove or re-pose a piece that a union joins to the rest.
+  A piece inside an intersection or a subtraction is edited only in its parameters. The helper that does this works on the public `SdfProgram`; Interface writes it, and Core reviews it, as Core reviewed the composer (§7).
+- **Physics records that world file v2 cannot hold** (turbulence, contact parameters, the broad-phase grid) live in `WorldInstanceDesc` today. The editor shows them as run settings, says that they are not saved with the world, and saves them with it once world file v3 carries them (module-API §11, Core).
+- **Save** validates the world and writes `world_to_yaml()` text atomically (a temporary file renamed over the target; `save_world_file()` writes in place). A saved world reloads bit-exactly, as the world file guarantees.
+- **The scene follows the world.** Saving a world changes its `world_hash()`:
+  - the open scene's `world.hash` is re-pinned as an undoable scene edit, once `compose()` succeeds on the scene and the new world;
+  - every other scene file in the project folder that names this world and pins the old hash is listed, and each is re-pinned only on the user's word and only after `compose()` succeeds on it;
+  - a world edit re-runs `compose()` on the open scene, so a conflict it creates (a material name the scene also uses, `SCN-004`; capacities, `SCN-007`) shows at once, not at the next run.
+
+## 7. Saving and opening scenes
+
+- **Save** validates the scene document and writes `scene_to_yaml()` text atomically (a temporary file renamed over the target), so a failed save never leaves a half-written scene. A world document with unsaved edits is saved first, so the scene never pins a hash that is not on disk.
 - **Save As** to another folder rewrites the world path relative to the new location, so the saved scene still finds its world (`SCN-001`).
-- **Open** reads with `load_scene_file()`, loads the named world, and refuses with the cause when the world is missing or its hash differs; the user can re-point the scene at another world, which re-pins the hash (§9 D4).
+- **Open** reads with `load_scene_file()`, opens the named world, and refuses with the cause when the world is missing or its hash differs. The user can re-point the scene at another world, which re-pins the hash.
 - **Round trip.** Saving an unedited scene writes its canonical text (`SCN-002`), so a file Spade or Kat wrote comes back byte for byte, and a hand-edited one comes back canonical with the same content. A Kat scene opened and saved stays a Kat scene: the editor adds nothing that is not engine content (`SCN-008`).
-- **Scene sources** (`SL13`, as amended by `INT-3`): one picker over the built-in scenes (the drone box and the builder's ground), the test scenarios, and saved scenes, all as scene files. A test scenario joins the picker when it is a scene file; composer task 5 converts the viewer scenes first (§9 D3).
+- **Scene sources** (`SL13`, as amended by `INT-3`): one picker over the built-in scenes (the drone box and the builder's ground), the test scenarios, and saved scenes, all as scene files. A test scenario joins the picker when it is a scene file; composer task 5 converts the viewer scenes first.
 
-## 7. What it needs from the installed API
+## 8. What it needs from the installed API
 
 | Need | Today | Owner |
 |---|---|---|
 | Load, validate and write a scene; world hash | `scene::load_scene_file`, `validate_scene`, `scene_to_yaml`, `world_hash` | built |
 | Compose and run | `scene::compose`, `compose_file`, `instantiate` | built |
-| **Save a scene file atomically** | none; `save_world_file()` exists for worlds | **finding for Core:** `save_scene_file(const SceneDesc&, path)`, the counterpart of `save_world_file()` |
+| Load, validate and write a world | `load_world_file`, `validate_world_desc`, `world_from_yaml`, `world_to_yaml`, `save_world_file` | built |
+| Atomic saves | the editor writes `*_to_yaml()` text to a temporary file and renames it | Interface; Core's `save_scene_file()` (routed) is a convenience, not a blocker |
+| **A library file: one model or one asset**, read and written canonically | none; the scene file serializes models and assets only inside a scene | **need for Core:** `model_to_yaml` / `model_from_yaml` and `asset_to_yaml` / `asset_from_yaml`, in the scene file's syntax and validators |
+| Every problem in a model, by field | `ModelType::issues()` | built |
+| **Edit a compiled world's SDF** | the public `SdfProgram`; `WorldBuilder` builds programs, it does not edit them | Interface writes the helper; **Core reviews** it (world model) |
+| **Save the world's physics records** | `WorldInstanceDesc` only; not in world file v2 | **Core:** world file v3 (module-API §11) |
 | Carry vehicle state across a rebuild | `Simulation::vehicle_state()` (design frame) | built |
-| **Spawn a vehicle with a full state**, not only a start pose | `VehicleSpawn` carries pose, velocity, rates and one rotor speed | **finding for Core:** per-rotor speeds on spawn, or a documented single-speed carry |
+| **Spawn a vehicle with a full state** | `VehicleSpawn` carries pose, velocity, rates and one rotor speed | **Core** (routed): per-rotor speeds on spawn, or a documented single-speed carry |
 | Pose an asset | `transform_of()`, `SdfPose` | built |
-| Pick an asset under the cursor | `eval()` and `gradient()` on an SDF program | built; the editor marches the composed world's SDF |
+| Pick under the cursor | `eval()` and `gradient()` on an SDF program | built; the editor marches the composed world's SDF |
 | Draw the scene | `render::scene_from_world`, `render_gl` | built |
-| Meshes for visuals | `render::load_gltf` | built; the first cut draws primitives only |
+| Meshes for visuals | `render::load_gltf` | built; the first cut draws primitives |
 | List component types and their availability | none | module-API stage 5 (Core); not needed until components |
 
-Each finding is reported to Core, and nothing widens an include path (`SL2b`).
+Each need is reported to Core through the lead, and nothing widens an include path (`SL2b`).
 
-## 8. The window
+## 9. Decisions and open questions
 
-The window stays a dumb shell (`SL15b`): it turns input into `Edit`s and draws panels over the document.
+**Decided by Cameron, 2026-10-05** (asked by the lead):
+- **D1, first-cut scope:** the scene editor.
+- **D2, models:** "There will be an asset/model library, with all parameters configurable. For now we only have drones as vehicles, but there will be other ones. You cannot build new models in spade editor. Think unity." This revision answers it in §4.
+- **D3, scene sources:** all three of `SL13`'s.
+- **D4, worlds:** "You can create new worlds, edit/configure/save existing worlds." This revision answers it in §6.
 
-- **The hierarchy:** the scene's assets and vehicles in scene order, with the selection.
-- **The inspector:** the selected object's pose, collider or model, material and start state. A field commits on release (`INT-2`).
-- **The scene panel:** the world it references (path, hash, whether it matched), the scene's materials and models, and `spare`.
-- **The run bar:** run, pause, step, the tick, and the last refusal if there was one.
-- **Menus:** Open, Save, Save As, Undo, Redo, and the scene sources.
-
-## 9. Decisions for the user
-
-Each is one question with options; the first is recommended.
-
-- **D1. First-cut scope.** (A, recommended) The scene editor of §§3–6: assets, vehicles, run, save. (B) A plus choosing a module's grade on the running world — waits on module-API stage 5. (C) A viewer that opens and runs scenes, with no editing.
-- **D2. Where a vehicle's model comes from.** (A, recommended) Models the scene declares, plus the quadrotor template the editor can add. (B) Only the scene's models; vehicles need Kat. (C) A plus editing model parameters in the editor.
-- **D3. Scene sources in the first cut.** (A, recommended) `SL13`'s three: built-in scenes, test scenarios and saved scenes, each as a scene file; each test scenario joins as it is converted. (B) Built-in and saved scenes only, with test scenarios later — this narrows `SL13` for the first cut. (C) Saved scenes only.
-- **D4. Worlds.** (A, recommended) The editor references worlds and never writes one; re-pointing a scene at another world is allowed. (B) A plus "new world" (environment and ground) saved as a world file. (C) A plus editing the referenced world.
+**Open, for Cameron** (the first option is recommended):
+- **Q1. A model edit on a placed vehicle.** (A) It edits the scene's model, so every vehicle using that model changes; the inspector lists them, and Make unique gives the selected vehicle its own copy. (B) Every placed vehicle gets its own model copy, so an edit never reaches another vehicle. (C) Per-vehicle overrides on a shared model; this needs a scene-file schema change (Core).
+- **Q2. Configured models and the library.** (A) Save to library writes a configured model or asset as a new library item; the structure stays Kat's. (B) The library is read-only in the editor; configured models live only in scenes. (C) A, and the editor may also overwrite an existing library item.
 
 ## 10. Requirements
 
-- **EDT-001** The editor MUST edit a scene document and MUST NOT mutate a running `Simulation`; a run is rebuilt from the document.
+- **EDT-001** The editor MUST edit scene and world documents and MUST NOT mutate a running `Simulation`; a run is rebuilt from the documents.
 - **EDT-002** Every edit MUST be a display-free operation, exercised headless and by the command line (`SL15b`).
-- **EDT-003** An edit MUST pass `validate_scene()` before it commits; a refused edit MUST leave the document unchanged and show the cause.
-- **EDT-004** Every committed edit MUST be undoable and redoable, to the history's stated bound.
+- **EDT-003** An edit MUST pass its document's validator before it commits; a refused edit MUST leave the document unchanged and show the cause.
+- **EDT-004** Every committed edit MUST be undoable and redoable, per document, to the history's stated bound.
 - **EDT-005** Saving an unedited scene MUST write its canonical text, so a canonical file MUST come back byte for byte (`SCN-002`).
-- **EDT-006** Save MUST write only a valid scene, atomically, through Core's canonical writer.
+- **EDT-006** Save MUST write only a valid scene or world, atomically, through Core's canonical writers.
 - **EDT-007** An edit while running MUST rebuild debounced and carry each surviving vehicle's state by name; a refused rebuild MUST keep the running simulation and show the reason (`INT-2`).
 - **EDT-008** Objects MUST be addressed by name; order MUST be shown and edited as configuration (`SCN-005`).
 - **EDT-009** Vehicle starts MUST stay in the design frame end to end (`DBE-013`).
-- **EDT-010** The editor MUST use only installed headers and `spade::` targets (`SL2b`); a missing capability is a finding for Core.
+- **EDT-010** The editor MUST use only installed headers and `spade::` targets (`SL2b`); a missing capability is a need for Core.
 - **EDT-011** The live smoke MUST tour the editor's operations, with each one a declared step.
+- **EDT-012** Placing a library item MUST copy it into the scene; a scene MUST NOT refer to a library file.
+- **EDT-013** The inspector MUST expose every parameter of a placed model and asset, and MUST NOT add or remove a model's parts.
+- **EDT-014** A model edit MUST be checked with `ModelType::issues()`, and each problem MUST show at its field.
+- **EDT-015** The editor MUST create, open, edit and save world files through Core's world file API; a saved world MUST reload bit-exactly.
+- **EDT-016** Saving a world MUST re-pin the open scene's world hash only after `compose()` succeeds, and MUST list every scene in the project folder that pins the old hash; another scene is re-pinned only on the user's word, after `compose()` succeeds on it.
+- **EDT-017** A world edit MUST re-run `compose()` on the open scene and show any conflict it creates.
+- **EDT-018** A setting the world file cannot hold MUST be shown as not saved with the world.
 
 ## 11. Testing
 
-- **Document:** each edit's effect on the `SceneDesc`; a refused edit leaves it unchanged; undo and redo restore exact bytes (`scene_to_yaml` equal).
+- **Documents:** each edit's effect on its document; a refused edit leaves it unchanged; undo and redo restore exact bytes (`scene_to_yaml` and `world_to_yaml` equal).
+- **Library:** placing copies the item (the scene holds no library path); a library file round-trips; a placed model's copy equals the library item.
+- **Inspector:** every `ModelType` field has an edit; an invalid value is refused and its `issues()` entry names the field; no edit changes a part count.
+- **Worlds:** a new world from each template validates and saves; an edited world reloads bit-exactly; the SDF helper's add, remove and re-pose leave a program `SdfProgram::validate()` accepts and that evaluates as the edit says at sample points.
+- **Hash follow:** saving a world re-pins the open scene after `compose()` succeeds; a scene that no longer composes is not re-pinned and says why; other scenes pinning the old hash are listed.
 - **Round trip:** every committed scene file and Kat's sample (all canonical) opens and saves byte for byte; a hand-formatted scene saves as its canonical text with equal content.
-- **Save:** an invalid document is not written; Save As rewrites the world path so `compose_file()` composes the copy.
-- **Run:** composing and instantiating the document equals `compose_file()` on its saved file (the first state digest); a rebuild carries a vehicle's pose and rates within the step's tolerance; a refusal keeps the old run.
-- **Headless:** the command line opens, edits, saves and runs a scene with no window, in `spade_tests` and a CLI test.
+- **Run:** composing and instantiating the documents equals `compose_file()` on their saved files (the first state digest); a rebuild carries a vehicle's pose and rates within the step's tolerance; a refusal keeps the old run.
+- **Headless:** the command line opens, edits, saves and runs a scene and a world with no window, in `spade_tests` and a CLI test.
 - **Live smoke:** an `editor` main function with a step per operation.
 
 ## 12. Order of work (for the plan)
 
-1. The document, its edits, validation and undo, headless, with tests.
-2. Open, save (with Core's `save_scene_file`), round trip.
-3. Run, pause, step; rebuild with carry.
-4. The window: hierarchy, inspector, scene panel, run bar, menus, on the existing sessions.
-5. The live smoke's `editor` main function.
-6. The scene picker: the built-in scenes as scene files, saved scenes, and the test scenarios as composer task 5 converts them.
+1. The scene and world documents, their edits, validation and undo, headless, with tests.
+2. Open and save for both, atomically; the scene's round trip; the hash follow.
+3. The library: built-in items, library files (with Core's model and asset files), placement by copy.
+4. The inspector's tables: vehicle, model (every `ModelType` field, with `issues()`), asset, world.
+5. The SDF edit helper, with Core's review.
+6. Run, pause, step; rebuild with carry.
+7. The window: library panel, hierarchy, inspector, scene and world panels, run bar, menus, on the existing sessions.
+8. The live smoke's `editor` main function.
+9. The scene picker: the built-in scenes as scene files, saved scenes, and the test scenarios as composer task 5 converts them.
