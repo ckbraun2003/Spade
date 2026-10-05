@@ -172,8 +172,9 @@ protected:
         {"bodies", "vel", offsetof(spade::BodyState, vel), 3, QuantityKind::components, vel},
         {"bodies", "orient", offsetof(spade::BodyState, orient), 4, QuantityKind::quaternion, orient},
         {"bodies", "omega_body", offsetof(spade::BodyState, omega_body), 3, QuantityKind::components, omega},
+        // s_q = 1 m/s^2, the quantity's own (bands::kSpecificForceCutoff).
         {"bodies", "specific_force", offsetof(spade::BodyState, specific_force), 3, QuantityKind::components,
-         specific_force},
+         specific_force, spade::testing::bands::kSpecificForceCutoff},
         // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
         // end each step at (0, 0, 0) on any device.
         {"bodies", "force_acc", offsetof(spade::BodyState, force_acc), 3, QuantityKind::components,
@@ -279,7 +280,9 @@ protected:
          ToleranceBand{0.0f, 0.0f}},
         {"imu_sensors", "last_index", offsetof(ImuSensorRow, last_index), 2, QuantityKind::bits,
          ToleranceBand{0.0f, 0.0f}},
-        {"imu_ring", "accel", offsetof(ImuSample, accel), 3, QuantityKind::components, accel},
+        // The specific force, read by the IMU: its cutoff (bands::kSpecificForceCutoff).
+        {"imu_ring", "accel", offsetof(ImuSample, accel), 3, QuantityKind::components, accel,
+         spade::testing::bands::kSpecificForceCutoff},
         {"imu_ring", "gyro", offsetof(ImuSample, gyro), 3, QuantityKind::components, gyro},
         {"imu_ring", "index", offsetof(ImuSample, index), 2, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
         {"imu_ring", "tick", offsetof(ImuSample, tick), 2, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
@@ -525,15 +528,17 @@ using ParityCheck = void (*)(const Simulation& cpu, const Simulation& gpu, std::
 
 // ---------------------------------------------------------------------------
 // PAST THE HORIZON (TD-14). A scenario whose one-ulp CPU control exceeds
-// 1e-5 of its scale (1 m, 1 m/s) before its horizon gets element bands on
+// 1e-5 of its scale (1 m, 1 m/s; g for specific force, the lead's decision of
+// 2026-10-05) before its horizon gets element bands on
 // every row only up to T_p (`element_steps`). From there to the horizon the
 // rows still inside it keep their element bands, and the `past` rows give
 // way to:
 //   * invariants, exact, on both legs: the same slots live, no NaN or
 //     infinity, and every body centre outside the solid (phi > 0: no
 //     tunnelling);
-//   * statistics per world -- the centre of mass, mean and RMS speed and the
-//     translational kinetic energy -- banded against chaos: 4x the largest
+//   * statistics per world -- the centre of mass, mean and RMS speed, the
+//     translational kinetic energy and the RMS specific force -- banded
+//     against chaos: 4x the largest
 //     deviation of the same statistic over kChaosRuns one-ulp-perturbed CPU
 //     runs, floored at TD-14's floor (5e-10 + 5e-7 |cpu|, four ulps at
 //     s_q and four ulps relative). The GPU has to be as
@@ -545,9 +550,9 @@ struct PastHorizon {
 };
 
 inline constexpr uint32_t kChaosRuns = 8;
-inline constexpr std::size_t kStatCount = 6;
-inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x", "com.y", "com.z", "mean speed",
-                                                                "rms speed", "kinetic"};
+inline constexpr std::size_t kStatCount = 7;
+inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x",     "com.y",   "com.z", "mean speed",
+                                                                "rms speed", "kinetic", "rms sf"};
 
 [[nodiscard]] std::span<const spade::BodyState> bodies_of(const Simulation& sim) {
     std::span<const spade::BodyState> out;
@@ -560,13 +565,15 @@ inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x", "com.y"
     return out;
 }
 
-// Per world, in double: centre of mass, mean and RMS speed, kinetic energy.
+// Per world, in double: centre of mass, mean and RMS speed, kinetic energy,
+// and the RMS specific force (PHY-7: the statistic a specific_force row past
+// its horizon gives way to).
 [[nodiscard]] std::vector<std::array<double, kStatCount>> world_stats(const Simulation& sim, uint32_t worlds) {
     const std::span<const spade::BodyState> bodies = bodies_of(sim);
     std::vector<std::array<double, kStatCount>> out(worlds);
     const std::size_t per_world = worlds == 0 ? 0 : bodies.size() / worlds;
     for (uint32_t w = 0; w < worlds; ++w) {
-        double mass = 0.0, mx = 0.0, my = 0.0, mz = 0.0, speed = 0.0, speed_sq = 0.0, kinetic = 0.0;
+        double mass = 0.0, mx = 0.0, my = 0.0, mz = 0.0, speed = 0.0, speed_sq = 0.0, kinetic = 0.0, sf_sq = 0.0;
         uint32_t n = 0;
         for (std::size_t k = 0; k < per_world; ++k) {
             const spade::BodyState& b = bodies[w * per_world + k];
@@ -581,10 +588,13 @@ inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x", "com.y"
             speed += std::sqrt(v2);
             speed_sq += v2;
             kinetic += 0.5 * m * v2;
+            sf_sq += static_cast<double>(b.specific_force.x) * b.specific_force.x +
+                     static_cast<double>(b.specific_force.y) * b.specific_force.y +
+                     static_cast<double>(b.specific_force.z) * b.specific_force.z;
             ++n;
         }
         if (n == 0) continue;
-        out[w] = {mx / mass, my / mass, mz / mass, speed / n, std::sqrt(speed_sq / n), kinetic};
+        out[w] = {mx / mass, my / mass, mz / mass, speed / n, std::sqrt(speed_sq / n), kinetic, std::sqrt(sf_sq / n)};
     }
     return out;
 }
@@ -2609,7 +2619,9 @@ TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
 
     // Past T_p at 900 steps: pos and vel (one-ulp CPU control 2.5e-5 m and
     // 1.4e-4 m/s in the gate world).
-    const PastHorizon past{450, {"pos", "vel"}};
+    // specific_force joins at the horizon: its one-ulp control at 900 is
+    // 6.4e-4 m/s^2, past 1e-5 g (bands::kSpecificForceCutoff's note).
+    const PastHorizon past{450, {"pos", "vel", "specific_force"}};
     using namespace spade::testing::bands::heterogeneous_geometry_set;
     run_parity(hetero, "heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps)",
                join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
@@ -3032,11 +3044,14 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
             << "CollisionDynamic shape -- if it is uniform, both shower tests cover the batched one";
     }
     using namespace spade::testing::bands::shower_ladder;
+    // specific_force is past its horizon at 400: its one-ulp control there is
+    // 2.9e-3 m/s^2, past 1e-5 g, and 0 at 200 (bands::kSpecificForceCutoff).
+    const PastHorizon past{200, {"specific_force"}};
     run_parity(ladder,
                "shower_ladder (2 worlds x 100 bodies, differing restitution, 400 steps x 2 substeps, "
                "PER-WORLD grid)",
                join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()),
-               &expect_shower_resolved_pairs);
+               &expect_shower_resolved_pairs, &past);
 }
 
 // ===========================================================================

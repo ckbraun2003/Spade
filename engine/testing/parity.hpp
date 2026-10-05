@@ -674,6 +674,18 @@ inline constexpr ToleranceBand kStructural{0.0f, 0.0f, true};
 // device" is not a claim this policy makes.
 inline constexpr ToleranceBand kFloor{kFloorAbs, kFloorRel};
 
+// Specific force's own s_q (the lead's decision, 2026-10-05), declared on the
+// specific_force and IMU accel rows. DERIVED, not chosen: since PHY-7 the
+// specific force carries the contact term dv/h, whose absolute resolution is
+// ulp(|v|)/h -- about 1e-4 m/s^2 at |v| ~ 1 m/s and h = 1 ms -- so the
+// relative error below 1e-4 / 1e-4 = 1 m/s^2 measures the quantization, not
+// the port. At the default 1e-3, shower's specific force reads R 2.97e-4 ->
+// 2e-3, over the 1e-3 grade line, for a worst gap of one ulp at -4634 m/s^2.
+// The floor's abs half at this cutoff is floor_abs_at(1) = 5e-7. Its horizon
+// scale is g (an accelerometer's natural scale): the one-ulp control must stay
+// under 1e-5 g = 9.8e-5 m/s^2.
+inline constexpr float kSpecificForceCutoff = 1.0f;
+
 // CORE-3: the gaussian draw, banded at its source (the Box-Muller sqrt in
 // rng / rng.slang, which Vulkan allows 2.5 ulp). Rows that ARE the draw cite
 // this band rather than re-deriving it. rtx3060ti-572.83: the GNSS draws at
@@ -749,8 +761,8 @@ inline constexpr ToleranceBand kVel{5.0e-10f, 5.0e-7f};
 inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // kOmega: measured. rtx3060ti-572.83: A 0, R 1.2e-6 -> {5e-10, 5e-6}; history irisplus-2125 {8e-6, 2e-5}
 inline constexpr ToleranceBand kOmega{5.0e-10f, 5.0e-6f};
-// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 4.2e-7 -> {5e-10, 2e-6}; history irisplus-2125 {2e-5, 2e-5}
-inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 2.0e-6f};
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 0, R 4.16e-7 -> {5e-7, 2e-6}; at the default s_q, A 0, R 4.16e-7 -> {5e-10, 2e-6}; history irisplus-2125 {2e-5, 2e-5}
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 2.0e-6f};
 }  // namespace ballistic
 
 // ---------------------------------------------------------------------------
@@ -831,8 +843,8 @@ inline constexpr ToleranceBand kOmega = kFloor;
 // elements at all, and Integrate clears force_acc at the end of every substep
 // -- so accel_ext is exactly (0,0,0) in every substep and the rotation of a
 // zero vector is a zero vector on both paths, for any orientation.
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: at T_p A 0, R 0; at the horizon A 0, R 1.40e-4 -> 4R 5.60e-4 -> {5e-7, 6e-4}, above the 1e-4 target and under the grade line: the contact term dv/h carries vel's in-horizon differences times 1/h (the lead, 2026-10-05). In horizon at 900: the one-ulp control is 1.28e-5 m/s^2, under 1e-5 g. At the default s_q, R 1.40e-4 -> 6e-4, the same
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 6.0e-4f};
 }  // namespace gate_fleet
 
 // ---------------------------------------------------------------------------
@@ -902,8 +914,8 @@ inline constexpr ToleranceBand kVel = kFloor;
 inline constexpr ToleranceBand kOrient = kStructural;
 // kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
 inline constexpr ToleranceBand kOmega = kStructural;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 0, R 0 -> the floor {5e-7, 5e-7}; at the default s_q also 0. Structural before PHY-7 (no force, no contact term); now the contact term is there and agrees exactly here
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace bounce
 
 // ---------------------------------------------------------------------------
@@ -949,8 +961,8 @@ inline constexpr ToleranceBand kVel{5.0e-10f, 2.0e-6f};
 inline constexpr ToleranceBand kOrient{5.0e-10f, 5.0e-6f};
 // kOmega: measured. rtx3060ti-572.83: A 0, R 2.2e-6 -> {5e-10, 9e-6}; history irisplus-2125 {8e-6, 4e-6}
 inline constexpr ToleranceBand kOmega{5.0e-10f, 9.0e-6f};
-// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 3.0e-6 -> {5e-10, 2e-5}; history irisplus-2125 {4e-5, 2e-5}
-inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 2.0e-5f};
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 7.15e-7, R 1.46e-6 -> 4A 2.86e-6, 4R 5.83e-6 -> {3e-6, 6e-6}; at the default s_q, A 0, R 3.03e-6 -> {5e-10, 2e-5}; history irisplus-2125 {4e-5, 2e-5}
+inline constexpr ToleranceBand kSpecificForce{3.0e-6f, 6.0e-6f};
 }  // namespace drag_componentwise
 
 // ---------------------------------------------------------------------------
@@ -1013,8 +1025,8 @@ inline constexpr ToleranceBand kVel{6.0e-8f, 4.0e-5f};
 inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 0, R 0 -> the floor {5e-7, 5e-7}; at the default s_q also 0. Structural before PHY-7 (no force, no contact term); the gate world gives it contact now
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace restore_resume
 
 // ---------------------------------------------------------------------------
@@ -1090,8 +1102,8 @@ inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // a future regression rather than catching it.
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (a torque-free tumble: rounding touches it)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: at T_p A 0, R 0 -> the floor {5e-7, 5e-7}; at the default s_q also 0. Past its horizon at 900 (the one-ulp control is 6.4e-4 m/s^2, past 1e-5 g), where the RMS specific force statistic stands in
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace heterogeneous_geometry_set
 
 // ===========================================================================
@@ -1210,8 +1222,8 @@ inline constexpr ToleranceBand kVel = kFloor;
 inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 0, R 0 at T_p and at the horizon -> the floor {5e-7, 5e-7}; at the default s_q also 0
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace contact_pair
 
 // ---------------------------------------------------------------------------
@@ -1278,8 +1290,8 @@ inline constexpr ToleranceBand kVel{9.0e-8f, 2.0e-4f};
 inline constexpr ToleranceBand kOrient = kStructural;
 // kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
 inline constexpr ToleranceBand kOmega = kStructural;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 3.54e-5, R 2.02e-5 -> 4A 1.42e-4, 4R 8.08e-5 -> {2e-4, 9e-5}. AT THE DEFAULT s_q 1e-3 it reads R 2.97e-4 -> 2e-3, over the grade line, for a worst gap of one ulp at -4634 m/s^2: the measurement the declared cutoff answers. In horizon: the one-ulp control is 3.05e-5 m/s^2 (R 6.12e-5), under 1e-5 g, and the port's R 2.02e-5 is under the CPU's own one-ulp R
+inline constexpr ToleranceBand kSpecificForce{2.0e-4f, 9.0e-5f};
 }  // namespace shower
 
 // ---------------------------------------------------------------------------
@@ -1327,8 +1339,8 @@ inline constexpr ToleranceBand kVel{2.0e-7f, 5.0e-4f};
 inline constexpr ToleranceBand kOrient = kStructural;
 // kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
 inline constexpr ToleranceBand kOmega = kStructural;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: at T_p = 200 A 0, R 0 -> the floor {5e-7, 5e-7}; at the default s_q also 0. Past its horizon at 400 (the one-ulp control is 2.93e-3 m/s^2, past 1e-5 g), where the RMS specific force statistic stands in; element-banded there at the default s_q it read R 1.86e-2 -> 8e-2
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace shower_ladder
 
 
@@ -1482,8 +1494,8 @@ inline constexpr ToleranceBand kVel{3.0e-9f, 2.0e-6f};
 inline constexpr ToleranceBand kOrient = kStructural;
 // kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
 inline constexpr ToleranceBand kOmega = kStructural;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
-inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 2.43e-11, R 9.73e-8 -> 4A 9.7e-11, 4R 3.89e-7, raised to the floor -> {5e-7, 5e-7}; at the default s_q the same A and R -> {5e-10, 5e-7}
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 }  // namespace two_world_isolation
 
 // ---------------------------------------------------------------------------
@@ -1572,8 +1584,8 @@ inline constexpr ToleranceBand kVel{5.0e-10f, 3.0e-6f};
 inline constexpr ToleranceBand kOrient = kFloor;
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (likewise)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 6.0e-7 -> {5e-10, 3e-6}; history irisplus-2125 {2e-6, 4e-6}
-inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 3.0e-6f};
+// kSpecificForce: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 2.98e-8, R 1.23e-7 -> 4A 1.19e-7, 4R 4.92e-7, raised to the floor -> {5e-7, 5e-7}; at the default s_q, A 0, R 5.99e-7 -> {5e-10, 3e-6}; history irisplus-2125 {2e-6, 4e-6}
+inline constexpr ToleranceBand kSpecificForce{5.0e-7f, 5.0e-7f};
 // The RPM lag's own state -- the one field the rotor pass writes. Measured
 // bit-exact over 1800 substeps; pinned there.
 // kRotorOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
@@ -1586,8 +1598,8 @@ inline constexpr ToleranceBand kBias = kStructural;
 inline constexpr ToleranceBand kCachedGauss = core3::kGaussianDraw;
 // The sample values themselves, mount frame. `accel` is the only ring row that
 // moves; `gyro` is bit-exact because this airframe never rotates.
-// kAccel: measured. rtx3060ti-572.83: A 0, R 6.7e-7 -> {5e-10, 3e-6}; history irisplus-2125 {8e-6, 4e-6}
-inline constexpr ToleranceBand kAccel{5.0e-10f, 3.0e-6f};
+// kAccel: measured, s_q = 1 m/s^2 (kSpecificForceCutoff). rtx3060ti-572.83, PHY-7: A 3.73e-8, R 1.23e-7 -> 4A 1.49e-7, 4R 4.93e-7, raised to the floor -> {5e-7, 5e-7}; at the default s_q, A 0, R 6.66e-7 -> {5e-10, 3e-6}; history irisplus-2125 {8e-6, 4e-6}
+inline constexpr ToleranceBand kAccel{5.0e-7f, 5.0e-7f};
 // kGyro: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (the gyro reads omega)
 inline constexpr ToleranceBand kGyro = kFloor;
 }  // namespace quad_hover
@@ -1816,7 +1828,7 @@ inline constexpr ToleranceBand kVel = kFloor;
 inline constexpr ToleranceBand kOrient{5.0e-10f, 5.0e-7f};
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero, and no contact reaches the body (one body in a world with no SDF geometry), so PHY-7's contact term, added only when non-zero, never is: the specific force is conj(q) (0/m), exactly zero on any device. Measured 0 with PHY-7 on rtx3060ti-572.83
 inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace gnss_receiver_body
 
@@ -1856,7 +1868,7 @@ inline constexpr ToleranceBand kVel = kFloor;
 inline constexpr ToleranceBand kOrient{5.0e-10f, 4.0e-6f};
 // kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (a torque-free tumble: rounding touches it)
 inline constexpr ToleranceBand kOmega = kFloor;
-// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero, and no contact reaches the body (no SDF geometry, and the two bodies never meet), so PHY-7's contact term, added only when non-zero, never is: the specific force is conj(q) (0/m), exactly zero on any device. Measured 0 with PHY-7 on rtx3060ti-572.83
 inline constexpr ToleranceBand kSpecificForce = kStructural;
 // kGnssBias: measured. rtx3060ti-572.83: A 0, R 2.01e-7 -> 4R 8.05e-7 -> {5e-10, 9e-7}; history irisplus-2125 {3e-7, 9e-7}
 inline constexpr ToleranceBand kGnssBias{5.0e-10f, 9.0e-7f};
