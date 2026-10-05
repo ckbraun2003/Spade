@@ -17,6 +17,8 @@
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
+#include "testing/replay.hpp"
+#include "vehicles/quadrotor.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
 
@@ -32,6 +34,10 @@ using spade::modules::Placement;
 using spade::modules::QuantityAccess;
 
 void noop(const spade::physics::SubstepContext&) noexcept {}
+
+// An attached array's init that writes nothing: for fixtures that test an
+// array's shape, where only its presence matters.
+void noop_row(const spade::modules::RowInit&) noexcept {}
 
 using Names = std::vector<std::string>;
 
@@ -813,6 +819,16 @@ namespace {
     return set;
 }
 
+// A copy of one standard module's declarations, for a fixture that changes
+// exactly one thing about them (Task 4 gave an attached array its spawn size,
+// init and validate, which a hand-written copy would also have to spell).
+[[nodiscard]] std::vector<spade::modules::ArrayDecl> standard_state(std::string_view module) {
+    for (const ModuleDesc& m : spade::modules::standard_modules()) {
+        if (m.name == module) return {m.state.begin(), m.state.end()};
+    }
+    return {};
+}
+
 }  // namespace
 
 TEST(ModuleState, TheStandardWalkIsTodaysTwentyTwoEntries) {
@@ -875,12 +891,10 @@ TEST(ModuleState, LegacyModulesRegisterBeforeReplayConfigInSetOrder) {
 
 // The engine's typed calls (add_gnss_sensor, set_rotor_commands, ...) use the
 // seven built-in arrays, so a set must declare each exactly as the standard set
-// does: its row size, extent, owner and depth (open question 1, approved).
+// does: its row size, extent, owner and depth (open question 1, approved), and
+// (Task 4) the spawn size its typed front hands attach_row.
 TEST(ModuleState, ASetWithoutABuiltinArrayOrWithAnotherRowSizeIsRefused) {
-    using spade::modules::ArrayDecl;
     using spade::modules::Extent;
-    using spade::modules::attached_row_size;
-    using spade::modules::row_size;
     const auto create = [](const spade::modules::ModuleSet& set) {
         return spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
     };
@@ -892,34 +906,33 @@ TEST(ModuleState, ASetWithoutABuiltinArrayOrWithAnotherRowSizeIsRefused) {
     std::erase_if(no_drag, [](const ModuleDesc& m) { return m.name == "drag"; });
     EXPECT_TRUE(refused_naming(create(no_drag), "drag_bodies"));
 
-    static constexpr ArrayDecl small_rotors[] = {{.name = "rotors", .elem_size = 16, .extent = Extent::per_element}};
+    // Each fixture is the standard declaration with exactly one thing changed.
+    auto small_rotors = standard_state("rotor");
+    ASSERT_EQ(small_rotors.size(), 1u);
+    small_rotors[0].elem_size = 16;
     EXPECT_TRUE(refused_naming(create(standard_with_state("rotor", small_rotors)), "rotors"));
 
     // Beyond the row size: another extent, depth or owner is another array.
-    static constexpr ArrayDecl body_dryden[] = {
-        {.name = "dryden", .elem_size = row_size<spade::DrydenState>(), .extent = Extent::per_body}};
-    static constexpr ArrayDecl shallow_imu[] = {
-        {.name = "imu_sensors",
-         .elem_size = attached_row_size<spade::sensors::ImuSensorRow>(),
-         .extent = Extent::per_sensor},
-        {.name = "imu_ring",
-         .elem_size = row_size<spade::sensors::ImuSample>(),
-         .extent = Extent::per_row,
-         .owner = "imu_sensors",
-         .depth = 1}};
-    static constexpr ArrayDecl gnss_ring_on_imu[] = {
-        {.name = "gnss_sensors",
-         .elem_size = attached_row_size<spade::sensors::GnssSensorRow>(),
-         .extent = Extent::per_sensor},
-        {.name = "gnss_ring",
-         .elem_size = row_size<spade::sensors::GnssFix>(),
-         .extent = Extent::per_row,
-         .owner = "imu_sensors",
-         .depth = spade::sensors::kRingDepth}};
+    auto body_dryden = standard_state("dryden");
+    ASSERT_EQ(body_dryden.size(), 1u);
+    body_dryden[0].extent = Extent::per_body;
+    body_dryden[0].init = &noop_row;  // a per_body array is attached, so it needs one to compile
+    auto shallow_imu = standard_state("imu");
+    ASSERT_EQ(shallow_imu.size(), 2u);
+    shallow_imu[1].depth = 1;
+    auto gnss_ring_on_imu = standard_state("gnss");
+    ASSERT_EQ(gnss_ring_on_imu.size(), 2u);
+    gnss_ring_on_imu[1].owner = "imu_sensors";
     EXPECT_TRUE(refused_naming(create(standard_with_state("dryden", body_dryden)), "dryden"));
     EXPECT_TRUE(refused_naming(create(standard_with_state("imu", shallow_imu)), "imu_ring"));
     EXPECT_TRUE(refused_naming(create(standard_with_state("gnss", gnss_ring_on_imu)), "gnss_ring"))
         << "the same shape, owned by another array";
+
+    // add_gnss_sensor hands attach_row a GnssSensorSpawn; another spawn size
+    // would refuse every receiver at the call, so it is refused here, by name.
+    auto other_spawn = standard_state("gnss");
+    other_spawn[0].spawn_size += 4;
+    EXPECT_TRUE(refused_naming(create(standard_with_state("gnss", other_spawn)), "gnss_sensors"));
 }
 
 // The converse of OnlyTheLegacyArraysMayCarryTheLegacyMarker: a legacy array
@@ -971,9 +984,10 @@ namespace {
 
 // A developer module with a per_world and a per_body array, so both of the
 // extents the standard set leaves to the core are sized from a declaration.
+// (A per_body array is attached, so it carries an init: Task 4's rule.)
 constexpr spade::modules::ArrayDecl kTallyAndBodyArrays[] = {
     {.name = "tally_counts", .elem_size = kTallySize},
-    {.name = "tally_bodies", .elem_size = kTallySize, .extent = spade::modules::Extent::per_body}};
+    {.name = "tally_bodies", .elem_size = kTallySize, .extent = spade::modules::Extent::per_body, .init = &noop_row}};
 
 }  // namespace
 
@@ -1026,4 +1040,502 @@ TEST(ModuleState, AStateArrayShapeThatWouldWrapIsRefusedByName) {
     ASSERT_FALSE(wraps.has_value()) << "2^26 * 64 = 2^32 ring rows would wrap to 0";
     EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded);
     EXPECT_NE(wraps.error().context.find("'imu_ring'"), std::string::npos) << wraps.error().context;
+}
+
+// Stage 4, Task 4: attached rows go through one queued init and one declared
+// cascade. The first two tests below pin the cascade's END STATE against
+// today's hand cascade (drag, imu, gnss, rotors). The declared one runs in walk
+// order (drag, imu, rotors, gnss), and each free touches only its own array and
+// free list, so nothing may move.
+namespace {
+
+[[nodiscard]] spade::vehicles::ModelType test_quad() {
+    spade::vehicles::QuadrotorParams p;
+    p.mass = 1.0f;
+    p.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
+    p.arm_length = 0.18f;
+    p.rotor_height = 0.02f;
+    for (spade::vehicles::RotorParams& rotor : p.rotors) {
+        rotor.tau = 0.02f;
+        rotor.radius = 0.13f;
+        rotor.thrust_coeff = 1.2e-5f;
+        rotor.torque_coeff = 1.9e-7f;
+    }
+    p.drag.mode = spade::physics::drag_mode::quadratic;
+    p.drag.area = 0.05f;
+    p.drag.coeffs = glm::vec3(1.6f, 0.0f, 0.0f);
+    p.imu.rate_divider = 1;
+    p.imu.sigma_a = 0.05f;
+    p.imu.sigma_g = 0.01f;
+    return spade::vehicles::make_quadrotor(p).value();
+}
+
+[[nodiscard]] spade::WorldSetDesc world_with(spade::Capacities capacities) {
+    auto world = spade::WorldBuilder()
+                     .name("rows")
+                     .environment(spade::Environment{})
+                     .capacities(capacities)
+                     .build();
+    spade::WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    return spade::WorldSetDesc{{inst}};
+}
+
+[[nodiscard]] spade::DragElementSpawn test_drag() {
+    spade::DragElementSpawn d;
+    d.mode = spade::physics::drag_mode::quadratic;
+    d.area = 0.02f;
+    d.coeffs = glm::vec3(1.1f, 0.0f, 0.0f);
+    d.local_pos = glm::vec3(0.0f, 0.1f, 0.0f);
+    return d;
+}
+
+[[nodiscard]] spade::GnssSensorSpawn test_gnss() {
+    spade::GnssSensorSpawn g;
+    g.mount_pos = glm::vec3(0.0f, 0.05f, 0.0f);
+    g.rate_divider = 1;
+    g.sigma_h = 0.5f;
+    g.sigma_v = 0.8f;
+    g.sigma_vel = 0.1f;
+    g.bias_tau_s = 2.0f;
+    g.sigma_bias = 0.3f;
+    return g;
+}
+
+[[nodiscard]] spade::ImuSensorSpawn test_imu() {
+    spade::ImuSensorSpawn s;
+    s.mount_pos = glm::vec3(0.02f, 0.0f, 0.0f);
+    s.sigma_a = 0.02f;
+    s.sigma_bg = 0.001f;
+    return s;
+}
+
+[[nodiscard]] spade::VehicleSpawn at_x(float x) {
+    spade::VehicleSpawn where;
+    where.pos = glm::vec3(x, 10.0f, 0.0f);
+    return where;
+}
+
+[[nodiscard]] spade::BodySpawn body_at_x(float x) {
+    spade::BodySpawn b;
+    b.pos = glm::vec3(x, 10.0f, 0.0f);
+    b.vel = glm::vec3(0.5f, 0.0f, 0.0f);
+    return b;
+}
+
+// Every byte and map entry of one module array, by name; empty if it is not
+// found.
+struct ArrayImage {
+    std::vector<std::byte> bytes;
+    std::vector<uint32_t> map;
+};
+[[nodiscard]] ArrayImage image_of(const spade::Simulation& sim, std::string_view array) {
+    const auto index = sim.module_array(array);
+    if (!index) return {};
+    const auto bytes = sim.arenas().bytes(*index);
+    const auto map = sim.arenas().slot_to_world(*index);
+    if (!bytes || !map) return {};
+    return {std::vector<std::byte>(bytes->begin(), bytes->end()), std::vector<uint32_t>(map->begin(), map->end())};
+}
+
+constexpr std::string_view kAttachedArrays[] = {"drag_bodies", "imu_sensors", "imu_ring",
+                                                "rotors",      "gnss_sensors", "gnss_ring"};
+
+}  // namespace
+
+// Review focus 2: despawn frees exactly what the hand cascade freed. Green on
+// the hand cascade too: it pins the end state, not the mechanism.
+TEST(ModuleRows, DespawnLeavesEveryAttachedArrayAsAFreshSimulationHasIt) {
+    const spade::WorldSetDesc desc = world_with(spade::Capacities{1, 6, 1, 1});
+    auto fresh = spade::Simulation::create(desc, 2'000'000, 2);
+    auto sim = spade::Simulation::create(desc, 2'000'000, 2);
+    ASSERT_TRUE(fresh.has_value() && sim.has_value());
+    const auto model = sim->register_model(test_quad());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    const auto quad = sim->spawn(0, *model, at_x(0.0f));
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    ASSERT_TRUE(sim->add_drag_element(quad->body, test_drag()).has_value());
+    ASSERT_TRUE(sim->add_gnss_sensor(quad->body, test_gnss()).has_value());
+    ASSERT_TRUE(sim->step(3).has_value());
+
+    // Every row and ring holds something before the despawn, or the test
+    // would pass on a cascade that freed nothing.
+    for (const std::string_view array : kAttachedArrays) {
+        const ArrayImage live = image_of(*sim, array);
+        ASSERT_FALSE(live.bytes.empty()) << array;
+        EXPECT_TRUE(std::ranges::any_of(live.bytes, [](std::byte b) { return b != std::byte{0}; }))
+            << array << " holds nothing to free";
+    }
+
+    ASSERT_TRUE(sim->despawn(quad->body).has_value());
+    ASSERT_TRUE(sim->flush_structural().has_value());
+    for (const std::string_view array : kAttachedArrays) {
+        const ArrayImage after = image_of(*sim, array);
+        const ArrayImage want = image_of(*fresh, array);
+        ASSERT_FALSE(want.bytes.empty()) << array;
+        EXPECT_TRUE(after.bytes == want.bytes) << array << ": a byte survived the despawn";
+        EXPECT_TRUE(std::ranges::all_of(after.bytes, [](std::byte b) { return b == std::byte{0}; })) << array;
+        EXPECT_TRUE(after.map == want.map) << array << ": a slot is still allocated";
+        EXPECT_TRUE(std::ranges::all_of(after.map, [](uint32_t w) { return w == spade::kInvalidWorld; })) << array;
+    }
+}
+
+// The plan's "Bytes" argument, pinned (the lead's request). The declared
+// cascade frees in walk order, rotors before gnss_sensors; today's hand cascade
+// freed gnss_sensors before rotors. Spawns and despawns interleave -- a vehicle
+// reserved while a despawn is queued, and two bodies freed in one flush, one of
+// them carrying rotors AND a receiver -- and every reservation's slot, and the
+// whole walk's digest at three boundaries, must be what today's order produced.
+// The digests were printed on a346cda's hand cascade before any Task 4 engine
+// change: they are its values, not regenerated ones.
+TEST(ModuleRows, InterleavedChurnLeavesTodaysSlotsAndBytes) {
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{4, 16, 4, 1}), 2'000'000, 2);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto model = sim->register_model(test_quad());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    const auto quad = [&](float x) {
+        auto v = sim->spawn(0, *model, at_x(x));
+        EXPECT_TRUE(v.has_value()) << v.error().context;
+        return v.value_or(spade::VehicleRef{});
+    };
+    const auto rotors = [](const spade::VehicleRef& v) {
+        return std::vector<uint32_t>(v.rotor_slots.begin(), v.rotor_slots.begin() + v.rotor_count);
+    };
+    const auto gnss = [&](spade::BodyRef body) {
+        const auto r = sim->add_gnss_sensor(body, test_gnss());
+        EXPECT_TRUE(r.has_value()) << r.error().context;
+        return r.has_value() ? r->slot : spade::kInvalidWorld;
+    };
+    const auto imu = [&](spade::BodyRef body) {
+        const auto r = sim->add_imu_sensor(body, test_imu());
+        EXPECT_TRUE(r.has_value()) << r.error().context;
+        return r.has_value() ? r->slot : spade::kInvalidWorld;
+    };
+    const auto drag = [&](spade::BodyRef body) {
+        const auto r = sim->add_drag_element(body, test_drag());
+        EXPECT_TRUE(r.has_value()) << r.error().context;
+        return r.has_value() ? r->slot : spade::kInvalidWorld;
+    };
+    const auto digest = [&] { return spade::testing::state_digest(*sim); };
+
+    // Body 0 a quad (rotors 0-3, drag 0, imu 0), body 1 a bare body with all
+    // three attachments, body 2 a quad.
+    const spade::VehicleRef a = quad(0.0f);
+    EXPECT_EQ(a.body.slot, 0u);
+    EXPECT_EQ(rotors(a), (std::vector<uint32_t>{0, 1, 2, 3}));
+    EXPECT_EQ(a.imu_sensors[0].slot, 0u);
+    const auto b = sim->spawn(0, body_at_x(3.0f));
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(b->slot, 1u);
+    EXPECT_EQ(gnss(*b), 0u);
+    EXPECT_EQ(imu(*b), 1u);
+    EXPECT_EQ(drag(*b), 1u);
+    EXPECT_EQ(gnss(a.body), 1u);
+    const spade::VehicleRef c = quad(6.0f);
+    EXPECT_EQ(c.body.slot, 2u);
+    EXPECT_EQ(rotors(c), (std::vector<uint32_t>{4, 5, 6, 7}));
+    EXPECT_EQ(c.imu_sensors[0].slot, 2u);
+    EXPECT_EQ(gnss(c.body), 2u);
+    ASSERT_TRUE(sim->step(3).has_value());
+
+    // a's despawn is queued when d reserves, so d cannot take a's slots.
+    ASSERT_TRUE(sim->despawn(a.body).has_value());
+    const spade::VehicleRef d = quad(9.0f);
+    EXPECT_EQ(d.body.slot, 3u);
+    EXPECT_EQ(rotors(d), (std::vector<uint32_t>{8, 9, 10, 11}));
+    EXPECT_EQ(d.imu_sensors[0].slot, 3u);
+    EXPECT_EQ(gnss(d.body), 3u);
+    ASSERT_TRUE(sim->flush_structural().has_value());
+    const uint64_t after_a = digest();
+    ASSERT_TRUE(sim->step(2).has_value());
+
+    // e takes a's freed slots, lowest first. Then b and c go in one flush: c
+    // carries rotors and a receiver, the pair whose order changed.
+    const spade::VehicleRef e = quad(12.0f);
+    EXPECT_EQ(e.body.slot, 0u);
+    EXPECT_EQ(rotors(e), (std::vector<uint32_t>{0, 1, 2, 3}));
+    EXPECT_EQ(e.imu_sensors[0].slot, 0u);
+    EXPECT_EQ(gnss(e.body), 1u);
+    ASSERT_TRUE(sim->despawn(*b).has_value());
+    ASSERT_TRUE(sim->despawn(c.body).has_value());
+    ASSERT_TRUE(sim->flush_structural().has_value());
+    const uint64_t after_bc = digest();
+    ASSERT_TRUE(sim->step(2).has_value());
+
+    // f and g take b's and c's freed slots.
+    const auto f = sim->spawn(0, body_at_x(15.0f));
+    ASSERT_TRUE(f.has_value());
+    EXPECT_EQ(f->slot, 1u);
+    EXPECT_EQ(drag(*f), 1u);
+    EXPECT_EQ(imu(*f), 1u);
+    EXPECT_EQ(gnss(*f), 0u);
+    const spade::VehicleRef g = quad(18.0f);
+    EXPECT_EQ(g.body.slot, 2u);
+    EXPECT_EQ(rotors(g), (std::vector<uint32_t>{4, 5, 6, 7}));
+    EXPECT_EQ(g.imu_sensors[0].slot, 2u);
+    EXPECT_EQ(gnss(g.body), 2u);
+    ASSERT_TRUE(sim->step(2).has_value());
+    const uint64_t after_fg = digest();
+
+    EXPECT_EQ(after_a, 0x4223c0e1cd3b5bc4ULL) << "a freed while d was reserved";
+    EXPECT_EQ(after_bc, 0xc9c283214c6c1020ULL) << "b and c freed in one flush";
+    EXPECT_EQ(after_fg, 0x09c9140ec8ca9496ULL) << "f and g in b's and c's slots, two steps on";
+}
+
+// A developer's attached arrays, through the same door as the built-ins: a
+// per_sensor tag with a four-deep per_row ring, and a per_body mark with a
+// two-deep per_row trail.
+namespace {
+
+using spade::modules::Extent;
+
+struct TagRow {
+    uint32_t body_slot;
+    uint32_t live;
+    float value;
+    float _p;
+};
+struct TagSpawn {
+    float value;
+};
+void init_tag(const spade::modules::RowInit& in) noexcept {
+    TagRow& row = spade::modules::row_as<TagRow>(in.row);
+    row.value = spade::modules::spawn_as<TagSpawn>(in.spawn).value;
+    row.live = 1u;  // last, like every built-in's liveness flag
+}
+spade::Result<void> validate_tag(std::span<const std::byte> spawn) {
+    if (!(spade::modules::spawn_as<TagSpawn>(spawn).value >= 0.0f)) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "value must be >= 0"});
+    }
+    return {};
+}
+constexpr spade::modules::ArrayDecl kTagArrays[] = {
+    {.name = "tag_rows",
+     .elem_size = spade::modules::attached_row_size<TagRow>(),
+     .extent = Extent::per_sensor,
+     .spawn_size = sizeof(TagSpawn),
+     .init = &init_tag,
+     .validate = &validate_tag},
+    {.name = "tag_ring",
+     .elem_size = spade::modules::row_size<TagRow>(),
+     .extent = Extent::per_row,
+     .owner = "tag_rows",
+     .depth = 4}};
+
+[[nodiscard]] spade::modules::ModuleSet standard_plus_tags() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "tags", .state = kTagArrays});
+    return set;
+}
+
+struct MarkRow {
+    float value;
+    uint32_t live;
+    uint32_t local_body;
+    uint32_t _p;
+};
+struct MarkSpawn {
+    float value;
+};
+void init_mark(const spade::modules::RowInit& in) noexcept {
+    MarkRow& row = spade::modules::row_as<MarkRow>(in.row);
+    row.value = spade::modules::spawn_as<MarkSpawn>(in.spawn).value;
+    row.local_body = in.local_body;
+    row.live = 1u;
+}
+constexpr spade::modules::ArrayDecl kMarkArrays[] = {
+    {.name = "mark_rows",
+     .elem_size = spade::modules::row_size<MarkRow>(),
+     .extent = Extent::per_body,
+     .spawn_size = sizeof(MarkSpawn),
+     .init = &init_mark},
+    {.name = "mark_trail",
+     .elem_size = spade::modules::row_size<MarkRow>(),
+     .extent = Extent::per_row,
+     .owner = "mark_rows",
+     .depth = 2}};
+
+// Every byte of a registered array set to `value` through the registry, as a
+// pass would have written it.
+void fill(const spade::Simulation& sim, std::string_view array, unsigned char value) {
+    const spade::RegisteredArray* a = sim.arenas().registry().find(array);
+    ASSERT_NE(a, nullptr) << array;
+    std::memset(a->data, value, a->byte_size());
+}
+
+[[nodiscard]] bool all_bytes(std::span<const std::byte> bytes, unsigned char value) {
+    return std::ranges::all_of(bytes, [value](std::byte b) { return b == std::byte{value}; });
+}
+
+}  // namespace
+
+TEST(ModuleRows, AnAttachedRowIsInitializedAtTheBoundaryAndFreedWithItsBody) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_tags());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto body = sim->spawn(0, spade::BodySpawn{});
+    ASSERT_TRUE(body.has_value());
+    const auto row = sim->attach_row(*body, "tag_rows", TagSpawn{2.5f});
+    ASSERT_TRUE(row.has_value()) << row.error().context;
+    EXPECT_EQ(*row, (spade::RowRef{0, 0}));
+    EXPECT_EQ((*sim->module_rows<TagRow>("tag_rows", 0))[0].live, 0u) << "inert until the boundary";
+    EXPECT_EQ(sim->pending_structural_ops(), 2u) << "the body's init and the row's";
+    ASSERT_TRUE(sim->step(0).has_value());
+    const TagRow live = (*sim->module_rows<TagRow>("tag_rows", 0))[0];
+    EXPECT_EQ(live.value, 2.5f);
+    EXPECT_EQ(live.live, 1u);
+    EXPECT_EQ(live.body_slot, 0u);
+    ASSERT_TRUE(sim->despawn(*body).has_value() && sim->step(0).has_value());
+    const TagRow freed = (*sim->module_rows<TagRow>("tag_rows", 0))[0];
+    EXPECT_EQ(freed.live, 0u);
+    EXPECT_EQ(freed.value, 0.0f);
+    const auto index = sim->module_array("tag_rows");
+    ASSERT_TRUE(index.has_value());
+    EXPECT_EQ((*sim->arenas().slot_to_world(*index))[0], spade::kInvalidWorld) << "the slot is free again";
+}
+
+TEST(ModuleRows, AChildRowIsClearedWithItsOwner) {
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{2, 1, 2, 1}), 2'000'000, 2, {},
+                                         standard_plus_tags());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto first = sim->spawn(0, body_at_x(0.0f));
+    const auto second = sim->spawn(0, body_at_x(3.0f));
+    ASSERT_TRUE(first.has_value() && second.has_value());
+    const auto first_tag = sim->attach_row(*first, "tag_rows", TagSpawn{1.0f});
+    const auto second_tag = sim->attach_row(*second, "tag_rows", TagSpawn{2.0f});
+    ASSERT_TRUE(first_tag.has_value()) << first_tag.error().context;
+    ASSERT_TRUE(second_tag.has_value()) << second_tag.error().context;
+    EXPECT_EQ(first_tag->slot, 0u);
+    EXPECT_EQ(second_tag->slot, 1u);
+    ASSERT_TRUE(sim->step(0).has_value());
+    fill(*sim, "tag_ring", 0xAB);
+
+    ASSERT_TRUE(sim->despawn(*first).has_value() && sim->flush_structural().has_value());
+    const auto ring = sim->arenas().bytes(sim->module_array("tag_ring").value());
+    ASSERT_TRUE(ring.has_value());
+    ASSERT_EQ(ring->size(), 8 * sizeof(TagRow)) << "two sensors, four rows each";
+    EXPECT_TRUE(all_bytes(ring->first(4 * sizeof(TagRow)), 0x00)) << "the freed row's window";
+    EXPECT_TRUE(all_bytes(ring->last(4 * sizeof(TagRow)), 0xAB)) << "the other body's window is untouched";
+    EXPECT_EQ((*sim->module_rows<TagRow>("tag_rows", 0))[1].value, 2.0f);
+}
+
+TEST(ModuleRows, APerBodyRowIsAttachedAtTheBodysSlotAndClearedWithIt) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "marks", .state = kMarkArrays});
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{2, 1, 1, 1}), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto first = sim->spawn(0, body_at_x(0.0f));
+    const auto second = sim->spawn(0, body_at_x(3.0f));
+    ASSERT_TRUE(first.has_value() && second.has_value());
+    const auto mark = sim->attach_row(*second, "mark_rows", MarkSpawn{7.0f});
+    ASSERT_TRUE(mark.has_value()) << mark.error().context;
+    EXPECT_EQ(*mark, (spade::RowRef{0, second->slot})) << "the body's own slot; nothing is reserved";
+    ASSERT_TRUE(sim->attach_row(*first, "mark_rows", MarkSpawn{5.0f}).has_value());
+    EXPECT_EQ((*sim->module_rows<MarkRow>("mark_rows", 0))[1].live, 0u) << "inert until the boundary";
+    ASSERT_TRUE(sim->step(0).has_value());
+    {
+        const auto rows = *sim->module_rows<MarkRow>("mark_rows", 0);
+        EXPECT_EQ(rows[1].value, 7.0f);
+        EXPECT_EQ(rows[1].local_body, 1u);
+        EXPECT_EQ(rows[1].live, 1u);
+        EXPECT_EQ(rows[0].value, 5.0f);
+    }
+    fill(*sim, "mark_trail", 0xCD);
+
+    ASSERT_TRUE(sim->despawn(*second).has_value() && sim->flush_structural().has_value());
+    const auto rows = *sim->module_rows<MarkRow>("mark_rows", 0);
+    const auto bytes = sim->arenas().bytes(sim->module_array("mark_rows").value());
+    ASSERT_TRUE(bytes.has_value());
+    EXPECT_TRUE(all_bytes(bytes->last(sizeof(MarkRow)), 0x00)) << "the despawned body's row";
+    EXPECT_EQ(rows[0].value, 5.0f) << "the other body's row is untouched";
+    EXPECT_EQ(rows[0].live, 1u);
+    const auto trail = sim->arenas().bytes(sim->module_array("mark_trail").value());
+    ASSERT_TRUE(trail.has_value());
+    EXPECT_TRUE(all_bytes(trail->last(2 * sizeof(MarkRow)), 0x00)) << "its two trail rows";
+    EXPECT_TRUE(all_bytes(trail->first(2 * sizeof(MarkRow)), 0xCD)) << "the other body's trail is untouched";
+}
+
+TEST(ModuleRows, AttachRowRefusesWhatItCannotAttach) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_tags());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto body = sim->spawn(0, spade::BodySpawn{});
+    ASSERT_TRUE(body.has_value());
+    const auto code = [](const spade::Result<spade::RowRef>& r) {
+        return r.has_value() ? spade::Code::internal : r.error().code;
+    };
+    const auto unknown = sim->attach_row(*body, "tag_rowz", TagSpawn{1.0f});
+    EXPECT_EQ(code(unknown), spade::Code::not_found);
+    EXPECT_TRUE(!unknown.has_value() && unknown.error().context.find("tag_rowz") != std::string::npos);
+
+    EXPECT_TRUE(refused_naming(sim->attach_row(*body, "dryden", TagSpawn{1.0f}), "dryden"))
+        << "a per_world row is not attached to a body";
+    EXPECT_TRUE(refused_naming(sim->attach_row(*body, "tag_ring", TagSpawn{1.0f}), "tag_ring"))
+        << "a per_row row comes with its owner";
+    EXPECT_TRUE(refused_naming(sim->attach_row(*body, "tag_rows", uint64_t{1}), "tag_rows"))
+        << "an 8-byte record for a 4-byte spawn";
+    EXPECT_TRUE(refused_naming(sim->attach_row(*body, "tag_rows", TagSpawn{-1.0f}), "attach_row: value must be >= 0"))
+        << "the module's validate, prefixed by the call";
+
+    // Rotors arrive only with a vehicle, whatever record is offered.
+    const auto rotors = std::ranges::find(sim->schedule().arrays, std::string("rotors"),
+                                          &spade::modules::CompiledArray::name);
+    ASSERT_NE(rotors, sim->schedule().arrays.end());
+    const std::vector<std::byte> rotor_record(rotors->spawn_size);
+    EXPECT_TRUE(refused_naming(sim->attach_row(*body, "rotors", rotor_record), "vehicle"));
+
+    // The typed front and the door give one message after their prefixes.
+    spade::ImuSensorSpawn no_rate;
+    no_rate.rate_divider = 0;
+    const auto front = sim->add_imu_sensor(*body, no_rate);
+    const auto door = sim->attach_row(*body, "imu_sensors", no_rate);
+    ASSERT_FALSE(front.has_value());
+    ASSERT_TRUE(refused_naming(door, "attach_row: "));
+    const std::string_view front_text = front.error().context;
+    ASSERT_TRUE(front_text.starts_with("add_imu_sensor: ")) << front_text;
+    EXPECT_EQ(front_text.substr(std::string_view("add_imu_sensor: ").size()),
+              std::string_view(door.error().context).substr(std::string_view("attach_row: ").size()));
+
+    // Nothing above reserved a row or queued an op.
+    EXPECT_EQ(sim->pending_structural_ops(), 1u) << "the body's own init only";
+
+    // sensors = 1: the second tag is past the world's declared capacity, which
+    // a per_sensor array counts alone (the IMU and GNSS arrays hold none).
+    ASSERT_TRUE(sim->attach_row(*body, "tag_rows", TagSpawn{1.0f}).has_value());
+    const auto second = sim->attach_row(*body, "tag_rows", TagSpawn{1.0f});
+    EXPECT_EQ(code(second), spade::Code::capacity_exceeded);
+    EXPECT_TRUE(sim->add_imu_sensor(*body, spade::ImuSensorSpawn{}).has_value()) << "the IMU array counts alone";
+
+    // A dead body attaches nothing.
+    ASSERT_TRUE(sim->despawn(*body).has_value());
+    EXPECT_EQ(code(sim->attach_row(*body, "tag_rows", TagSpawn{1.0f})), spade::Code::not_found);
+}
+
+TEST(ModuleState, AnAttachedArrayNeedsAnInitAndASpawnThatFits) {
+    using spade::modules::ArrayDecl;
+    using spade::modules::kMaxSpawnBytes;
+    const auto with = [](std::span<const ArrayDecl> state) { return standard_plus({.name = "tags", .state = state}); };
+    ASSERT_TRUE(with(kTagArrays).has_value()) << "the control";
+
+    static constexpr ArrayDecl no_init[] = {
+        {.name = "tag_rows", .elem_size = kTallySize, .extent = Extent::per_sensor, .spawn_size = 4}};
+    static constexpr ArrayDecl body_no_init[] = {{.name = "tag_rows", .elem_size = kTallySize, .extent = Extent::per_body}};
+    static constexpr ArrayDecl fits[] = {
+        {.name = "tag_rows", .elem_size = kTallySize, .extent = Extent::per_element, .spawn_size = kMaxSpawnBytes,
+         .init = &noop_row}};
+    static constexpr ArrayDecl too_big[] = {
+        {.name = "tag_rows", .elem_size = kTallySize, .extent = Extent::per_element, .spawn_size = kMaxSpawnBytes + 1,
+         .init = &noop_row}};
+    static constexpr ArrayDecl no_body_slot[] = {
+        {.name = "tag_rows", .elem_size = 2, .extent = Extent::per_sensor, .init = &noop_row}};
+    static constexpr ArrayDecl world_init[] = {{.name = "tag_rows", .elem_size = kTallySize, .init = &noop_row}};
+    static constexpr ArrayDecl ring_spawn[] = {
+        {.name = "tag_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "imu_sensors", .depth = 2,
+         .spawn_size = 4}};
+    ASSERT_TRUE(with(fits).has_value()) << "the control: exactly kMaxSpawnBytes";
+    EXPECT_TRUE(refused_naming(with(no_init), "tag_rows"));
+    EXPECT_TRUE(refused_naming(with(body_no_init), "tag_rows")) << "a per_body row is attached too";
+    EXPECT_TRUE(refused_naming(with(too_big), "tag_rows"));
+    EXPECT_TRUE(refused_naming(with(no_body_slot), "tag_rows")) << "a slot-allocated row starts with its body_slot";
+    EXPECT_TRUE(refused_naming(with(world_init), "tag_rows")) << "an init that would never run";
+    EXPECT_TRUE(refused_naming(with(ring_spawn), "tag_ring")) << "a spawn size that would never be offered";
 }
