@@ -10,9 +10,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -74,6 +76,10 @@ constexpr std::array kSteps = {
     StepName{"builder", "duplicate"},    StepName{"builder", "delete"},
     StepName{"builder", "camera"},
 };
+
+// The main functions, in tour order. Each has one poster, numbered by its
+// place here, so a poster's name never depends on which steps ran.
+constexpr std::array<std::string_view, 2> kMains = {"drone_box", "builder"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
@@ -138,6 +144,7 @@ class Recorder {
             smoke_.anomaly("recording/ffmpeg-start", "ffmpeg is on the PATH but did not start: " + cmd);
             return;
         }
+        piped_ = true;
         smoke_.note("recording " + mp4.string() + " at " + std::to_string(kVideoFps) + " fps, " +
                     std::to_string(width) + "x" + std::to_string(height));
     }
@@ -176,9 +183,14 @@ class Recorder {
                 write_failed_ = true;
             }
         } else if (video_frames_ % kFallbackEvery == 0) {
-            const fs::path still = out_ / frame_name(stills_++);
-            if (!png::write_file(still, png::encode_rgba(rgba, w, h, true))) {
-                smoke_.anomaly("recording/still", "could not write " + still.string());
+            if (stills_ < kMaxStills) {
+                const fs::path still = out_ / still_name(stills_++);
+                if (!png::write_file(still, png::encode_rgba(rgba, w, h, true))) {
+                    smoke_.anomaly("recording/still", "could not write " + still.string());
+                }
+            } else if (!stills_capped_) {
+                smoke_.note("stills stop at " + std::to_string(kMaxStills) + ", the names a run owns");
+                stills_capped_ = true;
             }
         }
         ++video_frames_;
@@ -200,6 +212,7 @@ class Recorder {
     }
 
     [[nodiscard]] bool mp4_written() const noexcept { return mp4_written_; }
+    [[nodiscard]] bool piped() const noexcept { return piped_; }
     [[nodiscard]] uint64_t video_frames() const noexcept { return video_frames_; }
 
   private:
@@ -211,7 +224,9 @@ class Recorder {
     bool video_pending_ = false;
     fs::path poster_;
     uint64_t video_frames_ = 0;
-    uint64_t stills_ = 0;
+    uint32_t stills_ = 0;
+    bool stills_capped_ = false;
+    bool piped_ = false;
     bool size_reported_ = false;
     bool write_failed_ = false;
     bool mp4_written_ = false;
@@ -291,8 +306,13 @@ class Tour {
 
     // The next captured frame becomes this main function's poster.
     void poster(std::string_view main) {
-        ++posters_;
-        rec_.want_poster(options_.out_dir / poster_name(posters_, main));
+        const auto it = std::find(kMains.begin(), kMains.end(), main);
+        if (it == kMains.end()) {
+            smoke_.anomaly("harness/poster-undeclared", main);
+            return;
+        }
+        rec_.want_poster(options_.out_dir /
+                         poster_name(static_cast<uint32_t>(std::distance(kMains.begin(), it)) + 1u, main));
     }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_; }
@@ -309,7 +329,6 @@ class Tour {
     bool stopped_ = false;
     uint64_t frame_ = 0;
     uint32_t index_ = 0;
-    uint32_t posters_ = 0;
 };
 
 // A frame with nothing behind the overlay: the title cards.
@@ -492,13 +511,18 @@ void drone_box(Tour& t, DroneSession& d) {
         t.pump(149, idle, draw);
     });
 
+    // F1's own path: poll() calls toggle_help() on the key's press. The checks
+    // read whether the presented frames drew the legend, not the flag.
     t.step("drone_box", "hud", [&] {
-        t.sink().set_help_visible(false);
+        const auto drawn = [&t] { return std::string(t.sink().help_drawn() ? "drawn" : "not drawn"); };
+        const bool before = t.sink().help_drawn();
+        t.sink().toggle_help();
         t.pump(60, idle, draw);
-        s.check(!t.sink().help_visible(), "hidden", "F1 legend hidden");
-        t.sink().set_help_visible(true);
+        s.check(before && !t.sink().help_drawn(), "hidden",
+                "legend " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
+        t.sink().toggle_help();
         t.pump(60, idle, draw);
-        s.check(t.sink().help_visible(), "shown", "F1 legend shown");
+        s.check(t.sink().help_drawn(), "shown", "legend " + drawn());
     });
 }
 
@@ -586,11 +610,17 @@ void builder(Tour& t, BuilderSession& b) {
         if (!s.check(!model.objects.empty(), "has-object", std::to_string(model.objects.size()) + " objects")) {
             return;
         }
-        model.objects[0].color = glm::vec4(1.0f, 0.1f, 0.05f, 1.0f);
+        const glm::vec4 red(1.0f, 0.1f, 0.05f, 1.0f);
+        model.objects[0].color = red;
         model.materials_dirty = true;
         t.pump(90, idle, draw);
-        s.check(b.scene().materials.size() >= model.objects.size(), "reaches-palette",
-                std::to_string(b.scene().materials.size()) + " materials");
+        // Object 0 draws with material material_base + 0 (builder_scene.hpp).
+        const uint32_t m = b.binding().material_base;
+        const bool has = m < b.scene().materials.size();
+        const glm::vec4 got = has ? b.scene().materials[m].base_color : glm::vec4(0.0f);
+        s.check(has && got == red, "reaches-material",
+                "material " + std::to_string(m) + " base colour (" + fmt(got.r) + ", " + fmt(got.g) + ", " +
+                    fmt(got.b) + "), set (1.000, 0.100, 0.050)");
     });
 
     t.step("builder", "duplicate", [&] {
@@ -644,25 +674,39 @@ void builder(Tour& t, BuilderSession& b) {
     });
 }
 
-// Removes exactly the files a run writes, so a stale frame never poses as a
-// new one, and touches nothing else in the folder.
-[[nodiscard]] Result<void> sweep(const fs::path& dir) {
+// Clears an earlier run's files so a stale frame never poses as a new one.
+// Deletes only names a run writes (plan_sweep in live_smoke.hpp); a folder
+// that holds anything else is refused before anything is deleted.
+[[nodiscard]] Result<void> sweep(const fs::path& dir, const std::vector<std::string>& owned) {
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {
         return std::unexpected(Error{Code::io_error, "cannot create " + dir.string() + ": " + ec.message()});
     }
-    for (const fs::directory_entry& e : fs::directory_iterator(dir, ec)) {
-        if (e.is_regular_file() && is_live_smoke_artifact(e.path().filename().string())) {
-            fs::remove(e.path(), ec);
-            if (ec) {
-                return std::unexpected(
-                    Error{Code::io_error, "cannot remove the old " + e.path().string() + ": " + ec.message()});
-            }
+    std::vector<std::string> entries;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::u8string u8 = it->path().filename().u8string();
+        std::string name(u8.begin(), u8.end());
+        // Only a plain file can be a run's own; a directory or a link is not.
+        std::error_code type_ec;
+        if (it->symlink_status(type_ec).type() != fs::file_type::regular) {
+            name += "/";
         }
+        entries.push_back(std::move(name));
     }
     if (ec) {
         return std::unexpected(Error{Code::io_error, "cannot list " + dir.string() + ": " + ec.message()});
+    }
+    const Result<std::vector<std::string>> plan = plan_sweep(entries, owned);
+    if (!plan) {
+        return std::unexpected(Error{plan.error().code, "--out " + dir.string() + " " + plan.error().context});
+    }
+    for (const std::string& name : *plan) {
+        fs::remove(dir / fs::path(std::u8string(name.begin(), name.end())), ec);
+        if (ec) {
+            return std::unexpected(Error{Code::io_error, "cannot remove the earlier run's " + name + " in " +
+                                                             dir.string() + ": " + ec.message()});
+        }
     }
     return {};
 }
@@ -670,7 +714,17 @@ void builder(Tour& t, BuilderSession& b) {
 }  // namespace
 
 int run_live_smoke(const TourOptions& options) {
-    if (const Result<void> swept = sweep(options.out_dir); !swept) {
+    std::vector<std::string> declared;
+    for (const StepName& st : kSteps) {
+        declared.push_back(std::string(st.main) + "." + std::string(st.sub));
+    }
+    // Before anything is touched: an injection that could not make the run
+    // red is refused, so a red run can never pass by mistake.
+    if (const Result<void> valid = validate_injections(options.injections, declared, kKnownOpen); !valid) {
+        std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", valid.error().context.c_str());
+        return 2;
+    }
+    if (const Result<void> swept = sweep(options.out_dir, owned_names(kMains)); !swept) {
         std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", swept.error().context.c_str());
         return 2;
     }
@@ -690,17 +744,7 @@ int run_live_smoke(const TourOptions& options) {
         std::fflush(stdout);
     };
 
-    std::vector<std::string> declared;
-    for (const StepName& st : kSteps) {
-        declared.push_back(std::string(st.main) + "." + std::string(st.sub));
-    }
-    std::vector<KnownOpen> known = kKnownOpen;
-    for (const Injection& inj : options.injections) {
-        if (inj.kind == Injection::Kind::known_open) {
-            known.push_back({inj.target, "injected by --inject; nothing raises it, so it must expire"});
-        }
-    }
-    Smoke smoke(std::move(declared), std::move(known), write);
+    Smoke smoke(std::move(declared), kKnownOpen, write);
     smoke.note("label " + (options.label.empty() ? std::string("(none)") : options.label));
     for (const Injection& inj : options.injections) {
         if (inj.kind == Injection::Kind::anomaly) {
@@ -708,10 +752,25 @@ int run_live_smoke(const TourOptions& options) {
         }
     }
 
-    std::unique_ptr<GlTargetSink> sink = open_window(options.width, options.height, /*vsync=*/true);
+    // Declared first, so it is destroyed last: the sessions detach from it.
+    std::unique_ptr<GlTargetSink> sink;
+    // Both scenes are built before the window opens, so a scene that will not
+    // build is journalled with no window, and the tour runs what did build.
+    spade::Result<std::unique_ptr<DroneSession>> drone = DroneSession::create(options.blur);
+    if (!drone) {
+        smoke.anomaly("harness/drone-session", drone.error().context);
+    }
+    spade::Result<std::unique_ptr<BuilderSession>> b = BuilderSession::create(true, options.blur);
+    if (!b) {
+        smoke.anomaly("harness/builder-session", b.error().context);
+    }
+
+    sink = open_window(options.width, options.height, /*vsync=*/true);
     if (!sink) {
+        // No tour, so no verdict: the journal is left without its END line,
+        // and the exit code says the run could not be judged.
         smoke.anomaly("harness/no-window", "the window could not be opened (see above)");
-        (void)smoke.finish();
+        smoke.note("no window, so the tour did not run and there is no verdict");
         return 2;
     }
     sink->set_fixed_delta(kDt);
@@ -727,21 +786,19 @@ int run_live_smoke(const TourOptions& options) {
     tour.pump(kOpeningFrames, {}, blank);
     sink->set_card({});
 
-    if (!tour.stopped()) {
-        spade::Result<std::unique_ptr<DroneSession>> drone = DroneSession::create(*sink, options.blur);
-        if (drone) {
-            drone_box(tour, **drone);
-        } else {
-            smoke.anomaly("harness/drone-session", drone.error().context);
-        }
+    if (drone && !tour.stopped()) {
+        (*drone)->attach(*sink);
+        drone_box(tour, **drone);
     }
-    if (!tour.stopped()) {
-        spade::Result<std::unique_ptr<BuilderSession>> b = BuilderSession::create(*sink, true, options.blur);
-        if (b) {
-            builder(tour, **b);
-        } else {
-            smoke.anomaly("harness/builder-session", b.error().context);
-        }
+    if (drone) {
+        drone->reset();  // detaches its panel before the builder attaches
+    }
+    if (b && !tour.stopped()) {
+        (*b)->attach(*sink);
+        builder(tour, **b);
+    }
+    if (b) {
+        b->reset();
     }
 
     // The closing card shows the tour's verdict. Closing ffmpeg comes after it
@@ -755,6 +812,23 @@ int run_live_smoke(const TourOptions& options) {
     rec.finish();
     smoke.note("frames " + std::to_string(tour.frames()) + ", recorded " + std::to_string(rec.video_frames()) +
                " (" + std::to_string(rec.video_frames() / kVideoFps) + " s of video)");
+
+    // What the run leaves behind, checked rather than assumed: ffmpeg given no
+    // frames still exits 0, and a poster request can go unanswered.
+    (void)smoke.check(rec.video_frames() > 0u, "frames-recorded", std::to_string(rec.video_frames()) + " frames");
+    if (rec.piped()) {
+        std::error_code ec;
+        const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);
+        (void)smoke.check(!ec && size > 0u, "mp4-written",
+                          ec ? "tour.mp4: " + ec.message() : "tour.mp4 " + std::to_string(size) + " bytes");
+    }
+    for (std::size_t i = 0; i < kMains.size(); ++i) {
+        const std::string name = poster_name(static_cast<uint32_t>(i) + 1u, kMains[i]);
+        std::error_code ec;
+        const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
+        (void)smoke.check(!ec && size > 0u, "poster-" + std::string(kMains[i]),
+                          ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
+    }
 
     const Verdict v = smoke.finish();
     std::printf("\nspade_sandbox: LIVE SMOKE %s -- anomalies %d, known-open %d, unmarked %zu, expired %zu\n",

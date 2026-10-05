@@ -234,9 +234,8 @@ namespace {
 // optional heatmap. Every decision is in drone_sim.hpp / drone_view.hpp and is
 // asserted with no display; this is the wiring.
 // ---------------------------------------------------------------------------
-spade::Result<std::unique_ptr<DroneSession>> DroneSession::create(GlTargetSink& sink, float blur) {
+spade::Result<std::unique_ptr<DroneSession>> DroneSession::create(float blur) {
     std::unique_ptr<DroneSession> s(new DroneSession());
-    s->sink_ = &sink;
     s->blur_ = blur;
     spade::Result<DroneSim> drone = DroneSim::create(DronePhysicsOptions{});
     if (!drone) {
@@ -248,19 +247,22 @@ spade::Result<std::unique_ptr<DroneSession>> DroneSession::create(GlTargetSink& 
         return std::unexpected(spade::Error{spade::Code::internal, "the drone scene would not build (see above)"});
     }
     s->binding_ = bind_drone_scene(s->scene_, s->drone_->params());
-    // Uploaded once: the drone's meshes and the palette never change, only
-    // the per-frame draw items do.
-    s->gpu_ = start_gpu(s->scene_);
-
     s->panel_.edited = s->drone_->options();
-    s->panel_.render_path = s->gpu_ ? "GPU (OpenGL)" : "CPU raster";
-    sink.attach_drone(&s->panel_);
 
     s->camera_.target = glm::vec3(0.0f);
     s->camera_.yaw = 0.6f;
     s->camera_.pitch = 0.35f;
     s->camera_.distance = 1.8f;
     return s;
+}
+
+void DroneSession::attach(GlTargetSink& sink) {
+    sink_ = &sink;
+    // Uploaded once: the drone's meshes and the palette never change, only
+    // the per-frame draw items do.
+    gpu_ = start_gpu(scene_);
+    panel_.render_path = gpu_ ? "GPU (OpenGL)" : "CPU raster";
+    sink.attach_drone(&panel_);
 }
 
 DroneSession::~DroneSession() {
@@ -325,20 +327,15 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
 // in builder_scene.hpp and is exercised by tests/ with no display. What
 // remains here is the wiring, and it is deliberately dull.
 // ---------------------------------------------------------------------------
-spade::Result<std::unique_ptr<BuilderSession>> BuilderSession::create(GlTargetSink& sink, bool grid, float blur) {
+spade::Result<std::unique_ptr<BuilderSession>> BuilderSession::create(bool grid, float blur) {
     std::unique_ptr<BuilderSession> s(new BuilderSession());
-    s->sink_ = &sink;
     if (!build_builtin_scene(s->scene_, s->world_)) {
         return std::unexpected(spade::Error{spade::Code::internal, "the builder scene would not build (see above)"});
     }
     s->options_.ground_grid = grid;
     s->options_.horizon_blend_strength = blur;
-    s->gpu_ = start_gpu(s->scene_);
 
     s->builder_.grid = grid;
-    // Attached once, so BOTH present paths draw the panel -- the GPU path
-    // through present_overlay() and the CPU fallback through accept().
-    sink.attach_builder(&s->builder_);
     s->bind_ = bind_builder_meshes(s->scene_);
     sync_builder_materials(s->builder_, s->bind_, s->scene_);
     // Cleared because the upload below IS the sync the flag was asking for.
@@ -350,17 +347,19 @@ spade::Result<std::unique_ptr<BuilderSession>> BuilderSession::create(GlTargetSi
     // the first time it is touched.
     s->builder_.sun_intensity = s->scene_.lighting.sun_intensity;
     s->builder_.sun_direction = s->scene_.lighting.sun_direction;
-    // ⚠ THE BUILDER'S GEOMETRY MUST REACH THE GPU BEFORE THE FIRST DRAW. The
-    // upload in start_gpu() happened before these three meshes existed, so
-    // without this the first placed object draws from a mesh id the GPU has
-    // never seen.
-    if (s->gpu_) {
-        if (const spade::Result<void> re = s->gpu_->upload_scene(s->scene_); !re) {
-            return std::unexpected(
-                spade::Error{re.error().code, "builder mesh upload failed: " + re.error().context});
-        }
-    }
     return s;
+}
+
+void BuilderSession::attach(GlTargetSink& sink) {
+    sink_ = &sink;
+    // ⚠ THE BUILDER'S GEOMETRY MUST REACH THE GPU BEFORE THE FIRST DRAW. It
+    // does here because create() bound the three meshes before this upload;
+    // started any earlier, the first placed object would draw from a mesh id
+    // the GPU has never seen.
+    gpu_ = start_gpu(scene_);
+    // Attached once, so BOTH present paths draw the panel -- the GPU path
+    // through present_overlay() and the CPU fallback through accept().
+    sink.attach_builder(&builder_);
 }
 
 BuilderSession::~BuilderSession() {

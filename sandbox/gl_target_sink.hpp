@@ -236,9 +236,11 @@ class GlTargetSink final : public TargetSink {
     // HUD includes the readback.
     void capture_next_present() noexcept;
 
-    // The HUD legend that F1 toggles.
-    void set_help_visible(bool visible) noexcept;
-    [[nodiscard]] bool help_visible() const noexcept;
+    // Shows or hides the HUD legend. F1 calls this from poll(), and the live
+    // smoke calls it too, so the tour drives the key's own path.
+    void toggle_help() noexcept;
+    // True when the last presented frame drew the legend.
+    [[nodiscard]] bool help_drawn() const noexcept;
 
   private:
     // Draws the caption and the card on the foreground draw list, so no panel

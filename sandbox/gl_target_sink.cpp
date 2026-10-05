@@ -172,6 +172,7 @@ struct GlTargetSink::Impl {
     double last_cursor_y = 0.0;
     float scroll_accum = 0.0f;
     bool show_help = true;
+    bool help_drawn = false;  // the last overlay drew the legend
     bool f1_was_down = false;
     // Builder edges. Every one of these exists because glfwGetKey and
     // glfwGetMouseButton report a STATE and the builder needs an EVENT.
@@ -453,7 +454,7 @@ FrameInput GlTargetSink::poll() {
         // input is an EVENT and the API reports a STATE.
         const bool f1 = glfwGetKey(impl_->window, GLFW_KEY_F1) == GLFW_PRESS;
         if (f1 && !impl_->f1_was_down) {
-            impl_->show_help = !impl_->show_help;
+            toggle_help();
         }
         impl_->f1_was_down = f1;
 
@@ -606,6 +607,7 @@ GlTargetSink::GlInfo GlTargetSink::gl_info() const {
 
 void GlTargetSink::draw_overlay() {
 #if SPADE_SANDBOX_HAS_GL
+    impl_->help_drawn = false;
     if (impl_->show_help) {
         // NOT A PANEL. The exclusions ruled for this task are hierarchy,
         // inspector and scene picker. This is a controls legend plus the
@@ -616,6 +618,7 @@ void GlTargetSink::draw_overlay() {
         if (ImGui::Begin("spade sandbox", nullptr,
                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
+            impl_->help_drawn = true;
             const Timings a = impl_->win_avg;
             const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
 
@@ -738,17 +741,15 @@ void GlTargetSink::set_fixed_delta(float seconds) noexcept { impl_->fixed_dt = s
 void GlTargetSink::set_frame_tap(FrameTap tap) { impl_->tap = std::move(tap); }
 void GlTargetSink::capture_next_present() noexcept { impl_->capture_armed = true; }
 
-void GlTargetSink::set_help_visible(bool visible) noexcept {
+void GlTargetSink::toggle_help() noexcept {
 #if SPADE_SANDBOX_HAS_GL
-    impl_->show_help = visible;
-#else
-    (void)visible;
+    impl_->show_help = !impl_->show_help;
 #endif
 }
 
-bool GlTargetSink::help_visible() const noexcept {
+bool GlTargetSink::help_drawn() const noexcept {
 #if SPADE_SANDBOX_HAS_GL
-    return impl_->show_help;
+    return impl_->help_drawn;
 #else
     return false;
 #endif

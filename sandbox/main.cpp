@@ -83,7 +83,7 @@ void print_usage() {
     std::puts("                        scene and journal.txt into --out <dir>; exit 0 PASS, 1 FAIL,");
     std::puts("                        2 no verdict (scripts/live-smoke.ps1 runs it)");
     std::puts("  --label <text>        live smoke: the commit and date for the title cards");
-    std::puts("  --inject <spec>       live smoke red runs: skip:<step>, anomaly:<id>, known-open:<id>");
+    std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
     std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --help                this text\n");
@@ -401,17 +401,21 @@ void print_exit_summary(const spade::sandbox::GlTargetSink& sink, uint32_t width
 // The builder in a window, or scripted by --smoke. Both drive the scene
 // through BuilderSession::frame() (scene_sessions.hpp).
 int run_windowed(uint32_t width, uint32_t height, bool grid, float blur, bool vsync, bool smoke) {
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink = spade::sandbox::open_window(width, height, vsync);
-    if (!sink) {
-        return 3;
-    }
+    // Declared first, so it is destroyed last: the session detaches from it.
+    // Opened second, so a scene that will not build refuses with no window.
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink;
     spade::Result<std::unique_ptr<spade::sandbox::BuilderSession>> made =
-        spade::sandbox::BuilderSession::create(*sink, grid, blur);
+        spade::sandbox::BuilderSession::create(grid, blur);
     if (!made) {
         std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
         return 1;
     }
+    sink = spade::sandbox::open_window(width, height, vsync);
+    if (!sink) {
+        return 3;
+    }
     spade::sandbox::BuilderSession& session = **made;
+    session.attach(*sink);
 
     // ⭐⭐⭐ ONE FRAME, ONE STATEMENT, CALLED BY BOTH THE INTERACTIVE LOOP AND
     // THE SMOKE. Extracted rather than copied, for the reason this file has
@@ -457,17 +461,20 @@ int run_windowed(uint32_t width, uint32_t height, bool grid, float blur, bool vs
 // ---------------------------------------------------------------------------
 
 int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) {
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink = spade::sandbox::open_window(width, height, vsync);
-    if (!sink) {
-        return 3;
-    }
-    spade::Result<std::unique_ptr<spade::sandbox::DroneSession>> made =
-        spade::sandbox::DroneSession::create(*sink, blur);
+    // Declared first, so it is destroyed last: the session detaches from it.
+    // Opened second, so a stand that will not build refuses with no window.
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink;
+    spade::Result<std::unique_ptr<spade::sandbox::DroneSession>> made = spade::sandbox::DroneSession::create(blur);
     if (!made) {
         std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
         return 1;
     }
+    sink = spade::sandbox::open_window(width, height, vsync);
+    if (!sink) {
+        return 3;
+    }
     spade::sandbox::DroneSession& session = **made;
+    session.attach(*sink);
 
     while (!sink->should_close()) {
         const spade::sandbox::FrameInput in = sink->poll();

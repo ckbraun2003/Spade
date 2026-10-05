@@ -109,9 +109,14 @@ class GpuRenderer {
 // ---------------------------------------------------------------------------
 class DroneSession {
   public:
-    // Builds the stand and the scene, starts the GPU renderer or announces the
-    // CPU fallback, and attaches the panel to `sink`, which must outlive this.
-    [[nodiscard]] static spade::Result<std::unique_ptr<DroneSession>> create(GlTargetSink& sink, float blur);
+    // Builds the stand and the scene. Needs no window, so a build that fails
+    // refuses before one opens.
+    [[nodiscard]] static spade::Result<std::unique_ptr<DroneSession>> create(float blur);
+
+    // Starts the GPU renderer in `sink`'s context, or announces the CPU
+    // fallback, and attaches the panel. `sink` must outlive this. Call once,
+    // before the first frame.
+    void attach(GlTargetSink& sink);
 
     ~DroneSession();
     DroneSession(const DroneSession&) = delete;
@@ -152,11 +157,14 @@ class DroneSession {
 // ---------------------------------------------------------------------------
 class BuilderSession {
   public:
-    // Builds the ground scene and the builder's meshes, starts the GPU renderer
-    // or announces the CPU fallback, and attaches the builder panel to `sink`,
-    // which must outlive this.
-    [[nodiscard]] static spade::Result<std::unique_ptr<BuilderSession>> create(GlTargetSink& sink, bool grid,
-                                                                               float blur);
+    // Builds the ground scene and the builder's meshes and palette. Needs no
+    // window, so a build that fails refuses before one opens.
+    [[nodiscard]] static spade::Result<std::unique_ptr<BuilderSession>> create(bool grid, float blur);
+
+    // Starts the GPU renderer in `sink`'s context, or announces the CPU
+    // fallback, and attaches the builder panel. `sink` must outlive this.
+    // Call once, before the first frame.
+    void attach(GlTargetSink& sink);
 
     ~BuilderSession();
     BuilderSession(const BuilderSession&) = delete;
@@ -170,6 +178,9 @@ class BuilderSession {
     [[nodiscard]] spade::render::RenderScene& scene() noexcept { return scene_; }
     [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
     [[nodiscard]] GpuRenderer* gpu() noexcept { return gpu_.get(); }
+    // Where the builder's meshes and materials start in scene(): object i
+    // draws with material binding().material_base + i.
+    [[nodiscard]] const BuilderBinding& binding() const noexcept { return bind_; }
 
   private:
     BuilderSession() = default;
