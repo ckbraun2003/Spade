@@ -9,6 +9,7 @@
 #include <system_error>
 #include <utility>
 
+#include "core/path_text.hpp"
 #include "state/arenas.hpp"
 
 namespace spade {
@@ -29,16 +30,6 @@ Error schema_err(std::string what) { return Error{Code::schema_mismatch, "snapsh
 Error capacity_err(std::string what) { return Error{Code::capacity_exceeded, "snapshot: " + std::move(what)}; }
 Error internal_err(std::string what) { return Error{Code::internal, "snapshot: " + std::move(what)}; }
 
-// path::string() converts to the native narrow encoding and can throw on a
-// path that encoding cannot represent. No exception may cross this API, and a
-// diagnostic string is never worth one.
-std::string path_text(const std::filesystem::path& path) {
-    try {
-        return path.string();
-    } catch (...) {
-        return "<unprintable path>";
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Byte-level helpers. Everything that touches blob bytes goes through memcpy:

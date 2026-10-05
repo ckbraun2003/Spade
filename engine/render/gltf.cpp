@@ -17,6 +17,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/path_text.hpp"
+
 namespace spade::render {
 namespace {
 
@@ -141,11 +143,11 @@ constexpr std::string_view kDataUriPrefix = "data:application/octet-stream;base6
         const std::filesystem::path bin_path = base_dir / uri;
         std::ifstream in(bin_path, std::ios::binary);
         if (!in) {
-            return std::unexpected(io("gltf: cannot open external buffer file '" + bin_path.string() + "'"));
+            return std::unexpected(io("gltf: cannot open external buffer file '" + path_text(bin_path) + "'"));
         }
         bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         if (in.bad()) {
-            return std::unexpected(io("gltf: failed reading external buffer file '" + bin_path.string() + "'"));
+            return std::unexpected(io("gltf: failed reading external buffer file '" + path_text(bin_path) + "'"));
         }
     }
     if (buffer.contains("byteLength") && buffer["byteLength"].is_number_unsigned()) {
@@ -676,14 +678,14 @@ Result<MeshData> load_gltf(const std::filesystem::path& path) {
     try {
         std::ifstream in(path, std::ios::binary);
         if (!in) {
-            return std::unexpected(io("gltf: cannot open '" + path.string() + "'"));
+            return std::unexpected(io("gltf: cannot open '" + path_text(path) + "'"));
         }
         text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         if (in.bad()) {
-            return std::unexpected(io("gltf: failed reading '" + path.string() + "'"));
+            return std::unexpected(io("gltf: failed reading '" + path_text(path) + "'"));
         }
     } catch (const std::exception& e) {
-        return std::unexpected(io("gltf: failed reading '" + path.string() + "': " + e.what()));
+        return std::unexpected(io("gltf: failed reading '" + path_text(path) + "': " + e.what()));
     }
     return parse_gltf(text, path.parent_path());
 }

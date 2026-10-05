@@ -84,6 +84,7 @@
 #include <glm/vec4.hpp>
 #include <yaml-cpp/yaml.h>
 
+#include "core/path_text.hpp"
 #include "core/error.hpp"
 #include "core/validate.hpp"
 #include "world/builder.hpp"  // MaterialDesc, MaterialShading
@@ -187,15 +188,9 @@ template <std::integral T>
     return float_list(std::span<const float>(values.begin(), values.size()));
 }
 
-// std::filesystem::path::string() can throw on a path the native narrow
-// encoding cannot represent, and nothing may be thrown out of a Spade API.
-[[nodiscard]] inline std::string path_text(const std::filesystem::path& path) noexcept {
-    try {
-        return path.string();
-    } catch (...) {
-        return "<unprintable path>";
-    }
-}
+// A path as UTF-8 text for messages: core/path_text.hpp's one helper (TD-9),
+// re-exported so the formats' `using yaml_text::path_text;` keeps working.
+using ::spade::path_text;
 
 // ===========================================================================
 // Parsing
