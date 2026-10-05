@@ -1,6 +1,6 @@
 # The editor, first cut — design
 
-**Owner:** Interface. **Status:** draft, revised for the user's decisions D1–D4 (2026-10-05, §9). Nothing is built from it until he approves the revision. **Builds:** `../01-editor.md` ("The target") and `../../backlog.md` ("Sandbox → editor"). **Rulings this rests on:** `INT-2` (rebuild debounced, carry state), `INT-3` as amended 2026-10-03 (the editor saves scenes), `SL2b` (only the installed API), `SL13` (three scene sources), `SL15b` (headless first), the world/scene split (`../../01-engine-model.md`). **Inputs:** the scene file (`2026-10-03-scene-file-draft.md`, `SCN-001`–`SCN-009`, built), the composer (`2026-10-03-scene-composer-plan.md`, built), the world file (`world/world_file.hpp`, built), the module-API design (`../../core/plans/2026-10-02-module-api-design.md`), the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`, `DBE-013`, `DBE-014`).
+**Owner:** Interface. **Status:** draft, revised for the user's decisions D1–D4 and Q1–Q2 (2026-10-05, §9). Nothing is built from it until he approves the revision. **Builds:** `../01-editor.md` ("The target") and `../../backlog.md` ("Sandbox → editor"). **Rulings this rests on:** `INT-2` (rebuild debounced, carry state), `INT-3` as amended 2026-10-03 (the editor saves scenes), `SL2b` (only the installed API), `SL13` (three scene sources), `SL15b` (headless first), the world/scene split (`../../01-engine-model.md`). **Inputs:** the scene file (`2026-10-03-scene-file-draft.md`, `SCN-001`–`SCN-009`, built), the composer (`2026-10-03-scene-composer-plan.md`, built), the world file (`world/world_file.hpp`, built), the module-API design (`../../core/plans/2026-10-02-module-api-design.md`), the drone-builder joint spec (`../../plans/2026-10-03-drone-builder-engine-design.md`, `DBE-013`, `DBE-014`).
 
 ## 1. Goal and done-when
 
@@ -44,7 +44,7 @@ The editor edits **documents**, never a running simulation.
 
 - **Items:** models and assets. Built-in items ship with the editor: the quadrotor template, and the primitive assets (box, sphere, cylinder, capsule). Further items are library files in a library folder: one model, or one asset, in the scene file's own syntax (§7, a need for Core).
 - **The panel** lists items by kind: vehicle models grouped by vehicle kind (drones today), then assets. The kind comes from the model, so a new kind needs no change to the panel.
-- **Placing copies.** Placing a model adds a copy of it to the scene's `models` (if the scene does not hold it yet) and a vehicle that uses it; placing an asset adds a copy to the scene's `assets`. A scene never refers to a library file, so it stays self-contained, as `SCN-008` and Kat's scenes require.
+- **Placing copies.** Placing a model adds a copy of it to the scene's `models`, one per placed vehicle under its own name, and the vehicle that uses it; placing an asset adds a copy to the scene's `assets`. A scene never refers to a library file, so it stays self-contained, as `SCN-008` and Kat's scenes require.
 - **Placement** is the builder's interaction, carried over: pick a point on the ground or a surface, drop the item there, drag it in the ground plane.
 
 **The inspector** shows the selection's every parameter:
@@ -55,8 +55,8 @@ The editor edits **documents**, never a running simulation.
 - **The world** (§6) when nothing in the scene is selected.
 - **Problems at their fields.** The inspector validates a model with `ModelType::issues()`, which names every problem with its element, index and field, so each one shows at the field it is about. An invalid value does not commit.
 - **Parameters, never parts.** The inspector edits the values of a model's existing parts and never adds or removes a part. A model with a different structure is a new model, and new models come from Kat's builder (Cameron, D2: "You cannot build new models in spade editor").
-- **Shared models.** Vehicles name their model, so a model edit changes every vehicle using it; the inspector lists them. **Make unique** copies the model under a new name for the selected vehicle alone (§9 Q1).
-- **Back to the library.** **Save to library** writes the configured model or asset as a library file (§9 Q2).
+- **One model per vehicle** (Cameron, Q1: "Always per vehicle"). An inspector edit to a vehicle's model reaches that vehicle alone. A scene opened from a file may share one model between vehicles (Kat's may); it is kept as it is until an edit, and the first parameter edit on such a vehicle copies the model for it under a new name before the edit commits, so the other vehicles keep theirs.
+- **Back to the library** (Cameron, Q2: "Save as new item"). **Save to library** writes the configured model or asset as a new library item, under a new name, and never overwrites an existing one. Its structure is the one Kat's builder gave it.
 - **Commit on release** (`INT-2`): a field commits when the user lets go of it.
 
 ## 5. Running
@@ -123,9 +123,9 @@ Each need is reported to Core through the lead, and nothing widens an include pa
 - **D3, scene sources:** all three of `SL13`'s.
 - **D4, worlds:** "You can create new worlds, edit/configure/save existing worlds." This revision answers it in §6.
 
-**Open, for Cameron** (the first option is recommended):
-- **Q1. A model edit on a placed vehicle.** (A) It edits the scene's model, so every vehicle using that model changes; the inspector lists them, and Make unique gives the selected vehicle its own copy. (B) Every placed vehicle gets its own model copy, so an edit never reaches another vehicle. (C) Per-vehicle overrides on a shared model; this needs a scene-file schema change (Core).
-- **Q2. Configured models and the library.** (A) Save to library writes a configured model or asset as a new library item; the structure stays Kat's. (B) The library is read-only in the editor; configured models live only in scenes. (C) A, and the editor may also overwrite an existing library item.
+**Decided by Cameron, 2026-10-05** (the lead's second round):
+- **Q1, a model edit on a placed vehicle:** "Always per vehicle". Each placed vehicle has its own copy of its model, so an edit never reaches another vehicle. There is no shared-model listing and no Make unique (§4).
+- **Q2, configured models and the library:** "Save as new item". Save to library writes a new item and never overwrites one; the structure stays Kat's (§4).
 
 ## 10. Requirements
 
@@ -140,19 +140,21 @@ Each need is reported to Core through the lead, and nothing widens an include pa
 - **EDT-009** Vehicle starts MUST stay in the design frame end to end (`DBE-013`).
 - **EDT-010** The editor MUST use only installed headers and `spade::` targets (`SL2b`); a missing capability is a need for Core.
 - **EDT-011** The live smoke MUST tour the editor's operations, with each one a declared step.
-- **EDT-012** Placing a library item MUST copy it into the scene; a scene MUST NOT refer to a library file.
+- **EDT-012** Placing a library item MUST copy it into the scene, a model once per placed vehicle; a scene MUST NOT refer to a library file.
 - **EDT-013** The inspector MUST expose every parameter of a placed model and asset, and MUST NOT add or remove a model's parts.
 - **EDT-014** A model edit MUST be checked with `ModelType::issues()`, and each problem MUST show at its field.
 - **EDT-015** The editor MUST create, open, edit and save world files through Core's world file API; a saved world MUST reload bit-exactly.
 - **EDT-016** Saving a world MUST re-pin the open scene's world hash only after `compose()` succeeds, and MUST list every scene in the project folder that pins the old hash; another scene is re-pinned only on the user's word, after `compose()` succeeds on it.
 - **EDT-017** A world edit MUST re-run `compose()` on the open scene and show any conflict it creates.
 - **EDT-018** A setting the world file cannot hold MUST be shown as not saved with the world.
+- **EDT-019** A model parameter edit MUST reach only the selected vehicle; a model an opened scene shares MUST be copied for that vehicle before the edit commits.
+- **EDT-020** Save to library MUST write a new library item and MUST NOT overwrite an existing one.
 
 ## 11. Testing
 
 - **Documents:** each edit's effect on its document; a refused edit leaves it unchanged; undo and redo restore exact bytes (`scene_to_yaml` and `world_to_yaml` equal).
-- **Library:** placing copies the item (the scene holds no library path); a library file round-trips; a placed model's copy equals the library item.
-- **Inspector:** every `ModelType` field has an edit; an invalid value is refused and its `issues()` entry names the field; no edit changes a part count.
+- **Library:** placing copies the item (the scene holds no library path), a model once per vehicle; a library file round-trips; a placed model's copy equals the library item; Save to library writes a new item and leaves an existing item's bytes unchanged.
+- **Inspector:** every `ModelType` field has an edit; an invalid value is refused and its `issues()` entry names the field; no edit changes a part count; an edit to a model an opened scene shares copies it first, and the other vehicles' model bytes are unchanged.
 - **Worlds:** a new world from each template validates and saves; an edited world reloads bit-exactly; the SDF helper's add, remove and re-pose leave a program `SdfProgram::validate()` accepts and that evaluates as the edit says at sample points.
 - **Hash follow:** saving a world re-pins the open scene after `compose()` succeeds; a scene that no longer composes is not re-pinned and says why; other scenes pinning the old hash are listed.
 - **Round trip:** every committed scene file and Kat's sample (all canonical) opens and saves byte for byte; a hand-formatted scene saves as its canonical text with equal content.
