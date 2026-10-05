@@ -75,12 +75,21 @@ TEST(EditorRun, AnUnsavedWorldEditRuns) {
 }
 
 TEST(EditorRun, ARebuildCarriesEveryVehicleThatKeepsItsName) {
-    ed::EditorRun run = start_hover();
+    // The hover scene starts in trim and barely moves, so a restart would pass
+    // for a carry; launch it instead, so the carried state is far from its start.
+    ed::SceneDocument scene = ed::make_scene_document(support::sample_scene(), {});
+    spade::VehicleSpawn launched = scene.desc().vehicles[0].start;
+    launched.vel = glm::vec3(1.0f, 0.5f, -0.5f);
+    launched.omega_body = glm::vec3(0.2f, 0.1f, 0.0f);
+    ASSERT_TRUE(ed::apply(scene, ed::SetVehicleStart{"hover_quad_0", launched}).has_value());
+    Result<ed::EditorRun> started =
+        ed::EditorRun::start(scene.desc(), support::sample_world(), ed::records_for(support::hover_scene()));
+    ASSERT_TRUE(started.has_value()) << started.error().context;
+    ed::EditorRun run = std::move(*started);
     ASSERT_TRUE(run.step(200).has_value());
     const std::optional<spade::FrameState> before = run.state_of("hover_quad_0");
     ASSERT_TRUE(before.has_value());
-    ASSERT_GT(std::abs(before->pos.y - support::sample_scene().vehicles[0].start.pos.y), 1e-3f);  // it moved
-    ed::SceneDocument scene = ed::make_scene_document(support::sample_scene(), {});
+    ASSERT_GT(glm::length(before->pos - launched.pos), 0.3f);  // a restart would put it back here
     ASSERT_TRUE(ed::apply(scene, ed::AddAsset{support::asset_named("box")}).has_value());
     ASSERT_TRUE(run.rebuild(scene.desc(), support::sample_world()).has_value());
     EXPECT_EQ(run.tick(), 200u);
@@ -92,12 +101,17 @@ TEST(EditorRun, ARebuildCarriesEveryVehicleThatKeepsItsName) {
 TEST(EditorRun, ARebuildCarriesTheRotorsMeanSpeed) {
     ed::EditorRun run = start_hover();
     ASSERT_TRUE(run.step(100).has_value());
-    const spade::VehicleRef& ref = run.vehicle_ref("hover_quad_0").value();
+    const spade::VehicleRef ref = run.vehicle_ref("hover_quad_0").value();
     float mean = 0.0f;
     for (uint32_t i = 0; i < ref.rotor_count; ++i) mean += run.sim().rotor(ref, i).value()->omega;
     mean /= static_cast<float>(ref.rotor_count);
-    ASSERT_TRUE(run.rebuild(support::sample_scene(), support::sample_world()).has_value());
-    const spade::VehicleRef& now = run.vehicle_ref("hover_quad_0").value();
+    // The edited scene starts the rotors elsewhere, so only a carry keeps them at the running speed.
+    ed::SceneDocument scene = ed::make_scene_document(support::sample_scene(), {});
+    spade::VehicleSpawn slower = scene.desc().vehicles[0].start;
+    slower.rotor_omega = 0.5f * mean;
+    ASSERT_TRUE(ed::apply(scene, ed::SetVehicleStart{"hover_quad_0", slower}).has_value());
+    ASSERT_TRUE(run.rebuild(scene.desc(), support::sample_world()).has_value());
+    const spade::VehicleRef now = run.vehicle_ref("hover_quad_0").value();
     for (uint32_t i = 0; i < now.rotor_count; ++i) {
         EXPECT_FLOAT_EQ(run.sim().rotor(now, i).value()->omega, mean) << "rotor " << i;
     }

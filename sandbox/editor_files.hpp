@@ -209,16 +209,21 @@ struct WorldSaved {
                                                 // world and do not pin new_hash; never changed here
 };
 
-// compose()'s refusal for the open scene and world as they would be saved
-// together -- the scene re-pinned to the world's current hash -- or "" when
-// they compose. Only the hash an unsaved world edit has not written yet is
-// ignored; every other conflict is reported.
-[[nodiscard]] inline std::string compose_conflict(const SceneDocument& scene, const WorldDocument& world) {
-    const Result<uint64_t> hash = scene::world_hash(world.desc());
-    if (!hash) return hash.error().context;
-    scene::SceneDesc candidate = scene.desc();
+// compose() for a scene and world as they would be saved together: the scene
+// re-pinned to the world's current hash. Only the hash an unsaved world edit
+// has not written yet is ignored; every other conflict is compose()'s.
+[[nodiscard]] inline Result<scene::ComposedScene> compose_together(const scene::SceneDesc& scene,
+                                                                   const WorldDesc& world) {
+    const Result<uint64_t> hash = scene::world_hash(world);
+    if (!hash) return std::unexpected(hash.error());
+    scene::SceneDesc candidate = scene;
     candidate.world.hash = *hash;
-    const Result<scene::ComposedScene> composed = scene::compose(candidate, world.desc());
+    return scene::compose(candidate, world);
+}
+
+// compose_together()'s refusal for the open documents, or "" when they compose.
+[[nodiscard]] inline std::string compose_conflict(const SceneDocument& scene, const WorldDocument& world) {
+    const Result<scene::ComposedScene> composed = compose_together(scene.desc(), world.desc());
     return composed ? std::string() : composed.error().context;
 }
 
