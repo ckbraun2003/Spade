@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -94,5 +95,34 @@ TEST(PathText, EveryFileLoaderNamesAMissingFileInUtf8) {
         check("testing::scenario_from_yaml", scenario.error());
     } catch (const std::exception& e) {
         ADD_FAILURE() << "testing::scenario_from_yaml threw: " << e.what();
+    }
+}
+
+// The external-buffer branch (Rendering's review): a .gltf under that directory
+// whose buffer uri names a missing .bin. Buffers load when an accessor needs
+// them, so the file carries one triangle's POSITION accessor into buffer 0.
+TEST(PathText, AGltfsMissingExternalBufferIsNamedInUtf8) {
+    const std::filesystem::path dir = unicode_dir();
+    const std::filesystem::path gltf = dir / "missing_buffer.gltf";
+    {
+        std::ofstream out(gltf, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out) << "cannot write the test's .gltf";
+        out << R"({"asset":{"version":"2.0"},)"
+            << R"("buffers":[{"uri":"missing.bin","byteLength":36}],)"
+            << R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],)"
+            << R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3",)"
+            << R"("min":[0,0,0],"max":[1,1,0]}],)"
+            << R"("meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],)"
+            << R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    }
+    try {
+        const auto mesh = spade::render::load_gltf(gltf);
+        ASSERT_FALSE(mesh.has_value());
+        EXPECT_EQ(mesh.error().code, spade::Code::io_error) << mesh.error().context;
+        EXPECT_NE(mesh.error().context.find("external buffer"), std::string::npos) << mesh.error().context;
+        EXPECT_NE(mesh.error().context.find(kDirUtf8), std::string::npos)
+            << "the missing buffer's path is not named in UTF-8: " << mesh.error().context;
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "render::load_gltf threw: " << e.what();
     }
 }
