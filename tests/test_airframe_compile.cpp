@@ -329,6 +329,52 @@ TEST(AirframeCompile, DragIsEstimatedFromThePartsOrTakenAsGiven) {
     EXPECT_EQ(g->fit.drag, Provenance::given);
 }
 
+// Supplied componentwise drag goes into BODY axes: the drag law applies its
+// coefficients along the body's axes and never reads local_orient
+// (physics/forces.cpp). A mount turned 90 degrees about +Y maps its local
+// axes onto body axes exactly, so the coefficients permute and stay "given".
+TEST(AirframeCompile, SuppliedDragOnATurnedMountPermutesIntoBodyAxes) {
+    AirframeSpec s = reference_quad();
+    DragSpec d;
+    d.coeffs = glm::dvec3(0.01, 0.02, 0.03);
+    const double h = 0.70710678118654752;  // sqrt(1/2): a 90-degree turn about +Y
+    d.mount.orientation = glm::dquat(h, 0.0, h, 0.0);
+    s.drag.push_back(d);
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    ASSERT_EQ(c->model.drag_bodies.size(), 1u);
+    // R_y(90): local +X lies along body -Z and local +Z along body +X.
+    EXPECT_EQ(c->model.drag_bodies[0].coeffs.x, 0.03f);
+    EXPECT_EQ(c->model.drag_bodies[0].coeffs.y, 0.02f);
+    EXPECT_EQ(c->model.drag_bodies[0].coeffs.z, 0.01f);
+    EXPECT_EQ(c->fit.drag, Provenance::given);
+}
+
+// With a tilted principal frame no permutation exists, so each body axis gets
+// the coefficient that gives the exact force for motion along it:
+// c_i = sum_j |M_ij|^3 c_j, M the mount -> body rotation. Cross-axis coupling
+// is lost, so the provenance drops to estimated.
+TEST(AirframeCompile, SuppliedDragInATiltedFrameIsProjectedOntoBodyAxes) {
+    AirframeSpec s = asymmetric_quad();
+    DragSpec d;
+    d.coeffs = glm::dvec3(0.01, 0.02, 0.03);
+    s.drag.push_back(d);
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    ASSERT_EQ(c->model.drag_bodies.size(), 1u);
+    const glm::quat q = c->model.design_to_principal;
+    const glm::dmat3 m = glm::mat3_cast(glm::dquat(q.w, q.x, q.y, q.z));  // mount = design axes
+    for (int i = 0; i < 3; ++i) {
+        double expected = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            const double mij = std::fabs(m[j][i]);  // glm is column-major: m[j][i] is row i, column j
+            expected += mij * mij * mij * d.coeffs[j];
+        }
+        EXPECT_NEAR(c->model.drag_bodies[0].coeffs[i], expected, 1e-6 * expected) << "body axis " << i;
+    }
+    EXPECT_EQ(c->fit.drag, Provenance::estimated);
+}
+
 // DETERMINISM (Kat's question 1). The reference quad's compiled model has one
 // identity, here and on every platform. FINAL under TD-12's discipline: the
 // Docker gcc leg reproduced the MSVC value at 3e4b589.
