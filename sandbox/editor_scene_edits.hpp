@@ -8,11 +8,12 @@
 // vehicle's model never reaches another (the user's Q1, EDT-019).
 //
 // docs/design/interface/plans/2026-10-05-editor-design.md §3-§4;
-// 2026-10-05-editor-plan.md Task 2.
+// 2026-10-05-editor-plan.md Tasks 2 and 3.
 
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "editor_document.hpp"
+#include "editor_model_params.hpp"
 
 namespace spade::sandbox::editor {
 
@@ -64,9 +66,21 @@ struct RepointWorld {
     std::string file;  // relative to the scene file (SCN-001)
     uint64_t hash = 0;
 };
+// One parameter of the model a vehicle flies (editor_model_params.hpp). It
+// reaches that vehicle alone: a model another vehicle shares is copied for it
+// first (EDT-019). A value ModelType::issues() objects to is refused, naming
+// each problem's part and field (EDT-014).
+struct SetModelParam {
+    std::string vehicle;
+    vehicles::ModelIssue::Element element = vehicles::ModelIssue::Element::model;
+    std::size_t index = 0;
+    std::string field;
+    ParamValue value;
+};
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
-                               SetAssetPose, SetAssetMaterial, SetVehicleStart, AddMaterial, RepointWorld>;
+                               SetAssetPose, SetAssetMaterial, SetVehicleStart, AddMaterial, RepointWorld,
+                               SetModelParam>;
 
 namespace detail {
 
@@ -236,6 +250,59 @@ inline Result<bool> change(scene::SceneDesc& s, const AddMaterial& e) {
 inline Result<bool> change(scene::SceneDesc& s, const RepointWorld& e) {
     s.world.file = e.file;
     s.world.hash = e.hash;
+    return true;
+}
+
+// Bit for bit, so -0 and 0 differ and a NaN equals itself: "no change" must
+// mean the saved file would not change.
+[[nodiscard]] inline bool same_value(const ParamValue& a, const ParamValue& b) {
+    if (a.index() != b.index()) return false;
+    const auto bits = [](float f) { return std::bit_cast<uint32_t>(f); };
+    if (const float* x = std::get_if<float>(&a)) return bits(*x) == bits(std::get<float>(b));
+    if (const glm::vec3* x = std::get_if<glm::vec3>(&a)) {
+        const glm::vec3& y = std::get<glm::vec3>(b);
+        return bits(x->x) == bits(y.x) && bits(x->y) == bits(y.y) && bits(x->z) == bits(y.z);
+    }
+    if (const glm::quat* x = std::get_if<glm::quat>(&a)) {
+        const glm::quat& y = std::get<glm::quat>(b);
+        return bits(x->w) == bits(y.w) && bits(x->x) == bits(y.x) && bits(x->y) == bits(y.y) && bits(x->z) == bits(y.z);
+    }
+    return a == b;  // uint32_t, std::string
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
+    scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
+    if (v == nullptr) return std::unexpected(no_object("set a model parameter", e.vehicle));
+    vehicles::ModelType* m = find_named(s.models, v->model);
+    if (m == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, "set a model parameter of '" + e.vehicle +
+                                                                 "': its model '" + v->model + "' is not in this scene"});
+    }
+    const Result<ParamValue> now = get_model_param(*m, e.element, e.index, e.field);
+    if (!now) return std::unexpected(now.error());
+    if (same_value(*now, e.value)) return false;
+
+    vehicles::ModelType edited = *m;
+    if (Result<void> set = set_model_param(edited, e.element, e.index, e.field, e.value); !set) {
+        return std::unexpected(set.error());
+    }
+    if (const std::string problems = describe_issues(edited); !problems.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "model '" + m->name + "' of '" + e.vehicle +
+                                                                 "' would not be valid: " + problems +
+                                                                 "; the edit was not made"});
+    }
+
+    const std::string model = v->model;
+    const bool shared = std::any_of(s.vehicles.begin(), s.vehicles.end(),
+                                    [&](const auto& other) { return other.name != e.vehicle && other.model == model; });
+    if (!shared) {
+        *m = std::move(edited);
+        return true;
+    }
+    // Copy-on-first-edit: this vehicle gets its own model, the others keep theirs.
+    edited.name = lowest_free(model, [&](std::string_view n) { return model_taken(s, n); });
+    v->model = edited.name;
+    s.models.push_back(std::move(edited));  // `m` may dangle from here; it is not used again
     return true;
 }
 
