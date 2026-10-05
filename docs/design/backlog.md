@@ -49,6 +49,14 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | Ray-march CSG subtrees in the raster instead of meshing them at load (B2, replaces `RS3`) | Plan it now. The plan comes back for the user's signature on replacing `RS3`. B1 (world-space cell size) lands first regardless | work item below |
 | GPU coverage on a device without fp32 denormal preservation (this machine's RTX 3060 Ti; Vulkan is refused, 72 of 83 gpu tests skip) | Measure NVIDIA first: run the gpu suite and denormal probe kernels on the 3060 Ti with the mode not requested, under a test-only flag. A measured admission rule, if the results support one, comes back for the user's signature. No rule changes now | work item below |
 
+## Ruled by the user, 2026-10-05
+
+| Decision | Ruling | Where it lands |
+|---|---|---|
+| `RS3`'s replacement (B2): "Three geometry paths: tessellated unions, CSG subtrees ray-marched per pixel within their bounds, and glTF, plus ray-march truth. The CSG mesh is kept, at fixed resolution, for wireframe and shadow casting only." | Signed | `rendering/00-decisions.md` (`RS3`), `rendering/plans/2026-10-04-b2-raymarched-csg-plan.md` |
+| `TD-13` on a machine whose GPU is refused (this machine's RTX 3060 Ti; 72 of 83 gpu tests skip) | Label, don't block. Gates read "green on CPU and gcc, GPU unverified (N refused)", and merges continue. Changes to kernels or GPU paths are flagged in their merge note and re-verified once a device can run them. This is an interim reading until the denorm measurement settles, not an amendment | `test-docs/00-decisions.md` (`TD-13` note), `test-docs/07-status.md` |
+| An e2e live smoke of the sandbox, recorded (the user's request, 2026-10-05) | Interface builds it. The lead runs it after merge batches and sends the recording | `interface/` (`interface/live-smoke`) |
+
 ## Open user decisions
 
 None open.
@@ -58,7 +66,7 @@ None open.
 | Item | Owner | Why it's open | Done when |
 |---|---|---|---|
 | Measure fp32 denormal behaviour on NVIDIA (the 3060 Ti) | Core, with Physics (probe kernels) and Test/Docs (build flag, scanner) | The user ruled on 2026-10-04 to measure first. `context.cpp` refuses devices whose `shaderDenormPreserveFloat32` is false, and no NVIDIA driver reports true | A report: which gpu tests and which op classes differ from the CPU twin with the mode not requested. Then either a proposed measured admission rule for the user's signature, or the list of operations that differ. The test-only flag never reaches an installed build |
-| Ray-marched CSG in the raster and GL (B2) | Rendering | The user ruled on 2026-10-04 to plan it now. Meshing at load (`RS3`) loses walls about one cell thick | A plan, approved, including the `RS3` replacement for the user's signature |
+| Ray-marched CSG in the raster and GL (B2) | Rendering | `RS3`'s replacement signed 2026-10-05. Meshing at load loses walls about one cell thick | The plan's six steps merged: CPU pass, CSG frame golden, GL pass, bands v2, fold warning narrowed, docs |
 | Analytic heightfield background past the world bounds (A1) | Rendering | Backlog by the user's ruling of 2026-10-04. Past the bounds the SDF and collision have terrain the raster does not draw (`RND-6`) | Before terrain reaches real scenes: a plan, then the `SR-17` amendment signed and built |
 | Module API, scheduler phases, regions, field registry, grades | Core (then Physics, Rendering) | The engine model (`01-engine-model.md`) is signed but not built; today's schedule is a fixed ten-pass array | Today's passes run as built-in modules through the new scheduler, with every golden unchanged |
 | Translation-lock constraint on both backends | Core / Physics | The drone stand pins with CPU behaviors, so Vulkan is refused there | The drone sim box runs on Vulkan with its position held |
