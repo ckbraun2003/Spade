@@ -19,7 +19,7 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 | Grade | Verified by |
 |---|---|
 | reference | a CPU implementation, a golden result (bit-identical per platform), and the module's own unit tests |
-| banded | a live comparison against the reference on every run, inside a band pinned per `TD-2` |
+| banded | a live comparison against the reference on every run, inside a band pinned per `TD-2` and `TD-14` |
 | best-effort | the module's unit tests; no numeric claim |
 
 **Today** nothing declares a grade; the engine model is not built. The KAT-era equivalents stand in: the CPU golden corpus is reference grade, and CPU↔GPU parity is banded grade.
@@ -32,7 +32,38 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 
 ## Parity harness
 
-`engine/testing/parity.hpp` compares the CPU and GPU paths per quantity and per element against a table of bands. Each band carries its provenance, and the module's realm owns it. Two host-only guards keep the question asked even without a device: `ParityCorpus.EveryCorpusScenarioIsInTheParitySet` (membership) and the CPU halves of the invariance tests. `workgroup_size` is a live knob, and its invariance sweep has been shown to fail under a deliberately size-dependent reduction (`engine A7`, Core).
+`engine/testing/parity.hpp` compares the CPU and GPU paths per quantity and per element, at the run's final tick, against a table of bands (`TD-14`). An element passes when |gpu − cpu| ≤ abs + rel × |cpu|, and a NaN fails. The harness reports two maxima per quantity: `A`, the largest |gpu − cpu| where |cpu| < `s_q`, and `R`, the largest relative error where |cpu| ≥ `s_q` (`s_q` = 1e-3 in the quantity's SI unit). Each band carries its record (below), and the module's realm owns it. Two host-only guards keep the question asked even without a device: `ParityCorpus.EveryCorpusScenarioIsInTheParitySet` (membership) and the CPU halves of the invariance tests. `workgroup_size` is a live knob, and its invariance sweep has been shown to fail under a deliberately size-dependent reduction (`engine A7`, Core).
+
+### Band records (`L4`)
+
+Every pinned band carries its record in `parity.hpp`, at three levels, so nothing repeats per row. Copy the numbers from the table the parity test prints, which carries the device line in its header; never retype a device by hand.
+
+- **Device**, once per device of record, above the bands. It holds:
+  - the `compute::describe()` line, verbatim: name, driver and `driverVersion`, Vulkan version, float controls;
+  - `vendorID` and `deviceID`;
+  - the build preset, the commit and the date;
+  - a short tag the rows cite, such as `rtx3060ti-572.83`.
+  A device that stops measuring keeps its block, marked history.
+- **Scenario**, once per scenario block. It holds:
+  - steps × substeps and the horizon in seconds;
+  - the one-ulp CPU control at that horizon, against the scene's scale (`T_p` holds, or element bands give way);
+  - the method: "final tick, every element of every world, `A`/`R` split at `s_q` = 1e-3";
+  - the margin: 4×, rounded up to one significant figure, the larger over devices of record.
+- **Row**, beside each band, says which kind it is:
+  - **measured**: per device tag, `A`, `R` and the band they give;
+  - **floor**: exactly equal on every device of record. `{5e-10, 5e-7}` is four ulps at `s_q` (4 × 2⁻³³ = 4.66e-10) and four ulps relative (4 × 2⁻²³ = 4.77e-7), each rounded up;
+  - **structural**: `{0, 0}`, with the argument that no rounding operation touches it;
+  - **cited**: the band of a signed row, such as `CORE-3`'s gaussian draw;
+  - **bits**: integer lanes, `{0, 0}` by kind.
+  An older device's numbers stay on the row, marked history, with the method they were measured under. The Iris rows were measured at the final tick under the disjunctive predicate; their provenance line's "whole run" was a misstatement (plan §2).
+- **A widened band** names its cause (`TD-2`). For NVIDIA's division and square root, that is finding 4 of `../core/2026-10-04-nvidia-denorm-report.md`.
+
+A row, with illustrative values:
+
+```
+// pos [m]  measured. rtx3060ti-572.83: A 2.1e-9, R 3.3e-7 -> {9e-9, 2e-6}
+//          history, irisplus-2125 (final tick, disjunctive): max 4.1e-7 -> {2e-6, 1e-5}
+```
 
 ## SPIR-V scanner
 
