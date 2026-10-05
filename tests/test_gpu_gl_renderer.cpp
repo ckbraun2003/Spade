@@ -940,14 +940,26 @@ TEST_F(GpuGlRenderer, WireframeStillDrawsTheCsgMesh) {
 // blob, a tessellated ball in front of the slab casting on it, and a ball
 // behind it seen through the hole. Depth both ways, shading, the shadow
 // lookup on a marched surface, and the SR-17a blend.
+//
+// The balls are unlit. A lit mesh is Gouraud-shaded on the CPU (SR-18) and
+// per pixel on GL, which the GL options plan accepted (RND-3). Near the
+// terminator that alone moves a lit ball's pixels by up to 11 levels here,
+// and it would hide what this band is for. Both paths shade a marched
+// surface per pixel.
 TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
-    constexpr size_t kBandMisses = 0;  // provisional until measured on this device
-    constexpr size_t kBandInteriorOver2 = 0;
+    // Measured 2026-10-05 on rendering/b2-gl, 160x120, on an NVIDIA GeForce
+    // RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 2709 covered pixels on each
+    // path, 0 misses either way, and at most 1 level apart over the 2335
+    // interior ones. Pinned at the measurement; another device may differ,
+    // so re-measure there before widening (03-verification).
+    constexpr size_t kBandMisses = 0;
+    constexpr int kBandInterior = 1;
 
     spade::WorldBuilder b = csg_builder();
     b.material(spade::MaterialDesc{.name = "red", .base_color = {0.8f, 0.3f, 0.2f, 1.0f}});
     b.material(spade::MaterialDesc{.name = "blue", .base_color = {0.2f, 0.35f, 0.8f, 1.0f}});
-    b.material(spade::MaterialDesc{.name = "green", .base_color = {0.25f, 0.7f, 0.3f, 1.0f}});
+    b.material(spade::MaterialDesc{
+        .name = "green", .base_color = {0.25f, 0.7f, 0.3f, 1.0f}, .shading = spade::MaterialShading::unlit});
     add_slab_with_hole(b, 0, glm::vec3(-0.6f, 0.8f, 0.0f));
     b.sphere(0.45f, spade::SdfPose{.position = {1.2f, 0.6f, 0.2f}}).material_for_last_node(1);
     b.sphere(0.3f, spade::SdfPose{.position = {1.6f, 1.0f, 0.2f}}).material_for_last_node(1);
@@ -979,9 +991,9 @@ TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
                                          << renderer_->renderer_name();
     EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of GL's " << m.gl_covered
                                         << " covered pixels have no CPU surface within 1 px";
-    EXPECT_LE(m.interior_over_2, kBandInteriorOver2)
-        << m.interior_over_2 << " of " << m.interior << " interior pixels differ by more than 2 levels (worst "
-        << m.max_interior << ")";
+    EXPECT_LE(m.max_interior, kBandInterior)
+        << "interior pixels differ by up to " << m.max_interior << " levels; " << m.interior_over_2 << " of "
+        << m.interior << " by more than 2";
 }
 
 // SR-17a on mesh fragments: every shaded surface blends toward the sky by
