@@ -17,7 +17,7 @@
 | `SL18` | Nine verification obligations for the library program, and the guard discipline: **every guard must be shown to fail under the mutation it exists to catch** | signed 2026-09-17 | live. Obligations 1–3 Core, 4 Physics, 5 Test/Docs, 6–9 Interface; the guard discipline binds every realm | 06 §7 |
 | `SPIR-V rule P1` | Every contractable float op in a parity kernel carries `NoContraction` | signed 2026-10-02 (user, via lead); in force since S6 | live | `engine/testing/spirv_scan.hpp`; 07 §4 rule 9 |
 | `SPIR-V rule P2` | No sum-of-products opcode (`OpDot` and kin): its accumulation order is unspecified | signed 2026-10-02 (user, via lead); in force since S6 | live | as `P1` |
-| `SPIR-V rule P3` | fp32 denormals preserved, declared in the module | signed 2026-10-02 (user, via lead); in force since S6 Task 4 | live | as `P1` |
+| `SPIR-V rule P3` | No fp32 denormal mode is requested: no module declares a `DenormPreserve` or `DenormFlushToZero` execution mode or capability. Every device then runs the kernels legally, with its own default | signed 2026-10-02 (user, via lead); amended by the user's ruling of 2026-10-05 | live, as amended. Was: "fp32 denormals preserved, declared in the module" | as `P1`; `../core/plans/2026-10-05-banded-parity-plan.md` |
 | `SPIR-V rule P4` | No `Int64` capability | signed 2026-10-02 (user, via lead); in force since S6 Task 8 | live | as `P1` |
 | `SPIR-V rule P5` | No GLSL.std.450 transcendental | signed 2026-10-02 (user, via lead); in force since S6 Task 8 | live | as `P1` |
 | `SPIR-V rule E1` | No `OpFDiv` in an `fp32_math` module | signed 2026-10-02 (user, via lead); in force since S6 | live | as `P1` |

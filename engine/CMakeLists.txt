@@ -1165,7 +1165,7 @@ endif()
 #
 # Registered in tests/test_slang_layouts.cpp's kSpirvModules[] under the PARITY
 # profile -- P1 (NoContraction on every contractable op), P2 (no sum-of-products
-# opcode) and P3 (fp32 denormals preserved), but NOT exact's E1/E2: these are
+# opcode) and P3 (no fp32 denormal mode requested), but NOT exact's E1/E2: these are
 # downstream kernels and the global constraint allows them div and sqrt, which
 # is exactly why CPU<->GPU here is banded rather than bit-identical.
 # ------------------------------------------------------------------------------
