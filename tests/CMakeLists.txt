@@ -272,6 +272,11 @@ if(SPADE_BUILD_SANDBOX)
         # palette and slice, and the drone's real-size parts -- including one
         # exact-pixel check through the CPU rasterizer.
         test_sandbox_drone_view.cpp
+        # The live smoke's verdict machinery (journal, declared-step ledger,
+        # expiring known-open entries, inject hooks), its artefact names, the
+        # ffmpeg command, the title cards and the PNG encoder. The tour itself
+        # needs a display and runs from scripts/live-smoke.ps1, not ctest.
+        test_sandbox_live_smoke.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
