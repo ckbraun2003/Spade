@@ -1389,7 +1389,7 @@ TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
     const Scenario gate = gate_fleet_scenario();
 
     // Past T_p at 900 steps: vel (the one-ulp CPU control reaches 4.3e-5 m/s on
-    // resting bodies, ParityChaos.OneUlpControlAtEachContactScenariosHorizon).
+    // resting bodies, ParityChaos.OneUlpControlAtEachScenariosHorizon).
     const PastHorizon past{450, {"vel"}};
     using namespace spade::testing::bands::gate_fleet;
     run_parity(gate, "gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes)",
@@ -1894,9 +1894,9 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
 //   * a velocity with all three components non-zero and no symmetry.
 // ===========================================================================
 
-TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// drag_componentwise's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario drag_componentwise_scenario() {
     Scenario drag;
     drag.name = "drag_componentwise";
     drag.dt_ns = 2'000'000;  // 2 ms step
@@ -1936,6 +1936,13 @@ TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
         if (!attached) return std::unexpected(attached.error());
         return {};
     };
+    return drag;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario drag = drag_componentwise_scenario();
 
     using namespace spade::testing::bands::drag_componentwise;
     run_parity(drag, "drag_componentwise (400 steps x 2 substeps, per-axis body-frame drag law)",
@@ -2742,16 +2749,17 @@ void expect_shower_resolved_pairs(const Simulation& cpu, const Simulation& gpu, 
 // CPU runs, no device, runs on every CI machine.
 // ---------------------------------------------------------------------------
 
-// The one-ulp CPU control for every scenario with contacts, at a quarter, a
-// half and the whole of its parity horizon: TD-14's horizon rule pins element
+// The one-ulp CPU control for every parity scenario, at a quarter, a half and
+// the whole of its parity horizon: TD-14's horizon rule pins element
 // bands only where this stays under 1e-5 of the scene's scale. Host-only: it
 // measures the scene, not a device. Report-only; the bands cite its numbers.
 namespace {
 [[nodiscard]] Scenario shower_ladder_scenario();  // defined beside its parity test
 [[nodiscard]] Scenario restore_resume_scenario();  // likewise
+[[nodiscard]] Scenario drag_componentwise_scenario();  // likewise
 }  // namespace
 
-TEST(ParityChaos, OneUlpControlAtEachContactScenariosHorizon) {
+TEST(ParityChaos, OneUlpControlAtEachScenariosHorizon) {
     std::vector<std::pair<std::string, Scenario>> scenes = {
         {"gate_fleet", gate_fleet_scenario()},
         {"heterogeneous_geometry_set", heterogeneous_scenario()},
@@ -2759,11 +2767,14 @@ TEST(ParityChaos, OneUlpControlAtEachContactScenariosHorizon) {
         {"shower_ladder", shower_ladder_scenario()},
         {"restore_resume", restore_resume_scenario()},
     };
-    for (const char* name : {"bounce", "two_world_isolation", "shower"}) {
+    for (const char* name : {"bounce", "two_world_isolation", "shower", "ballistic", "quad_hover", "gnss_tumble"}) {
         const Result<spade::testing::LoadedScenario> loaded = load_scenario(name);
         ASSERT_TRUE(loaded.has_value()) << name << ": " << loaded.error().context;
         scenes.emplace_back(name, loaded->scenario);
     }
+    // The smooth scenarios too: the rule is every scenario's, contacts or not.
+    scenes.emplace_back("drag_componentwise", drag_componentwise_scenario());
+    scenes.emplace_back("gnss_receiver", gnss_receiver_scenario(60.0f, "gnss_receiver"));
     const ToleranceBand open{1.0e30f, 1.0e30f};  // report-only
     std::printf("\n=== one-ulp CPU control (max |gap|, A, R) ===\n");
     for (const auto& [name, full] : scenes) {
