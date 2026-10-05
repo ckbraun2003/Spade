@@ -151,8 +151,9 @@ inline constexpr std::string_view kCoreArrays[] = {"world_params", "bodies", "bo
 // The arrays that predate replay_config in the walk. The four modules that
 // declare them (drag, dryden, imu, rotor) carry the LEGACY MARKER, which
 // registers their arrays before replay_config, in set order; the goldens'
-// walk depends on it. No other module may carry it (spec section 3). A future
-// snapshot-format version may drop it.
+// walk depends on it. No other module may carry it, and a module that declares
+// one of these arrays must (spec section 3). A future snapshot-format version
+// may drop it.
 inline constexpr std::string_view kLegacyWalkArrays[] = {"drag_bodies", "dryden", "imu_sensors", "imu_ring",
                                                          "rotors"};
 
@@ -233,7 +234,8 @@ struct CompiledSchedule {
 // array's name, elem_size 0 or an unknown extent, or declared twice in the
 // set; a per_row array with depth 0, or whose owner no module declares or is
 // per_world or per_row; an owner or a depth other than 1 on any other array;
-// the legacy marker on a module with an array outside kLegacyWalkArrays; an
+// the legacy marker on a module with an array outside kLegacyWalkArrays, and an
+// array in kLegacyWalkArrays declared by a module without it; an
 // edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.

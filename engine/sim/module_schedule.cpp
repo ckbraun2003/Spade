@@ -130,6 +130,11 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                                 "replay_config and is only for the arrays that predate it (drag_bodies, dryden, "
                                 "imu_sensors, imu_ring, rotors)"));
                 }
+                if (!mod.legacy_walk && is_legacy_array(a.name)) {
+                    return std::unexpected(invalid(
+                        where + ": an array that predates replay_config registers before it, so its module "
+                                "must carry the legacy walk marker; without it the walk would move"));
+                }
                 by_name.emplace(std::string(a.name), out.size());
                 out.push_back(CompiledArray{std::string(mod.name), std::string(a.name), a.elem_size, a.extent,
                                             kNoArray, a.depth, mod.legacy_walk});

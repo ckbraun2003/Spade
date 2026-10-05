@@ -61,9 +61,10 @@ struct ArrayIndex {
     friend constexpr bool operator==(const ArrayIndex&, const ArrayIndex&) noexcept = default;
 };
 
-// Typed array identity. Minted only by ArenaSet::register_array<T>(), which
-// is also the only way to obtain arena storage -- so holding one of these is
-// proof that the array it names is in the state registry.
+// Typed array identity. Minted only by ArenaSet::register_array<T>() and by
+// ArenaSet::typed<T>() over an array already registered with T's size --
+// registration being the only way to obtain arena storage, holding one of
+// these is proof that the array it names is in the state registry.
 //
 // The element type rides along as a phantom parameter (same idea as
 // core/ids.hpp's Handle<Tag>) so array()/world_slice() need no cast at the
@@ -123,10 +124,11 @@ struct AlignedArenaDelete {
 // including the tail padding inside WorldParams (see layout.hpp). Snapshot
 // blobs are byte-comparable because of this.
 //
-// REGISTRATION IS THE ONLY DOOR. register_array() both allocates and
-// registers; there is no other way to get arena bytes, and no way to
-// unregister. Hence "arena state a snapshot walk would miss" cannot be
-// expressed. See registry.hpp for the full statement of the invariant.
+// REGISTRATION IS THE ONLY DOOR. register_array() and its untyped twin
+// register_bytes() both allocate and register; there is no other way to get
+// arena bytes, and no way to unregister. Hence "arena state a snapshot walk
+// would miss" cannot be expressed. See registry.hpp for the full statement of
+// the invariant.
 //
 // COMPLETENESS OF THE WALK. An arena holds three kinds of state, and the
 // registry walk has to reach all of it:
@@ -227,6 +229,36 @@ public:
         if (!index) return std::unexpected(index.error());
         return ArrayId<T>{*index};
     }
+
+    // register_array<T>()'s registration, untyped: the same two registry
+    // entries, the same per-world capacity and the same zero-filled storage
+    // for an element of `elem_size` bytes. The module API registers its
+    // declared arrays through it (sim/module.hpp's ArrayDecl, whose row_size()
+    // carries register_array's three static_asserts to the declaration).
+    //
+    // Fails as register_array() does, and with invalid_argument on an
+    // elem_size of 0.
+    Result<ArrayIndex> register_bytes(std::string name, uint32_t elem_size, uint32_t capacity_per_world);
+
+    // A typed id for an array already registered, whatever registered it.
+    // not_found for an unknown array; invalid_argument if its element size is
+    // not sizeof(T) -- the check every typed accessor below repeats.
+    template <class T>
+    [[nodiscard]] Result<ArrayId<T>> typed(ArrayIndex array) const {
+        static_assert(std::is_trivially_copyable_v<T>, "arena element types must be trivially copyable (snapshots memcpy them)");
+        static_assert(std::is_trivially_destructible_v<T>, "arena slots are never individually destroyed");
+        static_assert(alignof(T) <= kStd430StructAlignment,
+                      "arena element alignment must not exceed the arena's 16-byte allocation alignment");
+        Result<const Arena*> arena = arena_for(array, static_cast<uint32_t>(sizeof(T)));
+        if (!arena) return std::unexpected(arena.error());
+        return ArrayId<T>{array};
+    }
+
+    // The whole array's bytes, all worlds, free slots included (they read as
+    // zeroes): elem_size * world_count * capacity_per_world of them, global
+    // slot i at byte i * elem_size. not_found for an unknown array.
+    [[nodiscard]] Result<std::span<std::byte>> bytes(ArrayIndex array);
+    [[nodiscard]] Result<std::span<const std::byte>> bytes(ArrayIndex array) const;
 
     // This world's partition of this array: {begin = world * capacity,
     // count = capacity}. Fails with not_found for an unknown array and

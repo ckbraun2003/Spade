@@ -14,13 +14,33 @@
 namespace spade::modules {
 namespace {
 
-// THE BUILT-INS' STATE: the seven arrays today's create() registers, with
-// the extents its capacities follow. Each ring holds kRingDepth samples per
-// sensor, so sensor g owns ring rows [g * kRingDepth, (g + 1) * kRingDepth).
+// THE BUILT-INS' STATE: the seven arrays create() registers from these
+// declarations, with the extents its capacities follow (sim/simulation.cpp's
+// registration block has the walk-order rules). Each ring holds kRingDepth
+// samples per sensor, so sensor g owns ring rows [g * kRingDepth, (g + 1) *
+// kRingDepth). The notes below came here from the hand-written registration
+// calls these declarations replaced (stage 4).
 constexpr ArrayDecl kDragArrays[] = {{.name = "drag_bodies",
                                       .elem_size = attached_row_size<physics::DragBodyRow>(),
                                       .extent = Extent::per_element}};
+
+// One Dryden filter row per world. It was the FIRST production registration of
+// the turbulence state (Task 16 shipped the model and its tests before anything
+// in the engine registered the array), and registering it is what makes
+// "snapshot the world, restore it, resume the identical gust sequence" true
+// rather than aspirational.
 constexpr ArrayDecl kDrydenArrays[] = {{.name = "dryden", .elem_size = row_size<DrydenState>()}};
+
+// The sensor table and its output rings (Task 19). REGISTERED, which is what
+// makes "snapshot mid-flight, restore, and the IMU resumes the identical noise
+// sequence AND the identical unread samples" true: the rows carry the bias
+// random walk, the rate-divider phase, the rng stream and the ring write
+// cursor; the ring array carries the samples themselves. None of it lives in a
+// Simulation member, deliberately.
+//
+// The ring is DIRECT-INDEXED, never slot-allocated: a ring window's lifetime
+// is its sensor's, so an independent alloc/free would be a second lifecycle to
+// keep in step with the first (see Simulation::clear_imu_ring()).
 constexpr ArrayDecl kImuArrays[] = {
     {.name = "imu_sensors", .elem_size = attached_row_size<sensors::ImuSensorRow>(), .extent = Extent::per_sensor},
     {.name = "imu_ring",
@@ -28,9 +48,39 @@ constexpr ArrayDecl kImuArrays[] = {
      .extent = Extent::per_row,
      .owner = "imu_sensors",
      .depth = sensors::kRingDepth}};
+
+// The rotor table (Task 18). REGISTERED, and that is NOT optional the way it
+// arguably is for the parameter-only drag rows: a RotorRow carries `omega` --
+// genuine dynamic state with its own time constant -- and `omega_cmd`, the
+// command in force at the snapshot instant. A snapshot that missed them would
+// restore a vehicle whose rotors are at the wrong speed, or spinning down
+// toward zero, and whose next second of flight differs (vehicles/rotor.hpp
+// says exactly this).
+//
+// SIZED BY THE FORCE-ELEMENT CAPACITY, which the drag table also uses. Rotors
+// and drag bodies are both force elements (spec §3) and share ONE declared
+// budget per world, so a world declaring N force elements can hold at most N
+// rotors -- but the two arrays are separately allocated, which costs a world
+// that never spawns a vehicle N unused RotorRows (80 bytes each; 320 bytes for
+// the corpus's largest world). Accepted deliberately: the alternative is
+// either a per-kind capacity in the world FILE (S5's format, for a distinction
+// a world author should not have to predict) or a conditional registration,
+// which would make the state layer's shape depend on its contents.
 constexpr ArrayDecl kRotorArrays[] = {{.name = "rotors",
                                        .elem_size = attached_row_size<vehicles::RotorRow>(),
                                        .extent = Extent::per_element}};
+
+// GNSS, the second sensor, and the first array appended below replay_config.
+// Its ring has the IMU ring's shape: sensor g owns ring rows [g * kRingDepth,
+// (g+1) * kRingDepth). kRingDepth lives in sensors/rings.hpp, not in imu.hpp --
+// it is shared ring vocabulary rather than an IMU constant, so reusing it here
+// is correct and not a copy.
+//
+// THAT REUSE IS A CHOICE AND NOT AN INHERITANCE. A GNSS fix arrives at roughly
+// 5-10 Hz against the IMU's ~1 kHz, so 64 slots is ~6-12 s of history here
+// against ~64 ms there. The depths happening to match is convenient, not
+// principled; if the rates ever justify a separate kGnssRingDepth, that is a
+// deliberate commit, not a drive-by.
 constexpr ArrayDecl kGnssArrays[] = {
     {.name = "gnss_sensors", .elem_size = attached_row_size<sensors::GnssSensorRow>(), .extent = Extent::per_sensor},
     {.name = "gnss_ring",

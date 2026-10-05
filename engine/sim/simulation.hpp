@@ -560,6 +560,14 @@ public:
     // passes in its order (module-API plan, stage 2), so any set whose passes
     // all name a recipe runs there; a pass with no recipe is refused with
     // unavailable, naming "<module>.<pass>".
+    //
+    // The set's module arrays are registered from its declarations (stage 4):
+    // the legacy-marked modules' before replay_config, every other module's
+    // after it, each in set order, so a module appended to the standard set
+    // registers after the standard walk's 22 entries (sim/module.hpp). The
+    // engine's own calls use the seven arrays the standard set declares, so a
+    // set that omits one, or declares one with another row size, extent, owner
+    // or depth, is refused with invalid_argument, naming the array.
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
@@ -567,6 +575,12 @@ public:
 
     // The compiled module schedule this simulation steps with.
     [[nodiscard]] const modules::CompiledSchedule& schedule() const noexcept { return schedule_; }
+
+    // A module array by its declared name (sim/module.hpp's ArrayDecl), for
+    // ArenaSet's untyped bytes() or typed<T>(). not_found, naming the array, if
+    // no module in this set declares it; the core's four arrays are not module
+    // arrays.
+    [[nodiscard]] Result<ArrayIndex> module_array(std::string_view name) const;
 
     // Declared here, DEFINED in simulation.cpp (not `= default` inline):
     // vulkan_backend_ is a unique_ptr<compute::VulkanBackend> and
@@ -1651,22 +1665,28 @@ private:
     // index into it, and there is no removal, so nothing can reorder it.
     std::vector<vehicles::ModelType> models_;
 
+    // The core's four arrays, registered by hand in create().
     ArrayId<WorldParams> world_params_id_{};
     ArrayId<BodyState> bodies_id_{};
     ArrayId<uint32_t> body_gen_id_{};
-    ArrayId<physics::DragBodyRow> drag_id_{};
-    ArrayId<DrydenState> dryden_id_{};
-    ArrayId<sensors::ImuSensorRow> imu_id_{};
-    ArrayId<sensors::ImuSample> imu_ring_id_{};
-    ArrayId<vehicles::RotorRow> rotors_id_{};
     // REGISTERED AT WALK POSITION 16, and that POSITION is load-bearing rather
     // than incidental -- see the APPEND-ONLY note over create()'s registration
     // block. It is no longer registered LAST: the GNSS arena is appended below
     // it, which is the move that note sanctions and the reason the rule was
     // always about position rather than last-ness.
     ArrayId<ReplayConfig> replay_config_id_{};
-    // Appended BELOW replay_config so its index does not move. Registered but
-    // deliberately NOT bound on the GPU -- no kernel reads either.
+
+    // Every module array, parallel to schedule_.arrays (module-API stage 4),
+    // registered from the set's declarations in create().
+    std::vector<ArrayIndex> module_array_ids_;
+    // The seven built-in module arrays the engine's own calls use, minted from
+    // that table with ArenaSet::typed<T>(). create() refuses a set that omits
+    // one or declares one with another shape, so each is always valid.
+    ArrayId<physics::DragBodyRow> drag_id_{};
+    ArrayId<DrydenState> dryden_id_{};
+    ArrayId<sensors::ImuSensorRow> imu_id_{};
+    ArrayId<sensors::ImuSample> imu_ring_id_{};
+    ArrayId<vehicles::RotorRow> rotors_id_{};
     ArrayId<sensors::GnssSensorRow> gnss_id_{};
     ArrayId<sensors::GnssFix> gnss_ring_id_{};
 

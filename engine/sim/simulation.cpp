@@ -1,5 +1,6 @@
 #include "sim/simulation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -40,7 +41,7 @@ namespace {
 // hashes and digests are written everywhere else in this tree
 // (the golden corpus's expected_digest, the schema hash) -- a decimal one would
 // be ungreppable against them. Hand-rolled rather than via <format>/ostringstream:
-// this is one call site on an error path, and neither of those belongs in an
+// its callers are restore()'s error paths, and neither of those belongs in an
 // engine TU that otherwise allocates nothing but the message itself.
 [[nodiscard]] std::string hex64(uint64_t value) {
     static constexpr char kDigits[] = "0123456789abcdef";
@@ -53,21 +54,15 @@ namespace {
 }
 
 // The array names are the snapshot blob's stable identities (a blob keys
-// entries by name, never by walk position), so they are spelled once, here, and
-// changing one invalidates every recorded blob and every committed digest. The
-// ninth, "replay_config", is spelled in sim/simulation.hpp instead
-// (kReplayConfigArray) because callers outside this file key on it -- see the
-// note at that constant.
+// entries by name, never by walk position), so changing one invalidates every
+// recorded blob and every committed digest. The core's are spelled here, except
+// "replay_config", which is spelled in sim/simulation.hpp (kReplayConfigArray)
+// because callers outside this file key on it -- see the note at that constant.
+// A module's arrays are spelled by its declarations (module-API stage 4; the
+// built-ins' in sim/standard_modules.cpp).
 constexpr const char* kWorldParamsArray = "world_params";
 constexpr const char* kBodiesArray = "bodies";
 constexpr const char* kBodyGenerationArray = "body_generation";
-constexpr const char* kDragElementsArray = "drag_bodies";
-constexpr const char* kDrydenArray = "dryden";
-constexpr const char* kImuSensorsArray = "imu_sensors";
-constexpr const char* kImuRingArray = "imu_ring";
-constexpr const char* kRotorsArray = "rotors";
-constexpr const char* kGnssSensorsArray = "gnss_sensors";
-constexpr const char* kGnssRingArray = "gnss_ring";
 
 
 // ---------------------------------------------------------------------------
@@ -216,6 +211,83 @@ void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> rin
     }
 }
 
+// "elem_size 80, per_element" or "elem_size 32, per_row: 64 per row of 'imu_sensors'".
+[[nodiscard]] std::string describe_array(uint32_t elem_size, modules::Extent extent, std::string_view owner,
+                                         uint32_t depth) {
+    std::string out = "elem_size " + std::to_string(elem_size) + ", ";
+    switch (extent) {
+        case modules::Extent::per_world: return out + "per_world";
+        case modules::Extent::per_body: return out + "per_body";
+        case modules::Extent::per_element: return out + "per_element";
+        case modules::Extent::per_sensor: return out + "per_sensor";
+        case modules::Extent::per_row:
+            return out + "per_row: " + std::to_string(depth) + " per row of '" + std::string(owner) + "'";
+    }
+    return out + "an unknown extent";
+}
+
+// THE BUILT-IN ARRAYS (module-API stage 4; open question 1, approved). The
+// engine's own calls -- spawn()'s rotors, add_drag_element(), add_imu_sensor(),
+// add_gnss_sensor(), the polls, reseed(), create()'s Dryden seeding -- use the
+// seven arrays the standard set declares, through typed ids minted from the
+// table. So a set must declare each of them exactly as the standard set does:
+// the same row size, extent, owner and depth. One that omits or reshapes one is
+// refused here, before anything is registered, naming the array. (Where it sits
+// in the walk is compile_schedule's: only the legacy marker registers before
+// replay_config, and only the legacy arrays carry it.)
+[[nodiscard]] Result<void> check_builtin_arrays(const modules::CompiledSchedule& schedule) {
+    for (const modules::ModuleDesc& standard : modules::standard_modules()) {
+        for (const modules::ArrayDecl& want : standard.state) {
+            const auto have = std::ranges::find(schedule.arrays, want.name, &modules::CompiledArray::name);
+            if (have == schedule.arrays.end()) {
+                return std::unexpected(invalid("module set: no module declares the built-in array '" +
+                                               std::string(want.name) + "' (the standard set's module '" +
+                                               std::string(standard.name) +
+                                               "' does); the engine's own calls use it, so a set must keep it"));
+            }
+            const std::string_view owner = have->owner == modules::kNoArray
+                                               ? std::string_view{}
+                                               : std::string_view(schedule.arrays[have->owner].name);
+            if (have->elem_size != want.elem_size || have->extent != want.extent || have->depth != want.depth ||
+                owner != want.owner) {
+                return std::unexpected(invalid(
+                    "module set: the built-in array '" + have->name + "' (module '" + have->module +
+                    "') is declared as " + describe_array(have->elem_size, have->extent, owner, have->depth) +
+                    "; the engine's is " + describe_array(want.elem_size, want.extent, want.owner, want.depth)));
+            }
+        }
+    }
+    return {};
+}
+
+// A module array's per-world capacity: its extent's formula, as create()
+// sized the built-ins by hand before stage 4 (sim/module.hpp's Extent). A
+// per_row array's owner holds rows itself (never per_world or per_row;
+// compile_schedule checked), and the product is taken in 64 bits so an
+// overflow is refused rather than wrapped.
+[[nodiscard]] Result<uint32_t> array_capacity(const modules::CompiledSchedule& schedule, std::size_t index,
+                                              const WorldSetLayout& layout) {
+    const auto extent_rows = [&layout](modules::Extent extent) -> uint32_t {
+        switch (extent) {
+            case modules::Extent::per_world: return 1u;
+            case modules::Extent::per_body: return layout.body_capacity;
+            case modules::Extent::per_element: return layout.element_capacity;
+            case modules::Extent::per_sensor: return layout.sensor_capacity;
+            case modules::Extent::per_row: break;
+        }
+        return 0u;  // unreachable: compile_schedule refused an unknown extent, and per_row is handled below
+    };
+    const modules::CompiledArray& a = schedule.arrays[index];
+    if (a.extent != modules::Extent::per_row) return extent_rows(a.extent);
+    const uint64_t rows = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
+    if (rows > std::numeric_limits<uint32_t>::max()) {
+        return std::unexpected(Error{Code::capacity_exceeded, "array '" + a.name + "' (module '" + a.module +
+                                                                  "'): its owner's rows times its depth exceed "
+                                                                  "2^32-1 per world"});
+    }
+    return static_cast<uint32_t>(rows);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -260,6 +332,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
 
     Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
     if (!compiled) return std::unexpected(compiled.error());
+    if (Result<void> builtins = check_builtin_arrays(*compiled); !builtins) return std::unexpected(builtins.error());
     if (backend.kind == compute::BackendKind::vulkan) {
         // A pass with no GPU kernel would be missing from the GPU chain: the
         // GPU would run a different experiment from the CPU (L6). Refuse it by
@@ -372,71 +445,38 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (!body_gen_id) return std::unexpected(body_gen_id.error());
     sim.body_gen_id_ = *body_gen_id;
 
-    Result<ArrayId<physics::DragBodyRow>> drag_id =
-        sim.arenas_.register_array<physics::DragBodyRow>(kDragElementsArray, layout->element_capacity);
-    if (!drag_id) return std::unexpected(drag_id.error());
-    sim.drag_id_ = *drag_id;
-
-    // One Dryden filter row per world. This is the FIRST production registration
-    // of the turbulence state (Task 16 shipped the model and its tests; nothing
-    // in the engine had registered the array yet), and registering it here is
-    // what makes "snapshot the world, restore it, resume the identical gust
-    // sequence" true rather than aspirational.
-    Result<ArrayId<DrydenState>> dryden_id = sim.arenas_.register_array<DrydenState>(kDrydenArray, 1);
-    if (!dryden_id) return std::unexpected(dryden_id.error());
-    sim.dryden_id_ = *dryden_id;
-
-    // The sensor table and its output rings (Task 19). REGISTERED, which is
-    // what makes "snapshot mid-flight, restore, and the IMU resumes the
-    // identical noise sequence AND the identical unread samples" true: the
-    // rows carry the bias random walk, the rate-divider phase, the rng stream
-    // and the ring write cursor; the ring array carries the samples themselves.
-    // None of it lives in a Simulation member, deliberately.
+    // THE MODULE ARRAYS (module-API stage 4) are registered from the set's
+    // declarations. compile_schedule tabled them in registration order
+    // (schedule_.arrays), and each registers exactly what its hand-written
+    // register_array<T>(name, capacity) call registered before stage 4: the
+    // elements and the map, the same element size, the same per-world capacity
+    // (array_capacity() above), zero-filled. Each built-in array's own
+    // rationale -- why it is registered, why a ring is direct-indexed, why
+    // rotors share the force-element budget -- sits beside its declaration in
+    // sim/standard_modules.cpp.
     //
-    // APPENDED AFTER the five that came before, not inserted among them: the
-    // walk order is the schema, so appending keeps every earlier array at its
-    // existing position in the blob.
-    Result<ArrayId<sensors::ImuSensorRow>> imu_id =
-        sim.arenas_.register_array<sensors::ImuSensorRow>(kImuSensorsArray, layout->sensor_capacity);
-    if (!imu_id) return std::unexpected(imu_id.error());
-    sim.imu_id_ = *imu_id;
-
-    // kRingDepth samples PER SENSOR, laid out so that global sensor slot g owns
-    // ring slots [g * kRingDepth, (g+1) * kRingDepth) -- see clear_imu_ring().
-    // DIRECT-INDEXED, never slot-allocated: a ring window's lifetime is its
-    // sensor's, so an independent alloc/free would be a second lifecycle to
-    // keep in step with the first.
-    Result<ArrayId<sensors::ImuSample>> imu_ring_id = sim.arenas_.register_array<sensors::ImuSample>(
-        kImuRingArray, layout->sensor_capacity * sensors::kRingDepth);
-    if (!imu_ring_id) return std::unexpected(imu_ring_id.error());
-    sim.imu_ring_id_ = *imu_ring_id;
-
-    // The rotor table (Task 18). REGISTERED, and that is NOT optional the way
-    // it arguably is for the parameter-only drag rows: a RotorRow carries
-    // `omega` -- genuine dynamic state with its own time constant -- and
-    // `omega_cmd`, the command in force at the snapshot instant. A snapshot
-    // that missed them would restore a vehicle whose rotors are at the wrong
-    // speed, or spinning down toward zero, and whose next second of flight
-    // differs (vehicles/rotor.hpp says exactly this).
-    //
-    // SIZED BY THE FORCE-ELEMENT CAPACITY, which the drag table also uses.
-    // Rotors and drag bodies are both force elements (spec §3) and share ONE
-    // declared budget per world, so a world declaring N force elements can
-    // hold at most N rotors -- but the two arrays are separately allocated,
-    // which costs a world that never spawns a vehicle N unused RotorRows
-    // (80 bytes each; 320 bytes for the corpus's largest world). Accepted
-    // deliberately: the alternative is either a per-kind capacity in the world
-    // FILE (S5's format, for a distinction a world author should not have to
-    // predict) or a conditional registration, which would make the state
-    // layer's shape depend on its contents.
-    //
-    // APPENDED LAST, like the sensor arrays before it: the walk order is the
-    // schema, so appending keeps every earlier array at its existing position
-    // in the blob.
-    Result<ArrayId<vehicles::RotorRow>> rotors_id =
-        sim.arenas_.register_array<vehicles::RotorRow>(kRotorsArray, layout->element_capacity);
-    if (!rotors_id) return std::unexpected(rotors_id.error());
-    sim.rotors_id_ = *rotors_id;
+    // THE LEGACY MARKER is what keeps the goldens' walk. Five module arrays
+    // predate replay_config: drag_bodies, dryden, imu_sensors, imu_ring and
+    // rotors. The four modules that declare them (drag, dryden, imu, rotor)
+    // carry the marker, so their arrays register HERE, before replay_config,
+    // in set order -- and the standard set's order is the order these arrays
+    // were registered in by hand. compile_schedule lets no other array carry
+    // the marker and no legacy array go without it, so nothing else can
+    // register at or before replay_config's position.
+    sim.module_array_ids_.assign(sim.schedule_.arrays.size(), ArrayIndex{});
+    const auto register_module_arrays = [&sim, &layout](bool legacy) -> Result<void> {
+        for (std::size_t i = 0; i < sim.schedule_.arrays.size(); ++i) {
+            const modules::CompiledArray& array = sim.schedule_.arrays[i];
+            if (array.legacy_walk != legacy) continue;
+            const Result<uint32_t> capacity = array_capacity(sim.schedule_, i, *layout);
+            if (!capacity) return std::unexpected(capacity.error());
+            const Result<ArrayIndex> index = sim.arenas_.register_bytes(array.name, array.elem_size, *capacity);
+            if (!index) return std::unexpected(index.error());
+            sim.module_array_ids_[i] = *index;
+        }
+        return {};
+    };
+    if (Result<void> legacy = register_module_arrays(true); !legacy) return std::unexpected(legacy.error());
 
     // THE RUN'S IDENTITY (ticket M-1): (dt_ns, substeps, config_hash), as
     // registered state so that it rides every blob and restore() can refuse a
@@ -479,42 +519,37 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (!replay_config_id) return std::unexpected(replay_config_id.error());
     sim.replay_config_id_ = *replay_config_id;
 
-    // THE APPEND THE PARAGRAPH ABOVE SANCTIONS, TAKEN FOR THE FIRST TIME. GNSS
-    // is the second sensor this platform has ever had, and registering it is
-    // the first real load on the walk's ability to grow. It goes BELOW
-    // replay_config for exactly the reason stated above: every earlier entry
-    // keeps its index, replay_config stays at 16, and each golden's
-    // continuation argument extends by a new suffix instead of being
+    // EVERY OTHER MODULE ARRAY, APPENDED BELOW replay_config: the move the
+    // paragraph above sanctions, in set order. In the standard set that is
+    // gnss_sensors and gnss_ring, the first time the append was taken: every
+    // earlier entry keeps its index, replay_config stays at 16, and each
+    // golden's continuation argument extends by a new suffix instead of being
     // invalidated. GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus
-    // is what turns that from a paragraph into a checked claim -- it folds the
-    // retired builder's digests forward over precisely these appended entries.
-    //
-    // NOT BOUND ON THE GPU, DELIBERATELY. No kernel reads either array, so
-    // neither is in the descriptor set (shaders/shared/bindings.slang section
-    // A). They are still registered, allocated, uploaded, read back and folded
-    // into the state digest -- compute/vulkan/state_mirror.cpp's per-entry
-    // has_binding flag is what makes "registered" and "bound" separable, and it
-    // is why a sensor with no kernel can join the walk without spending a
-    // descriptor slot.
-    Result<ArrayId<sensors::GnssSensorRow>> gnss_id =
-        sim.arenas_.register_array<sensors::GnssSensorRow>(kGnssSensorsArray, layout->sensor_capacity);
-    if (!gnss_id) return std::unexpected(gnss_id.error());
-    sim.gnss_id_ = *gnss_id;
+    // checks that claim over precisely those entries. A module appended to the
+    // standard set registers after them, so the standard walk's 22 entries
+    // keep their indices too.
+    if (Result<void> appended = register_module_arrays(false); !appended) {
+        return std::unexpected(appended.error());
+    }
 
-    // ONE RING SLOT BLOCK PER SENSOR, same shape as the IMU ring: sensor g owns
-    // ring slots [g * kRingDepth, (g+1) * kRingDepth). kRingDepth lives in
-    // sensors/rings.hpp, not in imu.hpp -- it is shared ring vocabulary rather
-    // than an IMU constant, so reusing it here is correct and not a copy.
-    //
-    // THAT REUSE IS A CHOICE AND NOT AN INHERITANCE. A GNSS fix arrives at
-    // roughly 5-10 Hz against the IMU's ~1 kHz, so 64 slots is ~6-12 s of
-    // history here against ~64 ms there. The depths happening to match is
-    // convenient, not principled; if the rates ever justify a separate
-    // kGnssRingDepth, that is a deliberate commit, not a drive-by.
-    Result<ArrayId<sensors::GnssFix>> gnss_ring_id = sim.arenas_.register_array<sensors::GnssFix>(
-        kGnssRingArray, layout->sensor_capacity * sensors::kRingDepth);
-    if (!gnss_ring_id) return std::unexpected(gnss_ring_id.error());
-    sim.gnss_ring_id_ = *gnss_ring_id;
+    // THE BUILT-INS' TYPED IDS, minted from the table by name.
+    // check_builtin_arrays() above refused a set that omits one of these or
+    // declares it with another shape, so each lookup finds its array with its
+    // row's size; a misspelt name here fails every create(), never silently.
+    const auto mint = [&sim]<class Row>(ArrayId<Row>& id, std::string_view name) -> Result<void> {
+        const Result<ArrayIndex> index = sim.module_array(name);
+        if (!index) return std::unexpected(index.error());
+        const Result<ArrayId<Row>> typed = sim.arenas_.typed<Row>(*index);
+        if (!typed) return std::unexpected(typed.error());
+        id = *typed;
+        return {};
+    };
+    for (const Result<void>& minted :
+         {mint(sim.drag_id_, "drag_bodies"), mint(sim.dryden_id_, "dryden"), mint(sim.imu_id_, "imu_sensors"),
+          mint(sim.imu_ring_id_, "imu_ring"), mint(sim.rotors_id_, "rotors"), mint(sim.gnss_id_, "gnss_sensors"),
+          mint(sim.gnss_ring_id_, "gnss_ring")}) {
+        if (!minted) return std::unexpected(minted.error());
+    }
 
     // -----------------------------------------------------------------------
     // Seed the per-world rows.
@@ -736,6 +771,16 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     return sim;
+}
+
+// A linear scan in set order: the table is a handful of rows, and a lookup
+// happens at create() and in host calls, never in a step.
+Result<ArrayIndex> Simulation::module_array(std::string_view name) const {
+    for (std::size_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].name == name) return module_array_ids_[i];
+    }
+    return std::unexpected(
+        missing("module_array: no module in this set declares an array '" + std::string(name) + "'"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2410,8 +2455,8 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // header (module-API plan Ruling 1), not in the digested replay_config row.
     if (blob.configuration_identity() != schedule_.identity) {
         return std::unexpected(invalid("restore: blob was taken under a different module set or schedule "
-                                       "(identity " + std::to_string(blob.configuration_identity()) +
-                                       ", this simulation runs " + std::to_string(schedule_.identity) +
+                                       "(identity " + hex64(blob.configuration_identity()) +
+                                       ", this simulation runs " + hex64(schedule_.identity) +
                                        "); restoring it here could replay different physics"));
     }
     // Snapshot format v3: the model registry, in registration order (L2). The
