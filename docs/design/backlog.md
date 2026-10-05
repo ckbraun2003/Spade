@@ -25,7 +25,7 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | The Vulkan raster, and GL's future | After field channels and the module API; GL stays the editor's path: `RND-4` |
 | The below-horizon default sun | Flip with one regeneration, after the Docker leg: `RND-5` |
 | The IMU/GNSS dedup | Absorbed by the module API: `CORE-4` |
-| Editor saves | World files only: `INT-3` |
+| Editor saves | Scenes: `INT-3`, amended 2026-10-03 to "the editor saves scenes" |
 | The `SL14b` v1 baselines | Capture now: `INT-4` |
 
 ## Ruled by the user, 2026-10-03
