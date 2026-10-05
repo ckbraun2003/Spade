@@ -1140,6 +1140,14 @@ spade_slang_generated_layouts(spade_compute)
 # artifact, not on a separately-compiled copy of it.
 spade_slang_kernel(spade_compute fp32_math_probe)
 
+# denorm_probe: M1 of the NVIDIA fp32-denormal measurement
+# (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md). It
+# exists only in the measurement build, so no default build or install carries
+# it; tests/test_gpu_denorm_probe.cpp dispatches it through probe_runner.
+if(SPADE_MEASURE_UNPINNED_DENORMS)
+    spade_slang_kernel(spade_compute denorm_probe)
+endif()
+
 # ------------------------------------------------------------------------------
 # S6 TASK 6 -- kernels wave A. Three real physics kernels replacing the stub:
 # forces_drag (today's drag.forces), collision_static (static_contact.resolve)
