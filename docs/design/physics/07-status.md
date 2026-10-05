@@ -17,7 +17,7 @@
 | Model types, quadrotor (`engine D4`) | **Built**. The quadrotor is still engine code (`vehicles/quadrotor.*`), not yet a template | `vehicles/model_type.*`, `quadrotor.*`; `test_quadrotor.cpp` (22) |
 | Medium: density, wind, Dryden (`engine D6`) | **Built**, CPU and Vulkan. Position-independent | `world/medium.*`, `medium_update.slang`, `dryden.slang`; `test_dryden.cpp` (22), `test_rng_medium.cpp` (26) |
 | Medium temperature (`engine D6`) | **Not built** | — |
-| IMU | **Built**, CPU and Vulkan | `sensors/imu.*`, `sensor_imu.slang`; `test_imu.cpp` (17) |
+| IMU | **Built**, CPU and Vulkan. Reads the contact response (`PHY-7`) | `sensors/imu.*`, `sensor_imu.slang`; `test_imu.cpp` (20) |
 | GNSS | **Built**, CPU and Vulkan. The CPU path has a golden, `gnss_tumble` (`PHY-6`) | `sensors/gnss.*`, `sensor_gnss.slang`; `test_gnss.cpp` (20) |
 | SPH field provider (`SL8`) | **Not built.** Resumes right after Core's module API lands (`PHY-4`); the one open transfer-register row | v1: `src/Core/Engine.cpp`, `assets/shaders/[SYSTEM]Fluid*.comp` |
 | Rotor wake, visualisation (`PHY-3`) | **Built**, CPU only (merge `84e435b`). Read only by the drone sim box's heatmap (`sandbox/drone_view.hpp`, merge `df33f09`) | `vehicles/rotor_wake.*`; `test_rotor_wake.cpp` (14) |
@@ -40,7 +40,6 @@ The three decisions this page held are ruled; the rulings live in `00-decisions.
 
 | Item | Detail |
 |---|---|
-| **A resting body's IMU reads ~0 specific force** | Contact impulses bypass `force_acc`. In-flight readings are correct. Documented in `imu.hpp`; it waits on the contact model's next fidelity step |
 | **Rotor torque is uncorrected by inflow and ground** | Thrust is corrected; `Q = k_Q ω²` is not, so `Q` is not a power budget. Documented in `rotor.hpp`; it waits on BEMT |
 | **No contact torque, manifold or CCD** | `contacts.hpp` states each limit |
 | **The drone stand cannot run on Vulkan** | It pins translation with CPU behaviors, and a Vulkan step now refuses an attached registry (`CORE-1`) rather than skipping it. A translation-lock constraint on both backends is `../backlog.md` (Core / Physics) |

@@ -186,9 +186,9 @@ constexpr float kG = 9.80665f;
 
 // The wrench that holds a unit-mass body exactly stationary against gravity:
 // force_acc becomes m*|g| upward, so accel_ext + gravity is exactly zero and
-// neither vel nor pos changes. This is also the ONLY way to get a static
-// reading -- contact response is impulse-based and never touches force_acc, so
-// a body resting on an SDF reads ~0, not +g (sensors/imu.hpp section 5).
+// neither vel nor pos changes. A body resting on an SDF reads +g as well, since
+// PHY-7 (ImuContact.*, sensors/imu.hpp section 5); this wrench keeps the body
+// off every contact, so its reading is force_acc's alone.
 [[nodiscard]] glm::vec3 antigravity_force(float mass) { return glm::vec3(0.0f, mass * kG, 0.0f); }
 
 // A rotation of +90 degrees about the body's Z axis, as a (w, x, y, z)

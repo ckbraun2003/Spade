@@ -23,7 +23,7 @@ Camera sensors are Rendering's.
 
 All of it is in `sensors/imu.hpp`.
 
-**Known limit:** a body resting on the ground reads about 0 specific force, because contact impulses bypass `force_acc`. In-flight readings are correct. The fix belongs with the contact model's next fidelity step (`02-responders.md`).
+**Contact (`PHY-7`):** the specific force includes the contact response. Contact is resolved by velocity impulses, never as a force, so the contact passes record each body's velocity change and Integrate adds it over `h`. A body resting on the ground reads `+g` up, and an impact reads its full reaction; there is no range clamp. The position correction is not felt. The reported velocity at rest still reads about `-g·dt`, because it is sampled before contact; that waits on the velocity-level substep (`PHY-8`).
 
 ## GNSS
 
