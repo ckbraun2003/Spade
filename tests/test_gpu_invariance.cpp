@@ -107,6 +107,7 @@
 #include "compute/backend.hpp"
 #include "compute/grid_entry.hpp"
 #include "compute/vulkan/context.hpp"
+#include "gpu_skip.hpp"
 #include "core/rng.hpp"
 #include "physics/grid.hpp"
 #include "physics/integrator.hpp"
@@ -293,28 +294,28 @@ void expect_workgroup_size_invariance(const Scenario& scenario, std::string_view
 }  // namespace
 
 TEST_F(GpuInvarianceTest, BallisticBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("ballistic");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "ballistic");
 }
 
 TEST_F(GpuInvarianceTest, BounceBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("bounce");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "bounce");
 }
 
 TEST_F(GpuInvarianceTest, QuadHoverBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("quad_hover");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "quad_hover");
 }
 
 TEST_F(GpuInvarianceTest, ShowerBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("shower");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "shower");
@@ -323,7 +324,7 @@ TEST_F(GpuInvarianceTest, ShowerBitIdenticalAcrossWorkgroupSizes) {
 // PHY-6: the corpus's GNSS scenario, so sensor_gnss.slang over live rows is
 // held to the same workgroup-size bit-identity as every other kernel.
 TEST_F(GpuInvarianceTest, GnssTumbleBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("gnss_tumble");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "gnss_tumble");
@@ -426,7 +427,7 @@ TEST(WorkgroupSizeContract, UnsupportedSizeIsRejectedByName) {
 }
 
 TEST_F(GpuInvarianceTest, TwoWorldIsolationBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Result<LoadedScenario> loaded = load_scenario("two_world_isolation");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     expect_workgroup_size_invariance(loaded->scenario, "two_world_isolation");
@@ -520,7 +521,7 @@ constexpr uint64_t kHeteroSteps = 900;
 }  // namespace
 
 TEST_F(GpuInvarianceTest, HeterogeneousGeometrySetBitIdenticalAcrossWorkgroupSizes) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     expect_workgroup_size_invariance(hetero_scenario(), "heterogeneous_geometry_set (2 worlds, differing SDF)");
 }
 
@@ -623,7 +624,7 @@ constexpr uint64_t kTwoWorldIsolationExpectedDigest = 0x69c6467bf2df206cULL;
 }  // namespace
 
 TEST_F(GpuInvarianceTest, TwoWorldIsolationWorldsMatchSoloRunsOnGpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldInstanceDesc> w0 = two_world_isolation_instance(kTwoWorldSeed0);
     ASSERT_TRUE(w0.has_value()) << w0.error().context;
@@ -850,7 +851,7 @@ constexpr uint64_t kCrossFinalTick = 700;
 }  // namespace
 
 TEST_F(GpuInvarianceTest, CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Scenario resume = cross_backend_resume_scenario();
 
@@ -918,7 +919,7 @@ TEST_F(GpuInvarianceTest, CpuSnapshotRestoresIntoVulkanAndContinuesWithinBands) 
 }
 
 TEST_F(GpuInvarianceTest, VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Scenario resume = cross_backend_resume_scenario();
 
@@ -1115,7 +1116,7 @@ void spawn_deep_sort_bodies(Simulation& sim) {
 }  // namespace
 
 TEST_F(GpuGridSortDeepTest, Deep128KeyBatchedNetworkMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = deep_sort_world_set(kDeepSortWorldCount, 0xD33D5027ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -1151,7 +1152,7 @@ TEST_F(GpuGridSortDeepTest, Deep128KeyBatchedNetworkMatchesTheCpu) {
 }
 
 TEST_F(GpuGridSortDeepTest, SegmentedPerWorldPartitionMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     // Hand-built (not world_set_from(), which replicates ONE prototype and so
     // can only ever produce a UNIFORM set): two worlds from the SAME file,

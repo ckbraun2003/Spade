@@ -72,6 +72,7 @@
 
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
+#include "gpu_skip.hpp"
 #include "compute/vulkan/probe_runner.hpp"
 #include "core/fp32_math.hpp"
 #include "core/rng.hpp"
@@ -331,7 +332,7 @@ float host_cos32(float x) { return spade::math::cos32(x); }
 // boundaries. A device that advertised denorm-preserve and did not do it would
 // pass an assertion here and fail there, which is the right way round.
 TEST(GpuFp32Math, ReportsTheDeviceAndItsFloatControls) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr) << "VulkanContext::create failed on a device-present box";
@@ -394,7 +395,7 @@ TEST(GpuFp32Math, ReportsTheDeviceAndItsFloatControls) {
 // Cody-Waite transcription: a test that read the same constant object the
 // implementation uses would prove nothing about the constant.
 TEST(GpuFp32Math, KernelConstantsAreBitIdenticalToTheHostConstants) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -465,7 +466,7 @@ TEST(GpuFp32Math, KernelConstantsAreBitIdenticalToTheHostConstants) {
 //     shown to be a correctly-rounded divide rather than something that happens
 //     to agree on log32's narrow domain.
 TEST(GpuFp32Math, CorrectlyRoundedDivisionMatchesTheHostDivide) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -540,7 +541,7 @@ TEST(GpuFp32Math, CorrectlyRoundedDivisionMatchesTheHostDivide) {
 // of arguments log32 can ever see inside the engine's gaussian -- 16,777,215
 // of them, every one of them, no sampling.
 TEST(GpuFp32Math, Log32MatchesTheHostBitForBitOverEveryNextFloatArgument) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -561,7 +562,7 @@ TEST(GpuFp32Math, Log32MatchesTheHostBitForBitOverEveryNextFloatArgument) {
 // every mantissa region. log32 is a general routine and the port has to be one
 // too.
 TEST(GpuFp32Math, Log32MatchesTheHostBitForBitAcrossTheWholeNormalRange) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -593,7 +594,7 @@ TEST(GpuFp32Math, Log32MatchesTheHostBitForBitAcrossTheWholeNormalRange) {
 // so both the polynomial's worst case and the reduction's discontinuity are
 // enumerated here.
 TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitAcrossTheReductionBoundary) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -618,7 +619,7 @@ TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitAcrossTheReductionBoundary) {
 // reduction's only rounding -- is largest; the negative half is the entire
 // subnormal-result region and both saturation boundaries.
 TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubnormalTail) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -644,7 +645,7 @@ TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitOverTheLargestQuotientsAndTheSubno
 // where a guard placed an ulp out of position on one side and not the other
 // would show up as a bit divergence rather than as an accuracy one.
 TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitAcrossTheWholeFiniteDomainAndBothSaturationEdges) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -709,7 +710,7 @@ namespace {
 }  // namespace
 
 TEST(GpuFp32Math, Sin32MatchesTheHostBitForBitOverEveryBoxMullerAngle) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -721,7 +722,7 @@ TEST(GpuFp32Math, Sin32MatchesTheHostBitForBitOverEveryBoxMullerAngle) {
 }
 
 TEST(GpuFp32Math, Cos32MatchesTheHostBitForBitOverEveryBoxMullerAngle) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -739,7 +740,7 @@ TEST(GpuFp32Math, Cos32MatchesTheHostBitForBitOverEveryBoxMullerAngle) {
 // different rules (computed vs pinned), both of which the port must land on the
 // same float as the host.
 TEST(GpuFp32Math, SinCos32MatchTheHostBitForBitAcrossTheAccuracyDomainAndThePinnedRegion) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -798,7 +799,7 @@ TEST(GpuFp32Math, SinCos32MatchTheHostBitForBitAcrossTheAccuracyDomainAndThePinn
 // world sets a rotor `tau`, so `tau <= 0` disables the lag and that call site
 // is not corpus-live today. Stated rather than silently omitted.
 TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADeterministicLattice) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -856,7 +857,7 @@ TEST(GpuFp32Math, Exp32MatchesTheHostBitForBitOverTheCorpusLiveArgumentsAndADete
 // the port behave as the host's do, on this device, rather than an inference
 // from the driver's advertised float-controls properties.
 TEST(GpuFp32Math, EdgeCasesAreBitIdenticalToTheHost) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
@@ -988,7 +989,7 @@ struct ShiftCase {
 }  // namespace
 
 TEST(GpuU64, ShiftMatchesTheHostAtEveryDistance) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const std::unique_ptr<VulkanContext> ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 

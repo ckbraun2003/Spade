@@ -84,6 +84,7 @@
 #include "compute/grid_entry.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/context.hpp"
+#include "gpu_skip.hpp"
 #include "core/rng.hpp"
 #include "physics/grid.hpp"
 #include "physics/integrator.hpp"
@@ -604,7 +605,7 @@ constexpr CorpusScenario kCorpusScenarios[] = {
 // deciding to.
 // ---------------------------------------------------------------------------
 TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Scenario scenario = gnss_receiver_scenario(60.0f, "gnss_receiver");
 
@@ -739,7 +740,7 @@ namespace {
 }  // namespace
 
 TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDraws) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     // 1e-6 s against a ~1e-3 s fix interval. Validation requires bias_tau_s to
     // be finite and >= 0 (sim/simulation.cpp:1647), which this satisfies -- it
@@ -840,7 +841,7 @@ TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDra
 // the tau=60 divergence without explaining it.
 // ===========================================================================
 TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     using spade::sensors::GnssFix;
     using spade::sensors::GnssSensorRow;
@@ -916,7 +917,7 @@ TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
 }
 
 TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Scenario scenario = gnss_receiver_scenario(60.0f, "gnss_receiver");
 
@@ -979,7 +980,7 @@ TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, BallisticMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("ballistic");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -1015,7 +1016,7 @@ TEST_F(GpuParityTest, BallisticMatchesTheCpuWithinBands) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     Scenario gate;
     gate.name = "gate_fleet";
@@ -1097,7 +1098,7 @@ TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, BounceMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("bounce");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -1261,7 +1262,7 @@ void expect_quad_hover_flew_and_sensed(const Simulation& cpu, const Simulation& 
 // ===========================================================================
 
 TEST_F(GpuParityTest, TwoWorldIsolationMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("two_world_isolation");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -1324,7 +1325,7 @@ TEST_F(GpuParityTest, TwoWorldIsolationMatchesTheCpuWithinBands) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, QuadHoverMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("quad_hover");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -1346,7 +1347,7 @@ TEST_F(GpuParityTest, QuadHoverMatchesTheCpuWithinBands) {
 // gnss_receiver run above (a band answers for the run it was measured on).
 // ===========================================================================
 TEST_F(GpuParityTest, GnssTumbleMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("gnss_tumble");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -1397,7 +1398,7 @@ TEST_F(GpuParityTest, GnssTumbleMatchesTheCpuWithinBands) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, IntegrateKernelReadsThePerStepTickBuffer) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     WorldInstanceDesc prototype;
     prototype.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
@@ -1494,7 +1495,7 @@ TEST_F(GpuParityTest, IntegrateKernelReadsThePerStepTickBuffer) {
 // ---------------------------------------------------------------------------
 
 TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     Scenario pair;
     pair.name = "contact_pair";
@@ -1579,7 +1580,7 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     Scenario drag;
     drag.name = "drag_componentwise";
@@ -1682,7 +1683,7 @@ namespace {
 }  // namespace
 
 TEST_F(GpuParityTest, ApplyWrenchForcesReupload) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = dirty_test_world_set(1, 0xA99117E0ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -1714,7 +1715,7 @@ TEST_F(GpuParityTest, ApplyWrenchForcesReupload) {
 }
 
 TEST_F(GpuParityTest, RotorCommandsForceReupload) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = dirty_test_world_set(1, 0x0C0FFEE1ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -1787,7 +1788,7 @@ TEST_F(GpuParityTest, RotorCommandsForceReupload) {
 }
 
 TEST_F(GpuParityTest, ReseedForcesReupload) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = dirty_test_world_set(2, 0x5EED5EEDULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -1828,7 +1829,7 @@ TEST_F(GpuParityTest, ReseedForcesReupload) {
 }
 
 TEST_F(GpuParityTest, StructuralOpsAreCoveredTransitively) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     // The census (simulation.hpp) claims spawn/despawn/add_drag_element/
     // add_imu_sensor need no mark of their own because each ALWAYS queues an op
@@ -1928,7 +1929,7 @@ TEST_F(GpuParityTest, StructuralOpsAreCoveredTransitively) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     constexpr uint64_t kSnapshotTick = 300;
     constexpr uint64_t kFinalTick = 700;
@@ -2222,7 +2223,7 @@ TEST(ParityGeometry, HeterogeneousGeometrySetMatchesSoloRuns) {
 // ---------------------------------------------------------------------------
 
 TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     Scenario hetero;
     hetero.name = "heterogeneous_geometry_set";
@@ -2511,7 +2512,7 @@ TEST(ParityChaos, ShowerPileAmplifiesOneUlpOnTheCpuAlone) {
 // live, non-zero-sigma Dryden filter running on the device for 800 substeps,
 // compared against the CPU's by the `dryden` rows.
 TEST_F(GpuParityTest, ShowerMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("shower");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -2534,7 +2535,7 @@ TEST_F(GpuParityTest, ShowerMatchesTheCpuWithinBands) {
 }
 
 TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     Scenario ladder;
     ladder.name = "shower_ladder";
@@ -2803,7 +2804,7 @@ constexpr std::size_t kSortDomain2 = 8;  // next_pow2(2 worlds * 4 slots)
 }  // namespace
 
 TEST_F(GpuGridSort, AlreadySortedKeySetMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = sort_test_world_set(1, 0x507E0ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -2827,7 +2828,7 @@ TEST_F(GpuGridSort, AlreadySortedKeySetMatchesTheCpu) {
 }
 
 TEST_F(GpuGridSort, ReversedKeySetMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = sort_test_world_set(1, 0x5EE5EDULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -2850,7 +2851,7 @@ TEST_F(GpuGridSort, ReversedKeySetMatchesTheCpu) {
 }
 
 TEST_F(GpuGridSort, AllEqualCellsFallsBackToTheSlotTiebreak) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = sort_test_world_set(1, 0xE00A11ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -2892,7 +2893,7 @@ TEST_F(GpuGridSort, AllEqualCellsFallsBackToTheSlotTiebreak) {
 }
 
 TEST_F(GpuGridSort, OneWorldEmptyMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = sort_test_world_set(2, 0xE377E0ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -3019,7 +3020,7 @@ void expect_gpu_run_to_run_determinism(const Scenario& scenario, std::string_vie
 }  // namespace
 
 TEST_F(GpuParityTest, QuadHoverIsBitIdenticalAcrossTwoGpuRuns) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("quad_hover");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -3027,7 +3028,7 @@ TEST_F(GpuParityTest, QuadHoverIsBitIdenticalAcrossTwoGpuRuns) {
 }
 
 TEST_F(GpuParityTest, ShowerIsBitIdenticalAcrossTwoGpuRuns) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("shower");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -3059,7 +3060,7 @@ TEST_F(GpuParityTest, ShowerIsBitIdenticalAcrossTwoGpuRuns) {
 // ===========================================================================
 
 TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::testing::LoadedScenario> loaded = load_scenario("quad_hover");
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
@@ -3157,7 +3158,7 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
 class GpuBehaviorRefusal : public GpuParityTest {};
 
 TEST_F(GpuBehaviorRefusal, VulkanStepRefusesAnAttachedBehaviorRegistry) {
-    if (!vulkan_available()) GTEST_SKIP() << "no Vulkan device";
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<spade::WorldDesc> world = spade::WorldBuilder()
                                                .name("refusal")

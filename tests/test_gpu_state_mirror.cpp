@@ -20,6 +20,7 @@
 #include "compute/vulkan/backend.hpp"
 #include "bindings.gen.hpp"
 #include "compute/vulkan/context.hpp"
+#include "gpu_skip.hpp"
 #include "core/error.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
@@ -237,7 +238,7 @@ protected:
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, RoundTripUploadReadbackWithoutSteppingIsByteIdentical) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = gate_world_set(4, 0xA11CE5EEDULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -298,7 +299,7 @@ TEST_F(GpuStateMirrorTest, RoundTripUploadReadbackWithoutSteppingIsByteIdentical
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, StructuralOpBetweenStepsForcesReupload) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = gate_world_set(4, 0xD1279101ULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -339,7 +340,7 @@ TEST_F(GpuStateMirrorTest, StructuralOpBetweenStepsForcesReupload) {
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, StepParamsTickWrittenPerSubmit) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = gate_world_set(4, 0x71C4574EULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -413,7 +414,7 @@ TEST_F(GpuStateMirrorTest, StepParamsTickWrittenPerSubmit) {
 //    the same non-vacuity discipline every other assertion in this file
 //    carries.
 TEST_F(GpuStateMirrorTest, VulkanStepTouchesOnlyTheExpectedArrays) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     const Result<WorldSetDesc> set = gate_world_set(1, 0x0B17E5EEULL);
     ASSERT_TRUE(set.has_value()) << set.error().context;
@@ -530,7 +531,7 @@ TEST_F(GpuStateMirrorTest, VulkanStepTouchesOnlyTheExpectedArrays) {
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, AbsurdShapeAllocationFailureIsReportedNotCrashed) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     // world_count=1, body_capacity=UINT32_MAX: the `bodies` buffer alone
     // would be sizeof(BodyState) (128) * ~4.29e9 slots =~ 549 GB -- far past
@@ -644,7 +645,7 @@ TEST(BackendKnobInvariance, CpuBackendReproducesTodaysDigestsAcrossTheFullCorpus
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     for (const uint32_t substeps : {1u, 2u, 5u}) {
         SCOPED_TRACE(::testing::Message() << "substeps = " << substeps);
@@ -679,7 +680,7 @@ TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchP
 // ===========================================================================
 
 TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     StepShape shape{};
     shape.world_count = 2;
