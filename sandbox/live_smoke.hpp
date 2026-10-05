@@ -11,7 +11,8 @@
 //      on, and any anomaly fails the run;
 //   2. known-open entries expire: a tolerated failure that stops firing fails
 //      the run, so it cannot outlive its cause;
-//   3. a declared-step ledger: a declared step that never ran fails the run.
+//   3. a declared-step ledger: a declared step that never ran fails the run,
+//      and so does a step that ran but checked nothing.
 // And Kat's section 4.4: the verdict is JOURNALED, not accumulated. Every event
 // is written as a line the moment it happens, and the journal ends with an
 // explicit "END verdict=..." line, so a crash leaves a true prefix whose
@@ -24,6 +25,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -79,6 +81,7 @@ class Smoke {
             anomaly("harness/step-not-closed", current_);
         }
         current_ = std::string(step);
+        checks_ = 0;
         line("BEGIN " + current_);
         if (index_of(current_) == kNone) {
             anomaly("harness/undeclared-step", current_);
@@ -89,6 +92,7 @@ class Smoke {
     // goes on. Returns `ok`, so a caller can skip what depends on it.
     bool check(bool ok, std::string_view name, std::string_view detail) {
         const std::string id = (current_.empty() ? std::string("harness") : current_) + "/" + std::string(name);
+        ++checks_;
         if (ok) {
             line("CHECK " + id + " | " + std::string(detail));
         } else {
@@ -107,11 +111,15 @@ class Smoke {
         line("ANOMALY " + std::string(id) + " | " + std::string(detail));
     }
 
-    // Ends the current step and marks it in the ledger.
+    // Ends the current step and marks it in the ledger. A step that checked
+    // nothing proves nothing, so ending one is an anomaly.
     void done() {
         if (current_.empty()) {
             anomaly("harness/done-without-begin", "");
             return;
+        }
+        if (checks_ == 0) {
+            anomaly(current_ + "/no-checks", "the step checked nothing");
         }
         line("DONE " + current_);
         if (const std::size_t i = index_of(current_); i != kNone) {
@@ -188,6 +196,7 @@ class Smoke {
     std::vector<int> fired_;
     LineWriter write_;
     std::string current_;
+    int checks_ = 0;  // in the current step, passed or failed
     int anomalies_ = 0;
     bool finished_ = false;
 };
@@ -204,11 +213,14 @@ class Smoke {
 }
 
 // ---------------------------------------------------------------------------
-// The inject hooks, for the red runs: skip a declared step, raise an anomaly,
-// or list a known-open entry that will not fire.
+// The inject hooks, for the red runs: skip a declared step, or raise an
+// anomaly inside one. An injection can only make a run red. There is no
+// known-open injection, because a tolerated entry added from the command line
+// could cancel a real anomaly and turn a FAIL into a PASS; expiry is covered
+// by tests/test_sandbox_live_smoke.cpp.
 // ---------------------------------------------------------------------------
 struct Injection {
-    enum class Kind { skip, anomaly, known_open };
+    enum class Kind { skip, anomaly };
     Kind kind = Kind::skip;
     std::string target;
 };
@@ -216,7 +228,7 @@ struct Injection {
 [[nodiscard]] inline Result<Injection> parse_inject(std::string_view spec) {
     const auto refuse = [&]() -> Result<Injection> {
         return std::unexpected(Error{Code::invalid_argument,
-                                     "--inject takes skip:<step>, anomaly:<id> or known-open:<id>, not '" +
+                                     "--inject takes skip:<step> or anomaly:<step>/<name>, not '" +
                                          std::string(spec) + "'"});
     };
     const std::size_t colon = spec.find(':');
@@ -230,56 +242,68 @@ struct Injection {
         out.kind = Injection::Kind::skip;
     } else if (kind == "anomaly") {
         out.kind = Injection::Kind::anomaly;
-    } else if (kind == "known-open") {
-        out.kind = Injection::Kind::known_open;
     } else {
         return refuse();
     }
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// The output folder. A run sweeps exactly these names before writing, so a
-// stale frame never poses as a new one (Kat's lesson), and nothing else in
-// the folder is touched.
-// ---------------------------------------------------------------------------
-namespace detail {
-[[nodiscard]] inline bool all_digits(std::string_view s) {
-    if (s.empty()) return false;
-    for (const char c : s) {
-        if (c < '0' || c > '9') return false;
+// Refuses, before the run starts, an injection that could not make it red: a
+// skip of a step the ledger does not declare, an anomaly that is not
+// "<declared step>/<name>", or an anomaly a known-open entry would tolerate.
+[[nodiscard]] inline Result<void> validate_injections(std::span<const Injection> injections,
+                                                      std::span<const std::string> declared,
+                                                      std::span<const KnownOpen> known_open) {
+    const auto is_declared = [&](std::string_view step) {
+        for (const std::string& d : declared) {
+            if (d == step) return true;
+        }
+        return false;
+    };
+    const auto steps = [&] {
+        std::string list;
+        for (const std::string& d : declared) {
+            list += (list.empty() ? "" : ", ") + d;
+        }
+        return list;
+    };
+    for (const Injection& inj : injections) {
+        if (inj.kind == Injection::Kind::skip) {
+            if (!is_declared(inj.target)) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "--inject skip:" + inj.target + " names no declared step, so it "
+                                             "would skip nothing (the steps are " + steps() + ")"});
+            }
+            continue;
+        }
+        const std::size_t slash = inj.target.find('/');
+        if (slash == std::string::npos || slash + 1 >= inj.target.size() ||
+            !is_declared(std::string_view(inj.target).substr(0, slash))) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "--inject anomaly:" + inj.target + " must be <step>/<name> for a declared "
+                                         "step (the steps are " + steps() + ")"});
+        }
+        for (const KnownOpen& k : known_open) {
+            if (k.id == inj.target) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "--inject anomaly:" + inj.target + " is a known-open entry, so it "
+                                             "would be tolerated and the run would not go red"});
+            }
+        }
     }
-    return true;
+    return {};
 }
-}  // namespace detail
 
-// "tour.mp4", "journal.txt", "NN_<main>.png" (a poster per main function) and
-// "frame_NNNNN.png" (the fallback frames when ffmpeg is missing).
-[[nodiscard]] inline bool is_live_smoke_artifact(std::string_view name) {
-    if (name == "tour.mp4" || name == "journal.txt") {
-        return true;
-    }
-    constexpr std::string_view kPng = ".png";
-    if (name.size() <= kPng.size() || name.substr(name.size() - kPng.size()) != kPng) {
-        return false;
-    }
-    const std::string_view stem = name.substr(0, name.size() - kPng.size());
-    if (stem.rfind("frame_", 0) == 0) {
-        const std::string_view n = stem.substr(6);
-        return n.size() == 5 && detail::all_digits(n);
-    }
-    if (stem.size() < 4 || !detail::all_digits(stem.substr(0, 2)) || stem[2] != '_') {
-        return false;
-    }
-    const std::string_view main = stem.substr(3);
-    if (main.front() < 'a' || main.front() > 'z') {
-        return false;
-    }
-    for (const char c : main) {
-        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
-    }
-    return true;
-}
+// ---------------------------------------------------------------------------
+// The output folder. A run deletes exactly the names it writes, so a stale
+// frame never poses as a new one (Kat's lesson). A folder holding anything
+// else is refused before anything is deleted, because --out may name a folder
+// that is not the run's to clear.
+// ---------------------------------------------------------------------------
+
+// Without ffmpeg a still is kept twice a second, up to this many (five
+// minutes); the cap keeps the list of names a run owns finite and exact.
+inline constexpr uint32_t kMaxStills = 600;
 
 [[nodiscard]] inline std::string poster_name(uint32_t index, std::string_view main) {
     char prefix[8];
@@ -287,10 +311,45 @@ namespace detail {
     return std::string(prefix) + std::string(main) + ".png";
 }
 
-[[nodiscard]] inline std::string frame_name(uint64_t n) {
+[[nodiscard]] inline std::string still_name(uint32_t n) {
     char text[24];
-    std::snprintf(text, sizeof text, "frame_%05llu.png", static_cast<unsigned long long>(n % 100000u));
+    std::snprintf(text, sizeof text, "still_%05u.png", static_cast<unsigned>(n % 100000u));
     return text;
+}
+
+// Every name a run can write into its folder: the video, the journal, a poster
+// per main function (numbered from 1, in tour order) and the stills.
+[[nodiscard]] inline std::vector<std::string> owned_names(std::span<const std::string_view> mains) {
+    std::vector<std::string> names = {"tour.mp4", "journal.txt"};
+    for (std::size_t i = 0; i < mains.size(); ++i) {
+        names.push_back(poster_name(static_cast<uint32_t>(i + 1), mains[i]));
+    }
+    for (uint32_t n = 0; n < kMaxStills; ++n) {
+        names.push_back(still_name(n));
+    }
+    return names;
+}
+
+// What to delete before a run, given the folder's entries (a directory's name
+// ends in '/'): every entry, when each is a name the run owns; otherwise
+// nothing, and the first entry the run would not have written.
+[[nodiscard]] inline Result<std::vector<std::string>> plan_sweep(const std::vector<std::string>& entries,
+                                                                 std::span<const std::string> owned) {
+    for (const std::string& e : entries) {
+        bool ours = false;
+        for (const std::string& o : owned) {
+            if (o == e) {
+                ours = true;
+                break;
+            }
+        }
+        if (!ours) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "holds '" + e + "', which a live smoke run does not write. A run deletes "
+                                         "only its own files, so give --out an empty folder or an earlier run's"});
+        }
+    }
+    return std::vector<std::string>(entries.begin(), entries.end());
 }
 
 // ---------------------------------------------------------------------------
@@ -298,12 +357,14 @@ namespace detail {
 // ---------------------------------------------------------------------------
 
 // Raw RGBA frames on stdin, as glReadPixels returns them (bottom row first, so
-// vflip), cropped to even dimensions (yuv420p needs them), into H.264.
+// vflip), cropped to even dimensions (yuv420p needs them), into H.264. The
+// filter is quoted: popen() hands the line to sh, where its parentheses are
+// syntax, and an unquoted filter fails only at the first frame's write.
 [[nodiscard]] inline std::string ffmpeg_command(const std::string& ffmpeg, const std::filesystem::path& out_mp4,
                                                 uint32_t width, uint32_t height, uint32_t fps) {
     return ffmpeg + " -hide_banner -loglevel error -y -f rawvideo -pix_fmt rgba -s " + std::to_string(width) + "x" +
            std::to_string(height) + " -r " + std::to_string(fps) +
-           " -i - -vf vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2 -c:v libx264 -preset veryfast -crf 20"
+           " -i - -vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 20"
            " -pix_fmt yuv420p \"" +
            out_mp4.string() + "\"";
 }
