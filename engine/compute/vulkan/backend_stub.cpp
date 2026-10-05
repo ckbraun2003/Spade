@@ -146,6 +146,13 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return {}; }
 
+// Never reached: create() refuses on a build without Vulkan, so no VulkanBackend
+// exists to ask. An empty report keeps the symbol defined.
+const DeviceReport& VulkanBackend::device_report() const noexcept {
+    static const DeviceReport kNone{};
+    return kNone;
+}
+
 uint32_t VulkanBackend::bound_binding_count() const noexcept { return 0; }
 
 }  // namespace spade::compute
