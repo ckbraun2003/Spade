@@ -72,6 +72,10 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return false;
 }
 
+[[nodiscard]] bool is_attached(Extent e) noexcept {
+    return e == Extent::per_body || e == Extent::per_element || e == Extent::per_sensor;
+}
+
 [[nodiscard]] std::string_view extent_name(Extent e) noexcept {
     switch (e) {
         case Extent::per_world: return "per_world";
@@ -124,6 +128,35 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 if (a.extent != Extent::per_row && (!a.owner.empty() || a.depth != 1)) {
                     return std::unexpected(invalid(where + ": only a per_row array takes an owner or a depth"));
                 }
+                // ROW INITS (Task 4). An attached row (per_body, per_element or
+                // per_sensor) is written only by its module's init, at the
+                // boundary attach_row() queued it for, so it needs one; a
+                // slot-allocated one starts with the uint32_t body_slot the
+                // despawn cascade reads. A per_row array may carry an init too:
+                // the plan's vehicle-row hook (Task 7) initializes rows owned
+                // by rotors. A per_world row is never queued, so an init, a
+                // validate or a spawn size there would never be used.
+                if (a.spawn_size > kMaxSpawnBytes) {
+                    return std::unexpected(invalid(where + ": spawn_size " + std::to_string(a.spawn_size) +
+                                                   " exceeds kMaxSpawnBytes (" + std::to_string(kMaxSpawnBytes) +
+                                                   "); the structural queue carries the record by value"));
+                }
+                if (is_attached(a.extent)) {
+                    if (a.init == nullptr) {
+                        return std::unexpected(invalid(where + ": an attached array (" +
+                                                       std::string(extent_name(a.extent)) +
+                                                       ") needs an init; attach_row runs it at the step boundary"));
+                    }
+                    if (a.extent != Extent::per_body && a.elem_size < sizeof(uint32_t)) {
+                        return std::unexpected(invalid(where + ": a " + std::string(extent_name(a.extent)) +
+                                                       " row starts with its uint32_t body_slot, so it is at "
+                                                       "least 4 bytes"));
+                    }
+                } else if (a.extent == Extent::per_world &&
+                           (a.spawn_size != 0 || a.init != nullptr || a.validate != nullptr)) {
+                    return std::unexpected(invalid(where + ": a per_world row is never attached or queued, so it "
+                                                           "takes no spawn size, init or validate"));
+                }
                 if (mod.legacy_walk && !is_legacy_array(a.name)) {
                     return std::unexpected(invalid(
                         where + ": the module carries the legacy walk marker, which registers before "
@@ -137,7 +170,8 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 }
                 by_name.emplace(std::string(a.name), out.size());
                 out.push_back(CompiledArray{std::string(mod.name), std::string(a.name), a.elem_size, a.extent,
-                                            kNoArray, a.depth, mod.legacy_walk});
+                                            kNoArray, a.depth, mod.legacy_walk, a.spawn_size, a.init,
+                                            a.validate});
                 owners.push_back(a.owner);
             }
         }

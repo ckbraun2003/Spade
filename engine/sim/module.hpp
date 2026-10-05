@@ -4,12 +4,14 @@
 // create() compiles a module set into ONE ordered pass list with
 // compile_schedule(). Stages 1-3 of the plan: passes, each naming the built-in
 // GPU kernel that matches its CPU function, and the fields a module provides.
-// Stage 4: the arrays a module owns (its state). Grades and roles join the
-// descriptor in later stages.
+// Stage 4: the arrays a module owns (its state) and the rows it attaches to
+// bodies. Grades and roles join the descriptor in later stages.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -19,7 +21,7 @@
 #include "compute/backend.hpp"
 #include "core/error.hpp"
 #include "physics/field_row.hpp"
-#include "state/layout.hpp"  // kStd430StructAlignment
+#include "state/layout.hpp"  // kStd430StructAlignment, WorldParams
 
 namespace spade::physics {
 struct SubstepContext;
@@ -117,13 +119,75 @@ inline constexpr uint32_t kFieldBuiltinFloats = physics::kFieldBuiltinFloats;
 //                owns rows [g * depth, (g + 1) * depth)
 enum class Extent : uint8_t { per_world = 0, per_body = 1, per_element = 2, per_sensor = 3, per_row = 4 };
 
+// ATTACHED ROWS (stage 4; spec section 3). A per_body, per_element or
+// per_sensor array is ATTACHED to bodies. Simulation::attach_row() -- which the
+// typed add_* calls front -- checks the module's spawn record with `validate`,
+// reserves a row for the body, writes the row's body_slot at once, and queues
+// the module's `init` for the next step boundary. Until then the row is the
+// arena's zeroes, so it is inert. A per_body row needs no reservation: it is
+// the body's own slot.
+//
+// FREEING IS THE CORE'S, not the module's. When a body is despawned, the core
+// walks the table in walk order: it frees every slot-allocated row whose
+// body_slot is the body's (in ascending slot order), zeroes the per_body row at
+// the body's slot, and zeroes every per_row child of each. A freed row reads as
+// zeroes, like every free slot. There is no module `free` function until a
+// module needs more than a zero-fill (the stage-4 plan's open question 2).
+//
+// The SPAWN RECORD is the module's own trivially copyable struct of
+// `spawn_size` bytes, at most kMaxSpawnBytes; the structural queue carries it
+// by value.
+inline constexpr uint32_t kMaxSpawnBytes = 128;
+
+struct RowInit {
+    std::span<std::byte> row;             // the row; an attached row's body_slot is already written
+    std::span<const std::byte> spawn;     // spawn_size bytes
+    const WorldParams* params = nullptr;  // the world's registered row (its seed)
+    uint32_t local_slot = 0;              // the row's world-local slot
+    uint32_t local_body = 0;              // the world-local body slot it belongs to
+    float h = 0.0f;                       // the substep, s
+};
+// Writes every field of the row field-wise -- never a whole-object assignment,
+// which would copy a temporary's padding into the arena -- and the row's
+// liveness flag last.
+using RowInitFn = void (*)(const RowInit&) noexcept;
+// invalid_argument on a bad record, with a message that carries no call
+// prefix: the caller adds "add_imu_sensor: " or "attach_row: ".
+using RowValidateFn = Result<void> (*)(std::span<const std::byte> spawn);
+
 struct ArrayDecl {
     std::string_view name;     // the registered name: unique in the set, no '.', not in kCoreArrays
     uint32_t elem_size = 0;    // attached_row_size<T>() for per_element and per_sensor; row_size<T>() otherwise
     Extent extent = Extent::per_world;
     std::string_view owner{};  // per_row only: the owning array (per_body, per_element or per_sensor; any module)
     uint32_t depth = 1;        // per_row only: rows per owner row, >= 1
+    // An attached array (per_body, per_element, per_sensor) needs `init`;
+    // `validate` is optional. A per_row array may carry an init (rows a
+    // vehicle hook initializes); a per_world array takes none of the three.
+    uint32_t spawn_size = 0;          // bytes of the spawn record, <= kMaxSpawnBytes
+    RowInitFn init = nullptr;         // writes the row at the step boundary
+    RowValidateFn validate = nullptr; // checks a record when it is offered, before anything is reserved
 };
+
+// The row inside RowInit::row, typed. Row is the array's own row type, so
+// sizeof(Row) is the declared elem_size.
+template <class Row>
+[[nodiscard]] Row& row_as(std::span<std::byte> row) noexcept {
+    static_assert(std::is_trivially_copyable_v<Row>, "a row is copied byte-wise by snapshots");
+    return *reinterpret_cast<Row*>(row.data());
+}
+
+// The spawn record, copied out: a record's bytes carry no alignment. A record
+// shorter than Spawn leaves the rest value-initialized; attach_row() refuses a
+// record whose size is not the declared spawn_size.
+template <class Spawn>
+[[nodiscard]] Spawn spawn_as(std::span<const std::byte> spawn) noexcept {
+    static_assert(std::is_trivially_copyable_v<Spawn>, "a spawn record is carried by value through the queue");
+    static_assert(sizeof(Spawn) <= kMaxSpawnBytes, "a spawn record is at most kMaxSpawnBytes");
+    Spawn out{};
+    std::memcpy(&out, spawn.data(), std::min(spawn.size(), sizeof(Spawn)));
+    return out;
+}
 
 // A row is raw arena bytes, never constructed or destroyed one at a time, and
 // copied byte-wise by snapshots: ArenaSet::register_array's own conditions.
@@ -198,6 +262,9 @@ struct CompiledArray {
     uint32_t owner = kNoArray;  // per_row only: the owner's index in CompiledSchedule::arrays
     uint32_t depth = 1;
     bool legacy_walk = false;   // registered before replay_config
+    uint32_t spawn_size = 0;    // attached arrays only, as declared
+    RowInitFn init = nullptr;
+    RowValidateFn validate = nullptr;
 };
 
 struct CompiledSchedule {
@@ -234,6 +301,9 @@ struct CompiledSchedule {
 // array's name, elem_size 0 or an unknown extent, or declared twice in the
 // set; a per_row array with depth 0, or whose owner no module declares or is
 // per_world or per_row; an owner or a depth other than 1 on any other array;
+// a spawn_size above kMaxSpawnBytes; an attached array (per_body, per_element
+// or per_sensor) with no init, or a slot-allocated one whose row cannot hold
+// its uint32_t body_slot; a spawn size, init or validate on a per_world array;
 // the legacy marker on a module with an array outside kLegacyWalkArrays, and an
 // array in kLegacyWalkArrays declared by a module without it; an
 // edge to a pass no module declares or to a later phase; two

@@ -8,6 +8,8 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
+#include "sim/builtin_state.hpp"
+#include "sim/simulation.hpp"  // the spawn records
 #include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
 
@@ -22,7 +24,10 @@ namespace {
 // calls these declarations replaced (stage 4).
 constexpr ArrayDecl kDragArrays[] = {{.name = "drag_bodies",
                                       .elem_size = attached_row_size<physics::DragBodyRow>(),
-                                      .extent = Extent::per_element}};
+                                      .extent = Extent::per_element,
+                                      .spawn_size = sizeof(DragElementSpawn),
+                                      .init = &builtin::init_drag_row,
+                                      .validate = &builtin::validate_drag_spawn}};
 
 // One Dryden filter row per world. It was the FIRST production registration of
 // the turbulence state (Task 16 shipped the model and its tests before anything
@@ -40,9 +45,15 @@ constexpr ArrayDecl kDrydenArrays[] = {{.name = "dryden", .elem_size = row_size<
 //
 // The ring is DIRECT-INDEXED, never slot-allocated: a ring window's lifetime
 // is its sensor's, so an independent alloc/free would be a second lifecycle to
-// keep in step with the first (see Simulation::clear_imu_ring()).
+// keep in step with the first: the despawn cascade zeroes a sensor's window
+// when it frees the sensor (sim/module.hpp's ATTACHED ROWS).
 constexpr ArrayDecl kImuArrays[] = {
-    {.name = "imu_sensors", .elem_size = attached_row_size<sensors::ImuSensorRow>(), .extent = Extent::per_sensor},
+    {.name = "imu_sensors",
+     .elem_size = attached_row_size<sensors::ImuSensorRow>(),
+     .extent = Extent::per_sensor,
+     .spawn_size = sizeof(ImuSensorSpawn),
+     .init = &builtin::init_imu_row,
+     .validate = &builtin::validate_imu_spawn},
     {.name = "imu_ring",
      .elem_size = row_size<sensors::ImuSample>(),
      .extent = Extent::per_row,
@@ -68,7 +79,10 @@ constexpr ArrayDecl kImuArrays[] = {
 // which would make the state layer's shape depend on its contents.
 constexpr ArrayDecl kRotorArrays[] = {{.name = "rotors",
                                        .elem_size = attached_row_size<vehicles::RotorRow>(),
-                                       .extent = Extent::per_element}};
+                                       .extent = Extent::per_element,
+                                       .spawn_size = sizeof(builtin::RotorSpawn),
+                                       .init = &builtin::init_rotor_row,
+                                       .validate = &builtin::refuse_direct_rotor}};
 
 // GNSS, the second sensor, and the first array appended below replay_config.
 // Its ring has the IMU ring's shape: sensor g owns ring rows [g * kRingDepth,
@@ -82,7 +96,12 @@ constexpr ArrayDecl kRotorArrays[] = {{.name = "rotors",
 // principled; if the rates ever justify a separate kGnssRingDepth, that is a
 // deliberate commit, not a drive-by.
 constexpr ArrayDecl kGnssArrays[] = {
-    {.name = "gnss_sensors", .elem_size = attached_row_size<sensors::GnssSensorRow>(), .extent = Extent::per_sensor},
+    {.name = "gnss_sensors",
+     .elem_size = attached_row_size<sensors::GnssSensorRow>(),
+     .extent = Extent::per_sensor,
+     .spawn_size = sizeof(GnssSensorSpawn),
+     .init = &builtin::init_gnss_row,
+     .validate = &builtin::validate_gnss_spawn},
     {.name = "gnss_ring",
      .elem_size = row_size<sensors::GnssFix>(),
      .extent = Extent::per_row,

@@ -230,6 +230,21 @@ struct GnssSensorRef {
 using GnssPoll = sensors::PollResult<sensors::GnssFix>;
 
 // ---------------------------------------------------------------------------
+// A reference to one attached row of a module's array (Simulation::
+// attach_row()). `slot` is the GLOBAL row: an index into the whole array, as
+// ArenaSet::bytes() lays it out. For a per_body array it is the body's own
+// slot. Same shape, and the same lifetime contract, as DragElementRef: the row
+// lives exactly as long as its body, and a ref held past the despawn names a
+// free (zeroed) row or, once recycled, another body's.
+// ---------------------------------------------------------------------------
+struct RowRef {
+    uint32_t world_index = 0;
+    uint32_t slot = 0;
+
+    friend constexpr bool operator==(const RowRef&, const RowRef&) noexcept = default;
+};
+
+// ---------------------------------------------------------------------------
 // A registered ModelType's identity (Task 18).
 //
 // ONE-BASED, so that a default-constructed id is null and names nothing --
@@ -844,20 +859,22 @@ public:
     // nothing can address the body during the window before the boundary. The
     // slot itself is released at the boundary, in queue order.
     //
-    // CASCADES TO THE BODY'S FORCE ELEMENTS AND SENSORS. Every drag element and
-    // every IMU sensor in the same world whose body_slot names this body is
-    // freed too, in ascending slot order. Without the cascade an element would
-    // outlive its body, be inert (apply_drag and synthesize_imu both skip rows
-    // whose body is not active) and leak its slot -- so a long run with
-    // spawn/despawn churn would exhaust capacity while appearing to work.
+    // CASCADES TO EVERY ROW ATTACHED TO THE BODY (sim/module.hpp's ATTACHED
+    // ROWS), by declaration, in walk order: every drag element, IMU, rotor and
+    // GNSS receiver -- and any module's attached row -- in the same world whose
+    // body_slot names this body is freed too, in ascending slot order within
+    // each array. Without the cascade an element would outlive its body, be
+    // inert (apply_drag and synthesize_imu both skip rows whose body is not
+    // active) and leak its slot -- so a long run with spawn/despawn churn would
+    // exhaust capacity while appearing to work.
     //
-    // FREEING A SENSOR ALSO ZEROES ITS RING WINDOW. ArenaSet zero-fills a freed
-    // slot's own bytes, but a sensor's samples live in a SECOND array that is
-    // direct-indexed rather than slot-allocated, so nothing else would clear
-    // them. Leaving them would break the engine-wide "a freed slot reads as
-    // zeroes" invariant, put dead samples in every subsequent snapshot, and
-    // hand the next sensor allocated into that slot a ring full of another
-    // sensor's history.
+    // FREEING A ROW ALSO ZEROES ITS per_row CHILDREN -- a sensor's ring window.
+    // ArenaSet zero-fills a freed slot's own bytes, but a sensor's samples live
+    // in a SECOND array that is direct-indexed rather than slot-allocated, so
+    // nothing else would clear them. Leaving them would break the engine-wide
+    // "a freed slot reads as zeroes" invariant, put dead samples in every
+    // subsequent snapshot, and hand the next sensor allocated into that slot a
+    // ring full of another sensor's history.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> despawn(BodyRef ref);
 
@@ -919,6 +936,59 @@ public:
     // so a world may hold `sensors` IMUs AND `sensors` receivers.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<GnssSensorRef> add_gnss_sensor(BodyRef ref, const GnssSensorSpawn& sensor);
+
+    // ---------------------------------------------------------------------
+    // attach_row -- attach one row of a module's array to `body`: THE ONE DOOR
+    // for attached rows (module-API stage 4; sim/module.hpp's ArrayDecl). The
+    // typed add_drag_element(), add_imu_sensor() and add_gnss_sensor() are
+    // fronts over it, and run exactly this sequence:
+    //
+    //   1. the body ref is checked (not_found for a dead or stale one);
+    //   2. the array must be attached (per_body, per_element or per_sensor)
+    //      and `spawn` its declared spawn_size; then the module's `validate`
+    //      checks the record (invalid_argument for each, the message prefixed
+    //      "attach_row: ");
+    //   3. capacity: a per_sensor array counts alone against the world's
+    //      declared sensors; a per_element array counts against the force-
+    //      element budget it shares with every per_element array, rotors and
+    //      drag bodies included (capacity_exceeded);
+    //   4. the row is reserved, lowest-free-first, and its body_slot written at
+    //      once, so the despawn cascade can never mistake it for body 0's;
+    //   5. the module's `init` is queued and runs at the next step boundary.
+    //
+    // A per_body row needs no reservation: it is the body's own slot, and
+    // attaching it again queues its init again. not_found for an array no
+    // module in this set declares. Rotors refuse
+    // the door (invalid_argument): they arrive only with a vehicle, spawn(world,
+    // model, where).
+    //
+    // Despawning the body frees the row (sim/module.hpp's cascade), and a
+    // freed row reads as zeroes.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<RowRef> attach_row(BodyRef body, std::string_view array, std::span<const std::byte> spawn);
+
+    // The same, for a typed spawn record: its bytes.
+    template <class Spawn>
+        requires(!std::is_convertible_v<const Spawn&, std::span<const std::byte>>)
+    [[nodiscard]] Result<RowRef> attach_row(BodyRef body, std::string_view array, const Spawn& spawn) {
+        static_assert(std::is_trivially_copyable_v<Spawn>, "a spawn record is carried by value through the queue");
+        return attach_row(body, array, std::as_bytes(std::span<const Spawn, 1>(&spawn, 1)));
+    }
+
+    // A module array's rows in one world, typed: the world's whole partition,
+    // free rows included (they read as zeroes), indexed by world-local slot.
+    // not_found for an array no module in this set declares; invalid_argument
+    // if T is not the array's row size or the world is outside the set. The
+    // span is invalidated by nothing short of destroying the Simulation (the
+    // arenas never reallocate); its contents change with every step.
+    template <class T>
+    [[nodiscard]] Result<std::span<const T>> module_rows(std::string_view array, uint32_t world_index) const {
+        const Result<ArrayIndex> index = module_array(array);
+        if (!index) return std::unexpected(index.error());
+        const Result<ArrayId<T>> typed = arenas_.typed<T>(*index);
+        if (!typed) return std::unexpected(typed.error());
+        return arenas_.world_slice(*typed, world_index);
+    }
 
     // --- model types (Task 18) --------------------------------------------
 
@@ -1225,14 +1295,15 @@ public:
     //      reason: dryden_init both derives the stream and places the filter
     //      on its stationary distribution, so the world starts gusty instead
     //      of burning off a spin-up transient.
-    //   3. Every LIVE ImuSensorRow::noise -- derived at OpKind::init_imu from
+    //   3. Every LIVE ImuSensorRow::noise -- derived by the imu module's init
+    //      (sim/builtin_state.cpp's init_imu_row) from
     //      (WorldParams::seed, WORLD-LOCAL sensor slot) via
     //      sensors::imu_noise_stream(). Re-derived for every ALLOCATED sensor
     //      row in the world, so a sensor that predates the reseed draws from
     //      the new stream exactly like one added after it. World-local, like
     //      the spawn path's, so a world's noise still does not depend on where
     //      that world sits in the set.
-    //   4. Every LIVE GnssSensorRow::noise -- derived at OpKind::init_gnss via
+    //   4. Every LIVE GnssSensorRow::noise -- derived by init_gnss_row via
     //      sensors::gnss_noise_stream(), re-derived exactly as the IMU's are.
     //
     // THE LIST IS reseed()'s BODY, one block per system that derives a stream
@@ -1257,7 +1328,7 @@ public:
     //
     // Refuses (invalid_argument) while the structural queue is non-empty,
     // mirroring snapshot() and for a related reason: a queued op carries its
-    // own seeding (init_imu derives its stream from the WorldParams row AT
+    // own seeding (init_imu_row derives its stream from the WorldParams row AT
     // FLUSH TIME) while a queued despawn's rows are still allocated, so the
     // outcome of a reseed issued over a pending queue would depend on how the
     // two interleave rather than on the state alone. Requiring an empty queue
@@ -1524,19 +1595,16 @@ private:
     // FIFO by construction, with no hashing, no pointer ordering and no
     // container whose iteration order is unspecified anywhere in sight.
     enum class OpKind : uint32_t {
-        init_body,   // write the reserved body slot and set body_flags::active
-        free_body,   // release a body slot (and cascade to its elements and sensors)
-        init_drag,   // write the reserved drag-element slot
-        init_imu,    // write the reserved sensor slot and seed its rng stream
-        init_gnss,   // write the reserved GNSS slot, seed its stream, derive its coefficients
-        init_rotor,  // write the reserved rotor slot and seed its shaft speed
+        init_body,  // write the reserved body slot and set body_flags::active
+        free_body,  // release a body slot, after the declared cascade frees its attached rows (free_rows_of)
+        init_row,   // run a module array's init on one attached row (sim/module.hpp's ATTACHED ROWS)
     };
 
     struct StructuralOp {
         OpKind kind = OpKind::init_body;
         uint32_t world_index = 0;
         uint32_t slot = 0;        // the reserved global slot this op targets
-        uint32_t body_slot = 0;   // init_drag/init_imu/init_rotor: the global body slot it attaches to
+        uint32_t body_slot = 0;   // init_row: the global body slot the row attaches to
         BodySpawn body{};         // init_body
         // init_body: the per-body contact-proxy radius to write into the new
         // slot's BodyState::proxy_radius (D-S6-2), 0 = sentinel ("use the
@@ -1547,11 +1615,11 @@ private:
         // Simulation::spawn(world, ModelTypeId, VehicleSpawn) sets it, from
         // the model's own ModelType::proxy_radius.
         float body_proxy_radius = 0.0f;
-        DragElementSpawn drag{};  // init_drag
-        ImuSensorSpawn imu{};     // init_imu
-        GnssSensorSpawn gnss{};   // init_gnss
-        vehicles::RotorDesc rotor{};  // init_rotor
-        float rotor_omega = 0.0f;     // init_rotor: the shaft speed AND command it spawns holding
+        // init_row: the array (its index in schedule_.arrays) and the module's
+        // spawn record, by value -- its first spawn_size bytes.
+        uint32_t array = modules::kNoArray;
+        uint32_t spawn_size = 0;
+        std::array<std::byte, modules::kMaxSpawnBytes> spawn{};
     };
 
     Simulation(ArenaSet arenas, WorldSetLayout layout, std::vector<WorldConfig> configs,
@@ -1618,9 +1686,11 @@ private:
     //   spawn(world, BodySpawn)     COVERED TRANSITIVELY. Both overloads
     //   spawn(world, model, where)  reserve slots immediately (alloc_slot
     //   despawn()                   writes the slot->world map; despawn also
-    //   add_drag_element()          bumps a generation) AND ALWAYS queue a
-    //   add_imu_sensor()            matching op, so the next boundary's
-    //                               flush_structural() sees a non-empty queue
+    //   add_drag_element()          bumps a generation; attach_row and its
+    //   add_imu_sensor()            fronts write the body_slot) AND ALWAYS
+    //   add_gnss_sensor()           queue a matching op, so the next
+    //   attach_row()                boundary's flush_structural() sees a
+    //                               non-empty queue
     //                               and marks. There is no reserve-without-
     //                               queue path: a failed vehicle spawn
     //                               releases every slot it took, and a
@@ -1648,27 +1718,42 @@ private:
     void mark_vulkan_dirty() noexcept;
 
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
-    void free_drag_elements_of(uint32_t world_index, uint32_t body_slot);
-    void free_imu_sensors_of(uint32_t world_index, uint32_t body_slot);
-    void free_gnss_sensors_of(uint32_t world_index, uint32_t body_slot);
-    void clear_gnss_ring(uint32_t slot);
-    void free_rotors_of(uint32_t world_index, uint32_t body_slot);
-    // Zeroes one sensor's ring window. `slot` is the GLOBAL sensor slot; the
-    // window is [slot * kRingDepth, (slot + 1) * kRingDepth), which lands in
-    // the right world's ring partition by construction (global sensor slot
-    // w * sensor_capacity + local times kRingDepth is exactly that world's
-    // partition offset plus the local sensor's window).
-    void clear_imu_ring(uint32_t slot);
+
+    // THE DESPAWN CASCADE (sim/module.hpp's ATTACHED ROWS): every attached row
+    // of the body at global `body_slot`, freed by walking schedule_.arrays in
+    // walk order. A slot-allocated (per_element, per_sensor) row is freed when
+    // its map names the world and its body_slot is the body's, in ascending
+    // slot order; the per_body row at the body's slot is zeroed; and each freed
+    // or zeroed row's per_row children are cleared.
+    void free_rows_of(uint32_t world_index, uint32_t body_slot);
+    // Zeroes every per_row array's window owned by row `slot` (GLOBAL) of
+    // table array `array`: rows [slot * depth, (slot + 1) * depth), which land
+    // in the right world's partition by construction (global owner slot
+    // w * capacity + local, times depth, is that world's offset plus the local
+    // row's window).
+    void clear_children(uint32_t array, uint32_t slot);
     void publish_body_counts();
+
+    // attach_row()'s sequence, for a table array; `what` prefixes every
+    // refusal ("attach_row", "add_imu_sensor", ...).
+    [[nodiscard]] Result<RowRef> attach_row_impl(BodyRef body, uint32_t array, std::span<const std::byte> spawn,
+                                                 std::string_view what);
+    // Queues one init_row: the spawn record by value.
+    void queue_init_row(uint32_t array, uint32_t world_index, uint32_t slot, uint32_t body_slot,
+                        std::span<const std::byte> spawn);
+    // The table index (schedule_.arrays) of a module array's arena id;
+    // modules::kNoArray if it is not a module array.
+    [[nodiscard]] uint32_t table_index(ArrayIndex array) const noexcept;
 
     [[nodiscard]] Result<uint32_t> checked_world(uint32_t world_index) const;
     [[nodiscard]] Result<void> validate_ref(BodyRef ref) const;
     [[nodiscard]] Result<void> validate_imu_ref(ImuSensorRef ref) const;
     [[nodiscard]] Result<void> validate_gnss_ref(GnssSensorRef ref) const;
 
-    // How many force-element slots (rotors + drag bodies) world `w` currently
-    // holds. The shared budget spawn() and add_drag_element() both check
-    // against Capacities::force_elements -- see spawn()'s doc comment.
+    // How many force-element slots world `w` currently holds: the live rows of
+    // every per_element array (rotors and drag bodies in the standard set).
+    // The one budget spawn() and every per_element attach_row() check against
+    // Capacities::force_elements -- see spawn()'s doc comment.
     [[nodiscard]] Result<uint32_t> live_force_elements(uint32_t world_index) const;
 
     ArenaSet arenas_;

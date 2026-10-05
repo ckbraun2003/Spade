@@ -1528,14 +1528,22 @@ TEST(ModuleState, AnAttachedArrayNeedsAnInitAndASpawnThatFits) {
     static constexpr ArrayDecl no_body_slot[] = {
         {.name = "tag_rows", .elem_size = 2, .extent = Extent::per_sensor, .init = &noop_row}};
     static constexpr ArrayDecl world_init[] = {{.name = "tag_rows", .elem_size = kTallySize, .init = &noop_row}};
-    static constexpr ArrayDecl ring_spawn[] = {
-        {.name = "tag_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "imu_sensors", .depth = 2,
-         .spawn_size = 4}};
+    static constexpr ArrayDecl world_spawn[] = {{.name = "tag_rows", .elem_size = kTallySize, .spawn_size = 4}};
+    // The plan's Task 7 initializes rows owned by rotors from a vehicle hook,
+    // so a per_row array may carry an init and a spawn size.
+    static constexpr ArrayDecl ring_init[] = {
+        {.name = "tag_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "rotors", .depth = 1,
+         .spawn_size = 4, .init = &noop_row}};
+    static constexpr ArrayDecl ring_too_big[] = {
+        {.name = "tag_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "rotors", .depth = 1,
+         .spawn_size = kMaxSpawnBytes + 1, .init = &noop_row}};
     ASSERT_TRUE(with(fits).has_value()) << "the control: exactly kMaxSpawnBytes";
+    EXPECT_TRUE(with(ring_init).has_value()) << "a per_row row a vehicle hook initializes";
     EXPECT_TRUE(refused_naming(with(no_init), "tag_rows"));
     EXPECT_TRUE(refused_naming(with(body_no_init), "tag_rows")) << "a per_body row is attached too";
     EXPECT_TRUE(refused_naming(with(too_big), "tag_rows"));
     EXPECT_TRUE(refused_naming(with(no_body_slot), "tag_rows")) << "a slot-allocated row starts with its body_slot";
     EXPECT_TRUE(refused_naming(with(world_init), "tag_rows")) << "an init that would never run";
-    EXPECT_TRUE(refused_naming(with(ring_spawn), "tag_ring")) << "a spawn size that would never be offered";
+    EXPECT_TRUE(refused_naming(with(world_spawn), "tag_rows")) << "a spawn size that would never be offered";
+    EXPECT_TRUE(refused_naming(with(ring_too_big), "tag_ring"));
 }

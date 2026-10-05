@@ -18,6 +18,7 @@
 #include "core/validate.hpp"
 #include "objects/behavior.hpp"
 #include "physics/integrator.hpp"
+#include "sim/builtin_state.hpp"
 #include "vehicles/model_identity.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -93,13 +94,15 @@ constexpr const char* kBodyGenerationArray = "body_generation";
 // the storage is SHARED; here the storage is deliberately not shared and the
 // kinds are a closed compile-time set, which is the shape a template fits.
 //
-// NOT TEMPLATED, DELIBERATELY: add_imu_sensor / add_gnss_sensor. Those two are
-// not identical -- the validation is sensor-specific (mount_orient and four
-// sigmas versus bias_tau_s and sigma_bias) and the queued op carries a
-// different field. Templating them needs a validation policy, which is more
-// machinery than the duplication it removes. THE DUPLICATION WORTH DELETING IS
-// THE DUPLICATION THAT IS IDENTICAL; forcing the remaining pair into the same
-// mould is how a dedup becomes a framework.
+// NOT HERE: adding a sensor and freeing one. Those were never identical -- the
+// validation is sensor-specific (mount_orient and four sigmas versus
+// bias_tau_s and sigma_bias) and the row's init differs -- and since module-API
+// stage 4 neither is a sensor-family operation at all. Each sensor module
+// DECLARES its validate and init (sim/builtin_state.cpp), add_imu_sensor() and
+// add_gnss_sensor() are thin fronts over the one attach_row() door, and the
+// despawn cascade frees every attached row, and its ring, by declaration
+// (free_rows_of). What stays here is what is still identical: the ref check,
+// the poll and the row read.
 // ---------------------------------------------------------------------------
 
 template <class Row>
@@ -156,70 +159,17 @@ template <class Row>
     return &(*rows)[slot];
 }
 
-// ---------------------------------------------------------------------------
-// THIS REPLACES A FIELD-WISE WRITE, AND IT STATES THAT WRITE'S PURPOSE DIRECTLY
-// RATHER THAN EMULATING IT.
-//
-// clear_imu_ring() used to name all six ImuSample fields, with a comment
-// explaining that "ImuSample has no implicit padding (sensors/imu.hpp asserts
-// it), so naming all six fields zeroes every byte -- which is what makes a
-// freed sensor's ring read as zeroes in a snapshot". THE GOAL WAS ALWAYS
-// EVERY BYTE, and the field list was a way of reaching it that depended on the
-// reader knowing the padding argument. memset says it.
-//
-// A VALUE-INITIALIZED ASSIGNMENT (`*it = Sample{}`) WOULD NOT HAVE BEEN
-// EQUIVALENT and is the trap here: it zero-initializes every MEMBER and leaves
-// padding bytes unspecified. That is invisible in a test and visible in a
-// snapshot digest, which folds raw bytes.
-// ---------------------------------------------------------------------------
-template <class Sample>
-void clear_sensor_ring(ArenaSet& arenas, ArrayId<Sample> ring_id, uint32_t slot) {
-    static_assert(std::is_trivially_copyable_v<Sample>,
-                  "a ring payload is zeroed byte-wise, so it must be trivially copyable");
-    Result<std::span<Sample>> ring = arenas.array(ring_id);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-    std::memset(ring->data() + begin, 0, sensors::kRingDepth * sizeof(Sample));
-}
-
-template <class Row, class Sample>
-void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> ring_id,
-                     const WorldSetLayout& layout, uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas.slot_to_world(rows_id);
-    Result<std::span<Row>> rows = arenas.array(rows_id);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout.body_capacity;
-    const uint32_t begin = world_index * layout.sensor_capacity;
-    const uint32_t end = begin + layout.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // sensors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas.free_slot(rows_id, slot); freed) {
-            // free_slot zeroes the ROW; the samples live in a second,
-            // direct-indexed array that nothing else would clear. See
-            // Simulation::despawn's contract.
-            clear_sensor_ring(arenas, ring_id, slot);
-        }
-    }
-}
-
-// "elem_size 80, per_element" or "elem_size 32, per_row: 64 per row of 'imu_sensors'".
+// "elem_size 80, per_element, spawn_size 52" or "elem_size 32, per_row: 64 per
+// row of 'imu_sensors'".
 [[nodiscard]] std::string describe_array(uint32_t elem_size, modules::Extent extent, std::string_view owner,
-                                         uint32_t depth) {
+                                         uint32_t depth, uint32_t spawn_size) {
     std::string out = "elem_size " + std::to_string(elem_size) + ", ";
+    const std::string spawn = ", spawn_size " + std::to_string(spawn_size);
     switch (extent) {
         case modules::Extent::per_world: return out + "per_world";
-        case modules::Extent::per_body: return out + "per_body";
-        case modules::Extent::per_element: return out + "per_element";
-        case modules::Extent::per_sensor: return out + "per_sensor";
+        case modules::Extent::per_body: return out + "per_body" + spawn;
+        case modules::Extent::per_element: return out + "per_element" + spawn;
+        case modules::Extent::per_sensor: return out + "per_sensor" + spawn;
         case modules::Extent::per_row:
             return out + "per_row: " + std::to_string(depth) + " per row of '" + std::string(owner) + "'";
     }
@@ -231,7 +181,8 @@ void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> rin
 // add_gnss_sensor(), the polls, reseed(), create()'s Dryden seeding -- use the
 // seven arrays the standard set declares, through typed ids minted from the
 // table. So a set must declare each of them exactly as the standard set does:
-// the same row size, extent, owner and depth. One that omits or reshapes one is
+// the same row size, extent, owner and depth, and the same spawn size, the
+// record its typed front hands attach_row(). One that omits or reshapes one is
 // refused here, before anything is registered, naming the array. (Where it sits
 // in the walk is compile_schedule's: only the legacy marker registers before
 // replay_config, and only the legacy arrays carry it.)
@@ -249,11 +200,13 @@ void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> rin
                                                ? std::string_view{}
                                                : std::string_view(schedule.arrays[have->owner].name);
             if (have->elem_size != want.elem_size || have->extent != want.extent || have->depth != want.depth ||
-                owner != want.owner) {
+                owner != want.owner || have->spawn_size != want.spawn_size) {
                 return std::unexpected(invalid(
                     "module set: the built-in array '" + have->name + "' (module '" + have->module +
-                    "') is declared as " + describe_array(have->elem_size, have->extent, owner, have->depth) +
-                    "; the engine's is " + describe_array(want.elem_size, want.extent, want.owner, want.depth)));
+                    "') is declared as " +
+                    describe_array(have->elem_size, have->extent, owner, have->depth, have->spawn_size) +
+                    "; the engine's is " +
+                    describe_array(want.elem_size, want.extent, want.owner, want.depth, want.spawn_size)));
             }
         }
     }
@@ -844,17 +797,19 @@ Result<ArrayIndex> Simulation::module_array(std::string_view name) const {
 // views
 // ---------------------------------------------------------------------------
 //
-// FIVE ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params,
+// SIX ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params,
 // dryden and replay_config (one row per world, indexed by world id -- they have
 // no lifecycle, so alloc_slot/free_slot would be ceremony around a constant),
 // body_generation (one row per BODY slot, indexed by that slot -- it must
 // SURVIVE its slot being freed, and free_slot zero-fills, which would erase the
-// very counter it exists to preserve), and imu_ring (kRingDepth rows per SENSOR
-// slot, indexed by that slot -- its lifetime IS its sensor's, so a second
-// alloc/free lifecycle would only be a thing to keep in step; clear_imu_ring()
-// does the zeroing the sensor's own free_slot does for the row).
+// very counter it exists to preserve), and imu_ring and gnss_ring (kRingDepth
+// rows per SENSOR slot, indexed by that slot -- a ring's lifetime IS its
+// sensor's, so a second alloc/free lifecycle would only be a thing to keep in
+// step; the despawn cascade, free_rows_of(), zeroes a sensor's window when it
+// frees the sensor's row). Every per_world, per_body and per_row module array
+// is direct-indexed the same way.
 //
-// The consequence is that those five arrays' slot->world maps stay uniformly
+// The consequence is that those arrays' slot->world maps stay uniformly
 // kInvalidWorld. They are still carried by the registry walk, still snapshotted
 // and still resynced on restore -- an all-free map resyncs to an all-free set,
 // which is consistent -- and they cost four bytes a slot for the uniformity of
@@ -1204,12 +1159,9 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
         }
 
         case OpKind::free_body: {
-            // Cascade first: the elements and sensors are addressed relative to
-            // the body that is about to stop existing.
-            free_drag_elements_of(op.world_index, op.slot);
-            free_imu_sensors_of(op.world_index, op.slot);
-            free_gnss_sensors_of(op.world_index, op.slot);
-            free_rotors_of(op.world_index, op.slot);
+            // Cascade first: the attached rows are addressed relative to the
+            // body that is about to stop existing.
+            free_rows_of(op.world_index, op.slot);
             if (Result<void> freed = arenas_.free_slot(bodies_id_, op.slot); !freed) {
                 return std::unexpected(internal("structural queue: freeing a body slot failed: " +
                                                 freed.error().context));
@@ -1217,339 +1169,134 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             return {};
         }
 
-        case OpKind::init_drag: {
-            Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: element slot out of range"));
+        case OpKind::init_row: {
+            if (op.array >= schedule_.arrays.size()) {
+                return std::unexpected(internal("structural queue: init_row names no module array"));
             }
-            // DEFENCE IN DEPTH: if this element's slot was released earlier in
-            // this same flush, its body no longer exists and there is nothing to
-            // initialize. With `body_slot` written at reservation time (see
-            // add_drag_element) the cascade cannot reach a row belonging to a
-            // DIFFERENT body, and a row belonging to the SAME body is always
-            // initialized before that body's free is applied (a ref for a body
-            // whose despawn is queued is rejected, so the element can only have
-            // been reserved first). So this is unreachable today -- and it is
-            // cheap insurance that a future queue reordering degrades to a
-            // no-op rather than to a live row in a free slot.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(drag_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            physics::DragBodyRow& row = (*rows)[op.slot];
-
-            // WORLD-LOCAL, not global: physics/forces.hpp documents body_slot as
-            // an index into the world's body slice, which is what apply_drag()
-            // is handed. Already written at reservation time; rewritten here so
-            // this function remains the complete statement of the row's contents.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.enabled = 1u;
-            row.mode = op.drag.mode;
-            row.area = op.drag.area;
-            row.local_pos = op.drag.local_pos;
-            row.local_orient = glm::normalize(op.drag.local_orient);
-            row.coeffs = op.drag.coeffs;
-            return {};
-        }
-
-        case OpKind::init_imu: {
-            Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: sensor slot out of range"));
+            const modules::CompiledArray& array = schedule_.arrays[op.array];
+            const ArrayIndex id = module_array_ids_[op.array];
+            Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) return std::unexpected(bytes.error());
+            const std::size_t row_bytes = array.elem_size;
+            if (std::size_t{op.slot} >= bytes->size() / row_bytes) {
+                return std::unexpected(internal("structural queue: row slot out of range in array '" + array.name +
+                                                "'"));
             }
-            // Same defence in depth as init_drag, for the same reason: if this
-            // slot was released earlier in this same flush its body no longer
-            // exists, so there is nothing to initialize. Unreachable today (the
-            // cascade's test is exact because `body_slot` is written at
-            // reservation time, below), cheap insurance against a future queue
-            // reordering.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(imu_id_);
+            // DEFENCE IN DEPTH: if this row's slot -- for a per_body row, its
+            // body's -- was released earlier in this same flush, its body no
+            // longer exists and there is nothing to initialize. With `body_slot`
+            // written at reservation time (see attach_row_impl) the cascade
+            // cannot reach a row belonging to a DIFFERENT body, and a row
+            // belonging to the SAME body is always initialized before that
+            // body's free is applied (a ref for a body whose despawn is queued
+            // is rejected, so the row can only have been reserved first). So
+            // this is unreachable today -- and it is cheap insurance that a
+            // future queue reordering degrades to a no-op rather than to a live
+            // row in a free slot.
+            const ArrayIndex liveness = array.extent == modules::Extent::per_body ? ArrayIndex(bodies_id_) : id;
+            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(liveness);
             if (!map) return std::unexpected(map.error());
             if ((*map)[op.slot] != op.world_index) return {};
 
             const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
             if (!params) return std::unexpected(params.error());
-
-            sensors::ImuSensorRow& row = (*rows)[op.slot];
-            const uint32_t local_slot = op.slot - op.world_index * layout_.sensor_capacity;
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body. Every field is
-            // written even where the arena's zero-fill would already have done
-            // it: the row's contents are this function's complete statement,
-            // not a coincidence of how the slot came to be free.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.rate_divider = op.imu.rate_divider;
-            row.phase = 0u;
-            row.mount_pos = op.imu.mount_pos;
-            row._p0 = 0.0f;
-            row.mount_orient = glm::normalize(op.imu.mount_orient);
-            row.sigma_a = op.imu.sigma_a;
-            row.sigma_g = op.imu.sigma_g;
-            row.sigma_ba = op.imu.sigma_ba;
-            row.sigma_bg = op.imu.sigma_bg;
-            row.bias_a = glm::vec3(0.0f);
-            row._p1 = 0.0f;
-            row.bias_g = glm::vec3(0.0f);
-            row._p2 = 0.0f;
-            // Seeded from the REGISTERED WorldParams row -- the world's rng
-            // authority (see WorldConfig's "NO `seed` MEMBER" note) -- and from
-            // the WORLD-LOCAL slot, so a world's noise does not depend on where
-            // that world sits in the set.
-            row.noise = sensors::imu_noise_stream((*params)[op.world_index].seed, local_slot);
-            row.last_index = 0;
-            row._reserved0 = 0;
-            // LAST, like body_flags::active in init_body: until `kind` is set
-            // the row is inert to the sensor passes, so a partially
-            // written row can never be sampled.
-            row.kind = sensors::sensor_kind::imu;
-            return {};
-        }
-
-        case OpKind::init_gnss: {
-            Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: gnss slot out of range"));
-            }
-            // Same defence in depth as init_imu, for the same reason.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
-            if (!params) return std::unexpected(params.error());
-
-            sensors::GnssSensorRow& row = (*rows)[op.slot];
-            const uint32_t local_slot = op.slot - op.world_index * layout_.sensor_capacity;
-
-            // ⛔⛔ THE FIX PERIOD, NOT THE SUBSTEP. The Gauss-Markov bias
-            // advances ONCE PER EMITTED FIX -- it is the receiver's own error
-            // process and runs on the receiver's own clock -- so `dt` is
-            // rate_divider substeps, not one. Computed HERE rather than in
-            // add_gnss_sensor() because this is where the row is written and
-            // where the arena hands it over; `h_` is a member either way.
-            //
-            //   A CONSTANT COMPUTED FROM THE WRONG CLOCK IS STILL
-            //   DETERMINISTIC, AND DETERMINISM IS WHAT THIS SUITE CHECKS.
-            //
-            // A receiver at rate_divider = 200 on the substep clock decays 200x
-            // too slowly, both backends still agree bit for bit, every digest
-            // stays self-consistent, and the corpus pins it wrong forever. The
-            // only thing standing between that and this line is this comment.
-            const float fix_dt = static_cast<float>(op.gnss.rate_divider) * h_;
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body and init_imu. The
-            // row's contents are this function's complete statement.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.rate_divider = op.gnss.rate_divider;
-            row.phase = 0u;
-            row.mount_pos = op.gnss.mount_pos;
-            row._p0 = 0.0f;
-            row.bias = glm::vec3(0.0f);
-            row._p1 = 0.0f;
-            row.sigma_h = op.gnss.sigma_h;
-            row.sigma_v = op.gnss.sigma_v;
-            row.sigma_vel = op.gnss.sigma_vel;
-            row.bias_tau_s = op.gnss.bias_tau_s;
-            row.noise = sensors::gnss_noise_stream((*params)[op.world_index].seed, local_slot);
-            row.last_index = 0;
-            row.bias_retention = sensors::gnss_bias_retention(fix_dt, op.gnss.bias_tau_s);
-            row.bias_drive =
-                sensors::gnss_bias_drive(fix_dt, op.gnss.bias_tau_s, op.gnss.sigma_bias);
-            row.sigma_bias = op.gnss.sigma_bias;
-            row._p2 = 0.0f;
-            row._reserved0 = 0;
-            // LAST, like init_imu's: until `kind` is set the row is inert to
-            // the sensor passes, so a partially written row can never be
-            // sampled.
-            row.kind = sensors::sensor_kind::gnss;
-            return {};
-        }
-
-        case OpKind::init_rotor: {
-            Result<std::span<vehicles::RotorRow>> rows = arenas_.array(rotors_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: rotor slot out of range"));
-            }
-            // Same defence in depth as init_drag and init_imu, and for the
-            // same reason: a slot released earlier in this same flush belongs
-            // to a body that no longer exists.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(rotors_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            vehicles::RotorRow& row = (*rows)[op.slot];
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body. Every field is
-            // written, including the four reserved lanes: rotor.hpp requires
-            // them to stay 0, and stating that here rather than relying on the
-            // arena's zero-fill makes this function the row's complete
-            // definition.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.tau = op.rotor.tau;
-            row.radius = op.rotor.radius;
-            row.local_pos = op.rotor.local_pos;
-            row.spin_dir = op.rotor.spin_dir;
-            row.local_orient = glm::normalize(op.rotor.local_orient);
-            // SPAWNED IN TRIM: omega and omega_cmd both take the spawn's
-            // rotor_omega, so a vehicle inserted mid-flight holds its speed
-            // instead of spinning up from rest. See VehicleSpawn.
-            row.omega = op.rotor_omega;
-            row.omega_cmd = op.rotor_omega;
-            row.thrust_coeff = op.rotor.thrust_coeff;
-            row.torque_coeff = op.rotor.torque_coeff;
-            row._r0 = 0.0f;
-            row._r1 = 0.0f;
-            row._r2 = 0.0f;
-            row._r3 = 0.0f;
-            // LAST, like body_flags::active in init_body and `kind` in
-            // init_imu: until `enabled` is set the row is inert to
-            // apply_rotors(), so a partially written row can never be stepped.
-            row.enabled = 1u;
+            const Result<WorldRange> range = arenas_.range(id, op.world_index);
+            if (!range) return std::unexpected(range.error());
+            // The module's init writes the row (sim/builtin_state.cpp has the
+            // built-ins'): field-wise, every field, its liveness flag last.
+            // Both slots it is handed are WORLD-LOCAL, so a world's rows -- and
+            // the noise streams seeded from them -- do not depend on where that
+            // world sits in the set.
+            array.init(modules::RowInit{
+                .row = bytes->subspan(std::size_t{op.slot} * row_bytes, row_bytes),
+                .spawn = std::span<const std::byte>(op.spawn.data(), op.spawn_size),
+                .params = &(*params)[op.world_index],
+                .local_slot = op.slot - range->begin,
+                .local_body = op.body_slot - op.world_index * layout_.body_capacity,
+                .h = h_,
+            });
             return {};
         }
     }
     return std::unexpected(internal("structural queue: unknown op kind"));
 }
 
-void Simulation::free_drag_elements_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(drag_id_);
-    Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-    if (!map || !rows) return;
-
+void Simulation::free_rows_of(uint32_t world_index, uint32_t body_slot) {
     const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.element_capacity;
-    const uint32_t end = begin + layout_.element_capacity;
+    // WALK ORDER (schedule_.arrays' order), so the cascade is a function of the
+    // declarations alone. It frees rotors before gnss_sensors, where the hand
+    // cascade it replaced freed them after; the bytes and every later
+    // allocation are the same, because each free touches only its own array's
+    // bytes, map and free list, and alloc_slot() consults only that array's
+    // free set (state/arenas.hpp). ModuleRows.InterleavedChurnLeavesTodaysSlots
+    // AndBytes pins it against the hand cascade's digests.
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        const modules::CompiledArray& array = schedule_.arrays[i];
+        const ArrayIndex id = module_array_ids_[i];
+        if (array.extent == modules::Extent::per_body) {
+            // The body's own row, direct-indexed by body slot: nothing to
+            // release, only to zero, as free_slot zeroes a released row.
+            Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) continue;
+            const std::size_t begin = std::size_t{body_slot} * array.elem_size;
+            if (begin + array.elem_size > bytes->size()) continue;
+            std::memset(bytes->data() + begin, 0, array.elem_size);
+            clear_children(i, body_slot);
+            continue;
+        }
+        if (array.extent != modules::Extent::per_element && array.extent != modules::Extent::per_sensor) continue;
 
-    // Ascending slot order, so the free sequence -- and therefore every future
-    // allocation out of the rebuilt free list -- is a function of the slot
-    // indices alone. Liveness comes from the slot->world map and NOT from the
-    // row's contents: a freed row is zero-filled, and body_slot 0 is a perfectly
-    // legitimate world-local index, so trusting the row would free live elements
-    // attached to body 0.
-    //
-    // `map` stays valid across the free_slot() calls below: it spans a vector
-    // that is sized once at registration and never resized, so only the VALUES
-    // change (to kInvalidWorld, for slots this loop has already passed).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        (void)arenas_.free_slot(drag_id_, slot);
-    }
-}
+        const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id);
+        const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        const Result<WorldRange> range = arenas_.range(id, world_index);
+        if (!map || !bytes || !range) continue;
 
-void Simulation::free_imu_sensors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(imu_id_);
-    Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.sensor_capacity;
-    const uint32_t end = begin + layout_.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // sensors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas_.free_slot(imu_id_, slot); freed) {
-            // free_slot zeroes the ROW; the samples live in a second,
-            // direct-indexed array that nothing else would clear. See
-            // Simulation::despawn's contract.
-            clear_imu_ring(slot);
+        // Ascending slot order, so the free sequence -- and therefore every
+        // future allocation out of the rebuilt free list -- is a function of
+        // the slot indices alone. Liveness comes from the slot->world map and
+        // NOT from the row's contents: a freed row is zero-filled, and
+        // body_slot 0 is a perfectly legitimate world-local index, so trusting
+        // the row would free live rows attached to body 0.
+        //
+        // `map` and `bytes` stay valid across the free_slot() calls below: they
+        // span storage that is sized once at registration and never moves, so
+        // only the VALUES change (to kInvalidWorld and zeroes, for slots this
+        // loop has already passed).
+        for (uint32_t slot = range->begin; slot < range->begin + range->count; ++slot) {
+            if ((*map)[slot] != world_index) continue;
+            // An attached row's body_slot is its first four bytes
+            // (modules::attached_row_size), copied out rather than read through
+            // a cast: the loop knows the row only as bytes.
+            uint32_t owner = 0;
+            std::memcpy(&owner, bytes->data() + std::size_t{slot} * array.elem_size, sizeof(owner));
+            if (owner != local_body) continue;
+            if (Result<void> freed = arenas_.free_slot(id, slot); freed) {
+                // free_slot zeroes the ROW; a ring's samples live in a second,
+                // direct-indexed array that nothing else would clear. See
+                // Simulation::despawn's contract.
+                clear_children(i, slot);
+            }
         }
     }
 }
 
-void Simulation::free_rotors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(rotors_id_);
-    Result<std::span<vehicles::RotorRow>> rows = arenas_.array(rotors_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    // The ROTOR partition is sized by element_capacity, the same number the
-    // drag table uses -- see create()'s registration note on the shared
-    // force-element budget.
-    const uint32_t begin = world_index * layout_.element_capacity;
-    const uint32_t end = begin + layout_.element_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same two reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // rotors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        (void)arenas_.free_slot(rotors_id_, slot);
-    }
-}
-
-void Simulation::free_gnss_sensors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
-    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.sensor_capacity;
-    const uint32_t end = begin + layout_.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_imu_sensors_of does and for exactly the same reasons.
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas_.free_slot(gnss_id_, slot); freed) {
-            clear_gnss_ring(slot);
-        }
-    }
-}
-
-void Simulation::clear_gnss_ring(uint32_t slot) {
-    Result<std::span<sensors::GnssFix>> ring = arenas_.array(gnss_ring_id_);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-
-    for (std::size_t i = 0; i < sensors::kRingDepth; ++i) {
-        // FIELD-WISE, like clear_imu_ring. GnssFix has no implicit padding
-        // (sensors/gnss.hpp asserts it), so naming all six fields zeroes every
-        // byte -- which is what makes a freed receiver's ring read as zeroes in
-        // a snapshot, the same as any other freed slot.
-        sensors::GnssFix& fix = (*ring)[begin + i];
-        fix.position = glm::vec3(0.0f);
-        fix.sigma_h = 0.0f;
-        fix.velocity = glm::vec3(0.0f);
-        fix.sigma_v = 0.0f;
-        fix.index = 0;
-        fix.tick = 0;
-    }
-}
-
-void Simulation::clear_imu_ring(uint32_t slot) {
-    Result<std::span<sensors::ImuSample>> ring = arenas_.array(imu_ring_id_);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-
-    for (std::size_t i = 0; i < sensors::kRingDepth; ++i) {
-        // FIELD-WISE, like every other arena write in this file. ImuSample has
-        // no implicit padding (sensors/imu.hpp asserts it), so naming all six
-        // fields zeroes every byte -- which is what makes a freed sensor's ring
-        // read as zeroes in a snapshot, the same as any other freed slot.
-        sensors::ImuSample& sample = (*ring)[begin + i];
-        sample.accel = glm::vec3(0.0f);
-        sample._p0 = 0.0f;
-        sample.gyro = glm::vec3(0.0f);
-        sample._p1 = 0.0f;
-        sample.index = 0;
-        sample.tick = 0;
+void Simulation::clear_children(uint32_t array, uint32_t slot) {
+    for (uint32_t j = 0; j < schedule_.arrays.size(); ++j) {
+        const modules::CompiledArray& child = schedule_.arrays[j];
+        if (child.extent != modules::Extent::per_row || child.owner != array) continue;
+        Result<std::span<std::byte>> bytes = arenas_.bytes(module_array_ids_[j]);
+        if (!bytes) continue;
+        const std::size_t window = std::size_t{child.depth} * child.elem_size;
+        const std::size_t begin = std::size_t{slot} * window;
+        if (begin + window > bytes->size()) continue;
+        // EVERY BYTE, BY memset. A freed slot reads as zeroes, padding
+        // included, because snapshot digests fold raw bytes; a value-initialized
+        // assignment (`row = Row{}`) would zero every MEMBER and leave padding
+        // unspecified. For the built-in rings this writes exactly the bytes the
+        // field-wise clears it replaced wrote: ImuSample and GnssFix have no
+        // implicit padding (sensors/imu.hpp and sensors/gnss.hpp assert it), so
+        // naming all six fields of each zeroed every byte.
+        std::memset(bytes->data() + begin, 0, window);
     }
 }
 
@@ -1717,200 +1464,173 @@ Result<void> Simulation::despawn(BodyRef ref) {
     return {};
 }
 
-Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragElementSpawn& elem) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
+// ---------------------------------------------------------------------------
+// attached rows: the one door, and its typed fronts
+// ---------------------------------------------------------------------------
+
+Result<RowRef> Simulation::attach_row(BodyRef body, std::string_view array, std::span<const std::byte> spawn) {
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].name == array) return attach_row_impl(body, i, spawn, "attach_row");
+    }
+    return std::unexpected(
+        missing("attach_row: no module in this set declares an array '" + std::string(array) + "'"));
+}
+
+Result<RowRef> Simulation::attach_row_impl(BodyRef body, uint32_t array, std::span<const std::byte> spawn,
+                                           std::string_view what) {
+    if (Result<void> valid = validate_ref(body); !valid) {
         return std::unexpected(valid.error());
     }
-    if (!finite(elem.area) || !finite(elem.coeffs) || !finite(elem.local_pos) ||
-        !finite(elem.local_orient)) {
-        return std::unexpected(invalid("add_drag_element: parameters must all be finite"));
+    const std::string prefix = std::string(what) + ": ";
+    if (array >= schedule_.arrays.size()) {
+        // The typed fronts pass the arrays create() minted, which always exist.
+        return std::unexpected(internal(prefix + "the array is not in this set's table"));
     }
-    if (const char* why = physics::check_drag_law(elem.mode, elem.area, elem.coeffs).first()) {
-        return std::unexpected(invalid(std::string("add_drag_element: ") + why));
+    const modules::CompiledArray& decl = schedule_.arrays[array];
+    const bool slot_allocated =
+        decl.extent == modules::Extent::per_element || decl.extent == modules::Extent::per_sensor;
+    if (!slot_allocated && decl.extent != modules::Extent::per_body) {
+        return std::unexpected(invalid(prefix + "array '" + decl.name + "' (module '" + decl.module +
+                                       "') is not attached to a body; only a per_body, per_element or "
+                                       "per_sensor array is"));
     }
-    if (!(glm::dot(elem.local_orient, elem.local_orient) > 0.0f)) {
-        return std::unexpected(invalid("add_drag_element: local_orient must have non-zero length"));
+    if (spawn.size() != decl.spawn_size) {
+        return std::unexpected(invalid(prefix + "array '" + decl.name + "' takes a " +
+                                       std::to_string(decl.spawn_size) + "-byte spawn record, not " +
+                                       std::to_string(spawn.size())));
     }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    // THE SHARED FORCE-ELEMENT BUDGET (Task 18): rotors and drag bodies live
-    // in separate arena arrays but count against ONE declared capacity,
-    // because spec §3 calls them both force elements and a world file declares
-    // how many force elements a world holds, not how many of each kind. A
-    // world with rotors in it therefore has fewer drag slots available than it
-    // has drag STORAGE, which is the honest reading of its own declaration.
-    const Result<uint32_t> live = live_force_elements(ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_element_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_drag_element: world " + std::to_string(ref.world_index) +
-                                         " is at its declared force-element capacity (" +
-                                         std::to_string(config.declared_element_capacity) +
-                                         ", shared between drag bodies and rotors)"});
+    if (decl.validate != nullptr) {
+        if (Result<void> checked = decl.validate(spawn); !checked) {
+            return std::unexpected(Error{checked.error().code, prefix + checked.error().context});
+        }
     }
 
-    const Result<uint32_t> slot = arenas_.alloc_slot(drag_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
+    const WorldConfig& config = configs_[body.world_index];
+    const ArrayIndex id = module_array_ids_[array];
+    uint32_t slot = body.slot;  // per_body: the body's own row
+    if (slot_allocated) {
+        if (decl.extent == modules::Extent::per_element) {
+            // THE SHARED FORCE-ELEMENT BUDGET (Task 18): rotors and drag
+            // bodies -- and every other per_element array -- live in separate
+            // arena arrays but count against ONE declared capacity, because
+            // spec §3 calls them all force elements and a world file declares
+            // how many force elements a world holds, not how many of each kind.
+            // A world with rotors in it therefore has fewer drag slots
+            // available than it has drag STORAGE, which is the honest reading
+            // of its own declaration.
+            const Result<uint32_t> live = live_force_elements(body.world_index);
+            if (!live) return std::unexpected(live.error());
+            if (*live >= config.declared_element_capacity) {
+                return std::unexpected(Error{Code::capacity_exceeded,
+                                             prefix + "world " + std::to_string(body.world_index) +
+                                                 " is at its declared force-element capacity (" +
+                                                 std::to_string(config.declared_element_capacity) +
+                                                 ", shared between drag bodies and rotors)"});
+            }
+        } else {
+            // A per_sensor array counts ALONE: the declared sensor capacity
+            // bounds each sensor array's live rows, never their sum, so a world
+            // may hold `sensors` IMUs AND `sensors` receivers.
+            const Result<uint32_t> live = arenas_.live_count(id, body.world_index);
+            if (!live) return std::unexpected(live.error());
+            if (*live >= config.declared_sensor_capacity) {
+                return std::unexpected(Error{Code::capacity_exceeded,
+                                             prefix + "world " + std::to_string(body.world_index) +
+                                                 " is at its declared sensor capacity (" +
+                                                 std::to_string(config.declared_sensor_capacity) + ")"});
+            }
+        }
 
-    // -----------------------------------------------------------------------
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME; ONLY ITS PARAMETERS
-    // AND `enabled` WAIT FOR THE BOUNDARY. This is not an optimization, it
-    // closes an aliasing hole:
-    //
-    // a reserved row is otherwise the arena's zeroes, i.e. `body_slot == 0` --
-    // and 0 is a perfectly legitimate world-local body index. The despawn
-    // cascade (free_drag_elements_of) identifies a body's elements by exactly
-    // that field, so a row reserved while a despawn of world-local body 0 was
-    // already queued would be mistaken for one of body 0's elements and freed,
-    // after which the queued init_drag would write a live row into a slot the
-    // arena considers free -- breaking the "a freed slot reads as zeroes"
-    // invariant, under-counting live_count, letting a later reservation alias
-    // the same row, and leaving an orphan element that applies drag to whatever
-    // body next occupies that body slot. Every one of those is silent.
-    //
-    // Writing `body_slot` here makes the reserved row TRUTHFUL about which body
-    // it belongs to from the instant it exists, so the cascade's test is exact.
-    // `enabled` stays 0 (the arena's zero-fill), so the row is still inert to
-    // apply_drag until the boundary -- the same "reserved but not yet live"
-    // posture spawn() gives a body slot via body_flags::active.
-    // -----------------------------------------------------------------------
-    Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
+        const Result<uint32_t> reserved = arenas_.alloc_slot(id, body.world_index);
+        if (!reserved) return std::unexpected(reserved.error());
+        slot = *reserved;
 
+        // -------------------------------------------------------------------
+        // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME; ONLY ITS
+        // PARAMETERS AND ITS LIVENESS FLAG WAIT FOR THE BOUNDARY. This is not
+        // an optimization, it closes an aliasing hole:
+        //
+        // a reserved row is otherwise the arena's zeroes, i.e. `body_slot == 0`
+        // -- and 0 is a perfectly legitimate world-local body index. The
+        // despawn cascade (free_rows_of) identifies a body's rows by exactly
+        // that field, so a row reserved while a despawn of world-local body 0
+        // was already queued would be mistaken for one of body 0's rows and
+        // freed, after which the queued init_row would write a live row into a
+        // slot the arena considers free -- breaking the "a freed slot reads as
+        // zeroes" invariant, under-counting live_count, letting a later
+        // reservation alias the same row, and leaving an orphan element that
+        // applies drag (say) to whatever body next occupies that body slot.
+        // Every one of those is silent.
+        //
+        // Writing `body_slot` here makes the reserved row TRUTHFUL about which
+        // body it belongs to from the instant it exists, so the cascade's test
+        // is exact. The liveness flag stays 0 (the arena's zero-fill), so the
+        // row is still inert to its pass until the boundary -- the same
+        // "reserved but not yet live" posture spawn() gives a body slot via
+        // body_flags::active.
+        // -------------------------------------------------------------------
+        Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        if (!bytes) return std::unexpected(bytes.error());
+        const uint32_t local_body = body.slot - body.world_index * layout_.body_capacity;
+        std::memcpy(bytes->data() + std::size_t{slot} * decl.elem_size, &local_body, sizeof(local_body));
+    }
+
+    queue_init_row(array, body.world_index, slot, body.slot, spawn);
+    return RowRef{body.world_index, slot};
+}
+
+void Simulation::queue_init_row(uint32_t array, uint32_t world_index, uint32_t slot, uint32_t body_slot,
+                                std::span<const std::byte> spawn) {
     StructuralOp op;
-    op.kind = OpKind::init_drag;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.drag = elem;
+    op.kind = OpKind::init_row;
+    op.world_index = world_index;
+    op.slot = slot;
+    op.body_slot = body_slot;
+    op.array = array;
+    // compile_schedule bounded every declared spawn_size by kMaxSpawnBytes,
+    // and attach_row_impl and spawn(vehicle) hand over exactly that many.
+    op.spawn_size = static_cast<uint32_t>(std::min<std::size_t>(spawn.size(), op.spawn.size()));
+    std::memcpy(op.spawn.data(), spawn.data(), op.spawn_size);
     queue_.push_back(op);
+}
 
-    return DragElementRef{ref.world_index, *slot};
+uint32_t Simulation::table_index(ArrayIndex array) const noexcept {
+    for (uint32_t i = 0; i < module_array_ids_.size(); ++i) {
+        if (module_array_ids_[i] == array) return i;
+    }
+    return modules::kNoArray;
+}
+
+Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragElementSpawn& elem) {
+    const Result<RowRef> row = attach_row_impl(ref, table_index(drag_id_), std::as_bytes(std::span(&elem, 1)),
+                                               "add_drag_element");
+    if (!row) return std::unexpected(row.error());
+    return DragElementRef{row->world_index, row->slot};
 }
 
 Result<GnssSensorRef> Simulation::add_gnss_sensor(BodyRef ref, const GnssSensorSpawn& sensor) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
-        return std::unexpected(valid.error());
-    }
-    if (sensor.rate_divider == 0) {
-        return std::unexpected(invalid("add_gnss_sensor: rate_divider must be >= 1"));
-    }
-    if (!finite(sensor.mount_pos)) {
-        return std::unexpected(invalid("add_gnss_sensor: mount_pos must be finite"));
-    }
-    // Spelled `!(x >= 0)` so a NaN REJECTS rather than comparing false on both
-    // sides -- add_imu_sensor()'s discipline, and world_set.cpp's in_range().
-    // bias_tau_s joins the sigmas here: <= 0 legitimately DISABLES the bias
-    // (gnss_bias_retention returns 0), but a NEGATIVE tau is a caller error and
-    // a NaN one would propagate into every fix through a finite-looking row.
-    if (!(sensor.sigma_h >= 0.0f) || !(sensor.sigma_v >= 0.0f) ||
-        !(sensor.sigma_vel >= 0.0f) || !(sensor.sigma_bias >= 0.0f) ||
-        !(sensor.bias_tau_s >= 0.0f) || !finite(sensor.sigma_h) ||
-        !finite(sensor.sigma_v) || !finite(sensor.sigma_vel) ||
-        !finite(sensor.sigma_bias) || !finite(sensor.bias_tau_s)) {
-        return std::unexpected(
-            invalid("add_gnss_sensor: every sigma and bias_tau_s must be finite and >= 0"));
-    }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    const Result<uint32_t> live = arenas_.live_count(gnss_id_, ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_sensor_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_gnss_sensor: world " + std::to_string(ref.world_index) +
-                                         " is at its declared sensor capacity (" +
-                                         std::to_string(config.declared_sensor_capacity) + ")"});
-    }
-
-    const Result<uint32_t> slot = arenas_.alloc_slot(gnss_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
-
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME -- the same aliasing
-    // hole add_imu_sensor() and add_drag_element() close, for the same reason:
-    // a reserved row's zeroed `body_slot` is a legitimate world-local index
-    // (body 0), and free_gnss_sensors_of() identifies a body's receivers by
-    // exactly that field. `kind` stays 0, so the row is inert until the
-    // boundary.
-    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
-
-    StructuralOp op;
-    op.kind = OpKind::init_gnss;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.gnss = sensor;
-    queue_.push_back(op);
-
-    return GnssSensorRef{ref.world_index, *slot};
+    const Result<RowRef> row = attach_row_impl(ref, table_index(gnss_id_), std::as_bytes(std::span(&sensor, 1)),
+                                               "add_gnss_sensor");
+    if (!row) return std::unexpected(row.error());
+    return GnssSensorRef{row->world_index, row->slot};
 }
 
 Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpawn& sensor) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
-        return std::unexpected(valid.error());
-    }
-    if (sensor.rate_divider == 0) {
-        // 0 would mean "no rate at all". synthesize_imu() degrades it to 1
-        // rather than dividing by zero, but a caller who wrote 0 meant
-        // something, and it was not "every substep".
-        return std::unexpected(invalid("add_imu_sensor: rate_divider must be >= 1"));
-    }
-    if (!finite(sensor.mount_pos) || !finite(sensor.mount_orient)) {
-        return std::unexpected(invalid("add_imu_sensor: mount pose must be finite"));
-    }
-    if (!(glm::dot(sensor.mount_orient, sensor.mount_orient) > 0.0f)) {
-        return std::unexpected(invalid("add_imu_sensor: mount_orient must have non-zero length"));
-    }
-    if (!(sensor.sigma_a >= 0.0f) || !(sensor.sigma_g >= 0.0f) || !(sensor.sigma_ba >= 0.0f) ||
-        !(sensor.sigma_bg >= 0.0f) || !finite(sensor.sigma_a) || !finite(sensor.sigma_g) ||
-        !finite(sensor.sigma_ba) || !finite(sensor.sigma_bg)) {
-        // Spelled `!(x >= 0)` so a NaN rejects rather than comparing false on
-        // both sides -- the same discipline world_set.cpp's in_range() uses.
-        return std::unexpected(invalid("add_imu_sensor: every sigma must be finite and >= 0"));
-    }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    const Result<uint32_t> live = arenas_.live_count(imu_id_, ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_sensor_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_imu_sensor: world " + std::to_string(ref.world_index) +
-                                         " is at its declared sensor capacity (" +
-                                         std::to_string(config.declared_sensor_capacity) + ")"});
-    }
-
-    const Result<uint32_t> slot = arenas_.alloc_slot(imu_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
-
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME -- see the long note in
-    // add_drag_element() for the aliasing hole this closes. It is the same hole:
-    // a reserved row's zeroed `body_slot` is a legitimate world-local index
-    // (body 0), and free_imu_sensors_of() identifies a body's sensors by exactly
-    // that field. `kind` stays 0 (the arena's zero-fill), so the row is still
-    // inert to the sensor passes until the boundary.
-    Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
-
-    StructuralOp op;
-    op.kind = OpKind::init_imu;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.imu = sensor;
-    queue_.push_back(op);
-
-    return ImuSensorRef{ref.world_index, *slot};
+    const Result<RowRef> row = attach_row_impl(ref, table_index(imu_id_), std::as_bytes(std::span(&sensor, 1)),
+                                               "add_imu_sensor");
+    if (!row) return std::unexpected(row.error());
+    return ImuSensorRef{row->world_index, row->slot};
 }
 
 Result<uint32_t> Simulation::live_force_elements(uint32_t world_index) const {
-    const Result<uint32_t> drag = arenas_.live_count(drag_id_, world_index);
-    if (!drag) return std::unexpected(drag.error());
-    const Result<uint32_t> rotors = arenas_.live_count(rotors_id_, world_index);
-    if (!rotors) return std::unexpected(rotors.error());
-    return *drag + *rotors;
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].extent != modules::Extent::per_element) continue;
+        const Result<uint32_t> rows = arenas_.live_count(module_array_ids_[i], world_index);
+        if (!rows) return std::unexpected(rows.error());
+        live += *rows;
+    }
+    return live;
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,7 +1828,7 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
 
     // -----------------------------------------------------------------------
     // THE ROWS' IDENTITY IS WRITTEN AT RESERVATION TIME -- the Task 13 lesson,
-    // spelled out at length in add_drag_element(). A reserved row is otherwise
+    // spelled out at length in attach_row_impl(). A reserved row is otherwise
     // the arena's zeroes, i.e. `body_slot == 0`, and 0 is a perfectly
     // legitimate world-local body index; the despawn cascade identifies a
     // body's rows by exactly that field, so a row reserved while a despawn of
@@ -2162,48 +1882,41 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                               1.0f / model.body.inertia_diag.z);
     queue_.push_back(body_op);
 
+    // Each row is an init_row of its module's array, with that module's spawn
+    // record -- the records attach_row() takes -- and no validate: the model
+    // was validated once, by register_model(), and the rows were reserved
+    // above. The body_slot of each is already written.
+    const uint32_t rotor_table = table_index(rotors_id_);
+    const uint32_t drag_table = table_index(drag_id_);
+    const uint32_t imu_table = table_index(imu_id_);
     for (std::size_t i = 0; i < rotors_taken; ++i) {
-        StructuralOp op;
-        op.kind = OpKind::init_rotor;
-        op.world_index = world_index;
-        op.slot = rotor_slots[i];
-        op.body_slot = *body_slot;
-        op.rotor = model.rotors[i];
-        op.rotor_omega = where.rotor_omega;
-        queue_.push_back(op);
+        const modules::builtin::RotorSpawn spawn{model.rotors[i], where.rotor_omega};
+        queue_init_row(rotor_table, world_index, rotor_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
     }
     for (std::size_t i = 0; i < drags_taken; ++i) {
         // The desc -> spawn-record mapping vehicles/model_type.hpp promises
         // lives in exactly one place. This is it, for drag bodies.
         const vehicles::DragBodyDesc& desc = model.drag_bodies[i];
-        StructuralOp op;
-        op.kind = OpKind::init_drag;
-        op.world_index = world_index;
-        op.slot = drag_slots[i];
-        op.body_slot = *body_slot;
-        op.drag.mode = desc.mode;
-        op.drag.area = desc.area;
-        op.drag.coeffs = desc.coeffs;
-        op.drag.local_pos = desc.local_pos;
-        op.drag.local_orient = desc.local_orient;
-        queue_.push_back(op);
+        DragElementSpawn spawn;
+        spawn.mode = desc.mode;
+        spawn.area = desc.area;
+        spawn.coeffs = desc.coeffs;
+        spawn.local_pos = desc.local_pos;
+        spawn.local_orient = desc.local_orient;
+        queue_init_row(drag_table, world_index, drag_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
     }
     for (std::size_t i = 0; i < sensors_taken; ++i) {
         // ... and this is it for IMU mounts.
         const vehicles::ImuMountDesc& desc = model.imu_mounts[i];
-        StructuralOp op;
-        op.kind = OpKind::init_imu;
-        op.world_index = world_index;
-        op.slot = sensor_slots[i];
-        op.body_slot = *body_slot;
-        op.imu.mount_pos = desc.mount_pos;
-        op.imu.mount_orient = desc.mount_orient;
-        op.imu.rate_divider = desc.rate_divider;
-        op.imu.sigma_a = desc.sigma_a;
-        op.imu.sigma_g = desc.sigma_g;
-        op.imu.sigma_ba = desc.sigma_ba;
-        op.imu.sigma_bg = desc.sigma_bg;
-        queue_.push_back(op);
+        ImuSensorSpawn spawn;
+        spawn.mount_pos = desc.mount_pos;
+        spawn.mount_orient = desc.mount_orient;
+        spawn.rate_divider = desc.rate_divider;
+        spawn.sigma_a = desc.sigma_a;
+        spawn.sigma_g = desc.sigma_g;
+        spawn.sigma_ba = desc.sigma_ba;
+        spawn.sigma_bg = desc.sigma_bg;
+        queue_init_row(imu_table, world_index, sensor_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
     }
 
     VehicleRef ref;
@@ -2599,7 +2312,7 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     Result<std::span<sensors::ImuSensorRow>> sensors_rows = arenas_.array(imu_id_);
     if (!sensors_rows) return std::unexpected(sensors_rows.error());
     // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's contents --
-    // the same discipline free_imu_sensors_of() states and for the same reason:
+    // the same discipline free_rows_of() states and for the same reason:
     // a free row is zero-filled, and writing a fresh stream into one would break
     // the engine-wide "a freed slot reads as zeroes" invariant and put sixteen
     // non-zero bytes into every subsequent snapshot of a slot nothing owns.
