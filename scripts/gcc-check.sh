@@ -8,7 +8,8 @@
 #
 # It checks the files as they are on disk, uncommitted changes included; a
 # header is checked through a one-line translation unit that includes it. The
-# volume is mounted read-only, and it is the newest leg volume no running
+# volume is mounted read-only, and it is the newest leg volume (one the driver
+# made: label spade.leg) that holds a configured build and that no running
 # container uses, so a check never reads a volume a leg is building and any
 # number of checks can run beside legs. GCC_CHECK_VOLUME=<volume> picks one.
 #
@@ -25,28 +26,33 @@ for f in "$@"; do
     [ -f "$f" ] || { echo "gcc-check: $f: no such file" >&2; exit 2; }
 done
 
-# Leg volumes, newest first: the per-run ones (label spade.leg) and the single
-# volume every leg shared before runs had their own.
+image=$(docker images -q "$prefix" | head -n 1)
+if [ -z "$image" ]; then
+    echo "gcc-check: no $prefix image; build it with scripts\\docker-leg.ps1 -Step image" >&2
+    exit 2
+fi
+
+# Leg volumes, newest first. Only the driver's (label spade.leg): mounting a
+# volume name that does not exist makes Docker create it EMPTY and unlabelled,
+# and such a volume must never be chosen.
 leg_volumes() {
-    { docker volume ls -q --filter label=spade.leg
-      docker volume ls -q | grep -x "$prefix"
-    } | sort -u | xargs -r docker volume inspect --format '{{.CreatedAt}} {{.Name}}' \
+    docker volume ls -q --filter label=spade.leg \
+      | xargs -r docker volume inspect --format '{{.CreatedAt}} {{.Name}}' \
       | sort -r | cut -d' ' -f2
 }
 
 volume=${GCC_CHECK_VOLUME:-}
 if [ -z "$volume" ]; then
     for v in $(leg_volumes); do
-        if [ -z "$(docker ps -q --filter "volume=$v")" ]; then volume=$v; break; fi
+        [ -z "$(docker ps -q --filter "volume=$v")" ] || continue
+        # A volume whose leg never configured has no dependency headers.
+        MSYS_NO_PATHCONV=1 docker run --rm -v "$v:/leg:ro" "$image" test -d /leg/build/_deps || continue
+        volume=$v
+        break
     done
 fi
 if [ -z "$volume" ]; then
-    echo "gcc-check: no leg volume is idle; run a leg first (scripts\\docker-leg.ps1), or let one finish" >&2
-    exit 2
-fi
-image=$(docker images -q "$prefix" | head -n 1)
-if [ -z "$image" ]; then
-    echo "gcc-check: no $prefix image; build it with scripts\\docker-leg.ps1 -Step image" >&2
+    echo "gcc-check: no idle leg volume holds a configured build; run a leg (scripts\\docker-leg.ps1), or let one finish" >&2
     exit 2
 fi
 

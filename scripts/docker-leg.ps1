@@ -19,9 +19,10 @@ It tests a COMMIT, never the working tree: uncommitted changes are not in the le
 Each run has its own container and volume, both named spade-docker-leg-<run>. The
 run defaults to the commit's short sha, so legs on different commits run side by
 side, and the steps of one commit share a volume. A new volume starts as a copy of
-the newest leg volume no running container uses (its build tree and source, mtimes
-kept), so it neither re-fetches dependencies nor rebuilds what the commit did not
-change; -NoSeed starts it empty. summary.txt says how the volume began.
+the newest leg volume (label spade.leg) that holds a configured build and that no
+running container uses (its build tree and source, mtimes kept), so it neither
+re-fetches dependencies nor rebuilds what the commit did not change; -NoSeed
+starts it empty. summary.txt says how the volume began.
 
 Every step except image first syncs the commit into the run's volume, so the leg
 always builds what it names. The leg runs detached: closing the terminal does not
@@ -82,16 +83,23 @@ function Test-VolumeExists([string] $Volume) {
     @(& docker volume ls -q --filter "name=$Volume") -contains $Volume
 }
 
-# Every leg volume, newest first: the per-run ones (label spade.leg) and the
-# single volume every leg shared before runs had their own (spade-docker-leg).
+# Every leg volume, newest first. Only the driver's (label spade.leg): mounting
+# a volume name that does not exist makes Docker create it EMPTY and
+# unlabelled, and such a volume must never be taken for a leg's.
 function Get-LegVolumes {
     $names = @(& docker volume ls -q --filter 'label=spade.leg')
     Invoke-Checked 'docker volume ls'
-    if (Test-VolumeExists $Prefix) { $names += $Prefix }
     if ($names.Count -eq 0) { return @() }
     $rows = @(& docker volume inspect --format '{{.CreatedAt}} {{.Name}}' @names)
     Invoke-Checked 'docker volume inspect'
     @($rows | Sort-Object -Descending | ForEach-Object { ($_ -split ' ', 2)[1] })
+}
+
+# Whether the volume holds a configured build to copy (a leg that stopped
+# before configuring leaves none). One throwaway container per call.
+function Test-VolumeConfigured([string] $Volume, [string] $Image) {
+    & docker run --rm -v "${Volume}:/seed:ro" $Image test -f /seed/build/CMakeCache.txt
+    $LASTEXITCODE -eq 0
 }
 
 # Whether a container mounts the volume: a running one, or with -AnyState any.
@@ -270,7 +278,8 @@ if ($Step -eq 'image') { exit 0 }
 if (-not (Test-VolumeExists $Volume)) {
     $seed = $null
     if (-not $NoSeed) {
-        $seed = Get-LegVolumes | Where-Object { -not (Test-VolumeInUse $_) } | Select-Object -First 1
+        $seed = Get-LegVolumes | Where-Object { -not (Test-VolumeInUse $_) } |
+            Where-Object { Test-VolumeConfigured $_ $image } | Select-Object -First 1
     }
     & docker volume create --label spade.leg=1 --label "spade.run=$id" $Volume | Out-Null
     Invoke-Checked 'docker volume create'
