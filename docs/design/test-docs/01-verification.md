@@ -36,7 +36,7 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 
 ## SPIR-V scanner
 
-`engine/testing/spirv_scan.hpp` reads compiled SPIR-V as a word stream; it needs no SDK tool. It applies two profiles: **parity** kernels obey `SPIR-V rule P1`–`P5`, and **`fp32_math`** modules also obey `E1`/`E2`. Every compiled variant is scanned, and the module count comes from the build, so a new kernel cannot slip past unscanned. Run by `test_slang_layouts.cpp`, which needs no device.
+`engine/testing/spirv_scan.hpp` reads compiled SPIR-V as a word stream; it needs no SDK tool. It applies two profiles: **parity** kernels obey `SPIR-V rule P1`–`P5`, and **`fp32_math`** modules also obey `E1`/`E2`. `P3` was amended on 2026-10-05 and now holds that no module requests an fp32 denormal mode, so every device runs the kernels with its own default (`00-decisions.md`). Every compiled variant is scanned, and the module count comes from the build, so a new kernel cannot slip past unscanned. Run by `test_slang_layouts.cpp`, which needs no device.
 
 ## Bench
 
