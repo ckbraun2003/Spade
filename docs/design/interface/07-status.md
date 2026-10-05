@@ -28,7 +28,8 @@
 
 In the backlog's order (`../backlog.md`, "Suggested order"):
 
-1. **The viewer scenes as world and scene files** (composer plan task 5) are in review on `interface/viewer-scenes` (`327bd2c`): `assets/worlds/` and `assets/scenes/`, tied to the viewer by `test_viewer_successors.cpp`, a row-for-row comparison every tick (the lead's ruling, option B: the golden digests cannot match by construction, and none moves). Each then joins the live smoke as a main function and the editor's scene picker.
+1. **The built-in scenes in the live smoke** are in review on `interface/scene-smoke` (`7d1a393`). The viewer scenes as files are merged (composer task 5). The tour gains shower, bounce, gate, hover and wind, each checking what its scene shows: 27 steps, 129 s of video.
+   - **Filed against world file v3** (Core, module-API §11): delete `sandbox/builtin_records.hpp` and its test. It is a bridge for the per-world physics records the scene files cannot hold yet (the lead's ruling, 2026-10-05).
    - The lead runs the live smoke after each merge batch and sends the user the recording.
 2. **The airflow work** (the user's ruling, 2026-10-05): Physics leads the joint spec. Interface's part is an airspeed and forces HUD (each vehicle's airspeed, angle of attack, aero forces and moments), the airflow views in the sandbox, and an airflow main function in the live smoke.
 3. **Lift the drone box's Vulkan refusal** once Core's translation lock lands on both backends.
