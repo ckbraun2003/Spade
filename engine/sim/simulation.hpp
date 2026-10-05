@@ -702,6 +702,14 @@ public:
     // compiled schedule's.
     [[nodiscard]] Result<compute::RecordedChain> vulkan_recorded_chain() const;
 
+    // Which device and driver this Vulkan run uses, and its fp32 denormal
+    // controls (compute/backend.hpp's DeviceReport; compute::describe() gives
+    // one line). CORE-5: every Vulkan 1.1 device is admitted, its kernels
+    // request no denormal mode, and its results are banded against the CPU
+    // (TD-14), so a run announces what produced it (L6). A diagnostic, like
+    // vulkan_pass_durations_ns(): `unavailable` on the cpu backend.
+    [[nodiscard]] Result<compute::DeviceReport> vulkan_device_report() const;
+
     // ---------------------------------------------------------------------
     // step -- advance `n` steps.
     //

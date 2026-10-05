@@ -22,7 +22,7 @@
 | Behaviors | **CPU only**, as the two placed passes of the `behaviors` module: kinematic first in Fields, force last in Forces. Read/write masks are declared but not consumed. `record_gpu` is stored and never called | `objects/behavior.*` |
 | Refuse a pass the GPU cannot run (`L6`) | **For behaviors, yes** (`CORE-1`, merged `ceb4aef`): a Vulkan `step()` with a registry attached returns `unavailable`. Since stage 2, a pass with no GPU recipe is refused on Vulkan at `create()`, naming `<module>.<pass>`. Measured on the branch tree (`spade-wt/core`, msvc-ninja-release): `GpuBehaviorRefusal` was red before the fix and green after; full suite 900 total, 0 failed, 33 skipped | `sim/simulation.cpp` |
 | Grades, grade check at `create()` | **No** | — |
-| Backend seam: CPU default, Vulkan record-once, denormal-preserving device | **Yes** | `compute/backend.hpp`, `compute/vulkan/` |
+| Backend seam: CPU default, Vulkan record-once, any Vulkan 1.1 device admitted and announced (`CORE-5`) | **Yes** | `compute/backend.hpp`, `compute/vulkan/` |
 | A barrier between every adjacent dispatch pair | **Yes** (`CORE-2`, merged `c7a36a4`). Measured on the branch tree: before the fix the recorder made 13/27/69 barriers where 14/29/74 were needed (1/2/5 substeps); after, `RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair` passes and all 64 `Gpu*` tests pass on the Iris Plus | `compute/vulkan/step_recorder.cpp` |
 
 ## Needs a user decision

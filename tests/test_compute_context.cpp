@@ -11,6 +11,10 @@
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
+#include "sim/simulation.hpp"
+#include "sim/world_set.hpp"
+#include "world/builder.hpp"
+#include "world/medium.hpp"
 #include "gpu_skip.hpp"
 
 namespace {
@@ -106,6 +110,37 @@ TEST(GpuContext, ReportsTheDeviceDriverAndFloatControls) {
         EXPECT_EQ(report.denorm_flush_to_zero_f32, direct.flush_to_zero_f32 == VK_TRUE);
     }
     std::cout << "[GpuContext] " << spade::compute::describe(report) << "\n";
+}
+
+// Simulation::vulkan_device_report() is the same report, on a Vulkan
+// Simulation; on a cpu one it refuses with `unavailable`, like the other
+// Vulkan diagnostics.
+TEST(GpuContext, ASimulationReportsTheDeviceItRunsOn) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::testing::DefaultDeviceDenorms direct = spade::testing::read_default_device_denorms();
+    auto world = spade::WorldBuilder()
+                     .name("report")
+                     .environment(spade::Environment{})
+                     .capacities(spade::Capacities{1, 1, 1, 1})
+                     .build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    spade::WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    const spade::WorldSetDesc worlds{{inst}};
+
+    auto on_vulkan = spade::Simulation::create(worlds, 2'000'000, 2, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(on_vulkan.has_value()) << on_vulkan.error().context;
+    const auto report = on_vulkan->vulkan_device_report();
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_EQ(report->device_name, direct.name);
+    EXPECT_EQ(report->driver_version, direct.driver_version);
+
+    auto on_cpu = spade::Simulation::create(worlds, 2'000'000, 2);
+    ASSERT_TRUE(on_cpu.has_value()) << on_cpu.error().context;
+    const auto none = on_cpu->vulkan_device_report();
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().code, Code::unavailable);
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +348,7 @@ TEST(ComputeBackendAvailability, ForcedUnavailableReturnsUnavailable) {
 
     // AND THE OVERRIDE SHORT-CIRCUITS BEFORE ANY DRIVER CALL (S6 Task 4, review
     // fix round 2). vulkan_available() gained a second reason to answer false --
-    // a present device that cannot preserve fp32 denormals -- and that clause
+    // a present device below Vulkan 1.1 (CORE-5; once, fp32 denormal preservation) -- and that clause
     // creates an instance, enumerates a device and queries its properties.
     // SPADE_FORCE_NO_VULKAN exists so a host-only test can get its "no" WITHOUT
     // touching a driver, so the env check must stay FIRST; and "first" is a
@@ -322,7 +357,7 @@ TEST(ComputeBackendAvailability, ForcedUnavailableReturnsUnavailable) {
     // TWO THINGS PROVE IT, and they are different claims:
     //
     //   1. THE ASSERTIONS ABOVE, on this program's box. A fully usable device
-    //      is present here (the Iris reports shaderDenormPreserveFloat32=1), so
+    //      is present here (the RTX 3060 Ti, admitted under CORE-5), so
     //      an override that did NOT win would leave create() succeeding --
     //      ASSERT_FALSE would have caught it. That is the ordering evidence,
     //      and it is only available where a device exists.

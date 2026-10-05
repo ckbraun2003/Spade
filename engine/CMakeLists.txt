@@ -1018,17 +1018,6 @@ add_library(spade_compute STATIC
     compute/vulkan/probe_runner.cpp
 )
 
-# THE NVIDIA DENORM MEASUREMENT (docs/design/core/plans/
-# 2026-10-04-nvidia-denorm-measurement-plan.md; the user's "measure first"
-# ruling). With the test-only SPADE_MEASURE_UNPINNED_DENORMS option on (declared,
-# and guarded against install and subproject use, by Test/Docs), context.cpp
-# admits a device without fp32 denormal preservation and carries the marker the
-# install scanner looks for. Off, which is every build anyone installs, nothing
-# changes.
-if(SPADE_MEASURE_UNPINNED_DENORMS)
-    target_compile_definitions(spade_compute PRIVATE SPADE_MEASURE_UNPINNED_DENORMS=1)
-endif()
-
 add_library(spade::compute ALIAS spade_compute)
 set_target_properties(spade_compute PROPERTIES EXPORT_NAME compute)
 

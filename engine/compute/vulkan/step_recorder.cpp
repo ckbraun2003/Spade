@@ -109,7 +109,7 @@ namespace {
 // Can this device actually run a local size of `workgroup_size` (S6 Task 9b)?
 //
 // CHECKED IN CODE RATHER THAN LEFT TO THE DRIVER, for exactly the reason
-// context.cpp checks shaderDenormPreserveFloat32 there and says so at length:
+// context.cpp checks its one capability clause (CORE-5) there:
 // exceeding maxComputeWorkGroupInvocations or maxComputeWorkGroupSize[0] is a
 // Vulkan VALID-USAGE violation, i.e. undefined behaviour, NOT a guaranteed
 // VK_ERROR_* from vkCreateComputePipelines -- and this project enables

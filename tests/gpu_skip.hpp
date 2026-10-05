@@ -3,8 +3,8 @@
 // Every Gpu* test that needs a Vulkan device begins with
 //     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 // so a log says WHY it skipped, not only that it did: the override, no loader
-// or device, or the default device's missing capability (the engine's one
-// requirement, fp32 denormal preservation).
+// or device, or a default device below Vulkan 1.1 (the engine's one capability
+// requirement, CORE-5).
 #pragma once
 
 #include <cstdlib>
@@ -107,14 +107,9 @@ struct DefaultDeviceDenorms {
     static const std::string reason = [] {
         const DefaultDeviceDenorms denorms = read_default_device_denorms();
         if (!denorms.device) return std::string("Vulkan unavailable: no Vulkan loader or physical device");
-        if (!denorms.queryable) {
+        if (denorms.api_version < VK_API_VERSION_1_1) {
             return "Vulkan unavailable: the default device ('" + denorms.name +
-                   "') reports Vulkan < 1.2, so shaderDenormPreserveFloat32 cannot be queried";
-        }
-        if (denorms.preserve_f32 == VK_FALSE) {
-            return "Vulkan unavailable: the default device ('" + denorms.name +
-                   "') reports shaderDenormPreserveFloat32 = false, and every spade kernel requires fp32 "
-                   "denormal preservation";
+                   "') reports Vulkan < 1.1, and every spade kernel is SPIR-V 1.3";
         }
         // The engine refused for a reason the direct read does not see: give its own words.
         auto context = compute::VulkanContext::create(compute::BackendDesc{.kind = compute::BackendKind::vulkan});
