@@ -2782,11 +2782,15 @@ TEST(ParityChaos, OneUlpControlAtEachScenariosHorizon) {
             ASSERT_TRUE(report.has_value()) << name << ": " << report.error().context;
             const spade::testing::QuantityReport& pos = report->quantities[0];
             const spade::testing::QuantityReport& vel = report->quantities[1];
-            std::printf("control %-26s steps %5llu  pos max %.3e A %.3e R %.3e  vel max %.3e A %.3e R %.3e\n",
+            const spade::testing::QuantityReport& sf = report->quantities[4];
+            std::printf("control %-26s steps %5llu  pos max %.3e A %.3e R %.3e  vel max %.3e A %.3e R %.3e"
+                        "  sf max %.3e A %.3e R %.3e\n",
                         name.c_str(), static_cast<unsigned long long>(scenario.steps),
                         static_cast<double>(pos.max_abs), static_cast<double>(pos.near_zero_abs),
                         static_cast<double>(pos.far_rel), static_cast<double>(vel.max_abs),
-                        static_cast<double>(vel.near_zero_abs), static_cast<double>(vel.far_rel));
+                        static_cast<double>(vel.near_zero_abs), static_cast<double>(vel.far_rel),
+                        static_cast<double>(sf.max_abs), static_cast<double>(sf.near_zero_abs),
+                        static_cast<double>(sf.far_rel));
         }
     }
 }
