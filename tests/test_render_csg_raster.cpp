@@ -205,11 +205,15 @@ TEST(CsgRaster, WireframeStillDrawsTheCsgMesh) {
 // A sphere in front hides part of the slab, and the slab hides part of a
 // sphere behind it, except through the hole. The raster must show the same
 // surface as the reference almost everywhere: the spheres are tessellated,
-// so their silhouettes differ by a pixel here and there.
+// so their silhouettes differ by a pixel here and there. Then each way is
+// checked where it decides: inside the front sphere's footprint, where the
+// slab lies behind, the raster shows the sphere, never the slab; and the
+// back sphere shows through the hole.
 TEST(CsgRaster, DepthOrdersCsgAgainstMeshesBothWays) {
-    const WorldDesc world = slab_and_spheres(
-        glm::vec3(1.0f, 1.0f, 0.1f),
-        {SdfPose{.position = {0.8f, 0.0f, 0.6f}}, SdfPose{.position = {-0.2f, 0.1f, -1.0f}}}, {0.3f, 0.6f});
+    const glm::vec3 slab(1.0f, 1.0f, 0.1f);
+    const SdfPose front{.position = {0.6f, 0.5f, 0.6f}};  // wholly over the slab, clear of the hole
+    const SdfPose back{.position = {-0.2f, 0.1f, -1.0f}};
+    const WorldDesc world = slab_and_spheres(slab, {front, back}, {0.25f, 0.6f});  // outlives scene.sdf
     const RenderScene scene = scene_or_fail(world);
     Camera camera;
     camera.position = glm::vec3(0.0f, 0.0f, 4.0f);
@@ -218,7 +222,44 @@ TEST(CsgRaster, DepthOrdersCsgAgainstMeshesBothWays) {
     const Frame reference = render_frame(scene, camera, DrawMode::raymarch);
     uint32_t blue = 0;
     EXPECT_LT(shows_mismatch(scene, raster, reference, &blue), 0.01);
-    EXPECT_GT(blue, 0u) << "a sphere shows";
+
+    // The front sphere's footprint, from the reference with that sphere
+    // alone, and what lies behind it, from the reference without it.
+    WorldBuilder b = base_builder();
+    b.material(MaterialDesc{.name = "blue", .base_color = {0.1f, 0.1f, 0.9f, 1.0f}});
+    b.sphere(0.25f, front).material_for_last_node(0);
+    const Result<WorldDesc> sphere_world = b.build();
+    ASSERT_TRUE(sphere_world) << sphere_world.error().context;
+    const Frame footprint = render_frame(scene_or_fail(*sphere_world), camera, DrawMode::raymarch);
+    const Frame without_front =
+        render_frame(scene_or_fail(slab_and_spheres(slab, {back}, {0.6f})), camera, DrawMode::raymarch);
+
+    const uint32_t sky = spade::render::pack_sky_reference_bgrx(scene.lighting);
+    uint32_t inside = 0, slab_behind = 0, slab_drawn_over = 0, through_hole = 0;
+    for (uint32_t y = 1; y + 1 < kHeight; ++y) {
+        for (uint32_t x = 1; x + 1 < kWidth; ++x) {
+            bool all_in = true, any_in = false;
+            for (uint32_t dy = 0; dy < 3u; ++dy) {
+                for (uint32_t dx = 0; dx < 3u; ++dx) {
+                    const bool in = shows(footprint, sky, x + dx - 1u, y + dy - 1u) != Shows::sky;
+                    all_in = all_in && in;
+                    any_in = any_in || in;
+                }
+            }
+            if (all_in) {
+                ++inside;
+                slab_behind += shows(without_front, sky, x, y) == Shows::red ? 1u : 0u;
+                slab_drawn_over += shows(raster, sky, x, y) != Shows::blue ? 1u : 0u;
+            } else if (!any_in && shows(raster, sky, x, y) == Shows::blue) {
+                ++through_hole;
+            }
+        }
+    }
+    ASSERT_GT(inside, 100u) << "the front sphere must cover part of the frame";
+    ASSERT_GT(slab_behind, inside * 9u / 10u) << "the slab must lie behind the front sphere";
+    EXPECT_EQ(slab_drawn_over, 0u) << slab_drawn_over << " of " << inside
+                                   << " pixels inside the front sphere show the slab behind it";
+    EXPECT_GT(through_hole, 0u) << "the back sphere shows through the hole";
 }
 
 // A camera inside the slab's solid sees what is behind it, as the raster's
