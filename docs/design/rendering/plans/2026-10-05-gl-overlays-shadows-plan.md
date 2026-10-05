@@ -1,6 +1,6 @@
 # GL overlays, then GL shadows: plan
 
-**Owner:** Rendering. **Status:** draft, for the lead's review. This closes the `07-status` debt row "GL draws no shadows or overlays". Today `GlRenderer::unhonoured(RenderOptions{})` returns `{"shadows", "overlays"}`, and the sandbox HUD shows that list while GL is the path. Interface's e2e live smoke will record the window, so the gap shows on video. It needs no user decision: GL stays the editor's path (`RND-4`), graded best-effort and banded against the CPU (`RND-3`).
+**Owner:** Rendering. **Status:** approved by the lead on 2026-10-05: Q1 yes, Q2 yes, and Q3 yes, recording the device and driver with each pin. It is built after B2 step 1. Under the user's `TD-13` ruling for this box, its review notes flag the GL steps for GPU re-verification. This closes the `07-status` debt row "GL draws no shadows or overlays". Today `GlRenderer::unhonoured(RenderOptions{})` returns `{"shadows", "overlays"}`, and the sandbox HUD shows that list while GL is the path. Interface's e2e live smoke will record the window, so the gap shows on video. It needs no user decision: GL stays the editor's path (`RND-4`), graded best-effort and banded against the CPU (`RND-3`).
 
 Two branches, overlays first. Each is red then green, gets the gcc check, and goes to review on its own.
 

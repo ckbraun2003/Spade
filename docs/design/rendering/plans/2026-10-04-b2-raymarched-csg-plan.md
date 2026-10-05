@@ -1,6 +1,6 @@
 # Ray-marched CSG in the raster (B2): plan
 
-**Owner:** Rendering. **Status:** draft, for the lead's review. The user ruled on 2026-10-04 to plan B2 now (`../../backlog.md`). B2 replaces `RS3`'s "CSG meshed at load", so the `RS3` replacement below goes to the user for signature before any code. B1 (a world-space cell size, `rendering/csg-cell-size`) lands first regardless.
+**Owner:** Rendering. **Status:** approved, being built. The user signed the `RS3` replacement below on 2026-10-05 (via lead). The lead's calls the same day: Q2 is decided in step 5 from measurements, leaning toward the 48-cell mesh for wireframe and shadows if the shadow edges change little; Q3 is a hand-ported GLSL evaluator; Q4 is one material per subtree; Q5 is done (`4821796`). B1 (a world-space cell size, `rendering/csg-cell-size`) lands first. The user ruled on 2026-10-04 to plan B2 (`../../backlog.md`).
 
 ## What B2 is
 
