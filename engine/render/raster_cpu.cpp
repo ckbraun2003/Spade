@@ -1041,9 +1041,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
     const RayGrid grid = ray_grid(camera, fb.width, fb.height);
 
     for (const CsgSubtree& sub : scene.csg_subtrees) {
-        if (sub.draw_item >= scene.statics.size() || sub.program.empty()) {
-            continue;
-        }
+        // render() has refused an empty program and a draw item past the statics.
         const DrawItem& item = scene.statics[sub.draw_item];
         const uint32_t material_index = item.material_override != kNoMaterial ? item.material_override : 0u;
         const Material& resolved =
@@ -1642,6 +1640,21 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     for (const FieldLayer& layer : scene.field_layers) {
         if (Result<void> valid = validate_field_layer(layer); !valid) {
             return valid;
+        }
+    }
+    // So is a CSG subtree with no program, or one naming a draw item past the
+    // statics: either would vanish from the frame in silence.
+    for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+        const CsgSubtree& sub = scene.csg_subtrees[i];
+        if (sub.program.empty()) {
+            return std::unexpected(
+                Error{Code::invalid_argument, "render: CSG subtree " + std::to_string(i) + " has no program"});
+        }
+        if (sub.draw_item >= scene.statics.size()) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "render: CSG subtree " + std::to_string(i) + " names draw item " +
+                                             std::to_string(sub.draw_item) + ", past the " +
+                                             std::to_string(scene.statics.size()) + " statics"});
         }
     }
     // S7a Task R8: raymarch is an exact SDF sphere-tracer, not a rasterizer

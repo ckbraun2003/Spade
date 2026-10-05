@@ -3,10 +3,12 @@
 
 #include "render_gl/gl_renderer.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +29,9 @@
 // glDispatchCompute and friends by hand for exactly this reason.
 #ifndef GL_SHADER_STORAGE_BUFFER
 #define GL_SHADER_STORAGE_BUFFER 0x90D2
+#endif
+#ifndef GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+#define GL_MAX_SHADER_STORAGE_BLOCK_SIZE 0x90DE
 #endif
 
 // One 4.3 FUNCTION too, since GL shadows: glCopyImageSubData, which seeds a
@@ -610,7 +615,8 @@ float primitive_distance(uint kind, vec4 prm, vec3 p) {
             vec2 q = vec2(length(p.xz) - prm.x, p.y);
             return length(q) - prm.y;
         }
-        case 6u: {  // heightfield; GLSL's sin, where the CPU has sin32 (banded)
+        case 6u: {  // heightfield. The driver's sin, where the CPU has sin32, which also reads
+                   // flat beyond |f x| >= 2^24; this one does not. Banded, not bit-exact (RND-3).
             float h = prm.w + prm.x * sin(prm.y * p.x) * sin(prm.z * p.z);
             float slope = abs(prm.x) * max(abs(prm.y), abs(prm.z));
             return (p.y - h) / sqrt(1.0 + slope * slope);
@@ -979,6 +985,7 @@ struct GlRenderer::Impl {
     GLuint shadow_work_tex = 0;
     GLuint shadow_fbo = 0;
     uint32_t shadow_size = 0;  // 0: the scene has no map, so nothing is shadowed
+    bool r32f_renderable = false;  // create() asks the driver once
     glm::mat4 shadow_light_view_proj{1.0f};
     GLuint caster_program = 0;
 
@@ -988,6 +995,7 @@ struct GlRenderer::Impl {
     GLuint ssbo_csg_nodes = 0;
     GLuint ssbo_csg_transforms = 0;
     std::vector<GpuCsgSubtree> csg_subtrees;  // parallel to RenderScene::csg_subtrees
+    size_t max_storage_block_bytes = 0;       // GL_MAX_SHADER_STORAGE_BLOCK_SIZE
 
     // Scratch, reused every frame so a frame allocates nothing steady-state.
     std::vector<glm::mat4> instance_transforms;
@@ -1226,6 +1234,24 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     gl.GenTextures(1, &impl->shadow_static_tex);
     gl.GenTextures(1, &impl->shadow_work_tex);
     gl.GenFramebuffers(1, &impl->shadow_fbo);
+    // The working shadow map stays attached to `shadow_fbo`; upload_scene()
+    // only resizes it. Whether the driver renders to R32F is asked here,
+    // once, so upload_scene() can refuse before it changes anything.
+    {
+        gl.BindTexture(GL_TEXTURE_2D, impl->shadow_work_tex);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 1, 1, 0, GL_RED, GL_FLOAT, nullptr);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl.BindTexture(GL_TEXTURE_2D, 0);
+        GLint prev_draw = 0, prev_read = 0;
+        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, impl->shadow_fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, impl->shadow_work_tex, 0);
+        impl->r32f_renderable = gl.CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
+    }
 
     const GLuint c = impl->csg_program;
     Impl::CsgUniforms& cu = impl->csg;
@@ -1261,6 +1287,10 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     cu.horizon_onset = gl.GetUniformLocation(c, "uHorizonOnset");
     gl.GenBuffers(1, &impl->ssbo_csg_nodes);
     gl.GenBuffers(1, &impl->ssbo_csg_transforms);
+    // GL 4.3 guarantees 2^24 bytes; a driver reporting nothing usable gets that.
+    GLint max_block = 0;
+    gl.GetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &max_block);
+    impl->max_storage_block_bytes = max_block > 0 ? static_cast<size_t>(max_block) : size_t{1} << 24u;
 
     return std::unique_ptr<GlRenderer>(new GlRenderer(std::move(impl)));
 }
@@ -1269,6 +1299,101 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     Impl& s = *impl_;
     const GlApi& gl = s.gl;
 
+    // --- validate everything first: a refusal changes nothing (L6) ------------
+    // The scene uploaded before still draws after a refused one.
+    for (size_t i = 0; i < scene.meshes.size(); ++i) {
+        const render::MeshData& src = scene.meshes[i];
+        if (src.positions.size() != src.normals.size()) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "GlRenderer::upload_scene: mesh " + std::to_string(i) +
+                                             " has " + std::to_string(src.positions.size()) +
+                                             " positions and " + std::to_string(src.normals.size()) +
+                                             " normals"});
+        }
+    }
+    if (scene.static_shadow.has_value()) {
+        // A map whose depth array is not size x size cannot be sampled (the
+        // CPU would read past it). Refused, never drawn unshadowed in
+        // silence. A size-0 map is a valid empty one: the CPU leaves every
+        // pixel lit, and so does GL.
+        const render::ShadowMap& map = *scene.static_shadow;
+        if (map.depth.size() != static_cast<size_t>(map.size) * map.size) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "GlRenderer::upload_scene: the static shadow map has " +
+                                             std::to_string(map.depth.size()) + " texels for size " +
+                                             std::to_string(map.size) + ", not size x size"});
+        }
+        // Refused, not degraded: dynamic shadows draw into R32F.
+        if (map.size > 0u && !s.r32f_renderable) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "GlRenderer::upload_scene: this driver cannot render to an R32F texture, "
+                                         "which the shadows of dynamic bodies need"});
+        }
+    }
+
+    // CSG subtrees' SDF programs, every one end to end. Each keeps only the
+    // transforms its leaves use, renumbered from its own transform base: a
+    // subtree's program carries the whole world's table (csg_subtree_program()),
+    // and copying it per subtree would grow the buffer as subtrees x transforms.
+    std::vector<SdfNode> nodes;
+    std::vector<SdfTransform> transforms;
+    std::vector<GpuCsgSubtree> subtrees;
+    subtrees.reserve(scene.csg_subtrees.size());
+    for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+        const render::CsgSubtree& sub = scene.csg_subtrees[i];
+        const std::string which = "GlRenderer::upload_scene: CSG subtree " + std::to_string(i);
+        // Either would vanish from the frame in silence.
+        if (sub.program.empty()) {
+            return std::unexpected(Error{Code::invalid_argument, which + " has no program"});
+        }
+        if (sub.draw_item >= scene.statics.size()) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         which + " names draw item " + std::to_string(sub.draw_item) + ", past the " +
+                                             std::to_string(scene.statics.size()) + " statics"});
+        }
+        // An invalid program would overrun the shader's fixed stack. validate()'s
+        // own code comes through: capacity_exceeded past kMaxSdfDepth.
+        if (const Result<uint32_t> valid = sub.program.validate(); !valid) {
+            return std::unexpected(Error{valid.error().code, which + ": " + valid.error().context});
+        }
+        if (sub.program.nodes.size() > kMaxCsgSubtreeNodes) {
+            return std::unexpected(Error{Code::capacity_exceeded,
+                                         which + " has " + std::to_string(sub.program.nodes.size()) +
+                                             " nodes; GL marches at most " + std::to_string(kMaxCsgSubtreeNodes) +
+                                             " (GlRenderer::kMaxCsgSubtreeNodes); draw it with render::render()"});
+        }
+        const GpuCsgSubtree g{.node_base = static_cast<uint32_t>(nodes.size()),
+                              .node_count = static_cast<uint32_t>(sub.program.nodes.size()),
+                              .transform_base = static_cast<uint32_t>(transforms.size())};
+        constexpr uint32_t kUnused = std::numeric_limits<uint32_t>::max();
+        std::vector<uint32_t> renumbered(sub.program.transforms.size(), kUnused);
+        for (SdfNode node : sub.program.nodes) {
+            if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+                uint32_t& local = renumbered[node.transform];  // in range: validate() checked it
+                if (local == kUnused) {
+                    local = static_cast<uint32_t>(transforms.size()) - g.transform_base;
+                    transforms.push_back(sub.program.transforms[node.transform]);
+                }
+                node.transform = local;
+            }
+            nodes.push_back(node);
+        }
+        subtrees.push_back(g);
+    }
+    if (nodes.empty()) nodes.emplace_back();  // a bound buffer always has storage
+    if (transforms.empty()) transforms.emplace_back();
+    const size_t node_bytes = nodes.size() * sizeof(SdfNode);
+    const size_t transform_bytes = transforms.size() * sizeof(SdfTransform);
+    if (node_bytes > s.max_storage_block_bytes || transform_bytes > s.max_storage_block_bytes) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     "GlRenderer::upload_scene: the CSG programs need " +
+                                         std::to_string(std::max(node_bytes, transform_bytes)) +
+                                         " bytes in one storage block; this driver's limit is " +
+                                         std::to_string(s.max_storage_block_bytes) +
+                                         " (GL_MAX_SHADER_STORAGE_BLOCK_SIZE)"});
+    }
+
+    // --- then upload -------------------------------------------------------------
     // Geometry uploads ONCE per mesh and lives until the mesh set changes --
     // v1's `if (meshComponent.VAO == 0)` branch, and the reason a frame costs
     // nothing per vertex.
@@ -1284,14 +1409,6 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     for (size_t i = 0; i < scene.meshes.size(); ++i) {
         const render::MeshData& src = scene.meshes[i];
         GpuMesh& dst = s.meshes[i];
-
-        if (src.positions.size() != src.normals.size()) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         "GlRenderer::upload_scene: mesh " + std::to_string(i) +
-                                             " has " + std::to_string(src.positions.size()) +
-                                             " positions and " + std::to_string(src.normals.size()) +
-                                             " normals"});
-        }
 
         gl.GenVertexArrays(1, &dst.vao);
         gl.BindVertexArray(dst.vao);
@@ -1352,54 +1469,19 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
                  static_cast<GLsizeiptr>(s.gpu_materials.size() * sizeof(GpuMaterial)),
                  s.gpu_materials.data(), GL_STATIC_DRAW);
     s.materials_capacity = s.gpu_materials.size();
-    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    // CSG subtrees' SDF programs, every one end to end. A subtree's node
-    // indexes its transforms from 0, so each keeps its own transform base.
-    // L6: an invalid program would overrun the shader's fixed stack, so it
-    // is refused here rather than marched.
-    std::vector<SdfNode> nodes;
-    std::vector<SdfTransform> transforms;
-    s.csg_subtrees.clear();
-    for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
-        const SdfProgram& program = scene.csg_subtrees[i].program;
-        if (const Result<uint32_t> valid = program.validate(); !valid) {
-            return std::unexpected(Error{Code::invalid_argument, "GlRenderer::upload_scene: CSG subtree " +
-                                                                     std::to_string(i) + ": " + valid.error().context});
-        }
-        s.csg_subtrees.push_back(GpuCsgSubtree{.node_base = static_cast<uint32_t>(nodes.size()),
-                                               .node_count = static_cast<uint32_t>(program.nodes.size()),
-                                               .transform_base = static_cast<uint32_t>(transforms.size())});
-        nodes.insert(nodes.end(), program.nodes.begin(), program.nodes.end());
-        transforms.insert(transforms.end(), program.transforms.begin(), program.transforms.end());
-    }
-    if (nodes.empty()) nodes.emplace_back();  // a bound buffer always has storage
-    if (transforms.empty()) transforms.emplace_back();
+    s.csg_subtrees = std::move(subtrees);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_nodes);
-    gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(nodes.size() * sizeof(SdfNode)), nodes.data(),
-                  GL_STATIC_DRAW);
+    gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(node_bytes), nodes.data(), GL_STATIC_DRAW);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_transforms);
-    gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(transforms.size() * sizeof(SdfTransform)),
-                  transforms.data(), GL_STATIC_DRAW);
+    gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(transform_bytes), transforms.data(),
+                  GL_STATIC_DRAW);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // The sun's shadow map, as the CPU built it: static shadows then come
-    // from the same data on both paths. The working copy is attached to
-    // `shadow_fbo` here, once, for the frames that add dynamic casters.
+    // from the same data on both paths. The working copy stays attached to
+    // `shadow_fbo` (create()), for the frames that add dynamic casters.
     s.shadow_size = 0;
-    if (scene.static_shadow.has_value()) {
-        // L6: a map whose depth array is not size x size cannot be sampled
-        // (the CPU would read past it). Refused, never drawn unshadowed in
-        // silence. A size-0 map is a valid empty one: the CPU leaves every
-        // pixel lit, and so does GL.
-        const render::ShadowMap& checked = *scene.static_shadow;
-        if (checked.depth.size() != static_cast<size_t>(checked.size) * checked.size) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         "GlRenderer::upload_scene: the static shadow map has " +
-                                             std::to_string(checked.depth.size()) + " texels for size " +
-                                             std::to_string(checked.size) + ", not size x size"});
-        }
-    }
     if (scene.static_shadow.has_value() && scene.static_shadow->size > 0u) {
         const render::ShadowMap& map = *scene.static_shadow;
         const auto size = static_cast<GLsizei>(map.size);
@@ -1414,21 +1496,6 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
             gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
         gl.BindTexture(GL_TEXTURE_2D, 0);
-
-        GLint prev_draw = 0, prev_read = 0;
-        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
-        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
-        gl.BindFramebuffer(GL_FRAMEBUFFER, s.shadow_fbo);
-        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.shadow_work_tex, 0);
-        const GLenum status = gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
-        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
-        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
-        // L6: refused, not degraded. Dynamic shadows need to draw into R32F.
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
-            return std::unexpected(Error{Code::unavailable,
-                                         "GlRenderer::upload_scene: this driver cannot render to an R32F texture, "
-                                         "which the shadows of dynamic bodies need"});
-        }
         s.shadow_size = map.size;
         s.shadow_light_view_proj = map.light_view_proj;
     }
@@ -1462,6 +1529,16 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                          " CSG subtrees but " + std::to_string(s.csg_subtrees.size()) +
                                          " are uploaded -- call upload_scene() first"});
     }
+    // A subtree that is not the one uploaded would vanish or march another
+    // program, so it is refused, as upload_scene() refuses one (L6).
+    for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+        const render::CsgSubtree& sub = scene.csg_subtrees[i];
+        if (sub.draw_item >= scene.statics.size() || sub.program.nodes.size() != s.csg_subtrees[i].node_count) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "GlRenderer::draw: CSG subtree " + std::to_string(i) +
+                                             " is not the one uploaded -- call upload_scene() with this scene"});
+        }
+    }
     if (width == 0u || height == 0u) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::draw: zero framebuffer size"});
     }
@@ -1479,7 +1556,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     s.static_marched.assign(scene.statics.size(), 0u);
     if (march_csg) {
         for (const render::CsgSubtree& sub : scene.csg_subtrees) {
-            if (sub.draw_item < s.static_marched.size()) s.static_marched[sub.draw_item] = 1u;
+            s.static_marched[sub.draw_item] = 1u;  // in range: checked above
         }
     }
 
@@ -1788,7 +1865,6 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
             const render::CsgSubtree& sub = scene.csg_subtrees[i];
             const GpuCsgSubtree& g = s.csg_subtrees[i];
-            if (sub.draw_item >= scene.statics.size() || g.node_count == 0u) continue;
             const render::DrawItem& item = scene.statics[sub.draw_item];
             // The draw item's material, as draw_csg_subtrees() resolves it.
             const uint32_t wanted = item.material_override != render::kNoMaterial ? item.material_override : 0u;
