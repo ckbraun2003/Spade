@@ -1,13 +1,21 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <string>
+#include <vector>
 
 #include "core/fp32_math.hpp"
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <xmmintrin.h>  // MXCSR, for the flush-mode test at the end
+#endif
 #include "core/rng.hpp"
 
 // ---------------------------------------------------------------------------
@@ -606,4 +614,98 @@ TEST(Fp32Log, TheLn2SplitMultipliesExactlyAcrossEveryExponentAndEveryExpQuotient
     EXPECT_LT(std::abs((static_cast<double>(ln2_hi) + static_cast<double>(ln2_lo)) -
                        0.69314718055994530942),
               1e-13);
+}
+
+// ---------------------------------------------------------------------------
+// THE MATH DOES NOT DEPEND ON THE DEVICE'S DENORMAL MODE (the banded-parity
+// plan, T1; the NVIDIA denorm report's table 5). Kernels request no fp32
+// denormal mode (SPIR-V rule P3), and a device may then flush: the RTX 3060 Ti
+// flushes every arithmetic op's subnormal inputs and outputs. These functions
+// must give the same bits anyway, because GpuFp32Math pins them exactly. The
+// host stands in for such a device: x86 MXCSR's FTZ and DAZ flush add, sub
+// and mul the same way. Every subnormal path must give the same bits with
+// them on as with them off: log32's subnormal input, exp32's subnormal
+// results, and sin32's and cos32's subnormal arguments.
+// ---------------------------------------------------------------------------
+namespace {
+
+#if defined(__x86_64__) || defined(_M_X64)
+// Sets MXCSR's FTZ (bit 15) and DAZ (bit 6) for its lifetime, and restores the
+// previous MXCSR on every exit.
+class ScopedFlushSubnormals {
+public:
+    ScopedFlushSubnormals() : saved_(_mm_getcsr()) { _mm_setcsr(saved_ | 0x8040u); }
+    ~ScopedFlushSubnormals() { _mm_setcsr(saved_); }
+    ScopedFlushSubnormals(const ScopedFlushSubnormals&) = delete;
+    ScopedFlushSubnormals& operator=(const ScopedFlushSubnormals&) = delete;
+
+private:
+    unsigned int saved_;
+};
+
+struct FlushMismatches {
+    uint64_t count = 0;
+    uint32_t arg = 0;      // the first mismatch's argument bits
+    uint32_t default_ = 0;  // its result under the default MXCSR
+    uint32_t flushed = 0;   // its result under FTZ + DAZ
+};
+
+// Every argument from `first` to `last` (as bit patterns, ascending), in
+// chunks: the default-mode bits first, then the flushed ones. Nothing inside
+// the flushed scope does float arithmetic of its own.
+[[nodiscard]] FlushMismatches flush_mismatches(float (*f)(float), uint32_t first, uint32_t last) {
+    constexpr uint64_t kChunk = 1u << 16;
+    std::vector<uint32_t> expected(kChunk);
+    FlushMismatches out;
+    for (uint64_t base = first; base <= last; base += kChunk) {
+        const uint64_t n = std::min<uint64_t>(kChunk, uint64_t{last} - base + 1u);
+        for (uint64_t i = 0; i < n; ++i) expected[i] = bits_of(f(float_of(static_cast<uint32_t>(base + i))));
+        const ScopedFlushSubnormals flush;
+        for (uint64_t i = 0; i < n; ++i) {
+            const uint32_t arg = static_cast<uint32_t>(base + i);
+            const uint32_t got = bits_of(f(float_of(arg)));
+            if (got != expected[i]) {
+                if (out.count == 0) out = FlushMismatches{0, arg, expected[i], got};
+                ++out.count;
+            }
+        }
+    }
+    return out;
+}
+#endif
+
+}  // namespace
+
+TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
+#if !(defined(__x86_64__) || defined(_M_X64))
+    GTEST_SKIP() << "needs x86 MXCSR (FTZ, DAZ) to flush subnormals on the host";
+#else
+    struct Case {
+        const char* what;
+        float (*f)(float);
+        uint32_t first;
+        uint32_t last;
+    };
+    const Case cases[] = {
+        {"log32, every positive subnormal", spade::math::log32, 0x00000001u, 0x007FFFFFu},
+        // exp32's subnormal tail with a margin on both sides: [-104, -87]
+        // holds every argument whose result is a non-zero subnormal.
+        {"exp32 over [-104, -87]", spade::math::exp32, std::bit_cast<uint32_t>(-87.0f),
+         std::bit_cast<uint32_t>(-104.0f)},
+        {"sin32, every positive subnormal", spade::math::sin32, 0x00000001u, 0x007FFFFFu},
+        {"sin32, every negative subnormal", spade::math::sin32, 0x80000001u, 0x807FFFFFu},
+        {"cos32, every positive subnormal", spade::math::cos32, 0x00000001u, 0x007FFFFFu},
+        {"cos32, every negative subnormal", spade::math::cos32, 0x80000001u, 0x807FFFFFu},
+    };
+    for (const Case& c : cases) {
+        const FlushMismatches m = flush_mismatches(c.f, c.first, c.last);
+        char first[160] = "";
+        if (m.count != 0) {
+            std::snprintf(first, sizeof first, "; first at arg 0x%08X: 0x%08X by default, 0x%08X flushed",
+                          static_cast<unsigned>(m.arg), static_cast<unsigned>(m.default_),
+                          static_cast<unsigned>(m.flushed));
+        }
+        EXPECT_EQ(m.count, 0u) << c.what << ": " << m.count << " results change when subnormals flush" << first;
+    }
+#endif
 }
