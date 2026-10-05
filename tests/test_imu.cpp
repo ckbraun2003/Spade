@@ -1634,7 +1634,7 @@ struct Tracked {
     glm::vec3 v_prev{0.0f};
     glm::vec3 peak{0.0f};  // the largest |component| seen, signed
     int mismatches = 0;
-    std::string first;
+    std::string first{};
 };
 
 void step_and_check(Simulation& sim, std::span<Tracked> tracked, int steps) {
