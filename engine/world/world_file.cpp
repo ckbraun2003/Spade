@@ -749,40 +749,13 @@ Result<std::string> world_to_yaml(const WorldDesc& world) {
             Error{valid.error().code, "world_to_yaml: " + valid.error().context});
     }
 
-    // REPRESENTABILITY. Schema v1 carries a node's discriminated identity
-    // (`prim` XOR `op`), its transform index and its four params -- and
-    // nothing else. The two fields it does not carry are an operator node's
-    // `kind` (sdf.hpp: unused on an operator) and the explicit padding both
-    // PODs hold for std430. Both are zero in everything WorldBuilder produces
-    // and in everything this loader returns, so refusing a non-zero one costs
-    // nothing and buys the round trip its BIT-EXACTNESS: what cannot be
-    // written cannot be silently dropped.
-    for (std::size_t i = 0; i < world.sdf.nodes.size(); ++i) {
-        const SdfNode& node = world.sdf.nodes[i];
-        if (node._pad != 0) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         "world_to_yaml: SDF node " + dec(i) +
-                                             " has non-zero padding, which schema v" +
-                                             dec(kWorldFileVersion) + " does not carry"});
-        }
-        if (node.op != static_cast<uint32_t>(SdfOp::none) && node.kind != 0) {
-            return std::unexpected(
-                Error{Code::invalid_argument,
-                      "world_to_yaml: SDF operator node " + dec(i) +
-                          " carries a non-zero primitive kind, which schema v" +
-                          dec(kWorldFileVersion) +
-                          " does not carry (an operator's `kind` is unused; the builder always "
-                          "leaves it 0)"});
-        }
-    }
-    for (std::size_t i = 0; i < world.sdf.transforms.size(); ++i) {
-        const SdfTransform& t = world.sdf.transforms[i];
-        if (t._pad[0] != 0.0f || t._pad[1] != 0.0f || t._pad[2] != 0.0f) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         "world_to_yaml: SDF transform " + dec(i) +
-                                             " has non-zero padding, which schema v" +
-                                             dec(kWorldFileVersion) + " does not carry"});
-        }
+    // REPRESENTABILITY: what the encoding cannot carry (an operator's kind,
+    // padding) is refused, not silently dropped -- yaml_text.hpp's
+    // check_sdf_representable, which the scene file's validator shares.
+    if (Result<void> r = yaml_text::check_sdf_representable(world.sdf, "world_to_yaml: SDF",
+                                                            "schema v" + dec(kWorldFileVersion));
+        !r) {
+        return std::unexpected(r.error());
     }
 
     return emit(world);
