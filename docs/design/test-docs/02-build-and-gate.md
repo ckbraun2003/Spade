@@ -83,9 +83,13 @@ scripts/gcc-check.sh tests/test_example.cpp engine/render/example.hpp
 
 ## This machine
 
-**Since 2026-10-04 Spade builds on a new machine:** 32 GB, 16 threads, an RTX 3060 Ti, and Docker Desktop with 16 GB. Kat's tree shares it.
+**Since 2026-10-04 Spade builds on a new machine:** 32 GB, 16 threads and an RTX 3060 Ti. Kat's tree shares it.
 - **No slots and no budget:** build and test as the work needs (`docs/design/consumers.md`, "Shared build machine"). The user lifted every memory-based limit on 2026-10-04.
-- **Settings:** the scripts' defaults suit this machine (`scripts\build.ps1 -ParallelLevel 8`; the Docker leg `-Memory 8g -Jobs 8`). Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **Docker's Linux VM is capped at 10 GB** (Docker reports `MemTotal` 9.71 GB). The cap is `.wslconfig` (`memory=10GB`), which is the user's machine configuration, set on 2026-10-05 on the user's word; only the user changes it. Before the cap, `vmmem` held 8.6 GB; just after it, 2.2 GB.
+- **Docker legs under the cap:** run at most one fresh leg at a time. If two legs must overlap, run both with `-Memory 4g -Jobs 4`.
+  - Why: a fresh (`-NoSeed`) leg at the defaults peaked at 4.29–4.50 GB, and a seeded leg with nothing to rebuild at about 0.9 GB.
+  - Two fresh legs plus the VM's own overhead come near the cap, and the VM's out-of-memory killer acts before either leg's own `--memory` limit would.
+- **Settings:** the scripts' defaults suit this machine (`scripts\build.ps1 -ParallelLevel 8`; the Docker leg `-Memory 8g -Jobs 8`, within the rule above). Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 
