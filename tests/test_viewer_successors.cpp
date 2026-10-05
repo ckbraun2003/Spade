@@ -398,12 +398,15 @@ TEST_P(ViewerSuccessor, EveryViewerRowIsTheSuccessorsEveryTick) {
 }
 
 // N per scene, under the same cap as test_viewer_trajectories.cpp's (5 s a case
-// on the debug preset), halved because each case steps two runs. shower's 1000
-// bodies make even its first checkpoint too slow there, so by default it
+// on the debug preset), since each case steps two runs. Measured 2026-10-05 on
+// debug: 0.6-2.5 s a case alone, and up to 5.7 s inside a loaded full ctest
+// run (where the trajectory guard's gate case took 5.2 s), so drop and gate
+// were trimmed for margin; every body has landed or passed the gate by then.
+// shower's 1000 bodies make even a few steps slow there, so by default it
 // checks tick 0 (the files, the spawns and the setup) and steps under the gate.
 INSTANTIATE_TEST_SUITE_P(Viewer, ViewerSuccessor,
-                         ::testing::Values(Case{"drop", 1, 1000, 3000}, Case{"bounce", 4, 1250, 3000},
-                                           Case{"shower", 1, 0, 250}, Case{"gate", 1, 1250, 3000},
+                         ::testing::Values(Case{"drop", 1, 750, 3000}, Case{"bounce", 4, 1250, 3000},
+                                           Case{"shower", 1, 0, 250}, Case{"gate", 1, 1000, 3000},
                                            Case{"hover", 1, 1500, 3000}, Case{"wind", 1, 1500, 3000},
                                            Case{"flight", 1, 2100, 3000}, Case{"swarm", 4, 750, 3000}),
                          [](const ::testing::TestParamInfo<Case>& info) { return std::string(info.param.scene); });
