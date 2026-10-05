@@ -285,18 +285,90 @@ TEST(AirframeCompile, CheckAirframeListsEveryProblem) {
     AirframeSpec s = reference_quad();
     s.motor.kv = 0.0;
     s.battery.cells_series = 0;
-    s.rotors[1].spin_dir = 2.0;
     s.parts[0].mass = -1.0;
     const std::vector<AirframeIssue> issues = check_airframe(s);
     EXPECT_TRUE(has_issue(issues, "motor", 0, "kv"));
     EXPECT_TRUE(has_issue(issues, "battery", 0, "cells_series"));
-    EXPECT_TRUE(has_issue(issues, "rotors", 1, "spin_dir"));
     EXPECT_TRUE(has_issue(issues, "parts", 0, "mass"));
     const auto c = compile_airframe(s);
     ASSERT_FALSE(c.has_value());
     EXPECT_NE(c.error().context.find("motor[0].kv"), std::string::npos) << c.error().context;
-    EXPECT_NE(c.error().context.find("rotors[1].spin_dir"), std::string::npos) << c.error().context;
+    EXPECT_NE(c.error().context.find("parts[0].mass"), std::string::npos) << c.error().context;
     EXPECT_FALSE(airframe_propulsion_chain(s).has_value()) << "an unusable motor is no chain";
+}
+
+// TD-9: a rule has one owner. The model's own rules (spin_dir here) come
+// from ModelType::validate, once, as a "model" issue, not from a copy.
+TEST(AirframeCompile, AModelRuleComesFromTheModelsValidatorOnce) {
+    AirframeSpec s = reference_quad();
+    s.rotors[1].spin_dir = 2.0;
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues[0].kind, "model");
+    EXPECT_NE(issues[0].message.find("spin_dir"), std::string::npos) << issues[0].message;
+}
+
+// One bad hub is one issue: the motor and the propeller parts at it are not
+// reported as well.
+TEST(AirframeCompile, ABadHubIsReportedOnce) {
+    AirframeSpec s = reference_quad();
+    s.rotors[2].hub.position.x = std::numeric_limits<double>::quiet_NaN();
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_TRUE(has_issue(issues, "rotors", 2, "hub"));
+}
+
+// A block's shape is the block's: one issue, index 0, field "shape", however
+// many hubs carry it, and checked even when the block has no mass.
+TEST(AirframeCompile, ABadBlockShapeIsOneIssueOnTheBlock) {
+    AirframeSpec s = reference_quad();
+    s.motor.shape = BlockShape{PartShape::box, glm::dvec3(0.01, 0.0, 0.01), glm::dmat3(0.0)};
+    std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_TRUE(has_issue(issues, "motor", 0, "shape"));
+
+    s = reference_quad();
+    s.esc.mass = 0.0;
+    s.esc.shape = BlockShape{PartShape::sphere, glm::dvec3(-1.0, 0.0, 0.0), glm::dmat3(0.0)};
+    issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "esc", 0, "shape")) << "a shape is checked even with no mass";
+}
+
+// Kat's convention (2026-10-05): one EscBlock is one physical board, and its
+// total caps that board's channels. Until an airframe carries several boards,
+// a total is accepted only when the board drives every rotor.
+TEST(AirframeCompile, AnEscTotalNeedsTheBoardToDriveEveryRotor) {
+    AirframeSpec s = reference_quad();
+    EXPECT_TRUE(check_airframe(s).empty()) << "4 rotors on a 4-channel board";
+    s.esc.channels = 8;
+    EXPECT_TRUE(has_issue(check_airframe(s), "esc", 0, "current_total"));
+    s.esc.current_total = 0.0;
+    EXPECT_TRUE(check_airframe(s).empty()) << "no total, nothing to misapply";
+    s.esc.channels = 0;
+    EXPECT_TRUE(has_issue(check_airframe(s), "esc", 0, "channels"));
+}
+
+// Silent passes, now refused: recorded-only fields still have to be numbers
+// that make sense, c_rating 0 is not "unlimited", and an airframe with no drag
+// given and nothing to estimate it from says so.
+TEST(AirframeCompile, NothingPassesSilently) {
+    AirframeSpec s = reference_quad();
+    s.esc.current_continuous = std::numeric_limits<double>::quiet_NaN();
+    s.motor.no_load_voltage = -1.0;
+    s.battery.polarization_capacitance = -1.0;
+    s.battery.c_rating = 0.0;
+    std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "esc", 0, "current_continuous"));
+    EXPECT_TRUE(has_issue(issues, "motor", 0, "no_load_voltage"));
+    EXPECT_TRUE(has_issue(issues, "battery", 0, "polarization_capacitance"));
+    EXPECT_TRUE(has_issue(issues, "battery", 0, "c_rating"));
+
+    s = reference_quad();
+    for (PartInertia& p : s.parts) p.shape = PartShape::point;
+    s.motor.shape.reset();
+    s.battery.shape.reset();
+    issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, "")) << "no drag given and no shape to estimate it from";
 }
 
 TEST(AirframeCompile, DragIsEstimatedFromThePartsOrTakenAsGiven) {
