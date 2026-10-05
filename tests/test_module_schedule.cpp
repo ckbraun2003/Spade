@@ -752,6 +752,8 @@ TEST(ModuleState, APerRowArrayNeedsAnOwnerThatHoldsRows) {
         {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "imu_sensors", .depth = 0}};
     static constexpr ArrayDecl owned_body[] = {
         {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_body, .owner = "imu_sensors"}};
+    static constexpr ArrayDecl deep_body[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_body, .depth = 4}};
     // Physics' shape: one row per rotor slot, owned by another module's array.
     static constexpr ArrayDecl per_rotor[] = {
         {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "rotors", .depth = 1}};
@@ -761,6 +763,8 @@ TEST(ModuleState, APerRowArrayNeedsAnOwnerThatHoldsRows) {
     EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = row_owner}), "imu_ring"));
     EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = no_depth}), "tally_ring"));
     EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = owned_body}), "tally_ring"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = deep_body}), "tally_ring"))
+        << "a depth is not silently dropped";
 }
 
 TEST(ModuleState, OnlyTheLegacyArraysMayCarryTheLegacyMarker) {

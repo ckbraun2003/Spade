@@ -4,7 +4,8 @@
 // create() compiles a module set into ONE ordered pass list with
 // compile_schedule(). Stages 1-3 of the plan: passes, each naming the built-in
 // GPU kernel that matches its CPU function, and the fields a module provides.
-// State, grades and roles join the descriptor in later stages.
+// Stage 4: the arrays a module owns (its state). Grades and roles join the
+// descriptor in later stages.
 #pragma once
 
 #include <cstddef>
@@ -220,20 +221,29 @@ struct CompiledSchedule {
 //      writers, or a writer and an accumulator, of one placement need an edge;
 //   3. ties by module-set order, then declaration order.
 // invalid_argument for: a module name that is empty, contains '.', or repeats;
-// a pass with no name or no CPU function, or declared twice; a GPU recipe
+// a pass with no name, a '.' in its name, no CPU function, or an unknown
+// phase, or declared twice; a GPU recipe
 // paired with any CPU function but builtin_cpu_for(recipe); a field with no
 // name, a '.' in its name, a bad kind or band count, or declared twice; a
 // built-in field with another kind or unit; a module named "field"; a provider
 // module with no pass that writes its field; a write of "field.<name>" outside
 // its provider, or outside the Fields phase; an unknown
-// quantity; an edge to a pass no module declares or to a later phase; two
+// quantity, including "<module>.<name>" where the module declares arrays and
+// <name> is none of them; an array with no name, a '.' in its name, a core
+// array's name, elem_size 0 or an unknown extent, or declared twice in the
+// set; a per_row array with depth 0, or whose owner no module declares or is
+// per_world or per_row; an owner or a depth other than 1 on any other array;
+// the legacy marker on a module with an array outside kLegacyWalkArrays; an
+// edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.
 //
 // IDENTITY, spelt byte by byte so it is the same on every platform: for each
 // module in set order, its name, 0x00 and its version as 4 bytes little-endian;
 // then 0x01; then for each compiled pass, module, '.', pass, 0x00 and the phase
-// as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes.
+// as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State
+// declarations are not spelt: the schema hash refuses a blob whose arrays
+// differ, and a changed row rides the module's version.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().
