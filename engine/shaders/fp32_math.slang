@@ -397,7 +397,49 @@ Reduction reduce_quadrant(float x) {
 // THE FOUR PUBLIC KERNELS
 // ===========================================================================
 
-// fp32_math.cpp:277-354.
+// THE INTEGER HELPERS for the subnormal paths (fp32_math.cpp's twins). No
+// kernel requests an fp32 denormal mode (SPIR-V rule P3), so a device may
+// flush subnormal inputs and outputs of every float op (the RTX 3060 Ti does).
+// Every subnormal is handled in integers, by shifts only: no extended
+// instruction, and the same steps as the host.
+
+// The index of v's highest set bit, for v != 0.
+uint msb_index(uint v) {
+    uint p = 0u;
+    if (v >= 0x00010000u) {
+        v >>= 16u;
+        p += 16u;
+    }
+    if (v >= 0x00000100u) {
+        v >>= 8u;
+        p += 8u;
+    }
+    if (v >= 0x00000010u) {
+        v >>= 4u;
+        p += 4u;
+    }
+    if (v >= 0x00000004u) {
+        v >>= 2u;
+        p += 2u;
+    }
+    if (v >= 0x00000002u) {
+        p += 1u;
+    }
+    return p;
+}
+
+// v * 2^-shift, rounded to nearest with ties to even, for shift in [0, 31].
+uint shift_right_nearest_even(uint v, uint shift) {
+    if (shift == 0u) {
+        return v;
+    }
+    const uint kept = v >> shift;
+    const uint rest = v & ((1u << shift) - 1u);
+    const uint half = 1u << (shift - 1u);
+    return kept + ((rest > half || (rest == half && (kept & 1u) != 0u)) ? 1u : 0u);
+}
+
+// fp32_math.cpp's log32.
 float log32(float x) {
     const uint ix = asuint(x);
 
@@ -414,20 +456,23 @@ float log32(float x) {
     }
 
     // Decompose x = m * 2^e with m in [1, 2). A subnormal is scaled into the
-    // normal range first by an EXACT multiply by 2^24.
+    // normal range first, by 2^24, in integers.
     //
-    // THIS MULTIPLY IS THE ONE PLACE THIS MODULE DEPENDS ON DENORMAL
-    // BEHAVIOUR, and it is the reason
-    // GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost enumerates the subnormal
-    // boundary explicitly: a device that flushed fp32 denormals to zero would
-    // turn this into 0 * 2^24 and answer -infinity for every subnormal. The
-    // Iris preserves them (measured -- this task's report carries the
-    // VkPhysicalDeviceFloatControlsProperties line and the battery's zero
-    // mismatches over the subnormal window).
+    // NO PATH IN THIS MODULE DEPENDS ON DENORMAL BEHAVIOUR. A float multiply
+    // here once did: on a device that flushes subnormal inputs (the RTX 3060
+    // Ti, measured in docs/design/core/2026-10-04-nvidia-denorm-report.md) it
+    // read x * 2^24 as 0. exp32's subnormal results and sin32's subnormal
+    // arguments had the same dependency, and all three are integer now.
+    // Fp32Math.SubnormalPathsDoNotDependOnTheFlushMode pins them on the host
+    // under FTZ and DAZ, and GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost
+    // enumerates the subnormal boundary on every device.
     uint mx = ix;
     int e = 0;
     if ((ix >> 23) == 0u) {
-        mx = asuint(x * 0x1.0p24);
+        // In integers, never x * 2^24, which a flushing device reads as 0
+        // (fp32_math.cpp explains the bits: exponent p + 2, f's bits below p).
+        const uint p = msb_index(ix);
+        mx = ((p + 2u) << 23) | ((ix << (23u - p)) & 0x007FFFFFu);
         e = -24;
     }
     e += int(mx >> 23) - 127;
@@ -486,7 +531,8 @@ float exp32(float x) {
     const float m = exp_kernel(r);
     const int k = int(n);
 
-    if (k >= -126 && k <= 127) {
+    // k == -126 belongs to the tail below: with m < 1 its result is subnormal.
+    if (k >= -125 && k <= 127) {
         return m * pow2(k);
     }
     if (k > 127) {
@@ -495,11 +541,14 @@ float exp32(float x) {
         // to overflow to +infinity on its own.
         return (m * pow2(127)) * pow2(k - 127);
     }
-    // k in [-150, -127]: subnormal or zero. Two exact steps so the SINGLE
-    // rounding happens in the last multiply, where it is the correct rounding
-    // to the subnormal lattice. (Second denormal-behaviour dependency; see
-    // log32's note above.)
-    return (m * pow2(k + 64)) * 0x1.0p-64;
+    // k in [-150, -126]: subnormal or zero (or FLT_MIN's binade for k == -126
+    // and m >= 1). m * 2^(k+64) is normal and exact; the scaling by 2^-64, the
+    // ONE rounding, is in integers, because a flushing device would return 0
+    // from a float multiply: the significand shifted right by 65 - E, rounded
+    // to nearest even (fp32_math.cpp's exp32 gives the arithmetic).
+    const uint scaled = asuint(m * pow2(k + 64));
+    const uint sig = (scaled & 0x007FFFFFu) | 0x00800000u;
+    return asfloat(shift_right_nearest_even(sig, 65u - (scaled >> 23)));
 }
 
 // fp32_math.cpp:434-449.
@@ -507,6 +556,11 @@ float sin32(float x) {
     const uint ix = asuint(x) & 0x7FFFFFFFu;
     if (ix >= 0x7F800000u) {
         return asfloat(kBitsQNaN);  // +-inf, NaN
+    }
+    // A non-zero subnormal returns itself, before any float op, so a device
+    // that flushes subnormal inputs gives the host's bits, not 0.
+    if (ix != 0u && ix < 0x00800000u) {
+        return x;
     }
 
     const Reduction red = reduce_quadrant(x);
