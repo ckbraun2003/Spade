@@ -978,6 +978,39 @@ TEST_F(GpuGlRenderer, RefusesRaymarch) {
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
+// L6: a static shadow map whose depth array is not size x size cannot be
+// sampled (the CPU would read past it), so upload_scene() refuses it rather
+// than drawing the scene unshadowed in silence.
+TEST_F(GpuGlRenderer, RefusesAMalformedShadowMap) {
+    RenderScene scene = make_scene(make_single_triangle(false));
+    spade::render::ShadowMap map;
+    map.size = 4;
+    map.depth.assign(3, spade::render::kNoOccluder);  // 16 texels needed
+    scene.static_shadow = map;
+    const spade::Result<void> up = renderer_->upload_scene(scene);
+    ASSERT_FALSE(up.has_value()) << "a 3-texel map for a 4 x 4 size must be refused";
+    EXPECT_EQ(up.error().code, spade::Code::invalid_argument);
+}
+
+// draw() sets every state it depends on: blending and depth clamp left on by
+// the caller (or by a GL that does not reset them) change nothing.
+TEST_F(GpuGlRenderer, TheCallersBlendAndDepthClampStateDoNotReachTheFrame) {
+    const RenderScene scene = make_ground_scene();
+    RenderOptions options = comparable_options();
+    options.overlays = true;
+    const std::vector<uint8_t> clean = draw_and_read(scene, options, camera_over_ground());
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ZERO, GL_ZERO);  // would turn every fragment black
+    glEnable(GL_DEPTH_CLAMP);
+    const std::vector<uint8_t> dirty = draw_and_read(scene, options, camera_over_ground());
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ZERO);
+    glDisable(GL_DEPTH_CLAMP);
+    ASSERT_EQ(dirty.size(), clean.size());
+    EXPECT_EQ(count_differing(clean, dirty), 0u) << "the caller's blend or depth-clamp state reached the frame";
+}
+
 // L6: what GL does not draw is announced by name, so a caller can show it or
 // refuse GL. Host-only: no context needed, so this suite has no gpu label.
 // A loader that finds nothing is refused with unavailable, naming the first
