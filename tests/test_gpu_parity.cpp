@@ -174,10 +174,14 @@ protected:
         {"bodies", "omega_body", offsetof(spade::BodyState, omega_body), 3, QuantityKind::components, omega},
         {"bodies", "specific_force", offsetof(spade::BodyState, specific_force), 3, QuantityKind::components,
          specific_force},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "force_acc", offsetof(spade::BodyState, force_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "torque_acc", offsetof(spade::BodyState, torque_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
     };
 }
 
@@ -832,7 +836,7 @@ TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
 
     using namespace spade::testing::bands::gnss_receiver;
     run_parity(scenario, "gnss_receiver (1 receiver x 200 substeps at rate_divider 1)",
-               gnss_bands(kGnssBias, /*cached=*/ToleranceBand{0.0f, 0.0f}, kGnssPosition,
+               gnss_bands(kGnssBias, /*cached=*/spade::testing::bands::core3::kGaussianDraw, kGnssPosition,
                           kGnssVelocity),
                [](const Simulation& cpu, const Simulation& gpu, std::string_view label) {
                    // THE PREMISE, ASSERTED BEFORE THE BANDS MEAN ANYTHING: the
@@ -883,43 +887,19 @@ TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
 // so if fp32_math's cutoff ever moves this test's PREMISE reds on the CPU side
 // before anyone spends a GPU run on it.
 //
-// ⭐⭐⭐ AND THE OUTCOME TABLE IS WRITTEN BEFORE THE RUN, WHICH IS THE POINT.
-// This realm shipped three MEASURED band numbers beside three GUESSED causes,
-// in the same sentences, so the guesses inherited the measurements'
-// credibility. The lesson was: A MEASURED NUMBER IS AUTHORITY FOR THE NUMBER
-// AND FOR NOTHING ABOUT ITS CAUSE -- and the hole it exposed is that every
-// falsifier in this tree tests a QUANTITY and none tests a STATED CAUSE. A
-// zero band governs the number and leaves the explanation entirely unguarded.
-// So the explanation goes here, in advance, where it can be wrong in public:
+// ⭐⭐⭐ THE OUTCOME TABLE WAS WRITTEN BEFORE THE RUN, WHICH WAS THE POINT:
+// BIT-EXACT would have left the tau=60 divergence with no named candidate;
+// DIFFERS would mean the draws themselves diverge, an rng finding rather than
+// a GNSS one. THE RUN ANSWERED DIFFERS, and the cause it named is CORE-3's:
+// rng.slang's Box-Muller sqrt, which Vulkan licenses at 2.5 ulp. Under TD-14
+// the draw is banded at its source, so `bias` and `noise.cached` here are
+// pinned at CORE-3's band (core3::kGaussianDraw): within it, the bias is a
+// pure function of draws that stay within CORE-3. rtx3060ti-572.83 measured
+// bias R 6.8e-8. GnssDrawsMatchTheCpuWithinTheCore3Band below checks every
+// fix's draws, which this test, sampling the last draw only, cannot.
 //
-//   BIT-EXACT   Every gaussian draw agrees across backends under a
-//               configuration where `bias` is a pure function of the draws.
-//               ⛔ THIS DOES NOT EXPLAIN THE tau=60 DIVERGENCE -- IT NARROWS
-//               IT, and the remaining candidate is the one that was always
-//               hardest to reach: THE RECURSION ITSELF, 200 multiply-adds
-//               deep, with contraction already excluded on both sides AND
-//               asserted by SlangSpirv.FloatControlsPinned. Coefficients are
-//               CPU-precomputed row config and run_parity's state_digest
-//               precondition proves the rows START byte-identical; `phase` and
-//               `last_index` prove the two legs emitted on the same substeps
-//               and the same NUMBER of times. A bit-exact result here would
-//               leave NO NAMED CANDIDATE, and that is a finding to report as
-//               such rather than to paper over with a wider band.
-//
-//   DIFFERS     The draws themselves diverge, and ⛔ THIS IS NOT A GNSS
-//               FINDING AT ALL. rng.slang's Box-Muller sqrt is the only
-//               operation on this path carrying a documented <= 2.5 ulp
-//               licence -- fp32_math.slang's SQRT AUDIT already names it and
-//               defers it with no owner and no trigger. THE STREAM IS SHARED
-//               WITH EVERY OTHER SENSOR AND WITH THE DRYDEN FILTER, so a
-//               divergence here is estate-wide and outranks this realm's
-//               queue. ⚠ Escalate before doing anything else with it.
-//
-// ⚠ EITHER WAY, THE tau=60 BANDS DO NOT MOVE. This is a SEPARATE, ADDITIVE
-// scenario; the pinned bands belong to the run that measured them. Widening
-// kGnssBias to make a longer run pass would convert a compounding divergence
-// into a permanently invisible one, which is the one thing parity.hpp's own
-// header forbids by name.
+// The tau=60 bands are gnss_receiver's own, measured on their run; this
+// scenario does not set them.
 //
 // THE TABLE IS DELIBERATELY NARROWER THAN gnss_bands(). This test asks ONE
 // question, so it carries the bias, the stream that feeds it, and the premises
@@ -949,12 +929,14 @@ namespace {
          QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
         {"gnss_sensors", "noise.cached",
          offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, cached_gauss), 1,
-         QuantityKind::components, ToleranceBand{0.0f, 0.0f}},
+         QuantityKind::components, spade::testing::bands::core3::kGaussianDraw},
 
         // THE SUBJECT, AT A ZERO BAND. Under this configuration the bias is
         // `sigma_bias * walk`, so anything other than bit-exact IS the answer.
+        // cited: CORE-3. With the retention underflowed to zero the bias is a pure
+        // function of the draws (see the test below), so its band is the draw's.
         {"gnss_sensors", "bias", offsetof(GnssSensorRow, bias), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::core3::kGaussianDraw},
     };
 }
 
@@ -1027,49 +1009,28 @@ TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDra
 // run as it stands and do not move.
 // ===========================================================================
 // ===========================================================================
-// ⛔ THE DISCRIMINATOR ABOVE IS WEAKER THAN ITS OWN HEADER CLAIMED, AND THE RUN
-// IS WHAT SHOWED IT. THIS IS THE STRONG FORM, AND IT FOUND THE DIVERGENCE --
-// SO IT IS A KNOWN-OPEN ENTRY CARRYING ITS OWN EXPIRY, NOT A PASSING TEST.
-// ⛔ ESCALATED 2026-09-24: the gaussian draws differ across backends. That is an
-// ESTATE-WIDE rng finding (the stream feeds every sensor and the Dryden filter),
-// it is the coordinator's, and the determinism GRADE for the gaussian path is a
-// decision rather than a measurement. Do not debug it from here.
+// THE DRAWS, BANDED AT THEIR SOURCE (TD-14, CORE-3). Every fix's gaussian
+// draws, the whole ring, against the CPU.
 //
-// The header asserted "`bias` bit-exact IFF every draw was bit-exact". The
-// reverse direction holds; THE FORWARD ONE DOES NOT. With retention == 0 the
-// advance is `bias = 0 * bias_prev + sigma_bias * walk` -- THE PREVIOUS BIAS IS
-// ANNIHILATED, so the final row's `bias` is a function of THE LAST DRAW ALONE.
-// `gnss_sensors/bias` compares end-of-run row state, so it samples ONE fix out
-// of two hundred. It passed, and what it proved was one draw.
+// WHY THE RING AND A ZERO LEVER ARM. With retention == 0 the bias is a
+// function of the LAST draw alone, so the discriminator above samples one fix
+// of two hundred; the ring is where the per-fix history lives. fix.position
+// is `bodies.pos + lever_world + bias + noise`; with mount_pos zero the lever
+// term vanishes, and `bodies.pos` is on the floor in this run (measured exact
+// on the device of record), so the ring's position isolates the draws.
 //
-// ⭐ AND THE NARROWING IS WHAT COST IT. That test drops the `gnss_ring` rows on
-// the stated grounds that they are "banded against a different run" -- correct
-// about the bands, and the ring is ALSO the only place the per-fix history
-// lives. A DEFENSIBLE SCOPE DECISION REMOVED THE EVIDENCE THE TEST NEEDED, and
-// nothing about the narrowing announced that.
-//
-// ✅ THE FIX IS A ZERO LEVER ARM, and it is cheap because the body measurement
-// above just told us what to remove. fix.position is `bodies.pos + lever_world
-// + bias + noise`; `bodies.pos` is BIT-EXACT in this scenario and `orient` is
-// the sole divergence, reaching the report ONLY through lever_world. Set
-// mount_pos to zero and lever_world vanishes, so the ring's position carries
-// `bodies.pos + bias + noise` with a bit-exact first term -- and a zero band
-// over the WHOLE RING then tests every fix's draws, not the last one's.
-//
-// ⛔ THE OUTCOME TABLE FROM THE WEAK FORM STILL GOVERNS, and now over 200 fixes
-// instead of 1: DIFFERS means the draws diverge, which is an estate-wide rng
-// finding and not a GNSS one -- escalate before debugging. BIT-EXACT narrows
-// the tau=60 divergence without explaining it.
+// HISTORY. This was GnssDrawsDivergeAcrossBackends_KNOWN_OPEN: an inverted
+// assertion that the draws DIFFER (Iris, 2026-09-24: 11 of 64 elements, max
+// |abs| 4.77e-7). Under TD-14 the draw is banded at its source, the Box-Muller
+// sqrt, by CORE-3, so the strong form now asserts that band. A device whose
+// sqrt is correctly rounded passes too, where the inverted form would have
+// failed it for no defect.
 // ===========================================================================
-TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
+TEST_F(GpuParityTest, GnssDrawsMatchTheCpuWithinTheCore3Band) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
     using spade::sensors::GnssFix;
     using spade::sensors::GnssSensorRow;
-
-    const Scenario scenario =
-        gnss_receiver_scenario(1.0e-6f, "gnss_draws_known_open", glm::vec3(0.0f));
-
+    const Scenario scenario = gnss_receiver_scenario(1.0e-6f, "gnss_draws", glm::vec3(0.0f));
     Result<Simulation> cpu =
         spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << "cpu leg: " << cpu.error().context;
@@ -1078,13 +1039,12 @@ TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
     ASSERT_TRUE(gpu.has_value()) << "gpu leg: " << gpu.error().context;
     ASSERT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*gpu))
         << "the two legs did not start from identical state";
-
     ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
     ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
 
     const std::vector<BandEntry> table = {
-        // THE ISOLATION PREMISES. If any of these breaks, the argument below
-        // stops holding and this entry must be re-derived rather than trusted.
+        // THE ISOLATION PREMISES: the integer state that decides which draws
+        // land where. If one breaks, the argument above stops holding.
         {"gnss_sensors", "phase", offsetof(GnssSensorRow, phase), 1, QuantityKind::bits,
          ToleranceBand{0.0f, 0.0f}},
         {"gnss_sensors", "last_index", offsetof(GnssSensorRow, last_index), 2, QuantityKind::bits,
@@ -1094,47 +1054,20 @@ TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
          ToleranceBand{0.0f, 0.0f}},
         {"gnss_ring", "index", offsetof(GnssFix, index), 2, QuantityKind::bits,
          ToleranceBand{0.0f, 0.0f}},
-        // THE SUBJECT. Zero band, deliberately, and it is EXPECTED TO BE OUTSIDE.
+        // THE SUBJECT: every fix's draws, on CORE-3's band.
         {"gnss_ring", "position", offsetof(GnssFix, position), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::core3::kGaussianDraw},
     };
-
     const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
     ASSERT_TRUE(report.has_value()) << report.error().context;
-    report->print("gnss_draws KNOWN-OPEN (tau=1e-6, zero lever arm, whole ring)");
-
-    const spade::testing::QuantityReport* position = nullptr;
+    report->print("gnss_draws (tau=1e-6, zero lever arm, whole ring)");
     for (const spade::testing::QuantityReport& q : report->quantities) {
         EXPECT_GT(q.elements_compared, std::size_t{0}) << q.quantity << ": compared nothing";
-        if (q.array == "gnss_ring" && q.quantity == "position") {
-            position = &q;
-            continue;
-        }
-        // THE PREMISES MUST STILL HOLD.
         EXPECT_TRUE(q.within_band())
-            << q.quantity << ": an ISOLATION PREMISE of this known-open entry has broken. The "
-            << "argument that `position` isolates the gaussian draws depended on this being "
-            << "bit-exact. Re-derive the entry; do not simply widen anything.";
+            << q.quantity << ": outside its band -- max |abs| " << q.max_abs << ", max rel " << q.max_rel
+            << (q.kind_is_bits ? ". An ISOLATION PREMISE broke: re-derive the argument above, do not widen."
+                               : ". The draws left CORE-3's band: that is an rng finding, the coordinator's.");
     }
-    ASSERT_NE(position, nullptr) << "the subject row was not compared";
-
-    // -----------------------------------------------------------------------
-    // ⛔⛔ THE INVERTED ASSERTION, AND IT IS THE WHOLE POINT OF THE ENTRY.
-    //
-    // This test PASSES while the defect is present and GOES RED THE DAY IT IS
-    // FIXED. A tolerated failure with no expiry becomes a permanent one, and
-    // THE ONLY THING THAT EXPIRES ONE AUTOMATICALLY IS FAILING WHEN IT PASSES.
-    // -----------------------------------------------------------------------
-    EXPECT_FALSE(position->within_band())
-        << "gnss_ring/position is now BIT-EXACT across backends. "
-        << "THIS IS GOOD NEWS AND THIS TEST IS NOW OBSOLETE -- RETIRE IT. "
-        << "It exists to record that the gaussian draws DIFFER between the cpu and vulkan legs. "
-        << "Measured 2026-09-24: 11 of 64 ring elements outside a zero band, max |abs| "
-        << "4.76837158e-07, worst element 22 component 2 (cpu 3.761487961e+00 vs gpu "
-        << "3.761488438e+00). If it no longer reproduces, someone has tightened the gaussian "
-        << "path -- almost certainly rng.slang's Box-Muller sqrt, which rng.slang:25 names as "
-        << "the SOLE bander of the float half. Delete this test and pin gnss_ring/position at "
-        << "a zero band in a normal parity test instead.";
 }
 
 TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
@@ -3510,6 +3443,8 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
             const std::size_t n = std::min(cpu_poll->samples.size(), gpu_poll->samples.size());
             float worst_accel = 0.0f;
             float worst_gyro = 0.0f;
+            std::size_t accel_outside = 0;  // TD-14's predicate, per component, as compare_arrays applies it
+            std::size_t gyro_outside = 0;
             for (std::size_t i = 0; i < n; ++i) {
                 const spade::sensors::ImuSample& a = cpu_poll->samples[i];
                 const spade::sensors::ImuSample& b = gpu_poll->samples[i];
@@ -3522,6 +3457,9 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
                 for (int c = 0; c < 3; ++c) {
                     worst_accel = std::max(worst_accel, std::fabs(a.accel[c] - b.accel[c]));
                     worst_gyro = std::max(worst_gyro, std::fabs(a.gyro[c] - b.gyro[c]));
+                    using spade::testing::parity_detail::element_within;
+                    if (!element_within(a.accel[c], b.accel[c], kAccel)) ++accel_outside;
+                    if (!element_within(a.gyro[c], b.gyro[c], kGyro)) ++gyro_outside;
                 }
             }
 
@@ -3530,10 +3468,10 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
                         world, m, n, static_cast<unsigned long long>(cpu_poll->dropped),
                         static_cast<double>(worst_accel), static_cast<double>(worst_gyro));
 
-            EXPECT_LE(worst_accel, kAccel.abs)
+            EXPECT_EQ(accel_outside, std::size_t{0})
                 << "world " << world << " sensor " << m << ": polled accel outside the band the "
                 << "`imu_ring` array comparison pinned";
-            EXPECT_LE(worst_gyro, kGyro.abs)
+            EXPECT_EQ(gyro_outside, std::size_t{0})
                 << "world " << world << " sensor " << m << ": polled gyro outside the band the "
                 << "`imu_ring` array comparison pinned";
             ++sensors_polled;

@@ -184,10 +184,14 @@ protected:
         {"bodies", "omega_body", offsetof(spade::BodyState, omega_body), 3, QuantityKind::components, omega},
         {"bodies", "specific_force", offsetof(spade::BodyState, specific_force), 3, QuantityKind::components,
          specific_force},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "force_acc", offsetof(spade::BodyState, force_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "torque_acc", offsetof(spade::BodyState, torque_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
     };
 }
 
