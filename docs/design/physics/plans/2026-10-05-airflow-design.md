@@ -1,6 +1,6 @@
 # 3D airflow: grid solvers as field providers — joint spec
 
-**Owner:** Physics (lead for this spec), with Core, Rendering and Interface. Test/Docs owns the gates. **Status:** DRAFT. Reviewed by Physics 2026-10-05; out to Core, Rendering, Interface and Test/Docs to confirm their sections (§10), then to the lead for the user. **Base:** master `e3b0560`. Re-check every file:line anchor at the cut.
+**Owner:** Physics (lead for this spec), with Core, Rendering and Interface. Test/Docs owns the gates. **Status:** DRAFT. Reviewed by Physics 2026-10-05; out to Core, Rendering, Interface and Test/Docs to confirm their sections (§10), then to the lead for the user. **Base:** master `e3b0560`, refreshed at `8ffe9fe` for what merged since (M0 done: T2–T4 and `CORE-5`; `PHY-7` approved; today's `TD-14` rules in §4.6). File:line anchors are still `e3b0560`'s; each realm re-checks its own at the cut.
 **Ruling this answers:** the user's, 2026-10-05 (`backlog.md:63`, open item `backlog.md:73`): "We really need this to be a full 3D simulation of airflow and dynamics, grid solver and everything. Also I want the gpu set up asap, since that allows for the complex physics and visualization I am looking for." His answers: both solvers as fidelity tiers per region (incompressible Navier-Stokes real time, lattice Boltzmann high fidelity), two-way coupled; real time first at about 128³ on the RTX 3060 Ti; volume rendering, streamlines, smoke and an airspeed and forces HUD, not slices; GPU solver as the product with a small-grid CPU reference, banded under `TD-14` (`L4`).
 **Marking:** a claim marked *(unconfirmed)* could not be checked in the code or docs. Every timing in this spec is an estimate from bandwidth arithmetic until the spike (§9, M1) measures it.
 
@@ -25,7 +25,7 @@ Air becomes a solved field. A new optional built-in module, `airflow`, owns a 3D
 | The Vulkan step uploads the whole walk when dirty and reads it all back after every `step(n)` | `engine/sim/simulation.cpp:881-896`; `engine/compute/vulkan/state_mirror.hpp:1-10` |
 | One step's command buffer is recorded once and resubmitted; only the tick varies per submit | `engine/compute/vulkan/step_recorder.cpp:492-497,714-740` |
 | One descriptor set holds every storage buffer; bindings come from `bindings.slang` | `engine/shaders/shared/bindings.slang` |
-| The 3060 Ti is refused until banded-parity T4 merges. It flushes fp32 denormals (sign-preserving FTZ+DAZ), and its div and sqrt are 1 ulp off correct rounding | `core/plans/2026-10-05-banded-parity-plan.md` §1, T2–T4; `core/2026-10-04-nvidia-denorm-report.md` (finding 4) |
+| The 3060 Ti is admitted (`CORE-5`, banded-parity T4, merged `e146575`) and every `gpu` test runs on it. It flushes fp32 denormals (sign-preserving FTZ+DAZ), and its div and sqrt are 1 ulp off correct rounding; GPU results are banded against the CPU (`TD-14`) | `core/plans/2026-10-05-banded-parity-plan.md` §1, T2–T4; `core/2026-10-04-nvidia-denorm-report.md` (finding 4) |
 | The drone box steps at `dt` = 2 ms with 2 substeps (`h` = 1 ms) and refuses Vulkan, because its stand is CPU behaviors | `sandbox/drone_sim.hpp:210-211,217-221` |
 | The sandbox quad: 1 kg, rotor radius 0.12 m, hover induced velocity 4.70 m/s; the heatmap shows 0–9.40 m/s | `sandbox/drone_sim.hpp:100-104`; `engine/vehicles/quadrotor.hpp:146`; `interface/07-status.md:18` |
 | The GL renderer runs a 4.3 core context (compute shaders and 3D textures available) | `engine/render_gl/gl_renderer.cpp:159,774`; `sandbox/gl_target_sink.cpp:270-271` |
@@ -412,7 +412,7 @@ Snapshots grow by about 40 MiB per world at 128³ (velocity, pressure, dye) and 
 - **invariants,** exact: no NaN or infinity; divergence under its bound; the momentum budget; the dye non-negative;
 - **statistics,** banded at 4× the largest deviation across eight one-ulp-perturbed CPU runs: the mean downwash on each rotor's axis at `s = 2R`, the time-averaged thrust, the RMS speed in the box, the kinetic energy, and the dye's centroid.
 
-The target is 1e-4 relative. Above 1e-3 is a grade change (`TD-2`), never a wider band. As for SPH (`SL8`): if no band exists, the GPU path's grade drops; the band is not widened.
+The target is 1e-4 relative. Above 1e-3 is a grade change (`TD-2`), never a wider band. As for SPH (`SL8`): if no band exists, the GPU path's grade drops; the band is not widened. Today's `TD-14` rules apply as written (`test-docs/01-verification.md`): no band tighter than the floor's halves (`compare_arrays` refuses one), records printing A and R to three figures, and a row's own near-zero cutoff only where it is derived from the quantity's absolute resolution and its record carries the measurement that fails at the default (as `PHY-7`'s specific force does). Airflow's quantities start at the default 1e-3; a declared cutoff, if the spike's measurements call for one, is argued then.
 
 ## 5. Rendering
 
@@ -515,7 +515,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 
 | Milestone | Realms | Content | Depends on |
 |---|---|---|---|
-| **M0** | Core, Test/Docs, Physics | Banded-parity T2 → T3 → T4: the 3060 Ti admitted and announced | Already ruled ahead of `PHY-7` (`backlog.md:63`) |
+| **M0** | Core, Test/Docs, Physics | Banded-parity T2 → T3 → T4: the 3060 Ti admitted and announced. **Done** (T4 merged `e146575`; T6, the probe as a standing device record, in review) | Already ruled ahead of `PHY-7` (`backlog.md:63`) |
 | **M1, the spike** | Physics, with Core | Standalone NS kernels at 64³ and 128³ in a worktree, run in the measurement tree. It measures ms per pass, per V-cycle and per fluid step, the residual each `n_V` leaves, and the readback cost. A report like the NVIDIA denorm report. It fixes `j`, `n_V` and MacCormack before any engine change | In parallel with M0 (the measurement tree admits the card) |
 | **M2** | Core | Stage 4 (with the scratch kind), then point samples, regions, device-resident state, two recordings per step, and the VRAM budget check | Stage 4; this spec approved |
 | **M3** | Physics, Rendering, Interface | Real-time tier on the CPU (16³/32³ tests, the golden) and on the GPU. One-way rotor sources; drag reads local air. The `airflow` scene on Vulkan with a free-flying quad; volume rendering by readback. This is the backlog's done-when ("the real-time tier running on the GPU in the sandbox and the live smoke") | M0, M2 |
@@ -524,7 +524,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 | **M6** | Physics | LBM tier: CPU reference at 16³–32³, GPU kernels, the nested region, slow-motion mode | M4; Q5, Q6 |
 | **M7** | All | 192³–256³; interop if measured necessary; the Vulkan raster's volume pass (`RND-4`) | M4 |
 
-`PHY-7` follows M0 as planned. `PHY-8` stays after stage 4; it moves positions and velocities within a substep, not where fields are sampled (Fields samples at the substep's starting positions under either order), so it does not interact with this spec (confirmed by Physics).
+`PHY-7` followed M0 as planned: approved 2026-10-05, merging after stage 4, whose first declared scratch is its `contact_dv`. `PHY-8` stays after stage 4; it moves positions and velocities within a substep, not where fields are sampled (Fields samples at the substep's starting positions under either order), so it does not interact with this spec (confirmed by Physics).
 
 ## 10. What each realm must confirm
 
