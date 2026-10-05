@@ -28,10 +28,11 @@
 
 In the backlog's order (`../backlog.md`, "Suggested order"):
 
-1. **The viewer scenes as world and scene files** against their trajectory goldens (composer plan task 5, `interface/viewer-scenes`). Each then joins the live smoke as a main function and the editor's scene picker.
+1. **The viewer scenes as world and scene files** (composer plan task 5) are in review on `interface/viewer-scenes` (`327bd2c`): `assets/worlds/` and `assets/scenes/`, tied to the viewer by `test_viewer_successors.cpp`, a row-for-row comparison every tick (the lead's ruling, option B: the golden digests cannot match by construction, and none moves). Each then joins the live smoke as a main function and the editor's scene picker.
    - The lead runs the live smoke after each merge batch and sends the user the recording.
-2. **Lift the drone box's Vulkan refusal** once Core's translation lock lands on both backends.
-3. **The editor** (`INT-3`): the design (`plans/2026-10-05-editor-design.md`) waits on Cameron's approval and Q1–Q2; then its plan.
+2. **The airflow work** (the user's ruling, 2026-10-05): Physics leads the joint spec. Interface's part is an airspeed and forces HUD (each vehicle's airspeed, angle of attack, aero forces and moments), the airflow views in the sandbox, and an airflow main function in the live smoke.
+3. **Lift the drone box's Vulkan refusal** once Core's translation lock lands on both backends.
+4. **The editor** (`INT-3`): the design (`plans/2026-10-05-editor-design.md`) follows Cameron's D1–D4 and Q1–Q2 (`0e7e23d`) and waits on his approval; then its plan.
    - Needs for Core, through the lead: library files for one model or asset; a review of the SDF edit helper; world file v3 for the physics records; per-rotor spawn speeds.
 
 
