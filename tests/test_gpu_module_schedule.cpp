@@ -15,6 +15,7 @@
 
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
+#include "gpu_skip.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -49,7 +50,7 @@ const std::vector<std::string> kStandardGpuOrder = {
 }  // namespace
 
 TEST(GpuModuleSchedule, TheRecorderRecordsTheSchedulesPassesInOrder) {
-    if (!spade::compute::vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, vulkan());
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
     const auto chain = sim->vulkan_recorded_chain();
@@ -61,7 +62,7 @@ TEST(GpuModuleSchedule, TheRecorderRecordsTheSchedulesPassesInOrder) {
 // touches, so swapping them in the set swaps them in the schedule; the GPU
 // must follow the schedule, not a remembered order.
 TEST(GpuModuleSchedule, ReorderedSensorsRecordInScheduleOrder) {
-    if (!spade::compute::vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     spade::modules::ModuleSet set = spade::modules::standard_modules();
     ASSERT_EQ(set[2].name, "imu");
     ASSERT_EQ(set[4].name, "gnss");
@@ -76,7 +77,7 @@ TEST(GpuModuleSchedule, ReorderedSensorsRecordInScheduleOrder) {
 }
 
 TEST(GpuModuleSchedule, DurationsAreOnePerPassByName) {
-    if (!spade::compute::vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, vulkan());
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
     ASSERT_TRUE(sim->step(1).has_value());
@@ -124,7 +125,7 @@ namespace {
 }  // namespace
 
 TEST(GpuModuleSchedule, StoredFieldSamplesMatchTheCpuCopiesBitwise) {
-    if (!spade::compute::vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto cpu = spade::Simulation::create(two_different_turbulent_worlds(), 2'000'000, 2);
     auto gpu = spade::Simulation::create(two_different_turbulent_worlds(), 2'000'000, 2, vulkan());
     ASSERT_TRUE(cpu.has_value()) << cpu.error().context;

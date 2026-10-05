@@ -45,70 +45,6 @@ public:
     ScopedForceNoVulkan& operator=(const ScopedForceNoVulkan&) = delete;
 };
 
-// Whether SPADE_FORCE_NO_VULKAN=1 is set for this process. _dupenv_s on MSVC,
-// where /W4 /WX rejects std::getenv (C4996).
-[[nodiscard]] bool forced_no_vulkan() {
-#ifdef _MSC_VER
-    char* value = nullptr;
-    std::size_t length = 0;
-    const bool forced = _dupenv_s(&value, &length, "SPADE_FORCE_NO_VULKAN") == 0 && value != nullptr &&
-                        std::string_view(value) == "1";
-    std::free(value);
-    return forced;
-#else
-    const char* value = std::getenv("SPADE_FORCE_NO_VULKAN");
-    return value != nullptr && std::string_view(value) == "1";
-#endif
-}
-
-// The default device's fp32-denormal capability, read straight from the
-// driver: NOT through vulkan_available(), whose answer is what the refusal
-// test below checks.
-struct DefaultDeviceDenorms {
-    bool device = false;     // a loader and a default device answered
-    bool queryable = false;  // the device reports Vulkan >= 1.2, so float controls can be queried
-    VkBool32 preserve_f32 = VK_FALSE;
-    std::string name;
-};
-
-[[nodiscard]] DefaultDeviceDenorms read_default_device_denorms() {
-    DefaultDeviceDenorms out;
-    if (volkInitialize() != VK_SUCCESS) return out;
-
-    VkApplicationInfo app_info{};
-    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.pApplicationName = "spade_test_denorm_read";
-    app_info.apiVersion = VK_API_VERSION_1_3;
-    VkInstanceCreateInfo instance_info{};
-    instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    instance_info.pApplicationInfo = &app_info;
-    VkInstance instance = VK_NULL_HANDLE;
-    if (vkCreateInstance(&instance_info, nullptr, &instance) != VK_SUCCESS) return out;
-    volkLoadInstanceOnly(instance);
-
-    uint32_t count = 1;
-    VkPhysicalDevice device = VK_NULL_HANDLE;
-    const VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count, &device);
-    if ((enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) && count > 0 && device != VK_NULL_HANDLE) {
-        out.device = true;
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(device, &properties);
-        out.name = properties.deviceName;
-        if (properties.apiVersion >= VK_API_VERSION_1_2) {
-            out.queryable = true;
-            VkPhysicalDeviceFloatControlsProperties float_controls{};
-            float_controls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
-            VkPhysicalDeviceProperties2 properties2{};
-            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            properties2.pNext = &float_controls;
-            vkGetPhysicalDeviceProperties2(device, &properties2);
-            out.preserve_f32 = float_controls.shaderDenormPreserveFloat32;
-        }
-    }
-    vkDestroyInstance(instance, nullptr);
-    return out;
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -132,8 +68,8 @@ struct DefaultDeviceDenorms {
 // pins the split).
 // ---------------------------------------------------------------------------
 TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
-    if (forced_no_vulkan()) GTEST_SKIP() << "SPADE_FORCE_NO_VULKAN=1";
-    const DefaultDeviceDenorms denorms = read_default_device_denorms();
+    if (spade::testing::forced_no_vulkan()) GTEST_SKIP() << "Vulkan unavailable: SPADE_FORCE_NO_VULKAN=1";
+    const spade::testing::DefaultDeviceDenorms denorms = spade::testing::read_default_device_denorms();
     if (!denorms.device) GTEST_SKIP() << "no Vulkan loader or physical device";
     if (!denorms.queryable) {
         GTEST_SKIP() << "the default device reports Vulkan < 1.2, so shaderDenormPreserveFloat32 cannot "
@@ -184,7 +120,7 @@ TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
 // ---------------------------------------------------------------------------
 
 TEST(GpuContext, CreatesOnAvailableDevice) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     BackendDesc desc{.kind = BackendKind::vulkan};
     auto result = VulkanContext::create(desc);
@@ -224,7 +160,7 @@ TEST(GpuContext, CreatesOnAvailableDevice) {
 // something else.
 // ---------------------------------------------------------------------------
 TEST(GpuContext, Int64ProbeMatchesTheDevice) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     BackendDesc desc{.kind = BackendKind::vulkan};
     auto result = VulkanContext::create(desc);
@@ -272,7 +208,7 @@ TEST(GpuContext, Int64ProbeMatchesTheDevice) {
 // assert regardless of environment: has_debug_messenger() agrees with
 // whether the layer was actually enumerable, on both presets.
 TEST(GpuContext, DebugMessengerExistsIffValidationLayerIsPresent) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     uint32_t layer_count = 0;
     vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
@@ -308,7 +244,7 @@ TEST(GpuContext, DebugMessengerExistsIffValidationLayerIsPresent) {
 }
 
 TEST(GpuContext, ComputeAndTransferQueuesAreValid) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     BackendDesc desc{.kind = BackendKind::vulkan};
     auto result = VulkanContext::create(desc);
@@ -327,7 +263,7 @@ TEST(GpuContext, ComputeAndTransferQueuesAreValid) {
 }
 
 TEST(GpuContext, DeviceIndexOutOfRangeIsInvalidArgument) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     BackendDesc desc{.kind = BackendKind::vulkan, .device_index = 0xffffffffu};
     auto result = VulkanContext::create(desc);
@@ -336,7 +272,7 @@ TEST(GpuContext, DeviceIndexOutOfRangeIsInvalidArgument) {
 }
 
 TEST(GpuContext, MoveTransfersOwnershipAndLeavesSourceInert) {
-    if (!vulkan_available()) GTEST_SKIP();
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 
     BackendDesc desc{.kind = BackendKind::vulkan};
     auto result = VulkanContext::create(desc);
