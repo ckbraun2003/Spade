@@ -66,6 +66,22 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return false;
 }
 
+[[nodiscard]] bool declares_table(const ModuleDesc& m, std::string_view name) noexcept {
+    for (const ConfigTableDecl& t : m.tables) {
+        if (t.name == name) return true;
+    }
+    return false;
+}
+
+// "<module>.<table>" for a table a module in the set declares (Task 7).
+[[nodiscard]] bool names_table(std::string_view q, std::span<const ModuleDesc> modules) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    if (!split_quantity(q, owner, name)) return false;
+    const ModuleDesc* m = find_module(modules, owner);
+    return m != nullptr && declares_table(*m, name);
+}
+
 [[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
                                   const FieldOwners& fields) noexcept {
     if (is_core_quantity(q)) return true;
@@ -75,17 +91,19 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     if (!split_quantity(q, owner, name)) return false;
     const ModuleDesc* m = find_module(modules, owner);
     if (m == nullptr) return false;
-    // A stateful module's quantities name its arrays (stage 4), so a misspelt
-    // array cannot drop a hazard. A stateless module's tokens stay free, as in
-    // stage 1.
-    return m->state.empty() || declares_array(*m, name);
+    // A stateful module's quantities name its arrays or its tables (stage 4),
+    // so a misspelt array cannot drop a hazard and a misspelt table cannot bind
+    // nothing. A module with neither keeps free tokens, as in stage 1.
+    if (m->state.empty() && m->tables.empty()) return true;
+    return declares_array(*m, name) || declares_table(*m, name);
 }
 
 // OPTIONAL ACCESSES (Task 6; module.hpp's QuantityAccess). Legal only as a
 // read of "<module>.<name>". A core quantity and a field are never absent, so
 // optional would mean nothing there. When the module is in the set, <name>
-// must be one of its arrays: an optional read binds an array or nothing, so a
-// present module's misspelt array cannot bind nothing in silence.
+// must be one of its arrays or tables (Task 7): an optional read binds an
+// array, a table or nothing, so a present module's misspelt name cannot bind
+// nothing in silence.
 [[nodiscard]] Result<void> check_optional(const std::string& pass, const QuantityAccess& qa,
                                           std::span<const ModuleDesc> modules) {
     const std::string where = pass + ": optional access to '" + std::string(qa.quantity) + "'";
@@ -100,9 +118,11 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
         return std::unexpected(invalid(where + ": optional is for <module>.<array> of a module the set may not "
                                                "hold; a core quantity or a field is never absent"));
     }
-    if (const ModuleDesc* m = find_module(modules, owner); m != nullptr && !declares_array(*m, name)) {
+    if (const ModuleDesc* m = find_module(modules, owner);
+        m != nullptr && !declares_array(*m, name) && !declares_table(*m, name)) {
         return std::unexpected(invalid(where + ": module '" + std::string(owner) +
-                                       "' is in the set and declares no array '" + std::string(name) + "'"));
+                                       "' is in the set and declares no array or table '" + std::string(name) +
+                                       "'"));
     }
     return {};
 }
@@ -116,9 +136,12 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 }
 
 // What one declared access binds (module.hpp's CompiledBinding): the array a
-// "<module>.<array>" quantity names, whichever module owns it, or nothing. Core
-// quantities are checked first, as known_quantity() checks them.
-[[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays) noexcept {
+// "<module>.<array>" quantity names, or the table a "<module>.<table>" one
+// does, whichever module owns it; or nothing. Core quantities are checked
+// first, as known_quantity() checks them. Arrays and tables share one
+// namespace (compile_tables), so at most one of the two loops can match.
+[[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays,
+                                         const std::vector<CompiledTable>& tables) noexcept {
     std::string_view owner;
     std::string_view name;
     if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
@@ -128,6 +151,11 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     for (std::size_t i = 0; i < arrays.size(); ++i) {
         if (arrays[i].module == owner && arrays[i].name == name) {
             return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i)};
+        }
+    }
+    for (std::size_t i = 0; i < tables.size(); ++i) {
+        if (tables[i].module == owner && tables[i].name == name) {
+            return CompiledBinding{BindingKind::table, static_cast<uint32_t>(i)};
         }
     }
     return {};
@@ -326,6 +354,45 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return out;
 }
 
+// THE CONFIGURATION TABLES (Task 7; module.hpp's ConfigTableDecl), in set
+// order and then each module's declaration order: the order Simulation builds
+// them in. A table's name shares the array namespace, so "<module>.<name>"
+// names one thing, whichever kind it is.
+[[nodiscard]] Result<std::vector<CompiledTable>> compile_tables(std::span<const ModuleDesc> modules,
+                                                                const std::vector<CompiledArray>& arrays) {
+    std::vector<CompiledTable> out;
+    for (const ModuleDesc& mod : modules) {
+        for (const ConfigTableDecl& t : mod.tables) {
+            if (t.name.empty() || t.name.find('.') != std::string_view::npos) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) + "': table '" +
+                                               std::string(t.name) + "': a table needs a name with no '.'"));
+            }
+            const std::string where = "table '" + std::string(t.name) + "' (module '" + std::string(mod.name) + "')";
+            if (is_core_array(t.name)) {
+                return std::unexpected(invalid(where + ": '" + std::string(t.name) +
+                                               "' is a core array's name; a table shares the array namespace"));
+            }
+            if (const auto array = std::ranges::find(arrays, t.name, &CompiledArray::name); array != arrays.end()) {
+                return std::unexpected(invalid(where + ": module '" + array->module +
+                                               "' declares an array of that name; a table shares the array "
+                                               "namespace, so <module>.<name> names one thing"));
+            }
+            if (const auto twice = std::ranges::find(out, t.name, &CompiledTable::name); twice != out.end()) {
+                if (twice->module == mod.name) return std::unexpected(invalid(where + ": declared twice"));
+                return std::unexpected(invalid("table '" + std::string(t.name) + "' is declared by module '" +
+                                               twice->module + "' and module '" + std::string(mod.name) +
+                                               "'; a table has one owner"));
+            }
+            if (t.build == nullptr) {
+                return std::unexpected(
+                    invalid(where + ": no build function, so register_model() could not build it"));
+            }
+            out.push_back(CompiledTable{std::string(mod.name), std::string(t.name), t.build});
+        }
+    }
+    return out;
+}
+
 // The built-in fields' fixed shapes (module.hpp). The GPU row depends on them.
 struct BuiltinField {
     std::string_view name;
@@ -445,7 +512,16 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
                                                    "' (a core quantity, field.<name> for a field a module "
                                                    "declares, or <module>.<name> for a module in the set, "
-                                                   "where <name> is one of its arrays if it declares any)"));
+                                                   "where <name> is one of its arrays or tables if it declares "
+                                                   "any)"));
+                }
+                // A table changes only in register_model() (Task 7), so no
+                // pass writes or accumulates it -- its own module's included.
+                if (qa.access != Access::read && names_table(qa.quantity, modules)) {
+                    return std::unexpected(invalid(full + (qa.access == Access::write ? ": writes" : ": accumulates") +
+                                                   " table '" + std::string(qa.quantity) +
+                                                   "'; a configuration table changes only in register_model(), "
+                                                   "so a pass may only read it"));
                 }
                 if (const std::string_view field = field_name_of(qa.quantity);
                     !field.empty() && qa.access != Access::read) {
@@ -475,6 +551,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     if (!arrays) return std::unexpected(arrays.error());
     Result<std::vector<CompiledStream>> streams = compile_streams(modules, *arrays);
     if (!streams) return std::unexpected(streams.error());
+    Result<std::vector<CompiledTable>> tables = compile_tables(modules, *arrays);
+    if (!tables) return std::unexpected(tables.error());
 
     // Every declared field has a pass in its provider module that writes it.
     for (const auto& [field, m] : field_owner) {
@@ -628,7 +706,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         // indexes SubstepContext::state by its own access list.
         std::vector<CompiledBinding> bindings;
         bindings.reserve(nd.pass->access.size());
-        for (const QuantityAccess& qa : nd.pass->access) bindings.push_back(binding_of(qa, *arrays));
+        for (const QuantityAccess& qa : nd.pass->access) bindings.push_back(binding_of(qa, *arrays, *tables));
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
                                           nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings)});
     }
@@ -654,6 +732,14 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
     out.streams = std::move(*streams);
+    out.tables = std::move(*tables);
+    // The vehicle-spawn hooks, in set order (Task 7): the order spawn() calls
+    // them in, checking every request against the vehicle.
+    for (const ModuleDesc& mod : modules) {
+        if (mod.vehicle_rows != nullptr) {
+            out.vehicle_rows.push_back(CompiledVehicleRows{std::string(mod.name), mod.vehicle_rows});
+        }
+    }
     return out;
 }
 

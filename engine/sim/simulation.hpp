@@ -1017,6 +1017,11 @@ public:
     //     lets ModelTypeId be a bare one-based index with no generation.
     //   * IT IS NOT A STRUCTURAL CHANGE. Nothing about the arenas moves, so
     //     this is not queued and may be called at any time between steps.
+    //   * IT REBUILDS EVERY CONFIGURATION TABLE the module set declares
+    //     (sim/module.hpp's ConfigTableDecl), from every registered model in
+    //     registration order -- the only place a table changes, so no step
+    //     ever allocates for one. A table is configuration too: a replay that
+    //     registers the same models in the same order builds the same tables.
     //
     // Codes: invalid_argument (the model does not validate -- reported
     // verbatim from ModelType::validate()), capacity_exceeded (2^32-1 models,
@@ -1072,6 +1077,18 @@ public:
     //
     // not_found for a null or out-of-range ModelTypeId. capacity_exceeded when
     // the world cannot fit the body, the force elements or the sensors.
+    //
+    // THE MODULES' VEHICLE ROWS (module-API stage 4, Task 7). Once every slot
+    // is reserved, each module's vehicle_rows hook is called in set order and
+    // asks for rows of its own module: the per_body row at the vehicle's body
+    // slot, or rows owned by the vehicle's rotors (sim/module.hpp's
+    // VehicleRows). Every request is checked before anything is committed; one
+    // outside the vehicle, of another module's array, of the wrong record size
+    // or of an array with no init refuses the whole spawn (invalid_argument,
+    // naming the module and the array) and releases every slot taken. The
+    // checked requests are queued after the built-in rows, so their inits run
+    // at the same boundary, and the despawn cascade frees them with the body
+    // or the rotor they belong to.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<VehicleRef> spawn(uint32_t world_index, ModelTypeId model,
                                            const VehicleSpawn& where);
@@ -1716,7 +1733,10 @@ private:
     //                               noise in the standard set).
     //   register_model()            touches no arena at all -- the model
     //                               registry is configuration, held in a
-    //                               plain vector outside the walk.
+    //                               plain vector outside the walk, and so
+    //                               are the configuration tables it
+    //                               rebuilds, which have no device copy
+    //                               until stage 6 (sim/module.hpp).
     //
     // A future public method that writes an arena outside step() belongs in
     // that list and owes this call; tests/test_gpu_parity.cpp's
@@ -1756,6 +1776,14 @@ private:
     // Queues one init_row: the spawn record by value.
     void queue_init_row(uint32_t array, uint32_t world_index, uint32_t slot, uint32_t body_slot,
                         std::span<const std::byte> spawn);
+    // One vehicle-hook request, checked against the vehicle it was made for
+    // (sim/module.hpp's VEHICLE-SPAWN HOOK): its array's index in
+    // schedule_.arrays, or invalid_argument naming `module` and the array.
+    [[nodiscard]] Result<uint32_t> check_row_request(std::string_view module, const modules::VehicleRows& vehicle,
+                                                     const modules::RowInitRequest& request) const;
+    // Every configuration table, rebuilt from models_ in registration order
+    // (sim/module.hpp's ConfigTableDecl). create() and register_model() only.
+    void rebuild_config_tables();
     // The table index (schedule_.arrays) of a module array's arena id;
     // modules::kNoArray if it is not a module array.
     [[nodiscard]] uint32_t table_index(ArrayIndex array) const noexcept;
@@ -1779,6 +1807,12 @@ private:
     // -- see register_model(). A plain vector: ModelTypeId is a one-based
     // index into it, and there is no removal, so nothing can reorder it.
     std::vector<vehicles::ModelType> models_;
+    // The configuration tables, parallel to schedule_.tables: each a pure
+    // function of models_, built at create() and rebuilt by register_model(),
+    // and by nothing else.
+    // CONFIGURATION, like models_: not registered, so not walked, digested or
+    // snapshotted.
+    std::vector<std::vector<float>> config_tables_;
 
     // The core's four arrays, registered by hand in create().
     ArrayId<WorldParams> world_params_id_{};

@@ -307,8 +307,9 @@ struct StreamDecl {
 // reviewed against that list. (The standard set declares no table.)
 //
 // The GPU has no copy yet: a table's device mirror waits for stage 6's fixed
-// bindings. A pass that reads one has no GPU kernel, so a Vulkan set holding
-// it is refused by name (stage 2's rule).
+// bindings. Until then only the CPU reads one. A developer's pass has no GPU
+// kernel, so Vulkan refuses its set by name (stage 2's rule), and no built-in
+// kernel or pass function reads a table.
 //
 // `build` receives the registered models in registration order and an EMPTY
 // `out`, and appends the table's floats.
@@ -338,11 +339,18 @@ struct ConfigTableDecl {
 //
 // A model the hook has nothing for gets no request: its rows stay the arena's
 // zeroes, which a module's rows read as "not driven".
+//
+// The hook sees the whole registry -- what every table's build was handed --
+// and the model's place in it, so a row can name that model's entries in a
+// table a build laid out model by model (Physics' MotorRow::table_offset into
+// propeller_tables). Every span is valid only during the call.
 struct VehicleRows {
-    const vehicles::ModelType* model = nullptr;  // the registered model being spawned
+    const vehicles::ModelType* model = nullptr;     // the registered model being spawned: models[model_index]
+    std::span<const vehicles::ModelType> models{};  // every registered model, in registration order
+    uint32_t model_index = 0;                       // the model's place in `models` (its ModelTypeId - 1)
     uint32_t world_index = 0;
-    uint32_t body_slot = 0;                      // GLOBAL
-    std::span<const uint32_t> rotor_slots;       // GLOBAL, in the model's rotor order
+    uint32_t body_slot = 0;                         // GLOBAL
+    std::span<const uint32_t> rotor_slots;          // GLOBAL, in the model's rotor order
 };
 
 struct RowInitRequest {
@@ -359,8 +367,9 @@ template <class Spawn>
 [[nodiscard]] RowInitRequest init_request(std::string_view array, uint32_t slot, const Spawn& spawn) noexcept {
     static_assert(std::is_trivially_copyable_v<Spawn>, "a spawn record is carried by value through the queue");
     static_assert(sizeof(Spawn) <= kMaxSpawnBytes, "a spawn record is at most kMaxSpawnBytes");
-    (void)spawn;
-    return RowInitRequest{.array = array, .slot = slot};
+    RowInitRequest out{.array = array, .slot = slot, .spawn_size = static_cast<uint32_t>(sizeof(Spawn))};
+    std::memcpy(out.spawn.data(), &spawn, sizeof(Spawn));
+    return out;
 }
 
 struct ModuleDesc {
@@ -490,8 +499,11 @@ struct CompiledSchedule {
 // built-in field with another kind or unit; a module named "field"; a provider
 // module with no pass that writes its field; a write of "field.<name>" outside
 // its provider, or outside the Fields phase; an unknown
-// quantity, including "<module>.<name>" where the module declares arrays and
-// <name> is none of them; an array with no name, a '.' in its name, a core
+// quantity, including "<module>.<name>" where the module declares arrays or
+// tables and <name> is none of them; a write or an accumulation of a table; a
+// table with no name, a '.' in its name, a core array's name, the name of an
+// array or another table in the set, or no build function; an array with no
+// name, a '.' in its name, a core
 // array's name, elem_size 0 or an unknown extent, or declared twice in the
 // set; a per_row array with depth 0, or whose owner no module declares or is
 // per_world or per_row; an owner or a depth other than 1 on any other array;
@@ -505,8 +517,8 @@ struct CompiledSchedule {
 // per_element or per_sensor arrays; an
 // optional access that is not a read, that names a core quantity, a field or
 // anything but "<module>.<name>", or whose module is in the set without an
-// array of that name; an `after` edge to a pass no module declares or to a
-// later phase; a `before` edge to a pass no module declares or to an earlier
+// array or table of that name; an `after` edge to a pass no module declares or
+// to a later phase; a `before` edge to a pass no module declares or to an earlier
 // phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle, naming the passes left unordered.
@@ -514,9 +526,11 @@ struct CompiledSchedule {
 // IDENTITY, spelt byte by byte so it is the same on every platform: for each
 // module in set order, its name, 0x00 and its version as 4 bytes little-endian;
 // then 0x01; then for each compiled pass, module, '.', pass, 0x00 and the phase
-// as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State
-// and stream declarations are not spelt: the schema hash refuses a blob whose
-// arrays differ, and a changed row or tag rides the module's version. Edges,
+// as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State,
+// stream and table declarations and vehicle hooks are not spelt: the schema
+// hash refuses a blob whose arrays differ, a table's contents are the model
+// registry's (whose identity the blob carries), and a changed row, tag, build
+// or hook rides the module's version. Edges,
 // optional reads and bindings are not spelt either: what they decide is the
 // compiled order, which is.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);

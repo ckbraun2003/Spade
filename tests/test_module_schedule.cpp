@@ -2660,6 +2660,66 @@ TEST(ModuleTables, ATableNameSharesTheArrayNamespace) {
     EXPECT_TRUE(refused_naming(compile_schedule(two), "masses")) << "two modules, one table name";
 }
 
+// A hook sees the whole registry and its model's place in it, so it can point a
+// row at that model's entries in a table a build laid out model by model --
+// Physics' MotorRow::table_offset into propeller_tables.
+namespace {
+
+struct PlacedRow {
+    uint32_t index;       // the model's place in the registry
+    uint32_t count;       // the registry's size
+    float table_mass;     // the model's entry in the table, found from its place
+    uint32_t same_model;  // 1 if models[index] is the model being spawned
+};
+void init_placed(const spade::modules::RowInit& in) noexcept {
+    const PlacedRow placed = spade::modules::spawn_as<PlacedRow>(in.spawn);
+    PlacedRow& row = spade::modules::row_as<PlacedRow>(in.row);
+    row.index = placed.index;
+    row.count = placed.count;
+    row.table_mass = placed.table_mass;
+    row.same_model = placed.same_model;
+}
+void placed_vehicle_rows(const VehicleRows& v, std::vector<RowInitRequest>& out) {
+    std::vector<float> masses;
+    build_masses(v.models, masses);  // the layout the table's build gave it
+    const bool placed_ok = v.model_index < v.models.size();
+    const PlacedRow placed{.index = v.model_index,
+                           .count = static_cast<uint32_t>(v.models.size()),
+                           .table_mass = placed_ok ? masses[v.model_index] : -1.0f,
+                           .same_model = placed_ok && &v.models[v.model_index] == v.model ? 1u : 0u};
+    out.push_back(init_request("placed_rows", v.body_slot, placed));
+}
+constexpr spade::modules::ArrayDecl kPlacedArrays[] = {{.name = "placed_rows",
+                                                        .elem_size = spade::modules::row_size<PlacedRow>(),
+                                                        .extent = Extent::per_body,
+                                                        .spawn_size = sizeof(PlacedRow),
+                                                        .init = &init_placed}};
+constexpr ConfigTableDecl kPlacedTables[] = {{.name = "placed_masses", .build = &build_masses}};
+
+}  // namespace
+
+TEST(ModuleVehicleRows, AHookSeesItsModelsPlaceInTheRegistry) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(
+        {.name = "placed", .state = kPlacedArrays, .tables = kPlacedTables, .vehicle_rows = &placed_vehicle_rows});
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{2, 5, 1, 1}), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.0f)).has_value());
+    const auto second = sim->register_model(quad_of_mass(2.5f));
+    ASSERT_TRUE(second.has_value()) << second.error().context;
+    const auto quad = sim->spawn(0, *second, at_x(0.0f));
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    ASSERT_TRUE(sim->step(0).has_value());
+    const PlacedRow row = (*sim->module_rows<PlacedRow>("placed_rows", 0))[quad->body.slot];
+    EXPECT_EQ(row.index, 1u) << "the second model registered";
+    EXPECT_EQ(row.count, 2u);
+    EXPECT_EQ(row.same_model, 1u) << "models[model_index] is the model being spawned";
+    EXPECT_EQ(row.table_mass, 2.5f);
+    const std::vector<float> table = table_of(*sim, "placed_masses");
+    ASSERT_EQ(table.size(), 2u);
+    EXPECT_EQ(row.table_mass, table[row.index]) << "the hook found the model's entry";
+}
+
 // THE IDENTITY RULE (sim/module.hpp's ConfigTableDecl): snapshot v3's
 // model-registry identity covers a table only if every ModelType field its build
 // reads is folded into model_identity(). The standard set builds no table and

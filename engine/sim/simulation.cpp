@@ -38,6 +38,11 @@ namespace {
     return Error{Code::internal, std::move(context)};
 }
 
+// Where an EMPTY configuration table's view points (rebuild_views): the view
+// has zero rows, so nothing ever reads or writes these bytes. They exist so
+// that the view's data is not null, which would read as an absent module.
+alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
+
 // A 64-bit identity, for an error message. Hex because that is how config
 // hashes and digests are written everywhere else in this tree
 // (the golden corpus's expected_digest, the schema hash) -- a decimal one would
@@ -654,6 +659,11 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     sim.pass_views_.assign(sim.pass_view_begin_.back(), StateView{});
     // The field sample rows, sized once and zero-filled (module-API stage 3).
     sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
+    // The configuration tables (module-API stage 4, Task 7), built here from
+    // no models -- so a pass that reads one before any model is registered
+    // sees an empty table -- and rebuilt by register_model().
+    sim.config_tables_.assign(sim.schedule_.tables.size(), std::vector<float>{});
+    sim.rebuild_config_tables();
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
     // run per body slot in the whole set.
@@ -823,8 +833,22 @@ Result<ArrayIndex> Simulation::module_array(std::string_view name) const {
         missing("module_array: no module in this set declares an array '" + std::string(name) + "'"));
 }
 
+// A linear scan, like module_array(): a host call, never in a step.
 Result<std::span<const float>> Simulation::config_table(std::string_view name) const {
-    return std::unexpected(missing("config_table: not implemented ('" + std::string(name) + "')"));
+    for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        if (schedule_.tables[i].name == name) return std::span<const float>(config_tables_[i]);
+    }
+    return std::unexpected(
+        missing("config_table: no module in this set declares a table '" + std::string(name) + "'"));
+}
+
+void Simulation::rebuild_config_tables() {
+    for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        // EMPTY, then built: ConfigBuildFn's contract. clear() keeps the
+        // capacity, so a table that does not grow is rebuilt in place.
+        config_tables_[i].clear();
+        schedule_.tables[i].build(std::span<const vehicles::ModelType>(models_), config_tables_[i]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -936,11 +960,26 @@ Result<void> Simulation::rebuild_views() {
     // same `w` the views above use -- or absent. The arenas never move, so
     // this rewrites the same values every step; refilling rather than caching
     // keeps the one rule this function exists for.
+    //
+    // A CONFIGURATION TABLE (Task 7) is one row of floats that every world
+    // shares: world_count 1, elem_size 4, as many rows as it has floats. Its
+    // storage moves only in register_model(), which never runs inside a step,
+    // and this runs at the top of every step. An empty table -- no model
+    // registered yet -- still reads as present(), since its module is in the
+    // set: its view points at g_no_table_rows and has no rows.
     for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
         const std::vector<modules::CompiledBinding>& bindings = schedule_.passes[p].state;
         for (std::size_t k = 0; k < bindings.size(); ++k) {
             StateView& view = pass_views_[pass_view_begin_[p] + k];
             view = StateView{};
+            if (bindings[k].kind == modules::BindingKind::table) {
+                std::vector<float>& table = config_tables_[bindings[k].index];
+                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<std::byte*>(table.data());
+                view.elem_size = static_cast<uint32_t>(sizeof(float));
+                view.world_count = 1;
+                view.capacity_per_world = static_cast<uint32_t>(table.size());
+                continue;
+            }
             if (bindings[k].kind != modules::BindingKind::array) continue;
             const ArrayIndex id = module_array_ids_[bindings[k].index];
             const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
@@ -1254,10 +1293,26 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // this is unreachable today -- and it is cheap insurance that a
             // future queue reordering degrades to a no-op rather than to a live
             // row in a free slot.
-            const ArrayIndex liveness = array.extent == modules::Extent::per_body ? ArrayIndex(bodies_id_) : id;
+            //
+            // WHOSE MAP SAYS A ROW IS LIVE. A slot-allocated row's own; a
+            // per_body row's BODY's, at the same slot; and a per_row row's
+            // OWNER's, at row slot / depth (Task 7), read by the owner's own
+            // rule -- the body map for a per_body owner, else the owner's map.
+            // A per_row array's own map is never written (it is direct-indexed,
+            // like the rings), so reading it would skip every such row in
+            // silence: Task 4's check did, for every row a rotor owns.
+            uint32_t live_array = op.array;
+            uint32_t live_slot = op.slot;
+            if (array.extent == modules::Extent::per_row) {
+                live_array = array.owner;
+                live_slot = op.slot / array.depth;
+            }
+            const ArrayIndex liveness = schedule_.arrays[live_array].extent == modules::Extent::per_body
+                                            ? ArrayIndex(bodies_id_)
+                                            : module_array_ids_[live_array];
             const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(liveness);
             if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
+            if (live_slot >= map->size() || (*map)[live_slot] != op.world_index) return {};
 
             const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
             if (!params) return std::unexpected(params.error());
@@ -1655,6 +1710,54 @@ void Simulation::queue_init_row(uint32_t array, uint32_t world_index, uint32_t s
     queue_.push_back(op);
 }
 
+// THE RULES A VEHICLE HOOK'S REQUEST KEEPS (sim/module.hpp's VEHICLE-SPAWN
+// HOOK). Each is what makes the queued init safe without a reservation of its
+// own: the row is one this vehicle owns outright (its body's, or one in a
+// rotor window it just reserved), so no other body's row can be written, and
+// the despawn cascade frees it with that body or rotor.
+Result<uint32_t> Simulation::check_row_request(std::string_view module, const modules::VehicleRows& vehicle,
+                                               const modules::RowInitRequest& request) const {
+    const std::string who = "spawn(vehicle): module '" + std::string(module) + "' asks for a row of '" +
+                            std::string(request.array) + "'";
+    const auto it = std::ranges::find(schedule_.arrays, request.array, &modules::CompiledArray::name);
+    if (it == schedule_.arrays.end()) {
+        return std::unexpected(invalid(who + ", which no module in this set declares"));
+    }
+    const modules::CompiledArray& array = *it;
+    if (array.module != module) {
+        return std::unexpected(invalid(who + ", an array of module '" + array.module +
+                                       "'; a vehicle hook initializes only its own module's rows"));
+    }
+    if (array.init == nullptr) {
+        return std::unexpected(invalid(who + ", which declares no init to run"));
+    }
+    if (request.spawn_size != array.spawn_size) {
+        return std::unexpected(invalid(who + " with a " + std::to_string(request.spawn_size) +
+                                       "-byte record; the array takes " + std::to_string(array.spawn_size)));
+    }
+    if (array.extent == modules::Extent::per_body) {
+        if (request.slot != vehicle.body_slot) {
+            return std::unexpected(invalid(who + " at slot " + std::to_string(request.slot) +
+                                           "; the vehicle's per_body row is its body's, slot " +
+                                           std::to_string(vehicle.body_slot)));
+        }
+    } else if (array.extent == modules::Extent::per_row) {
+        if (array.owner != table_index(rotors_id_)) {
+            return std::unexpected(invalid(who + ", whose rows are owned by '" + schedule_.arrays[array.owner].name +
+                                           "'; a vehicle's per_row rows are its rotors'"));
+        }
+        // Row g of the owner owns rows [g * depth, (g + 1) * depth).
+        if (std::ranges::find(vehicle.rotor_slots, request.slot / array.depth) == vehicle.rotor_slots.end()) {
+            return std::unexpected(invalid(who + " at slot " + std::to_string(request.slot) +
+                                           ", which lies in none of the vehicle's rotor windows"));
+        }
+    } else {
+        return std::unexpected(invalid(who + ", which is neither per_body nor owned by rotors; a vehicle hook "
+                                             "initializes those, and attach_row() reserves the rest"));
+    }
+    return static_cast<uint32_t>(it - schedule_.arrays.begin());
+}
+
 uint32_t Simulation::table_index(ArrayIndex array) const noexcept {
     for (uint32_t i = 0; i < module_array_ids_.size(); ++i) {
         if (module_array_ids_[i] == array) return i;
@@ -1713,6 +1816,10 @@ Result<ModelTypeId> Simulation::register_model(vehicles::ModelType model) {
         return std::unexpected(Error{Code::capacity_exceeded, "register_model: model id space is full"});
     }
     models_.push_back(std::move(model));
+    // Every configuration table is a function of the whole registry, in
+    // registration order, so all of them are rebuilt -- here and only here,
+    // never in a step (sim/module.hpp's ConfigTableDecl).
+    rebuild_config_tables();
     // ONE-BASED: id 0 is the null id (see ModelTypeId), so the first model
     // registered is 1.
     return ModelTypeId{static_cast<uint32_t>(models_.size())};
@@ -1734,11 +1841,15 @@ Result<const vehicles::ModelType*> Simulation::model(ModelTypeId id) const {
 // single queue op is pushed, so the failure story has to be stated: the
 // capacity checks all happen before the first reservation, which makes a
 // mid-reservation failure unreachable, and if one happened anyway every slot
-// already taken is released here. A reserve/release pair leaves the arena's
+// already taken is released here. ONE UNWIND IS REACHABLE (module-API stage 4,
+// Task 7): a module's vehicle hook asks for its rows only once the slots are
+// reserved, and a request that breaks a rule is refused here, before the
+// generation bump. A reserve/release pair leaves the arena's
 // free SET exactly as it was (state/arenas.hpp: the bump-cursor/free-list pair
 // is canonical-equivalent, and alloc_slot only ever consults the free set), so
 // an unwound spawn is invisible to every future allocation -- which is what
 // keeps a failed spawn from perturbing a determinism replay.
+// ModuleVehicleRows.ARequestOutsideTheVehicleIsRefusedAndUnwinds pins it.
 // ---------------------------------------------------------------------------
 
 Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
@@ -1849,7 +1960,8 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     std::size_t sensors_taken = 0;
 
     // Releases everything taken so far, in the reverse order it was taken, and
-    // returns `error`. Unreachable given the checks above; see the unwind note.
+    // returns `error`. Reached by a refused vehicle-hook request; otherwise
+    // unreachable given the checks above. See the unwind note.
     const auto unwind = [&](Error error) -> std::unexpected<Error> {
         for (std::size_t i = sensors_taken; i-- > 0;) (void)arenas_.free_slot(imu_id_, sensor_slots[i]);
         for (std::size_t i = drags_taken; i-- > 0;) (void)arenas_.free_slot(drag_id_, drag_slots[i]);
@@ -1875,6 +1987,34 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         if (!slot) return unwind(slot.error());
         sensor_slots[i] = *slot;
         ++sensors_taken;
+    }
+
+    // --- the modules' vehicle rows (module-API stage 4, Task 7) -------------
+    //
+    // Each module's hook, in set order, asks for rows of its own module. Every
+    // request is checked HERE, before the generation bump, so one that breaks
+    // a rule unwinds exactly like a failed reservation: nothing is committed
+    // and every slot taken above is released. Each hook fills a vector of its
+    // own, so it sees -- and can disturb -- only its own requests. A set with
+    // no hook allocates nothing here.
+    const modules::VehicleRows vehicle{.model = &model,
+                                       .models = std::span<const vehicles::ModelType>(models_),
+                                       .model_index = model_id.value - 1u,
+                                       .world_index = world_index,
+                                       .body_slot = *body_slot,
+                                       .rotor_slots = std::span<const uint32_t>(rotor_slots.data(), rotors_taken)};
+    std::vector<modules::RowInitRequest> requests;
+    std::vector<uint32_t> request_arrays;  // parallel to `requests`: each one's index in schedule_.arrays
+    std::vector<modules::RowInitRequest> asked;
+    for (const modules::CompiledVehicleRows& hook : schedule_.vehicle_rows) {
+        asked.clear();
+        hook.rows(vehicle, asked);
+        for (const modules::RowInitRequest& request : asked) {
+            const Result<uint32_t> array = check_row_request(hook.module, vehicle, request);
+            if (!array) return unwind(array.error());
+            requests.push_back(request);
+            request_arrays.push_back(*array);
+        }
     }
 
     // Every reservation succeeded; from here nothing can fail, so the
@@ -1978,6 +2118,12 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         spawn.sigma_ba = desc.sigma_ba;
         spawn.sigma_bg = desc.sigma_bg;
         queue_init_row(imu_table, world_index, sensor_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
+    }
+    // THEN THE MODULES' ROWS, checked above: hook order, then each hook's
+    // request order, so this too is a function of the model and the set.
+    for (std::size_t r = 0; r < requests.size(); ++r) {
+        queue_init_row(request_arrays[r], world_index, requests[r].slot, *body_slot,
+                       std::span<const std::byte>(requests[r].spawn.data(), requests[r].spawn_size));
     }
 
     VehicleRef ref;
