@@ -217,6 +217,21 @@ struct BackendDesc {
 // SdfProgram is configuration that never changes after create(). Both are
 // TOTALS OVER THE WHOLE SET (every world's nodes concatenated), because that is
 // what the buffers hold -- see compute/sdf_program.hpp for the flattening.
+//
+// THE REGISTERED WALK IS SHAPE TOO (module-API stage 4). `arrays` holds one
+// StateArrayShape per registry walk entry -- each array and then its
+// `.slot_to_world` map, in walk order -- and the state mirror makes exactly one
+// device buffer per element. compute/ holds no list of array names or sizes:
+// Simulation::create() fills this from the module set's declarations
+// (sim/simulation.hpp's state_array_shapes()), so a module's array reaches the
+// device without a change here. Every size is checked again against the live
+// registry on every upload and readback.
+struct StateArrayShape {
+    std::string name{};
+    uint32_t elem_size = 0;
+    uint32_t capacity_per_world = 0;
+};
+
 struct StepShape {
     uint32_t world_count = 0;
     uint32_t body_capacity = 0;
@@ -227,6 +242,7 @@ struct StepShape {
     bool batch_dynamic_collision = false;
     uint32_t sdf_node_count = 0;       // total SDF nodes across every world
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
+    std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

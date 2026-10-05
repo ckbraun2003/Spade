@@ -260,35 +260,83 @@ void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> rin
     return {};
 }
 
+// The per-world rows the three capacity extents resolve to: a WorldSetLayout's
+// when create() registers an array, a StepShape's when state_array_shapes()
+// sizes its device buffer -- the same three numbers, read from either.
+struct ExtentRows {
+    uint32_t body = 0;
+    uint32_t element = 0;
+    uint32_t sensor = 0;
+};
+
 // A module array's per-world capacity: its extent's formula, as create()
 // sized the built-ins by hand before stage 4 (sim/module.hpp's Extent). A
 // per_row array's owner holds rows itself (never per_world or per_row;
 // compile_schedule checked), and the product is taken in 64 bits so an
 // overflow is refused rather than wrapped.
 [[nodiscard]] Result<uint32_t> array_capacity(const modules::CompiledSchedule& schedule, std::size_t index,
-                                              const WorldSetLayout& layout) {
-    const auto extent_rows = [&layout](modules::Extent extent) -> uint32_t {
+                                              const ExtentRows& rows) {
+    const auto extent_rows = [&rows](modules::Extent extent) -> uint32_t {
         switch (extent) {
             case modules::Extent::per_world: return 1u;
-            case modules::Extent::per_body: return layout.body_capacity;
-            case modules::Extent::per_element: return layout.element_capacity;
-            case modules::Extent::per_sensor: return layout.sensor_capacity;
+            case modules::Extent::per_body: return rows.body;
+            case modules::Extent::per_element: return rows.element;
+            case modules::Extent::per_sensor: return rows.sensor;
             case modules::Extent::per_row: break;
         }
         return 0u;  // unreachable: compile_schedule refused an unknown extent, and per_row is handled below
     };
     const modules::CompiledArray& a = schedule.arrays[index];
     if (a.extent != modules::Extent::per_row) return extent_rows(a.extent);
-    const uint64_t rows = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
-    if (rows > std::numeric_limits<uint32_t>::max()) {
+    const uint64_t owned = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
+    if (owned > std::numeric_limits<uint32_t>::max()) {
         return std::unexpected(Error{Code::capacity_exceeded, "array '" + a.name + "' (module '" + a.module +
                                                                   "'): its owner's rows times its depth exceed "
                                                                   "2^32-1 per world"});
     }
-    return static_cast<uint32_t>(rows);
+    return static_cast<uint32_t>(owned);
 }
 
 }  // namespace
+
+// The walk create() registers, as data for the GPU mirror. walk_order() is the
+// registration order. The core's four arrays are sized as create() registers
+// them by hand, and every module array by array_capacity(), the function
+// create() registers it with; ModuleState.TheMirrorsShapesAreTheRegistryWalk
+// EntryForEntry holds this list to the registry on every box.
+Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::CompiledSchedule& schedule,
+                                                                 const compute::StepShape& shape) {
+    const ExtentRows rows{shape.body_capacity, shape.element_capacity, shape.sensor_capacity};
+    std::vector<compute::StateArrayShape> out;
+    out.reserve(2 * (std::size(modules::kCoreArrays) + schedule.arrays.size()));
+    const auto add = [&out](const std::string& name, uint32_t elem_size, uint32_t capacity_per_world) {
+        out.push_back({name, elem_size, capacity_per_world});
+        out.push_back({name + std::string(kSlotToWorldSuffix), static_cast<uint32_t>(sizeof(uint32_t)),
+                       capacity_per_world});
+    };
+    for (const std::string& name : modules::walk_order(schedule)) {
+        if (name == kWorldParamsArray) {
+            add(name, static_cast<uint32_t>(sizeof(WorldParams)), 1u);
+        } else if (name == kBodiesArray) {
+            add(name, static_cast<uint32_t>(sizeof(BodyState)), shape.body_capacity);
+        } else if (name == kBodyGenerationArray) {
+            add(name, static_cast<uint32_t>(sizeof(uint32_t)), shape.body_capacity);
+        } else if (name == kReplayConfigArray) {
+            add(name, static_cast<uint32_t>(sizeof(ReplayConfig)), 1u);
+        } else {
+            const auto it = std::ranges::find(schedule.arrays, name, &modules::CompiledArray::name);
+            if (it == schedule.arrays.end()) {
+                // walk_order() spells only the core's four and the table's names.
+                return std::unexpected(internal("state_array_shapes: '" + name + "' is in the walk but not the table"));
+            }
+            const auto index = static_cast<std::size_t>(it - schedule.arrays.begin());
+            const Result<uint32_t> capacity = array_capacity(schedule, index, rows);
+            if (!capacity) return std::unexpected(capacity.error());
+            add(name, it->elem_size, *capacity);
+        }
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // create
@@ -464,11 +512,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // the marker and no legacy array go without it, so nothing else can
     // register at or before replay_config's position.
     sim.module_array_ids_.assign(sim.schedule_.arrays.size(), ArrayIndex{});
-    const auto register_module_arrays = [&sim, &layout](bool legacy) -> Result<void> {
+    const ExtentRows rows{layout->body_capacity, layout->element_capacity, layout->sensor_capacity};
+    const auto register_module_arrays = [&sim, &rows](bool legacy) -> Result<void> {
         for (std::size_t i = 0; i < sim.schedule_.arrays.size(); ++i) {
             const modules::CompiledArray& array = sim.schedule_.arrays[i];
             if (array.legacy_walk != legacy) continue;
-            const Result<uint32_t> capacity = array_capacity(sim.schedule_, i, *layout);
+            const Result<uint32_t> capacity = array_capacity(sim.schedule_, i, rows);
             if (!capacity) return std::unexpected(capacity.error());
             const Result<ArrayIndex> index = sim.arenas_.register_bytes(array.name, array.elem_size, *capacity);
             if (!index) return std::unexpected(index.error());
@@ -668,6 +717,14 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         shape.batch_dynamic_collision = layout->uniform_dynamic_params;
         shape.sdf_node_count = sdf_node_count;
         shape.sdf_transform_count = sdf_transform_count;
+
+        // The registered walk, as data (module-API stage 4): the mirror makes
+        // one device buffer per entry, so every module array -- a developer's
+        // included -- reaches the device from its declaration. Registration
+        // above already refused any capacity this refuses.
+        Result<std::vector<compute::StateArrayShape>> arrays = state_array_shapes(sim.schedule_, shape);
+        if (!arrays) return std::unexpected(arrays.error());
+        shape.arrays = std::move(*arrays);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams

@@ -491,13 +491,28 @@ static_assert(sizeof(ReplayConfig::dt_ns) + sizeof(ReplayConfig::substeps) + siz
                   sizeof(ReplayConfig),
               "ReplayConfig has implicit padding: every byte must belong to a named field");
 
-// The registered name of the ReplayConfig array. PUBLIC, unlike the other eight
-// array names (which are private constants in sim/simulation.cpp), because two
+// The registered name of the ReplayConfig array. PUBLIC, unlike the core's
+// other three array names (private constants in sim/simulation.cpp; a module's
+// arrays are spelt by its declarations), because two
 // things outside this file key on it by name: a caller inspecting a blob's
 // configuration without restoring it (find_section(), state/snapshot.hpp), and
 // the per-world replay digest, which must SKIP it -- see the normalization note
 // in engine/testing/replay.hpp.
 inline constexpr std::string_view kReplayConfigArray = "replay_config";
+
+// The registered walk's shape for the GPU mirror (module-API stage 4): one
+// entry per registry walk entry -- each array, then its `.slot_to_world` map --
+// in the order create() registers them, for a Simulation whose capacities are
+// `shape`'s. The core's four arrays have their own sizes; every module array
+// takes its declared row size and its extent's capacity (sim/module.hpp's
+// Extent), exactly as create() registers it. create() hands the result to the
+// Vulkan backend as StepShape::arrays, so compute/ keeps no list of its own.
+//
+// capacity_exceeded, naming the array, if a per_row array's capacity (its
+// owner's rows times its depth, taken in 64 bits) would not fit a uint32 --
+// the same refusal create() makes when it registers one.
+[[nodiscard]] Result<std::vector<compute::StateArrayShape>> state_array_shapes(
+    const modules::CompiledSchedule& schedule, const compute::StepShape& shape);
 
 class Simulation {
 public:

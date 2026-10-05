@@ -4,10 +4,11 @@
 // state_mirror.hpp (S6 Task 5) -- the device buffer table: one storage buffer
 // (device-local) plus one staging buffer (host-visible, persistently mapped)
 // per entry of the FULL registered walk (state/arenas.hpp's
-// ArenaSet::registry(): eleven registered arrays plus their eleven
-// `.slot_to_world` siblings, 22 entries as of the GNSS sensor), plus one more
-// buffer for dryden_params (bindings.slang binding 13 -- derived,
-// backend-internal, not part of the registered walk).
+// ArenaSet::registry(), handed over as StepShape::arrays: for the standard
+// module set, eleven registered arrays plus their eleven `.slot_to_world`
+// siblings, 22 entries; more for a set whose modules declare more), plus the
+// derived, backend-internal buffers that are not part of the registered walk
+// (dryden_params, bindings.slang binding 13, and the rest of derived_entries()).
 //
 // THE WALK GROWS. An earlier form of this comment said the global constraint
 // was "Registered state is FROZEN at 18 walk entries". That sentence was a
@@ -29,9 +30,11 @@
 // here, because this is where the walk is defined:
 //
 //   Backend and derived storage never call register_array. REGISTERED state
-//   grows only with a sensor or feature that declares it -- and every growth
-//   moves array_shapes(), bindings.slang and test_slang_layouts.cpp's lists
-//   TOGETHER.
+//   grows only with a module that declares it (sim/module.hpp's ArrayDecl),
+//   and this mirror follows by itself: StepShape::arrays carries the walk
+//   (module-API stage 4). Only an array a kernel reads moves bindings.slang,
+//   state_mirror.cpp's binding_for() and test_slang_layouts.cpp's lists, and
+//   those three move TOGETHER.
 //
 // NO register_array CALL ANYWHERE IN THIS FILE. Every buffer here is
 // backend-internal derived storage: a device-side MIRROR of state the
@@ -41,18 +44,18 @@
 // store, exactly as it is on the cpu backend.
 //
 // GENERIC OVER THE WALK, BY NAME, NOT BY C++ TYPE. This class does not
-// `#include` a single one of the nine arrays' element types (BodyState,
+// `#include` a single one of the walk's element types (BodyState,
 // WorldParams, DragBodyRow, ...) and does not need to: state/registry.hpp's
 // RegisteredArray already carries everything a byte-copying mirror needs
 // (name, elem_size, world_count, capacity_per_world, a data pointer), and
-// ArenaSet::registry().for_each_array() is the walk itself. The one place
-// this class DOES need to know a size ahead of an ArenaSet existing is at
-// create() time, sizing buffers from StepShape before any Simulation has
-// registered anything -- see state_mirror.cpp's kArrayShapes table for that
-// one necessary exception, and its own comment for why the sizes there are
-// safe to hardcode (upload()/readback() cross-check every one of them
-// against the live registry on every call, so a drift is a returned
-// invalid_argument, never a silent truncation).
+// ArenaSet::registry().for_each_array() is the walk itself. The sizes this
+// class needs at create() time, before any Simulation has registered
+// anything, arrive AS DATA in StepShape::arrays -- Simulation::create()
+// computes them from the module declarations (sim/simulation.hpp's
+// state_array_shapes()), so compute/ keeps no list of array names or sizes
+// (module-API stage 4). upload()/readback() cross-check every one against the
+// live registry on every call, so a drift is a returned invalid_argument,
+// never a silent truncation.
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
@@ -196,9 +199,10 @@ private:
     void destroy() noexcept;
 
     // One registered-walk entry's device+staging buffer pair, plus the
-    // shader binding it occupies when it has one (five of the 18 -- the
-    // `.slot_to_world` siblings bindings.slang's section B documents as
-    // deliberately unbound -- do not; see kNoBinding).
+    // shader binding it occupies when it has one (six of the standard walk's
+    // `.slot_to_world` siblings, which bindings.slang's section B documents as
+    // deliberately unbound, and any module array no kernel reads, do not; see
+    // state_mirror.cpp's binding_for()).
     struct Entry {
         std::string name;
         uint32_t elem_size = 0;

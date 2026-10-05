@@ -26,10 +26,11 @@
 //      WHAT THIS CANNOT SEE, SAID PLAINLY. kBoundArrays below is
 //      hardcoded, on purpose (a test reading its expectations out of the
 //      artifact under test would assert nothing). That independence is exactly
-//      why nothing here notices an array REGISTERED in sim/simulation.cpp: the
-//      guard on that side is StateMirror::upload()'s runtime refusal, which is
-//      Vulkan-only and GTEST_SKIP()-gated, so on a device-less box an
-//      array_shapes() drift is caught by nothing at all.
+//      why nothing here notices an array a module DECLARES: the mirror sizes
+//      its buffers from the declarations (StepShape::arrays, module-API stage
+//      4), ModuleState.TheMirrorsShapesAreTheRegistryWalkEntryForEntry holds
+//      those to the registry on every box, and an array a kernel reads still
+//      needs its binding added here by hand.
 //
 //   3. THE SPIR-V FLOAT-CONTROLS GATE. SlangSpirv.FloatControlsPinned scans
 //      the embedded SPIR-V of every compiled kernel against
