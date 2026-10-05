@@ -106,6 +106,9 @@ add_executable(spade_tests
     # INT-4: replays spade_viewer's eight scenes (spade_viewer_scenes, v1-free)
     # against the trajectory goldens in golden/viewer/. One case per scene.
     test_viewer_trajectories.cpp
+    # Composer task 5: assets/worlds/ and assets/scenes/ hold the viewer scenes
+    # as files; each runs beside the viewer's own setup, row for row.
+    test_viewer_successors.cpp
     # spade::scene's composer: compose_transform, compose, compose_file and
     # instantiate (the drone-builder joint spec, section 3).
     test_scene_compose.cpp
@@ -396,11 +399,14 @@ endif()
 # before it can be baked in, so the string the scanner sees never contains a
 # component that isn't a real directory on the path to engine/.
 cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../engine")
+# The same normalization, for the content test_viewer_successors.cpp reads.
+cmake_path(SET SPADE_ASSETS_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../assets")
 
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
     SPADE_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    SPADE_ASSETS_DIR="${SPADE_ASSETS_DIR_NORMALIZED}"
     # Where opt-in test output goes: the build tree, never the source tree.
     # Writers: RasterGolden's frame dump (SPADE_RENDER_DUMP_FRAMES) and
     # AgreementMatrix's measurements (SPADE_AGREEMENT_MEASURE).

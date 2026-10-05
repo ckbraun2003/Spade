@@ -1,0 +1,298 @@
+// ---------------------------------------------------------------------------
+// test_viewer_successors.cpp -- the viewer scenes as world and scene files
+// (the scene composer's task 5; the lead's ruling, 2026-10-05).
+//
+// assets/worlds/ and assets/scenes/ hold each spade_viewer scene as content: a
+// world file and a scene file that spade::scene::compose_file() and
+// instantiate() turn into a run. This test ties each one to the viewer: it
+// runs the viewer's own setup (make_scene + make_simulation, which the
+// trajectory goldens in golden/viewer/ pin) beside the successor, and asserts
+// before every step that every row the viewer holds is the successor's row,
+// byte for byte.
+//
+// WHY ROWS AND NOT THE GOLDEN DIGESTS. The digests cannot match by
+// construction, and no golden moves:
+//   - compose() sizes each capacity as the world's own count plus what the
+//     scene spawns plus spare (SCN-007), and a world file's counts must be
+//     > 0, so a successor always has at least one more slot than the viewer,
+//     which declares exactly what it uses; the digests fold the capacities.
+//   - drop, bounce, shower and gate spawn bare bodies, which a scene file has
+//     no kind for. Their successors spawn body-only models (a body and nothing
+//     else), which write the same body rows but add a model to the registry.
+//   - bounce and swarm are four-world runs; a scene names one world. Each lane
+//     is its own successor, compared with the viewer's world `lane`.
+// So the comparison is over the viewer's rows: every row of every array the
+// viewer registers, in world `lane`, against the same row of the successor's
+// world 0. The viewer's capacities are exactly what it uses, so every
+// compared row is a live one, and the successor's extra rows are the padding
+// SCN-007 adds. Excluded, each with its reason, in kExcluded below.
+//
+// What the files cannot hold stays in code, here: the per-world physics
+// records (turbulence, contacts, grid), which world file v2 does not carry
+// and instantiate() takes as its WorldInstanceDesc; and flight's command hook.
+//
+// A MISSING FILE is written from the viewer scene into the build tree (never
+// the source tree), and the case fails naming it: review it, then copy it
+// into assets/. assets/scenes/README.md says the same.
+// ---------------------------------------------------------------------------
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <ostream>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "bridge.hpp"
+#include "scene/compose.hpp"
+#include "scene/scene_file.hpp"
+#include "setup.hpp"
+#include "sim/simulation.hpp"
+#include "state/registry.hpp"
+#include "world/world_file.hpp"
+
+namespace {
+
+namespace fs = std::filesystem;
+using spade::RegisteredArray;
+
+// Arrays that are not a world's state. Each is named with why.
+//   replay_config: the whole set's identity (world count, capacities, world
+//   names, the model registry). It differs by construction (above), and
+//   world_digest() leaves it out for the same reason.
+const std::vector<std::string_view> kExcluded = {spade::kReplayConfigArray};
+
+// Set means present, as in test_viewer_trajectories.cpp, so one variable gates
+// both tests the same way.
+[[nodiscard]] bool env_gate_is_set(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name) != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// The scene's file stem: the viewer's name, or "<name>_lane_<i>" for a lane of
+// a many-world scene.
+[[nodiscard]] std::string stem_of(std::string_view scene, uint32_t lane, uint32_t lanes) {
+    return lanes == 1u ? std::string(scene) : std::string(scene) + "_lane_" + std::to_string(lane);
+}
+
+struct Successor {
+    spade::WorldDesc world;
+    spade::scene::SceneDesc scene;
+};
+
+// The viewer scene's lane `lane`, as a world and a scene. Used only to write a
+// missing file; the comparison always runs the files on disk.
+[[nodiscard]] Successor successor_of(const spade::viewer::Scene& v, uint32_t lane, const std::string& stem) {
+    Successor s;
+    s.world = v.worlds.worlds.at(lane).world;
+    // compose() adds what the scene spawns to the world's own counts (SCN-007),
+    // and a world's counts must be > 0: the world keeps one of each for itself.
+    // Contacts are not spawned, so the world's count is the run's.
+    s.world.capacities.bodies = 1;
+    s.world.capacities.force_elements = 1;
+    s.world.capacities.sensors = 1;
+
+    s.scene.name = stem;
+    s.scene.world.file = "../worlds/" + stem + ".world.yaml";
+    s.scene.world.hash = spade::scene::world_hash(s.world).value();
+
+    // Bare bodies become vehicles of a body-only model, one model per distinct
+    // body template. The model carries the inertia; the body row carries its
+    // inverse, so the reciprocal must survive the round trip exactly.
+    for (const spade::viewer::BodyPlacement& b : v.bodies) {
+        if (b.world_index != lane) continue;
+        const glm::vec3 inertia = 1.0f / b.spawn.inv_inertia_diag;
+        EXPECT_EQ(1.0f / inertia, b.spawn.inv_inertia_diag) << stem << ": an inverse inertia does not round-trip";
+        std::string model;
+        for (const spade::vehicles::ModelType& m : s.scene.models) {
+            if (m.body.mass == b.spawn.mass && m.body.inertia_diag == inertia) model = m.name;
+        }
+        if (model.empty()) {
+            spade::vehicles::ModelType m;
+            m.name = stem + "_body" + (s.scene.models.empty() ? "" : "_" + std::to_string(s.scene.models.size()));
+            m.body.mass = b.spawn.mass;
+            m.body.inertia_diag = inertia;
+            s.scene.models.push_back(m);
+            model = m.name;
+        }
+        spade::VehicleSpawn start;
+        start.pos = b.spawn.pos;
+        start.orient = b.spawn.orient;
+        start.vel = b.spawn.vel;
+        start.omega_body = b.spawn.omega_body;
+        s.scene.vehicles.push_back({stem + "_" + std::to_string(s.scene.vehicles.size()), model, start});
+    }
+
+    // The viewer's models, all of them and in order (ids follow it), and its
+    // vehicles in this lane.
+    for (const spade::vehicles::ModelType& m : v.models) {
+        s.scene.models.push_back(m);
+    }
+    for (const spade::viewer::VehiclePlacement& p : v.vehicles) {
+        if (p.world_index != lane) continue;
+        const std::string& model = v.models.at(p.model_index).name;
+        s.scene.vehicles.push_back({model + "_" + std::to_string(s.scene.vehicles.size()), model, p.spawn});
+    }
+    return s;
+}
+
+[[nodiscard]] bool write_text(const fs::path& path, const std::string& text) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return static_cast<bool>(out);
+}
+
+// The first row where the viewer's world `lane` and the successor's world 0
+// differ, or "" when every viewer row matches.
+[[nodiscard]] std::string first_difference(const spade::Simulation& viewer, uint32_t lane,
+                                           const spade::Simulation& successor) {
+    std::map<std::string, RegisteredArray> theirs;
+    successor.arenas().registry().for_each_array(
+        [&theirs](const RegisteredArray& a) { theirs.emplace(a.name, a); });
+    std::string found;
+    viewer.arenas().registry().for_each_array([&](const RegisteredArray& mine) {
+        if (!found.empty()) return;
+        for (const std::string_view x : kExcluded) {
+            if (mine.name == x) return;
+        }
+        // A set-wide array (one partition in a many-world run) is compared on
+        // lane 0 only, as world_digest() folds it only for world 0.
+        if (lane >= mine.world_count) return;
+        const auto it = theirs.find(mine.name);
+        if (it == theirs.end()) {
+            found = "array '" + mine.name + "' is not in the successor";
+            return;
+        }
+        const RegisteredArray& other = it->second;
+        if (other.elem_size != mine.elem_size) {
+            found = "array '" + mine.name + "' has element size " + std::to_string(other.elem_size) +
+                    ", the viewer's is " + std::to_string(mine.elem_size);
+            return;
+        }
+        if (other.capacity_per_world < mine.capacity_per_world) {
+            found = "array '" + mine.name + "' holds " + std::to_string(other.capacity_per_world) +
+                    " rows, the viewer uses " + std::to_string(mine.capacity_per_world);
+            return;
+        }
+        const std::size_t stride = mine.elem_size;
+        const std::byte* a = mine.data + static_cast<std::size_t>(lane) * mine.capacity_per_world * stride;
+        const std::byte* b = other.data;
+        for (uint32_t row = 0; row < mine.capacity_per_world; ++row) {
+            if (std::memcmp(a + row * stride, b + row * stride, stride) != 0) {
+                std::size_t byte = 0;
+                while (a[row * stride + byte] == b[row * stride + byte]) ++byte;
+                found = "array '" + mine.name + "' row " + std::to_string(row) + " differs at byte " +
+                        std::to_string(byte) + " of " + std::to_string(stride);
+                return;
+            }
+        }
+    });
+    return found;
+}
+
+struct Case {
+    const char* scene;
+    uint32_t lanes;
+    uint64_t ticks;       // checked by default
+    uint64_t full_ticks;  // with SPADE_FULL_VIEWER_TRAJECTORIES=1 (the Docker leg)
+};
+
+void PrintTo(const Case& c, std::ostream* os) {
+    *os << c.scene << " (" << c.lanes << (c.lanes == 1u ? " lane" : " lanes") << ") to tick " << c.ticks;
+}
+
+class ViewerSuccessor : public ::testing::TestWithParam<Case> {};
+
+TEST_P(ViewerSuccessor, EveryViewerRowIsTheSuccessorsEveryTick) {
+    const Case c = GetParam();
+    std::optional<spade::viewer::Scene> scene = spade::viewer::make_scene(c.scene);
+    ASSERT_TRUE(scene.has_value()) << "spade_viewer_scenes has no scene '" << c.scene << "'";
+    ASSERT_EQ(scene->worlds.worlds.size(), c.lanes) << c.scene << ": the viewer scene has another world count";
+    ASSERT_TRUE(scene->bodies.empty() || scene->vehicles.empty())
+        << c.scene << ": the viewer spawns bodies before it registers models, and a scene registers models "
+                      "first, so a scene with both would spawn in another order";
+    ASSERT_TRUE(scene->command_hook == nullptr || c.lanes == 1u) << c.scene << ": a hook drives all lanes at once";
+
+    spade::viewer::SceneRun viewer = spade::viewer::make_simulation(*scene, spade::compute::BackendDesc{});
+
+    const fs::path assets(SPADE_ASSETS_DIR);
+    const fs::path drafts = fs::path(SPADE_TEST_OUTPUT_DIR) / "viewer-successors";
+    std::vector<spade::scene::SceneRun> successors;
+    std::vector<std::string> missing;
+    for (uint32_t lane = 0; lane < c.lanes; ++lane) {
+        const std::string stem = stem_of(c.scene, lane, c.lanes);
+        const fs::path world_file = assets / "worlds" / (stem + ".world.yaml");
+        const fs::path scene_file = assets / "scenes" / (stem + ".scene.yaml");
+        if (!fs::exists(world_file) || !fs::exists(scene_file)) {
+            const Successor s = successor_of(*scene, lane, stem);
+            const auto world_text = spade::world_to_yaml(s.world);
+            const auto scene_text = spade::scene::scene_to_yaml(s.scene);
+            ASSERT_TRUE(world_text.has_value()) << stem << ": " << world_text.error().context;
+            ASSERT_TRUE(scene_text.has_value()) << stem << ": " << scene_text.error().context;
+            ASSERT_TRUE(write_text(drafts / "worlds" / world_file.filename(), *world_text));
+            ASSERT_TRUE(write_text(drafts / "scenes" / scene_file.filename(), *scene_text));
+            missing.push_back(stem);
+            continue;
+        }
+        const auto composed = spade::scene::compose_file(scene_file);
+        ASSERT_TRUE(composed.has_value()) << stem << ": " << composed.error().context;
+        // The physics records world file v2 does not hold, from the viewer.
+        auto run = spade::scene::instantiate(*composed, scene->worlds.worlds[lane], spade::viewer::kStepDtNs,
+                                             spade::viewer::kSubsteps);
+        ASSERT_TRUE(run.has_value()) << stem << ": " << run.error().context;
+        successors.push_back(std::move(*run));
+    }
+    ASSERT_TRUE(missing.empty()) << c.scene << ": no world and scene files for " << ::testing::PrintToString(missing)
+                                 << ". Drafts from the viewer scene are in " << drafts.string()
+                                 << "; review them and copy them into " << assets.string() << ".";
+
+    const char* gate = "SPADE_FULL_VIEWER_TRAJECTORIES";
+    const uint64_t n = env_gate_is_set(gate) ? c.full_ticks : c.ticks;
+    for (uint64_t t = 0;; ++t) {
+        for (uint32_t lane = 0; lane < c.lanes; ++lane) {
+            const std::string diff = first_difference(viewer.sim, lane, successors[lane].sim);
+            ASSERT_TRUE(diff.empty()) << stem_of(c.scene, lane, c.lanes) << " at tick " << t << ": " << diff;
+        }
+        if (t == n) break;
+        if (scene->command_hook != nullptr) {
+            scene->command_hook(viewer.sim, viewer.sim.tick().value, viewer.vehicle_refs);
+            scene->command_hook(successors[0].sim, successors[0].sim.tick().value, successors[0].vehicles);
+        }
+        const spade::Result<void> stepped = viewer.sim.step(1);
+        ASSERT_TRUE(stepped.has_value()) << c.scene << ": the viewer's step failed at tick " << t;
+        for (spade::scene::SceneRun& s : successors) {
+            const spade::Result<void> s_stepped = s.sim.step(1);
+            ASSERT_TRUE(s_stepped.has_value()) << c.scene << ": a successor's step failed at tick " << t << ": "
+                                               << s_stepped.error().context;
+        }
+    }
+}
+
+// N per scene, under the same cap as test_viewer_trajectories.cpp's (5 s a case
+// on the debug preset), halved because each case steps two runs. shower's 1000
+// bodies make even its first checkpoint too slow there, so by default it
+// checks tick 0 (the files, the spawns and the setup) and steps under the gate.
+INSTANTIATE_TEST_SUITE_P(Viewer, ViewerSuccessor,
+                         ::testing::Values(Case{"drop", 1, 1000, 3000}, Case{"bounce", 4, 1250, 3000},
+                                           Case{"shower", 1, 0, 250}, Case{"gate", 1, 1250, 3000},
+                                           Case{"hover", 1, 1500, 3000}, Case{"wind", 1, 1500, 3000},
+                                           Case{"flight", 1, 2100, 3000}, Case{"swarm", 4, 750, 3000}),
+                         [](const ::testing::TestParamInfo<Case>& info) { return std::string(info.param.scene); });
+
+}  // namespace
