@@ -936,3 +936,94 @@ TEST(ModuleState, ALegacyArrayIsDeclaredOnlyUnderTheLegacyMarker) {
     EXPECT_TRUE(standard_plus({.name = "probe", .legacy_walk = true}).has_value())
         << "the control: the marker on a module with no arrays registers nothing";
 }
+
+// Stage 4, Task 3: the GPU mirror is sized from the declarations.
+// state_array_shapes() needs no device, so it is checked against the registry
+// here, on every box; tests/test_gpu_state_mirror.cpp runs it on the device.
+namespace {
+
+// Two worlds whose capacities all differ (and differ from a ring's), so an
+// array sized by the wrong extent cannot match the registry by accident.
+[[nodiscard]] spade::WorldSetDesc two_shaped_worlds() {
+    auto world = spade::WorldBuilder()
+                     .name("shaped")
+                     .environment(spade::Environment{})
+                     .capacities(spade::Capacities{3, 5, 2, 1})
+                     .build();
+    spade::WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    return spade::WorldSetDesc{{inst, inst}};
+}
+
+[[nodiscard]] spade::compute::StepShape capacities_of(const spade::Simulation& sim) {
+    spade::compute::StepShape shape{};
+    shape.world_count = sim.layout().world_count;
+    shape.body_capacity = sim.layout().body_capacity;
+    shape.element_capacity = sim.layout().element_capacity;
+    shape.sensor_capacity = sim.layout().sensor_capacity;
+    return shape;
+}
+
+[[nodiscard]] std::string shape_text(const std::string& name, uint32_t elem_size, uint32_t capacity_per_world) {
+    return name + ": " + std::to_string(elem_size) + " x " + std::to_string(capacity_per_world);
+}
+
+// A developer module with a per_world and a per_body array, so both of the
+// extents the standard set leaves to the core are sized from a declaration.
+constexpr spade::modules::ArrayDecl kTallyAndBodyArrays[] = {
+    {.name = "tally_counts", .elem_size = kTallySize},
+    {.name = "tally_bodies", .elem_size = kTallySize, .extent = spade::modules::Extent::per_body}};
+
+}  // namespace
+
+TEST(ModuleState, TheMirrorsShapesAreTheRegistryWalkEntryForEntry) {
+    spade::modules::ModuleSet with_tally = spade::modules::standard_modules();
+    with_tally.push_back({.name = "tally", .state = kTallyAndBodyArrays});
+    for (const spade::modules::ModuleSet& set : {spade::modules::standard_modules(), with_tally}) {
+        const bool tally = set.size() == with_tally.size();
+        SCOPED_TRACE(tally ? "standard + tally" : "standard");
+        auto sim = spade::Simulation::create(two_shaped_worlds(), 2'000'000, 2, {}, set);
+        ASSERT_TRUE(sim.has_value()) << sim.error().context;
+        const auto shapes = spade::state_array_shapes(sim->schedule(), capacities_of(*sim));
+        ASSERT_TRUE(shapes.has_value()) << shapes.error().context;
+
+        Names registry;
+        sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& a) {
+            EXPECT_EQ(a.world_count, 2u) << a.name;
+            registry.push_back(shape_text(a.name, a.elem_size, a.capacity_per_world));
+        });
+        Names mirror;
+        for (const spade::compute::StateArrayShape& a : *shapes) {
+            mirror.push_back(shape_text(a.name, a.elem_size, a.capacity_per_world));
+        }
+        EXPECT_EQ(mirror, registry);
+        EXPECT_EQ(mirror.size(), tally ? 26u : 22u);
+    }
+}
+
+// A per_row capacity is its owner's rows times its depth, taken in 64 bits.
+// 2^26 sensors with 64-deep rings is 2^32 ring rows per world, which a uint32
+// product wraps to 0 -- as the mirror's hand list, sensor_capacity *
+// kRingDepth, did before stage 4.
+TEST(ModuleState, AStateArrayShapeThatWouldWrapIsRefusedByName) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    spade::compute::StepShape shape{};
+    shape.world_count = 1;
+    shape.body_capacity = 1;
+    shape.element_capacity = 1;
+
+    shape.sensor_capacity = (1u << 26) - 1u;
+    const auto fits = spade::state_array_shapes(*s, shape);
+    ASSERT_TRUE(fits.has_value()) << fits.error().context;
+    const auto ring = std::ranges::find(*fits, std::string("imu_ring"), &spade::compute::StateArrayShape::name);
+    ASSERT_NE(ring, fits->end()) << "the control";
+    EXPECT_EQ(ring->capacity_per_world, 0xFFFF'FFC0u) << "the control: (2^26 - 1) * 64";
+
+    shape.sensor_capacity = 1u << 26;
+    const auto wraps = spade::state_array_shapes(*s, shape);
+    ASSERT_FALSE(wraps.has_value()) << "2^26 * 64 = 2^32 ring rows would wrap to 0";
+    EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded);
+    EXPECT_NE(wraps.error().context.find("'imu_ring'"), std::string::npos) << wraps.error().context;
+}
