@@ -48,58 +48,21 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
-#if SPADE_SANDBOX_HAS_GPU
-#include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
-#endif
-
 #include "builder_scene.hpp"   // the builder's object model and its whole interaction
 #include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
+#include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
-#include "render_gap.hpp"      // the HUD line naming what the GPU path does not draw
+#include "scene_sessions.hpp"  // each scene's setup and its one frame function
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
 
 namespace {
 
-#if SPADE_SANDBOX_HAS_GPU
-using GpuRenderer = spade::render_gl::GlRenderer;
-#else
-// ⚠ BUILT WITH SPADE_RENDER_GL=OFF: THERE IS NO GPU RENDERER, AND THIS TYPE
-// DOES NOT PRETEND TO BE ONE. create() refuses with the cause, so start_gpu()
-// announces the CPU path exactly as it does when a driver refuses (a missing
-// capability is announced, never silent), and every `if (gpu)` below is false
-// for the whole run. The other members exist only so those branches compile:
-// the constructor is private and create() never succeeds, so none of them can
-// run. One guard here instead of one at every GPU call.
-class GpuRenderer {
-  public:
-    [[nodiscard]] static spade::Result<std::unique_ptr<GpuRenderer>> create(void* (*)(const char*)) {
-        return std::unexpected(off());
-    }
-    [[nodiscard]] spade::Result<void> upload_scene(const spade::render::RenderScene&) {
-        return std::unexpected(off());
-    }
-    [[nodiscard]] spade::Result<void> draw(const spade::render::RenderScene&, const spade::render::Camera&,
-                                           const spade::render::RenderOptions&, uint32_t, uint32_t) {
-        return std::unexpected(off());
-    }
-    [[nodiscard]] uint32_t last_draw_calls() const noexcept { return 0u; }
-    [[nodiscard]] uint32_t last_instances() const noexcept { return 0u; }
-    [[nodiscard]] const std::string& renderer_name() const noexcept { return none_; }
-    [[nodiscard]] const std::string& version_string() const noexcept { return none_; }
-    [[nodiscard]] static std::vector<std::string_view> unhonoured(const spade::render::RenderOptions&) {
-        return {};
-    }
-
-  private:
-    GpuRenderer() = default;
-    [[nodiscard]] static spade::Error off() {
-        return spade::Error{spade::Code::unavailable,
-                            "this sandbox was built with SPADE_RENDER_GL=OFF, so it has no GPU renderer"};
-    }
-    std::string none_;
-};
-#endif
+using spade::sandbox::build_builtin_scene;
+using spade::sandbox::build_drone_scene;
+using spade::sandbox::drone_frame;
+using spade::sandbox::GpuRenderer;
+using spade::sandbox::render_frame;
 
 constexpr uint32_t kDefaultWidth = 320;
 constexpr uint32_t kDefaultHeight = 180;
@@ -116,6 +79,11 @@ void print_usage() {
     std::puts("  --no-vsync            do not wait for the display refresh");
     std::puts("  --smoke               drive the builder from a SCRIPT, assert, and exit");
     std::puts("                        non-zero if any check fails -- the re-runnable demo");
+    std::puts("  --live-smoke          tour both scenes in the window, record tour.mp4, a PNG per");
+    std::puts("                        scene and journal.txt into --out <dir>; exit 0 PASS, 1 FAIL,");
+    std::puts("                        2 no verdict (scripts/live-smoke.ps1 runs it)");
+    std::puts("  --label <text>        live smoke: the commit and date for the title cards");
+    std::puts("  --inject <spec>       live smoke red runs: skip:<step>, anomaly:<id>, known-open:<id>");
     std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --help                this text\n");
@@ -132,102 +100,6 @@ void print_usage() {
     std::puts("  the panel      shape palette, hierarchy, per-object transform/colour/physics");
     std::puts("  F1 hides the HUD, Esc quits.");
     std::puts("Run with --headless in CI; SPADE_BUILD_SANDBOX=OFF omits this target entirely.");
-}
-
-// C0's built-in scene: a ground plane and nothing else. Deliberately built in
-// code rather than loaded from a file, so this task depends on NO content path
-// at all -- the scene picker (C3) is what introduces file loading, behind its
-// own task. Thirty agreement tests were red for days because a content path
-// moved; C0 did not acquire one before it needed one.
-//
-// C2: SPLIT FROM THE RENDER. The world is built ONCE and rendered many times,
-// which the single-frame version did not have to distinguish. Rebuilding the
-// scene per frame would have worked and been a defect of the quiet kind: the
-// window would run at a fraction of its frame rate for a reason no profile
-// line would name.
-// ⚠⚠ THE WORLD IS AN OUT-PARAMETER AND THAT IS A BUG FIX, NOT A STYLE CHOICE.
-// scene_from_world() ends with `scene.sdf = &world.sdf` (scene.cpp:415) and
-// its own header states the contract in one line: "the returned RenderScene
-// must not outlive `world`." This function used to build the WorldDesc as a
-// FUNCTION LOCAL and return the scene, so `out.sdf` DANGLED the moment it
-// returned -- a use-after-free with a documented contract sitting above it.
-//
-// ⭐ IT WAS LATENT RATHER THAN HARMLESS, AND THE DIFFERENCE MATTERS: `sdf` is
-// dereferenced only by the raymarch and agreement paths, and the sandbox
-// renders shaded, so nothing touches it TODAY. The first person to add a
-// --mode raymarch flag would have inherited a crash with no plausible
-// connection to their change. ***A DEFECT THAT IS UNREACHABLE IS NOT A DEFECT
-// THAT IS FIXED; IT IS ONE WHOSE BILL GOES TO SOMEBODY ELSE.***
-//
-// Found by reading this file while waiting for a build slot, not by a test --
-// no test could have caught it, because nothing exercises the path.
-[[nodiscard]] bool build_builtin_scene(spade::render::RenderScene& out,
-                                       spade::WorldDesc& world_out) {
-    spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
-                                                .name("sandbox_c0")
-                                                .environment(spade::Environment{})
-                                                .capacities(spade::Capacities{4, 4, 1, 1})
-                                                .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
-                                                .build();
-    if (!world) {
-        std::fprintf(stderr, "spade_sandbox: WorldBuilder::build failed: %s\n",
-                     world.error().context.c_str());
-        return false;
-    }
-    // Moved into the CALLER's storage FIRST, so the scene below is built
-    // against the object that will outlive this function -- not against a
-    // temporary whose address the scene would then keep.
-    world_out = std::move(*world);
-    const spade::Result<spade::render::RenderScene> scene =
-        spade::render::scene_from_world(world_out, {});
-    if (!scene) {
-        std::fprintf(stderr, "spade_sandbox: scene_from_world failed: %s\n",
-                     scene.error().context.c_str());
-        return false;
-    }
-    out = *scene;
-    return true;
-}
-
-// C1: renders and hands the target to a TargetSink. The sink is a PARAMETER
-// rather than something this function picks, which is the whole point of the
-// seam -- C2's windowed sink substitutes here without touching a line below,
-// and that is not a claim, it is what this function's signature enforces.
-[[nodiscard]] bool render_frame(const spade::render::RenderScene& scene,
-                                const spade::render::Camera& camera, uint32_t width,
-                                uint32_t height, const spade::render::RenderOptions& options,
-                                std::vector<uint8_t>& pixels, spade::sandbox::TargetSink& sink) {
-    // PA-1: RenderTarget NEVER owns its pixel memory. The caller allocates and
-    // hands it a span. This is the constraint the TargetSink seam (C1)
-    // inherits -- a presenter is HANDED a buffer and must not allocate one, or
-    // the sandbox grows a frame pool the engine deliberately does not have.
-    //
-    // `assign` rather than `resize`: on a window resize the old contents are
-    // meaningless, and a partially-stale buffer is how a resize artefact gets
-    // mistaken for a renderer bug.
-    const size_t needed = static_cast<size_t>(width) * height * 4u;
-    if (pixels.size() != needed) {
-        pixels.assign(needed, 0u);
-    }
-    spade::render::RenderTarget target{
-        .pixels = pixels,
-        .width = width,
-        .height = height,
-        .stride = width * 4u,
-        .format = spade::render::PixelFormat::bgrx8,
-    };
-
-    const spade::Result<void> rendered = spade::render::render(scene, camera, options, target);
-    if (!rendered) {
-        std::fprintf(stderr, "spade_sandbox: render failed: %s\n", rendered.error().context.c_str());
-        return false;
-    }
-    // THE SEAM. Everything above is the engine's; everything the sink does with
-    // the frame is the application's. SL10 asserts these two halves agree, and
-    // test_sandbox_target_sink.cpp drives this same call shape rather than a
-    // re-creation of it.
-    sink.accept(target);
-    return true;
 }
 
 // NOTE: this file's own BGRX8 -> PPM writer MOVED to HeadlessTargetSink
@@ -506,70 +378,6 @@ template <typename RenderOne>
 // ---------------------------------------------------------------------------
 namespace {
 
-// ⭐ GPU FIRST, CPU FALLBACK -- the user's ruling, implemented as a branch
-// rather than as a preference. If the GPU renderer refuses, we say WHY and
-// keep going on raster_cpu; we do not exit, because a fallback that aborts is
-// not a fallback. Shared by both scenes so they cannot disagree about it.
-[[nodiscard]] std::unique_ptr<GpuRenderer> start_gpu(const spade::render::RenderScene& scene) {
-    std::unique_ptr<GpuRenderer> gpu;
-    spade::Result<std::unique_ptr<GpuRenderer>> made =
-        GpuRenderer::create(spade::sandbox::GlTargetSink::proc_loader());
-    if (made) {
-        gpu = std::move(*made);
-        spade::Result<void> uploaded = gpu->upload_scene(scene);
-        if (!uploaded) {
-            std::fprintf(stderr, "spade_sandbox: GPU upload failed, falling back to the CPU "
-                                 "rasteriser: %s\n",
-                         uploaded.error().context.c_str());
-            gpu.reset();
-        }
-    } else {
-        std::fprintf(stderr, "spade_sandbox: GPU renderer unavailable, using the CPU "
-                             "rasteriser: %s\n",
-                     made.error().context.c_str());
-    }
-    if (gpu) {
-        std::printf("spade_sandbox: GPU path ACTIVE -- %s, %s\n", gpu->renderer_name().c_str(),
-                    gpu->version_string().c_str());
-    } else {
-        std::printf("spade_sandbox: CPU fallback path (no GPU renderer)\n");
-    }
-    return gpu;
-}
-
-// Opens the window, or explains why not. ⚠⚠ THE REFUSAL IS THE DELIVERABLE,
-// NOT AN ERROR PATH: it names the cause and the caller exits non-zero. A
-// missing capability refuses, never degrades -- a window that silently fails
-// to appear is the worst possible outcome for someone judging whether the GUI
-// works.
-[[nodiscard]] std::unique_ptr<spade::sandbox::GlTargetSink> open_window(uint32_t width, uint32_t height,
-                                                                        bool vsync) {
-    spade::sandbox::GlTargetSink::Options opts;
-    opts.width = width;
-    opts.height = height;
-    opts.title = "spade sandbox";
-    opts.vsync = vsync;
-    std::string why_not;
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink =
-        spade::sandbox::GlTargetSink::create(opts, &why_not);
-    if (!sink) {
-        std::fprintf(stderr, "spade_sandbox: cannot open a window -- %s\n", why_not.c_str());
-        std::fprintf(stderr, "spade_sandbox: --headless still works in this build.\n");
-        return nullptr;
-    }
-    // ⚠⚠ WHICH GL IMPLEMENTATION ARE WE ACTUALLY ON. Printed unconditionally
-    // rather than behind a flag, because it decides how every timing below is
-    // read: on Microsoft's GDI GENERIC software GL, SwapBuffers is a CPU blit
-    // of the framebuffer to the window, so it costs PER PIXEL rather than per
-    // frame -- and a per-pixel swap is indistinguishable from "the rasteriser
-    // is slow" in any aggregate number.
-    const spade::sandbox::GlTargetSink::GlInfo gl = sink->gl_info();
-    std::printf("spade_sandbox: GL_RENDERER %s\n", gl.renderer.c_str());
-    std::printf("spade_sandbox: GL_VERSION  %s\n", gl.version.c_str());
-    std::printf("spade_sandbox: GL_VENDOR   %s\n", gl.vendor.c_str());
-    return sink;
-}
-
 // Reported rather than inferred: "the window appeared" and "the loop ran"
 // are different claims, and only the second has a number.
 // ⭐ AND THE SPLIT GOES TO STDOUT AS WELL AS THE HUD, so the answer to
@@ -590,148 +398,38 @@ void print_exit_summary(const spade::sandbox::GlTargetSink& sink, uint32_t width
                     (1024.0 * 1024.0));
 }
 
-int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t height,
-                 bool grid, float blur, bool vsync, bool smoke) {
-    spade::render::RenderOptions gpu_options;
-    gpu_options.ground_grid = grid;
-    gpu_options.horizon_blend_strength = blur;
-
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink = open_window(width, height, vsync);
+// The builder in a window, or scripted by --smoke. Both drive the scene
+// through BuilderSession::frame() (scene_sessions.hpp).
+int run_windowed(uint32_t width, uint32_t height, bool grid, float blur, bool vsync, bool smoke) {
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink = spade::sandbox::open_window(width, height, vsync);
     if (!sink) {
         return 3;
     }
-
-    std::unique_ptr<GpuRenderer> gpu = start_gpu(scene);
-
-    spade::sandbox::OrbitCamera camera;
-    std::vector<uint8_t> pixels;
-
-    // THE BUILDER. The model is the application's; every decision it makes
-    // lives in builder_scene.hpp and is exercised by tests/ with no
-    // display. What remains here is the wiring, and it is deliberately dull.
-    spade::sandbox::BuilderScene builder;
-    builder.grid = grid;
-    // Attached once, so BOTH present paths draw the panel -- the GPU path
-    // through present_overlay() and the CPU fallback through accept().
-    sink->attach_builder(&builder);
-    const spade::sandbox::BuilderBinding bind = spade::sandbox::bind_builder_meshes(scene);
-    spade::sandbox::sync_builder_materials(builder, bind, scene);
-    // Cleared because the upload below IS the sync the flag was asking for.
-    // Left set, the first frame would ask for a second identical upload --
-    // harmless, and exactly the kind of "harmless" that gets copied.
-    builder.materials_dirty = false;
-    // The model starts from whatever the scene's own lighting is, so the
-    // slider's initial position matches the picture rather than snapping it
-    // the first time it is touched.
-    builder.sun_intensity = scene.lighting.sun_intensity;
-    builder.sun_direction = scene.lighting.sun_direction;
-    // ⚠ THE BUILDER'S GEOMETRY MUST REACH THE GPU BEFORE THE FIRST DRAW. The
-    // upload above happened before these three meshes existed, so without this
-    // the first placed object draws from a mesh id the GPU has never seen.
-    if (gpu) {
-        const spade::Result<void> re = gpu->upload_scene(scene);
-        if (!re) {
-            std::fprintf(stderr, "spade_sandbox: builder mesh upload failed: %s\n",
-                         re.error().context.c_str());
-            return 1;
-        }
+    spade::Result<std::unique_ptr<spade::sandbox::BuilderSession>> made =
+        spade::sandbox::BuilderSession::create(*sink, grid, blur);
+    if (!made) {
+        std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
+        return 1;
     }
+    spade::sandbox::BuilderSession& session = **made;
 
     // ⭐⭐⭐ ONE FRAME, ONE STATEMENT, CALLED BY BOTH THE INTERACTIVE LOOP AND
     // THE SMOKE. Extracted rather than copied, for the reason this file has
     // already refused twice: two copies of a render path are two things that
     // can disagree, and the smoke's whole value is that it exercises THE SAME
     // path a user does. A smoke with its own private frame loop proves that
-    // the smoke works.
-    //
-    // Returns 0 on success and a non-zero exit code on a hard render failure.
-    int frame_error = 0;
+    // the smoke works. The frame itself is BuilderSession::frame(), which the
+    // live smoke drives too.
     const auto render_one = [&](const spade::sandbox::FrameInput& in) -> bool {
-        camera.apply(in, sink->delta_seconds());
-
-        // The FRAMEBUFFER size, never the window size: on a HiDPI display they
-        // differ, and rendering at window size then letting GL stretch it is
-        // precisely the blocky-viewport defect this estate has already
-        // diagnosed once in the editor.
-        const uint32_t fw = sink->framebuffer_width();
-        const uint32_t fh = sink->framebuffer_height();
-        if (fw == 0u || fh == 0u) {
-            return true;  // minimised; there is nothing to render into
-        }
-
-        // ----- THE BUILDER, ONE CALL ------------------------------------
-        // Everything the mouse means happens inside this function, against
-        // the camera THIS frame is about to render from. Using the previous
-        // frame's camera here would make picking lag the view by one frame,
-        // which is invisible while the camera is still and wrong while it is
-        // moving -- the hardest kind of bug to see in a viewport.
-        const spade::render::Camera rc = camera.to_render_camera();
-        const spade::sandbox::BuilderFrameResult bf =
-            spade::sandbox::apply_builder_input(builder, in, rc, fw, fh, scene.ground_y);
-        if (bf.needs_upload) {
-            // ONLY WHEN THE SET CHANGED. A per-frame upload would work and
-            // would silently throw away the entire reason the GPU path is
-            // fast -- the defect would show up as a frame rate, never as a
-            // wrong picture.
-            spade::sandbox::sync_builder_materials(builder, bind, scene);
-            if (gpu) {
-                const spade::Result<void> re = gpu->upload_scene(scene);
-                if (!re) {
-                    std::fprintf(stderr, "spade_sandbox: re-upload failed: %s\n",
-                                 re.error().context.c_str());
-                    frame_error = 1;
-                    return false;
-                }
-            }
-        }
-        spade::sandbox::rebuild_builder_dynamics(builder, bind, scene);
-
-        // Scene settings the inspector owns, applied to what actually renders.
-        gpu_options.ground_grid = builder.grid;
-        scene.lighting.sun_intensity = builder.sun_intensity;
-        // NORMALISED HERE RATHER THAN IN THE WIDGET. Both paths shade with
-        // dot(n, sun_direction) and assume a unit vector; a dragged direction is
-        // whatever the user left it at, and a non-unit one scales the whole
-        // diffuse term -- which reads as the brightness slider being broken.
-        if (glm::length(builder.sun_direction) > 1e-4f) {
-            scene.lighting.sun_direction = glm::normalize(builder.sun_direction);
-        }
-        // The application owns the render call, so it times its own cost.
-        // Both paths are timed the SAME WAY and feed the SAME HUD, which is
-        // what makes the two comparable at all.
-        // SL10: the HUD names what the active path does not draw, every frame,
-        // because the options and the path can both change.
-        sink->set_gap_line(gpu ? spade::sandbox::render_gap_line(GpuRenderer::unhonoured(gpu_options)) : std::string{});
-        const auto r0 = std::chrono::steady_clock::now();
-        if (gpu) {
-            sink->begin_gpu_frame();
-            const spade::Result<void> drew = gpu->draw(scene, rc, gpu_options, fw, fh);
-            if (!drew) {
-                std::fprintf(stderr, "spade_sandbox: GPU draw failed: %s\n",
-                             drew.error().context.c_str());
-                frame_error = 1;
-                return false;
-            }
-            const auto r1 = std::chrono::steady_clock::now();
-            // physics_ms is 0 here and that is an ABSENCE, not an omission: this
-            // scene is a static ground plane, so there is no physics step in
-            // the frame to time. The entry exists so that when bodies arrive
-            // the split can attribute them.
-            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count(), 0.0f);
-        } else {
-            const bool ok = render_frame(scene, rc, fw, fh, gpu_options, pixels, *sink);
-            const auto r1 = std::chrono::steady_clock::now();
-            sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
-            if (!ok) {
-                frame_error = 1;
-                return false;
-            }
+        if (const spade::Result<void> drew = session.frame(in); !drew) {
+            std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
+            return false;
         }
         return true;
     };
 
     if (smoke) {
-        const int rc_smoke = run_smoke(*sink, builder, scene, gpu.get(), render_one);
+        const int rc_smoke = run_smoke(*sink, session.builder(), session.scene(), session.gpu(), render_one);
         if (rc_smoke != 0) {
             return rc_smoke;
         }
@@ -742,7 +440,7 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
                 break;
             }
             if (!render_one(in)) {
-                return frame_error;
+                return 1;
             }
         }
     }
@@ -755,151 +453,30 @@ int run_windowed(spade::render::RenderScene& scene, uint32_t width, uint32_t hei
 // THE DRONE SIM BOX -- the default scene. A quadrotor on a test stand, flown
 // in attitude through the engine's rotor model, with the air around it as an
 // optional heatmap. Every decision is in drone_sim.hpp / drone_view.hpp and is
-// asserted with no display; this is the wiring.
+// asserted with no display; the wiring is DroneSession (scene_sessions.hpp).
 // ---------------------------------------------------------------------------
 
-// An empty world (no ground): the drone hangs in air. The WorldDesc is an
-// out-parameter for the same reason build_builtin_scene's is -- the scene
-// borrows its sdf.
-[[nodiscard]] bool build_drone_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out) {
-    spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
-                                                .name("drone_sim_box")
-                                                .environment(spade::Environment{})
-                                                .capacities(spade::Capacities{1, 5, 1, 1})
-                                                .build();
-    if (!world) {
-        std::fprintf(stderr, "spade_sandbox: WorldBuilder::build failed: %s\n", world.error().context.c_str());
-        return false;
-    }
-    world_out = std::move(*world);
-    const spade::Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world_out, {});
-    if (!scene) {
-        std::fprintf(stderr, "spade_sandbox: scene_from_world failed: %s\n", scene.error().context.c_str());
-        return false;
-    }
-    out = *scene;
-    return true;
-}
-
-// The drone frame's draw list and options, shared by the window and headless.
-[[nodiscard]] spade::render::RenderOptions drone_frame(spade::render::RenderScene& scene,
-                                                       const spade::sandbox::DroneDrawBinding& binding,
-                                                       const spade::sandbox::DroneSim& drone,
-                                                       const glm::quat& orientation,
-                                                       const spade::render::Camera& camera, bool heatmap,
-                                                       float heatmap_max, float blur, float* observed_max) {
-    scene.dynamics.clear();
-    scene.field_layers.clear();
-    spade::sandbox::append_drone_items(binding, drone.params(), glm::vec3(0.0f), orientation, scene.dynamics);
-    if (heatmap) {
-        if (const auto field = spade::sandbox::air_field_from(drone)) {
-            scene.field_layers.push_back(spade::sandbox::slice_layer(
-                spade::sandbox::camera_facing_slice(camera, glm::vec3(0.0f), orientation), *field, heatmap_max,
-                observed_max));
-        }
-    }
-    spade::render::RenderOptions o;
-    o.overlays = false;     // no ground, no bounds worth drawing
-    o.ground_grid = false;  // and no ground for the grid to sit on
-    // The design's "shadows off in the heatmap view". A no-op in this scene
-    // either way: the shadow map is baked from statics at world load, the
-    // empty world has none, the drone's parts neither cast nor receive, and a
-    // field layer takes no shadow.
-    o.shadows = !heatmap;
-    // The layer itself never takes the atmospheric term (field_layer.hpp,
-    // SR-17a). The drone's parts drop it in the heatmap view too, so the
-    // whole frame reads against a clean sky, as it did before the move to
-    // field layers.
-    o.horizon_blend_strength = heatmap ? 0.0f : blur;
-    return o;
-}
-
 int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) {
-    spade::Result<spade::sandbox::DroneSim> drone = spade::sandbox::DroneSim::create(spade::sandbox::DronePhysicsOptions{});
-    if (!drone) {
-        std::fprintf(stderr, "spade_sandbox: the drone stand would not build: %s\n", drone.error().context.c_str());
-        return 1;
-    }
-    spade::WorldDesc world;
-    spade::render::RenderScene scene;
-    if (!build_drone_scene(scene, world)) {
-        return 1;
-    }
-    const spade::sandbox::DroneDrawBinding binding = spade::sandbox::bind_drone_scene(scene, drone->params());
-
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink = open_window(width, height, vsync);
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink = spade::sandbox::open_window(width, height, vsync);
     if (!sink) {
         return 3;
     }
-    // Uploaded once: the drone's meshes and the palette never change, only
-    // the per-frame draw items do.
-    std::unique_ptr<GpuRenderer> gpu = start_gpu(scene);
-
-    spade::sandbox::DronePanelModel panel;
-    panel.edited = drone->options();
-    panel.render_path = gpu ? "GPU (OpenGL)" : "CPU raster";
-    sink->attach_drone(&panel);
-
-    spade::sandbox::OrbitCamera camera;
-    camera.target = glm::vec3(0.0f);
-    camera.yaw = 0.6f;
-    camera.pitch = 0.35f;
-    camera.distance = 1.8f;
-    std::vector<uint8_t> pixels;
+    spade::Result<std::unique_ptr<spade::sandbox::DroneSession>> made =
+        spade::sandbox::DroneSession::create(*sink, blur);
+    if (!made) {
+        std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
+        return 1;
+    }
+    spade::sandbox::DroneSession& session = **made;
 
     while (!sink->should_close()) {
         const spade::sandbox::FrameInput in = sink->poll();
         if (in.want_close) {
             break;
         }
-        const float dt = sink->delta_seconds();
-        spade::sandbox::apply_drone_orbit(camera, in, dt);
-        spade::sandbox::nudge_attitude(drone->target, in, dt);
-        if (in.toggle_view_pressed && !in.ui_captured_keyboard) {
-            panel.view_heatmap = !panel.view_heatmap;
-        }
-        // Debounced inside: nothing happens while a slider is held.
-        (void)spade::sandbox::apply_panel_edits(*drone, panel);
-
-        const auto p0 = std::chrono::steady_clock::now();
-        if (const spade::Result<void> stepped = drone->advance(dt); !stepped) {
-            std::fprintf(stderr, "spade_sandbox: the drone step failed: %s\n", stepped.error().context.c_str());
+        if (const spade::Result<void> drew = session.frame(in, sink->delta_seconds()); !drew) {
+            std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
             return 1;
-        }
-        const auto p1 = std::chrono::steady_clock::now();
-        const float physics_ms = std::chrono::duration<float, std::milli>(p1 - p0).count();
-        panel.readouts = drone->readouts();
-        panel.target = drone->target;
-
-        const uint32_t fw = sink->framebuffer_width();
-        const uint32_t fh = sink->framebuffer_height();
-        if (fw == 0u || fh == 0u) {
-            continue;  // minimised: the stand keeps stepping, capped by the accumulator
-        }
-        const spade::render::Camera rc = camera.to_render_camera();
-        const spade::render::RenderOptions options =
-            drone_frame(scene, binding, *drone, panel.readouts.orientation, rc, panel.view_heatmap, panel.heatmap_max,
-                        blur, &panel.observed_max);
-
-        // SL10: the HUD names what the active path does not draw.
-        sink->set_gap_line(gpu ? spade::sandbox::render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
-        const auto r0 = std::chrono::steady_clock::now();
-        if (gpu) {
-            sink->begin_gpu_frame();
-            if (const spade::Result<void> drew = gpu->draw(scene, rc, options, fw, fh); !drew) {
-                std::fprintf(stderr, "spade_sandbox: GPU draw failed: %s\n", drew.error().context.c_str());
-                return 1;
-            }
-            const auto r1 = std::chrono::steady_clock::now();
-            sink->present_overlay(std::chrono::duration<float, std::milli>(r1 - r0).count(), physics_ms);
-        } else {
-            sink->note_physics_ms(physics_ms);
-            const bool ok = render_frame(scene, rc, fw, fh, options, pixels, *sink);
-            const auto r1 = std::chrono::steady_clock::now();
-            sink->note_render_ms(std::chrono::duration<float, std::milli>(r1 - r0).count());
-            if (!ok) {
-                return 1;
-            }
         }
     }
     print_exit_summary(*sink, width, height, vsync);
@@ -975,6 +552,8 @@ int main(int argc, char** argv) {
     float blur = 0.0f;
     const char* scene_name = nullptr;  // "drone" (the default) or "builder"
     const char* view_name = nullptr;   // drone only: "standard" (default) or "heatmap"
+    bool live_smoke = false;
+    spade::sandbox::live::TourOptions tour;
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -1005,6 +584,17 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
             height = static_cast<uint32_t>(std::atoi(argv[++i]));
             height_set = true;
+        } else if (std::strcmp(a, "--live-smoke") == 0) {
+            live_smoke = true;
+        } else if (std::strcmp(a, "--label") == 0 && i + 1 < argc) {
+            tour.label = argv[++i];
+        } else if (std::strcmp(a, "--inject") == 0 && i + 1 < argc) {
+            const spade::Result<spade::sandbox::live::Injection> inj = spade::sandbox::live::parse_inject(argv[++i]);
+            if (!inj) {
+                std::fprintf(stderr, "spade_sandbox: %s\n", inj.error().context.c_str());
+                return 2;
+            }
+            tour.injections.push_back(*inj);
         } else {
             std::fprintf(stderr, "spade_sandbox: unrecognised argument '%s'\n\n", a);
             print_usage();
@@ -1020,6 +610,29 @@ int main(int argc, char** argv) {
     // flag that quietly does nothing is worse than one that says no.
     if (smoke && headless) {
         std::fprintf(stderr, "spade_sandbox: --smoke drives the window; it cannot run headless\n");
+        return 2;
+    }
+    // --live-smoke tours both scenes in one window and records it; it picks its
+    // own scenes and views, and it writes a folder, so it needs --out.
+    if (live_smoke) {
+        if (headless || smoke || scene_name != nullptr || view_name != nullptr) {
+            std::fprintf(stderr, "spade_sandbox: --live-smoke tours both scenes in a window; it takes no "
+                                 "--headless, --smoke, --scene or --view\n");
+            return 2;
+        }
+        if (out_path == nullptr) {
+            std::fprintf(stderr, "spade_sandbox: --live-smoke needs --out <dir> for the recording and the "
+                                 "journal (scripts/live-smoke.ps1 picks one)\n");
+            return 2;
+        }
+        tour.out_dir = out_path;
+        tour.width = width_set ? width : 1280u;
+        tour.height = height_set ? height : 720u;
+        tour.blur = blur;
+        return spade::sandbox::live::run_live_smoke(tour);
+    }
+    if (!tour.label.empty() || !tour.injections.empty()) {
+        std::fprintf(stderr, "spade_sandbox: --label and --inject apply to --live-smoke only\n");
         return 2;
     }
     if (headless && windowed) {
@@ -1089,20 +702,20 @@ int main(int argc, char** argv) {
         return run_headless_drone(width, height, blur, heatmap, out_path);
     }
 
+    if (windowed) {
+        std::printf("spade_sandbox: opening a %ux%u window (--headless for the CI surface)\n",
+                    width, height);
+        return run_windowed(width, height, grid, blur, vsync, smoke);
+    }
+
     // Declared HERE, before the scene, so it is destroyed AFTER it -- the
     // scene holds a non-owning pointer into this world (see
-    // build_builtin_scene above), and reverse-declaration order is what makes
-    // that safe for the whole of main().
+    // build_builtin_scene in scene_sessions.cpp), and reverse-declaration
+    // order is what makes that safe for the whole of main().
     spade::WorldDesc world;
     spade::render::RenderScene scene;
     if (!build_builtin_scene(scene, world)) {
         return 1;
-    }
-
-    if (windowed) {
-        std::printf("spade_sandbox: opening a %ux%u window (--headless for the CI surface)\n",
-                    width, height);
-        return run_windowed(scene, width, height, grid, blur, vsync, smoke);
     }
 
     // C1: the sink is chosen HERE, by the application, and handed down. An
