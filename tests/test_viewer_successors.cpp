@@ -36,6 +36,7 @@
 // into assets/. assets/scenes/README.md says the same.
 // ---------------------------------------------------------------------------
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +57,7 @@
 #include "scene/scene_file.hpp"
 #include "setup.hpp"
 #include "sim/simulation.hpp"
+#include "state/layout.hpp"
 #include "state/registry.hpp"
 #include "world/world_file.hpp"
 
@@ -64,11 +66,35 @@ namespace {
 namespace fs = std::filesystem;
 using spade::RegisteredArray;
 
-// Arrays that are not a world's state. Each is named with why.
+// What is not a world's state, and so is not compared. Each is named with why.
 //   replay_config: the whole set's identity (world count, capacities, world
 //   names, the model registry). It differs by construction (above), and
 //   world_digest() leaves it out for the same reason.
 const std::vector<std::string_view> kExcluded = {spade::kReplayConfigArray};
+
+// Fields within a compared row that are not a world's state, each with why.
+struct ExcludedField {
+    std::string_view array;
+    std::size_t offset;
+    std::size_t size;
+};
+//   world_params.body_capacity: the body partition's size, which SCN-007 pads.
+//   The row's body_count, its live bodies, is compared.
+const std::vector<ExcludedField> kExcludedFields = {
+    {"world_params", offsetof(spade::WorldParams, body_capacity), sizeof(spade::WorldParams::body_capacity)},
+};
+
+// Arrays that hold a world's id: every "<partition>.slot_to_world", one
+// uint32_t per slot naming the world the slot belongs to. A lane's successor
+// is world 0 of its own run, so each row must read `lane` in the viewer and 0
+// in the successor: the same world, numbered by its run. Not skipped,
+// translated.
+constexpr std::string_view kSlotToWorld = ".slot_to_world";
+
+[[nodiscard]] bool holds_world_ids(const RegisteredArray& a) {
+    return a.name.size() > kSlotToWorld.size() &&
+           std::string_view(a.name).substr(a.name.size() - kSlotToWorld.size()) == kSlotToWorld;
+}
 
 // Set means present, as in test_viewer_trajectories.cpp, so one variable gates
 // both tests the same way.
@@ -193,13 +219,42 @@ struct Successor {
         const std::size_t stride = mine.elem_size;
         const std::byte* a = mine.data + static_cast<std::size_t>(lane) * mine.capacity_per_world * stride;
         const std::byte* b = other.data;
-        for (uint32_t row = 0; row < mine.capacity_per_world; ++row) {
-            if (std::memcmp(a + row * stride, b + row * stride, stride) != 0) {
-                std::size_t byte = 0;
-                while (a[row * stride + byte] == b[row * stride + byte]) ++byte;
-                found = "array '" + mine.name + "' row " + std::to_string(row) + " differs at byte " +
-                        std::to_string(byte) + " of " + std::to_string(stride);
+        std::vector<bool> skip(stride, false);
+        for (const ExcludedField& f : kExcludedFields) {
+            if (f.array != mine.name) continue;
+            for (std::size_t k = f.offset; k < f.offset + f.size && k < stride; ++k) skip[k] = true;
+        }
+        std::vector<std::size_t> world_ids;
+        if (holds_world_ids(mine)) {
+            if (stride != sizeof(uint32_t)) {
+                found = "array '" + mine.name + "' holds world ids but its element is " + std::to_string(stride) +
+                        " bytes, not a uint32_t";
                 return;
+            }
+            world_ids.push_back(0);
+            for (std::size_t k = 0; k < sizeof(uint32_t); ++k) skip[k] = true;
+        }
+        for (uint32_t row = 0; row < mine.capacity_per_world; ++row) {
+            for (const std::size_t at : world_ids) {
+                uint32_t in_viewer = 0;
+                uint32_t in_successor = 0;
+                std::memcpy(&in_viewer, a + row * stride + at, sizeof in_viewer);
+                std::memcpy(&in_successor, b + row * stride + at, sizeof in_successor);
+                // UINT32_MAX is a slot no world owns; it must be unowned in both.
+                const bool unowned = in_viewer == UINT32_MAX && in_successor == UINT32_MAX;
+                if (!unowned && (in_viewer != lane || in_successor != 0u)) {
+                    found = "array '" + mine.name + "' row " + std::to_string(row) + " names world " +
+                            std::to_string(in_viewer) + " in the viewer and " + std::to_string(in_successor) +
+                            " in the successor; lane " + std::to_string(lane) + " should map to 0";
+                    return;
+                }
+            }
+            for (std::size_t byte = 0; byte < stride; ++byte) {
+                if (!skip[byte] && a[row * stride + byte] != b[row * stride + byte]) {
+                    found = "array '" + mine.name + "' row " + std::to_string(row) + " differs at byte " +
+                            std::to_string(byte) + " of " + std::to_string(stride);
+                    return;
+                }
             }
         }
     });
