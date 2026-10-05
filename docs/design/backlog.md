@@ -81,7 +81,7 @@ None open.
 | SPH fluid as a field provider (`PHY-4`) | Physics | The one open v1 transfer row (`docs/v1-transfer-register.md`); v1 stays in the tree until it closes | Row closed with a v2 implementation and a declared grade |
 | GPU rasterizer as a render technique (`RND-4`) | Rendering | Stages 1–2 exist but are in no build graph | Built, tested, selectable as a technique, with colour guarded |
 | Field channels for cameras | Rendering / Core | The drone heatmap draws a field with sandbox-side cells; the engine has no field channel | A camera renders a registered field as a channel on both CPU and GPU paths |
-| Sandbox → editor (`INT-3`) | Interface | The sandbox grows into the editor | An editor spec, approved, then built |
+| Sandbox → editor (`INT-3`) | Interface | The sandbox grows into the editor. The spec (`interface/plans/2026-10-05-editor-design.md`) was approved by the user on 2026-10-05 | A plan reviewed, then built |
 | Spade-owned content for render agreement bands | Rendering / Test/Docs | The bands were measured on KAT's worlds, which left Spade's suite on 2026-10-01 | Bands re-measured on worlds in this repo |
 | Drone builder: model functions and mass properties | Physics | Approved joint spec; Kat's airframe fit runs against them | Motor/ESC, battery and propeller pure functions, the composite-inertia utility and the steady-state solver, built and tested before module API stage 4 (DBP-01..52) |
 | Drone builder: `spade::scene` | Core (schema), Interface (composer) | Kat sends scenes, and the editor saves them | The scene file loads, round-trips and composes into a runnable world (SCN-001..009); snapshot v3 carries the model-registry identity; `consumers.md` records it |
