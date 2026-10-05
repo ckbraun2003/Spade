@@ -53,8 +53,12 @@
 // field names and units of the spec's section 14.2. Spade never reads a
 // builder's files.
 //
-// REFUSALS. check_airframe() returns every problem, as a list. compile_airframe()
-// runs the same checks and, on any problem, returns them joined in its error.
+// REFUSALS. check_airframe() returns every problem the compile's own checks
+// and the parts' checks find, as a list, one issue per fault. The model's own
+// rules (name, version, proxy radius, spin, drag elements, IMUs and every
+// pose) belong to ModelType::validate, which reports its first problem as one
+// issue of kind "model" (TD-9: one owner per rule). compile_airframe() runs
+// the same checks and, on any problem, returns them joined in its error.
 // ===========================================================================
 
 namespace spade::vehicles {
@@ -114,8 +118,8 @@ struct PropBlock {
 struct EscBlock {
     double current_continuous = 0.0;  // A per channel; recorded (the model has no thermal state)
     double current_burst = 0.0;       // A per channel; the motor's current clamp is the smaller rating
-    double current_total = 0.0;       // A, a 4-in-1's total (DBP-26); 0 for none
-    uint32_t channels = 1;
+    double current_total = 0.0;       // A, this board's total drive current (DBP-26); 0 for none
+    uint32_t channels = 1;            // >= 1; with a total, it must equal the rotor count (one board for all)
     double on_resistance = 0.0;       // ohm, adds to the motor's resistance
     bool braking = false;             // active braking: current may reverse
     std::string protocol;             // identity only
@@ -133,7 +137,7 @@ struct BatteryBlock {
     double cell_voltage_full = 0.0;        // V, identity only
     double cell_voltage_cutoff = 0.0;      // V
     std::vector<std::array<double, 2>> ocv_table;  // [SoC, V] per cell
-    double c_rating = 0.0;                 // 1/h; the pack's current limit is c_rating x capacity
+    double c_rating = 0.0;                 // 1/h, > 0; the pack's current limit is c_rating x capacity
     double polarization_resistance = 0.0;  // ohm, pack R1
     double polarization_capacitance = 0.0; // F, pack C1 (the stateful rows use it; the fit does not)
     double mass = 0.0;                     // kg
@@ -194,8 +198,9 @@ struct AirframeSpec {
 };
 
 // One problem: what kind of entry ("airframe", "parts", "motor", "prop",
-// "esc", "battery", "rotors", "drag", "imus", "model"), its index within that
-// kind (0 for the single blocks), the field and a message.
+// "esc", "battery", "rotors", "drag", "model"), its index within that kind (0
+// for the single blocks), the field and a message. A block's shape is
+// "<block>[0].shape"; a bad pose at a rotor's hub is "rotors[k].hub", once.
 struct AirframeIssue {
     Code code = Code::invalid_argument;
     std::string kind;

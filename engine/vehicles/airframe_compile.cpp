@@ -21,33 +21,43 @@ constexpr double kDragCoefficient = 1.0;  // best-effort bluff-body C_d for the 
 [[nodiscard]] bool positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
 [[nodiscard]] bool non_negative(double x) noexcept { return std::isfinite(x) && x >= 0.0; }
 
-[[nodiscard]] bool finite_vec(const glm::dvec3& v) noexcept {
-    return is_finite(v.x) && is_finite(v.y) && is_finite(v.z);
-}
-
-[[nodiscard]] bool usable_pose(const MountPose& m) noexcept {
-    const glm::dquat& q = m.orientation;
-    const double n = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
-    return finite_vec(m.position) && is_finite(n) && n > 0.0;
-}
-
-// The collector every check writes into.
+// The collector every check writes into. add_once() keeps one issue per
+// (kind, index, field), for a fault several parts would each report.
 struct Issues {
     std::vector<AirframeIssue> list;
     void add(std::string kind, std::size_t index, std::string field, std::string message) {
         list.push_back(AirframeIssue{Code::invalid_argument, std::move(kind), index, std::move(field),
                                      std::move(message)});
     }
+    void add_once(const std::string& kind, std::size_t index, const std::string& field, std::string message) {
+        for (const AirframeIssue& i : list) {
+            if (i.kind == kind && i.index == index && i.field == field) return;
+        }
+        add(kind, index, field, std::move(message));
+    }
 };
 
-void check_pose(Issues& out, const char* kind, std::size_t index, const char* field, const MountPose& m) {
-    if (!usable_pose(m)) out.add(kind, index, field, "is not finite, or its orientation is zero");
+// A block's own shape, checked once, as one part at the origin, whatever the
+// block's mass: a shape given with no mass is still a mistake. Its problems
+// come back as <kind>[0].shape (TD-9: composite_inertia_issues owns the rules).
+void check_shape(Issues& out, const char* kind, const std::optional<BlockShape>& shape) {
+    if (!shape) return;
+    PartInertia p;
+    p.mass = 1.0;
+    p.shape = shape->shape;
+    p.size = shape->size;
+    p.tensor = shape->tensor;
+    for (const PartIssue& i : composite_inertia_issues(std::span<const PartInertia>(&p, 1))) {
+        out.add_once(kind, 0, "shape", i.message);
+    }
 }
 
+// The rules only the compile owns: the blocks' electrical and recorded fields,
+// the fit's operating point and the rotor count. The model's rules (name,
+// version, proxy radius, spin, drag, IMUs, every pose) are ModelType::
+// validate's and the parts' are composite_inertia_issues' (TD-9); neither is
+// repeated here.
 void check_blocks(const AirframeSpec& s, Issues& out) {
-    if (s.name.empty()) out.add("airframe", 0, "name", "is empty");
-    if (s.version < 1) out.add("airframe", 0, "version", "must be at least 1");
-    if (!non_negative(s.proxy_radius)) out.add("airframe", 0, "proxy_radius", "must be finite and >= 0");
     if (!positive(s.air_density)) out.add("airframe", 0, "air_density", "must be positive");
     if (!positive(s.gravity)) out.add("airframe", 0, "gravity", "must be positive");
     if (!(is_finite(s.state_of_charge) && s.state_of_charge >= 0.0 && s.state_of_charge <= 1.0)) {
@@ -57,17 +67,20 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     const MotorBlock& m = s.motor;
     if (!positive(m.kv)) out.add("motor", 0, "kv", "must be positive (rpm/V)");
     if (!positive(m.resistance)) out.add("motor", 0, "resistance", "must be positive");
-    if (!non_negative(m.no_load_current)) out.add("motor", 0, "no_load_current", "must be >= 0");
+    if (!non_negative(m.no_load_current)) out.add("motor", 0, "no_load_current", "must be finite and >= 0");
+    if (!non_negative(m.no_load_voltage)) out.add("motor", 0, "no_load_voltage", "must be finite and >= 0");
     if (!positive(m.current_max)) out.add("motor", 0, "current_max", "must be positive");
-    if (!non_negative(m.pole_pairs)) out.add("motor", 0, "pole_pairs", "must be >= 0");
-    if (!non_negative(m.inductance)) out.add("motor", 0, "inductance", "must be >= 0");
-    if (!non_negative(m.rotor_inertia)) out.add("motor", 0, "rotor_inertia", "must be >= 0");
-    if (!non_negative(m.mass)) out.add("motor", 0, "mass", "must be >= 0");
+    if (!non_negative(m.pole_pairs)) out.add("motor", 0, "pole_pairs", "must be finite and >= 0");
+    if (!non_negative(m.inductance)) out.add("motor", 0, "inductance", "must be finite and >= 0");
+    if (!non_negative(m.rotor_inertia)) out.add("motor", 0, "rotor_inertia", "must be finite and >= 0");
+    if (!non_negative(m.mass)) out.add("motor", 0, "mass", "must be finite and >= 0");
+    check_shape(out, "motor", m.shape);
 
     const PropBlock& p = s.prop;
     if (!positive(p.diameter)) out.add("prop", 0, "diameter", "must be positive");
-    if (!non_negative(p.inertia)) out.add("prop", 0, "inertia", "must be >= 0");
-    if (!non_negative(p.mass)) out.add("prop", 0, "mass", "must be >= 0");
+    if (!non_negative(p.pitch)) out.add("prop", 0, "pitch", "must be finite and >= 0");
+    if (!non_negative(p.inertia)) out.add("prop", 0, "inertia", "must be finite and >= 0");
+    if (!non_negative(p.mass)) out.add("prop", 0, "mass", "must be finite and >= 0");
     if (p.ct_table.empty() != p.cq_table.empty()) {
         out.add("prop", 0, "ct_table", "C_T and C_Q tables must both be given, or neither");
     } else if (p.ct_table.empty()) {
@@ -76,56 +89,52 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     } else if (const Result<PropellerTable> t = propeller_resample_table(p.ct_table, p.cq_table, kTablePoints); !t) {
         out.add("prop", 0, "ct_table", t.error().context);
     }
+    check_shape(out, "prop", p.shape);
 
     const EscBlock& e = s.esc;
-    if (!non_negative(e.current_burst)) out.add("esc", 0, "current_burst", "must be >= 0");
-    if (!non_negative(e.current_total)) out.add("esc", 0, "current_total", "must be >= 0");
-    if (!non_negative(e.on_resistance)) out.add("esc", 0, "on_resistance", "must be >= 0");
-    if (!non_negative(e.mass)) out.add("esc", 0, "mass", "must be >= 0");
-    check_pose(out, "esc", 0, "mount", e.mount);
+    if (!non_negative(e.current_continuous)) out.add("esc", 0, "current_continuous", "must be finite and >= 0");
+    if (!non_negative(e.current_burst)) out.add("esc", 0, "current_burst", "must be finite and >= 0");
+    if (!non_negative(e.current_total)) out.add("esc", 0, "current_total", "must be finite and >= 0");
+    if (e.channels < 1) out.add("esc", 0, "channels", "must be at least 1");
+    // One EscBlock is one physical board, and its total caps that board's
+    // channels only (Kat, 2026-10-05). Until an airframe carries several
+    // boards and a rotor-to-channel map, a total is accepted only when this
+    // board drives every rotor, so it can never cap the wrong motors.
+    if (e.current_total > 0.0 && e.channels >= 1 && e.channels != s.rotors.size()) {
+        out.add("esc", 0, "current_total",
+                "caps one board's channels, so the board must drive every rotor: " + std::to_string(e.channels) +
+                    " channels for " + std::to_string(s.rotors.size()) + " rotors");
+    }
+    if (!non_negative(e.on_resistance)) out.add("esc", 0, "on_resistance", "must be finite and >= 0");
+    if (!non_negative(e.mass)) out.add("esc", 0, "mass", "must be finite and >= 0");
+    check_shape(out, "esc", e.shape);
 
     const BatteryBlock& b = s.battery;
     if (b.cells_series < 1) out.add("battery", 0, "cells_series", "must be at least 1");
     if (b.cells_parallel < 1) out.add("battery", 0, "cells_parallel", "must be at least 1");
     if (!positive(b.cell_capacity)) out.add("battery", 0, "cell_capacity", "must be positive");
-    if (!non_negative(b.cell_resistance)) out.add("battery", 0, "cell_resistance", "must be >= 0");
-    if (!non_negative(b.cell_voltage_cutoff)) out.add("battery", 0, "cell_voltage_cutoff", "must be >= 0");
-    if (!non_negative(b.c_rating)) out.add("battery", 0, "c_rating", "must be >= 0");
-    if (!non_negative(b.polarization_resistance)) {
-        out.add("battery", 0, "polarization_resistance", "must be >= 0");
+    if (!non_negative(b.cell_resistance)) out.add("battery", 0, "cell_resistance", "must be finite and >= 0");
+    if (!non_negative(b.cell_voltage_nominal)) {
+        out.add("battery", 0, "cell_voltage_nominal", "must be finite and >= 0");
     }
-    if (!non_negative(b.mass)) out.add("battery", 0, "mass", "must be >= 0");
+    if (!non_negative(b.cell_voltage_full)) out.add("battery", 0, "cell_voltage_full", "must be finite and >= 0");
+    if (!non_negative(b.cell_voltage_cutoff)) {
+        out.add("battery", 0, "cell_voltage_cutoff", "must be finite and >= 0");
+    }
+    if (!positive(b.c_rating)) out.add("battery", 0, "c_rating", "must be positive: it sets the pack's current limit");
+    if (!non_negative(b.polarization_resistance)) {
+        out.add("battery", 0, "polarization_resistance", "must be finite and >= 0");
+    }
+    if (!non_negative(b.polarization_capacitance)) {
+        out.add("battery", 0, "polarization_capacitance", "must be finite and >= 0");
+    }
+    if (!non_negative(b.mass)) out.add("battery", 0, "mass", "must be finite and >= 0");
     if (const Result<std::vector<float>> t = battery_resample_ocv(b.ocv_table, kTablePoints); !t) {
         out.add("battery", 0, "ocv_table", t.error().context);
     }
-    check_pose(out, "battery", 0, "mount", b.mount);
+    check_shape(out, "battery", b.shape);
 
     if (s.rotors.empty()) out.add("rotors", 0, "", "an airframe needs at least one rotor");
-    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
-        check_pose(out, "rotors", k, "hub", s.rotors[k].hub);
-        const double spin = s.rotors[k].spin_dir;
-        if (!(spin == 1.0 || spin == -1.0 || spin == 0.0)) out.add("rotors", k, "spin_dir", "must be +1, -1 or 0");
-    }
-    for (std::size_t k = 0; k < s.drag.size(); ++k) {
-        const DragSpec& d = s.drag[k];
-        if (d.mode != physics::drag_mode::quadratic && d.mode != physics::drag_mode::componentwise) {
-            out.add("drag", k, "mode", "is neither quadratic nor componentwise");
-        }
-        if (!non_negative(d.area)) out.add("drag", k, "area", "must be >= 0");
-        if (!finite_vec(d.coeffs) || d.coeffs.x < 0.0 || d.coeffs.y < 0.0 || d.coeffs.z < 0.0) {
-            out.add("drag", k, "coeffs", "must be finite and >= 0");
-        }
-        check_pose(out, "drag", k, "mount", d.mount);
-    }
-    for (std::size_t k = 0; k < s.imus.size(); ++k) {
-        const ImuSpec& i = s.imus[k];
-        if (i.rate_divider < 1) out.add("imus", k, "rate_divider", "must be at least 1");
-        if (!non_negative(i.sigma_a) || !non_negative(i.sigma_g) || !non_negative(i.sigma_ba) ||
-            !non_negative(i.sigma_bg)) {
-            out.add("imus", k, "sigma", "every sigma must be finite and >= 0");
-        }
-        check_pose(out, "imus", k, "mount", i.mount);
-    }
 }
 
 // The propeller's polar inertia: given, or a thin rod of its mass across its
@@ -300,7 +309,17 @@ struct Built {
     const PartList parts = gather_parts(s);
     for (const PartIssue& pi : composite_inertia_issues(parts.parts)) {
         const auto& [kind, index] = parts.origin[pi.index];
-        out.issues.add(kind, index, pi.field, pi.message);
+        if (kind == "parts") {
+            out.issues.add(kind, index, pi.field, pi.message);
+            continue;
+        }
+        // A block's part: its shape and mass were checked once, as the
+        // block's. Only its pose is its own, and that is the hub's or the
+        // mount's, reported once however many parts sit there.
+        if (pi.field != "position" && pi.field != "orientation") continue;
+        const bool at_hub = kind == "motor" || kind == "prop";
+        out.issues.add_once(at_hub ? "rotors" : kind, at_hub ? index : 0, at_hub ? "hub" : "mount",
+                            "is not finite, or its orientation is zero");
     }
     if (!out.issues.list.empty()) return out;
 
@@ -420,12 +439,16 @@ struct Built {
                            std::fabs(to_body[2][i]) * local.z;
             }
         }
-        if (area.x > 0.0 || area.y > 0.0 || area.z > 0.0) {
-            DragBodyDesc d;
-            d.mode = physics::drag_mode::componentwise;
-            d.coeffs = to_float(0.5 * s.air_density * kDragCoefficient * area);
-            model.drag_bodies.push_back(d);
+        if (!(area.x > 0.0 || area.y > 0.0 || area.z > 0.0)) {
+            out.issues.add("drag", 0, "",
+                           "none given, and no part has a shape to estimate it from: give a DragSpec "
+                           "(zero coefficients for none)");
+            return out;
         }
+        DragBodyDesc d;
+        d.mode = physics::drag_mode::componentwise;
+        d.coeffs = to_float(0.5 * s.air_density * kDragCoefficient * area);
+        model.drag_bodies.push_back(d);
     }
 
     for (const ImuSpec& i : s.imus) {
