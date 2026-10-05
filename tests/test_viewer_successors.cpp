@@ -184,16 +184,31 @@ struct Successor {
     return static_cast<bool>(out);
 }
 
-// The first row where the viewer's world `lane` and the successor's world 0
-// differ, or "" when every viewer row matches.
-[[nodiscard]] std::string first_difference(const spade::Simulation& viewer, uint32_t lane,
-                                           const spade::Simulation& successor) {
+// One array of the viewer's, paired with the successor's array of that name:
+// the viewer's world `lane` partition against the successor's world 0.
+struct Pair {
+    std::string name;
+    const std::byte* viewer = nullptr;
+    const std::byte* successor = nullptr;
+    std::size_t stride = 0;
+    uint32_t rows = 0;          // the viewer's capacity: every row it holds
+    std::vector<bool> skip;     // per byte of a row; empty when every byte is compared
+    bool world_ids = false;     // a *.slot_to_world array
+};
+
+// Pairs every compared array once. Capacities are fixed at create() and the
+// arenas never move, so the pairs stay valid for the whole run; the test
+// checks that again at its last tick. Returns the pairs, or why they cannot
+// be made.
+[[nodiscard]] spade::Result<std::vector<Pair>> pair_arrays(const spade::Simulation& viewer, uint32_t lane,
+                                                           const spade::Simulation& successor) {
     std::map<std::string, RegisteredArray> theirs;
     successor.arenas().registry().for_each_array(
         [&theirs](const RegisteredArray& a) { theirs.emplace(a.name, a); });
-    std::string found;
+    std::vector<Pair> pairs;
+    std::string why;
     viewer.arenas().registry().for_each_array([&](const RegisteredArray& mine) {
-        if (!found.empty()) return;
+        if (!why.empty()) return;
         for (const std::string_view x : kExcluded) {
             if (mine.name == x) return;
         }
@@ -202,63 +217,93 @@ struct Successor {
         if (lane >= mine.world_count) return;
         const auto it = theirs.find(mine.name);
         if (it == theirs.end()) {
-            found = "array '" + mine.name + "' is not in the successor";
+            why = "array '" + mine.name + "' is not in the successor";
             return;
         }
         const RegisteredArray& other = it->second;
         if (other.elem_size != mine.elem_size) {
-            found = "array '" + mine.name + "' has element size " + std::to_string(other.elem_size) +
-                    ", the viewer's is " + std::to_string(mine.elem_size);
+            why = "array '" + mine.name + "' has element size " + std::to_string(other.elem_size) +
+                  ", the viewer's is " + std::to_string(mine.elem_size);
             return;
         }
         if (other.capacity_per_world < mine.capacity_per_world) {
-            found = "array '" + mine.name + "' holds " + std::to_string(other.capacity_per_world) +
-                    " rows, the viewer uses " + std::to_string(mine.capacity_per_world);
+            why = "array '" + mine.name + "' holds " + std::to_string(other.capacity_per_world) +
+                  " rows, the viewer uses " + std::to_string(mine.capacity_per_world);
             return;
         }
-        const std::size_t stride = mine.elem_size;
-        const std::byte* a = mine.data + static_cast<std::size_t>(lane) * mine.capacity_per_world * stride;
-        const std::byte* b = other.data;
-        std::vector<bool> skip(stride, false);
+        Pair p;
+        p.name = mine.name;
+        p.stride = mine.elem_size;
+        p.rows = mine.capacity_per_world;
+        p.viewer = mine.data + static_cast<std::size_t>(lane) * mine.capacity_per_world * p.stride;
+        p.successor = other.data;
         for (const ExcludedField& f : kExcludedFields) {
             if (f.array != mine.name) continue;
-            for (std::size_t k = f.offset; k < f.offset + f.size && k < stride; ++k) skip[k] = true;
+            p.skip.resize(p.stride, false);
+            for (std::size_t k = f.offset; k < f.offset + f.size && k < p.stride; ++k) p.skip[k] = true;
         }
-        std::vector<std::size_t> world_ids;
         if (holds_world_ids(mine)) {
-            if (stride != sizeof(uint32_t)) {
-                found = "array '" + mine.name + "' holds world ids but its element is " + std::to_string(stride) +
-                        " bytes, not a uint32_t";
+            if (p.stride != sizeof(uint32_t)) {
+                why = "array '" + mine.name + "' holds world ids but its element is " + std::to_string(p.stride) +
+                      " bytes, not a uint32_t";
                 return;
             }
-            world_ids.push_back(0);
-            for (std::size_t k = 0; k < sizeof(uint32_t); ++k) skip[k] = true;
+            p.world_ids = true;
         }
-        for (uint32_t row = 0; row < mine.capacity_per_world; ++row) {
-            for (const std::size_t at : world_ids) {
+        pairs.push_back(std::move(p));
+    });
+    if (!why.empty()) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, why});
+    }
+    return pairs;
+}
+
+// True when every pair still points at its run's arrays.
+[[nodiscard]] bool pairs_still_valid(const std::vector<Pair>& pairs, const spade::Simulation& viewer, uint32_t lane,
+                                     const spade::Simulation& successor) {
+    const auto again = pair_arrays(viewer, lane, successor);
+    if (!again || again->size() != pairs.size()) return false;
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        if ((*again)[i].viewer != pairs[i].viewer || (*again)[i].successor != pairs[i].successor) return false;
+    }
+    return true;
+}
+
+// The first row where the pairs differ, or "" when every viewer row matches.
+// A plain array is one memcmp; the row-by-row walk runs only for the masked
+// and translated arrays, or to name the row once a memcmp has failed.
+[[nodiscard]] std::string first_difference(const std::vector<Pair>& pairs, uint32_t lane) {
+    for (const Pair& p : pairs) {
+        if (!p.world_ids && p.skip.empty() &&
+            std::memcmp(p.viewer, p.successor, static_cast<std::size_t>(p.rows) * p.stride) == 0) {
+            continue;
+        }
+        for (uint32_t row = 0; row < p.rows; ++row) {
+            const std::byte* a = p.viewer + static_cast<std::size_t>(row) * p.stride;
+            const std::byte* b = p.successor + static_cast<std::size_t>(row) * p.stride;
+            if (p.world_ids) {
                 uint32_t in_viewer = 0;
                 uint32_t in_successor = 0;
-                std::memcpy(&in_viewer, a + row * stride + at, sizeof in_viewer);
-                std::memcpy(&in_successor, b + row * stride + at, sizeof in_successor);
+                std::memcpy(&in_viewer, a, sizeof in_viewer);
+                std::memcpy(&in_successor, b, sizeof in_successor);
                 // UINT32_MAX is a slot no world owns; it must be unowned in both.
                 const bool unowned = in_viewer == UINT32_MAX && in_successor == UINT32_MAX;
                 if (!unowned && (in_viewer != lane || in_successor != 0u)) {
-                    found = "array '" + mine.name + "' row " + std::to_string(row) + " names world " +
-                            std::to_string(in_viewer) + " in the viewer and " + std::to_string(in_successor) +
-                            " in the successor; lane " + std::to_string(lane) + " should map to 0";
-                    return;
+                    return "array '" + p.name + "' row " + std::to_string(row) + " names world " +
+                           std::to_string(in_viewer) + " in the viewer and " + std::to_string(in_successor) +
+                           " in the successor; lane " + std::to_string(lane) + " should map to 0";
                 }
+                continue;
             }
-            for (std::size_t byte = 0; byte < stride; ++byte) {
-                if (!skip[byte] && a[row * stride + byte] != b[row * stride + byte]) {
-                    found = "array '" + mine.name + "' row " + std::to_string(row) + " differs at byte " +
-                            std::to_string(byte) + " of " + std::to_string(stride);
-                    return;
+            for (std::size_t byte = 0; byte < p.stride; ++byte) {
+                if ((p.skip.empty() || !p.skip[byte]) && a[byte] != b[byte]) {
+                    return "array '" + p.name + "' row " + std::to_string(row) + " differs at byte " +
+                           std::to_string(byte) + " of " + std::to_string(p.stride);
                 }
             }
         }
-    });
-    return found;
+    }
+    return {};
 }
 
 struct Case {
@@ -317,14 +362,27 @@ TEST_P(ViewerSuccessor, EveryViewerRowIsTheSuccessorsEveryTick) {
                                  << ". Drafts from the viewer scene are in " << drafts.string()
                                  << "; review them and copy them into " << assets.string() << ".";
 
+    std::vector<std::vector<Pair>> pairs;
+    for (uint32_t lane = 0; lane < c.lanes; ++lane) {
+        auto made = pair_arrays(viewer.sim, lane, successors[lane].sim);
+        ASSERT_TRUE(made.has_value()) << stem_of(c.scene, lane, c.lanes) << ": " << made.error().context;
+        pairs.push_back(std::move(*made));
+    }
+
     const char* gate = "SPADE_FULL_VIEWER_TRAJECTORIES";
     const uint64_t n = env_gate_is_set(gate) ? c.full_ticks : c.ticks;
     for (uint64_t t = 0;; ++t) {
         for (uint32_t lane = 0; lane < c.lanes; ++lane) {
-            const std::string diff = first_difference(viewer.sim, lane, successors[lane].sim);
+            const std::string diff = first_difference(pairs[lane], lane);
             ASSERT_TRUE(diff.empty()) << stem_of(c.scene, lane, c.lanes) << " at tick " << t << ": " << diff;
         }
-        if (t == n) break;
+        if (t == n) {
+            for (uint32_t lane = 0; lane < c.lanes; ++lane) {
+                EXPECT_TRUE(pairs_still_valid(pairs[lane], viewer.sim, lane, successors[lane].sim))
+                    << stem_of(c.scene, lane, c.lanes) << ": an array moved during the run, so the pairs went stale";
+            }
+            break;
+        }
         if (scene->command_hook != nullptr) {
             scene->command_hook(viewer.sim, viewer.sim.tick().value, viewer.vehicle_refs);
             scene->command_hook(successors[0].sim, successors[0].sim.tick().value, successors[0].vehicles);
