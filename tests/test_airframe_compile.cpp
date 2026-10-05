@@ -50,8 +50,11 @@ constexpr double kArm = 0.11;
     s.param_schema_id = 1;
     s.visual_ref = "meshes/ref_quad";
     s.parts.push_back(make_part(PartShape::box, 0.12, glm::dvec3(0.0), glm::dvec3(0.12, 0.03, 0.12)));
-    const glm::dquat along_x = glm::angleAxis(glm::half_pi<double>(), glm::dvec3(0.0, 0.0, 1.0));
-    const glm::dquat along_z = glm::angleAxis(glm::half_pi<double>(), glm::dvec3(1.0, 0.0, 0.0));
+    // 90-degree turns as exact literals, not glm::angleAxis: its libm cos and
+    // sin would put a platform's rounding into the pinned identity's input.
+    const double h = 0.7071067811865476;  // sqrt(1/2)
+    const glm::dquat along_x(h, 0.0, 0.0, h);  // about +Z: the tube's +Y onto -X
+    const glm::dquat along_z(h, h, 0.0, 0.0);  // about +X: the tube's +Y onto +Z
     const glm::dvec3 tube(0.006, kArm, 0.0);
     s.parts.push_back(make_part(PartShape::tube, 0.015, glm::dvec3(+kArm / 2, 0.0, 0.0), tube, along_x));
     s.parts.push_back(make_part(PartShape::tube, 0.015, glm::dvec3(0.0, 0.0, +kArm / 2), tube, along_z));
@@ -114,7 +117,8 @@ constexpr double kArm = 0.11;
 [[nodiscard]] AirframeSpec asymmetric_quad() {
     AirframeSpec s = reference_quad();
     s.battery.mount.position = glm::dvec3(0.02, -0.03, 0.01);
-    s.battery.mount.orientation = glm::angleAxis(glm::radians(15.0), glm::dvec3(0.0, 1.0, 0.0));
+    // 15 degrees about +Y, as an exact literal: (cos 7.5, 0, sin 7.5, 0).
+    s.battery.mount.orientation = glm::dquat(0.9914448613738104, 0.0, 0.13052619222005157, 0.0);
     return s;
 }
 
@@ -445,6 +449,58 @@ TEST(AirframeCompile, SuppliedDragInATiltedFrameIsProjectedOntoBodyAxes) {
         EXPECT_NEAR(c->model.drag_bodies[0].coeffs[i], expected, 1e-6 * expected) << "body axis " << i;
     }
     EXPECT_EQ(c->fit.drag, Provenance::estimated);
+}
+
+// The drag estimate in a tilted principal frame. Each body axis sees the
+// plate's projected area along it, |n_x| A_yz + |n_y| A_xz + |n_z| A_xy for
+// the axis n in design coordinates (the projection of a box), with n taken
+// from the model's own design_to_principal.
+TEST(AirframeCompile, TheDragEstimateProjectsThePartsOntoTiltedBodyAxes) {
+    AirframeSpec s = reference_quad();
+    s.parts.resize(1);  // the 0.12 x 0.03 x 0.12 m plate: the one shape that sees the flow
+    s.motor.shape.reset();
+    s.battery.shape.reset();
+    s.battery.mount.position = glm::dvec3(0.03, -0.03, 0.02);  // off-centre: tilts the principal axes
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const glm::quat q = c->model.design_to_principal;
+    ASSERT_FALSE(q.w == 1.0f && q.x == 0.0f && q.y == 0.0f && q.z == 0.0f) << "the battery must tilt the axes";
+    ASSERT_EQ(c->model.drag_bodies.size(), 1u);
+    const glm::dmat3 r = glm::mat3_cast(glm::dquat(q.w, q.x, q.y, q.z));  // design -> body
+    const double a_yz = 0.03 * 0.12;
+    const double a_xz = 0.12 * 0.12;
+    const double a_xy = 0.12 * 0.03;
+    for (int i = 0; i < 3; ++i) {
+        // Body axis i in design coordinates is row i of r (glm: r[j][i]).
+        const double area = std::fabs(r[0][i]) * a_yz + std::fabs(r[1][i]) * a_xz + std::fabs(r[2][i]) * a_xy;
+        const double expected = 0.5 * s.air_density * area;  // C_d = 1
+        EXPECT_NEAR(c->model.drag_bodies[0].coeffs[i], expected, 1e-6 * expected) << "body axis " << i;
+    }
+    EXPECT_EQ(c->fit.drag, Provenance::estimated);
+}
+
+// A compile whose propulsion reaches the ESC total, with braking on. Counting
+// |I| toward the total let the braking motors drag the full-duty thrust from
+// 18.0 N to 16.7 N per rotor (a Python port of the chain), so an airframe
+// hovering at 17.4 N per rotor was refused as unable to hover. Counting drive
+// current, it compiles, and full duty is held at the board's total.
+TEST(AirframeCompile, AnAirframeThatReachesTheEscTotalWithBrakingCompiles) {
+    AirframeSpec s = reference_quad();
+    s.prop.cq_table = {{0.0, 0.0049}, {0.8, 0.003}};
+    s.esc.braking = true;
+    s.esc.current_total = 120.0;
+    const double hover_thrust = 17.4;  // N per rotor
+    s.battery.mass = 4.0 * hover_thrust / s.gravity - (0.526 - 0.18);  // the battery carries the rest
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_NEAR(c->fit.hover_thrust, hover_thrust, 1e-4);
+    const auto chain = airframe_propulsion_chain(s);
+    ASSERT_TRUE(chain.has_value()) << chain.error().context;
+    EXPECT_EQ(chain->esc_current_total_max, 120.0);
+    EXPECT_LT(chain->current_min, 0.0) << "braking";
+    const SteadyPoint full = steady_state_at_duty(*chain, 1.0, s.air_density, 0.0, s.state_of_charge);
+    EXPECT_NE(full.flags & propulsion_flags::esc_total_limited, 0u) << "full duty reaches the board's total";
+    EXPECT_GT(full.thrust, hover_thrust);
 }
 
 // DETERMINISM (Kat's question 1). The reference quad's compiled model has one
