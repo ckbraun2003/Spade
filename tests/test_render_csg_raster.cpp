@@ -366,23 +366,27 @@ struct ShadowTruth {
     return truth;
 }
 
-// `scene` with its one subtree meshed at `limits` and its shadow map rebuilt
-// over `bounds`, so the map covers the whole subtree (SR-17 clause 6 leaves
-// everything past scene.bounds lit, which is not what this measures).
+// `scene` with its shadow map rebuilt over `bounds`, so the map covers the
+// whole subtree (SR-17 clause 6 leaves everything past scene.bounds lit,
+// which is not what this measures). With `limits`, its one subtree is first
+// re-meshed at them; without, it keeps scene_from_world()'s mesh (B1's).
 [[nodiscard]] RenderScene with_mesh_and_map(const WorldDesc& world, RenderScene scene, uint32_t root_node,
-                                            const spade::render::CsgMeshLimits& limits,
+                                            const spade::render::CsgMeshLimits* limits,
                                             const spade::render::Aabb& bounds) {
-    const Result<spade::render::Aabb> subtree = spade::render::csg_subtree_world_bounds(world.sdf, root_node, scene.bounds);
-    if (!subtree) {
-        ADD_FAILURE() << subtree.error().context;
-        return scene;
+    if (limits != nullptr) {
+        const Result<spade::render::Aabb> subtree =
+            spade::render::csg_subtree_world_bounds(world.sdf, root_node, scene.bounds);
+        if (!subtree) {
+            ADD_FAILURE() << subtree.error().context;
+            return scene;
+        }
+        Result<spade::render::MeshData> mesh = spade::render::mesh_csg_subtree(world.sdf, root_node, *subtree, *limits);
+        if (!mesh) {
+            ADD_FAILURE() << mesh.error().context;
+            return scene;
+        }
+        scene.meshes[scene.statics[scene.csg_subtrees[0].draw_item].mesh_index] = std::move(*mesh);
     }
-    Result<spade::render::MeshData> mesh = spade::render::mesh_csg_subtree(world.sdf, root_node, *subtree, limits);
-    if (!mesh) {
-        ADD_FAILURE() << mesh.error().context;
-        return scene;
-    }
-    scene.meshes[scene.statics[scene.csg_subtrees[0].draw_item].mesh_index] = std::move(*mesh);
     scene.bounds = bounds;
     Result<spade::render::ShadowMap> map = spade::render::build_static_shadow_map(scene);
     if (!map) {
@@ -397,43 +401,43 @@ struct ShadowTruth {
 // 48 cells. On a bowl's lit inside, B1's shadows stay close to the truth:
 // acne is a speckle at the thin rim, where the fold warning already speaks,
 // and the leaks are a thin band at the rim's shadow edge. A 48-cell mesh
-// leaks three times as much and holes the rim's shadow. Measured 2026-10-05
-// at 160x120 (B2 step 5), of about 10 900 sun-facing pixels: B1 5 acne and
-// 195 leaks on the 4 m bowl, 20 and 198 on the 8 m one; 48 cells 0 and 682,
-// 3 and 696. CPU code, so the counts are the same on every toolchain. The
-// bands are 1.5x B1's worst.
+// leaks three times as much and holes the rim's shadow. The bowl is 16 m
+// across, so B1 meets its 160-cell cap there: about 0.11 m cells, the case
+// where acne was expected. Measured 2026-10-05 at 160x120 (B2 step 5), of
+// 10 906 sun-facing pixels: B1 20 acne and 198 leaks, 48 cells 3 and 696,
+// the same counts on msvc-release and msvc-debug. A 4 m bowl, under the
+// cap, measured B1 5 and 195, 48 cells 0 and 682; it is left out because
+// it doubles the test's time on debug. The bands are 1.5x B1's.
 TEST(CsgRaster, ShadowsOnMarchedSurfacesStayCloseToTheTruth) {
     constexpr uint32_t kAcneBand = 30;
     constexpr uint32_t kLeakBand = 300;
-    for (const float r : {4.0f, 8.0f}) {  // 8 m reaches B1's 160-cell cap: about 0.11 m cells
-        SCOPED_TRACE(r == 4.0f ? "a 4 m bowl" : "an 8 m bowl");
-        WorldBuilder b = base_builder();
-        b.sphere(r).sphere(0.95f * r, SdfPose{.position = {0.0f, 0.1f * r, 0.0f}}).subtract();
-        const Result<WorldDesc> world = b.build();
-        ASSERT_TRUE(world) << world.error().context;
-        const RenderScene scene = scene_or_fail(*world);
-        ASSERT_EQ(scene.csg_subtrees.size(), 1u);
-        const spade::render::Aabb around{.min = glm::vec3(-1.1f * r), .max = glm::vec3(1.1f * r)};
-        Camera camera;  // above and in front, looking into the bowl
-        camera.position = glm::vec3(0.0f, 1.2f * r, 1.4f * r);
-        camera.orientation = glm::quat(0.93782017f, -0.34712150f, 0.0f, 0.0f);  // pitch -0.709 rad
+    constexpr float r = 8.0f;
+    WorldBuilder b = base_builder();
+    b.sphere(r).sphere(0.95f * r, SdfPose{.position = {0.0f, 0.1f * r, 0.0f}}).subtract();
+    const Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world) << world.error().context;
+    const RenderScene scene = scene_or_fail(*world);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    const spade::render::Aabb around{.min = glm::vec3(-1.1f * r), .max = glm::vec3(1.1f * r)};
+    Camera camera;  // above and in front, looking into the bowl
+    camera.position = glm::vec3(0.0f, 1.2f * r, 1.4f * r);
+    camera.orientation = glm::quat(0.93782017f, -0.34712150f, 0.0f, 0.0f);  // pitch -0.709 rad
 
-        const RenderScene fine = with_mesh_and_map(*world, scene, 2, spade::render::kCsgMeshDefaults, around);
-        const RenderScene coarse = with_mesh_and_map(
-            *world, scene, 2, spade::render::CsgMeshLimits{.min_cells_per_axis = 48, .max_cells_per_axis = 48}, around);
-        const ShadowTruth b1 = shadow_truth(*world, fine, camera);
-        const ShadowTruth old = shadow_truth(*world, coarse, camera);
-        RecordProperty(r == 4.0f ? "r4_b1" : "r8_b1", std::to_string(b1.sun_facing) + " sun-facing, " +
-                                                          std::to_string(b1.acne) + " acne, " +
-                                                          std::to_string(b1.leaks) + " leaks");
-        RecordProperty(r == 4.0f ? "r4_48" : "r8_48", std::to_string(old.sun_facing) + " sun-facing, " +
-                                                          std::to_string(old.acne) + " acne, " +
-                                                          std::to_string(old.leaks) + " leaks");
-        ASSERT_GT(b1.sun_facing, kWidth * kHeight / 4u) << "the bowl's lit inside must fill the frame";
-        EXPECT_LE(b1.acne, kAcneBand) << "of " << b1.sun_facing;
-        EXPECT_LE(b1.leaks, kLeakBand) << "of " << b1.sun_facing;
-        EXPECT_GT(old.leaks, 2u * b1.leaks) << "the reason for Q2: a 48-cell mesh leaks far more";
-    }
+    constexpr spade::render::CsgMeshLimits k48Cells{.min_cells_per_axis = 48, .max_cells_per_axis = 48};
+    const RenderScene fine = with_mesh_and_map(*world, scene, 2, nullptr, around);  // B1, as built
+    const RenderScene coarse = with_mesh_and_map(*world, scene, 2, &k48Cells, around);
+    const ShadowTruth b1 = shadow_truth(*world, fine, camera);
+    const ShadowTruth old = shadow_truth(*world, coarse, camera);
+    const auto summary = [](const ShadowTruth& t) {
+        return std::to_string(t.sun_facing) + " sun-facing, " + std::to_string(t.acne) + " acne, " +
+               std::to_string(t.leaks) + " leaks";
+    };
+    RecordProperty("b1", summary(b1));
+    RecordProperty("cells_48", summary(old));
+    ASSERT_GT(b1.sun_facing, kWidth * kHeight / 4u) << "the bowl's lit inside must fill the frame";
+    EXPECT_LE(b1.acne, kAcneBand) << "of " << b1.sun_facing;
+    EXPECT_LE(b1.leaks, kLeakBand) << "of " << b1.sun_facing;
+    EXPECT_GT(old.leaks, 2u * b1.leaks) << "the reason for Q2: a 48-cell mesh leaks far more";
 }
 
 }  // namespace
