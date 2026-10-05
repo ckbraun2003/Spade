@@ -403,12 +403,13 @@
 // wrong file's constant is exactly the kind of near-miss this sentence exists
 // to prevent.
 //
-// SINCE S5 TASK 1 THAT PARITY IS AN EXACT CLAIM, NOT A TOLERANCE ONE. This
-// file's only transcendental is core/fp32_math.hpp's exp32, built from
-// IEEE-mandated operations alone; std::sqrt is correctly rounded by mandate.
-// So every operation here is one the standard pins, and two conforming
-// implementations must agree bit for bit -- provided the S6 Slang mirror
-// mirrors exp32 rather than reaching for HLSL's exp() intrinsic, which is
+// SINCE S5 TASK 1 THAT PARITY IS EXACT ACROSS CPU TOOLCHAINS. This file's only
+// transcendental is core/fp32_math.hpp's exp32, built from IEEE-mandated
+// operations alone; std::sqrt is correctly rounded by mandate. So every
+// operation here is one the standard pins, and two conforming CPU
+// implementations must agree bit for bit. On the GPU it is banded (TD-14):
+// Vulkan's sqrt and division are not correctly rounded. The Slang mirror must
+// still mirror exp32 rather than reach for HLSL's exp() intrinsic, which is
 // specified only to a relative tolerance. world/medium.cpp's parity note says
 // the same thing about the same kernel.
 // ===========================================================================

@@ -17,8 +17,8 @@
    - climb and descent against momentum theory;
    - Dryden spectral sanity.
 3. **The golden corpus** (`tests/golden/scenarios/`): CPU-golden, bit-identical per platform. A moved digest is a deliberate physics change or a bug, and the two look identical in a diff. **Understand it before regenerating**, and record why in that scenario's provenance block (the governance rules are Test/Docs's).
-4. **CPU↔GPU parity** (`engine/testing/parity.hpp`): per-scenario bands on positions, velocities, orientations, angular rates and specific force, compared abs-or-rel. Bands are **measured, then pinned with margin and device provenance**, and **never widened** to admit a new pass. Several bands are pinned at zero because those quantities are bit-identical across backends: every `bounce` quantity, and the contact pair's positions, velocities and rates.
-5. **Invariance:** solo vs in-set batching, workgroup sizes `{32, 64, 128}`, and CPU↔Vulkan snapshot restore are bit-identical (`test_gpu_invariance.cpp`).
+4. **CPU↔GPU parity** (`engine/testing/parity.hpp`, `TD-14`): per-scenario bands on positions, velocities, orientations, angular rates, specific force and the sensors. An element passes when `|gpu − cpu| ≤ abs + rel·|cpu|`. Bands are **measured on each device of record** (the RTX 3060 Ti since 2026-10-05; the Iris Plus numbers stay as history), pinned at 4× rounded up to one significant figure with an `L4` record beside each, and **never widened** without a named cause (`TD-2`). A float row keeps a zero band only when it is argued structural; one measured exact gets the floor `{5e-10, 5e-7}`. Element bands hold up to each scenario's horizon, where one ulp amplified by the CPU alone stays under 1e-5 of the scene's scale; past it, invariants and chaos-banded statistics (`gate_fleet`, `heterogeneous_geometry_set`, `contact_pair`).
+5. **Invariance:** solo vs in-set batching and workgroup sizes `{32, 64, 128}` are bit-identical on one device; a snapshot restores across CPU and Vulkan exactly, and the continuation is banded (`test_gpu_invariance.cpp`).
 
 **GPU parity runs only where the gate has a device** (`TD-13`). On the development box all `gpu` tests run inside `scripts\test.ps1`, and a skipped one is reported by name and does not count toward a green gate. The Docker leg excludes them (`-LE gpu`), so it says nothing about agreement. Anyone adding or touching a GPU physics path runs `ctest -L gpu` on real hardware and says so in the commit.
 
@@ -29,8 +29,8 @@
 | Module | CPU | Vulkan | Evidence |
 |---|---|---|---|
 | Integrator | reference | banded | `ballistic` golden; `parity::ballistic` |
-| Static contact | reference | banded (bit-identical rows) | `bounce` golden; `parity::bounce` |
-| Dynamic contact, Gauss-Seidel | reference | banded (bit-identical contact pairs) | `shower` golden; `parity::shower`, `contact_pair` |
+| Static contact | reference | banded | `bounce` golden; `parity::bounce` |
+| Dynamic contact, Gauss-Seidel | reference | banded | `shower` golden; `parity::shower`, `contact_pair` |
 | Drag (T0) | reference | banded | `quad_hover` golden; `parity::drag_componentwise` |
 | Rotor element | reference | banded | `quad_hover` golden; `parity::quad_hover` |
 | Dryden gust | reference | banded via `CORE-3` | `quad_hover` (moderate); `parity::medium` |

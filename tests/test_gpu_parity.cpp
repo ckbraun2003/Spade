@@ -1579,6 +1579,42 @@ TEST_F(GpuParityTest, QuadHoverMatchesTheCpuWithinBands) {
 }
 
 // ===========================================================================
+// gnss_tumble AT TEN TIMES ITS HORIZON -- REPORTED, NOT BANDED (TD-14). How
+// fast CPU-GPU differences grow on a smooth scene, so the docs can say it from
+// a measurement: 4000 steps x 4 substeps (16 s), open bands, printed. It
+// scripts no input, so each leg takes one step(n) and the device run stays on
+// the device (a step(1) loop pays an upload and a readback per step; the same
+// run of quad_hover, which scripts input every tick, took 40 s of the 60 s
+// test limit). It asserts only what holds at any horizon: nothing non-finite,
+// every quaternion on the unit sphere, and the integer state exact. The bands
+// themselves stay at 400 steps.
+// ===========================================================================
+TEST_F(GpuParityTest, GnssTumbleAtTenTimesItsHorizonIsReportedNotBanded) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("gnss_tumble");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    const Scenario& scenario = loaded->scenario;
+    Result<Simulation> cpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
+    Result<Simulation> gpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    const uint64_t steps = scenario.steps * 10;
+    ASSERT_TRUE(cpu->step(steps).has_value());
+    ASSERT_TRUE(gpu->step(steps).has_value());
+    const ToleranceBand open{1.0e30f, 1.0e30f};
+    const Result<ParityReport> report = compare_arrays(
+        cpu->arenas(), gpu->arenas(),
+        join(body_bands(open, open, open, open, open), gnss_bands(open, open, open, open)));
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    report->print("gnss_tumble at 10x its horizon (4000 steps x 4 substeps, 16 s), REPORT ONLY");
+    for (const spade::testing::QuantityReport& q : report->quantities) {
+        EXPECT_FALSE(q.nan_seen) << q.quantity << ": non-finite at 10x the horizon";
+        if (q.kind_is_quaternion) EXPECT_LT(q.max_unit_norm_error, 1.0e-5f) << q.quantity;
+        if (q.kind_is_bits) EXPECT_TRUE(q.within_band()) << q.quantity << ": integer state diverged";
+    }
+}
+
+// ===========================================================================
 // gnss_tumble -- THE CORPUS FILE, VERBATIM (PHY-6). The first corpus scenario
 // with a live GNSS row, so the first time sensor_gnss.slang is compared over a
 // scenario whose CPU run is a golden. The bands are parity.hpp's gnss_tumble

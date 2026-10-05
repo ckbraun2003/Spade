@@ -29,67 +29,66 @@
 //
 // The engine's CPU determinism contract IS bit equality: two runs of the same
 // scenario on the same build produce byte-identical state, which is what the
-// golden digests pin. CPU<->GPU is deliberately NOT that, and the reason is a
-// standing global constraint rather than a concession:
+// golden digests pin. CPU<->GPU is not, by the user's ruling of 2026-10-05
+// ("basically the same, extremely low error"), made TD-14: every float
+// quantity is banded against the CPU, on every device of record.
 //
-//     "Vulkan OpFDiv and sqrt are <= 2.5-ulp (NOT correctly rounded): the
-//      fp32_math Slang module must contain NO OpFDiv and NO sqrt ...
-//      downstream kernels MAY use div/sqrt -- that is why CPU<->GPU is banded
-//      rather than bit-identical."
-//
-// Every ported kernel's header lists its own div and sqrt sites against the
-// CPU expression each one mirrors. The transcendentals are NOT a contributor:
-// sin32/cos32/exp32/log32 come from the T4 Slang port and are proven
-// bit-identical to the host on this device (tests/test_gpu_fp32_math.cpp). So
-// the divergence this file measures is exactly the accumulated <= 2.5-ulp
-// error of a bounded number of divides and square roots per substep, compounded
-// over the run by the integrator -- which is why a band is a MEASUREMENT, and
-// why it grows with step count and with how chaotic the scenario is.
-//
-// ===========================================================================
-// MEASURE FIRST, THEN PIN. THE ORDER IS THE METHOD.
-//
-// The global constraint: "Tolerance bands are measured then pinned with margin
-// (spec section 9): calibrated on the Iris, committed as constants with
-// provenance comments (device, driver, measured max, margin factor). Bands are
-// NEVER widened to make a failure pass without a root-caused coordinator
-// ruling."
-//
-// compare_arrays() therefore ALWAYS reports the measured maxima, whether or not
-// they are inside the band, and a caller prints them. The bands at the bottom
-// of this file each carry the measurement they were derived from. Reading a
-// band as "how much error is acceptable" is backwards: it is "four times what
-// this device actually produced, so a real regression moves it and thermal
-// noise does not".
+// The GPU differs from the CPU in two named ways, and a band measures their
+// sum, compounded over the run by the integrator:
+//   * Vulkan's OpFDiv and sqrt are <= 2.5 ulp, not correctly rounded; on the
+//     RTX 3060 Ti they are 1 ulp off on normal operands (finding 4 of
+//     core/2026-10-04-nvidia-denorm-report.md). Every ported kernel's header
+//     lists its divide and square-root sites.
+//   * The device's own denormal mode: no kernel requests one (P3), and NVIDIA
+//     flushes subnormals in arithmetic (sign-preserving FTZ and DAZ).
+// fp32_math's transcendentals are exact as a library -- integer forms where
+// subnormals appear, so no flush mode changes a bit (banded-parity T1) -- and
+// the integer state (rng streams, indices, flags) stays exact by its own rule
+// (QuantityKind::bits). So a band is a MEASUREMENT of a port on a device, and
+// it grows with step count and with how chaotic the scenario is.
 //
 // ===========================================================================
-// THE PREDICATE, STATED PRECISELY.
+// MEASURE FIRST, THEN PIN. THE ORDER IS THE METHOD (TD-14, L4).
 //
-// An element passes iff EITHER its absolute error is within `abs` OR its
-// relative error is within `rel`. Not both, and the disjunction is deliberate:
-//   * near zero, a relative error is meaningless (a position component passing
+// compare_arrays() ALWAYS reports the measured maxima, whether or not they are
+// inside the band, split TD-14's way: A, the worst absolute error where
+// |cpu| < s_q = 1e-3, and R, the worst relative error elsewhere. A band is
+// pinned at {4A, 4R}, each rounded up to one significant figure (pin_of()),
+// the larger over every device of record, and each band carries its record:
+// the device tag, A and R, and the older devices' numbers as history (bands::
+// below opens with the devices and the method). Reading a band as "how much
+// error is acceptable" is backwards: it is "four times what the device
+// produced, so a real regression moves it and thermal noise does not". A band
+// is NEVER widened to make a failure pass: a widening names its cause (TD-2),
+// and a quantity that needs more than 1e-3 relative is a grade change, not a
+// band.
+//
+// A BAND MEANS SOMETHING ONLY WHILE IT MEASURES THE PORT. Past the horizon at
+// which one ulp of input, amplified by the CPU alone, exceeds 1e-5 of the
+// scene's scale, the CPU-GPU gap measures the scene; element bands stop there
+// and invariants and statistics take over (test_gpu_parity.cpp's PastHorizon).
+//
+// A ZERO BAND IS A CLAIM. A float row keeps {0, 0} only when no rounding
+// operation can touch it and its argument sits beside it (bands::kStructural);
+// a float row measured exactly equal gets the floor (bands::kFloor), and
+// compare_arrays() refuses an unargued zero.
+//
+// ===========================================================================
+// THE PREDICATE, STATED PRECISELY (parity_detail::error_within).
+//
+// An element passes iff |gpu - cpu| <= abs + rel * |cpu|. The halves ADD:
+//   * near zero a relative error is meaningless (a position component passing
 //     through 0 makes every rel enormous while the absolute error is an ulp),
-//     so `abs` has to be able to carry it alone;
-//   * far from zero, an absolute band would have to be scaled to the largest
-//     value any scenario reaches, which would make it useless for the small
-//     ones, so `rel` has to be able to carry it alone.
-// Both maxima are reported regardless, so the report never hides which one is
-// doing the work.
+//     so `abs` carries that regime -- alone at cpu == 0, where an exact-zero
+//     band is exactly the bit-equality demand (finding C2 of the S6 Task 6
+//     review: a relative half must never excuse a cpu == 0 component);
+//   * far from zero an absolute band would have to be scaled to the largest
+//     value any scenario reaches, so `rel` carries that regime;
+//   * between them, the error is judged against their sum. This replaced the
+//     disjunction (abs_ok || rel_ok): the sum never refuses what the
+//     disjunction passed, and is at most 2x more lenient.
 //
-// THE RELATIVE HALF IS INAPPLICABLE, NOT SATISFIED, WHEN THE CPU VALUE IS
-// EXACTLY ZERO (S6 Task 6 review round 1, finding C2 -- and the one place a
-// disjunction like this is easy to get quietly wrong). There is nothing to
-// divide by, so no relative error exists; treating the resulting placeholder 0
-// as "within the relative band" made every cpu == 0 component pass
-// unconditionally, band or no band. The absolute half carries that regime
-// alone, which is exactly what a band of 0 abs is asking for: bit equality.
-// See the predicate at the comparison site for the three checks that hole
-// silently defeated.
-//
-// A NaN on either side is a FAILURE, never a pass: the comparison is spelled so
-// that a NaN error fails both halves of the disjunction (`!(x <= band)` rather
-// than `x > band`), the same NaN-safe spelling physics/contacts.cpp uses for
-// its own guards.
+// A NaN on either side is a FAILURE, never a pass: NaN <= x is false.
 //
 // ===========================================================================
 // QUATERNIONS get the component bands like everything else PLUS a unit-norm
@@ -531,7 +530,12 @@ namespace parity_detail {
 // ===========================================================================
 // THE PINNED BANDS.
 //
-// PROVENANCE, common to every constant below:
+// HISTORY: the irisplus-2125 provenance, as it stood before TD-14. The
+// devices of record, the method and every band's current record open
+// `namespace bands` below; this block and each scenario's prose stay as the
+// older device's record.
+//
+// PROVENANCE, common to every constant below until TD-14:
 //   device   Intel Iris Plus Graphics (integrated), Vulkan 1.3.215
 //   driver   31.0.101.2125
 //   build    msvc-ninja-release. THE TASK VARIES BY BLOCK AND EACH BLOCK SAYS
@@ -545,8 +549,10 @@ namespace parity_detail {
 //            Task 8: `medium`, `two_world_isolation`, `quad_hover` (all new)
 //            and `ballistic`, RE-MEASURED because the scenario itself changed
 //            -- see that block's header.
-//   method   measured max over the WHOLE run, every element of every world,
-//            printed by tests/test_gpu_parity.cpp's own table; each constant
+//   method   measured max at the FINAL TICK, every element of every world
+//            (this line said "over the WHOLE run"; the harness has only ever
+//            compared the final tick), printed by tests/test_gpu_parity.cpp's
+//            own table; each constant
 //            below records the measurement it came from and the margin factor
 //            applied to it.
 //   margin   ~4x the measured maximum, rounded UP to a round decimal. Four
@@ -556,9 +562,9 @@ namespace parity_detail {
 //            than four, because a band that cannot move is a band that catches
 //            nothing.
 //
-// THE STOP RULE, which no constant here is allowed to quietly break: this
-// task's brief pins a hard tripwire at 1e-3 RELATIVE. A quantity needing a
-// wider relative band than that is reported to the coordinator as a
+// THE STOP RULE, which no constant here is allowed to quietly break, and
+// which TD-14 keeps: a hard tripwire at 1e-3 RELATIVE. A quantity needing a
+// wider relative band than that is a grade change (TD-2), reported as a
 // measurement, not banded over. Every `rel` below is inside it.
 //
 // WHY EVERY SCENARIO NEEDS ITS OWN SET. The divergence is the accumulated
@@ -793,12 +799,12 @@ inline constexpr ToleranceBand kSpecificForce = kStructural;
 // MEASURED: ZERO. Every quantity, every component, every one of the 16
 // elements -- the GPU run is BIT-IDENTICAL to the CPU run after 900 steps.
 //
-// THE BANDS BELOW ARE THEREFORE ALL ZERO, WHICH IS A CLAIM AND IS MEANT TO BE.
-// Pinning a nominal band "for safety" would assert less than the measurement
-// supports and would silently absorb a future regression. If a driver update
-// moves this, the suite says so and the coordinator rules on it -- which is the
-// global constraint's own posture ("bands are NEVER widened to make a failure
-// pass without a root-caused coordinator ruling").
+// UNDER TD-14 THAT IS ONE DEVICE'S MEASUREMENT, NOT A CLAIM. The bands were all
+// zero on that basis; now pos and vel sit at the floor (measured exact on the
+// device of record too, but rounding touches them), and orient, omega_body
+// and specific_force are argued structural, each with its argument beside it
+// below. If a device moves a floor row, the suite says so and the cause is
+// named before anything is widened (TD-2).
 //
 // IT IS NOT VACUOUS -- BUT IT PROVES LESS ABOUT DIVISION AND SQUARE ROOT THAN
 // IT FIRST APPEARS, AND THE DISTINCTION MATTERS (S6 Task 6 review round 1,
@@ -1099,6 +1105,11 @@ inline constexpr ToleranceBand kSpecificForce = kStructural;
 // are REPORTED rather than banded over, and the standing rule is kept intact:
 // "bands are NEVER widened to make a failure pass". A band pinned at 800 steps
 // would not be a tolerance; it would be a Lyapunov exponent wearing one.
+//
+// TD-14 MADE THIS THE RULE FOR EVERY SCENARIO: element bands up to the horizon
+// at which the one-ulp CPU control stays under 1e-5 of the scene's scale
+// (ParityChaos.OneUlpControlAtEachScenariosHorizon), invariants and chaos-
+// banded statistics past it (test_gpu_parity.cpp's PastHorizon).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -1326,8 +1337,9 @@ inline constexpr ToleranceBand kSpecificForce = kStructural;
 //
 // WHERE THE DIVERGENCE COMES FROM, exactly, because the list is short enough to
 // be exhaustive. The filter's transcendentals are exp32 (the coefficients) and
-// log32/sin32/cos32 (Box-Muller), all T4 ports proven bit-identical to the host
-// on this device; the integer half of splitmix64 is exact by construction
+// log32/sin32/cos32 (Box-Muller), all T4 ports measured exact against the host
+// on this device (and exact as a library on any flush mode since banded-parity
+// T1's integer forms); the integer half of splitmix64 is exact by construction
 // (engine/shaders/u64.slang). What is left is the arithmetic Vulkan does NOT
 // specify to be correctly rounded: Box-Muller's `sqrt(-2 * log32(u1))`, the
 // Cholesky's three square roots and its one division, and the step ratio's
@@ -1601,16 +1613,15 @@ namespace gnss_receiver {
 // were consumed. It is evidence at the sampled points, not a proof over every
 // draw.
 //
-// ⛔⛔ AND THIS BAND HAS A SILENT EXPIRY DATE, WHICH IS WHY IT IS THE ONE TO
-// SETTLE FIRST. sensor_gnss.slang's header pre-registered this quantity as a
-// BIT-IDENTITY claim, not a banded one, and said why: "A RECURSIVE BIAS FILTER
-// DOES NOT TOLERATE ERROR, IT ACCUMULATES IT ... 'close enough' is a different
-// answer next hour." THIS NUMBER WAS MEASURED OVER 200 FIXES. Its adequacy is
-// therefore a function of run length, and no test on this path states a run
-// length -- so a longer scenario can walk out of this band with nothing having
-// changed. The one band here that compounds is the one that was reasoned about
-// least. Do not widen it to make a longer run pass; that converts a compounding
-// divergence into a permanently invisible one.
+// ⛔ THIS BAND HOLDS AT ITS STATED HORIZON, 200 FIXES (0.2 s), AND NO FURTHER.
+// A recursive bias filter accumulates error rather than tolerating it, so its
+// adequacy is a function of run length; TD-14 pins every band at a stated
+// horizon, and a longer run is a new measurement, not this band stretched.
+// sensor_gnss.slang's header once pre-registered this quantity as a
+// bit-identity claim; under TD-14 it is banded: the bias multiply is exact,
+// and the draws feeding it are CORE-3's. Do not widen it to make a longer run
+// pass; that converts a compounding divergence into a permanently invisible
+// one.
 // TD-14 records (rtx3060ti-572.83, b9e3316). 200 substeps at 1 kHz (0.2 s). One-ulp CPU control: the nudge rides unamplified: inside the horizon.
 // kGnssBias: measured. rtx3060ti-572.83: A 0, R 7.9e-7 -> {5e-10, 4e-6}; history irisplus-2125 {2e-8, 2e-6}
 inline constexpr ToleranceBand kGnssBias{5.0e-10f, 4.0e-6f};

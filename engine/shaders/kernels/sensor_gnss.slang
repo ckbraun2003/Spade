@@ -21,8 +21,10 @@
 // at add_gnss_sensor() time and stored as `bias_retention` and `bias_drive`.
 // This kernel multiplies.
 //
-// That is not an optimisation, it is what makes this port a BIT-IDENTITY claim
-// rather than a banded one. fp32_math.slang:83-88: "an OpFDiv is not merely
+// That is not an optimisation: it keeps the recursion's own arithmetic exact,
+// a multiply by byte-identical per-sensor constants, so the only difference it
+// carries across backends is the draws', which CORE-3 bands at their source
+// (TD-14 bands this sensor; parity.hpp's gnss rows). fp32_math.slang:83-88: "an OpFDiv is not merely
 // less accurate, it is DEVICE-DEPENDENT" -- which is why log32_div() is a
 // restoring integer long division, domain-restricted, and must not be reached
 // for as a general divide. Other kernels do divide (collision_dynamic.slang),
@@ -43,9 +45,10 @@
 //
 // sensor_imu.slang's TWELVE is even and calls that "a small dividend": the
 // Box-Muller cache is empty again at the end of every sample. NINE LEAVES IT
-// FULL, and that is still bit-identical across backends, because core/rng.hpp's
+// FULL, and both backends still carry it the same way, because core/rng.hpp's
 // Stream and layouts.slang's RngStream mirror each other INCLUDING
-// `cached_gauss`/`has_cached` -- both sides carry the same spare forward.
+// `cached_gauss`/`has_cached` -- both sides carry the same spare forward, its
+// value within CORE-3's band like every draw's.
 //
 // Said out loud because the neighbouring file's even count reads as a rule:
 // AN UNSTATED NON-REQUIREMENT BECOMES A REQUIREMENT BY INHERITANCE.
