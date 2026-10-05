@@ -469,9 +469,10 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     }
 
     // The contact scratch (binding 27, PHY-7), one float4 per body slot of
-    // every world, zero-filled here and zero at every substep boundary.
+    // every world, zero-filled here and zero at every substep boundary. The
+    // count is a 64-bit product, so a shape past 2^32 - 1 rows is refused by name.
     if (Result<void> made = make_derived(self->contact_dv_, "contact_dv", static_cast<uint32_t>(4 * sizeof(float)),
-                                          shape.world_count * shape.body_capacity, gen::kBinding_contact_dv);
+                                          uint64_t{shape.world_count} * shape.body_capacity, gen::kBinding_contact_dv);
         !made) {
         return std::unexpected(made.error());
     }
