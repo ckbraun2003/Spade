@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // denorm_probe.slang -- M1 of the NVIDIA fp32-denormal measurement
 // (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md).
-// Compiled ONLY in the measurement build (SPADE_MEASURE_UNPINNED_DENORMS), so
-// it carries no DenormPreserve 32, like every kernel there: it shows what the
-// device does with subnormals when no fp32 denormal mode is requested.
+// Compiled in every build since banded-parity T6, a standing device record:
+// like every kernel it requests no fp32 denormal mode (P3), so it shows what
+// the device does with subnormals by default.
 // tests/test_gpu_denorm_probe.cpp is the host half.
 //
 // THE CONTRACT is probe_runner.hpp's: set 0, binding 0 the arguments, binding

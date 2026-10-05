@@ -19,10 +19,14 @@
 #include "denorm_probe.spv.gen.hpp"
 
 // ===========================================================================
-// M1 of the NVIDIA fp32-denormal measurement
-// (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md).
-// Compiled only in the measurement build (SPADE_MEASURE_UNPINNED_DENORMS),
-// where every kernel, this probe's included, carries no DenormPreserve 32.
+// A STANDING DEVICE RECORD (banded-parity plan T6). It began as M1 of the
+// NVIDIA fp32-denormal measurement
+// (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md), in
+// the measurement build; it now runs in every build, where no kernel requests
+// an fp32 denormal mode (P3), so its table is the device's own default, in
+// every gate log. It asserts only its harness rules: every case explained by
+// an answer, the control cases exact, no contraction. What the device does
+// with subnormals is printed, never asserted: any device's default passes.
 //
 // For each fp32 op class the physics kernels use, the probe kernel
 // (engine/shaders/kernels/denorm_probe.slang) runs every case of an operand

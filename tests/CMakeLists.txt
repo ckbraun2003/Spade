@@ -194,9 +194,13 @@ add_executable(spade_tests
 # Vulkan step records the compiled schedule's passes. It includes
 # compute/vulkan/context.hpp for vulkan_available(), so it lives here rather
 # than in test_module_schedule.cpp, which builds with SPADE_VULKAN off too.
+# test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
+# denormal behaviour per op class, printed in every gate log and asserted only
+# on its harness rules. It began as M1 in the measurement build.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
+        test_gpu_denorm_probe.cpp
         test_slang_layouts.cpp
         test_gpu_fp32_math.cpp
         test_gpu_state_mirror.cpp
@@ -431,10 +435,6 @@ target_compile_definitions(spade_tests PRIVATE
 # spade_tests only, so a default build's targets are untouched.
 if(SPADE_MEASURE_UNPINNED_DENORMS)
     target_compile_definitions(spade_tests PRIVATE SPADE_MEASURE_UNPINNED_DENORMS=1)
-    # M1's probe (GpuDenormProbe): its kernel exists only in this build.
-    if(SPADE_VULKAN)
-        target_sources(spade_tests PRIVATE test_gpu_denorm_probe.cpp)
-    endif()
 endif()
 
 include(GoogleTest)
