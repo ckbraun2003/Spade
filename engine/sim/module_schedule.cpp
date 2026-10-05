@@ -36,28 +36,101 @@ constexpr std::string_view kFieldPrefix = "field.";
 
 using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field name -> declaring module
 
-[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
-                                  const FieldOwners& fields) noexcept {
+[[nodiscard]] bool is_core_quantity(std::string_view q) noexcept {
     for (const std::string_view core : kCoreQuantities) {
         if (q == core) return true;
     }
-    if (q.starts_with(kFieldPrefix)) return fields.contains(field_name_of(q));
+    return false;
+}
+
+// "<module>.<name>" split at its first '.'; false if either half is empty.
+[[nodiscard]] bool split_quantity(std::string_view q, std::string_view& owner, std::string_view& name) noexcept {
     const std::size_t dot = q.find('.');
     if (dot == std::string_view::npos || dot == 0 || dot + 1 == q.size()) return false;
-    const std::string_view owner = q.substr(0, dot);
-    const std::string_view name = q.substr(dot + 1);
+    owner = q.substr(0, dot);
+    name = q.substr(dot + 1);
+    return true;
+}
+
+[[nodiscard]] const ModuleDesc* find_module(std::span<const ModuleDesc> modules, std::string_view name) noexcept {
     for (const ModuleDesc& m : modules) {
-        if (m.name != owner) continue;
-        // A stateful module's quantities name its arrays (stage 4), so a
-        // misspelt array cannot drop a hazard. A stateless module's tokens
-        // stay free, as in stage 1.
-        if (m.state.empty()) return true;
-        for (const ArrayDecl& a : m.state) {
-            if (a.name == name) return true;
-        }
-        return false;
+        if (m.name == name) return &m;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] bool declares_array(const ModuleDesc& m, std::string_view name) noexcept {
+    for (const ArrayDecl& a : m.state) {
+        if (a.name == name) return true;
     }
     return false;
+}
+
+[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
+                                  const FieldOwners& fields) noexcept {
+    if (is_core_quantity(q)) return true;
+    if (q.starts_with(kFieldPrefix)) return fields.contains(field_name_of(q));
+    std::string_view owner;
+    std::string_view name;
+    if (!split_quantity(q, owner, name)) return false;
+    const ModuleDesc* m = find_module(modules, owner);
+    if (m == nullptr) return false;
+    // A stateful module's quantities name its arrays (stage 4), so a misspelt
+    // array cannot drop a hazard. A stateless module's tokens stay free, as in
+    // stage 1.
+    return m->state.empty() || declares_array(*m, name);
+}
+
+// OPTIONAL ACCESSES (Task 6; module.hpp's QuantityAccess). Legal only as a
+// read of "<module>.<name>". A core quantity and a field are never absent, so
+// optional would mean nothing there. When the module is in the set, <name>
+// must be one of its arrays: an optional read binds an array or nothing, so a
+// present module's misspelt array cannot bind nothing in silence.
+[[nodiscard]] Result<void> check_optional(const std::string& pass, const QuantityAccess& qa,
+                                          std::span<const ModuleDesc> modules) {
+    const std::string where = pass + ": optional access to '" + std::string(qa.quantity) + "'";
+    if (qa.access != Access::read) {
+        return std::unexpected(invalid(where + ": only a read may be optional; a write or an accumulation of "
+                                               "what may be absent would change state no ordering accounts for"));
+    }
+    std::string_view owner;
+    std::string_view name;
+    if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
+        !split_quantity(qa.quantity, owner, name)) {
+        return std::unexpected(invalid(where + ": optional is for <module>.<array> of a module the set may not "
+                                               "hold; a core quantity or a field is never absent"));
+    }
+    if (const ModuleDesc* m = find_module(modules, owner); m != nullptr && !declares_array(*m, name)) {
+        return std::unexpected(invalid(where + ": module '" + std::string(owner) +
+                                       "' is in the set and declares no array '" + std::string(name) + "'"));
+    }
+    return {};
+}
+
+// An access that binds nothing and orders nothing: an optional read of a
+// module the set does not hold.
+[[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    return qa.optional && split_quantity(qa.quantity, owner, name) && find_module(modules, owner) == nullptr;
+}
+
+// What one declared access binds (module.hpp's CompiledBinding): the array a
+// "<module>.<array>" quantity names, whichever module owns it, or nothing. Core
+// quantities are checked first, as known_quantity() checks them.
+[[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
+        !split_quantity(qa.quantity, owner, name)) {
+        return {};
+    }
+    for (std::size_t i = 0; i < arrays.size(); ++i) {
+        if (arrays[i].module == owner && arrays[i].name == name) {
+            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i)};
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] bool is_core_array(std::string_view name) noexcept {
@@ -363,6 +436,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 return std::unexpected(invalid(full + ": declared twice"));
             }
             for (const QuantityAccess& qa : p.access) {
+                if (qa.optional) {
+                    // A read, so never a field write: nothing below applies.
+                    if (Result<void> ok = check_optional(full, qa, modules); !ok) return std::unexpected(ok.error());
+                    continue;
+                }
                 if (!known_quantity(qa.quantity, modules, field_owner)) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
                                                    "' (a core quantity, field.<name> for a field a module "
@@ -450,6 +528,25 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 edge_path[it->second][i] = true;
             }
         }
+        // `before`, the mirror (Task 6): the target runs after this pass. A
+        // target in a later phase already does; one in an earlier phase never
+        // can.
+        for (const std::string_view target : nodes[i].pass->before) {
+            const auto it = by_name.find(target);
+            if (it == by_name.end()) {
+                return std::unexpected(invalid(nodes[i].full + ": before edge to '" + std::string(target) +
+                                               "', which no module in the set declares"));
+            }
+            const Node& t = nodes[it->second];
+            if (t.pass->phase < nodes[i].pass->phase) {
+                return std::unexpected(
+                    invalid(nodes[i].full + ": before edge to '" + t.full + "', which runs in an earlier phase"));
+            }
+            if (t.pass->phase == nodes[i].pass->phase) {
+                preds[it->second].push_back(i);
+                edge_path[i][it->second] = true;
+            }
+        }
     }
     for (std::size_t k = 0; k < n; ++k) {
         for (std::size_t i = 0; i < n; ++i) {
@@ -473,7 +570,12 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 }
             }
             for (const QuantityAccess& qa : a.access) {
+                // An optional read of an absent module is no hazard (Task 6).
+                // Nothing else can name that module -- it would be an unknown
+                // quantity -- so this only says so rather than relying on it.
+                if (absent_access(qa, modules)) continue;
                 for (const QuantityAccess& qb : b.access) {
+                    if (absent_access(qb, modules)) continue;
                     if (qa.quantity != qb.quantity) continue;
                     if (needs_edge(qa.access, qb.access)) {
                         // A different placement already orders the pair.
@@ -522,8 +624,13 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         done[best] = true;
         for (const std::size_t s : succs[best]) --indegree[s];
         const Node& nd = nodes[best];
+        // One binding per declared access, in declaration order, so a pass
+        // indexes SubstepContext::state by its own access list.
+        std::vector<CompiledBinding> bindings;
+        bindings.reserve(nd.pass->access.size());
+        for (const QuantityAccess& qa : nd.pass->access) bindings.push_back(binding_of(qa, *arrays));
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
-                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu});
+                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings)});
     }
 
     // The recipe is not folded: it is bound to the CPU function (checked above),

@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string_view>
 
 #include "core/time.hpp"
 #include "physics/contacts.hpp"
@@ -226,8 +225,18 @@ struct SubstepContext {
     // SampleIndex, which is what it is for.
     Tick tick{};
 
-    // The RUNNING PASS's declared state (module-API stage 4, Task 6):
-    // state[i] views what its i-th declared access names. Set before each pass.
+    // The RUNNING PASS's declared state (module-API stage 4, Task 6): state[i]
+    // views what the pass's i-th declared access names (sim/module.hpp's
+    // CompiledBinding) -- a module array, which may be another module's, or an
+    // absent view for a core quantity, a field, a stateless module's token or
+    // an optional read of a module the set does not hold. So a pass indexes it
+    // by its own access list, and sees nothing it did not declare.
+    // Simulation::step() sets it before each pass from views it refills in
+    // place; nothing is allocated.
+    //
+    // The built-in passes do not read it: they keep their typed members of
+    // WorldSubstepView above until the GPU module ABI (stage-4 plan, open
+    // question 5), so no pass body moved.
     std::span<const StateView> state{};
 };
 #if defined(_MSC_VER)

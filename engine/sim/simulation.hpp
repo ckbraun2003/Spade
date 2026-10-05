@@ -28,6 +28,7 @@
 #include "sim/world_set.hpp"
 #include "state/arenas.hpp"
 #include "state/snapshot.hpp"
+#include "state/state_view.hpp"
 #include "vehicles/model_type.hpp"
 #include "vehicles/rotor.hpp"
 
@@ -1622,10 +1623,11 @@ private:
     Simulation(ArenaSet arenas, WorldSetLayout layout, std::vector<WorldConfig> configs,
                uint64_t dt_ns, uint32_t substeps, float h);
 
-    // Rebuilds the per-world views from the arenas. Called at the top of every
-    // step rather than cached across steps: the cost is O(worlds) and it makes
-    // a stale view -- the classic way a restore silently keeps pointing at the
-    // wrong thing -- structurally impossible.
+    // Rebuilds the per-world views, and refills every pass's declared-state
+    // views in place, from the arenas. Called at the top of every step rather
+    // than cached across steps: the cost is O(worlds + declared accesses) and
+    // it makes a stale view -- the classic way a restore silently keeps
+    // pointing at the wrong thing -- structurally impossible.
     [[nodiscard]] Result<void> rebuild_views();
 
     // The pre-apply half of restore(): "was this blob produced under the same
@@ -1806,6 +1808,14 @@ private:
 
     std::vector<StructuralOp> queue_;
     std::vector<physics::WorldSubstepView> views_;
+    // THE PASSES' DECLARED STATE (module-API stage 4, Task 6): one view per
+    // declared access of every compiled pass, pass-major in schedule order --
+    // pass p's are [pass_view_begin_[p], pass_view_begin_[p + 1]), bound as
+    // schedule_.passes[p].state says. Sized once at create(); rebuild_views()
+    // refills them in place and step() hands each pass its window as
+    // SubstepContext::state, so a step allocates nothing.
+    std::vector<StateView> pass_views_;
+    std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
     physics::GridScratch scratch_;
     // Every world's field sample row, world-major, schedule_.field_stride floats
     // each. Scratch like scratch_: not registered, not in any blob or digest,

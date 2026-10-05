@@ -644,6 +644,14 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     sim.views_.resize(layout->world_count);
+    // Every pass's declared-state views (module-API stage 4, Task 6), sized
+    // once; rebuild_views() below fills them.
+    sim.pass_view_begin_.reserve(sim.schedule_.passes.size() + 1);
+    sim.pass_view_begin_.push_back(0);
+    for (const modules::CompiledPass& pass : sim.schedule_.passes) {
+        sim.pass_view_begin_.push_back(sim.pass_view_begin_.back() + static_cast<uint32_t>(pass.state.size()));
+    }
+    sim.pass_views_.assign(sim.pass_view_begin_.back(), StateView{});
     // The field sample rows, sized once and zero-filled (module-API stage 3).
     sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
     // One-shot sizing so the broad phase never allocates in the steady state
@@ -917,6 +925,30 @@ Result<void> Simulation::rebuild_views() {
         // DragBodyRow's) agree with the `bodies` span bound three lines up.
         view.rotors = rotors->subspan(elem_begin, layout_.element_capacity);
     }
+
+    // THE PASSES' DECLARED STATE (module-API stage 4, Task 6), refilled in
+    // place: each declared access's view is the array its binding names --
+    // all worlds' rows, world-contiguous, which world_rows() slices by the
+    // same `w` the views above use -- or absent. The arenas never move, so
+    // this rewrites the same values every step; refilling rather than caching
+    // keeps the one rule this function exists for.
+    for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
+        const std::vector<modules::CompiledBinding>& bindings = schedule_.passes[p].state;
+        for (std::size_t k = 0; k < bindings.size(); ++k) {
+            StateView& view = pass_views_[pass_view_begin_[p] + k];
+            view = StateView{};
+            if (bindings[k].kind != modules::BindingKind::array) continue;
+            const ArrayIndex id = module_array_ids_[bindings[k].index];
+            const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) return std::unexpected(bytes.error());
+            const Result<WorldRange> world0 = arenas_.range(id, 0);  // its count is the per-world capacity
+            if (!world0) return std::unexpected(world0.error());
+            view.data = bytes->data();
+            view.elem_size = schedule_.arrays[bindings[k].index].elem_size;
+            view.world_count = layout_.world_count;
+            view.capacity_per_world = world0->count;
+        }
+    }
     return {};
 }
 
@@ -1014,10 +1046,13 @@ Result<void> Simulation::step(uint64_t n) {
         ctx.tick = tick_;
 
         // The compiled module schedule (sim/module.hpp), in order, every
-        // substep. The order is the parity contract; create() fixed it.
+        // substep. The order is the parity contract; create() fixed it. Each
+        // pass sees its own declared state, and only that (Task 6).
+        const std::span<const StateView> pass_views(pass_views_);
         for (uint32_t s = 0; s < substeps_; ++s) {
-            for (const modules::CompiledPass& pass : schedule_.passes) {
-                pass.cpu(ctx);
+            for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
+                ctx.state = pass_views.subspan(pass_view_begin_[p], pass_view_begin_[p + 1] - pass_view_begin_[p]);
+                schedule_.passes[p].cpu(ctx);
             }
         }
 

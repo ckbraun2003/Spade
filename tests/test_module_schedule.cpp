@@ -2080,7 +2080,9 @@ TEST(ModuleSchedule, ABeforeEdgeOrdersTwoWriters) {
     const ModuleDesc set[] = {{.name = "a", .passes = a}, {.name = "b", .passes = b}};
     const auto s = compile_schedule(set);
     EXPECT_TRUE(s.has_value()) << s.error().context;
-    if (s) EXPECT_EQ(names(*s), (Names{"b.fix", "a.fix"})) << "the second in set order runs first";
+    if (s) {
+        EXPECT_EQ(names(*s), (Names{"b.fix", "a.fix"})) << "the second in set order runs first";
+    }
     const ModuleDesc no_edge[] = {{.name = "a", .passes = a}, {.name = "b", .passes = b_no_edge}};
     EXPECT_TRUE(refused_naming(compile_schedule(no_edge), "body.pose"));
 

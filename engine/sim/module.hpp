@@ -57,19 +57,33 @@ enum class Placement : uint8_t { first = 0, ordered = 1, last = 2 };
 inline constexpr std::string_view kCoreQuantities[] = {"body.pose", "body.wrench", "body.specific_force",
                                                        "world.params"};
 
+// An OPTIONAL access (stage 4, Task 6) reads "<module>.<array>" of a module the
+// set may not hold. When the module is in the set it is an ordinary read: the
+// name must be one of that module's arrays, it orders the pass after the
+// array's writers, and the pass's view binds the array. When the module is
+// absent it is no hazard and orders nothing, and the view is absent. Only a
+// read may be optional: an optional write or accumulation would let a pass
+// change state that its ordering never accounted for.
 struct QuantityAccess {
     std::string_view quantity;
     Access access = Access::read;
     bool optional = false;
 };
 
+// EDGES. `after` names passes this one runs after; `before` names passes it
+// runs before -- the mirror, for a module that must slot in ahead of a pass it
+// does not own (Physics' propulsion.drive before rotor.forces). An edge to a
+// pass of the same phase orders the pair. Phases already order passes of
+// different phases, so an edge that agrees with them (after an earlier phase,
+// before a later one) is satisfied and adds nothing, and one that contradicts
+// them is refused.
 struct PassDecl {
     std::string_view name;
     Phase phase = Phase::fields;
     Placement placement = Placement::ordered;
     std::span<const QuantityAccess> access{};
-    std::span<const std::string_view> after{};   // "<module>.<pass>"
-    std::span<const std::string_view> before{};  // "<module>.<pass>"
+    std::span<const std::string_view> after{};   // "<module>.<pass>", in this or an earlier phase
+    std::span<const std::string_view> before{};  // "<module>.<pass>", in this or a later phase
     PassFn cpu = nullptr;
     // The built-in kernel that does what `cpu` does, on the GPU; `none` runs
     // only on the CPU, and Vulkan refuses the set at create().
@@ -273,10 +287,16 @@ using ModuleSet = std::vector<ModuleDesc>;
 
 inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 
+// What one declared access of a compiled pass binds (stage 4, Task 6): the
+// view Simulation hands the pass as SubstepContext::state[i] for its i-th
+// access. "<module>.<array>" binds that array -- its index in
+// CompiledSchedule::arrays, whichever module owns it. A core quantity, a field,
+// a stateless module's token, and an optional read of an absent module bind
+// nothing: an absent view, so every access keeps its slot.
 enum class BindingKind : uint8_t { absent = 0, array = 1 };
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
-    uint32_t index = kNoArray;
+    uint32_t index = kNoArray;  // BindingKind::array: the array's index in CompiledSchedule::arrays
 };
 
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set
@@ -343,9 +363,12 @@ struct CompiledSchedule {
 // Orders every pass of `modules`:
 //   1. phases in Phase order;
 //   2. inside a phase: placement groups (first, ordered, last); a reader after
-//      every writer and accumulator of what it reads; `after` edges; two
-//      writers, or a writer and an accumulator, of one placement need an edge;
+//      every writer and accumulator of what it reads; `after` and `before`
+//      edges; two writers, or a writer and an accumulator, of one placement
+//      need an edge (either kind, or a chain of them); an optional read of an
+//      absent module orders nothing;
 //   3. ties by module-set order, then declaration order.
+// and binds each pass's declared accesses (CompiledPass::state).
 // invalid_argument for: a module name that is empty, contains '.', or repeats;
 // a pass with no name, a '.' in its name, no CPU function, or an unknown
 // phase, or declared twice; a GPU recipe
@@ -367,16 +390,22 @@ struct CompiledSchedule {
 // empty tag, the tag kWorldSeedDomainTag, a tag declared twice in the set, no
 // reseed function, or an array that is not one of its module's per_world,
 // per_element or per_sensor arrays; an
-// edge to a pass no module declares or to a later phase; two
+// optional access that is not a read, that names a core quantity, a field or
+// anything but "<module>.<name>", or whose module is in the set without an
+// array of that name; an `after` edge to a pass no module declares or to a
+// later phase; a `before` edge to a pass no module declares or to an earlier
+// phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
-// between them; a cycle.
+// between them; a cycle, naming the passes left unordered.
 //
 // IDENTITY, spelt byte by byte so it is the same on every platform: for each
 // module in set order, its name, 0x00 and its version as 4 bytes little-endian;
 // then 0x01; then for each compiled pass, module, '.', pass, 0x00 and the phase
 // as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State
 // and stream declarations are not spelt: the schema hash refuses a blob whose
-// arrays differ, and a changed row or tag rides the module's version.
+// arrays differ, and a changed row or tag rides the module's version. Edges,
+// optional reads and bindings are not spelt either: what they decide is the
+// compiled order, which is.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().

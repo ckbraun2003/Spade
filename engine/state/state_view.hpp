@@ -36,9 +36,9 @@ struct StateView {
 template <class T>
 [[nodiscard]] std::span<T> world_rows(const StateView& v, uint32_t world) noexcept {
     static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
-    static_cast<void>(v);
-    static_cast<void>(world);
-    return {};
+    if (v.data == nullptr || sizeof(T) != v.elem_size || world >= v.world_count) return {};
+    std::byte* const begin = v.data + static_cast<std::size_t>(world) * v.capacity_per_world * v.elem_size;
+    return std::span<T>(reinterpret_cast<T*>(begin), v.capacity_per_world);
 }
 
 }  // namespace spade
