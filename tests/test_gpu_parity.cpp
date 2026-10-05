@@ -1153,6 +1153,29 @@ TEST(ParityPredicate, AZeroFloatBandMustBeArgued) {
     EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), flags).has_value());
 }
 
+// TD-14: a measured pin is no tighter than the floor's halves, so a float row
+// that is not argued structural carries abs >= 5e-10 and rel >= 5e-7.
+// Test/Docs' record check found two pins below it that pin_of() alone let
+// through; compare_arrays now refuses the next one.
+TEST(ParityPredicate, NoFloatBandIsTighterThanTheFloor) {
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("ballistic");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    Result<Simulation> a = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    Result<Simulation> b = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    const auto row = [](ToleranceBand band) {
+        return std::vector<BandEntry>{
+            {"bodies", "vel", offsetof(spade::BodyState, vel), 3, QuantityKind::components, band}};
+    };
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{1.0e-6f, 4.0e-7f})).has_value())
+        << "rel below the floor's 5e-7 must be refused";
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{4.0e-10f, 1.0e-6f})).has_value())
+        << "abs below the floor's 5e-10 must be refused";
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(spade::testing::bands::kFloor)).has_value());
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(spade::testing::bands::kStructural)).has_value())
+        << "a structural row is exact by argument, not by measurement";
+}
+
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;
     std::error_code ec;
