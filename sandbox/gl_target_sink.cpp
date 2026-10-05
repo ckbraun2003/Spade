@@ -37,7 +37,9 @@
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
 
 #include <algorithm>
+#include <cfloat>   // FLT_MAX, ImFont::CalcTextSizeA's "no wrap"
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -150,6 +152,14 @@ struct GlTargetSink::Impl {
     uint32_t win_count = 0;
     GlTargetSink::Timings win_avg;
     GlTargetSink::Timings life_sum;
+
+    // The live smoke's hooks; see the header.
+    float fixed_dt = 0.0f;
+    std::string caption;
+    std::string card;
+    GlTargetSink::FrameTap tap;
+    bool capture_armed = false;
+    std::vector<uint8_t> readback;
 
 #if SPADE_SANDBOX_HAS_GL
     GLFWwindow* window = nullptr;
@@ -348,6 +358,11 @@ FrameInput GlTargetSink::poll() {
     // otherwise teleport the camera by dt * speed. Bounded, not averaged: an
     // average hides the stall, a bound just refuses to act on it.
     impl_->dt = std::clamp(impl_->dt, 0.0f, 0.1f);
+    // A scripted tour asks for a fixed step, so it moves the same on any
+    // machine however long a frame really took (set_fixed_delta).
+    if (impl_->fixed_dt > 0.0f) {
+        impl_->dt = impl_->fixed_dt;
+    }
 
     glfwPollEvents();
 
@@ -522,6 +537,7 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    tap_frame();
     const auto t3 = Clock::now();
 
     glfwSwapBuffers(impl_->window);
@@ -643,6 +659,97 @@ void GlTargetSink::draw_overlay() {
     if (impl_->drone != nullptr) {
         draw_drone_panel(*impl_->drone);
     }
+    draw_live_smoke_text();
+#endif
+}
+
+void GlTargetSink::draw_live_smoke_text() {
+#if SPADE_SANDBOX_HAS_GL
+    if (impl_->caption.empty() && impl_->card.empty()) {
+        return;
+    }
+    // The FOREGROUND draw list, not a window: it is drawn after every window,
+    // so no panel can cover the caption or the card in the recording.
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    if (!impl_->caption.empty()) {
+        const float size = ImGui::GetFontSize() * 1.6f;
+        const ImVec2 text = font->CalcTextSizeA(size, FLT_MAX, 0.0f, impl_->caption.c_str());
+        const ImVec2 at((display.x - text.x) * 0.5f, 10.0f);
+        dl->AddRectFilled(ImVec2(at.x - 12.0f, at.y - 6.0f), ImVec2(at.x + text.x + 12.0f, at.y + text.y + 6.0f),
+                          IM_COL32(0, 0, 0, 185), 6.0f);
+        dl->AddText(font, size, at, IM_COL32(255, 255, 255, 255), impl_->caption.c_str());
+    }
+
+    if (!impl_->card.empty()) {
+        dl->AddRectFilled(ImVec2(0.0f, 0.0f), display, IM_COL32(12, 14, 20, 240));
+        std::vector<std::string> lines;
+        std::size_t from = 0;
+        while (from <= impl_->card.size()) {
+            const std::size_t nl = impl_->card.find('\n', from);
+            lines.push_back(impl_->card.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+            if (nl == std::string::npos) break;
+            from = nl + 1;
+        }
+        // The first line is the title, larger; the rest are the facts.
+        const float title = ImGui::GetFontSize() * 3.0f;
+        const float body = ImGui::GetFontSize() * 2.0f;
+        float total = 0.0f;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            total += (i == 0 ? title : body) * 1.5f;
+        }
+        float y = (display.y - total) * 0.5f;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            const float size = i == 0 ? title : body;
+            const ImVec2 text = font->CalcTextSizeA(size, FLT_MAX, 0.0f, lines[i].c_str());
+            dl->AddText(font, size, ImVec2((display.x - text.x) * 0.5f, y), IM_COL32(235, 238, 245, 255),
+                        lines[i].c_str());
+            y += size * 1.5f;
+        }
+    }
+#endif
+}
+
+void GlTargetSink::tap_frame() {
+#if SPADE_SANDBOX_HAS_GL
+    if (!impl_->capture_armed || !impl_->tap) {
+        return;
+    }
+    impl_->capture_armed = false;
+    const uint32_t w = impl_->fb_width;
+    const uint32_t h = impl_->fb_height;
+    impl_->readback.resize(static_cast<std::size_t>(w) * h * 4u);
+    // Tightly packed rows, so the buffer is exactly w * h * 4 bytes. The read
+    // buffer of a double-buffered default framebuffer is GL_BACK, which is the
+    // frame about to be swapped.
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA, GL_UNSIGNED_BYTE,
+                 impl_->readback.data());
+    impl_->tap(impl_->readback.data(), w, h);
+#endif
+}
+
+void GlTargetSink::set_caption(std::string text) { impl_->caption = std::move(text); }
+void GlTargetSink::set_card(std::string text) { impl_->card = std::move(text); }
+void GlTargetSink::set_fixed_delta(float seconds) noexcept { impl_->fixed_dt = seconds > 0.0f ? seconds : 0.0f; }
+void GlTargetSink::set_frame_tap(FrameTap tap) { impl_->tap = std::move(tap); }
+void GlTargetSink::capture_next_present() noexcept { impl_->capture_armed = true; }
+
+void GlTargetSink::set_help_visible(bool visible) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->show_help = visible;
+#else
+    (void)visible;
+#endif
+}
+
+bool GlTargetSink::help_visible() const noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    return impl_->show_help;
+#else
+    return false;
 #endif
 }
 
@@ -900,6 +1007,7 @@ void GlTargetSink::present_overlay(float render_ms, float physics_ms) {
     draw_overlay();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    tap_frame();
     const auto t3 = Clock::now();
     glfwSwapBuffers(impl_->window);
     const auto t4 = Clock::now();
