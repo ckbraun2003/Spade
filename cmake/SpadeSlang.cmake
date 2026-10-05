@@ -77,78 +77,50 @@
 # tripwire, not an accident of flag ordering.
 #
 # ------------------------------------------------------------------------------
-# WHY -denorm-mode-fp32 preserve IS ON EVERY KERNEL COMPILE TOO (S6 Task 4).
-# A MEASURED FINDING, not a precaution. Vulkan leaves fp32 denormal handling
-# IMPLEMENTATION-DEFINED unless a module requests a mode, and this program's
-# correctness device -- Intel Iris Plus, driver 0x0019484D -- FLUSHES DENORMALS
-# TO ZERO by default while advertising support for both behaviours
-# (shaderDenormPreserveFloat32=1 AND shaderDenormFlushToZeroFloat32=1). The CPU
-# twin does not flush (x86 SSE with the default MXCSR: FTZ and DAZ both off), so
-# the default is a silent CPU<->GPU divergence on every subnormal.
+# WHY NO KERNEL REQUESTS AN fp32 DENORMAL MODE (amended 2026-10-05).
+# Vulkan leaves fp32 denormal handling IMPLEMENTATION-DEFINED unless a module
+# requests a mode (SPV_KHR_float_controls). Requesting a mode the device does
+# not support (VkPhysicalDeviceFloatControlsProperties) is a VULKAN VALID-USAGE
+# VIOLATION, i.e. UNDEFINED BEHAVIOUR, not a reported error. So no compile here
+# passes a -denorm-mode flag, and every device runs the kernels legally with
+# its own default.
 #
-# It is not a corner nobody reaches. Task 4's first device run, with the flag
-# absent, failed on three separate paths at once (transcript in that task's
-# report): log32 answered -104.665 instead of -103.279 for EVERY subnormal
-# argument (its 2^24 pre-scale received a flushed zero), exp32 answered +0
-# instead of a subnormal for every argument at or below -87.3365479 (its whole
-# documented subnormal-result tail, which test_fp32_math.cpp enumerates at full
-# float density), and sin32 answered 0 instead of x for a subnormal x.
+# HISTORY. From S6 Task 4 to 2026-10-05, every kernel was compiled
+# -denorm-mode-fp32 preserve, after a MEASURED finding:
+#   - The Intel Iris Plus (driver 0x0019484D) flushes denormals to zero by
+#     default, while advertising both behaviours.
+#   - The CPU twin (x86 SSE, default MXCSR) preserves.
+#   - So log32's pre-scale, exp32's subnormal tail and sin32 of a subnormal
+#     diverged.
+# That pin needed shaderDenormPreserveFloat32, and VulkanContext refused any
+# device without it. The RTX 3060 Ti has neither mode, so it was refused. The
+# user's ruling of 2026-10-05 ended bit-exact CPU<->GPU parity, and option (b)
+# of docs/design/core/plans/2026-10-05-banded-parity-plan.md removed the flag.
 #
-# `preserve` makes slangc emit OpCapability DenormPreserve, OpExtension
-# "SPV_KHR_float_controls" and `OpExecutionMode <entry> DenormPreserve 32`
-# (verified on v2026.14.1), which is the SPIR-V way of asking for the CPU's
-# behaviour. engine/testing/spirv_scan.hpp's rule P3 is the tripwire: drop this
-# flag and SlangSpirv.FloatControlsPinned fails on every module, in both
-# profiles, before any device test gets a chance to.
+# WHAT IT COSTS, AND WHAT COVERS IT.
+#   - Both devices on record flush by default, so a GPU result can differ
+#     from the CPU's at subnormal magnitudes (below 1.18e-38).
+#   - fp32_math's subnormal paths are integer forms that do not depend on the
+#     mode (the plan's T1), so that library stays exact on every device
+#     measured.
+#   - Everything else is banded against the CPU (TD-14).
 #
-# THE COST, STATED PRECISELY: a kernel compiled this way requires a device whose
-# shaderDenormPreserveFloat32 is VK_TRUE. On a device whose is not, requesting
-# the execution mode is a VULKAN VALID-USAGE VIOLATION -- i.e. UNDEFINED
-# BEHAVIOUR. It is NOT a guaranteed VK_ERROR_* from vkCreateComputePipelines, so
-# "pipeline creation fails loudly" would be an OVERCLAIM: a validation layer
-# would report it, and this project enables layers only in Debug and only if
-# present, so a Release run on such a device could plausibly get a pipeline that
-# quietly flushes and a trajectory that quietly diverges.
+# THE TRIPWIRE. engine/testing/spirv_scan.hpp's rule P3: a module that declares
+# a DenormPreserve or DenormFlushToZero mode or capability fails
+# SlangSpirv.FloatControlsPinned before any device runs it. That covers a flag
+# put back here and a future slangc default alike.
 #
-# WHICH IS WHY THE DEVICE IS CHECKED IN CODE rather than left to the driver:
-# VulkanContext::create() (engine/compute/vulkan/context.cpp) queries
-# VkPhysicalDeviceFloatControlsProperties and refuses such a device up front with
-# Code::unavailable, naming the capability and why parity requires it. That turns
-# an undefined behaviour into a named error at the one place a device is
-# accepted -- which is the loud failure this comment previously assumed it
-# already had.
-#
-# WHAT IS *NOT* PINNED, stated rather than left unsaid: signed-zero/Inf/NaN
-# preservation and the round-to-nearest-even rounding mode are the other two
-# float-controls execution modes, and slangc v2026.14.1 exposes no flag for
-# either (`slangc -h` lists only -denorm-mode-fp16/32/64, and no float-controls
-# entry appears in `slangc -h capability`). Both are advertised as supported by
-# this device and are honoured by it in practice --
+# WHAT IS *NOT* PINNED, stated rather than left unsaid: the other two
+# float-controls execution modes, signed-zero/Inf/NaN preservation and
+# round-to-nearest-even rounding. slangc v2026.14.1 exposes no flag for either
+# (`slangc -h` lists only -denorm-mode-fp16/32/64, and no float-controls entry
+# appears in `slangc -h capability`). The Iris Plus advertised both as
+# supported and honoured them in practice:
 # GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost compares +-0, +-inf and NaN
-# through all four fp32_math kernels and matches bit for bit -- so the exposure
-# is a missing PIN, not a missing behaviour. Recorded here as a carry-in for
-# whoever next revisits the toolchain pins.
-#
-# THE ONE EXCEPTION: the measurement build (SPADE_MEASURE_UNPINNED_DENORMS, the
-# top-level CMakeLists.txt; docs/design/core/plans/2026-10-04-nvidia-denorm-
-# measurement-plan.md) compiles every kernel and variant WITHOUT this flag, to
-# measure what a device does when no mode is requested. -fp-mode precise stays.
-# Rule P3 inverts there ("P3-unpinned"), and nothing from that tree installs.
-# _spade_slang_denorm_args() below is the one place the choice is made; in a
-# default build it yields exactly the flag, so default command lines are
-# unchanged.
+# through all four fp32_math kernels and matched bit for bit. So the exposure
+# is a missing PIN, not a missing behaviour. Recorded here for whoever next
+# revisits the toolchain pins.
 # ==============================================================================
-
-# The denormal flags for one kernel compile, and the words its COMMENT uses.
-function(_spade_slang_denorm_args out_args out_note)
-    if(SPADE_MEASURE_UNPINNED_DENORMS)
-        set(${out_args} "" PARENT_SCOPE)
-        set(${out_note} "denorm UNPINNED (measurement build)" PARENT_SCOPE)
-    else()
-        set(${out_args} -denorm-mode-fp32 preserve PARENT_SCOPE)
-        set(${out_note} "denorm preserve" PARENT_SCOPE)
-    endif()
-endfunction()
 
 if(NOT SPADE_SLANGC)
     message(FATAL_ERROR
@@ -194,7 +166,7 @@ set(SPADE_SLANG_PROFILE "glsl_450")
 # WHY A LIST HERE AT ALL, rather than one compile and a specialization constant.
 # MEASURED on the pinned slangc v2026.14.1 (Task 9b's report carries the
 # transcript): a `[vk::constant_id(0)] const int` driving [numthreads] does
-# compile, and it does keep the -fp-mode/-denorm-mode pins -- but slangc emits
+# compile, and it does keep the -fp-mode pin -- but slangc emits
 # it as `OpExecutionModeId <entry> LocalSizeId ...`, NOT as the SpecId-decorated
 # `BuiltIn WorkgroupSize` composite. Vulkan gates LocalSizeId behind the
 # maintenance4 feature for any SPIR-V below 1.6 (these modules are 1.3), so that
@@ -339,7 +311,6 @@ function(spade_slang_kernel target name)
     # the reflection step's dependency edge, and adding a pure math module to
     # it would re-run slangc's reflection over bindings.slang every time a
     # polynomial coefficient changed. Kernels reach it as `import fp32_math;`.
-    _spade_slang_denorm_args(_denorm_args _denorm_note)
     add_custom_command(
         OUTPUT "${_spv}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gen_dir}"
@@ -348,14 +319,13 @@ function(spade_slang_kernel target name)
                 -target spirv
                 -profile ${SPADE_SLANG_PROFILE}
                 -fp-mode precise
-                ${_denorm_args}
                 -I "${SPADE_SLANG_SHARED_DIR}"
                 -I "${SPADE_SLANG_SHADERS_DIR}"
                 -o "${_spv}"
                 -depfile "${_dep}"
         DEPENDS "${_src}" ${SPADE_SLANG_SHARED_MODULES}
         DEPFILE "${_dep}"
-        COMMENT "slangc: ${name}.slang -> SPIR-V (fp-mode precise, ${_denorm_note})"
+        COMMENT "slangc: ${name}.slang -> SPIR-V (fp-mode precise)"
         VERBATIM
     )
 
@@ -401,7 +371,7 @@ endfunction()
 # loop -- yields a 64-wide module that step_recorder.cpp then dispatches on a
 # grid divided by 32 or 128. That is a Vulkan valid-usage violation whose
 # symptom is wrong physics rather than an error, and it is exactly the class of
-# silent mismatch this file's -fp-mode/-denorm-mode notes exist to prevent
+# silent mismatch this file's -fp-mode and denormal notes exist to prevent
 # elsewhere. Without a fallback, the same slip is a slangc "undefined identifier
 # SPADE_WG" at build time.
 #
@@ -423,18 +393,16 @@ function(spade_slang_kernel_variants target name)
 
     set(_spv_outputs "")
     set(_embed_args "")
-    _spade_slang_denorm_args(_denorm_args _denorm_note)
 
     foreach(_wg IN LISTS SPADE_SLANG_WORKGROUP_SIZES)
         set(_spv "${_gen_dir}/${name}.wg${_wg}.spv")
         set(_dep "${_gen_dir}/${name}.wg${_wg}.spv.d")
 
         # Identical to spade_slang_kernel()'s compile in every respect except
-        # the -D: same profile, same -fp-mode precise, same -denorm-mode-fp32
-        # preserve (or, in the measurement build, the same absence of it), same
-        # two -I paths, same -depfile. The pins are per-compile flags, so EVERY
-        # variant carries them and the SPIR-V policy gate checks every variant
-        # independently.
+        # the -D: same profile, same -fp-mode precise, the same absence of any
+        # -denorm-mode flag, same two -I paths, same -depfile. The pins are
+        # per-compile flags, so EVERY variant carries them and the SPIR-V
+        # policy gate checks every variant independently.
         add_custom_command(
             OUTPUT "${_spv}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gen_dir}"
@@ -443,7 +411,6 @@ function(spade_slang_kernel_variants target name)
                     -target spirv
                     -profile ${SPADE_SLANG_PROFILE}
                     -fp-mode precise
-                    ${_denorm_args}
                     -DSPADE_WG=${_wg}
                     -I "${SPADE_SLANG_SHARED_DIR}"
                     -I "${SPADE_SLANG_SHADERS_DIR}"
@@ -451,7 +418,7 @@ function(spade_slang_kernel_variants target name)
                     -depfile "${_dep}"
             DEPENDS "${_src}" ${SPADE_SLANG_SHARED_MODULES}
             DEPFILE "${_dep}"
-            COMMENT "slangc: ${name}.slang -> SPIR-V (local size ${_wg}, fp-mode precise, ${_denorm_note})"
+            COMMENT "slangc: ${name}.slang -> SPIR-V (local size ${_wg}, fp-mode precise)"
             VERBATIM
         )
 

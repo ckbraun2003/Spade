@@ -34,8 +34,9 @@
 //   3. THE SPIR-V FLOAT-CONTROLS GATE. SlangSpirv.FloatControlsPinned scans
 //      the embedded SPIR-V of every compiled kernel against
 //      engine/testing/spirv_scan.hpp's policy: NoContraction on every
-//      contractable float op, no sum-of-products opcode, and (for modules held
-//      to the exact profile) no OpFDiv and no sqrt.
+//      contractable float op, no sum-of-products opcode, no fp32 denormal
+//      mode requested, and (for modules held to the exact profile) no OpFDiv
+//      and no sqrt.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -413,15 +414,13 @@ struct SpirvModule {
     // fake work just to satisfy the checker"), reached from the other
     // direction.
     //
-    // WHY NOT JUST USE THE NO_OP PROFILE FOR IT. NO_OP means "a byte-
-    // preserving stub", and it DROPS rule P3 (the fp32 denormal pin) on the
-    // argument that a kernel with zero arithmetic has no denormal hazard.
-    // grid_sort is not a stub -- it is a real ported stage of a real pass --
-    // and it does declare DenormPreserve (measured: the flag emits the
-    // execution mode even for an arithmetic-free module), so demoting it to
-    // NO_OP would silently stop checking a property it actually has. Keeping
-    // PARITY and swapping only the non-vacuity instrument asserts strictly
-    // more.
+    // WHY NOT JUST USE THE NO_OP PROFILE FOR IT. NO_OP (since retired) meant
+    // "a byte-preserving stub", and it DROPPED rule P3 as P3 stood then (the
+    // fp32 denormal pin) on the argument that a kernel with zero arithmetic
+    // has no denormal hazard. grid_sort is not a stub -- it is a real ported
+    // stage of a real pass -- so demoting it to NO_OP would have silently
+    // stopped checking a module-level property it really has. Keeping PARITY
+    // and swapping only the non-vacuity instrument asserts strictly more.
     //
     // WHAT REPLACES IT: the same two substitutes the NO_OP branch already
     // uses -- a real OpStore (so an empty or truncated embedding cannot pass)
@@ -443,8 +442,8 @@ const SpirvModule kSpirvModules[] = {
     // audit) and no sqrt (there is none to respell).
     {gen::kSpvVariants_fp32_math_probe, spade::testing::SpirvProfile::exact},
     // S6 Task 6's three ported kernels, under PARITY -- P1 (NoContraction on
-    // every contractable op), P2 (no sum-of-products opcode) and P3 (fp32
-    // denormals preserved), but NOT exact's E1/E2. That is the global
+    // every contractable op), P2 (no sum-of-products opcode) and P3 (no fp32
+    // denormal mode requested), but NOT exact's E1/E2. That is the global
     // constraint's own split, not a relaxation: "downstream kernels MAY use
     // div/sqrt -- that is why CPU<->GPU is banded rather than bit-identical",
     // and each kernel's header lists every one of its div and sqrt sites
@@ -464,8 +463,9 @@ const SpirvModule kSpirvModules[] = {
     //   grid_build carries the only floating-point arithmetic in the broad
     //   phase -- the three divisions and three floors of grid_cell_of()
     //   (grid.cpp:306-327) -- so P1's non-vacuity has something real to bite
-    //   on and P3's denormal pin genuinely matters (a flushed pos/cell_size
-    //   would put a body in the wrong cell).
+    //   on. It is also where a device's denormal flush could reach state: a
+    //   flushed pos/cell_size puts a body |pos| < 2.8e-39 m into another cell,
+    //   which no scene reaches and the bands would show (banded-parity plan).
     //
     //   grid_sort contains NO float arithmetic at all: a sort is integer
     //   comparison and a swap. It is held to PARITY anyway rather than to
@@ -549,16 +549,6 @@ const SpirvModule kSpirvModules[] = {
 #endif
 };
 
-// Rule P3's expectation for THIS build. The measurement build
-// (SPADE_MEASURE_UNPINNED_DENORMS, a definition on spade_tests only; see the
-// top-level CMakeLists.txt) compiles every kernel without the fp32 denormal
-// pin, so there P3 inverts; everywhere else it is the pin.
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-constexpr spade::testing::DenormPolicy kDenormPolicy = spade::testing::DenormPolicy::unpinned;
-#else
-constexpr spade::testing::DenormPolicy kDenormPolicy = spade::testing::DenormPolicy::preserve;
-#endif
-
 }  // namespace
 
 TEST(SlangSpirv, FloatControlsPinned) {
@@ -576,7 +566,7 @@ TEST(SlangSpirv, FloatControlsPinned) {
             const std::string module = std::string(entry.variants.name) + " (local size " +
                                        std::to_string(variant.workgroup_size) + ")";
             const spade::testing::SpirvScanResult scan =
-                spade::testing::scan_spirv(variant.code(), entry.profile, kDenormPolicy);
+                spade::testing::scan_spirv(variant.code(), entry.profile);
 
             EXPECT_TRUE(scan.well_formed) << module << ": not a well-formed SPIR-V module";
 
@@ -612,29 +602,15 @@ TEST(SlangSpirv, FloatControlsPinned) {
             }
 
             // Rule P3, asserted by name as well as through the findings loop
-            // below: this one is a module-level property with exactly one way to be
-            // wrong, and a named expectation reads better in a failure log than
-            // "[P3] no OpExecutionMode ...".
-            //
-            // UNCONDITIONAL AS OF S6 TASK 8. It used to carry a `profile != no_op`
-            // guard, because the stub kernel was the one module that legitimately
-            // declared no DenormPreserve execution mode (a module with provably
-            // zero float arithmetic has no flush hazard to guard against). That
-            // kernel and that profile are both retired, so every module in the
-            // table is now an arithmetic one and the guard would be a branch nothing
-            // takes.
-            //
-            // Inverted in the measurement build (kDenormPolicy, above).
-            if constexpr (kDenormPolicy == spade::testing::DenormPolicy::preserve) {
-                EXPECT_TRUE(scan.denorm_preserve_fp32)
-                    << module << ": fp32 denormals are not pinned to preserve; is the module "
-                    << "compiled -denorm-mode-fp32 preserve? (cmake/SpadeSlang.cmake)";
-            } else {
-                EXPECT_FALSE(scan.denorm_preserve_fp32)
-                    << module << ": P3-unpinned: DenormPreserve 32 present in the measurement "
-                    << "build (SPADE_MEASURE_UNPINNED_DENORMS); it must compile without "
-                    << "-denorm-mode-fp32 preserve (cmake/SpadeSlang.cmake)";
-            }
+            // below: one module-level property, every module, every build. No
+            // module may request a denormal mode (amended 2026-10-05; see P3
+            // in engine/testing/spirv_scan.hpp).
+            EXPECT_FALSE(scan.requests_denorm_mode())
+                << module << ": requests a denormal mode ("
+                << (scan.denorm_requests.empty() ? std::string{} : scan.denorm_requests.front())
+                << (scan.denorm_requests.size() > 1 ? ", ..." : "")
+                << "), which a device without the mode runs as undefined behaviour; is a "
+                << "-denorm-mode flag back in cmake/SpadeSlang.cmake?";
 
             // Rule P4 (EVERY profile, S6 Task 8), named for the same reason P3 is
             // named above: one module-level property, one way to be wrong, and a
@@ -758,16 +734,24 @@ struct SpirvInterface {
 
 namespace {
 
-// A real module's words with its `OpExecutionMode <entry> DenormPreserve 32`
-// overwritten by OpNops (word count 1, opcode 0); unchanged if it has none.
-std::vector<uint32_t> without_denorm_preserve(std::span<const uint32_t> code) {
+// A real module's words with every denormal request overwritten by OpNops
+// (word count 1, opcode 0): each `DenormPreserve` / `DenormFlushToZero`
+// execution mode, whatever its width, and each matching capability. A module
+// with none comes back unchanged.
+std::vector<uint32_t> without_denorm_requests(std::span<const uint32_t> code) {
     namespace st = spade::testing;
     std::vector<uint32_t> words(code.begin(), code.end());
     for (std::size_t i = 5; i < words.size();) {
         const uint32_t word_count = words[i] >> 16;
         if (word_count == 0 || i + word_count > words.size()) break;
-        if ((words[i] & 0xFFFFu) == st::spv_op::kExecutionMode && word_count >= 4 &&
-            words[i + 2] == st::kExecutionModeDenormPreserve && words[i + 3] == st::kFloatWidth32) {
+        const uint32_t opcode = words[i] & 0xFFFFu;
+        const bool mode = opcode == st::spv_op::kExecutionMode && word_count >= 3 &&
+                          (words[i + 2] == st::kExecutionModeDenormPreserve ||
+                           words[i + 2] == st::kExecutionModeDenormFlushToZero);
+        const bool capability = opcode == st::spv_op::kCapability && word_count >= 2 &&
+                                (words[i + 1] == st::kCapabilityDenormPreserve ||
+                                 words[i + 1] == st::kCapabilityDenormFlushToZero);
+        if (mode || capability) {
             std::fill_n(words.begin() + static_cast<std::ptrdiff_t>(i), word_count, uint32_t{1} << 16);
         }
         i += word_count;
@@ -775,19 +759,21 @@ std::vector<uint32_t> without_denorm_preserve(std::span<const uint32_t> code) {
     return words;
 }
 
-// The same module with exactly one such execution mode, right after its first
-// OpEntryPoint (the scanner judges the declaration, not where it sits).
-std::vector<uint32_t> with_denorm_preserve(std::span<const uint32_t> code) {
+// `words` with one instruction inserted right after its first OpEntryPoint
+// (the scanner judges the declaration, not where it sits). `entry_operand`
+// says whether the instruction's first operand is the entry point's id.
+std::vector<uint32_t> with_instruction(std::vector<uint32_t> words, uint32_t opcode,
+                                       std::vector<uint32_t> operands, bool entry_operand) {
     namespace st = spade::testing;
-    std::vector<uint32_t> words = without_denorm_preserve(code);
     for (std::size_t i = 5; i < words.size();) {
         const uint32_t word_count = words[i] >> 16;
         if (word_count == 0 || i + word_count > words.size()) break;
         if ((words[i] & 0xFFFFu) == st::spv_op::kEntryPoint && word_count >= 3) {
-            const uint32_t mode[] = {(uint32_t{4} << 16) | st::spv_op::kExecutionMode, words[i + 2],
-                                     st::kExecutionModeDenormPreserve, st::kFloatWidth32};
-            words.insert(words.begin() + static_cast<std::ptrdiff_t>(i + word_count), std::begin(mode),
-                         std::end(mode));
+            if (entry_operand) operands.insert(operands.begin(), words[i + 2]);
+            std::vector<uint32_t> instruction{(static_cast<uint32_t>(operands.size() + 1) << 16) | opcode};
+            instruction.insert(instruction.end(), operands.begin(), operands.end());
+            words.insert(words.begin() + static_cast<std::ptrdiff_t>(i + word_count), instruction.begin(),
+                         instruction.end());
             break;
         }
         i += word_count;
@@ -802,39 +788,46 @@ std::size_t findings_named(const spade::testing::SpirvScanResult& scan, const st
 
 }  // namespace
 
-// Rule P3 in both directions, under both policies, on one real module. The
-// inverted rule (DenormPolicy::unpinned, the SPADE_MEASURE_UNPINNED_DENORMS
-// build's) has to be provable from a default build, which never compiles an
-// unpinned module, so the test makes both forms of the module itself: the
-// mode present, and the mode overwritten. It holds in either build.
-TEST(SlangSpirv, RuleP3InvertsUnderTheUnpinnedPolicy) {
+// Rule P3 as amended on 2026-10-05: no denormal mode is requested, in any
+// form. One real module, stripped of whatever it requests, is the clean case;
+// each way back to a request -- either mode, any width, or a capability alone
+// -- must give exactly one P3 finding, and the module must stay well formed.
+// Holds in any build, whatever the compiled modules carry.
+TEST(SlangSpirv, RuleP3RefusesAnyDenormalMode) {
     namespace st = spade::testing;
     const std::span<const uint32_t> code = kSpirvModules[0].variants.all().front().code();
-    const std::vector<uint32_t> pinned = with_denorm_preserve(code);
-    const std::vector<uint32_t> unpinned = without_denorm_preserve(code);
     const st::SpirvProfile profile = kSpirvModules[0].profile;
+    const std::vector<uint32_t> none = without_denorm_requests(code);
 
-    const st::SpirvScanResult pinned_preserve = st::scan_spirv(pinned, profile, st::DenormPolicy::preserve);
-    const st::SpirvScanResult unpinned_preserve = st::scan_spirv(unpinned, profile, st::DenormPolicy::preserve);
-    const st::SpirvScanResult pinned_unpinned = st::scan_spirv(pinned, profile, st::DenormPolicy::unpinned);
-    const st::SpirvScanResult unpinned_unpinned = st::scan_spirv(unpinned, profile, st::DenormPolicy::unpinned);
+    const st::SpirvScanResult clean = st::scan_spirv(none, profile);
+    EXPECT_TRUE(clean.well_formed);
+    EXPECT_FALSE(clean.requests_denorm_mode());
+    EXPECT_EQ(findings_named(clean, "P3"), std::size_t{0});
 
-    for (const st::SpirvScanResult* scan : {&pinned_preserve, &unpinned_preserve, &pinned_unpinned, &unpinned_unpinned}) {
-        EXPECT_TRUE(scan->well_formed);
+    struct Request {
+        const char* what;
+        uint32_t opcode;
+        std::vector<uint32_t> operands;
+        bool entry_operand;
+    };
+    const Request requests[] = {
+        {"OpExecutionMode DenormPreserve 32", st::spv_op::kExecutionMode,
+         {st::kExecutionModeDenormPreserve, st::kFloatWidth32}, true},
+        {"OpExecutionMode DenormFlushToZero 32", st::spv_op::kExecutionMode,
+         {st::kExecutionModeDenormFlushToZero, st::kFloatWidth32}, true},
+        {"OpExecutionMode DenormPreserve 16 (another width)", st::spv_op::kExecutionMode,
+         {st::kExecutionModeDenormPreserve, 16}, true},
+        {"OpCapability DenormPreserve alone", st::spv_op::kCapability, {st::kCapabilityDenormPreserve}, false},
+        {"OpCapability DenormFlushToZero alone", st::spv_op::kCapability, {st::kCapabilityDenormFlushToZero},
+         false},
+    };
+    for (const Request& r : requests) {
+        const st::SpirvScanResult scan =
+            st::scan_spirv(with_instruction(none, r.opcode, r.operands, r.entry_operand), profile);
+        EXPECT_TRUE(scan.well_formed) << r.what;
+        EXPECT_EQ(scan.denorm_requests.size(), std::size_t{1}) << r.what;
+        EXPECT_EQ(findings_named(scan, "P3"), std::size_t{1}) << r.what;
     }
-    EXPECT_TRUE(pinned_preserve.denorm_preserve_fp32);
-    EXPECT_FALSE(unpinned_preserve.denorm_preserve_fp32);
-
-    // preserve: the pin passes, its absence is P3.
-    EXPECT_EQ(findings_named(pinned_preserve, "P3"), std::size_t{0});
-    EXPECT_EQ(findings_named(unpinned_preserve, "P3"), std::size_t{1});
-    // unpinned: the pin is P3-unpinned, its absence passes, and P3 never fires.
-    EXPECT_EQ(findings_named(pinned_unpinned, "P3-unpinned"), std::size_t{1});
-    EXPECT_EQ(findings_named(unpinned_unpinned, "P3-unpinned"), std::size_t{0});
-    EXPECT_EQ(findings_named(pinned_unpinned, "P3") + findings_named(unpinned_unpinned, "P3"), std::size_t{0});
-    // preserve never reports the inverted rule.
-    EXPECT_EQ(findings_named(pinned_preserve, "P3-unpinned") + findings_named(unpinned_preserve, "P3-unpinned"),
-              std::size_t{0});
 }
 
 // engine/compute/vulkan/probe_runner.hpp states a contract the probe KERNEL has

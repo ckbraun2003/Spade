@@ -39,35 +39,38 @@
 //       is what puts the decoration on; this rule is the tripwire that fires
 //       if that flag is ever dropped.
 //
-//   P3. FP32 DENORMALS ARE PRESERVED, DECLARED IN THE MODULE. Vulkan leaves
-//       denormal handling IMPLEMENTATION-DEFINED unless a module asks, via
-//       `OpExecutionMode <entry> DenormPreserve 32` (SPV_KHR_float_controls).
-//       This program's own correctness device -- an Intel Iris Plus that
-//       advertises BOTH behaviours as supported -- flushes to zero when not
-//       asked, while the CPU twin (x86 SSE, default MXCSR, FTZ and DAZ off)
-//       preserves. S6 Task 4 measured that divergence on three separate paths
-//       at once: log32's subnormal pre-scale, exp32's entire subnormal-result
-//       tail below -87.3365479, and sin32 of a subnormal argument.
-//       cmake/SpadeSlang.cmake compiles every kernel -denorm-mode-fp32
-//       preserve, which is what emits the execution mode; this rule is the
-//       tripwire that fires if that flag is ever dropped. In BOTH profiles: a
-//       physics kernel that may use div/sqrt still may not silently flush.
-//
-//       INVERTED IN THE MEASUREMENT BUILD ONLY (DenormPolicy::unpinned, below;
-//       SPADE_MEASURE_UNPINNED_DENORMS, docs/design/core/plans/2026-10-04-
-//       nvidia-denorm-measurement-plan.md). That build compiles its kernels
-//       WITHOUT the flag to measure a device's default, so a module that still
-//       declares the mode is the failure there ("P3-unpinned"): the build
-//       would be measuring something other than what it says.
+//   P3. NO FP32 DENORMAL MODE IS REQUESTED. No module declares a
+//       `DenormPreserve` or `DenormFlushToZero` execution mode, for any width,
+//       or the matching capability (SPV_KHR_float_controls; the four values
+//       below). Every device then runs the kernels legally, with its own
+//       default.
+//       - Why: requesting a mode the device does not support
+//         (VkPhysicalDeviceFloatControlsProperties) is a Vulkan valid-usage
+//         violation, i.e. undefined behaviour, not a reported error. The RTX
+//         3060 Ti supports neither mode.
+//       - What it costs: subnormal magnitudes only. Both devices on record
+//         flush by default (the Iris Plus, recorded in S6 Task 4, and the
+//         3060 Ti, measured in 2026-10-04-nvidia-denorm-report.md), and
+//         fp32_math's subnormal paths are integer forms that do not depend on
+//         the mode (the banded-parity plan's T1). The CPU twin preserves, and
+//         the difference is banded, never assumed away (TD-14).
+//       - The tripwire: if a flag, or a future slangc default, puts a request
+//         back, the gate fails before any device runs it.
+//       - Checked in BOTH profiles.
+//       - History: until 2026-10-05, P3 REQUIRED `DenormPreserve 32`, and
+//         SpadeSlang.cmake compiled every kernel -denorm-mode-fp32 preserve.
+//         The user's ruling of 2026-10-05 ended bit-exact CPU<->GPU parity, and
+//         the rule was amended to this (docs/design/core/plans/2026-10-05-
+//         banded-parity-plan.md; test-docs/00-decisions.md).
 //
 //   P4. NO `OpCapability Int64` (S6 Task 8, and it is a MEASUREMENT rather
-//       than a precaution). This program's correctness device -- the Intel
-//       Iris Plus every parity band is calibrated on -- reports
-//       VkPhysicalDeviceFeatures::shaderInt64 == VK_FALSE (Task 8's
-//       plan-mandated probe; tests/test_compute_context.cpp's
-//       GpuContext.Int64ProbeMatchesTheDevice prints it). A SPIR-V module may
-//       only declare a capability whose feature the logical device enabled, so
-//       a module declaring Int64 is UNDEFINED BEHAVIOUR on this device, not a
+//       than a precaution). The Intel Iris Plus, the device of record when
+//       this rule was written, reports VkPhysicalDeviceFeatures::shaderInt64
+//       == VK_FALSE (Task 8's plan-mandated probe;
+//       tests/test_compute_context.cpp's GpuContext.Int64ProbeMatchesTheDevice
+//       prints it for whatever device runs it). A SPIR-V module may only
+//       declare a capability whose feature the logical device enabled, so a
+//       module declaring Int64 is UNDEFINED BEHAVIOUR on such a device, not a
 //       reported error -- the same shape of hazard P3 exists for.
 //
 //       IT CAUGHT A REAL, SHIPPED VIOLATION. forces_drag.spv and integrate.spv
@@ -143,7 +146,9 @@
 //
 // (P1 through P5 are PARITY. P3 was added by S6 Task 4, P4 and P5 by Task 8;
 // P3 and P4 came from a device measurement and P5 from a review finding -- see
-// their text above.)
+// their text above. P3 was amended on 2026-10-05, from "DenormPreserve 32
+// required" to "no denormal mode requested", under the user's ruling that
+// ended bit-exact CPU<->GPU parity.)
 //
 // Profile EXACT -- PARITY, plus the two rules the global constraints impose on
 // the fp32_math module (Task 4) and on anything else that must be
@@ -290,11 +295,17 @@ inline constexpr uint32_t kGlslStd450InverseSqrt = 32;
     }
 }
 
-// SPIR-V ExecutionMode DenormPreserve (SPV_KHR_float_controls; core from
-// SPIR-V 1.4). Its single literal operand is the FLOAT WIDTH the mode applies
-// to -- a module may preserve 16-bit denormals and flush 32-bit ones, which is
-// exactly why rule P3 checks the operand rather than the mode's presence.
+// The denormal modes and their capabilities (SPV_KHR_float_controls; core from
+// SPIR-V 1.4), the four values rule P3 refuses. An execution mode's single
+// literal operand is the FLOAT WIDTH it applies to; P3 refuses every width.
+// Confirmed on 2026-10-05 two ways: Khronos SPIRV-Headers
+// (include/spirv/unified1/spirv.hpp) gives these values, and the pinned slangc
+// v2026.14.1 emits exactly them for -denorm-mode-fp32 preserve and ftz, naming
+// them in its spirv-asm output.
 inline constexpr uint32_t kExecutionModeDenormPreserve = 4459;
+inline constexpr uint32_t kExecutionModeDenormFlushToZero = 4460;
+inline constexpr uint32_t kCapabilityDenormPreserve = 4464;
+inline constexpr uint32_t kCapabilityDenormFlushToZero = 4465;
 inline constexpr uint32_t kFloatWidth32 = 32;
 
 // SPIR-V Capability Int64 (rule P4). Worth stating that it sits in a run of
@@ -312,7 +323,7 @@ inline constexpr uint32_t kSpirvMagic = 0x07230203u;
 // returns every finding rather than the first, so a failing test names all of
 // them at once instead of forcing one round trip per violation.
 struct SpirvFinding {
-    std::string rule;     // "P1", "P2", "P3", "P3-unpinned", "P4", "P5", "E1", "E2"
+    std::string rule;     // "P1", "P2", "P3", "P4", "P5", "E1", "E2"
     std::string message;  // what was found, with the offending word index
 };
 
@@ -320,15 +331,6 @@ enum class SpirvProfile {
     parity,  // P1 + P2 + P3 + P4
     exact,   // P1 + P2 + P3 + P4 + E1 + E2
     // no_op RETIRED (S6 Task 8) with its only instance; see this file's header.
-};
-
-// What rule P3 expects of a module's fp32 denormal mode. `preserve` is every
-// build's but one: `unpinned` is the measurement build's
-// (SPADE_MEASURE_UNPINNED_DENORMS), where a module must carry NO
-// `DenormPreserve 32`. See P3 in this file's header.
-enum class DenormPolicy {
-    preserve,
-    unpinned,
 };
 
 // True for the opcodes an implementation may contract and that slangc DOES
@@ -382,7 +384,9 @@ struct SpirvScanResult {
     uint32_t version_minor = 0;
     std::size_t contractable_ops = 0;  // ops subject to rule P1
     std::size_t decorated_ops = 0;     // of those, how many carry NoContraction (parity/exact only)
-    bool denorm_preserve_fp32 = false;  // rule P3 (parity/exact only): the module declared it
+    // Rule P3 (EVERY profile): each denormal execution mode or capability the
+    // module declares, as "<what> at word <i>". Empty is the only passing value.
+    std::vector<std::string> denorm_requests;
     bool declares_int64 = false;        // rule P4 (EVERY profile): OpCapability Int64 present
     // Rule P5: GLSL.std.450 exp/log/trig calls. COUNTED in every profile so a
     // caller can assert zero by name; reported as a finding under parity and
@@ -402,6 +406,7 @@ struct SpirvScanResult {
     std::vector<SpirvFinding> findings;
 
     [[nodiscard]] bool clean() const noexcept { return well_formed && findings.empty(); }
+    [[nodiscard]] bool requests_denorm_mode() const noexcept { return !denorm_requests.empty(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -414,8 +419,7 @@ struct SpirvScanResult {
 // GLSL.std.450 import id; pass 2 judges the instructions.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline SpirvScanResult scan_spirv(std::span<const uint32_t> words,
-                                                SpirvProfile profile,
-                                                DenormPolicy denorms = DenormPolicy::preserve) {
+                                                SpirvProfile profile) {
     SpirvScanResult result;
 
     // Header: magic, version, generator, bound, schema -- five words minimum.
@@ -458,13 +462,26 @@ struct SpirvScanResult {
         if (opcode == spv_op::kCapability && word_count >= 2 && words[i + 1] == kCapabilityInt64) {
             result.declares_int64 = true;
         }
-        // P3, collected in pass 1 with the decorations: OpExecutionMode sits
-        // in the module's own header section, before any function body, so a
-        // pass-2 check would be a check about instruction order rather than
-        // about the mode. Operands: <entry point id> <mode> <literal...>.
-        if (opcode == spv_op::kExecutionMode && word_count >= 4 &&
-            words[i + 2] == kExecutionModeDenormPreserve && words[i + 3] == kFloatWidth32) {
-            result.denorm_preserve_fp32 = true;
+        // P3, collected in pass 1 with the decorations: OpExecutionMode and
+        // OpCapability sit in the module's own header section, before any
+        // function body, so a pass-2 check would be a check about instruction
+        // order rather than about the request. Execution mode operands:
+        // <entry point id> <mode> <width>; every width counts.
+        if (opcode == spv_op::kExecutionMode && word_count >= 3 &&
+            (words[i + 2] == kExecutionModeDenormPreserve ||
+             words[i + 2] == kExecutionModeDenormFlushToZero)) {
+            std::string what = words[i + 2] == kExecutionModeDenormPreserve
+                                   ? "OpExecutionMode DenormPreserve"
+                                   : "OpExecutionMode DenormFlushToZero";
+            if (word_count >= 4) what += " " + std::to_string(words[i + 3]);
+            result.denorm_requests.push_back(what + " at word " + std::to_string(i));
+        }
+        if (opcode == spv_op::kCapability && word_count >= 2 &&
+            (words[i + 1] == kCapabilityDenormPreserve || words[i + 1] == kCapabilityDenormFlushToZero)) {
+            result.denorm_requests.push_back(
+                std::string(words[i + 1] == kCapabilityDenormPreserve ? "OpCapability DenormPreserve"
+                                                                      : "OpCapability DenormFlushToZero") +
+                " at word " + std::to_string(i));
         }
         if (opcode == spv_op::kExtInstImport && word_count >= 3) {
             all_ext_inst_import_ids.push_back(words[i + 1]);
@@ -610,41 +627,26 @@ struct SpirvScanResult {
     if (result.declares_int64) {
         result.findings.push_back(
             {"P4",
-             "`OpCapability Int64`: this program's correctness device reports "
-             "shaderInt64 == VK_FALSE, so a module declaring it is undefined behaviour there "
+             "`OpCapability Int64`: a device that reports shaderInt64 == VK_FALSE (the Iris "
+             "Plus did) makes a module declaring it undefined behaviour there "
              "rather than a reported error. Mirror 64-bit fields as `uint2` "
              "(shaders/shared/layouts.slang) and do the arithmetic through "
              "engine/shaders/u64.slang, which is exact."});
     }
 
-    // P3: a module that never says so gets the implementation's default, which
-    // on the box this program calls its correctness device is flush-to-zero.
-    // Reported once for the module rather than per instruction, because it IS a
-    // module-level property.
-    //
-    // UNCONDITIONAL AS OF S6 TASK 8. It carried a `profile != no_op` exclusion,
-    // because a stub with provably zero floating-point arithmetic has no
-    // denormal-flush hazard to guard against (and the pinned slangc had no
-    // supported way to add the declaration to it from Slang source anyway).
-    // That profile and its one module are retired, so every module this scanner
-    // sees is an arithmetic one and the guard would be a branch nothing takes.
-    //
-    // Under DenormPolicy::unpinned (the measurement build) the rule inverts:
-    // the declaration is the finding, and its absence is what that build is for.
-    if (denorms == DenormPolicy::preserve && !result.denorm_preserve_fp32) {
+    // P3: no denormal mode requested. Reported once for the module, listing
+    // every request, because the request IS a module-level property.
+    if (result.requests_denorm_mode()) {
+        std::string list;
+        for (const std::string& request : result.denorm_requests) {
+            list += (list.empty() ? "" : "; ") + request;
+        }
         result.findings.push_back(
             {"P3",
-             "no `OpExecutionMode <entry> DenormPreserve 32`: fp32 denormal handling is "
-             "implementation-defined without it and this program's device flushes to zero, "
-             "while the CPU twin preserves; is the module compiled -denorm-mode-fp32 preserve?"});
-    }
-    if (denorms == DenormPolicy::unpinned && result.denorm_preserve_fp32) {
-        result.findings.push_back(
-            {"P3-unpinned",
-             "DenormPreserve 32 present: the measurement build "
-             "(SPADE_MEASURE_UNPINNED_DENORMS) must compile every module WITHOUT "
-             "-denorm-mode-fp32 preserve, or it measures the pinned mode instead of the "
-             "device's default; see cmake/SpadeSlang.cmake"});
+             "a denormal mode is requested (" + list + "). A device that does not support the "
+             "mode runs this module as undefined behaviour; no kernel may request one. Is a "
+             "-denorm-mode flag back in cmake/SpadeSlang.cmake, or did a slangc update change "
+             "its default?"});
     }
 
     result.well_formed = true;
