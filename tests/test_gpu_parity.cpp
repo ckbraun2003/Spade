@@ -97,6 +97,7 @@
 #include "world/medium.hpp"
 #include "sim/world_set.hpp"
 #include "state/layout.hpp"
+#include "state/snapshot.hpp"
 #include "testing/parity.hpp"
 #include "testing/replay.hpp"
 #include "sensors/gnss.hpp"
@@ -517,6 +518,72 @@ void run_parity(const Scenario& scenario, std::string_view label, const std::vec
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] std::filesystem::path golden_dir() { return std::filesystem::path(SPADE_GOLDEN_DIR); }
+
+// ---------------------------------------------------------------------------
+// THE ONE-ULP CPU CONTROL (TD-14's horizon rule). The scenario run twice on
+// the CPU; in the second, the first active body of EVERY world has one
+// position component nudged one ulp up after setup (worlds are isolated, so
+// each world gets its own control). The component is the body's LARGEST in
+// magnitude: one ulp up from a zero coordinate is the smallest subnormal,
+// which the first addition rounds away, so a nudge there tests nothing. The two are compared at the scenario's horizon with the
+// parity table's own rows: what the scene alone does to one ulp. A band means
+// something only while this stays under 1e-5 of the scene's scale; past that
+// the CPU-GPU gap measures the scene, not the port.
+//
+// The nudge goes through a snapshot: find_section() locates the bodies
+// payload, one float is edited in a copy, and restore() takes it back -- the
+// engine's own parser and restore path, so no body is edited behind its back.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<ParityReport> one_ulp_control(const Scenario& scenario, const std::vector<BandEntry>& table) {
+    const BackendDesc cpu{.kind = BackendKind::cpu};
+    Result<Simulation> base = spade::testing::start_scenario(scenario, cpu);
+    if (!base) return std::unexpected(base.error());
+    Result<Simulation> nudged = spade::testing::start_scenario(scenario, cpu);
+    if (!nudged) return std::unexpected(nudged.error());
+
+    const Result<spade::SnapshotBlob> blob = nudged->snapshot();
+    if (!blob) return std::unexpected(blob.error());
+    const Result<spade::BlobSection> bodies = spade::find_section(*blob, "bodies");
+    if (!bodies) return std::unexpected(bodies.error());
+    if (bodies->elem_size != sizeof(spade::BodyState)) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "one_ulp_control: BodyState size"});
+    }
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const std::size_t payload_at = static_cast<std::size_t>(bodies->payload.data() - blob->bytes().data());
+    uint32_t nudges = 0;
+    for (uint32_t w = 0; w < bodies->world_count; ++w) {
+        for (uint32_t k = 0; k < bodies->capacity_per_world; ++k) {
+            const std::size_t at =
+                payload_at + (static_cast<std::size_t>(w) * bodies->capacity_per_world + k) * sizeof(spade::BodyState);
+            spade::BodyState b{};
+            std::memcpy(&b, bytes.data() + at, sizeof(b));
+            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
+            int c = 0;
+            for (int i = 1; i < 3; ++i) {
+                if (std::fabs(b.pos[i]) > std::fabs(b.pos[c])) c = i;
+            }
+            b.pos[c] = std::nextafter(b.pos[c], std::numeric_limits<float>::infinity());
+            std::memcpy(bytes.data() + at, &b, sizeof(b));
+            ++nudges;
+            break;
+        }
+    }
+    if (nudges == 0) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "one_ulp_control: no active body"});
+    }
+    Result<spade::SnapshotBlob> edited = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    if (!edited) return std::unexpected(edited.error());
+    if (const Result<void> restored = nudged->restore(*edited); !restored) {
+        return std::unexpected(restored.error());
+    }
+    if (const Result<void> a = spade::testing::advance_scenario(scenario, *base, scenario.steps); !a) {
+        return std::unexpected(a.error());
+    }
+    if (const Result<void> b = spade::testing::advance_scenario(scenario, *nudged, scenario.steps); !b) {
+        return std::unexpected(b.error());
+    }
+    return compare_arrays(base->arenas(), nudged->arenas(), table);
+}
 
 [[nodiscard]] Result<spade::testing::LoadedScenario> load_scenario(std::string_view name) {
     return spade::testing::scenario_from_yaml(golden_dir() / "scenarios" /
@@ -1058,8 +1125,10 @@ TEST_F(GpuParityTest, BallisticMatchesTheCpuWithinBands) {
 // actually taken rather than merely compiled.
 // ===========================================================================
 
-TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+// gate_fleet's scenario: its parity test and its one-ulp CPU control (TD-14's
+// horizon rule) run the same one.
+namespace {
+[[nodiscard]] Scenario gate_fleet_scenario() {
 
     Scenario gate;
     gate.name = "gate_fleet";
@@ -1127,6 +1196,13 @@ TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
         }
         return {};
     };
+    return gate;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario gate = gate_fleet_scenario();
 
     using namespace spade::testing::bands::gate_fleet;
     run_parity(gate, "gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes)",
@@ -1537,9 +1613,9 @@ TEST_F(GpuParityTest, IntegrateKernelReadsThePerStepTickBuffer) {
 // OVERLAPPING at t = 0 and the pass has real work on its very first substep.
 // ---------------------------------------------------------------------------
 
-TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// contact_pair's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario contact_pair_scenario() {
     Scenario pair;
     pair.name = "contact_pair";
     pair.dt_ns = 1'000'000;  // 1 ms step
@@ -1585,6 +1661,13 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
         if (const Result<spade::BodyRef> ref = sim.spawn(0, b); !ref) return std::unexpected(ref.error());
         return {};
     };
+    return pair;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario pair = contact_pair_scenario();
 
     using namespace spade::testing::bands::contact_pair;
     run_parity(pair, "contact_pair (2 overlapping bodies, unequal masses, 600 steps)",
@@ -2265,9 +2348,9 @@ TEST(ParityGeometry, HeterogeneousGeometrySetMatchesSoloRuns) {
 // check for free.
 // ---------------------------------------------------------------------------
 
-TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// heterogeneous_geometry_set's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario heterogeneous_scenario() {
     Scenario hetero;
     hetero.name = "heterogeneous_geometry_set";
     hetero.dt_ns = kHeteroDtNs;
@@ -2283,6 +2366,13 @@ TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
         }
         return {};
     };
+    return hetero;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario hetero = heterogeneous_scenario();
 
     using namespace spade::testing::bands::heterogeneous_geometry_set;
     run_parity(hetero, "heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps)",
@@ -2451,6 +2541,46 @@ void expect_shower_resolved_pairs(const Simulation& cpu, const Simulation& gpu, 
 // CPU runs, no device, runs on every CI machine.
 // ---------------------------------------------------------------------------
 
+// The one-ulp CPU control for every scenario with contacts, at a quarter, a
+// half and the whole of its parity horizon: TD-14's horizon rule pins element
+// bands only where this stays under 1e-5 of the scene's scale. Host-only: it
+// measures the scene, not a device. Report-only; the bands cite its numbers.
+namespace {
+[[nodiscard]] Scenario shower_ladder_scenario();  // defined beside its parity test
+}  // namespace
+
+TEST(ParityChaos, OneUlpControlAtEachContactScenariosHorizon) {
+    std::vector<std::pair<std::string, Scenario>> scenes = {
+        {"gate_fleet", gate_fleet_scenario()},
+        {"heterogeneous_geometry_set", heterogeneous_scenario()},
+        {"contact_pair", contact_pair_scenario()},
+        {"shower_ladder", shower_ladder_scenario()},
+    };
+    for (const char* name : {"bounce", "two_world_isolation", "shower"}) {
+        const Result<spade::testing::LoadedScenario> loaded = load_scenario(name);
+        ASSERT_TRUE(loaded.has_value()) << name << ": " << loaded.error().context;
+        scenes.emplace_back(name, loaded->scenario);
+    }
+    const ToleranceBand open{1.0e30f, 1.0e30f};  // report-only
+    std::printf("\n=== one-ulp CPU control (max |gap|, A, R) ===\n");
+    for (const auto& [name, full] : scenes) {
+        for (const uint64_t parts : {4u, 2u, 1u}) {
+            Scenario scenario = full;
+            scenario.steps = full.steps / parts;
+            const Result<ParityReport> report =
+                one_ulp_control(scenario, body_bands(open, open, open, open, open));
+            ASSERT_TRUE(report.has_value()) << name << ": " << report.error().context;
+            const spade::testing::QuantityReport& pos = report->quantities[0];
+            const spade::testing::QuantityReport& vel = report->quantities[1];
+            std::printf("control %-26s steps %5llu  pos max %.3e A %.3e R %.3e  vel max %.3e A %.3e R %.3e\n",
+                        name.c_str(), static_cast<unsigned long long>(scenario.steps),
+                        static_cast<double>(pos.max_abs), static_cast<double>(pos.near_zero_abs),
+                        static_cast<double>(pos.far_rel), static_cast<double>(vel.max_abs),
+                        static_cast<double>(vel.near_zero_abs), static_cast<double>(vel.far_rel));
+        }
+    }
+}
+
 TEST(ParityChaos, ShowerPileAmplifiesOneUlpOnTheCpuAlone) {
     const Result<spade::WorldDesc> world =
         spade::resolve_world(WorldRef{golden_dir() / "worlds" / "shower.world.yaml"});
@@ -2577,9 +2707,9 @@ TEST_F(GpuParityTest, ShowerMatchesTheCpuWithinBands) {
                &expect_shower_resolved_pairs);
 }
 
-TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// shower_ladder's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario shower_ladder_scenario() {
     Scenario ladder;
     ladder.name = "shower_ladder";
     // shower's OWN step decomposition, verbatim, so the two shower tests differ
@@ -2636,6 +2766,14 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
         return {};
     };
 
+    return ladder;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario ladder = shower_ladder_scenario();
+
     // THE SHAPE THIS TEST MEANS TO EXERCISE, asserted rather than assumed --
     // the other half of the pair.
     {
@@ -2647,7 +2785,6 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
             << "the two worlds' restitutions differ, so this set must take the PER-WORLD "
             << "CollisionDynamic shape -- if it is uniform, both shower tests cover the batched one";
     }
-
     using namespace spade::testing::bands::shower_ladder;
     run_parity(ladder,
                "shower_ladder (2 worlds x 100 bodies, differing restitution, 400 steps x 2 substeps, "
