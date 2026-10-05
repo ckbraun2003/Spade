@@ -982,9 +982,20 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     // from the same data on both paths. The working copy is attached to
     // `shadow_fbo` here, once, for the frames that add dynamic casters.
     s.shadow_size = 0;
-    if (scene.static_shadow.has_value() && scene.static_shadow->size > 0u &&
-        scene.static_shadow->depth.size() ==
-            static_cast<size_t>(scene.static_shadow->size) * scene.static_shadow->size) {
+    if (scene.static_shadow.has_value()) {
+        // L6: a map whose depth array is not size x size cannot be sampled
+        // (the CPU would read past it). Refused, never drawn unshadowed in
+        // silence. A size-0 map is a valid empty one: the CPU leaves every
+        // pixel lit, and so does GL.
+        const render::ShadowMap& checked = *scene.static_shadow;
+        if (checked.depth.size() != static_cast<size_t>(checked.size) * checked.size) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "GlRenderer::upload_scene: the static shadow map has " +
+                                             std::to_string(checked.depth.size()) + " texels for size " +
+                                             std::to_string(checked.size) + ", not size x size"});
+        }
+    }
+    if (scene.static_shadow.has_value() && scene.static_shadow->size > 0u) {
         const render::ShadowMap& map = *scene.static_shadow;
         const auto size = static_cast<GLsizei>(map.size);
         for (const GLuint tex : {s.shadow_static_tex, s.shadow_work_tex}) {
@@ -1197,6 +1208,11 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.DepthMask(GL_TRUE);
     gl.Clear(GL_DEPTH_BUFFER_BIT);
     gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    // Every pass below writes without blending and clips in depth. Set here,
+    // not assumed: the caller's state, or a dynamic-caster pass, may differ.
+    gl.Disable(GL_BLEND);
+    gl.Disable(GL_DEPTH_CLAMP);
 
     // --- background --------------------------------------------------------
     // Every pixel, before the meshes and with no depth: raster_cpu's

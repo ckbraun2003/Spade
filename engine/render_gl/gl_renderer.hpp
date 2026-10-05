@@ -86,8 +86,9 @@ class GlRenderer {
     // shadow map as the CPU built it. Call when the MESH SET changes -- at
     // scene load -- and not per frame. Idempotent: calling it again
     // re-uploads, which is what a changed mesh set needs. Refused with
-    // Code::unavailable when the driver cannot render to the R32F texture
-    // that dynamic bodies' shadows are drawn into.
+    // Code::invalid_argument for a static shadow map whose depth array is
+    // not size x size, and with Code::unavailable when the driver cannot
+    // render to the R32F texture that dynamic bodies' shadows are drawn into.
     [[nodiscard]] Result<void> upload_scene(const render::RenderScene& scene);
 
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
