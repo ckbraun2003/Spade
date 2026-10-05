@@ -991,6 +991,13 @@ public:
         return arenas_.world_slice(*typed, world_index);
     }
 
+    // A configuration table by its declared name (sim/module.hpp's
+    // ConfigTableDecl): its floats as built from every registered model, in
+    // registration order -- empty until a model is registered. not_found,
+    // naming the table, if no module in this set declares it. The span is
+    // invalidated by the next register_model(), which rebuilds every table.
+    [[nodiscard]] Result<std::span<const float>> config_table(std::string_view name) const;
+
     // --- model types (Task 18) --------------------------------------------
 
     // ---------------------------------------------------------------------

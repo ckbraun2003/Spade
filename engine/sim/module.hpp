@@ -10,6 +10,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,7 +23,8 @@
 #include "compute/backend.hpp"
 #include "core/error.hpp"
 #include "physics/field_row.hpp"
-#include "state/layout.hpp"  // kStd430StructAlignment, WorldParams
+#include "state/layout.hpp"         // kStd430StructAlignment, WorldParams
+#include "vehicles/model_type.hpp"  // complete: a span of an incomplete type breaks MSVC (physics/schedule.hpp)
 
 namespace spade::physics {
 struct SubstepContext;
@@ -273,14 +275,104 @@ struct StreamDecl {
     RowReseedFn reseed = nullptr;  // re-derives one live row's stream; history untouched
 };
 
+// CONFIGURATION TABLES (stage 4, Task 7; Physics' propulsion-rows plan, section
+// 4). A table is a flat list of floats built from the MODEL REGISTRY: model
+// data a pass reads, such as a propeller's coefficient table resampled from
+// every registered model. Simulation builds each table once at create(), from
+// no models, and register_model() rebuilds every table from all the registered
+// models, in registration order. Nothing else writes one, and it never changes
+// inside a step, so a step allocates nothing for it.
+//
+// A table is CONFIGURATION, NOT STATE: it is not registered, so it is not in
+// the walk, the digest or the snapshot, and restore() does not rebuild it.
+// A pass reads it as a bound view: "<module>.<table>" in its access list binds
+// it (BindingKind::table), as one row of floats -- world_count 1 and elem_size
+// 4, read with world_rows<float>(view, 0) -- because one table serves every
+// world. A pass may only READ a table: compile_schedule refuses a write or an
+// accumulation, since a table changes only in register_model(). Another module
+// may read it, plainly or optionally, by the same rules as an array. Table names
+// share the array namespace: unique among every array and table in the set,
+// with no '.', and never a core array's name.
+//
+// THE IDENTITY RULE. A table is a pure function of the registered models (and
+// its build function, whose changes ride the module's version, like a pass's).
+// So snapshot v3's model-registry identity covers it -- a blob restores only
+// into a Simulation whose registry spells the same identity, and so builds the
+// same tables -- ONLY IF EVERY ModelType FIELD A BUILD READS IS FOLDED INTO
+// vehicles::model_identity() (vehicles/model_identity.hpp). A build that reads
+// a field the identity does not fold (visual_ref, or a field added to
+// ModelType without joining the fold) would let two registries with one
+// identity hold different tables, and restore() would accept a blob under the
+// wrong ones. Every new build function, and every new ModelType field, is
+// reviewed against that list. (The standard set declares no table.)
+//
+// The GPU has no copy yet: a table's device mirror waits for stage 6's fixed
+// bindings. A pass that reads one has no GPU kernel, so a Vulkan set holding
+// it is refused by name (stage 2's rule).
+//
+// `build` receives the registered models in registration order and an EMPTY
+// `out`, and appends the table's floats.
+using ConfigBuildFn = void (*)(std::span<const vehicles::ModelType> models, std::vector<float>& out);
+
+struct ConfigTableDecl {
+    std::string_view name;          // shares the array namespace: unique in the set, no '.', not a core array
+    ConfigBuildFn build = nullptr;  // the table from every registered model, in registration order
+};
+
+// THE VEHICLE-SPAWN HOOK (stage 4, Task 7). spawn(world, model, where) calls
+// each module's `vehicle_rows`, in set order, once the vehicle's slots are
+// reserved, with the vehicle as VehicleRows. The hook appends one
+// RowInitRequest per row it wants initialized: rows of ITS OWN module only, and
+// only the vehicle's own -- a per_body row at the vehicle's body slot, or a
+// per_row row owned by `rotors` whose slot lies in one of the vehicle's rotor
+// windows ([rotor_slot * depth, (rotor_slot + 1) * depth)). Each record must be
+// the array's spawn_size, and the array must have an init.
+//
+// spawn() checks every request before anything is committed. One that breaks a
+// rule refuses the whole spawn (invalid_argument, naming the module and the
+// array) and releases every slot it reserved, so a refused spawn leaves the
+// arenas and the queue as they were. The checked requests are queued as
+// init_row ops after the vehicle's built-in rows, so each init runs at the next
+// step boundary; the despawn cascade then frees the rows with their body or
+// their rotor (ATTACHED ROWS above).
+//
+// A model the hook has nothing for gets no request: its rows stay the arena's
+// zeroes, which a module's rows read as "not driven".
+struct VehicleRows {
+    const vehicles::ModelType* model = nullptr;  // the registered model being spawned
+    uint32_t world_index = 0;
+    uint32_t body_slot = 0;                      // GLOBAL
+    std::span<const uint32_t> rotor_slots;       // GLOBAL, in the model's rotor order
+};
+
+struct RowInitRequest {
+    std::string_view array;  // this module's per_body array, or a per_row array owned by rotors
+    uint32_t slot = 0;       // the row's GLOBAL slot
+    std::array<std::byte, kMaxSpawnBytes> spawn{};
+    uint32_t spawn_size = 0;  // the array's spawn_size
+};
+
+using VehicleRowsFn = void (*)(const VehicleRows& vehicle, std::vector<RowInitRequest>& out);
+
+// One request, its record copied in by value: what a hook appends.
+template <class Spawn>
+[[nodiscard]] RowInitRequest init_request(std::string_view array, uint32_t slot, const Spawn& spawn) noexcept {
+    static_assert(std::is_trivially_copyable_v<Spawn>, "a spawn record is carried by value through the queue");
+    static_assert(sizeof(Spawn) <= kMaxSpawnBytes, "a spawn record is at most kMaxSpawnBytes");
+    (void)spawn;
+    return RowInitRequest{.array = array, .slot = slot};
+}
+
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
     std::span<const PassDecl> passes{};
-    std::span<const FieldDecl> fields{};    // the fields this module provides
-    std::span<const ArrayDecl> state{};     // the arrays this module owns
-    bool legacy_walk = false;               // only on a module whose every array is in kLegacyWalkArrays
-    std::span<const StreamDecl> streams{};  // the seeded streams this module's rows hold
+    std::span<const FieldDecl> fields{};          // the fields this module provides
+    std::span<const ArrayDecl> state{};           // the arrays this module owns
+    bool legacy_walk = false;                     // only on a module whose every array is in kLegacyWalkArrays
+    std::span<const StreamDecl> streams{};        // the seeded streams this module's rows hold
+    std::span<const ConfigTableDecl> tables{};    // the configuration tables this module builds
+    VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -290,13 +382,14 @@ inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 // What one declared access of a compiled pass binds (stage 4, Task 6): the
 // view Simulation hands the pass as SubstepContext::state[i] for its i-th
 // access. "<module>.<array>" binds that array -- its index in
-// CompiledSchedule::arrays, whichever module owns it. A core quantity, a field,
-// a stateless module's token, and an optional read of an absent module bind
-// nothing: an absent view, so every access keeps its slot.
-enum class BindingKind : uint8_t { absent = 0, array = 1 };
+// CompiledSchedule::arrays, whichever module owns it -- and "<module>.<table>"
+// that configuration table (Task 7), its index in CompiledSchedule::tables. A
+// core quantity, a field, a stateless module's token, and an optional read of
+// an absent module bind nothing: an absent view, so every access keeps its slot.
+enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2 };
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
-    uint32_t index = kNoArray;  // BindingKind::array: the array's index in CompiledSchedule::arrays
+    uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays (array) or ::tables (table)
 };
 
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set
@@ -342,6 +435,19 @@ struct CompiledStream {
     RowReseedFn reseed = nullptr;
 };
 
+// One declared configuration table.
+struct CompiledTable {
+    std::string module;
+    std::string name;
+    ConfigBuildFn build = nullptr;
+};
+
+// One module's vehicle-spawn hook.
+struct CompiledVehicleRows {
+    std::string module;
+    VehicleRowsFn rows = nullptr;
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -358,6 +464,13 @@ struct CompiledSchedule {
     // The declared streams in set order, then each module's declaration order:
     // the order create() and reseed() derive them in. Not part of the identity.
     std::vector<CompiledStream> streams{};
+    // The configuration tables in set order, then each module's declaration
+    // order. Not part of the identity: a table's contents are the model
+    // registry's (ConfigTableDecl's identity rule), and its build rides the
+    // module's version.
+    std::vector<CompiledTable> tables{};
+    // The vehicle-spawn hooks, in set order: the order spawn() calls them in.
+    std::vector<CompiledVehicleRows> vehicle_rows{};
 };
 
 // Orders every pass of `modules`:

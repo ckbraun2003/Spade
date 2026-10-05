@@ -2190,3 +2190,489 @@ TEST(ModuleSchedule, PhysicsInputFiveDeclaresAsWritten) {
     unordered.push_back({.name = "propulsion", .passes = drive_no_edge, .state = motors});
     EXPECT_TRUE(refused_naming(compile_schedule(unordered), "rotor.rotors"));
 }
+
+// Stage 4, Task 7: model-driven state for optional modules (Physics'
+// propulsion-rows plan, section 4, inputs 3 and 4). A VEHICLE HOOK asks for
+// rows of its own module when a vehicle spawns -- a per_body row, and rows
+// owned by the vehicle's rotors -- and the core checks, queues, initializes and
+// frees them. A CONFIGURATION TABLE is a float table register_model() rebuilds
+// from every registered model, which a pass reads as a bound view.
+namespace {
+
+using spade::modules::ConfigTableDecl;
+using spade::modules::init_request;
+using spade::modules::RowInitRequest;
+using spade::modules::VehicleRows;
+
+// "ballast", the plan's fixture: a per_body row holding twice the vehicle's
+// mass, and a mark per rotor slot holding the rotor's one-based index in the
+// model -- a row owned by another module's array, as Physics' motor rows are.
+struct BallastRow {
+    float kg;
+    uint32_t _p[3];
+};
+struct RotorMarkRow {
+    uint32_t index;
+    uint32_t _p[3];
+};
+void init_ballast(const spade::modules::RowInit& in) noexcept {
+    spade::modules::row_as<BallastRow>(in.row).kg = spade::modules::spawn_as<float>(in.spawn);
+}
+void init_rotor_mark(const spade::modules::RowInit& in) noexcept {
+    spade::modules::row_as<RotorMarkRow>(in.row).index = spade::modules::spawn_as<uint32_t>(in.spawn);
+}
+constexpr spade::modules::ArrayDecl kBallastArrays[] = {{.name = "ballast_rows",
+                                                         .elem_size = spade::modules::row_size<BallastRow>(),
+                                                         .extent = Extent::per_body,
+                                                         .spawn_size = sizeof(float),
+                                                         .init = &init_ballast},
+                                                        {.name = "rotor_marks",
+                                                         .elem_size = spade::modules::row_size<RotorMarkRow>(),
+                                                         .extent = Extent::per_row,
+                                                         .owner = "rotors",
+                                                         .depth = 1,
+                                                         .spawn_size = sizeof(uint32_t),
+                                                         .init = &init_rotor_mark}};
+void ballast_vehicle_rows(const VehicleRows& v, std::vector<RowInitRequest>& out) {
+    out.push_back(init_request("ballast_rows", v.body_slot, 2.0f * v.model->body.mass));
+    for (uint32_t i = 0; i < v.rotor_slots.size(); ++i) {
+        out.push_back(init_request("rotor_marks", v.rotor_slots[i], i + 1u));
+    }
+}
+
+// Standard + "ballast": one world with room for test_quad() -- four rotors and
+// a drag body (five force elements) and an IMU -- and one more body.
+[[nodiscard]] spade::Simulation make_ballast_sim() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "ballast", .state = kBallastArrays, .vehicle_rows = &ballast_vehicle_rows});
+    return spade::Simulation::create(world_with(spade::Capacities{2, 5, 1, 1}), 2'000'000, 2, {}, set).value();
+}
+
+[[nodiscard]] spade::WorldSetDesc two_worlds_with(spade::Capacities capacities) {
+    const spade::WorldInstanceDesc one = world_with(capacities).worlds[0];
+    return spade::WorldSetDesc{{one, one}};
+}
+
+// "windows": TWO rows per rotor slot, owned by rotors, each recording what its
+// init was handed -- so a test can see that it ran, and where.
+struct WindowRow {
+    uint32_t value;
+    uint32_t local_slot;
+    uint32_t local_body;
+    uint32_t live;
+};
+void init_window(const spade::modules::RowInit& in) noexcept {
+    WindowRow& row = spade::modules::row_as<WindowRow>(in.row);
+    row.value = spade::modules::spawn_as<uint32_t>(in.spawn);
+    row.local_slot = in.local_slot;
+    row.local_body = in.local_body;
+    row.live = 1u;  // last
+}
+constexpr spade::modules::ArrayDecl kWindowArrays[] = {{.name = "rotor_windows",
+                                                        .elem_size = spade::modules::row_size<WindowRow>(),
+                                                        .extent = Extent::per_row,
+                                                        .owner = "rotors",
+                                                        .depth = 2,
+                                                        .spawn_size = sizeof(uint32_t),
+                                                        .init = &init_window}};
+void window_vehicle_rows(const VehicleRows& v, std::vector<RowInitRequest>& out) {
+    for (uint32_t i = 0; i < v.rotor_slots.size(); ++i) {
+        for (uint32_t k = 0; k < 2; ++k) {
+            out.push_back(init_request("rotor_windows", v.rotor_slots[i] * 2u + k, 10u * (i + 1u) + k));
+        }
+    }
+}
+
+// "stray": a hook that keeps the rules, or breaks the one the test picks.
+enum class Stray : uint8_t {
+    none,
+    another_body,     // a per_body row at a body that is not the vehicle's
+    outside_rotors,   // a rotor-owned row outside the vehicle's rotor windows
+    wrong_size,       // a record of another size than the array's spawn_size
+    foreign_array,    // another module's array
+    unknown_array,    // an array no module declares
+    not_rotor_owned,  // a per_row row owned by something other than rotors
+    no_init,          // an array with no init to run
+};
+Stray g_stray = Stray::none;
+uint32_t g_other_body = 0;  // the global slot of a body that is not the vehicle's
+
+constexpr spade::modules::ArrayDecl kStrayArrays[] = {{.name = "stray_rows",
+                                                       .elem_size = spade::modules::row_size<BallastRow>(),
+                                                       .extent = Extent::per_body,
+                                                       .spawn_size = sizeof(float),
+                                                       .init = &init_ballast},
+                                                      {.name = "stray_marks",
+                                                       .elem_size = spade::modules::row_size<RotorMarkRow>(),
+                                                       .extent = Extent::per_row,
+                                                       .owner = "rotors",
+                                                       .depth = 1,
+                                                       .spawn_size = sizeof(uint32_t),
+                                                       .init = &init_rotor_mark},
+                                                      {.name = "stray_imu_marks",
+                                                       .elem_size = spade::modules::row_size<RotorMarkRow>(),
+                                                       .extent = Extent::per_row,
+                                                       .owner = "imu_sensors",
+                                                       .depth = 1,
+                                                       .spawn_size = sizeof(uint32_t),
+                                                       .init = &init_rotor_mark},
+                                                      {.name = "stray_bare",
+                                                       .elem_size = spade::modules::row_size<RotorMarkRow>(),
+                                                       .extent = Extent::per_row,
+                                                       .owner = "rotors",
+                                                       .depth = 1,
+                                                       .spawn_size = sizeof(uint32_t)}};
+void stray_vehicle_rows(const VehicleRows& v, std::vector<RowInitRequest>& out) {
+    out.push_back(init_request("stray_rows", v.body_slot, 1.0f));  // always within the rules
+    switch (g_stray) {
+        case Stray::none: out.push_back(init_request("stray_marks", v.rotor_slots[0], 1u)); break;
+        case Stray::another_body: out.push_back(init_request("stray_rows", g_other_body, 1.0f)); break;
+        case Stray::outside_rotors: out.push_back(init_request("stray_marks", v.rotor_slots.back() + 1u, 1u)); break;
+        case Stray::wrong_size: out.push_back(init_request("stray_rows", v.body_slot, 1.0)); break;
+        case Stray::foreign_array: out.push_back(init_request("rotors", v.rotor_slots[0], 1u)); break;
+        case Stray::unknown_array: out.push_back(init_request("stray_nope", v.body_slot, 1.0f)); break;
+        case Stray::not_rotor_owned: out.push_back(init_request("stray_imu_marks", 0u, 1u)); break;
+        case Stray::no_init: out.push_back(init_request("stray_bare", v.rotor_slots[0], 1u)); break;
+    }
+}
+
+// "massed": a table of every registered model's mass, and a pass that copies
+// what it sees of the table into a per_world row of its own.
+void build_masses(std::span<const spade::vehicles::ModelType> models, std::vector<float>& out) {
+    for (const spade::vehicles::ModelType& m : models) out.push_back(m.body.mass);
+}
+struct MassCopyRow {
+    float first;           // the table's first float; -1 when it has none
+    uint32_t count;        // its length
+    uint32_t present;      // the view's present()
+    uint32_t world_count;  // the view's world_count
+};
+spade::StateView g_masses_view{};  // massed.copy's ctx.state[0] at its last run
+void copy_mass_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 2) return;
+    g_masses_view = ctx.state[0];
+    const std::span<const float> masses = spade::world_rows<const float>(ctx.state[0], 0);
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<MassCopyRow> out = spade::world_rows<MassCopyRow>(ctx.state[1], w);
+        if (out.empty()) continue;
+        out[0].first = masses.empty() ? -1.0f : masses[0];
+        out[0].count = static_cast<uint32_t>(masses.size());
+        out[0].present = ctx.state[0].present() ? 1u : 0u;
+        out[0].world_count = ctx.state[0].world_count;
+    }
+}
+constexpr ConfigTableDecl kMassTables[] = {{.name = "masses", .build = &build_masses}};
+constexpr spade::modules::ArrayDecl kMassCopyArrays[] = {
+    {.name = "mass_copies", .elem_size = spade::modules::row_size<MassCopyRow>()}};
+constexpr QuantityAccess kMassCopyAccess[] = {{"massed.masses", Access::read}, {"massed.mass_copies", Access::write}};
+constexpr PassDecl kMassCopyPasses[] = {
+    {.name = "copy", .phase = Phase::forces, .access = kMassCopyAccess, .cpu = &copy_mass_pass}};
+
+[[nodiscard]] ModuleDesc massed_module() {
+    return {.name = "massed", .passes = kMassCopyPasses, .state = kMassCopyArrays, .tables = kMassTables};
+}
+
+// "reader": another module's pass that reads massed's table optionally.
+spade::StateView g_look_view{};  // reader.look's ctx.state[0] at its last run
+void look_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() == 1) g_look_view = ctx.state[0];
+}
+constexpr QuantityAccess kLookAccess[] = {{.quantity = "massed.masses", .access = Access::read, .optional = true}};
+constexpr PassDecl kLookPasses[] = {{.name = "look", .phase = Phase::sensors, .access = kLookAccess, .cpu = &look_pass}};
+
+[[nodiscard]] spade::vehicles::ModelType quad_of_mass(float mass) {
+    spade::vehicles::ModelType m = test_quad();
+    m.body.mass = mass;
+    return m;
+}
+
+[[nodiscard]] std::vector<float> table_of(const spade::Simulation& sim, std::string_view name) {
+    const auto table = sim.config_table(name);
+    if (!table) {
+        ADD_FAILURE() << table.error().context;
+        return {};
+    }
+    return {table->begin(), table->end()};
+}
+
+}  // namespace
+
+TEST(ModuleVehicleRows, AVehicleSpawnInitializesItsBodyAndRotorRowsAndDespawnClearsThem) {
+    auto sim = make_ballast_sim();
+    const auto model = sim.register_model(test_quad());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    const auto quad = sim.spawn(0, *model, at_x(0.0f));
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    ASSERT_EQ(quad->rotor_count, 4u);
+    EXPECT_EQ(sim.pending_structural_ops(), 7u + 5u)
+        << "the body and its six built-in rows, then the hook's ballast row and four marks";
+    ASSERT_TRUE(sim.step(0).has_value());
+
+    const auto ballast = sim.module_rows<BallastRow>("ballast_rows", 0);
+    const auto marks = sim.module_rows<RotorMarkRow>("rotor_marks", 0);
+    ASSERT_TRUE(ballast.has_value()) << ballast.error().context;
+    ASSERT_TRUE(marks.has_value()) << marks.error().context;
+    const uint32_t local_body = quad->body.slot;  // world 0: global == local
+    EXPECT_EQ((*ballast)[local_body].kg, 2.0f * (*sim.model(*model))->body.mass) << "the per_body row's init ran";
+    for (uint32_t i = 0; i < quad->rotor_count; ++i) {
+        EXPECT_EQ((*marks)[quad->rotor_slots[i]].index, i + 1u) << "rotor " << i << ": the rotor-owned row's init ran";
+    }
+
+    ASSERT_TRUE(sim.despawn(quad->body).has_value() && sim.step(0).has_value());
+    EXPECT_EQ((*ballast)[local_body].kg, 0.0f) << "cleared with its body";
+    for (uint32_t i = 0; i < quad->rotor_count; ++i) {
+        EXPECT_EQ((*marks)[quad->rotor_slots[i]].index, 0u) << "rotor " << i << ": cleared with its rotor";
+    }
+}
+
+// THE TASK 4 LIVENESS BUG. init_row skips a row whose owner is gone, and it
+// read a per_row row's liveness from that array's OWN slot->world map -- which
+// is always free, because a per_row array is direct-indexed like the rings. So
+// every row owned by a rotor (Physics' motor rows, owner rotors, depth 1) was
+// skipped in silence. A per_row row is live while its OWNER's row (its slot /
+// depth) is. Two rows per rotor, in the second world, behind another body, so a
+// wrong window, world or slot shows as a wrong value.
+TEST(ModuleVehicleRows, ARowOwnedByARotorIsInitializedWhileItsRotorIsLive) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "windows", .state = kWindowArrays, .vehicle_rows = &window_vehicle_rows});
+    auto sim = spade::Simulation::create(two_worlds_with(spade::Capacities{2, 5, 1, 1}), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->spawn(1, body_at_x(3.0f)).has_value()) << "so the vehicle is world 1's body 1";
+    const auto model = sim->register_model(test_quad());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    const auto quad = sim->spawn(1, *model, at_x(0.0f));
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    ASSERT_TRUE(sim->step(0).has_value());
+
+    const uint32_t elements = sim->layout().element_capacity;
+    const uint32_t bodies = sim->layout().body_capacity;
+    const auto rows = sim->module_rows<WindowRow>("rotor_windows", 1);
+    ASSERT_TRUE(rows.has_value()) << rows.error().context;
+    ASSERT_EQ(rows->size(), 2u * elements) << "two rows per rotor slot";
+    ASSERT_EQ(quad->rotor_count, 4u);
+    for (uint32_t i = 0; i < quad->rotor_count; ++i) {
+        const uint32_t local_rotor = quad->rotor_slots[i] - elements;  // world 1
+        for (uint32_t k = 0; k < 2; ++k) {
+            const WindowRow& row = (*rows)[2u * local_rotor + k];
+            EXPECT_EQ(row.live, 1u) << "rotor " << i << ", row " << k << ": its init did not run";
+            EXPECT_EQ(row.value, 10u * (i + 1u) + k) << "rotor " << i << ", row " << k;
+            EXPECT_EQ(row.local_slot, 2u * local_rotor + k) << "rotor " << i << ", row " << k;
+            EXPECT_EQ(row.local_body, quad->body.slot - bodies) << "rotor " << i << ", row " << k;
+        }
+    }
+    const auto world0 = sim->module_rows<WindowRow>("rotor_windows", 0);
+    ASSERT_TRUE(world0.has_value()) << world0.error().context;
+    EXPECT_TRUE(std::ranges::all_of(*world0, [](const WindowRow& r) { return r.live == 0u; }))
+        << "world 0's rows were never asked for";
+}
+
+TEST(ModuleVehicleRows, ARequestOutsideTheVehicleIsRefusedAndUnwinds) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "stray", .state = kStrayArrays, .vehicle_rows = &stray_vehicle_rows});
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{2, 5, 1, 1}), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto other = sim->spawn(0, body_at_x(3.0f));
+    ASSERT_TRUE(other.has_value());
+    ASSERT_TRUE(sim->step(0).has_value());
+    g_other_body = other->slot;
+    const auto model = sim->register_model(test_quad());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+
+    struct Case {
+        Stray stray;
+        std::string_view names;
+    };
+    constexpr Case cases[] = {{Stray::another_body, "stray_rows"},     {Stray::outside_rotors, "stray_marks"},
+                              {Stray::wrong_size, "stray_rows"},       {Stray::foreign_array, "rotors"},
+                              {Stray::unknown_array, "stray_nope"},    {Stray::not_rotor_owned, "stray_imu_marks"},
+                              {Stray::no_init, "stray_bare"}};
+    const uint64_t before = spade::testing::state_digest(*sim);
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.names));
+        g_stray = c.stray;
+        const auto refused = sim->spawn(0, *model, at_x(0.0f));
+        EXPECT_TRUE(refused_naming(refused, c.names));
+        EXPECT_TRUE(refused_naming(refused, "module 'stray'")) << "the hook's module";
+        EXPECT_EQ(sim->pending_structural_ops(), 0u) << "nothing queued";
+        EXPECT_EQ(sim->live_body_count(0).value(), 1u);
+        EXPECT_EQ(sim->live_rotor_count(0).value(), 0u);
+        EXPECT_EQ(sim->live_imu_sensor_count(0).value(), 0u);
+        EXPECT_EQ(spade::testing::state_digest(*sim), before) << "every reserved slot released, no generation bumped";
+    }
+
+    // The control: the same hook within the rules spawns, into the slots a
+    // simulation that never saw a refusal would hand out.
+    g_stray = Stray::none;
+    const auto quad = sim->spawn(0, *model, at_x(0.0f));
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    EXPECT_EQ(quad->body.slot, 1u);
+    EXPECT_EQ(quad->rotor_slots[0], 0u);
+    ASSERT_TRUE(sim->step(0).has_value());
+    EXPECT_EQ((*sim->module_rows<RotorMarkRow>("stray_marks", 0))[0].index, 1u);
+    EXPECT_EQ((*sim->module_rows<BallastRow>("stray_rows", 0))[1].kg, 1.0f);
+}
+
+TEST(ModuleTables, ATableIsTheRegisteredModelsInRegistrationOrder) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(massed_module());
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    EXPECT_EQ(table_of(*sim, "masses"), std::vector<float>{}) << "built at create() from no models";
+
+    const uint64_t digest = spade::testing::state_digest(*sim);
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.0f)).has_value());
+    EXPECT_EQ(table_of(*sim, "masses"), (std::vector<float>{1.0f}));
+    ASSERT_TRUE(sim->register_model(quad_of_mass(2.5f)).has_value());
+    EXPECT_EQ(table_of(*sim, "masses"), (std::vector<float>{1.0f, 2.5f})) << "registration order";
+    EXPECT_EQ(spade::testing::state_digest(*sim), digest) << "configuration, not state: no arena moved";
+    EXPECT_EQ(walk_names(*sim).size(), 24u) << "the standard walk and mass_copies; the table is not in it";
+
+    ASSERT_TRUE(sim->step(1).has_value());
+    const auto copy = sim->module_rows<MassCopyRow>("mass_copies", 0);
+    ASSERT_TRUE(copy.has_value()) << copy.error().context;
+    EXPECT_EQ((*copy)[0].first, 1.0f) << "a pass reads the table";
+    EXPECT_EQ((*copy)[0].count, 2u);
+
+    const auto none = sim->config_table("massez");
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().code, spade::Code::not_found);
+    EXPECT_NE(none.error().context.find("massez"), std::string::npos) << none.error().context;
+}
+
+TEST(ModuleTables, ATableMayOnlyBeRead) {
+    static constexpr QuantityAccess read[] = {{"massed.masses", Access::read}};
+    static constexpr QuantityAccess write[] = {{"massed.masses", Access::write}};
+    static constexpr QuantityAccess add[] = {{"massed.masses", Access::accumulate}};
+    static constexpr QuantityAccess optional_write[] = {
+        {.quantity = "massed.masses", .access = Access::write, .optional = true}};
+    const auto with = [](std::span<const QuantityAccess> access) {
+        const PassDecl probe[] = {{.name = "probe", .phase = Phase::forces, .access = access, .cpu = &noop}};
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back(massed_module());
+        set.push_back({.name = "probe", .passes = probe});
+        return compile_schedule(set);
+    };
+    const auto control = with(read);
+    ASSERT_TRUE(control.has_value()) << control.error().context;
+    EXPECT_TRUE(refused_naming(with(write), "massed.masses"));
+    EXPECT_TRUE(refused_naming(with(write), "register_model")) << "says where a table changes";
+    EXPECT_TRUE(refused_naming(with(add), "massed.masses"));
+    EXPECT_TRUE(refused_naming(with(optional_write), "massed.masses"));
+
+    // Its own module may not write it either.
+    static constexpr QuantityAccess own_write[] = {{"massed.masses", Access::write},
+                                                   {"massed.mass_copies", Access::write}};
+    static constexpr PassDecl own[] = {{.name = "copy", .phase = Phase::forces, .access = own_write, .cpu = &noop}};
+    EXPECT_TRUE(refused_naming(
+        standard_plus({.name = "massed", .passes = own, .state = kMassCopyArrays, .tables = kMassTables}),
+        "massed.masses"));
+}
+
+TEST(ModuleTables, APassBindsItsOwnTableAndAnotherModulesOptionally) {
+    spade::modules::ModuleSet present = spade::modules::standard_modules();
+    present.push_back(massed_module());
+    present.push_back({.name = "reader", .passes = kLookPasses});
+    const auto s = compile_schedule(present);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->tables.size(), 1u);
+    EXPECT_EQ(s->tables[0].module, "massed");
+    EXPECT_EQ(s->tables[0].name, "masses");
+    const spade::modules::CompiledPass* copy = compiled_pass(*s, "massed", "copy");
+    const spade::modules::CompiledPass* look = compiled_pass(*s, "reader", "look");
+    ASSERT_NE(copy, nullptr);
+    ASSERT_NE(look, nullptr);
+    ASSERT_EQ(copy->state.size(), 2u);
+    EXPECT_EQ(copy->state[0].kind, BindingKind::table) << "its own table";
+    EXPECT_EQ(copy->state[0].index, 0u);
+    EXPECT_EQ(copy->state[1].kind, BindingKind::array);
+    ASSERT_EQ(look->state.size(), 1u);
+    EXPECT_EQ(look->state[0].kind, BindingKind::table) << "another module's, read optionally";
+    EXPECT_EQ(look->state[0].index, 0u);
+
+    // Without massed the optional read binds nothing and orders nothing.
+    spade::modules::ModuleSet absent = spade::modules::standard_modules();
+    absent.push_back({.name = "reader", .passes = kLookPasses});
+    const auto alone = compile_schedule(absent);
+    ASSERT_TRUE(alone.has_value()) << alone.error().context;
+    EXPECT_TRUE(alone->tables.empty());
+    look = compiled_pass(*alone, "reader", "look");
+    ASSERT_NE(look, nullptr);
+    ASSERT_EQ(look->state.size(), 1u);
+    EXPECT_EQ(look->state[0].kind, BindingKind::absent);
+    Names without = names(*alone);
+    std::erase(without, std::string("reader.look"));
+    EXPECT_EQ(without, names(*compile_schedule(spade::modules::standard_modules())));
+
+    // At run time: one row of floats for every world, present before any model
+    // is registered (with no rows), and as long as the registry after.
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, present);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    g_masses_view = {};
+    g_look_view = {};
+    ASSERT_TRUE(sim->step(1).has_value());
+    EXPECT_TRUE(g_masses_view.present()) << "present with no model registered";
+    EXPECT_EQ(g_masses_view.capacity_per_world, 0u);
+    for (uint32_t w = 0; w < 2; ++w) {
+        const MassCopyRow row = (*sim->module_rows<MassCopyRow>("mass_copies", w))[0];
+        EXPECT_EQ(row.count, 0u) << "world " << w;
+        EXPECT_EQ(row.present, 1u) << "world " << w;
+        EXPECT_EQ(row.first, -1.0f) << "world " << w;
+    }
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.5f)).has_value());
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (const spade::StateView& view : {g_masses_view, g_look_view}) {
+        EXPECT_TRUE(view.present());
+        EXPECT_EQ(view.elem_size, sizeof(float));
+        EXPECT_EQ(view.world_count, 1u) << "one table serves every world";
+        EXPECT_EQ(view.capacity_per_world, 1u) << "one float per registered model";
+    }
+    for (uint32_t w = 0; w < 2; ++w) {
+        const MassCopyRow row = (*sim->module_rows<MassCopyRow>("mass_copies", w))[0];
+        EXPECT_EQ(row.first, 1.5f) << "world " << w;
+        EXPECT_EQ(row.world_count, 1u) << "world " << w;
+    }
+}
+
+TEST(ModuleTables, ATableNameSharesTheArrayNamespace) {
+    static constexpr ConfigTableDecl own_array[] = {{.name = "mass_copies", .build = &build_masses}};
+    static constexpr ConfigTableDecl builtin_array[] = {{.name = "rotors", .build = &build_masses}};
+    static constexpr ConfigTableDecl core_array[] = {{.name = "bodies", .build = &build_masses}};
+    static constexpr ConfigTableDecl dotted[] = {{.name = "a.b", .build = &build_masses}};
+    static constexpr ConfigTableDecl unnamed[] = {{.name = "", .build = &build_masses}};
+    static constexpr ConfigTableDecl twice[] = {{.name = "masses", .build = &build_masses},
+                                                {.name = "masses", .build = &build_masses}};
+    static constexpr ConfigTableDecl unbuilt[] = {{.name = "masses"}};
+    const auto with = [](std::span<const ConfigTableDecl> tables) {
+        return standard_plus({.name = "massed", .state = kMassCopyArrays, .tables = tables});
+    };
+    ASSERT_TRUE(with(kMassTables).has_value()) << "the control";
+    EXPECT_TRUE(refused_naming(with(own_array), "mass_copies")) << "its own array's name";
+    EXPECT_TRUE(refused_naming(with(builtin_array), "rotors")) << "another module's array's name";
+    EXPECT_TRUE(refused_naming(with(core_array), "bodies"));
+    EXPECT_TRUE(refused_naming(with(dotted), "a.b"));
+    EXPECT_TRUE(refused_naming(with(unnamed), "massed"));
+    EXPECT_TRUE(refused_naming(with(twice), "masses"));
+    EXPECT_TRUE(refused_naming(with(unbuilt), "masses")) << "no build function";
+
+    spade::modules::ModuleSet two = spade::modules::standard_modules();
+    two.push_back({.name = "massed", .state = kMassCopyArrays, .tables = kMassTables});
+    two.push_back({.name = "other", .tables = kMassTables});
+    EXPECT_TRUE(refused_naming(compile_schedule(two), "masses")) << "two modules, one table name";
+}
+
+// THE IDENTITY RULE (sim/module.hpp's ConfigTableDecl): snapshot v3's
+// model-registry identity covers a table only if every ModelType field its build
+// reads is folded into model_identity(). The standard set builds no table and
+// has no vehicle hook, and stage 4 adds no ModelType field, so no identity
+// moves: ModelSnapshot.* and ModelIdentity.* stand as they were.
+TEST(StandardModules, DeclareNoTablesAndNoVehicleHooks) {
+    for (const ModuleDesc& m : spade::modules::standard_modules()) {
+        EXPECT_TRUE(m.tables.empty()) << m.name;
+        EXPECT_EQ(m.vehicle_rows, nullptr) << m.name;
+    }
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_TRUE(s->tables.empty());
+    EXPECT_TRUE(s->vehicle_rows.empty());
+    EXPECT_EQ(s->identity, kStandardIdentity);
+}

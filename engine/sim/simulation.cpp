@@ -823,6 +823,10 @@ Result<ArrayIndex> Simulation::module_array(std::string_view name) const {
         missing("module_array: no module in this set declares an array '" + std::string(name) + "'"));
 }
 
+Result<std::span<const float>> Simulation::config_table(std::string_view name) const {
+    return std::unexpected(missing("config_table: not implemented ('" + std::string(name) + "')"));
+}
+
 // ---------------------------------------------------------------------------
 // views
 // ---------------------------------------------------------------------------
