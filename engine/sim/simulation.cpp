@@ -1615,7 +1615,7 @@ Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragEleme
         !finite(elem.local_orient)) {
         return std::unexpected(invalid("add_drag_element: parameters must all be finite"));
     }
-    if (const char* why = physics::check_drag_law(elem.mode, elem.area, elem.coeffs)) {
+    if (const char* why = physics::check_drag_law(elem.mode, elem.area, elem.coeffs).first()) {
         return std::unexpected(invalid(std::string("add_drag_element: ") + why));
     }
     if (!(glm::dot(elem.local_orient, elem.local_orient) > 0.0f)) {

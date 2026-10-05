@@ -302,6 +302,94 @@ struct Built {
     return c;
 }
 
+// The model as the spec writes it, before anything is fitted, converted or
+// normalized: the spec's own fields and every element as given, with valid
+// stand-ins where the composite and the fit will supply the values. A zero or
+// non-finite orientation therefore reaches ModelType's rules as written;
+// glm::normalize would have turned a zero into the identity.
+[[nodiscard]] ModelType provisional_model(const AirframeSpec& s) {
+    ModelType m;
+    m.name = s.name;
+    m.param_schema_id = s.param_schema_id;
+    m.visual_ref = s.visual_ref;
+    m.version = s.version;
+    m.proxy_radius = static_cast<float>(s.proxy_radius);
+    for (const RotorSpec& r : s.rotors) {
+        RotorDesc d;
+        d.local_pos = to_float(r.hub.position);
+        d.local_orient = to_float(r.hub.orientation);
+        d.spin_dir = static_cast<float>(r.spin_dir);
+        d.radius = 1.0f;        // stand-in: the fit's
+        d.thrust_coeff = 1.0f;  // stand-in: the fit's
+        m.rotors.push_back(d);
+    }
+    for (const DragSpec& g : s.drag) {
+        DragBodyDesc d;
+        d.mode = g.mode;
+        d.area = static_cast<float>(g.area);
+        d.coeffs = to_float(g.coeffs);
+        d.local_pos = to_float(g.mount.position);
+        d.local_orient = to_float(g.mount.orientation);
+        m.drag_bodies.push_back(d);
+    }
+    for (const ImuSpec& i : s.imus) {
+        ImuMountDesc d;
+        d.mount_pos = to_float(i.mount.position);
+        d.mount_orient = to_float(i.mount.orientation);
+        d.rate_divider = i.rate_divider;
+        d.sigma_a = static_cast<float>(i.sigma_a);
+        d.sigma_g = static_cast<float>(i.sigma_g);
+        d.sigma_ba = static_cast<float>(i.sigma_ba);
+        d.sigma_bg = static_cast<float>(i.sigma_bg);
+        m.imu_mounts.push_back(d);
+    }
+    return m;
+}
+
+// Every model rule the spec breaks (TD-9: ModelType::issues() owns them),
+// listed where the spec wrote the value: a pose as rotors[k].hub,
+// drag[k].mount or imus[k].mount, once; a count as <list>[0].count; the
+// model's own fields under "airframe".
+void add_model_issues(const AirframeSpec& s, Issues& out) {
+    using E = ModelIssue::Element;
+    for (const ModelIssue& i : provisional_model(s).issues()) {
+        switch (i.element) {
+            case E::model:
+                if (i.field == "rotors") {
+                    out.add("rotors", 0, "count", i.message);
+                } else if (i.field == "drag_bodies") {
+                    out.add("drag", 0, "count", i.message);
+                } else if (i.field == "imu_mounts") {
+                    out.add("imus", 0, "count", i.message);
+                } else {
+                    out.add("airframe", 0, i.field, i.message);
+                }
+                break;
+            case E::rotor:
+                if (i.field == "local_pos" || i.field == "local_orient") {
+                    out.add_once("rotors", i.index, "hub", i.message);
+                } else {
+                    out.add("rotors", i.index, i.field, i.message);
+                }
+                break;
+            case E::drag_body:
+                if (i.field == "local_pos" || i.field == "local_orient") {
+                    out.add_once("drag", i.index, "mount", i.message);
+                } else {
+                    out.add("drag", i.index, i.field, i.message);
+                }
+                break;
+            case E::imu_mount:
+                if (i.field == "mount_pos" || i.field == "mount_orient") {
+                    out.add_once("imus", i.index, "mount", i.message);
+                } else {
+                    out.add("imus", i.index, i.field, i.message);
+                }
+                break;
+        }
+    }
+}
+
 [[nodiscard]] Built build(const AirframeSpec& s) {
     Built out;
     check_blocks(s, out.issues);
@@ -321,7 +409,12 @@ struct Built {
         out.issues.add_once(at_hub ? "rotors" : kind, at_hub ? index : 0, at_hub ? "hub" : "mount",
                             "is not finite, or its orientation is zero");
     }
-    if (!out.issues.list.empty()) return out;
+    // ONE CALL LISTS EVERYTHING (Kat's question 2). A block or part problem
+    // stops the composite and the fit; a model-rule problem stops only the
+    // final model, so the fit still runs and its own problems are listed too.
+    const bool fit_possible = out.issues.list.empty();
+    add_model_issues(s, out.issues);
+    if (!fit_possible) return out;
 
     // --- the body -------------------------------------------------------------
     const Result<CompositeInertia> inertia = composite_inertia(parts.parts);
@@ -335,6 +428,32 @@ struct Built {
     const glm::dvec3 c(inertia->center_of_mass);
     const auto to_body_pos = [&](const glm::dvec3& p_d) { return to_float(r_bd * (p_d - c)); };
     const auto to_body_rot = [&](const glm::dquat& q_d) { return to_float(q_bd * glm::normalize(q_d)); };
+
+    // --- the drag estimate's areas, when no drag is given ---------------------
+    // Best-effort: half rho C_d times each body axis's projected area, summed
+    // over the parts. A rotated part projects as sum_j |M_ij| A_j: exact for a
+    // box at any angle and for an axis-aligned part, an overestimate for a
+    // tilted cylinder; parts that shield each other are counted twice.
+    // Propellers are left out: their aerodynamics are the rotor's.
+    glm::dvec3 area(0.0);
+    if (s.drag.empty()) {
+        for (std::size_t k = 0; k < parts.parts.size(); ++k) {
+            if (!parts.drag_source[k]) continue;
+            const PartInertia& p = parts.parts[k];
+            const glm::dmat3 to_body = r_bd * glm::mat3_cast(glm::normalize(p.orientation));
+            const glm::dvec3 local = local_areas(p);
+            for (int i = 0; i < 3; ++i) {
+                // glm is column-major: to_body[j][i] is row i, column j.
+                area[i] += std::fabs(to_body[0][i]) * local.x + std::fabs(to_body[1][i]) * local.y +
+                           std::fabs(to_body[2][i]) * local.z;
+            }
+        }
+        if (!(area.x > 0.0 || area.y > 0.0 || area.z > 0.0)) {
+            out.issues.add("drag", 0, "",
+                           "none given, and no part has a shape to estimate it from: give a DragSpec "
+                           "(zero coefficients for none)");
+        }
+    }
 
     // --- the propulsion chain and the fit ------------------------------------
     Result<PropulsionChain> chain = chain_from(s);
@@ -375,6 +494,7 @@ struct Built {
                        "the chain's time constant at hover cannot be fitted (is the rotor inertia zero?)");
         return out;
     }
+    if (!out.issues.list.empty()) return out;  // model rules or drag: the list is complete, no model
 
     // --- the model ------------------------------------------------------------
     ModelType model;
@@ -421,30 +541,7 @@ struct Built {
             model.drag_bodies.push_back(d);
         }
     } else {
-        // Best-effort: half rho C_d times each body axis's projected area, summed
-        // over the parts. A rotated part projects as sum_j |M_ij| A_j: exact
-        // for a box at any angle and for an axis-aligned part, an overestimate
-        // for a tilted cylinder; parts that shield each other are counted
-        // twice. Propellers are left out: their aerodynamics are the rotor's.
         fit.drag = Provenance::estimated;
-        glm::dvec3 area(0.0);
-        for (std::size_t k = 0; k < parts.parts.size(); ++k) {
-            if (!parts.drag_source[k]) continue;
-            const PartInertia& p = parts.parts[k];
-            const glm::dmat3 to_body = r_bd * glm::mat3_cast(glm::normalize(p.orientation));
-            const glm::dvec3 local = local_areas(p);
-            for (int i = 0; i < 3; ++i) {
-                // glm is column-major: to_body[j][i] is row i, column j.
-                area[i] += std::fabs(to_body[0][i]) * local.x + std::fabs(to_body[1][i]) * local.y +
-                           std::fabs(to_body[2][i]) * local.z;
-            }
-        }
-        if (!(area.x > 0.0 || area.y > 0.0 || area.z > 0.0)) {
-            out.issues.add("drag", 0, "",
-                           "none given, and no part has a shape to estimate it from: give a DragSpec "
-                           "(zero coefficients for none)");
-            return out;
-        }
         DragBodyDesc d;
         d.mode = physics::drag_mode::componentwise;
         d.coeffs = to_float(0.5 * s.air_density * kDragCoefficient * area);

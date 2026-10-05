@@ -9,13 +9,14 @@
 
 namespace spade::physics {
 
-const char* check_drag_law(uint32_t mode, float area, const glm::vec3& coeffs) noexcept {
-    if (mode != drag_mode::quadratic && mode != drag_mode::componentwise) return "unknown drag mode";
-    if (!std::isfinite(area) || !(area >= 0.0f)) return "area must be finite and >= 0";
+DragLawCheck check_drag_law(uint32_t mode, float area, const glm::vec3& coeffs) noexcept {
+    DragLawCheck out;
+    if (mode != drag_mode::quadratic && mode != drag_mode::componentwise) out.mode = "unknown drag mode";
+    if (!std::isfinite(area) || !(area >= 0.0f)) out.area = "area must be finite and >= 0";
     for (int i = 0; i < 3; ++i) {
-        if (!std::isfinite(coeffs[i]) || !(coeffs[i] >= 0.0f)) return "coeffs must be finite and >= 0";
+        if (!std::isfinite(coeffs[i]) || !(coeffs[i] >= 0.0f)) out.coeffs = "coeffs must be finite and >= 0";
     }
-    return nullptr;
+    return out;
 }
 
 void apply_drag(std::span<BodyState> bodies, std::span<const DragBodyRow> elems, const Medium& medium,

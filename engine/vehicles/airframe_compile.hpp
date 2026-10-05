@@ -53,12 +53,15 @@
 // field names and units of the spec's section 14.2. Spade never reads a
 // builder's files.
 //
-// REFUSALS. check_airframe() returns every problem the compile's own checks
-// and the parts' checks find, as a list, one issue per fault. The model's own
-// rules (name, version, proxy radius, spin, drag elements, IMUs and every
-// pose) belong to ModelType::validate, which reports its first problem as one
-// issue of kind "model" (TD-9: one owner per rule). compile_airframe() runs
-// the same checks and, on any problem, returns them joined in its error.
+// REFUSALS. check_airframe() lists every problem in one call, one issue per
+// fault, at the element where the spec wrote it: the compile's own checks of
+// the blocks; the parts' (composite_inertia_issues); and the model's rules
+// (ModelType::issues(), TD-9), run over the model as the spec writes it,
+// before anything is fitted or normalized, so a zero mount orientation is
+// refused rather than normalized to the identity. A propulsion problem the
+// fit finds is listed too whenever the blocks and parts let the fit run.
+// compile_airframe() runs the same checks and, on any problem, returns them
+// joined in its error.
 // ===========================================================================
 
 namespace spade::vehicles {
@@ -198,9 +201,11 @@ struct AirframeSpec {
 };
 
 // One problem: what kind of entry ("airframe", "parts", "motor", "prop",
-// "esc", "battery", "rotors", "drag", "model"), its index within that kind (0
-// for the single blocks), the field and a message. A block's shape is
-// "<block>[0].shape"; a bad pose at a rotor's hub is "rotors[k].hub", once.
+// "esc", "battery", "rotors", "drag", "imus", "model"), its index within that
+// kind (0 for the single blocks), the field and a message. A block's shape is
+// "<block>[0].shape"; a bad pose is "rotors[k].hub", "drag[k].mount" or
+// "imus[k].mount", once; a list too long is "<list>[0].count". "model" is
+// only a fitted value the model refuses, which should not happen.
 struct AirframeIssue {
     Code code = Code::invalid_argument;
     std::string kind;
