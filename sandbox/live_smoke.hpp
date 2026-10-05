@@ -359,15 +359,19 @@ inline constexpr uint32_t kMaxStills = 600;
 // Raw RGBA frames on stdin, as glReadPixels returns them (bottom row first, so
 // vflip), cropped to even dimensions (yuv420p needs them), into H.264. The
 // filter is quoted: popen() hands the line to sh, where its parentheses are
-// syntax, and an unquoted filter fails only at the first frame's write.
+// syntax, and an unquoted filter fails only at the first frame's write. CRF 28
+// keeps the file sendable (kSendableBytes): at 20, the 129 s tour was 35.6 MB.
 [[nodiscard]] inline std::string ffmpeg_command(const std::string& ffmpeg, const std::filesystem::path& out_mp4,
                                                 uint32_t width, uint32_t height, uint32_t fps) {
     return ffmpeg + " -hide_banner -loglevel error -y -f rawvideo -pix_fmt rgba -s " + std::to_string(width) + "x" +
            std::to_string(height) + " -r " + std::to_string(fps) +
-           " -i - -vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 20"
+           " -i - -vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 28"
            " -pix_fmt yuv420p \"" +
            out_mp4.string() + "\"";
 }
+
+// The largest tour.mp4 that can be sent to the user; the run checks it.
+inline constexpr std::uintmax_t kSendableBytes = 30'000'000;
 
 // The first seconds of the video, so a forwarded MP4 says what it shows.
 // `label` is the commit and the date, from scripts/live-smoke.ps1.
