@@ -557,6 +557,18 @@ TEST(Quadrotor, DegenerateAirframeParametersAreRejected) {
         p.drag.mode = 99u;
         rejected(p, "unknown drag mode");
     }
+    {
+        // Drag must never add energy: a negative coefficient or area is
+        // refused (physics::check_drag_law, the rule both drag doors share).
+        QuadrotorParams p = test_quad(0.02f, 0.9f);
+        p.drag.coeffs.x = -0.01f;
+        rejected(p, "negative drag coefficient");
+    }
+    {
+        QuadrotorParams p = test_quad(0.02f, 0.9f);
+        p.drag.area = -1.0f;
+        rejected(p, "negative drag area");
+    }
 
     // tau == 0 is LEGAL -- it is the "no lag" degenerate every moment test in
     // this file relies on.
@@ -894,6 +906,41 @@ TEST(Quadrotor, RotorsAndDragBodiesShareTheWorldsDeclaredForceElementBudget) {
         EXPECT_EQ(code_of(sim->add_drag_element(vehicle->body, extra)),
                   code(spade::Code::capacity_exceeded));
     }
+}
+
+// The second door for drag. add_drag_element applies the same law check as
+// ModelType::validate (physics::check_drag_law), so what a model may not
+// carry, a body may not be given either.
+TEST(Quadrotor, AddDragElementRefusesWhatTheDragLawCannotTake) {
+    const spade::Result<ModelType> model = spade::vehicles::make_quadrotor(test_quad(0.02f, 0.9f));
+    ASSERT_OK(model);
+    spade::Result<Simulation> sim = void_sim(4, 8, 2);
+    ASSERT_OK(sim);
+    const spade::Result<ModelTypeId> id = sim->register_model(*model);
+    ASSERT_OK(id);
+    VehicleSpawn where;
+    where.pos = glm::vec3(0.0f, 10.0f, 0.0f);
+    const spade::Result<VehicleRef> vehicle = sim->spawn(0, *id, where);
+    ASSERT_OK(vehicle);
+    ASSERT_OK(sim->flush_structural());
+
+    spade::DragElementSpawn negative_coeff;
+    negative_coeff.mode = spade::physics::drag_mode::componentwise;
+    negative_coeff.coeffs = glm::vec3(-0.01f, 0.02f, 0.02f);
+    EXPECT_EQ(code_of(sim->add_drag_element(vehicle->body, negative_coeff)), code(spade::Code::invalid_argument))
+        << "negative coefficient";
+
+    spade::DragElementSpawn negative_area;
+    negative_area.mode = spade::physics::drag_mode::quadratic;
+    negative_area.area = -1.0f;
+    negative_area.coeffs = glm::vec3(1.0f, 0.0f, 0.0f);
+    EXPECT_EQ(code_of(sim->add_drag_element(vehicle->body, negative_area)), code(spade::Code::invalid_argument))
+        << "negative area";
+
+    spade::DragElementSpawn fine;
+    fine.mode = spade::physics::drag_mode::componentwise;
+    fine.coeffs = glm::vec3(0.01f, 0.02f, 0.02f);
+    EXPECT_OK(sim->add_drag_element(vehicle->body, fine));
 }
 
 // ===========================================================================

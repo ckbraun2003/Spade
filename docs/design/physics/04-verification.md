@@ -40,6 +40,7 @@
 | Rotor wake | best-effort, CPU only, not read by stepping (`PHY-3`) | — | `test_rotor_wake.cpp` |
 | Drone builder: motor, battery, propeller | not placed: pure functions, unit-tested; reference with a golden once the rows exist (`DBP-60`) | not placed; banded once the kernels exist (`DBP-61`) | `test_motor.cpp`, `test_battery.cpp`, `test_propeller.cpp` |
 | Drone builder: composite inertia, steady-state solver | reference by closed forms; host utilities, never in the step | — | `test_composite_inertia.cpp`, `test_propulsion_steady.cpp` |
+| Drone builder: the airframe compile (`DBP-44`) | mass, inertia and mounts: reference by closed forms. The fitted momentum rotor and the drag estimate: best-effort | — | `test_airframe_compile.cpp`; the τ fit is checked against a stepped response |
 
 A world's grade is its weakest module's (`L3`). Until the grade check exists (Core), this table is the declaration.
 

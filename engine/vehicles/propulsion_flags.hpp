@@ -22,5 +22,6 @@ inline constexpr uint32_t battery_cutoff = 1u << 5;            // terminal volta
 inline constexpr uint32_t battery_empty = 1u << 6;             // state of charge held at 0
 inline constexpr uint32_t unreachable = 1u << 7;               // solver: target above full-duty thrust
 inline constexpr uint32_t no_bracket = 1u << 8;                // solver: torque balance has no sign change
+inline constexpr uint32_t esc_total_limited = 1u << 9;         // a 4-in-1 ESC's total current held at its rating
 
 }  // namespace spade::vehicles::propulsion_flags

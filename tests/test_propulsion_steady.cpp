@@ -127,6 +127,24 @@ TEST(PropulsionSteady, InductanceDroopGrowsWithSpeed) {
     EXPECT_GT(high, low) << "R_eff grows with the square of speed";
 }
 
+// The small-signal time constant, against the closed form. With no pack
+// resistance the bus holds V = V_source, so d(balance)/d(omega) is
+// -1/(Kv^2 R) - 2 Q_load/omega at J = 0, and tau = J_r over its negation.
+TEST(PropulsionSteady, TimeConstantMatchesTheClosedForm) {
+    PropulsionChain c = make_chain();
+    c.cell_resistance = 0.0;
+    const double inertia = 2.5e-5;
+    const double d = 0.6;
+    const SteadyPoint p = steady_state_at_duty(c, d, kRho, 0.0, kSoc);
+    ASSERT_EQ(p.flags, 0u);
+    const double n = p.omega / (2.0 * kPi);
+    const double q_load = double{c.table.cq[0]} * kRho * n * n * std::pow(c.diameter, 5.0);
+    const double slope = 1.0 / (c.kv * c.kv * c.resistance) + 2.0 * q_load / p.omega;
+    EXPECT_NEAR(steady_state_time_constant(c, d, kRho, 0.0, kSoc, inertia), inertia / slope, 1e-6 * inertia / slope);
+    EXPECT_EQ(steady_state_time_constant(c, d, kRho, 0.0, kSoc, 0.0), 0.0) << "no inertia, no time constant";
+    EXPECT_EQ(steady_state_time_constant(c, 0.0, kRho, 0.0, kSoc, inertia), 0.0) << "at rest";
+}
+
 // ===========================================================================
 // DBP-52. The float step functions, driven at constant duty, settle to the
 // double solver's speed. The exponential step's fixed point IS the torque

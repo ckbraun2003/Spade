@@ -47,6 +47,7 @@ struct PropulsionChain {
     double no_load_current = 0.0;          // A
     double current_min = 0.0;              // A: 0, or -current_max with active braking
     double current_max = 0.0;              // A: the smaller of the motor's and the ESC's ratings
+    double esc_current_total_max = 0.0;    // A: a 4-in-1 ESC's total over its channels (DBP-26); <= 0 for none
     double pole_pairs = 0.0;               // count; 0 drops the inductance term
     double inductance = 0.0;               // H, line to line; 0 drops the inductance term
     // Propeller.
@@ -89,5 +90,16 @@ struct SteadyPoint {
 
 [[nodiscard]] SteadyPoint steady_state_for_thrust(const PropulsionChain& chain, double thrust, double density,
                                                   double v_axial, double soc) noexcept;
+
+// The chain's small-signal time constant at the equilibrium for `duty`, s:
+// J_r / -(d balance / d omega), where balance = Q_motor - Q_load with the bus
+// solved at each omega. The slope is a central difference in double with a
+// fixed step of 1e-4 of the equilibrium speed. It is what a first-order lag
+// on shaft speed needs to match the chain for small changes about that point;
+// the airframe compile fits the momentum-variant rotor's tau with it. 0 when
+// the chain is invalid, the equilibrium is at rest or has no bracket,
+// rotor_inertia is not positive, or the slope is not negative.
+[[nodiscard]] double steady_state_time_constant(const PropulsionChain& chain, double duty, double density,
+                                                double v_axial, double soc, double rotor_inertia) noexcept;
 
 }  // namespace spade::vehicles

@@ -63,6 +63,24 @@ inline constexpr uint32_t componentwise = 1u;
 
 }  // namespace drag_mode
 
+// The drag law's parameter rule, the one check every door a drag element comes
+// in by applies (ModelType::validate and issues(), Simulation::add_drag_element;
+// TD-9): the mode is known, the area finite and >= 0, and all three
+// coefficients finite and >= 0, the unused ones included, so one rule covers
+// both modes. A negative area or coefficient would make drag add energy. Each
+// field gets its own reason, nullptr where the field is fine, so a caller that
+// lists every problem names the field without reading the message.
+struct DragLawCheck {
+    const char* mode = nullptr;
+    const char* area = nullptr;
+    const char* coeffs = nullptr;
+    // The first reason, in the order mode, area, coeffs; nullptr if none.
+    [[nodiscard]] const char* first() const noexcept {
+        return mode != nullptr ? mode : (area != nullptr ? area : coeffs);
+    }
+};
+[[nodiscard]] DragLawCheck check_drag_law(uint32_t mode, float area, const glm::vec3& coeffs) noexcept;
+
 // ---------------------------------------------------------------------------
 // DragBodyRow -- one drag element. One row of the world-partitioned
 // "drag_bodies" array registered via ArenaSet::register_array<DragBodyRow>.
