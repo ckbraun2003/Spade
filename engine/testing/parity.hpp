@@ -275,6 +275,22 @@ namespace parity_detail {
 // The same bytes, as the 32-bit word they are, for QuantityKind::bits.
 // memcpy rather than a reinterpret_cast for the identical strict-aliasing
 // reason load_float() uses one.
+// The per-element predicate, on the error: whether `abs_err` = |gpu - cpu|
+// is within `band` of a CPU value `cpu`. A NaN error fails.
+[[nodiscard]] inline bool error_within(float abs_err, float cpu, ToleranceBand band) noexcept {
+    if (std::isnan(abs_err)) return false;
+    const float rel_err = cpu != 0.0f ? abs_err / std::fabs(cpu) : 0.0f;
+    const bool abs_ok = abs_err <= band.abs;
+    const bool rel_ok = (cpu != 0.0f) && (rel_err <= band.rel);
+    return abs_ok || rel_ok;
+}
+
+// The same, on one float of one element. A NaN on either side fails.
+[[nodiscard]] inline bool element_within(float cpu, float gpu, ToleranceBand band) noexcept {
+    if (std::isnan(cpu) || std::isnan(gpu)) return false;
+    return error_within(std::fabs(cpu - gpu), cpu, band);
+}
+
 [[nodiscard]] inline uint32_t load_word(const std::byte* base, std::size_t offset) noexcept {
     uint32_t value = 0;
     std::memcpy(&value, base + offset, sizeof(uint32_t));
@@ -449,9 +465,7 @@ namespace parity_detail {
                 // NaN-safe by construction, unchanged: a NaN error is `<=`
                 // nothing, so it fails both halves.
                 // ---------------------------------------------------------
-                const bool abs_ok = abs_err <= entry.band.abs;
-                const bool rel_ok = (a != 0.0f) && (rel_err <= entry.band.rel);
-                if (!abs_ok && !rel_ok) element_outside = true;
+                if (!parity_detail::element_within(a, b, entry.band)) element_outside = true;
             }
 
             if (entry.kind == QuantityKind::quaternion) {

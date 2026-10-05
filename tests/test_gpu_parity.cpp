@@ -926,6 +926,39 @@ TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
                body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce));
 }
 
+// ---------------------------------------------------------------------------
+// TD-14's predicate, at its boundary. An element passes when
+// |gpu - cpu| <= abs + rel * |cpu|: the two halves ADD. One ulp inside the
+// sum passes and one ulp past it fails, and an error that exceeds each half
+// alone but not their sum passes -- which the retired disjunction
+// (abs_ok || rel_ok) refused. Host-only: it is the harness, not a device.
+// ---------------------------------------------------------------------------
+TEST(ParityPredicate, SumFormAtTheBoundary) {
+    using spade::testing::parity_detail::element_within;
+    using spade::testing::parity_detail::error_within;
+    const ToleranceBand band{1.0e-6f, 1.0e-6f};
+    // On the error itself: a gpu value cpu + err cannot land on every ulp of
+    // the tolerance when |cpu| is far larger than it, so the boundary is
+    // probed on the error the harness computes, |gpu - cpu|.
+    for (const float cpu : {2.0f, -2.0f, 0.25f, 1.0e3f}) {
+        const float tol = band.abs + band.rel * std::fabs(cpu);
+        const float inside = std::nextafter(tol, 0.0f);
+        const float outside = std::nextafter(tol, 1.0f);
+        ASSERT_GT(inside, band.abs) << "the boundary case must exceed the absolute half alone";
+        ASSERT_GT(inside, band.rel * std::fabs(cpu)) << "and the relative half alone";
+        EXPECT_TRUE(error_within(inside, cpu, band)) << "cpu " << cpu << ": one ulp inside the sum";
+        EXPECT_TRUE(error_within(tol, cpu, band)) << "cpu " << cpu << ": exactly the sum";
+        EXPECT_FALSE(error_within(outside, cpu, band)) << "cpu " << cpu << ": one ulp past the sum";
+    }
+    // At cpu == 0 the absolute half carries it alone.
+    EXPECT_TRUE(element_within(0.0f, band.abs, band));
+    EXPECT_FALSE(element_within(0.0f, std::nextafter(band.abs, 1.0f), band));
+    // A NaN on either side fails, whatever the band.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(element_within(nan, 1.0f, ToleranceBand{1.0f, 1.0f}));
+    EXPECT_FALSE(element_within(1.0f, nan, ToleranceBand{1.0f, 1.0f}));
+}
+
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;
     std::error_code ec;
