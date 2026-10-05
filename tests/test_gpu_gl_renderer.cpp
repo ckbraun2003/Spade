@@ -463,7 +463,10 @@ TEST_F(GpuGlRenderer, OverlaysMatchTheCpuWithinTheirBand) {
     // crosses grid lines on screen: GL's bounds line covers a pixel that is
     // grid on the CPU (3), and one grid pixel lands on bare ground in GL.
     // Pinned at the measurement. Another device may differ; re-measure there
-    // before widening (03-verification).
+    // before widening (03-verification). Known difference, within the band:
+    // GL biases each vertex before clipping, and a vertex behind the eye gets
+    // no bias, so a grid line crossing the eye plane bends by about 0.2 px
+    // against the CPU, which biases after clipping.
     constexpr size_t kBandCpuMisses = 4;
     constexpr size_t kBandGlMisses = 0;
 
@@ -533,6 +536,39 @@ TEST_F(GpuGlRenderer, OverlaysMatchTheCpuWithinTheirBand) {
                                           << " CPU overlay pixels have no match in GL within 1 px, on " << device;
     EXPECT_LE(gl_misses, kBandGlMisses) << gl_misses << " of " << gl_count
                                         << " GL overlay pixels have no match on the CPU within 1 px, on " << device;
+}
+
+// SR-21 on GL: the grid lies exactly on a tessellated ground mesh at y = 0,
+// and the overlay depth bias (ported in the vertex shader) must win that tie,
+// as it does on the CPU. Without the bias the two are at one depth and
+// GL_LESS hides most of the grid.
+TEST_F(GpuGlRenderer, OverlayBiasKeepsTheGridOnACoincidentGroundMesh) {
+    MeshData ground;
+    ground.positions = {glm::vec3(-8.0f, 0.0f, -8.0f), glm::vec3(-8.0f, 0.0f, 8.0f), glm::vec3(8.0f, 0.0f, 8.0f),
+                        glm::vec3(8.0f, 0.0f, -8.0f)};
+    ground.normals.assign(4, glm::vec3(0.0f, 1.0f, 0.0f));
+    ground.indices = {0, 1, 2, 0, 2, 3};  // counter-clockwise seen from +Y
+    RenderScene scene = make_scene(std::move(ground));
+    scene.materials[0] = Material{.base_color = glm::vec4(0.2f, 0.6f, 0.3f, 1.0f)};  // lambert, not grid grey
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 4.0f, 0.2f);
+    camera.orientation = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));  // looking down
+    RenderOptions with = comparable_options();
+    with.overlays = true;
+
+    const auto grid_pixels = [](const std::vector<uint8_t>& rgba) {
+        size_t n = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            n += (rgba[p * 4u] == 90u && rgba[p * 4u + 1u] == 90u && rgba[p * 4u + 2u] == 90u) ? 1u : 0u;
+        }
+        return n;
+    };
+    const size_t cpu = grid_pixels(cpu_rgba(scene, camera, with));
+    const std::vector<uint8_t> gl_frame = draw_and_read(scene, with, camera);
+    ASSERT_EQ(gl_frame.size(), kPixels * 4u);
+    const size_t gl = grid_pixels(gl_frame);
+    ASSERT_GT(cpu, 200u) << "the CPU frame must show the grid on the ground mesh";
+    EXPECT_GE(gl * 10u, cpu * 9u) << "GL shows " << gl << " grid pixels on the ground mesh, the CPU " << cpu;
 }
 
 // A surface nearer than an overlay hides it: from above, a quad at y = 1 hides
