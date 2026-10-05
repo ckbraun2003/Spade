@@ -73,6 +73,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -106,6 +107,7 @@
 #include "objects/behavior.hpp"
 #include "objects/behaviors/kinematic_mover.hpp"
 #include "world/builder.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -460,56 +462,244 @@ protected:
 // table of zeroes and call it parity.
 using ParityCheck = void (*)(const Simulation& cpu, const Simulation& gpu, std::string_view label);
 
+// ---------------------------------------------------------------------------
+// A CPU run of `scenario` nudged by one ulp after setup (TD-14's horizon
+// rule; one_ulp_control() below and the chaos statistics use it). In every
+// world the chosen active body has one position component stepped one ulp,
+// through snapshot/find_section/restore -- the engine's own parser and restore
+// path, so no body is edited behind its back. `variant` picks the run:
+// direction (up, down), then which component by magnitude (largest first; one
+// ulp off a zero coordinate is a subnormal the first add discards, so zero
+// components are skipped), then which active body of the world.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<Simulation> start_nudged(const Scenario& scenario, uint32_t variant) {
+    Result<Simulation> sim = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
+    if (!sim) return sim;
+    const Result<spade::SnapshotBlob> blob = sim->snapshot();
+    if (!blob) return std::unexpected(blob.error());
+    const Result<spade::BlobSection> bodies = spade::find_section(*blob, "bodies");
+    if (!bodies) return std::unexpected(bodies.error());
+    if (bodies->elem_size != sizeof(spade::BodyState)) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "start_nudged: BodyState size"});
+    }
+    const float toward = (variant % 2u) == 0u ? std::numeric_limits<float>::infinity()
+                                              : -std::numeric_limits<float>::infinity();
+    const uint32_t rank = (variant / 2u) % 3u;
+    const uint32_t pick = variant / 6u;
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const std::size_t payload_at = static_cast<std::size_t>(bodies->payload.data() - blob->bytes().data());
+    uint32_t nudges = 0;
+    for (uint32_t w = 0; w < bodies->world_count; ++w) {
+        std::vector<std::size_t> active;
+        for (uint32_t k = 0; k < bodies->capacity_per_world; ++k) {
+            const std::size_t at = payload_at + (static_cast<std::size_t>(w) * bodies->capacity_per_world + k) *
+                                                    sizeof(spade::BodyState);
+            spade::BodyState b{};
+            std::memcpy(&b, bytes.data() + at, sizeof(b));
+            if ((b.flags & spade::physics::body_flags::active) != 0u) active.push_back(at);
+        }
+        if (active.empty()) continue;
+        const std::size_t at = active[pick % active.size()];
+        spade::BodyState b{};
+        std::memcpy(&b, bytes.data() + at, sizeof(b));
+        std::array<int, 3> order{0, 1, 2};
+        std::sort(order.begin(), order.end(),
+                  [&](int x, int y) { return std::fabs(b.pos[x]) > std::fabs(b.pos[y]); });
+        const int c = b.pos[order[rank]] != 0.0f ? order[rank] : order[0];
+        b.pos[c] = std::nextafter(b.pos[c], toward);
+        std::memcpy(bytes.data() + at, &b, sizeof(b));
+        ++nudges;
+    }
+    if (nudges == 0) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "start_nudged: no active body"});
+    }
+    Result<spade::SnapshotBlob> edited = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    if (!edited) return std::unexpected(edited.error());
+    if (const Result<void> restored = sim->restore(*edited); !restored) return std::unexpected(restored.error());
+    return sim;
+}
+
+// ---------------------------------------------------------------------------
+// PAST THE HORIZON (TD-14). A scenario whose one-ulp CPU control exceeds
+// 1e-5 of its scale (1 m, 1 m/s) before its horizon gets element bands on
+// every row only up to T_p (`element_steps`). From there to the horizon the
+// rows still inside it keep their element bands, and the `past` rows give
+// way to:
+//   * invariants, exact, on both legs: the same slots live, no NaN or
+//     infinity, and every body centre outside the solid (phi > 0: no
+//     tunnelling);
+//   * statistics per world -- the centre of mass, mean and RMS speed and the
+//     translational kinetic energy -- banded against chaos: 4x the largest
+//     deviation of the same statistic over kChaosRuns one-ulp-perturbed CPU
+//     runs, floored at TD-14's floor (5e-10 + 5e-7 |cpu|, four ulps at
+//     s_q and four ulps relative). The GPU has to be as
+//     close to the CPU as the CPU is to itself, nudged by one ulp.
+// ---------------------------------------------------------------------------
+struct PastHorizon {
+    uint64_t element_steps = 0;
+    std::vector<std::string_view> past;  // quantity names past T_p at the horizon
+};
+
+inline constexpr uint32_t kChaosRuns = 8;
+inline constexpr std::size_t kStatCount = 6;
+inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x", "com.y", "com.z", "mean speed",
+                                                                "rms speed", "kinetic"};
+
+[[nodiscard]] std::span<const spade::BodyState> bodies_of(const Simulation& sim) {
+    std::span<const spade::BodyState> out;
+    sim.arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
+        if (array.name == "bodies" && array.elem_size == sizeof(spade::BodyState)) {
+            out = std::span<const spade::BodyState>(reinterpret_cast<const spade::BodyState*>(array.data),
+                                                    array.byte_size() / sizeof(spade::BodyState));
+        }
+    });
+    return out;
+}
+
+// Per world, in double: centre of mass, mean and RMS speed, kinetic energy.
+[[nodiscard]] std::vector<std::array<double, kStatCount>> world_stats(const Simulation& sim, uint32_t worlds) {
+    const std::span<const spade::BodyState> bodies = bodies_of(sim);
+    std::vector<std::array<double, kStatCount>> out(worlds);
+    const std::size_t per_world = worlds == 0 ? 0 : bodies.size() / worlds;
+    for (uint32_t w = 0; w < worlds; ++w) {
+        double mass = 0.0, mx = 0.0, my = 0.0, mz = 0.0, speed = 0.0, speed_sq = 0.0, kinetic = 0.0;
+        uint32_t n = 0;
+        for (std::size_t k = 0; k < per_world; ++k) {
+            const spade::BodyState& b = bodies[w * per_world + k];
+            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
+            const double m = b.mass;
+            const double v2 = static_cast<double>(b.vel.x) * b.vel.x + static_cast<double>(b.vel.y) * b.vel.y +
+                              static_cast<double>(b.vel.z) * b.vel.z;
+            mass += m;
+            mx += m * b.pos.x;
+            my += m * b.pos.y;
+            mz += m * b.pos.z;
+            speed += std::sqrt(v2);
+            speed_sq += v2;
+            kinetic += 0.5 * m * v2;
+            ++n;
+        }
+        if (n == 0) continue;
+        out[w] = {mx / mass, my / mass, mz / mass, speed / n, std::sqrt(speed_sq / n), kinetic};
+    }
+    return out;
+}
+
+// The invariants, on one leg.
+void expect_invariants(const Simulation& sim, const WorldSetDesc& desc, std::string_view what) {
+    const std::span<const spade::BodyState> bodies = bodies_of(sim);
+    const std::size_t worlds = desc.worlds.size();
+    const std::size_t per_world = worlds == 0 ? 0 : bodies.size() / worlds;
+    for (std::size_t w = 0; w < worlds; ++w) {
+        const spade::SdfProgram& sdf = desc.worlds[w].world.sdf;
+        for (std::size_t k = 0; k < per_world; ++k) {
+            const spade::BodyState& b = bodies[w * per_world + k];
+            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
+            const bool finite = std::isfinite(b.pos.x) && std::isfinite(b.pos.y) && std::isfinite(b.pos.z) &&
+                                std::isfinite(b.vel.x) && std::isfinite(b.vel.y) && std::isfinite(b.vel.z) &&
+                                std::isfinite(b.orient.w) && std::isfinite(b.omega_body.x) &&
+                                std::isfinite(b.omega_body.y) && std::isfinite(b.omega_body.z);
+            EXPECT_TRUE(finite) << what << ": world " << w << " body " << k << " is not finite";
+            if (!sdf.nodes.empty()) {
+                EXPECT_GT(spade::eval(sdf, b.pos), 0.0f)
+                    << what << ": world " << w << " body " << k << " has its centre inside the solid (tunnelled)";
+            }
+        }
+    }
+}
+
+
 void run_parity(const Scenario& scenario, std::string_view label, const std::vector<BandEntry>& table,
-                ParityCheck extra = nullptr) {
+                ParityCheck extra = nullptr, const PastHorizon* past = nullptr) {
     Result<Simulation> cpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << "cpu leg: " << cpu.error().context;
     Result<Simulation> gpu =
         spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::vulkan});
     ASSERT_TRUE(gpu.has_value()) << "gpu leg: " << gpu.error().context;
-
-    // The two runs start from IDENTICAL state -- asserted, not assumed. Both
-    // legs were built by the same closures, but a create()-time divergence
-    // (a different seed derivation, a spawn the vulkan path rejected) would
-    // otherwise show up later as a "parity failure" that had nothing to do
-    // with the kernels.
     EXPECT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*gpu))
         << label << ": the two legs did not start from identical state";
 
-    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
-    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
-    ASSERT_EQ(cpu->tick().value, gpu->tick().value);
-    ASSERT_EQ(cpu->tick().value, scenario.steps);
+    const auto compare = [&](const std::vector<BandEntry>& rows, const std::string& at) {
+        const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), rows);
+        ASSERT_TRUE(report.has_value()) << report.error().context;
+        report->print(at);
+        for (const spade::testing::QuantityReport& q : report->quantities) {
+            EXPECT_TRUE(q.within_band())
+                << at << ": '" << q.quantity << "' is outside its pinned band -- measured max |abs| " << q.max_abs
+                << ", max rel " << q.max_rel << ", pinned (" << q.band.abs << ", " << q.band.rel << "); "
+                << q.elements_outside_band << " of " << q.elements_compared << " elements";
+            EXPECT_GT(q.elements_compared, std::size_t{0}) << at << ": '" << q.quantity << "' compared nothing";
+            if (q.kind_is_quaternion) {
+                EXPECT_LT(q.max_unit_norm_error, 1.0e-5f)
+                    << at << ": a quaternion drifted off the unit sphere by " << q.max_unit_norm_error;
+            }
+        }
+    };
 
-    const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
-    ASSERT_TRUE(report.has_value()) << report.error().context;
+    if (past == nullptr) {
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
+        compare(table, std::string(label));
+    } else {
+        ASSERT_LT(past->element_steps, scenario.steps);
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, past->element_steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, past->element_steps).has_value());
+        compare(table, std::string(label) + " @ T_p = " + std::to_string(past->element_steps) + " steps");
 
-    // PRINTED ALWAYS, passing or failing: the measured-versus-pinned table is
-    // this task's actual deliverable (the user checkpoint's centrepiece), and
-    // a table printed only on failure is a table nobody reads. `ctest -V` is
-    // what surfaces it.
-    report->print(label);
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
+        std::vector<BandEntry> inside;
+        for (const BandEntry& row : table) {
+            if (std::find(past->past.begin(), past->past.end(), row.quantity) == past->past.end()) {
+                inside.push_back(row);
+            }
+        }
+        compare(inside, std::string(label) + " @ horizon, rows inside T_p");
 
-    for (const spade::testing::QuantityReport& q : report->quantities) {
-        EXPECT_TRUE(q.within_band())
-            << label << ": '" << q.quantity << "' is outside its pinned band -- measured max |abs| "
-            << q.max_abs << ", max rel " << q.max_rel << ", pinned (" << q.band.abs << ", " << q.band.rel
-            << "); " << q.elements_outside_band << " of " << q.elements_compared << " elements";
-        // The band table must not pass VACUOUSLY: a quantity nothing wrote
-        // would report zero error and sail through. Every row here names a
-        // field a wave-A kernel writes on every substep, so at least one
-        // element must have been compared.
-        EXPECT_GT(q.elements_compared, std::size_t{0}) << label << ": '" << q.quantity << "' compared nothing";
-        if (q.kind_is_quaternion) {
-            // integrate_orientation renormalizes on the way out on BOTH paths
-            // (math_ops.cpp:47, integrate.slang's glm_quat_normalize), so a
-            // drifting norm is a different defect from a component band being
-            // exceeded -- see parity.hpp's header.
-            EXPECT_LT(q.max_unit_norm_error, 1.0e-5f)
-                << label << ": a quaternion drifted off the unit sphere by " << q.max_unit_norm_error;
+        // Invariants, both legs.
+        const Result<WorldSetDesc> desc = scenario.build();
+        ASSERT_TRUE(desc.has_value()) << desc.error().context;
+        const std::span<const spade::BodyState> cb = bodies_of(*cpu);
+        const std::span<const spade::BodyState> gb = bodies_of(*gpu);
+        ASSERT_EQ(cb.size(), gb.size());
+        for (std::size_t k = 0; k < cb.size(); ++k) {
+            EXPECT_EQ(cb[k].flags, gb[k].flags) << label << ": slot " << k << " differs in liveness";
+        }
+        expect_invariants(*cpu, *desc, "cpu leg");
+        expect_invariants(*gpu, *desc, "gpu leg");
+
+        // Statistics against chaos.
+        const uint32_t worlds = static_cast<uint32_t>(desc->worlds.size());
+        const std::vector<std::array<double, kStatCount>> c = world_stats(*cpu, worlds);
+        const std::vector<std::array<double, kStatCount>> g = world_stats(*gpu, worlds);
+        std::vector<std::array<double, kStatCount>> spread(worlds);
+        for (uint32_t v = 0; v < kChaosRuns; ++v) {
+            Result<Simulation> run = start_nudged(scenario, v);
+            ASSERT_TRUE(run.has_value()) << run.error().context;
+            ASSERT_TRUE(spade::testing::advance_scenario(scenario, *run, scenario.steps).has_value());
+            const std::vector<std::array<double, kStatCount>> r = world_stats(*run, worlds);
+            for (uint32_t w = 0; w < worlds; ++w) {
+                for (std::size_t i = 0; i < kStatCount; ++i) {
+                    spread[w][i] = std::max(spread[w][i], std::fabs(r[w][i] - c[w][i]));
+                }
+            }
+        }
+        std::printf("    statistics past T_p (|gpu - cpu| against 4x the one-ulp CPU spread over %u runs):\n",
+                    kChaosRuns);
+        for (uint32_t w = 0; w < worlds; ++w) {
+            for (std::size_t i = 0; i < kStatCount; ++i) {
+                const double floor = 5.0e-10 + 5.0e-7 * std::fabs(c[w][i]);
+                const double band = std::max(4.0 * spread[w][i], floor);
+                const double gap = std::fabs(g[w][i] - c[w][i]);
+                std::printf("    world %u %-10s cpu %+.6e  |gpu-cpu| %.3e  spread %.3e  band %.3e  %s\n", w,
+                            kStatNames[i], c[w][i], gap, spread[w][i], band, gap <= band ? "within" : "OUTSIDE");
+                EXPECT_LE(gap, band) << label << ": world " << w << " " << kStatNames[i]
+                                     << " is further from the CPU than the CPU's own one-ulp spread allows";
+            }
         }
     }
-
+    ASSERT_EQ(cpu->tick().value, gpu->tick().value);
+    ASSERT_EQ(cpu->tick().value, scenario.steps);
     if (extra != nullptr) extra(*cpu, *gpu, label);
 }
 
@@ -538,44 +728,8 @@ void run_parity(const Scenario& scenario, std::string_view label, const std::vec
     const BackendDesc cpu{.kind = BackendKind::cpu};
     Result<Simulation> base = spade::testing::start_scenario(scenario, cpu);
     if (!base) return std::unexpected(base.error());
-    Result<Simulation> nudged = spade::testing::start_scenario(scenario, cpu);
+    Result<Simulation> nudged = start_nudged(scenario, 0);
     if (!nudged) return std::unexpected(nudged.error());
-
-    const Result<spade::SnapshotBlob> blob = nudged->snapshot();
-    if (!blob) return std::unexpected(blob.error());
-    const Result<spade::BlobSection> bodies = spade::find_section(*blob, "bodies");
-    if (!bodies) return std::unexpected(bodies.error());
-    if (bodies->elem_size != sizeof(spade::BodyState)) {
-        return std::unexpected(spade::Error{spade::Code::invalid_argument, "one_ulp_control: BodyState size"});
-    }
-    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
-    const std::size_t payload_at = static_cast<std::size_t>(bodies->payload.data() - blob->bytes().data());
-    uint32_t nudges = 0;
-    for (uint32_t w = 0; w < bodies->world_count; ++w) {
-        for (uint32_t k = 0; k < bodies->capacity_per_world; ++k) {
-            const std::size_t at =
-                payload_at + (static_cast<std::size_t>(w) * bodies->capacity_per_world + k) * sizeof(spade::BodyState);
-            spade::BodyState b{};
-            std::memcpy(&b, bytes.data() + at, sizeof(b));
-            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
-            int c = 0;
-            for (int i = 1; i < 3; ++i) {
-                if (std::fabs(b.pos[i]) > std::fabs(b.pos[c])) c = i;
-            }
-            b.pos[c] = std::nextafter(b.pos[c], std::numeric_limits<float>::infinity());
-            std::memcpy(bytes.data() + at, &b, sizeof(b));
-            ++nudges;
-            break;
-        }
-    }
-    if (nudges == 0) {
-        return std::unexpected(spade::Error{spade::Code::invalid_argument, "one_ulp_control: no active body"});
-    }
-    Result<spade::SnapshotBlob> edited = spade::SnapshotBlob::from_bytes(std::move(bytes));
-    if (!edited) return std::unexpected(edited.error());
-    if (const Result<void> restored = nudged->restore(*edited); !restored) {
-        return std::unexpected(restored.error());
-    }
     if (const Result<void> a = spade::testing::advance_scenario(scenario, *base, scenario.steps); !a) {
         return std::unexpected(a.error());
     }
@@ -1204,9 +1358,12 @@ TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Scenario gate = gate_fleet_scenario();
 
+    // Past T_p at 900 steps: vel (the one-ulp CPU control reaches 4.3e-5 m/s on
+    // resting bodies, ParityChaos.OneUlpControlAtEachContactScenariosHorizon).
+    const PastHorizon past{450, {"vel"}};
     using namespace spade::testing::bands::gate_fleet;
     run_parity(gate, "gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
@@ -1669,9 +1826,11 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Scenario pair = contact_pair_scenario();
 
+    // Past T_p at 600 steps: vel (one-ulp CPU control 1.6e-5 m/s).
+    const PastHorizon past{300, {"vel"}};
     using namespace spade::testing::bands::contact_pair;
     run_parity(pair, "contact_pair (2 overlapping bodies, unequal masses, 600 steps)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
@@ -2374,9 +2533,12 @@ TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const Scenario hetero = heterogeneous_scenario();
 
+    // Past T_p at 900 steps: pos and vel (one-ulp CPU control 2.5e-5 m and
+    // 1.4e-4 m/s in the gate world).
+    const PastHorizon past{450, {"pos", "vel"}};
     using namespace spade::testing::bands::heterogeneous_geometry_set;
     run_parity(hetero, "heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
