@@ -116,7 +116,9 @@ void record_glfw_error(int code, const char* description) {
     return camera;
 }
 
-// Options for a GL-to-CPU comparison: the two features GL does not draw are off.
+// The fixture's default options, and a GL-to-CPU comparison's: shadows off,
+// which GL does not draw yet, and overlays off, whose lines would cross a
+// frame meant to show only the scene. Overlay cases turn them on.
 [[nodiscard]] RenderOptions comparable_options() {
     RenderOptions options;
     options.shadows = false;
@@ -240,7 +242,7 @@ class GpuGlRenderer : public ::testing::Test {
     // Clears to black, draws `scene`, and reads back RGBA8, bottom row first.
     // Empty if the renderer refused.
     [[nodiscard]] std::vector<uint8_t> draw_and_read(const RenderScene& scene,
-                                                     const RenderOptions& options = RenderOptions{},
+                                                     const RenderOptions& options = comparable_options(),
                                                      const Camera& camera = camera_on_plus_z()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -261,7 +263,7 @@ class GpuGlRenderer : public ::testing::Test {
     }
 
     // How many pixels `scene` turns from black.
-    [[nodiscard]] size_t covered_pixels(const RenderScene& scene, const RenderOptions& options = RenderOptions{}) {
+    [[nodiscard]] size_t covered_pixels(const RenderScene& scene, const RenderOptions& options = comparable_options()) {
         return count_non_black(draw_and_read(scene, options));
     }
 
@@ -455,11 +457,20 @@ TEST_F(GpuGlRenderer, BackgroundMatchesTheCpuWithinItsMeasuredBand) {
 // measured and pinned (03-verification): a regression guard on a
 // best-effort technique (RND-3), not a grade.
 TEST_F(GpuGlRenderer, OverlaysMatchTheCpuWithinTheirBand) {
-    constexpr size_t kBandCpuMisses = 0;  // provisional until measured on this device
+    // Measured 2026-10-05 on rendering/gl-overlays, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 4 of the CPU's 3277
+    // overlay pixels miss, and 0 of GL's. The 4 are where a bounds edge
+    // crosses grid lines on screen: GL's bounds line covers a pixel that is
+    // grid on the CPU (3), and one grid pixel lands on bare ground in GL.
+    // Pinned at the measurement. Another device may differ; re-measure there
+    // before widening (03-verification).
+    constexpr size_t kBandCpuMisses = 4;
     constexpr size_t kBandGlMisses = 0;
 
     RenderScene scene = make_ground_scene();
-    scene.bounds = spade::render::Aabb{.min = glm::vec3(-3.0f, 0.0f, -3.0f), .max = glm::vec3(3.0f, 2.0f, 3.0f)};
+    // Off the grid lines: a bounds edge on a grid line would tie with it, and
+    // which colour wins a tie is rounding, not a property of either path.
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-2.5f, 0.25f, -2.5f), .max = glm::vec3(2.5f, 2.0f, 2.5f)};
     scene.spawn_positions = {glm::vec3(1.0f, 0.0f, 1.0f), glm::vec3(-1.5f, 0.0f, -1.0f)};
     scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                                 glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f))};

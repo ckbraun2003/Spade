@@ -94,7 +94,8 @@ class GlRenderer {
     // names. A background pass draws the sky in every mode. In shaded mode it
     // also draws the analytic ground, the grid and the atmospheric term
     // (SR-17, SR-17a, SR-22). Meshes draw shaded, wireframe or velocity.
-    // Field layers draw filled in every mode, as raster_cpu draws them.
+    // Field layers draw filled in every mode, as raster_cpu draws them, and so
+    // do the overlays, from raster_cpu's own lists (render::overlay_geometry()).
     // Raymarch is refused with Code::unavailable: it is a CPU technique. So
     // is a malformed field layer, with Code::invalid_argument.
     //
@@ -108,7 +109,7 @@ class GlRenderer {
 
     // Names the options in `options` that draw() will not draw, so the gap is
     // announced, not silent (L6). Each name is the RenderOptions field it
-    // concerns: "shadows", "overlays", or "mode" for a mode draw() refuses.
+    // concerns: "shadows", or "mode" for a mode draw() refuses.
     // A caller shows the list, or refuses GL when it needs one of them.
     // Needs no GL context.
     [[nodiscard]] static std::vector<std::string_view> unhonoured(const render::RenderOptions& options);
