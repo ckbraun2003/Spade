@@ -128,7 +128,27 @@
 # through all four fp32_math kernels and matches bit for bit -- so the exposure
 # is a missing PIN, not a missing behaviour. Recorded here as a carry-in for
 # whoever next revisits the toolchain pins.
+#
+# THE ONE EXCEPTION: the measurement build (SPADE_MEASURE_UNPINNED_DENORMS, the
+# top-level CMakeLists.txt; docs/design/core/plans/2026-10-04-nvidia-denorm-
+# measurement-plan.md) compiles every kernel and variant WITHOUT this flag, to
+# measure what a device does when no mode is requested. -fp-mode precise stays.
+# Rule P3 inverts there ("P3-unpinned"), and nothing from that tree installs.
+# _spade_slang_denorm_args() below is the one place the choice is made; in a
+# default build it yields exactly the flag, so default command lines are
+# unchanged.
 # ==============================================================================
+
+# The denormal flags for one kernel compile, and the words its COMMENT uses.
+function(_spade_slang_denorm_args out_args out_note)
+    if(SPADE_MEASURE_UNPINNED_DENORMS)
+        set(${out_args} "" PARENT_SCOPE)
+        set(${out_note} "denorm UNPINNED (measurement build)" PARENT_SCOPE)
+    else()
+        set(${out_args} -denorm-mode-fp32 preserve PARENT_SCOPE)
+        set(${out_note} "denorm preserve" PARENT_SCOPE)
+    endif()
+endfunction()
 
 if(NOT SPADE_SLANGC)
     message(FATAL_ERROR
@@ -319,6 +339,7 @@ function(spade_slang_kernel target name)
     # the reflection step's dependency edge, and adding a pure math module to
     # it would re-run slangc's reflection over bindings.slang every time a
     # polynomial coefficient changed. Kernels reach it as `import fp32_math;`.
+    _spade_slang_denorm_args(_denorm_args _denorm_note)
     add_custom_command(
         OUTPUT "${_spv}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gen_dir}"
@@ -327,14 +348,14 @@ function(spade_slang_kernel target name)
                 -target spirv
                 -profile ${SPADE_SLANG_PROFILE}
                 -fp-mode precise
-                -denorm-mode-fp32 preserve
+                ${_denorm_args}
                 -I "${SPADE_SLANG_SHARED_DIR}"
                 -I "${SPADE_SLANG_SHADERS_DIR}"
                 -o "${_spv}"
                 -depfile "${_dep}"
         DEPENDS "${_src}" ${SPADE_SLANG_SHARED_MODULES}
         DEPFILE "${_dep}"
-        COMMENT "slangc: ${name}.slang -> SPIR-V (fp-mode precise, denorm preserve)"
+        COMMENT "slangc: ${name}.slang -> SPIR-V (fp-mode precise, ${_denorm_note})"
         VERBATIM
     )
 
@@ -402,6 +423,7 @@ function(spade_slang_kernel_variants target name)
 
     set(_spv_outputs "")
     set(_embed_args "")
+    _spade_slang_denorm_args(_denorm_args _denorm_note)
 
     foreach(_wg IN LISTS SPADE_SLANG_WORKGROUP_SIZES)
         set(_spv "${_gen_dir}/${name}.wg${_wg}.spv")
@@ -409,9 +431,10 @@ function(spade_slang_kernel_variants target name)
 
         # Identical to spade_slang_kernel()'s compile in every respect except
         # the -D: same profile, same -fp-mode precise, same -denorm-mode-fp32
-        # preserve, same two -I paths, same -depfile. The pins are per-compile
-        # flags, so EVERY variant carries them and the SPIR-V policy gate checks
-        # every variant independently.
+        # preserve (or, in the measurement build, the same absence of it), same
+        # two -I paths, same -depfile. The pins are per-compile flags, so EVERY
+        # variant carries them and the SPIR-V policy gate checks every variant
+        # independently.
         add_custom_command(
             OUTPUT "${_spv}"
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_gen_dir}"
@@ -420,7 +443,7 @@ function(spade_slang_kernel_variants target name)
                     -target spirv
                     -profile ${SPADE_SLANG_PROFILE}
                     -fp-mode precise
-                    -denorm-mode-fp32 preserve
+                    ${_denorm_args}
                     -DSPADE_WG=${_wg}
                     -I "${SPADE_SLANG_SHARED_DIR}"
                     -I "${SPADE_SLANG_SHADERS_DIR}"
@@ -428,7 +451,7 @@ function(spade_slang_kernel_variants target name)
                     -depfile "${_dep}"
             DEPENDS "${_src}" ${SPADE_SLANG_SHARED_MODULES}
             DEPFILE "${_dep}"
-            COMMENT "slangc: ${name}.slang -> SPIR-V (local size ${_wg}, fp-mode precise, denorm preserve)"
+            COMMENT "slangc: ${name}.slang -> SPIR-V (local size ${_wg}, fp-mode precise, ${_denorm_note})"
             VERBATIM
         )
 

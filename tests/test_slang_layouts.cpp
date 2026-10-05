@@ -540,6 +540,16 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_field_dryden, spade::testing::SpirvProfile::parity},
 };
 
+// Rule P3's expectation for THIS build. The measurement build
+// (SPADE_MEASURE_UNPINNED_DENORMS, a definition on spade_tests only; see the
+// top-level CMakeLists.txt) compiles every kernel without the fp32 denormal
+// pin, so there P3 inverts; everywhere else it is the pin.
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+constexpr spade::testing::DenormPolicy kDenormPolicy = spade::testing::DenormPolicy::unpinned;
+#else
+constexpr spade::testing::DenormPolicy kDenormPolicy = spade::testing::DenormPolicy::preserve;
+#endif
+
 }  // namespace
 
 TEST(SlangSpirv, FloatControlsPinned) {
@@ -557,7 +567,7 @@ TEST(SlangSpirv, FloatControlsPinned) {
             const std::string module = std::string(entry.variants.name) + " (local size " +
                                        std::to_string(variant.workgroup_size) + ")";
             const spade::testing::SpirvScanResult scan =
-                spade::testing::scan_spirv(variant.code(), entry.profile);
+                spade::testing::scan_spirv(variant.code(), entry.profile, kDenormPolicy);
 
             EXPECT_TRUE(scan.well_formed) << module << ": not a well-formed SPIR-V module";
 
@@ -604,9 +614,18 @@ TEST(SlangSpirv, FloatControlsPinned) {
             // kernel and that profile are both retired, so every module in the
             // table is now an arithmetic one and the guard would be a branch nothing
             // takes.
-            EXPECT_TRUE(scan.denorm_preserve_fp32)
-                << module << ": fp32 denormals are not pinned to preserve; is the module "
-                << "compiled -denorm-mode-fp32 preserve? (cmake/SpadeSlang.cmake)";
+            //
+            // Inverted in the measurement build (kDenormPolicy, above).
+            if constexpr (kDenormPolicy == spade::testing::DenormPolicy::preserve) {
+                EXPECT_TRUE(scan.denorm_preserve_fp32)
+                    << module << ": fp32 denormals are not pinned to preserve; is the module "
+                    << "compiled -denorm-mode-fp32 preserve? (cmake/SpadeSlang.cmake)";
+            } else {
+                EXPECT_FALSE(scan.denorm_preserve_fp32)
+                    << module << ": P3-unpinned: DenormPreserve 32 present in the measurement "
+                    << "build (SPADE_MEASURE_UNPINNED_DENORMS); it must compile without "
+                    << "-denorm-mode-fp32 preserve (cmake/SpadeSlang.cmake)";
+            }
 
             // Rule P4 (EVERY profile, S6 Task 8), named for the same reason P3 is
             // named above: one module-level property, one way to be wrong, and a
@@ -727,6 +746,87 @@ struct SpirvInterface {
 }
 
 }  // namespace
+
+namespace {
+
+// A real module's words with its `OpExecutionMode <entry> DenormPreserve 32`
+// overwritten by OpNops (word count 1, opcode 0); unchanged if it has none.
+std::vector<uint32_t> without_denorm_preserve(std::span<const uint32_t> code) {
+    namespace st = spade::testing;
+    std::vector<uint32_t> words(code.begin(), code.end());
+    for (std::size_t i = 5; i < words.size();) {
+        const uint32_t word_count = words[i] >> 16;
+        if (word_count == 0 || i + word_count > words.size()) break;
+        if ((words[i] & 0xFFFFu) == st::spv_op::kExecutionMode && word_count >= 4 &&
+            words[i + 2] == st::kExecutionModeDenormPreserve && words[i + 3] == st::kFloatWidth32) {
+            std::fill_n(words.begin() + static_cast<std::ptrdiff_t>(i), word_count, uint32_t{1} << 16);
+        }
+        i += word_count;
+    }
+    return words;
+}
+
+// The same module with exactly one such execution mode, right after its first
+// OpEntryPoint (the scanner judges the declaration, not where it sits).
+std::vector<uint32_t> with_denorm_preserve(std::span<const uint32_t> code) {
+    namespace st = spade::testing;
+    std::vector<uint32_t> words = without_denorm_preserve(code);
+    for (std::size_t i = 5; i < words.size();) {
+        const uint32_t word_count = words[i] >> 16;
+        if (word_count == 0 || i + word_count > words.size()) break;
+        if ((words[i] & 0xFFFFu) == st::spv_op::kEntryPoint && word_count >= 3) {
+            const uint32_t mode[] = {(uint32_t{4} << 16) | st::spv_op::kExecutionMode, words[i + 2],
+                                     st::kExecutionModeDenormPreserve, st::kFloatWidth32};
+            words.insert(words.begin() + static_cast<std::ptrdiff_t>(i + word_count), std::begin(mode),
+                         std::end(mode));
+            break;
+        }
+        i += word_count;
+    }
+    return words;
+}
+
+std::size_t findings_named(const spade::testing::SpirvScanResult& scan, const std::string& rule) {
+    return static_cast<std::size_t>(std::count_if(scan.findings.begin(), scan.findings.end(),
+                                                  [&](const auto& f) { return f.rule == rule; }));
+}
+
+}  // namespace
+
+// Rule P3 in both directions, under both policies, on one real module. The
+// inverted rule (DenormPolicy::unpinned, the SPADE_MEASURE_UNPINNED_DENORMS
+// build's) has to be provable from a default build, which never compiles an
+// unpinned module, so the test makes both forms of the module itself: the
+// mode present, and the mode overwritten. It holds in either build.
+TEST(SlangSpirv, RuleP3InvertsUnderTheUnpinnedPolicy) {
+    namespace st = spade::testing;
+    const std::span<const uint32_t> code = kSpirvModules[0].variants.all().front().code();
+    const std::vector<uint32_t> pinned = with_denorm_preserve(code);
+    const std::vector<uint32_t> unpinned = without_denorm_preserve(code);
+    const st::SpirvProfile profile = kSpirvModules[0].profile;
+
+    const st::SpirvScanResult pinned_preserve = st::scan_spirv(pinned, profile, st::DenormPolicy::preserve);
+    const st::SpirvScanResult unpinned_preserve = st::scan_spirv(unpinned, profile, st::DenormPolicy::preserve);
+    const st::SpirvScanResult pinned_unpinned = st::scan_spirv(pinned, profile, st::DenormPolicy::unpinned);
+    const st::SpirvScanResult unpinned_unpinned = st::scan_spirv(unpinned, profile, st::DenormPolicy::unpinned);
+
+    for (const st::SpirvScanResult* scan : {&pinned_preserve, &unpinned_preserve, &pinned_unpinned, &unpinned_unpinned}) {
+        EXPECT_TRUE(scan->well_formed);
+    }
+    EXPECT_TRUE(pinned_preserve.denorm_preserve_fp32);
+    EXPECT_FALSE(unpinned_preserve.denorm_preserve_fp32);
+
+    // preserve: the pin passes, its absence is P3.
+    EXPECT_EQ(findings_named(pinned_preserve, "P3"), std::size_t{0});
+    EXPECT_EQ(findings_named(unpinned_preserve, "P3"), std::size_t{1});
+    // unpinned: the pin is P3-unpinned, its absence passes, and P3 never fires.
+    EXPECT_EQ(findings_named(pinned_unpinned, "P3-unpinned"), std::size_t{1});
+    EXPECT_EQ(findings_named(unpinned_unpinned, "P3-unpinned"), std::size_t{0});
+    EXPECT_EQ(findings_named(pinned_unpinned, "P3") + findings_named(unpinned_unpinned, "P3"), std::size_t{0});
+    // preserve never reports the inverted rule.
+    EXPECT_EQ(findings_named(pinned_preserve, "P3-unpinned") + findings_named(unpinned_preserve, "P3-unpinned"),
+              std::size_t{0});
+}
 
 // engine/compute/vulkan/probe_runner.hpp states a contract the probe KERNEL has
 // to meet -- one descriptor set, two storage buffers at binding 0 (arguments)

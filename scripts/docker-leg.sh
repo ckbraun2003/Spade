@@ -228,7 +228,21 @@ do_consumer() {
     else
         sandbox_note="not offered by this commit's consumer-smoke.sh"
     fi
-    bash "$smoke" "${args[@]}"
+    bash "$smoke" "${args[@]}" || return
+    # The measurement build's install guard (SPADE_MEASURE_UNPINNED_DENORMS):
+    # the installed spade_compute must carry no trace of it. Only the ON
+    # prefix has spade_compute. A commit without the scanner says so.
+    if [ "$mode" = ON ]; then
+        local scan=$src/scripts/denorm-marker-scan.sh
+        if [ ! -f "$scan" ]; then
+            denorm_note="not in this commit (scripts/denorm-marker-scan.sh)"
+        elif bash "$scan" "$root/consumer/prefix-vkon"; then
+            denorm_note="clean: the consumer ON prefix's spade_compute and headers carry no marker"
+        else
+            denorm_note="FAIL: denorm-marker-scan.sh on the consumer ON prefix (leg.log)"
+            return 1
+        fi
+    fi
 }
 
 echo "docker-leg: commit $commit, step $step, jobs $jobs"
@@ -240,6 +254,7 @@ echo "docker-leg: started $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 gpu_excluded=
 agreement_note=
 sandbox_note=
+denorm_note=
 t_start=$SECONDS
 
 # all and consumer chain configure -> build -> what needs a built tree.
@@ -292,6 +307,9 @@ for p in "${parts[@]}"; do passed "$p" || result=FAIL; done
     fi
     if [ -n "$sandbox_note" ]; then
         echo "sandbox     $sandbox_note"
+    fi
+    if [ -n "$denorm_note" ]; then
+        echo "denorm      $denorm_note"
     fi
 } > "$summary"
 echo

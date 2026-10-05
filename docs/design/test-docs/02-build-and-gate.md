@@ -15,11 +15,16 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | `scripts/docker-leg.sh` | The leg's steps inside the container. The driver runs the commit's copy for the step, and its own copy for `seed` and `sync` | `<step> [--jobs N]`, `seed [--from VOLUME]` |
 | `scripts/gcc-check.sh` | The gcc check before review (below), from Git Bash | `<file>...`; `GCC_CHECK_VOLUME=<volume>` picks the volume |
 | `scripts/consumer-smoke.sh` | **Interface's.** Installs Spade into a fresh prefix, then builds and runs `tests/consumer` against it | `--vulkan ON\|OFF --work DIR [--from-build DIR] [--deps DIR] [--jobs N]` |
+| `scripts/denorm-marker-scan.sh` | Fails if an install prefix's `spade_compute` archive or headers carry a trace of the measurement build (`SPADE_MEASURE_UNPINNED_DENORMS`); a prefix with no `spade_compute` archive fails too (`TD-5`). The leg runs it on the consumer ON prefix | `<install prefix \| archive>...` |
 
 ## Presets and options
 
 - `CMakePresets.json`: `msvc-ninja-debug` and `msvc-ninja-release`, building into `build-ninja/debug` and `build-ninja/release`. CMake 3.28 or newer.
 - Options: `SPADE_VULKAN`, `SPADE_RENDER_GL`, `SPADE_BUILD_SANDBOX` and `SPADE_BUILD_V1`, all default `ON`. A `-DSPADE_VULKAN=OFF` configure has no preset of its own.
+- `SPADE_MEASURE_UNPINNED_DENORMS` (default `OFF`) is a measurement build, never a product one (Core's `../core/plans/2026-10-04-nvidia-denorm-measurement-plan.md`). It is configured only in a dedicated top-level tree.
+  - Under it, kernels compile without the fp32 denormal pin, rule P3 inverts ("P3-unpinned"), and `spade_compute` admits a device that cannot preserve denormals.
+  - Configure refuses it in a project that consumes Spade, and the first install rule fails any install from such a tree.
+  - A default build is byte-identical with or without this code: all 23 archives and 43 SPIR-V modules matched across two fresh legs.
 - A worktree builds in its own directory; two sessions never share a build tree.
 
 ## The gate
@@ -46,7 +51,7 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | **Runs** | Detached, in a container named like its volume, with `--memory 8g` and `-j8` by default and no swap. Legs on different commits run side by side. Closing the terminal does not stop a leg; running the driver again for the same run re-attaches rather than starting a second leg, and `-Stop` ends it. `-Follow` and `-Stop` act on the only leg, or on the one `-Run` (or `-Commit`) names. The driver's own `docker-leg.sh` seeds and syncs, since an older commit's copy predates those steps; the commit's copy runs the step. Stay with a leg in the foreground |
 | **`TD-12`** | A leg that makes a regenerated golden final runs on a fresh volume (`-NoSeed`), so no object in it predates the commit |
 | **Order** | configure, build (`ninja -k 0`, so one run lists every failing file), test, agreement, consumer ON, consumer OFF. `-Step consumer` also configures and builds first, so consumer ON installs the commit under test and never a tree some earlier commit built. A failed part blocks only the parts that need it. The exit code is 0 only if every part passed |
-| **Output** | `build-docker\<short-sha>\`, or `build-docker\<short-sha>-<run>\` for a named run: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk, and the volume: how it began and what it held before the run), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
+| **Output** | `build-docker\<short-sha>\`, or `build-docker\<short-sha>-<run>\` for a named run: `summary.txt` (each part's result and seconds, the commit, the toolchain, peak memory, free disk, the `denorm` scan of the consumer ON prefix, and the volume: how it began and what it held before the run), `build-errors.txt` (repo-relative `file:line`), `ctest.log`, `ctest-junit.xml`, `tests.txt` (registered names), `leg.log` |
 | **Refuses** | Under 4 GB free on the host drive (`-MinFreeGB`), since a full disk truncates files mid-build |
 
 A red leg is reported per realm with the failing `file:line`, and each realm fixes its own code. Measured times and peak memory are in `07-status.md`.

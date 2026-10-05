@@ -53,6 +53,13 @@
 //       tripwire that fires if that flag is ever dropped. In BOTH profiles: a
 //       physics kernel that may use div/sqrt still may not silently flush.
 //
+//       INVERTED IN THE MEASUREMENT BUILD ONLY (DenormPolicy::unpinned, below;
+//       SPADE_MEASURE_UNPINNED_DENORMS, docs/design/core/plans/2026-10-04-
+//       nvidia-denorm-measurement-plan.md). That build compiles its kernels
+//       WITHOUT the flag to measure a device's default, so a module that still
+//       declares the mode is the failure there ("P3-unpinned"): the build
+//       would be measuring something other than what it says.
+//
 //   P4. NO `OpCapability Int64` (S6 Task 8, and it is a MEASUREMENT rather
 //       than a precaution). This program's correctness device -- the Intel
 //       Iris Plus every parity band is calibrated on -- reports
@@ -305,7 +312,7 @@ inline constexpr uint32_t kSpirvMagic = 0x07230203u;
 // returns every finding rather than the first, so a failing test names all of
 // them at once instead of forcing one round trip per violation.
 struct SpirvFinding {
-    std::string rule;     // "P1", "P2", "P3", "P4", "P5", "E1", "E2"
+    std::string rule;     // "P1", "P2", "P3", "P3-unpinned", "P4", "P5", "E1", "E2"
     std::string message;  // what was found, with the offending word index
 };
 
@@ -313,6 +320,15 @@ enum class SpirvProfile {
     parity,  // P1 + P2 + P3 + P4
     exact,   // P1 + P2 + P3 + P4 + E1 + E2
     // no_op RETIRED (S6 Task 8) with its only instance; see this file's header.
+};
+
+// What rule P3 expects of a module's fp32 denormal mode. `preserve` is every
+// build's but one: `unpinned` is the measurement build's
+// (SPADE_MEASURE_UNPINNED_DENORMS), where a module must carry NO
+// `DenormPreserve 32`. See P3 in this file's header.
+enum class DenormPolicy {
+    preserve,
+    unpinned,
 };
 
 // True for the opcodes an implementation may contract and that slangc DOES
@@ -398,7 +414,8 @@ struct SpirvScanResult {
 // GLSL.std.450 import id; pass 2 judges the instructions.
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline SpirvScanResult scan_spirv(std::span<const uint32_t> words,
-                                                SpirvProfile profile) {
+                                                SpirvProfile profile,
+                                                DenormPolicy denorms = DenormPolicy::preserve) {
     SpirvScanResult result;
 
     // Header: magic, version, generator, bound, schema -- five words minimum.
@@ -611,12 +628,23 @@ struct SpirvScanResult {
     // supported way to add the declaration to it from Slang source anyway).
     // That profile and its one module are retired, so every module this scanner
     // sees is an arithmetic one and the guard would be a branch nothing takes.
-    if (!result.denorm_preserve_fp32) {
+    //
+    // Under DenormPolicy::unpinned (the measurement build) the rule inverts:
+    // the declaration is the finding, and its absence is what that build is for.
+    if (denorms == DenormPolicy::preserve && !result.denorm_preserve_fp32) {
         result.findings.push_back(
             {"P3",
              "no `OpExecutionMode <entry> DenormPreserve 32`: fp32 denormal handling is "
              "implementation-defined without it and this program's device flushes to zero, "
              "while the CPU twin preserves; is the module compiled -denorm-mode-fp32 preserve?"});
+    }
+    if (denorms == DenormPolicy::unpinned && result.denorm_preserve_fp32) {
+        result.findings.push_back(
+            {"P3-unpinned",
+             "DenormPreserve 32 present: the measurement build "
+             "(SPADE_MEASURE_UNPINNED_DENORMS) must compile every module WITHOUT "
+             "-denorm-mode-fp32 preserve, or it measures the pinned mode instead of the "
+             "device's default; see cmake/SpadeSlang.cmake"});
     }
 
     result.well_formed = true;
