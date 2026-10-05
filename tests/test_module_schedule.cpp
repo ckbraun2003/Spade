@@ -1807,3 +1807,36 @@ TEST(ModuleStreams, AReseededSimulationHoldsTheStreamsOneCreatedAtTheNewSeedHold
         expect_same_noise<NoisyRow>(*reseeded, *fresh, "noisy_rows", w, 2);
     }
 }
+
+// L6: a streamed built-in array (dryden, imu_sensors, gnss_sensors) whose
+// module dropped its stream, or declared it under another tag, would hold noise
+// reseed() never reaches. create() refuses it, as it refuses a reshaped one,
+// naming the module, the array and the standard tag.
+TEST(ModuleStreams, ABuiltinStreamedArrayWithoutItsStreamIsRefused) {
+    const auto create = [](const spade::modules::ModuleSet& set) {
+        return spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    };
+    const auto with_imu_streams = [](std::span<const StreamDecl> streams) {
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        for (ModuleDesc& m : set) {
+            if (m.name == "imu") m.streams = streams;
+        }
+        return set;
+    };
+    std::vector<StreamDecl> renamed;
+    for (const ModuleDesc& m : spade::modules::standard_modules()) {
+        if (m.name == "imu") renamed.assign(m.streams.begin(), m.streams.end());
+    }
+    ASSERT_EQ(renamed.size(), 1u);
+    renamed[0].tag = "sensor.imu.v2";
+    ASSERT_TRUE(create(spade::modules::standard_modules()).has_value()) << "the control";
+    ASSERT_TRUE(create(standard_plus_noisy()).has_value()) << "the control: a developer's streams beside them";
+
+    const auto silent = create(with_imu_streams({}));
+    EXPECT_TRUE(refused_naming(silent, "module 'imu'"));
+    EXPECT_TRUE(refused_naming(silent, "'imu_sensors'"));
+    EXPECT_TRUE(refused_naming(silent, "'sensor.imu'"));
+    const auto retagged = create(with_imu_streams(renamed));
+    EXPECT_TRUE(refused_naming(retagged, "'imu_sensors'"));
+    EXPECT_TRUE(refused_naming(retagged, "'sensor.imu'")) << "the standard tag, not the one declared";
+}
