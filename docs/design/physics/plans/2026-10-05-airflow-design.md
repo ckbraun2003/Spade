@@ -350,21 +350,21 @@ Aliasing vorticity with the backward MacCormack set would save 24 MiB; this tabl
 
 | Buffer | MiB | Where |
 |---|---|---|
-| Render volume, RGBA16F (speed, pressure, `|ω|`, dye) | 16 | VRAM (Vulkan) |
-| Its staging copy | 16 | host memory *(unconfirmed: depends on the memory type the mirror picks)* |
-| GL 3D texture, RGBA16F | 16 | VRAM (GL) |
+| Render volume V, RGBA16F (`u, v, w`, dye), and S, RG16F (pressure gauge, `|ω|`): 12 B/cell (§5) | 24 | VRAM (Vulkan) |
+| Its staging copy | 24 | host memory *(unconfirmed: depends on the memory type the mirror picks)* |
+| GL 3D textures, V and S | 24 | VRAM (GL) |
 | Streamlines: 4,096 seeds × 128 points × 16 B | 8 | VRAM |
 | Smoke particles, 262,144 × 32 B (if used) | 8 | VRAM |
-| **VRAM total** | **≈ 48** | |
+| **VRAM total** | **≈ 64** | |
 
 **Against 8 GiB.** Proposed cap for airflow: 4 GiB. That leaves about 4 GiB for Windows and the desktop, the driver, the GL editor and the engine's own buffers *(the reserve is unmeasured; Core measures it with `VK_EXT_memory_budget`)*.
 
 | Configuration | Real-time | LBM (D3Q27, one copy) | Render | Total |
 |---|---|---|---|---|
-| **128³ both tiers** | 194 | 274 | 48 | **≈ 516 MiB** |
-| 192³ both | 655 | 925 | ≈ 110 | ≈ 1.7 GiB |
-| 256³ real-time + 192³ LBM | 1,552 | 925 | ≈ 280 | ≈ 2.7 GiB |
-| 256³ both | 1,552 | 2,192 | ≈ 280 | ≈ 3.9 GiB, at the cap |
+| **128³ both tiers** | 194 | 274 | 64 | **≈ 532 MiB** |
+| 192³ both | 655 | 925 | ≈ 180 | ≈ 1.7 GiB |
+| 256³ real-time + 192³ LBM | 1,552 | 925 | ≈ 400 | ≈ 2.8 GiB |
+| 256³ both, the volume decimated by 2 | 1,552 | 2,192 | ≈ 64 | ≈ 3.7 GiB (at full resolution, ≈ 400 and ≈ 4.0 GiB: over the cap) |
 
 Batching (`L8`): each world owns its region. 32 worlds at 64³ (real-time tier, 24 MiB each) use 776 MiB. `create()` refuses a set whose declared footprint exceeds the budget, naming the region (`L6`).
 
@@ -396,7 +396,7 @@ Snapshots grow by about 40 MiB per world at 128³ (velocity, pressure, dye) and 
 | 16³ | Unit tests: projection, free stream, multigrid convergence factor, momentum budget | 1–5 ms |
 | 32³ | Parity against the GPU, and the corpus golden | 10–40 ms |
 | 64³ | Report-only measurements | 0.1–0.3 s |
-| 128³ | Once per device of record, report-only (§8 Q9) | 1–2 s |
+| 128³ | Once per device of record, report-only (§8 Q9): an opt-in test (an environment variable, with a named skip, like `Fp32Exp`'s full sweep), never a gate test. Its record follows `test-docs/01-verification.md`'s band records: the device block, the scenario line with the control and `T_p`, and per statistic the 8-run spread, the GPU gap and the band | 1–2 s |
 
 **Closed-form and invariant tests** (in double where the test derives a value, `physics/04-verification.md`):
 - a uniform flow with no sources and no solids is reproduced bit for bit, on both backends;
@@ -406,7 +406,13 @@ Snapshots grow by about 40 MiB per world at 128³ (velocity, pressure, dye) and 
 - an actuator disc in still air: far-wake speed against momentum theory's `2 v_i`, within a band measured at 128³;
 - LBM: Poiseuille flow (second order), Taylor-Green decay against its closed form in `ν`, and the drag on a sphere at Re 20–100 against published correlations.
 
-**The golden:** `airflow_hover` at 32³ on the CPU. A quad hovers in a fixed 1.6 m box with a ground plane, for 250 fluid steps. The digest is reproduced by MSVC and the Docker gcc leg (`TD-1`, `TD-12`).
+**The golden:** `airflow_hover` at 32³ on the CPU. A quad hovers in a fixed 1.6 m box with a ground plane, for 250 fluid steps. The digest is final only when a fresh `-NoSeed` Docker gcc leg reproduces it, with the provenance block in the scenario file (`TD-1`, `TD-12`). It must not depend on the thread count (assumption 6).
+
+**Gate time** (Test/Docs, 2026-10-05). The gate runs debug as well as release, about 11× slower (at `86f1cb6` the non-gpu suite took about 41 s in release and 468 s in debug), and this box's load moves timings another 3–4×. So:
+- each new CPU test's time is measured in both presets before review and stated in the merge note (`TD-8`);
+- the airflow CPU tests together add at most about 60 s to the debug gate: one CPU run is shared between the golden and the parity test where possible, and the unit tests stay at 16³;
+- if the live 8-run spread breaks that budget, the statistics' spread is pinned as a measured band with its `L4` record, re-measured when the scenario or the solver changes (`TD-2`), instead of being recomputed every gate;
+- a test over 60 s in debug gets a per-test timeout override with its reason beside it (`test-docs/01-verification.md`, "Timeouts"), as the last resort, not the plan.
 
 **Bands (`TD-14`).** At 32³, element bands cover velocity at the probes, the wind sample at each body, body pose and rates, and every cell of the published volume. They hold up to the scenario's horizon `T_p`: the longest tested horizon at which the one-ulp CPU control (one face's velocity nudged by one ulp) stays under 1e-5 of the scene's scale (the scale is `v_h`, so 5e-5 m/s for the sandbox quad). Past `T_p`:
 - **invariants,** exact: no NaN or infinity; divergence under its bound; the momentum budget; the dye non-negative;
@@ -418,20 +424,20 @@ The target is 1e-4 relative. Above 1e-3 is a grade change (`TD-2`), never a wide
 
 **Owner:** Rendering.
 
-The views read only Publish (`L5`, the engine model). `airflow.publish` writes a render volume at the region's resolution, or decimated by 2: RGBA16F holding speed, pressure (gauge), vorticity magnitude and dye. It runs only on frames that request it, never at substep rate.
+The views read only Publish (`L5`, the engine model). `airflow.publish` writes a render volume at the region's resolution, or decimated by 2, cell-centred (it interpolates off the MAC faces), as two textures: **V**, RGBA16F = (`u, v, w`, dye), and **S**, RG16F = (pressure gauge, vorticity magnitude). The velocity is a vector because the streamlines and tracers need it; speed is `|uvw|` in the shader. That is 12 B/cell: 24 MiB at 128³, 3 MiB decimated. Each frame carries a small header: the world box (origin, cell size, dims), since a box can recentre (§8 Q1), and a finite min and max per channel for the transfer functions. The f32 → f16 conversion rounds to nearest even and keeps subnormals; a non-finite sample is flagged no-data and drawn transparent (`L6`), never as a value, as the field layer does. Publish runs only on frames that request it, never at substep rate. (Rendering, 2026-10-05.)
 
 **Volume rendering (GL, the editor's path, `RND-4`).**
-- The volume reaches GL by readback: 16 MiB per frame, under 1 ms over PCIe 4.0 *(estimate)*, then uploaded to a 3D texture.
-- A fragment ray-march uses front-to-back compositing with early exit, at 1–2 samples per cell. A transfer function per channel: speed, pressure (diverging) and vorticity, plus dye as absorption. It reads the scene's depth, so solid geometry hides the air behind it. Estimated 2–4 ms at 1080p *(unmeasured)*.
+- The volume reaches GL by readback: 24 MiB per frame, about 1 ms over PCIe 4.0 *(estimate)*, then uploaded to two 3D textures.
+- A fragment ray-march uses front-to-back compositing with early exit, at 1–2 samples per cell. A transfer function per channel: speed, pressure (diverging) and vorticity. Dye is absorption plus one constant in-scatter colour, so smoke reads as smoke, not ink; no self-shadowing at first. The march reads the scene's depth, so solid geometry hides the air behind it: `GlRenderer` draws into the caller's framebuffer, whose depth may be a renderbuffer, so Rendering redraws depth only into an internal texture. Estimated 2–4 ms at 1080p *(unmeasured; Rendering measures it in M3, against 2–4 ms measured for small GL CSG marches on the same card)*.
 - Vulkan-GL interop (`VK_KHR_external_memory_win32` with `GL_EXT_memory_object_win32` and semaphores) removes the copy. It comes only if the readback measures too slow (§8 Q7).
 
-**Streamlines.** Seeds come as a rake, a grid or rings around each rotor. They are integrated by RK2 through the published velocity in a GL 4.3 compute shader, or on the CPU at small seed counts, and drawn as lines coloured by speed. Display only.
+**Streamlines.** Seeds come as a rake, a grid or rings around each rotor. They are integrated by RK2 through the published velocity and drawn as lines coloured by speed. Display only. The CPU integrator comes first: it is the reference and the small-seed path. A GL 4.3 compute shader follows, banded against it.
 
 **Smoke.**
 - **Dye** is a passive scalar the solver advects (state, optional, §1.5). It is emitted at configurable sources: rotor tips, a wand, a ground patch. It is rendered as absorption in the same ray-march.
 - **Tracer particles** (optional, later) are advected through the published field on the device, render-only, and drawn as points.
 
-**Grades (`RND-3`).** A CPU volume ray-march at 32³ is the reference, with a frame golden. GL is best-effort, with a measured colour band against the CPU, as the field layer has (`GpuGlRenderer.FieldLayerMatchesTheCpuWithinItsMeasuredBand`).
+**Grades (`RND-3`).** A CPU volume ray-march at 32³ is the reference, with a frame golden. The golden renders a synthetic analytic volume (a vortex ring with a dye blob) through the Publish format, so it pins rendering alone and does not move with the solver; the gcc cross-check is `TD-12`. CPU trilinear sampling is cell-centred and edge-clamped. GL is best-effort, with a colour band measured against the CPU on the same volume, as the field layer has (`GpuGlRenderer.FieldLayerMatchesTheCpuWithinItsMeasuredBand`); NVIDIA's hardware trilinear (8-bit weights) sits inside it. There is no end-to-end frame golden from `airflow_hover`: the solver's golden pins the solver and this one pins rendering, so neither moves for the other's reason (Physics, 2026-10-05).
 
 **The Vulkan raster path needs nothing for this spec.** It is paused at background only (`rendering/07-status.md`). When it resumes (`RND-4`), a volume pass is a compute ray-march over the published buffer on the same device, with no copy. Airflow is a reason to bring that forward, and that decision is the user's (§8 Q7).
 
@@ -503,11 +509,11 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 
 **Q6. The LBM tier's speed.** It cannot be real time at 128³ on this card (about 12–16× slower). (A) Accept slow motion: the sandbox shows the real-time ratio. (B) Only small nested regions, 64³, about 2–4× slower. (C) Both. (D) Defer LBM until the real-time tier ships. **Recommend C, sequenced as D.**
 
-**Q7. How the volume reaches the screen.** (A) Readback into GL each frame. (B) Vulkan-GL interop. (C) Bring the Vulkan raster forward and ray-march on the device. **Recommend A,** with B only if the readback measures too slow. C changes `RND-4`'s order and is a separate decision.
+**Q7. How the volume reaches the screen.** (A) Readback into GL each frame. (B) Vulkan-GL interop. (C) Bring the Vulkan raster forward and ray-march on the device. **Recommend A,** with B only if the readback measures too slow. C changes `RND-4`'s order and is a separate decision. Rendering agrees (2026-10-05).
 
 **Q8. Order against SPH.** `PHY-4` (signed) puts SPH right after the module API, and SPH closes the last v1 transfer row, which unblocks the v1 quarantine (`SL14a`). (A) Airflow first; SPH then reuses point sampling and regions. (B) SPH first. (C) In parallel, sharing the Core stage. **Recommend A.** It follows the 2026-10-05 ruling ("GPU asap"), and the shared Core work is built once. It amends `PHY-4`'s timing, so it needs the user's word.
 
-**Q9. The grade at 128³.** The gate can afford a CPU comparison at 32³, not at 128³. (A) Banded at both sizes: 32³ in the gate, plus a recorded 128³ statistics measurement per device of record (`L4`'s record, like T3's). (B) Banded at 32³, best-effort at 128³. (C) Gate at 64³ too. **Recommend A.**
+**Q9. The grade at 128³.** The gate can afford a CPU comparison at 32³, not at 128³. (A) Banded at both sizes: 32³ in the gate, plus a recorded 128³ statistics measurement per device of record (`L4`'s record, like T3's). (B) Banded at 32³, best-effort at 128³. (C) Gate at 64³ too. **Recommend A.** Test/Docs agrees (2026-10-05), with the 128³ measurement as an opt-in, report-only test (§4.6).
 
 **Q10. Airflow on the CPU.** (A) Opt-in only, with the cost announced at `create()`. (B) A supported coarse CPU tier for Kat (16³–32³), with its own scenarios. (C) Refuse CPU grids above 32³. **Recommend A.** B can come when Kat asks for it.
 
@@ -544,11 +550,11 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 - The staging memory type (§4.3).
 - The snapshot growth, and that a v3 blob without airflow is unchanged.
 
-**Rendering**
-- The Publish volume format (RGBA16F, four channels).
-- GL ray-march by readback; streamlines in a GL compute shader; dye as absorption.
-- The CPU volume reference and its frame golden.
-- That the Vulkan raster needs nothing now.
+**Rendering** (confirmed 2026-10-05, with its amendments folded into §4.3 and §5)
+- The Publish volume format: **amended** to two cell-centred textures, V (RGBA16F: `u, v, w`, dye) and S (RG16F: pressure, `|ω|`), with a per-frame header and no-data for non-finite samples.
+- GL ray-march by readback; streamlines in a GL compute shader; dye as absorption: **amended**: a depth-only redraw into an internal texture, dye with one in-scatter colour, and streamlines on the CPU first.
+- The CPU volume reference and its frame golden: **amended**: the golden renders a synthetic analytic volume, so it pins rendering alone.
+- That the Vulkan raster needs nothing now: **confirmed.**
 
 **Interface**
 - The HUD items and the α and β conventions, agreed with Kat.
@@ -556,11 +562,11 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 - The live smoke's `airflow` main and its checks.
 - `INT-2` for the airflow panel.
 
-**Test/Docs**
-- `TD-14` applied to airflow at 32³: the one-ulp control and `T_p`, the statistics past it, and the 128³ per-device record (Q9).
-- The golden's cross-check on the gcc leg (`TD-12`).
-- The gate time the new CPU tests add (estimated 10–30 s at 32³).
-- The SPIR-V scan of the new kernels (no contraction, no denormal mode, per the new `P3`).
+**Test/Docs** (confirmed 2026-10-05, with its amendments folded into §4.6 and assumption 6)
+- `TD-14` applied to airflow at 32³: the one-ulp control and `T_p`, the statistics past it, and the 128³ per-device record (Q9): **confirmed,** the 128³ record as an opt-in test.
+- The golden's cross-check on the gcc leg (`TD-12`): **confirmed,** final on a fresh `-NoSeed` leg, and the digest independent of the thread count.
+- The gate time the new CPU tests add: **amended** to a budget: at most about 60 s added to the debug gate, each test timed in both presets (§4.6).
+- The SPIR-V scan of the new kernels: **confirmed.** Every new kernel, LBM and `mg_*` included, is registered in `kSpirvModules` under the parity profile, so `P1`–`P5` apply: no contraction, no `OpDot` or matrix products (stencils written componentwise), no Int64, no GLSL.std.450 transcendental, and no denormal mode (`P3`); `sqrt` is allowed. Every workgroup variant is scanned; a fixed-size kernel (`mg_coarse`) registers as single-variant. Anything that seems to need an exemption goes to Test/Docs first.
 
 ## Assumptions not confirmed in the code
 
@@ -569,8 +575,8 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 3. Staging buffers land in host memory, not the device's host-visible BAR heap.
 4. `VK_EXT_memory_budget` is available on driver 572.83, and `maxStorageBufferRange` there exceeds 216 MiB.
 5. A V(2,2) cycle with apertures reduces the residual 3–5×.
-6. The CPU passes stay single-threaded (no threading was found under `engine/`).
+6. The CPU passes stay single-threaded (no threading was found under `engine/`). If that ever changes, the CPU twin keeps a fixed partition and gather order, so the golden's digest does not depend on the thread count: the leg's container and the Windows box need not see the same core count (Test/Docs, 2026-10-05). `std::sqrt` is correctly rounded on both toolchains; any other libm call stays forbidden (`TD-3`).
 7. Kat runs the CPU backend, and its `dt` and substep count are unknown here.
 8. A 5-inch prop (R ≈ 6.4 cm) is representative of Kat's vehicles.
-9. The GL loader can add the compute and 3D-texture entry points (`gl_renderer.cpp:17-35` loads a private table of 45 functions).
+9. The GL loader can add the compute and 3D-texture entry points. **Confirmed by Rendering** (2026-10-05): the private table is now 58 entries at `gl_renderer.cpp:67-125`; `glDispatchCompute` (4.3), `glMemoryBarrier`, `glBindImageTexture` and `glTexStorage3D` (4.2) are past the vendored glad 4.1, so they get hand-declared types, as `glCopyImageSubData` does (`:41`); `glTexImage3D`/`glTexSubImage3D` (1.2) are already in glad; `create()` already refuses below 4.3.
 10. The SDF evaluation cost per cell is small enough to re-evaluate the box on a recentre.
