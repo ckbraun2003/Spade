@@ -32,7 +32,7 @@ The charter's grades (`L3`, `L4`) set what a module's tests must show.
 
 ## Parity harness
 
-`engine/testing/parity.hpp` compares the CPU and GPU paths per quantity and per element, at the run's final tick, against a table of bands (`TD-14`). An element passes when |gpu − cpu| ≤ abs + rel × |cpu|, and a NaN fails. The harness reports two maxima per quantity: `A`, the largest |gpu − cpu| where |cpu| < `s_q`, and `R`, the largest relative error where |cpu| ≥ `s_q` (`s_q` = 1e-3 in the quantity's SI unit). Element bands hold up to a scenario's horizon `T_p`, where one ulp of input, amplified by the CPU alone, stays under 1e-5 of the scene's scale (`ParityChaos.OneUlpControlAtEachScenariosHorizon`). Past it:
+`engine/testing/parity.hpp` compares the CPU and GPU paths per quantity and per element, at the run's final tick, against a table of bands (`TD-14`). An element passes when |gpu − cpu| ≤ abs + rel × |cpu|, and a NaN fails. The harness reports two maxima per quantity: `A`, the largest |gpu − cpu| where |cpu| < `s_q`, and `R`, the largest relative error where |cpu| ≥ `s_q` (`s_q` = 1e-3 in the quantity's SI unit). A row may declare its quantity's own cutoff instead, derived from the quantity's absolute resolution over the 1e-4 relative target. Specific force is one: Δv/h quantizes at ulp(|v|)/h ≈ 1e-4 m/s² at h = 1 ms, so its `s_q` is 1 m/s². The row's record states the derivation and the measurement that fails at the default, and its floor's abs half is four ulps of that cutoff. Element bands hold up to a scenario's horizon `T_p`, where one ulp of input, amplified by the CPU alone, stays under 1e-5 of the scene's scale, which is g for specific force (`ParityChaos.OneUlpControlAtEachScenariosHorizon`). Past it:
 - **invariants** are exact on both paths: the same slots live, no NaN or infinity, no body centre inside a solid;
 - **statistics** per world (centre of mass, mean and RMS speed, translational kinetic energy) are banded at 4× the largest deviation of the same statistic over eight one-ulp-perturbed CPU runs, never tighter than the floor (5e-10 + 5e-7 × |cpu|).
 
@@ -51,11 +51,11 @@ Every pinned band carries its record in `parity.hpp`, at three levels, so nothin
 - **Scenario**, once per scenario block. It holds:
   - steps × substeps and the horizon in seconds;
   - the one-ulp CPU control at that horizon, against the scene's scale (`T_p` holds, or element bands give way);
-  - the method: "final tick, every element of every world, `A`/`R` split at `s_q` = 1e-3";
+  - the method: "final tick, every element of every world, `A`/`R` split at `s_q` = 1e-3", or the row's declared cutoff;
   - the margin: 4×, rounded up to one significant figure, the larger over devices of record.
 - **Row**, beside each band, says which kind it is:
   - **measured**: per device tag, `A`, `R` and the band they give. Each half is 4× its measurement rounded up to one significant figure, and never tighter than the floor's half, so a measured `A` of 0 pins `abs` at 5e-10. `A` and `R` are written with enough significant figures to recompute the band;
-  - **floor**: exactly equal on every device of record. `{5e-10, 5e-7}` is four ulps at `s_q` (4 × 2⁻³³ = 4.66e-10) and four ulps relative (4 × 2⁻²³ = 4.77e-7), each rounded up;
+  - **floor**: exactly equal on every device of record. `{5e-10, 5e-7}` is four ulps at the default `s_q` (4 × 2⁻³³ = 4.66e-10) and four ulps relative (4 × 2⁻²³ = 4.77e-7), each rounded up;
   - **structural**: `{0, 0}`, with the argument that no rounding operation touches it;
   - **cited**: the band of a signed row, such as `CORE-3`'s gaussian draw;
   - **bits**: integer lanes, `{0, 0}` by kind.
