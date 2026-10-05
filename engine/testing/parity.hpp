@@ -113,6 +113,12 @@ namespace spade::testing {
 struct ToleranceBand {
     float abs = 0.0f;
     float rel = 0.0f;
+    // TD-14: a float row keeps a zero band only if no rounding operation can
+    // touch it -- an integer copy, or a structural zero such as force_acc
+    // after Integrate clears it -- and says so: `structural` is that claim,
+    // and the argument sits beside the row. compare_arrays() refuses a zero
+    // band on a float row without it, and `structural` on a non-zero band.
+    bool structural = false;
 };
 
 enum class QuantityKind : uint32_t {
@@ -554,6 +560,24 @@ namespace parity_detail {
 // bears it out.
 // ===========================================================================
 namespace bands {
+
+// A float row no rounding operation can touch, exact on any device. Each use
+// carries its argument beside it.
+inline constexpr ToleranceBand kStructural{0.0f, 0.0f, true};
+
+// TD-14's floor, for a float row measured exactly equal on every device of
+// record: four ulps at s_q = 1e-3 (4 x 2^-33 = 4.66e-10) and four ulps
+// relative (4 x 2^-23 = 4.77e-7), each rounded up. "Measured zero on one
+// device" is not a claim this policy makes.
+inline constexpr ToleranceBand kFloor{5.0e-10f, 5.0e-7f};
+
+// CORE-3: the gaussian draw, banded at its source (the Box-Muller sqrt in
+// rng / rng.slang, which Vulkan allows 2.5 ulp). Rows that ARE the draw cite
+// this band rather than re-deriving it. rtx3060ti-572.83: the GNSS draws at
+// zero lever arm, |c| 3.42, max |g - c| 4.77e-7, R 1.07e-6 -> {2e-6, 5e-6}.
+namespace core3 {
+inline constexpr ToleranceBand kGaussianDraw{2.0e-6f, 5.0e-6f};
+}  // namespace core3
 
 // ---------------------------------------------------------------------------
 // ballistic -- THE CORPUS SCENARIO VERBATIM as of S6 Task 8. 200 steps x 5

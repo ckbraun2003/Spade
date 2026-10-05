@@ -1190,6 +1190,36 @@ TEST(ParityPredicate, ThePinIsFourTimesRoundedUpToOneFigure) {
     EXPECT_EQ(pin_of(0.0f), 0.0f) << "an exact measurement is not pinned at 4 x 0";
 }
 
+// TD-14: a zero band on a float row is an unstated bit-identity claim unless
+// it is marked structural, and structural means {0, 0}. Host-only: two CPU
+// runs of one scenario, compared with deliberately malformed tables.
+TEST(ParityPredicate, AZeroFloatBandMustBeArgued) {
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("ballistic");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    Result<Simulation> a = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    Result<Simulation> b = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    const auto row = [](ToleranceBand band) {
+        return std::vector<BandEntry>{
+            {"bodies", "vel", offsetof(spade::BodyState, vel), 3, QuantityKind::components, band}};
+    };
+    using spade::testing::bands::kFloor;
+    using spade::testing::bands::kStructural;
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{0.0f, 0.0f})).has_value())
+        << "a bare zero band on a float row must be refused";
+    const std::vector<BandEntry> orient{{"bodies", "orient", offsetof(spade::BodyState, orient), 4,
+                                         QuantityKind::quaternion, ToleranceBand{0.0f, 0.0f}}};
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), orient).has_value()) << "on a quaternion row too";
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{1.0e-6f, 0.0f, true})).has_value())
+        << "structural means {0, 0}";
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(kStructural)).has_value());
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(kFloor)).has_value());
+    // Integer rows keep their own exact rule, with no structural mark.
+    const std::vector<BandEntry> flags{
+        {"bodies", "flags", offsetof(spade::BodyState, flags), 1, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}}};
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), flags).has_value());
+}
+
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;
     std::error_code ec;
