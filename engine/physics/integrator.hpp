@@ -113,6 +113,9 @@ inline constexpr uint32_t active = 1u << 0;
 // angularly accelerated"); `orient` a unit quaternion (integrate_orientation
 // renormalizes on the way out, so this self-corrects after the first call).
 // ---------------------------------------------------------------------------
+//
+// `contact_dv`: the contact scratch (physics/schedule.hpp), read into the
+// specific force and zeroed for every slot; see step 2.
 void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
                       std::span<glm::vec3> contact_dv = {}) noexcept;
 

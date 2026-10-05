@@ -9,7 +9,7 @@ namespace spade::physics {
 
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
                              const ContactParams& params, [[maybe_unused]] float h,
-                             [[maybe_unused]] std::span<glm::vec3> contact_dv) noexcept {
+                             std::span<glm::vec3> contact_dv) noexcept {
     // Hoisted once: per-world, not per-body, so the per-body op sequence below
     // is exactly what a GPU thread executes after reading its world's param
     // row. (`h` is unused by the pinned model -- see contacts.hpp.) `radius`
@@ -21,7 +21,8 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
     const float beta = params.baumgarte_beta;
     const float slop = params.slop;
 
-    for (BodyState& body : bodies) {
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        BodyState& body = bodies[i];
         // Same skip contract as Integrate: an inert slot -- freed, tombstoned
         // or never spawned -- is left byte-for-byte untouched. flags == 0 is
         // the zero-filled arena state, so an unallocated slot costs one bit
@@ -111,6 +112,7 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
         //    Post-condition when it fires: dot(vel, n) == -e * v_n, i.e. the
         //    separating speed is e times the approach speed -- the definition
         //    of the coefficient of restitution.
+        const glm::vec3 vel_in = body.vel;  // PHY-7: the change below is the IMU's
         const float v_n = glm::dot(body.vel, n);
         float j_n = 0.0f;
         if (v_n < 0.0f) {
@@ -156,6 +158,9 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
         if (v_t_len > 0.0f) {
             const float dv_t = glm::min(mu * j_n, v_t_len);
             body.vel -= dv_t * (v_t / v_t_len);
+        }
+        if (!contact_dv.empty()) {
+            contact_dv[i] += body.vel - vel_in;
         }
 
         // 3. POSITIONAL CORRECTION (Baumgarte-style, applied to `pos`

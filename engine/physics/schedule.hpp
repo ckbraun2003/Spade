@@ -105,6 +105,7 @@ struct WorldSubstepView {
     std::span<BodyState> bodies;
     std::span<const DragBodyRow> drag_elements;  // this world's drag-element partition
     std::span<const uint32_t> body_slot_to_world;  // this world's slice of the bodies map
+    std::span<glm::vec3> contact_dv;               // this world's slice of the contact scratch
     DrydenState* dryden = nullptr;               // this world's turbulence filter row
     const DrydenParams* dryden_params = nullptr; // that filter's configuration
     const SdfProgram* sdf = nullptr;             // this world's static geometry
@@ -190,6 +191,20 @@ struct SubstepContext {
     // rebuilt from body positions on every call, therefore not registered state
     // and not in any snapshot.
     GridScratch* scratch = nullptr;
+
+// THE CONTACT SCRATCH (PHY-7). One world-axes velocity change per body slot,
+// parallel to the bodies: the contact passes ADD each substep's change to it
+// (static, then each dynamic pair in the sweep's Gauss-Seidel order), and
+// Integrate adds it over h to the specific force, then zeroes it. Integrate
+// zeroes EVERY slot, the ones it skips included, so the scratch is zero at
+// every substep boundary whatever was spawned, despawned or deactivated
+// between the passes (Core's condition 1). That is why it is transient: it
+// is zero-filled once, at create(), is not registered state, and is in no
+// snapshot or digest -- restore needs nothing, and nothing may add it to a
+// blob later. An empty span means "no scratch": the contact passes write
+// nothing and Integrate adds nothing, which is what a caller outside the
+// schedule (a unit test) gets by default.
+    std::span<glm::vec3> all_contact_dv;  // the whole contact scratch, parallel to all_bodies
 
     // Effective substep duration, SECONDS. dt / substeps -- the same quantity
     // integrate_bodies(), resolve_static_contacts() and dryden_advance() all

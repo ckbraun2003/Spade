@@ -57,7 +57,7 @@ enum class Placement : uint8_t { first = 0, ordered = 1, last = 2 };
 // a module in the set declares, or "<module>.<name>" for a module in the set.
 // Anything else is refused, so a misspelling cannot drop a hazard.
 inline constexpr std::string_view kCoreQuantities[] = {"body.pose", "body.wrench", "body.specific_force",
-                                                       "world.params"};
+                                                       "body.contact_dv", "world.params"};
 
 // An OPTIONAL access (stage 4, Task 6) reads "<module>.<array>" of a module the
 // set may not hold. When the module is in the set it is an ordinary read: the

@@ -669,6 +669,11 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // run per body slot in the whole set.
     sim.scratch_.reserve(static_cast<std::size_t>(layout->world_count) *
                          static_cast<std::size_t>(layout->body_capacity));
+    // The contact scratch, sized and zero-filled once (PHY-7): the step never
+    // allocates it, and it is zero between steps.
+    sim.contact_dv_.assign(static_cast<std::size_t>(layout->world_count) *
+                               static_cast<std::size_t>(layout->body_capacity),
+                           glm::vec3(0.0f));
 
     if (Result<void> views = sim.rebuild_views(); !views) {
         return std::unexpected(views.error());
@@ -925,6 +930,7 @@ Result<void> Simulation::rebuild_views() {
         view.drag_elements =
             std::span<const physics::DragBodyRow>(drag->subspan(elem_begin, layout_.element_capacity));
         view.body_slot_to_world = body_map->subspan(body_begin, layout_.body_capacity);
+        view.contact_dv = std::span<glm::vec3>(contact_dv_).subspan(body_begin, layout_.body_capacity);
         view.dryden = &(*dryden)[w];
         view.dryden_params = &configs_[w].turbulence;
         view.fields = std::span<float>(field_rows_).subspan(static_cast<std::size_t>(w) * schedule_.field_stride,
@@ -1077,6 +1083,7 @@ Result<void> Simulation::step(uint64_t n) {
         ctx.dynamic_contacts = configs_[0].contacts;
         ctx.dynamic_grid = configs_[0].grid;
         ctx.scratch = &scratch_;
+        ctx.all_contact_dv = contact_dv_;
         ctx.h = h_;
         // dt, not h: Tick counts STEPS, and a behavior deriving a pose from the
         // tick needs what one tick is worth. Same ns -> s conversion as

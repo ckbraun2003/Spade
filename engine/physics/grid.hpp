@@ -571,6 +571,11 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 // per-cell candidate cap: dropping contacts to bound worst-case cost is a
 // policy this pass deliberately does not have.
 // ---------------------------------------------------------------------------
+//
+// `contact_dv` (PHY-7): parallel to `bodies`; each pair's velocity change to
+// each of its two bodies, the state's own, added to their slots in the
+// sweep's Gauss-Seidel order (physics/schedule.hpp's contact scratch).
+// Empty: none kept. The Jacobi gather below keeps none yet: it is not wired.
 void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
                               const GridParams& grid, const ContactParams& params,
                               GridScratch& scratch, std::span<glm::vec3> contact_dv = {}) noexcept;
