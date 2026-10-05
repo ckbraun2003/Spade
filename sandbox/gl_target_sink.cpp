@@ -225,6 +225,7 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
     };
 
 #if !SPADE_SANDBOX_HAS_GL
+    (void)options;  // read only by the windowing branch below
     // ⚠ THE REFUSAL NAMES THE CAUSE AND THE FIX. "No window" on its own sends
     // the reader to look for a crash; this sends them to the configure line
     // that produced the binary they are holding.
