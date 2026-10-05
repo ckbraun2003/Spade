@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -220,6 +221,13 @@ struct QuantityReport {
 // (relative). One value for every quantity, as the policy states it.
 inline constexpr float kNearZeroCutoff = 1.0e-3f;
 
+// TD-14's floor, by halves: four ulps at s_q (4 x 2^-33 = 4.66e-10) and four
+// ulps relative (4 x 2^-23 = 4.77e-7), each rounded up. No float row that is
+// not argued structural may be tighter in either half (compare_arrays refuses
+// it), and a measured pin is raised to them (pin_of() gives the raw 4x).
+inline constexpr float kFloorAbs = 5.0e-10f;
+inline constexpr float kFloorRel = 5.0e-7f;
+
 // TD-14's pin of a measured maximum: 4x, rounded UP to one significant
 // figure (4 * 2.3e-6 = 9.2e-6 -> 1e-5). 0 stays 0: a quantity measured
 // exactly equal goes to the floor or to an argued exact band, not to 4 * 0.
@@ -275,8 +283,9 @@ struct ParityReport {
                             static_cast<double>(q.band.rel), q.within_band() ? "within" : "OUTSIDE");
                 // The TD-14 measurement line, grep-able as "td14 ".
                 std::printf("    td14 A=%.3e R=%.3e  pin {%.0e, %.0e}\n", static_cast<double>(q.near_zero_abs),
-                            static_cast<double>(q.far_rel), static_cast<double>(pin_of(q.near_zero_abs)),
-                            static_cast<double>(pin_of(q.far_rel)));
+                            static_cast<double>(q.far_rel),
+                            static_cast<double>(std::max(pin_of(q.near_zero_abs), kFloorAbs)),
+                            static_cast<double>(std::max(pin_of(q.far_rel), kFloorRel)));
             }
             if (!q.within_band()) {
                 std::printf("    worst: element %zu component %u  cpu=%.9e gpu=%.9e  (%zu elements outside%s)\n",
@@ -401,6 +410,12 @@ namespace parity_detail {
                 return std::unexpected(Error{Code::invalid_argument,
                                              "compare_arrays: quantity '" + std::string(entry.quantity) +
                                                  "' is marked structural but carries a non-zero band"});
+            }
+            if (!entry.band.structural && (entry.band.abs < kFloorAbs || entry.band.rel < kFloorRel)) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "compare_arrays: quantity '" + std::string(entry.quantity) +
+                                                 "' has a band tighter than TD-14's floor {5e-10, 5e-7} -- "
+                                                 "raise the pin to the floor's halves"});
             }
         }
         // A bit-exact row with a non-zero band would read as "these integers
@@ -605,8 +620,10 @@ namespace bands {
 // METHOD, every scenario: final tick (or T_p, below), every element of every
 // world, A/R split at s_q = 1e-3 (QuantityReport::near_zero_abs, far_rel).
 // Pin {4A, 4R}, each rounded up to one significant figure (pin_of()), and no
-// tighter than the floor's halves (5e-10, 5e-7), so a near-zero element
-// never meets an exact-zero demand it was not argued into. Row kinds:
+// tighter than the floor's halves (5e-10, 5e-7; compare_arrays refuses a
+// tighter one), so a near-zero element never meets an exact-zero demand it was
+// not argued into. Records print A and R to three significant figures, so
+// each pin can be recomputed from its record. Row kinds:
 // measured, floor (kFloor), structural (kStructural, argued), cited
 // (core3::kGaussianDraw), bits.
 //
@@ -630,7 +647,7 @@ inline constexpr ToleranceBand kStructural{0.0f, 0.0f, true};
 // record: four ulps at s_q = 1e-3 (4 x 2^-33 = 4.66e-10) and four ulps
 // relative (4 x 2^-23 = 4.77e-7), each rounded up. "Measured zero on one
 // device" is not a claim this policy makes.
-inline constexpr ToleranceBand kFloor{5.0e-10f, 5.0e-7f};
+inline constexpr ToleranceBand kFloor{kFloorAbs, kFloorRel};
 
 // CORE-3: the gaussian draw, banded at its source (the Box-Muller sqrt in
 // rng / rng.slang, which Vulkan allows 2.5 ulp). Rows that ARE the draw cite
@@ -701,8 +718,8 @@ namespace ballistic {
 // TD-14 records (rtx3060ti-572.83, b9e3316). 200 steps x 5 substeps (0.2 s). One-ulp CPU control: the nudge rides unamplified (7.6e-6 m on a 100 m coordinate): inside the horizon.
 // kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
 inline constexpr ToleranceBand kPos = kFloor;
-// kVel: measured. rtx3060ti-572.83: A 0, R 8.1e-8 -> {5e-10, 4e-7}; history irisplus-2125 {5e-7, 5e-7}
-inline constexpr ToleranceBand kVel{5.0e-10f, 4.0e-7f};
+// kVel: measured. rtx3060ti-572.83: A 0, R 8.15e-8 -> 4R 3.26e-7, raised to the floor -> {5e-10, 5e-7}; history irisplus-2125 {5e-7, 5e-7}
+inline constexpr ToleranceBand kVel{5.0e-10f, 5.0e-7f};
 // kOrient: measured. rtx3060ti-572.83: A 0, R 3.4e-7 -> {5e-10, 2e-6}; history irisplus-2125 {4e-6, 2e-5}
 inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // kOmega: measured. rtx3060ti-572.83: A 0, R 1.2e-6 -> {5e-10, 5e-6}; history irisplus-2125 {8e-6, 2e-5}
@@ -1230,7 +1247,7 @@ namespace shower {
 // TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 2 (0.8 s). One-ulp CPU control: pos 7.0e-10 m, vel 6.0e-8 m/s: inside the horizon.
 // kPos: measured. rtx3060ti-572.83: A 5.2e-10, R 1.2e-6 -> {3e-9, 5e-6}; history irisplus-2125 {2e-6, 2e-5}
 inline constexpr ToleranceBand kPos{3.0e-9f, 5.0e-6f};
-// kVel: measured. rtx3060ti-572.83: A 2.0e-8, R 3.4e-5 -> {9e-8, 2e-4}; history irisplus-2125 {2e-5, 2e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
+// kVel: measured. rtx3060ti-572.83: A 2.05e-8, R 3.45e-5 -> {9e-8, 2e-4}; history irisplus-2125 {2e-5, 2e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
 inline constexpr ToleranceBand kVel{9.0e-8f, 2.0e-4f};
 // kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
 inline constexpr ToleranceBand kOrient = kStructural;
@@ -1279,7 +1296,7 @@ namespace shower_ladder {
 // TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 2 (0.8 s). One-ulp CPU control: pos 1.2e-7 m, vel 1.7e-6 m/s: inside the horizon.
 // kPos: measured. rtx3060ti-572.83: A 4.2e-9, R 6.5e-6 -> {2e-8, 3e-5}; history irisplus-2125 {2e-6, 4e-5}
 inline constexpr ToleranceBand kPos{2.0e-8f, 3.0e-5f};
-// kVel: measured. rtx3060ti-572.83: A 4.5e-8, R 1.0e-4 -> {2e-7, 5e-4}; history irisplus-2125 {2e-5, 4e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
+// kVel: measured. rtx3060ti-572.83: A 4.54e-8, R 1.02e-4 -> {2e-7, 5e-4}; history irisplus-2125 {2e-5, 4e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
 inline constexpr ToleranceBand kVel{2.0e-7f, 5.0e-4f};
 // kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
 inline constexpr ToleranceBand kOrient = kStructural;
@@ -1724,8 +1741,8 @@ inline constexpr ToleranceBand kGnssPosition{5.0e-10f, 4.0e-6f};
 // what a single slightly-divergent input reproduced through an exact arithmetic
 // path looks like. With two of three inputs proven bit-exact, that is no longer
 // an inference about "banded inputs" in general -- it is one input, named.
-// kGnssVelocity: measured. rtx3060ti-572.83: A 0, R 9.4e-8 -> {5e-10, 4e-7}; history irisplus-2125 {1e-6, 5e-7}
-inline constexpr ToleranceBand kGnssVelocity{5.0e-10f, 4.0e-7f};
+// kGnssVelocity: measured. rtx3060ti-572.83: A 0, R 9.36e-8 -> 4R 3.74e-7, raised to the floor -> {5e-10, 5e-7}; history irisplus-2125 {1e-6, 5e-7}
+inline constexpr ToleranceBand kGnssVelocity{5.0e-10f, 5.0e-7f};
 }  // namespace gnss_receiver
 
 // ---------------------------------------------------------------------------
@@ -1816,7 +1833,7 @@ inline constexpr ToleranceBand kOrient{5.0e-10f, 4.0e-6f};
 inline constexpr ToleranceBand kOmega = kFloor;
 // kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
 inline constexpr ToleranceBand kSpecificForce = kStructural;
-// kGnssBias: measured. rtx3060ti-572.83: A 0, R 2.0e-7 -> {5e-10, 9e-7}; history irisplus-2125 {3e-7, 9e-7}
+// kGnssBias: measured. rtx3060ti-572.83: A 0, R 2.01e-7 -> 4R 8.05e-7 -> {5e-10, 9e-7}; history irisplus-2125 {3e-7, 9e-7}
 inline constexpr ToleranceBand kGnssBias{5.0e-10f, 9.0e-7f};
 // kCachedGauss: cited: CORE-3, the gaussian draw itself. rtx3060ti-572.83: A 0, R 0; history irisplus-2125 {0, 0}
 inline constexpr ToleranceBand kCachedGauss = core3::kGaussianDraw;
