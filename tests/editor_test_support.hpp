@@ -4,7 +4,9 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -39,6 +41,24 @@ namespace spade::sandbox::editor::test {
 [[nodiscard]] inline std::string text_of(const scene::SceneDesc& s) {
     Result<std::string> t = scene::scene_to_yaml(s);
     return t ? *t : std::string("<scene_to_yaml failed: ") + t.error().context + ">";
+}
+
+// A unit box asset (half extents 0.5) at the identity pose, colliding, with no visual.
+[[nodiscard]] inline scene::SceneAsset asset_named(std::string name) {
+    scene::SceneAsset a;
+    a.name = std::move(name);
+    a.collider.transforms.push_back(SdfTransform{});
+    SdfNode box{};
+    box.kind = static_cast<uint32_t>(SdfPrim::box);
+    box.op = static_cast<uint32_t>(SdfOp::none);
+    box.params = glm::vec4(0.5f, 0.5f, 0.5f, 0.0f);
+    a.collider.nodes.push_back(box);
+    return a;
+}
+
+[[nodiscard]] inline scene::SceneDesc with_asset(scene::SceneDesc s, std::string name) {
+    s.assets.push_back(asset_named(std::move(name)));
+    return s;
 }
 
 }  // namespace spade::sandbox::editor::test
