@@ -2213,10 +2213,9 @@ TEST_F(GpuParityTest, StructuralOpsAreCoveredTransitively) {
 // it carried the right bytes.
 // ===========================================================================
 
-TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
-    constexpr uint64_t kSnapshotTick = 300;
+// restore_resume's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario restore_resume_scenario() {
     constexpr uint64_t kFinalTick = 700;
 
     Scenario resume;
@@ -2249,6 +2248,16 @@ TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
     };
 
     // --- the CPU reference: one uninterrupted run to kFinalTick -------------
+    return resume;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    constexpr uint64_t kSnapshotTick = 300;
+    constexpr uint64_t kFinalTick = 700;
+    const Scenario resume = restore_resume_scenario();
+
     Result<Simulation> cpu = spade::testing::start_scenario(resume, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
     ASSERT_TRUE(spade::testing::advance_scenario(resume, *cpu, kFinalTick).has_value());
@@ -2709,6 +2718,7 @@ void expect_shower_resolved_pairs(const Simulation& cpu, const Simulation& gpu, 
 // measures the scene, not a device. Report-only; the bands cite its numbers.
 namespace {
 [[nodiscard]] Scenario shower_ladder_scenario();  // defined beside its parity test
+[[nodiscard]] Scenario restore_resume_scenario();  // likewise
 }  // namespace
 
 TEST(ParityChaos, OneUlpControlAtEachContactScenariosHorizon) {
@@ -2717,6 +2727,7 @@ TEST(ParityChaos, OneUlpControlAtEachContactScenariosHorizon) {
         {"heterogeneous_geometry_set", heterogeneous_scenario()},
         {"contact_pair", contact_pair_scenario()},
         {"shower_ladder", shower_ladder_scenario()},
+        {"restore_resume", restore_resume_scenario()},
     };
     for (const char* name : {"bounce", "two_world_isolation", "shower"}) {
         const Result<spade::testing::LoadedScenario> loaded = load_scenario(name);
