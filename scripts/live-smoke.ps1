@@ -9,7 +9,8 @@
 
     The run writes to <OutRoot>\<UTC date>_<commit sha12>\:
       tour.mp4      the tour, 30 fps, with a title card at each end
-      NN_<main>.png one still per main function (drone_box, builder)
+      NN_<main>.png one still per main function (drone_box, builder, and the
+                    built-in scenes shower, bounce, gate, hover, wind)
       journal.txt   every step, check and anomaly, as it happened, ending
                     with "END verdict=PASS|FAIL"
     The sandbox deletes only those names (and its fallback stills) from the
@@ -88,7 +89,7 @@ if (Test-Path -LiteralPath $journal) {
     Remove-Item -LiteralPath $journal
 }
 
-$runArgs = @('--live-smoke', '--out', $out, '--label', "$sha $date")
+$runArgs = @('--live-smoke', '--out', $out, '--label', "$sha $date", '--assets', (Join-Path $repo 'assets'))
 foreach ($spec in ($Inject | ForEach-Object { $_ -split ',' } | Where-Object { $_ })) {
     $runArgs += @('--inject', $spec.Trim())
 }

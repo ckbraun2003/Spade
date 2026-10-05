@@ -29,6 +29,9 @@ struct TourOptions {
     uint32_t width = 1280;
     uint32_t height = 720;
     float blur = 0.0f;
+    // The repository's assets/, where the built-in scene files are (--assets;
+    // scripts/live-smoke.ps1 passes it). Empty: the scene main functions fail.
+    std::filesystem::path assets_dir;
 };
 
 // Runs the tour and writes tour.mp4, one PNG per main function and

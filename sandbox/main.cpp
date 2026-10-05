@@ -83,6 +83,7 @@ void print_usage() {
     std::puts("                        scene and journal.txt into --out <dir>; exit 0 PASS, 1 FAIL,");
     std::puts("                        2 no verdict (scripts/live-smoke.ps1 runs it)");
     std::puts("  --label <text>        live smoke: the commit and date for the title cards");
+    std::puts("  --assets <dir>        live smoke: the repository's assets/, for the built-in scene files");
     std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
     std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
@@ -593,6 +594,8 @@ int main(int argc, char** argv) {
             height_set = true;
         } else if (std::strcmp(a, "--live-smoke") == 0) {
             live_smoke = true;
+        } else if (std::strcmp(a, "--assets") == 0 && i + 1 < argc) {
+            tour.assets_dir = argv[++i];
         } else if (std::strcmp(a, "--label") == 0 && i + 1 < argc) {
             tour.label = argv[++i];
         } else if (std::strcmp(a, "--inject") == 0 && i + 1 < argc) {
@@ -638,8 +641,8 @@ int main(int argc, char** argv) {
         tour.blur = blur;
         return spade::sandbox::live::run_live_smoke(tour);
     }
-    if (!tour.label.empty() || !tour.injections.empty()) {
-        std::fprintf(stderr, "spade_sandbox: --label and --inject apply to --live-smoke only\n");
+    if (!tour.label.empty() || !tour.injections.empty() || !tour.assets_dir.empty()) {
+        std::fprintf(stderr, "spade_sandbox: --label, --inject and --assets apply to --live-smoke only\n");
         return 2;
     }
     if (headless && windowed) {

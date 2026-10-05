@@ -16,6 +16,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -25,8 +26,11 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "builtin_records.hpp"
 #include "gl_target_sink.hpp"
 #include "png_writer.hpp"
+#include "scene_checks.hpp"
+#include "scene_file_session.hpp"
 #include "scene_sessions.hpp"
 
 #ifdef _WIN32
@@ -75,11 +79,17 @@ constexpr std::array kSteps = {
     StepName{"builder", "select_drag"},  StepName{"builder", "recolour"},
     StepName{"builder", "duplicate"},    StepName{"builder", "delete"},
     StepName{"builder", "camera"},
+    StepName{"shower", "open"},          StepName{"shower", "pour"},
+    StepName{"bounce", "open"},          StepName{"bounce", "drops"},
+    StepName{"gate", "open"},            StepName{"gate", "lobs"},
+    StepName{"hover", "open"},           StepName{"hover", "holds"},
+    StepName{"wind", "open"},            StepName{"wind", "gusts"},
 };
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
-constexpr std::array<std::string_view, 2> kMains = {"drone_box", "builder"};
+constexpr std::array<std::string_view, 7> kMains = {"drone_box", "builder", "shower", "bounce",
+                                                    "gate",      "hover",   "wind"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
@@ -674,6 +684,258 @@ void builder(Tour& t, BuilderSession& b) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// MAIN FUNCTIONS 3-7: THE BUILT-IN SCENE FILES (assets/scenes/), the viewer's
+// scenes as engine content. Each runs its files through compose_file() and
+// instantiate() with the bridge's records (builtin_records.hpp), and checks
+// what the scene is there to show. flight is not here: its command hook is
+// viewer code.
+// ---------------------------------------------------------------------------
+
+// A slow orbit, for watching: half a pixel of drag a frame, about 10 degrees
+// a second.
+[[nodiscard]] InputFn slow_orbit() {
+    return [](int) {
+        FrameInput in;
+        in.orbit_dx = 0.5f;
+        return in;
+    };
+}
+
+struct SceneView {
+    glm::vec3 target;
+    float yaw;
+    float pitch;
+    float distance;
+};
+
+// A scene main function's run, open once its "open" step passed.
+struct SceneRun {
+    std::unique_ptr<SceneFileSession> session;
+    DrawFn draw;
+};
+
+// The "open" step: the scene files composed and instantiated, each lane
+// holding the bodies the scene places, on the GPU path.
+void open_scene(Tour& t, SceneRun& run, std::string_view main, const fs::path& assets,
+                const std::vector<std::string>& stems, std::size_t bodies_per_lane, const SceneView& view) {
+    t.step(main, "open", [&] {
+        Smoke& s = t.smoke();
+        if (!s.check(!assets.empty(), "assets", assets.empty() ? "no --assets, so no scene files" : assets.string())) {
+            return;
+        }
+        std::vector<SceneFileSession::Lane> lanes;
+        for (const std::string& stem : stems) {
+            const std::optional<BuiltinRecords> records = builtin_records(stem);
+            if (!s.check(records.has_value(), "records", stem + (records ? " has its records" : " has none"))) {
+                return;
+            }
+            lanes.push_back({assets / "scenes" / (stem + ".scene.yaml"), *records});
+        }
+        spade::Result<std::unique_ptr<SceneFileSession>> made = SceneFileSession::create(std::move(lanes));
+        if (!s.check(made.has_value(), "composed",
+                     made ? std::to_string(stems.size()) + " scene file(s) composed and instantiated"
+                          : made.error().context)) {
+            return;
+        }
+        run.session = std::move(*made);
+        run.session->attach(t.sink());
+        SceneFileSession* session = run.session.get();
+        run.draw = [session](const FrameInput& in) { return session->frame(in, kDt); };
+        OrbitCamera& cam = run.session->camera();
+        cam.target = view.target;
+        cam.yaw = view.yaw;
+        cam.pitch = view.pitch;
+        cam.distance = view.distance;
+
+        bool each = true;
+        std::string counts;
+        for (std::size_t lane = 0; lane < run.session->lane_count(); ++lane) {
+            each = each && run.session->vehicle_count(lane) == bodies_per_lane;
+            counts += (counts.empty() ? "" : ", ") + std::to_string(run.session->vehicle_count(lane));
+        }
+        s.check(each, "bodies", counts + " per lane, the scene places " + std::to_string(bodies_per_lane));
+        s.check(run.session->gpu_active(), "gpu-path", run.session->gpu_active() ? "GPU (OpenGL)" : "CPU raster");
+        t.pump(45, slow_orbit(), run.draw);
+    });
+}
+
+// True when the scene opened; otherwise the step that needs it fails, naming why.
+[[nodiscard]] bool scene_is_open(Smoke& s, const SceneRun& run) {
+    return s.check(run.session != nullptr, "session", run.session ? "open" : "the scene did not open");
+}
+
+[[nodiscard]] bool finite(const glm::vec3& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+// shower: 1000 bodies poured into a CSG bowl (a floor and four walls, joined
+// by unions), which must hold them.
+void shower(Tour& t, const fs::path& assets) {
+    SceneRun run;
+    open_scene(t, run, "shower", assets, {"shower"}, 1000, SceneView{{0.0f, 0.8f, 0.0f}, 0.6f, 0.55f, 13.0f});
+    t.step("shower", "pour", [&] {
+        Smoke& s = t.smoke();
+        if (!scene_is_open(s, run)) return;
+        SceneFileSession& scene = *run.session;
+        const auto mean_height = [&scene] {
+            double sum = 0.0;
+            for (std::size_t i = 0; i < scene.vehicle_count(0); ++i) sum += scene.position(0, i).value_or(glm::vec3(0.0f)).y;
+            return static_cast<float>(sum / static_cast<double>(scene.vehicle_count(0)));
+        };
+        const float before = mean_height();
+        t.pump(480, slow_orbit(), run.draw);
+        t.poster("shower");
+        t.pump(240, slow_orbit(), run.draw);
+        // The bowl's floor top is y = 0 and its walls' inner faces |x|, |z| = 4.
+        std::size_t outside = 0;
+        std::size_t not_finite = 0;
+        for (std::size_t i = 0; i < scene.vehicle_count(0); ++i) {
+            const spade::Result<glm::vec3> p = scene.position(0, i);
+            if (!p || !finite(*p)) {
+                ++not_finite;
+                continue;
+            }
+            if (std::abs(p->x) > 4.0f || std::abs(p->z) > 4.0f || p->y < 0.0f) ++outside;
+        }
+        s.check(not_finite == 0u, "finite", std::to_string(not_finite) + " bodies not finite");
+        s.check(outside == 0u, "held-by-the-bowl", std::to_string(outside) + " of 1000 outside the bowl");
+        const float after = mean_height();
+        s.check(after < before - 0.5f, "poured", "mean height " + fmt(before) + " -> " + fmt(after) + " m");
+    });
+}
+
+// bounce: four lanes, one body each, dropped from 6 m onto the ground at
+// restitution 0, 0.25, 0.5 and 0.75. Each lane is its own scene file.
+void bounce(Tour& t, const fs::path& assets) {
+    SceneRun run;
+    open_scene(t, run, "bounce", assets, {"bounce_lane_0", "bounce_lane_1", "bounce_lane_2", "bounce_lane_3"}, 1,
+               SceneView{{0.0f, 2.5f, 0.0f}, 0.0f, 0.2f, 17.0f});
+    t.step("bounce", "drops", [&] {
+        Smoke& s = t.smoke();
+        if (!scene_is_open(s, run)) return;
+        SceneFileSession& scene = *run.session;
+        std::vector<std::vector<float>> heights(scene.lane_count());
+        for (int frame = 0; frame < 420; ++frame) {
+            if (!t.pump(1, slow_orbit(), run.draw)) return;
+            for (std::size_t lane = 0; lane < scene.lane_count(); ++lane) {
+                heights[lane].push_back(scene.position(lane, 0).value_or(glm::vec3(0.0f)).y);
+            }
+            if (frame == 100) t.poster("bounce");
+        }
+        // Rebound: the highest point after first contact, its centre within a
+        // margin of one contact radius of the ground.
+        std::vector<float> rebounds;
+        std::string detail;
+        bool landed = true;
+        for (std::size_t lane = 0; lane < scene.lane_count(); ++lane) {
+            const float contact_y = scene.records(lane).contacts.proxy_radius + 0.05f;
+            const std::optional<float> r = checks::rebound_height(heights[lane], contact_y);
+            landed = landed && r.has_value();
+            rebounds.push_back(r.value_or(0.0f));
+            detail += (detail.empty() ? "" : ", ") + std::string("e ") + fmt(scene.records(lane).contacts.restitution_e) +
+                      " -> " + (r ? fmt(*r) + " m" : std::string("never landed"));
+        }
+        s.check(landed, "all-landed", detail);
+        s.check(checks::strictly_increasing(rebounds), "rebound-follows-restitution", detail);
+    });
+}
+
+// gate: five bodies lobbed along +z at a torus gate on two posts. Each must
+// reach the gate's plane; where it crosses is journalled, against the ring.
+void gate(Tour& t, const fs::path& assets) {
+    SceneRun run;
+    open_scene(t, run, "gate", assets, {"gate"}, 5, SceneView{{0.0f, 3.0f, -3.0f}, 1.25f, 0.15f, 15.0f});
+    t.step("gate", "lobs", [&] {
+        Smoke& s = t.smoke();
+        if (!scene_is_open(s, run)) return;
+        SceneFileSession& scene = *run.session;
+        const std::size_t n = scene.vehicle_count(0);
+        std::vector<glm::vec3> last(n);
+        for (std::size_t i = 0; i < n; ++i) last[i] = scene.position(0, i).value_or(glm::vec3(0.0f));
+        std::vector<std::optional<checks::GateCrossing>> crossed(n);
+        for (int frame = 0; frame < 150; ++frame) {
+            if (!t.pump(1, slow_orbit(), run.draw)) return;
+            for (std::size_t i = 0; i < n; ++i) {
+                const glm::vec3 now = scene.position(0, i).value_or(last[i]);
+                if (!crossed[i]) crossed[i] = checks::crossing_z0(last[i], now);
+                last[i] = now;
+            }
+            if (frame == 70) t.poster("gate");
+        }
+        std::size_t crossings = 0;
+        std::size_t through = 0;
+        std::string heights;
+        for (const auto& c : crossed) {
+            if (!c) continue;
+            ++crossings;
+            through += checks::through_ring(*c, 1.8f, 1.35f) ? 1u : 0u;
+            heights += (heights.empty() ? "" : ", ") + fmt(c->y);
+        }
+        s.check(crossings == n, "reach-the-gate",
+                std::to_string(crossings) + " of " + std::to_string(n) + " crossed z = 0, at heights " + heights + " m");
+        s.note("gate: " + std::to_string(through) + " of " + std::to_string(n) +
+               " lobs passed inside the ring's clear radius (1.35 m about y = 1.8)");
+        t.pump(60, slow_orbit(), run.draw);
+    });
+}
+
+// The angle a body has tilted from level, radians.
+[[nodiscard]] float tilt(const glm::quat& q) {
+    const glm::vec3 up = q * glm::vec3(0.0f, 1.0f, 0.0f);
+    return std::acos(std::clamp(up.y, -1.0f, 1.0f));
+}
+
+// hover: a quadrotor at its hover rotor speed, open loop, in calm air. It
+// holds its height, level.
+void hover(Tour& t, const fs::path& assets) {
+    SceneRun run;
+    open_scene(t, run, "hover", assets, {"hover"}, 1, SceneView{{0.0f, 3.0f, 0.0f}, 0.6f, 0.3f, 2.2f});
+    t.step("hover", "holds", [&] {
+        Smoke& s = t.smoke();
+        if (!scene_is_open(s, run)) return;
+        SceneFileSession& scene = *run.session;
+        const float y0 = scene.position(0, 0).value_or(glm::vec3(0.0f)).y;
+        float worst = 0.0f;
+        for (int frame = 0; frame < 360; ++frame) {
+            if (!t.pump(1, slow_orbit(), run.draw)) return;
+            worst = std::max(worst, std::abs(scene.position(0, 0).value_or(glm::vec3(0.0f)).y - y0));
+            if (frame == 180) t.poster("hover");
+        }
+        s.check(worst < 0.25f, "holds-height", "largest change " + fmt(worst) + " m from " + fmt(y0) + " m");
+        const float tilted = tilt(scene.orientation(0, 0).value_or(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+        s.check(tilted < 0.05f, "level", "tilted " + fmt(tilted) + " rad");
+    });
+}
+
+// wind: the same open-loop hover in moderate turbulence, which carries it
+// several metres (the viewer scene's own account of it).
+void wind(Tour& t, const fs::path& assets) {
+    SceneRun run;
+    open_scene(t, run, "wind", assets, {"wind"}, 1, SceneView{{0.0f, 3.0f, 0.0f}, 0.6f, 0.25f, 4.0f});
+    t.step("wind", "gusts", [&] {
+        Smoke& s = t.smoke();
+        if (!scene_is_open(s, run)) return;
+        SceneFileSession& scene = *run.session;
+        const glm::vec3 p0 = scene.position(0, 0).value_or(glm::vec3(0.0f));
+        float worst = 0.0f;
+        bool all_finite = true;
+        for (int frame = 0; frame < 360; ++frame) {
+            if (!t.pump(1, slow_orbit(), run.draw)) return;
+            const glm::vec3 p = scene.position(0, 0).value_or(glm::vec3(0.0f));
+            all_finite = all_finite && finite(p);
+            worst = std::max(worst, std::abs(p.y - p0.y));
+            // The camera follows the drone, which the air carries metres off.
+            if (finite(p)) scene.camera().target = p;
+            if (frame == 240) t.poster("wind");
+        }
+        s.check(all_finite, "finite", all_finite ? "the drone stayed finite" : "the drone went non-finite");
+        s.check(worst > 0.5f, "carried-by-the-air", "largest height change " + fmt(worst) + " m");
+        const float tilted = tilt(scene.orientation(0, 0).value_or(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
+        s.note("wind: tilted " + fmt(tilted) + " rad at the end");
+    });
+}
+
 // Clears an earlier run's files so a stale frame never poses as a new one.
 // Deletes only names a run writes (plan_sweep in live_smoke.hpp); a folder
 // that holds anything else is refused before anything is deleted.
@@ -799,6 +1061,12 @@ int run_live_smoke(const TourOptions& options) {
     }
     if (b) {
         b->reset();
+    }
+    // The built-in scene files, each built when its turn comes; the window is
+    // already open.
+    for (void (*scene)(Tour&, const fs::path&) : {&shower, &bounce, &gate, &hover, &wind}) {
+        if (tour.stopped()) break;
+        scene(tour, options.assets_dir);
     }
 
     // The closing card shows the tour's verdict. Closing ffmpeg comes after it
