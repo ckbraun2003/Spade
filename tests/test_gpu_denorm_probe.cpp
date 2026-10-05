@@ -255,19 +255,21 @@ struct Tally {
     int accuracy = 0;
     int other = 0;
     int control_differs = 0;
-    // Evidence per direction: cases where flushing that side changes the
-    // answer, split by what the device did.
+    // Evidence per side. A case is evidence that a side was kept only when
+    // the device matches an answer that keeps it and no answer that flushes
+    // it, and the reverse for lost: a case several answers explain decides
+    // nothing.
     int inputs_kept = 0;
     int inputs_lost = 0;
     int outputs_kept = 0;
     int outputs_lost = 0;
 };
 
-[[nodiscard]] const char* verdict(int kept, int lost, int either) {
+[[nodiscard]] const char* verdict(int kept, int lost) {
     if (kept > 0 && lost > 0) return "MIXED";
     if (lost > 0) return "FLUSHED";
     if (kept > 0) return "preserved";
-    return either > 0 ? "flushed (in/out?)" : "not exercised";
+    return "not distinguished";
 }
 
 [[nodiscard]] std::span<const std::byte> probe_spirv() {
@@ -363,30 +365,31 @@ TEST(GpuDenormProbe, EveryFp32OpClassIsExplainedByAFlushVariant) {
             const bool control = operands_normal && answers_agree;
             if (control) ++t.control;
 
-            const bool in_changes = !same(cls.op, r.inputs_flushed, r.preserved);
-            const bool out_changes = !same(cls.op, r.outputs_flushed, r.preserved);
             const bool kept = same(cls.op, device, r.preserved);
             const bool in = same(cls.op, device, r.inputs_flushed);
             const bool outf = same(cls.op, device, r.outputs_flushed);
             const bool both = same(cls.op, device, r.both);
 
+            const bool inputs_kept_explains = kept || outf;
+            const bool inputs_lost_explains = in || both;
+            const bool outputs_kept_explains = kept || in;
+            const bool outputs_lost_explains = outf || both;
+            if (inputs_kept_explains && !inputs_lost_explains) ++t.inputs_kept;
+            if (inputs_lost_explains && !inputs_kept_explains) ++t.inputs_lost;
+            if (outputs_kept_explains && !outputs_lost_explains) ++t.outputs_kept;
+            if (outputs_lost_explains && !outputs_kept_explains) ++t.outputs_lost;
+
             const char* what = nullptr;
             if (kept) {
                 ++t.kept;
-                if (in_changes) ++t.inputs_kept;
-                if (out_changes) ++t.outputs_kept;
             } else if (in && outf) {
                 ++t.either_flushed;
             } else if (in) {
                 ++t.in_flushed;
-                ++t.inputs_lost;
             } else if (outf) {
                 ++t.out_flushed;
-                ++t.outputs_lost;
             } else if (both) {
                 ++t.both_flushed;
-                ++t.inputs_lost;
-                ++t.outputs_lost;
             } else if (cls.op == Op::mul_add && (same(cls.op, device, r.fused) ||
                                                   same(cls.op, device, r.fused_flushed))) {
                 ++t.contracted;
@@ -419,8 +422,7 @@ TEST(GpuDenormProbe, EveryFp32OpClassIsExplainedByAFlushVariant) {
         std::printf("[GpuDenormProbe] %-13s %6d %7d %6d %6d %7d %6d %5d %10d %8d %5d | %-17s %-17s\n",
                     cls.name, t.cases, t.control, t.kept, t.in_flushed, t.out_flushed, t.either_flushed,
                     t.both_flushed, t.contracted, t.accuracy, t.other,
-                    verdict(t.inputs_kept, t.inputs_lost, t.either_flushed),
-                    verdict(t.outputs_kept, t.outputs_lost, t.either_flushed));
+                    verdict(t.inputs_kept, t.inputs_lost), verdict(t.outputs_kept, t.outputs_lost));
         std::fflush(stdout);
 
         EXPECT_GT(t.cases, 0) << cls.name << ": no cases ran (c)";
