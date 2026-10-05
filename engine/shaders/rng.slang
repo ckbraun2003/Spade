@@ -79,10 +79,12 @@
 //     which CPU<->GPU results are banded everywhere (TD-14).
 //
 //     LIVE REPRODUCTION, kept alongside the declaration deliberately:
-//     tests/test_gpu_parity.cpp's GnssDrawsDivergeAcrossBackends_KNOWN_OPEN
-//     asserts the divergence IS present, so it goes RED the day anyone tightens
-//     this sqrt and demands its own retirement. A DECLARED BAND AND A LIVE
-//     REPRODUCTION ARE DIFFERENT INSTRUMENTS and this path carries both.
+//     tests/test_gpu_parity.cpp's GnssDrawsMatchTheCpuWithinTheCore3Band
+//     (once GnssDrawsDivergeAcrossBackends_KNOWN_OPEN, which asserted the
+//     divergence was present) holds the draws to bands::core3::kGaussianDraw
+//     over the whole ring, on every device of record (TD-14). A DECLARED BAND
+//     AND A LIVE CHECK OF IT ARE DIFFERENT INSTRUMENTS and this path carries
+//     both.
 //
 //     SCOPE, BY CALL AND NOT BY INCLUDE: rng_next_gauss reaches dryden.slang,
 //     sensor_gnss.slang and sensor_imu.slang. forces_drag.slang and
