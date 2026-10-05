@@ -229,6 +229,30 @@ TEST(BusSolve, TheEscTotalLimitScalesEveryDutyByOneFactor) {
     for (std::size_t k = 1; k < 4; ++k) EXPECT_EQ(currents[k], currents[0]) << "one common scale";
 }
 
+// The ESC total with active braking (current_min = -I_max). Braking current
+// grows as the duty scale shrinks, so a total over |I| is not monotonic in the
+// scale, and a bisection on it slid to scale 0 with every motor braking at
+// -45 A. The total counts drive current only. Expected values from a Python
+// port of the bus solve: scale 0.962, currents +35.2, +31.7, +28.3, +24.8 A.
+TEST(BusSolve, TheEscTotalCountsDriveCurrentWhenTheMotorsCanBrake) {
+    const double kv = 2450.0 * 3.14159265358979323846 / 30.0;  // rad/s per V
+    const double omegas[] = {2900.0, 2966.6666, 3033.3333, 3100.0};
+    std::vector<BusMotorD> motors;
+    for (const double w : omegas) motors.push_back(BusMotorD{1.0, w / kv, 0.075, -45.0, 45.0});
+    std::vector<double> currents(4);
+    const BusResultD r = bus_solve(16.8, 0.02, 0.0, 0.0, 120.0, motors, currents);
+    EXPECT_NE(r.flags & pf::esc_total_limited, 0u);
+    EXPECT_GT(r.duty_scale, 0.95);
+    EXPECT_LT(r.duty_scale, 0.97);
+    double drive = 0.0;
+    for (const double i : currents) {
+        EXPECT_GT(i, 0.0) << "every motor drives; none brakes";
+        drive += i;
+    }
+    EXPECT_LE(drive, 120.0);
+    EXPECT_GT(drive, 120.0 * (1.0 - 1e-5));
+}
+
 TEST(BusSolve, TheSixArgumentFormIsTheSevenWithNoEscLimit) {
     const std::vector<BusMotorD> motors(4, BusMotorD{0.9, 2.0, 0.075, 0.0, 200.0});
     std::vector<double> a(4);
