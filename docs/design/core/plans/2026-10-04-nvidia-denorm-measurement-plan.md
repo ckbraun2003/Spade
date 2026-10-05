@@ -45,7 +45,7 @@ It is configured only in a dedicated build tree, for example `build-ninja/releas
     - **sqrt of a subnormal, and division by a subnormal** (1/length: inf or finite). These are the glm mirrors: `length()` in drag and collision, and the quaternion normalize in integrate.
   - **Cut:** int→float, which cannot produce a subnormal. float→int truncation of a subnormal is 0 either way; `floor` above is the case that matters.
   - **Harness rules.**
-    - Inputs are loaded as uint and `asfloat`-ed, and outputs are `asuint`-ed, so no compiler constant-folds a literal subnormal under its own rules.
+    - Buffers are float-typed, as in `fp32_math_probe` and the physics kernels, so pass-through exercises their real load and store path (a uint buffer's `asfloat`/`asuint` pair folds to nothing). Every operand comes from a buffer the compiler cannot see into, so nothing is constant-folded; the host writes and reads exact bits through memcpy. Integer results (floor then int, packed compare bits) come back as small exact floats, out of the subnormal range, so a store-side flush cannot corrupt them. (Physics, while building M1, 2026-10-05.)
     - Every class gets a control row on normal operands. A difference that also shows on normal operands is accuracy (div or sqrt ULP), not denormals.
   - For each class, report one of: identical; inputs flushed (DAZ-like); outputs flushed (FTZ-like); accuracy (the control row differs too); or other (show the bits).
   - **Out of physics scope:** `round()` and the 16 divisions in `raster_background.slang` are Rendering's; M2 covers them through the render gpu tests. No kernel does half-precision arithmetic.
