@@ -31,7 +31,8 @@
 **The Vulkan path** (`compute/vulkan/`, Core owns the seam, context, mirror and recorder):
 
 - **Headless by construction.** No surface is needed to step or to sense.
-- **The device must preserve fp32 denormals.** `create()` refuses one that does not.
+- **Any Vulkan 1.1 device is admitted** (`CORE-5`). The kernels are SPIR-V 1.3, and request no fp32 denormal mode (`SPIR-V rule P3`), so each device runs them with its own denormal default. Vulkan results are banded against the CPU (`TD-14`) and deterministic per device and driver. A device below 1.1 is refused by name.
+- **A run says what produced it** (`L6`). The context records the device, the driver and the float controls. `Simulation::vulkan_device_report()` returns them, and `compute::describe()` prints one line.
 - **The state mirror is derived storage.** It uploads and reads back every registered array, and calls nothing that registers state.
 - **Record once per shape.** The whole substep chain is recorded once and resubmitted per step. The only per-step input is the tick, written through a persistently mapped buffer.
 - **A barrier between every adjacent pair of dispatches, none after the last.** The last dispatch is found from what was emitted, never from a tally (`CORE-2`).

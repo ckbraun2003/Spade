@@ -11,6 +11,10 @@
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
+#include "sim/simulation.hpp"
+#include "sim/world_set.hpp"
+#include "world/builder.hpp"
+#include "world/medium.hpp"
 #include "gpu_skip.hpp"
 
 namespace {
@@ -48,65 +52,95 @@ public:
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// THE REFUSAL, ON REAL HARDWARE (docs/design/core/plans/
-// 2026-10-04-nvidia-denorm-measurement-plan.md, step 2). Every spade kernel
-// declares DenormPreserve 32, and requesting that on a device whose
-// shaderDenormPreserveFloat32 is false is undefined behaviour, so such a device
-// is refused: the predicate says no and create() returns Code::unavailable.
+// ADMITTED AND ANNOUNCED, ON REAL HARDWARE (CORE-5; the banded-parity plan,
+// T4). No kernel requests an fp32 denormal mode (SPIR-V rule P3), so a device
+// that cannot preserve fp32 denormals runs every kernel legally with its own
+// default, and is admitted. It is announced, never silent (L6): the context
+// records the device, the driver and the float controls, and describe() says
+// that no denormal mode was requested.
 //
-// It runs where the default device reports shaderDenormPreserveFloat32 = false
-// (this program's RTX 3060 Ti) and skips elsewhere, naming the capability.
-// The skip cannot hide a regression: the capability is read straight from the
-// driver, independent of the engine, and before skipping on a device that does
-// preserve, the test requires the engine to admit it. A broken read that
-// skipped everywhere would fail there instead.
-//
-// On a one-device box the refusal comes from the predicate, whose message
-// names the capability in words ("cannot preserve fp32 denormals") and never
-// as the token shaderDenormPreserveFloat32; that token belongs to create()'s
-// per-device check (ComputeBackendAvailability.ForcedUnavailableReturnsUnavailable
-// pins the split).
+// The capability is read straight from the driver, independent of the engine.
+// This RTX 3060 Ti reports shaderDenormPreserveFloat32 = false, so the whole
+// test runs here; a preserving device checks admission and skips the rest.
 // ---------------------------------------------------------------------------
-TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
+TEST(GpuContext, ADeviceWithoutFp32DenormalPreservationIsAdmittedAndAnnounced) {
     if (spade::testing::forced_no_vulkan()) GTEST_SKIP() << "Vulkan unavailable: SPADE_FORCE_NO_VULKAN=1";
     const spade::testing::DefaultDeviceDenorms denorms = spade::testing::read_default_device_denorms();
-    if (!denorms.device) GTEST_SKIP() << "no Vulkan loader or physical device";
-    if (!denorms.queryable) {
-        GTEST_SKIP() << "the default device reports Vulkan < 1.2, so shaderDenormPreserveFloat32 cannot "
-                        "be queried";
-    }
-    if (denorms.preserve_f32 == VK_TRUE) {
-        ASSERT_TRUE(vulkan_available()) << "'" << denorms.name
-                                        << "' reports shaderDenormPreserveFloat32 = true, yet the engine "
-                                           "refuses it; this skip would hide that";
-        GTEST_SKIP() << "the default device ('" << denorms.name
-                     << "') reports shaderDenormPreserveFloat32 = true; this test needs one that does not";
-    }
+    if (!denorms.device) GTEST_SKIP() << "Vulkan unavailable: no Vulkan loader or physical device";
+    if (denorms.api_version < VK_API_VERSION_1_1) GTEST_SKIP() << "'" << denorms.name << "' reports Vulkan < 1.1";
 
-    ASSERT_EQ(denorms.preserve_f32, VK_FALSE);
+    EXPECT_TRUE(vulkan_available()) << "'" << denorms.name << "' must be admitted";
     BackendDesc desc{.kind = BackendKind::vulkan};
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-    // The test-only measurement build (the same CMake option defines this on
-    // spade_tests and spade_compute): kernels request no denormal mode, so the
-    // device is admitted, unpinned, to be measured.
-    EXPECT_TRUE(vulkan_available()) << "the measurement build must admit '" << denorms.name << "'";
-    auto admitted = VulkanContext::create(desc);
-    ASSERT_TRUE(admitted.has_value()) << admitted.error().context;
-#else
-    EXPECT_FALSE(vulkan_available()) << "'" << denorms.name << "' cannot preserve fp32 denormals";
-    auto result = VulkanContext::create(desc);
-    ASSERT_FALSE(result.has_value()) << "VulkanContext::create admitted '" << denorms.name
-                                     << "', which cannot preserve fp32 denormals";
-    EXPECT_EQ(result.error().code, Code::unavailable);
-    EXPECT_NE(result.error().context.find("cannot preserve fp32 denormals"), std::string::npos)
-        << result.error().context;
+    auto context = VulkanContext::create(desc);
+    ASSERT_TRUE(context.has_value()) << context.error().context;
 
-    // Every gpu test that skips here says why, naming the capability.
-    const auto why = spade::testing::vulkan_skip_reason();
-    ASSERT_TRUE(why.has_value()) << "a refused device must give a skip reason";
-    EXPECT_NE(why->find("shaderDenormPreserveFloat32 = false"), std::string::npos) << *why;
-    EXPECT_NE(why->find(denorms.name), std::string::npos) << *why;
-#endif
+    if (!denorms.queryable || denorms.preserve_f32 == VK_TRUE) {
+        GTEST_SKIP() << "the default device ('" << denorms.name
+                     << "') preserves fp32 denormals or cannot say; the announcement needs one that does not";
+    }
+    const spade::compute::DeviceReport& report = (*context)->device_report();
+    EXPECT_FALSE(report.denorm_preserve_f32);
+    const std::string line = spade::compute::describe(report);
+    EXPECT_NE(line.find(denorms.name), std::string::npos) << line;
+    EXPECT_NE(line.find("no mode requested"), std::string::npos) << line;
+    EXPECT_NE(line.find("preserve supported: no"), std::string::npos) << line;
+}
+
+// The report's fields equal a direct read of the driver (gpu_skip.hpp's, an
+// independent source: TD-4), and describe() prints them on one line.
+TEST(GpuContext, ReportsTheDeviceDriverAndFloatControls) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::testing::DefaultDeviceDenorms direct = spade::testing::read_default_device_denorms();
+    ASSERT_TRUE(direct.device);
+    BackendDesc desc{.kind = BackendKind::vulkan};
+    auto context = VulkanContext::create(desc);
+    ASSERT_TRUE(context.has_value()) << context.error().context;
+
+    const spade::compute::DeviceReport& report = (*context)->device_report();
+    EXPECT_EQ(report.device_name, direct.name);
+    EXPECT_EQ(report.vendor_id, direct.vendor_id);
+    EXPECT_EQ(report.device_id, direct.device_id);
+    EXPECT_EQ(report.api_version, direct.api_version);
+    EXPECT_EQ(report.driver_version, direct.driver_version);
+    EXPECT_EQ(report.float_controls_queryable, direct.queryable);
+    if (direct.queryable) {
+        EXPECT_EQ(report.driver_name, direct.driver_name);
+        EXPECT_EQ(report.driver_info, direct.driver_info);
+        EXPECT_EQ(report.denorm_preserve_f32, direct.preserve_f32 == VK_TRUE);
+        EXPECT_EQ(report.denorm_flush_to_zero_f32, direct.flush_to_zero_f32 == VK_TRUE);
+    }
+    std::cout << "[GpuContext] " << spade::compute::describe(report) << "\n";
+}
+
+// Simulation::vulkan_device_report() is the same report, on a Vulkan
+// Simulation; on a cpu one it refuses with `unavailable`, like the other
+// Vulkan diagnostics.
+TEST(GpuContext, ASimulationReportsTheDeviceItRunsOn) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::testing::DefaultDeviceDenorms direct = spade::testing::read_default_device_denorms();
+    auto world = spade::WorldBuilder()
+                     .name("report")
+                     .environment(spade::Environment{})
+                     .capacities(spade::Capacities{1, 1, 1, 1})
+                     .build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    spade::WorldInstanceDesc inst;
+    inst.world = *world;
+    inst.turbulence = spade::dryden_params(spade::TurbulenceLevel::none);
+    const spade::WorldSetDesc worlds{{inst}};
+
+    auto on_vulkan = spade::Simulation::create(worlds, 2'000'000, 2, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(on_vulkan.has_value()) << on_vulkan.error().context;
+    const auto report = on_vulkan->vulkan_device_report();
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_EQ(report->device_name, direct.name);
+    EXPECT_EQ(report->driver_version, direct.driver_version);
+
+    auto on_cpu = spade::Simulation::create(worlds, 2'000'000, 2);
+    ASSERT_TRUE(on_cpu.has_value()) << on_cpu.error().context;
+    const auto none = on_cpu->vulkan_device_report();
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().code, Code::unavailable);
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +348,7 @@ TEST(ComputeBackendAvailability, ForcedUnavailableReturnsUnavailable) {
 
     // AND THE OVERRIDE SHORT-CIRCUITS BEFORE ANY DRIVER CALL (S6 Task 4, review
     // fix round 2). vulkan_available() gained a second reason to answer false --
-    // a present device that cannot preserve fp32 denormals -- and that clause
+    // a present device below Vulkan 1.1 (CORE-5; once, fp32 denormal preservation) -- and that clause
     // creates an instance, enumerates a device and queries its properties.
     // SPADE_FORCE_NO_VULKAN exists so a host-only test can get its "no" WITHOUT
     // touching a driver, so the env check must stay FIRST; and "first" is a
@@ -323,18 +357,19 @@ TEST(ComputeBackendAvailability, ForcedUnavailableReturnsUnavailable) {
     // TWO THINGS PROVE IT, and they are different claims:
     //
     //   1. THE ASSERTIONS ABOVE, on this program's box. A fully usable device
-    //      is present here (the Iris reports shaderDenormPreserveFloat32=1), so
+    //      is present here (the RTX 3060 Ti, admitted under CORE-5), so
     //      an override that did NOT win would leave create() succeeding --
     //      ASSERT_FALSE would have caught it. That is the ordering evidence,
     //      and it is only available where a device exists.
-    //   2. THE DISCRIMINATOR BELOW, everywhere. `shaderDenormPreserveFloat32`
+    //   2. THE DISCRIMINATOR BELOW, everywhere. `SPIR-V 1.3` (CORE-5: the one
+    //      capability left is Vulkan 1.1, because the kernels are SPIR-V 1.3)
     //      appears verbatim in create()'s PER-DEVICE capability rejection and
     //      never in its predicate-failure message (context.cpp says so at both
     //      sites), so its absence pins that the answer came from the predicate
     //      rather than from a device query -- i.e. that the forced path never
     //      reached one. This holds on a device-less CI runner too, where claim
     //      1 is vacuous.
-    EXPECT_EQ(result.error().context.find("shaderDenormPreserveFloat32"), std::string::npos)
+    EXPECT_EQ(result.error().context.find("SPIR-V 1.3"), std::string::npos)
         << "SPADE_FORCE_NO_VULKAN must short-circuit before any device is queried, but the "
         << "rejection came from the per-device capability check: " << result.error().context;
 }

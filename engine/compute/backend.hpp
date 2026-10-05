@@ -136,6 +136,51 @@ inline constexpr std::array<uint32_t, 3> kSupportedWorkgroupSizes = {32u, 64u, 1
 // ⚠ THIS IS DOCUMENTATION OF A MEASUREMENT, NOT A FIX. `vulkan` REMAINS FULLY
 // SELECTABLE -- a backend that cannot be chosen on demand cannot be measured
 // again, and whoever improves it needs to be able to run it.
+// WHAT A VULKAN RUN USED (CORE-5; L6, announced and never silent). No kernel
+// requests an fp32 denormal mode (SPIR-V rule P3), so every Vulkan 1.1 device
+// is admitted and runs with its own denormal default, and its results are
+// banded against the CPU (TD-14), not bit-identical. The context records the
+// device, the driver and the float controls here, so every run can say which
+// device and driver produced it. Plain data, no Vulkan types: a front end on
+// the CPU backend can include it too.
+struct DeviceReport {
+    std::string device_name;
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    uint32_t api_version = 0;     // VK_MAKE_API_VERSION-encoded
+    uint32_t driver_version = 0;  // vendor-encoded; driver_info is its readable form
+    // VkPhysicalDeviceDriverProperties and VkPhysicalDeviceFloatControlsProperties
+    // are Vulkan 1.2 core; below it they are not queryable and stay empty / false.
+    bool float_controls_queryable = false;
+    std::string driver_name;
+    std::string driver_info;
+    bool denorm_preserve_f32 = false;
+    bool denorm_flush_to_zero_f32 = false;
+};
+
+// One line for logs, gate output and front ends, e.g. "NVIDIA GeForce RTX 3060
+// Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no
+// mode requested, device default (preserve supported: no, flush-to-zero
+// supported: no)".
+[[nodiscard]] inline std::string describe(const DeviceReport& report) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string hex = "0x00000000";
+    for (int i = 0; i < 8; ++i) hex[9 - i] = kHex[(report.driver_version >> (4 * i)) & 0xFu];
+    const uint32_t v = report.api_version;
+    std::string out = report.device_name + ", driver ";
+    if (!report.driver_name.empty() || !report.driver_info.empty()) {
+        out += report.driver_name;
+        if (!report.driver_name.empty() && !report.driver_info.empty()) out += ' ';
+        out += report.driver_info + " ";
+    }
+    out += "(" + hex + "), Vulkan " + std::to_string((v >> 22) & 0x7Fu) + "." +
+           std::to_string((v >> 12) & 0x3FFu) + "." + std::to_string(v & 0xFFFu) +
+           "; fp32 denormals: no mode requested, device default ";
+    if (!report.float_controls_queryable) return out + "(float controls not queryable below Vulkan 1.2)";
+    return out + "(preserve supported: " + (report.denorm_preserve_f32 ? "yes" : "no") +
+           ", flush-to-zero supported: " + (report.denorm_flush_to_zero_f32 ? "yes" : "no") + ")";
+}
+
 struct BackendDesc {
     BackendKind kind = BackendKind::cpu;
     uint32_t workgroup_size = 64;

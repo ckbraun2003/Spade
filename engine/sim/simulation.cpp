@@ -1013,6 +1013,14 @@ Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
     return vulkan_backend_->recorded_chain();
 }
 
+Result<compute::DeviceReport> Simulation::vulkan_device_report() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_device_report: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->device_report();
+}
+
 Result<void> Simulation::flush_structural() {
     if (queue_.empty()) {
         return {};

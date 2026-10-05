@@ -44,20 +44,14 @@ public:
     //   - Code::unavailable: no Vulkan loader, or the loader enumerates zero
     //     physical devices -- exactly the condition vulkan_available() below
     //     reports, and the GTEST_SKIP() signal every device-executing test
-    //     checks for first. ALSO (S6 Task 4) a device that IS present and
-    //     enumerable but cannot preserve fp32 denormals in shaders
-    //     (shaderDenormPreserveFloat32 == VK_FALSE, or a pre-1.1 device that
-    //     cannot be asked at all). Every spade kernel declares
-    //     `OpExecutionMode DenormPreserve 32`; requesting that on such a device
-    //     is a Vulkan VALID-USAGE VIOLATION -- undefined behaviour, NOT a
-    //     reported pipeline-creation error -- so this factory refuses the
-    //     device outright rather than let a silently-flushing pipeline produce
-    //     a divergent trajectory. The error's `context` names the capability
-    //     and why parity requires it; the .cpp's
-    //     device_preserves_fp32_denormals() carries the full argument. It
-    //     remains the ONLY capability clause after S6 Task 8's shaderInt64
-    //     probe -- see supports_int64() below for why that measurement changed
-    //     the kernels instead of adding a second refusal.
+    //     checks for first. ALSO (CORE-5) a device that IS present but below
+    //     Vulkan 1.1: every spade kernel is SPIR-V 1.3. That is the ONLY
+    //     capability clause. fp32 denormal preservation is not one: no kernel
+    //     requests a denormal mode (SPIR-V rule P3), so every device runs the
+    //     kernels legally with its own default, its results are banded against
+    //     the CPU (TD-14), and device_report() says which device and driver a
+    //     run used (L6). shaderInt64 is not one either -- see supports_int64()
+    //     below for why that measurement changed the kernels instead.
     //   - Code::invalid_argument: a loader/device ARE present, but
     //     device_index names no enumerated physical device.
     //   - Code::internal: any other Vulkan API failure while creating the
@@ -117,6 +111,10 @@ public:
     // ------------------------------------------------------------------
     [[nodiscard]] bool supports_int64() const noexcept { return int64_supported_; }
 
+    // The device, driver and float controls this context runs on (CORE-5,
+    // L6). Recorded at create(); describe() gives it one line.
+    [[nodiscard]] const DeviceReport& device_report() const noexcept { return report_; }
+
     // True iff this context created a VK_EXT_debug_utils messenger (S6 Task
     // 5): a debug build where VK_LAYER_KHRONOS_validation AND the
     // VK_EXT_debug_utils instance extension were both present at create()
@@ -159,6 +157,7 @@ private:
     // S6 Task 8: VkPhysicalDeviceFeatures::shaderInt64 as this device
     // advertised it (see supports_int64() above). Recorded, never required.
     bool int64_supported_ = false;
+    DeviceReport report_;
     std::string device_name_;
 };
 
@@ -174,11 +173,11 @@ private:
 //
 // "CAN RUN THIS ENGINE'S KERNELS" IS PART OF THE PREDICATE (S6 Task 4, review
 // fix round 2), not an extra condition a caller checks afterwards: every spade
-// kernel declares `OpExecutionMode DenormPreserve 32`, so a device whose
-// shaderDenormPreserveFloat32 is VK_FALSE (or which is too old to be asked) is
-// one VulkanContext::create() refuses with Code::unavailable. STILL ONE
-// CAPABILITY AFTER S6 TASK 8: shaderInt64 was probed, found VK_FALSE here, and
-// designed around rather than demanded (see supports_int64() above). If this
+// kernel is SPIR-V 1.3, so a device below Vulkan 1.1 is one
+// VulkanContext::create() refuses with Code::unavailable (CORE-5). fp32
+// denormal preservation stopped being a clause when no kernel requested a
+// denormal mode any more (SPIR-V rule P3), and shaderInt64 was designed around
+// rather than demanded (see supports_int64() above). If this
 // function
 // answered `true` for such a device, every `GTEST_SKIP()` guard keyed on it
 // would sail through and the test would then HARD-FAIL on create() -- on

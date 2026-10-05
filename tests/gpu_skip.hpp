@@ -3,8 +3,8 @@
 // Every Gpu* test that needs a Vulkan device begins with
 //     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 // so a log says WHY it skipped, not only that it did: the override, no loader
-// or device, or the default device's missing capability (the engine's one
-// requirement, fp32 denormal preservation).
+// or device, or a default device below Vulkan 1.1 (the engine's one capability
+// requirement, CORE-5).
 #pragma once
 
 #include <cstdlib>
@@ -38,9 +38,16 @@ namespace spade::testing {
 // test below checks.
 struct DefaultDeviceDenorms {
     bool device = false;     // a loader and a default device answered
-    bool queryable = false;  // the device reports Vulkan >= 1.2, so float controls can be queried
+    bool queryable = false;  // the device reports Vulkan >= 1.2: driver and float-control properties
     VkBool32 preserve_f32 = VK_FALSE;
+    VkBool32 flush_to_zero_f32 = VK_FALSE;
     std::string name;
+    uint32_t vendor_id = 0;
+    uint32_t device_id = 0;
+    uint32_t api_version = 0;
+    uint32_t driver_version = 0;
+    std::string driver_name;  // VkPhysicalDeviceDriverProperties, when queryable
+    std::string driver_info;
 };
 
 [[nodiscard]] inline DefaultDeviceDenorms read_default_device_denorms() {
@@ -66,15 +73,25 @@ struct DefaultDeviceDenorms {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(device, &properties);
         out.name = properties.deviceName;
+        out.vendor_id = properties.vendorID;
+        out.device_id = properties.deviceID;
+        out.api_version = properties.apiVersion;
+        out.driver_version = properties.driverVersion;
         if (properties.apiVersion >= VK_API_VERSION_1_2) {
             out.queryable = true;
             VkPhysicalDeviceFloatControlsProperties float_controls{};
             float_controls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+            VkPhysicalDeviceDriverProperties driver{};
+            driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+            driver.pNext = &float_controls;
             VkPhysicalDeviceProperties2 properties2{};
             properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-            properties2.pNext = &float_controls;
+            properties2.pNext = &driver;
             vkGetPhysicalDeviceProperties2(device, &properties2);
             out.preserve_f32 = float_controls.shaderDenormPreserveFloat32;
+            out.flush_to_zero_f32 = float_controls.shaderDenormFlushToZeroFloat32;
+            out.driver_name = driver.driverName;
+            out.driver_info = driver.driverInfo;
         }
     }
     vkDestroyInstance(instance, nullptr);
@@ -90,14 +107,9 @@ struct DefaultDeviceDenorms {
     static const std::string reason = [] {
         const DefaultDeviceDenorms denorms = read_default_device_denorms();
         if (!denorms.device) return std::string("Vulkan unavailable: no Vulkan loader or physical device");
-        if (!denorms.queryable) {
+        if (denorms.api_version < VK_API_VERSION_1_1) {
             return "Vulkan unavailable: the default device ('" + denorms.name +
-                   "') reports Vulkan < 1.2, so shaderDenormPreserveFloat32 cannot be queried";
-        }
-        if (denorms.preserve_f32 == VK_FALSE) {
-            return "Vulkan unavailable: the default device ('" + denorms.name +
-                   "') reports shaderDenormPreserveFloat32 = false, and every spade kernel requires fp32 "
-                   "denormal preservation";
+                   "') reports Vulkan < 1.1, and every spade kernel is SPIR-V 1.3";
         }
         // The engine refused for a reason the direct read does not see: give its own words.
         auto context = compute::VulkanContext::create(compute::BackendDesc{.kind = compute::BackendKind::vulkan});

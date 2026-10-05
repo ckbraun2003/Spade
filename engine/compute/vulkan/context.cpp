@@ -5,9 +5,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-#include <cstdio>  // the measurement build's admission log line
-#endif
 
 namespace spade::compute {
 
@@ -67,46 +64,40 @@ namespace {
     return compute_family;
 }
 
-// Does this physical device preserve fp32 denormals in shaders?
-//
-// WHY create() REFUSES A DEVICE THAT DOES NOT (S6 Task 4). Every kernel this
-// engine compiles carries `OpExecutionMode <entry> DenormPreserve 32`
-// (cmake/SpadeSlang.cmake's -denorm-mode-fp32 preserve), because the CPU twin
-// preserves denormals and the GPU must match it bit for bit -- this box's own
-// Iris flushes them when not asked, which broke log32's subnormal pre-scale,
-// exp32's whole subnormal-result tail and sin32 of a subnormal until the mode
-// was requested.
-//
-// Requesting that execution mode on a device whose shaderDenormPreserveFloat32
-// is VK_FALSE is a VULKAN VALID-USAGE VIOLATION -- i.e. UNDEFINED BEHAVIOUR,
-// not a guaranteed VK_ERROR_* from vkCreateComputePipelines. A validation layer
-// would report it, but this file enables layers only in Debug and only if
-// present, so the realistic Release outcome is a pipeline that quietly flushes
-// and a trajectory that quietly diverges. That is precisely the failure this
-// engine exists to make impossible, so the check is made HERE, once, where a
-// device is accepted -- not left to a rule the driver is not obliged to
-// enforce.
-//
-// THE 1.1 GUARD IS NOT PEDANTRY: vkGetPhysicalDeviceProperties2 is Vulkan 1.1
-// core, and volk leaves its pointer null on a 1.0 instance -- calling it would
-// crash rather than report anything. A device that cannot even be ASKED cannot
-// be shown to satisfy the requirement, so it is refused too, and create()'s
-// message says which of the two situations it is.
-[[nodiscard]] bool device_preserves_fp32_denormals(VkPhysicalDevice device,
-                                                   uint32_t api_version) noexcept {
-    if (api_version < VK_API_VERSION_1_1 || vkGetPhysicalDeviceProperties2 == nullptr) {
-        return false;
+// WHAT THIS DEVICE IS, AND HOW IT TREATS fp32 DENORMALS (CORE-5): recorded,
+// never a requirement. No kernel requests a denormal mode (SPIR-V rule P3), so
+// every device runs them legally with its own default, and its results are
+// banded against the CPU (TD-14). The report says which device and driver a
+// run used, announced and never silent (L6). Driver and float-control
+// properties are Vulkan 1.2 core, so below 1.2 they stay empty and false.
+[[nodiscard]] DeviceReport read_device_report(VkPhysicalDevice device,
+                                              const VkPhysicalDeviceProperties& properties) {
+    DeviceReport report;
+    report.device_name = properties.deviceName;
+    report.vendor_id = properties.vendorID;
+    report.device_id = properties.deviceID;
+    report.api_version = properties.apiVersion;
+    report.driver_version = properties.driverVersion;
+    if (properties.apiVersion < VK_API_VERSION_1_2 || vkGetPhysicalDeviceProperties2 == nullptr) {
+        return report;
     }
 
     VkPhysicalDeviceFloatControlsProperties float_controls{};
     float_controls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+    VkPhysicalDeviceDriverProperties driver{};
+    driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+    driver.pNext = &float_controls;
+    VkPhysicalDeviceProperties2 properties2{};
+    properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties2.pNext = &driver;
+    vkGetPhysicalDeviceProperties2(device, &properties2);
 
-    VkPhysicalDeviceProperties2 properties{};
-    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &float_controls;
-    vkGetPhysicalDeviceProperties2(device, &properties);
-
-    return float_controls.shaderDenormPreserveFloat32 == VK_TRUE;
+    report.float_controls_queryable = true;
+    report.driver_name = driver.driverName;
+    report.driver_info = driver.driverInfo;
+    report.denorm_preserve_f32 = float_controls.shaderDenormPreserveFloat32 == VK_TRUE;
+    report.denorm_flush_to_zero_f32 = float_controls.shaderDenormFlushToZeroFloat32 == VK_TRUE;
+    return report;
 }
 
 // Does this physical device support 64-bit integer arithmetic in shaders?
@@ -141,7 +132,7 @@ namespace {
 // vkGetPhysicalDeviceFeatures (not ...Features2) deliberately: shaderInt64 is a
 // CORE Vulkan 1.0 feature, so the 1.0 entry point answers it on every device
 // this engine can otherwise accept, and using it keeps this probe free of the
-// 1.1 guard device_preserves_fp32_denormals() above needs.
+// 1.1 guard read_device_report()'s Vulkan 1.2 properties need.
 [[nodiscard]] bool device_supports_int64(VkPhysicalDevice device) noexcept {
     VkPhysicalDeviceFeatures features{};
     vkGetPhysicalDeviceFeatures(device, &features);
@@ -213,8 +204,8 @@ bool vulkan_available() noexcept {
     const bool have_device = (enumerated == VK_SUCCESS || enumerated == VK_INCOMPLETE) &&
                              device_count > 0 && first_device != VK_NULL_HANDLE;
 
-    // THE CAPABILITY CLAUSE (S6 Task 4, review fix round 2). A device that is
-    // present but cannot preserve fp32 denormals is one this engine cannot use
+    // THE CAPABILITY CLAUSE (S6 Task 4, review fix round 2; CORE-5). A device
+    // that is present but below Vulkan 1.1 cannot run the SPIR-V 1.3 kernels
     // -- create() rejects it with Code::unavailable -- so this predicate must
     // say so too, or the two disagree and every
     // `if (!vulkan_available()) GTEST_SKIP()` guard in the suite becomes a hard
@@ -243,35 +234,19 @@ bool vulkan_available() noexcept {
     if (have_device) {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(first_device, &properties);
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-        // THE TEST-ONLY MEASUREMENT BUILD (docs/design/core/plans/
-        // 2026-10-04-nvidia-denorm-measurement-plan.md; the user's "measure
-        // first" ruling). Its kernels are compiled WITHOUT DenormPreserve, so
-        // requesting nothing is legal on any device, and the device is admitted
-        // to be measured. Never an installed build: CMake refuses to install
-        // or to be a subproject with the option on.
-        static_cast<void>(properties);
-        usable = true;
-#else
-        usable = device_preserves_fp32_denormals(first_device, properties.apiVersion);
-#endif
+        // THE ONE CAPABILITY LEFT (CORE-5): Vulkan 1.1, because every kernel is
+        // SPIR-V 1.3. create() checks the same clause per device.
+        usable = properties.apiVersion >= VK_API_VERSION_1_1;
     }
 
     vkDestroyInstance(instance, nullptr);
     return usable;
 }
 
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-// The measurement build's marker: a non-static array, so the archive always
-// carries these bytes, and the install scanner proves no installed archive does.
-extern const char kSpadeUnpinnedDenormsMarker[];
-const char kSpadeUnpinnedDenormsMarker[] = "SPADE_MEASURE_UNPINNED_DENORMS";
-#endif
-
 Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& desc) {
     // vulkan_available() IS the unavailable-path source of truth -- the
-    // SPADE_FORCE_NO_VULKAN override, the loader, the device, AND (review fix
-    // round 2) the fp32-denormal capability the kernels require. Checked first
+    // SPADE_FORCE_NO_VULKAN override, the loader, the device, AND (CORE-5) the
+    // one capability the kernels require, Vulkan 1.1. Checked first
     // so every failure mode below it only has to handle "a loader and a usable
     // default device are known to exist".
     //
@@ -286,8 +261,7 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     if (!vulkan_available()) {
         return std::unexpected(Error{
             Code::unavailable,
-            "no Vulkan loader, no physical device, or the default device cannot preserve fp32 "
-            "denormals"});
+            "no Vulkan loader, no physical device, or the default device is below Vulkan 1.1"});
     }
 
     // vulkan_available() already ran volkInitialize() successfully as part
@@ -401,56 +375,31 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical_device, &properties);
 
-    // The one CAPABILITY requirement this engine imposes on a device (S6 Task
-    // 4). Checked before any queue is picked or any device is created, so a
-    // device that cannot give bit-exact results is refused rather than half
-    // set up. Code::unavailable, not invalid_argument: the caller asked for
-    // nothing wrong -- the resource is architecturally absent from this
-    // environment, which is exactly what that code means (core/error.hpp), and
-    // is what lets a caller that can degrade or skip switch on it.
-#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
-    // THE TEST-ONLY MEASUREMENT BUILD admits the device (see vulkan_available()
-    // above), but still reads the capability and says so in every log, so a
-    // measurement run names what it measured.
-    if (!device_preserves_fp32_denormals(physical_device, properties.apiVersion)) {
-        std::fprintf(stderr,
-                     "[spade] measurement build: '%s' reports no fp32 denormal preservation; admitted "
-                     "with the denormal mode not requested\n",
-                     properties.deviceName);
-    }
-#else
-    if (!device_preserves_fp32_denormals(physical_device, properties.apiVersion)) {
-        // BOTH VARIANTS NAME shaderDenormPreserveFloat32 VERBATIM, and that is
-        // a contract, not phrasing: it is the one token that appears in this
-        // per-device rejection and never in the PREDICATE's message above, so
-        // ComputeBackendAvailability.ForcedUnavailableReturnsUnavailable can
-        // tell the two apart and pin which clause answered.
-        const std::string detail =
-            properties.apiVersion < VK_API_VERSION_1_1
-                ? "cannot be queried for shaderDenormPreserveFloat32 -- device reports Vulkan " +
-                      std::to_string(VK_API_VERSION_MAJOR(properties.apiVersion)) + "." +
-                      std::to_string(VK_API_VERSION_MINOR(properties.apiVersion)) +
-                      ", and vkGetPhysicalDeviceProperties2 is 1.1 core"
-                : "shaderDenormPreserveFloat32 is VK_FALSE";
-        // Wave-3 merge note: this early return is T4's; the messenger
-        // cleanup is T5's and must appear on EVERY early-return path between
-        // the messenger's creation (above) and VulkanContext taking
-        // ownership of it (below) -- the other three early returns
-        // (device_index range, no compute family, vkCreateDevice failure)
-        // already do this; this one was the gap the merge introduced by
-        // combining a T4 return that predates the messenger with T5's
-        // messenger lifetime.
+    // THE ONE CAPABILITY LEFT (CORE-5): Vulkan 1.1, because every kernel is
+    // SPIR-V 1.3. fp32 denormal preservation is no longer one: no kernel
+    // requests a denormal mode (SPIR-V rule P3), so a device that cannot
+    // preserve runs every kernel legally with its own default, and its results
+    // are banded against the CPU (TD-14). Checked before any queue is picked or
+    // any device is created. Code::unavailable, not invalid_argument: the
+    // caller asked for nothing wrong -- the resource is architecturally absent
+    // from this environment (core/error.hpp), which is what lets a caller that
+    // can degrade or skip switch on it. "SPIR-V 1.3" appears in this per-device
+    // refusal and never in the predicate's message above, so
+    // ComputeBackendAvailability.ForcedUnavailableReturnsUnavailable can tell
+    // which clause answered.
+    if (properties.apiVersion < VK_API_VERSION_1_1) {
+        // The messenger cleanup belongs on every early return between the
+        // messenger's creation and VulkanContext taking ownership of it.
         if (debug_messenger != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(instance, debug_messenger, nullptr);
         vkDestroyInstance(instance, nullptr);
         return std::unexpected(Error{
             Code::unavailable,
-            std::string("physical device '") + properties.deviceName +
-                "' cannot preserve fp32 denormals (" + detail +
-                "). Every spade kernel declares OpExecutionMode DenormPreserve 32 because the CPU "
-                "twin preserves denormals and GPU results must be bit-identical to it; requesting "
-                "that mode here would be undefined behaviour, not a reported error."});
+            std::string("physical device '") + properties.deviceName + "' reports Vulkan " +
+                std::to_string(VK_API_VERSION_MAJOR(properties.apiVersion)) + "." +
+                std::to_string(VK_API_VERSION_MINOR(properties.apiVersion)) +
+                ", and every spade kernel is SPIR-V 1.3, which needs Vulkan 1.1"});
     }
-#endif
+    DeviceReport report = read_device_report(physical_device, properties);
 
     // S6 Task 8's probe, RECORDED but NOT a requirement -- the one capability
     // question this engine asks and then works around rather than refusing on.
@@ -542,6 +491,7 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     ctx->device_name_ = properties.deviceName;
     ctx->debug_messenger_ = debug_messenger;
     ctx->int64_supported_ = int64_supported;
+    ctx->report_ = std::move(report);
     vkGetDeviceQueue(device, compute_family, compute_queue_index, &ctx->compute_queue_);
     vkGetDeviceQueue(device, transfer_family, transfer_queue_index, &ctx->transfer_queue_);
 
@@ -559,6 +509,7 @@ VulkanContext::VulkanContext(VulkanContext&& other) noexcept
       transfer_family_(other.transfer_family_),
       api_version_(other.api_version_),
       int64_supported_(other.int64_supported_),
+      report_(std::move(other.report_)),
       device_name_(std::move(other.device_name_)) {}
 
 VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
@@ -574,6 +525,7 @@ VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
         transfer_family_ = other.transfer_family_;
         api_version_ = other.api_version_;
         int64_supported_ = other.int64_supported_;
+        report_ = std::move(other.report_);
         device_name_ = std::move(other.device_name_);
     }
     return *this;

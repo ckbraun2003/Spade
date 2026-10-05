@@ -223,11 +223,12 @@ struct Stream {
     // bit-identical everywhere and replacing it would trade a guarantee for a
     // polynomial.
     //
-    // Note for S6: with log32/sin32/cos32 the gaussian sequence is now an
-    // EXACT parity claim rather than a tolerance one -- the GPU mirror
-    // implements these same three routines rather than calling the device's
-    // intrinsics. Draw COUNTS were already exact, which is what keeps the two
-    // paths' streams in step.
+    // The GPU mirror implements log32/sin32/cos32 itself rather than calling
+    // the device's intrinsics, and they match the host on every device
+    // measured -- but CPU<->GPU parity is banded (CORE-3 as amended, TD-14),
+    // not a bit-identity requirement. The integer stream state and the draw
+    // COUNTS are exact by construction, which is what keeps the two paths'
+    // streams in step.
     float next_gauss() noexcept {
         if (has_cached != 0u) {
             // Clearing the slot as well as the flag is not tidiness -- it is

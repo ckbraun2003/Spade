@@ -23,10 +23,10 @@
 //     COUNTS in step so that comparing them means anything at all.
 //
 //   * THE GAUSSIAN'S FLOAT HALF IS BANDED, AND ONLY BY sqrt. log32, sin32 and
-//     cos32 are the T4 Slang ports, proven bit-identical to the host on this
-//     device (tests/test_gpu_fp32_math.cpp) -- core/rng.hpp's own note
-//     anticipates exactly this: "with log32/sin32/cos32 the gaussian sequence
-//     is now an EXACT parity claim rather than a tolerance one". The ONE
+//     cos32 are the T4 Slang ports, bit-identical to the host on every
+//     device measured (tests/test_gpu_fp32_math.cpp; their subnormal paths are
+//     integer, so no denormal mode changes them) -- though CPU<->GPU parity is
+//     banded (CORE-3 as amended, TD-14), not a bit-identity requirement. The ONE
 //     remaining operation the CPU performs that this file cannot promise bit
 //     for bit is `std::sqrt`, which IEEE 754 mandates correctly rounded and
 //     Vulkan specifies only to <= 2.5 ulp. That is the global constraint's
@@ -52,6 +52,10 @@
 //                    gpu 3.761488438e+00
 //         device     Intel Iris Plus Graphics (integrated), Vulkan 1.3.215,
 //                    driver 31.0.101.2125, msvc-ninja-release
+//         and        NVIDIA GeForce RTX 3060 Ti, Vulkan 1.4.303, driver 572.83,
+//                    msvc-ninja-release: max |abs| 4.76837158e-07, max rel
+//                    1.06963546e-06, 19 of 64 elements differ (CORE-3 as
+//                    amended, 2026-10-05)
 //     11 of 64 rather than 64 of 64, at roughly 1 ulp: THAT IS WHAT A <= 2.5-ULP
 //     sqrt LICENCE LOOKS LIKE, not a systematically different algorithm. It is
 //     what makes banding this honest rather than resigned.
@@ -69,16 +73,18 @@
 //     first execution.
 //
 //     It remains a real allowance and NOT a claim that Vulkan's sqrt is
-//     correctly rounded. Tightening is REFUSED (R3) -- Vulkan does not
-//     guarantee a correctly-rounded sqrt, so a tightened implementation would
-//     be a claim the platform cannot keep. fp32_math.slang's deferral on this
-//     sqrt is deleted rather than reassigned, for the same reason.
+//     correctly rounded. A tighter implementation (an integer correctly
+//     rounded sqrt, as log32_div is for division) is allowed but not
+//     required: CORE-3 as amended by the user's ruling of 2026-10-05, under
+//     which CPU<->GPU results are banded everywhere (TD-14).
 //
 //     LIVE REPRODUCTION, kept alongside the declaration deliberately:
-//     tests/test_gpu_parity.cpp's GnssDrawsDivergeAcrossBackends_KNOWN_OPEN
-//     asserts the divergence IS present, so it goes RED the day anyone tightens
-//     this sqrt and demands its own retirement. A DECLARED BAND AND A LIVE
-//     REPRODUCTION ARE DIFFERENT INSTRUMENTS and this path carries both.
+//     tests/test_gpu_parity.cpp's GnssDrawsMatchTheCpuWithinTheCore3Band
+//     (once GnssDrawsDivergeAcrossBackends_KNOWN_OPEN, which asserted the
+//     divergence was present) holds the draws to bands::core3::kGaussianDraw
+//     over the whole ring, on every device of record (TD-14). A DECLARED BAND
+//     AND A LIVE CHECK OF IT ARE DIFFERENT INSTRUMENTS and this path carries
+//     both.
 //
 //     SCOPE, BY CALL AND NOT BY INCLUDE: rng_next_gauss reaches dryden.slang,
 //     sensor_gnss.slang and sensor_imu.slang. forces_drag.slang and

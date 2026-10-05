@@ -4,6 +4,13 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Banded CPU-GPU parity: any Vulkan 1.1 device is admitted (2026-10-05)
+
+- **The RTX 3060 Ti, and any device that cannot preserve fp32 denormals, now runs the Vulkan path** (`CORE-5`, the user's ruling of 2026-10-05). No kernel requests a denormal mode (`SPIR-V rule P3`), so each device runs them legally with its own default. Vulkan results are banded against the CPU (`TD-14`), not bit-identical; the CPU stays the reference for goldens and replays.
+- **`Simulation::vulkan_device_report()`** returns the device, driver and float controls a Vulkan run uses (`compute::DeviceReport`); `compute::describe()` gives one line. `unavailable` on the CPU backend.
+- **The one capability clause left is Vulkan 1.1**, because the kernels are SPIR-V 1.3. `vulkan_available()` and `VulkanContext::create()` refuse only that, by name.
+- **`fp32_math` no longer depends on a device's denormal mode**: its three subnormal paths are integer on both twins, so no CPU result moved.
+
 ### Module API, stage 3: fields and sample buffers (2026-10-03)
 
 - **Fields.** A module declares the fields it provides (`ModuleDesc::fields`): scalar, vec3, or a band array of 1 to 32 floats for the acoustic and RF fields to come. A pass reads or writes `field.<name>`. `compile_schedule` refuses:
