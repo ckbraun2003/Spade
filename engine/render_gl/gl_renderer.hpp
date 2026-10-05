@@ -68,6 +68,13 @@ using GlProcLoader = void* (*)(const char* name);
 
 class GlRenderer {
   public:
+    // The most SDF nodes one CSG subtree may have here. Each pixel's march
+    // evaluates every node at every step, so this bounds a frame's GPU time:
+    // 25 nodes cost 29.6 ms at 1920x1080 on an RTX 3060 Ti in the worst case
+    // measured, so 64 is about 76 ms there, and under Windows' 2 s timeout on
+    // a GPU ten times slower. The largest golden world has 13 nodes in all.
+    static constexpr uint32_t kMaxCsgSubtreeNodes = 64;
+
     // Requires a CURRENT GL context on the calling thread -- it queries the
     // version and compiles programs immediately, so a failure is reported here
     // rather than at the first frame.
