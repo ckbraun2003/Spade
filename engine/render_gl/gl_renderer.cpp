@@ -15,9 +15,9 @@
 #include <glad/glad.h>
 
 // ⚠ THE VENDORED GLAD IS GENERATED UP TO GL 4.1, AND SSBOs ARE 4.3. Every
-// FUNCTION this file calls is 4.1 or earlier and is present; the only thing
-// missing is the enum. Defined here behind an #ifndef, with the value from the
-// GL registry, which has never changed.
+// FUNCTION this file calls is 4.1 or earlier and is present, but one (below);
+// for SSBOs the only thing missing is the enum. Defined here behind an
+// #ifndef, with the value from the GL registry, which has never changed.
 //
 // ⭐ THIRD INSTANCE TODAY OF THE SAME SPECIES: WHAT A LOADER DECLARES IS A
 // PROPERTY OF HOW IT WAS GENERATED, NOT OF THE GL SPEC. ImGui's bundled loader
@@ -29,6 +29,15 @@
 #define GL_SHADER_STORAGE_BUFFER 0x90D2
 #endif
 
+// One 4.3 FUNCTION too, since GL shadows: glCopyImageSubData, which seeds a
+// frame's shadow map from the static one. Its type, from the registry's
+// signature, under a name of our own so it cannot clash with a later glad.
+// create() refuses a context below 4.3, so the entry point always exists.
+typedef void(APIENTRYP SpadePfnGlCopyImageSubData)(GLuint src, GLenum src_target, GLint src_level, GLint src_x,
+                                                   GLint src_y, GLint src_z, GLuint dst, GLenum dst_target,
+                                                   GLint dst_level, GLint dst_x, GLint dst_y, GLint dst_z,
+                                                   GLsizei width, GLsizei height, GLsizei depth);
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -36,6 +45,7 @@
 
 #include "core/error.hpp"
 #include "render/raster_cpu.hpp"  // overlay_geometry(), kOverlayDepthBias
+#include "render/shadow.hpp"      // kNoOccluder, kShadowDepthBias
 
 namespace spade::render_gl {
 namespace {
@@ -49,20 +59,28 @@ namespace {
 // ---------------------------------------------------------------------------
 #define SPADE_GL_FUNCTIONS(X) \
     X(PFNGLGETSTRINGPROC, GetString) \
+    X(PFNGLACTIVETEXTUREPROC, ActiveTexture) \
     X(PFNGLATTACHSHADERPROC, AttachShader) \
     X(PFNGLBINDBUFFERPROC, BindBuffer) \
     X(PFNGLBINDBUFFERBASEPROC, BindBufferBase) \
+    X(PFNGLBINDFRAMEBUFFERPROC, BindFramebuffer) \
+    X(PFNGLBINDTEXTUREPROC, BindTexture) \
     X(PFNGLBINDVERTEXARRAYPROC, BindVertexArray) \
+    X(PFNGLBLENDEQUATIONPROC, BlendEquation) \
     X(PFNGLBUFFERDATAPROC, BufferData) \
     X(PFNGLBUFFERSUBDATAPROC, BufferSubData) \
+    X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, CheckFramebufferStatus) \
     X(PFNGLCLEARPROC, Clear) \
     X(PFNGLCOMPILESHADERPROC, CompileShader) \
+    X(SpadePfnGlCopyImageSubData, CopyImageSubData) \
     X(PFNGLCREATEPROGRAMPROC, CreateProgram) \
     X(PFNGLCREATESHADERPROC, CreateShader) \
     X(PFNGLCULLFACEPROC, CullFace) \
     X(PFNGLDELETEBUFFERSPROC, DeleteBuffers) \
+    X(PFNGLDELETEFRAMEBUFFERSPROC, DeleteFramebuffers) \
     X(PFNGLDELETEPROGRAMPROC, DeleteProgram) \
     X(PFNGLDELETESHADERPROC, DeleteShader) \
+    X(PFNGLDELETETEXTURESPROC, DeleteTextures) \
     X(PFNGLDELETEVERTEXARRAYSPROC, DeleteVertexArrays) \
     X(PFNGLDEPTHFUNCPROC, DepthFunc) \
     X(PFNGLDEPTHMASKPROC, DepthMask) \
@@ -72,8 +90,11 @@ namespace {
     X(PFNGLDRAWELEMENTSINSTANCEDPROC, DrawElementsInstanced) \
     X(PFNGLENABLEPROC, Enable) \
     X(PFNGLENABLEVERTEXATTRIBARRAYPROC, EnableVertexAttribArray) \
+    X(PFNGLFRAMEBUFFERTEXTURE2DPROC, FramebufferTexture2D) \
     X(PFNGLFRONTFACEPROC, FrontFace) \
     X(PFNGLGENBUFFERSPROC, GenBuffers) \
+    X(PFNGLGENFRAMEBUFFERSPROC, GenFramebuffers) \
+    X(PFNGLGENTEXTURESPROC, GenTextures) \
     X(PFNGLGENVERTEXARRAYSPROC, GenVertexArrays) \
     X(PFNGLGETINTEGERVPROC, GetIntegerv) \
     X(PFNGLGETPROGRAMINFOLOGPROC, GetProgramInfoLog) \
@@ -84,6 +105,8 @@ namespace {
     X(PFNGLLINKPROGRAMPROC, LinkProgram) \
     X(PFNGLPOLYGONMODEPROC, PolygonMode) \
     X(PFNGLSHADERSOURCEPROC, ShaderSource) \
+    X(PFNGLTEXIMAGE2DPROC, TexImage2D) \
+    X(PFNGLTEXPARAMETERIPROC, TexParameteri) \
     X(PFNGLUNIFORM1FPROC, Uniform1f) \
     X(PFNGLUNIFORM1UIPROC, Uniform1ui) \
     X(PFNGLUNIFORM2FPROC, Uniform2f) \
@@ -136,12 +159,38 @@ template <class Fn>
 constexpr const char* kGlslVersion = "#version 430 core\n";
 
 // One GLSL port of render/scene.hpp's sky_gradient_color() and
-// horizon_blend(), shared by the background and the mesh programs.
+// horizon_blend(), and of render/shadow.cpp's sample_shadow(), shared by the
+// background and the mesh programs.
 constexpr const char* kCommonSrc = R"GLSL(
 uniform vec3 uSkyZenith;
 uniform vec3 uSkyHorizon;
 uniform float uHorizonStrength;  // 0 outside shaded mode, as raster_cpu passes it
 uniform float uHorizonOnset;
+
+// The sun's shadow map: the CPU's static map, or this frame's copy with the
+// dynamic casters added. Unit 0. uShadowEnabled is 0 unless shaded mode asks
+// for shadows and the scene has a map, as raster_cpu decides.
+layout(binding = 0) uniform sampler2D uShadowMap;
+uniform uint uShadowEnabled;
+uniform mat4 uLightViewProj;
+uniform uint uShadowSize;
+uniform float uNoOccluder;    // shadow.hpp's kNoOccluder
+uniform float uShadowBias;    // shadow.hpp's kShadowDepthBias
+
+// sample_shadow(): one texel, unfiltered. Lit outside the map's footprint
+// (SR-17 clause 6) and where no caster landed. 1 lit, 0 shadowed.
+float sample_shadow(vec3 world) {
+    if (uShadowEnabled == 0u) return 1.0;
+    vec4 p = uLightViewProj * vec4(world, 1.0);
+    if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0) return 1.0;
+    float size_f = float(uShadowSize);
+    int last = int(uShadowSize) - 1;
+    int tx = clamp(int((p.x * 0.5 + 0.5) * size_f), 0, last);
+    int ty = clamp(int((p.y * 0.5 + 0.5) * size_f), 0, last);
+    float occluder = texelFetch(uShadowMap, ivec2(tx, ty), 0).r;
+    if (occluder == uNoOccluder) return 1.0;
+    return (p.z < occluder - uShadowBias) ? 0.0 : 1.0;
+}
 
 vec3 sky_gradient_color(vec3 ray) {
     float len = sqrt(dot(ray, ray));
@@ -256,7 +305,9 @@ void main() {
         // render/scene.hpp's shade_vertex_color(). Negating it lit every
         // world-loaded scene from below on this path only.
         float ndl = max(dot(n, uSunDir), 0.0);
-        lit = base * (uAmbient + uSunColor * uSunIntensity * ndl);
+        // A shadowed pixel loses the sun term and keeps the ambient, as
+        // raster_cpu's apply_shadow() does. Unlit and emissive have no sun term.
+        lit = base * (uAmbient + uSunColor * uSunIntensity * ndl * sample_shadow(vWorld));
     }
     // SR-17a, per pixel along this pixel's own ray, as raster_cpu does it.
     vec3 eye_to_surface = vWorld - uCamPos;
@@ -278,7 +329,9 @@ void main() {
 // analytic ground, grid and horizon term in shaded mode only (SR-17, SR-22).
 // fp32, so it agrees with the fp64 CPU to a band, not to the bit.
 constexpr const char* kBackgroundFragmentSrc = R"GLSL(
-// 64 bytes. The colour is shaded once per plane on the host.
+// 80 bytes. The colour is shaded once per plane on the host: `color` is
+// shade_vertex_color()'s combined term and `sun` its sun term, which a
+// shadowed pixel loses.
 struct GroundPlaneGpu {
     vec3 normal;
     float offset;    // dot(p, normal) <= offset is solid
@@ -288,6 +341,8 @@ struct GroundPlaneGpu {
     float pad0;
     vec3 grid_v;
     float pad1;
+    vec3 sun;
+    float pad2;
 };
 layout(std430, binding = 3) readonly buffer GroundPlanes { GroundPlaneGpu uPlanes[]; };
 
@@ -348,7 +403,8 @@ void main() {
     if (best_t > 0.0) {
         vec3 hit = uCamPos + ray * best_t;
         float view_distance = sqrt(dot(ray, ray)) * best_t;
-        color = uPlanes[best].color;
+        // Shaded, then shadowed, then gridded, then blended: raster_cpu's order.
+        color = uPlanes[best].color - uPlanes[best].sun * (1.0 - sample_shadow(hit));
         if (uGridEnabled != 0u) {
             float cov = ground_grid_coverage(hit, uPlanes[best].grid_u, uPlanes[best].grid_v, view_distance);
             color = color + (uGridColor - color) * cov;
@@ -433,6 +489,36 @@ void main() {
 }
 )GLSL";
 
+// Dynamic shadow casters, drawn from the sun into this frame's copy of the
+// static map (render/shadow.cpp's rasterize_shadow_casters()). Each fragment
+// writes its light-clip z, and GL_MAX blending keeps the larger: the CPU's
+// "closer to the sun wins". Nothing is culled, and depth clamp stands in for
+// the CPU's rasterizer, which clips nothing in z.
+constexpr const char* kCasterVertexSrc = R"GLSL(
+layout(location = 0) in vec3 aPos;
+layout(std430, binding = 0) readonly buffer Transforms { mat4 uModel[]; };
+
+uniform uint uInstanceBase;
+uniform mat4 uLightViewProj;
+
+out float vLightZ;
+
+void main() {
+    vec4 p = uLightViewProj * (uModel[uInstanceBase + uint(gl_InstanceID)] * vec4(aPos, 1.0));
+    vLightZ = p.z;
+    gl_Position = p;
+}
+)GLSL";
+
+constexpr const char* kCasterFragmentSrc = R"GLSL(
+in float vLightZ;
+out vec4 fragColor;
+
+void main() {
+    fragColor = vec4(vLightZ, 0.0, 0.0, 1.0);
+}
+)GLSL";
+
 // 32 bytes, explicitly padded. See the shader comment above.
 struct GpuMaterial {
     glm::vec4 base_color{0.72f, 0.72f, 0.74f, 1.0f};
@@ -441,7 +527,7 @@ struct GpuMaterial {
 };
 static_assert(sizeof(GpuMaterial) == 32, "std430 layout must match the shader's GpuMaterial");
 
-// 64 bytes: std430 packs each vec3 with the scalar after it into 16.
+// 80 bytes: std430 packs each vec3 with the scalar after it into 16.
 struct GpuGroundPlane {
     glm::vec3 normal{0.0f};
     float offset = 0.0f;
@@ -451,8 +537,10 @@ struct GpuGroundPlane {
     float pad0 = 0.0f;
     glm::vec3 grid_v{0.0f};
     float pad1 = 0.0f;
+    glm::vec3 sun{0.0f};  // the sun term a shadowed ground pixel loses
+    float pad2 = 0.0f;
 };
-static_assert(sizeof(GpuGroundPlane) == 64, "std430 layout must match the shader's GroundPlaneGpu");
+static_assert(sizeof(GpuGroundPlane) == 80, "std430 layout must match the shader's GroundPlaneGpu");
 
 struct GpuMesh {
     GLuint vao = 0, vbo_pos = 0, vbo_nrm = 0, ebo = 0;
@@ -568,12 +656,23 @@ struct GlRenderer::Impl {
     size_t overlay_capacity = 0;  // in floats
     std::vector<float> overlay_vertices;
 
+    // The sun's shadow map (render/shadow.hpp): the CPU's static map,
+    // uploaded with the scene, and a working copy that a frame with dynamic
+    // casters draws them into, through `shadow_fbo`.
+    GLuint shadow_static_tex = 0;
+    GLuint shadow_work_tex = 0;
+    GLuint shadow_fbo = 0;
+    uint32_t shadow_size = 0;  // 0: the scene has no map, so nothing is shadowed
+    glm::mat4 shadow_light_view_proj{1.0f};
+    GLuint caster_program = 0;
+
     // Scratch, reused every frame so a frame allocates nothing steady-state.
     std::vector<glm::mat4> instance_transforms;
     std::vector<uint32_t> instance_overrides;
     std::vector<float> instance_speeds;
-    std::vector<uint32_t> batch_base;   // per mesh: where its instances start
-    std::vector<uint32_t> batch_count;  // per mesh: how many
+    std::vector<uint32_t> batch_base;    // per mesh: where its instances start
+    std::vector<uint32_t> batch_count;   // per mesh: how many
+    std::vector<uint32_t> batch_static;  // per mesh: how many of those are statics, which come first
     std::vector<GpuMaterial> gpu_materials;
     std::vector<GpuGroundPlane> gpu_planes;
     std::vector<glm::vec4> field_colours;
@@ -604,6 +703,15 @@ struct GlRenderer::Impl {
         GLint view = -1, proj = -1, depth_bias = -1;
     } overlay;
 
+    struct CasterUniforms {
+        GLint instance_base = -1, light_view_proj = -1;
+    } caster;
+
+    // kCommonSrc's shadow lookup, once per program that includes it.
+    struct ShadowUniforms {
+        GLint enabled = -1, light_view_proj = -1, size = -1, no_occluder = -1, bias = -1;
+    } mesh_shadow, bg_shadow;
+
     ~Impl() {
         for (GpuMesh& m : meshes) {
             if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
@@ -611,6 +719,10 @@ struct GlRenderer::Impl {
             if (m.vbo_pos != 0) gl.DeleteBuffers(1, &m.vbo_pos);
             if (m.vao != 0) gl.DeleteVertexArrays(1, &m.vao);
         }
+        if (shadow_fbo != 0) gl.DeleteFramebuffers(1, &shadow_fbo);
+        if (shadow_work_tex != 0) gl.DeleteTextures(1, &shadow_work_tex);
+        if (shadow_static_tex != 0) gl.DeleteTextures(1, &shadow_static_tex);
+        if (caster_program != 0) gl.DeleteProgram(caster_program);
         if (overlay_vbo != 0) gl.DeleteBuffers(1, &overlay_vbo);
         if (overlay_vao != 0) gl.DeleteVertexArrays(1, &overlay_vao);
         if (overlay_program != 0) gl.DeleteProgram(overlay_program);
@@ -680,6 +792,10 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
         link(gl, {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, "overlay");
     if (!overlay_program) return std::unexpected(overlay_program.error());
     impl->overlay_program = *overlay_program;
+    const Result<GLuint> caster_program =
+        link(gl, {kGlslVersion, kCasterVertexSrc}, {kGlslVersion, kCasterFragmentSrc}, "shadow caster");
+    if (!caster_program) return std::unexpected(caster_program.error());
+    impl->caster_program = *caster_program;
 
     const GLuint p = impl->program;
     impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
@@ -754,6 +870,21 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     gl.VertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kOverlayStride, reinterpret_cast<const void*>(3 * sizeof(float)));
     gl.BindVertexArray(0);
     gl.BindBuffer(GL_ARRAY_BUFFER, 0);
+
+    impl->caster.instance_base = gl.GetUniformLocation(impl->caster_program, "uInstanceBase");
+    impl->caster.light_view_proj = gl.GetUniformLocation(impl->caster_program, "uLightViewProj");
+    const auto shadow_uniforms = [&gl](GLuint program, Impl::ShadowUniforms& u) {
+        u.enabled = gl.GetUniformLocation(program, "uShadowEnabled");
+        u.light_view_proj = gl.GetUniformLocation(program, "uLightViewProj");
+        u.size = gl.GetUniformLocation(program, "uShadowSize");
+        u.no_occluder = gl.GetUniformLocation(program, "uNoOccluder");
+        u.bias = gl.GetUniformLocation(program, "uShadowBias");
+    };
+    shadow_uniforms(impl->program, impl->mesh_shadow);
+    shadow_uniforms(impl->background_program, impl->bg_shadow);
+    gl.GenTextures(1, &impl->shadow_static_tex);
+    gl.GenTextures(1, &impl->shadow_work_tex);
+    gl.GenFramebuffers(1, &impl->shadow_fbo);
 
     return std::unique_ptr<GlRenderer>(new GlRenderer(std::move(impl)));
 }
@@ -847,6 +978,56 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     s.materials_capacity = s.gpu_materials.size();
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    // The sun's shadow map, as the CPU built it: static shadows then come
+    // from the same data on both paths. The working copy is attached to
+    // `shadow_fbo` here, once, for the frames that add dynamic casters.
+    s.shadow_size = 0;
+    if (scene.static_shadow.has_value()) {
+        // L6: a map whose depth array is not size x size cannot be sampled
+        // (the CPU would read past it). Refused, never drawn unshadowed in
+        // silence. A size-0 map is a valid empty one: the CPU leaves every
+        // pixel lit, and so does GL.
+        const render::ShadowMap& checked = *scene.static_shadow;
+        if (checked.depth.size() != static_cast<size_t>(checked.size) * checked.size) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "GlRenderer::upload_scene: the static shadow map has " +
+                                             std::to_string(checked.depth.size()) + " texels for size " +
+                                             std::to_string(checked.size) + ", not size x size"});
+        }
+    }
+    if (scene.static_shadow.has_value() && scene.static_shadow->size > 0u) {
+        const render::ShadowMap& map = *scene.static_shadow;
+        const auto size = static_cast<GLsizei>(map.size);
+        for (const GLuint tex : {s.shadow_static_tex, s.shadow_work_tex}) {
+            gl.BindTexture(GL_TEXTURE_2D, tex);
+            gl.TexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size, size, 0, GL_RED, GL_FLOAT,
+                          tex == s.shadow_static_tex ? map.depth.data() : nullptr);
+            // One level, so the minifying filter must not ask for mipmaps.
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        gl.BindTexture(GL_TEXTURE_2D, 0);
+
+        GLint prev_draw = 0, prev_read = 0;
+        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, s.shadow_fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.shadow_work_tex, 0);
+        const GLenum status = gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
+        // L6: refused, not degraded. Dynamic shadows need to draw into R32F.
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "GlRenderer::upload_scene: this driver cannot render to an R32F texture, "
+                                         "which the shadows of dynamic bodies need"});
+        }
+        s.shadow_size = map.size;
+        s.shadow_light_view_proj = map.light_view_proj;
+    }
+
     return {};
 }
 
@@ -888,6 +1069,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     for (const render::DrawItem& d : scene.statics) {
         if (d.mesh_index < mesh_count) ++s.batch_count[d.mesh_index];
     }
+    s.batch_static.assign(s.batch_count.begin(), s.batch_count.end());
     for (const render::DrawItem& d : scene.dynamics) {
         if (d.mesh_index < mesh_count) ++s.batch_count[d.mesh_index];
     }
@@ -924,7 +1106,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             g.normal = gp.normal;
             g.offset = gp.offset;
             const uint32_t mi = gp.material < scene.materials.size() ? gp.material : 0u;
-            g.color = render::shade_vertex_color(scene.materials[mi], scene.lighting, gp.normal).combined;
+            const render::ShadedColor shade = render::shade_vertex_color(scene.materials[mi], scene.lighting, gp.normal);
+            g.color = shade.combined;
+            g.sun = shade.sun;
             const double n_dot_cam = static_cast<double>(gp.normal.x) * camera.position.x +
                                      static_cast<double>(gp.normal.y) * camera.position.y +
                                      static_cast<double>(gp.normal.z) * camera.position.z;
@@ -966,10 +1150,69 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     const float horizon_strength = shaded ? options.horizon_blend_strength : 0.0f;
     const render::Lighting& light = scene.lighting;
 
+    // --- shadows -----------------------------------------------------------
+    // As raster_cpu decides: shaded mode, shadows asked for, and a map. With
+    // dynamic casters, copy the static map and draw them into the copy, so
+    // the static casters' texels stay the CPU's own.
+    const bool shadows = options.shadows && shaded && s.shadow_size > 0u;
+    GLuint shadow_tex = s.shadow_static_tex;
+    uint32_t dynamic_instances = 0;
+    for (size_t i = 0; i < mesh_count; ++i) {
+        dynamic_instances += s.batch_count[i] - s.batch_static[i];
+    }
+    if (shadows && dynamic_instances > 0u) {
+        GLint prev_draw = 0, prev_read = 0;
+        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+        const auto size = static_cast<GLsizei>(s.shadow_size);
+        gl.CopyImageSubData(s.shadow_static_tex, GL_TEXTURE_2D, 0, 0, 0, 0, s.shadow_work_tex, GL_TEXTURE_2D, 0, 0, 0,
+                            0, size, size, 1);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, s.shadow_fbo);
+        gl.Viewport(0, 0, size, size);
+        gl.Disable(GL_DEPTH_TEST);
+        gl.DepthMask(GL_FALSE);
+        gl.Disable(GL_CULL_FACE);
+        gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        gl.Enable(GL_BLEND);
+        gl.BlendEquation(GL_MAX);
+        gl.Enable(GL_DEPTH_CLAMP);
+        gl.UseProgram(s.caster_program);
+        gl.UniformMatrix4fv(s.caster.light_view_proj, 1, GL_FALSE, glm::value_ptr(s.shadow_light_view_proj));
+        for (size_t i = 0; i < mesh_count; ++i) {
+            const uint32_t dynamic = s.batch_count[i] - s.batch_static[i];
+            if (dynamic == 0u || s.meshes[i].index_count == 0u) continue;
+            gl.BindVertexArray(s.meshes[i].vao);
+            gl.Uniform1ui(s.caster.instance_base, s.batch_base[i] + s.batch_static[i]);
+            // Every triangle casts, whatever its submesh's material.
+            gl.DrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(s.meshes[i].index_count), GL_UNSIGNED_INT,
+                                     nullptr, static_cast<GLsizei>(dynamic));
+        }
+        gl.Disable(GL_DEPTH_CLAMP);
+        gl.BlendEquation(GL_FUNC_ADD);
+        gl.Disable(GL_BLEND);
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
+        shadow_tex = s.shadow_work_tex;
+    }
+    gl.ActiveTexture(GL_TEXTURE0);
+    gl.BindTexture(GL_TEXTURE_2D, shadows ? shadow_tex : 0u);
+    const auto set_shadow_uniforms = [&](const Impl::ShadowUniforms& u) {
+        gl.Uniform1ui(u.enabled, shadows ? 1u : 0u);
+        gl.UniformMatrix4fv(u.light_view_proj, 1, GL_FALSE, glm::value_ptr(s.shadow_light_view_proj));
+        gl.Uniform1ui(u.size, s.shadow_size);
+        gl.Uniform1f(u.no_occluder, render::kNoOccluder);
+        gl.Uniform1f(u.bias, render::kShadowDepthBias);
+    };
+
     gl.Viewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
     gl.DepthMask(GL_TRUE);
     gl.Clear(GL_DEPTH_BUFFER_BIT);
     gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    // Every pass below writes without blending and clips in depth. Set here,
+    // not assumed: the caller's state, or a dynamic-caster pass, may differ.
+    gl.Disable(GL_BLEND);
+    gl.Disable(GL_DEPTH_CLAMP);
 
     // --- background --------------------------------------------------------
     // Every pixel, before the meshes and with no depth: raster_cpu's
@@ -1006,6 +1249,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform3fv(bg.sky_horizon, 1, glm::value_ptr(light.sky_horizon));
         gl.Uniform1f(bg.horizon_strength, horizon_strength);
         gl.Uniform1f(bg.horizon_onset, options.horizon_blend_onset);
+        set_shadow_uniforms(s.bg_shadow);
         gl.BindVertexArray(s.empty_vao);
         gl.DrawArrays(GL_TRIANGLES, 0, 3);
         gl.DepthMask(GL_TRUE);
@@ -1037,6 +1281,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
     gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
     gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
+    set_shadow_uniforms(s.mesh_shadow);
     gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
     gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
     gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
@@ -1164,12 +1409,8 @@ std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions
     if (options.mode == render::DrawMode::raymarch) {
         return {"mode"};
     }
-    std::vector<std::string_view> names;
-    // raster_cpu draws shadows in shaded mode only, so only there is one missing.
-    if (options.shadows && options.mode == render::DrawMode::shaded) {
-        names.emplace_back("shadows");
-    }
-    return names;
+    // GL draws everything else raster_cpu draws: shadows and overlays too.
+    return {};
 }
 
 uint32_t GlRenderer::last_draw_calls() const noexcept { return impl_->last_draw_calls; }

@@ -82,9 +82,13 @@ class GlRenderer {
     GlRenderer(const GlRenderer&) = delete;
     GlRenderer& operator=(const GlRenderer&) = delete;
 
-    // Uploads geometry for every mesh in the scene. Call when the MESH SET
-    // changes -- at scene load -- and not per frame. Idempotent: calling it
-    // again re-uploads, which is what a changed mesh set needs.
+    // Uploads geometry for every mesh in the scene, and the scene's static
+    // shadow map as the CPU built it. Call when the MESH SET changes -- at
+    // scene load -- and not per frame. Idempotent: calling it again
+    // re-uploads, which is what a changed mesh set needs. Refused with
+    // Code::invalid_argument for a static shadow map whose depth array is
+    // not size x size, and with Code::unavailable when the driver cannot
+    // render to the R32F texture that dynamic bodies' shadows are drawn into.
     [[nodiscard]] Result<void> upload_scene(const render::RenderScene& scene);
 
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
@@ -93,7 +97,9 @@ class GlRenderer {
     // Honours RenderOptions as raster_cpu does, except what unhonoured()
     // names. A background pass draws the sky in every mode. In shaded mode it
     // also draws the analytic ground, the grid and the atmospheric term
-    // (SR-17, SR-17a, SR-22). Meshes draw shaded, wireframe or velocity.
+    // (SR-17, SR-17a, SR-22), and the sun's shadows on meshes and ground,
+    // from the scene's static map (uploaded by upload_scene()) plus this
+    // frame's dynamic casters. Meshes draw shaded, wireframe or velocity.
     // Field layers draw filled in every mode, as raster_cpu draws them, and so
     // do the overlays, from raster_cpu's own lists (render::overlay_geometry()).
     // Raymarch is refused with Code::unavailable: it is a CPU technique. So
@@ -101,15 +107,17 @@ class GlRenderer {
     //
     // Renders into the CURRENTLY BOUND framebuffer at the given size and
     // covers every pixel. It does not present: that belongs to whoever owns
-    // the window. It changes depth, cull and polygon-mode state, so a caller
-    // drawing its own geometry afterwards sets the state it needs.
+    // the window. It changes depth, cull, polygon-mode, blend and texture
+    // unit 0 state, so a caller drawing its own geometry afterwards sets the
+    // state it needs. A frame with dynamic casters draws them into its own
+    // framebuffer first, and rebinds the caller's after.
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);
 
     // Names the options in `options` that draw() will not draw, so the gap is
     // announced, not silent (L6). Each name is the RenderOptions field it
-    // concerns: "shadows", or "mode" for a mode draw() refuses.
+    // concerns. Today only "mode", for a mode draw() refuses.
     // A caller shows the list, or refuses GL when it needs one of them.
     // Needs no GL context.
     [[nodiscard]] static std::vector<std::string_view> unhonoured(const render::RenderOptions& options);

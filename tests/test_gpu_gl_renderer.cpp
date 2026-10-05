@@ -42,7 +42,10 @@
 #include "core/error.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
+#include "render/shadow.hpp"
 #include "render/target.hpp"
+#include "render/tessellate.hpp"
+#include "world/sdf.hpp"
 #include "render_gl/gl_renderer.hpp"
 
 namespace {
@@ -116,9 +119,9 @@ void record_glfw_error(int code, const char* description) {
     return camera;
 }
 
-// The fixture's default options, and a GL-to-CPU comparison's: shadows off,
-// which GL does not draw yet, and overlays off, whose lines would cross a
-// frame meant to show only the scene. Overlay cases turn them on.
+// The fixture's default options, and a GL-to-CPU comparison's: shadows and
+// overlays off, so a case sees only what it is about. The shadow and overlay
+// cases turn theirs on.
 [[nodiscard]] RenderOptions comparable_options() {
     RenderOptions options;
     options.shadows = false;
@@ -620,6 +623,165 @@ TEST_F(GpuGlRenderer, OverlaysLoseToNearerGeometry) {
     EXPECT_GT(grid_outside, 0u) << "the grid must show around the quad";
 }
 
+// A lambert ground (the analytic plane, plus a tessellated plane mesh within
+// +-5 m, as scene_from_world() gives a plane) under a box at y = 2.5, with
+// the default sun. The box is static, or dynamic: then the static shadow map
+// holds only the ground, and each frame adds the box (render/shadow.hpp).
+[[nodiscard]] RenderScene make_shadow_scene(bool dynamic_caster) {
+    const spade::render::Aabb tess_bounds{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    const auto mesh = [&](spade::SdfPrim kind, glm::vec4 params) {
+        auto made = spade::render::tessellate_primitive(kind, params, tess_bounds, spade::render::kTessellationDefaults);
+        if (!made) {
+            ADD_FAILURE() << made.error().context;
+            return MeshData{};
+        }
+        return std::move(*made);
+    };
+    RenderScene scene;
+    scene.meshes.push_back(mesh(spade::SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f)));
+    scene.meshes.push_back(mesh(spade::SdfPrim::box, glm::vec4(0.8f, 0.8f, 0.8f, 0.0f)));
+    scene.materials = {Material{.base_color = glm::vec4(0.55f, 0.5f, 0.45f, 1.0f)},
+                       Material{.base_color = glm::vec4(0.75f, 0.3f, 0.25f, 1.0f)}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    const DrawItem caster{.mesh_index = 1,
+                          .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.5f, 0.0f)),
+                          .material_override = 1};
+    (dynamic_caster ? scene.dynamics : scene.statics).push_back(caster);
+    scene.ground_planes = {GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0}};
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f, -1.0f, -5.0f), .max = glm::vec3(5.0f, 4.0f, 5.0f)};
+    auto map = spade::render::build_static_shadow_map(scene);
+    if (!map) {
+        ADD_FAILURE() << map.error().context;
+        return scene;
+    }
+    scene.static_shadow = std::move(*map);
+    return scene;
+}
+
+// Pitched down at the box's shadow (the default sun casts it toward -x, -z):
+// the box, its shadow, and ground past the shadow map's footprint near the
+// top of the frame, which stays lit (SR-17 clause 6).
+[[nodiscard]] Camera camera_over_shadow() {
+    Camera camera;
+    camera.position = glm::vec3(-1.0f, 4.5f, 3.0f);
+    camera.orientation = glm::angleAxis(glm::radians(-40.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    return camera;
+}
+
+// Shadowed pixels are those a frame changes when shadows turn on. A miss is
+// a shadowed pixel on one path with no shadowed pixel within 1 px on the
+// other: a texel edge can land a pixel apart, since GL rasterizes casters by
+// its own rules. Inside the shadow (3x3 shadowed on both paths) the colours
+// are compared as the background band compares them.
+struct ShadowMatch {
+    size_t cpu_shadowed = 0, gl_shadowed = 0;
+    size_t cpu_misses = 0, gl_misses = 0;
+    size_t interior = 0;
+    int max_interior = 0;
+};
+
+[[nodiscard]] ShadowMatch match_shadows(const std::vector<uint8_t>& cpu_on, const std::vector<uint8_t>& cpu_off,
+                                        const std::vector<uint8_t>& gl_on, const std::vector<uint8_t>& gl_off) {
+    ShadowMatch m;
+    std::vector<uint8_t> cpu_mask(kPixels), gl_mask(kPixels);
+    for (size_t p = 0; p < kPixels; ++p) {
+        cpu_mask[p] = static_cast<uint8_t>(same_pixel(cpu_on, cpu_off, p) ? 0 : 1);
+        gl_mask[p] = static_cast<uint8_t>(same_pixel(gl_on, gl_off, p) ? 0 : 1);
+        m.cpu_shadowed += cpu_mask[p];
+        m.gl_shadowed += gl_mask[p];
+    }
+    const auto count_round = [](const std::vector<uint8_t>& mask, int x, int y) {
+        int n = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int nx = std::clamp(x + dx, 0, kWidth - 1), ny = std::clamp(y + dy, 0, kHeight - 1);
+                n += mask[static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx)];
+            }
+        }
+        return n;
+    };
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+            if (cpu_mask[p] != 0u && count_round(gl_mask, x, y) == 0) ++m.cpu_misses;
+            if (gl_mask[p] != 0u && count_round(cpu_mask, x, y) == 0) ++m.gl_misses;
+            if (count_round(cpu_mask, x, y) == 9 && count_round(gl_mask, x, y) == 9) {
+                ++m.interior;
+                for (size_t ch = 0; ch < 3u; ++ch) {
+                    m.max_interior = std::max(
+                        m.max_interior, std::abs(static_cast<int>(gl_on[p * 4u + ch]) - static_cast<int>(cpu_on[p * 4u + ch])));
+                }
+            }
+        }
+    }
+    return m;
+}
+
+// GL samples the CPU's own static shadow map, uploaded as a texture, with a
+// port of sample_shadow(). Pinned like the other GL bands.
+TEST_F(GpuGlRenderer, StaticShadowsMatchTheCpuWithinTheirBand) {
+    // Measured 2026-10-05 on rendering/gl-shadows, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 776 shadowed pixels
+    // on each path, 0 misses either way, and 0 levels over the 648 interior
+    // ones. The map is the CPU's own data. Pinned at the measurement; another
+    // device may differ, so re-measure there before widening (03-verification).
+    constexpr size_t kBandMisses = 0;
+    constexpr int kBandInterior = 0;
+
+    const RenderScene scene = make_shadow_scene(/*dynamic_caster=*/false);
+    RenderOptions on = comparable_options();
+    on.shadows = true;
+    const RenderOptions off = comparable_options();
+    const Camera camera = camera_over_shadow();
+    const ShadowMatch m = match_shadows(cpu_rgba(scene, camera, on), cpu_rgba(scene, camera, off),
+                                        draw_and_read(scene, on, camera), draw_and_read(scene, off, camera));
+    ASSERT_GT(m.cpu_shadowed, kPixels / 40u) << "the CPU frame must hold a shadow";
+    RecordProperty("cpu_shadowed", static_cast<int>(m.cpu_shadowed));
+    RecordProperty("gl_shadowed", static_cast<int>(m.gl_shadowed));
+    RecordProperty("max_interior", m.max_interior);
+    RecordProperty("interior", static_cast<int>(m.interior));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of " << m.cpu_shadowed
+                                         << " CPU shadow pixels have no GL shadow within 1 px, on " << device;
+    EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of " << m.gl_shadowed
+                                        << " GL shadow pixels have no CPU shadow within 1 px, on " << device;
+    EXPECT_LE(m.max_interior, kBandInterior) << "inside the shadow (" << m.interior
+                                             << " pixels) GL differs from the CPU by up to " << m.max_interior
+                                             << " levels, on " << device;
+}
+
+// A dynamic caster: GL copies the static map and rasterizes the box into the
+// copy, keeping the larger light-space z, as the CPU does each frame.
+TEST_F(GpuGlRenderer, DynamicCasterShadowsMatchTheCpuWithinTheirBand) {
+    // Measured 2026-10-05 as above, same device: 776 shadowed pixels on each
+    // path, 0 misses either way, 0 levels over 648 interior pixels. GL's own
+    // caster texels land where the CPU's do at this map size. Pinned at the
+    // measurement.
+    constexpr size_t kBandMisses = 0;
+    constexpr int kBandInterior = 0;
+
+    const RenderScene scene = make_shadow_scene(/*dynamic_caster=*/true);
+    RenderOptions on = comparable_options();
+    on.shadows = true;
+    const RenderOptions off = comparable_options();
+    const Camera camera = camera_over_shadow();
+    const ShadowMatch m = match_shadows(cpu_rgba(scene, camera, on), cpu_rgba(scene, camera, off),
+                                        draw_and_read(scene, on, camera), draw_and_read(scene, off, camera));
+    ASSERT_GT(m.cpu_shadowed, kPixels / 40u) << "the CPU frame must hold the dynamic box's shadow";
+    RecordProperty("cpu_shadowed", static_cast<int>(m.cpu_shadowed));
+    RecordProperty("gl_shadowed", static_cast<int>(m.gl_shadowed));
+    RecordProperty("max_interior", m.max_interior);
+    RecordProperty("interior", static_cast<int>(m.interior));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of " << m.cpu_shadowed
+                                         << " CPU shadow pixels have no GL shadow within 1 px, on " << device;
+    EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of " << m.gl_shadowed
+                                        << " GL shadow pixels have no CPU shadow within 1 px, on " << device;
+    EXPECT_LE(m.max_interior, kBandInterior) << "inside the shadow (" << m.interior
+                                             << " pixels) GL differs from the CPU by up to " << m.max_interior
+                                             << " levels, on " << device;
+}
+
 // SR-17a on mesh fragments: every shaded surface blends toward the sky by
 // view distance, and at strength 0 the term is exact.
 TEST_F(GpuGlRenderer, AtmosphericTermBlendsMeshPixelsAndIsExactAtZero) {
@@ -816,6 +978,39 @@ TEST_F(GpuGlRenderer, RefusesRaymarch) {
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
+// L6: a static shadow map whose depth array is not size x size cannot be
+// sampled (the CPU would read past it), so upload_scene() refuses it rather
+// than drawing the scene unshadowed in silence.
+TEST_F(GpuGlRenderer, RefusesAMalformedShadowMap) {
+    RenderScene scene = make_scene(make_single_triangle(false));
+    spade::render::ShadowMap map;
+    map.size = 4;
+    map.depth.assign(3, spade::render::kNoOccluder);  // 16 texels needed
+    scene.static_shadow = map;
+    const spade::Result<void> up = renderer_->upload_scene(scene);
+    ASSERT_FALSE(up.has_value()) << "a 3-texel map for a 4 x 4 size must be refused";
+    EXPECT_EQ(up.error().code, spade::Code::invalid_argument);
+}
+
+// draw() sets every state it depends on: blending and depth clamp left on by
+// the caller (or by a GL that does not reset them) change nothing.
+TEST_F(GpuGlRenderer, TheCallersBlendAndDepthClampStateDoNotReachTheFrame) {
+    const RenderScene scene = make_ground_scene();
+    RenderOptions options = comparable_options();
+    options.overlays = true;
+    const std::vector<uint8_t> clean = draw_and_read(scene, options, camera_over_ground());
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ZERO, GL_ZERO);  // would turn every fragment black
+    glEnable(GL_DEPTH_CLAMP);
+    const std::vector<uint8_t> dirty = draw_and_read(scene, options, camera_over_ground());
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ZERO);
+    glDisable(GL_DEPTH_CLAMP);
+    ASSERT_EQ(dirty.size(), clean.size());
+    EXPECT_EQ(count_differing(clean, dirty), 0u) << "the caller's blend or depth-clamp state reached the frame";
+}
+
 // L6: what GL does not draw is announced by name, so a caller can show it or
 // refuse GL. Host-only: no context needed, so this suite has no gpu label.
 // A loader that finds nothing is refused with unavailable, naming the first
@@ -833,8 +1028,7 @@ TEST(GlRendererCreate, ANullLoaderIsRefusedBeforeAnyGlCall) {
 
 TEST(GlRendererOptions, UnhonouredNamesWhatGlDoesNotDraw) {
     using Names = std::vector<std::string_view>;
-    EXPECT_EQ(GlRenderer::unhonoured(RenderOptions{}), (Names{"shadows"}))
-        << "the defaults ask for shadows, which GL does not draw yet; it draws the overlays";
+    EXPECT_EQ(GlRenderer::unhonoured(RenderOptions{}), Names{}) << "GL draws the defaults' shadows and overlays";
 
     RenderOptions overlays_only = comparable_options();
     overlays_only.overlays = true;
