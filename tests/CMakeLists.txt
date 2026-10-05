@@ -406,6 +406,10 @@ target_compile_definitions(spade_tests PRIVATE
 # spade_tests only, so a default build's targets are untouched.
 if(SPADE_MEASURE_UNPINNED_DENORMS)
     target_compile_definitions(spade_tests PRIVATE SPADE_MEASURE_UNPINNED_DENORMS=1)
+    # M1's probe (GpuDenormProbe): its kernel exists only in this build.
+    if(SPADE_VULKAN)
+        target_sources(spade_tests PRIVATE test_gpu_denorm_probe.cpp)
+    endif()
 endif()
 
 include(GoogleTest)

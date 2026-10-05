@@ -67,6 +67,9 @@
 #include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+#include "denorm_probe.spv.gen.hpp"  // M1's probe, built only in the measurement tree
+#endif
 #include "grid_build.spv.gen.hpp"
 #include "grid_sort.spv.gen.hpp"
 #include "integrate.spv.gen.hpp"
@@ -538,6 +541,12 @@ const SpirvModule kSpirvModules[] = {
     //                      It reaches no sqrt and no OpFDiv.
     {gen::kSpvVariants_field_environment, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
     {gen::kSpvVariants_field_dryden, spade::testing::SpirvProfile::parity},
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+    // M1's probe: parity, like the physics kernels whose ops it measures. The
+    // profile's NoContraction check is what lets the probe tell a driver that
+    // fuses a mul + add from a module that asked for it.
+    {gen::kSpvVariants_denorm_probe, spade::testing::SpirvProfile::parity},
+#endif
 };
 
 // Rule P3's expectation for THIS build. The measurement build
@@ -947,7 +956,11 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
     // (sensor_gnss joined the schedule); 14 with the two field-sample kernels
     // (module-API stage 3).
     constexpr std::size_t kScheduleKernels = 14;
+#if defined(SPADE_MEASURE_UNPINNED_DENORMS)
+    constexpr std::size_t kSingleVariantKernels = 2;  // fp32_math_probe, and M1's denorm_probe
+#else
     constexpr std::size_t kSingleVariantKernels = 1;  // fp32_math_probe
+#endif
 
     std::size_t scanned = 0;
     std::size_t multi_variant_kernels = 0;
