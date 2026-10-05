@@ -182,7 +182,7 @@ struct CommittedScene {
 // Every committed scene file: assets/scenes/ and tests/golden/scenes/.
 [[nodiscard]] inline std::vector<CommittedScene> committed_scene_files() {
     std::vector<CommittedScene> out;
-    for (const std::filesystem::path root : {std::filesystem::path(SPADE_ASSETS_DIR),
+    for (const std::filesystem::path& root : {std::filesystem::path(SPADE_ASSETS_DIR),
                                              std::filesystem::path(SPADE_GOLDEN_DIR)}) {
         for (const auto& entry : std::filesystem::directory_iterator(root / "scenes")) {
             const std::string name = entry.path().filename().string();
