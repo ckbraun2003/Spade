@@ -1609,8 +1609,12 @@ TEST_F(GpuParityTest, GnssTumbleAtTenTimesItsHorizonIsReportedNotBanded) {
     report->print("gnss_tumble at 10x its horizon (4000 steps x 4 substeps, 16 s), REPORT ONLY");
     for (const spade::testing::QuantityReport& q : report->quantities) {
         EXPECT_FALSE(q.nan_seen) << q.quantity << ": non-finite at 10x the horizon";
-        if (q.kind_is_quaternion) EXPECT_LT(q.max_unit_norm_error, 1.0e-5f) << q.quantity;
-        if (q.kind_is_bits) EXPECT_TRUE(q.within_band()) << q.quantity << ": integer state diverged";
+        if (q.kind_is_quaternion) {
+            EXPECT_LT(q.max_unit_norm_error, 1.0e-5f) << q.quantity;
+        }
+        if (q.kind_is_bits) {
+            EXPECT_TRUE(q.within_band()) << q.quantity << ": integer state diverged";
+        }
     }
 }
 
