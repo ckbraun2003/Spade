@@ -186,6 +186,13 @@ template <class Row>
 // refused here, before anything is registered, naming the array. (Where it sits
 // in the walk is compile_schedule's: only the legacy marker registers before
 // replay_config, and only the legacy arrays carry it.)
+//
+// THE BUILT-IN STREAMS (L6). A streamed built-in array (dryden, imu_sensors,
+// gnss_sensors) must also keep its stream: declared on that array under the
+// standard set's tag (compile_schedule already requires a reseed function).
+// One whose module dropped it, or retagged it, would hold noise reseed() never
+// reaches -- silently -- so it is refused too, naming the module, the array and
+// the tag.
 [[nodiscard]] Result<void> check_builtin_arrays(const modules::CompiledSchedule& schedule) {
     for (const modules::ModuleDesc& standard : modules::standard_modules()) {
         for (const modules::ArrayDecl& want : standard.state) {
@@ -208,6 +215,20 @@ template <class Row>
                     "; the engine's is " +
                     describe_array(want.elem_size, want.extent, want.owner, want.depth, want.spawn_size)));
             }
+        }
+    }
+    for (const modules::ModuleDesc& standard : modules::standard_modules()) {
+        for (const modules::StreamDecl& want : standard.streams) {
+            const bool kept = std::ranges::any_of(schedule.streams, [&](const modules::CompiledStream& s) {
+                return s.tag == want.tag && s.reseed != nullptr && schedule.arrays[s.array].name == want.array;
+            });
+            if (kept) continue;
+            // The loop above found every built-in array, so `have` is real.
+            const auto have = std::ranges::find(schedule.arrays, want.array, &modules::CompiledArray::name);
+            return std::unexpected(invalid(
+                "module set: the built-in array '" + std::string(want.array) + "' (module '" + have->module +
+                "') has no stream declared under the tag '" + std::string(want.tag) +
+                "'; its rows hold noise that reseed() would never re-derive, so a set must keep the stream"));
         }
     }
     return {};
