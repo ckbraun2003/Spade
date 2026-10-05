@@ -193,6 +193,19 @@ struct ImuMountDesc {
 // command Simulation::set_rotor_commands() takes at index i. A model that
 // reorders its rotors between two runs is a different model.
 // ---------------------------------------------------------------------------
+// One problem ModelType::issues() finds: the element at fault (the model
+// itself, or one rotor, drag body or IMU mount, with its index), the field,
+// named as its struct names it ("spin_dir", "local_orient", "body.mass", and
+// for the three element counts "rotors", "drag_bodies", "imu_mounts"), and
+// the message validate() returns for it, word for word.
+struct ModelIssue {
+    enum class Element : uint8_t { model, rotor, drag_body, imu_mount };
+    Element element = Element::model;
+    std::size_t index = 0;
+    std::string field;
+    std::string message;
+};
+
 struct ModelType {
     std::string name;                  // non-empty; identity for a human, not for the engine
     uint32_t param_schema_id = 0;      // which parameter schema these values were authored against
@@ -251,6 +264,13 @@ struct ModelType {
     // error, not a capacity one).
     // -----------------------------------------------------------------------
     [[nodiscard]] Result<void> validate() const;
+
+    // Every problem validate() checks for, in validate()'s order, each with its
+    // element, index and field: the collect-all form, for a caller that lists
+    // them all at once (the airframe compile). validate() is "the first of
+    // these, or ok", so the two cannot disagree (TD-9). Empty for a valid
+    // model.
+    [[nodiscard]] std::vector<ModelIssue> issues() const;
 };
 
 // The design-to-principal rotation as a model stores it: `q` normalized, and

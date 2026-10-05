@@ -289,27 +289,79 @@ TEST(AirframeCompile, CheckAirframeListsEveryProblem) {
     AirframeSpec s = reference_quad();
     s.motor.kv = 0.0;
     s.battery.cells_series = 0;
+    s.rotors[1].spin_dir = 2.0;
     s.parts[0].mass = -1.0;
+    s.imus[0].rate_divider = 0;
+    s.name.clear();
     const std::vector<AirframeIssue> issues = check_airframe(s);
     EXPECT_TRUE(has_issue(issues, "motor", 0, "kv"));
     EXPECT_TRUE(has_issue(issues, "battery", 0, "cells_series"));
+    EXPECT_TRUE(has_issue(issues, "rotors", 1, "spin_dir"));
     EXPECT_TRUE(has_issue(issues, "parts", 0, "mass"));
+    EXPECT_TRUE(has_issue(issues, "imus", 0, "rate_divider"));
+    EXPECT_TRUE(has_issue(issues, "airframe", 0, "name"));
     const auto c = compile_airframe(s);
     ASSERT_FALSE(c.has_value());
     EXPECT_NE(c.error().context.find("motor[0].kv"), std::string::npos) << c.error().context;
+    EXPECT_NE(c.error().context.find("rotors[1].spin_dir"), std::string::npos) << c.error().context;
     EXPECT_NE(c.error().context.find("parts[0].mass"), std::string::npos) << c.error().context;
     EXPECT_FALSE(airframe_propulsion_chain(s).has_value()) << "an unusable motor is no chain";
 }
 
 // TD-9: a rule has one owner. The model's own rules (spin_dir here) come
-// from ModelType::validate, once, as a "model" issue, not from a copy.
-TEST(AirframeCompile, AModelRuleComesFromTheModelsValidatorOnce) {
+// from ModelType's validator, not a copy, and are listed once, at the
+// element that breaks them.
+TEST(AirframeCompile, AModelRuleIsListedOnceAtTheElementThatBreaksIt) {
     AirframeSpec s = reference_quad();
     s.rotors[1].spin_dir = 2.0;
     const std::vector<AirframeIssue> issues = check_airframe(s);
     ASSERT_EQ(issues.size(), 1u);
-    EXPECT_EQ(issues[0].kind, "model");
+    EXPECT_TRUE(has_issue(issues, "rotors", 1, "spin_dir"));
     EXPECT_NE(issues[0].message.find("spin_dir"), std::string::npos) << issues[0].message;
+}
+
+// The whole list in one call, even when the fit cannot run: an airframe the
+// chain cannot lift still lists its model-rule problems (Kat's question 2).
+TEST(AirframeCompile, ModelRulesAreListedEvenWhenTheFitFails) {
+    AirframeSpec s = reference_quad();
+    s.battery.mass = 20.0;
+    s.rotors[3].spin_dir = 0.5;
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "rotors", 3, "spin_dir"));
+}
+
+// A zero or non-finite orientation is refused where it was written, before
+// anything normalizes it: glm::normalize turns a zero quaternion into the
+// identity, which would pass every later check.
+TEST(AirframeCompile, AZeroOrNonFiniteMountOrientationIsRefusedWhereWritten) {
+    const glm::dquat zero(0.0, 0.0, 0.0, 0.0);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    AirframeSpec s = reference_quad();
+    s.imus[0].mount.orientation = zero;
+    EXPECT_TRUE(has_issue(check_airframe(s), "imus", 0, "mount")) << "IMU mount";
+
+    s = reference_quad();
+    DragSpec componentwise;
+    componentwise.coeffs = glm::dvec3(0.02);
+    componentwise.mount.orientation = zero;
+    s.drag.push_back(componentwise);
+    EXPECT_TRUE(has_issue(check_airframe(s), "drag", 0, "mount")) << "componentwise drag mount";
+
+    s = reference_quad();
+    DragSpec quadratic;
+    quadratic.mode = spade::physics::drag_mode::quadratic;
+    quadratic.area = 0.01;
+    quadratic.coeffs = glm::dvec3(1.0, 0.0, 0.0);
+    quadratic.mount.orientation = glm::dquat(nan, 0.0, 0.0, 1.0);
+    s.drag.push_back(quadratic);
+    EXPECT_TRUE(has_issue(check_airframe(s), "drag", 0, "mount")) << "quadratic drag mount";
+
+    s = reference_quad();
+    s.motor.mass = 0.0;
+    s.prop.mass = 0.0;
+    s.rotors[2].hub.orientation = zero;
+    EXPECT_TRUE(has_issue(check_airframe(s), "rotors", 2, "hub")) << "a hub no part sits at";
 }
 
 // One bad hub is one issue: the motor and the propeller parts at it are not

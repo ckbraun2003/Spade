@@ -178,6 +178,10 @@ Result<void> ModelType::validate() const {
     return {};
 }
 
+std::vector<ModelIssue> ModelType::issues() const {
+    return {};  // STUB until the next commit
+}
+
 glm::quat canonical_design_rotation(const glm::quat& q) noexcept {
     if (q.w == 1.0f && q.x == 0.0f && q.y == 0.0f && q.z == 0.0f) {
         return q;
