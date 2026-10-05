@@ -207,6 +207,42 @@ struct PartList {
     }
 }
 
+// A componentwise drag element's coefficients in body axes. The drag law
+// applies them along the body's own axes and never reads local_orient
+// (physics/forces.cpp), so a mount's coefficients go through M, mount -> body:
+// c_i = sum_j |M_ij|^3 c_j, the coefficient that gives the exact force for
+// motion along body axis i. When M is a signed axis permutation that is the
+// permuted coefficient, exact everywhere; otherwise the coupling between the
+// mount's axes is lost. Returns whether the mapping is exact.
+[[nodiscard]] bool body_axis_coeffs(const glm::dmat3& m, const glm::dvec3& c, glm::dvec3& out) noexcept {
+    constexpr double kAxisTolerance = 1e-9;
+    const auto row = [&m](int i, int j) { return std::fabs(m[j][i]); };  // glm is column-major
+    bool exact = true;
+    for (int i = 0; i < 3; ++i) {
+        int on_axis = 0;
+        for (int j = 0; j < 3; ++j) {
+            if (row(i, j) > 1.0 - kAxisTolerance) {
+                ++on_axis;
+            } else if (row(i, j) > kAxisTolerance) {
+                exact = false;
+            }
+        }
+        if (on_axis != 1) exact = false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        out[i] = 0.0;
+        for (int j = 0; j < 3; ++j) {
+            const double a = row(i, j);
+            if (exact) {
+                if (a > 1.0 - kAxisTolerance) out[i] = c[j];
+            } else {
+                out[i] += a * a * a * c[j];
+            }
+        }
+    }
+    return exact;
+}
+
 [[nodiscard]] glm::vec3 to_float(const glm::dvec3& v) noexcept {
     return glm::vec3(static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z));
 }
@@ -351,9 +387,18 @@ struct Built {
             DragBodyDesc d;
             d.mode = g.mode;
             d.area = static_cast<float>(g.area);
-            d.coeffs = to_float(g.coeffs);
+            d.coeffs = to_float(g.coeffs);  // quadratic: isotropic, coeffs.x is C_d
+            if (g.mode == physics::drag_mode::componentwise) {
+                glm::dvec3 body(0.0);
+                if (!body_axis_coeffs(r_bd * glm::mat3_cast(glm::normalize(g.mount.orientation)), g.coeffs,
+                                      body)) {
+                    fit.drag = Provenance::estimated;
+                }
+                d.coeffs = to_float(body);
+            }
             d.local_pos = to_body_pos(g.mount.position);
-            d.local_orient = to_body_rot(g.mount.orientation);
+            // Identity: the coefficients are in body axes now, and neither drag
+            // mode reads an orientation.
             model.drag_bodies.push_back(d);
         }
     } else {

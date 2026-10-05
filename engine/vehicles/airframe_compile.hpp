@@ -148,7 +148,12 @@ struct RotorSpec {
     double spin_dir = 1.0;
 };
 
-// A drag element, as DragBodyDesc but in the design frame.
+// A drag element, as DragBodyDesc but in the design frame. Componentwise
+// coefficients run along the MOUNT's axes; the drag law applies them along
+// body axes, so the compile maps them there: exactly when the mount's axes
+// land on body axes (an axis-aligned mount in an untilted principal frame),
+// and otherwise by the on-axis projection c_i = sum_j |M_ij|^3 c_j, which drops
+// the coupling between axes and makes the drag provenance `estimated`.
 struct DragSpec {
     uint32_t mode = physics::drag_mode::componentwise;
     double area = 0.0;
