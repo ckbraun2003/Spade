@@ -71,6 +71,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
       -DGLM_ENABLE_EXPERIMENTAL -DGLFW_INCLUDE_NONE -DYAML_CPP_STATIC_DEFINE \
       -DSPADE_ENGINE_DIR=\"/src/engine\" -DSPADE_GOLDEN_DIR=\"/src/tests/golden\" \
       -DSPADE_TESTS_DIR=\"/src/tests\" -DSPADE_TEST_OUTPUT_DIR=\"/tmp/test-output\" \
+      -DSPADE_ASSETS_DIR=\"/src/assets\" \
       -Iengine -Isandbox -Iengine/tools/viewer -I/leg/build/engine/generated/spade_slang \
       -I$D/glm-src -I$D/glad-src/include -I$D/glfw-src/include -I$D/imgui-src -I$D/imgui-src/backends \
       -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
