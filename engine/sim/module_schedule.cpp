@@ -343,4 +343,6 @@ std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     return out;
 }
 
+std::vector<std::string> walk_order(const CompiledSchedule&) { return {}; }  // RED stub
+
 }  // namespace spade::modules
