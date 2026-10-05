@@ -116,7 +116,9 @@ void record_glfw_error(int code, const char* description) {
     return camera;
 }
 
-// Options for a GL-to-CPU comparison: the two features GL does not draw are off.
+// The fixture's default options, and a GL-to-CPU comparison's: shadows off,
+// which GL does not draw yet, and overlays off, whose lines would cross a
+// frame meant to show only the scene. Overlay cases turn them on.
 [[nodiscard]] RenderOptions comparable_options() {
     RenderOptions options;
     options.shadows = false;
@@ -240,7 +242,7 @@ class GpuGlRenderer : public ::testing::Test {
     // Clears to black, draws `scene`, and reads back RGBA8, bottom row first.
     // Empty if the renderer refused.
     [[nodiscard]] std::vector<uint8_t> draw_and_read(const RenderScene& scene,
-                                                     const RenderOptions& options = RenderOptions{},
+                                                     const RenderOptions& options = comparable_options(),
                                                      const Camera& camera = camera_on_plus_z()) {
         glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -261,7 +263,7 @@ class GpuGlRenderer : public ::testing::Test {
     }
 
     // How many pixels `scene` turns from black.
-    [[nodiscard]] size_t covered_pixels(const RenderScene& scene, const RenderOptions& options = RenderOptions{}) {
+    [[nodiscard]] size_t covered_pixels(const RenderScene& scene, const RenderOptions& options = comparable_options()) {
         return count_non_black(draw_and_read(scene, options));
     }
 
@@ -445,6 +447,177 @@ TEST_F(GpuGlRenderer, BackgroundMatchesTheCpuWithinItsMeasuredBand) {
         << "interior pixels (no grid line or horizon within 1 px) differ from the CPU by up to " << max_interior
         << " levels; " << interior << " interior pixels, on " << device;
     EXPECT_LE(max_all, kBandAll) << "some pixel differs from the CPU by " << max_all << " levels, on " << device;
+}
+
+// GL draws the overlays from the CPU's own lists (render::overlay_geometry()),
+// with the CPU's inverse-depth bias. Lines rasterize by different rules on
+// the two paths, so a pixel may sit one pixel apart; the colours are flat
+// and must match exactly. A miss is an overlay pixel on one path with no
+// overlay pixel of the same colour within 1 px on the other. Both counts are
+// measured and pinned (03-verification): a regression guard on a
+// best-effort technique (RND-3), not a grade.
+TEST_F(GpuGlRenderer, OverlaysMatchTheCpuWithinTheirBand) {
+    // Measured 2026-10-05 on rendering/gl-overlays, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 4 of the CPU's 3277
+    // overlay pixels miss, and 0 of GL's. The 4 are where a bounds edge
+    // crosses grid lines on screen: GL's bounds line covers a pixel that is
+    // grid on the CPU (3), and one grid pixel lands on bare ground in GL.
+    // Pinned at the measurement. Another device may differ; re-measure there
+    // before widening (03-verification). Known difference, within the band:
+    // GL biases each vertex before clipping, and a vertex behind the eye gets
+    // no bias, so a grid line crossing the eye plane bends by about 0.2 px
+    // against the CPU, which biases after clipping.
+    constexpr size_t kBandCpuMisses = 4;
+    constexpr size_t kBandGlMisses = 0;
+
+    RenderScene scene = make_ground_scene();
+    // Off the grid lines: a bounds edge on a grid line would tie with it, and
+    // which colour wins a tie is rounding, not a property of either path.
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-2.5f, 0.25f, -2.5f), .max = glm::vec3(2.5f, 2.0f, 2.5f)};
+    scene.spawn_positions = {glm::vec3(1.0f, 0.0f, 1.0f), glm::vec3(-1.5f, 0.0f, -1.0f)};
+    scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                glm::angleAxis(glm::radians(30.0f), glm::vec3(0.0f, 1.0f, 0.0f))};
+    scene.dynamics.push_back(DrawItem{.mesh_index = spade::render::kNoMesh,
+                                      .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f))});
+    RenderOptions with = comparable_options();
+    with.overlays = true;
+    with.spawn_markers = true;
+    const RenderOptions without = comparable_options();
+    const Camera camera = camera_over_ground();
+
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, with);
+    const std::vector<uint8_t> cpu_off = cpu_rgba(scene, camera, without);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, with, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(scene, without, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+
+    std::vector<uint8_t> cpu_overlay(kPixels), gl_overlay(kPixels);
+    size_t cpu_count = 0, gl_count = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        cpu_overlay[p] = static_cast<uint8_t>(same_pixel(cpu_on, cpu_off, p) ? 0 : 1);
+        gl_overlay[p] = static_cast<uint8_t>(same_pixel(gl_on, gl_off, p) ? 0 : 1);
+        cpu_count += cpu_overlay[p];
+        gl_count += gl_overlay[p];
+    }
+    ASSERT_GT(cpu_count, 200u) << "the CPU frame must hold overlays";
+
+    // Overlay pixels in `a` with no same-coloured overlay pixel within 1 px in `b`.
+    const auto misses = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& a_mask,
+                           const std::vector<uint8_t>& b, const std::vector<uint8_t>& b_mask) {
+        size_t n = 0;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+                if (a_mask[p] == 0u) continue;
+                bool found = false;
+                for (int dy = -1; dy <= 1 && !found; ++dy) {
+                    for (int dx = -1; dx <= 1 && !found; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= kWidth || ny >= kHeight) continue;
+                        const size_t q = static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx);
+                        found = b_mask[q] != 0u && a[p * 4u] == b[q * 4u] && a[p * 4u + 1u] == b[q * 4u + 1u] &&
+                                a[p * 4u + 2u] == b[q * 4u + 2u];
+                    }
+                }
+                if (!found) ++n;
+            }
+        }
+        return n;
+    };
+    const size_t cpu_misses = misses(cpu_on, cpu_overlay, gl_on, gl_overlay);
+    const size_t gl_misses = misses(gl_on, gl_overlay, cpu_on, cpu_overlay);
+    RecordProperty("cpu_overlay_pixels", static_cast<int>(cpu_count));
+    RecordProperty("gl_overlay_pixels", static_cast<int>(gl_count));
+    RecordProperty("cpu_misses", static_cast<int>(cpu_misses));
+    RecordProperty("gl_misses", static_cast<int>(gl_misses));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    EXPECT_LE(cpu_misses, kBandCpuMisses) << cpu_misses << " of " << cpu_count
+                                          << " CPU overlay pixels have no match in GL within 1 px, on " << device;
+    EXPECT_LE(gl_misses, kBandGlMisses) << gl_misses << " of " << gl_count
+                                        << " GL overlay pixels have no match on the CPU within 1 px, on " << device;
+}
+
+// SR-21 on GL: the grid lies exactly on a tessellated ground mesh at y = 0,
+// and the overlay depth bias (ported in the vertex shader) must win that tie,
+// as it does on the CPU. Without the bias the two are at one depth and
+// GL_LESS hides most of the grid.
+TEST_F(GpuGlRenderer, OverlayBiasKeepsTheGridOnACoincidentGroundMesh) {
+    MeshData ground;
+    ground.positions = {glm::vec3(-8.0f, 0.0f, -8.0f), glm::vec3(-8.0f, 0.0f, 8.0f), glm::vec3(8.0f, 0.0f, 8.0f),
+                        glm::vec3(8.0f, 0.0f, -8.0f)};
+    ground.normals.assign(4, glm::vec3(0.0f, 1.0f, 0.0f));
+    ground.indices = {0, 1, 2, 0, 2, 3};  // counter-clockwise seen from +Y
+    RenderScene scene = make_scene(std::move(ground));
+    scene.materials[0] = Material{.base_color = glm::vec4(0.2f, 0.6f, 0.3f, 1.0f)};  // lambert, not grid grey
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 4.0f, 0.2f);
+    camera.orientation = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));  // looking down
+    RenderOptions with = comparable_options();
+    with.overlays = true;
+
+    const auto grid_pixels = [](const std::vector<uint8_t>& rgba) {
+        size_t n = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            n += (rgba[p * 4u] == 90u && rgba[p * 4u + 1u] == 90u && rgba[p * 4u + 2u] == 90u) ? 1u : 0u;
+        }
+        return n;
+    };
+    const size_t cpu = grid_pixels(cpu_rgba(scene, camera, with));
+    const std::vector<uint8_t> gl_frame = draw_and_read(scene, with, camera);
+    ASSERT_EQ(gl_frame.size(), kPixels * 4u);
+    const size_t gl = grid_pixels(gl_frame);
+    ASSERT_GT(cpu, 200u) << "the CPU frame must show the grid on the ground mesh";
+    EXPECT_GE(gl * 10u, cpu * 9u) << "GL shows " << gl << " grid pixels on the ground mesh, the CPU " << cpu;
+}
+
+// A surface nearer than an overlay hides it: from above, a quad at y = 1 hides
+// the ground grid at y = 0, which still shows around it.
+TEST_F(GpuGlRenderer, OverlaysLoseToNearerGeometry) {
+    MeshData quad;
+    quad.positions = {glm::vec3(-1.0f, 1.0f, -1.0f), glm::vec3(-1.0f, 1.0f, 1.0f), glm::vec3(1.0f, 1.0f, 1.0f),
+                      glm::vec3(1.0f, 1.0f, -1.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 1.0f, 0.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};  // counter-clockwise seen from +Y
+    const RenderScene scene = make_scene(std::move(quad));
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 5.0f, 0.0f);
+    camera.orientation = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));  // looking down
+    RenderOptions with = comparable_options();
+    with.overlays = true;
+    const RenderOptions without = comparable_options();
+
+    const std::vector<uint8_t> quad_mask = cpu_rgba(scene, camera, without);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, with, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(scene, without, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+
+    size_t interior = 0, shows_through = 0, grid_outside = 0;
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+            bool is_interior = true;
+            for (int dy = -1; dy <= 1 && is_interior; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = std::clamp(x + dx, 0, kWidth - 1), ny = std::clamp(y + dy, 0, kHeight - 1);
+                    if (is_black(quad_mask, static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx))) {
+                        is_interior = false;
+                        break;
+                    }
+                }
+            }
+            const bool changed = !same_pixel(gl_on, gl_off, p);
+            if (is_interior) {
+                ++interior;
+                shows_through += changed ? 1u : 0u;
+            } else if (is_black(quad_mask, p) && changed) {
+                ++grid_outside;
+            }
+        }
+    }
+    ASSERT_GT(interior, kPixels / 10u) << "the quad must fill part of the frame";
+    EXPECT_EQ(shows_through, 0u) << "the grid shows through the quad above it";
+    EXPECT_GT(grid_outside, 0u) << "the grid must show around the quad";
 }
 
 // SR-17a on mesh fragments: every shaded surface blends toward the sky by
@@ -660,8 +833,13 @@ TEST(GlRendererCreate, ANullLoaderIsRefusedBeforeAnyGlCall) {
 
 TEST(GlRendererOptions, UnhonouredNamesWhatGlDoesNotDraw) {
     using Names = std::vector<std::string_view>;
-    EXPECT_EQ(GlRenderer::unhonoured(RenderOptions{}), (Names{"shadows", "overlays"}))
-        << "the defaults ask for shadows and overlays, which GL does not draw";
+    EXPECT_EQ(GlRenderer::unhonoured(RenderOptions{}), (Names{"shadows"}))
+        << "the defaults ask for shadows, which GL does not draw yet; it draws the overlays";
+
+    RenderOptions overlays_only = comparable_options();
+    overlays_only.overlays = true;
+    overlays_only.spawn_markers = true;
+    EXPECT_EQ(GlRenderer::unhonoured(overlays_only), Names{}) << "GL draws every overlay";
 
     RenderOptions drawn = comparable_options();
     drawn.ground_grid = true;

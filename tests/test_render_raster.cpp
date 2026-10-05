@@ -1036,6 +1036,40 @@ TEST(RasterCpu, OverlaysDrawBodyMarkerForDynamicItemEvenWithoutAResolvedMesh) {
     EXPECT_FALSE(region_contains_bgr(storage_off, kOverlayWidth, 0, kOverlayWidth, 0, kOverlayHeight, drone));
 }
 
+// overlay_geometry() is the one source the CPU and GL draw overlays from:
+// lines (grid, then bounds), then triangles (spawns, then meshless bodies).
+TEST(OverlayGeometry, ListsTheGridBoundsAndMarkersInDrawOrder) {
+    RenderScene scene = make_empty_overlay_scene();
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-1.0f, -2.0f, -3.0f), .max = glm::vec3(1.0f, 2.0f, 3.0f)};
+    scene.spawn_positions = {glm::vec3(0.5f, 0.0f, 0.0f), glm::vec3(-0.5f, 0.0f, 0.0f)};
+    scene.spawn_orientations = {glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f)};
+    scene.dynamics.push_back(DrawItem{.mesh_index = kNoMesh, .local_to_world = glm::mat4(1.0f)});
+    scene.dynamics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});  // draws itself
+
+    RenderOptions options;
+    options.overlays = true;
+    options.spawn_markers = true;
+    const spade::render::OverlayGeometry all = spade::render::overlay_geometry(scene, options);
+    ASSERT_EQ(all.lines.size(), 21u + 21u + 12u) << "grid lines every metre over +-10 m, then 12 box edges";
+    ASSERT_EQ(all.triangles.size(), 2u * 2u + 4u) << "two per spawn, then four for the one meshless body";
+
+    const double y = scene.has_ground ? static_cast<double>(scene.ground_y) : 0.0;
+    EXPECT_EQ(all.lines.front().a, glm::dvec3(-10.0, y, -10.0));
+    EXPECT_EQ(all.lines.front().b, glm::dvec3(-10.0, y, 10.0));
+    EXPECT_EQ(all.lines.front().rgb, (std::array<uint8_t, 3>{90, 90, 90}));
+    EXPECT_EQ(all.lines[42].a, glm::dvec3(-1.0, -2.0, -3.0)) << "the first box edge starts at the min corner";
+    EXPECT_EQ(all.lines[42].b, glm::dvec3(1.0, -2.0, -3.0));
+    EXPECT_EQ(all.lines[42].rgb, (std::array<uint8_t, 3>{90, 140, 200}));
+    EXPECT_EQ(all.triangles.front().rgb, (std::array<uint8_t, 3>{190, 90, 170}));
+    EXPECT_EQ(all.triangles.back().rgb, (std::array<uint8_t, 3>{124, 147, 255}));
+
+    options.spawn_markers = false;
+    EXPECT_EQ(spade::render::overlay_geometry(scene, options).triangles.size(), 4u) << "spawns need spawn_markers";
+    options.overlays = false;
+    const spade::render::OverlayGeometry none = spade::render::overlay_geometry(scene, options);
+    EXPECT_TRUE(none.lines.empty() && none.triangles.empty()) << "nothing without overlays";
+}
+
 // ===========================================================================
 // 5b. Ruling SR-21 (S7a Task R7, controller amendment) -- the ground-grid-
 // overlay vs tessellated-mesh z-fight carried since Task R3. None of the

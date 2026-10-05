@@ -1159,7 +1159,7 @@ constexpr double kGridStep = 1.0;
 // Recomputed directly (not assumed) at eps = 1e-4: Delta(20m) ~= 4.0 cm,
 // Delta(100m) ~= 99 cm (~1 m), Delta(200m) ~= 3.9 m. Harmless for this
 // program's own OverlayDepthBias.* regression fixture (a ground grid within
-// a few metres of the camera), but draw_world_bounds's box and the spawn/
+// a few metres of the camera), but the world-bounds box and the spawn/
 // body markers all follow scene.bounds and CAN be meaningfully far from the
 // camera in a large world -- at ~100+ m this bias could plausibly let an
 // overlay win a depth tie against real geometry that is genuinely closer by
@@ -1170,24 +1170,32 @@ constexpr double kGridStep = 1.0;
 // empirical verification pass (this file's own "recompute, don't assume"
 // discipline) rather than a hasty substitution alongside this round's other
 // changes -- flagged for a follow-up rather than guessed at here.
-constexpr double kOverlayDepthBias = 1e-4;
+//
+// kOverlayDepthBias itself is declared in raster_cpu.hpp, so GL applies the
+// same value (render_gl/gl_renderer.cpp's overlay pass).
+//
+// The four builders below produce overlay_geometry()'s lists in draw order.
+// They compute every point in double exactly as the old draw_* functions
+// did, so the CPU's overlay pixels are unchanged.
 
-void draw_ground_grid(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+[[nodiscard]] glm::dvec3 dvec(const Vec3& v) { return glm::dvec3(v.x, v.y, v.z); }
+[[nodiscard]] Vec3 from_dvec(const glm::dvec3& v) { return Vec3{v.x, v.y, v.z}; }
+
+void append_ground_grid(OverlayGeometry& out, const RenderScene& scene) {
     // value_or(0.0f) equivalent -- the wireframe rasterizer's own
     // drawGroundGrid always drew a grid, defaulting to y=0 with no ground
     // plane found; reproduced unchanged.
     const double y = scene.has_ground ? static_cast<double>(scene.ground_y) : 0.0;
+    const std::array<uint8_t, 3> rgb{kGridR, kGridG, kGridB};
     for (double x = -kGridHalfExtent; x <= kGridHalfExtent + 1e-9; x += kGridStep) {
-        draw_world_segment(fb, vc, Vec3{x, y, -kGridHalfExtent}, Vec3{x, y, kGridHalfExtent}, kGridR, kGridG, kGridB,
-                            kOverlayDepthBias);
+        out.lines.push_back(OverlayLine{.a = {x, y, -kGridHalfExtent}, .b = {x, y, kGridHalfExtent}, .rgb = rgb});
     }
     for (double z = -kGridHalfExtent; z <= kGridHalfExtent + 1e-9; z += kGridStep) {
-        draw_world_segment(fb, vc, Vec3{-kGridHalfExtent, y, z}, Vec3{kGridHalfExtent, y, z}, kGridR, kGridG, kGridB,
-                            kOverlayDepthBias);
+        out.lines.push_back(OverlayLine{.a = {-kGridHalfExtent, y, z}, .b = {kGridHalfExtent, y, z}, .rgb = rgb});
     }
 }
 
-void draw_world_bounds(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+void append_world_bounds(OverlayGeometry& out, const RenderScene& scene) {
     const Aabb& box = scene.bounds;
     const Vec3 c[8] = {
         {static_cast<double>(box.min.x), static_cast<double>(box.min.y), static_cast<double>(box.min.z)},
@@ -1203,14 +1211,15 @@ void draw_world_bounds(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7},
     };
     for (const auto& e : kEdges) {
-        draw_world_segment(fb, vc, c[e[0]], c[e[1]], kBoundsR, kBoundsG, kBoundsB, kOverlayDepthBias);
+        out.lines.push_back(OverlayLine{.a = dvec(c[e[0]]), .b = dvec(c[e[1]]), .rgb = {kBoundsR, kBoundsG, kBoundsB}});
     }
 }
 
 constexpr double kSpawnMarkerRadius = 0.3;
 constexpr double kSpawnMarkerYOffset = 0.02;  // lifted slightly off the grid plane
 
-void draw_spawn_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+void append_spawn_markers(OverlayGeometry& out, const RenderScene& scene) {
+    const std::array<uint8_t, 3> rgb{kSpawnR, kSpawnG, kSpawnB};
     for (size_t i = 0; i < scene.spawn_positions.size(); ++i) {
         const Vec3 base = vec3d(scene.spawn_positions[i]);
         const glm::quat& orient = scene.spawn_orientations[i];
@@ -1221,8 +1230,10 @@ void draw_spawn_markers(FrameBuffers& fb, const ViewContext& vc, const RenderSce
         const Vec3 v2{-kSpawnMarkerRadius, kSpawnMarkerYOffset, 0.0};
         const Vec3 v3{0.0, kSpawnMarkerYOffset, -kSpawnMarkerRadius};
         const auto place = [&](const Vec3& local) { return base + rotateByQuat(q, local); };
-        draw_world_triangle(fb, vc, place(v0), place(v1), place(v2), kSpawnR, kSpawnG, kSpawnB, kOverlayDepthBias);
-        draw_world_triangle(fb, vc, place(v0), place(v2), place(v3), kSpawnR, kSpawnG, kSpawnB, kOverlayDepthBias);
+        out.triangles.push_back(
+            OverlayTriangle{.a = dvec(place(v0)), .b = dvec(place(v1)), .c = dvec(place(v2)), .rgb = rgb});
+        out.triangles.push_back(
+            OverlayTriangle{.a = dvec(place(v0)), .b = dvec(place(v2)), .c = dvec(place(v3)), .rgb = rgb});
     }
 }
 
@@ -1253,7 +1264,8 @@ constexpr double kDroneNose = 0.5;
 // gain meshes, without anyone having to remember to turn it off. A flag for
 // "marker ON TOP of a mesh" can be added when someone can say why they want
 // one -- adding it now would be speculative.
-void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+void append_body_markers(OverlayGeometry& out, const RenderScene& scene) {
+    const std::array<uint8_t, 3> rgb{kDroneR, kDroneG, kDroneB};
     const Vec3 nose{0.0, 0.0, -kDroneNose};
     const Vec3 left{-0.2, -0.08, 0.2};
     const Vec3 right{0.2, -0.08, 0.2};
@@ -1268,14 +1280,14 @@ void draw_body_markers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         const double q[4] = {static_cast<double>(orientation.w), static_cast<double>(orientation.x),
                               static_cast<double>(orientation.y), static_cast<double>(orientation.z)};
         const auto place = [&](const Vec3& local) { return base + rotateByQuat(q, local); };
-        draw_world_triangle(fb, vc, place(nose), place(left), place(right), kDroneR, kDroneG, kDroneB,
-                            kOverlayDepthBias);
-        draw_world_triangle(fb, vc, place(nose), place(right), place(top), kDroneR, kDroneG, kDroneB,
-                            kOverlayDepthBias);
-        draw_world_triangle(fb, vc, place(nose), place(top), place(left), kDroneR, kDroneG, kDroneB,
-                            kOverlayDepthBias);
-        draw_world_triangle(fb, vc, place(left), place(right), place(top), kDroneR, kDroneG, kDroneB,
-                            kOverlayDepthBias);
+        const auto tri = [&](const Vec3& a, const Vec3& b, const Vec3& c) {
+            out.triangles.push_back(
+                OverlayTriangle{.a = dvec(place(a)), .b = dvec(place(b)), .c = dvec(place(c)), .rgb = rgb});
+        };
+        tri(nose, left, right);
+        tri(nose, right, top);
+        tri(nose, top, left);
+        tri(left, right, top);
     }
 }
 
@@ -1603,6 +1615,24 @@ void draw_field_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScen
 
 }  // namespace
 
+OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& options) {
+    OverlayGeometry out;
+    if (!options.overlays) {
+        return out;
+    }
+    append_ground_grid(out, scene);
+    append_world_bounds(out, scene);
+    // F3: authoring-only -- see RenderOptions::spawn_markers. Gated HERE
+    // rather than inside append_spawn_markers so the builder keeps taking
+    // exactly what it builds, and the policy stays visible in the one place
+    // that reads the whole overlay order.
+    if (options.spawn_markers) {
+        append_spawn_markers(out, scene);
+    }
+    append_body_markers(out, scene);
+    return out;
+}
+
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
                      RenderTarget& target, std::vector<float>* shadow_scratch) {
     if (Result<void> valid = validate_target(target); !valid) {
@@ -1737,17 +1767,18 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     }
     draw_field_layers(fb, vc, scene);
 
+    // Overlays: overlay_geometry() decides what draws and in what order; GL
+    // draws the same lists.
     if (options.overlays) {
-        draw_ground_grid(fb, vc, scene);
-        draw_world_bounds(fb, vc, scene);
-        // F3: authoring-only -- see RenderOptions::spawn_markers. Gated HERE
-        // rather than inside draw_spawn_markers so the drawing function keeps
-        // taking exactly what it draws, and the policy stays visible in the
-        // one place that reads the whole overlay order.
-        if (options.spawn_markers) {
-            draw_spawn_markers(fb, vc, scene);
+        const OverlayGeometry overlays = overlay_geometry(scene, options);
+        for (const OverlayLine& line : overlays.lines) {
+            draw_world_segment(fb, vc, from_dvec(line.a), from_dvec(line.b), line.rgb[0], line.rgb[1], line.rgb[2],
+                               kOverlayDepthBias);
         }
-        draw_body_markers(fb, vc, scene);
+        for (const OverlayTriangle& tri : overlays.triangles) {
+            draw_world_triangle(fb, vc, from_dvec(tri.a), from_dvec(tri.b), from_dvec(tri.c), tri.rgb[0], tri.rgb[1],
+                                tri.rgb[2], kOverlayDepthBias);
+        }
     }
 
     // Hands the (possibly newly-grown) depth buffer back to the caller for

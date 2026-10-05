@@ -3,6 +3,7 @@
 
 #include "render_gl/gl_renderer.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <initializer_list>
@@ -34,6 +35,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include "core/error.hpp"
+#include "render/raster_cpu.hpp"  // overlay_geometry(), kOverlayDepthBias
 
 namespace spade::render_gl {
 namespace {
@@ -397,6 +399,40 @@ void main() {
 }
 )GLSL";
 
+// Overlays (render::overlay_geometry(), the CPU's own lists): flat, unlit,
+// depth-tested. Each vertex moves along its view ray to the depth whose
+// inverse is 1/d + uDepthBias, which is raster_cpu's overlay bias with the
+// screen position unchanged. glPolygonOffset would not reach GL_LINES.
+constexpr const char* kOverlayVertexSrc = R"GLSL(
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColour;
+
+uniform mat4 uView;  // world to camera
+uniform mat4 uProj;
+uniform float uDepthBias;
+
+out vec3 vColour;
+
+void main() {
+    vec4 pc = uView * vec4(aPos, 1.0);
+    float d = -pc.z;
+    if (d > 0.0) {
+        pc.xyz *= 1.0 / (1.0 + uDepthBias * d);  // d' = 1 / (1/d + bias)
+    }
+    vColour = aColour;
+    gl_Position = uProj * pc;
+}
+)GLSL";
+
+constexpr const char* kOverlayFragmentSrc = R"GLSL(
+in vec3 vColour;
+out vec4 fragColor;
+
+void main() {
+    fragColor = vec4(vColour, 1.0);
+}
+)GLSL";
+
 // 32 bytes, explicitly padded. See the shader comment above.
 struct GpuMaterial {
     glm::vec4 base_color{0.72f, 0.72f, 0.74f, 1.0f};
@@ -524,6 +560,14 @@ struct GlRenderer::Impl {
     GLuint ssbo_field_colours = 0;
     size_t field_colours_capacity = 0;
 
+    // Overlays: their own program, and one vertex buffer of position and
+    // colour, refilled each frame from render::overlay_geometry().
+    GLuint overlay_program = 0;
+    GLuint overlay_vao = 0;
+    GLuint overlay_vbo = 0;
+    size_t overlay_capacity = 0;  // in floats
+    std::vector<float> overlay_vertices;
+
     // Scratch, reused every frame so a frame allocates nothing steady-state.
     std::vector<glm::mat4> instance_transforms;
     std::vector<uint32_t> instance_overrides;
@@ -556,6 +600,10 @@ struct GlRenderer::Impl {
         GLint view_proj = -1, center = -1, right = -1, up = -1, size = -1, cells = -1, cell_base = -1;
     } field;
 
+    struct OverlayUniforms {
+        GLint view = -1, proj = -1, depth_bias = -1;
+    } overlay;
+
     ~Impl() {
         for (GpuMesh& m : meshes) {
             if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
@@ -563,6 +611,9 @@ struct GlRenderer::Impl {
             if (m.vbo_pos != 0) gl.DeleteBuffers(1, &m.vbo_pos);
             if (m.vao != 0) gl.DeleteVertexArrays(1, &m.vao);
         }
+        if (overlay_vbo != 0) gl.DeleteBuffers(1, &overlay_vbo);
+        if (overlay_vao != 0) gl.DeleteVertexArrays(1, &overlay_vao);
+        if (overlay_program != 0) gl.DeleteProgram(overlay_program);
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
@@ -625,6 +676,10 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
         link(gl, {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field");
     if (!field_program) return std::unexpected(field_program.error());
     impl->field_program = *field_program;
+    const Result<GLuint> overlay_program =
+        link(gl, {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, "overlay");
+    if (!overlay_program) return std::unexpected(overlay_program.error());
+    impl->overlay_program = *overlay_program;
 
     const GLuint p = impl->program;
     impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
@@ -681,6 +736,24 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     fu.cells = gl.GetUniformLocation(f, "uCells");
     fu.cell_base = gl.GetUniformLocation(f, "uCellBase");
     gl.GenBuffers(1, &impl->ssbo_field_colours);
+
+    const GLuint o = impl->overlay_program;
+    impl->overlay.view = gl.GetUniformLocation(o, "uView");
+    impl->overlay.proj = gl.GetUniformLocation(o, "uProj");
+    impl->overlay.depth_bias = gl.GetUniformLocation(o, "uDepthBias");
+    // Position then colour, six floats a vertex. The array records the
+    // buffer object, so a later BufferData that grows it needs no re-setup.
+    gl.GenVertexArrays(1, &impl->overlay_vao);
+    gl.GenBuffers(1, &impl->overlay_vbo);
+    gl.BindVertexArray(impl->overlay_vao);
+    gl.BindBuffer(GL_ARRAY_BUFFER, impl->overlay_vbo);
+    constexpr GLsizei kOverlayStride = 6 * sizeof(float);
+    gl.EnableVertexAttribArray(0);
+    gl.VertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, kOverlayStride, nullptr);
+    gl.EnableVertexAttribArray(1);
+    gl.VertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, kOverlayStride, reinterpret_cast<const void*>(3 * sizeof(float)));
+    gl.BindVertexArray(0);
+    gl.BindBuffer(GL_ARRAY_BUFFER, 0);
 
     return std::unique_ptr<GlRenderer>(new GlRenderer(std::move(impl)));
 }
@@ -1028,6 +1101,56 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             base += cells;
         }
     }
+
+    // --- overlays ------------------------------------------------------------
+    // The CPU's own lists, in its order: lines, then triangles. Depth-tested
+    // and written, strictly nearer wins (setPixelIfCloser's rule), and nothing
+    // is culled, as on the CPU. In every raster mode, filled.
+    if (options.overlays) {
+        const render::OverlayGeometry overlays = render::overlay_geometry(scene, options);
+        std::vector<float>& v = s.overlay_vertices;
+        v.clear();
+        const auto push = [&v](const glm::dvec3& p, const std::array<uint8_t, 3>& rgb) {
+            v.insert(v.end(), {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z),
+                               static_cast<float>(rgb[0]) / 255.0f, static_cast<float>(rgb[1]) / 255.0f,
+                               static_cast<float>(rgb[2]) / 255.0f});
+        };
+        for (const render::OverlayLine& line : overlays.lines) {
+            push(line.a, line.rgb);
+            push(line.b, line.rgb);
+        }
+        for (const render::OverlayTriangle& tri : overlays.triangles) {
+            push(tri.a, tri.rgb);
+            push(tri.b, tri.rgb);
+            push(tri.c, tri.rgb);
+        }
+        if (!v.empty()) {
+            gl.BindBuffer(GL_ARRAY_BUFFER, s.overlay_vbo);
+            if (v.size() > s.overlay_capacity) {
+                gl.BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(),
+                              GL_STREAM_DRAW);
+                s.overlay_capacity = v.size();
+            } else {
+                gl.BufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data());
+            }
+            gl.BindBuffer(GL_ARRAY_BUFFER, 0);
+
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_LESS);
+            gl.DepthMask(GL_TRUE);
+            gl.Disable(GL_CULL_FACE);
+            gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            gl.UseProgram(s.overlay_program);
+            gl.UniformMatrix4fv(s.overlay.view, 1, GL_FALSE, glm::value_ptr(view));
+            gl.UniformMatrix4fv(s.overlay.proj, 1, GL_FALSE, glm::value_ptr(proj));
+            gl.Uniform1f(s.overlay.depth_bias, static_cast<float>(render::kOverlayDepthBias));
+            gl.BindVertexArray(s.overlay_vao);
+            const auto line_vertices = static_cast<GLsizei>(overlays.lines.size() * 2u);
+            const auto triangle_vertices = static_cast<GLsizei>(overlays.triangles.size() * 3u);
+            if (line_vertices > 0) gl.DrawArrays(GL_LINES, 0, line_vertices);
+            if (triangle_vertices > 0) gl.DrawArrays(GL_TRIANGLES, line_vertices, triangle_vertices);
+        }
+    }
     gl.BindVertexArray(0);
     gl.UseProgram(0);
 
@@ -1045,9 +1168,6 @@ std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions
     // raster_cpu draws shadows in shaded mode only, so only there is one missing.
     if (options.shadows && options.mode == render::DrawMode::shaded) {
         names.emplace_back("shadows");
-    }
-    if (options.overlays) {
-        names.emplace_back("overlays");
     }
     return names;
 }

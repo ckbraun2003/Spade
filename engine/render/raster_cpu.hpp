@@ -70,7 +70,11 @@
 // unset.
 // ---------------------------------------------------------------------------
 
+#include <array>
+#include <cstdint>
 #include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "core/error.hpp"
 #include "render/scene.hpp"
@@ -105,5 +109,38 @@ namespace spade::render {
 // frame skips the copy entirely and never touches this parameter at all).
 [[nodiscard]] Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
                                    RenderTarget& target, std::vector<float>* shadow_scratch = nullptr);
+
+// ---------------------------------------------------------------------------
+// The overlays' geometry (RenderOptions::overlays, PA-4): one source for the
+// CPU raster and GL, so the two paths cannot drift on what they draw.
+
+// The inverse-depth bias every overlay vertex gets, so an overlay wins a
+// depth tie with the surface it lies on. raster_cpu.cpp derives it and
+// states its known limit; GL applies the same value.
+inline constexpr double kOverlayDepthBias = 1e-4;
+
+// A world-space line or triangle, flat and unlit, with its colour.
+struct OverlayLine {
+    glm::dvec3 a{0.0}, b{0.0};
+    std::array<uint8_t, 3> rgb{};
+};
+struct OverlayTriangle {
+    glm::dvec3 a{0.0}, b{0.0}, c{0.0};
+    std::array<uint8_t, 3> rgb{};
+};
+
+// In draw order: lines first (the ground grid, then the world bounds), then
+// triangles (spawn markers, then markers for meshless dynamic bodies). Each
+// overlay is depth-tested and writes depth, so the order decides ties among
+// overlays. Neither side culls the triangles.
+struct OverlayGeometry {
+    std::vector<OverlayLine> lines;
+    std::vector<OverlayTriangle> triangles;
+};
+
+// Empty unless `options.overlays`. Spawn markers need `options.spawn_markers`
+// as well. render() draws exactly this in its raster modes; the ray-march
+// mode draws no overlays.
+[[nodiscard]] OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& options);
 
 }  // namespace spade::render
