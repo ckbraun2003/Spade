@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <utility>
@@ -940,6 +941,172 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
 }
 
 // ---------------------------------------------------------------------------
+// CSG subtrees, ray-marched per pixel within their boxes (RS3, replacement
+// signed 2026-10-05; rendering/plans/2026-10-04-b2-raymarched-csg-plan.md).
+// ---------------------------------------------------------------------------
+
+struct PixelRect {
+    int x0 = 0, y0 = 0, x1 = -1, y1 = -1;  // inclusive
+};
+
+// The pixels whose centres can see `box`: the bounding rectangle of its
+// projected corners, or the whole frame when a corner is nearer than the
+// near plane. False when no pixel can: the box is wholly nearer than the near
+// plane, or projects off the frame.
+[[nodiscard]] bool box_pixel_rect(const ViewContext& vc, const Aabb& box, PixelRect& rect) {
+    double min_x = std::numeric_limits<double>::max(), min_y = std::numeric_limits<double>::max();
+    double max_x = std::numeric_limits<double>::lowest(), max_y = std::numeric_limits<double>::lowest();
+    bool nearer_than_near = false;
+    bool beyond_near = false;
+    for (int i = 0; i < 8; ++i) {
+        const Vec3 corner{static_cast<double>((i & 1) != 0 ? box.max.x : box.min.x),
+                          static_cast<double>((i & 2) != 0 ? box.max.y : box.min.y),
+                          static_cast<double>((i & 4) != 0 ? box.max.z : box.min.z)};
+        const Vec3 pc = worldToCameraSpace(vc, corner);
+        if (-pc.z < vc.nearP) {
+            nearer_than_near = true;
+            continue;
+        }
+        beyond_near = true;
+        const ScreenPoint sp = projectCameraSpace(vc, pc);
+        min_x = std::min(min_x, sp.x);
+        max_x = std::max(max_x, sp.x);
+        min_y = std::min(min_y, sp.y);
+        max_y = std::max(max_y, sp.y);
+    }
+    const double last_x = static_cast<double>(vc.width) - 1.0;
+    const double last_y = static_cast<double>(vc.height) - 1.0;
+    if (!beyond_near) {
+        return false;
+    }
+    if (nearer_than_near) {
+        rect = PixelRect{0, 0, static_cast<int>(last_x), static_cast<int>(last_y)};
+        return true;
+    }
+    if (max_x < 0.0 || max_y < 0.0 || min_x > last_x + 1.0 || min_y > last_y + 1.0) {
+        return false;
+    }
+    // Clamped in double before the cast, so a far-off corner cannot overflow an int.
+    rect.x0 = static_cast<int>(std::clamp(std::floor(min_x), 0.0, last_x));
+    rect.x1 = static_cast<int>(std::clamp(std::ceil(max_x), 0.0, last_x));
+    rect.y0 = static_cast<int>(std::clamp(std::floor(min_y), 0.0, last_y));
+    rect.y1 = static_cast<int>(std::clamp(std::ceil(max_y), 0.0, last_y));
+    return true;
+}
+
+// Clips the ray origin + dir * t to `box` (the slab test). False on a miss.
+[[nodiscard]] bool clip_ray_to_box(const glm::vec3& origin, const glm::vec3& dir, const Aabb& box, float& t_enter,
+                                   float& t_exit) {
+    t_enter = std::numeric_limits<float>::lowest();
+    t_exit = std::numeric_limits<float>::max();
+    for (int a = 0; a < 3; ++a) {
+        if (dir[a] == 0.0f) {
+            if (origin[a] < box.min[a] || origin[a] > box.max[a]) {
+                return false;  // parallel to this slab and outside it
+            }
+            continue;
+        }
+        const float inv = 1.0f / dir[a];
+        float ta = (box.min[a] - origin[a]) * inv;
+        float tb = (box.max[a] - origin[a]) * inv;
+        if (ta > tb) {
+            std::swap(ta, tb);
+        }
+        t_enter = std::max(t_enter, ta);
+        t_exit = std::min(t_exit, tb);
+    }
+    return t_enter <= t_exit && t_exit >= 0.0f;
+}
+
+// Ray-marches each CSG subtree over the pixels its box covers, writing colour
+// and depth as a mesh fill does. The rays and the march are the reference's
+// own (render/raymarch.hpp), so a subtree draws to the reference's epsilon:
+// a wall of any thickness, with nothing folded. Shading follows
+// draw_mesh_item: the draw item's material (one per subtree, as its mesh
+// had), shade_vertex_color() with the SDF gradient as the normal, the shadow
+// lookup, and the SR-17a blend. Runs after every mesh, so the depth already
+// in a pixel also ends that pixel's march early.
+void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const Camera& camera,
+                       const RenderOptions& options, const ShadowMap* shadow) {
+    if (scene.materials.empty()) {
+        return;  // nothing to shade with, as draw_mesh_item
+    }
+    const DrawMode mode = options.mode;
+    const AtmosphereContext atmo{
+        .eye = camera.position,
+        .lighting = &scene.lighting,
+        .strength = (mode == DrawMode::shaded) ? options.horizon_blend_strength : 0.0f,
+        .onset = options.horizon_blend_onset,
+    };
+    const RayGrid grid = ray_grid(camera, fb.width, fb.height);
+
+    for (const CsgSubtree& sub : scene.csg_subtrees) {
+        if (sub.draw_item >= scene.statics.size() || sub.program.empty()) {
+            continue;
+        }
+        const DrawItem& item = scene.statics[sub.draw_item];
+        const uint32_t material_index = item.material_override != kNoMaterial ? item.material_override : 0u;
+        const Material& resolved =
+            material_index < scene.materials.size() ? scene.materials[material_index] : scene.materials[0];
+        Material velocity_tinted;
+        if (mode == DrawMode::velocity) {
+            velocity_tinted = resolved;
+            velocity_tinted.base_color = glm::vec4(velocity_ramp(item.speed_mps, options.velocity_scale_mps), 1.0f);
+        }
+        const Material& material = (mode == DrawMode::velocity) ? velocity_tinted : resolved;
+
+        PixelRect rect;
+        if (!box_pixel_rect(vc, sub.bounds, rect)) {
+            continue;
+        }
+        for (int y = rect.y0; y <= rect.y1; ++y) {
+            for (int x = rect.x0; x <= rect.x1; ++x) {
+                const CameraRay ray = camera_ray(grid, static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+                float t_enter = 0.0f, t_exit = 0.0f;
+                if (!clip_ray_to_box(grid.origin, ray.dir_world, sub.bounds, t_enter, t_exit)) {
+                    continue;
+                }
+                // Near and far bound camera-space depth, as in the reference.
+                const float cos_theta = -ray.dir_cam.z;
+                float t_end = std::min(camera.far_plane / cos_theta, t_exit);
+                const double nearer = fb.depth[static_cast<size_t>(y) * fb.width + static_cast<size_t>(x)];
+                if (nearer > 0.0) {
+                    // A surface already drawn here hides anything beyond it.
+                    t_end = std::min(t_end, static_cast<float>(1.0 / nearer) / cos_theta);
+                }
+                const float t_start = std::max(camera.near_plane / cos_theta, t_enter);
+                if (!(t_start <= t_end)) {
+                    continue;
+                }
+                const MarchHit march = sphere_trace(sub.program, grid.origin, ray.dir_world, t_start, t_end);
+                if (!march.hit) {
+                    continue;
+                }
+                const Vec3 pc = worldToCameraSpace(vc, vec3d(march.p));
+                if (!(-pc.z > 0.0)) {
+                    continue;
+                }
+                const glm::vec3 raw_normal = spade::gradient(sub.program, march.p);
+                const float normal_len = glm::length(raw_normal);
+                const glm::vec3 normal = normal_len > 0.0f ? raw_normal / normal_len : glm::vec3(0.0f, 1.0f, 0.0f);
+                const ShadedColor shaded = shade_vertex_color(material, scene.lighting, normal);
+                glm::vec3 color = shaded.combined;
+                if (shadow != nullptr) {
+                    color = apply_shadow(shaded, sample_shadow(*shadow, march.p));
+                }
+                if (atmo.active()) {
+                    const glm::vec3 eye_to_surface = march.p - atmo.eye;
+                    const float view_distance = std::sqrt(glm::dot(eye_to_surface, eye_to_surface));
+                    const glm::vec3 sky = sky_gradient_color(*atmo.lighting, eye_to_surface);
+                    color = horizon_blend(color, sky, view_distance, atmo.onset, atmo.strength);
+                }
+                setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), to_byte(color.r), to_byte(color.g), to_byte(color.b));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Overlay passes (RenderOptions::overlays, PA-4) -- ported from the
 // wireframe rasterizer's drawGroundGrid/drawWorldBounds/drawSpawnMarkers/
 // drawBodyMarkers, adapted to read already-computed RenderScene fields
@@ -1540,13 +1707,33 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
                                     options.horizon_blend_onset);
 
     // Fixed operation order (constraint 4): background, then statics, then
-    // dynamics, then overlays -- never based on hashing, pointer identity, or
-    // anything else unordered.
-    for (const DrawItem& item : scene.statics) {
-        draw_mesh_item(fb, vc, scene, item, options, shadow);
+    // dynamics, then CSG subtrees, then field layers, then overlays -- never
+    // based on hashing, pointer identity, or anything else unordered.
+    //
+    // Shaded and velocity modes ray-march CSG subtrees instead of drawing
+    // their meshes (RS3, replacement signed 2026-10-05). Wireframe has no
+    // surface to outline in a march, so it keeps the mesh.
+    const bool march_csg =
+        (options.mode == DrawMode::shaded || options.mode == DrawMode::velocity) && !scene.csg_subtrees.empty();
+    std::vector<bool> marched;
+    if (march_csg) {
+        marched.assign(scene.statics.size(), false);
+        for (const CsgSubtree& sub : scene.csg_subtrees) {
+            if (sub.draw_item < marched.size()) {
+                marched[sub.draw_item] = true;
+            }
+        }
+    }
+    for (size_t i = 0; i < scene.statics.size(); ++i) {
+        if (!march_csg || !marched[i]) {
+            draw_mesh_item(fb, vc, scene, scene.statics[i], options, shadow);
+        }
     }
     for (const DrawItem& item : scene.dynamics) {
         draw_mesh_item(fb, vc, scene, item, options, shadow);
+    }
+    if (march_csg) {
+        draw_csg_subtrees(fb, vc, scene, camera, options, shadow);
     }
     draw_field_layers(fb, vc, scene);
 

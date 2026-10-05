@@ -98,6 +98,21 @@ struct SubtreeSplit {
 };
 [[nodiscard]] Result<SubtreeSplit> split_program(const SdfProgram& program);
 
+// The subtree ending at `root_node` as a program of its own.
+// eval() and gradient() on it see that subtree alone, never the rest of the
+// world's geometry. `transforms` is copied whole, so the nodes' transform
+// indices still resolve. Precondition: a validated `program` and an
+// in-range `root_node` (split_program()'s csg_roots qualify).
+[[nodiscard]] SdfProgram csg_subtree_program(const SdfProgram& program, uint32_t root_node);
+
+// The box mesh_csg_subtree() samples, and the box a ray-march clips to.
+// It is `subtree_bounds` padded by limits.aabb_margin, or by k/4 when
+// `root_node` is a smooth_union with a larger k/4. The subtree's surface
+// lies inside it.
+[[nodiscard]] Aabb csg_subtree_sample_box(const SdfProgram& program, uint32_t root_node,
+                                          const Aabb& subtree_bounds,
+                                          const CsgMeshLimits& limits = kCsgMeshDefaults);
+
 // World-space AABB enclosing the CSG subtree rooted at `root_node` (as
 // identified by split_program()'s csg_roots / consumed by mesh_csg_subtree()
 // below).

@@ -527,6 +527,16 @@ struct DrawItem {
     float speed_mps = 0.0f;
 };
 
+// A CSG subtree the raster ray-marches instead of drawing its mesh.
+// RS3, replacement signed 2026-10-05. The subtree's mesh stays in
+// `statics[draw_item]` for wireframe and shadow casting only; its material
+// and speed are that draw item's.
+struct CsgSubtree {
+    SdfProgram program;      // the subtree alone (csg_mesh.hpp's csg_subtree_program())
+    Aabb bounds;             // world space; the surface lies inside, so a march clips to it
+    uint32_t draw_item = 0;  // index into RenderScene::statics
+};
+
 // A tick-boundary copy of one body's pose (position/orientation only -- no
 // scale; bodies are rigid). `mesh_index` is an index into RenderScene::meshes
 // -- normally one of the `resolved_meshes` slots the caller resolved at
@@ -577,6 +587,10 @@ struct RenderScene {
     // samples each field and fills these; the raster modes draw them, and the
     // ray-march mode does not. Empty unless a caller adds one.
     std::vector<FieldLayer> field_layers;
+    // CSG subtrees, which shaded and velocity modes ray-march per pixel
+    // within their bounds (RS3). Empty for a hand-built RenderScene; only
+    // scene_from_world() fills it, one entry per CSG root.
+    std::vector<CsgSubtree> csg_subtrees;
     // What scene_from_world() could not build faithfully, one sentence each,
     // for the caller to show (L6). Today: a CSG wall thinner than about two
     // grid cells, which draws with holes (render/csg_mesh.hpp).

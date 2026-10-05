@@ -13,11 +13,7 @@
 
 namespace spade::render {
 
-Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target,
-                              float horizon_strength, float horizon_onset) {
-    const uint32_t width = target.width;
-    const uint32_t height = target.height;
-
+RayGrid ray_grid(const Camera& camera, uint32_t width, uint32_t height) {
     // Loop invariants -- computed ONCE per frame, never per pixel (the same
     // discipline raster_cpu.cpp's own background pass applies to its
     // f/aspect precompute, measured there at 2.5-4.4x for the per-pixel
@@ -30,10 +26,140 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
     // point raster_cpu.cpp's own projectCameraSpace narrows it, so the two
     // paths' `f` agree bit-for-bit for the same fov_y_radians.
     const double f_double = 1.0 / tan32(static_cast<double>(camera.fov_y_radians) * 0.5);
-    const float f = static_cast<float>(f_double);
-    const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    const glm::vec3 origin = camera.position;
-    const glm::mat3 cam_to_world = glm::mat3_cast(camera.orientation);
+    RayGrid grid;
+    grid.origin = camera.position;
+    grid.cam_to_world = glm::mat3_cast(camera.orientation);
+    grid.f = static_cast<float>(f_double);
+    grid.aspect = static_cast<float>(width) / static_cast<float>(height);
+    grid.width = width;
+    grid.height = height;
+    return grid;
+}
+
+CameraRay camera_ray(const RayGrid& grid, uint32_t x, uint32_t y) {
+    // Pinhole camera ray through pixel center (x+0.5, y+0.5) -- the
+    // SAME NDC convention raster_cpu.cpp's own background pass
+    // (draw_sky_and_ground_background) uses, but normalized here: sphere
+    // tracing steps `t` by a real WORLD-SPACE distance every
+    // iteration, which is only correct when `dir_world` has unit
+    // length. Reconstructed for EVERY pixel, not merely when there is
+    // geometry -- the elevation-based sky gradient (ruling SR-23, Task VQ-A)
+    // needs this same per-pixel ray direction even on a sky-only frame.
+    const float y_ndc = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(grid.height);
+    const float x_ndc = 2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(grid.width) - 1.0f;
+    CameraRay ray;
+    ray.dir_cam = glm::normalize(glm::vec3(x_ndc * grid.aspect / grid.f, y_ndc / grid.f, -1.0f));
+    ray.dir_world = grid.cam_to_world * ray.dir_cam;
+    return ray;
+}
+
+MarchHit sphere_trace(const SdfProgram& program, const glm::vec3& origin, const glm::vec3& dir, float t_start,
+                      float t_end) {
+    float t = t_start;
+    glm::vec3 p = origin + dir * t;
+    float d = spade::eval(program, p);
+    // Sticks at false while the ray is still inside (or, for the
+    // ONGOING in-loop re-check below, within epsilon of) the
+    // solid it started behind -- see the "march past" note in
+    // raymarch.hpp's own header comment (fix round 2, review
+    // MINOR) for why this may NOT be treated as an immediate
+    // whole-ray miss the way fix round 1 did.
+    //
+    // INITIALIZED FROM `d > 0.0f`, NOT `d > epsilon` (fix round
+    // 3, review MINOR -- a real behaviour narrowing round 2 had
+    // introduced): the FIRST sample is a special case. A ray
+    // whose very first sample already satisfies
+    // `0 < d <= epsilon` is a genuine, legitimate hit converged
+    // from OUTSIDE -- round 1's own `d > 0.0f` gate let it
+    // register immediately, and round 2's `d > epsilon` gate
+    // silently swept it into the march-past branch instead,
+    // narrowing what counts as a hit for no reason tied to the
+    // march-past fix. The ONGOING in-loop re-check just below
+    // deliberately keeps the STRICTER `> epsilon` bound instead
+    // of reusing this same `> 0.0f` test: promoting on the first
+    // barely-positive sample seen WHILE MARCHING PAST a solid
+    // would fire almost every time on axis-aligned geometry --
+    // the march-past step lands very close to the solid's own
+    // flat exit face by construction, so a naive `> 0.0f` there
+    // reintroduced a MUCH worse regression than the one being
+    // fixed (measured: the whole frame read as a hit on the
+    // slab's own exit face in
+    // CameraInsideASolidWithAnotherObjectBehindItSeesTheSecond
+    // Object, and CameraFullyInsideAConvexSolidSeesNothingLike
+    // RastersBackFaceCull regressed too). The two thresholds are
+    // deliberately different for deliberately different
+    // reasons, not an oversight.
+    bool cleared_start_solid = d > 0.0f;
+
+    // Sphere tracing (task brief Step 2): step by the exact
+    // returned distance every iteration once outside (a lower
+    // bound on how far the nearest surface can be,
+    // world/sdf.hpp), so no step can ever cross through unseen
+    // geometry. `t` strictly increases every iteration that
+    // reaches the bottom of this loop -- either branch below
+    // advances by a strictly positive amount -- so this loop
+    // always terminates.
+    //
+    // FAR-PLANE ESCAPE (fix round 1, review IMPORTANT): the only
+    // previous termination was hit-or-budget-exhausted, which
+    // measured 81.5% of all SDF evaluations spent on rays that
+    // hit nothing -- every miss burning the FULL kRaymarchMaxSteps
+    // budget, because a ray nearly parallel to an infinite ground
+    // plane has its distance stay roughly CONSTANT (neither
+    // converging nor escaping) rather than growing the way a ray
+    // receding from a bounded primitive does. Stopping at
+    // `t > t_end` bounds this ray's cost by the SAME frustum
+    // raster_cpu.cpp already clips to, rather than a second, invented
+    // distance constant.
+    //
+    // Uses eval() here, NOT sample() or gradient() -- Task R8's
+    // own performance note: sample()/gradient() additionally
+    // compute a per-node gradient (a central difference costs SIX
+    // extra primitive_distance() calls per such node,
+    // world/sdf.hpp), which is pure waste on every step that does
+    // not converge. A caller fetches the gradient exactly ONCE, only at
+    // the hit point.
+    for (uint32_t step = 0; step < kRaymarchMaxSteps; ++step) {
+        if (!cleared_start_solid && d > kRaymarchSurfaceEpsilon) {
+            cleared_start_solid = true;
+        }
+        if (cleared_start_solid) {
+            if (d <= kRaymarchSurfaceEpsilon) {
+                // `p` already holds the converged hit point (fix round
+                // 1, review Minor 2 -- no redundant recomputation: the
+                // loop's own last-evaluated `p` IS the hit point, since
+                // this return happens before `p` is ever advanced past it).
+                return MarchHit{.hit = true, .t = t, .p = p};
+            }
+            t += d;
+        } else {
+            // MARCH PAST THE STARTING SOLID (fix round 2, review
+            // MINOR): step toward the nearest surface without
+            // registering a hit, however small |d| gets -- a
+            // sphere tracer detects a genuine CROSSING, and
+            // re-crossing back OUT of the solid the ray started
+            // behind is not a new surface to report (raster's own
+            // SR-13 cull hides only that ENCLOSING solid, never
+            // whatever sits further along the ray). Floored at
+            // kRaymarchSurfaceEpsilon so a degenerate exact-zero
+            // sample (an axis-aligned face hit dead-on) cannot
+            // stall progress.
+            t += std::max(std::fabs(d), kRaymarchSurfaceEpsilon);
+        }
+        if (t > t_end) {
+            break;  // escaped the visible frustum (or the caller's bound) -- a miss.
+        }
+        p = origin + dir * t;
+        d = spade::eval(program, p);
+    }
+    return MarchHit{};
+}
+
+Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, RenderTarget& target,
+                              float horizon_strength, float horizon_onset) {
+    const uint32_t width = target.width;
+    const uint32_t height = target.height;
+    const RayGrid grid = ray_grid(camera, width, height);
     const float near_plane = camera.near_plane;
     const float far_plane = camera.far_plane;
 
@@ -53,22 +179,8 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
     const bool has_sdf = scene.sdf != nullptr && !scene.sdf->empty() && !scene.materials.empty();
 
     for (uint32_t y = 0; y < height; ++y) {
-        const float y_ndc = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / static_cast<float>(height);
-
         for (uint32_t x = 0; x < width; ++x) {
-            // Pinhole camera ray through pixel center (x+0.5, y+0.5) -- the
-            // SAME NDC convention raster_cpu.cpp's own background pass
-            // (draw_sky_and_ground_background) uses, but normalized here: sphere
-            // tracing steps `t` by a real WORLD-SPACE distance every
-            // iteration, which is only correct when `dir_world` has unit
-            // length. Reconstructed for EVERY pixel now, not merely when
-            // has_sdf -- the elevation-based sky gradient below (ruling
-            // SR-23, Task VQ-A) needs this same per-pixel ray direction even
-            // on a sky-only (no-SDF) frame, unlike the old per-ROW gradient
-            // it replaces.
-            const float x_ndc = 2.0f * (static_cast<float>(x) + 0.5f) / static_cast<float>(width) - 1.0f;
-            const glm::vec3 dir_cam = glm::normalize(glm::vec3(x_ndc * aspect / f, y_ndc / f, -1.0f));
-            const glm::vec3 dir_world = cam_to_world * dir_cam;
+            const CameraRay ray = camera_ray(grid, x, y);
 
             // Sky gradient (render/scene.hpp's sky_gradient_color(), shared
             // with raster_cpu.cpp's own background pass -- see raymarch.hpp's
@@ -77,7 +189,7 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
             // length here, but the function does not require that), so the
             // two paths' sky agrees bit-for-bit rather than by two
             // independently-equal expressions.
-            const glm::vec3 sky = sky_gradient_color(scene.lighting, dir_world);
+            const glm::vec3 sky = sky_gradient_color(scene.lighting, ray.dir_world);
             glm::vec3 color = sky;
 
             if (has_sdf) {
@@ -91,114 +203,11 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                 // them from depth bounds into the equivalent RADIAL bounds
                 // for THIS pixel's ray, computed once and reused every step
                 // rather than converting back and forth per iteration.
-                const float cos_theta = -dir_cam.z;  // > 0 always: the un-normalized z is exactly -1.0f before normalize()
-                const float t_near = near_plane / cos_theta;
-                const float t_far = far_plane / cos_theta;
+                const float cos_theta = -ray.dir_cam.z;  // > 0 always: the un-normalized z is exactly -1.0f before normalize()
+                const MarchHit march =
+                    sphere_trace(*scene.sdf, grid.origin, ray.dir_world, near_plane / cos_theta, far_plane / cos_theta);
 
-                float t = t_near;
-                glm::vec3 p = origin + dir_world * t;
-                float d = spade::eval(*scene.sdf, p);
-                bool hit = false;
-                // Sticks at false while the ray is still inside (or, for the
-                // ONGOING in-loop re-check below, within epsilon of) the
-                // solid it started behind -- see the "march past" note in
-                // raymarch.hpp's own header comment (fix round 2, review
-                // MINOR) for why this may NOT be treated as an immediate
-                // whole-ray miss the way fix round 1 did.
-                //
-                // INITIALIZED FROM `d > 0.0f`, NOT `d > epsilon` (fix round
-                // 3, review MINOR -- a real behaviour narrowing round 2 had
-                // introduced): the FIRST sample is a special case. A ray
-                // whose very first sample already satisfies
-                // `0 < d <= epsilon` is a genuine, legitimate hit converged
-                // from OUTSIDE -- round 1's own `d > 0.0f` gate let it
-                // register immediately, and round 2's `d > epsilon` gate
-                // silently swept it into the march-past branch instead,
-                // narrowing what counts as a hit for no reason tied to the
-                // march-past fix. The ONGOING in-loop re-check just below
-                // deliberately keeps the STRICTER `> epsilon` bound instead
-                // of reusing this same `> 0.0f` test: promoting on the first
-                // barely-positive sample seen WHILE MARCHING PAST a solid
-                // would fire almost every time on axis-aligned geometry --
-                // the march-past step lands very close to the solid's own
-                // flat exit face by construction, so a naive `> 0.0f` there
-                // reintroduced a MUCH worse regression than the one being
-                // fixed (measured: the whole frame read as a hit on the
-                // slab's own exit face in
-                // CameraInsideASolidWithAnotherObjectBehindItSeesTheSecond
-                // Object, and CameraFullyInsideAConvexSolidSeesNothingLike
-                // RastersBackFaceCull regressed too). The two thresholds are
-                // deliberately different for deliberately different
-                // reasons, not an oversight.
-                bool cleared_start_solid = d > 0.0f;
-
-                // Sphere tracing (task brief Step 2): step by the exact
-                // returned distance every iteration once outside (a lower
-                // bound on how far the nearest surface can be,
-                // world/sdf.hpp), so no step can ever cross through unseen
-                // geometry. `t` strictly increases every iteration that
-                // reaches the bottom of this loop -- either branch below
-                // advances by a strictly positive amount -- so this loop
-                // always terminates.
-                //
-                // FAR-PLANE ESCAPE (fix round 1, review IMPORTANT): the only
-                // previous termination was hit-or-budget-exhausted, which
-                // measured 81.5% of all SDF evaluations spent on rays that
-                // hit nothing -- every miss burning the FULL kRaymarchMaxSteps
-                // budget, because a ray nearly parallel to an infinite ground
-                // plane has its distance stay roughly CONSTANT (neither
-                // converging nor escaping) rather than growing the way a ray
-                // receding from a bounded primitive does. Stopping at
-                // `t > t_far` bounds this ray's cost by the SAME frustum
-                // raster_cpu.cpp already clips to (now correctly, per the
-                // depth-not-radial fix above), rather than a second, invented
-                // distance constant.
-                //
-                // Uses eval() here, NOT sample() or gradient() -- Task R8's
-                // own performance note: sample()/gradient() additionally
-                // compute a per-node gradient (a central difference costs SIX
-                // extra primitive_distance() calls per such node,
-                // world/sdf.hpp), which is pure waste on every step that does
-                // not converge. The gradient is fetched exactly ONCE below,
-                // only at the final hit point.
-                for (uint32_t step = 0; step < kRaymarchMaxSteps; ++step) {
-                    if (!cleared_start_solid && d > kRaymarchSurfaceEpsilon) {
-                        cleared_start_solid = true;
-                    }
-                    if (cleared_start_solid) {
-                        if (d <= kRaymarchSurfaceEpsilon) {
-                            hit = true;
-                            break;
-                        }
-                        t += d;
-                    } else {
-                        // MARCH PAST THE STARTING SOLID (fix round 2, review
-                        // MINOR): step toward the nearest surface without
-                        // registering a hit, however small |d| gets -- a
-                        // sphere tracer detects a genuine CROSSING, and
-                        // re-crossing back OUT of the solid the ray started
-                        // behind is not a new surface to report (raster's own
-                        // SR-13 cull hides only that ENCLOSING solid, never
-                        // whatever sits further along the ray). Floored at
-                        // kRaymarchSurfaceEpsilon so a degenerate exact-zero
-                        // sample (an axis-aligned face hit dead-on) cannot
-                        // stall progress.
-                        t += std::max(std::fabs(d), kRaymarchSurfaceEpsilon);
-                    }
-                    if (t > t_far) {
-                        break;  // escaped the visible frustum -- miss, sky.
-                    }
-                    p = origin + dir_world * t;
-                    d = spade::eval(*scene.sdf, p);
-                }
-
-                if (hit) {
-                    // `p` already holds the converged hit point (fix round
-                    // 1, review Minor 2 -- no redundant recomputation: the
-                    // loop's own last-evaluated `p` IS the hit point, since
-                    // the break above happens before `p` is ever advanced
-                    // past it).
-                    //
+                if (march.hit) {
                     // world/sdf.hpp's gradient() -- the physics side's own
                     // pinned central-difference stencil (kSdfGradientStep)
                     // for every primitive kind without an analytic
@@ -206,7 +215,7 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                     // the rest -- cited by calling it directly, never
                     // re-derived (raymarch.hpp's own header comment; task
                     // brief Step 2's binding instruction).
-                    const glm::vec3 raw_normal = spade::gradient(*scene.sdf, p);
+                    const glm::vec3 raw_normal = spade::gradient(*scene.sdf, march.p);
                     const float normal_len = glm::length(raw_normal);
                     // Gradient magnitude is only guaranteed 1 where the
                     // field is an exact metric and differentiable
@@ -239,7 +248,7 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                     // out-of-range resolved index all fall back to material
                     // 0, the SAME fallback draw_mesh_item's own submesh
                     // resolution uses.
-                    const uint32_t leaf = spade::nearest_leaf_node(*scene.sdf, p);
+                    const uint32_t leaf = spade::nearest_leaf_node(*scene.sdf, march.p);
                     const uint32_t node_material = (leaf != spade::kNoSdfLeaf && !scene.sdf->node_materials.empty())
                                                         ? scene.sdf->node_materials[leaf]
                                                         : kNoMaterial;
@@ -268,7 +277,7 @@ Result<void> render_raymarch(const RenderScene& scene, const Camera& camera, Ren
                     // happens at the boundary -- which is the whole point of
                     // the amendment: the boundary case is a CONSEQUENCE of the
                     // rule, never the rule.
-                    color = horizon_blend(color, sky, t, horizon_onset, horizon_strength);
+                    color = horizon_blend(color, sky, march.t, horizon_onset, horizon_strength);
                 }
             }
 
