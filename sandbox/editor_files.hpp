@@ -16,15 +16,24 @@
 //      As elsewhere still finds it;
 //   3. re-pins the world's hash when it changed, but only if the scene still
 //      composes with that world; otherwise compose()'s reason is returned and
-//      the scene is not written (Task 6 adds the others-to-follow list);
+//      the scene is not written;
 //   4. commits any change it made to the document, so it can be undone.
 // An unedited scene saves back byte for byte (EDT-005).
 //
-// docs/design/interface/plans/2026-10-05-editor-design.md §7;
-// 2026-10-05-editor-plan.md Task 5.
+// THE SCENE FOLLOWS ITS WORLD (EDT-016). Saving the world on its own
+// (save_world_and_follow) re-pins the open scene by the same rule as step 3,
+// as an undoable edit, and lists the other scene files in the project that
+// name the world but do not pin its new hash. It never changes them: the user
+// re-pins each with repin_scene_file(), which is refused if that scene would
+// not compose. compose_conflict() shows the open pair's conflict live
+// (EDT-017).
+//
+// docs/design/interface/plans/2026-10-05-editor-design.md §6-§7;
+// 2026-10-05-editor-plan.md Tasks 5 and 6.
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -33,8 +42,10 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "editor_document.hpp"
+#include "editor_scene_edits.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "world/world_file.hpp"
@@ -186,6 +197,103 @@ struct OpenedScene {
                                                                  "': it has no file yet; use Save As to choose one"});
     }
     return save_scene_as(scene, world, scene.path);
+}
+
+// What saving a world did to the scenes that name it.
+struct WorldSaved {
+    uint64_t old_hash = 0;      // the world's hash as it was on disk before the save; 0 if it had no file
+    uint64_t new_hash = 0;      // its hash now
+    bool repinned = false;      // the open scene pins new_hash (an undoable edit, saved with the scene)
+    std::string why_not;        // compose()'s refusal when the open scene could not follow
+    std::vector<std::filesystem::path> others;  // other scene files under the project folder that name this
+                                                // world and do not pin new_hash; never changed here
+};
+
+// compose()'s refusal for the open scene and world as they would be saved
+// together -- the scene re-pinned to the world's current hash -- or "" when
+// they compose. Only the hash an unsaved world edit has not written yet is
+// ignored; every other conflict is reported.
+[[nodiscard]] inline std::string compose_conflict(const SceneDocument& scene, const WorldDocument& world) {
+    const Result<uint64_t> hash = scene::world_hash(world.desc());
+    if (!hash) return hash.error().context;
+    scene::SceneDesc candidate = scene.desc();
+    candidate.world.hash = *hash;
+    const Result<scene::ComposedScene> composed = scene::compose(candidate, world.desc());
+    return composed ? std::string() : composed.error().context;
+}
+
+namespace detail {
+
+[[nodiscard]] inline bool is_scene_file(const std::filesystem::path& p) {
+    const std::string name = p.filename().string();
+    return name.size() > 11 && name.ends_with(".scene.yaml");
+}
+
+[[nodiscard]] inline bool same_file(const std::filesystem::path& a, const std::filesystem::path& b) {
+    std::error_code ec;
+    return std::filesystem::equivalent(a, b, ec) && !ec;
+}
+
+}  // namespace detail
+
+// Saves the world, re-pins the open scene if it still composes, and lists the
+// project's other scenes that name this world but no longer pin it.
+[[nodiscard]] inline Result<WorldSaved> save_world_and_follow(WorldDocument& world, SceneDocument& scene,
+                                                              const std::filesystem::path& project_dir) {
+    WorldSaved out;
+    if (const Result<WorldDesc> on_disk = load_world_file(world.path); on_disk) {
+        if (const Result<uint64_t> h = scene::world_hash(*on_disk); h) out.old_hash = *h;
+    }
+    if (Result<void> saved = save_world(world); !saved) return std::unexpected(saved.error());
+    const Result<uint64_t> hash = scene::world_hash(world.desc());
+    if (!hash) return std::unexpected(hash.error());
+    out.new_hash = *hash;
+
+    if (scene.desc().world.hash == out.new_hash) {
+        out.repinned = true;
+    } else if (const std::string conflict = compose_conflict(scene, world); !conflict.empty()) {
+        out.why_not = conflict;
+    } else if (Result<void> repinned = apply(scene, RepointWorld{scene.desc().world.file, out.new_hash}); !repinned) {
+        out.why_not = repinned.error().context;
+    } else {
+        out.repinned = true;
+    }
+
+    std::error_code ec;
+    for (std::filesystem::recursive_directory_iterator it(
+             project_dir, std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const std::filesystem::path& p = it->path();
+        if (!detail::is_scene_file(p) || !it->is_regular_file()) continue;
+        if (!scene.path.empty() && detail::same_file(p, scene.path)) continue;
+        // A scene that does not load is not judged here; opening it says why.
+        const Result<scene::SceneDesc> s = scene::load_scene_file(p);
+        if (!s || s->world.hash == out.new_hash) continue;
+        if (!detail::same_file((p.parent_path() / s->world.file).lexically_normal(), world.path)) continue;
+        out.others.push_back(p);
+    }
+    std::sort(out.others.begin(), out.others.end());
+    return out;
+}
+
+// Re-pins a scene file, on the user's word, to the world it names as now
+// saved. Refused, with the file unchanged, if the scene would not compose
+// with that world.
+[[nodiscard]] inline Result<void> repin_scene_file(const std::filesystem::path& scene_file, const WorldDesc& world) {
+    Result<scene::SceneDesc> s = scene::load_scene_file(scene_file);
+    if (!s) return std::unexpected(s.error());
+    const Result<uint64_t> hash = scene::world_hash(world);
+    if (!hash) return std::unexpected(hash.error());
+    s->world.hash = *hash;
+    if (const Result<scene::ComposedScene> composed = scene::compose(*s, world); !composed) {
+        return std::unexpected(Error{composed.error().code,
+                                     "re-pin " + scene_file.string() + ": it would not compose with the saved world (" +
+                                         composed.error().context +
+                                         "); the file is unchanged. Open it and resolve the conflict, then save it"});
+    }
+    const Result<std::string> text = scene::scene_to_yaml(*s);
+    if (!text) return std::unexpected(text.error());
+    return write_atomically(scene_file, *text);
 }
 
 }  // namespace spade::sandbox::editor
