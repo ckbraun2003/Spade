@@ -291,4 +291,32 @@ TEST(CsgRaster, TheSameFrameTwiceIsByteIdentical) {
     EXPECT_EQ(first.storage, second.storage);
 }
 
+
+// L6: a subtree with no program, or pointing past the statics, would vanish
+// from the frame in silence. render() refuses both before drawing anything.
+TEST(CsgRaster, RefusesAnEmptyOrUnattachedSubtree) {
+    const WorldDesc world = slab_and_spheres(glm::vec3(1.0f, 1.0f, 0.1f), {}, {});
+    const RenderScene good = scene_or_fail(world);
+    ASSERT_EQ(good.csg_subtrees.size(), 1u);
+    std::vector<uint8_t> storage(static_cast<size_t>(kWidth) * kHeight * 4u, 0u);
+    RenderTarget target{.pixels = std::span<uint8_t>(storage), .width = kWidth, .height = kHeight,
+                        .stride = kWidth * 4u, .format = PixelFormat::bgrx8};
+    for (const DrawMode mode : {DrawMode::shaded, DrawMode::wireframe}) {
+        SCOPED_TRACE(mode == DrawMode::shaded ? "shaded" : "wireframe");
+        RenderOptions options;
+        options.mode = mode;
+        RenderScene empty = good;
+        empty.csg_subtrees[0].program = spade::SdfProgram{};
+        const Result<void> a = spade::render::render(empty, Camera{}, options, target);
+        ASSERT_FALSE(a.has_value()) << "an empty subtree program must be refused";
+        EXPECT_EQ(a.error().code, spade::Code::invalid_argument);
+
+        RenderScene unattached = good;
+        unattached.csg_subtrees[0].draw_item = static_cast<uint32_t>(unattached.statics.size());
+        const Result<void> b = spade::render::render(unattached, Camera{}, options, target);
+        ASSERT_FALSE(b.has_value()) << "a subtree whose draw item is past the statics must be refused";
+        EXPECT_EQ(b.error().code, spade::Code::invalid_argument);
+    }
+}
+
 }  // namespace

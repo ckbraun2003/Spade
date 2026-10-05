@@ -46,6 +46,7 @@
 #include "render/target.hpp"
 #include "render/tessellate.hpp"
 #include "world/sdf.hpp"
+#include "world/builder.hpp"
 #include "render_gl/gl_renderer.hpp"
 
 namespace {
@@ -247,13 +248,20 @@ class GpuGlRenderer : public ::testing::Test {
     [[nodiscard]] std::vector<uint8_t> draw_and_read(const RenderScene& scene,
                                                      const RenderOptions& options = comparable_options(),
                                                      const Camera& camera = camera_on_plus_z()) {
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
         if (auto up = renderer_->upload_scene(scene); !up) {
             ADD_FAILURE() << up.error().context;
             return {};
         }
+        return draw_uploaded_and_read(scene, options, camera);
+    }
+
+    // As draw_and_read(), with whatever upload_scene() last accepted.
+    [[nodiscard]] std::vector<uint8_t> draw_uploaded_and_read(const RenderScene& scene,
+                                                              const RenderOptions& options = comparable_options(),
+                                                              const Camera& camera = camera_on_plus_z()) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
         if (auto drew = renderer_->draw(scene, camera, options, kWidth, kHeight); !drew) {
             ADD_FAILURE() << drew.error().context;
             return {};
@@ -780,6 +788,370 @@ TEST_F(GpuGlRenderer, DynamicCasterShadowsMatchTheCpuWithinTheirBand) {
     EXPECT_LE(m.max_interior, kBandInterior) << "inside the shadow (" << m.interior
                                              << " pixels) GL differs from the CPU by up to " << m.max_interior
                                              << " levels, on " << device;
+}
+
+// ---------------------------------------------------------------------------
+// CSG subtrees, ray-marched (RS3, replacement signed 2026-10-05;
+// rendering/plans/2026-10-04-b2-raymarched-csg-plan.md, step 3). GL marches
+// each subtree within its box in shaded and velocity modes, as raster_cpu
+// does, and draws its mesh only in wireframe. Scenes come through
+// scene_from_world(), the only path that makes subtrees, under a black sky,
+// so "not black" means "covered".
+// ---------------------------------------------------------------------------
+
+// Rotates a Y-axis cylinder onto Z.
+const glm::quat kCsgYToZ(0.70710678f, 0.70710678f, 0.0f, 0.0f);
+
+[[nodiscard]] spade::WorldBuilder csg_builder() {
+    spade::WorldBuilder b;
+    b.name("gpu-gl-csg-test").capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    return b;
+}
+
+[[nodiscard]] RenderScene csg_scene_or_fail(spade::WorldBuilder& b) {
+    const spade::Result<spade::WorldDesc> world = b.build();
+    if (!world) {
+        ADD_FAILURE() << "build failed: " << world.error().context;
+        return RenderScene{};
+    }
+    // The scene keeps no pointer into `world`: each subtree's program is its own copy.
+    spade::Result<RenderScene> scene = spade::render::scene_from_world(*world, {});
+    if (!scene) {
+        ADD_FAILURE() << "scene_from_world failed: " << scene.error().context;
+        return RenderScene{};
+    }
+    scene->lighting.sky_zenith = glm::vec3(0.0f);
+    scene->lighting.sky_horizon = glm::vec3(0.0f);
+    return std::move(*scene);
+}
+
+// A red slab with a round hole: one subtree, every node one material.
+void add_slab_with_hole(spade::WorldBuilder& b, uint32_t material, glm::vec3 centre) {
+    b.box(glm::vec3(1.0f, 1.0f, 0.1f), spade::SdfPose{.position = centre}).material_for_last_node(material);
+    b.cylinder(0.4f, 1.0f, spade::SdfPose{.position = centre, .rotation = kCsgYToZ}).material_for_last_node(material);
+    b.subtract().material_for_last_node(material);
+}
+
+// What each frame covers, and how the two agree: a covered pixel misses
+// when the other frame covers nothing within 1 px. Where both cover the
+// whole 3x3 round a pixel, the colours are compared, as the background band
+// compares them; `interior_over_2` counts those more than 2 levels apart.
+struct SurfaceMatch {
+    size_t cpu_covered = 0, gl_covered = 0;
+    size_t cpu_misses = 0, gl_misses = 0;
+    size_t interior = 0, interior_over_2 = 0;
+    int max_interior = 0;
+};
+
+[[nodiscard]] SurfaceMatch match_surfaces(const std::vector<uint8_t>& cpu, const std::vector<uint8_t>& gl) {
+    SurfaceMatch m;
+    if (cpu.size() != kPixels * 4u || gl.size() != kPixels * 4u) {
+        ADD_FAILURE() << "a frame is missing";
+        return m;
+    }
+    std::vector<uint8_t> cpu_mask(kPixels), gl_mask(kPixels);
+    for (size_t p = 0; p < kPixels; ++p) {
+        cpu_mask[p] = static_cast<uint8_t>(is_black(cpu, p) ? 0 : 1);
+        gl_mask[p] = static_cast<uint8_t>(is_black(gl, p) ? 0 : 1);
+        m.cpu_covered += cpu_mask[p];
+        m.gl_covered += gl_mask[p];
+    }
+    const auto count_round = [](const std::vector<uint8_t>& mask, int x, int y) {
+        int n = 0;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                const int nx = std::clamp(x + dx, 0, kWidth - 1), ny = std::clamp(y + dy, 0, kHeight - 1);
+                n += mask[static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx)];
+            }
+        }
+        return n;
+    };
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+            if (cpu_mask[p] != 0u && count_round(gl_mask, x, y) == 0) ++m.cpu_misses;
+            if (gl_mask[p] != 0u && count_round(cpu_mask, x, y) == 0) ++m.gl_misses;
+            if (count_round(cpu_mask, x, y) == 9 && count_round(gl_mask, x, y) == 9) {
+                ++m.interior;
+                int worst = 0;
+                for (size_t ch = 0; ch < 3u; ++ch) {
+                    worst = std::max(worst, std::abs(static_cast<int>(gl[p * 4u + ch]) - static_cast<int>(cpu[p * 4u + ch])));
+                }
+                m.max_interior = std::max(m.max_interior, worst);
+                m.interior_over_2 += worst > 2 ? 1u : 0u;
+            }
+        }
+    }
+    return m;
+}
+
+// RED before step 3. Shaded and velocity frames draw a subtree without its
+// mesh: with the mesh emptied, GL still shows the slab where the CPU does.
+TEST_F(GpuGlRenderer, CsgSubtreesDrawWithoutTheirMesh) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    add_slab_with_hole(b, 0, glm::vec3(0.0f));
+    RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    scene.meshes[scene.statics[scene.csg_subtrees[0].draw_item].mesh_index].indices.clear();
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 0.2f, 3.0f);
+
+    for (const DrawMode mode : {DrawMode::shaded, DrawMode::velocity}) {
+        SCOPED_TRACE(mode == DrawMode::shaded ? "shaded" : "velocity");
+        RenderOptions options = comparable_options();
+        options.mode = mode;
+        const SurfaceMatch m = match_surfaces(cpu_rgba(scene, camera, options), draw_and_read(scene, options, camera));
+        ASSERT_GT(m.cpu_covered, kPixels / 10u) << "the CPU frame must show the slab";
+        EXPECT_LE(m.cpu_misses, kPixels / 1000u) << "GL shows " << m.gl_covered << " of the CPU's " << m.cpu_covered
+                                                 << " slab pixels with the mesh emptied";
+        EXPECT_LE(m.gl_misses, kPixels / 1000u);
+    }
+}
+
+// RED before step 3. A concentric shell whose 0.02 m wall is under one mesh
+// cell: the mesh loses it, and from inside GL shows holes. A march does not.
+TEST_F(GpuGlRenderer, AThinCsgWallDrawsWithoutHolesFromInside) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{
+        .name = "white", .base_color = {1.0f, 1.0f, 1.0f, 1.0f}, .shading = spade::MaterialShading::unlit});
+    b.sphere(4.0f).material_for_last_node(0).sphere(3.98f).material_for_last_node(0).subtract().material_for_last_node(0);
+    const RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    const Camera camera;  // at the centre: every ray meets the inner wall
+
+    const size_t cpu = count_non_black(cpu_rgba(scene, camera, comparable_options()));
+    ASSERT_EQ(cpu, kPixels) << "the CPU must see the wall in every pixel";
+    const size_t gl = count_non_black(draw_and_read(scene, comparable_options(), camera));
+    EXPECT_EQ(gl, kPixels) << "GL shows " << (kPixels - gl) << " holes in a 0.02 m wall";
+}
+
+// Wireframe has no surface to outline in a march, so it keeps the mesh (RS3).
+TEST_F(GpuGlRenderer, WireframeStillDrawsTheCsgMesh) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    add_slab_with_hole(b, 0, glm::vec3(0.0f));
+    RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 0.2f, 3.0f);
+    RenderOptions wireframe = comparable_options();
+    wireframe.mode = DrawMode::wireframe;
+
+    EXPECT_GT(count_non_black(draw_and_read(scene, wireframe, camera)), 0u) << "wireframe draws the mesh's edges";
+    scene.meshes[scene.statics[scene.csg_subtrees[0].draw_item].mesh_index].indices.clear();
+    EXPECT_EQ(count_non_black(draw_and_read(scene, wireframe, camera)), 0u) << "and only the mesh";
+}
+
+// GL against the CPU on a lit scene with shadows: the slab, a smooth-union
+// blob, a tessellated ball in front of the slab casting on it, and a ball
+// behind it seen through the hole. Depth both ways, shading, the shadow
+// lookup on a marched surface, and the SR-17a blend.
+//
+// The balls are unlit. A lit mesh is Gouraud-shaded on the CPU (SR-18) and
+// per pixel on GL, which the GL options plan accepted (RND-3). Near the
+// terminator that alone moves a lit ball's pixels by up to 11 levels here,
+// and it would hide what this band is for. Both paths shade a marched
+// surface per pixel.
+TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
+    // Measured 2026-10-05 on rendering/b2-gl, 160x120, on an NVIDIA GeForce
+    // RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 2709 covered pixels on each
+    // path, 0 misses either way, and at most 1 level apart over the 2335
+    // interior ones. Pinned at the measurement; another device may differ,
+    // so re-measure there before widening (03-verification).
+    constexpr size_t kBandMisses = 0;
+    constexpr int kBandInterior = 1;
+
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.8f, 0.3f, 0.2f, 1.0f}});
+    b.material(spade::MaterialDesc{.name = "blue", .base_color = {0.2f, 0.35f, 0.8f, 1.0f}});
+    b.material(spade::MaterialDesc{
+        .name = "green", .base_color = {0.25f, 0.7f, 0.3f, 1.0f}, .shading = spade::MaterialShading::unlit});
+    add_slab_with_hole(b, 0, glm::vec3(-0.6f, 0.8f, 0.0f));
+    b.sphere(0.45f, spade::SdfPose{.position = {1.2f, 0.6f, 0.2f}}).material_for_last_node(1);
+    b.sphere(0.3f, spade::SdfPose{.position = {1.6f, 1.0f, 0.2f}}).material_for_last_node(1);
+    b.smooth_union(0.25f).material_for_last_node(1);
+    b.union_();
+    b.sphere(0.3f, spade::SdfPose{.position = {-0.1f, 0.3f, 0.9f}}).material_for_last_node(2);
+    b.union_();
+    b.sphere(0.5f, spade::SdfPose{.position = {-0.6f, 0.8f, -1.5f}}).material_for_last_node(2);
+    b.union_();
+    const RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 2u);
+    ASSERT_TRUE(scene.static_shadow.has_value());
+    Camera camera;
+    camera.position = glm::vec3(0.2f, 0.9f, 4.5f);
+    RenderOptions options = comparable_options();
+    options.shadows = true;
+
+    const SurfaceMatch m = match_surfaces(cpu_rgba(scene, camera, options), draw_and_read(scene, options, camera));
+    RecordProperty("cpu_covered", static_cast<int>(m.cpu_covered));
+    RecordProperty("gl_covered", static_cast<int>(m.gl_covered));
+    RecordProperty("cpu_misses", static_cast<int>(m.cpu_misses));
+    RecordProperty("gl_misses", static_cast<int>(m.gl_misses));
+    RecordProperty("interior", static_cast<int>(m.interior));
+    RecordProperty("interior_over_2", static_cast<int>(m.interior_over_2));
+    RecordProperty("max_interior", m.max_interior);
+    ASSERT_GT(m.cpu_covered, kPixels / 10u) << "the CPU frame must show the scene";
+    EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of the CPU's " << m.cpu_covered
+                                         << " covered pixels have no GL surface within 1 px, on "
+                                         << renderer_->renderer_name();
+    EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of GL's " << m.gl_covered
+                                        << " covered pixels have no CPU surface within 1 px";
+    EXPECT_LE(m.max_interior, kBandInterior)
+        << "interior pixels differ by up to " << m.max_interior << " levels; " << m.interior_over_2 << " of "
+        << m.interior << " by more than 2";
+}
+
+// Pixels whose green channel dominates: the unlit green ball, here.
+[[nodiscard]] size_t count_green(const std::vector<uint8_t>& rgba) {
+    size_t n = 0;
+    for (size_t p = 0; p < rgba.size() / 4u; ++p) {
+        n += (rgba[p * 4u + 1u] > rgba[p * 4u] && rgba[p * 4u + 1u] > rgba[p * 4u + 2u]) ? 1u : 0u;
+    }
+    return n;
+}
+
+// A mesh partly inside a subtree's box but behind its surface stays hidden:
+// the march writes the surface's depth, not the proxy's. Were the proxy's
+// back face the depth, the ball's front (inside the box) would be nearer and
+// show through the slab. The other CSG cases keep every mesh wholly in front
+// of or behind a box, so they cannot see this.
+TEST_F(GpuGlRenderer, AMeshInsideASubtreesBoxStaysBehindItsSurface) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    b.material(spade::MaterialDesc{
+        .name = "green", .base_color = {0.1f, 0.9f, 0.1f, 1.0f}, .shading = spade::MaterialShading::unlit});
+    add_slab_with_hole(b, 0, glm::vec3(0.0f));
+    // Behind the slab (front face z = +0.1), clear of the hole, its front at z = -0.05.
+    b.sphere(0.25f, spade::SdfPose{.position = {0.5f, 0.55f, -0.3f}}).material_for_last_node(1);
+    b.union_();
+    const RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    ASSERT_LT(scene.csg_subtrees[0].bounds.min.z, -0.05f) << "the ball's front must lie inside the slab's box";
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 0.2f, 3.0f);
+
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(count_green(cpu), 0u) << "the CPU must hide the ball behind the slab";
+    ASSERT_GT(count_non_black(cpu), kPixels / 10u);
+    EXPECT_EQ(count_green(draw_and_read(scene, comparable_options(), camera)), 0u)
+        << "GL shows the ball through the slab: the march's depth is not the surface's";
+}
+
+// The proxy is the box's back faces, and depth clamp keeps the parts of them
+// past the far plane. With far between the slab and its box's back, GL must
+// still show the slab where the CPU does.
+TEST_F(GpuGlRenderer, ASubtreeDrawsWhereItsBoxCrossesTheFarPlane) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    add_slab_with_hole(b, 0, glm::vec3(0.0f));
+    const RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 0.2f, 3.0f);
+    camera.far_plane = 3.0f;  // the slab's front is 2.9 m away, its box's back more than 3.1 m
+    ASSERT_GT(camera.position.z - scene.csg_subtrees[0].bounds.min.z, camera.far_plane);
+
+    const SurfaceMatch m =
+        match_surfaces(cpu_rgba(scene, camera, comparable_options()), draw_and_read(scene, comparable_options(), camera));
+    ASSERT_GT(m.cpu_covered, kPixels / 10u) << "the CPU frame must show the slab";
+    EXPECT_LE(m.cpu_misses, kPixels / 1000u) << "GL shows " << m.gl_covered << " of the CPU's " << m.cpu_covered
+                                             << " slab pixels with the far plane through the box";
+    EXPECT_LE(m.gl_misses, kPixels / 1000u);
+}
+
+// A one-subtree program by hand: `leaves` spheres, then unions. Pushed all
+// first, the stack peaks at `leaves`; alternated, at 2.
+[[nodiscard]] spade::SdfProgram sphere_chain(uint32_t leaves, bool all_first) {
+    spade::SdfProgram program;
+    program.transforms = {spade::SdfTransform{}};
+    const spade::SdfNode sphere{.kind = static_cast<uint32_t>(spade::SdfPrim::sphere), .params = {0.5f, 0.0f, 0.0f, 0.0f}};
+    const spade::SdfNode unite{.op = static_cast<uint32_t>(spade::SdfOp::union_)};
+    if (all_first) {
+        program.nodes.assign(leaves, sphere);
+        program.nodes.insert(program.nodes.end(), leaves - 1u, unite);
+    } else {
+        program.nodes.push_back(sphere);
+        for (uint32_t i = 1; i < leaves; ++i) {
+            program.nodes.push_back(sphere);
+            program.nodes.push_back(unite);
+        }
+    }
+    return program;
+}
+
+[[nodiscard]] RenderScene slab_scene() {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "red", .base_color = {0.9f, 0.1f, 0.1f, 1.0f}});
+    add_slab_with_hole(b, 0, glm::vec3(0.0f));
+    return csg_scene_or_fail(b);
+}
+
+// L6: a subtree with no program, or pointing past the statics, would vanish
+// from the frame in silence. upload_scene() refuses both.
+TEST_F(GpuGlRenderer, RefusesAnEmptyOrUnattachedCsgSubtree) {
+    const RenderScene good = slab_scene();
+    ASSERT_EQ(good.csg_subtrees.size(), 1u);
+    {
+        RenderScene scene = good;
+        scene.csg_subtrees[0].program = spade::SdfProgram{};
+        const spade::Result<void> up = renderer_->upload_scene(scene);
+        ASSERT_FALSE(up.has_value()) << "an empty subtree program must be refused";
+        EXPECT_EQ(up.error().code, spade::Code::invalid_argument);
+    }
+    {
+        RenderScene scene = good;
+        scene.csg_subtrees[0].draw_item = static_cast<uint32_t>(scene.statics.size());
+        const spade::Result<void> up = renderer_->upload_scene(scene);
+        ASSERT_FALSE(up.has_value()) << "a subtree whose draw item is past the statics must be refused";
+        EXPECT_EQ(up.error().code, spade::Code::invalid_argument);
+    }
+}
+
+// validate()'s own code comes through: a program needing more stack than
+// kMaxSdfDepth is capacity_exceeded, not invalid_argument.
+TEST_F(GpuGlRenderer, PassesThroughAProgramsCapacityRefusal) {
+    RenderScene scene = slab_scene();
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    scene.csg_subtrees[0].program = sphere_chain(spade::kMaxSdfDepth + 1u, /*all_first=*/true);
+    const spade::Result<void> up = renderer_->upload_scene(scene);
+    ASSERT_FALSE(up.has_value());
+    EXPECT_EQ(up.error().code, spade::Code::capacity_exceeded) << up.error().context;
+}
+
+// A subtree past GL's node cap is refused, at the cap it is not. The cap
+// bounds one pixel's march so a frame stays inside the driver's timeout.
+TEST_F(GpuGlRenderer, RefusesASubtreePastTheNodeCap) {
+    RenderScene scene = slab_scene();
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    constexpr uint32_t kCap = GlRenderer::kMaxCsgSubtreeNodes;
+    static_assert(kCap % 2u == 0u, "a sphere chain has an odd node count");
+    scene.csg_subtrees[0].program = sphere_chain(kCap / 2u, /*all_first=*/false);  // kCap - 1 nodes
+    EXPECT_TRUE(renderer_->upload_scene(scene).has_value()) << "under the cap";
+    scene.csg_subtrees[0].program = sphere_chain(kCap / 2u + 1u, /*all_first=*/false);  // kCap + 1 nodes
+    const spade::Result<void> up = renderer_->upload_scene(scene);
+    ASSERT_FALSE(up.has_value()) << "past the cap";
+    EXPECT_EQ(up.error().code, spade::Code::capacity_exceeded) << up.error().context;
+}
+
+// A refused upload changes nothing: the scene uploaded before it still draws
+// the same frame. Refusing after replacing the meshes, or with the subtree
+// table half filled, would leave GL drawing a mix of the two scenes.
+TEST_F(GpuGlRenderer, ARefusedUploadLeavesThePreviousSceneDrawing) {
+    const RenderScene good = slab_scene();
+    Camera camera;
+    camera.position = glm::vec3(0.3f, 0.2f, 3.0f);
+    const std::vector<uint8_t> before = draw_and_read(good, comparable_options(), camera);
+    ASSERT_GT(count_non_black(before), kPixels / 10u);
+
+    RenderScene bad = make_scene(make_single_triangle(false));  // other meshes and materials
+    bad.csg_subtrees.push_back(spade::render::CsgSubtree{});  // no program
+    ASSERT_FALSE(renderer_->upload_scene(bad).has_value());
+
+    const std::vector<uint8_t> after = draw_uploaded_and_read(good, comparable_options(), camera);
+    ASSERT_EQ(after.size(), before.size()) << "the scene uploaded before the refusal no longer draws";
+    EXPECT_EQ(count_differing(before, after), 0u);
 }
 
 // SR-17a on mesh fragments: every shaded surface blends toward the sky by

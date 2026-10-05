@@ -68,6 +68,13 @@ using GlProcLoader = void* (*)(const char* name);
 
 class GlRenderer {
   public:
+    // The most SDF nodes one CSG subtree may have here. Each pixel's march
+    // evaluates every node at every step, so this bounds a frame's GPU time:
+    // 25 nodes cost 29.6 ms at 1920x1080 on an RTX 3060 Ti in the worst case
+    // measured, so 64 is about 76 ms there, and under Windows' 2 s timeout on
+    // a GPU ten times slower. The largest golden world has 13 nodes in all.
+    static constexpr uint32_t kMaxCsgSubtreeNodes = 64;
+
     // Requires a CURRENT GL context on the calling thread -- it queries the
     // version and compiles programs immediately, so a failure is reported here
     // rather than at the first frame.
@@ -85,10 +92,20 @@ class GlRenderer {
     // Uploads geometry for every mesh in the scene, and the scene's static
     // shadow map as the CPU built it. Call when the MESH SET changes -- at
     // scene load -- and not per frame. Idempotent: calling it again
-    // re-uploads, which is what a changed mesh set needs. Refused with
-    // Code::invalid_argument for a static shadow map whose depth array is
-    // not size x size, and with Code::unavailable when the driver cannot
-    // render to the R32F texture that dynamic bodies' shadows are drawn into.
+    // re-uploads, which is what a changed mesh set needs. CSG subtrees'
+    // programs go up with it, for draw() to march.
+    //
+    // Refused, never drawn short (L6), and a refusal changes nothing: the
+    // scene uploaded before it still draws.
+    //   Code::invalid_argument -- a mesh whose positions and normals differ in
+    //     count; a static shadow map whose depth array is not size x size; a
+    //     CSG subtree with no program, naming a draw item past the statics, or
+    //     whose program fails SdfProgram::validate().
+    //   Code::capacity_exceeded -- a subtree's program past kMaxSdfDepth
+    //     (validate()'s own code) or past kMaxCsgSubtreeNodes, or CSG programs
+    //     past the driver's GL_MAX_SHADER_STORAGE_BLOCK_SIZE.
+    //   Code::unavailable -- a scene with a shadow map, on a driver that cannot
+    //     render to the R32F texture dynamic bodies' shadows are drawn into.
     [[nodiscard]] Result<void> upload_scene(const render::RenderScene& scene);
 
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
@@ -100,10 +117,14 @@ class GlRenderer {
     // (SR-17, SR-17a, SR-22), and the sun's shadows on meshes and ground,
     // from the scene's static map (uploaded by upload_scene()) plus this
     // frame's dynamic casters. Meshes draw shaded, wireframe or velocity.
-    // Field layers draw filled in every mode, as raster_cpu draws them, and so
-    // do the overlays, from raster_cpu's own lists (render::overlay_geometry()).
-    // Raymarch is refused with Code::unavailable: it is a CPU technique. So
-    // is a malformed field layer, with Code::invalid_argument.
+    // CSG subtrees are ray-marched within their boxes in shaded and velocity
+    // modes, as raster_cpu does, and drawn from their meshes in wireframe
+    // (RS3). Field layers draw filled in every mode, as raster_cpu draws them,
+    // and so do the overlays, from raster_cpu's own lists
+    // (render::overlay_geometry()). Raymarch is refused with
+    // Code::unavailable: it is a CPU technique. A malformed field layer is
+    // refused with Code::invalid_argument, and so is a scene whose meshes or
+    // CSG subtrees are not the ones uploaded.
     //
     // Renders into the CURRENTLY BOUND framebuffer at the given size and
     // covers every pixel. It does not present: that belongs to whoever owns
@@ -127,8 +148,10 @@ class GlRenderer {
     // claim like that is exactly the kind this estate has learned to assert in
     // a test. After draw(), these report what the last frame actually issued --
     // so "one draw per mesh" is checkable by a caller with no display, against
-    // a scene whose instance count it chose. The background pass and each
-    // field layer are one more draw apiece, and are not counted.
+    // a scene whose instance count it chose. The count is one per mesh and
+    // submesh drawn, plus one per ray-marched CSG subtree. The background
+    // pass, the shadow casters, each field layer and the overlays are more
+    // draws, and are not counted.
     [[nodiscard]] uint32_t last_draw_calls() const noexcept;
     [[nodiscard]] uint32_t last_instances() const noexcept;
 
