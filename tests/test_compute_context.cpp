@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
+#include "gpu_skip.hpp"
 
 namespace {
 
@@ -162,6 +164,12 @@ TEST(GpuContext, ADeviceThatCannotPreserveFp32DenormalsIsRefused) {
     EXPECT_EQ(result.error().code, Code::unavailable);
     EXPECT_NE(result.error().context.find("cannot preserve fp32 denormals"), std::string::npos)
         << result.error().context;
+
+    // Every gpu test that skips here says why, naming the capability.
+    const auto why = spade::testing::vulkan_skip_reason();
+    ASSERT_TRUE(why.has_value()) << "a refused device must give a skip reason";
+    EXPECT_NE(why->find("shaderDenormPreserveFloat32 = false"), std::string::npos) << *why;
+    EXPECT_NE(why->find(denorms.name), std::string::npos) << *why;
 #endif
 }
 
@@ -360,6 +368,8 @@ TEST(ComputeBackendAvailability, ForcedUnavailableReturnsUnavailable) {
     ScopedForceNoVulkan guard;
 
     EXPECT_FALSE(vulkan_available());
+    EXPECT_EQ(spade::testing::vulkan_skip_reason(), std::optional<std::string>("Vulkan unavailable: SPADE_FORCE_NO_VULKAN=1"))
+        << "a forced skip names the override";
 
     BackendDesc desc{.kind = BackendKind::vulkan};
     auto result = VulkanContext::create(desc);
