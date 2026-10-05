@@ -141,14 +141,11 @@ Result<void> ModelType::validate() const {
         const DragBodyDesc& drag = drag_bodies[i];
         const std::string where = at + "drag body " + std::to_string(i) + ": ";
 
-        if (drag.mode != physics::drag_mode::quadratic && drag.mode != physics::drag_mode::componentwise) {
-            return std::unexpected(invalid(where + "unknown drag mode"));
+        if (const char* why = physics::check_drag_law(drag.mode, drag.area, drag.coeffs)) {
+            return std::unexpected(invalid(where + why));
         }
-        if (!(drag.area >= 0.0f) || !finite(drag.area)) {
-            return std::unexpected(invalid(where + "area must be finite and >= 0"));
-        }
-        if (!finite(drag.coeffs) || !finite(drag.local_pos)) {
-            return std::unexpected(invalid(where + "coeffs and local_pos must be finite"));
+        if (!finite(drag.local_pos)) {
+            return std::unexpected(invalid(where + "local_pos must be finite"));
         }
         if (!orientable(drag.local_orient)) {
             return std::unexpected(
