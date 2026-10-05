@@ -285,6 +285,9 @@ if(SPADE_BUILD_SANDBOX)
         # The built-in scenes' physics records (a bridge until world file v3),
         # pinned to spade_viewer's make_scene() records field by field.
         test_sandbox_builtin_records.cpp
+        # What the live smoke's scene main functions measure: bounce's
+        # rebounds, gate's ring crossings.
+        test_sandbox_scene_checks.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
