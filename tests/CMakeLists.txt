@@ -55,6 +55,7 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_path_text.cpp
     test_sdf.cpp
     test_state.cpp
     test_snapshot.cpp

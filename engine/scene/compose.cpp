@@ -7,6 +7,8 @@
 // ---------------------------------------------------------------------------
 #include "scene/compose.hpp"
 
+#include "core/path_text.hpp"
+
 #include <cstddef>
 #include <exception>
 #include <limits>
@@ -41,16 +43,6 @@ bool is_identity(const SdfTransform& t) {
         out += kDigits[(value >> shift) & 0xFu];
     }
     return out;
-}
-
-// std::filesystem::path::string() can throw on a path the native narrow
-// encoding cannot represent, and nothing may be thrown out of a Spade API.
-[[nodiscard]] std::string path_text(const std::filesystem::path& path) noexcept {
-    try {
-        return path.string();
-    } catch (...) {
-        return "<unprintable path>";
-    }
 }
 
 // The one palette entry `name` refers to (SCN-009: a reference is a name). A
