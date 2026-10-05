@@ -295,6 +295,7 @@ if(SPADE_BUILD_SANDBOX)
         # file per task's unit, sharing editor_test_support.hpp.
         test_editor_document.cpp
         test_editor_scene_edits.cpp
+        test_editor_model_params.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

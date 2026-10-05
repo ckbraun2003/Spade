@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -59,6 +60,44 @@ namespace spade::sandbox::editor::test {
 [[nodiscard]] inline scene::SceneDesc with_asset(scene::SceneDesc s, std::string name) {
     s.assets.push_back(asset_named(std::move(name)));
     return s;
+}
+
+// The hover scene's quadrotor model, renamed "quad": four rotors, a drag body
+// and an IMU mount, so every part kind has an index 0.
+[[nodiscard]] inline vehicles::ModelType quad_model() {
+    vehicles::ModelType m = sample_scene().models.at(0);
+    m.name = "quad";
+    return m;
+}
+
+// The hover scene with `m` as its only model and its one vehicle, "quad_0", flying it.
+[[nodiscard]] inline scene::SceneDesc scene_with(const vehicles::ModelType& m) {
+    scene::SceneDesc s = sample_scene();
+    s.models = {m};
+    s.vehicles.at(0).name = "quad_0";
+    s.vehicles.at(0).model = m.name;
+    return s;
+}
+
+// Two vehicles, "quad_0" and "quad_1", sharing one model named `name`, as a
+// scene from a file may (the editor never makes one).
+[[nodiscard]] inline scene::SceneDesc two_vehicles_sharing(std::string name) {
+    vehicles::ModelType m = quad_model();
+    m.name = std::move(name);
+    scene::SceneDesc s = scene_with(m);
+    scene::SceneVehicle twin = s.vehicles.at(0);
+    twin.name = "quad_1";
+    twin.start.pos.x += 2.0f;
+    s.vehicles.push_back(twin);
+    return s;
+}
+
+[[nodiscard]] inline const vehicles::ModelType& model_named(const scene::SceneDesc& s, std::string_view name) {
+    for (const auto& m : s.models) {
+        if (m.name == name) return m;
+    }
+    ADD_FAILURE() << "no model named " << name;
+    return s.models.at(0);
 }
 
 }  // namespace spade::sandbox::editor::test
