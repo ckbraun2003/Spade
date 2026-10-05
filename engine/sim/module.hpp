@@ -60,6 +60,7 @@ inline constexpr std::string_view kCoreQuantities[] = {"body.pose", "body.wrench
 struct QuantityAccess {
     std::string_view quantity;
     Access access = Access::read;
+    bool optional = false;
 };
 
 struct PassDecl {
@@ -67,7 +68,8 @@ struct PassDecl {
     Phase phase = Phase::fields;
     Placement placement = Placement::ordered;
     std::span<const QuantityAccess> access{};
-    std::span<const std::string_view> after{};  // "<module>.<pass>"
+    std::span<const std::string_view> after{};   // "<module>.<pass>"
+    std::span<const std::string_view> before{};  // "<module>.<pass>"
     PassFn cpu = nullptr;
     // The built-in kernel that does what `cpu` does, on the GPU; `none` runs
     // only on the CPU, and Vulkan refuses the set at create().
@@ -269,6 +271,14 @@ struct ModuleDesc {
 
 using ModuleSet = std::vector<ModuleDesc>;
 
+inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
+
+enum class BindingKind : uint8_t { absent = 0, array = 1 };
+struct CompiledBinding {
+    BindingKind kind = BindingKind::absent;
+    uint32_t index = kNoArray;
+};
+
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set
 // it was compiled from may have been built from temporary strings.
 struct CompiledPass {
@@ -277,6 +287,7 @@ struct CompiledPass {
     Phase phase = Phase::fields;
     PassFn cpu = nullptr;
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
+    std::vector<CompiledBinding> state{};  // one per declared access, in declaration order
 };
 
 // One field of the compiled registry: where its `count` floats sit in a world's
@@ -290,7 +301,6 @@ struct CompiledField {
 };
 
 // One module array of the compiled table.
-inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 struct CompiledArray {
     std::string module;
     std::string name;

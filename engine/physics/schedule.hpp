@@ -13,6 +13,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "state/layout.hpp"
+#include "state/state_view.hpp"
 #include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -224,6 +225,10 @@ struct SubstepContext {
     // sub-step resolution reads the sample's monotonically increasing
     // SampleIndex, which is what it is for.
     Tick tick{};
+
+    // The RUNNING PASS's declared state (module-API stage 4, Task 6):
+    // state[i] views what its i-th declared access names. Set before each pass.
+    std::span<const StateView> state{};
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -1839,4 +1840,351 @@ TEST(ModuleStreams, ABuiltinStreamedArrayWithoutItsStreamIsRefused) {
     const auto retagged = create(with_imu_streams(renamed));
     EXPECT_TRUE(refused_naming(retagged, "'imu_sensors'"));
     EXPECT_TRUE(refused_naming(retagged, "'sensor.imu'")) << "the standard tag, not the one declared";
+}
+
+// Stage 4, Task 6 (review focus 4): a pass sees the state it declares, and
+// nothing else, through SubstepContext::state -- one view per declared access,
+// in its own declaration order. An optional read of an absent module binds an
+// absent view and orders nothing; a `before` edge orders like a mirrored
+// `after`. Each developer pass below checks the size of ctx.state first, so a
+// missing binding shows as a wrong count rather than an out-of-range read.
+namespace {
+
+using spade::modules::BindingKind;
+
+// `tally`: one per_world counter, incremented by its pass once per substep in
+// every world. It declares one access, so it sees one view.
+std::size_t g_tally_views = 0;      // ctx.state.size() at the last tally pass
+spade::StateView g_tally_view{};    // ctx.state[0] at the last tally pass
+void tally_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    g_tally_views = ctx.state.size();
+    if (ctx.state.size() != 1) return;
+    g_tally_view = ctx.state[0];
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<TallyRow> rows = spade::world_rows<TallyRow>(ctx.state[0], w);
+        if (!rows.empty()) ++rows[0].count;
+    }
+}
+constexpr QuantityAccess kTallyAccess[] = {{"tally.tally_counts", Access::write}};
+constexpr PassDecl kTallyPasses[] = {{.name = "count", .phase = Phase::forces, .access = kTallyAccess, .cpu = &tally_pass}};
+
+[[nodiscard]] ModuleDesc tally_module() { return {.name = "tally", .passes = kTallyPasses, .state = kTallyArrays}; }
+
+[[nodiscard]] spade::WorldSetDesc two_world_set() {
+    const spade::WorldInstanceDesc one = one_body_world().worlds[0];
+    return spade::WorldSetDesc{{one, one}};
+}
+
+// `copier`: copies tally's count into a per_world row of its own. It declares a
+// core quantity, tally's array and its own array, so it sees three views: the
+// first absent, whatever the set holds.
+struct CopyRow {
+    uint32_t seen;           // tally's count this substep, or kNothing
+    uint32_t tally_present;  // ctx.state[1].present()
+    uint32_t core_present;   // ctx.state[0].present()
+    uint32_t views;          // ctx.state.size()
+};
+constexpr uint32_t kNothing = 0xFFFF'FFFFu;
+void copy_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 3) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<CopyRow> out = spade::world_rows<CopyRow>(ctx.state[2], w);
+        if (out.empty()) continue;
+        const std::span<const TallyRow> in = spade::world_rows<const TallyRow>(ctx.state[1], w);
+        out[0].seen = in.empty() ? kNothing : in[0].count;
+        out[0].tally_present = ctx.state[1].present() ? 1u : 0u;
+        out[0].core_present = ctx.state[0].present() ? 1u : 0u;
+        out[0].views = static_cast<uint32_t>(ctx.state.size());
+    }
+}
+constexpr spade::modules::ArrayDecl kCopierArrays[] = {
+    {.name = "copier_rows", .elem_size = spade::modules::row_size<CopyRow>()}};
+constexpr QuantityAccess kCopyAccess[] = {
+    {"world.params", Access::read}, {"tally.tally_counts", Access::read}, {"copier.copier_rows", Access::write}};
+constexpr QuantityAccess kCopyOptionalAccess[] = {{"world.params", Access::read},
+                                                  {.quantity = "tally.tally_counts", .access = Access::read, .optional = true},
+                                                  {"copier.copier_rows", Access::write}};
+constexpr QuantityAccess kCopyNothingAccess[] = {{"world.params", Access::read}, {"copier.copier_rows", Access::write}};
+constexpr PassDecl kCopyPasses[] = {{.name = "copy", .phase = Phase::forces, .access = kCopyAccess, .cpu = &copy_pass}};
+constexpr PassDecl kCopyOptionalPasses[] = {
+    {.name = "copy", .phase = Phase::forces, .access = kCopyOptionalAccess, .cpu = &copy_pass}};
+constexpr PassDecl kCopyNothingPasses[] = {
+    {.name = "copy", .phase = Phase::forces, .access = kCopyNothingAccess, .cpu = &copy_pass}};
+
+[[nodiscard]] ModuleDesc copier_module(std::span<const PassDecl> passes) {
+    return {.name = "copier", .passes = passes, .state = kCopierArrays};
+}
+
+[[nodiscard]] std::ptrdiff_t position_of(const Names& order, std::string_view pass) {
+    const auto it = std::ranges::find(order, std::string(pass));
+    return it == order.end() ? -1 : it - order.begin();
+}
+
+[[nodiscard]] const spade::modules::CompiledPass* compiled_pass(const CompiledSchedule& s, std::string_view module,
+                                                                std::string_view pass) {
+    for (const spade::modules::CompiledPass& p : s.passes) {
+        if (p.module == module && p.pass == pass) return &p;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] uint32_t array_index(const CompiledSchedule& s, std::string_view name) {
+    const auto it = std::ranges::find(s.arrays, std::string(name), &spade::modules::CompiledArray::name);
+    return it == s.arrays.end() ? spade::modules::kNoArray : static_cast<uint32_t>(it - s.arrays.begin());
+}
+
+}  // namespace
+
+TEST(ModuleViews, APassSeesItsOwnArrayPerWorld) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    g_tally_views = 0;
+    ASSERT_TRUE(sim->step(3).has_value());
+    EXPECT_EQ(g_tally_views, 1u) << "one view per declared access";
+    EXPECT_EQ(g_tally_view.elem_size, sizeof(TallyRow));
+    EXPECT_EQ(g_tally_view.world_count, 2u);
+    EXPECT_EQ(g_tally_view.capacity_per_world, 1u) << "per_world";
+    for (uint32_t w = 0; w < 2; ++w) {
+        const auto rows = sim->module_rows<TallyRow>("tally_counts", w);
+        ASSERT_TRUE(rows.has_value()) << rows.error().context;
+        EXPECT_EQ((*rows)[0].count, 6u) << "3 steps x 2 substeps, world " << w;
+    }
+    EXPECT_TRUE(spade::world_rows<TallyRow>(g_tally_view, 2).empty()) << "a world outside the set";
+    EXPECT_TRUE(spade::world_rows<uint64_t>(g_tally_view, 0).empty()) << "another row size";
+    EXPECT_TRUE(spade::world_rows<TallyRow>(spade::StateView{}, 0).empty()) << "an absent view";
+}
+
+TEST(ModuleViews, ADevelopersStateSnapshotsAndRestoresBitwise) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    auto source = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    auto twin = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(source.has_value()) << source.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    ASSERT_TRUE(source->step(3).has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    ASSERT_TRUE(twin->restore(*blob).has_value());
+    ASSERT_TRUE(source->step(2).has_value());
+    ASSERT_TRUE(twin->step(2).has_value());
+    EXPECT_EQ(spade::testing::state_digest(*twin), spade::testing::state_digest(*source));
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ((*source->module_rows<TallyRow>("tally_counts", w))[0].count, 10u) << "world " << w;
+        EXPECT_EQ((*twin->module_rows<TallyRow>("tally_counts", w))[0].count, 10u) << "world " << w;
+    }
+}
+
+TEST(ModuleViews, AReaderOfAnotherModulesArrayRunsAfterItsWriter) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(copier_module(kCopyPasses));  // before tally in the set
+    set.push_back(tally_module());
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const Names order = names(sim->schedule());
+    EXPECT_LT(position_of(order, "tally.count"), position_of(order, "copier.copy")) << "the read orders it";
+    ASSERT_TRUE(sim->step(3).has_value());
+    const auto rows = sim->module_rows<CopyRow>("copier_rows", 0);
+    ASSERT_TRUE(rows.has_value()) << rows.error().context;
+    EXPECT_EQ((*rows)[0].views, 3u) << "one view per declared access";
+    EXPECT_EQ((*rows)[0].seen, 6u) << "this substep's count, not the last one's";
+    EXPECT_EQ((*rows)[0].tally_present, 1u);
+    EXPECT_EQ((*rows)[0].core_present, 0u) << "a core quantity binds an absent view";
+}
+
+TEST(ModuleViews, AnOptionalReadOfAnAbsentModuleBindsNothing) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(copier_module(kCopyOptionalPasses));
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+
+    // It orders nothing: the schedule (and so the identity) is the one a copier
+    // that never named tally compiles to, which is the copier-free order plus
+    // copier.copy.
+    spade::modules::ModuleSet unnamed = spade::modules::standard_modules();
+    unnamed.push_back(copier_module(kCopyNothingPasses));
+    const auto plain = compile_schedule(unnamed);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    EXPECT_EQ(names(*s), names(*plain));
+    EXPECT_EQ(s->identity, plain->identity);
+    Names without = names(*s);
+    std::erase(without, std::string("copier.copy"));
+    EXPECT_EQ(without, names(*compile_schedule(spade::modules::standard_modules())));
+    const spade::modules::CompiledPass* copy = compiled_pass(*s, "copier", "copy");
+    ASSERT_NE(copy, nullptr);
+    ASSERT_EQ(copy->state.size(), 3u);
+    EXPECT_EQ(copy->state[1].kind, BindingKind::absent);
+    EXPECT_EQ(copy->state[2].kind, BindingKind::array);
+
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->step(1).has_value());
+    const auto rows = sim->module_rows<CopyRow>("copier_rows", 0);
+    ASSERT_TRUE(rows.has_value()) << rows.error().context;
+    EXPECT_EQ((*rows)[0].views, 3u) << "the absent read still has its slot";
+    EXPECT_EQ((*rows)[0].tally_present, 0u);
+    EXPECT_EQ((*rows)[0].seen, kNothing) << "an absent view has no rows";
+}
+
+TEST(ModuleSchedule, AnOptionalAccessMayOnlyReadAnArrayThatExists) {
+    using spade::modules::ArrayDecl;
+    static constexpr QuantityAccess read_ok[] = {
+        {.quantity = "tally.tally_counts", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess write[] = {
+        {.quantity = "tally.tally_counts", .access = Access::write, .optional = true}};
+    static constexpr QuantityAccess add[] = {
+        {.quantity = "tally.tally_counts", .access = Access::accumulate, .optional = true}};
+    static constexpr QuantityAccess absent_write[] = {{.quantity = "ghost.x", .access = Access::write, .optional = true}};
+    static constexpr QuantityAccess nope[] = {{.quantity = "tally.nope", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess core[] = {{.quantity = "body.pose", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess field[] = {{.quantity = "field.wind", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess token[] = {
+        {.quantity = "integrate.anything", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess bare[] = {{.quantity = "ghost", .access = Access::read, .optional = true}};
+    const auto with = [](std::span<const QuantityAccess> access) {
+        const PassDecl probe[] = {{.name = "probe", .phase = Phase::sensors, .access = access, .cpu = &noop}};
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back({.name = "tally", .state = kTallyArrays});
+        set.push_back({.name = "probe", .passes = probe});
+        return compile_schedule(set);
+    };
+    const auto control = with(read_ok);
+    ASSERT_TRUE(control.has_value()) << control.error().context;
+    const spade::modules::CompiledPass* probe = compiled_pass(*control, "probe", "probe");
+    ASSERT_NE(probe, nullptr);
+    EXPECT_EQ(probe->state.size(), 1u);
+    if (probe->state.size() == 1u) {
+        EXPECT_EQ(probe->state[0].kind, BindingKind::array) << "present: it binds like a plain read";
+        EXPECT_EQ(probe->state[0].index, array_index(*control, "tally_counts"));
+    }
+
+    EXPECT_TRUE(refused_naming(with(write), "tally.tally_counts")) << "an optional write";
+    EXPECT_TRUE(refused_naming(with(add), "tally.tally_counts")) << "an optional accumulate";
+    EXPECT_TRUE(refused_naming(with(absent_write), "ghost.x")) << "an optional write, module absent";
+    EXPECT_TRUE(refused_naming(with(nope), "tally.nope")) << "present, but not one of its arrays";
+    EXPECT_TRUE(refused_naming(with(core), "body.pose")) << "a core quantity is never absent";
+    EXPECT_TRUE(refused_naming(with(field), "field.wind")) << "a field is not <module>.<array>";
+    EXPECT_TRUE(refused_naming(with(token), "integrate.anything")) << "present and stateless: no array to bind";
+    EXPECT_TRUE(refused_naming(with(bare), "ghost")) << "not <module>.<name>";
+}
+
+TEST(ModuleSchedule, ABeforeEdgeOrdersTwoWriters) {
+    static constexpr QuantityAccess writes[] = {{"body.pose", Access::write}};
+    static constexpr std::string_view before_a[] = {"a.fix"};
+    static constexpr PassDecl a[] = {{.name = "fix", .phase = Phase::constraints, .access = writes, .cpu = &noop}};
+    static constexpr PassDecl b[] = {
+        {.name = "fix", .phase = Phase::constraints, .access = writes, .before = before_a, .cpu = &noop}};
+    static constexpr PassDecl b_no_edge[] = {
+        {.name = "fix", .phase = Phase::constraints, .access = writes, .cpu = &noop}};
+    const ModuleDesc set[] = {{.name = "a", .passes = a}, {.name = "b", .passes = b}};
+    const auto s = compile_schedule(set);
+    EXPECT_TRUE(s.has_value()) << s.error().context;
+    if (s) EXPECT_EQ(names(*s), (Names{"b.fix", "a.fix"})) << "the second in set order runs first";
+    const ModuleDesc no_edge[] = {{.name = "a", .passes = a}, {.name = "b", .passes = b_no_edge}};
+    EXPECT_TRUE(refused_naming(compile_schedule(no_edge), "body.pose"));
+
+    // An edge that closes a cycle is refused, naming the passes in it: two
+    // `before` edges, and a `before` against an `after`.
+    static constexpr std::string_view to_one[] = {"a.one"};
+    static constexpr std::string_view to_two[] = {"b.two"};
+    static constexpr PassDecl one_before_two[] = {{.name = "one", .phase = Phase::forces, .before = to_two, .cpu = &noop}};
+    static constexpr PassDecl two_before_one[] = {{.name = "two", .phase = Phase::forces, .before = to_one, .cpu = &noop}};
+    static constexpr PassDecl one_both[] = {
+        {.name = "one", .phase = Phase::forces, .after = to_two, .before = to_two, .cpu = &noop}};
+    static constexpr PassDecl two[] = {{.name = "two", .phase = Phase::forces, .cpu = &noop}};
+    const ModuleDesc befores[] = {{.name = "a", .passes = one_before_two}, {.name = "b", .passes = two_before_one}};
+    const ModuleDesc mixed[] = {{.name = "a", .passes = one_both}, {.name = "b", .passes = two}};
+    for (const auto& cycle : {compile_schedule(befores), compile_schedule(mixed)}) {
+        EXPECT_TRUE(refused_naming(cycle, "cycle"));
+        EXPECT_TRUE(refused_naming(cycle, "a.one"));
+        EXPECT_TRUE(refused_naming(cycle, "b.two"));
+    }
+}
+
+TEST(ModuleSchedule, ABeforeEdgeMustNameAPassInThisOrALaterPhase) {
+    static constexpr std::string_view to_nobody[] = {"nobody.here"};
+    static constexpr std::string_view to_late[] = {"b.late"};
+    static constexpr std::string_view to_early[] = {"b.early"};
+    static constexpr PassDecl dangling[] = {{.name = "x", .phase = Phase::forces, .before = to_nobody, .cpu = &noop}};
+    static constexpr PassDecl into_later[] = {{.name = "x", .phase = Phase::forces, .before = to_late, .cpu = &noop}};
+    static constexpr PassDecl into_earlier[] = {{.name = "x", .phase = Phase::forces, .before = to_early, .cpu = &noop}};
+    static constexpr PassDecl b[] = {{.name = "late", .phase = Phase::sensors, .cpu = &noop},
+                                     {.name = "early", .phase = Phase::fields, .cpu = &noop}};
+    const ModuleDesc s1[] = {{.name = "a", .passes = dangling}, {.name = "b", .passes = b}};
+    const ModuleDesc s2[] = {{.name = "a", .passes = into_earlier}, {.name = "b", .passes = b}};
+    const ModuleDesc s3[] = {{.name = "a", .passes = into_later}, {.name = "b", .passes = b}};
+    EXPECT_TRUE(refused_naming(compile_schedule(s1), "nobody.here"));
+    EXPECT_TRUE(refused_naming(compile_schedule(s2), "b.early"));
+    EXPECT_TRUE(compile_schedule(s3).has_value()) << "an edge into a later phase is already satisfied";
+}
+
+// Physics' input 5 (propulsion-rows plan section 4), declared as the stage-4
+// plan writes it: rotor.forces reads propulsion.motors optionally, and
+// propulsion.drive, which also writes rotor.rotors, runs before rotor.forces.
+// The one change is the initializer: C++ cannot mix positional and designated
+// clauses, so the optional read is spelt with designators throughout.
+TEST(ModuleSchedule, PhysicsInputFiveDeclaresAsWritten) {
+    struct MotorRow {
+        float duty;
+        float _p[3];
+    };
+    static constexpr spade::modules::ArrayDecl motors[] = {{.name = "motors",
+                                                            .elem_size = spade::modules::row_size<MotorRow>(),
+                                                            .extent = Extent::per_row,
+                                                            .owner = "rotors",
+                                                            .depth = 1}};
+    static constexpr QuantityAccess drive_access[] = {{"propulsion.motors", Access::write},
+                                                      {"rotor.rotors", Access::write}};
+    static constexpr std::string_view before_rotor[] = {"rotor.forces"};
+    static constexpr PassDecl drive[] = {
+        {.name = "drive", .phase = Phase::forces, .access = drive_access, .before = before_rotor, .cpu = &noop}};
+    static constexpr PassDecl drive_no_edge[] = {
+        {.name = "drive", .phase = Phase::forces, .access = drive_access, .cpu = &noop}};
+
+    // The standard rotor pass, with the optional read appended to its access.
+    spade::modules::ModuleSet standard = spade::modules::standard_modules();
+    const auto rotor = std::ranges::find(standard, std::string_view("rotor"), &ModuleDesc::name);
+    ASSERT_NE(rotor, standard.end());
+    ASSERT_EQ(rotor->passes.size(), 1u);
+    std::vector<QuantityAccess> rotor_access(rotor->passes[0].access.begin(), rotor->passes[0].access.end());
+    const std::size_t optional_slot = rotor_access.size();
+    rotor_access.push_back({.quantity = "propulsion.motors", .access = Access::read, .optional = true});
+    std::array<PassDecl, 1> rotor_pass{rotor->passes[0]};
+    rotor_pass[0].access = rotor_access;
+    rotor->passes = rotor_pass;
+
+    // Without propulsion: today's order and today's identity.
+    const auto alone = compile_schedule(standard);
+    ASSERT_TRUE(alone.has_value()) << alone.error().context;
+    EXPECT_EQ(names(*alone), names(*compile_schedule(spade::modules::standard_modules())));
+    EXPECT_EQ(alone->identity, kStandardIdentity);
+    const spade::modules::CompiledPass* forces = compiled_pass(*alone, "rotor", "forces");
+    ASSERT_NE(forces, nullptr);
+    ASSERT_EQ(forces->state.size(), rotor_access.size());
+    EXPECT_EQ(forces->state[optional_slot].kind, BindingKind::absent);
+
+    // With it: drive runs immediately before rotor.forces, and the motors bind.
+    spade::modules::ModuleSet with = standard;
+    with.push_back({.name = "propulsion", .passes = drive, .state = motors});
+    const auto s = compile_schedule(with);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const Names order = names(*s);
+    const std::ptrdiff_t at = position_of(order, "rotor.forces");
+    ASSERT_GT(at, 0);
+    EXPECT_EQ(order[static_cast<std::size_t>(at) - 1], "propulsion.drive");
+    forces = compiled_pass(*s, "rotor", "forces");
+    ASSERT_NE(forces, nullptr);
+    ASSERT_EQ(forces->state.size(), rotor_access.size());
+    EXPECT_EQ(forces->state[optional_slot].kind, BindingKind::array);
+    EXPECT_EQ(forces->state[optional_slot].index, array_index(*s, "motors"));
+    const spade::modules::CompiledPass* driver = compiled_pass(*s, "propulsion", "drive");
+    ASSERT_NE(driver, nullptr);
+    ASSERT_EQ(driver->state.size(), 2u);
+    EXPECT_EQ(driver->state[1].index, array_index(*s, "rotors")) << "another module's array";
+
+    // Without the edge the two writers of rotor.rotors are refused.
+    spade::modules::ModuleSet unordered = standard;
+    unordered.push_back({.name = "propulsion", .passes = drive_no_edge, .state = motors});
+    EXPECT_TRUE(refused_naming(compile_schedule(unordered), "rotor.rotors"));
 }
