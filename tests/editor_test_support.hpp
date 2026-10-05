@@ -44,6 +44,12 @@ namespace spade::sandbox::editor::test {
     return t ? *t : std::string("<scene_to_yaml failed: ") + t.error().context + ">";
 }
 
+// The canonical text of a world, as text_of() is for a scene.
+[[nodiscard]] inline std::string world_text_of(const WorldDesc& w) {
+    Result<std::string> t = world_to_yaml(w);
+    return t ? *t : std::string("<world_to_yaml failed: ") + t.error().context + ">";
+}
+
 // A unit box asset (half extents 0.5) at the identity pose, colliding, with no visual.
 [[nodiscard]] inline scene::SceneAsset asset_named(std::string name) {
     scene::SceneAsset a;

@@ -296,6 +296,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_document.cpp
         test_editor_scene_edits.cpp
         test_editor_model_params.cpp
+        test_editor_world_edits.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
