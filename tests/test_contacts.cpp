@@ -842,6 +842,62 @@ TEST(Contacts, InactiveBodiesAreLeftByteIdentical) {
 // StateLayout.WorldParamsTailPaddingIsZeroInAnArena, for the same reason.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PHY-7: the IMU's specific force includes the contact response. The contact
+// passes add each body's velocity change to a transient scratch; Integrate
+// adds it over h to the specific force (not to vel, which already took the
+// impulse) and zeroes EVERY slot of the scratch, so it is zero at every
+// substep boundary (Core's condition 1).
+// ---------------------------------------------------------------------------
+TEST(Contacts, TheContactScratchIsZeroAtTheBoundaryForEverySlot) {
+    const SdfProgram prog = GroundPlane();
+    const ContactParams cp = MakeContacts(/*e=*/0.5f, /*mu=*/0.4f);
+    const WorldParams wp = MakeWorld(glm::vec3(0.0f, 0.0f, -kG));
+
+    std::vector<BodyState> bodies(2, MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(1.0f, 0.0f, -2.0f)));
+    std::vector<glm::vec3> dv(bodies.size(), glm::vec3(0.0f));
+    const glm::vec3 vel_in = bodies[0].vel;
+
+    resolve_static_contacts(bodies, prog, cp, kH, dv);
+    ASSERT_NE(dv[0], glm::vec3(0.0f)) << "the contact pass wrote no velocity change";
+    EXPECT_EQ(dv[0], bodies[0].vel - vel_in) << "the scratch must hold the change the state took, exactly";
+    EXPECT_EQ(dv[1], dv[0]);
+
+    bodies[1].flags = 0u;  // skipped by Integrate from here, as a despawn between the passes would leave it
+    integrate_bodies(bodies, wp, kH, dv);
+    EXPECT_EQ(dv[0], glm::vec3(0.0f)) << "an active body's contact change outlived its substep";
+    EXPECT_EQ(dv[1], glm::vec3(0.0f))
+        << "a body Integrate skips kept its contact change: it would read as a phantom contact later";
+}
+
+TEST(Contacts, IntegrateAddsTheContactChangeToTheSpecificForceAndNothingElse) {
+    const SdfProgram prog = GroundPlane();
+    const ContactParams cp = MakeContacts(/*e=*/0.5f, /*mu=*/0.4f);
+    const WorldParams wp = MakeWorld(glm::vec3(0.0f, 0.0f, -kG));
+    // A literal unit quaternion, 30 degrees about Z: the body frame differs
+    // from the world's, so the change is rotated as the force is.
+    const glm::quat q = glm::normalize(glm::quat(0.9659258f, 0.0f, 0.0f, 0.2588190f));
+
+    std::vector<BodyState> bodies{MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(1.0f, 0.0f, -2.0f))};
+    bodies[0].orient = q;
+    std::vector<glm::vec3> dv(1, glm::vec3(0.0f));
+    resolve_static_contacts(bodies, prog, cp, kH, dv);
+    const glm::vec3 change = dv[0];
+    ASSERT_NE(change, glm::vec3(0.0f));
+
+    std::vector<BodyState> plain = bodies;
+    integrate_bodies(bodies, wp, kH, dv);
+    integrate_bodies(plain, wp, kH);
+
+    EXPECT_EQ(bodies[0].specific_force, glm::conjugate(q) * (change / kH));
+    BodyState a = bodies[0];
+    BodyState b = plain[0];
+    a.specific_force = glm::vec3(0.0f);
+    b.specific_force = glm::vec3(0.0f);
+    EXPECT_EQ(std::memcmp(&a, &b, sizeof(BodyState)), 0)
+        << "Integrate changed more than the specific force: vel took the impulse in the contact pass already";
+}
+
 TEST(Contacts, ContactParamsIsStd430SafeAndByteDetermined) {
     static_assert(sizeof(ContactParams) == 32, "two 16-byte std430 rows");
     static_assert(alignof(ContactParams) == 16, "std430 base alignment");

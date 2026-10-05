@@ -322,6 +322,7 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // physics inner loop; it does not revalidate.
 // ---------------------------------------------------------------------------
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
-                             const ContactParams& params, float h) noexcept;
+                             const ContactParams& params, float h,
+                             std::span<glm::vec3> contact_dv = {}) noexcept;
 
 }  // namespace spade::physics

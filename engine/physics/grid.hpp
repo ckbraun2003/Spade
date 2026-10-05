@@ -573,7 +573,7 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 // ---------------------------------------------------------------------------
 void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
                               const GridParams& grid, const ContactParams& params,
-                              GridScratch& scratch) noexcept;
+                              GridScratch& scratch, std::span<glm::vec3> contact_dv = {}) noexcept;
 
 // ---------------------------------------------------------------------------
 // THE SAME PASS AS A JACOBI GATHER -- one iteration, no in-place coupling.
