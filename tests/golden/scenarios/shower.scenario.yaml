@@ -73,7 +73,8 @@
 #   generated  2026-10-05 (PHY-7 regeneration; first generated at Task 16)
 #   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
 #   cross-check msvc-ninja-release AND msvc-ninja-debug agree; the gcc-13 Docker
-#              leg (TD-12): pending
+#              leg (TD-12) reproduces it on a fresh -NoSeed volume
+#              (spade-docker-leg-83d33ae26902, PASS 1168/1168)
 # -----------------------------------------------------------------------------
 
 scenario_version: 1
