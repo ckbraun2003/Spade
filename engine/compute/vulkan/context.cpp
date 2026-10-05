@@ -559,6 +559,7 @@ VulkanContext::VulkanContext(VulkanContext&& other) noexcept
       transfer_family_(other.transfer_family_),
       api_version_(other.api_version_),
       int64_supported_(other.int64_supported_),
+      report_(std::move(other.report_)),
       device_name_(std::move(other.device_name_)) {}
 
 VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
@@ -574,6 +575,7 @@ VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
         transfer_family_ = other.transfer_family_;
         api_version_ = other.api_version_;
         int64_supported_ = other.int64_supported_;
+        report_ = std::move(other.report_);
         device_name_ = std::move(other.device_name_);
     }
     return *this;

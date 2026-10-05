@@ -117,6 +117,10 @@ public:
     // ------------------------------------------------------------------
     [[nodiscard]] bool supports_int64() const noexcept { return int64_supported_; }
 
+    // The device, driver and float controls this context runs on (CORE-5,
+    // L6). Recorded at create(); describe() gives it one line.
+    [[nodiscard]] const DeviceReport& device_report() const noexcept { return report_; }
+
     // True iff this context created a VK_EXT_debug_utils messenger (S6 Task
     // 5): a debug build where VK_LAYER_KHRONOS_validation AND the
     // VK_EXT_debug_utils instance extension were both present at create()
@@ -159,6 +163,7 @@ private:
     // S6 Task 8: VkPhysicalDeviceFeatures::shaderInt64 as this device
     // advertised it (see supports_int64() above). Recorded, never required.
     bool int64_supported_ = false;
+    DeviceReport report_;
     std::string device_name_;
 };
 
