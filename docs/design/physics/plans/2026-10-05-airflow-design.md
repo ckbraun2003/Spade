@@ -258,7 +258,7 @@ Recommendation: A, then B, with C for LBM (§8 Q3). B makes the on-axis wake pro
 
 **A new airspeed sensor.** It has the shape `03-sensors.md` names for the next sensors (a row, a kind tag, a seeded stream, a ring), and is added under `sensors/kinds.hpp`'s rule: row, sample, stream and poll path first, then the tag.
 - **Mount:** a body slot, a body-frame position `r` and an orientation. The probe axis is the mount's +X.
-- **Reads:** `wind` and `density` at its mount point (a per-sensor sample point). Without airflow it reads Dryden, so it is useful before the solver lands.
+- **Reads:** `wind` and `density` at its mount point (a per-sensor sample point). Without airflow it reads Dryden, so it is useful before the solver lands. Inside a region it reads the local air, the vehicle's own wake included, as a real probe does: a probe meant to read the free stream is mounted forward on a boom, clear of the discs. The HUD's airspeed does not depend on it (§6).
 - **Model:** the relative wind `w = u_air(p) − (v + ω × r)`. True airspeed along the probe is `V = max(0, −w·a)`; the differential pressure is `q = ½ ρ V²`; indicated airspeed is `sqrt(2q / ρ₀)` with ρ₀ = 1.225 kg/m³. Optionally the three-axis `w` in the mount frame, for angle of attack and sideslip.
 - **Noise:** white noise on `q` (Pa), plus a bias random walk, from a per-sensor seeded stream. Noise on pressure makes low-speed readings noisy, as a real pitot's are.
 - **Placement:** the Sensors phase. It reads the Fields-phase sample, taken at the substep's starting positions. That instant is documented, not corrected.
@@ -451,33 +451,40 @@ The views read only Publish (`L5`, the engine model). `airflow.publish` writes a
 
 | Item | Source |
 |---|---|
-| Airspeed | The airspeed sensor if one is mounted; otherwise `|u_air(body) − v_body|` from a Publish point |
+| Airspeed, α and β | The **free-stream** relative wind the vehicle's aero actually used, so the HUD shows what the force laws saw: the mean over the vehicle's rotors of the air their inflow read, minus `v_body`. That is Dryden in M3 (option A) and option B's probe-and-subtract value from M4 (§3.2). `aero_breakdown` carries each element's air-relative velocity as used. **Not** a Publish point at the body centre: on `hover.scene`'s quad the discs' inner edges are 5 cm from the centre, inside the Peskin kernel's support, so that point reads the vehicle's own downwash, about `v_h` ≈ 4.3 m/s at hover *(estimate)* (Interface, 2026-10-05) |
+| Angle of attack and sideslip, the formulas | `v_a = Rᵀ(v_body − u_air)` in body axes: nose +X, up +Y, right +Z = forward × up (`sandbox/drone_sim.hpp:116-117`: pitch about Z, roll about X). `α = atan2(−v_a.y, v_a.x)`, positive nose-up into the relative wind; `β = asin(v_a.z / |v_a|)`, positive with the relative wind from the right (the aerospace convention). In steady level forward flight in still air, `α` equals the pitch. Shown as "—" below 0.5 m/s. The HUD states its convention; Kat's is not recorded anywhere in this repo, so agreeing it goes through the lead (`consumers.md`) *(unconfirmed until Kat answers)* |
+| Local air at the body | A Publish point at the body centre, labelled as such: it includes the vehicle's own wake |
+| The airspeed sensor, if one is mounted | Its reading (§3.5), labelled as the sensor's |
 | Ground speed, and the wind at the body | Body state; the Publish point |
-| Angle of attack and sideslip | `v_a = Rᵀ(v_body − u_air)` in body axes (nose +X, up +Y, right +Z, `vehicles/quadrotor.hpp`). `α = atan2(−v_a.y, v_a.x)`, `β = asin(v_a.z / |v_a|)`. Shown as "—" below 0.5 m/s. Signs to be agreed with Kat's convention *(unconfirmed)* |
-| Aero force and moment, total and split (rotors, drag), body and world frame; thrust per rotor | The per-element outputs of `rotor.forces` and `drag.forces` (§1.8), copied per body in Publish. A new public read, for example `aero_breakdown(VehicleRef)` (Core and Physics name it) |
+| Aero force and moment, total and split (rotors, drag), body and world frame; thrust per rotor | The per-element outputs of `rotor.forces` and `drag.forces` (§1.8), copied per body in Publish. A new public read, for example `aero_breakdown(VehicleRef)` (Core and Physics name it), carrying each element's air-relative velocity as used. It and the region diagnostics reach the installed headers (`SL2b`) |
 | "Outside the airflow region" | The per-body flag (§1.3) |
 | Region diagnostics: CFL monitor, divergence residual, GPU ms per fluid step, real-time ratio (simulated over wall seconds) | Publish diagnostics; `vulkan_pass_durations_ns()` |
 | Device | `vulkan_device_report()` (`CORE-5`) |
 
 **Sandbox.** A new scene, `airflow`, on Vulkan:
-- **The vehicle:** a free-flying quad, held by a host-side position loop wrapped around the existing attitude controller (`sandbox/drone_sim.hpp`). It uses no CPU behaviors, so it runs on Vulkan before stage 6's lock. Once the lock lands, the drone box itself can move to Vulkan and gain the airflow views.
+- **The vehicle:** a free-flying quad, held by a host-side position loop wrapped around the existing attitude controller (`sandbox/drone_sim.hpp`). It needs no behavior: drone_sim's CPU behaviors are only the test stand (`drone_sim.hpp:5-13`), and the controller and mixer are host-side code that writes `set_rotor_commands` (`simulation.hpp:998`), which has no Vulkan restriction. So it runs on Vulkan before stage 6's lock. Once the lock lands, the drone box itself can move to Vulkan and gain the airflow views.
+- **The loop's rate:** DroneSim runs the controller once per engine step (`drone_sim.hpp:307-317`), which on Vulkan is one state readback and one submission per step. M1 and M3 measure that round trip; if it eats the real-time budget, the attitude loop runs every `k` steps with retuned gains, `k` chosen from the measurement, and Interface tests that the loop holds position at that `k`.
 - **The world:** a ground plane, so ground effect and outwash show.
 - **Views:** volume (speed, pressure, vorticity), streamlines, smoke, and the HUD.
-- **Panel:** box size (2–6 m), fixed or following, `j`, `n_V`, `ε`, dye on or off, emitters. These are configuration, so a change rebuilds the simulation, debounced, carrying state (`INT-2`).
+- **Panel:** box size (2–6 m), fixed or following, `j`, `n_V`, `ε`, dye on or off, emitters. These are the region's fields in world file v3 (§7), so the panel edits the world document and rebuilds through the editor's single rebuild path (the editor plan's `WorldEdit` and `EditorRun::rebuild` with carry), not a second path. The vehicles' poses and rates carry; the fluid field carries only when the grid is unchanged, and a box-size or `dx` change restarts it at the ambient wind, which the panel says (`INT-2`).
+- **Files:** `assets/scenes/airflow.scene.yaml` and `assets/worlds/airflow.world.yaml`, once world file v3 carries the region. Until then the region's configuration is code in the airflow session, as `sandbox/builtin_records.hpp` is, deleted with v3.
 
-**Live smoke.** A third main function, `airflow`, joins `kMains` (`sandbox/live_tour.cpp:82`), with its steps in the ledger (`:68`):
+**Live smoke.** A third main function, `airflow`, joins `kMains` (`sandbox/live_tour.cpp:91`), with its steps in the ledger (`:72`). Every check can fail (Interface, 2026-10-05):
 
 | Step | Check |
 |---|---|
-| `airflow.open` | The device report names the 3060 Ti; the scene steps on Vulkan |
-| `airflow.volume_speed`, `volume_pressure`, `volume_vorticity` | The volume has no non-finite cells; each channel is drawn |
-| `airflow.downwash` | At hover, the Publish point 2R below each hub reads downward at more than 1.5 `v_h` |
-| `airflow.streamlines`, `airflow.smoke` | Seeds below the rotors travel down; dye leaves its emitter |
-| `airflow.hud` | In still air at hover, airspeed reads under 0.5 m/s; with 5 m/s of wind, within 0.5 m/s of 5 |
-| `airflow.wind` | The wake skews downwind: a point 1 m downstream has a positive along-wind component |
-| `airflow.ground` | Descend to 0.3 m: outwash runs along the ground |
-| `airflow.forward` | In forward flight, α and the drag force change sign as expected |
-| `airflow.timing` | GPU ms per fluid step and the real-time ratio are journaled (recorded, not gated, until the spike sets a target) |
+| `airflow.open` | The device report is journaled and the backend is Vulkan. No device is named, so the smoke means the same on another machine (`L4` records are per device) |
+| `airflow.volume_speed`, `volume_pressure`, `volume_vorticity` | No cell is non-finite; with the channel on, the frame differs from the volume-off frame over at least 5% of the region's screen footprint |
+| `airflow.downwash` | At hover, the Publish point 2R below each hub reads downward at more than 1.5 `v_h`; `v_h` is computed from the scene's model and density, and both are journaled with the reading |
+| `airflow.streamlines` | Seeds 0.5R below each hub move down by more than half of `v_h` × the integration time |
+| `airflow.smoke` | The dye outside the emitter's cells rises from zero and keeps rising over 1 s |
+| `airflow.hud` | From the free-stream source above: in still air at hover, airspeed reads under 0.5 m/s; with 5 m/s of wind, within 0.5 m/s of 5 |
+| `airflow.wind` | With 5 m/s of wind, on a plane 2R below the hub, the strongest downwash lies downwind of the hub, and further downwind than in still air |
+| `airflow.ground` | At 0.3 m altitude, a point 2R out from each hub and 5 cm above the ground reads an outward horizontal velocity above 0.3 `v_h`; the same point at 3 m altitude reads under half of that. (`k` = 0.3 is Physics' provisional value, re-set from M4's measurement) |
+| `airflow.forward` | In steady level forward flight above 2 m/s in still air, `α` equals the pitch within 2°, `|β|` < 2°, and the drag force's along-track component opposes the velocity |
+| `airflow.timing` | GPU ms per fluid step and the real-time ratio are journaled and checked finite and positive (the ledger makes a step with no checks an anomaly); targets stay ungated until the spike sets them |
+
+The tour's shared video must stay under `kSendableBytes` (30 MB). Volume frames compress worse; if the airflow main pushes it over, it writes its own file under the same checks, decided by measurement.
 
 The 2D-block complaint is closed by the volume steps, "no airfield" by `downwash` and `wind`, and "no airspeed" by `hud`.
 
@@ -522,7 +529,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 | Milestone | Realms | Content | Depends on |
 |---|---|---|---|
 | **M0** | Core, Test/Docs, Physics | Banded-parity T2 → T3 → T4: the 3060 Ti admitted and announced. **Done** (T4 merged `e146575`; T6, the probe as a standing device record, in review) | Already ruled ahead of `PHY-7` (`backlog.md:63`) |
-| **M1, the spike** | Physics, with Core | Standalone NS kernels at 64³ and 128³ in a worktree, run in the measurement tree. It measures ms per pass, per V-cycle and per fluid step, the residual each `n_V` leaves, and the readback cost. A report like the NVIDIA denorm report. It fixes `j`, `n_V` and MacCormack before any engine change | In parallel with M0 (the measurement tree admits the card) |
+| **M1, the spike** | Physics, with Core | Standalone NS kernels at 64³ and 128³ in a worktree, run in the measurement tree. It measures ms per pass, per V-cycle and per fluid step, the residual each `n_V` leaves, the readback cost, and the host control loop's round trip (one state readback and one submission per step, §6). A report like the NVIDIA denorm report. It fixes `j`, `n_V` and MacCormack before any engine change | In parallel with M0 (the measurement tree admits the card) |
 | **M2** | Core | Stage 4 (with the scratch kind), then point samples, regions, device-resident state, two recordings per step, and the VRAM budget check | Stage 4; this spec approved |
 | **M3** | Physics, Rendering, Interface | Real-time tier on the CPU (16³/32³ tests, the golden) and on the GPU. One-way rotor sources; drag reads local air. The `airflow` scene on Vulkan with a free-flying quad; volume rendering by readback. This is the backlog's done-when ("the real-time tier running on the GPU in the sandbox and the live smoke") | M0, M2 |
 | **M4** | Physics, Interface, Rendering | Two-way: drag pushback, probe-and-subtract, the airspeed sensor, the HUD's forces and moments, streamlines, smoke, the live smoke's `airflow` main | M3 |
@@ -556,11 +563,11 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 - The CPU volume reference and its frame golden: **amended**: the golden renders a synthetic analytic volume, so it pins rendering alone.
 - That the Vulkan raster needs nothing now: **confirmed.**
 
-**Interface**
-- The HUD items and the α and β conventions, agreed with Kat.
-- The `airflow` scene with a host position loop on Vulkan.
-- The live smoke's `airflow` main and its checks.
-- `INT-2` for the airflow panel.
+**Interface** (confirmed 2026-10-05, with its amendments folded into §3.5, §6 and §9)
+- The HUD items and the α and β conventions: **amended**: airspeed, α and β from the free-stream air the aero used, not a body-centre point; the signs stated (aerospace); Kat's convention still to come through the lead.
+- The `airflow` scene with a host position loop on Vulkan: **confirmed,** with the loop's rate measured (M1, M3) and the scene's files waiting on world file v3.
+- The live smoke's `airflow` main and its checks: **amended**: every check made falsifiable (`wind`, `ground`, `forward`, the volume channels), and no device named.
+- `INT-2` for the airflow panel: **confirmed,** through the editor's single rebuild path, with the fluid field carried only when the grid is unchanged.
 
 **Test/Docs** (confirmed 2026-10-05, with its amendments folded into §4.6 and assumption 6)
 - `TD-14` applied to airflow at 32³: the one-ulp control and `T_p`, the statistics past it, and the 128³ per-device record (Q9): **confirmed,** the 128³ record as an opt-in test.
