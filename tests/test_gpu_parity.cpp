@@ -1176,6 +1176,37 @@ TEST(ParityPredicate, NoFloatBandIsTighterThanTheFloor) {
         << "a structural row is exact by argument, not by measurement";
 }
 
+// TD-14's s_q defaults to 1e-3 in the quantity's SI unit. A row may declare
+// its quantity's own cutoff, derived from the quantity's absolute resolution
+// over the 1e-4 relative target (specific force: the contact term's Δv/h
+// quantization). The floor's abs half then sits at four ulps of THAT cutoff,
+// so a declared cutoff cannot be paired with an abs half the default would
+// allow, and the report says which cutoff split its A from its R.
+TEST(ParityPredicate, ARowMayDeclareItsQuantitysOwnCutoff) {
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("ballistic");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    Result<Simulation> a = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    Result<Simulation> b = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    const auto row = [](ToleranceBand band, float cutoff) {
+        return std::vector<BandEntry>{{"bodies", "vel", offsetof(spade::BodyState, vel), 3,
+                                       QuantityKind::components, band, cutoff}};
+    };
+    EXPECT_EQ(spade::testing::floor_abs_at(spade::testing::kNearZeroCutoff), spade::testing::kFloorAbs);
+    EXPECT_EQ(spade::testing::floor_abs_at(1.0f), 5.0e-7f) << "4 x 2^-23 = 4.77e-7, rounded up";
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{1.0e-9f, 1.0e-6f}, 1.0f)).has_value())
+        << "abs 1e-9 clears the default's floor but not four ulps at s_q = 1";
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(spade::testing::bands::kFloor, 0.0f)).has_value())
+        << "a cutoff must be positive";
+    const Result<ParityReport> declared =
+        compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{5.0e-7f, 5.0e-7f}, 1.0f));
+    ASSERT_TRUE(declared.has_value()) << declared.error().context;
+    EXPECT_EQ(declared->quantities[0].near_zero_cutoff, 1.0f);
+    const Result<ParityReport> by_default = compare_arrays(a->arenas(), b->arenas(), row(spade::testing::bands::kFloor, spade::testing::kNearZeroCutoff));
+    ASSERT_TRUE(by_default.has_value()) << by_default.error().context;
+    EXPECT_EQ(by_default->quantities[0].near_zero_cutoff, spade::testing::kNearZeroCutoff);
+}
+
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
     std::vector<std::string> on_disk;
     std::error_code ec;
