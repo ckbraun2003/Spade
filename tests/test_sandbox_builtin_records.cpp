@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -52,15 +53,16 @@ TEST(SandboxBuiltinRecords, EachEntryIsTheViewersRecordFieldByField) {
             const spade::WorldInstanceDesc& theirs = scene->worlds.worlds[lane];
             EXPECT_EQ(mine->seed, theirs.seed) << stem;
             EXPECT_EQ(mine->turbulence, theirs.turbulence) << stem;
-            EXPECT_EQ(mine->contacts.restitution_e, theirs.contacts.restitution_e) << stem;
-            EXPECT_EQ(mine->contacts.friction_mu, theirs.contacts.friction_mu) << stem;
-            EXPECT_EQ(mine->contacts.baumgarte_beta, theirs.contacts.baumgarte_beta) << stem;
-            EXPECT_EQ(mine->contacts.proxy_radius, theirs.contacts.proxy_radius) << stem;
-            EXPECT_EQ(mine->grid.cell_size, theirs.grid.cell_size) << stem;
-            static_assert(sizeof(spade::physics::ContactParams) == 4 * sizeof(float),
-                          "ContactParams grew: compare the new field above");
-            static_assert(sizeof(spade::physics::GridParams) == 4 * sizeof(float),
-                          "GridParams grew: compare the new field above");
+            // Whole records, every field and reserved word: both are std430
+            // rows of floats with no padding (contacts.hpp and grid.hpp assert
+            // their sizes), so the bytes are the fields.
+            EXPECT_EQ(std::memcmp(&mine->contacts, &theirs.contacts, sizeof theirs.contacts), 0)
+                << stem << ": contact parameters differ (restitution " << mine->contacts.restitution_e << " vs "
+                << theirs.contacts.restitution_e << ", radius " << mine->contacts.proxy_radius << " vs "
+                << theirs.contacts.proxy_radius << ")";
+            EXPECT_EQ(std::memcmp(&mine->grid, &theirs.grid, sizeof theirs.grid), 0)
+                << stem << ": grid parameters differ (cell " << mine->grid.cell_size << " vs "
+                << theirs.grid.cell_size << ")";
         }
     }
 }
