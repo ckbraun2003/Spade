@@ -141,9 +141,11 @@ GPU coverage on a one-machine gate, the third open question, is `TD-13`. On 2026
 
 ## What's next
 
-1. **The bench baselines' re-seed on this machine** (the lead's choice (a), 2026-10-05), on a branch:
-   - the CPU families are re-measured here;
-   - the old box's GPU numbers are set aside, labelled with that box, because the GPU families cannot run here (above);
-   - `_meta` names Core's module-API stage 2 commit, `198eab1` (merged as `dca7cfb`). That commit splits the rotor/drag and IMU/GNSS timing brackets, so `gpu_force_elements_ns` and `gpu_sensor_synthesis_ns` each include one extra timestamp mark (`TD-8`).
+1. **The bench baselines are re-seeded on this machine** (the lead's choice (a), 2026-10-05; `test-docs/baselines-reseed`):
+   - the CPU families were re-measured at master `b08d139`: 27 cases in 8 families, in the lead's announced quiet window;
+   - the old box's 7 GPU entries are kept, labelled with that box, because the GPU families cannot run here (above);
+   - `_meta` names Core's module-API stage 2 commit, `198eab1` (merged as `dca7cfb`), which moved the GPU timing basis (`TD-8`).
+
+   A GPU seed waits for a device the default build admits.
 2. **GPU coverage** (`TD-13`): every gate report states how many `gpu` tests ran and names any skip. On this machine it reports "GPU unverified (72 refused)" under the interim reading, until the denorm measurement settles admission.
 3. **The leg** runs when the work needs it. Each run has its own volume (`plans/2026-10-04-parallel-legs.md`), and a golden made final under `TD-12` uses a fresh volume (`-NoSeed`).
