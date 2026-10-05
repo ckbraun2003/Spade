@@ -111,6 +111,8 @@ add_executable(spade_tests
     # Composer task 5: assets/worlds/ and assets/scenes/ hold the viewer scenes
     # as files; each runs beside the viewer's own setup, row for row.
     test_viewer_successors.cpp
+    # The gate scene's lobs pass through its ring (the live smoke's finding).
+    test_viewer_gate.cpp
     # spade::scene's composer: compose_transform, compose, compose_file and
     # instantiate (the drone-builder joint spec, section 3).
     test_scene_compose.cpp

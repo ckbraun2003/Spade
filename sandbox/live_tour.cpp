@@ -841,8 +841,9 @@ void bounce(Tour& t, const fs::path& assets) {
     });
 }
 
-// gate: five bodies lobbed along +z at a torus gate on two posts. Each must
-// reach the gate's plane; where it crosses is journalled, against the ring.
+// gate: five bodies lobbed along +z at a torus gate on two posts, each back
+// at ring height as it reaches the gate. Each must pass through the ring:
+// cross the gate's plane inside its clear radius less its own contact radius.
 void gate(Tour& t, const fs::path& assets) {
     SceneRun run;
     open_scene(t, run, "gate", assets, {"gate"}, 5, SceneView{{0.0f, 3.0f, -3.0f}, 1.25f, 0.15f, 15.0f});
@@ -863,19 +864,23 @@ void gate(Tour& t, const fs::path& assets) {
             }
             if (frame == 70) t.poster("gate");
         }
+        // The ring: radius 1.5 m, tube 0.15 m, centred 1.8 m up, so its clear
+        // opening is 1.35 m; a body clears it by its own contact radius.
+        const float clear = 1.5f - 0.15f - scene.records(0).contacts.proxy_radius;
         std::size_t crossings = 0;
         std::size_t through = 0;
-        std::string heights;
+        std::string where;
         for (const auto& c : crossed) {
             if (!c) continue;
             ++crossings;
-            through += checks::through_ring(*c, 1.8f, 1.35f) ? 1u : 0u;
-            heights += (heights.empty() ? "" : ", ") + fmt(c->y);
+            through += checks::through_ring(*c, 1.8f, clear) ? 1u : 0u;
+            where += (where.empty() ? "" : ", ") + std::string("(") + fmt(c->x) + ", " + fmt(c->y) + ")";
         }
         s.check(crossings == n, "reach-the-gate",
-                std::to_string(crossings) + " of " + std::to_string(n) + " crossed z = 0, at heights " + heights + " m");
-        s.note("gate: " + std::to_string(through) + " of " + std::to_string(n) +
-               " lobs passed inside the ring's clear radius (1.35 m about y = 1.8)");
+                std::to_string(crossings) + " of " + std::to_string(n) + " crossed z = 0, at (x, y) " + where + " m");
+        s.check(through == n, "through-the-ring",
+                std::to_string(through) + " of " + std::to_string(n) + " inside " + fmt(clear) +
+                    " m of the ring's centre (0, 1.8)");
         t.pump(60, slow_orbit(), run.draw);
     });
 }
@@ -1089,6 +1094,9 @@ int run_live_smoke(const TourOptions& options) {
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);
         (void)smoke.check(!ec && size > 0u, "mp4-written",
                           ec ? "tour.mp4: " + ec.message() : "tour.mp4 " + std::to_string(size) + " bytes");
+        // So whatever the script prints can be sent as it is.
+        (void)smoke.check(!ec && size < kSendableBytes, "mp4-sendable",
+                          "tour.mp4 " + std::to_string(size) + " bytes, the limit " + std::to_string(kSendableBytes));
     }
     for (std::size_t i = 0; i < kMains.size(); ++i) {
         const std::string name = poster_name(static_cast<uint32_t>(i) + 1u, kMains[i]);

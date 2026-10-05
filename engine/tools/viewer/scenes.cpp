@@ -420,10 +420,16 @@ namespace {
     //
     // Fixed by giving each throw an actual BALLISTIC ARC: for a throw at
     // (x0, y0=1.8, z0) with horizontal speed vz, time-to-gate is
-    // t_gate = -z0 / vz, and launching with vy = g * t_gate (g = 9.80665,
+    // t_gate = -z0 / vz, and launching with vy = g * t_gate / 2 (g = 9.80665,
     // Environment{}'s default) makes y(t_gate) = y0 + vy*t_gate - 0.5*g*t_gate^2
     // = y0 exactly -- a symmetric lob that returns to ring height precisely
     // when it reaches the gate, well inside the ring's ~1.35 m clear radius.
+    //
+    // (2026-10-05: until then the launch was vy = g * t_gate, twice this,
+    // which puts the TOP of each arc at the gate: the lobs crossed z = 0 at
+    // 4.9 to 14.3 m, over the ring and its posts. The live smoke's gate step
+    // measured it; ViewerGate.EveryLobPassesThroughTheRing pins the fix, and
+    // golden/viewer/gate.trajectory.txt was regenerated for it.)
     struct Throw {
         glm::vec3 start;
         glm::vec3 vel;
@@ -445,7 +451,7 @@ namespace {
         const float z0 = lobs[i][1];
         const float vz = lobs[i][2];
         const float t_gate = -z0 / vz;
-        const float vy = kGravity * t_gate;
+        const float vy = 0.5f * kGravity * t_gate;
         throws[i] = Throw{{x0, kRingHeight, z0}, {0.0f, vy, vz}};
     }
     const glm::vec4 color(0.95f, 0.55f, 0.25f, 1.0f);
