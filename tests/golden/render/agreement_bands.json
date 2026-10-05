@@ -3,7 +3,7 @@
   "_margin_rule": "band = round_up(0.001, max(0.001, 1.5 * d)). Signed off by Test/Docs under TD-2 on 2026-10-03, with four conditions: (1) d is recorded per toolchain (msvc-release, msvc-debug, gcc-release) and must be bit-identical, since both paths are deterministic CPU code under TD-3; a difference is a finding to root-cause, never a reason to widen a band or keep per-toolchain bands; (2) d_probe and probe_over_band are recorded per case, and a case with d_probe < 2 x band goes to Test/Docs before pinning; (3) a later version states its root cause, and a band that cannot be met is a grade change (L3), not a wider band; (4) the 0.001 floor is a fraction of the frame, about 19 px at 160x120, so a change of resolution re-derives every band.",
   "_camera_convention": "position in metres; yaw_radians turns the view about world +Y from looking down -Z (positive yaw turns toward -X); pitch_radians tilts it up (positive) or down. Orientation = yaw quaternion * pitch quaternion, built with core/fp32_math.hpp's sin32/cos32 so every toolchain frames the same camera. Vertical FOV is render::Camera's default, 60 degrees.",
   "_probe_rule": "SR-30: the probe reference is the ground-only world (strip_to_ground_plane_only) when scene_from_world() finds an analytic ground plane, else the world with every static SDF node removed (all sky). detects_total_deletion is d_probe > band, re-checked live every run.",
-  "active_measurement_version": "1",
+  "active_measurement_version": "2",
   "measurements": {
     "1": {
       "_provenance": "Measured 2026-10-03 on msvc-release (msvc-ninja-release, the Rendering worktree's tree) at a93b43f plus this commit's band file, 160x120, with SPADE_AGREEMENT_MEASURE set. Margin: Test/Docs' TD-2 rule, re-derived and signed off per case by Test/Docs on 2026-10-03. Every d and d_probe x 19200 is a whole pixel count. First framings: 7 cases; three were dropped and two reframed after their frames showed two raster defects, not framing faults (07-status debt): maximal's heightfield (PA-5) and shower's thin shell on the CSG grid. msvc-debug and gcc-release attestations follow in their own commit, with no band changed.",
@@ -145,6 +145,177 @@
           "covered_raster": 4714,
           "covered_raymarch": 4768,
           "_framing_note": "Looking up at the bowl's thick underside; the thin rim faces away. Deliberately keeps the shell's thin region out of view: at 0.2-0.6 m it is about one cell on the 48-cell CSG grid, so surface nets leaves holes and mixed winding there (07-status debt). This band says nothing about the shell's inside or rim."
+        }
+      ]
+    },
+    "2": {
+      "_provenance": "Measured 2026-10-05 on msvc-release (msvc-ninja-release, the Rendering worktree's tree) at master 17ddeeb plus this commit's band file, 160x120, with SPADE_AGREEMENT_MEASURE set. Margin: Test/Docs' TD-2 rule, unchanged; per-case sign-off asked of Test/Docs with this commit. ROOT CAUSE (TD-2 condition 3): B2 step 1 (d895c32, RS3 as replaced 2026-10-05) makes the raster ray-march each CSG subtree per pixel with the reference's own sphere_trace(), so the CSG cases' d falls: maximal/csg_against_sky 0.00115 to 0.00073, maximal/torus_from_below 0.00214 to 0.00083, shower/outside_from_below 0.0028 to 0. gate has no CSG and is unchanged. shower/inside returns: version 1 dropped it at d = 0.252 for defect B, and it now measures 0. Every case keeps d_probe at least 2 x band (condition 2). msvc-debug and gcc-release attestations follow in their own commit, with no band changed.",
+      "attested": {
+        "msvc-release": "measured 2026-10-05 at 17ddeeb",
+        "msvc-debug": "measured 2026-10-05 at d10103e (the Rendering worktree's msvc-ninja-debug tree): every d and d_probe bit-identical to msvc-release",
+        "gcc-release": "measured 2026-10-05 at d10103e (Docker leg, gcc-13 13.3.0, Release; agreement.txt): every d and d_probe bit-identical to msvc-release"
+      },
+      "_attested_note": "Test/Docs' condition 1, as for version 1: d must be bit-identical across these toolchains. Do not cite these bands as cross-checked while any entry is pending.",
+      "_signoff": "Test/Docs signed off all six cases under TD-2 on 2026-10-05, on the same terms as version 1, with the TD-4 note below. The 0.001 floor stays for the two d = 0 cases: a band of 0 would claim bit-identity, the claim the floor exists to avoid (condition 4).",
+      "_td4_note": "Since B2 step 1, the raster's CSG pixels use the reference's own rays and sphere_trace(), so on them these cases check the raster's integration (subtree boxes, the slab clip, near and far, depth against meshes, shading), not the march (TD-4). Where a frame is CSG only, d = 0 follows for the march by construction: both shower frames are, since shower is one subtree (sphere minus sphere) with no ground plane and no other geometry. The march's independent checks are RaymarchSmoke.SphereAnalyticSilhouetteAgreesWithTheExactCircleWithinHalfAPercent (an analytic circle) and RaymarchSmoke.HoverPadCoverageWithinTwoPercentOfTessellated (the tessellated mesh). gate has no CSG and stays independent end to end.",
+      "resolution": {
+        "width": 160,
+        "height": 120
+      },
+      "cases": [
+        {
+          "world": "gate",
+          "camera": {
+            "name": "through_ring",
+            "position": [
+              0.0,
+              1.8,
+              6.0
+            ],
+            "yaw_radians": 0.0,
+            "pitch_radians": 0.0
+          },
+          "probe": "ground_only",
+          "d": {
+            "msvc-release": 0.0078125,
+            "msvc-debug": 0.0078125,
+            "gcc-release": 0.0078125
+          },
+          "d_probe": 0.04572916666666667,
+          "band": 0.012,
+          "probe_over_band": 3.81,
+          "detects_total_deletion": true,
+          "covered_raster": 10318,
+          "covered_raymarch": 10196
+        },
+        {
+          "world": "gate",
+          "camera": {
+            "name": "three_quarter",
+            "position": [
+              4.5,
+              1.0,
+              4.5
+            ],
+            "yaw_radians": 0.7853982,
+            "pitch_radians": 0.125
+          },
+          "probe": "ground_only",
+          "d": {
+            "msvc-release": 0.00796875,
+            "msvc-debug": 0.00796875,
+            "gcc-release": 0.00796875
+          },
+          "d_probe": 0.054427083333333334,
+          "band": 0.012,
+          "probe_over_band": 4.54,
+          "detects_total_deletion": true,
+          "covered_raster": 8405,
+          "covered_raymarch": 8262
+        },
+        {
+          "world": "maximal",
+          "camera": {
+            "name": "csg_against_sky",
+            "position": [
+              0.0,
+              -4.0,
+              12.0
+            ],
+            "yaw_radians": 0.0,
+            "pitch_radians": 0.55
+          },
+          "probe": "empty",
+          "d": {
+            "msvc-release": 0.0007291666666666667,
+            "msvc-debug": 0.0007291666666666667,
+            "gcc-release": 0.0007291666666666667
+          },
+          "d_probe": 0.019791666666666666,
+          "band": 0.002,
+          "probe_over_band": 9.9,
+          "detects_total_deletion": true,
+          "covered_raster": 380,
+          "covered_raymarch": 374,
+          "_framing_note": "Same camera as version 1. Still keeps the heightfield out of frame: the raster draws it only within the world bounds (PA-5, RND-6 accepted), so these bands say nothing about the heightfield."
+        },
+        {
+          "world": "maximal",
+          "camera": {
+            "name": "torus_from_below",
+            "position": [
+              0.0,
+              -3.0,
+              0.5
+            ],
+            "yaw_radians": 0.0,
+            "pitch_radians": 1.45
+          },
+          "probe": "empty",
+          "d": {
+            "msvc-release": 0.0008333333333333334,
+            "msvc-debug": 0.0008333333333333334,
+            "gcc-release": 0.0008333333333333334
+          },
+          "d_probe": 0.13854166666666667,
+          "band": 0.002,
+          "probe_over_band": 69.27,
+          "detects_total_deletion": true,
+          "covered_raster": 2660,
+          "covered_raymarch": 2676,
+          "_framing_note": "Same camera as version 1, and still keeps the heightfield out of frame, as csg_against_sky does."
+        },
+        {
+          "world": "shower",
+          "camera": {
+            "name": "outside_from_below",
+            "position": [
+              0.0,
+              -7.0,
+              9.0
+            ],
+            "yaw_radians": 0.0,
+            "pitch_radians": 0.661
+          },
+          "probe": "empty",
+          "d": {
+            "msvc-release": 0.0,
+            "msvc-debug": 0.0,
+            "gcc-release": 0.0
+          },
+          "d_probe": 0.24833333333333332,
+          "band": 0.001,
+          "probe_over_band": 248.33,
+          "detects_total_deletion": true,
+          "covered_raster": 4768,
+          "covered_raymarch": 4768,
+          "_framing_note": "Same camera as version 1. Its framing kept the shell's thin region out of view for defect B, which B2 removes: the raster now marches the shell, so the rim would agree too. Kept unchanged so the two versions compare."
+        },
+        {
+          "world": "shower",
+          "camera": {
+            "name": "inside",
+            "position": [
+              0.0,
+              0.5,
+              0.0
+            ],
+            "yaw_radians": 1.5707964,
+            "pitch_radians": 0.35
+          },
+          "probe": "empty",
+          "d": {
+            "msvc-release": 0.0,
+            "msvc-debug": 0.0,
+            "gcc-release": 0.0
+          },
+          "d_probe": 0.6304166666666666,
+          "band": 0.001,
+          "probe_over_band": 630.42,
+          "detects_total_deletion": true,
+          "covered_raster": 12104,
+          "covered_raymarch": 12104,
+          "_framing_note": "Returned from version 1's dropped framings. Inside the bowl, looking along -X and up, at the inner wall with the rim against the sky. Version 1 measured d = 0.25213541666666667 here, holes from defect B; B2 draws the wall with the reference's own march."
         }
       ]
     }
