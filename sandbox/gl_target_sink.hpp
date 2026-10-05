@@ -24,6 +24,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -208,7 +209,48 @@ class GlTargetSink final : public TargetSink {
     // ran rather than infer it.
     [[nodiscard]] uint64_t presented() const noexcept;
 
+    // ---------------------------------------------------------------------
+    // THE LIVE SMOKE'S HOOKS (live_smoke.hpp, scripts/live-smoke.ps1). The
+    // caption and the card are drawn by both present paths, over everything
+    // else, because they exist to be seen in the recording. The rest change
+    // nothing about what a frame shows.
+    // ---------------------------------------------------------------------
+
+    // One line across the top of the frame, or "" for none: the tour's step.
+    void set_caption(std::string text);
+
+    // A full-frame title card, lines separated by '\n', or "" for none.
+    void set_card(std::string text);
+
+    // Above 0, delta_seconds() reports this instead of the wall clock, so a
+    // scripted tour steps the same on any machine. 0 restores the clock.
+    void set_fixed_delta(float seconds) noexcept;
+
+    // Receives a presented frame: RGBA8, rows BOTTOM-UP as GL reads them, read
+    // from the back buffer after the overlay is drawn and before the swap.
+    using FrameTap = std::function<void(const uint8_t* rgba, uint32_t width, uint32_t height)>;
+    void set_frame_tap(FrameTap tap);
+
+    // Arms the tap for the next present only. A readback stalls the pipeline,
+    // so a frame is read only when asked for. A read frame's ui figure on the
+    // HUD includes the readback.
+    void capture_next_present() noexcept;
+
+    // Shows or hides the HUD legend. F1 calls this from poll(), and the live
+    // smoke calls it too, so the tour drives the key's own path.
+    void toggle_help() noexcept;
+    // True when the last presented frame drew the legend.
+    [[nodiscard]] bool help_drawn() const noexcept;
+
   private:
+    // Draws the caption and the card on the foreground draw list, so no panel
+    // can cover them. Called from draw_overlay().
+    void draw_live_smoke_text();
+
+    // Reads the back buffer into the tap when it is armed. Called by both
+    // present paths between the overlay and the swap.
+    void tap_frame();
+
     // ONE STATEMENT OF THE HUD, called by BOTH paths. The CPU fallback and the
     // GPU primary must show the same panel or the two are not comparable --
     // and two copies of a panel is the same defect as two copies of a channel
