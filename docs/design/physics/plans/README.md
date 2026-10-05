@@ -8,5 +8,6 @@ Active Physics plans, one file each, named `YYYY-MM-DD-<topic>.md`.
 - `2026-10-03-propulsion-rows-plan.md`: the stateful motor and battery rows, after module-API stage 4.
 - `2026-10-03-airframe-compile-plan.md`: part-built airframes to a `ModelType` (DBP-44), with a fitted momentum-variant rotor until the rows land. Built, merged at `58abbf4`.
 - `2026-10-05-imu-contact-specific-force-plan.md`: the IMU's specific force includes the contact response (Kat's report), and the reported velocity at rest.
+- `2026-10-05-airflow-design.md`: DRAFT joint spec, 3D airflow as grid-solver field providers (the user's 2026-10-05 ruling). Physics leads; Core, Rendering, Interface and Test/Docs confirm their sections, then the lead takes it to the user.
 
 The drone sim box's Physics task (the rotor wake) was in the lead's plan, `../../plans/2026-10-01-drone-sim-box-plan.md`, Task 2. SPH gets its own plan here when it resumes (`PHY-4`, `../01-fields-and-media.md`).
