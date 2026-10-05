@@ -389,11 +389,13 @@ TEST(LiveSmokeArtifacts, AFolderHoldingAnythingElseIsRefusedAndNothingIsSwept) {
 // Raw RGBA frames from glReadPixels arrive bottom row first, so ffmpeg flips
 // them; yuv420p needs even dimensions, so it crops to them. The filter is
 // quoted because popen() hands the line to sh, where its parentheses are syntax.
+// CRF 28 keeps the recording sendable: at 20 the 129 s tour was 35.6 MB, over
+// the 30 MB a file can be to reach the user.
 TEST(LiveSmokeRecording, TheFfmpegCommandStreamsRawRgbaIntoAnH264File) {
     using spade::sandbox::live::ffmpeg_command;
     EXPECT_EQ(ffmpeg_command("ffmpeg", "C:/out dir/tour.mp4", 1280, 720, 30),
               "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - "
-              "-vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 20 "
+              "-vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 28 "
               "-pix_fmt yuv420p \"C:/out dir/tour.mp4\"");
 }
 
