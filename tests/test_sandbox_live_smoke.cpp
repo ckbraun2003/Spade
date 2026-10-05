@@ -3,8 +3,8 @@
 // The tour itself needs a display (scripts/live-smoke.ps1 runs it), so
 // everything that DECIDES something lives in display-free headers and is
 // checked here: the journal and its terminator, the declared-step ledger, the
-// known-open entries that expire, the inject hooks the red runs use, which
-// files a run may sweep, the ffmpeg command, the title cards, and the PNG
+// known-open entries that expire, the inject hooks the red runs use and
+// their validation, which files a run may sweep or must refuse, the ffmpeg command, the title cards, and the PNG
 // encoder. Kat's e2e smoke (KAT design-specs/dev/01-e2e-live-smoke.md, sections
 // 2.1 and 4.4) is the source of the three mechanisms.
 //
@@ -60,6 +60,7 @@ TEST(LiveSmokeLedger, EveryDeclaredStepRunAndNoAnomalyPasses) {
     EXPECT_TRUE(smoke.check(true, "gpu-path", "GPU (OpenGL)"));
     smoke.done();
     smoke.begin("builder.place");
+    EXPECT_TRUE(smoke.check(true, "objects", "3 objects"));
     smoke.done();
     const Verdict v = smoke.finish();
     EXPECT_TRUE(v.pass);
@@ -104,6 +105,7 @@ TEST(LiveSmokeLedger, AFailedCheckIsAnAnomalyAndTheRunContinues) {
     EXPECT_FALSE(smoke.check(false, "gpu-path", "CPU raster"));
     smoke.done();
     smoke.begin("builder.place");
+    (void)smoke.check(true, "objects", "3 objects");
     smoke.done();
     const Verdict v = smoke.finish();
     EXPECT_FALSE(v.pass);
@@ -129,6 +131,7 @@ TEST(LiveSmokeLedger, AKnownOpenEntryThatFiresIsTolerated) {
     (void)smoke.check(false, "gpu-path", "CPU raster");
     smoke.done();
     smoke.begin("builder.place");
+    (void)smoke.check(true, "objects", "3 objects");
     smoke.done();
     const Verdict v = smoke.finish();
     EXPECT_TRUE(v.pass);
@@ -143,6 +146,7 @@ TEST(LiveSmokeLedger, AKnownOpenEntryThatDoesNotFireExpiresAndFailsTheRun) {
     Lines out;
     Smoke smoke = two_step_smoke(out, {{"builder.place/objects", "placement misses on HiDPI"}});
     smoke.begin("drone_box.open");
+    (void)smoke.check(true, "gpu-path", "GPU (OpenGL)");
     smoke.done();
     smoke.begin("builder.place");
     (void)smoke.check(true, "objects", "3");
@@ -159,15 +163,46 @@ TEST(LiveSmokeLedger, AnUndeclaredStepIsAnAnomaly) {
     Lines out;
     Smoke smoke = two_step_smoke(out);
     smoke.begin("drone_box.open");
+    (void)smoke.check(true, "gpu-path", "GPU (OpenGL)");
     smoke.done();
     smoke.begin("builder.surprise");
+    (void)smoke.check(true, "x", "y");
+    smoke.done();
+    smoke.begin("builder.place");
+    (void)smoke.check(true, "objects", "3 objects");
+    smoke.done();
+    const Verdict v = smoke.finish();
+    EXPECT_FALSE(v.pass);
+    EXPECT_EQ(v.anomalies, 1);
+    EXPECT_TRUE(out.has("ANOMALY harness/undeclared-step | builder.surprise"));
+}
+
+// A step that checked nothing proves nothing, however it looked: it is an
+// anomaly, raised as the step ends, before its DONE line.
+TEST(LiveSmokeLedger, AStepThatCheckedNothingIsAnAnomaly) {
+    Lines out;
+    Smoke smoke = two_step_smoke(out);
+    smoke.begin("drone_box.open");
+    (void)smoke.check(true, "gpu-path", "GPU (OpenGL)");
     smoke.done();
     smoke.begin("builder.place");
     smoke.done();
     const Verdict v = smoke.finish();
     EXPECT_FALSE(v.pass);
     EXPECT_EQ(v.anomalies, 1);
-    EXPECT_TRUE(out.has("ANOMALY harness/undeclared-step | builder.surprise"));
+    EXPECT_TRUE(v.unmarked.empty());
+    EXPECT_TRUE(out.has("ANOMALY builder.place/no-checks | the step checked nothing"));
+    EXPECT_TRUE(out.has("DONE builder.place"));
+}
+
+// A failed check counts as checking: the step is not also blamed for silence.
+TEST(LiveSmokeLedger, AFailedCheckIsStillACheck) {
+    Lines out;
+    Smoke smoke = two_step_smoke(out);
+    smoke.begin("drone_box.open");
+    (void)smoke.check(false, "gpu-path", "CPU raster");
+    smoke.done();
+    EXPECT_FALSE(out.has("ANOMALY drone_box.open/no-checks | the step checked nothing"));
 }
 
 // verdict() is the same arithmetic as finish(), without writing anything, so
@@ -208,6 +243,7 @@ TEST(LiveSmokeJournal, LinesAreWrittenAsEventsHappenAndOnlyFinishWritesEnd) {
     EXPECT_EQ(out.lines.back(), "BEGIN drone_box.open");
     smoke.anomaly("harness/window-closed", "closed by the user");
     EXPECT_EQ(out.lines.back(), "ANOMALY harness/window-closed | closed by the user");
+    (void)smoke.check(true, "gpu-path", "GPU (OpenGL)");
     smoke.done();
     EXPECT_EQ(out.lines.back(), "DONE drone_box.open");
     for (const std::string& l : out.lines) {
@@ -232,7 +268,7 @@ TEST(LiveSmokeJournal, IsTerminatedRecognisesOnlyAFinalEndLine) {
 // The inject hooks the red runs use
 // ===========================================================================
 
-TEST(LiveSmokeInject, TheThreeKindsParse) {
+TEST(LiveSmokeInject, TheTwoKindsParse) {
     using spade::sandbox::live::Injection;
     using spade::sandbox::live::parse_inject;
     const auto skip = parse_inject("skip:builder.place");
@@ -243,15 +279,13 @@ TEST(LiveSmokeInject, TheThreeKindsParse) {
     ASSERT_TRUE(anomaly.has_value());
     EXPECT_EQ(anomaly->kind, Injection::Kind::anomaly);
     EXPECT_EQ(anomaly->target, "drone_box.orbit/injected");
-    const auto known = parse_inject("known-open:builder.place/never-fires");
-    ASSERT_TRUE(known.has_value());
-    EXPECT_EQ(known->kind, Injection::Kind::known_open);
-    EXPECT_EQ(known->target, "builder.place/never-fires");
 }
 
 TEST(LiveSmokeInject, AnythingElseIsRefusedWithTheCause) {
     using spade::sandbox::live::parse_inject;
-    for (const char* bad : {"", "skip", "skip:", "bogus:x", "anomaly", ":x"}) {
+    // known-open is not injectable: a tolerated entry added from the command
+    // line could cancel a real anomaly and turn a FAIL into a PASS.
+    for (const char* bad : {"", "skip", "skip:", "bogus:x", "anomaly", ":x", "known-open:builder.place/x"}) {
         const auto r = parse_inject(bad);
         EXPECT_FALSE(r.has_value()) << bad;
         if (!r) {
@@ -260,32 +294,92 @@ TEST(LiveSmokeInject, AnythingElseIsRefusedWithTheCause) {
     }
 }
 
-// ===========================================================================
-// The output folder: only this run's own names are swept
-// ===========================================================================
+// An injection only ever makes a run red, so one that could not is refused
+// before the run starts (exit 2): a skip of a step the ledger does not
+// declare, an anomaly outside a declared step, or an anomaly a known-open
+// entry would tolerate.
+TEST(LiveSmokeInject, TargetsAreCheckedAgainstTheLedger) {
+    using spade::sandbox::live::Injection;
+    using spade::sandbox::live::validate_injections;
+    const std::vector<std::string> declared = {"drone_box.open", "builder.place"};
+    const std::vector<KnownOpen> known = {{"builder.place/hidpi", "why"}};
+    const auto ok = [&](std::vector<Injection> inj) { return validate_injections(inj, declared, known); };
 
-TEST(LiveSmokeArtifacts, OnlyTheRunsOwnNamesAreSwept) {
-    using spade::sandbox::live::is_live_smoke_artifact;
-    for (const char* own : {"tour.mp4", "journal.txt", "01_drone_box.png", "02_builder.png",
-                            "frame_00000.png", "frame_04321.png"}) {
-        EXPECT_TRUE(is_live_smoke_artifact(own)) << own;
-    }
-    for (const char* other : {"notes.txt", "tour.mp4.bak", "journal.txt~", "1_drone_box.png",
-                              "01_Drone_box.png", "01_.png", "frame_123.png", "frame_00012.jpg",
-                              "x01_drone_box.png", "01_drone box.png"}) {
-        EXPECT_FALSE(is_live_smoke_artifact(other)) << other;
-    }
+    EXPECT_TRUE(ok({}).has_value());
+    EXPECT_TRUE(ok({{Injection::Kind::skip, "builder.place"}}).has_value());
+    EXPECT_TRUE(ok({{Injection::Kind::anomaly, "drone_box.open/injected"}}).has_value());
+
+    const auto skip_unknown = ok({{Injection::Kind::skip, "builder.nope"}});
+    ASSERT_FALSE(skip_unknown.has_value());
+    EXPECT_NE(skip_unknown.error().context.find("builder.nope"), std::string::npos);
+    EXPECT_NE(skip_unknown.error().context.find("drone_box.open, builder.place"), std::string::npos)
+        << skip_unknown.error().context;
+    // What `-Inject skip:a,anomaly:x` became under powershell -File: one string.
+    EXPECT_FALSE(ok({{Injection::Kind::skip, "builder.place,anomaly:drone_box.open/x"}}).has_value());
+    EXPECT_FALSE(ok({{Injection::Kind::anomaly, "nowhere/injected"}}).has_value());
+    EXPECT_FALSE(ok({{Injection::Kind::anomaly, "drone_box.open"}}).has_value());
+    EXPECT_FALSE(ok({{Injection::Kind::anomaly, "drone_box.open/"}}).has_value());
+    const auto tolerated = ok({{Injection::Kind::anomaly, "builder.place/hidpi"}});
+    ASSERT_FALSE(tolerated.has_value());
+    EXPECT_NE(tolerated.error().context.find("known-open"), std::string::npos) << tolerated.error().context;
 }
 
-TEST(LiveSmokeArtifacts, PosterAndFrameNamesMatchTheSweep) {
-    using spade::sandbox::live::frame_name;
-    using spade::sandbox::live::is_live_smoke_artifact;
+// ===========================================================================
+// The output folder: a run deletes only the exact names it writes, and
+// refuses a folder that holds anything else
+// ===========================================================================
+
+TEST(LiveSmokeArtifacts, TheRunOwnsExactlyItsOwnNames) {
+    using spade::sandbox::live::kMaxStills;
+    using spade::sandbox::live::owned_names;
     using spade::sandbox::live::poster_name;
+    using spade::sandbox::live::still_name;
     EXPECT_EQ(poster_name(1, "drone_box"), "01_drone_box.png");
     EXPECT_EQ(poster_name(12, "builder"), "12_builder.png");
-    EXPECT_EQ(frame_name(7), "frame_00007.png");
-    EXPECT_TRUE(is_live_smoke_artifact(poster_name(3, "builder")));
-    EXPECT_TRUE(is_live_smoke_artifact(frame_name(99999)));
+    EXPECT_EQ(still_name(7), "still_00007.png");
+    const std::vector<std::string_view> mains = {"drone_box", "builder"};
+    const std::vector<std::string> owned = owned_names(mains);
+    ASSERT_EQ(owned.size(), 4u + kMaxStills);
+    EXPECT_EQ(owned[0], "tour.mp4");
+    EXPECT_EQ(owned[1], "journal.txt");
+    EXPECT_EQ(owned[2], "01_drone_box.png");
+    EXPECT_EQ(owned[3], "02_builder.png");
+    EXPECT_EQ(owned[4], "still_00000.png");
+    EXPECT_EQ(owned.back(), still_name(kMaxStills - 1));
+}
+
+TEST(LiveSmokeArtifacts, AnEmptyOrEarlierRunFolderIsSweptByExactName) {
+    using spade::sandbox::live::owned_names;
+    using spade::sandbox::live::plan_sweep;
+    const std::vector<std::string_view> mains = {"drone_box", "builder"};
+    const std::vector<std::string> owned = owned_names(mains);
+    const auto empty = plan_sweep({}, owned);
+    ASSERT_TRUE(empty.has_value());
+    EXPECT_TRUE(empty->empty());
+    const std::vector<std::string> earlier = {"journal.txt", "tour.mp4", "01_drone_box.png", "02_builder.png",
+                                              "still_00000.png", "still_00001.png"};
+    const auto plan = plan_sweep(earlier, owned);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_EQ(*plan, earlier);
+}
+
+// The lead's review: a folder of someone's own frames, or a 01_holiday.png,
+// is not the run's to delete, so the whole run is refused and nothing goes.
+// A directory's entry ends in '/'.
+TEST(LiveSmokeArtifacts, AFolderHoldingAnythingElseIsRefusedAndNothingIsSwept) {
+    using spade::sandbox::live::kMaxStills;
+    using spade::sandbox::live::owned_names;
+    using spade::sandbox::live::plan_sweep;
+    using spade::sandbox::live::still_name;
+    const std::vector<std::string_view> mains = {"drone_box", "builder"};
+    const std::vector<std::string> owned = owned_names(mains);
+    for (const std::string& foreign : {std::string("01_holiday.png"), std::string("frame_00001.png"),
+                                       std::string("03_builder.png"), still_name(kMaxStills), std::string("notes/"),
+                                       std::string("tour.mp4.bak"), std::string("Journal.txt")}) {
+        const auto plan = plan_sweep({"journal.txt", "tour.mp4", foreign}, owned);
+        ASSERT_FALSE(plan.has_value()) << foreign;
+        EXPECT_NE(plan.error().context.find("'" + foreign + "'"), std::string::npos) << plan.error().context;
+    }
 }
 
 // ===========================================================================
@@ -293,12 +387,13 @@ TEST(LiveSmokeArtifacts, PosterAndFrameNamesMatchTheSweep) {
 // ===========================================================================
 
 // Raw RGBA frames from glReadPixels arrive bottom row first, so ffmpeg flips
-// them; yuv420p needs even dimensions, so it crops to them.
+// them; yuv420p needs even dimensions, so it crops to them. The filter is
+// quoted because popen() hands the line to sh, where its parentheses are syntax.
 TEST(LiveSmokeRecording, TheFfmpegCommandStreamsRawRgbaIntoAnH264File) {
     using spade::sandbox::live::ffmpeg_command;
     EXPECT_EQ(ffmpeg_command("ffmpeg", "C:/out dir/tour.mp4", 1280, 720, 30),
               "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt rgba -s 1280x720 -r 30 -i - "
-              "-vf vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2 -c:v libx264 -preset veryfast -crf 20 "
+              "-vf \"vflip,crop=trunc(iw/2)*2:trunc(ih/2)*2\" -c:v libx264 -preset veryfast -crf 20 "
               "-pix_fmt yuv420p \"C:/out dir/tour.mp4\"");
 }
 
