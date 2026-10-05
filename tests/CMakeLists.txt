@@ -282,6 +282,9 @@ if(SPADE_BUILD_SANDBOX)
         # ffmpeg command, the title cards and the PNG encoder. The tour itself
         # needs a display and runs from scripts/live-smoke.ps1, not ctest.
         test_sandbox_live_smoke.cpp
+        # The built-in scenes' physics records (a bridge until world file v3),
+        # pinned to spade_viewer's make_scene() records field by field.
+        test_sandbox_builtin_records.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
