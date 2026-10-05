@@ -593,7 +593,8 @@ struct RenderScene {
     std::vector<CsgSubtree> csg_subtrees;
     // What scene_from_world() could not build faithfully, one sentence each,
     // for the caller to show (L6). Today: a CSG wall thinner than about two
-    // grid cells, which draws with holes (render/csg_mesh.hpp).
+    // mesh cells, whose mesh has holes there (render/csg_mesh.hpp). Shaded
+    // frames march it whole; wireframe and its sun shadow show the holes.
     std::vector<std::string> warnings;
 };
 
