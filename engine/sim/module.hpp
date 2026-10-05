@@ -4,8 +4,9 @@
 // create() compiles a module set into ONE ordered pass list with
 // compile_schedule(). Stages 1-3 of the plan: passes, each naming the built-in
 // GPU kernel that matches its CPU function, and the fields a module provides.
-// Stage 4: the arrays a module owns (its state) and the rows it attaches to
-// bodies. Grades and roles join the descriptor in later stages.
+// Stage 4: the arrays a module owns (its state), the rows it attaches to
+// bodies and the seeded streams those rows hold. Grades and roles join the
+// descriptor in later stages.
 #pragma once
 
 #include <algorithm>
@@ -221,6 +222,41 @@ inline constexpr std::string_view kCoreArrays[] = {"world_params", "bodies", "bo
 inline constexpr std::string_view kLegacyWalkArrays[] = {"drag_bodies", "dryden", "imu_sensors", "imu_ring",
                                                          "rotors"};
 
+// SEEDED STREAMS (stage 4; spec section 3). A module that keeps an rng::Stream
+// in its rows declares it: the domain tag it derives under, the array whose
+// rows hold it, and `reseed`, which writes one row's stream from the world's
+// registered seed and the row's world-local slot -- that stream and nothing
+// else, so a row's history (bias states, ring cursors, phases) is untouched.
+//
+// Simulation walks the declarations, in set order and then declaration order:
+// create() derives every per_world stream once the world's seed is written, and
+// reseed() rewrites the seed and then re-derives every stream of every live
+// row. So a module's streams are reseeded with no edit to Simulation, and a
+// stream that is not declared is a stream reseed() cannot reach (the 2026-10-02
+// GNSS defect, closed by construction).
+//
+// LIVENESS IS THE ARENA'S, which is why a stream lives in a per_world array (one
+// row per world, always live) or a slot-allocated one (per_element or
+// per_sensor; a row is live while its slot->world map names the world). A free
+// row stays zero.
+//
+// ONE DERIVATION PER ROW TYPE (TD-9). An attached row's init derives its stream
+// too, at the step boundary: it must call this same function, so a row attached
+// after a reseed and one reseeded in place hold the same stream. A per_world row
+// takes no init; create() derives it through `reseed`.
+//
+// A tag is unique in the set, so two modules can never draw the same numbers,
+// and is never kWorldSeedDomainTag ("world", sim/world_set.hpp), the tag every
+// world's own root is derived under. The configuration identity does not spell
+// tags: a changed tag rides the module's version, like a changed row.
+using RowReseedFn = void (*)(std::span<std::byte> row, const WorldParams& params, uint32_t local_slot) noexcept;
+
+struct StreamDecl {
+    std::string_view tag;          // the rng domain tag: unique in the set, never "world"
+    std::string_view array;        // this module's per_world, per_element or per_sensor array
+    RowReseedFn reseed = nullptr;  // re-derives one live row's stream; history untouched
+};
+
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
@@ -228,6 +264,7 @@ struct ModuleDesc {
     std::span<const FieldDecl> fields{};    // the fields this module provides
     std::span<const ArrayDecl> state{};     // the arrays this module owns
     bool legacy_walk = false;               // only on a module whose every array is in kLegacyWalkArrays
+    std::span<const StreamDecl> streams{};  // the seeded streams this module's rows hold
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -267,6 +304,14 @@ struct CompiledArray {
     RowValidateFn validate = nullptr;
 };
 
+// One declared stream of the compiled table.
+struct CompiledStream {
+    std::string module;
+    std::string tag;
+    uint32_t array = kNoArray;  // its index in CompiledSchedule::arrays
+    RowReseedFn reseed = nullptr;
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -280,6 +325,9 @@ struct CompiledSchedule {
     // declaration order. Not part of the identity: arrays are declarations,
     // like access and fields (the schema hash covers them).
     std::vector<CompiledArray> arrays{};
+    // The declared streams in set order, then each module's declaration order:
+    // the order create() and reseed() derive them in. Not part of the identity.
+    std::vector<CompiledStream> streams{};
 };
 
 // Orders every pass of `modules`:
@@ -305,7 +353,10 @@ struct CompiledSchedule {
 // or per_sensor) with no init, or a slot-allocated one whose row cannot hold
 // its uint32_t body_slot; a spawn size, init or validate on a per_world array;
 // the legacy marker on a module with an array outside kLegacyWalkArrays, and an
-// array in kLegacyWalkArrays declared by a module without it; an
+// array in kLegacyWalkArrays declared by a module without it; a stream with an
+// empty tag, the tag kWorldSeedDomainTag, a tag declared twice in the set, no
+// reseed function, or an array that is not one of its module's per_world,
+// per_element or per_sensor arrays; an
 // edge to a pass no module declares or to a later phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
 // between them; a cycle.
@@ -314,8 +365,8 @@ struct CompiledSchedule {
 // module in set order, its name, 0x00 and its version as 4 bytes little-endian;
 // then 0x01; then for each compiled pass, module, '.', pass, 0x00 and the phase
 // as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State
-// declarations are not spelt: the schema hash refuses a blob whose arrays
-// differ, and a changed row rides the module's version.
+// and stream declarations are not spelt: the schema hash refuses a blob whose
+// arrays differ, and a changed row or tag rides the module's version.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().

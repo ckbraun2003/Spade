@@ -1,5 +1,6 @@
 #include "sim/module.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <string>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "core/rng.hpp"
+#include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
 namespace spade::modules {
 namespace {
@@ -197,6 +199,60 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return out;
 }
 
+// THE STREAM TABLE (stage 4, Task 5), in set order and then each module's
+// declaration order: the order create() and reseed() derive the streams in.
+// For the standard set that is dryden, imu, gnss -- the order reseed()'s
+// hand-written blocks ran in before the declarations replaced them.
+[[nodiscard]] Result<std::vector<CompiledStream>> compile_streams(std::span<const ModuleDesc> modules,
+                                                                  const std::vector<CompiledArray>& arrays) {
+    std::vector<CompiledStream> out;
+    std::map<std::string, std::size_t, std::less<>> by_tag;  // tag -> its entry in `out`
+    for (const ModuleDesc& mod : modules) {
+        for (const StreamDecl& s : mod.streams) {
+            if (s.tag.empty()) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) + "': the stream on array '" +
+                                               std::string(s.array) + "' needs a tag"));
+            }
+            const std::string where = "stream '" + std::string(s.tag) + "' (module '" + std::string(mod.name) + "')";
+            if (s.tag == kWorldSeedDomainTag) {
+                return std::unexpected(invalid(where + ": the tag is reserved; every world's own seed is derived "
+                                                       "under it (kWorldSeedDomainTag)"));
+            }
+            if (const auto it = by_tag.find(s.tag); it != by_tag.end()) {
+                if (out[it->second].module == mod.name) {
+                    return std::unexpected(invalid(where + ": declared twice"));
+                }
+                return std::unexpected(invalid("stream '" + std::string(s.tag) + "' is declared by module '" +
+                                               out[it->second].module + "' and module '" + std::string(mod.name) +
+                                               "'; a tag names one stream, or two modules would draw the same "
+                                               "numbers"));
+            }
+            if (s.reseed == nullptr) {
+                return std::unexpected(invalid(where + ": no reseed function, so reseed() could not re-derive it"));
+            }
+            const auto array = std::ranges::find(arrays, s.array, &CompiledArray::name);
+            if (array == arrays.end() || array->module != mod.name) {
+                return std::unexpected(invalid(where + ": its array '" + std::string(s.array) +
+                                               "' is not one this module declares"));
+            }
+            // Liveness is the arena's: a per_world row is always live, and a
+            // slot-allocated row while its map names the world. A per_body or
+            // per_row row has no liveness of its own to walk.
+            if (array->extent != Extent::per_world && array->extent != Extent::per_element &&
+                array->extent != Extent::per_sensor) {
+                return std::unexpected(invalid(where + ": its array '" + array->name + "' is " +
+                                               std::string(extent_name(array->extent)) +
+                                               "; a stream lives in a per_world, per_element or per_sensor array, "
+                                               "whose liveness the arena keeps"));
+            }
+            by_tag.emplace(std::string(s.tag), out.size());
+            out.push_back(CompiledStream{std::string(mod.name), std::string(s.tag),
+                                         static_cast<uint32_t>(array - arrays.begin()), s.reseed});
+        }
+    }
+    return out;
+}
+
 // The built-in fields' fixed shapes (module.hpp). The GPU row depends on them.
 struct BuiltinField {
     std::string_view name;
@@ -339,6 +395,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
 
     Result<std::vector<CompiledArray>> arrays = compile_arrays(modules);
     if (!arrays) return std::unexpected(arrays.error());
+    Result<std::vector<CompiledStream>> streams = compile_streams(modules, *arrays);
+    if (!streams) return std::unexpected(streams.error());
 
     // Every declared field has a pass in its provider module that writes it.
     for (const auto& [field, m] : field_owner) {
@@ -488,6 +546,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
+    out.streams = std::move(*streams);
     return out;
 }
 

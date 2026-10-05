@@ -3,7 +3,9 @@
 // init_rotor in Simulation::apply_op), moved here with its comments: the same
 // field-wise writes in the same order, the same fp32 expressions, so the bytes
 // it leaves are the bytes it left. Each validate is the old add_* call's
-// parameter check, with the same messages less their "<call>: " prefix.
+// parameter check, with the same messages less their "<call>: " prefix. Each
+// reseed is one of reseed()'s old per-system blocks (Task 5); the IMU and GNSS
+// inits call theirs at the place they wrote `noise`, so the write is the same.
 #include "sim/builtin_state.hpp"
 
 #include <string>
@@ -17,6 +19,7 @@
 #include "sensors/imu.hpp"
 #include "sim/simulation.hpp"
 #include "vehicles/rotor.hpp"
+#include "world/medium.hpp"
 
 namespace spade::modules::builtin {
 namespace {
@@ -66,6 +69,19 @@ Result<void> validate_drag_spawn(std::span<const std::byte> spawn) {
 }
 
 // ---------------------------------------------------------------------------
+// dryden
+// ---------------------------------------------------------------------------
+
+// The stream create() derives once the world's seed is written, and reseed()
+// re-derives after rewriting it: dryden_init re-places the filter on its
+// stationary distribution too, so a reseeded world starts gusty instead of
+// burning off a spin-up transient. One row per world, at index 0 of the
+// "dryden" tag whatever the slot.
+void reseed_dryden_row(std::span<std::byte> row, const WorldParams& params, uint32_t /*local_slot*/) noexcept {
+    dryden_init(row_as<DrydenState>(row), params);
+}
+
+// ---------------------------------------------------------------------------
 // imu_sensors
 // ---------------------------------------------------------------------------
 
@@ -94,8 +110,9 @@ void init_imu_row(const RowInit& in) noexcept {
     // Seeded from the REGISTERED WorldParams row -- the world's rng
     // authority (see WorldConfig's "NO `seed` MEMBER" note) -- and from
     // the WORLD-LOCAL slot, so a world's noise does not depend on where
-    // that world sits in the set.
-    row.noise = sensors::imu_noise_stream(in.params->seed, in.local_slot);
+    // that world sits in the set. Through the declared stream's own reseed
+    // function, so this and reseed() derive it one way (TD-9).
+    reseed_imu_row(in.row, *in.params, in.local_slot);
     row.last_index = 0;
     row._reserved0 = 0;
     // LAST, like body_flags::active in init_body: until `kind` is set
@@ -126,6 +143,13 @@ Result<void> validate_imu_spawn(std::span<const std::byte> spawn) {
         return invalid("every sigma must be finite and >= 0");
     }
     return {};
+}
+
+// ONLY `noise`. The bias states, the divider phase, the ring cursor and the
+// ring itself are HISTORY: a reseed changes the future draws, not the past
+// (Simulation::reseed's contract).
+void reseed_imu_row(std::span<std::byte> row, const WorldParams& params, uint32_t local_slot) noexcept {
+    row_as<sensors::ImuSensorRow>(row).noise = sensors::imu_noise_stream(params.seed, local_slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +190,7 @@ void init_gnss_row(const RowInit& in) noexcept {
     row.sigma_v = gnss.sigma_v;
     row.sigma_vel = gnss.sigma_vel;
     row.bias_tau_s = gnss.bias_tau_s;
-    row.noise = sensors::gnss_noise_stream(in.params->seed, in.local_slot);
+    reseed_gnss_row(in.row, *in.params, in.local_slot);  // the declared stream's derivation, as init_imu_row's
     row.last_index = 0;
     row.bias_retention = sensors::gnss_bias_retention(fix_dt, gnss.bias_tau_s);
     row.bias_drive = sensors::gnss_bias_drive(fix_dt, gnss.bias_tau_s, gnss.sigma_bias);
@@ -200,6 +224,11 @@ Result<void> validate_gnss_spawn(std::span<const std::byte> spawn) {
         return invalid("every sigma and bias_tau_s must be finite and >= 0");
     }
     return {};
+}
+
+// ONLY `noise`, as reseed_imu_row: the bias, the phase and the ring are history.
+void reseed_gnss_row(std::span<std::byte> row, const WorldParams& params, uint32_t local_slot) noexcept {
+    row_as<sensors::GnssSensorRow>(row).noise = sensors::gnss_noise_stream(params.seed, local_slot);
 }
 
 // ---------------------------------------------------------------------------

@@ -178,7 +178,7 @@ template <class Row>
 
 // THE BUILT-IN ARRAYS (module-API stage 4; open question 1, approved). The
 // engine's own calls -- spawn()'s rotors, add_drag_element(), add_imu_sensor(),
-// add_gnss_sensor(), the polls, reseed(), create()'s Dryden seeding -- use the
+// add_gnss_sensor(), the polls, the step's views -- use the
 // seven arrays the standard set declares, through typed ids minted from the
 // table. So a set must declare each of them exactly as the standard set does:
 // the same row size, extent, owner and depth, and the same spawn size, the
@@ -558,8 +558,6 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // -----------------------------------------------------------------------
     Result<std::span<WorldParams>> params = sim.arenas_.array(sim.world_params_id_);
     if (!params) return std::unexpected(params.error());
-    Result<std::span<DrydenState>> dryden = sim.arenas_.array(sim.dryden_id_);
-    if (!dryden) return std::unexpected(dryden.error());
 
     for (uint32_t w = 0; w < layout->world_count; ++w) {
         const Environment& env = desc.worlds[w].world.environment;
@@ -585,10 +583,13 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         row.seed = desc.worlds[w].seed;
         row._reserved0 = 0;
 
-        // Places the filter on its stationary distribution using row.seed, so
-        // the world starts gusty rather than burning off a spin-up transient.
-        // Must come AFTER the seed is written.
-        dryden_init((*dryden)[w], row);
+        // THE DECLARED STREAMS (sim/module.hpp's SEEDED STREAMS), derived from
+        // row.seed, so this must come AFTER the seed is written. No attached
+        // row is live yet, so this derives the per_world ones: in the standard
+        // set, dryden's, whose dryden_init also places the filter on its
+        // stationary distribution so the world starts gusty rather than
+        // burning off a spin-up transient. reseed() runs the same walk.
+        if (Result<void> derived = sim.derive_streams(w); !derived) return std::unexpected(derived.error());
     }
 
     // -----------------------------------------------------------------------
@@ -2292,9 +2293,9 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
 // reseed
 // ---------------------------------------------------------------------------
 //
-// See the doc comment in simulation.hpp for the full argument -- in particular
-// for why the blocks below are the complete list: one block per system that
-// derives a stream from the world seed.
+// See the doc comment in simulation.hpp for the full argument. What it
+// re-derives is no longer a list here: it is every stream the module set
+// declares (sim/module.hpp's SEEDED STREAMS), walked by derive_streams().
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::reseed(uint64_t scene_seed) {
@@ -2305,28 +2306,28 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
                                        "first."));
     }
 
+    // RESOLVE FIRST, WRITE SECOND, as the hand-written body did: every array
+    // the walk touches is resolved before any seed is written, so a refusal
+    // leaves every seed and every stream as it was.
     Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
     if (!params) return std::unexpected(params.error());
-    Result<std::span<DrydenState>> dryden = arenas_.array(dryden_id_);
-    if (!dryden) return std::unexpected(dryden.error());
-    Result<std::span<sensors::ImuSensorRow>> sensors_rows = arenas_.array(imu_id_);
-    if (!sensors_rows) return std::unexpected(sensors_rows.error());
-    // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's contents --
-    // the same discipline free_rows_of() states and for the same reason:
-    // a free row is zero-filled, and writing a fresh stream into one would break
-    // the engine-wide "a freed slot reads as zeroes" invariant and put sixteen
-    // non-zero bytes into every subsequent snapshot of a slot nothing owns.
-    Result<std::span<const uint32_t>> sensor_map = arenas_.slot_to_world(imu_id_);
-    if (!sensor_map) return std::unexpected(sensor_map.error());
-    Result<std::span<sensors::GnssSensorRow>> gnss_rows = arenas_.array(gnss_id_);
-    if (!gnss_rows) return std::unexpected(gnss_rows.error());
-    Result<std::span<const uint32_t>> gnss_map = arenas_.slot_to_world(gnss_id_);
-    if (!gnss_map) return std::unexpected(gnss_map.error());
+    for (const modules::CompiledStream& stream : schedule_.streams) {
+        const ArrayIndex id = module_array_ids_[stream.array];
+        if (const Result<std::span<std::byte>> bytes = arenas_.bytes(id); !bytes) {
+            return std::unexpected(bytes.error());
+        }
+        if (const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id); !map) {
+            return std::unexpected(map.error());
+        }
+    }
 
-    // Worlds in INDEX order, and each world's sensors in ascending slot order.
-    // Nothing here depends on the iteration order (each write is a pure function
-    // of the new world seed and the slot index), but the engine's determinism
-    // posture is that an ordered walk is the only kind there is.
+    // Worlds in INDEX order; within a world, derive_streams() walks the
+    // streams in declaration order and each array's rows in ascending slot
+    // order. Nothing here depends on the iteration order (each write is a pure
+    // function of the new world seed and the slot index), but the engine's
+    // determinism posture is that an ordered walk is the only kind there is.
+    // For the standard set the order is the hand-written body's: per world,
+    // dryden, then the live IMU rows, then the live GNSS rows.
     for (uint32_t w = 0; w < layout_.world_count; ++w) {
         WorldParams& row = (*params)[w];
 
@@ -2336,29 +2337,16 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
         // step.
         row.seed = rng::splitmix64(scene_seed ^ rng::fnv1a64(kWorldSeedDomainTag) ^ uint64_t{w});
 
-        // AFTER the seed write, exactly as create() does it: dryden_init reads
-        // row.seed and re-places the filter on its stationary distribution.
-        dryden_init((*dryden)[w], row);
-
-        const uint32_t begin = w * layout_.sensor_capacity;
-        const uint32_t end = begin + layout_.sensor_capacity;
-        for (uint32_t slot = begin; slot < end; ++slot) {
-            if ((*sensor_map)[slot] != w) continue;
-            // ONLY `noise`. The bias states, the divider phase, the ring cursor
-            // and the ring itself are HISTORY and stay exactly as they are --
-            // see the header: a reseed changes the future draws, not the past.
-            (*sensors_rows)[slot].noise = sensors::imu_noise_stream(row.seed, slot - begin);
-        }
-        for (uint32_t slot = begin; slot < end; ++slot) {
-            if ((*gnss_map)[slot] != w) continue;
-            (*gnss_rows)[slot].noise = sensors::gnss_noise_stream(row.seed, slot - begin);
-        }
+        // AFTER the seed write, exactly as create() does it. Every array was
+        // resolved above, so this cannot fail part-way.
+        if (Result<void> derived = derive_streams(w); !derived) return std::unexpected(derived.error());
     }
 
     // The device mirror is stale (S6 Task 6 review round 1, finding C1). Every
-    // write above lands in a REGISTERED array -- WorldParams, DrydenState and
-    // the live ImuSensorRow noise streams are all part of the walk the mirror
-    // uploads -- and none of them goes through the structural queue, so
+    // write above lands in a REGISTERED array -- WorldParams and every declared
+    // stream's array are part of the walk the mirror uploads (a developer's
+    // too: the mirror holds every module array, bound or not) -- and none of
+    // them goes through the structural queue, so
     // nothing else would say so. Unmarked, a reseed on the vulkan path would
     // be a call that appeared to succeed and changed nothing about the run:
     // the next step() would submit the OLD seeds and the readback would put
@@ -2372,6 +2360,45 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     // the mark is now load-bearing for the trajectory as well as for the bytes.
     mark_vulkan_dirty();
 
+    return {};
+}
+
+Result<void> Simulation::derive_streams(uint32_t world_index) {
+    Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
+    if (!params) return std::unexpected(params.error());
+    const WorldParams& world = (*params)[world_index];
+    for (const modules::CompiledStream& stream : schedule_.streams) {
+        const modules::CompiledArray& array = schedule_.arrays[stream.array];
+        const ArrayIndex id = module_array_ids_[stream.array];
+        const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        if (!bytes) return std::unexpected(bytes.error());
+        const Result<WorldRange> range = arenas_.range(id, world_index);
+        if (!range) return std::unexpected(range.error());
+        const std::size_t row_bytes = array.elem_size;
+        const auto row = [&bytes, row_bytes](uint32_t slot) {
+            return bytes->subspan(std::size_t{slot} * row_bytes, row_bytes);
+        };
+
+        if (array.extent == modules::Extent::per_world) {
+            // The world's one row, always live (compile_schedule allows a
+            // stream only here or in a slot-allocated array).
+            stream.reseed(row(range->begin), world, 0);
+            continue;
+        }
+
+        // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's
+        // contents -- the same discipline free_rows_of() states and for the
+        // same reason: a free row is zero-filled, and writing a fresh stream
+        // into one would break the engine-wide "a freed slot reads as zeroes"
+        // invariant and put non-zero bytes into every later snapshot of a slot
+        // nothing owns. The slot handed over is WORLD-LOCAL, as init_row's is.
+        const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id);
+        if (!map) return std::unexpected(map.error());
+        for (uint32_t slot = range->begin; slot < range->begin + range->count; ++slot) {
+            if ((*map)[slot] != world_index) continue;
+            stream.reseed(row(slot), world, slot - range->begin);
+        }
+    }
     return {};
 }
 

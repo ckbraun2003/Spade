@@ -1,6 +1,7 @@
 // The standard module set: today's engine as modules (plan stages 1-4). Every
 // pass names the GPU recipe of its own CPU function (builtin_cpu_for below),
-// and every module that owns state declares its arrays.
+// every module that owns state declares its arrays, and every one whose rows
+// hold a seeded stream declares it.
 #include "sim/module.hpp"
 
 #include "physics/forces.hpp"
@@ -107,6 +108,17 @@ constexpr ArrayDecl kGnssArrays[] = {
      .extent = Extent::per_row,
      .owner = "gnss_sensors",
      .depth = sensors::kRingDepth}};
+
+// THE BUILT-INS' SEEDED STREAMS (Task 5): what create() and reseed() walk.
+// Each tag is the one its derivation draws under, so a developer's module
+// cannot take it. Set order puts them in reseed()'s historical order: dryden,
+// then the IMU rows, then the GNSS rows.
+constexpr StreamDecl kDrydenStreams[] = {
+    {.tag = kDrydenDomainTag, .array = "dryden", .reseed = &builtin::reseed_dryden_row}};
+constexpr StreamDecl kImuStreams[] = {
+    {.tag = sensors::kImuNoiseDomainTag, .array = "imu_sensors", .reseed = &builtin::reseed_imu_row}};
+constexpr StreamDecl kGnssStreams[] = {
+    {.tag = sensors::kGnssNoiseDomainTag, .array = "gnss_sensors", .reseed = &builtin::reseed_gnss_row}};
 
 // Dryden provides the wind field: the mean wind plus this substep's gust,
 // sampled after the filter advances (the read of dryden.dryden orders it).
@@ -216,10 +228,10 @@ ModuleSet standard_modules() {
     return {
         {.name = "drag", .passes = kDragPasses, .state = kDragArrays, .legacy_walk = true},
         {.name = "dryden", .passes = kDrydenPasses, .fields = kDrydenFields, .state = kDrydenArrays,
-         .legacy_walk = true},
-        {.name = "imu", .passes = kImuPasses, .state = kImuArrays, .legacy_walk = true},
+         .legacy_walk = true, .streams = kDrydenStreams},
+        {.name = "imu", .passes = kImuPasses, .state = kImuArrays, .legacy_walk = true, .streams = kImuStreams},
         {.name = "rotor", .passes = kRotorPasses, .state = kRotorArrays, .legacy_walk = true},
-        {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays},
+        {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays, .streams = kGnssStreams},
         {.name = "behaviors", .passes = kBehaviorPasses},
         {.name = "static_contact", .passes = kStaticPasses},
         {.name = "dynamic_contact", .passes = kDynamicPasses},

@@ -1281,40 +1281,37 @@ public:
     // The world seed is NOT read by the step loop. It is read ONCE by each
     // system that derives a stream from it, and from then on the DERIVED
     // STREAM is the live state -- which makes rewriting the seed only half a
-    // reseed. Every cached derivation has to be re-derived too, and the
-    // complete inventory of them is:
+    // reseed. Every cached derivation has to be re-derived too:
     //
     //   1. WorldParams::seed itself (state/layout.hpp) -- THE AUTHORITY, and
     //      the only place a seed is stored. WorldConfig deliberately holds no
     //      copy (see its "NO `seed` MEMBER" note below), which is exactly what
     //      makes this a single write rather than a two-place update that could
     //      half-fail. create() is the only other writer.
-    //   2. DrydenState, one row per world -- derived by dryden_init() under
-    //      the "dryden" tag at index 0 (world/medium.cpp). Re-run per world
-    //      AFTER the seed write, in create()'s order and for create()'s
-    //      reason: dryden_init both derives the stream and places the filter
-    //      on its stationary distribution, so the world starts gusty instead
-    //      of burning off a spin-up transient.
-    //   3. Every LIVE ImuSensorRow::noise -- derived by the imu module's init
-    //      (sim/builtin_state.cpp's init_imu_row) from
-    //      (WorldParams::seed, WORLD-LOCAL sensor slot) via
-    //      sensors::imu_noise_stream(). Re-derived for every ALLOCATED sensor
-    //      row in the world, so a sensor that predates the reseed draws from
-    //      the new stream exactly like one added after it. World-local, like
-    //      the spawn path's, so a world's noise still does not depend on where
-    //      that world sits in the set.
-    //   4. Every LIVE GnssSensorRow::noise -- derived by init_gnss_row via
-    //      sensors::gnss_noise_stream(), re-derived exactly as the IMU's are.
+    //   2. EVERY STREAM THE MODULE SET DECLARES (sim/module.hpp's SEEDED
+    //      STREAMS; schedule().streams), re-derived per world AFTER the seed
+    //      write by the stream's own reseed function: a per_world stream's
+    //      row, and every LIVE row of a slot-allocated stream's array -- live
+    //      by the slot->world map, so a free row stays zero -- from
+    //      (WorldParams::seed, WORLD-LOCAL slot). So a row that predates the
+    //      reseed draws from the new stream exactly like one added after it,
+    //      and a world's noise still does not depend on where that world sits
+    //      in the set. create() runs the same walk after its seed write. The
+    //      standard set declares three, in this order: dryden (dryden_init,
+    //      which also places the filter on its stationary distribution, so
+    //      the world starts gusty), sensor.imu and sensor.gnss (each live
+    //      row's `noise`); sim/standard_modules.cpp has them.
     //
-    // THE LIST IS reseed()'s BODY, one block per system that derives a stream
-    // from the world seed; every other stochastic value is a draw from one of
-    // those streams. A new seeded system adds its block there and a test that
-    // checks its stream directly, as Imu.ReseedRederivesALiveSensorsStream...
-    // and GnssReseed.ReseedRederivesAReceiversNoiseStream do. (Until
-    // 2026-10-02 this comment counted "exactly three" seed sites and pointed
-    // at test_m1b_bar.cpp's A3 cases as the backstop; GNSS was a fourth site,
-    // and those worlds carry no receiver, so nothing failed.) The module API
-    // replaces this hand-kept list: each module declares its seeded streams.
+    // THERE IS NO HAND-KEPT LIST. Until 2026-10-02 this comment counted
+    // "exactly three" seed sites, and reseed()'s body was one block per site;
+    // GNSS was a fourth, and nothing failed (the A3 worlds carry no receiver).
+    // Now a module's stream is reseeded because it is declared, with no edit
+    // here: compile_schedule refuses a tag declared twice in the set (two
+    // modules would draw the same numbers) or the "world" tag, and an init
+    // that derives a stream calls the declared reseed function to do it, so
+    // the two derive it one way (TD-9). ModuleStreams.* pin both, and
+    // Imu.ReseedRederivesALiveSensorsStream... and GnssReseed.Reseed
+    // RederivesAReceiversNoiseStream check the built-ins' streams directly.
     //
     // WHAT IT DOES NOT TOUCH: THE PAST. Ring contents, ring cursors
     // (last_index), rate-divider phase and the accumulated bias states all
@@ -1705,8 +1702,9 @@ private:
     //   restore()                   MARKS (round 1 REVIEW, C1). Rewrites
     //                               EVERY registered array.
     //   reseed()                    MARKS (round 1 REVIEW, C1). Rewrites
-    //                               WorldParams::seed, every DrydenState and
-    //                               every live ImuSensorRow::noise.
+    //                               WorldParams::seed and every declared
+    //                               stream (DrydenState, live IMU and GNSS
+    //                               noise in the standard set).
     //   register_model()            touches no arena at all -- the model
     //                               registry is configuration, held in a
     //                               plain vector outside the walk.
@@ -1732,6 +1730,14 @@ private:
     // w * capacity + local, times depth, is that world's offset plus the local
     // row's window).
     void clear_children(uint32_t array, uint32_t slot);
+    // THE STREAM WALK (sim/module.hpp's SEEDED STREAMS): re-derives every
+    // declared stream of world `world_index` from its registered WorldParams
+    // row, in schedule_.streams order -- a per_world stream's one row, and
+    // every LIVE row (by the slot->world map) of a slot-allocated stream's
+    // array, in ascending slot order, handing each its WORLD-LOCAL slot. A free
+    // row is never written. create() runs it per world after writing the seed,
+    // and reseed() after rewriting it.
+    [[nodiscard]] Result<void> derive_streams(uint32_t world_index);
     void publish_body_counts();
 
     // attach_row()'s sequence, for a table array; `what` prefixes every
