@@ -267,7 +267,7 @@ TEST(StandardModules, DroppingDragsEdgeChangesTheOrderAndTheIdentity) {
 
     static constexpr QuantityAccess drag_access[] = {{"body.pose", Access::read},
                                                      {"body.wrench", Access::accumulate},
-                                                     {"dryden.state", Access::read}};
+                                                     {"dryden.dryden", Access::read}};
     static constexpr PassDecl drag_no_edge[] = {
         {.name = "forces", .phase = Phase::forces, .access = drag_access, .cpu = &spade::physics::pass_drag}};
     ASSERT_EQ(set[0].name, "drag");
@@ -359,8 +359,8 @@ TEST(ModuleSimulation, ScheduleNamesOutliveTheStringsThatNamedThem) {
 TEST(ModuleSimulation, AStandardNamedSetWithAnotherFunctionIsRefusedOnVulkan) {
     static constexpr QuantityAccess rotor_access[] = {{"body.pose", Access::read},
                                                       {"body.wrench", Access::accumulate},
-                                                      {"rotor.state", Access::write},
-                                                      {"dryden.state", Access::read}};
+                                                      {"rotor.rotors", Access::write},
+                                                      {"dryden.dryden", Access::read}};
     static constexpr PassDecl my_rotor[] = {
         {.name = "forces", .phase = Phase::forces, .access = rotor_access, .cpu = &hover_pass}};
     spade::modules::ModuleSet set = spade::modules::standard_modules();
@@ -656,4 +656,125 @@ TEST(StandardModules, ProvideGravityDensityAndWindAtFixedOffsets) {
     EXPECT_EQ(s->fields[2].name, "wind");
     EXPECT_EQ(s->fields[2].offset, spade::modules::kFieldWindOffset);
     EXPECT_EQ(s->field_stride, spade::modules::kFieldBuiltinFloats);
+}
+
+// Stage 4: modules declare the arrays they own. compile_schedule tables them in
+// walk order; the standard set's table spells today's walk, and the declarations
+// leave the compiled order and the configuration identity alone.
+namespace {
+
+struct TallyRow {
+    uint32_t count;
+    uint32_t _p[3];
+};
+constexpr uint32_t kTallySize = spade::modules::row_size<TallyRow>();
+constexpr spade::modules::ArrayDecl kTallyArrays[] = {{.name = "tally_counts", .elem_size = kTallySize}};
+
+// Master d7db700's values, printed by a scratch test before any stage-4 change
+// (plan Task 1, step 0). They are master's, not regenerated ones.
+constexpr uint64_t kStandardIdentity = 0x3303cfc86821f502ULL;
+// schema_hash() of one_body_world()'s registry at 2 ms and 2 substeps. Task 2
+// pins the registered walk with it.
+[[maybe_unused]] constexpr uint64_t kOneBodySchema = 0x1f60a6fef22e254aULL;
+
+[[nodiscard]] spade::Result<CompiledSchedule> standard_plus(const ModuleDesc& extra) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(extra);
+    return compile_schedule(set);
+}
+
+// Refused with invalid_argument, by a message that names `what`.
+[[nodiscard]] testing::AssertionResult refused_naming(const spade::Result<CompiledSchedule>& r,
+                                                      std::string_view what) {
+    if (r.has_value()) return testing::AssertionFailure() << "accepted; expected a refusal naming '" << what << "'";
+    if (r.error().code != spade::Code::invalid_argument) {
+        return testing::AssertionFailure() << "code " << static_cast<int>(r.error().code) << ": " << r.error().context;
+    }
+    if (r.error().context.find(what) == std::string::npos) {
+        return testing::AssertionFailure() << "'" << what << "' is not named in: " << r.error().context;
+    }
+    return testing::AssertionSuccess();
+}
+
+}  // namespace
+
+TEST(StandardModules, DeclareTodaysArraysInTodaysWalkOrder) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(spade::modules::walk_order(*s),
+              (Names{"world_params", "bodies", "body_generation", "drag_bodies", "dryden", "imu_sensors", "imu_ring",
+                     "rotors", "replay_config", "gnss_sensors", "gnss_ring"}));
+}
+
+TEST(StandardModules, StateDeclarationsLeaveTheOrderAndTheIdentityAlone) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(s->identity, kStandardIdentity) << "master's value; CompileToTodaysOrder pins the order";
+}
+
+TEST(ModuleState, AStatefulModulesQuantitiesNameItsArrays) {
+    static constexpr QuantityAccess wrong[] = {{"tally.count", Access::write}};
+    static constexpr QuantityAccess right[] = {{"tally.tally_counts", Access::write}};
+    static constexpr PassDecl a[] = {{.name = "count", .phase = Phase::forces, .access = wrong, .cpu = &noop}};
+    static constexpr PassDecl b[] = {{.name = "count", .phase = Phase::forces, .access = right, .cpu = &noop}};
+    const ModuleDesc bad[] = {{.name = "tally", .passes = a, .state = kTallyArrays}};
+    const ModuleDesc good[] = {{.name = "tally", .passes = b, .state = kTallyArrays}};
+    EXPECT_EQ(code_of(compile_schedule(bad)), spade::Code::invalid_argument);
+    EXPECT_TRUE(compile_schedule(good).has_value());
+}
+
+TEST(ModuleState, AnArrayNameIsDeclaredOnceAndIsNotACoreArray) {
+    using spade::modules::ArrayDecl;
+    static constexpr ArrayDecl twice[] = {{.name = "tally_counts", .elem_size = kTallySize},
+                                          {.name = "tally_counts", .elem_size = kTallySize}};
+    static constexpr ArrayDecl builtin[] = {{.name = "rotors", .elem_size = kTallySize}};
+    static constexpr ArrayDecl core[] = {{.name = "bodies", .elem_size = kTallySize}};
+    static constexpr ArrayDecl dotted[] = {{.name = "a.b", .elem_size = kTallySize}};
+    static constexpr ArrayDecl sizeless[] = {{.name = "tally_counts", .elem_size = 0}};
+    ASSERT_TRUE(standard_plus({.name = "tally", .state = kTallyArrays}).has_value()) << "the control";
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = twice}), "tally_counts"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = builtin}), "rotors"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = core}), "bodies"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = dotted}), "a.b"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = sizeless}), "tally_counts"));
+}
+
+TEST(ModuleState, APerRowArrayNeedsAnOwnerThatHoldsRows) {
+    using spade::modules::ArrayDecl;
+    using spade::modules::Extent;
+    static constexpr ArrayDecl ownerless[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "nobody", .depth = 4}};
+    static constexpr ArrayDecl world_owner[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "dryden", .depth = 4}};
+    static constexpr ArrayDecl row_owner[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "imu_ring", .depth = 4}};
+    static constexpr ArrayDecl no_depth[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "imu_sensors", .depth = 0}};
+    static constexpr ArrayDecl owned_body[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_body, .owner = "imu_sensors"}};
+    static constexpr ArrayDecl deep_body[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_body, .depth = 4}};
+    // Physics' shape: one row per rotor slot, owned by another module's array.
+    static constexpr ArrayDecl per_rotor[] = {
+        {.name = "tally_ring", .elem_size = kTallySize, .extent = Extent::per_row, .owner = "rotors", .depth = 1}};
+    ASSERT_TRUE(standard_plus({.name = "tally", .state = per_rotor}).has_value()) << "the control";
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = ownerless}), "nobody"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = world_owner}), "dryden"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = row_owner}), "imu_ring"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = no_depth}), "tally_ring"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = owned_body}), "tally_ring"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = deep_body}), "tally_ring"))
+        << "a depth is not silently dropped";
+}
+
+TEST(ModuleState, OnlyTheLegacyArraysMayCarryTheLegacyMarker) {
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "tally", .state = kTallyArrays, .legacy_walk = true}),
+                               "tally_counts"));
+}
+
+TEST(ModuleSchedule, APassNameWithADotOrAnUnknownPhaseIsRefused) {
+    static constexpr PassDecl dotted[] = {{.name = "a.b", .phase = Phase::forces, .cpu = &noop}};
+    static constexpr PassDecl unphased[] = {{.name = "x", .phase = static_cast<Phase>(6), .cpu = &noop}};
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "probe", .passes = dotted}), "probe.a.b"));
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "probe", .passes = unphased}), "probe.x"));
 }

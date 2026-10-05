@@ -43,10 +43,119 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     const std::size_t dot = q.find('.');
     if (dot == std::string_view::npos || dot == 0 || dot + 1 == q.size()) return false;
     const std::string_view owner = q.substr(0, dot);
+    const std::string_view name = q.substr(dot + 1);
     for (const ModuleDesc& m : modules) {
-        if (m.name == owner) return true;
+        if (m.name != owner) continue;
+        // A stateful module's quantities name its arrays (stage 4), so a
+        // misspelt array cannot drop a hazard. A stateless module's tokens
+        // stay free, as in stage 1.
+        if (m.state.empty()) return true;
+        for (const ArrayDecl& a : m.state) {
+            if (a.name == name) return true;
+        }
+        return false;
     }
     return false;
+}
+
+[[nodiscard]] bool is_core_array(std::string_view name) noexcept {
+    for (const std::string_view core : kCoreArrays) {
+        if (name == core) return true;
+    }
+    return false;
+}
+
+[[nodiscard]] bool is_legacy_array(std::string_view name) noexcept {
+    for (const std::string_view legacy : kLegacyWalkArrays) {
+        if (name == legacy) return true;
+    }
+    return false;
+}
+
+[[nodiscard]] std::string_view extent_name(Extent e) noexcept {
+    switch (e) {
+        case Extent::per_world: return "per_world";
+        case Extent::per_body: return "per_body";
+        case Extent::per_element: return "per_element";
+        case Extent::per_sensor: return "per_sensor";
+        case Extent::per_row: return "per_row";
+    }
+    return "unknown";
+}
+
+// THE MODULE ARRAY TABLE (stage 4), in registration order: the legacy
+// modules' arrays first, then every other module's -- each pass in set order,
+// and each module's arrays in declaration order. Owners resolve by name after
+// both passes, so an owner may be declared by any module in the set.
+[[nodiscard]] Result<std::vector<CompiledArray>> compile_arrays(std::span<const ModuleDesc> modules) {
+    std::vector<CompiledArray> out;
+    std::vector<std::string_view> owners;  // parallel to `out`: each array's declared owner
+    std::map<std::string, std::size_t, std::less<>> by_name;
+    for (const bool legacy : {true, false}) {
+        for (const ModuleDesc& mod : modules) {
+            if (mod.legacy_walk != legacy) continue;
+            for (const ArrayDecl& a : mod.state) {
+                const std::string where =
+                    "array '" + std::string(a.name) + "' (module '" + std::string(mod.name) + "')";
+                if (a.name.empty() || a.name.find('.') != std::string_view::npos) {
+                    return std::unexpected(invalid(where + ": an array needs a name with no '.'"));
+                }
+                if (is_core_array(a.name)) {
+                    return std::unexpected(invalid(where + ": the core registers '" + std::string(a.name) +
+                                                   "' itself; a module cannot declare it"));
+                }
+                if (const auto it = by_name.find(a.name); it != by_name.end()) {
+                    if (out[it->second].module == mod.name) {
+                        return std::unexpected(invalid(where + ": declared twice"));
+                    }
+                    return std::unexpected(invalid("array '" + std::string(a.name) + "' is declared by module '" +
+                                                   out[it->second].module + "' and module '" +
+                                                   std::string(mod.name) + "'; an array has one owner"));
+                }
+                if (a.elem_size == 0) {
+                    return std::unexpected(invalid(where + ": elem_size is 0; a row has a size"));
+                }
+                if (static_cast<uint8_t>(a.extent) > static_cast<uint8_t>(Extent::per_row)) {
+                    return std::unexpected(invalid(where + ": unknown extent"));
+                }
+                if (a.extent == Extent::per_row && a.depth == 0) {
+                    return std::unexpected(invalid(where + ": a per_row array needs a depth of at least 1"));
+                }
+                if (a.extent != Extent::per_row && (!a.owner.empty() || a.depth != 1)) {
+                    return std::unexpected(invalid(where + ": only a per_row array takes an owner or a depth"));
+                }
+                if (mod.legacy_walk && !is_legacy_array(a.name)) {
+                    return std::unexpected(invalid(
+                        where + ": the module carries the legacy walk marker, which registers before "
+                                "replay_config and is only for the arrays that predate it (drag_bodies, dryden, "
+                                "imu_sensors, imu_ring, rotors)"));
+                }
+                by_name.emplace(std::string(a.name), out.size());
+                out.push_back(CompiledArray{std::string(mod.name), std::string(a.name), a.elem_size, a.extent,
+                                            kNoArray, a.depth, mod.legacy_walk});
+                owners.push_back(a.owner);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        CompiledArray& c = out[i];
+        if (c.extent != Extent::per_row) continue;
+        const std::string where = "array '" + c.name + "' (module '" + c.module + "')";
+        const auto it = by_name.find(owners[i]);
+        if (it == by_name.end()) {
+            return std::unexpected(invalid(where + ": its owner '" + std::string(owners[i]) +
+                                           "' is not an array any module in the set declares"));
+        }
+        const Extent owner_extent = out[it->second].extent;
+        if (owner_extent == Extent::per_world || owner_extent == Extent::per_row) {
+            return std::unexpected(invalid(where + ": its owner '" + std::string(owners[i]) + "' is " +
+                                           std::string(extent_name(owner_extent)) +
+                                           "; a per_row array's owner holds rows (per_body, per_element or "
+                                           "per_sensor)"));
+        }
+        c.owner = static_cast<uint32_t>(it->second);
+    }
+    return out;
 }
 
 // The built-in fields' fixed shapes (module.hpp). The GPU row depends on them.
@@ -143,8 +252,10 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
-            if (p.name.empty() || p.cpu == nullptr) {
-                return std::unexpected(invalid(full + ": a pass needs a name and a CPU function"));
+            // A '.' in a pass name would make "<module>.<pass>", the name an
+            // edge uses, ambiguous.
+            if (p.name.empty() || p.name.find('.') != std::string_view::npos || p.cpu == nullptr) {
+                return std::unexpected(invalid(full + ": a pass needs a name with no '.' and a CPU function"));
             }
             if (static_cast<std::size_t>(p.phase) >= kPhaseCount) {
                 return std::unexpected(invalid(full + ": unknown phase"));
@@ -160,7 +271,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 if (!known_quantity(qa.quantity, modules, field_owner)) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
                                                    "' (a core quantity, field.<name> for a field a module "
-                                                   "declares, or <module>.<name> for a module in the set)"));
+                                                   "declares, or <module>.<name> for a module in the set, "
+                                                   "where <name> is one of its arrays if it declares any)"));
                 }
                 if (const std::string_view field = field_name_of(qa.quantity);
                     !field.empty() && qa.access != Access::read) {
@@ -185,6 +297,9 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             nodes.push_back(Node{m, d, &p, std::move(full)});
         }
     }
+
+    Result<std::vector<CompiledArray>> arrays = compile_arrays(modules);
+    if (!arrays) return std::unexpected(arrays.error());
 
     // Every declared field has a pass in its provider module that writes it.
     for (const auto& [field, m] : field_owner) {
@@ -333,6 +448,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     out.identity = h;
     out.fields = std::move(fields);
     out.field_stride = field_stride;
+    out.arrays = std::move(*arrays);
     return out;
 }
 
@@ -340,6 +456,20 @@ std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     std::vector<compute::GpuPass> out;
     out.reserve(schedule.passes.size());
     for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu});
+    return out;
+}
+
+std::vector<std::string> walk_order(const CompiledSchedule& schedule) {
+    // kCoreArrays is the three head arrays, then replay_config.
+    const std::span<const std::string_view> core(kCoreArrays);
+    std::vector<std::string> out(core.begin(), core.end() - 1);
+    for (const CompiledArray& a : schedule.arrays) {
+        if (a.legacy_walk) out.push_back(a.name);
+    }
+    out.emplace_back(core.back());
+    for (const CompiledArray& a : schedule.arrays) {
+        if (!a.legacy_walk) out.push_back(a.name);
+    }
     return out;
 }
 

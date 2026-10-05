@@ -1,18 +1,50 @@
-// The standard module set: today's engine as modules (plan stages 1-3). Every
-// pass names the GPU recipe of its own CPU function (builtin_cpu_for below).
+// The standard module set: today's engine as modules (plan stages 1-4). Every
+// pass names the GPU recipe of its own CPU function (builtin_cpu_for below),
+// and every module that owns state declares its arrays.
 #include "sim/module.hpp"
 
+#include "physics/forces.hpp"
 #include "physics/schedule.hpp"
+#include "sensors/gnss.hpp"
+#include "sensors/imu.hpp"
+#include "sensors/rings.hpp"
+#include "vehicles/rotor.hpp"
+#include "world/medium.hpp"
 
 namespace spade::modules {
 namespace {
 
+// THE BUILT-INS' STATE: the seven arrays today's create() registers, with
+// the extents its capacities follow. Each ring holds kRingDepth samples per
+// sensor, so sensor g owns ring rows [g * kRingDepth, (g + 1) * kRingDepth).
+constexpr ArrayDecl kDragArrays[] = {{.name = "drag_bodies",
+                                      .elem_size = attached_row_size<physics::DragBodyRow>(),
+                                      .extent = Extent::per_element}};
+constexpr ArrayDecl kDrydenArrays[] = {{.name = "dryden", .elem_size = row_size<DrydenState>()}};
+constexpr ArrayDecl kImuArrays[] = {
+    {.name = "imu_sensors", .elem_size = attached_row_size<sensors::ImuSensorRow>(), .extent = Extent::per_sensor},
+    {.name = "imu_ring",
+     .elem_size = row_size<sensors::ImuSample>(),
+     .extent = Extent::per_row,
+     .owner = "imu_sensors",
+     .depth = sensors::kRingDepth}};
+constexpr ArrayDecl kRotorArrays[] = {{.name = "rotors",
+                                       .elem_size = attached_row_size<vehicles::RotorRow>(),
+                                       .extent = Extent::per_element}};
+constexpr ArrayDecl kGnssArrays[] = {
+    {.name = "gnss_sensors", .elem_size = attached_row_size<sensors::GnssSensorRow>(), .extent = Extent::per_sensor},
+    {.name = "gnss_ring",
+     .elem_size = row_size<sensors::GnssFix>(),
+     .extent = Extent::per_row,
+     .owner = "gnss_sensors",
+     .depth = sensors::kRingDepth}};
+
 // Dryden provides the wind field: the mean wind plus this substep's gust,
-// sampled after the filter advances (the read of dryden.state orders it).
+// sampled after the filter advances (the read of dryden.dryden orders it).
 constexpr FieldDecl kDrydenFields[] = {{.name = "wind", .kind = FieldKind::vec3, .unit = "m/s"}};
-constexpr QuantityAccess kDrydenAccess[] = {{"dryden.state", Access::write}};
+constexpr QuantityAccess kDrydenAccess[] = {{"dryden.dryden", Access::write}};
 constexpr QuantityAccess kDrydenSampleAccess[] = {
-    {"dryden.state", Access::read}, {"world.params", Access::read}, {"field.wind", Access::write}};
+    {"dryden.dryden", Access::read}, {"world.params", Access::read}, {"field.wind", Access::write}};
 constexpr PassDecl kDrydenPasses[] = {
     {.name = "advance", .phase = Phase::fields, .access = kDrydenAccess, .cpu = &physics::pass_medium_update,
      .gpu = compute::GpuRecipe::medium_update},
@@ -33,7 +65,7 @@ constexpr PassDecl kEnvironmentPasses[] = {{.name = "sample",
 
 constexpr QuantityAccess kRotorAccess[] = {{"body.pose", Access::read},
                                            {"body.wrench", Access::accumulate},
-                                           {"rotor.state", Access::write},
+                                           {"rotor.rotors", Access::write},
                                            {"field.density", Access::read},
                                            {"field.wind", Access::read}};
 constexpr PassDecl kRotorPasses[] = {
@@ -43,6 +75,7 @@ constexpr PassDecl kRotorPasses[] = {
 // Rotors then drag is an fp32 accumulation order the goldens pin.
 constexpr QuantityAccess kDragAccess[] = {{"body.pose", Access::read},
                                           {"body.wrench", Access::accumulate},
+                                          {"drag.drag_bodies", Access::read},
                                           {"field.density", Access::read},
                                           {"field.wind", Access::read}};
 constexpr std::string_view kDragAfter[] = {"rotor.forces"};
@@ -55,12 +88,14 @@ constexpr PassDecl kDragPasses[] = {{.name = "forces",
 
 constexpr QuantityAccess kImuAccess[] = {{"body.pose", Access::read},
                                          {"body.specific_force", Access::read},
-                                         {"imu.state", Access::write}};
+                                         {"imu.imu_sensors", Access::write},
+                                         {"imu.imu_ring", Access::write}};
 constexpr PassDecl kImuPasses[] = {
     {.name = "synthesize", .phase = Phase::sensors, .access = kImuAccess, .cpu = &physics::pass_sensor_imu,
      .gpu = compute::GpuRecipe::sensor_imu}};
 
-constexpr QuantityAccess kGnssAccess[] = {{"body.pose", Access::read}, {"gnss.state", Access::write}};
+constexpr QuantityAccess kGnssAccess[] = {
+    {"body.pose", Access::read}, {"gnss.gnss_sensors", Access::write}, {"gnss.gnss_ring", Access::write}};
 constexpr PassDecl kGnssPasses[] = {
     {.name = "synthesize", .phase = Phase::sensors, .access = kGnssAccess, .cpu = &physics::pass_sensor_gnss,
      .gpu = compute::GpuRecipe::sensor_gnss}};
@@ -105,15 +140,17 @@ constexpr PassDecl kIntegratePasses[] = {
 }  // namespace
 
 ModuleSet standard_modules() {
-    // Set order is today's registration order for the modules that own state
-    // (drag, dryden, imu, rotor, gnss: the golden walk, which stage 4 hands to
-    // the modules), then the stateless ones.
+    // Set order is today's registration order for the modules that own state,
+    // then the stateless ones. That order is the golden walk: drag, dryden, imu
+    // and rotor carry the legacy marker, so their arrays register before
+    // replay_config, in this order; gnss registers after it.
     return {
-        {.name = "drag", .passes = kDragPasses},
-        {.name = "dryden", .passes = kDrydenPasses, .fields = kDrydenFields},
-        {.name = "imu", .passes = kImuPasses},
-        {.name = "rotor", .passes = kRotorPasses},
-        {.name = "gnss", .passes = kGnssPasses},
+        {.name = "drag", .passes = kDragPasses, .state = kDragArrays, .legacy_walk = true},
+        {.name = "dryden", .passes = kDrydenPasses, .fields = kDrydenFields, .state = kDrydenArrays,
+         .legacy_walk = true},
+        {.name = "imu", .passes = kImuPasses, .state = kImuArrays, .legacy_walk = true},
+        {.name = "rotor", .passes = kRotorPasses, .state = kRotorArrays, .legacy_walk = true},
+        {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays},
         {.name = "behaviors", .passes = kBehaviorPasses},
         {.name = "static_contact", .passes = kStaticPasses},
         {.name = "dynamic_contact", .passes = kDynamicPasses},
