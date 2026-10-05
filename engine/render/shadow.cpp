@@ -257,20 +257,8 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos) {
     if (map.size == 0 || map.depth.empty()) {
         return 1.0f;
     }
-    // Depth bias (Step 2): trades shadow acne (too small -- a lit surface
-    // incorrectly self-shadows against its own quantised shadow-map depth)
-    // against peter-panning (too large -- a caster's shadow visibly
-    // detaches/shrinks from its own base). TUNED against this task's own
-    // tests/test_render_shadow.cpp fixtures (casters and receivers a few
-    // world units apart, shadow-map texel footprints on that same scale) --
-    // NOT the same constant as raster_cpu.cpp's kOverlayDepthBias, which
-    // biases a different quantity (a screen-space invDepth, not a
-    // world-space light-axis distance) to fix a different failure mode (an
-    // overlay disappearing behind the surface it annotates, not shadow
-    // acne). Conflating the two would be a defect even if the numbers
-    // happened to coincide (this task's own controller amendment).
-    constexpr float kShadowDepthBias = 0.05f;
-
+    // kShadowDepthBias (shadow.hpp) trades acne against peter-panning; its
+    // comment there says how it was tuned. GL's lookup uses the same value.
     const glm::vec4 p = map.light_view_proj * glm::vec4(world_pos, 1.0f);
     if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) {
         return 1.0f;  // SR-17: outside the shadow frustum's own footprint -- unshadowed, by design.

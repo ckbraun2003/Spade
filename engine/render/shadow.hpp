@@ -49,11 +49,23 @@ struct DrawItem;
 
 // Sentinel: a texel no caster's silhouette has ever covered. Chosen so ANY
 // real light-space z (however far from the sun) reads as "an occluder closer
-// than this was never found" -- sample_shadow()'s own check below is the one
-// place this value is ever compared against. Spelled as the IEEE-754 float32
-// bit pattern for -FLT_MAX so this header does not need <cfloat>/<limits> for
-// a single constant.
+// than this was never found" -- sample_shadow()'s own check below, and GL's
+// port of it, are the only places this value is compared against. Spelled as
+// the IEEE-754 float32 bit pattern for -FLT_MAX so this header does not need
+// <cfloat>/<limits> for a single constant.
 inline constexpr float kNoOccluder = -3.402823466e+38f;
+
+// sample_shadow()'s depth bias, in light-clip z. A point is shadowed when its
+// z is below the occluder's by more than this. It trades shadow acne (too
+// small -- a lit surface incorrectly self-shadows against its own quantised
+// shadow-map depth) against peter-panning (too large -- a caster's shadow
+// visibly detaches/shrinks from its own base). TUNED against
+// tests/test_render_shadow.cpp's fixtures (casters and receivers a few world
+// units apart, shadow-map texel footprints on that same scale) -- NOT the
+// same constant as raster_cpu.hpp's kOverlayDepthBias, which biases a
+// different quantity (a screen-space invDepth) to fix a different failure
+// mode. Public so GL's port of sample_shadow() applies the same value.
+inline constexpr float kShadowDepthBias = 0.05f;
 
 // A depth-only, orthographic shadow map rasterised from the sun's own
 // viewpoint. `depth` is `size*size` texels, row-major, each holding the

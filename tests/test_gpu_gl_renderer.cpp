@@ -119,9 +119,9 @@ void record_glfw_error(int code, const char* description) {
     return camera;
 }
 
-// The fixture's default options, and a GL-to-CPU comparison's: shadows off,
-// which GL does not draw yet, and overlays off, whose lines would cross a
-// frame meant to show only the scene. Overlay cases turn them on.
+// The fixture's default options, and a GL-to-CPU comparison's: shadows and
+// overlays off, so a case sees only what it is about. The shadow and overlay
+// cases turn theirs on.
 [[nodiscard]] RenderOptions comparable_options() {
     RenderOptions options;
     options.shadows = false;
@@ -720,7 +720,12 @@ struct ShadowMatch {
 // GL samples the CPU's own static shadow map, uploaded as a texture, with a
 // port of sample_shadow(). Pinned like the other GL bands.
 TEST_F(GpuGlRenderer, StaticShadowsMatchTheCpuWithinTheirBand) {
-    constexpr size_t kBandMisses = 0;  // provisional until measured on this device
+    // Measured 2026-10-05 on rendering/gl-shadows, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 776 shadowed pixels
+    // on each path, 0 misses either way, and 0 levels over the 648 interior
+    // ones. The map is the CPU's own data. Pinned at the measurement; another
+    // device may differ, so re-measure there before widening (03-verification).
+    constexpr size_t kBandMisses = 0;
     constexpr int kBandInterior = 0;
 
     const RenderScene scene = make_shadow_scene(/*dynamic_caster=*/false);
@@ -734,6 +739,7 @@ TEST_F(GpuGlRenderer, StaticShadowsMatchTheCpuWithinTheirBand) {
     RecordProperty("cpu_shadowed", static_cast<int>(m.cpu_shadowed));
     RecordProperty("gl_shadowed", static_cast<int>(m.gl_shadowed));
     RecordProperty("max_interior", m.max_interior);
+    RecordProperty("interior", static_cast<int>(m.interior));
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of " << m.cpu_shadowed
                                          << " CPU shadow pixels have no GL shadow within 1 px, on " << device;
@@ -747,7 +753,11 @@ TEST_F(GpuGlRenderer, StaticShadowsMatchTheCpuWithinTheirBand) {
 // A dynamic caster: GL copies the static map and rasterizes the box into the
 // copy, keeping the larger light-space z, as the CPU does each frame.
 TEST_F(GpuGlRenderer, DynamicCasterShadowsMatchTheCpuWithinTheirBand) {
-    constexpr size_t kBandMisses = 0;  // provisional until measured on this device
+    // Measured 2026-10-05 as above, same device: 776 shadowed pixels on each
+    // path, 0 misses either way, 0 levels over 648 interior pixels. GL's own
+    // caster texels land where the CPU's do at this map size. Pinned at the
+    // measurement.
+    constexpr size_t kBandMisses = 0;
     constexpr int kBandInterior = 0;
 
     const RenderScene scene = make_shadow_scene(/*dynamic_caster=*/true);
@@ -761,6 +771,7 @@ TEST_F(GpuGlRenderer, DynamicCasterShadowsMatchTheCpuWithinTheirBand) {
     RecordProperty("cpu_shadowed", static_cast<int>(m.cpu_shadowed));
     RecordProperty("gl_shadowed", static_cast<int>(m.gl_shadowed));
     RecordProperty("max_interior", m.max_interior);
+    RecordProperty("interior", static_cast<int>(m.interior));
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of " << m.cpu_shadowed
                                          << " CPU shadow pixels have no GL shadow within 1 px, on " << device;
