@@ -23,6 +23,45 @@ namespace {
     return x;
 }
 
+// THE INTEGER HELPERS for the subnormal paths below. Kernels request no fp32
+// denormal mode (SPIR-V rule P3), so a device may flush subnormal inputs and
+// outputs of every float op (the RTX 3060 Ti does; the NVIDIA denorm report).
+// Every subnormal this file handles is therefore handled in integers, by
+// shifts only -- the GPU twin has no extended instructions to lean on, and the
+// two must agree bit for bit.
+
+// The index of v's highest set bit, for v != 0.
+[[nodiscard]] uint32_t msb_index(uint32_t v) noexcept {
+    uint32_t p = 0;
+    if (v >= 0x00010000u) {
+        v >>= 16;
+        p += 16;
+    }
+    if (v >= 0x00000100u) {
+        v >>= 8;
+        p += 8;
+    }
+    if (v >= 0x00000010u) {
+        v >>= 4;
+        p += 4;
+    }
+    if (v >= 0x00000004u) {
+        v >>= 2;
+        p += 2;
+    }
+    if (v >= 0x00000002u) p += 1;
+    return p;
+}
+
+// v * 2^-shift, rounded to nearest with ties to even, for shift in [0, 31].
+[[nodiscard]] uint32_t shift_right_nearest_even(uint32_t v, uint32_t shift) noexcept {
+    if (shift == 0u) return v;
+    const uint32_t kept = v >> shift;
+    const uint32_t rest = v & ((1u << shift) - 1u);
+    const uint32_t half = 1u << (shift - 1u);
+    return kept + ((rest > half || (rest == half && (kept & 1u) != 0u)) ? 1u : 0u);
+}
+
 // ===========================================================================
 // log32
 // ===========================================================================
@@ -291,12 +330,17 @@ float log32(float x) noexcept {
     }
 
     // Decompose x = m * 2^e with m in [1, 2). A subnormal has a zero exponent
-    // field, so it is scaled into the normal range first by an EXACT multiply
-    // by 2^24 and the exponent is paid back afterwards.
+    // field, so it is scaled into the normal range by 2^24 first and the
+    // exponent is paid back afterwards. The scaling is IN INTEGERS, never a
+    // float multiply, which a device that flushes subnormal inputs would read
+    // as 0 * 2^24. The multiply was exact, so the integer form gives the same
+    // bits: x = f * 2^-149 with f's highest set bit at p, so x * 2^24 =
+    // f * 2^-125 has biased exponent p + 2 and f's bits below p as its fraction.
     uint32_t mx = ix;
     int32_t e = 0;
     if ((ix >> 23) == 0u) {
-        mx = bits_of(x * 0x1.0p24f);
+        const uint32_t p = msb_index(ix);
+        mx = ((p + 2u) << 23) | ((ix << (23u - p)) & 0x007FFFFFu);
         e = -24;
     }
     e += static_cast<int32_t>(mx >> 23) - 127;
@@ -411,7 +455,8 @@ float exp32(float x) noexcept {
     const float m = exp_kernel(r);
     const int32_t k = static_cast<int32_t>(n);
 
-    if (k >= -126 && k <= 127) {
+    // k == -126 belongs to the tail below: with m < 1 its result is subnormal.
+    if (k >= -125 && k <= 127) {
         return m * pow2(k);
     }
     if (k > 127) {
@@ -423,17 +468,30 @@ float exp32(float x) noexcept {
         // opinion about where FLT_MAX is.
         return (m * pow2(127)) * pow2(k - 127);
     }
-    // k in [-150, -127]: the result is subnormal or zero. Scaled in two exact
-    // steps so the SINGLE rounding happens in the last multiply, where it is
-    // the correct rounding to the subnormal lattice. m * 2^(k+64) is normal
-    // for every k in range (its exponent lands in [-87, -62]), so that first
-    // multiply is exact and the second is the only one that rounds.
-    return (m * pow2(k + 64)) * 0x1.0p-64f;
+    // k in [-150, -126]: the result is subnormal or zero (or, for k == -126
+    // and m >= 1, the smallest binade, which the shift-0 case encodes exactly). m * 2^(k+64) is
+    // normal for every k in range (its exponent lands in [-87, -62]), so that
+    // multiply is exact. The scaling by 2^-64 is then the ONE rounding, to the
+    // subnormal lattice, and it is IN INTEGERS: a device that flushes
+    // subnormal outputs would return 0 from a float multiply. With
+    // scaled = sig * 2^(E - 150) (sig the 24-bit significand, E the biased
+    // exponent), scaled * 2^-64 is sig * 2^(E - 65) units of 2^-149: sig shifted
+    // right by 65 - E, rounded to nearest even. Those are the bits the float
+    // multiply gives where subnormals are kept, and a carry into 0x00800000 is
+    // FLT_MIN's encoding, as it should be.
+    const uint32_t scaled = bits_of(m * pow2(k + 64));
+    const uint32_t sig = (scaled & 0x007FFFFFu) | 0x00800000u;
+    return float_of(shift_right_nearest_even(sig, 65u - (scaled >> 23)));
 }
 
 float sin32(float x) noexcept {
     const uint32_t ix = bits_of(x) & 0x7FFFFFFFu;
     if (ix >= 0x7F800000u) return std::numeric_limits<float>::quiet_NaN();  // +-inf, NaN
+    // A non-zero subnormal returns itself: exactly what the reduction and the
+    // kernel give where subnormals are kept (x - 0 * pio2 is x, and x^3
+    // underflows to zero). Returned before any float op, so a device that
+    // flushes subnormal inputs gives the same bits instead of 0.
+    if (ix != 0u && ix < 0x00800000u) return x;
 
     const Reduction red = reduce_quadrant(x);
     switch (red.quadrant) {
