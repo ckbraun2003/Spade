@@ -1,0 +1,8 @@
+# World and scene files are written by spade::world_to_yaml() and
+# spade::scene::scene_to_yaml(), which always write LF, and the editor saves
+# them the same way. The root .gitattributes sets `* text=auto`, so without
+# these lines a Windows checkout (core.autocrlf=true) would turn them CRLF,
+# and a re-save would show as a whole-file diff. tests/golden/.gitattributes
+# keeps the golden corpus the same way. eol=lf, not -text: they are read.
+*.world.yaml text eol=lf
+*.scene.yaml text eol=lf
