@@ -204,6 +204,10 @@ const RegistryEntry kExpectedRegistry[] = {
     // same substep, never uploaded, read back only by the field_samples()
     // diagnostic.
     {"field_samples", gen::kBinding_field_samples},
+    // PHY-7: the contact scratch, one float4 per body slot. DERIVED for the
+    // same reason: the contact kernels write it and integrate reads and zeroes
+    // it inside one substep; never uploaded, never read back.
+    {"contact_dv", gen::kBinding_contact_dv},
 };
 
 // How many entries of kExpectedRegistry are DERIVED (not part of the
@@ -211,7 +215,7 @@ const RegistryEntry kExpectedRegistry[] = {
 // spelled as a literal in the count assertion below, so the assertion reads as
 // the sentence it is meant to be: the BOUND arrays + five siblings + the
 // derived buffers, and nothing else.
-constexpr std::size_t kDerivedBufferCount = 11;
+constexpr std::size_t kDerivedBufferCount = 12;
 
 }  // namespace
 

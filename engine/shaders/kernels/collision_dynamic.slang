@@ -340,7 +340,13 @@ void collision_dynamic(uint3 tid : SV_DispatchThreadID) {
                         // self-exclusion, since slots are unique.
                         if (!(ea.slot < eb.slot)) continue;
 
+                        // PHY-7: the pair's change to each body, as the
+                        // state took it, in this sweep's order (grid.cpp).
+                        const float3 a_in = bodies[ea.slot].vel;
+                        const float3 b_in = bodies[eb.slot].vel;
                         resolve_pair(ea.slot, eb.slot, material);
+                        contact_dv[ea.slot] = float4(contact_dv[ea.slot].xyz + (bodies[ea.slot].vel - a_in), 0.0f);
+                        contact_dv[eb.slot] = float4(contact_dv[eb.slot].xyz + (bodies[eb.slot].vel - b_in), 0.0f);
                     }
                 }
             }
