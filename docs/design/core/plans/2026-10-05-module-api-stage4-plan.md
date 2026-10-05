@@ -701,6 +701,8 @@ TEST(ModuleVehicleRows, AVehicleSpawnInitializesItsBodyAndRotorRowsAndDespawnCle
 
 ## Notes for later stages
 
+- **Transient scratch (Physics' IMU contact plan, `../../physics/plans/2026-10-05-imu-contact-specific-force-plan.md`, option A, agreed 2026-10-05).** Beside walked arrays, a module may declare a per-body **scratch**: not walked, not digested, not snapshotted, zero-filled at `create()`, and zero at every substep boundary by the module's own invariant. `contact_dv` is the first. If the IMU change lands first, its scratch is hand-registered like the grid's, and Task 1 adds the `scratch` kind and moves it over. If stage 4 lands first, the IMU change declares it. Either way, whichever lands second adopts the other. The parity plan (`2026-10-05-banded-parity-plan.md`) also changes this plan's "every GPU parity band holds unchanged" to "at its cut": whichever merges second re-runs `ctest -L gpu`.
+
 - **Stage 6, the lock,** is a `per_body` array attached through `attach_row`, with `lock_translation` as its front. Its fixed GPU binding, which binds an empty buffer when the module is absent, is the pattern Physics' inputs 4 (the GPU mirror) and 6 then reuse.
 - **Physics' propulsion step 2:** `set_motor_duty` and the motor and battery reads (input 7). Fold the new `ModelType` propulsion fields into `model_identity` in a way that leaves a propulsion-free model's identity, and so Kat's airframe hashes, unchanged.
 - **SPH** gets per-particle rows as `per_body` arrays. The contact-participation bit (spec §11) is a later `init`'s job.
