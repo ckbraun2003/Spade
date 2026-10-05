@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <utility>
 
@@ -329,6 +330,21 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             Result<MeshData> mesh = mesh_csg_subtree(world.sdf, root_node, *subtree_bounds);
             if (!mesh) {
                 return std::unexpected(mesh.error());
+            }
+            // A wall thinner than about two cells folds under surface nets and
+            // draws with holes. Name it rather than draw it wrong in silence (L6).
+            if (const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh); folds.folded > 0u) {
+                const glm::vec3 extent = subtree_bounds->max - subtree_bounds->min +
+                                         glm::vec3(2.0f * kCsgMeshDefaults.aabb_margin);
+                const float cell = std::max({extent.x, extent.y, extent.z}) /
+                                   static_cast<float>(csg_cells_per_axis(*subtree_bounds, kCsgMeshDefaults));
+                const glm::vec3& lo = folds.bounds.min;
+                const glm::vec3& hi = folds.bounds.max;
+                scene.warnings.push_back(std::format(
+                    "CSG subtree at node {}: {} of {} triangles fold between ({:.2f}, {:.2f}, {:.2f}) and "
+                    "({:.2f}, {:.2f}, {:.2f}), so a wall there is thinner than about two cells of {:.3f} m and draws "
+                    "with holes. Make it at least {:.3f} m thick.",
+                    root_node, folds.folded, folds.triangles, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, cell, 2.0f * cell));
             }
             const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
             scene.meshes.push_back(std::move(*mesh));

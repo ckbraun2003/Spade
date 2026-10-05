@@ -587,13 +587,64 @@ TEST(MeshCsgSubtree, RootNodeOutOfRangeIsAnError) {
     EXPECT_EQ(mesh.error().code, Code::invalid_argument);
 }
 
-TEST(MeshCsgSubtree, ZeroCellsPerAxisIsAnError) {
+TEST(MeshCsgSubtree, LimitsThatGiveNoCellsAreAnError) {
     const WorldDesc world = gate_square_world();
     const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2);
-    const CsgMeshLimits bad_limits{.cells_per_axis = 0, .aabb_margin = 0.05f};
-    const Result<MeshData> mesh = mesh_csg_subtree(world.sdf, /*root=*/2, bounds, bad_limits);
-    ASSERT_FALSE(mesh.has_value());
-    EXPECT_EQ(mesh.error().code, Code::invalid_argument);
+    const CsgMeshLimits no_cell_size{.cell_size = 0.0f};
+    const CsgMeshLimits no_floor{.min_cells_per_axis = 0};
+    const CsgMeshLimits cap_below_floor{.min_cells_per_axis = 48, .max_cells_per_axis = 8};
+    for (const CsgMeshLimits& bad : {no_cell_size, no_floor, cap_below_floor}) {
+        const Result<MeshData> mesh = mesh_csg_subtree(world.sdf, /*root=*/2, bounds, bad);
+        ASSERT_FALSE(mesh.has_value());
+        EXPECT_EQ(mesh.error().code, Code::invalid_argument);
+    }
+}
+
+// B1 (rendering/plans/2026-10-03-raster-defects-plan.md): the grid follows a
+// world-space cell, so a large subtree is meshed as finely as a small one.
+// A small subtree keeps the old 48 cells; a large one is capped.
+TEST(CsgCellsPerAxis, TheGridFollowsAWorldSpaceCellSize) {
+    const CsgMeshLimits limits{.cell_size = 0.05f, .min_cells_per_axis = 48, .max_cells_per_axis = 160,
+                               .aabb_margin = 0.05f};
+    const auto cube = [](float half) { return Aabb{.min = glm::vec3(-half), .max = glm::vec3(half)}; };
+    EXPECT_EQ(spade::render::csg_cells_per_axis(cube(0.5f), limits), 48u) << "1.1 m keeps the old floor";
+    EXPECT_EQ(spade::render::csg_cells_per_axis(cube(2.0f), limits), 82u) << "4.1 m / 0.05 m";
+    EXPECT_EQ(spade::render::csg_cells_per_axis(cube(4.0f), limits), 160u) << "8.1 m reaches the cap";
+    const Aabb slab{.min = glm::vec3(-2.0f, -0.1f, -0.1f), .max = glm::vec3(2.0f, 0.1f, 0.1f)};
+    EXPECT_EQ(spade::render::csg_cells_per_axis(slab, limits), 82u) << "the longest axis decides";
+}
+
+// B3: a wall about one cell thick folds under surface nets and draws with
+// holes. shower's bowl (sphere r 4 minus sphere r 3.8 at y 0.4) thins to
+// nothing at its rim, so some fold at any cell size, and scene_from_world()
+// must name it in a warning (L6), never build it in silence.
+TEST(CsgFolds, AThinShellFoldsAndTheSceneNamesIt) {
+    WorldBuilder b = base_builder();
+    b.sphere(4.0f).sphere(3.8f, SdfPose{.position = {0.0f, 0.4f, 0.0f}}).subtract();
+    const WorldDesc world = build_or_fail(b);
+    const Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world, {});
+    ASSERT_TRUE(scene) << scene.error().context;
+    ASSERT_EQ(scene->warnings.size(), 1u) << "one CSG subtree, so one warning";
+    const std::string& warning = scene->warnings[0];
+    EXPECT_NE(warning.find("node 2"), std::string::npos) << warning;
+    EXPECT_NE(warning.find("thinner than about two cells"), std::string::npos) << warning;
+
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2);
+    const MeshData mesh = mesh_or_fail(world.sdf, /*root=*/2, bounds);
+    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(world.sdf, 2, mesh);
+    EXPECT_GT(folds.folded, 0u);
+    EXPECT_GT(folds.bounds.min.y, 0.0f) << "the folds are in the thin upper wall, not the thick bottom";
+}
+
+// The control: the same bowl with a thick wall folds nowhere and warns of
+// nothing, so the warning above is about thinness, not about subtract.
+TEST(CsgFolds, AThickShellNeitherFoldsNorWarns) {
+    WorldBuilder b = base_builder();
+    b.sphere(4.0f).sphere(3.0f, SdfPose{.position = {0.0f, 0.4f, 0.0f}}).subtract();
+    const WorldDesc world = build_or_fail(b);
+    const Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world, {});
+    ASSERT_TRUE(scene) << scene.error().context;
+    EXPECT_TRUE(scene->warnings.empty()) << scene->warnings[0];
 }
 
 // ===========================================================================
@@ -636,7 +687,7 @@ namespace {
 // Bumped only alongside a deliberate kCsgMeshDefaults change, together with
 // the manifest's own `limits_version` field -- csg_mesh.hpp's RS3 discipline,
 // mirroring tessellate.hpp's identical rule for kTessellationDefaults.
-constexpr const char* kExpectedLimitsVersion = "kCsgMeshDefaults@1";
+constexpr const char* kExpectedLimitsVersion = "kCsgMeshDefaults@2";
 
 // A second self-authored fixture, distinct in shape from gate_square_world()
 // (smooth_union rather than subtract, and it stacks a genuine transform on
@@ -681,7 +732,9 @@ TEST(CsgMeshGolden, MatchesCommittedManifest) {
 
     const YAML::Node limits = root["limits"];
     ASSERT_TRUE(limits) << "manifest missing limits";
-    EXPECT_EQ(limits["cells_per_axis"].as<uint32_t>(), kCsgMeshDefaults.cells_per_axis);
+    EXPECT_FLOAT_EQ(limits["cell_size"].as<float>(), kCsgMeshDefaults.cell_size);
+    EXPECT_EQ(limits["min_cells_per_axis"].as<uint32_t>(), kCsgMeshDefaults.min_cells_per_axis);
+    EXPECT_EQ(limits["max_cells_per_axis"].as<uint32_t>(), kCsgMeshDefaults.max_cells_per_axis);
     EXPECT_FLOAT_EQ(limits["aabb_margin"].as<float>(), kCsgMeshDefaults.aabb_margin);
 
     const YAML::Node subtrees = root["subtrees"];
