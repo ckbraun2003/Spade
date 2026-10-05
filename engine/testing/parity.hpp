@@ -29,67 +29,66 @@
 //
 // The engine's CPU determinism contract IS bit equality: two runs of the same
 // scenario on the same build produce byte-identical state, which is what the
-// golden digests pin. CPU<->GPU is deliberately NOT that, and the reason is a
-// standing global constraint rather than a concession:
+// golden digests pin. CPU<->GPU is not, by the user's ruling of 2026-10-05
+// ("basically the same, extremely low error"), made TD-14: every float
+// quantity is banded against the CPU, on every device of record.
 //
-//     "Vulkan OpFDiv and sqrt are <= 2.5-ulp (NOT correctly rounded): the
-//      fp32_math Slang module must contain NO OpFDiv and NO sqrt ...
-//      downstream kernels MAY use div/sqrt -- that is why CPU<->GPU is banded
-//      rather than bit-identical."
-//
-// Every ported kernel's header lists its own div and sqrt sites against the
-// CPU expression each one mirrors. The transcendentals are NOT a contributor:
-// sin32/cos32/exp32/log32 come from the T4 Slang port and are proven
-// bit-identical to the host on this device (tests/test_gpu_fp32_math.cpp). So
-// the divergence this file measures is exactly the accumulated <= 2.5-ulp
-// error of a bounded number of divides and square roots per substep, compounded
-// over the run by the integrator -- which is why a band is a MEASUREMENT, and
-// why it grows with step count and with how chaotic the scenario is.
-//
-// ===========================================================================
-// MEASURE FIRST, THEN PIN. THE ORDER IS THE METHOD.
-//
-// The global constraint: "Tolerance bands are measured then pinned with margin
-// (spec section 9): calibrated on the Iris, committed as constants with
-// provenance comments (device, driver, measured max, margin factor). Bands are
-// NEVER widened to make a failure pass without a root-caused coordinator
-// ruling."
-//
-// compare_arrays() therefore ALWAYS reports the measured maxima, whether or not
-// they are inside the band, and a caller prints them. The bands at the bottom
-// of this file each carry the measurement they were derived from. Reading a
-// band as "how much error is acceptable" is backwards: it is "four times what
-// this device actually produced, so a real regression moves it and thermal
-// noise does not".
+// The GPU differs from the CPU in two named ways, and a band measures their
+// sum, compounded over the run by the integrator:
+//   * Vulkan's OpFDiv and sqrt are <= 2.5 ulp, not correctly rounded; on the
+//     RTX 3060 Ti they are 1 ulp off on normal operands (finding 4 of
+//     core/2026-10-04-nvidia-denorm-report.md). Every ported kernel's header
+//     lists its divide and square-root sites.
+//   * The device's own denormal mode: no kernel requests one (P3), and NVIDIA
+//     flushes subnormals in arithmetic (sign-preserving FTZ and DAZ).
+// fp32_math's transcendentals are exact as a library -- integer forms where
+// subnormals appear, so no flush mode changes a bit (banded-parity T1) -- and
+// the integer state (rng streams, indices, flags) stays exact by its own rule
+// (QuantityKind::bits). So a band is a MEASUREMENT of a port on a device, and
+// it grows with step count and with how chaotic the scenario is.
 //
 // ===========================================================================
-// THE PREDICATE, STATED PRECISELY.
+// MEASURE FIRST, THEN PIN. THE ORDER IS THE METHOD (TD-14, L4).
 //
-// An element passes iff EITHER its absolute error is within `abs` OR its
-// relative error is within `rel`. Not both, and the disjunction is deliberate:
-//   * near zero, a relative error is meaningless (a position component passing
+// compare_arrays() ALWAYS reports the measured maxima, whether or not they are
+// inside the band, split TD-14's way: A, the worst absolute error where
+// |cpu| < s_q = 1e-3, and R, the worst relative error elsewhere. A band is
+// pinned at {4A, 4R}, each rounded up to one significant figure (pin_of()),
+// the larger over every device of record, and each band carries its record:
+// the device tag, A and R, and the older devices' numbers as history (bands::
+// below opens with the devices and the method). Reading a band as "how much
+// error is acceptable" is backwards: it is "four times what the device
+// produced, so a real regression moves it and thermal noise does not". A band
+// is NEVER widened to make a failure pass: a widening names its cause (TD-2),
+// and a quantity that needs more than 1e-3 relative is a grade change, not a
+// band.
+//
+// A BAND MEANS SOMETHING ONLY WHILE IT MEASURES THE PORT. Past the horizon at
+// which one ulp of input, amplified by the CPU alone, exceeds 1e-5 of the
+// scene's scale, the CPU-GPU gap measures the scene; element bands stop there
+// and invariants and statistics take over (test_gpu_parity.cpp's PastHorizon).
+//
+// A ZERO BAND IS A CLAIM. A float row keeps {0, 0} only when no rounding
+// operation can touch it and its argument sits beside it (bands::kStructural);
+// a float row measured exactly equal gets the floor (bands::kFloor), and
+// compare_arrays() refuses an unargued zero.
+//
+// ===========================================================================
+// THE PREDICATE, STATED PRECISELY (parity_detail::error_within).
+//
+// An element passes iff |gpu - cpu| <= abs + rel * |cpu|. The halves ADD:
+//   * near zero a relative error is meaningless (a position component passing
 //     through 0 makes every rel enormous while the absolute error is an ulp),
-//     so `abs` has to be able to carry it alone;
-//   * far from zero, an absolute band would have to be scaled to the largest
-//     value any scenario reaches, which would make it useless for the small
-//     ones, so `rel` has to be able to carry it alone.
-// Both maxima are reported regardless, so the report never hides which one is
-// doing the work.
+//     so `abs` carries that regime -- alone at cpu == 0, where an exact-zero
+//     band is exactly the bit-equality demand (finding C2 of the S6 Task 6
+//     review: a relative half must never excuse a cpu == 0 component);
+//   * far from zero an absolute band would have to be scaled to the largest
+//     value any scenario reaches, so `rel` carries that regime;
+//   * between them, the error is judged against their sum. This replaced the
+//     disjunction (abs_ok || rel_ok): the sum never refuses what the
+//     disjunction passed, and is at most 2x more lenient.
 //
-// THE RELATIVE HALF IS INAPPLICABLE, NOT SATISFIED, WHEN THE CPU VALUE IS
-// EXACTLY ZERO (S6 Task 6 review round 1, finding C2 -- and the one place a
-// disjunction like this is easy to get quietly wrong). There is nothing to
-// divide by, so no relative error exists; treating the resulting placeholder 0
-// as "within the relative band" made every cpu == 0 component pass
-// unconditionally, band or no band. The absolute half carries that regime
-// alone, which is exactly what a band of 0 abs is asking for: bit equality.
-// See the predicate at the comparison site for the three checks that hole
-// silently defeated.
-//
-// A NaN on either side is a FAILURE, never a pass: the comparison is spelled so
-// that a NaN error fails both halves of the disjunction (`!(x <= band)` rather
-// than `x > band`), the same NaN-safe spelling physics/contacts.cpp uses for
-// its own guards.
+// A NaN on either side is a FAILURE, never a pass: NaN <= x is false.
 //
 // ===========================================================================
 // QUATERNIONS get the component bands like everything else PLUS a unit-norm
@@ -113,6 +112,12 @@ namespace spade::testing {
 struct ToleranceBand {
     float abs = 0.0f;
     float rel = 0.0f;
+    // TD-14: a float row keeps a zero band only if no rounding operation can
+    // touch it -- an integer copy, or a structural zero such as force_acc
+    // after Integrate clears it -- and says so: `structural` is that claim,
+    // and the argument sits beside the row. compare_arrays() refuses a zero
+    // band on a float row without it, and `structural` on a non-zero band.
+    bool structural = false;
 };
 
 enum class QuantityKind : uint32_t {
@@ -178,6 +183,12 @@ struct QuantityReport {
 
     float max_abs = 0.0f;  // largest |cpu - gpu| over every compared component
     float max_rel = 0.0f;  // largest |cpu - gpu| / |cpu|, over components with cpu != 0
+    // TD-14's measurement, split at kNearZeroCutoff: A, the largest
+    // |cpu - gpu| where |cpu| < the cutoff, and R, the largest relative error
+    // where |cpu| >= it. A band is pinned at {4A, 4R}, each rounded up to one
+    // significant figure (pin_of()), the larger over every device of record.
+    float near_zero_abs = 0.0f;  // A
+    float far_rel = 0.0f;        // R
 
     // Where the largest ABSOLUTE error was, and what the two sides held there.
     std::size_t worst_element = 0;
@@ -203,6 +214,28 @@ struct QuantityReport {
 
     [[nodiscard]] bool within_band() const noexcept { return elements_outside_band == 0 && !nan_seen; }
 };
+
+// TD-14's near-zero cutoff s_q, in the quantity's SI unit: below it an
+// element's error counts toward A (absolute), at or above it toward R
+// (relative). One value for every quantity, as the policy states it.
+inline constexpr float kNearZeroCutoff = 1.0e-3f;
+
+// TD-14's pin of a measured maximum: 4x, rounded UP to one significant
+// figure (4 * 2.3e-6 = 9.2e-6 -> 1e-5). 0 stays 0: a quantity measured
+// exactly equal goes to the floor or to an argued exact band, not to 4 * 0.
+// Plain arithmetic, no libm (TD-3's scan covers engine/, harness included):
+// the decade is found by stepping powers of ten, the digit by truncation.
+[[nodiscard]] inline float pin_of(float measured) noexcept {
+    if (!(measured > 0.0f)) return 0.0f;
+    const double x = 4.0 * static_cast<double>(measured);
+    double decade = 1.0;
+    while (decade * 10.0 <= x) decade *= 10.0;
+    while (decade > x) decade /= 10.0;
+    const double ratio = x / decade;  // in [1, 10)
+    double digit = static_cast<double>(static_cast<int>(ratio));
+    if (ratio - digit > 1e-9) digit += 1.0;  // round UP, ignoring the decade's own rounding
+    return static_cast<float>(digit * decade);
+}
 
 struct ParityReport {
     std::vector<QuantityReport> quantities;
@@ -240,6 +273,10 @@ struct ParityReport {
                             q.quantity.c_str(), q.elements_compared, static_cast<double>(q.max_abs),
                             static_cast<double>(q.max_rel), static_cast<double>(q.band.abs),
                             static_cast<double>(q.band.rel), q.within_band() ? "within" : "OUTSIDE");
+                // The TD-14 measurement line, grep-able as "td14 ".
+                std::printf("    td14 A=%.3e R=%.3e  pin {%.0e, %.0e}\n", static_cast<double>(q.near_zero_abs),
+                            static_cast<double>(q.far_rel), static_cast<double>(pin_of(q.near_zero_abs)),
+                            static_cast<double>(pin_of(q.far_rel)));
             }
             if (!q.within_band()) {
                 std::printf("    worst: element %zu component %u  cpu=%.9e gpu=%.9e  (%zu elements outside%s)\n",
@@ -275,6 +312,23 @@ namespace parity_detail {
 // The same bytes, as the 32-bit word they are, for QuantityKind::bits.
 // memcpy rather than a reinterpret_cast for the identical strict-aliasing
 // reason load_float() uses one.
+// THE PER-ELEMENT PREDICATE (TD-14), on the error: `abs_err` = |gpu - cpu|
+// passes when abs_err <= abs + rel * |cpu|. The two halves ADD: the absolute
+// half carries the near-zero regime (alone at cpu == 0, where an exact-zero
+// band is exactly the bit-equality demand), the relative half the large one,
+// and an error between them is judged against their sum. It replaced the
+// disjunction (abs_ok || rel_ok), which it never refuses where that passed
+// and which is at most 2x stricter. A NaN error fails: NaN <= x is false.
+[[nodiscard]] inline bool error_within(float abs_err, float cpu, ToleranceBand band) noexcept {
+    return abs_err <= band.abs + band.rel * std::fabs(cpu);
+}
+
+// The same, on one float of one element. A NaN on either side fails.
+[[nodiscard]] inline bool element_within(float cpu, float gpu, ToleranceBand band) noexcept {
+    if (std::isnan(cpu) || std::isnan(gpu)) return false;
+    return error_within(std::fabs(cpu - gpu), cpu, band);
+}
+
 [[nodiscard]] inline uint32_t load_word(const std::byte* base, std::size_t offset) noexcept {
     uint32_t value = 0;
     std::memcpy(&value, base + offset, sizeof(uint32_t));
@@ -332,6 +386,22 @@ namespace parity_detail {
                                          "compare_arrays: quantity '" + std::string(entry.quantity) +
                                              "' is declared a quaternion but has " +
                                              std::to_string(entry.components) + " components"});
+        }
+        // TD-14: a zero band on a float row is an unstated bit-identity claim
+        // unless the row is argued structural, and structural means {0, 0}.
+        if (entry.kind != QuantityKind::bits) {
+            const bool zero = entry.band.abs == 0.0f && entry.band.rel == 0.0f;
+            if (zero && !entry.band.structural) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "compare_arrays: quantity '" + std::string(entry.quantity) +
+                                                 "' has a zero band but is not marked structural -- measure it, "
+                                                 "give it the floor, or argue it (TD-14)"});
+            }
+            if (entry.band.structural && !zero) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "compare_arrays: quantity '" + std::string(entry.quantity) +
+                                                 "' is marked structural but carries a non-zero band"});
+            }
         }
         // A bit-exact row with a non-zero band would read as "these integers
         // may differ by a little", which is not a thing (see QuantityKind::bits).
@@ -420,38 +490,23 @@ namespace parity_detail {
                     q.worst_gpu = b;
                 }
                 if (rel_err > q.max_rel) q.max_rel = rel_err;
+                if (std::fabs(a) < kNearZeroCutoff) {
+                    if (abs_err > q.near_zero_abs) q.near_zero_abs = abs_err;
+                } else if (rel_err > q.far_rel) {
+                    q.far_rel = rel_err;
+                }
 
                 // ---------------------------------------------------------
-                // THE RELATIVE HALF ONLY APPLIES WHERE A RELATIVE ERROR
-                // EXISTS (S6 Task 6 review round 1, finding C2).
-                //
-                // `rel_err` is defined as 0 when the CPU value is exactly 0,
-                // because there is nothing to divide by. Feeding THAT 0 into
-                // the disjunction below made `rel_ok` unconditionally true for
-                // every cpu == 0 component -- even against a band of 0 -- so
-                // any quantity whose CPU side happened to be zero passed no
-                // matter what the GPU produced. That silently defeated three
-                // separate checks this file relies on: the force_acc/
-                // torque_acc rows (whose whole point is that both sides are
-                // exactly (0,0,0) after every step, and whose call site says
-                // "no band should hide it"), `bounce`'s all-zero bands (only
-                // the rows with a non-zero CPU value were genuinely enforced),
-                // and free-slot mis-write detection (a free arena slot reads
-                // as zeroes on the CPU side by construction, so a kernel
-                // scribbling into one would have passed).
-                //
-                // Requiring `a != 0` makes the two halves say what they mean:
-                // the ABSOLUTE half carries the near-zero regime (including
-                // exact zero, where `abs_err <= band.abs` with band.abs == 0
-                // is exactly the bit-equality demand intended), and the
-                // RELATIVE half carries the large-magnitude regime.
-                //
-                // NaN-safe by construction, unchanged: a NaN error is `<=`
-                // nothing, so it fails both halves.
+                // TD-14's predicate (parity_detail::error_within): the error
+                // passes when it is within abs + rel * |cpu|. At cpu == 0 the
+                // relative half contributes nothing, so the ABSOLUTE half
+                // carries exact zeros alone -- which keeps the S6 Task 6
+                // review's finding C2 closed: a zero band on a cpu == 0
+                // component (force_acc, torque_acc, a free slot a kernel must
+                // not scribble into) demands bit equality, and no relative
+                // term can hide a GPU value there.
                 // ---------------------------------------------------------
-                const bool abs_ok = abs_err <= entry.band.abs;
-                const bool rel_ok = (a != 0.0f) && (rel_err <= entry.band.rel);
-                if (!abs_ok && !rel_ok) element_outside = true;
+                if (!parity_detail::element_within(a, b, entry.band)) element_outside = true;
             }
 
             if (entry.kind == QuantityKind::quaternion) {
@@ -481,7 +536,12 @@ namespace parity_detail {
 // ===========================================================================
 // THE PINNED BANDS.
 //
-// PROVENANCE, common to every constant below:
+// HISTORY: the irisplus-2125 provenance, as it stood before TD-14. The
+// devices of record, the method and every band's current record open
+// `namespace bands` below; this block and each scenario's prose stay as the
+// older device's record.
+//
+// PROVENANCE, common to every constant below until TD-14:
 //   device   Intel Iris Plus Graphics (integrated), Vulkan 1.3.215
 //   driver   31.0.101.2125
 //   build    msvc-ninja-release. THE TASK VARIES BY BLOCK AND EACH BLOCK SAYS
@@ -495,8 +555,10 @@ namespace parity_detail {
 //            Task 8: `medium`, `two_world_isolation`, `quad_hover` (all new)
 //            and `ballistic`, RE-MEASURED because the scenario itself changed
 //            -- see that block's header.
-//   method   measured max over the WHOLE run, every element of every world,
-//            printed by tests/test_gpu_parity.cpp's own table; each constant
+//   method   measured max at the FINAL TICK, every element of every world
+//            (this line said "over the WHOLE run"; the harness has only ever
+//            compared the final tick), printed by tests/test_gpu_parity.cpp's
+//            own table; each constant
 //            below records the measurement it came from and the margin factor
 //            applied to it.
 //   margin   ~4x the measured maximum, rounded UP to a round decimal. Four
@@ -506,9 +568,9 @@ namespace parity_detail {
 //            than four, because a band that cannot move is a band that catches
 //            nothing.
 //
-// THE STOP RULE, which no constant here is allowed to quietly break: this
-// task's brief pins a hard tripwire at 1e-3 RELATIVE. A quantity needing a
-// wider relative band than that is reported to the coordinator as a
+// THE STOP RULE, which no constant here is allowed to quietly break, and
+// which TD-14 keeps: a hard tripwire at 1e-3 RELATIVE. A quantity needing a
+// wider relative band than that is a grade change (TD-2), reported as a
 // measurement, not banded over. Every `rel` below is inside it.
 //
 // WHY EVERY SCENARIO NEEDS ITS OWN SET. The divergence is the accumulated
@@ -526,6 +588,57 @@ namespace parity_detail {
 // bears it out.
 // ===========================================================================
 namespace bands {
+
+// ===========================================================================
+// DEVICES OF RECORD (TD-14, L4). Each row's record cites a tag.
+//
+// rtx3060ti-572.83 -- the measuring device from 2026-10-05.
+//   NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303;
+//   fp32 denormals: no mode requested, device default. vendorID 0x10de,
+//   deviceID 0x2489. msvc-ninja-release, measured in the measurement tree
+//   (SPADE_MEASURE_UNPINNED_DENORMS=ON: kernels carry no denormal mode, as
+//   banded-parity T2 makes the default build), commit b9e3316, 2026-10-05.
+// irisplus-2125 -- history. Intel Iris Plus Graphics, driver 31.0.101.2125,
+//   Vulkan 1.3.215. Its numbers stay on each row: final tick, the retired
+//   disjunctive predicate, bands about 4x rounded to a round decimal.
+//
+// METHOD, every scenario: final tick (or T_p, below), every element of every
+// world, A/R split at s_q = 1e-3 (QuantityReport::near_zero_abs, far_rel).
+// Pin {4A, 4R}, each rounded up to one significant figure (pin_of()), and no
+// tighter than the floor's halves (5e-10, 5e-7), so a near-zero element
+// never meets an exact-zero demand it was not argued into. Row kinds:
+// measured, floor (kFloor), structural (kStructural, argued), cited
+// (core3::kGaussianDraw), bits.
+//
+// HORIZONS: ParityChaos.OneUlpControlAtEachScenariosHorizon runs each
+// scenario twice on the CPU, one ulp apart. Where that gap passes 1e-5 of the
+// scene's scale (1 m, 1 m/s) before the horizon, the scenario's element bands
+// apply up to T_p only and its run_parity takes a PastHorizon: invariants and
+// chaos-banded statistics past it. Each scenario's record line states its
+// control.
+//
+// The prose above each scenario's bands is the irisplus-2125 record. It stays
+// as history; its "BIT-EXACT" rows were one device's measurement, not a claim
+// this policy makes.
+// ===========================================================================
+
+// A float row no rounding operation can touch, exact on any device. Each use
+// carries its argument beside it.
+inline constexpr ToleranceBand kStructural{0.0f, 0.0f, true};
+
+// TD-14's floor, for a float row measured exactly equal on every device of
+// record: four ulps at s_q = 1e-3 (4 x 2^-33 = 4.66e-10) and four ulps
+// relative (4 x 2^-23 = 4.77e-7), each rounded up. "Measured zero on one
+// device" is not a claim this policy makes.
+inline constexpr ToleranceBand kFloor{5.0e-10f, 5.0e-7f};
+
+// CORE-3: the gaussian draw, banded at its source (the Box-Muller sqrt in
+// rng / rng.slang, which Vulkan allows 2.5 ulp). Rows that ARE the draw cite
+// this band rather than re-deriving it. rtx3060ti-572.83: the GNSS draws at
+// zero lever arm, |c| 3.42, max |g - c| 4.77e-7, R 1.07e-6 -> {2e-6, 5e-6}.
+namespace core3 {
+inline constexpr ToleranceBand kGaussianDraw{2.0e-6f, 5.0e-6f};
+}  // namespace core3
 
 // ---------------------------------------------------------------------------
 // ballistic -- THE CORPUS SCENARIO VERBATIM as of S6 Task 8. 200 steps x 5
@@ -585,11 +698,17 @@ namespace bands {
 // Bands are 4x measured, rounded up to a round decimal.
 // ---------------------------------------------------------------------------
 namespace ballistic {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{5.0e-7f, 5.0e-7f};
-inline constexpr ToleranceBand kOrient{4.0e-6f, 2.0e-5f};
-inline constexpr ToleranceBand kOmega{8.0e-6f, 2.0e-5f};
-inline constexpr ToleranceBand kSpecificForce{2.0e-5f, 2.0e-5f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 200 steps x 5 substeps (0.2 s). One-ulp CPU control: the nudge rides unamplified (7.6e-6 m on a 100 m coordinate): inside the horizon.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: measured. rtx3060ti-572.83: A 0, R 8.1e-8 -> {5e-10, 4e-7}; history irisplus-2125 {5e-7, 5e-7}
+inline constexpr ToleranceBand kVel{5.0e-10f, 4.0e-7f};
+// kOrient: measured. rtx3060ti-572.83: A 0, R 3.4e-7 -> {5e-10, 2e-6}; history irisplus-2125 {4e-6, 2e-5}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
+// kOmega: measured. rtx3060ti-572.83: A 0, R 1.2e-6 -> {5e-10, 5e-6}; history irisplus-2125 {8e-6, 2e-5}
+inline constexpr ToleranceBand kOmega{5.0e-10f, 5.0e-6f};
+// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 4.2e-7 -> {5e-10, 2e-6}; history irisplus-2125 {2e-5, 2e-5}
+inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 2.0e-6f};
 }  // namespace ballistic
 
 // ---------------------------------------------------------------------------
@@ -653,19 +772,25 @@ inline constexpr ToleranceBand kSpecificForce{2.0e-5f, 2.0e-5f};
 // inertia -- which is exactly where last-bit differences enter.
 // =========================================================================
 namespace gate_fleet {
-inline constexpr ToleranceBand kPos{2.0e-6f, 1.0e-5f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 900 x 1 (0.9 s). One-ulp CPU control: pos 2.4e-6 m, vel 4.3e-5 m/s at 900; 0 at 450. Past T_p for vel: element bands on every row to 450 steps (0.45 s), then statistics for vel (run_parity's PastHorizon).
+// kPos: measured. rtx3060ti-572.83: A 1.1e-10, R 1.3e-5 -> {5e-10, 6e-5}; history irisplus-2125 {2e-6, 1e-5}
+inline constexpr ToleranceBand kPos{5.0e-10f, 6.0e-5f};
 // abs 4.0e-04 is the OPERATIVE half here (4x the measured 8.72e-05 m/s); the
 // relative half stays tight on purpose, so a genuinely large-magnitude velocity
 // error could not hide behind it.
-inline constexpr ToleranceBand kVel{4.0e-4f, 1.0e-5f};
-inline constexpr ToleranceBand kOrient{4.0e-6f, 4.0e-5f};
-inline constexpr ToleranceBand kOmega{4.0e-8f, 2.0e-6f};
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {4e-4, 1e-5}, at T_p = 450 steps; past it, statistics (run_parity's PastHorizon)
+inline constexpr ToleranceBand kVel = kFloor;
+// kOrient: measured. rtx3060ti-572.83: A 2.9e-10, R 7.2e-7 -> {2e-9, 3e-6}; history irisplus-2125 {4e-6, 4e-5}
+inline constexpr ToleranceBand kOrient{2.0e-9f, 3.0e-6f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {4e-8, 2e-6} (spawned spinning: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
 // Zero, and structurally so rather than luckily: specific_force is
 // `conjugate(orient) * (force_acc / mass)`, this scenario spawns no force
 // elements at all, and Integrate clears force_acc at the end of every substep
 // -- so accel_ext is exactly (0,0,0) in every substep and the rotation of a
 // zero vector is a zero vector on both paths, for any orientation.
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace gate_fleet
 
 // ---------------------------------------------------------------------------
@@ -680,12 +805,12 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // MEASURED: ZERO. Every quantity, every component, every one of the 16
 // elements -- the GPU run is BIT-IDENTICAL to the CPU run after 900 steps.
 //
-// THE BANDS BELOW ARE THEREFORE ALL ZERO, WHICH IS A CLAIM AND IS MEANT TO BE.
-// Pinning a nominal band "for safety" would assert less than the measurement
-// supports and would silently absorb a future regression. If a driver update
-// moves this, the suite says so and the coordinator rules on it -- which is the
-// global constraint's own posture ("bands are NEVER widened to make a failure
-// pass without a root-caused coordinator ruling").
+// UNDER TD-14 THAT IS ONE DEVICE'S MEASUREMENT, NOT A CLAIM. The bands were all
+// zero on that basis; now pos and vel sit at the floor (measured exact on the
+// device of record too, but rounding touches them), and orient, omega_body
+// and specific_force are argued structural, each with its argument beside it
+// below. If a device moves a floor row, the suite says so and the cause is
+// named before anything is widened (TD-2).
 //
 // IT IS NOT VACUOUS -- BUT IT PROVES LESS ABOUT DIVISION AND SQUARE ROOT THAN
 // IT FIRST APPEARS, AND THE DISTINCTION MATTERS (S6 Task 6 review round 1,
@@ -726,11 +851,17 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // sources taken away, the Slang kernels reproduce the CPU twin EXACTLY, which
 // means the op ORDER itself is right rather than merely close.
 namespace bounce {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{0.0f, 0.0f};
-inline constexpr ToleranceBand kOrient{0.0f, 0.0f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 900 x 1 (0.9 s). One-ulp CPU control: pos 2.4e-7 m, vel 0: inside the horizon.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kVel = kFloor;
+// kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
+inline constexpr ToleranceBand kOrient = kStructural;
+// kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
+inline constexpr ToleranceBand kOmega = kStructural;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace bounce
 
 // ---------------------------------------------------------------------------
@@ -767,11 +898,17 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // rotated, so it inherits both chains at once.
 // ---------------------------------------------------------------------------
 namespace drag_componentwise {
-inline constexpr ToleranceBand kPos{4.0e-6f, 2.0e-6f};
-inline constexpr ToleranceBand kVel{4.0e-6f, 2.0e-6f};
-inline constexpr ToleranceBand kOrient{2.0e-6f, 1.0e-5f};
-inline constexpr ToleranceBand kOmega{8.0e-6f, 4.0e-6f};
-inline constexpr ToleranceBand kSpecificForce{4.0e-5f, 2.0e-5f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 2 (0.4 s). One-ulp CPU control: the nudge rides unamplified: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 0, R 2.3e-7 -> {5e-10, 1e-6}; history irisplus-2125 {4e-6, 2e-6}
+inline constexpr ToleranceBand kPos{5.0e-10f, 1.0e-6f};
+// kVel: measured. rtx3060ti-572.83: A 0, R 3.3e-7 -> {5e-10, 2e-6}; history irisplus-2125 {4e-6, 2e-6}
+inline constexpr ToleranceBand kVel{5.0e-10f, 2.0e-6f};
+// kOrient: measured. rtx3060ti-572.83: A 0, R 1.1e-6 -> {5e-10, 5e-6}; history irisplus-2125 {2e-6, 1e-5}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 5.0e-6f};
+// kOmega: measured. rtx3060ti-572.83: A 0, R 2.2e-6 -> {5e-10, 9e-6}; history irisplus-2125 {8e-6, 4e-6}
+inline constexpr ToleranceBand kOmega{5.0e-10f, 9.0e-6f};
+// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 3.0e-6 -> {5e-10, 2e-5}; history irisplus-2125 {4e-5, 2e-5}
+inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 2.0e-5f};
 }  // namespace drag_componentwise
 
 // ---------------------------------------------------------------------------
@@ -825,11 +962,17 @@ inline constexpr ToleranceBand kSpecificForce{4.0e-5f, 2.0e-5f};
 // touches omega.
 // ---------------------------------------------------------------------------
 namespace restore_resume {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{1.0e-7f, 0.0f};
-inline constexpr ToleranceBand kOrient{2.0e-6f, 2.0e-5f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). ticks 300 to 700 x 1 (0.4 s on the device, 0.7 s from spawn). One-ulp CPU control from spawn to 700: pos 1.4e-6 m, vel 7.7e-6 m/s: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 4.4e-10, R 1.5e-7 -> {2e-9, 6e-7}; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos{2.0e-9f, 6.0e-7f};
+// kVel: measured. rtx3060ti-572.83: A 1.5e-8, R 8.1e-6 -> {6e-8, 4e-5}; history irisplus-2125 {1e-7, 0}
+inline constexpr ToleranceBand kVel{6.0e-8f, 4.0e-5f};
+// kOrient: measured. rtx3060ti-572.83: A 0, R 3.2e-7 -> {5e-10, 2e-6}; history irisplus-2125 {2e-6, 2e-5}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace restore_resume
 
 // ---------------------------------------------------------------------------
@@ -892,15 +1035,21 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // row for that reason.
 // ---------------------------------------------------------------------------
 namespace heterogeneous_geometry_set {
-inline constexpr ToleranceBand kPos{2.0e-6f, 1.0e-5f};
-inline constexpr ToleranceBand kVel{1.0e-5f, 1.0e-5f};
-inline constexpr ToleranceBand kOrient{2.0e-6f, 2.0e-5f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 900 x 1 (0.9 s). One-ulp CPU control: pos 2.5e-5 m, vel 1.4e-4 m/s at 900; 0 at 450. Past T_p for pos and vel: element bands on every row to 450 steps, then statistics for pos and vel.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {2e-6, 1e-5}, at T_p = 450 steps; past it, statistics
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {1e-5, 1e-5}, at T_p = 450 steps; past it, statistics
+inline constexpr ToleranceBand kVel = kFloor;
+// kOrient: measured. rtx3060ti-572.83: A 0, R 3.3e-7 -> {5e-10, 2e-6}; history irisplus-2125 {2e-6, 2e-5}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
 // Measured bit-exact (0, 0); pinned at exactly what was measured, the same
 // posture `bounce`'s header explains at length: a nominal nonzero band here
 // would assert less than the measurement supports and would silently absorb
 // a future regression rather than catching it.
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (a torque-free tumble: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace heterogeneous_geometry_set
 
 // ===========================================================================
@@ -962,6 +1111,11 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // are REPORTED rather than banded over, and the standing rule is kept intact:
 // "bands are NEVER widened to make a failure pass". A band pinned at 800 steps
 // would not be a tolerance; it would be a Lyapunov exponent wearing one.
+//
+// TD-14 MADE THIS THE RULE FOR EVERY SCENARIO: element bands up to the horizon
+// at which the one-ulp CPU control stays under 1e-5 of the scene's scale
+// (ParityChaos.OneUlpControlAtEachScenariosHorizon), invariants and chaos-
+// banded statistics past it (test_gpu_parity.cpp's PastHorizon).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -1005,11 +1159,17 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // ballistic_calm's own note, and its measured orient figure
 // (4.17232513e-07) is the same order. Bands are 4x measured, rounded up.
 namespace contact_pair {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{0.0f, 0.0f};
-inline constexpr ToleranceBand kOrient{1.0e-6f, 2.0e-5f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 600 x 1 (0.6 s). One-ulp CPU control: pos 8.4e-7 m, vel 1.6e-5 m/s at 600; 3.6e-7 m/s at 300. Past T_p for vel: element bands on every row to 300 steps, then statistics for vel.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}, at T_p = 300 steps; past it, statistics
+inline constexpr ToleranceBand kVel = kFloor;
+// kOrient: measured. rtx3060ti-572.83: A 0, R 4.0e-7 -> {5e-10, 2e-6}; history irisplus-2125 {1e-6, 2e-5}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 2.0e-6f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace contact_pair
 
 // ---------------------------------------------------------------------------
@@ -1067,11 +1227,17 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 //
 // Bands are 4x measured, rounded up to a round decimal, both halves live.
 namespace shower {
-inline constexpr ToleranceBand kPos{2.0e-6f, 2.0e-5f};
-inline constexpr ToleranceBand kVel{2.0e-5f, 2.0e-4f};
-inline constexpr ToleranceBand kOrient{0.0f, 0.0f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 2 (0.8 s). One-ulp CPU control: pos 7.0e-10 m, vel 6.0e-8 m/s: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 5.2e-10, R 1.2e-6 -> {3e-9, 5e-6}; history irisplus-2125 {2e-6, 2e-5}
+inline constexpr ToleranceBand kPos{3.0e-9f, 5.0e-6f};
+// kVel: measured. rtx3060ti-572.83: A 2.0e-8, R 3.4e-5 -> {9e-8, 2e-4}; history irisplus-2125 {2e-5, 2e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
+inline constexpr ToleranceBand kVel{9.0e-8f, 2.0e-4f};
+// kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
+inline constexpr ToleranceBand kOrient = kStructural;
+// kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
+inline constexpr ToleranceBand kOmega = kStructural;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace shower
 
 // ---------------------------------------------------------------------------
@@ -1110,11 +1276,17 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // Bands are 4x measured, rounded up.
 // ---------------------------------------------------------------------------
 namespace shower_ladder {
-inline constexpr ToleranceBand kPos{2.0e-6f, 4.0e-5f};
-inline constexpr ToleranceBand kVel{2.0e-5f, 4.0e-4f};
-inline constexpr ToleranceBand kOrient{0.0f, 0.0f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 2 (0.8 s). One-ulp CPU control: pos 1.2e-7 m, vel 1.7e-6 m/s: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 4.2e-9, R 6.5e-6 -> {2e-8, 3e-5}; history irisplus-2125 {2e-6, 4e-5}
+inline constexpr ToleranceBand kPos{2.0e-8f, 3.0e-5f};
+// kVel: measured. rtx3060ti-572.83: A 4.5e-8, R 1.0e-4 -> {2e-7, 5e-4}; history irisplus-2125 {2e-5, 4e-4}. Above the 1e-4 target, below the 1e-3 grade line (TD-2): the cause is NVIDIA's division and square root on normal operands (finding 4, core/2026-10-04-nvidia-denorm-report.md), across every contact of a 100-body pile; the one-ulp CPU control at this horizon is far smaller, so it is the port, not chaos.
+inline constexpr ToleranceBand kVel{2.0e-7f, 5.0e-4f};
+// kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
+inline constexpr ToleranceBand kOrient = kStructural;
+// kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
+inline constexpr ToleranceBand kOmega = kStructural;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace shower_ladder
 
 
@@ -1171,8 +1343,9 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 //
 // WHERE THE DIVERGENCE COMES FROM, exactly, because the list is short enough to
 // be exhaustive. The filter's transcendentals are exp32 (the coefficients) and
-// log32/sin32/cos32 (Box-Muller), all T4 ports proven bit-identical to the host
-// on this device; the integer half of splitmix64 is exact by construction
+// log32/sin32/cos32 (Box-Muller), all T4 ports measured exact against the host
+// on this device (and exact as a library on any flush mode since banded-parity
+// T1's integer forms); the integer half of splitmix64 is exact by construction
 // (engine/shaders/u64.slang). What is left is the arithmetic Vulkan does NOT
 // specify to be correctly rounded: Box-Muller's `sqrt(-2 * log32(u1))`, the
 // Cholesky's three square roots and its one division, and the step ratio's
@@ -1186,8 +1359,11 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // tick. The absolute figure there is one ulp.
 // ---------------------------------------------------------------------------
 namespace medium {
-inline constexpr ToleranceBand kFilterState{2.0e-6f, 6.0e-5f};
-inline constexpr ToleranceBand kCachedGauss{5.0e-7f, 5.0e-7f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). shared by every scenario's dryden rows; each pin is the worst over them.
+// kFilterState: measured. rtx3060ti-572.83: A 0, R 1.4e-5 -> {5e-10, 6e-5}; history irisplus-2125 {2e-6, 6e-5} (worst: ballistic)
+inline constexpr ToleranceBand kFilterState{5.0e-10f, 6.0e-5f};
+// kCachedGauss: cited: CORE-3, the gaussian draw itself. rtx3060ti-572.83: A 0, R 1.1e-7; history irisplus-2125 {5e-7, 5e-7}
+inline constexpr ToleranceBand kCachedGauss = core3::kGaussianDraw;
 }  // namespace medium
 
 // ---------------------------------------------------------------------------
@@ -1240,7 +1416,9 @@ inline constexpr ToleranceBand kCachedGauss{5.0e-7f, 5.0e-7f};
 // is the half no CPU<->GPU band can see.
 // ---------------------------------------------------------------------------
 namespace two_world_isolation {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 300 x 2 (0.6 s). One-ulp CPU control: pos 1.2e-7 m, vel 1.4e-14 m/s: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 0, R 7.6e-7 -> {5e-10, 4e-6}; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos{5.0e-10f, 4.0e-6f};
 // 9.0x and 5.9x the measured 5.56146938e-29 / 3.41933774e-05 -- NOT the ~4x
 // this file's margin rule nominally asks for, and the overshoot is the "rounded
 // UP to a round decimal" half of that rule landing badly rather than a decision
@@ -1256,10 +1434,14 @@ inline constexpr ToleranceBand kPos{0.0f, 0.0f};
 // magnitude below anything physical in this scenario, and every other row here
 // is pinned at exactly zero. See the block note above for why this row is
 // pinned at an absurd-looking exponent rather than at zero as well.
-inline constexpr ToleranceBand kVel{5.0e-28f, 2.0e-4f};
-inline constexpr ToleranceBand kOrient{0.0f, 0.0f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// kVel: measured. rtx3060ti-572.83: A 7.0e-10, R 3.3e-7 -> {3e-9, 2e-6}; history irisplus-2125 {5e-28, 2e-4}
+inline constexpr ToleranceBand kVel{3.0e-9f, 2.0e-6f};
+// kOrient: structural: spawned at the identity with omega identically zero, so the small-angle exp map gives (1, 0, 0, 0) exactly and normalize(identity) is the identity on any device.
+inline constexpr ToleranceBand kOrient = kStructural;
+// kOmega: structural: spawned at omega = 0 and nothing applies a torque (contacts act on vel and pos only), so Euler's update adds exactly zero on any device.
+inline constexpr ToleranceBand kOmega = kStructural;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace two_world_isolation
 
 // ---------------------------------------------------------------------------
@@ -1339,22 +1521,33 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // zero is pinned at exactly zero, the posture `bounce`'s header explains.
 // ---------------------------------------------------------------------------
 namespace quad_hover {
-inline constexpr ToleranceBand kPos{2.0e-5f, 4.0e-6f};
-inline constexpr ToleranceBand kVel{2.0e-6f, 1.0e-5f};
-inline constexpr ToleranceBand kOrient{0.0f, 0.0f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{2.0e-6f, 4.0e-6f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 900 x 2 (1.8 s). One-ulp CPU control: the nudge rides unamplified: inside the horizon.
+// kPos: measured. rtx3060ti-572.83: A 0, R 9.0e-7 -> {5e-10, 4e-6}; history irisplus-2125 {2e-5, 4e-6}
+inline constexpr ToleranceBand kPos{5.0e-10f, 4.0e-6f};
+// kVel: measured. rtx3060ti-572.83: A 0, R 6.2e-7 -> {5e-10, 3e-6}; history irisplus-2125 {2e-6, 1e-5}
+inline constexpr ToleranceBand kVel{5.0e-10f, 3.0e-6f};
+// kOrient: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (the four rotor torques cancel as measured, not by construction: summed in sequence, fp association does not guarantee it)
+inline constexpr ToleranceBand kOrient = kFloor;
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (likewise)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: measured. rtx3060ti-572.83: A 0, R 6.0e-7 -> {5e-10, 3e-6}; history irisplus-2125 {2e-6, 4e-6}
+inline constexpr ToleranceBand kSpecificForce{5.0e-10f, 3.0e-6f};
 // The RPM lag's own state -- the one field the rotor pass writes. Measured
 // bit-exact over 1800 substeps; pinned there.
-inline constexpr ToleranceBand kRotorOmega{0.0f, 0.0f};
+// kRotorOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kRotorOmega = kFloor;
 // Both bias random walks; bit-exact because this model's walk sigmas are zero.
-inline constexpr ToleranceBand kBias{0.0f, 0.0f};
+// kBias: structural: the walk sigmas are zero, so each step adds 0 x draw, exactly zero on any device.
+inline constexpr ToleranceBand kBias = kStructural;
 // The Box-Muller partner value carried in each sensor's stream.
-inline constexpr ToleranceBand kCachedGauss{0.0f, 0.0f};
+// kCachedGauss: cited: CORE-3, the gaussian draw itself. rtx3060ti-572.83: A 0, R 0; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kCachedGauss = core3::kGaussianDraw;
 // The sample values themselves, mount frame. `accel` is the only ring row that
 // moves; `gyro` is bit-exact because this airframe never rotates.
-inline constexpr ToleranceBand kAccel{8.0e-6f, 4.0e-6f};
-inline constexpr ToleranceBand kGyro{0.0f, 0.0f};
+// kAccel: measured. rtx3060ti-572.83: A 0, R 6.7e-7 -> {5e-10, 3e-6}; history irisplus-2125 {8e-6, 4e-6}
+inline constexpr ToleranceBand kAccel{5.0e-10f, 3.0e-6f};
+// kGyro: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (the gyro reads omega)
+inline constexpr ToleranceBand kGyro = kFloor;
 }  // namespace quad_hover
 
 // ---------------------------------------------------------------------------
@@ -1426,17 +1619,18 @@ namespace gnss_receiver {
 // were consumed. It is evidence at the sampled points, not a proof over every
 // draw.
 //
-// ⛔⛔ AND THIS BAND HAS A SILENT EXPIRY DATE, WHICH IS WHY IT IS THE ONE TO
-// SETTLE FIRST. sensor_gnss.slang's header pre-registered this quantity as a
-// BIT-IDENTITY claim, not a banded one, and said why: "A RECURSIVE BIAS FILTER
-// DOES NOT TOLERATE ERROR, IT ACCUMULATES IT ... 'close enough' is a different
-// answer next hour." THIS NUMBER WAS MEASURED OVER 200 FIXES. Its adequacy is
-// therefore a function of run length, and no test on this path states a run
-// length -- so a longer scenario can walk out of this band with nothing having
-// changed. The one band here that compounds is the one that was reasoned about
-// least. Do not widen it to make a longer run pass; that converts a compounding
-// divergence into a permanently invisible one.
-inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
+// ⛔ THIS BAND HOLDS AT ITS STATED HORIZON, 200 FIXES (0.2 s), AND NO FURTHER.
+// A recursive bias filter accumulates error rather than tolerating it, so its
+// adequacy is a function of run length; TD-14 pins every band at a stated
+// horizon, and a longer run is a new measurement, not this band stretched.
+// sensor_gnss.slang's header once pre-registered this quantity as a
+// bit-identity claim; under TD-14 it is banded: the bias multiply is exact,
+// and the draws feeding it are CORE-3's. Do not widen it to make a longer run
+// pass; that converts a compounding divergence into a permanently invisible
+// one.
+// TD-14 records (rtx3060ti-572.83, b9e3316). 200 substeps at 1 kHz (0.2 s). One-ulp CPU control: the nudge rides unamplified: inside the horizon.
+// kGnssBias: measured. rtx3060ti-572.83: A 0, R 7.9e-7 -> {5e-10, 4e-6}; history irisplus-2125 {2e-8, 2e-6}
+inline constexpr ToleranceBand kGnssBias{5.0e-10f, 4.0e-6f};
 
 // The reported antenna position. Measured abs 9.54e-07 on values near 4.09 --
 // 2 ulp.
@@ -1501,7 +1695,8 @@ inline constexpr ToleranceBand kGnssBias{2.0e-8f, 2.0e-6f};
 // DIVISION ... DIVISION AND SQRT SITES: none in this file"). The Gauss-Markov
 // coefficients are precomputed on the CPU precisely so that this kernel only
 // multiplies. That exclusion is measured and stands.
-inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
+// kGnssPosition: measured. rtx3060ti-572.83: A 0, R 9.3e-7 -> {5e-10, 4e-6}; history irisplus-2125 {4e-6, 4e-6}
+inline constexpr ToleranceBand kGnssPosition{5.0e-10f, 4.0e-6f};
 
 // The reported antenna velocity, which carries the omega x lever-arm cross
 // product. Measured abs 2.38e-07 on values near 2.17 -- exactly 1 ulp.
@@ -1529,7 +1724,8 @@ inline constexpr ToleranceBand kGnssPosition{4.0e-6f, 4.0e-6f};
 // what a single slightly-divergent input reproduced through an exact arithmetic
 // path looks like. With two of three inputs proven bit-exact, that is no longer
 // an inference about "banded inputs" in general -- it is one input, named.
-inline constexpr ToleranceBand kGnssVelocity{1.0e-6f, 5.0e-7f};
+// kGnssVelocity: measured. rtx3060ti-572.83: A 0, R 9.4e-8 -> {5e-10, 4e-7}; history irisplus-2125 {1e-6, 5e-7}
+inline constexpr ToleranceBand kGnssVelocity{5.0e-10f, 4.0e-7f};
 }  // namespace gnss_receiver
 
 // ---------------------------------------------------------------------------
@@ -1566,14 +1762,20 @@ namespace gnss_receiver_body {
 // are bit-exact here. The six zeros are kept AT ZERO rather than given nominal
 // bands, the posture `bounce`'s header sets out: a nominal band would assert
 // less than the measurement supports and would silently absorb a real change.
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{0.0f, 0.0f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). the gnss_receiver run's body: 200 substeps (0.2 s), inside the horizon.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kVel = kFloor;
 // ~4x the measured maximum, rounded up to a round decimal, per this file's
 // standing margin rule. Far tighter than ballistic's {4.0e-6, 2.0e-5} because
 // this scenario has no contacts and no force elements.
-inline constexpr ToleranceBand kOrient{4.0e-7f, 4.0e-6f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
+// kOrient: measured. rtx3060ti-572.83: A 0, R 1.2e-7 -> {5e-10, 5e-7}; history irisplus-2125 {4e-7, 4e-6}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 5.0e-7f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (spawned spinning: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
 }  // namespace gnss_receiver_body
 
 // ---------------------------------------------------------------------------
@@ -1603,15 +1805,25 @@ inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
 // measured exactly zero stays at zero.
 // ---------------------------------------------------------------------------
 namespace gnss_tumble {
-inline constexpr ToleranceBand kPos{0.0f, 0.0f};
-inline constexpr ToleranceBand kVel{0.0f, 0.0f};
-inline constexpr ToleranceBand kOrient{4.0e-6f, 1.0e-4f};
-inline constexpr ToleranceBand kOmega{0.0f, 0.0f};
-inline constexpr ToleranceBand kSpecificForce{0.0f, 0.0f};
-inline constexpr ToleranceBand kGnssBias{3.0e-7f, 9.0e-7f};
-inline constexpr ToleranceBand kCachedGauss{0.0f, 0.0f};
-inline constexpr ToleranceBand kGnssPosition{4.0e-5f, 3.0e-5f};
-inline constexpr ToleranceBand kGnssVelocity{1.0e-5f, 9.0e-6f};
+// TD-14 records (rtx3060ti-572.83, b9e3316). 400 x 4 (1.6 s). One-ulp CPU control: the nudge rides unamplified: inside the horizon.
+// kPos: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kPos = kFloor;
+// kVel: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kVel = kFloor;
+// kOrient: measured. rtx3060ti-572.83: A 0, R 7.9e-7 -> {5e-10, 4e-6}; history irisplus-2125 {4e-6, 1e-4}
+inline constexpr ToleranceBand kOrient{5.0e-10f, 4.0e-6f};
+// kOmega: floor: measured exact on rtx3060ti-572.83; history irisplus-2125 {0, 0} (a torque-free tumble: rounding touches it)
+inline constexpr ToleranceBand kOmega = kFloor;
+// kSpecificForce: structural: no force element and no wrench, so force_acc is zero when Integrate reads it and the specific force is conj(q) (0/m), exactly zero on any device. PHY-7 adds the contact response here; re-measured then.
+inline constexpr ToleranceBand kSpecificForce = kStructural;
+// kGnssBias: measured. rtx3060ti-572.83: A 0, R 2.0e-7 -> {5e-10, 9e-7}; history irisplus-2125 {3e-7, 9e-7}
+inline constexpr ToleranceBand kGnssBias{5.0e-10f, 9.0e-7f};
+// kCachedGauss: cited: CORE-3, the gaussian draw itself. rtx3060ti-572.83: A 0, R 0; history irisplus-2125 {0, 0}
+inline constexpr ToleranceBand kCachedGauss = core3::kGaussianDraw;
+// kGnssPosition: measured. rtx3060ti-572.83: A 0, R 3.5e-6 -> {5e-10, 2e-5}; history irisplus-2125 {4e-5, 3e-5}
+inline constexpr ToleranceBand kGnssPosition{5.0e-10f, 2.0e-5f};
+// kGnssVelocity: measured. rtx3060ti-572.83: A 0, R 1.2e-6 -> {5e-10, 5e-6}; history irisplus-2125 {1e-5, 9e-6}
+inline constexpr ToleranceBand kGnssVelocity{5.0e-10f, 5.0e-6f};
 }  // namespace gnss_tumble
 
 }  // namespace bands

@@ -73,6 +73,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -97,6 +98,7 @@
 #include "world/medium.hpp"
 #include "sim/world_set.hpp"
 #include "state/layout.hpp"
+#include "state/snapshot.hpp"
 #include "testing/parity.hpp"
 #include "testing/replay.hpp"
 #include "sensors/gnss.hpp"
@@ -105,6 +107,7 @@
 #include "objects/behavior.hpp"
 #include "objects/behaviors/kinematic_mover.hpp"
 #include "world/builder.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -171,10 +174,14 @@ protected:
         {"bodies", "omega_body", offsetof(spade::BodyState, omega_body), 3, QuantityKind::components, omega},
         {"bodies", "specific_force", offsetof(spade::BodyState, specific_force), 3, QuantityKind::components,
          specific_force},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "force_acc", offsetof(spade::BodyState, force_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
+        // structural: Integrate clears force_acc and torque_acc at the end of every substep, so both legs
+        // end each step at (0, 0, 0) on any device.
         {"bodies", "torque_acc", offsetof(spade::BodyState, torque_acc), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::kStructural},
     };
 }
 
@@ -459,56 +466,244 @@ protected:
 // table of zeroes and call it parity.
 using ParityCheck = void (*)(const Simulation& cpu, const Simulation& gpu, std::string_view label);
 
+// ---------------------------------------------------------------------------
+// A CPU run of `scenario` nudged by one ulp after setup (TD-14's horizon
+// rule; one_ulp_control() below and the chaos statistics use it). In every
+// world the chosen active body has one position component stepped one ulp,
+// through snapshot/find_section/restore -- the engine's own parser and restore
+// path, so no body is edited behind its back. `variant` picks the run:
+// direction (up, down), then which component by magnitude (largest first; one
+// ulp off a zero coordinate is a subnormal the first add discards, so zero
+// components are skipped), then which active body of the world.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<Simulation> start_nudged(const Scenario& scenario, uint32_t variant) {
+    Result<Simulation> sim = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
+    if (!sim) return sim;
+    const Result<spade::SnapshotBlob> blob = sim->snapshot();
+    if (!blob) return std::unexpected(blob.error());
+    const Result<spade::BlobSection> bodies = spade::find_section(*blob, "bodies");
+    if (!bodies) return std::unexpected(bodies.error());
+    if (bodies->elem_size != sizeof(spade::BodyState)) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "start_nudged: BodyState size"});
+    }
+    const float toward = (variant % 2u) == 0u ? std::numeric_limits<float>::infinity()
+                                              : -std::numeric_limits<float>::infinity();
+    const uint32_t rank = (variant / 2u) % 3u;
+    const uint32_t pick = variant / 6u;
+    std::vector<std::byte> bytes(blob->bytes().begin(), blob->bytes().end());
+    const std::size_t payload_at = static_cast<std::size_t>(bodies->payload.data() - blob->bytes().data());
+    uint32_t nudges = 0;
+    for (uint32_t w = 0; w < bodies->world_count; ++w) {
+        std::vector<std::size_t> active;
+        for (uint32_t k = 0; k < bodies->capacity_per_world; ++k) {
+            const std::size_t at = payload_at + (static_cast<std::size_t>(w) * bodies->capacity_per_world + k) *
+                                                    sizeof(spade::BodyState);
+            spade::BodyState b{};
+            std::memcpy(&b, bytes.data() + at, sizeof(b));
+            if ((b.flags & spade::physics::body_flags::active) != 0u) active.push_back(at);
+        }
+        if (active.empty()) continue;
+        const std::size_t at = active[pick % active.size()];
+        spade::BodyState b{};
+        std::memcpy(&b, bytes.data() + at, sizeof(b));
+        std::array<int, 3> order{0, 1, 2};
+        std::sort(order.begin(), order.end(),
+                  [&](int x, int y) { return std::fabs(b.pos[x]) > std::fabs(b.pos[y]); });
+        const int c = b.pos[order[rank]] != 0.0f ? order[rank] : order[0];
+        b.pos[c] = std::nextafter(b.pos[c], toward);
+        std::memcpy(bytes.data() + at, &b, sizeof(b));
+        ++nudges;
+    }
+    if (nudges == 0) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "start_nudged: no active body"});
+    }
+    Result<spade::SnapshotBlob> edited = spade::SnapshotBlob::from_bytes(std::move(bytes));
+    if (!edited) return std::unexpected(edited.error());
+    if (const Result<void> restored = sim->restore(*edited); !restored) return std::unexpected(restored.error());
+    return sim;
+}
+
+// ---------------------------------------------------------------------------
+// PAST THE HORIZON (TD-14). A scenario whose one-ulp CPU control exceeds
+// 1e-5 of its scale (1 m, 1 m/s) before its horizon gets element bands on
+// every row only up to T_p (`element_steps`). From there to the horizon the
+// rows still inside it keep their element bands, and the `past` rows give
+// way to:
+//   * invariants, exact, on both legs: the same slots live, no NaN or
+//     infinity, and every body centre outside the solid (phi > 0: no
+//     tunnelling);
+//   * statistics per world -- the centre of mass, mean and RMS speed and the
+//     translational kinetic energy -- banded against chaos: 4x the largest
+//     deviation of the same statistic over kChaosRuns one-ulp-perturbed CPU
+//     runs, floored at TD-14's floor (5e-10 + 5e-7 |cpu|, four ulps at
+//     s_q and four ulps relative). The GPU has to be as
+//     close to the CPU as the CPU is to itself, nudged by one ulp.
+// ---------------------------------------------------------------------------
+struct PastHorizon {
+    uint64_t element_steps = 0;
+    std::vector<std::string_view> past;  // quantity names past T_p at the horizon
+};
+
+inline constexpr uint32_t kChaosRuns = 8;
+inline constexpr std::size_t kStatCount = 6;
+inline constexpr std::array<const char*, kStatCount> kStatNames{"com.x", "com.y", "com.z", "mean speed",
+                                                                "rms speed", "kinetic"};
+
+[[nodiscard]] std::span<const spade::BodyState> bodies_of(const Simulation& sim) {
+    std::span<const spade::BodyState> out;
+    sim.arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
+        if (array.name == "bodies" && array.elem_size == sizeof(spade::BodyState)) {
+            out = std::span<const spade::BodyState>(reinterpret_cast<const spade::BodyState*>(array.data),
+                                                    array.byte_size() / sizeof(spade::BodyState));
+        }
+    });
+    return out;
+}
+
+// Per world, in double: centre of mass, mean and RMS speed, kinetic energy.
+[[nodiscard]] std::vector<std::array<double, kStatCount>> world_stats(const Simulation& sim, uint32_t worlds) {
+    const std::span<const spade::BodyState> bodies = bodies_of(sim);
+    std::vector<std::array<double, kStatCount>> out(worlds);
+    const std::size_t per_world = worlds == 0 ? 0 : bodies.size() / worlds;
+    for (uint32_t w = 0; w < worlds; ++w) {
+        double mass = 0.0, mx = 0.0, my = 0.0, mz = 0.0, speed = 0.0, speed_sq = 0.0, kinetic = 0.0;
+        uint32_t n = 0;
+        for (std::size_t k = 0; k < per_world; ++k) {
+            const spade::BodyState& b = bodies[w * per_world + k];
+            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
+            const double m = b.mass;
+            const double v2 = static_cast<double>(b.vel.x) * b.vel.x + static_cast<double>(b.vel.y) * b.vel.y +
+                              static_cast<double>(b.vel.z) * b.vel.z;
+            mass += m;
+            mx += m * b.pos.x;
+            my += m * b.pos.y;
+            mz += m * b.pos.z;
+            speed += std::sqrt(v2);
+            speed_sq += v2;
+            kinetic += 0.5 * m * v2;
+            ++n;
+        }
+        if (n == 0) continue;
+        out[w] = {mx / mass, my / mass, mz / mass, speed / n, std::sqrt(speed_sq / n), kinetic};
+    }
+    return out;
+}
+
+// The invariants, on one leg.
+void expect_invariants(const Simulation& sim, const WorldSetDesc& desc, std::string_view what) {
+    const std::span<const spade::BodyState> bodies = bodies_of(sim);
+    const std::size_t worlds = desc.worlds.size();
+    const std::size_t per_world = worlds == 0 ? 0 : bodies.size() / worlds;
+    for (std::size_t w = 0; w < worlds; ++w) {
+        const spade::SdfProgram& sdf = desc.worlds[w].world.sdf;
+        for (std::size_t k = 0; k < per_world; ++k) {
+            const spade::BodyState& b = bodies[w * per_world + k];
+            if ((b.flags & spade::physics::body_flags::active) == 0u) continue;
+            const bool finite = std::isfinite(b.pos.x) && std::isfinite(b.pos.y) && std::isfinite(b.pos.z) &&
+                                std::isfinite(b.vel.x) && std::isfinite(b.vel.y) && std::isfinite(b.vel.z) &&
+                                std::isfinite(b.orient.w) && std::isfinite(b.omega_body.x) &&
+                                std::isfinite(b.omega_body.y) && std::isfinite(b.omega_body.z);
+            EXPECT_TRUE(finite) << what << ": world " << w << " body " << k << " is not finite";
+            if (!sdf.nodes.empty()) {
+                EXPECT_GT(spade::eval(sdf, b.pos), 0.0f)
+                    << what << ": world " << w << " body " << k << " has its centre inside the solid (tunnelled)";
+            }
+        }
+    }
+}
+
+
 void run_parity(const Scenario& scenario, std::string_view label, const std::vector<BandEntry>& table,
-                ParityCheck extra = nullptr) {
+                ParityCheck extra = nullptr, const PastHorizon* past = nullptr) {
     Result<Simulation> cpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << "cpu leg: " << cpu.error().context;
     Result<Simulation> gpu =
         spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::vulkan});
     ASSERT_TRUE(gpu.has_value()) << "gpu leg: " << gpu.error().context;
-
-    // The two runs start from IDENTICAL state -- asserted, not assumed. Both
-    // legs were built by the same closures, but a create()-time divergence
-    // (a different seed derivation, a spawn the vulkan path rejected) would
-    // otherwise show up later as a "parity failure" that had nothing to do
-    // with the kernels.
     EXPECT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*gpu))
         << label << ": the two legs did not start from identical state";
 
-    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
-    ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
-    ASSERT_EQ(cpu->tick().value, gpu->tick().value);
-    ASSERT_EQ(cpu->tick().value, scenario.steps);
+    const auto compare = [&](const std::vector<BandEntry>& rows, const std::string& at) {
+        const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), rows);
+        ASSERT_TRUE(report.has_value()) << report.error().context;
+        report->print(at);
+        for (const spade::testing::QuantityReport& q : report->quantities) {
+            EXPECT_TRUE(q.within_band())
+                << at << ": '" << q.quantity << "' is outside its pinned band -- measured max |abs| " << q.max_abs
+                << ", max rel " << q.max_rel << ", pinned (" << q.band.abs << ", " << q.band.rel << "); "
+                << q.elements_outside_band << " of " << q.elements_compared << " elements";
+            EXPECT_GT(q.elements_compared, std::size_t{0}) << at << ": '" << q.quantity << "' compared nothing";
+            if (q.kind_is_quaternion) {
+                EXPECT_LT(q.max_unit_norm_error, 1.0e-5f)
+                    << at << ": a quaternion drifted off the unit sphere by " << q.max_unit_norm_error;
+            }
+        }
+    };
 
-    const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
-    ASSERT_TRUE(report.has_value()) << report.error().context;
+    if (past == nullptr) {
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
+        compare(table, std::string(label));
+    } else {
+        ASSERT_LT(past->element_steps, scenario.steps);
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, past->element_steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, past->element_steps).has_value());
+        compare(table, std::string(label) + " @ T_p = " + std::to_string(past->element_steps) + " steps");
 
-    // PRINTED ALWAYS, passing or failing: the measured-versus-pinned table is
-    // this task's actual deliverable (the user checkpoint's centrepiece), and
-    // a table printed only on failure is a table nobody reads. `ctest -V` is
-    // what surfaces it.
-    report->print(label);
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
+        std::vector<BandEntry> inside;
+        for (const BandEntry& row : table) {
+            if (std::find(past->past.begin(), past->past.end(), row.quantity) == past->past.end()) {
+                inside.push_back(row);
+            }
+        }
+        compare(inside, std::string(label) + " @ horizon, rows inside T_p");
 
-    for (const spade::testing::QuantityReport& q : report->quantities) {
-        EXPECT_TRUE(q.within_band())
-            << label << ": '" << q.quantity << "' is outside its pinned band -- measured max |abs| "
-            << q.max_abs << ", max rel " << q.max_rel << ", pinned (" << q.band.abs << ", " << q.band.rel
-            << "); " << q.elements_outside_band << " of " << q.elements_compared << " elements";
-        // The band table must not pass VACUOUSLY: a quantity nothing wrote
-        // would report zero error and sail through. Every row here names a
-        // field a wave-A kernel writes on every substep, so at least one
-        // element must have been compared.
-        EXPECT_GT(q.elements_compared, std::size_t{0}) << label << ": '" << q.quantity << "' compared nothing";
-        if (q.kind_is_quaternion) {
-            // integrate_orientation renormalizes on the way out on BOTH paths
-            // (math_ops.cpp:47, integrate.slang's glm_quat_normalize), so a
-            // drifting norm is a different defect from a component band being
-            // exceeded -- see parity.hpp's header.
-            EXPECT_LT(q.max_unit_norm_error, 1.0e-5f)
-                << label << ": a quaternion drifted off the unit sphere by " << q.max_unit_norm_error;
+        // Invariants, both legs.
+        const Result<WorldSetDesc> desc = scenario.build();
+        ASSERT_TRUE(desc.has_value()) << desc.error().context;
+        const std::span<const spade::BodyState> cb = bodies_of(*cpu);
+        const std::span<const spade::BodyState> gb = bodies_of(*gpu);
+        ASSERT_EQ(cb.size(), gb.size());
+        for (std::size_t k = 0; k < cb.size(); ++k) {
+            EXPECT_EQ(cb[k].flags, gb[k].flags) << label << ": slot " << k << " differs in liveness";
+        }
+        expect_invariants(*cpu, *desc, "cpu leg");
+        expect_invariants(*gpu, *desc, "gpu leg");
+
+        // Statistics against chaos.
+        const uint32_t worlds = static_cast<uint32_t>(desc->worlds.size());
+        const std::vector<std::array<double, kStatCount>> c = world_stats(*cpu, worlds);
+        const std::vector<std::array<double, kStatCount>> g = world_stats(*gpu, worlds);
+        std::vector<std::array<double, kStatCount>> spread(worlds);
+        for (uint32_t v = 0; v < kChaosRuns; ++v) {
+            Result<Simulation> run = start_nudged(scenario, v);
+            ASSERT_TRUE(run.has_value()) << run.error().context;
+            ASSERT_TRUE(spade::testing::advance_scenario(scenario, *run, scenario.steps).has_value());
+            const std::vector<std::array<double, kStatCount>> r = world_stats(*run, worlds);
+            for (uint32_t w = 0; w < worlds; ++w) {
+                for (std::size_t i = 0; i < kStatCount; ++i) {
+                    spread[w][i] = std::max(spread[w][i], std::fabs(r[w][i] - c[w][i]));
+                }
+            }
+        }
+        std::printf("    statistics past T_p (|gpu - cpu| against 4x the one-ulp CPU spread over %u runs):\n",
+                    kChaosRuns);
+        for (uint32_t w = 0; w < worlds; ++w) {
+            for (std::size_t i = 0; i < kStatCount; ++i) {
+                const double floor = 5.0e-10 + 5.0e-7 * std::fabs(c[w][i]);
+                const double band = std::max(4.0 * spread[w][i], floor);
+                const double gap = std::fabs(g[w][i] - c[w][i]);
+                std::printf("    world %u %-10s cpu %+.6e  |gpu-cpu| %.3e  spread %.3e  band %.3e  %s\n", w,
+                            kStatNames[i], c[w][i], gap, spread[w][i], band, gap <= band ? "within" : "OUTSIDE");
+                EXPECT_LE(gap, band) << label << ": world " << w << " " << kStatNames[i]
+                                     << " is further from the CPU than the CPU's own one-ulp spread allows";
+            }
         }
     }
-
+    ASSERT_EQ(cpu->tick().value, gpu->tick().value);
+    ASSERT_EQ(cpu->tick().value, scenario.steps);
     if (extra != nullptr) extra(*cpu, *gpu, label);
 }
 
@@ -517,6 +712,36 @@ void run_parity(const Scenario& scenario, std::string_view label, const std::vec
 // ---------------------------------------------------------------------------
 
 [[nodiscard]] std::filesystem::path golden_dir() { return std::filesystem::path(SPADE_GOLDEN_DIR); }
+
+// ---------------------------------------------------------------------------
+// THE ONE-ULP CPU CONTROL (TD-14's horizon rule). The scenario run twice on
+// the CPU; in the second, the first active body of EVERY world has one
+// position component nudged one ulp up after setup (worlds are isolated, so
+// each world gets its own control). The component is the body's LARGEST in
+// magnitude: one ulp up from a zero coordinate is the smallest subnormal,
+// which the first addition rounds away, so a nudge there tests nothing. The two are compared at the scenario's horizon with the
+// parity table's own rows: what the scene alone does to one ulp. A band means
+// something only while this stays under 1e-5 of the scene's scale; past that
+// the CPU-GPU gap measures the scene, not the port.
+//
+// The nudge goes through a snapshot: find_section() locates the bodies
+// payload, one float is edited in a copy, and restore() takes it back -- the
+// engine's own parser and restore path, so no body is edited behind its back.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<ParityReport> one_ulp_control(const Scenario& scenario, const std::vector<BandEntry>& table) {
+    const BackendDesc cpu{.kind = BackendKind::cpu};
+    Result<Simulation> base = spade::testing::start_scenario(scenario, cpu);
+    if (!base) return std::unexpected(base.error());
+    Result<Simulation> nudged = start_nudged(scenario, 0);
+    if (!nudged) return std::unexpected(nudged.error());
+    if (const Result<void> a = spade::testing::advance_scenario(scenario, *base, scenario.steps); !a) {
+        return std::unexpected(a.error());
+    }
+    if (const Result<void> b = spade::testing::advance_scenario(scenario, *nudged, scenario.steps); !b) {
+        return std::unexpected(b.error());
+    }
+    return compare_arrays(base->arenas(), nudged->arenas(), table);
+}
 
 [[nodiscard]] Result<spade::testing::LoadedScenario> load_scenario(std::string_view name) {
     return spade::testing::scenario_from_yaml(golden_dir() / "scenarios" /
@@ -611,7 +836,7 @@ TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
 
     using namespace spade::testing::bands::gnss_receiver;
     run_parity(scenario, "gnss_receiver (1 receiver x 200 substeps at rate_divider 1)",
-               gnss_bands(kGnssBias, /*cached=*/ToleranceBand{0.0f, 0.0f}, kGnssPosition,
+               gnss_bands(kGnssBias, /*cached=*/spade::testing::bands::core3::kGaussianDraw, kGnssPosition,
                           kGnssVelocity),
                [](const Simulation& cpu, const Simulation& gpu, std::string_view label) {
                    // THE PREMISE, ASSERTED BEFORE THE BANDS MEAN ANYTHING: the
@@ -662,43 +887,19 @@ TEST_F(GpuParityTest, GnssReceiverMatchesTheCpuWithinBands) {
 // so if fp32_math's cutoff ever moves this test's PREMISE reds on the CPU side
 // before anyone spends a GPU run on it.
 //
-// ⭐⭐⭐ AND THE OUTCOME TABLE IS WRITTEN BEFORE THE RUN, WHICH IS THE POINT.
-// This realm shipped three MEASURED band numbers beside three GUESSED causes,
-// in the same sentences, so the guesses inherited the measurements'
-// credibility. The lesson was: A MEASURED NUMBER IS AUTHORITY FOR THE NUMBER
-// AND FOR NOTHING ABOUT ITS CAUSE -- and the hole it exposed is that every
-// falsifier in this tree tests a QUANTITY and none tests a STATED CAUSE. A
-// zero band governs the number and leaves the explanation entirely unguarded.
-// So the explanation goes here, in advance, where it can be wrong in public:
+// ⭐⭐⭐ THE OUTCOME TABLE WAS WRITTEN BEFORE THE RUN, WHICH WAS THE POINT:
+// BIT-EXACT would have left the tau=60 divergence with no named candidate;
+// DIFFERS would mean the draws themselves diverge, an rng finding rather than
+// a GNSS one. THE RUN ANSWERED DIFFERS, and the cause it named is CORE-3's:
+// rng.slang's Box-Muller sqrt, which Vulkan licenses at 2.5 ulp. Under TD-14
+// the draw is banded at its source, so `bias` and `noise.cached` here are
+// pinned at CORE-3's band (core3::kGaussianDraw): within it, the bias is a
+// pure function of draws that stay within CORE-3. rtx3060ti-572.83 measured
+// bias R 6.8e-8. GnssDrawsMatchTheCpuWithinTheCore3Band below checks every
+// fix's draws, which this test, sampling the last draw only, cannot.
 //
-//   BIT-EXACT   Every gaussian draw agrees across backends under a
-//               configuration where `bias` is a pure function of the draws.
-//               ⛔ THIS DOES NOT EXPLAIN THE tau=60 DIVERGENCE -- IT NARROWS
-//               IT, and the remaining candidate is the one that was always
-//               hardest to reach: THE RECURSION ITSELF, 200 multiply-adds
-//               deep, with contraction already excluded on both sides AND
-//               asserted by SlangSpirv.FloatControlsPinned. Coefficients are
-//               CPU-precomputed row config and run_parity's state_digest
-//               precondition proves the rows START byte-identical; `phase` and
-//               `last_index` prove the two legs emitted on the same substeps
-//               and the same NUMBER of times. A bit-exact result here would
-//               leave NO NAMED CANDIDATE, and that is a finding to report as
-//               such rather than to paper over with a wider band.
-//
-//   DIFFERS     The draws themselves diverge, and ⛔ THIS IS NOT A GNSS
-//               FINDING AT ALL. rng.slang's Box-Muller sqrt is the only
-//               operation on this path carrying a documented <= 2.5 ulp
-//               licence -- fp32_math.slang's SQRT AUDIT already names it and
-//               defers it with no owner and no trigger. THE STREAM IS SHARED
-//               WITH EVERY OTHER SENSOR AND WITH THE DRYDEN FILTER, so a
-//               divergence here is estate-wide and outranks this realm's
-//               queue. ⚠ Escalate before doing anything else with it.
-//
-// ⚠ EITHER WAY, THE tau=60 BANDS DO NOT MOVE. This is a SEPARATE, ADDITIVE
-// scenario; the pinned bands belong to the run that measured them. Widening
-// kGnssBias to make a longer run pass would convert a compounding divergence
-// into a permanently invisible one, which is the one thing parity.hpp's own
-// header forbids by name.
+// The tau=60 bands are gnss_receiver's own, measured on their run; this
+// scenario does not set them.
 //
 // THE TABLE IS DELIBERATELY NARROWER THAN gnss_bands(). This test asks ONE
 // question, so it carries the bias, the stream that feeds it, and the premises
@@ -728,12 +929,14 @@ namespace {
          QuantityKind::bits, ToleranceBand{0.0f, 0.0f}},
         {"gnss_sensors", "noise.cached",
          offsetof(GnssSensorRow, noise) + offsetof(spade::rng::Stream, cached_gauss), 1,
-         QuantityKind::components, ToleranceBand{0.0f, 0.0f}},
+         QuantityKind::components, spade::testing::bands::core3::kGaussianDraw},
 
         // THE SUBJECT, AT A ZERO BAND. Under this configuration the bias is
         // `sigma_bias * walk`, so anything other than bit-exact IS the answer.
+        // cited: CORE-3. With the retention underflowed to zero the bias is a pure
+        // function of the draws (see the test below), so its band is the draw's.
         {"gnss_sensors", "bias", offsetof(GnssSensorRow, bias), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::core3::kGaussianDraw},
     };
 }
 
@@ -806,49 +1009,28 @@ TEST_F(GpuParityTest, GnssBiasUnderAnUnderflowedRetentionIsAPureFunctionOfTheDra
 // run as it stands and do not move.
 // ===========================================================================
 // ===========================================================================
-// ⛔ THE DISCRIMINATOR ABOVE IS WEAKER THAN ITS OWN HEADER CLAIMED, AND THE RUN
-// IS WHAT SHOWED IT. THIS IS THE STRONG FORM, AND IT FOUND THE DIVERGENCE --
-// SO IT IS A KNOWN-OPEN ENTRY CARRYING ITS OWN EXPIRY, NOT A PASSING TEST.
-// ⛔ ESCALATED 2026-09-24: the gaussian draws differ across backends. That is an
-// ESTATE-WIDE rng finding (the stream feeds every sensor and the Dryden filter),
-// it is the coordinator's, and the determinism GRADE for the gaussian path is a
-// decision rather than a measurement. Do not debug it from here.
+// THE DRAWS, BANDED AT THEIR SOURCE (TD-14, CORE-3). Every fix's gaussian
+// draws, the whole ring, against the CPU.
 //
-// The header asserted "`bias` bit-exact IFF every draw was bit-exact". The
-// reverse direction holds; THE FORWARD ONE DOES NOT. With retention == 0 the
-// advance is `bias = 0 * bias_prev + sigma_bias * walk` -- THE PREVIOUS BIAS IS
-// ANNIHILATED, so the final row's `bias` is a function of THE LAST DRAW ALONE.
-// `gnss_sensors/bias` compares end-of-run row state, so it samples ONE fix out
-// of two hundred. It passed, and what it proved was one draw.
+// WHY THE RING AND A ZERO LEVER ARM. With retention == 0 the bias is a
+// function of the LAST draw alone, so the discriminator above samples one fix
+// of two hundred; the ring is where the per-fix history lives. fix.position
+// is `bodies.pos + lever_world + bias + noise`; with mount_pos zero the lever
+// term vanishes, and `bodies.pos` is on the floor in this run (measured exact
+// on the device of record), so the ring's position isolates the draws.
 //
-// ⭐ AND THE NARROWING IS WHAT COST IT. That test drops the `gnss_ring` rows on
-// the stated grounds that they are "banded against a different run" -- correct
-// about the bands, and the ring is ALSO the only place the per-fix history
-// lives. A DEFENSIBLE SCOPE DECISION REMOVED THE EVIDENCE THE TEST NEEDED, and
-// nothing about the narrowing announced that.
-//
-// ✅ THE FIX IS A ZERO LEVER ARM, and it is cheap because the body measurement
-// above just told us what to remove. fix.position is `bodies.pos + lever_world
-// + bias + noise`; `bodies.pos` is BIT-EXACT in this scenario and `orient` is
-// the sole divergence, reaching the report ONLY through lever_world. Set
-// mount_pos to zero and lever_world vanishes, so the ring's position carries
-// `bodies.pos + bias + noise` with a bit-exact first term -- and a zero band
-// over the WHOLE RING then tests every fix's draws, not the last one's.
-//
-// ⛔ THE OUTCOME TABLE FROM THE WEAK FORM STILL GOVERNS, and now over 200 fixes
-// instead of 1: DIFFERS means the draws diverge, which is an estate-wide rng
-// finding and not a GNSS one -- escalate before debugging. BIT-EXACT narrows
-// the tau=60 divergence without explaining it.
+// HISTORY. This was GnssDrawsDivergeAcrossBackends_KNOWN_OPEN: an inverted
+// assertion that the draws DIFFER (Iris, 2026-09-24: 11 of 64 elements, max
+// |abs| 4.77e-7). Under TD-14 the draw is banded at its source, the Box-Muller
+// sqrt, by CORE-3, so the strong form now asserts that band. A device whose
+// sqrt is correctly rounded passes too, where the inverted form would have
+// failed it for no defect.
 // ===========================================================================
-TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
+TEST_F(GpuParityTest, GnssDrawsMatchTheCpuWithinTheCore3Band) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
     using spade::sensors::GnssFix;
     using spade::sensors::GnssSensorRow;
-
-    const Scenario scenario =
-        gnss_receiver_scenario(1.0e-6f, "gnss_draws_known_open", glm::vec3(0.0f));
-
+    const Scenario scenario = gnss_receiver_scenario(1.0e-6f, "gnss_draws", glm::vec3(0.0f));
     Result<Simulation> cpu =
         spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << "cpu leg: " << cpu.error().context;
@@ -857,13 +1039,12 @@ TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
     ASSERT_TRUE(gpu.has_value()) << "gpu leg: " << gpu.error().context;
     ASSERT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*gpu))
         << "the two legs did not start from identical state";
-
     ASSERT_TRUE(spade::testing::advance_scenario(scenario, *cpu, scenario.steps).has_value());
     ASSERT_TRUE(spade::testing::advance_scenario(scenario, *gpu, scenario.steps).has_value());
 
     const std::vector<BandEntry> table = {
-        // THE ISOLATION PREMISES. If any of these breaks, the argument below
-        // stops holding and this entry must be re-derived rather than trusted.
+        // THE ISOLATION PREMISES: the integer state that decides which draws
+        // land where. If one breaks, the argument above stops holding.
         {"gnss_sensors", "phase", offsetof(GnssSensorRow, phase), 1, QuantityKind::bits,
          ToleranceBand{0.0f, 0.0f}},
         {"gnss_sensors", "last_index", offsetof(GnssSensorRow, last_index), 2, QuantityKind::bits,
@@ -873,47 +1054,20 @@ TEST_F(GpuParityTest, GnssDrawsDivergeAcrossBackends_KNOWN_OPEN) {
          ToleranceBand{0.0f, 0.0f}},
         {"gnss_ring", "index", offsetof(GnssFix, index), 2, QuantityKind::bits,
          ToleranceBand{0.0f, 0.0f}},
-        // THE SUBJECT. Zero band, deliberately, and it is EXPECTED TO BE OUTSIDE.
+        // THE SUBJECT: every fix's draws, on CORE-3's band.
         {"gnss_ring", "position", offsetof(GnssFix, position), 3, QuantityKind::components,
-         ToleranceBand{0.0f, 0.0f}},
+         spade::testing::bands::core3::kGaussianDraw},
     };
-
     const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
     ASSERT_TRUE(report.has_value()) << report.error().context;
-    report->print("gnss_draws KNOWN-OPEN (tau=1e-6, zero lever arm, whole ring)");
-
-    const spade::testing::QuantityReport* position = nullptr;
+    report->print("gnss_draws (tau=1e-6, zero lever arm, whole ring)");
     for (const spade::testing::QuantityReport& q : report->quantities) {
         EXPECT_GT(q.elements_compared, std::size_t{0}) << q.quantity << ": compared nothing";
-        if (q.array == "gnss_ring" && q.quantity == "position") {
-            position = &q;
-            continue;
-        }
-        // THE PREMISES MUST STILL HOLD.
         EXPECT_TRUE(q.within_band())
-            << q.quantity << ": an ISOLATION PREMISE of this known-open entry has broken. The "
-            << "argument that `position` isolates the gaussian draws depended on this being "
-            << "bit-exact. Re-derive the entry; do not simply widen anything.";
+            << q.quantity << ": outside its band -- max |abs| " << q.max_abs << ", max rel " << q.max_rel
+            << (q.kind_is_bits ? ". An ISOLATION PREMISE broke: re-derive the argument above, do not widen."
+                               : ". The draws left CORE-3's band: that is an rng finding, the coordinator's.");
     }
-    ASSERT_NE(position, nullptr) << "the subject row was not compared";
-
-    // -----------------------------------------------------------------------
-    // ⛔⛔ THE INVERTED ASSERTION, AND IT IS THE WHOLE POINT OF THE ENTRY.
-    //
-    // This test PASSES while the defect is present and GOES RED THE DAY IT IS
-    // FIXED. A tolerated failure with no expiry becomes a permanent one, and
-    // THE ONLY THING THAT EXPIRES ONE AUTOMATICALLY IS FAILING WHEN IT PASSES.
-    // -----------------------------------------------------------------------
-    EXPECT_FALSE(position->within_band())
-        << "gnss_ring/position is now BIT-EXACT across backends. "
-        << "THIS IS GOOD NEWS AND THIS TEST IS NOW OBSOLETE -- RETIRE IT. "
-        << "It exists to record that the gaussian draws DIFFER between the cpu and vulkan legs. "
-        << "Measured 2026-09-24: 11 of 64 ring elements outside a zero band, max |abs| "
-        << "4.76837158e-07, worst element 22 component 2 (cpu 3.761487961e+00 vs gpu "
-        << "3.761488438e+00). If it no longer reproduces, someone has tightened the gaussian "
-        << "path -- almost certainly rng.slang's Box-Muller sqrt, which rng.slang:25 names as "
-        << "the SOLE bander of the float half. Delete this test and pin gnss_ring/position at "
-        << "a zero band in a normal parity test instead.";
 }
 
 TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
@@ -924,6 +1078,79 @@ TEST_F(GpuParityTest, GnssReceiverBodyStateIsMeasuredNotAssumed) {
     using namespace spade::testing::bands::gnss_receiver_body;
     run_parity(scenario, "gnss_receiver BODY STATE (the inputs kGnssPosition/kGnssVelocity read)",
                body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce));
+}
+
+// ---------------------------------------------------------------------------
+// TD-14's predicate, at its boundary. An element passes when
+// |gpu - cpu| <= abs + rel * |cpu|: the two halves ADD. One ulp inside the
+// sum passes and one ulp past it fails, and an error that exceeds each half
+// alone but not their sum passes -- which the retired disjunction
+// (abs_ok || rel_ok) refused. Host-only: it is the harness, not a device.
+// ---------------------------------------------------------------------------
+TEST(ParityPredicate, SumFormAtTheBoundary) {
+    using spade::testing::parity_detail::element_within;
+    using spade::testing::parity_detail::error_within;
+    const ToleranceBand band{1.0e-6f, 1.0e-6f};
+    // On the error itself: a gpu value cpu + err cannot land on every ulp of
+    // the tolerance when |cpu| is far larger than it, so the boundary is
+    // probed on the error the harness computes, |gpu - cpu|.
+    for (const float cpu : {2.0f, -2.0f, 0.25f, 1.0e3f}) {
+        const float tol = band.abs + band.rel * std::fabs(cpu);
+        const float inside = std::nextafter(tol, 0.0f);
+        const float outside = std::nextafter(tol, 1.0f);
+        ASSERT_GT(inside, band.abs) << "the boundary case must exceed the absolute half alone";
+        ASSERT_GT(inside, band.rel * std::fabs(cpu)) << "and the relative half alone";
+        EXPECT_TRUE(error_within(inside, cpu, band)) << "cpu " << cpu << ": one ulp inside the sum";
+        EXPECT_TRUE(error_within(tol, cpu, band)) << "cpu " << cpu << ": exactly the sum";
+        EXPECT_FALSE(error_within(outside, cpu, band)) << "cpu " << cpu << ": one ulp past the sum";
+    }
+    // At cpu == 0 the absolute half carries it alone.
+    EXPECT_TRUE(element_within(0.0f, band.abs, band));
+    EXPECT_FALSE(element_within(0.0f, std::nextafter(band.abs, 1.0f), band));
+    // A NaN on either side fails, whatever the band.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(element_within(nan, 1.0f, ToleranceBand{1.0f, 1.0f}));
+    EXPECT_FALSE(element_within(1.0f, nan, ToleranceBand{1.0f, 1.0f}));
+}
+
+// TD-14's pin of a measurement: 4x, rounded UP to one significant figure.
+TEST(ParityPredicate, ThePinIsFourTimesRoundedUpToOneFigure) {
+    using spade::testing::pin_of;
+    EXPECT_EQ(pin_of(2.3e-6f), 1.0e-5f);   // 9.2e-6 -> 1e-5
+    EXPECT_EQ(pin_of(5.0e-7f), 2.0e-6f);   // exactly 2e-6
+    EXPECT_EQ(pin_of(3.2e-6f), 2.0e-5f);   // 1.28e-5 -> 2e-5
+    EXPECT_EQ(pin_of(8.94e-8f), 4.0e-7f);  // M2's two_world_isolation pos -> the plan's 4e-7
+    EXPECT_EQ(pin_of(0.0f), 0.0f) << "an exact measurement is not pinned at 4 x 0";
+}
+
+// TD-14: a zero band on a float row is an unstated bit-identity claim unless
+// it is marked structural, and structural means {0, 0}. Host-only: two CPU
+// runs of one scenario, compared with deliberately malformed tables.
+TEST(ParityPredicate, AZeroFloatBandMustBeArgued) {
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("ballistic");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    Result<Simulation> a = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    Result<Simulation> b = spade::testing::start_scenario(loaded->scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    const auto row = [](ToleranceBand band) {
+        return std::vector<BandEntry>{
+            {"bodies", "vel", offsetof(spade::BodyState, vel), 3, QuantityKind::components, band}};
+    };
+    using spade::testing::bands::kFloor;
+    using spade::testing::bands::kStructural;
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{0.0f, 0.0f})).has_value())
+        << "a bare zero band on a float row must be refused";
+    const std::vector<BandEntry> orient{{"bodies", "orient", offsetof(spade::BodyState, orient), 4,
+                                         QuantityKind::quaternion, ToleranceBand{0.0f, 0.0f}}};
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), orient).has_value()) << "on a quaternion row too";
+    EXPECT_FALSE(compare_arrays(a->arenas(), b->arenas(), row(ToleranceBand{1.0e-6f, 0.0f, true})).has_value())
+        << "structural means {0, 0}";
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(kStructural)).has_value());
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), row(kFloor)).has_value());
+    // Integer rows keep their own exact rule, with no structural mark.
+    const std::vector<BandEntry> flags{
+        {"bodies", "flags", offsetof(spade::BodyState, flags), 1, QuantityKind::bits, ToleranceBand{0.0f, 0.0f}}};
+    EXPECT_TRUE(compare_arrays(a->arenas(), b->arenas(), flags).has_value());
 }
 
 TEST(ParityCorpus, EveryCorpusScenarioIsInTheParitySet) {
@@ -1015,8 +1242,10 @@ TEST_F(GpuParityTest, BallisticMatchesTheCpuWithinBands) {
 // actually taken rather than merely compiled.
 // ===========================================================================
 
-TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+// gate_fleet's scenario: its parity test and its one-ulp CPU control (TD-14's
+// horizon rule) run the same one.
+namespace {
+[[nodiscard]] Scenario gate_fleet_scenario() {
 
     Scenario gate;
     gate.name = "gate_fleet";
@@ -1084,10 +1313,20 @@ TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
         }
         return {};
     };
+    return gate;
+}
+}  // namespace
 
+TEST_F(GpuParityTest, GateFleetMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario gate = gate_fleet_scenario();
+
+    // Past T_p at 900 steps: vel (the one-ulp CPU control reaches 4.3e-5 m/s on
+    // resting bodies, ParityChaos.OneUlpControlAtEachScenariosHorizon).
+    const PastHorizon past{450, {"vel"}};
     using namespace spade::testing::bands::gate_fleet;
     run_parity(gate, "gate_fleet (4 worlds x 900 steps, SDF union: plane + torus + 2 boxes)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
@@ -1340,6 +1579,46 @@ TEST_F(GpuParityTest, QuadHoverMatchesTheCpuWithinBands) {
 }
 
 // ===========================================================================
+// gnss_tumble AT TEN TIMES ITS HORIZON -- REPORTED, NOT BANDED (TD-14). How
+// fast CPU-GPU differences grow on a smooth scene, so the docs can say it from
+// a measurement: 4000 steps x 4 substeps (16 s), open bands, printed. It
+// scripts no input, so each leg takes one step(n) and the device run stays on
+// the device (a step(1) loop pays an upload and a readback per step; the same
+// run of quad_hover, which scripts input every tick, took 40 s of the 60 s
+// test limit). It asserts only what holds at any horizon: nothing non-finite,
+// every quaternion on the unit sphere, and the integer state exact. The bands
+// themselves stay at 400 steps.
+// ===========================================================================
+TEST_F(GpuParityTest, GnssTumbleAtTenTimesItsHorizonIsReportedNotBanded) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Result<spade::testing::LoadedScenario> loaded = load_scenario("gnss_tumble");
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    const Scenario& scenario = loaded->scenario;
+    Result<Simulation> cpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
+    Result<Simulation> gpu = spade::testing::start_scenario(scenario, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    const uint64_t steps = scenario.steps * 10;
+    ASSERT_TRUE(cpu->step(steps).has_value());
+    ASSERT_TRUE(gpu->step(steps).has_value());
+    const ToleranceBand open{1.0e30f, 1.0e30f};
+    const Result<ParityReport> report = compare_arrays(
+        cpu->arenas(), gpu->arenas(),
+        join(body_bands(open, open, open, open, open), gnss_bands(open, open, open, open)));
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    report->print("gnss_tumble at 10x its horizon (4000 steps x 4 substeps, 16 s), REPORT ONLY");
+    for (const spade::testing::QuantityReport& q : report->quantities) {
+        EXPECT_FALSE(q.nan_seen) << q.quantity << ": non-finite at 10x the horizon";
+        if (q.kind_is_quaternion) {
+            EXPECT_LT(q.max_unit_norm_error, 1.0e-5f) << q.quantity;
+        }
+        if (q.kind_is_bits) {
+            EXPECT_TRUE(q.within_band()) << q.quantity << ": integer state diverged";
+        }
+    }
+}
+
+// ===========================================================================
 // gnss_tumble -- THE CORPUS FILE, VERBATIM (PHY-6). The first corpus scenario
 // with a live GNSS row, so the first time sensor_gnss.slang is compared over a
 // scenario whose CPU run is a golden. The bands are parity.hpp's gnss_tumble
@@ -1494,9 +1773,9 @@ TEST_F(GpuParityTest, IntegrateKernelReadsThePerStepTickBuffer) {
 // OVERLAPPING at t = 0 and the pass has real work on its very first substep.
 // ---------------------------------------------------------------------------
 
-TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// contact_pair's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario contact_pair_scenario() {
     Scenario pair;
     pair.name = "contact_pair";
     pair.dt_ns = 1'000'000;  // 1 ms step
@@ -1542,10 +1821,19 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
         if (const Result<spade::BodyRef> ref = sim.spawn(0, b); !ref) return std::unexpected(ref.error());
         return {};
     };
+    return pair;
+}
+}  // namespace
 
+TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario pair = contact_pair_scenario();
+
+    // Past T_p at 600 steps: vel (one-ulp CPU control 1.6e-5 m/s).
+    const PastHorizon past{300, {"vel"}};
     using namespace spade::testing::bands::contact_pair;
     run_parity(pair, "contact_pair (2 overlapping bodies, unequal masses, 600 steps)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
@@ -1579,9 +1867,9 @@ TEST_F(GpuParityTest, TwoActiveBodiesInAWorldStepAndMatchTheCpu) {
 //   * a velocity with all three components non-zero and no symmetry.
 // ===========================================================================
 
-TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// drag_componentwise's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario drag_componentwise_scenario() {
     Scenario drag;
     drag.name = "drag_componentwise";
     drag.dt_ns = 2'000'000;  // 2 ms step
@@ -1621,6 +1909,13 @@ TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
         if (!attached) return std::unexpected(attached.error());
         return {};
     };
+    return drag;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, ComponentwiseDragMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario drag = drag_componentwise_scenario();
 
     using namespace spade::testing::bands::drag_componentwise;
     run_parity(drag, "drag_componentwise (400 steps x 2 substeps, per-axis body-frame drag law)",
@@ -1928,10 +2223,9 @@ TEST_F(GpuParityTest, StructuralOpsAreCoveredTransitively) {
 // it carried the right bytes.
 // ===========================================================================
 
-TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
-    constexpr uint64_t kSnapshotTick = 300;
+// restore_resume's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario restore_resume_scenario() {
     constexpr uint64_t kFinalTick = 700;
 
     Scenario resume;
@@ -1964,6 +2258,16 @@ TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
     };
 
     // --- the CPU reference: one uninterrupted run to kFinalTick -------------
+    return resume;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, RestoredRunResumesAndMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    constexpr uint64_t kSnapshotTick = 300;
+    constexpr uint64_t kFinalTick = 700;
+    const Scenario resume = restore_resume_scenario();
+
     Result<Simulation> cpu = spade::testing::start_scenario(resume, BackendDesc{.kind = BackendKind::cpu});
     ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
     ASSERT_TRUE(spade::testing::advance_scenario(resume, *cpu, kFinalTick).has_value());
@@ -2222,9 +2526,9 @@ TEST(ParityGeometry, HeterogeneousGeometrySetMatchesSoloRuns) {
 // check for free.
 // ---------------------------------------------------------------------------
 
-TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// heterogeneous_geometry_set's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario heterogeneous_scenario() {
     Scenario hetero;
     hetero.name = "heterogeneous_geometry_set";
     hetero.dt_ns = kHeteroDtNs;
@@ -2240,10 +2544,20 @@ TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
         }
         return {};
     };
+    return hetero;
+}
+}  // namespace
 
+TEST_F(GpuParityTest, HeterogeneousGeometrySetMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario hetero = heterogeneous_scenario();
+
+    // Past T_p at 900 steps: pos and vel (one-ulp CPU control 2.5e-5 m and
+    // 1.4e-4 m/s in the gate world).
+    const PastHorizon past{450, {"pos", "vel"}};
     using namespace spade::testing::bands::heterogeneous_geometry_set;
     run_parity(hetero, "heterogeneous_geometry_set (2 worlds: empty-SDF ballistic + gate geometry, 900 steps)",
-               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()));
+               join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands()), nullptr, &past);
 }
 
 // ===========================================================================
@@ -2408,6 +2722,52 @@ void expect_shower_resolved_pairs(const Simulation& cpu, const Simulation& gpu, 
 // CPU runs, no device, runs on every CI machine.
 // ---------------------------------------------------------------------------
 
+// The one-ulp CPU control for every parity scenario, at a quarter, a half and
+// the whole of its parity horizon: TD-14's horizon rule pins element
+// bands only where this stays under 1e-5 of the scene's scale. Host-only: it
+// measures the scene, not a device. Report-only; the bands cite its numbers.
+namespace {
+[[nodiscard]] Scenario shower_ladder_scenario();  // defined beside its parity test
+[[nodiscard]] Scenario restore_resume_scenario();  // likewise
+[[nodiscard]] Scenario drag_componentwise_scenario();  // likewise
+}  // namespace
+
+TEST(ParityChaos, OneUlpControlAtEachScenariosHorizon) {
+    std::vector<std::pair<std::string, Scenario>> scenes = {
+        {"gate_fleet", gate_fleet_scenario()},
+        {"heterogeneous_geometry_set", heterogeneous_scenario()},
+        {"contact_pair", contact_pair_scenario()},
+        {"shower_ladder", shower_ladder_scenario()},
+        {"restore_resume", restore_resume_scenario()},
+    };
+    for (const char* name : {"bounce", "two_world_isolation", "shower", "ballistic", "quad_hover", "gnss_tumble"}) {
+        const Result<spade::testing::LoadedScenario> loaded = load_scenario(name);
+        ASSERT_TRUE(loaded.has_value()) << name << ": " << loaded.error().context;
+        scenes.emplace_back(name, loaded->scenario);
+    }
+    // The smooth scenarios too: the rule is every scenario's, contacts or not.
+    scenes.emplace_back("drag_componentwise", drag_componentwise_scenario());
+    scenes.emplace_back("gnss_receiver", gnss_receiver_scenario(60.0f, "gnss_receiver"));
+    const ToleranceBand open{1.0e30f, 1.0e30f};  // report-only
+    std::printf("\n=== one-ulp CPU control (max |gap|, A, R) ===\n");
+    for (const auto& [name, full] : scenes) {
+        for (const uint64_t parts : {4u, 2u, 1u}) {
+            Scenario scenario = full;
+            scenario.steps = full.steps / parts;
+            const Result<ParityReport> report =
+                one_ulp_control(scenario, body_bands(open, open, open, open, open));
+            ASSERT_TRUE(report.has_value()) << name << ": " << report.error().context;
+            const spade::testing::QuantityReport& pos = report->quantities[0];
+            const spade::testing::QuantityReport& vel = report->quantities[1];
+            std::printf("control %-26s steps %5llu  pos max %.3e A %.3e R %.3e  vel max %.3e A %.3e R %.3e\n",
+                        name.c_str(), static_cast<unsigned long long>(scenario.steps),
+                        static_cast<double>(pos.max_abs), static_cast<double>(pos.near_zero_abs),
+                        static_cast<double>(pos.far_rel), static_cast<double>(vel.max_abs),
+                        static_cast<double>(vel.near_zero_abs), static_cast<double>(vel.far_rel));
+        }
+    }
+}
+
 TEST(ParityChaos, ShowerPileAmplifiesOneUlpOnTheCpuAlone) {
     const Result<spade::WorldDesc> world =
         spade::resolve_world(WorldRef{golden_dir() / "worlds" / "shower.world.yaml"});
@@ -2534,9 +2894,9 @@ TEST_F(GpuParityTest, ShowerMatchesTheCpuWithinBands) {
                &expect_shower_resolved_pairs);
 }
 
-TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-
+// shower_ladder's scenario, shared with its one-ulp control.
+namespace {
+[[nodiscard]] Scenario shower_ladder_scenario() {
     Scenario ladder;
     ladder.name = "shower_ladder";
     // shower's OWN step decomposition, verbatim, so the two shower tests differ
@@ -2593,6 +2953,14 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
         return {};
     };
 
+    return ladder;
+}
+}  // namespace
+
+TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const Scenario ladder = shower_ladder_scenario();
+
     // THE SHAPE THIS TEST MEANS TO EXERCISE, asserted rather than assumed --
     // the other half of the pair.
     {
@@ -2604,7 +2972,6 @@ TEST_F(GpuParityTest, ShowerLadderMatchesTheCpuWithinBands) {
             << "the two worlds' restitutions differ, so this set must take the PER-WORLD "
             << "CollisionDynamic shape -- if it is uniform, both shower tests cover the batched one";
     }
-
     using namespace spade::testing::bands::shower_ladder;
     run_parity(ladder,
                "shower_ladder (2 worlds x 100 bodies, differing restitution, 400 steps x 2 substeps, "
@@ -3116,6 +3483,8 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
             const std::size_t n = std::min(cpu_poll->samples.size(), gpu_poll->samples.size());
             float worst_accel = 0.0f;
             float worst_gyro = 0.0f;
+            std::size_t accel_outside = 0;  // TD-14's predicate, per component, as compare_arrays applies it
+            std::size_t gyro_outside = 0;
             for (std::size_t i = 0; i < n; ++i) {
                 const spade::sensors::ImuSample& a = cpu_poll->samples[i];
                 const spade::sensors::ImuSample& b = gpu_poll->samples[i];
@@ -3128,6 +3497,9 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
                 for (int c = 0; c < 3; ++c) {
                     worst_accel = std::max(worst_accel, std::fabs(a.accel[c] - b.accel[c]));
                     worst_gyro = std::max(worst_gyro, std::fabs(a.gyro[c] - b.gyro[c]));
+                    using spade::testing::parity_detail::element_within;
+                    if (!element_within(a.accel[c], b.accel[c], kAccel)) ++accel_outside;
+                    if (!element_within(a.gyro[c], b.gyro[c], kGyro)) ++gyro_outside;
                 }
             }
 
@@ -3136,10 +3508,10 @@ TEST_F(GpuParityTest, ImuRingPollAfterGpuStepsMatchesTheCpu) {
                         world, m, n, static_cast<unsigned long long>(cpu_poll->dropped),
                         static_cast<double>(worst_accel), static_cast<double>(worst_gyro));
 
-            EXPECT_LE(worst_accel, kAccel.abs)
+            EXPECT_EQ(accel_outside, std::size_t{0})
                 << "world " << world << " sensor " << m << ": polled accel outside the band the "
                 << "`imu_ring` array comparison pinned";
-            EXPECT_LE(worst_gyro, kGyro.abs)
+            EXPECT_EQ(gyro_outside, std::size_t{0})
                 << "world " << world << " sensor " << m << ": polled gyro outside the band the "
                 << "`imu_ring` array comparison pinned";
             ++sensors_polled;

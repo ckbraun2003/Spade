@@ -49,10 +49,11 @@ namespace {
 // NOTHING. sensor_imu.slang calls its even count "a small dividend": rng::
 // Stream's Box-Muller cache is empty again at the end of every sample, so the
 // row's 16 stream bytes are in the same canonical shape after each emission.
-// Nine leaves `has_cached == 1` and a live `cached_gauss`. That is still
-// BIT-IDENTICAL ACROSS BACKENDS, because core/rng.hpp's Stream and
+// Nine leaves `has_cached == 1` and a live `cached_gauss`. Both backends still
+// carry it the same way, because core/rng.hpp's Stream and
 // shaders/shared/layouts.slang's RngStream mirror each other INCLUDING the
-// cache -- both sides carry the same spare forward to the next emission.
+// cache -- both sides carry the same spare forward to the next emission, its
+// value within CORE-3's band like every draw's.
 //
 // It is stated here rather than left to inference, because the neighbouring
 // file's even count reads as a rule: AN UNSTATED NON-REQUIREMENT BECOMES A
@@ -72,8 +73,9 @@ namespace {
 // `bias_drive`. This function multiplies; it never evaluates a transcendental
 // and never divides.
 //
-// That is what makes the Slang twin bit-identical BY CONSTRUCTION rather than
-// by tolerance. shaders/fp32_math.slang:83-88 is explicit that "an OpFDiv is
+// That keeps the Slang twin's recursion exact BY CONSTRUCTION: the multiply is
+// exact, and what differs across backends is only the draws, which CORE-3
+// bands at their source (TD-14). shaders/fp32_math.slang:83-88 is explicit that "an OpFDiv is
 // not merely less accurate, it is DEVICE-DEPENDENT" -- which is why log32_div()
 // is a restoring integer long division, and it is domain-restricted and must
 // not be reached for as a general divide. Other kernels do divide

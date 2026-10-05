@@ -30,7 +30,7 @@ All of it is in `sensors/imu.hpp`.
 - **The fix:** a local-tangent-plane position and velocity in the world frame, at a low rate. There is no geodetic datum; a consumer that needs latitude and longitude owns the origin.
 - **Error:** a first-order Gauss-Markov bias with correlation time `bias_tau_s`, plus white noise (`σ_h`, `σ_v`). Velocity is an order of magnitude more accurate than position.
 
-All of it is in `sensors/gnss.hpp`. GNSS runs on both backends. Its GPU draws diverge from the CPU's within `CORE-3`'s band, which `GnssDrawsDivergeAcrossBackends_KNOWN_OPEN` asserts on purpose.
+All of it is in `sensors/gnss.hpp`. GNSS runs on both backends. Its GPU draws differ from the CPU's within `CORE-3`'s band, which `GnssDrawsMatchTheCpuWithinTheCore3Band` checks over every fix.
 
 ## Next sensors
 

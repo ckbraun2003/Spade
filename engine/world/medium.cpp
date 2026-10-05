@@ -26,14 +26,16 @@ MediumSample ConstantMedium::sample(const WorldParams& params, glm::vec3 /*pos*/
 // mirror must perform the same operations, in the same order, with the same
 // groupings and the same series thresholds.
 //
-// AND, SINCE S5 TASK 1, PARITY HERE IS AN EXACT CLAIM RATHER THAN A TOLERANCE
-// ONE. The exponential below is core/fp32_math.hpp's exp32, built from
-// IEEE-mandated operations only, and std::sqrt is correctly rounded by
-// mandate -- so every operation in this file is one the standard pins, and
-// two conforming implementations must agree on all of them bit for bit. The
-// Slang mirror inherits that the moment it mirrors exp32 rather than calling
-// HLSL's own exp() intrinsic, which is specified to a relative tolerance and
-// would put this file straight back where it started.
+// AND, SINCE S5 TASK 1, PARITY HERE IS EXACT ACROSS CPU TOOLCHAINS. The
+// exponential below is core/fp32_math.hpp's exp32, built from IEEE-mandated
+// operations only, and std::sqrt is correctly rounded by mandate -- so every
+// operation in this file is one the standard pins, and two conforming CPU
+// implementations must agree on all of them bit for bit. ON THE GPU IT IS
+// BANDED (TD-14): the Slang mirror's exp32 is exact as a library, but its
+// sqrt and division are Vulkan's, which are not correctly rounded (finding 4
+// of core/2026-10-04-nvidia-denorm-report.md). The mirror must still mirror
+// exp32 rather than call HLSL's exp() intrinsic, which is specified only to a
+// relative tolerance and would widen the band for no reason.
 // ===========================================================================
 
 namespace {
