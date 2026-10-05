@@ -131,13 +131,18 @@ void solve_at(T scale, T v_source, T r0, std::span<const BusMotorT<T>> motors, s
     ib_out = ib;
 }
 
-// The ESC side's total: sum |I_k| over the usable motors, in slot order.
+// The ESC side's total: the DRIVE current, sum max(I_k, 0) over the usable
+// motors, in slot order. Not |I_k|: with braking on, a motor's braking current
+// grows as the duty scale falls, so a total over |I| is not monotonic in the
+// scale and the bisection below would slide to 0. Drive current is monotonic
+// and zero at scale 0, which is the bisection's premise. Braking current is
+// bounded by each motor's current_min instead.
 template <typename T>
 [[nodiscard]] T motor_side_total(std::span<const BusMotorT<T>> motors, std::span<const T> currents) noexcept {
     T total = T(0);
     for (std::size_t k = 0; k < motors.size(); ++k) {
         if (!motor_usable(motors[k])) continue;
-        total += currents[k] < T(0) ? -currents[k] : currents[k];
+        if (currents[k] > T(0)) total += currents[k];
     }
     return total;
 }
