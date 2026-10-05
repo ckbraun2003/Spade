@@ -48,8 +48,13 @@ constexpr float kDt = 1.0f / 60.0f;
 constexpr uint64_t kVideoEvery = 2;      // 60 frames a second rendered, 30 recorded
 constexpr uint32_t kVideoFps = 30;
 constexpr uint64_t kFallbackEvery = 15;  // without ffmpeg, a PNG every 15th recorded frame (2 a second)
-constexpr int kOpeningFrames = 150;      // 2.5 s
-constexpr int kClosingFrames = 240;      // 4 s
+// The watching stretches (frames with no scripted input) run this many times
+// longer than their counts in the steps below, so a person can follow the
+// tour. Scripted input is not paced: its counts set how far a key moves the
+// camera or the drone, which the checks rely on.
+constexpr int kIdlePace = 2;
+constexpr int kOpeningFrames = 90;   // paced: 3 s
+constexpr int kClosingFrames = 120;  // paced: 4 s
 
 // THE LEDGER. Every sub-step the tour runs, in order. A step listed here that
 // never runs fails the run; a step the tour runs that is not listed is an
@@ -255,6 +260,9 @@ class Tour {
     // the script drives, not the mouse. False when the window was closed or a
     // frame failed; the tour then stops and the ledger reports what never ran.
     bool pump(int frames, const InputFn& input, const DrawFn& draw) {
+        if (!input) {
+            frames *= kIdlePace;
+        }
         for (int i = 0; i < frames && !stopped_; ++i) {
             const FrameInput real = sink_.poll();
             if (real.want_close) {
@@ -361,6 +369,10 @@ void drone_box(Tour& t, DroneSession& d) {
         drag.orbit_dx = -4.0f;  // a mouse drag left, 4 px a frame
         t.pump(60, hold(drag), draw);
         s.check(cam.yaw > yaw1 + 1.0f, "drag", "yaw " + fmt(yaw1) + " -> " + fmt(cam.yaw));
+        // Back in to the view the tour started from, so the drone fills the
+        // frame for the steps that follow.
+        t.pump(40, hold(nearer), draw);
+        s.check(cam.distance < 2.2f, "back-in", "distance " + fmt(cam.distance));
         t.pump(30, idle, draw);
     });
 
