@@ -223,11 +223,17 @@ inline constexpr float kNearZeroCutoff = 1.0e-3f;
 // TD-14's pin of a measured maximum: 4x, rounded UP to one significant
 // figure (4 * 2.3e-6 = 9.2e-6 -> 1e-5). 0 stays 0: a quantity measured
 // exactly equal goes to the floor or to an argued exact band, not to 4 * 0.
+// Plain arithmetic, no libm (TD-3's scan covers engine/, harness included):
+// the decade is found by stepping powers of ten, the digit by truncation.
 [[nodiscard]] inline float pin_of(float measured) noexcept {
     if (!(measured > 0.0f)) return 0.0f;
     const double x = 4.0 * static_cast<double>(measured);
-    const double decade = std::pow(10.0, std::floor(std::log10(x)));
-    double digit = std::ceil(x / decade - 1e-9);
+    double decade = 1.0;
+    while (decade * 10.0 <= x) decade *= 10.0;
+    while (decade > x) decade /= 10.0;
+    const double ratio = x / decade;  // in [1, 10)
+    double digit = static_cast<double>(static_cast<int>(ratio));
+    if (ratio - digit > 1e-9) digit += 1.0;  // round UP, ignoring the decade's own rounding
     return static_cast<float>(digit * decade);
 }
 
