@@ -400,6 +400,7 @@ TEST(GpuDenormProbe, EveryFp32OpClassIsExplainedByAFlushVariant) {
                         ulp_distance(device, r.outputs_flushed) <= kAccuracyUlps ||
                         ulp_distance(device, r.both) <= kAccuracyUlps)) {
                 ++t.accuracy;
+                what = control ? "ACCURACY on normal operands" : "ACCURACY";
             } else {
                 ++t.other;
                 what = "OTHER (matches no answer)";
