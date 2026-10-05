@@ -7,13 +7,17 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "compute/backend.hpp"
+#include "core/rng.hpp"
 #include "physics/schedule.hpp"
+#include "sensors/gnss.hpp"
+#include "sensors/imu.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -1546,4 +1550,260 @@ TEST(ModuleState, AnAttachedArrayNeedsAnInitAndASpawnThatFits) {
     EXPECT_TRUE(refused_naming(with(world_init), "tag_rows")) << "an init that would never run";
     EXPECT_TRUE(refused_naming(with(world_spawn), "tag_rows")) << "a spawn size that would never be offered";
     EXPECT_TRUE(refused_naming(with(ring_too_big), "tag_ring"));
+}
+
+// Stage 4, Task 5: seeded streams are declared, and create() and reseed() walk
+// the declarations. A developer's module holds a per_world stream and a
+// per_sensor one, each derived as the built-ins derive theirs: from the world's
+// registered seed, a tag of its own and the row's world-local slot. Each row
+// type has ONE derivation, which its init and its reseed share (TD-9).
+namespace {
+
+using spade::modules::StreamDecl;
+
+constexpr std::string_view kWeatherTag = "test.weather";
+constexpr std::string_view kNoisyTag = "test.noisy";
+
+struct WeatherRow {
+    spade::rng::Stream noise;
+};
+struct NoisyRow {
+    uint32_t body_slot;
+    uint32_t live;
+    uint32_t _p[2];
+    spade::rng::Stream noise;
+};
+
+void reseed_weather(std::span<std::byte> row, const spade::WorldParams& params, uint32_t local_slot) noexcept {
+    spade::modules::row_as<WeatherRow>(row).noise = spade::rng::make_stream(params.seed, kWeatherTag, local_slot);
+}
+void reseed_noisy(std::span<std::byte> row, const spade::WorldParams& params, uint32_t local_slot) noexcept {
+    spade::modules::row_as<NoisyRow>(row).noise = spade::rng::make_stream(params.seed, kNoisyTag, local_slot);
+}
+void init_noisy(const spade::modules::RowInit& in) noexcept {
+    NoisyRow& row = spade::modules::row_as<NoisyRow>(in.row);
+    row.body_slot = in.local_body;
+    row._p[0] = 0u;
+    row._p[1] = 0u;
+    reseed_noisy(in.row, *in.params, in.local_slot);
+    row.live = 1u;
+}
+
+constexpr spade::modules::ArrayDecl kNoisyArrays[] = {
+    {.name = "noisy_weather", .elem_size = spade::modules::row_size<WeatherRow>()},
+    {.name = "noisy_rows",
+     .elem_size = spade::modules::attached_row_size<NoisyRow>(),
+     .extent = Extent::per_sensor,
+     .init = &init_noisy},
+    {.name = "noisy_ring",
+     .elem_size = spade::modules::row_size<NoisyRow>(),
+     .extent = Extent::per_row,
+     .owner = "noisy_rows",
+     .depth = 2}};
+constexpr StreamDecl kNoisyStreams[] = {{.tag = kWeatherTag, .array = "noisy_weather", .reseed = &reseed_weather},
+                                        {.tag = kNoisyTag, .array = "noisy_rows", .reseed = &reseed_noisy}};
+
+[[nodiscard]] ModuleDesc noisy_module(std::span<const StreamDecl> streams = kNoisyStreams) {
+    return {.name = "noisy", .state = kNoisyArrays, .streams = streams};
+}
+
+[[nodiscard]] spade::modules::ModuleSet standard_plus_noisy() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(noisy_module());
+    return set;
+}
+
+[[nodiscard]] bool same_stream(const spade::rng::Stream& a, const spade::rng::Stream& b) {
+    return std::memcmp(&a, &b, sizeof(spade::rng::Stream)) == 0;
+}
+
+[[nodiscard]] spade::Result<spade::RowRef> attach_noisy(spade::Simulation& sim, spade::BodyRef body) {
+    return sim.attach_row(body, "noisy_rows", std::span<const std::byte>{});
+}
+
+// World `w`'s rows of `array`, byte for byte the same in `a` and `b`, and not
+// all zero (or the comparison would prove nothing).
+template <class Row>
+void expect_same_rows(const spade::Simulation& a, const spade::Simulation& b, std::string_view array, uint32_t w) {
+    const auto rows_a = a.module_rows<Row>(array, w);
+    const auto rows_b = b.module_rows<Row>(array, w);
+    ASSERT_TRUE(rows_a.has_value() && rows_b.has_value()) << array;
+    ASSERT_EQ(rows_a->size(), rows_b->size()) << array;
+    EXPECT_EQ(std::memcmp(rows_a->data(), rows_b->data(), rows_b->size_bytes()), 0) << array << ", world " << w;
+    EXPECT_TRUE(std::ranges::any_of(std::as_bytes(*rows_b), [](std::byte x) { return x != std::byte{0}; }))
+        << array << ", world " << w << ": nothing was derived";
+}
+
+// The `noise` stream of every row of `array` in world `w`, the same in `a` and
+// `b`; the first `live` rows hold one.
+template <class Row>
+void expect_same_noise(const spade::Simulation& a, const spade::Simulation& b, std::string_view array, uint32_t w,
+                       std::size_t live) {
+    const auto rows_a = a.module_rows<Row>(array, w);
+    const auto rows_b = b.module_rows<Row>(array, w);
+    ASSERT_TRUE(rows_a.has_value() && rows_b.has_value()) << array;
+    ASSERT_EQ(rows_a->size(), rows_b->size()) << array;
+    for (std::size_t i = 0; i < rows_b->size(); ++i) {
+        EXPECT_TRUE(same_stream((*rows_a)[i].noise, (*rows_b)[i].noise)) << array << ", world " << w << ", slot " << i;
+        if (i < live) {
+            EXPECT_FALSE(same_stream((*rows_b)[i].noise, spade::rng::Stream{}))
+                << array << ", world " << w << ", slot " << i << ": no stream was derived";
+        }
+    }
+}
+
+}  // namespace
+
+// Review focus 3, the 2026-10-02 GNSS defect closed structurally: two modules
+// cannot share a tag, or the second would draw the first's numbers; and "world"
+// is the tag every world's root is derived under (kWorldSeedDomainTag).
+TEST(ModuleStreams, ATagIsDeclaredOnceAndIsNotTheWorldTag) {
+    static_assert(spade::kWorldSeedDomainTag == "world");
+    static constexpr StreamDecl imus[] = {{.tag = "sensor.imu", .array = "noisy_rows", .reseed = &reseed_noisy}};
+    static constexpr StreamDecl twice[] = {{.tag = kNoisyTag, .array = "noisy_rows", .reseed = &reseed_noisy},
+                                           {.tag = kNoisyTag, .array = "noisy_weather", .reseed = &reseed_weather}};
+    static constexpr StreamDecl world[] = {
+        {.tag = spade::kWorldSeedDomainTag, .array = "noisy_weather", .reseed = &reseed_weather}};
+    static constexpr StreamDecl untagged[] = {{.tag = "", .array = "noisy_weather", .reseed = &reseed_weather}};
+    ASSERT_TRUE(standard_plus(noisy_module()).has_value()) << "the control";
+
+    const auto shared = standard_plus(noisy_module(imus));
+    EXPECT_TRUE(refused_naming(shared, "sensor.imu"));
+    EXPECT_TRUE(refused_naming(shared, "module 'imu'")) << "the module that declared it first";
+    EXPECT_TRUE(refused_naming(shared, "module 'noisy'"));
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(twice)), kNoisyTag)) << "twice in one module";
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(world)), "'world'"));
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(untagged)), "noisy_weather")) << "a stream needs a tag";
+}
+
+// A stream's liveness is the arena's: a per_world row is always live, and a
+// slot-allocated (per_element, per_sensor) row is live while its map names the
+// world. A per_body or per_row row has no map of its own, so it holds none.
+TEST(ModuleStreams, AStreamLivesInItsModulesSlotAllocatedOrPerWorldArray) {
+    static constexpr StreamDecl foreign[] = {{.tag = kNoisyTag, .array = "imu_sensors", .reseed = &reseed_noisy}};
+    static constexpr StreamDecl unknown[] = {{.tag = kNoisyTag, .array = "noisy_rowz", .reseed = &reseed_noisy}};
+    static constexpr StreamDecl ring[] = {{.tag = kNoisyTag, .array = "noisy_ring", .reseed = &reseed_noisy}};
+    static constexpr StreamDecl headless[] = {{.tag = kNoisyTag, .array = "noisy_rows"}};
+    static constexpr StreamDecl per_body[] = {{.tag = kNoisyTag, .array = "mark_rows", .reseed = &reseed_noisy}};
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(foreign)), "imu_sensors")) << "another module's array";
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(unknown)), "noisy_rowz"));
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(ring)), "noisy_ring"));
+    EXPECT_TRUE(refused_naming(standard_plus(noisy_module(headless)), kNoisyTag)) << "a stream nothing re-derives";
+    EXPECT_TRUE(refused_naming(standard_plus({.name = "marks", .state = kMarkArrays, .streams = per_body}),
+                               "mark_rows"));
+}
+
+// reseed()'s order before stage 4 -- per world, dryden, then the IMU rows, then
+// the GNSS rows -- is the declarations' order: set order, then declaration
+// order. Each tag is the one its derivation draws under.
+TEST(StandardModules, DeclareTheDrydenImuAndGnssStreams) {
+    static_assert(spade::kDrydenDomainTag == "dryden");
+    static_assert(spade::sensors::kImuNoiseDomainTag == "sensor.imu");
+    static_assert(spade::sensors::kGnssNoiseDomainTag == "sensor.gnss");
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    Names tags;
+    Names modules;
+    Names arrays;
+    for (const spade::modules::CompiledStream& stream : s->streams) {
+        tags.push_back(stream.tag);
+        modules.push_back(stream.module);
+        arrays.push_back(stream.array < s->arrays.size() ? s->arrays[stream.array].name : "?");
+        EXPECT_NE(stream.reseed, nullptr) << stream.tag;
+    }
+    EXPECT_EQ(tags, (Names{"dryden", "sensor.imu", "sensor.gnss"}));
+    EXPECT_EQ(modules, (Names{"dryden", "imu", "gnss"}));
+    EXPECT_EQ(arrays, (Names{"dryden", "imu_sensors", "gnss_sensors"}));
+}
+
+// Review focus 3: reseed() reaches a developer's streams with no edit to
+// Simulation -- the per_world one create() derived, and every live row's --
+// and writes nothing into a free row.
+TEST(ModuleStreams, ReseedRederivesADevelopersStreamAndLeavesFreeRowsZero) {
+    auto sim = spade::Simulation::create(world_with(spade::Capacities{1, 1, 2, 1}), 2'000'000, 2, {},
+                                         standard_plus_noisy());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto body = sim->spawn(0, spade::BodySpawn{});
+    ASSERT_TRUE(body.has_value());
+    const auto row = attach_noisy(*sim, *body);
+    ASSERT_TRUE(row.has_value()) << row.error().context;
+    ASSERT_TRUE(sim->flush_structural().has_value());
+
+    const auto params = sim->world_params(0);
+    const auto weather = sim->module_rows<WeatherRow>("noisy_weather", 0);
+    const auto rows = sim->module_rows<NoisyRow>("noisy_rows", 0);
+    ASSERT_TRUE(params.has_value() && weather.has_value() && rows.has_value());
+    ASSERT_EQ(rows->size(), 2u);
+    const uint64_t old_seed = (*params)->seed;
+    EXPECT_TRUE(same_stream((*weather)[0].noise, spade::rng::make_stream(old_seed, kWeatherTag, 0)))
+        << "create() derives a per_world stream from the declarations";
+    EXPECT_TRUE(same_stream((*rows)[0].noise, spade::rng::make_stream(old_seed, kNoisyTag, 0)));
+
+    ASSERT_TRUE(sim->reseed(0xBEEF).has_value());
+    const uint64_t new_seed = (*params)->seed;
+    ASSERT_NE(new_seed, old_seed);
+    EXPECT_TRUE(same_stream((*weather)[0].noise, spade::rng::make_stream(new_seed, kWeatherTag, 0)))
+        << "the per_world row follows the new seed";
+    EXPECT_TRUE(same_stream((*rows)[0].noise, spade::rng::make_stream(new_seed, kNoisyTag, 0)))
+        << "the live row follows the new seed";
+    EXPECT_EQ((*rows)[0].live, 1u) << "only the stream is rewritten";
+    const std::array<std::byte, sizeof(NoisyRow)> zero{};
+    EXPECT_EQ(std::memcmp(&(*rows)[1], zero.data(), zero.size()), 0) << "a free row stays zero";
+}
+
+// The lead's pin (TD-9): the init and the reseed derive each stream with ONE
+// function, so a Simulation reseeded to S holds exactly the streams a
+// Simulation created at S holds -- every built-in stream and a developer's, in
+// two worlds, after the reseeded run's streams have advanced.
+TEST(ModuleStreams, AReseededSimulationHoldsTheStreamsOneCreatedAtTheNewSeedHolds) {
+    constexpr uint32_t kWorlds = 2;
+    constexpr uint64_t kOldScene = 0x5EED'0001ULL;
+    constexpr uint64_t kNewScene = 0x5EED'0002ULL;
+    const spade::WorldInstanceDesc prototype = world_with(spade::Capacities{2, 1, 2, 1}).worlds[0];
+    // Per world: body 0 carries an IMU, a receiver and a noisy row; body 1 an
+    // IMU and a noisy row. So every streamed array holds a live row at local
+    // slot 0, and the IMU and noisy arrays one at slot 1.
+    const auto build = [&](uint64_t scene_seed) -> spade::Result<spade::Simulation> {
+        auto sim = spade::Simulation::create(spade::replicate(prototype, kWorlds, scene_seed), 2'000'000, 2, {},
+                                             standard_plus_noisy());
+        if (!sim) return sim;
+        for (uint32_t w = 0; w < kWorlds; ++w) {
+            const auto first = sim->spawn(w, body_at_x(0.0f));
+            const auto second = sim->spawn(w, body_at_x(3.0f));
+            if (!first || !second) return std::unexpected(spade::Error{spade::Code::internal, "spawn"});
+            if (!sim->add_imu_sensor(*first, test_imu()) || !sim->add_gnss_sensor(*first, test_gnss()) ||
+                !attach_noisy(*sim, *first) || !sim->add_imu_sensor(*second, test_imu()) ||
+                !attach_noisy(*sim, *second)) {
+                return std::unexpected(spade::Error{spade::Code::internal, "attach"});
+            }
+        }
+        if (!sim->flush_structural()) return std::unexpected(spade::Error{spade::Code::internal, "flush"});
+        return sim;
+    };
+    auto reseeded = build(kOldScene);
+    auto fresh = build(kNewScene);
+    ASSERT_TRUE(reseeded.has_value()) << reseeded.error().context;
+    ASSERT_TRUE(fresh.has_value()) << fresh.error().context;
+
+    // The control: before the reseed the two hold different streams.
+    {
+        const auto a = reseeded->module_rows<spade::sensors::ImuSensorRow>("imu_sensors", 0);
+        const auto b = fresh->module_rows<spade::sensors::ImuSensorRow>("imu_sensors", 0);
+        ASSERT_TRUE(a.has_value() && b.has_value());
+        ASSERT_FALSE(same_stream((*a)[0].noise, (*b)[0].noise));
+    }
+    ASSERT_TRUE(reseeded->step(3).has_value()) << "advance the old streams, so a re-derivation is visible";
+    ASSERT_TRUE(reseeded->reseed(kNewScene).has_value());
+
+    for (uint32_t w = 0; w < kWorlds; ++w) {
+        const auto seed_a = reseeded->world_params(w);
+        const auto seed_b = fresh->world_params(w);
+        ASSERT_TRUE(seed_a.has_value() && seed_b.has_value());
+        EXPECT_EQ((*seed_a)->seed, (*seed_b)->seed) << "world " << w;
+        expect_same_rows<spade::DrydenState>(*reseeded, *fresh, "dryden", w);  // dryden_init writes the whole row
+        expect_same_rows<WeatherRow>(*reseeded, *fresh, "noisy_weather", w);
+        expect_same_noise<spade::sensors::ImuSensorRow>(*reseeded, *fresh, "imu_sensors", w, 2);
+        expect_same_noise<spade::sensors::GnssSensorRow>(*reseeded, *fresh, "gnss_sensors", w, 1);
+        expect_same_noise<NoisyRow>(*reseeded, *fresh, "noisy_rows", w, 2);
+    }
 }
