@@ -1,7 +1,5 @@
 # Airflow Solver Core Implementation Plan — the CPU reference and V1
 
-> **DRAFT IN PROGRESS** (2026-10-05): Tasks 1–8 written; Tasks 9–12 (the actuator source, the reference data, V1's validation, the docs) and the self-review follow. Not yet sent to the lead.
-
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The real-time tier's incompressible Navier–Stokes solver as a standalone CPU reference library, validated on V1's cases (the lid-driven cavity against Ghia et al., the Taylor–Green vortex as the numerics' own dissipation, and an actuator disc's far wake against momentum theory).
@@ -18,6 +16,8 @@
 **What this plan is, and is not.** The spec covers several subsystems; this plan is the first: the solver core on the CPU and V1. It produces working, tested software on its own. Two plans follow, and neither blocks this one:
 - **Plan B, the GPU twin and the spike:** Slang kernels for each operator here, banded against this reference per kernel (`TD-14`), and the timings at 64³ and 128³ (spec §9, M1). It needs a persistent-buffer kernel chain, which is Core's machinery, so it is written with Core once Task 5 here has fixed the projection's expressions. It may run in parallel with Tasks 6–11.
 - **Plan C, the `airflow` module:** the engine integration (point samples, regions, the recordings, device residency) waits on Core's stage 7, which follows stages 5 and 6 (`PHY-9`).
+
+**Not in this plan**, on purpose: the following box's recentring (spec §1.5 step 1, with the module), immersed solids from the world SDF as face apertures (spec §2; V2's cylinder needs them), vorticity confinement (spec §1.5 step 5, off in every validated configuration), the WALE subgrid model (V2) and the dye scalar. Each arrives with the case that needs it.
 
 ## Global Constraints
 
@@ -1967,7 +1967,7 @@ git commit -m "feat(physics): airflow implicit viscosity with no-slip walls (air
 
 **Interfaces:**
 - Consumes: Tasks 1–7.
-- Produces: `struct FluidConfig { float rho = 1.225f; float nu = 0.0f; float h = 0.0f; uint32_t n_v = 2; uint32_t visc_sweeps = 8; }`, `struct FluidScratch { MacGrid next; AdvectScratch advect; ProjectionScratch projection; std::vector<float> rhs, du, dv, dw; }`, `make_fluid_scratch(const MacGrid&, const FluidConfig&) -> Result<FluidScratch>`, `fluid_step(MacGrid&, const DomainBc&, const FluidConfig&, FluidScratch&) noexcept`, and `digest(const MacGrid&) -> uint64_t` (test-side helper in `test_airflow_step.cpp`, reused by Task 11).
+- Produces: `struct FluidConfig { float rho = 1.225f; float nu = 0.0f; float h = 0.0f; uint32_t n_v = 2; uint32_t visc_sweeps = 8; }`, `struct FluidScratch { MacGrid next; AdvectScratch advect; ProjectionScratch projection; std::vector<float> rhs, du, dv, dw; }`, `make_fluid_scratch(const MacGrid&, const FluidConfig&) -> Result<FluidScratch>`, `fluid_step(MacGrid&, const DomainBc&, const FluidConfig&, FluidScratch&) noexcept`, and a test-side `digest(const MacGrid&) -> uint64_t` in `test_airflow_step.cpp`.
 
 **One fluid step** (spec §1.5): the velocity conditions; advection into the scratch grid, swapped in; the sources (`du`, `dv`, `dw`, velocity increments a source wrote, Task 9) added and cleared; the velocity conditions; if `ν` > 0, the viscous solve and the conditions again; the projection. Nothing runs after the projection: an outlet's projected face must keep its correction, and the projection keeps periodic faces equal itself. `p` stays in the grid as the next step's warm start.
 
@@ -2236,3 +2236,597 @@ git commit -m "feat(physics): the airflow fluid step and the solver core's golde
 
 ---
 
+### Task 9: The actuator-disc source
+
+**Files:**
+- Create: `engine/physics/airflow/actuator.hpp`, `engine/physics/airflow/actuator.cpp`
+- Modify: `engine/CMakeLists.txt`; `tests/test_airflow_step.cpp` (a new suite, `AirflowActuator`)
+
+**Interfaces:**
+- Consumes: Tasks 1 and 8 (`FluidScratch::du/dv/dw`).
+- Produces: `struct ActuatorDisc { glm::vec3 centre; glm::vec3 axis; float radius; float thrust; }`, `kDiscPoints` = 48, `peskin4(float) noexcept -> float`, `check_disc(const ActuatorDisc&, const GridShape&) -> Result<void>`, `spread_actuator(const ActuatorDisc&, const GridShape&, float rho, float h, std::span<float> du, std::span<float> dv, std::span<float> dw) noexcept`.
+
+**What it does** (spec §3.1): one fluid step's impulse `thrust · h` along `axis` (the direction the disc pushes the air), carried by 48 points (3 equal-area rings × 16 angles, ring radii `R √((k + ½)/3)`), each spread with Peskin's 4-point kernel onto the velocity increments: `Δu_face = (h T / (48 ρ dx³)) · axis_c · Σ_points φ(fx) φ(fy) φ(fz)`. It is written as a **gather** (each face sums the points in their fixed order), so the GPU twin computes the same sums with no atomics. The kernel's weights sum to 1 per point, so the momentum added is `T h` to fp32 rounding. The angles are literals, not `cos`/`sin` (`TD-3`). The caller runs it before each `fluid_step`, which adds and clears the increments.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/test_airflow_step.cpp`'s anonymous namespace, with `#include "physics/airflow/actuator.hpp"`:
+
+```cpp
+TEST(AirflowActuator, TheKernelSumsToOneAlongAnAxis) {
+    Lcg rng;
+    for (int n = 0; n < 100; ++n) {
+        const float x = 0.5f * (rng.next() + 1.0f);  // in [0, 1)
+        float sum = 0.0f;
+        for (int k = -2; k <= 3; ++k) sum += peskin4(x - static_cast<float>(k));
+        EXPECT_NEAR(sum, 1.0f, 1.0e-6f) << x;
+    }
+}
+
+TEST(AirflowActuator, TheDiscAddsExactlyItsImpulse) {
+    const GridShape shape{32, 32, 32, 1.0f / 32.0f};
+    const MacGrid g = *make_grid(shape, DomainBc{});
+    const ActuatorDisc disc{.centre = {0.5f, 0.5f, 0.5f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.2f, .thrust = 2.0f};
+    ASSERT_TRUE(check_disc(disc, shape).has_value());
+    std::vector<float> du(g.u.size(), 0.0f), dv(g.v.size(), 0.0f), dw(g.w.size(), 0.0f);
+    const float rho = 1.225f;
+    const float h = 0.004f;
+    spread_actuator(disc, shape, rho, h, du, dv, dw);
+    const double cell = static_cast<double>(shape.dx) * shape.dx * shape.dx;
+    const auto momentum = [&](const std::vector<float>& d) {
+        double m = 0.0;
+        for (float x : d) m += static_cast<double>(x) * rho * cell;
+        return m;
+    };
+    const double expected = -static_cast<double>(h) * 2.0;  // along -y
+    EXPECT_NEAR(momentum(dv), expected, 1.0e-5 * std::fabs(expected));
+    EXPECT_EQ(momentum(du), 0.0) << "the axis has no x component";
+    EXPECT_EQ(momentum(dw), 0.0);
+}
+
+// Review Focus 2.
+TEST(AirflowActuator, ADiscWhoseSupportLeavesTheGridIsRefused) {
+    const GridShape shape{32, 32, 32, 1.0f / 32.0f};
+    const auto refused = [&](const ActuatorDisc& d, const char* what) {
+        const auto r = check_disc(d, shape);
+        if (r.has_value()) return testing::AssertionFailure() << "accepted";
+        if (r.error().context.find(what) == std::string::npos) return testing::AssertionFailure() << r.error().context;
+        return testing::AssertionSuccess();
+    };
+    const ActuatorDisc ok{.centre = {0.5f, 0.5f, 0.5f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.2f, .thrust = 1.0f};
+    ActuatorDisc edge = ok;
+    edge.centre.x = 0.1f;
+    EXPECT_TRUE(refused(edge, "leaves the grid"));
+    ActuatorDisc long_axis = ok;
+    long_axis.axis = {0.0f, -2.0f, 0.0f};
+    EXPECT_TRUE(refused(long_axis, "unit"));
+    ActuatorDisc flat = ok;
+    flat.radius = 0.0f;
+    EXPECT_TRUE(refused(flat, "radius"));
+}
+```
+
+- [ ] **Step 2: Run them and confirm they fail to compile**
+
+Expected: FAIL, `physics/airflow/actuator.hpp: No such file or directory`.
+
+- [ ] **Step 3: Write the header**
+
+`engine/physics/airflow/actuator.hpp`:
+
+```cpp
+#pragma once
+
+#include <cstdint>
+#include <span>
+
+#include <glm/glm.hpp>
+
+#include "core/error.hpp"
+#include "physics/airflow/mac_grid.hpp"
+
+// ---------------------------------------------------------------------------
+// AN ACTUATOR DISC (spec §3.1): one step's impulse thrust * h along `axis`,
+// carried by 48 points and spread with Peskin's 4-point kernel onto the
+// velocity increments a fluid step adds. A gather, so the GPU twin needs no
+// atomics.
+// ---------------------------------------------------------------------------
+namespace spade::physics::airflow {
+
+struct ActuatorDisc {
+    glm::vec3 centre{0.0f};             // metres, in the grid's frame
+    glm::vec3 axis{0.0f, -1.0f, 0.0f};  // unit: the direction the disc pushes the air
+    float radius = 0.0f;                // metres
+    float thrust = 0.0f;                // newtons: the force the air takes along `axis`
+};
+
+inline constexpr uint32_t kDiscRings = 3;
+inline constexpr uint32_t kDiscAngles = 16;
+inline constexpr uint32_t kDiscPoints = kDiscRings * kDiscAngles;
+
+// Peskin's 4-point kernel, in cells.
+[[nodiscard]] float peskin4(float r) noexcept;
+
+// Refused (invalid_argument): a radius not positive and finite; a thrust not
+// finite; an axis not of unit length; a kernel support (radius + 2 dx about
+// the centre) that leaves the grid.
+[[nodiscard]] Result<void> check_disc(const ActuatorDisc& disc, const GridShape& shape);
+
+// Adds one step's increments for a checked disc.
+void spread_actuator(const ActuatorDisc& disc, const GridShape& shape, float rho, float h, std::span<float> du,
+                     std::span<float> dv, std::span<float> dw) noexcept;
+
+}  // namespace spade::physics::airflow
+```
+
+- [ ] **Step 4: Write the source**
+
+`engine/physics/airflow/actuator.cpp`:
+
+```cpp
+#include "physics/airflow/actuator.hpp"
+
+#include <array>
+#include <cmath>
+#include <string>
+
+namespace spade::physics::airflow {
+
+namespace {
+
+// cos and sin of 2 pi m / 16, m = 0..15: literals, not libm (TD-3).
+constexpr float kCos[kDiscAngles] = {1.0f,         0.92387953f,  0.70710678f,  0.38268343f,
+                                     0.0f,         -0.38268343f, -0.70710678f, -0.92387953f,
+                                     -1.0f,        -0.92387953f, -0.70710678f, -0.38268343f,
+                                     0.0f,         0.38268343f,  0.70710678f,  0.92387953f};
+constexpr float kSin[kDiscAngles] = {0.0f,         0.38268343f,  0.70710678f,  0.92387953f,
+                                     1.0f,         0.92387953f,  0.70710678f,  0.38268343f,
+                                     0.0f,         -0.38268343f, -0.70710678f, -0.92387953f,
+                                     -1.0f,        -0.92387953f, -0.70710678f, -0.38268343f};
+
+[[nodiscard]] std::array<glm::vec3, kDiscPoints> disc_points(const ActuatorDisc& d) noexcept {
+    const glm::vec3 helper = std::fabs(d.axis.x) < 0.9f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+    const glm::vec3 c1 = glm::cross(d.axis, helper);
+    const glm::vec3 e1 = c1 / std::sqrt(glm::dot(c1, c1));
+    const glm::vec3 e2 = glm::cross(d.axis, e1);
+    std::array<glm::vec3, kDiscPoints> out{};
+    for (uint32_t ring = 0; ring < kDiscRings; ++ring) {
+        const float r = d.radius * std::sqrt((static_cast<float>(ring) + 0.5f) / static_cast<float>(kDiscRings));
+        for (uint32_t m = 0; m < kDiscAngles; ++m) {
+            out[ring * kDiscAngles + m] = d.centre + r * (kCos[m] * e1 + kSin[m] * e2);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+float peskin4(float r) noexcept {
+    const float a = r < 0.0f ? -r : r;
+    if (a < 1.0f) return 0.125f * (3.0f - 2.0f * a + std::sqrt(1.0f + 4.0f * a - 4.0f * a * a));
+    if (a < 2.0f) return 0.125f * (5.0f - 2.0f * a - std::sqrt(-7.0f + 12.0f * a - 4.0f * a * a));
+    return 0.0f;
+}
+
+Result<void> check_disc(const ActuatorDisc& d, const GridShape& s) {
+    const auto refuse = [](const char* what) {
+        return std::unexpected(Error{Code::invalid_argument, std::string("actuator disc: ") + what});
+    };
+    if (!(d.radius > 0.0f) || !std::isfinite(d.radius)) return refuse("radius must be positive and finite");
+    if (!std::isfinite(d.thrust)) return refuse("thrust must be finite");
+    if (!(std::fabs(glm::dot(d.axis, d.axis) - 1.0f) <= 1.0e-5f)) return refuse("axis must be a unit vector");
+    const float reach = d.radius + 2.0f * s.dx;
+    const float extent[3] = {static_cast<float>(s.nx) * s.dx, static_cast<float>(s.ny) * s.dx,
+                             static_cast<float>(s.nz) * s.dx};
+    for (uint32_t a = 0; a < 3; ++a) {
+        const float c = d.centre[static_cast<glm::length_t>(a)];
+        if (!(c - reach >= 0.0f) || !(c + reach <= extent[a])) return refuse("its kernel support leaves the grid");
+    }
+    return {};
+}
+
+void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float h, std::span<float> du,
+                     std::span<float> dv, std::span<float> dw) noexcept {
+    const std::array<glm::vec3, kDiscPoints> pts = disc_points(d);
+    const float inv_dx = 1.0f / s.dx;
+    const float scale = h * d.thrust / (static_cast<float>(kDiscPoints) * rho * s.dx * s.dx * s.dx);
+    const float reach = d.radius + 2.0f * s.dx;
+    const std::span<float> out[3] = {du, dv, dw};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const float axis_c = d.axis[static_cast<glm::length_t>(c)];
+        if (axis_c == 0.0f) continue;
+        for_each_sample(s, c, [&](std::size_t idx, glm::vec3 x) {
+            // Outside this box every point's weight is exactly 0, so skipping it changes nothing.
+            if (std::fabs(x.x - d.centre.x) > reach || std::fabs(x.y - d.centre.y) > reach ||
+                std::fabs(x.z - d.centre.z) > reach) {
+                return;
+            }
+            float sum = 0.0f;
+            for (const glm::vec3& p : pts) {
+                const glm::vec3 f = (x - p) * inv_dx;
+                sum += peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
+            }
+            out[c][idx] += scale * axis_c * sum;
+        });
+    }
+}
+
+}  // namespace spade::physics::airflow
+```
+
+Add `physics/airflow/actuator.cpp` to `spade_physics`.
+
+- [ ] **Step 5: Run the tests and confirm they pass**
+
+Run: `build-ninja\release\bin\spade_tests.exe --gtest_filter=AirflowActuator.*:AirflowStep.*`
+Expected: 7 tests PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add engine/physics/airflow/actuator.hpp engine/physics/airflow/actuator.cpp engine/CMakeLists.txt tests/test_airflow_step.cpp
+git commit -m "feat(physics): the airflow actuator-disc source, Peskin-spread as a gather (airflow core, Task 9)"
+```
+
+---
+
+### Task 10: The reference data, with provenance
+
+**Files:**
+- Create: `tests/data/airflow/ghia1982_cavity.hpp`, `tests/data/airflow/README.md`, `tests/data/airflow/records/.gitkeep`
+
+**Interfaces:**
+- Produces: `spade::testing::airflow_reference::{kGhiaY, kGhiaU100, kGhiaU400, kGhiaU1000, kGhiaX, kGhiaV100, kGhiaV400, kGhiaV1000}`, each `inline constexpr double[17]`, for Task 11.
+
+This task has no test of its own: its check is the transcription, then Test/Docs' review, **before** Task 11 runs a case against it (spec §11.1; the lead, 2026-10-05).
+
+- [ ] **Step 1: Transcribe Ghia et al.'s tables**
+
+`tests/data/airflow/ghia1982_cavity.hpp`:
+
+```cpp
+#pragma once
+
+// ---------------------------------------------------------------------------
+// REFERENCE DATA: the lid-driven cavity (airflow spec §11.2, case C1).
+//
+// SOURCE: U. Ghia, K. N. Ghia and C. T. Shin, "High-Re solutions for
+// incompressible flow using the Navier-Stokes equations and a multigrid
+// method", J. Comput. Phys. 48 (1982) 387-411.
+//   Table I:  u along the vertical line through the geometric centre (x = 0.5),
+//             at the tabulated y; the lid is y = 1, moving at u = 1.
+//   Table II: v along the horizontal line through the centre (y = 0.5), at the
+//             tabulated x.
+// METHOD: transcribed by hand from the printed tables, five decimals as
+// printed; no digitization. Each value was checked against the paper twice,
+// by <implementer> on <date>, and reviewed by Test/Docs on <date>.
+// Only the Re = 100, 400 and 1000 columns are carried (V1 uses 100 and 400;
+// 1000 is V2's).
+// ---------------------------------------------------------------------------
+namespace spade::testing::airflow_reference {
+
+inline constexpr double kGhiaY[17] = {1.0000, 0.9766, 0.9688, 0.9609, 0.9531, 0.8516, 0.7344, 0.6172, 0.5000,
+                                      0.4531, 0.2813, 0.1719, 0.1016, 0.0703, 0.0625, 0.0547, 0.0000};
+inline constexpr double kGhiaU100[17] = {1.00000,  0.84123,  0.78871,  0.73722,  0.68717,  0.23151,
+                                         0.00332,  -0.13641, -0.20581, -0.21090, -0.15662, -0.10150,
+                                         -0.06434, -0.04775, -0.04192, -0.03717, 0.00000};
+inline constexpr double kGhiaU400[17] = {1.00000,  0.75837,  0.68439,  0.61756,  0.55892,  0.29093,
+                                         0.16256,  0.02135,  -0.11477, -0.17119, -0.32726, -0.24299,
+                                         -0.14612, -0.10338, -0.09266, -0.08186, 0.00000};
+inline constexpr double kGhiaU1000[17] = {1.00000,  0.65928,  0.57492,  0.51117,  0.46604,  0.33304,
+                                          0.18719,  0.05702,  -0.06080, -0.10648, -0.27805, -0.38289,
+                                          -0.29730, -0.22220, -0.20196, -0.18109, 0.00000};
+
+inline constexpr double kGhiaX[17] = {1.0000, 0.9688, 0.9609, 0.9531, 0.9453, 0.9063, 0.8594, 0.8047, 0.5000,
+                                      0.2344, 0.2266, 0.1563, 0.0938, 0.0781, 0.0703, 0.0625, 0.0000};
+inline constexpr double kGhiaV100[17] = {0.00000,  -0.05906, -0.07391, -0.08864, -0.10313, -0.16914,
+                                         -0.22445, -0.24533, 0.05454,  0.17527,  0.17507,  0.16077,
+                                         0.12317,  0.10890,  0.10091,  0.09233,  0.00000};
+inline constexpr double kGhiaV400[17] = {0.00000,  -0.12146, -0.15663, -0.19254, -0.22847, -0.23827,
+                                         -0.44993, -0.38598, 0.05186,  0.30174,  0.30203,  0.28124,
+                                         0.22965,  0.20920,  0.19713,  0.18360,  0.00000};
+inline constexpr double kGhiaV1000[17] = {0.00000,  -0.21388, -0.27669, -0.33714, -0.39188, -0.51550,
+                                          -0.42665, -0.31966, 0.02526,  0.32235,  0.33075,  0.37095,
+                                          0.32627,  0.30353,  0.29012,  0.27485,  0.00000};
+
+}  // namespace spade::testing::airflow_reference
+```
+
+- [ ] **Step 2: Check every value against the paper**
+
+The values above were written from memory of the widely reproduced tables. Open the paper and compare all 136 numbers, row by row, against Tables I and II. Correct any mismatch from the paper, never the other way round, and fill the `<implementer>` and `<date>` fields. If the paper is not to hand, stop and ask the lead for it: the case must not run on unverified data.
+
+- [ ] **Step 3: Write the provenance index**
+
+`tests/data/airflow/README.md`:
+
+```markdown
+# Airflow reference data (spec §11.1)
+
+Every validation case's reference data, with its provenance. Test/Docs reviews each file like a golden before its case's first run, and a change to one needs a named cause (`TD-2`).
+
+| Case | File | Source | Method |
+|---|---|---|---|
+| C0, the Taylor–Green vortex | none: the initial field is closed form, `u = sin x cos y cos z`, `v = −cos x sin y cos z`, `w = 0` | Brachet et al. (1983), J. Fluid Mech. 130 | V1 reports the numerics' own dissipation; DNS data enter at V3 |
+| C1, the lid-driven cavity | `ghia1982_cavity.hpp` | Ghia, Ghia & Shin (1982), J. Comput. Phys. 48, Tables I and II | transcribed by hand from the printed tables, checked twice |
+| C8, the hovering actuator disc | none: closed form. `v_h = √(T / 2ρA)`; on the axis at `z` below the disc, `v = v_h (1 + z / √(z² + R²))` | momentum theory; Leishman, *Principles of Helicopter Aerodynamics*, 2nd ed. (2006), ch. 2; this repo's `engine/vehicles/rotor_wake.hpp` §1 | formula |
+
+`records/` holds one file per case run: the device, the commit, the configuration, each measure with its value, the reference and its tolerance, and the verdict.
+```
+
+Create `tests/data/airflow/records/.gitkeep` (empty).
+
+- [ ] **Step 4: Send the data for review, then commit**
+
+Send Test/Docs the two files for review as goldens. Commit once they confirm:
+
+```bash
+git add tests/data/airflow/
+git commit -m "test(physics): airflow reference data with provenance, reviewed by Test/Docs (airflow core, Task 10)"
+```
+
+---
+
+### Task 11: V1 — the cavity, the Taylor–Green vortex, the actuator disc's wake
+
+**Files:**
+- Create: `tests/test_airflow_validation.cpp`; modify `tests/CMakeLists.txt`
+- Create: `tests/data/airflow/records/c1-cavity.md`, `c0-taylor-green.md`, `c8-actuator-wake.md` (from the runs)
+
+**Interfaces:**
+- Consumes: Tasks 8–10.
+
+**The cases and their tolerances**, fixed here before the first run (spec §11.2):
+- **C1, gate:** 32 × 32 (a quasi-2D slab, `nz` = 1 periodic), `Re` = 100, `T` = 20. Max over Ghia's points of `|u − u_Ghia|` and `|v − v_Ghia|` ≤ **0.06** (`U` = 1). This guards against regressions; the validation figure is the next one.
+- **C1, opt-in:** 128 × 128, `Re` = 100 (`T` = 40) and 400 (`T` = 60). Both measures ≤ **0.02**.
+- **C0, opt-in:** 64³, inviscid, `T` = 10. Report only: the kinetic energy every 0.5, finite, and lower at `T` than at the start.
+- **C8, opt-in:** an actuator disc, `R` = 0.1 m = 10 cells, in a 64 × 128 × 64 box at `dx` = 1 cm, still air, inviscid, `v_h` = 4 m/s. The axial velocity on the axis at `2R` below the disc, time-averaged over the last 128 of 384 steps, within **10%** of momentum theory's `v_h (1 + 2/√5)`. About 6–7 minutes in release.
+- **Opt-in** cases skip by name unless `SPADE_AIRFLOW_VALIDATION=1`. Run them with the release binary and `--gtest_filter`, which has no ctest timeout.
+
+- [ ] **Step 1: Write the tests**
+
+`tests/test_airflow_validation.cpp`:
+
+```cpp
+// V1 of the airflow spec's validation (§11.6): C1, C0 and C8 (airflow core
+// plan, Task 11). Not golden-feeding: reference values are computed in double
+// with std:: functions.
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <numbers>
+#include <vector>
+
+#include "data/airflow/ghia1982_cavity.hpp"
+#include "physics/airflow/actuator.hpp"
+#include "physics/airflow/fluid_step.hpp"
+
+namespace {
+
+using namespace spade::physics::airflow;
+namespace ref = spade::testing::airflow_reference;
+
+[[nodiscard]] bool validation_enabled() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_AIRFLOW_VALIDATION") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// u on the line x = 0.5 at height y. The u faces at i = n/2 sit at
+// y_j = (j + 1/2) / n; below the first, u falls linearly to the floor's 0;
+// above the last, it rises linearly to the lid's 1.
+[[nodiscard]] double centreline_u(const MacGrid& g, double y) {
+    const uint32_t n = g.shape.ny;
+    const uint32_t i = g.shape.nx / 2u;
+    const auto at = [&](uint32_t j) { return static_cast<double>(g.u[u_index(g.shape, i, j, 0)]); };
+    const double pos = y * n - 0.5;
+    if (pos <= 0.0) return at(0) * (y * n / 0.5);
+    if (pos >= n - 1.0) return at(n - 1u) + (pos - (n - 1.0)) / 0.5 * (1.0 - at(n - 1u));
+    const auto j0 = static_cast<uint32_t>(pos);
+    return at(j0) + (pos - j0) * (at(j0 + 1u) - at(j0));
+}
+
+// v on the line y = 0.5 at x: v faces at j = n/2, x_i = (i + 1/2) / n; the
+// side walls hold v = 0.
+[[nodiscard]] double centreline_v(const MacGrid& g, double x) {
+    const uint32_t n = g.shape.nx;
+    const uint32_t j = g.shape.ny / 2u;
+    const auto at = [&](uint32_t i) { return static_cast<double>(g.v[v_index(g.shape, i, j, 0)]); };
+    const double pos = x * n - 0.5;
+    if (pos <= 0.0) return at(0) * (x * n / 0.5);
+    if (pos >= n - 1.0) return at(n - 1u) * (1.0 - (pos - (n - 1.0)) / 0.5);
+    const auto i0 = static_cast<uint32_t>(pos);
+    return at(i0) + (pos - i0) * (at(i0 + 1u) - at(i0));
+}
+
+struct CavityResult {
+    double u_error = 0.0;
+    double v_error = 0.0;
+};
+
+[[nodiscard]] CavityResult run_cavity(uint32_t n, double re, double t_end, const double* u_ref, const double* v_ref) {
+    DomainBc bc;
+    bc.face = {FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::periodic, FaceBc::periodic};
+    bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
+    MacGrid g = *make_grid({n, n, 1, 1.0f / static_cast<float>(n)}, bc);
+    const FluidConfig cfg{.rho = 1.0f, .nu = static_cast<float>(1.0 / re), .h = 0.5f / static_cast<float>(n),
+                          .n_v = 2, .visc_sweeps = 8};
+    FluidScratch s = *make_fluid_scratch(g, cfg);
+    const auto steps = static_cast<uint32_t>(t_end / static_cast<double>(cfg.h));
+    for (uint32_t k = 0; k < steps; ++k) fluid_step(g, bc, cfg, s);
+    CavityResult r;
+    for (int q = 0; q < 17; ++q) {
+        r.u_error = std::max(r.u_error, std::fabs(centreline_u(g, ref::kGhiaY[q]) - u_ref[q]));
+        r.v_error = std::max(r.v_error, std::fabs(centreline_v(g, ref::kGhiaX[q]) - v_ref[q]));
+    }
+    std::printf("=== validation record: C1 lid-driven cavity ===\n"
+                "config: %ux%u (quasi-2D slab), Re %.0f, T %.0f (%u steps of h = %.6f), n_v 2, visc_sweeps 8, rho 1, U 1\n"
+                "measure: max |u - u_Ghia| on x = 0.5 = %.4f; max |v - v_Ghia| on y = 0.5 = %.4f\n"
+                "reference: Ghia, Ghia & Shin (1982), Tables I and II (tests/data/airflow/ghia1982_cavity.hpp)\n",
+                n, n, re, t_end, steps, static_cast<double>(cfg.h), r.u_error, r.v_error);
+    return r;
+}
+
+TEST(AirflowValidation, C1CavityAtRe100On32CellsIsWithinTheGateBand) {
+    const CavityResult r = run_cavity(32, 100.0, 20.0, ref::kGhiaU100, ref::kGhiaV100);
+    EXPECT_LE(r.u_error, 0.06);
+    EXPECT_LE(r.v_error, 0.06);
+}
+
+TEST(AirflowValidation, C1CavityAtRe100On128Cells) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 100";
+    const CavityResult r = run_cavity(128, 100.0, 40.0, ref::kGhiaU100, ref::kGhiaV100);
+    EXPECT_LE(r.u_error, 0.02);
+    EXPECT_LE(r.v_error, 0.02);
+}
+
+TEST(AirflowValidation, C1CavityAtRe400On128Cells) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 400";
+    const CavityResult r = run_cavity(128, 400.0, 60.0, ref::kGhiaU400, ref::kGhiaV400);
+    EXPECT_LE(r.u_error, 0.02);
+    EXPECT_LE(r.v_error, 0.02);
+}
+
+// The kinetic energy per unit mass, from the faces, the periodic alias faces left out.
+[[nodiscard]] double kinetic_energy(const MacGrid& g) {
+    const GridShape& s = g.shape;
+    double sum[3] = {0.0, 0.0, 0.0};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const std::vector<float>& f = c == 0 ? g.u : c == 1 ? g.v : g.w;
+        for (uint32_t k = 0; k < s.nz; ++k) {
+            for (uint32_t j = 0; j < s.ny; ++j) {
+                for (uint32_t i = 0; i < s.nx; ++i) {
+                    const std::size_t idx = c == 0 ? u_index(s, i, j, k) : c == 1 ? v_index(s, i, j, k) : w_index(s, i, j, k);
+                    sum[c] += static_cast<double>(f[idx]) * f[idx];
+                }
+            }
+        }
+    }
+    const double cells = static_cast<double>(s.nx) * s.ny * s.nz;
+    return 0.5 * (sum[0] + sum[1] + sum[2]) / cells;
+}
+
+TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 64^3 Taylor-Green vortex";
+    const uint32_t n = 64;
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({n, n, n, static_cast<float>(2.0 * std::numbers::pi / n)}, bc);
+    for_each_sample(g.shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        g.u[idx] = static_cast<float>(std::sin(double(x.x)) * std::cos(double(x.y)) * std::cos(double(x.z)));
+    });
+    for_each_sample(g.shape, 1, [&](std::size_t idx, glm::vec3 x) {
+        g.v[idx] = static_cast<float>(-std::cos(double(x.x)) * std::sin(double(x.y)) * std::cos(double(x.z)));
+    });
+    const FluidConfig cfg{.rho = 1.0f, .nu = 0.0f, .h = 0.5f * g.shape.dx, .n_v = 2};
+    FluidScratch s = *make_fluid_scratch(g, cfg);
+    const double ke0 = kinetic_energy(g);
+    std::printf("=== validation record: C0 Taylor-Green vortex (report) ===\n"
+                "config: 64^3 periodic 2 pi box, inviscid (the numerics' own dissipation), h = %.6f, n_v 2\n"
+                "t, kinetic energy, -dKE/dt\n", static_cast<double>(cfg.h));
+    double t = 0.0;
+    double ke = ke0;
+    double next_report = 0.5;
+    while (t < 10.0) {
+        fluid_step(g, bc, cfg, s);
+        t += cfg.h;
+        if (t >= next_report) {
+            const double ke_now = kinetic_energy(g);
+            std::printf("%.2f, %.6f, %.6f\n", t, ke_now, (ke - ke_now) / 0.5);
+            ASSERT_TRUE(std::isfinite(ke_now));
+            ke = ke_now;
+            next_report += 0.5;
+        }
+    }
+    EXPECT_LT(ke, ke0);
+}
+
+TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the actuator-disc wake (~6 min)";
+    const GridShape shape{64, 128, 64, 0.01f};
+    const DomainBc bc;  // open faces, still air: every face an outlet
+    MacGrid g = *make_grid(shape, bc);
+    const float rho = 1.225f;
+    const float vh = 4.0f;
+    const float radius = 0.1f;
+    const float area = static_cast<float>(std::numbers::pi) * radius * radius;
+    const ActuatorDisc disc{.centre = {0.32f, 0.96f, 0.32f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = radius,
+                            .thrust = 2.0f * rho * area * vh * vh};
+    ASSERT_TRUE(check_disc(disc, shape).has_value());
+    const FluidConfig cfg{.rho = rho, .nu = 0.0f, .h = shape.dx / 8.0f, .n_v = 2};
+    FluidScratch s = *make_fluid_scratch(g, cfg);
+    const uint32_t steps = 384;
+    const uint32_t window = 128;
+    const uint32_t j = 76;  // y = 0.76 m = 2R below the disc
+    double sum = 0.0;
+    for (uint32_t k = 0; k < steps; ++k) {
+        spread_actuator(disc, shape, rho, cfg.h, s.du, s.dv, s.dw);
+        fluid_step(g, bc, cfg, s);
+        if (k >= steps - window) {
+            const auto v = [&](uint32_t i, uint32_t kk) { return static_cast<double>(g.v[v_index(shape, i, j, kk)]); };
+            sum += -0.25 * (v(31, 31) + v(32, 31) + v(31, 32) + v(32, 32));
+        }
+    }
+    const double measured = sum / window;
+    const double expected = vh * (1.0 + 2.0 / std::sqrt(5.0));
+    std::printf("=== validation record: C8 actuator-disc far wake ===\n"
+                "config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, h %.6f, n_v 2\n"
+                "measure: axial velocity on the axis 2R below the disc, mean of the last %u of %u steps = %.4f m/s\n"
+                "reference: momentum theory v_h (1 + 2/sqrt 5) = %.4f m/s; tolerance 10%%\n",
+                static_cast<double>(disc.thrust), static_cast<double>(cfg.h), window, steps, measured, expected);
+    EXPECT_NEAR(measured, expected, 0.1 * expected);
+}
+
+}  // namespace
+```
+
+- [ ] **Step 2: Register the file and run the gate case**
+
+Add `test_airflow_validation.cpp` after `test_airflow_step.cpp`. Build, then run `build-ninja\release\bin\spade_tests.exe --gtest_filter=AirflowValidation.*`.
+Expected: `C1CavityAtRe100On32CellsIsWithinTheGateBand` PASS, the other four SKIPPED by name. Time the gate case in both presets and state both times in the report (`TD-8`; spec §4.6, "Gate time": the airflow CPU tests together add at most about 60 s to the debug gate).
+
+- [ ] **Step 3: Run the opt-in cases and keep their records**
+
+Run, in release, with `SPADE_AIRFLOW_VALIDATION=1` set: `build-ninja\release\bin\spade_tests.exe --gtest_filter=AirflowValidation.*`. Each case prints its record block. Paste each into its file under `tests/data/airflow/records/`, with a header: the device (`describe()` of the CPU: compiler, preset, machine), the commit, the date, and PASS or MISS against the tolerance above. A miss is recorded as a miss and reported to the lead with the measured numbers. It is not re-toleranced (spec §11.1); the cause is found.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/test_airflow_validation.cpp tests/CMakeLists.txt tests/data/airflow/records/
+git commit -m "test(physics): airflow V1 -- the cavity against Ghia, the Taylor-Green report, the actuator disc's wake (airflow core, Task 11)"
+```
+
+---
+
+### Task 12: The documents, and the final gate
+
+**Files:**
+- Modify: `docs/design/physics/07-status.md`, `docs/design/physics/04-verification.md`, `docs/design/backlog.md`, `docs/design/physics/plans/README.md`, `docs/design/physics/plans/2026-10-05-airflow-design.md` (§9)
+
+- [ ] **Step 1: Write the status and verification rows**
+
+- `07-status.md`, "Specified vs built": a row **Airflow solver core (CPU reference, standalone)** — "**Built**, CPU only, not yet a module: MAC grid, multigrid projection, MacCormack advection, implicit viscosity with no-slip walls, the actuator source. The GPU twin is plan B; the `airflow` module waits on stage 7 (plan C)" — `physics/airflow/*`; the four test files with their counts from ctest.
+- `04-verification.md`: under "Grades", the airflow core's golden (`kSolverCoreDigest`, with its leg) and, under a new "Validation (`PHY-9`, spec §11)" heading, one line per V1 record with its verdict and file.
+- `backlog.md`, the airflow row: "Plan A (the CPU solver core and V1) built; plan B (the GPU twin and the spike) and plan C (the module) next".
+- `plans/README.md`: this plan's line. The spec's §9: M3's CPU half built.
+
+- [ ] **Step 2: The final gate**
+
+Both presets built and tested (counts with tree and commit), `bash scripts/gcc-check.sh` on every C++ file this plan changed, and a fresh `scripts\docker-leg.ps1 -NoSeed -Memory 8g -Jobs 8` at the head: PASS, with the solver core's golden reproduced on gcc.
+
+- [ ] **Step 3: Commit and report**
+
+```bash
+git add docs/design/
+git commit -m "docs(physics): the airflow solver core is built; V1 recorded (airflow core, Task 12)"
+```
+
+Send the lead "ready for review": the branch and head, the gate's counts, the leg, the V1 records with their verdicts, and the measured multigrid factors and `n_v` table from Tasks 4 and 5.
