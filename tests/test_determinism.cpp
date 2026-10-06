@@ -29,6 +29,16 @@
 #include "testing/replay.hpp"
 #include "testing/scenario_file.hpp"
 #include "world/builder.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("determinism");
+    return dir.path();
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Task 13 -- the pass schedule, Simulation, and the determinism replay corpus.
@@ -2477,7 +2487,7 @@ namespace {
 [[nodiscard]] spade::Result<LoadedScenario> load_scratch_scenario(const std::string& stem,
                                                                   const std::string& text) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / ("spade_test_" + stem + ".scenario.yaml");
+        temp_root() / ("spade_test_" + stem + ".scenario.yaml");
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         out.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -2843,7 +2853,7 @@ TEST(ScenarioFile, RejectsEveryMalformedDocument) {
 
 TEST(ScenarioFile, AMissingFileIsAnIoErrorCarryingThePath) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_no_such.scenario.yaml";
+        temp_root() / "spade_test_no_such.scenario.yaml";
     std::filesystem::remove(path);
     const spade::Result<LoadedScenario> loaded = spade::testing::scenario_from_yaml(path);
     EXPECT_EQ(code_of(loaded), code(spade::Code::io_error));

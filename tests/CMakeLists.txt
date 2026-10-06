@@ -89,6 +89,7 @@ add_executable(spade_tests
     test_design_frame.cpp
     test_model_registry.cpp
     test_m1b_bar.cpp
+    test_temp_hygiene.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp

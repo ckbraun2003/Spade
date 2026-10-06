@@ -47,6 +47,16 @@
 
 #include "render_gap.hpp"
 #include "target_sink.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("target_sink");
+    return dir.path();
+}
+}  // namespace
 
 using spade::WorldBuilder;
 using spade::WorldDesc;
@@ -218,7 +228,7 @@ TEST(SandboxTargetSink, TheWrittenPpmRoundTripsToTheEmittedFrame) {
     // the thing SL10 is ultimately about. Exercises the header format and the
     // write path, neither of which the in-memory cases touch.
     const std::filesystem::path out =
-        std::filesystem::temp_directory_path() / "spade_target_sink_roundtrip.ppm";
+        temp_root() / "spade_target_sink_roundtrip.ppm";
     std::error_code ec;
     std::filesystem::remove(out, ec);
 

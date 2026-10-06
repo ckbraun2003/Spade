@@ -19,6 +19,16 @@
 #include "state/snapshot.hpp"
 #include "testing/scenario_file.hpp"
 #include "world/world_file.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("path_text");
+    return dir.path();
+}
+}  // namespace
 
 namespace {
 
@@ -32,7 +42,7 @@ constexpr std::string_view kDirUtf8 = "spade_path_\xC3\xA9_\xE4\xB8\xAD";
 
 // A directory whose name is outside every ANSI code page, made fresh.
 [[nodiscard]] std::filesystem::path unicode_dir() {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / from_utf8(kDirUtf8);
+    const std::filesystem::path dir = temp_root() / from_utf8(kDirUtf8);
     std::filesystem::create_directories(dir);
     return dir;
 }

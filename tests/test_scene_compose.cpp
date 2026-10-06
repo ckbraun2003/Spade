@@ -32,6 +32,16 @@
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
 #include "world/world_file.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("scene_compose");
+    return dir.path();
+}
+}  // namespace
 
 namespace {
 
@@ -211,7 +221,7 @@ std::string hex64(uint64_t value) {
 
 // A scratch directory of the test's own, emptied first.
 std::filesystem::path scratch_dir(const std::string& name) {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("spade_scene_compose_" + name);
+    const std::filesystem::path dir = temp_root() / ("spade_scene_compose_" + name);
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir);

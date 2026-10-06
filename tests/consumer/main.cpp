@@ -46,6 +46,7 @@
 #include "world/builder.hpp"
 #include "world/medium.hpp"
 #include "world/world_file.hpp"
+#include "../unique_temp.hpp"  // the repo's per-process temp names; std-only
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
 int check_render_gl();  // gl_check.cpp
@@ -68,7 +69,7 @@ int main() {
     // Round-trip it through a real world file -- see the header comment above
     // for why this call is the whole point of this integration follow-up.
     const std::filesystem::path world_file_path =
-        std::filesystem::temp_directory_path() / "spade_consumer_smoke_world.yaml";
+        spade::test::unique_temp_path("consumer_smoke_world.yaml");
 
     if (const spade::Result<void> saved = spade::save_world_file(*authored, world_file_path); !saved) {
         std::fprintf(stderr, "save_world_file failed: %s\n", saved.error().context.c_str());
