@@ -85,6 +85,12 @@ scripts/gcc-check.sh tests/test_example.cpp engine/render/example.hpp
   - Why: a fresh (`-NoSeed`) leg at the defaults peaked at 4.29–4.50 GB, and a seeded leg with nothing to rebuild at about 0.9 GB.
   - Two fresh legs plus the VM's own overhead come near the cap, and the VM's out-of-memory killer acts before either leg's own `--memory` limit would.
 - **Settings:** the scripts' defaults suit this machine (`scripts\build.ps1 -ParallelLevel 8`; the Docker leg `-Memory 8g -Jobs 8`, within the rule above). Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **The owner's machine: throttle while a game runs** (the user, 2026-10-06: "Throttle while I play"). Before every heavy run, check for one: `Get-Process r5apex_dx12 -ErrorAction SilentlyContinue` in PowerShell (Apex Legends), or any other full-screen game. While one runs:
+  - no Docker legs, no GPU tests and no GPU bench. A full `scripts	est.ps1` includes the GPU tests, so run `ctest -L spade -LE gpu` instead;
+  - builds run at `-ParallelLevel 4`;
+  - CPU tests are fine.
+
+  Full speed resumes when the game closes. A bench window needs no game running, as well as both trees quiet.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 
