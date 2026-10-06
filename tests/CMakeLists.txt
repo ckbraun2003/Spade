@@ -436,13 +436,6 @@ target_compile_definitions(spade_tests PRIVATE
     SPADE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
 )
 
-# The measurement build's inverted rule P3 (SPADE_MEASURE_UNPINNED_DENORMS, the
-# top-level CMakeLists.txt): SlangSpirv.FloatControlsPinned reads it here, on
-# spade_tests only, so a default build's targets are untouched.
-if(SPADE_MEASURE_UNPINNED_DENORMS)
-    target_compile_definitions(spade_tests PRIVATE SPADE_MEASURE_UNPINNED_DENORMS=1)
-endif()
-
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a
 # PROPERTIES entry (S5 T9 ticket B, first of two root causes -- see

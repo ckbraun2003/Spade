@@ -90,41 +90,6 @@ option(SPADE_VULKAN "Build the v2 Vulkan compute backend (engine/compute/vulkan,
 # consumer, and the Linux gate, actually want.
 option(SPADE_RENDER_GL "Build the v2 OpenGL render backend (engine/render_gl, spade_render_gl)" ON)
 
-# SPADE_MEASURE_UNPINNED_DENORMS (OFF): a MEASUREMENT build, never a product
-# one (docs/design/core/plans/2026-10-04-nvidia-denorm-measurement-plan.md).
-# ON:
-#   - every kernel compiles without -denorm-mode-fp32 preserve
-#     (cmake/SpadeSlang.cmake); -fp-mode precise stays;
-#   - the SPIR-V gate's rule P3 inverts: a module must carry NO
-#     DenormPreserve 32 ("P3-unpinned"; a definition on spade_tests only);
-#   - spade_compute admits a device that cannot preserve fp32 denormals
-#     (Core's definition, engine/compute).
-# Configure it only in a dedicated tree: never a preset, never build-host/ or
-# install-host/. Two guards keep it out of anything installed or consumed:
-#   - configure refuses unless Spade is the top-level project, because an
-#     add_subdirectory or FetchContent consumer never installs, so the install
-#     guard alone would not stop it;
-#   - the FIRST install rule fails the install before anything is copied.
-#     CMP0082 is NEW at this file's 3.28 minimum, so install rules run in
-#     declaration order, subdirectories included, and this one comes before
-#     every add_subdirectory below.
-option(SPADE_MEASURE_UNPINNED_DENORMS
-    "Measurement build: kernels without the fp32 denormal pin; never installed (see CMakeLists.txt)" OFF)
-if(SPADE_MEASURE_UNPINNED_DENORMS)
-    if(NOT PROJECT_IS_TOP_LEVEL)
-        message(FATAL_ERROR
-            "SPADE_MEASURE_UNPINNED_DENORMS is ON in a build that consumes Spade "
-            "(add_subdirectory or FetchContent). It is a measurement option for a "
-            "dedicated top-level Spade tree only; configure with it OFF.")
-    endif()
-    message(STATUS "spade: ****************************************************************")
-    message(STATUS "spade: SPADE_MEASURE_UNPINNED_DENORMS=ON -- a MEASUREMENT build.")
-    message(STATUS "spade:   kernels carry no fp32 denormal mode; SPIR-V rule P3 is inverted;")
-    message(STATUS "spade:   device admission skips the denormal clause; nothing installs.")
-    message(STATUS "spade: ****************************************************************")
-    install(CODE "message(FATAL_ERROR \"SPADE_MEASURE_UNPINNED_DENORMS is ON: this is a measurement tree, and nothing installs from it. Install from a tree configured with it OFF.\")")
-endif()
-
 # Function to help with target aliases for consistency
 function(create_target_alias target alias)
     if(TARGET ${target} AND NOT TARGET ${alias})
