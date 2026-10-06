@@ -49,12 +49,13 @@
 // ===========================================================================
 // SET 1, AND SET 0 IS NOT TOUCHED
 //
-// shaders/shared/bindings.slang is the PHYSICS binding registry: nine bound
-// arrays at 0..8, four .slot_to_world siblings at 9..12, DENSE and guarded by
-// test_slang_layouts.cpp's BindingIndicesAreDistinctAndDense. Adding a render
-// buffer there would renumber physics bindings and break the one path whose
-// entire value is that it is pinned. These three bindings therefore live in
-// SET 1 and need no entry in that registry at all.
+// shaders/shared/bindings.slang is the PHYSICS binding registry and the one
+// statement of what set 0 holds (no count is restated here: it changes as
+// modules register state), DENSE and guarded by test_slang_layouts.cpp's
+// BindingIndicesAreDistinctAndDense. Adding a render buffer there would
+// renumber physics bindings and break the one path whose entire value is
+// that it is pinned. These three bindings therefore live in SET 1 and need
+// no entry in that registry at all.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>

@@ -82,10 +82,11 @@
 // ===========================================================================
 // ⛔⛔ THIS KERNEL TAKES ITS OWN DESCRIPTOR SET. IT MUST NOT JOIN SET 0.
 //
-// shaders/shared/bindings.slang is THE BINDING REGISTRY for the physics path:
-// nine bound registered arrays at bindings 0..8 and four .slot_to_world
-// siblings at 9..12, DENSE, and guarded by tests/test_slang_layouts.cpp's
+// shaders/shared/bindings.slang is THE BINDING REGISTRY for the physics path,
+// and the one statement of what set 0 holds: its registered arrays and the
+// buffers derived from them, DENSE, and guarded by tests/test_slang_layouts.cpp's
 // BindingIndicesAreDistinctAndDense / BindingRegistryCoversEveryRegisteredArray.
+// No count is restated here; it changes as modules register state.
 //
 // Adding a render buffer to that registry would renumber physics bindings and
 // break a path whose whole value is that it is pinned. These resources
