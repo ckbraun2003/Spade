@@ -42,6 +42,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -310,7 +311,10 @@ struct SdfTree {
     const uint32_t op = program.nodes[node].op;
     if (op != static_cast<uint32_t>(SdfOp::none)) {
         const bool blend = op == static_cast<uint32_t>(SdfOp::smooth_union);
-        const bool unused_set = (!blend && params.x != 0.0f) || params.y != 0.0f || params.z != 0.0f || params.w != 0.0f;
+        // By bits: -0 is not 0 to the writer or the hash. A smooth union's k
+        // is the user's own value, -0 included (k <= 0 degenerates to min).
+        const auto set = [](float v) { return std::bit_cast<uint32_t>(v) != 0u; };
+        const bool unused_set = (!blend && set(params.x)) || set(params.y) || set(params.z) || set(params.w);
         if (unused_set) {
             return std::unexpected(Error{
                 Code::invalid_argument,
