@@ -1115,7 +1115,7 @@ TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
     RenderScene scene = slab_scene();
     ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
     const spade::FlowVolume volume;
-    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {spade::render::TransferFunction{}}});
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {spade::render::TransferFunction{}}, {}});
     const spade::Result<void> drew =
         renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
     ASSERT_FALSE(drew.has_value()) << "a flow layer GL cannot draw must be refused";

@@ -87,7 +87,7 @@ struct Frame {
 
 [[nodiscard]] RenderScene scene_with(const spade::FlowVolume& volume, std::vector<TransferFunction> transfers) {
     RenderScene scene;
-    scene.flow_layers.push_back(FlowLayer{&volume, std::move(transfers)});
+    scene.flow_layers.push_back(FlowLayer{&volume, std::move(transfers), {}});
     return scene;
 }
 
@@ -245,7 +245,7 @@ TEST(RenderFlowVolume, AMalformedLayerIsRefusedBeforeAnyPixel) {
     };
     {
         RenderScene scene;
-        scene.flow_layers.push_back(FlowLayer{nullptr, {fine}});
+        scene.flow_layers.push_back(FlowLayer{nullptr, {fine}, {}});
         refused(scene, "a layer with no volume");
     }
     refused(scene_with(bad, {fine}), "a malformed volume");
@@ -256,7 +256,7 @@ TEST(RenderFlowVolume, AMalformedLayerIsRefusedBeforeAnyPixel) {
 
 TEST(RenderFlowVolume, AnEmptyIntervalLeavesThePixelAlone) {
     const spade::FlowVolume volume = slab(-0.25f, 5);
-    const auto prepared = spade::render::prepare_flow_layer(FlowLayer{&volume, {absorber(1.0f, glm::vec3(1.0f))}});
+    const auto prepared = spade::render::prepare_flow_layer(FlowLayer{&volume, {absorber(1.0f, glm::vec3(1.0f))}, {}});
     const auto r = spade::render::march_flow_ray(prepared, glm::vec3(0.0f, 0.0f, 5.0f), glm::vec3(0.0f, 0.0f, -1.0f),
                                                  5.0f, 4.0f);
     EXPECT_EQ(r.transmittance, 1.0f);

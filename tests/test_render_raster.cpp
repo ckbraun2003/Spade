@@ -1681,7 +1681,7 @@ TEST(RasterGolden, FlowVortexRingMatchesCommittedManifest) {
     smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
     smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
     RenderScene scene;
-    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}});
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}, {}});
     const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 2.2f));
     RenderOptions options;
     options.mode = DrawMode::shaded;
