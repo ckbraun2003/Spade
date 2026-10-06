@@ -151,7 +151,9 @@ TEST(CoreFp16, AStridedF32SweepMatchesTheReference) {
         const Half got = from_f32(x);
         const Half want = reference_from_f32(x);
         ASSERT_EQ(got.no_data, want.no_data) << "x = " << x << " (bits " << std::hex << i << ")";
-        if (!want.no_data) ASSERT_EQ(got.bits, want.bits) << "x = " << x << " (bits " << std::hex << i << ")";
+        if (!want.no_data) {
+            ASSERT_EQ(got.bits, want.bits) << "x = " << x << " (bits " << std::hex << i << ")";
+        }
         ++checked;
     }
     EXPECT_GT(checked, 1000000u);
@@ -168,7 +170,9 @@ TEST(CoreFp16, FullDomainSweepEveryFloat) {
         const Half got = from_f32(x);
         const Half want = reference_from_f32(x);
         ASSERT_EQ(got.no_data, want.no_data) << std::hex << i;
-        if (!want.no_data) ASSERT_EQ(got.bits, want.bits) << std::hex << i;
+        if (!want.no_data) {
+            ASSERT_EQ(got.bits, want.bits) << std::hex << i;
+        }
     }
 }
 
