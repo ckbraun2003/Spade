@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <iomanip>
 #include <optional>
 #include <sstream>
@@ -634,6 +636,37 @@ TEST(CsgFolds, AThinShellFoldsAndTheSceneNamesIt) {
     const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(world.sdf, 2, mesh);
     EXPECT_GT(folds.folded, 0u);
     EXPECT_GT(folds.bounds.min.y, 0.0f) << "the folds are in the thin upper wall, not the thick bottom";
+
+    // Since B2, shaded and velocity frames march the wall and draw it whole
+    // (RS3). Only the mesh has the holes, and the mesh draws wireframe and
+    // casts the sun's shadow, so the warning says that and no more.
+    EXPECT_NE(warning.find("wireframe"), std::string::npos) << warning;
+    EXPECT_NE(warning.find("shadow"), std::string::npos) << warning;
+    EXPECT_NE(warning.find("draw it whole"), std::string::npos) << warning;
+}
+
+// The warning's cell is the cell the mesh samples. A smooth_union root pads
+// its sample box by k/4 when that beats aabb_margin (csg_subtree_sample_box()),
+// so a figure from aabb_margin alone names a cell the mesh does not use.
+TEST(CsgFolds, TheWarningNamesTheCellTheMeshSamples) {
+    WorldBuilder b = base_builder();
+    b.sphere(4.0f).sphere(3.8f, SdfPose{.position = {0.0f, 0.4f, 0.0f}}).subtract();
+    b.sphere(0.5f, SdfPose{.position = {0.0f, -4.2f, 0.0f}}).smooth_union(2.0f);  // k/4 = 0.5 m
+    const WorldDesc world = build_or_fail(b);
+    const Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world, {});
+    ASSERT_TRUE(scene) << scene.error().context;
+    ASSERT_EQ(scene->warnings.size(), 1u) << "the bowl's rim still folds";
+    const std::string& warning = scene->warnings[0];
+
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/4);
+    const float cell = spade::render::csg_mesh_cell_size(world.sdf, 4, bounds);
+    const glm::vec3 extent = bounds.max - bounds.min + glm::vec3(2.0f * kCsgMeshDefaults.aabb_margin);
+    const float margin_only = std::max({extent.x, extent.y, extent.z}) /
+                              static_cast<float>(spade::render::csg_cells_per_axis(bounds, kCsgMeshDefaults));
+    ASSERT_NE(std::format("{:.3f}", cell), std::format("{:.3f}", margin_only))
+        << "the case must tell the two figures apart";
+    EXPECT_NE(warning.find(std::format("two cells of {:.3f} m", cell)), std::string::npos)
+        << "the mesh samples " << cell << " m cells: " << warning;
 }
 
 // The control: the same bowl with a thick wall folds nowhere and warns of

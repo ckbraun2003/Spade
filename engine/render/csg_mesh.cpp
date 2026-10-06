@@ -496,6 +496,15 @@ uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& lim
     return cells_for_extent(std::max({extent.x, extent.y, extent.z}), limits);
 }
 
+float csg_mesh_cell_size(const SdfProgram& program, uint32_t root_node, const Aabb& subtree_bounds,
+                         const CsgMeshLimits& limits) {
+    const Aabb box = csg_subtree_sample_box(program, root_node, subtree_bounds, limits);
+    const glm::vec3 extent = box.max - box.min;
+    const float longest = std::max({extent.x, extent.y, extent.z});
+    const uint32_t cells = cells_for_extent(longest, limits);
+    return cells == 0u ? 0.0f : longest / static_cast<float>(cells);
+}
+
 CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh) {
     CsgFoldReport report;
     if (root_node >= program.nodes.size()) {

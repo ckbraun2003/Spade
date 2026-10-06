@@ -331,19 +331,21 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             if (!mesh) {
                 return std::unexpected(mesh.error());
             }
-            // A wall thinner than about two cells folds under surface nets and
-            // draws with holes. Name it rather than draw it wrong in silence (L6).
+            // A wall thinner than about two cells folds under surface nets, so
+            // the mesh has holes there. Shaded and velocity frames march the
+            // wall (RS3), but the mesh still draws wireframe and casts the
+            // sun's shadow. Named rather than left wrong in silence (L6), with
+            // the cell the mesh really samples (csg_mesh_cell_size()).
             if (const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh); folds.folded > 0u) {
-                const glm::vec3 extent = subtree_bounds->max - subtree_bounds->min +
-                                         glm::vec3(2.0f * kCsgMeshDefaults.aabb_margin);
-                const float cell = std::max({extent.x, extent.y, extent.z}) /
-                                   static_cast<float>(csg_cells_per_axis(*subtree_bounds, kCsgMeshDefaults));
+                const float cell = csg_mesh_cell_size(world.sdf, root_node, *subtree_bounds, kCsgMeshDefaults);
                 const glm::vec3& lo = folds.bounds.min;
                 const glm::vec3& hi = folds.bounds.max;
                 scene.warnings.push_back(std::format(
                     "CSG subtree at node {}: {} of {} triangles fold between ({:.2f}, {:.2f}, {:.2f}) and "
-                    "({:.2f}, {:.2f}, {:.2f}), so a wall there is thinner than about two cells of {:.3f} m and draws "
-                    "with holes. Make it at least {:.3f} m thick.",
+                    "({:.2f}, {:.2f}, {:.2f}), so a wall there is thinner than about two cells of {:.3f} m. Shaded "
+                    "frames ray-march the wall and draw it whole, but its mesh has holes there: wireframe shows "
+                    "them, and its sun shadow leaks. Make it at least {:.3f} m thick for a whole wireframe and "
+                    "shadow.",
                     root_node, folds.folded, folds.triangles, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, cell, 2.0f * cell));
             }
             const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());

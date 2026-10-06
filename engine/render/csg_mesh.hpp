@@ -64,7 +64,9 @@ struct CsgMeshLimits {
 inline constexpr CsgMeshLimits kCsgMeshDefaults{};
 
 // Cells per axis for a subtree with these bounds (before the margin), by the
-// rule above. 0 when the limits are invalid.
+// rule above. 0 when the limits are invalid. It pads by aabb_margin alone; a
+// smooth_union root pads by k/4 when that is larger (csg_subtree_sample_box()),
+// which csg_mesh_cell_size() below takes into account.
 [[nodiscard]] uint32_t csg_cells_per_axis(const Aabb& subtree_bounds, const CsgMeshLimits& limits);
 
 // Folded triangles: their geometric normal points against the subtree's SDF
@@ -112,6 +114,12 @@ struct SubtreeSplit {
 [[nodiscard]] Aabb csg_subtree_sample_box(const SdfProgram& program, uint32_t root_node,
                                           const Aabb& subtree_bounds,
                                           const CsgMeshLimits& limits = kCsgMeshDefaults);
+
+// The longest edge of one cell of the grid mesh_csg_subtree() samples: the
+// sample box's longest axis over its cells per axis, as the mesh computes
+// them. 0 when the limits are invalid. The fold warning names this figure.
+[[nodiscard]] float csg_mesh_cell_size(const SdfProgram& program, uint32_t root_node, const Aabb& subtree_bounds,
+                                       const CsgMeshLimits& limits = kCsgMeshDefaults);
 
 // World-space AABB enclosing the CSG subtree rooted at `root_node` (as
 // identified by split_program()'s csg_roots / consumed by mesh_csg_subtree()
