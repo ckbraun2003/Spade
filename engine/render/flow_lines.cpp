@@ -126,6 +126,142 @@ Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std:
     return lines;
 }
 
+namespace {
+
+// One RK4 step in time from x over dt: where the tracer lands, or why it
+// retires (no-data at any stage, or landing outside the box).
+struct Carried {
+    glm::vec3 x{0.0f};
+    std::optional<LineEnd> end;
+};
+
+[[nodiscard]] Carried carry(const FlowSampler& sampler, const Box& box, glm::vec3 x, float dt) {
+    const FlowVelocity k1 = sample_velocity(sampler, x);
+    if (k1.no_data) return Carried{x, LineEnd::no_data};
+    const FlowVelocity k2 = sample_velocity(sampler, x + (0.5f * dt) * k1.u);
+    if (k2.no_data) return Carried{x, LineEnd::no_data};
+    const FlowVelocity k3 = sample_velocity(sampler, x + (0.5f * dt) * k2.u);
+    if (k3.no_data) return Carried{x, LineEnd::no_data};
+    const FlowVelocity k4 = sample_velocity(sampler, x + dt * k3.u);
+    if (k4.no_data) return Carried{x, LineEnd::no_data};
+    const glm::vec3 next = x + (dt / 6.0f) * (k1.u + 2.0f * k2.u + 2.0f * k3.u + k4.u);
+    if (!box.contains(next)) return Carried{next, LineEnd::left_box};
+    return Carried{next, std::nullopt};
+}
+
+struct Emission {
+    double time = 0.0;
+    uint32_t source = 0;
+};
+
+}  // namespace
+
+Result<void> advance_tracers(TracerState& state, const FlowVolume& volume, std::span<const TracerSource> sources,
+                             float dt, const TracerOptions& options) {
+    const auto refuse = [](const std::string& why) {
+        return std::unexpected(Error{Code::invalid_argument, "advance_tracers: " + why});
+    };
+    if (Result<void> valid = validate_flow_volume(volume); !valid) {
+        return refuse(valid.error().context);
+    }
+    if (!(std::isfinite(dt) && dt > 0.0f)) {
+        return refuse("dt is not finite and > 0");
+    }
+    if (options.capacity == 0u || options.capacity > (1u << 24)) {
+        return refuse("the capacity is not 1 to 2^24");
+    }
+    if (!(std::isfinite(options.max_age_s) && options.max_age_s > 0.0f)) {
+        return refuse("max_age_s is not finite and > 0");
+    }
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        const TracerSource& src = sources[i];
+        const std::string name = "source " + std::to_string(i);
+        if (!finite(src.position)) return refuse(name + "'s position is not finite");
+        if (!(std::isfinite(src.interval_s) && src.interval_s > 0.0f)) {
+            return refuse(name + "'s interval is not finite and > 0");
+        }
+        if (static_cast<double>(dt) / static_cast<double>(src.interval_s) > static_cast<double>(1u << 20)) {
+            return refuse(name + " would emit more than 2^20 tracers in one step");
+        }
+    }
+    const std::size_t live = state.positions.size();
+    if (state.ages.size() != live || state.sources.size() != live) {
+        return refuse("the state's arrays disagree in length");
+    }
+    if (live > options.capacity) {
+        return refuse("the state holds " + std::to_string(live) + " tracers, past its capacity of " +
+                      std::to_string(options.capacity));
+    }
+
+    const FlowVolumeHeader& h = volume.header;
+    const FlowSampler sampler = make_flow_sampler(volume);
+    const Box box{h.origin, h.origin + glm::vec3(static_cast<float>(h.nx), static_cast<float>(h.ny),
+                                                 static_cast<float>(h.nz)) *
+                                           h.cell};
+
+    // Live tracers first, in order; retired ones leave, counted by reason.
+    std::size_t keep = 0;
+    for (std::size_t i = 0; i < live; ++i) {
+        const Carried c = carry(sampler, box, state.positions[i], dt);
+        const float age = state.ages[i] + dt;
+        if (c.end == LineEnd::no_data) {
+            ++state.retired_no_data;
+        } else if (c.end == LineEnd::left_box) {
+            ++state.retired_left_box;
+        } else if (age > options.max_age_s) {
+            ++state.retired_aged;
+        } else {
+            state.positions[keep] = c.x;
+            state.ages[keep] = age;
+            state.sources[keep] = state.sources[i];
+            ++keep;
+        }
+    }
+    state.positions.resize(keep);
+    state.ages.resize(keep);
+    state.sources.resize(keep);
+
+    // Then this step's emissions, in time order and by source within a
+    // time, so cutting a run into other steps lists them the same way.
+    const double start = state.clock_s;
+    const double end = start + static_cast<double>(dt);
+    std::vector<Emission> emissions;
+    for (uint32_t s = 0; s < sources.size(); ++s) {
+        const double interval = static_cast<double>(sources[s].interval_s);
+        for (double k = std::ceil(start / interval); k * interval < end; k += 1.0) {
+            emissions.push_back(Emission{k * interval, s});
+        }
+    }
+    std::stable_sort(emissions.begin(), emissions.end(),
+                     [](const Emission& a, const Emission& b) { return a.time < b.time; });
+    for (const Emission& e : emissions) {
+        if (state.positions.size() >= options.capacity) {
+            ++state.dropped;
+            continue;
+        }
+        const glm::vec3 from = sources[e.source].position;
+        const auto remaining = static_cast<float>(end - e.time);
+        if (!box.contains(from)) {
+            ++state.retired_left_box;
+            continue;
+        }
+        const Carried c = carry(sampler, box, from, remaining);
+        if (c.end == LineEnd::no_data) {
+            ++state.retired_no_data;
+        } else if (c.end == LineEnd::left_box) {
+            ++state.retired_left_box;
+        } else if (remaining > options.max_age_s) {
+            ++state.retired_aged;
+        } else {
+            state.positions.push_back(c.x);
+            state.ages.push_back(remaining);
+            state.sources.push_back(e.source);
+        }
+    }
+    state.clock_s = end;
+    return {};
+}
+
 std::vector<glm::vec3> seed_rake(glm::vec3 a, glm::vec3 b, uint32_t n) {
     std::vector<glm::vec3> out;
     if (n == 1u) {
@@ -153,16 +289,6 @@ std::vector<glm::vec3> seed_ring(glm::vec3 centre, glm::vec3 axis, float radius,
         out.push_back(centre + radius * (math::cos32(theta) * e1 + math::sin32(theta) * e2));
     }
     return out;
-}
-
-}  // namespace spade::render
-
-namespace spade::render {
-
-// RED: a stub.
-Result<void> advance_tracers(TracerState&, const FlowVolume&, std::span<const TracerSource>, float,
-                             const TracerOptions&) {
-    return {};
 }
 
 }  // namespace spade::render
