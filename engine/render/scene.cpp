@@ -331,22 +331,35 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             if (!mesh) {
                 return std::unexpected(mesh.error());
             }
-            // A wall thinner than about two cells folds under surface nets, so
-            // the mesh has holes there. Shaded and velocity frames march the
-            // wall (RS3), but the mesh still draws wireframe and casts the
-            // sun's shadow. Named rather than left wrong in silence (L6), with
-            // the cell the mesh really samples (csg_mesh_cell_size()).
+            // The mesh folds where a wall is thinner than about two cells, and
+            // at a sharp CSG edge of any thickness. Shaded and velocity frames
+            // march both (RS3), but the mesh still draws wireframe and casts
+            // the sun's shadow. Each kind is named with its own advice rather
+            // than left in silence (L6), with the cell the mesh really samples.
             const float cell = csg_mesh_cell_size(world.sdf, root_node, *subtree_bounds, kCsgMeshDefaults);
-            if (const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh, cell); folds.folded > 0u) {
-                const glm::vec3& lo = folds.bounds.min;
-                const glm::vec3& hi = folds.bounds.max;
+            const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh, cell);
+            if (folds.thin > 0u) {
+                const glm::vec3& lo = folds.thin_bounds.min;
+                const glm::vec3& hi = folds.thin_bounds.max;
                 scene.warnings.push_back(std::format(
                     "CSG subtree at node {}: {} of {} triangles fold between ({:.2f}, {:.2f}, {:.2f}) and "
                     "({:.2f}, {:.2f}, {:.2f}), so a wall there is thinner than about two cells of {:.3f} m. Shaded "
                     "frames ray-march the wall and draw it whole, but its mesh has holes there: wireframe shows "
                     "them, and its sun shadow leaks. Make it at least {:.3f} m thick for a whole wireframe and "
                     "shadow.",
-                    root_node, folds.folded, folds.triangles, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, cell, 2.0f * cell));
+                    root_node, folds.thin, folds.triangles, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, cell, 2.0f * cell));
+            }
+            if (folds.sharp > 0u) {
+                const glm::vec3& lo = folds.sharp_bounds.min;
+                const glm::vec3& hi = folds.sharp_bounds.max;
+                scene.warnings.push_back(std::format(
+                    "CSG subtree at node {}: {} of {} triangles fold at a sharp edge between ({:.2f}, {:.2f}, "
+                    "{:.2f}) and ({:.2f}, {:.2f}, {:.2f}), where the surface creases. The solid there is at least "
+                    "two cells of {:.3f} m thick, so this is not a thin wall: a mesh folds at a sharp CSG edge at "
+                    "any resolution. Shaded frames ray-march the edge and draw it exactly; wireframe shows the "
+                    "fold, and the sun shadow may leak a little along it. Expected; soften the edge with a "
+                    "smooth_union if it matters.",
+                    root_node, folds.sharp, folds.triangles, lo.x, lo.y, lo.z, hi.x, hi.y, hi.z, cell));
             }
             const uint32_t mesh_index = static_cast<uint32_t>(scene.meshes.size());
             scene.meshes.push_back(std::move(*mesh));

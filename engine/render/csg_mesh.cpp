@@ -505,16 +505,51 @@ float csg_mesh_cell_size(const SdfProgram& program, uint32_t root_node, const Aa
     return cells == 0u ? 0.0f : longest / static_cast<float>(cells);
 }
 
+namespace {
+
+// How thick the solid is inward from near `p`, up to `limit`. `p` moves onto
+// the surface along the gradient, then marches along -gradient until the
+// field turns positive. Each step is the distance to the nearest surface,
+// so the march cannot pass the far face. A point with no gradient has no
+// inward direction and reads as `limit`: no wall to call thin.
+[[nodiscard]] float inward_thickness(const SdfProgram& subtree, glm::vec3 p, float limit) {
+    const glm::vec3 g = gradient(subtree, p);
+    const float len = glm::length(g);
+    if (!(len > 0.0f)) {
+        return limit;
+    }
+    const glm::vec3 n = g / len;
+    const glm::vec3 surface = p - n * eval(subtree, p);
+    const float floor_step = limit * 1e-3f;
+    float t = floor_step;
+    while (t < limit) {
+        const float d = eval(subtree, surface - n * t);
+        if (d > 0.0f) {
+            return t;
+        }
+        t += std::max(-d, floor_step);
+    }
+    return limit;
+}
+
+void grow(glm::vec3& lo, glm::vec3& hi, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+    lo = glm::min(lo, glm::min(a, glm::min(b, c)));
+    hi = glm::max(hi, glm::max(a, glm::max(b, c)));
+}
+
+}  // namespace
+
 CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh,
                                     float cell) {
-    (void)cell;  // RED: every fold still reads as a thin wall
     CsgFoldReport report;
     if (root_node >= program.nodes.size()) {
         return report;
     }
     const SdfProgram subtree = csg_subtree_program(program, root_node);
-    glm::vec3 lo(std::numeric_limits<float>::max());
-    glm::vec3 hi(std::numeric_limits<float>::lowest());
+    const float two_cells = 2.0f * cell;
+    constexpr float kMax = std::numeric_limits<float>::max();
+    constexpr float kLowest = std::numeric_limits<float>::lowest();
+    glm::vec3 lo(kMax), hi(kLowest), thin_lo(kMax), thin_hi(kLowest), sharp_lo(kMax), sharp_hi(kLowest);
     for (size_t t = 0; t + 2u < mesh.indices.size(); t += 3u) {
         const glm::vec3& a = mesh.positions[mesh.indices[t]];
         const glm::vec3& b = mesh.positions[mesh.indices[t + 1u]];
@@ -524,16 +559,27 @@ CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_nod
             continue;  // degenerate: it has no facing to judge
         }
         ++report.triangles;
-        if (glm::dot(n, gradient(subtree, (a + b + c) / 3.0f)) < 0.0f) {
+        const glm::vec3 centroid = (a + b + c) / 3.0f;
+        if (glm::dot(n, gradient(subtree, centroid)) < 0.0f) {
             ++report.folded;
-            lo = glm::min(lo, glm::min(a, glm::min(b, c)));
-            hi = glm::max(hi, glm::max(a, glm::max(b, c)));
+            grow(lo, hi, a, b, c);
+            if (inward_thickness(subtree, centroid, two_cells) < two_cells) {
+                ++report.thin;
+                grow(thin_lo, thin_hi, a, b, c);
+            } else {
+                ++report.sharp;
+                grow(sharp_lo, sharp_hi, a, b, c);
+            }
         }
     }
     if (report.folded > 0u) {
         report.bounds = Aabb{.min = lo, .max = hi};
-        report.thin = report.folded;
-        report.thin_bounds = report.bounds;
+    }
+    if (report.thin > 0u) {
+        report.thin_bounds = Aabb{.min = thin_lo, .max = thin_hi};
+    }
+    if (report.sharp > 0u) {
+        report.sharp_bounds = Aabb{.min = sharp_lo, .max = sharp_hi};
     }
     return report;
 }
