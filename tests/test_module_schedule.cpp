@@ -2874,10 +2874,58 @@ TEST(ModuleViews, AMisusedViewRefusesTheStepAtItsEndNamingTheModulePassAndView) 
         }
         g_misuse = Misuse::none;
         const spade::Result<void> next = sim.step(1);
-        EXPECT_TRUE(next.has_value()) << "the refusal reported the fault, so the next step starts clean: "
-                                      << (next.has_value() ? std::string() : next.error().context);
+        EXPECT_TRUE(refused_naming(next, "step: state invalid since tick 0: ")) << "poisoned by the misuse";
+        EXPECT_TRUE(refused_naming(next, c.view)) << "the original fault";
+        EXPECT_TRUE(refused_naming(next, c.detail)) << "the original fault";
+        EXPECT_EQ(sim.tick().value, 1u) << "a poisoned step steps nothing";
     }
     g_misuse = Misuse::none;
+}
+
+// The lead's poison ruling (review of Task 1). A step refused for a misused
+// view leaves the Simulation POISONED: every later step() refuses at its top,
+// stepping nothing, with the original fault and the tick the faulting step
+// stamped; snapshot() refuses with the same text, so no blob of the invalid
+// state can exist; reads stay open, to inspect the bad state; a successful
+// restore() clears it, and the same misuse after it poisons again.
+TEST(ModuleViews, AMisusedViewPoisonsTheSimulationUntilARestore) {
+    spade::Simulation sim = make_misuser_sim();
+    g_misuse = Misuse::none;
+    ASSERT_TRUE(sim.step(2).has_value());
+    const spade::Result<spade::SnapshotBlob> before = sim.snapshot();  // before the faulting step, k = 2
+    ASSERT_TRUE(before.has_value()) << before.error().context;
+
+    g_misuse = Misuse::world;
+    const spade::Result<void> fault = sim.step(1);
+    ASSERT_TRUE(refused_naming(fault, "array 'misuser.marks'"));
+    const std::string poisoned = "step: state invalid since tick 2: " + fault.error().context;
+    EXPECT_EQ(sim.tick().value, 3u) << "the faulting step ran, and its tick advanced";
+
+    g_misuse = Misuse::none;
+    const uint64_t digest = spade::testing::state_digest(sim);
+    for (const uint64_t n : {uint64_t{1}, uint64_t{0}}) {
+        EXPECT_TRUE(refused_naming(sim.step(n), poisoned)) << "step(" << n << ")";
+    }
+    EXPECT_EQ(sim.tick().value, 3u) << "a poisoned step steps nothing";
+    EXPECT_EQ(spade::testing::state_digest(sim), digest) << "and moves no state";
+    EXPECT_TRUE(refused_naming(sim.snapshot(), poisoned)) << "no blob of the invalid state";
+    const auto marks = sim.module_rows<ViewMarkRow>("marks", 0);
+    ASSERT_TRUE(marks.has_value()) << "reads stay open: " << marks.error().context;
+    EXPECT_EQ((*marks)[0].runs, 6u) << "3 steps x 2 substeps, the faulting one included";
+
+    ASSERT_TRUE(sim.restore(*before).has_value()) << "state from before the fault";
+    EXPECT_EQ(sim.tick().value, 2u);
+    const spade::Result<void> resumed = sim.step(1);
+    ASSERT_TRUE(resumed.has_value()) << "the restore cleared the poison: " << resumed.error().context;
+    EXPECT_TRUE(sim.snapshot().has_value());
+
+    g_misuse = Misuse::row_type;
+    const spade::Result<void> again = sim.step(1);
+    ASSERT_TRUE(refused_naming(again, "row type of 8 bytes")) << "the misuse after a restore faults again";
+    g_misuse = Misuse::none;
+    EXPECT_TRUE(refused_naming(sim.step(1), "step: state invalid since tick 3: " + again.error().context))
+        << "and poisons again, naming its own step";
+    EXPECT_EQ(sim.tick().value, 4u);
 }
 
 // A hook sees the whole registry and its model's place in it, so it can point a

@@ -3633,6 +3633,10 @@ TEST_F(GpuBehaviorRefusal, VulkanStepRefusesAnAttachedBehaviorRegistry) {
     ASSERT_FALSE(refused.has_value()) << "a Vulkan step with behaviors attached must refuse";
     EXPECT_EQ(refused.error().code, spade::Code::unavailable) << refused.error().context;
     EXPECT_EQ(sim->tick().value, 0u) << "a refused step must not advance the tick";
+    // CORE-1 refuses BEFORE stepping, so no state moved and nothing is poisoned
+    // (unlike a step refused for a misused view, which ran): a snapshot is
+    // still a snapshot of valid state, and the step after detaching runs.
+    EXPECT_TRUE(sim->snapshot().has_value()) << "CORE-1's refusal does not poison the Simulation";
 
     sim->set_behaviors(nullptr);
     const Result<void> stepped = sim->step(1);
