@@ -1,5 +1,7 @@
 # Third-party notices
 
+Spade itself is licensed under the Apache License 2.0 (`LICENSE`). Each component below keeps its own licence.
+
 Spade uses the components below. All but one are fetched by CMake at configure time, at the pins in `vendor/CMakeLists.txt`, and are not committed to this repository. The exception is the Inter font, vendored in `assets/fonts/` by Interface's UI-1 (`interface/ui-1-look`; its entry describes the files as they land with that merge). Each licence was read from the component's own upstream at its pinned version on 2026-10-05: from the fetched source's licence file, or from the upstream repository at that tag.
 
 | Component | Version or pin | Licence | Upstream | Used by |
