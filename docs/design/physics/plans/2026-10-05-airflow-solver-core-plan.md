@@ -1,5 +1,7 @@
 # Airflow Solver Core Implementation Plan — the CPU reference and V1
 
+> **Approved** by the lead, 2026-10-05, for native execution: one implementer, the lead reviewing each task.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The real-time tier's incompressible Navier–Stokes solver as a standalone CPU reference library, validated on V1's cases (the lid-driven cavity against Ghia et al., the Taylor–Green vortex as the numerics' own dissipation, and an actuator disc's far wake against momentum theory).
