@@ -1632,7 +1632,8 @@ OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& 
 }
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
-                     RenderTarget& target, std::vector<float>* shadow_scratch) {
+                     RenderTarget& target, std::vector<float>* shadow_scratch, FlowFrameReport* flow_report) {
+    (void)flow_report;  // RED: flow layers are not drawn yet
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
     }
