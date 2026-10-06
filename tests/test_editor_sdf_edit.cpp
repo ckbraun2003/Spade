@@ -264,3 +264,53 @@ TEST(EditorSdfEdit, NodeMaterialsStayParallelToTheNodes) {
     ASSERT_EQ(removed->node_materials.size(), removed->nodes.size());
     EXPECT_EQ(removed->node_materials[1], 1u);  // the sphere kept its material
 }
+
+// Core's review (L6): an operator's parameters are fixed by the world file --
+// [0, 0, 0, 0] for union, intersect and subtract, [k, 0, 0, 0] for
+// smooth_union. Anything else would change the hash and do nothing, so it is
+// refused by name.
+TEST(EditorSdfEdit, AnOperatorTakesOnlyTheParametersItUses) {
+    const SdfProgram p = four_pieces();
+    const Result<std::vector<ed::SdfPiece>> pieces = ed::union_pieces(p);
+    ASSERT_TRUE(pieces.has_value());
+    const std::size_t join = p.nodes.size() - 1;              // the root union
+    const std::size_t meet = (*pieces)[2].last;               // the intersection
+    const std::size_t blend = (*pieces)[3].last;              // the smooth union
+    ASSERT_EQ(p.nodes[join].op, static_cast<uint32_t>(SdfOp::union_));
+    ASSERT_EQ(p.nodes[blend].op, static_cast<uint32_t>(SdfOp::smooth_union));
+
+    const Result<SdfProgram> on_union = ed::set_node_params(p, join, glm::vec4(1.0f, 0, 0, 0));
+    ASSERT_FALSE(on_union.has_value());
+    EXPECT_NE(on_union.error().context.find("union"), std::string::npos) << on_union.error().context;
+    const Result<SdfProgram> on_meet = ed::set_node_params(p, meet, glm::vec4(0, 0, 0, 2.0f));
+    ASSERT_FALSE(on_meet.has_value());
+    EXPECT_NE(on_meet.error().context.find("intersect"), std::string::npos) << on_meet.error().context;
+    const Result<SdfProgram> blend_extra = ed::set_node_params(p, blend, glm::vec4(0.5f, 1.0f, 0, 0));
+    ASSERT_FALSE(blend_extra.has_value());
+    EXPECT_NE(blend_extra.error().context.find("smooth_union"), std::string::npos) << blend_extra.error().context;
+
+    // What an operator does use is still set.
+    const Result<SdfProgram> radius = ed::set_node_params(p, blend, glm::vec4(0.5f, 0, 0, 0));
+    ASSERT_TRUE(radius.has_value()) << radius.error().context;
+    EXPECT_EQ(radius->nodes[blend].params.x, 0.5f);
+    EXPECT_TRUE(ed::set_node_params(p, join, glm::vec4(0.0f)).has_value());  // its own zeros: a no-op
+}
+
+// Core's review, pinned rather than changed: a non-zero material on a world
+// whose node_materials is empty fills the array with zeros, and removing the
+// piece again leaves those zeros spelled out. Same meaning, different bytes,
+// so the byte-for-byte round trip holds for material 0 (and for a world that
+// has node_materials). Undo restores the prior program exactly.
+TEST(EditorSdfEdit, AMaterialOnAWorldWithoutNodeMaterialsLeavesTheZerosSpelledOut) {
+    WorldBuilder b = builder();
+    b.plane(glm::vec3(0, 1, 0), 0.0f);
+    const SdfProgram p = built(b);
+    ASSERT_TRUE(p.node_materials.empty());
+    const Result<SdfProgram> added = ed::add_primitive(p, SdfPrim::sphere, glm::vec4(0.5f, 0, 0, 0), kBallAt, 1);
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    ASSERT_EQ(added->node_materials.size(), added->nodes.size());
+    const Result<SdfProgram> removed = ed::remove_piece(*added, 1);
+    ASSERT_TRUE(removed.has_value()) << removed.error().context;
+    EXPECT_EQ(removed->node_materials, std::vector<uint32_t>(removed->nodes.size(), 0u));
+    expect_same_field(*removed, p);
+}
