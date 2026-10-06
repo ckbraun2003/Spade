@@ -12,6 +12,7 @@
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pressure.hpp"
+#include "physics/airflow/projection.hpp"
 
 namespace {
 
@@ -148,6 +149,112 @@ TEST(AirflowMultigrid, TwoRunsAreBitIdentical) {
         return mg.levels[0].p;
     };
     EXPECT_EQ(run(), run());
+}
+
+[[nodiscard]] float max_divergence(const MacGrid& g) {
+    std::vector<float> div(g.p.size(), 0.0f);
+    divergence(g, div);
+    return max_abs(div);
+}
+
+void randomise(MacGrid& g, uint32_t seed) {
+    Lcg rng{seed};
+    for (float& x : g.u) x = rng.next();
+    for (float& x : g.v) x = rng.next();
+    for (float& x : g.w) x = rng.next();
+}
+
+TEST(AirflowProjection, AUniformFlowPassesThroughUntouched) {
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({8, 8, 8, 0.1f}, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.5f);
+    std::fill(g.v.begin(), g.v.end(), -0.5f);
+    const MacGrid before = g;
+    ProjectionScratch s = make_projection_scratch(g.shape);
+    project(g, bc, 1.225f, 0.004f, 2, s);
+    EXPECT_EQ(g.u, before.u);
+    EXPECT_EQ(g.v, before.v);
+    EXPECT_EQ(g.w, before.w);
+    for (float p : g.p) EXPECT_EQ(p, 0.0f);
+}
+
+TEST(AirflowProjection, MoreCyclesLeaveLessDivergence) {
+    DomainBc bc;  // still air: every face an outlet
+    float previous = 0.0f;
+    for (uint32_t n_v : {1u, 2u, 4u, 8u}) {
+        MacGrid g = *make_grid({32, 32, 32, 0.05f}, bc);
+        randomise(g, 7u);
+        apply_velocity_boundaries(g, bc);
+        const float before = max_divergence(g);
+        ProjectionScratch s = make_projection_scratch(g.shape);
+        project(g, bc, 1.225f, 0.004f, n_v, s);
+        const float after = max_divergence(g);
+        std::printf("n_v %u: max |div| %.3e -> %.3e\n", n_v, static_cast<double>(before), static_cast<double>(after));
+        if (n_v > 1u) {
+            EXPECT_LT(after, previous) << n_v;
+        }
+        previous = after;
+        if (n_v == 8u) {
+            EXPECT_LT(after, 1.0e-4f * before);
+        }
+    }
+}
+
+// Review Focus 3: Neumann on every face, so p is fixed only up to a constant.
+TEST(AirflowProjection, AClosedBoxStaysFiniteAndItsDivergenceFalls) {
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    MacGrid g = *make_grid({16, 16, 16, 0.05f}, bc);
+    randomise(g, 11u);
+    apply_velocity_boundaries(g, bc);
+    const float before = max_divergence(g);
+    ProjectionScratch s = make_projection_scratch(g.shape);
+    for (int n = 0; n < 20; ++n) project(g, bc, 1.225f, 0.004f, 2, s);
+    for (float x : g.p) ASSERT_TRUE(std::isfinite(x));
+    EXPECT_LT(max_divergence(g), 1.0e-3f * before);
+}
+
+// Review Focus 4.
+TEST(AirflowProjection, AFaceFollowsTheAmbientEachStep) {
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);  // x- is an inflow, fixed
+    MacGrid g = *make_grid({8, 4, 4, 0.1f}, bc);
+    randomise(g, 3u);
+    apply_velocity_boundaries(g, bc);
+    ProjectionScratch s = make_projection_scratch(g.shape);
+    project(g, bc, 1.225f, 0.004f, 2, s);
+    EXPECT_EQ(g.u[u_index(g.shape, 0, 2, 2)], 1.0f) << "an inflow face is fixed";
+    bc.ambient = glm::vec3(-1.0f, 0.0f, 0.0f);  // now x- is an outlet
+    g.u[u_index(g.shape, 0, 2, 2)] = 0.0f;
+    project(g, bc, 1.225f, 0.004f, 2, s);
+    EXPECT_NE(g.u[u_index(g.shape, 0, 2, 2)], 0.0f) << "an outlet face is corrected by the projection";
+}
+
+// The lead's ask (2026-10-06): with no outlet face (every face a wall, or
+// every axis periodic) p is fixed only up to a constant. The projection
+// removes the mean of the right side and of p in a fixed order, so the
+// pressure is repeatable and its mean is zero, never drifting.
+TEST(AirflowProjection, AClosedBoxsPressureIsRepeatableWithZeroMean) {
+    for (const FaceBc kind : {FaceBc::wall, FaceBc::periodic}) {
+        const auto run = [kind] {
+            DomainBc bc;
+            bc.face.fill(kind);
+            MacGrid g = *make_grid({16, 16, 16, 0.05f}, bc);
+            randomise(g, 11u);
+            apply_velocity_boundaries(g, bc);
+            ProjectionScratch s = make_projection_scratch(g.shape);
+            for (int n = 0; n < 5; ++n) project(g, bc, 1.225f, 0.004f, 2, s);
+            return g.p;
+        };
+        const std::vector<float> p = run();
+        EXPECT_EQ(p, run());
+        double sum = 0.0;
+        for (float x : p) sum += x;
+        const double mean = sum / static_cast<double>(p.size());
+        EXPECT_LE(std::fabs(mean), 1.0e-6 * static_cast<double>(max_abs(p)))
+            << (kind == FaceBc::wall ? "walls" : "periodic") << ": mean " << mean;
+    }
 }
 
 }  // namespace
