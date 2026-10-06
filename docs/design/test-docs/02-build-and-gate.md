@@ -94,7 +94,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 - **The owner's machine: throttle while a game runs** (the user, 2026-10-06: "Throttle while I play"). Before every heavy run, check for one: `Get-Process r5apex_dx12 -ErrorAction SilentlyContinue` in PowerShell (Apex Legends), or any other full-screen game. While one runs:
   - no Docker legs, no GPU tests and no GPU bench. A full `scripts	est.ps1` includes the GPU tests, so run `ctest -L spade -LE gpu` instead;
   - builds run at `-ParallelLevel 4`;
-  - CPU tests are fine.
+  - CPU tests are fine, and so is `scripts/gcc-check.sh` in either mode (one translation unit, capped at 3 GB): only full `docker-leg.ps1` runs wait.
 
   Full speed resumes when the game closes. A bench window needs no game running, as well as both trees quiet.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
