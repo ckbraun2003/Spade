@@ -559,6 +559,40 @@ TEST(RasterCpu, WireframeModeDrawsBothWindingsIdentically) {
         << "wireframe mode must still draw something for a back-facing triangle";
 }
 
+// A drawn line has no gaps, whatever its length in pixels. rasterizeLine()
+// once truncated its step count, so a segment 11.4 pixels long advanced
+// 1.04 pixels a step and skipped a column (rendering 07-status, 2026-10-06).
+// Overlays, wireframe and flow streamlines all draw through it. Here a
+// wireframe triangle's base, a horizontal edge at y = 0.05 (a quarter pixel
+// off a row boundary), at several fractional pixel lengths: every column it
+// crosses on its row must be drawn.
+TEST(RasterCpu, ALineCoversEveryColumnItCrosses) {
+    constexpr uint32_t kSide = 33;  // odd: column 16.5 is the axis
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 5.0f));
+    RenderOptions wireframe;
+    wireframe.mode = DrawMode::wireframe;
+    wireframe.overlays = false;
+    const auto bg = render_background_only(camera, kSide, kSide);
+    const double f = 1.7320508075688772;  // 1 / tan(30 degrees)
+    for (const float half : {0.31f, 0.57f, 0.83f, 1.0f, 1.09f, 1.21f, 1.37f}) {
+        MeshData mesh;
+        mesh.positions = {glm::vec3(-half, 0.05f, 0.0f), glm::vec3(half, 0.05f, 0.0f), glm::vec3(0.0f, 1.5f, 0.0f)};
+        mesh.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+        mesh.indices = {0, 1, 2};
+        std::vector<uint8_t> storage;
+        RenderTarget target = make_target(storage, kSide, kSide);
+        render_or_fail(make_scene(mesh), camera, wireframe, target);
+        const double left = 16.5 - 16.5 * f * half / 5.0;
+        const double right = 16.5 + 16.5 * f * half / 5.0;
+        for (int x = static_cast<int>(std::ceil(left)); x < static_cast<int>(std::floor(right)); ++x) {
+            const size_t i = (16u * kSide + static_cast<size_t>(x)) * 4u;
+            const bool drawn = storage[i] != bg[i] || storage[i + 1] != bg[i + 1] || storage[i + 2] != bg[i + 2];
+            EXPECT_TRUE(drawn) << "half-width " << half << " (" << right - left << " px): column " << x
+                               << " on the base's row is a gap";
+        }
+    }
+}
+
 // ===========================================================================
 // 4. SR-11 submesh contract.
 // ===========================================================================
