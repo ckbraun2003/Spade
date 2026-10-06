@@ -157,7 +157,8 @@ TEST(CoreFp16, AStridedF32SweepMatchesTheReference) {
     EXPECT_GT(checked, 1000000u);
 }
 
-// Every f32 bit pattern. About a minute; opt-in, like Fp32Exp's full sweep.
+// Every f32 bit pattern: about six minutes on release (348 s measured,
+// 2026-10-05); opt-in, like Fp32Exp's full sweep.
 TEST(CoreFp16, FullDomainSweepEveryFloat) {
     if (!env_gate_is_set("SPADE_FULL_FP16_SWEEP")) {
         GTEST_SKIP() << "set SPADE_FULL_FP16_SWEEP=1 to run the full 2^32 sweep";
