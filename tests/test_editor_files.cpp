@@ -192,3 +192,15 @@ TEST(EditorFiles, RelativeWorldPathsUseForwardSlashes) {
     EXPECT_EQ(ed::relative_world_path("C:/a", "C:/a/w.world.yaml").value(), "w.world.yaml");
     EXPECT_EQ(ed::relative_world_path("C:/a/b/c", "C:/a/w.world.yaml").value(), "../../w.world.yaml");
 }
+
+// The editor tests' folders cannot collide across processes: every realm's
+// suite runs on this machine at once, in one temp folder (the lead's gate 5,
+// 2026-10-06, lost two tests to a shared name). tests/unique_temp.hpp.
+TEST(EditorFiles, TwoTempDirsInOneTestGetDifferentFoldersNamingTheProcess) {
+    const support::TempDir a;
+    const support::TempDir b;
+    EXPECT_NE(a.path(), b.path());
+    const std::string pid = "_" + std::to_string(spade::test::process_id()) + "_";
+    EXPECT_NE(a.path().filename().string().find(pid), std::string::npos) << a.path();
+    EXPECT_NE(a.path().filename().string().find("TwoTempDirsInOneTest"), std::string::npos) << a.path();
+}

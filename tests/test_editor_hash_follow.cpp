@@ -160,9 +160,12 @@ TEST(EditorHashFollow, AComposeConflictIgnoresOnlyTheUnsavedHash) {
 }
 
 TEST(EditorHashFollow, AWorldWithNoFileCannotBeFollowed) {
+    // Its own project folder, never the shared temp folder: were the refusal
+    // to regress, the scan would read other processes' files.
+    const support::TempDir tmp;
     ed::WorldDocument w = ed::make_world_document(ed::new_world("field").value(), {});
     ed::SceneDocument s = ed::make_scene_document(support::sample_scene(), {});
-    const Result<ed::WorldSaved> r = ed::save_world_and_follow(w, s, fs::temp_directory_path());
+    const Result<ed::WorldSaved> r = ed::save_world_and_follow(w, s, tmp.path());
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().context.find("Save As"), std::string::npos) << r.error().context;
 }
