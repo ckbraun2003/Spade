@@ -78,7 +78,7 @@ namespace spade::compute {
 
 // ---------------------------------------------------------------------------
 // THE DERIVED BUFFERS' TABLE (module-API stage 4, Task 7b): every buffer the
-// mirror makes beside the registered walk, as data -- the twelve hand-listed
+// mirror makes beside the registered walk, as data -- the eleven hand-listed
 // ones (StateMirror::derived_entries(), in that order), then every declared
 // scratch that names a binding (StepShape::scratch, in its order). create()
 // makes, zero-fills and binds each buffer from its row, so a derived buffer's
@@ -333,10 +333,8 @@ private:
     // substep. Derived like grid_entries_; read back only by
     // read_field_samples().
     Entry field_samples_;
-    // contact_dv_ (binding 27, PHY-7) -- the contact scratch: one float4 per
-    // body slot, zero-filled at create, written and zeroed by the step's own
-    // kernels, never uploaded or read back (physics/schedule.hpp's rule).
-    Entry contact_dv_;
+    // The contact scratch (binding 27, PHY-7) is a declared scratch, one of
+    // scratch_entries_ below: integrate declares it.
 
     // Every DECLARED SCRATCH that names a binding (module-API stage 4, Task
     // 7b), in StepShape::scratch's order: derived buffers like field_samples_,
@@ -348,10 +346,10 @@ private:
     // THE HAND-LISTED derived buffers above, in derived_buffer_shapes()' row
     // order. Until 2026-10-02 there were three hand-kept lists of them, and
     // body_snapshot_ was missing from two.
-    [[nodiscard]] std::array<Entry*, 12> derived_entries() noexcept {
+    [[nodiscard]] std::array<Entry*, 11> derived_entries() noexcept {
         return {&dryden_params_,  &sdf_nodes_,     &sdf_transforms_, &sdf_ranges_,
                 &step_params_,    &step_witness_,  &contact_params_, &grid_params_,
-                &grid_entries_,   &body_snapshot_, &field_samples_,  &contact_dv_};
+                &grid_entries_,   &body_snapshot_, &field_samples_};
     }
 
     // THE ONE WALK over every derived buffer: the hand-listed ones, then every

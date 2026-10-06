@@ -81,9 +81,29 @@ void pass_sensor_gnss(const SubstepContext& ctx) noexcept {
     }
 }
 
+// The contact scratch (PHY-7), a declared scratch `integrate` owns (stage 4
+// Task 7b). Each pass reaches it through its own access list: the contact
+// passes declare it second (kContactAccess), Integrate fourth
+// (kIntegrateAccess), both in sim/standard_modules.cpp.
+namespace {
+
+constexpr std::size_t kContactAccessDv = 1;
+constexpr std::size_t kIntegrateAccessDv = 3;
+
+// Every world's rows of a declared scratch, in slot order: the whole buffer,
+// parallel to all_bodies, for the batched dynamic sweep.
+[[nodiscard]] std::span<ContactDvRow> all_contact_rows(const StateView& v) noexcept {
+    if (v.data == nullptr || v.elem_size != sizeof(ContactDvRow)) return {};
+    return {reinterpret_cast<ContactDvRow*>(v.data), static_cast<std::size_t>(v.world_count) * v.capacity_per_world};
+}
+
+}  // namespace
+
 void pass_collision_static(const SubstepContext& ctx) noexcept {
-    for (const WorldSubstepView& w : ctx.worlds) {
-        resolve_static_contacts(w.bodies, *w.sdf, w.contacts, ctx.h, w.contact_dv);
+    for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
+        const WorldSubstepView& view = ctx.worlds[w];
+        resolve_static_contacts(view.bodies, *view.sdf, view.contacts, ctx.h,
+                                world_rows<ContactDvRow>(ctx.state[kContactAccessDv], static_cast<uint32_t>(w)));
     }
 }
 
@@ -92,25 +112,28 @@ void pass_collision_dynamic(const SubstepContext& ctx) noexcept {
         // D8's shape: one sweep, every world, cross-world pairs structurally
         // impossible because the sort key leads with the world id.
         resolve_dynamic_contacts(ctx.all_bodies, ctx.all_slot_to_world, ctx.dynamic_grid,
-                                 ctx.dynamic_contacts, *ctx.scratch, ctx.all_contact_dv);
+                                 ctx.dynamic_contacts, *ctx.scratch, all_contact_rows(ctx.state[kContactAccessDv]));
         return;
     }
 
     // Heterogeneous materials: one sweep per world, each with its own record.
     // Numerically identical per world to the batched form (see the header).
-    for (const WorldSubstepView& w : ctx.worlds) {
-        resolve_dynamic_contacts(w.bodies, w.body_slot_to_world, w.grid, w.contacts, *ctx.scratch,
-                                 w.contact_dv);
+    for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
+        const WorldSubstepView& view = ctx.worlds[w];
+        resolve_dynamic_contacts(view.bodies, view.body_slot_to_world, view.grid, view.contacts, *ctx.scratch,
+                                 world_rows<ContactDvRow>(ctx.state[kContactAccessDv], static_cast<uint32_t>(w)));
     }
 }
 
 void pass_integrate(const SubstepContext& ctx) noexcept {
-    for (const WorldSubstepView& w : ctx.worlds) {
+    for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
+        const WorldSubstepView& view = ctx.worlds[w];
         // Gravity is a field (engine A9: Integrate applies it, nothing else
         // does), copied from WorldParams by environment.sample this substep.
-        const glm::vec3 gravity(w.fields[kFieldGravityOffset + 0], w.fields[kFieldGravityOffset + 1],
-                                w.fields[kFieldGravityOffset + 2]);
-        integrate_bodies(w.bodies, gravity, ctx.h, w.contact_dv);
+        const glm::vec3 gravity(view.fields[kFieldGravityOffset + 0], view.fields[kFieldGravityOffset + 1],
+                                view.fields[kFieldGravityOffset + 2]);
+        integrate_bodies(view.bodies, gravity, ctx.h,
+                         world_rows<ContactDvRow>(ctx.state[kIntegrateAccessDv], static_cast<uint32_t>(w)));
     }
 }
 

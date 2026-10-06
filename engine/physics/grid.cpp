@@ -537,7 +537,7 @@ bool grid_entry_less(const GridEntry& a, const GridEntry& b) noexcept {
 
 void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
                               const GridParams& grid, const ContactParams& params,
-                              GridScratch& scratch, std::span<glm::vec3> contact_dv) noexcept {
+                              GridScratch& scratch, std::span<ContactDvRow> contact_dv) noexcept {
     // Stages 1-3 -- BUILD, SORT, OFFSETS -- are build_broad_phase(), shared
     // verbatim with the Jacobi gather. Extracting them moved no number, and
     // that is a property rather than a hope: that function performs no
@@ -624,8 +624,8 @@ void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint3
                         const glm::vec3 a_in = a.vel;
                         const glm::vec3 b_in = b.vel;
                         resolve_pair(a, b, pp);
-                        contact_dv[ea.slot] += a.vel - a_in;
-                        contact_dv[eb.slot] += b.vel - b_in;
+                        contact_dv[ea.slot].dv += a.vel - a_in;
+                        contact_dv[eb.slot].dv += b.vel - b_in;
                     }
                 }
             }

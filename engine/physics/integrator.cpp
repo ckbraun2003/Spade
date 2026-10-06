@@ -8,7 +8,7 @@
 namespace spade::physics {
 
 void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
-                      std::span<glm::vec3> contact_dv) noexcept {
+                      std::span<ContactDvRow> contact_dv) noexcept {
     // `gravity` is per-world, not per-body: the caller reads it once (the
     // schedule's Integrate pass, from the gravity field), which keeps the
     // per-body op sequence below identical to what a GPU thread executes (it
@@ -24,8 +24,8 @@ void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
         // substep as a phantom contact (physics/schedule.hpp's scratch rule).
         glm::vec3 contact(0.0f);
         if (!contact_dv.empty()) {
-            contact = contact_dv[i];
-            contact_dv[i] = glm::vec3(0.0f);
+            contact = contact_dv[i].dv;
+            contact_dv[i].dv = glm::vec3(0.0f);
         }
 
         // Inert slots -- freed, tombstoned, or never spawned -- are skipped

@@ -9,7 +9,7 @@ namespace spade::physics {
 
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
                              const ContactParams& params, [[maybe_unused]] float h,
-                             std::span<glm::vec3> contact_dv) noexcept {
+                             std::span<ContactDvRow> contact_dv) noexcept {
     // Hoisted once: per-world, not per-body, so the per-body op sequence below
     // is exactly what a GPU thread executes after reading its world's param
     // row. (`h` is unused by the pinned model -- see contacts.hpp.) `radius`
@@ -160,7 +160,7 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
             body.vel -= dv_t * (v_t / v_t_len);
         }
         if (!contact_dv.empty()) {
-            contact_dv[i] += body.vel - vel_in;
+            contact_dv[i].dv += body.vel - vel_in;
         }
 
         // 3. POSITIONAL CORRECTION (Baumgarte-style, applied to `pos`

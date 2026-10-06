@@ -716,6 +716,9 @@ TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
     shape.substeps = 1;
     shape.h = 0.001f;
     shape.arrays = walk_shapes(standard_schedule(), shape);
+    // The standard set's declared scratch (integrate's contact_dv, binding 27,
+    // PHY-7) is bound from its declaration, as Simulation hands it over.
+    shape.scratch = spade::scratch_shapes(standard_schedule(), shape);
 
     Result<std::unique_ptr<VulkanBackend>> backend =
         VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
@@ -886,9 +889,9 @@ TEST_F(GpuStateMirrorTest, AShapeTheMirrorCannotSizeIsRefusedByName) {
 //
 // THESE RUN ON THE HOST, NOT THE DEVICE, AND THAT IS FORCED, NOT CHOSEN. Every
 // binding in the generated range (0 .. gen::kBindingCount_state - 1) is taken
-// by the registry's walk entries and the twelve hand-listed derived buffers --
-// PHY-7's contact_dv, binding 27, is the twelfth -- so no scratch can be bound
-// without a new binding in bindings.slang. So the mirror's table is checked
+// by the registry's walk entries, the eleven hand-listed derived buffers and
+// integrate's contact_dv scratch (PHY-7, binding 27) -- so no other scratch
+// can be bound without a new binding in bindings.slang. So the mirror's table is checked
 // here, as data: the test scratches sit at bindings 40 and 41, clear of the
 // generated range, and each call widens the range just enough to hold them.
 // Not Gpu-prefixed, so no "gpu" label: nothing here touches a device.
@@ -900,9 +903,9 @@ namespace gen = spade::compute::gen;
 using spade::compute::DerivedBufferShape;
 using spade::compute::ScratchShape;
 
-// The hand-listed twelve, in derived_entries() order, with their bindings: the
-// buffers and bindings this task must not move. PHY-7's contact_dv is the
-// twelfth.
+// The hand-listed eleven, in derived_entries() order, with their bindings: the
+// buffers and bindings this task must not move. PHY-7's contact_dv was the
+// twelfth until Physics made it integrate's declared scratch (same binding).
 struct HandListed {
     std::string_view name;
     uint32_t binding;
@@ -913,7 +916,7 @@ constexpr HandListed kHandListed[] = {
     {"step_params", gen::kBinding_step_params},       {"step_witness", gen::kBinding_step_witness},
     {"contact_params", gen::kBinding_contact_params}, {"grid_params", gen::kBinding_grid_params},
     {"grid_entries", gen::kBinding_grid_entries},     {"body_snapshot", gen::kBinding_body_snapshot},
-    {"field_samples", gen::kBinding_field_samples},   {"contact_dv", gen::kBinding_contact_dv}};
+    {"field_samples", gen::kBinding_field_samples}};
 
 // The test scratches' bindings: past the generated range, so a test scratch
 // never collides with a real binding, and the range each call passes is
@@ -953,14 +956,13 @@ static_assert(gen::kBindingCount_state <= kScratchBinding,
 
 TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSize) {
     // The declarations, through Simulation's own conversion (scratch_shapes):
-    // a per_body scratch at a test binding, a CPU-only one, and a per_world one
-    // at the binding after it.
+    // the standard set's own per_body scratch (integrate's contact_dv, PHY-7,
+    // at its binding), then a CPU-only one and a per_world one at the test
+    // binding.
     static constexpr spade::modules::ScratchDecl declared[] = {
-        {.name = "body_dv", .elem_size = 16, .extent = spade::modules::Extent::per_body,
-         .binding = kScratchBinding},
         {.name = "cpu_dv", .elem_size = 16, .extent = spade::modules::Extent::per_body},
         {.name = "world_dv", .elem_size = 32, .extent = spade::modules::Extent::per_world,
-         .binding = kScratchBinding + 1}};
+         .binding = kScratchBinding}};
     spade::modules::ModuleSet set = spade::modules::standard_modules();
     set.push_back({.name = "dvmod", .scratch = declared});
     const auto schedule = spade::modules::compile_schedule(set);
@@ -968,22 +970,23 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
     StepShape shape = scratch_test_shape();
     shape.scratch = spade::scratch_shapes(*schedule, shape);
 
-    const auto derived = spade::compute::derived_buffer_shapes(shape, kScratchBinding + 2);
+    const auto derived = spade::compute::derived_buffer_shapes(shape, kScratchBinding + 1);
     ASSERT_TRUE(derived.has_value()) << derived.error().context;
-    ASSERT_EQ(derived->size(), std::size(kHandListed) + 2) << "the twelve, then the two bound scratches";
+    ASSERT_EQ(derived->size(), std::size(kHandListed) + 2)
+        << "the eleven, then the two bound scratches (contact_dv, world_dv)";
     for (std::size_t i = 0; i < std::size(kHandListed); ++i) {
         EXPECT_EQ((*derived)[i].name, kHandListed[i].name) << i;
         EXPECT_EQ((*derived)[i].binding, kHandListed[i].binding) << kHandListed[i].name;
     }
     const DerivedBufferShape& dv = (*derived)[std::size(kHandListed)];
-    EXPECT_EQ(dv.name, "body_dv");
-    EXPECT_EQ(dv.binding, kScratchBinding);
+    EXPECT_EQ(dv.name, "contact_dv");
+    EXPECT_EQ(dv.binding, gen::kBinding_contact_dv);
     EXPECT_EQ(dv.elem_size, 16u) << "the declared row size: one size for the CPU rows and the device buffer";
     EXPECT_EQ(dv.count, 16u) << "per_body: 2 worlds x 8 body slots";
     EXPECT_EQ(dv.byte_size, 256u);
     const DerivedBufferShape& world = (*derived)[std::size(kHandListed) + 1];
     EXPECT_EQ(world.name, "world_dv");
-    EXPECT_EQ(world.binding, kScratchBinding + 1);
+    EXPECT_EQ(world.binding, kScratchBinding);
     EXPECT_EQ(world.count, 2u) << "per_world: one row per world";
     EXPECT_EQ(world.byte_size, 64u);
 
@@ -1006,12 +1009,13 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
     EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded) << wraps.error().context;
     EXPECT_NE(wraps.error().context.find("'huge_dv'"), std::string::npos) << wraps.error().context;
 
-    // Today's range: the standard set's shape is the twelve and nothing else,
-    // contact_dv last at PHY-7's size -- one 16-byte row per body slot of every
-    // world.
-    const auto standard = spade::compute::derived_buffer_shapes(scratch_test_shape(), gen::kBindingCount_state);
+    // Today's range: the standard set's shape is the eleven and its one
+    // declared scratch, contact_dv, at binding 27 (PHY-7).
+    StepShape plain = scratch_test_shape();
+    plain.scratch = spade::scratch_shapes(standard_schedule(), plain);
+    const auto standard = spade::compute::derived_buffer_shapes(plain, gen::kBindingCount_state);
     ASSERT_TRUE(standard.has_value()) << standard.error().context;
-    ASSERT_EQ(standard->size(), std::size(kHandListed));
+    ASSERT_EQ(standard->size(), std::size(kHandListed) + 1);
     EXPECT_EQ(standard->back().name, "contact_dv");
     EXPECT_EQ(standard->back().binding, gen::kBinding_contact_dv);
     EXPECT_EQ(standard->back().elem_size, 16u);

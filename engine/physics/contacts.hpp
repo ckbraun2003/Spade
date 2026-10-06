@@ -4,6 +4,7 @@
 #include <span>
 #include <type_traits>
 
+#include "physics/contact_dv.hpp"
 #include "state/layout.hpp"
 #include "world/sdf.hpp"
 
@@ -327,6 +328,6 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // body's slot of the contact scratch (physics/schedule.hpp). Empty: none kept.
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
                              const ContactParams& params, float h,
-                             std::span<glm::vec3> contact_dv = {}) noexcept;
+                             std::span<ContactDvRow> contact_dv = {}) noexcept;
 
 }  // namespace spade::physics

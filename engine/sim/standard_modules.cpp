@@ -5,6 +5,7 @@
 #include "sim/module.hpp"
 
 #include "physics/forces.hpp"
+#include "physics/contact_dv.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -13,6 +14,10 @@
 #include "sim/simulation.hpp"  // the spawn records
 #include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
+
+#if __has_include("bindings.gen.hpp")
+#include "bindings.gen.hpp"  // the contact scratch's binding (Vulkan builds only)
+#endif
 
 namespace spade::modules {
 namespace {
@@ -195,11 +200,14 @@ constexpr PassDecl kBehaviorPasses[] = {
      .cpu = &physics::pass_behaviors_force, .gpu = compute::GpuRecipe::behaviors_force},
 };
 
-// body.contact_dv: the contact scratch (physics/schedule.hpp, PHY-7). Both
-// contact passes add to it; Integrate reads it into the specific force and
-// zeroes it.
+// integrate.contact_dv: the contact scratch (physics/contact_dv.hpp, PHY-7),
+// a declared scratch `integrate` owns (stage 4 Task 7b). Both contact passes
+// accumulate into it -- required writes to another module's scratch, ordered
+// by the phases and by dynamic's `after` -- and Integrate reads it into the
+// specific force and zeroes it. Its index here (1) and in kIntegrateAccess (3)
+// is how the passes reach it (physics/schedule.cpp).
 constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write},
-                                             {"body.contact_dv", Access::accumulate}};
+                                             {"integrate.contact_dv", Access::accumulate}};
 constexpr PassDecl kStaticPasses[] = {{.name = "resolve",
                                        .phase = Phase::constraints,
                                        .access = kContactAccess,
@@ -217,8 +225,21 @@ constexpr PassDecl kDynamicPasses[] = {{.name = "resolve",
 constexpr QuantityAccess kIntegrateAccess[] = {{"body.pose", Access::write},
                                                {"body.wrench", Access::write},
                                                {"body.specific_force", Access::write},
-                                               {"body.contact_dv", Access::write},
+                                               {"integrate.contact_dv", Access::write},
                                                {"field.gravity", Access::read}};
+// The contact scratch's declaration: per body, 16-byte rows on both sides,
+// at binding 27 on the GPU. bindings.gen.hpp exists only in a SPADE_VULKAN
+// build; without it no backend could bind the scratch, so it is CPU-only there.
+#if __has_include("bindings.gen.hpp")
+constexpr uint32_t kContactDvBinding = compute::gen::kBinding_contact_dv;
+#else
+constexpr uint32_t kContactDvBinding = kNoBinding;
+#endif
+constexpr ScratchDecl kIntegrateScratch[] = {{.name = "contact_dv",
+                                              .elem_size = row_size<physics::ContactDvRow>(),
+                                              .extent = Extent::per_body,
+                                              .binding = kContactDvBinding}};
+
 constexpr PassDecl kIntegratePasses[] = {
     {.name = "integrate", .phase = Phase::integrate, .access = kIntegrateAccess, .cpu = &physics::pass_integrate,
      .gpu = compute::GpuRecipe::integrate}};
@@ -240,7 +261,7 @@ ModuleSet standard_modules() {
         {.name = "behaviors", .passes = kBehaviorPasses},
         {.name = "static_contact", .passes = kStaticPasses},
         {.name = "dynamic_contact", .passes = kDynamicPasses},
-        {.name = "integrate", .passes = kIntegratePasses},
+        {.name = "integrate", .passes = kIntegratePasses, .scratch = kIntegrateScratch},
         {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields},
     };
 }

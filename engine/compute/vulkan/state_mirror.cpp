@@ -238,7 +238,7 @@ static_assert(sizeof(VkDeviceSize) >= 8 && sizeof(std::size_t) >= 8,
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// The derived buffers' table (state_mirror.hpp). The hand-listed twelve keep
+// The derived buffers' table (state_mirror.hpp). The hand-listed eleven keep
 // the sizes, counts and bindings create() gave them one by one before Task 7b;
 // only the place they are spelt moved.
 // ---------------------------------------------------------------------------
@@ -310,14 +310,9 @@ Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& s
          .elem_size = static_cast<uint32_t>(sizeof(spade::physics::FieldSampleRow)),
          .count = shape.world_count,
          .binding = gen::kBinding_field_samples},
-        // The contact scratch (binding 27, PHY-7), one float4 per body slot of
-        // every world, zero-filled at create and zero at every substep boundary.
-        // The count is a 64-bit product, so a shape past 2^32 - 1 rows is
-        // refused by name.
-        {.name = "contact_dv",
-         .elem_size = static_cast<uint32_t>(4 * sizeof(float)),
-         .count = uint64_t{shape.world_count} * shape.body_capacity,
-         .binding = gen::kBinding_contact_dv},
+        // The contact scratch (binding 27, PHY-7) is not here: integrate
+        // declares it (sim/standard_modules.cpp, a ScratchDecl), so it reaches
+        // the mirror through StepShape::scratch like any declared scratch.
     };
 
     std::vector<DerivedBufferShape> out;
@@ -490,7 +485,7 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     //
     // FROM ONE TABLE (module-API stage 4, Task 7b): derived_buffer_shapes()
     // spells every derived buffer's name, size and binding -- the hand-listed
-    // twelve in derived_entries() order, then every declared scratch that names
+    // eleven in derived_entries() order, then every declared scratch that names
     // a binding -- and refuses, by name, a shape or a scratch binding the
     // mirror cannot take. It runs after the walk's buffers are made, where the
     // derived sizing always ran, so a shape the walk cannot allocate still
@@ -502,7 +497,7 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
 
     Result<std::vector<DerivedBufferShape>> derived = derived_buffer_shapes(shape, gen::kBindingCount_state);
     if (!derived) return std::unexpected(derived.error());
-    const std::array<Entry*, 12> hand_listed = self->derived_entries();
+    const std::array<Entry*, 11> hand_listed = self->derived_entries();
     if (derived->size() < hand_listed.size()) {
         return std::unexpected(Error{Code::internal, "StateMirror::create: the derived table lost a hand-listed row"});
     }
