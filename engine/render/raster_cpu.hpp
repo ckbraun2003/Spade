@@ -107,8 +107,14 @@ namespace spade::render {
 // see raster_cpu.cpp's own render() body for exactly when this path is
 // even reached (only when `scene.dynamics` is non-empty; an empty-dynamics
 // frame skips the copy entirely and never touches this parameter at all).
+//
+// `flow_report` (airflow visualization plan step 2): OPTIONAL. When given,
+// render() fills it with what each flow layer drew with: the ranges, auto
+// ones flagged for announcement, and the no-data counts (L6). A malformed
+// flow layer is refused, as a field layer is, before any pixel is written.
 [[nodiscard]] Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
-                                   RenderTarget& target, std::vector<float>* shadow_scratch = nullptr);
+                                   RenderTarget& target, std::vector<float>* shadow_scratch = nullptr,
+                                   FlowFrameReport* flow_report = nullptr);
 
 // ---------------------------------------------------------------------------
 // The overlays' geometry (RenderOptions::overlays, PA-4): one source for the

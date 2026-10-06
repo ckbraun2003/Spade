@@ -1104,6 +1104,65 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
     }
 }
 
+// Composites each flow layer over the frame (render/flow_render.hpp): per
+// pixel of its box, the camera ray clipped to the box, the near and far
+// planes and the opaque depth already drawn, marched by march_flow_ray(),
+// then C + T C_behind. Colour only: a volume writes no depth. Fills
+// `report`, when given, with each layer's ranges and no-data counts.
+void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const Camera& camera,
+                      FlowFrameReport* report) {
+    if (scene.flow_layers.empty()) {
+        return;
+    }
+    const RayGrid grid = ray_grid(camera, fb.width, fb.height);
+    for (const FlowLayer& layer : scene.flow_layers) {
+        // render() has refused a malformed layer.
+        const PreparedFlowLayer prepared = prepare_flow_layer(layer);
+        FlowLayerReport layer_report;
+        for (const PreparedTransfer& transfer : prepared.transfers) {
+            layer_report.ranges.push_back(transfer.range);
+        }
+        layer_report.volume_no_data = layer.volume->header.no_data;
+        PixelRect rect;
+        if (box_pixel_rect(vc, prepared.box, rect)) {
+            for (int y = rect.y0; y <= rect.y1; ++y) {
+                for (int x = rect.x0; x <= rect.x1; ++x) {
+                    const CameraRay ray = camera_ray(grid, static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+                    float t_enter = 0.0f, t_exit = 0.0f;
+                    if (!clip_ray_to_box(grid.origin, ray.dir_world, prepared.box, t_enter, t_exit)) {
+                        continue;
+                    }
+                    const size_t idx = static_cast<size_t>(y) * fb.width + static_cast<size_t>(x);
+                    const float cos_theta = -ray.dir_cam.z;
+                    float t_end = std::min(camera.far_plane / cos_theta, t_exit);
+                    if (fb.depth[idx] > 0.0) {
+                        // An opaque surface hides the air behind it.
+                        t_end = std::min(t_end, static_cast<float>(1.0 / fb.depth[idx]) / cos_theta);
+                    }
+                    const float t_start = std::max(camera.near_plane / cos_theta, t_enter);
+                    const FlowRayResult r = march_flow_ray(prepared, grid.origin, ray.dir_world, t_start, t_end);
+                    if (r.crossed_no_data) {
+                        ++layer_report.pixels_crossing_no_data;
+                    }
+                    if (r.transmittance == 1.0f && r.colour == glm::vec3(0.0f)) {
+                        continue;  // nothing absorbed or emitted
+                    }
+                    uint8_t* px = &fb.pixels[idx * 4u];  // B, G, R, X
+                    const glm::vec3 behind(static_cast<float>(px[2]) / 255.0f, static_cast<float>(px[1]) / 255.0f,
+                                           static_cast<float>(px[0]) / 255.0f);
+                    const glm::vec3 out = r.colour + r.transmittance * behind;
+                    px[0] = to_byte(out.b);
+                    px[1] = to_byte(out.g);
+                    px[2] = to_byte(out.r);
+                }
+            }
+        }
+        if (report != nullptr) {
+            report->layers.push_back(std::move(layer_report));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Overlay passes (RenderOptions::overlays, PA-4) -- ported from the
 // wireframe rasterizer's drawGroundGrid/drawWorldBounds/drawSpawnMarkers/
@@ -1632,7 +1691,7 @@ OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& 
 }
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
-                     RenderTarget& target, std::vector<float>* shadow_scratch) {
+                     RenderTarget& target, std::vector<float>* shadow_scratch, FlowFrameReport* flow_report) {
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
     }
@@ -1641,6 +1700,16 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         if (Result<void> valid = validate_field_layer(layer); !valid) {
             return valid;
         }
+    }
+    // So is a malformed flow layer (render/flow_render.hpp).
+    for (size_t i = 0; i < scene.flow_layers.size(); ++i) {
+        if (Result<void> valid = validate_flow_layer(scene.flow_layers[i]); !valid) {
+            return std::unexpected(
+                Error{valid.error().code, "render: flow layer " + std::to_string(i) + ": " + valid.error().context});
+        }
+    }
+    if (flow_report != nullptr) {
+        flow_report->layers.clear();  // the ray-march mode draws no flow layers, and reports none
     }
     // So is a CSG subtree with no program, or one naming a draw item past the
     // statics: either would vanish from the frame in silence.
@@ -1779,6 +1848,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         draw_csg_subtrees(fb, vc, scene, camera, options, shadow);
     }
     draw_field_layers(fb, vc, scene);
+    draw_flow_layers(fb, vc, scene, camera, flow_report);
 
     // Overlays: overlay_geometry() decides what draws and in what order; GL
     // draws the same lists.

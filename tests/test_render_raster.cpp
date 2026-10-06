@@ -32,6 +32,8 @@
 #include "render/tessellate.hpp"
 #include "world/sdf.hpp"
 
+#include "flow_synthetic.hpp"
+
 // ---------------------------------------------------------------------------
 // render() -- S7a Task R3, the deterministic CPU rasterizer.
 //
@@ -1657,6 +1659,50 @@ TEST(RasterGolden, CsgSlabAndBlobRayMarchedMatchesCommittedManifest) {
     }
 
     check_against_manifest("csg_slab_and_blob_shaded", pixels);
+}
+
+// Airflow visualization plan step 2: the first flow-volume golden. A
+// synthetic vortex ring with a dye blob at 32^3 (tests/flow_synthetic.hpp),
+// written through the publish format, so it pins rendering alone and never
+// moves with the solver (airflow spec section 5). Vorticity through inferno
+// with a ramped extinction, and the dye as smoke, marched together.
+TEST(RasterGolden, FlowVortexRingMatchesCommittedManifest) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    ASSERT_TRUE(spade::validate_flow_volume(volume).has_value());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    RenderScene scene;
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}});
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 2.2f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+
+    const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
+        << "sanity floor: this scene/camera must actually show something before its hash means anything";
+
+    // Guards beside the hash: both transfer functions must reach the frame.
+    {
+        RenderScene vorticity_only = scene;
+        vorticity_only.flow_layers[0].transfers = {vorticity};
+        EXPECT_NE(pixels, render_golden(vorticity_only, camera, options)) << "the smoke must show";
+        RenderScene smoke_only = scene;
+        smoke_only.flow_layers[0].transfers = {smoke};
+        EXPECT_NE(pixels, render_golden(smoke_only, camera, options)) << "the vorticity must show";
+    }
+
+    check_against_manifest("flow_vortex_ring", pixels);
 }
 
 // ===========================================================================

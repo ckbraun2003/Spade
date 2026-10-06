@@ -1109,6 +1109,19 @@ TEST_F(GpuGlRenderer, RefusesAnEmptyOrUnattachedCsgSubtree) {
     }
 }
 
+// L6: GL has no flow-volume pass yet (airflow visualization plan step 7),
+// so a scene with a flow layer is refused, never drawn without it.
+TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
+    RenderScene scene = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    const spade::FlowVolume volume;
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {spade::render::TransferFunction{}}});
+    const spade::Result<void> drew =
+        renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value()) << "a flow layer GL cannot draw must be refused";
+    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+}
+
 // validate()'s own code comes through: a program needing more stack than
 // kMaxSdfDepth is capacity_exceeded, not invalid_argument.
 TEST_F(GpuGlRenderer, PassesThroughAProgramsCapacityRefusal) {

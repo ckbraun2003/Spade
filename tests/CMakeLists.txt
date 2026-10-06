@@ -55,6 +55,8 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_core_fp16.cpp
+    test_core_flow_volume.cpp
     test_path_text.cpp
     test_unique_temp.cpp
     test_sdf.cpp
@@ -95,6 +97,9 @@ add_executable(spade_tests
     test_render_gltf.cpp
     test_render_csg.cpp
     test_render_csg_raster.cpp
+    test_render_transfer_function.cpp
+    test_render_flow_sample.cpp
+    test_render_flow_volume.cpp
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp

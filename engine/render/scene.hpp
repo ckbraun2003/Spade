@@ -68,6 +68,7 @@
 #include "core/error.hpp"
 #include "core/fp32_math.hpp"   // math::sin32/cos32 (S7a Task R8) -- tan32() below, SR-14
 #include "render/field_layer.hpp"  // FieldLayer, RenderScene::field_layers
+#include "render/flow_render.hpp"  // FlowLayer, RenderScene::flow_layers
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
@@ -587,6 +588,12 @@ struct RenderScene {
     // samples each field and fills these; the raster modes draw them, and the
     // ray-march mode does not. Empty unless a caller adds one.
     std::vector<FieldLayer> field_layers;
+    // Published flow volumes and their transfer functions
+    // (render/flow_render.hpp). The raster modes composite them after the
+    // field layers and before the overlays; the ray-march mode does not, as
+    // with field layers; GL refuses them until its pass lands (airflow
+    // visualization plan step 7). Empty unless a caller adds one.
+    std::vector<FlowLayer> flow_layers;
     // CSG subtrees, which shaded and velocity modes ray-march per pixel
     // within their bounds (RS3). Empty for a hand-built RenderScene; only
     // scene_from_world() fills it, one entry per CSG root.
