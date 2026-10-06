@@ -16,12 +16,20 @@
 //   remove_piece -- drops the piece's nodes and the union that joined it,
 //     plus only the transforms those nodes used that no other node uses
 //     (never transform 0, the identity by convention). So add, then remove,
-//     restores the program's bytes.
+//     restores the program's bytes -- with one exception: a non-zero
+//     material added to a program whose node_materials is empty fills that
+//     array with zeros, and the zeros stay after the remove. The meaning is
+//     the same and the bytes differ; an all-zero array is not turned back
+//     into an empty one, since a world may spell its zeros out. Undo restores
+//     the prior program exactly in every case.
 //   repose_piece -- gives a piece a new transform. It is refused for a piece
 //     whose primitives carry more than one transform, since one pose cannot
 //     move them together. A transform another node shares is left alone and
 //     the piece gets a new one.
-//   set_node_params -- one node's four parameters.
+//   set_node_params -- one node's four parameters. An operator takes only
+//     what it uses: union, intersect and subtract take [0, 0, 0, 0], and a
+//     smooth union takes [k, 0, 0, 0]. Anything else would change the world
+//     hash and nothing else, so it is refused (L6).
 // An exact no-op (the same transform, the same parameters) returns the input
 // unchanged, so it cannot perturb the world hash. node_materials stays
 // parallel to the nodes. Every result passes SdfProgram::validate(), and is
@@ -299,6 +307,19 @@ struct SdfTree {
                                          ", numbered from 0"});
     }
     if (std::memcmp(&program.nodes[node].params, &params, sizeof(glm::vec4)) == 0) return program;  // exact no-op
+    const uint32_t op = program.nodes[node].op;
+    if (op != static_cast<uint32_t>(SdfOp::none)) {
+        const bool blend = op == static_cast<uint32_t>(SdfOp::smooth_union);
+        const bool unused_set = (!blend && params.x != 0.0f) || params.y != 0.0f || params.z != 0.0f || params.w != 0.0f;
+        if (unused_set) {
+            return std::unexpected(Error{
+                Code::invalid_argument,
+                "set the parameters of terrain node " + std::to_string(node) + ": it is a " +
+                    std::string(detail::op_word(op)) + ", which takes " +
+                    (blend ? "only its blend radius [k, 0, 0, 0]" : "no parameters [0, 0, 0, 0]") +
+                    "; any other value would change the world's hash and nothing else"});
+        }
+    }
     SdfProgram out = program;
     out.nodes[node].params = params;
     return detail::checked(std::move(out));
