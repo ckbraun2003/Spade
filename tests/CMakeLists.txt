@@ -64,6 +64,7 @@ add_executable(spade_tests
     test_contacts.cpp
     test_grid.cpp
     test_forces.cpp
+    test_airflow_grid.cpp
     test_dryden.cpp
     test_rotor.cpp
     test_rotor_wake.cpp
