@@ -1051,8 +1051,13 @@ TEST(StateMirrorScratch, AScratchBindingIsRefusedByName) {
         << "a hand-listed derived buffer's binding";
     EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_field_samples)}, range), {"dv", "field_samples"}))
         << "field_samples' binding";
-    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_contact_dv)}, range), {"'dv'", "contact_dv"}))
-        << "the last hand-listed derived buffer's binding (PHY-7's contact_dv)";
+    // contact_dv's binding (PHY-7) is a declared scratch's now, not a
+    // hand-listed buffer's: a second scratch claiming it beside integrate's
+    // contact_dv is refused, naming both.
+    EXPECT_TRUE(refused_naming_all(
+        with({at("contact_dv", gen::kBinding_contact_dv), at("dv", gen::kBinding_contact_dv)}, range),
+        {"'dv'", "contact_dv"}))
+        << "integrate's contact_dv's binding";
     EXPECT_TRUE(refused_naming_all(with({at("dv", kScratchBinding), at("dv_b", kScratchBinding)}, kScratchBinding + 1),
                                    {"dv_b", "'dv'"}))
         << "another scratch's binding";
