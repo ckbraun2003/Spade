@@ -620,6 +620,9 @@ add_library(spade_physics STATIC
     physics/contacts.cpp
     physics/grid.cpp
     physics/forces.cpp
+    physics/airflow/mac_grid.cpp
+    physics/airflow/boundaries.cpp
+    physics/airflow/pressure.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
 set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)
