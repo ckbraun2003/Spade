@@ -633,9 +633,12 @@ TEST(CsgFolds, AThinShellFoldsAndTheSceneNamesIt) {
 
     const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2);
     const MeshData mesh = mesh_or_fail(world.sdf, /*root=*/2, bounds);
-    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(world.sdf, 2, mesh);
+    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(
+        world.sdf, 2, mesh, spade::render::csg_mesh_cell_size(world.sdf, 2, bounds));
     EXPECT_GT(folds.folded, 0u);
     EXPECT_GT(folds.bounds.min.y, 0.0f) << "the folds are in the thin upper wall, not the thick bottom";
+    EXPECT_EQ(folds.thin, folds.folded) << "every fold here is on the thin wall";
+    EXPECT_EQ(folds.sharp, 0u);
 
     // Since B2, shaded and velocity frames march the wall and draw it whole
     // (RS3). Only the mesh has the holes, and the mesh draws wireframe and
@@ -667,6 +670,36 @@ TEST(CsgFolds, TheWarningNamesTheCellTheMeshSamples) {
         << "the case must tell the two figures apart";
     EXPECT_NE(warning.find(std::format("two cells of {:.3f} m", cell)), std::string::npos)
         << "the mesh samples " << cell << " m cells: " << warning;
+}
+
+// A sharp CSG edge folds a few triangles at any thickness: the gradient
+// flips across the crease. Kat's circuit-track node 19 is such a shape, a
+// torus with a 0.24 m tube cut flat by a box at y = 1.6. Its tube is about
+// five cells thick, so "make it thicker" would be the wrong advice. The
+// warning names a sharp edge instead, and says it is expected.
+TEST(CsgFolds, ASharpEdgeIsNamedAsOneNotAsAThinWall) {
+    WorldBuilder b = base_builder();
+    b.torus(2.0f, 0.24f, SdfPose{.position = {0.0f, 1.5f, 0.0f}});
+    b.box(glm::vec3(5.0f, 5.0f, 5.0f), SdfPose{.position = {0.0f, 1.6f - 5.0f, 0.0f}});
+    b.intersect();
+    const WorldDesc world = build_or_fail(b);
+
+    const Aabb bounds = bounds_or_fail(world.sdf, /*root=*/2);
+    const MeshData mesh = mesh_or_fail(world.sdf, /*root=*/2, bounds);
+    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(
+        world.sdf, 2, mesh, spade::render::csg_mesh_cell_size(world.sdf, 2, bounds));
+    ASSERT_GT(folds.folded, 0u) << "the case must fold at its crease";
+    EXPECT_EQ(folds.sharp, folds.folded) << "every fold here is at the sharp cut edge";
+    EXPECT_EQ(folds.thin, 0u);
+    EXPECT_NEAR(folds.sharp_bounds.max.y, 1.6f, 0.1f) << "the folds lie along the cut";
+
+    const Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world, {});
+    ASSERT_TRUE(scene) << scene.error().context;
+    ASSERT_EQ(scene->warnings.size(), 1u);
+    const std::string& warning = scene->warnings[0];
+    EXPECT_NE(warning.find("sharp edge"), std::string::npos) << warning;
+    EXPECT_NE(warning.find("smooth_union"), std::string::npos) << warning;
+    EXPECT_EQ(warning.find("thinner than"), std::string::npos) << "not a thin wall: " << warning;
 }
 
 // The control: the same bowl with a thick wall folds nowhere and warns of

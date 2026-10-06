@@ -72,15 +72,22 @@ inline constexpr CsgMeshLimits kCsgMeshDefaults{};
 // Folded triangles: their geometric normal points against the subtree's SDF
 // gradient at the centroid. Surface nets folds a wall thinner than about two
 // cells, because both faces share one cell's vertex, and a folded triangle is
-// culled as a back face. scene_from_world() turns a nonzero count into a
-// warning that names the subtree and where the fold is (L6).
+// culled as a back face. It also folds a few triangles at a sharp CSG edge,
+// where the gradient flips, however thick the solid. Each fold is judged by
+// the solid's thickness inward from it: under two cells of `cell` (the mesh's
+// own, csg_mesh_cell_size()) is a thin wall, anything else a sharp edge.
+// scene_from_world() names each kind in a warning of its own (L6).
 struct CsgFoldReport {
-    uint32_t folded = 0;     // triangles that fold
+    uint32_t folded = 0;     // triangles that fold: thin + sharp
     uint32_t triangles = 0;  // all triangles judged (degenerate ones are skipped)
     Aabb bounds{};           // world-space box around the folded triangles; empty when none fold
+    uint32_t thin = 0;       // folds on a wall thinner than two cells
+    Aabb thin_bounds{};
+    uint32_t sharp = 0;      // folds at a sharp edge of thicker solid
+    Aabb sharp_bounds{};
 };
 [[nodiscard]] CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node,
-                                                  const MeshData& mesh);
+                                                  const MeshData& mesh, float cell);
 
 // Splits a validated postfix program (PRECONDITION: program.validate() has
 // succeeded -- matching world/sdf.hpp's own eval()/gradient()/sample()
