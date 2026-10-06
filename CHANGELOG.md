@@ -4,6 +4,30 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API, stage 4: modules own their state (2026-10-05)
+
+- **Modules declare their arrays** (`ModuleDesc::state`, `ArrayDecl`). Each has a name, a row size and an extent: per world, per body slot, per force element, per sensor, or a fixed number of rows per row of another array (`per_row`, such as a sensor's ring). `compile_schedule` tables them in walk order and refuses, by name, a bad name, size, extent or owner, or a name declared twice. A stateful module's `<module>.<name>` quantities must name its own arrays, so the standard set's tokens changed:
+  - `dryden.state` is `dryden.dryden`, and `rotor.state` is `rotor.rotors`;
+  - `imu.state` is `imu.imu_sensors` and `imu.imu_ring`;
+  - `gnss.state` is `gnss.gnss_sensors` and `gnss.gnss_ring`.
+
+  A developer's module that names an old token is refused as an unknown quantity.
+- **`Simulation::create()` registers module arrays from the declarations.** The core registers its own four. The four modules that carry the legacy marker (drag, dryden, imu, rotor) register before `replay_config`, and every other module after it, each in set order. `ArenaSet` gains `register_bytes()` (an untyped `register_array`), `typed<T>()` and `bytes()`. `Simulation::module_array()` finds a module array by name, and `module_rows<T>()` reads one world's rows of it.
+- **The GPU mirror sizes its buffers from the declarations.** `compute::StepShape` gains `arrays`, one `StateArrayShape` per walk entry, which `create()` fills from `state_array_shapes()`. So `compute/` keeps no list of arrays, and a developer's array with no binding is allocated, uploaded and read back unbound. Sizes are counted in 64 bits: a buffer past 2^32-1 elements is refused with `capacity_exceeded`, naming it. A `StepShape` with no arrays is refused.
+- **Attached rows go through one door, `Simulation::attach_row()`.** It checks the module's spawn record with its `validate`, reserves the row, writes its `body_slot` at once, and queues the module's `init` for the next step boundary. `add_drag_element`, `add_imu_sensor` and `add_gnss_sensor` are fronts over it, with unchanged signatures and messages. Rotors still arrive only with a vehicle. Despawning a body frees its attached rows by declaration, in walk order, and zeroes their per-row children. The IMU and GNSS function pairs collapse into this path (`CORE-4`).
+- **Seeded streams are declared** (`ModuleDesc::streams`): a tag, the array whose rows hold it, and a reseed function. `create()` and `reseed()` walk the declarations, so a developer's stream is reseeded too. A tag is unique in the set and is never `world`.
+- **A pass sees the state it declares** through `SubstepContext::state`: one `StateView` per declared access (`state/state_view.hpp`, read with `world_rows<T>()`), another module's array included. `QuantityAccess::optional` reads an array of a module the set may not hold; when it is absent, the read binds nothing and orders nothing. `PassDecl::before` mirrors `after`. The built-in passes keep their typed views.
+- **Configuration tables and the vehicle-spawn hook**, for Physics' optional modules.
+  - A configuration table (`ConfigTableDecl`) is a float table built from the model registry and rebuilt only by `register_model()`. It is not in the walk, the digest or the snapshot, and a pass may only read it. `Simulation::config_table()` returns one. It has no GPU copy until stage 6.
+  - `ModuleDesc::vehicle_rows` lets a module initialize its own rows when `spawn(world, model, where)` places a vehicle. A bad request refuses the spawn and releases every slot it took.
+- **Scratch** (`ModuleDesc::scratch`, `ScratchDecl`): per-body or per-world rows a module's passes share within a substep. It is not walked, digested or snapshotted, and it is zero at every substep boundary by the module's own invariant. On Vulkan a scratch names a fixed binding (`StepShape::scratch`). One with none is CPU-only, and a Vulkan set whose pass declares it is refused.
+- **What is refused now:**
+  - a set that omits one of the seven built-in arrays, or declares one with another row size, extent, owner, depth or spawn size;
+  - a set that drops or retags the stream on `dryden`, `imu_sensors` or `gnss_sensors`;
+  - a legacy array declared by a module without the legacy marker, and the marker on a module with any other array.
+- **Nothing moved.** Every golden digest, the standard walk (22 entries, `replay_config` at 16), the schema hash (pinned for one body at `0x1f60a6fef22e254a`), the standard configuration identity (`0x3303cfc86821f502`), snapshot format v3 and every GPU band are unchanged. `Simulation::restore()`'s identity refusal now prints both identities in hex.
+- **Tasks 1 to 7 merged as `eb57d4d` and `a698ea4`**; Tasks 7b and 8 are on `core/module-state`, rebased onto PHY-7, whose `contact_dv` is the mirror's twelfth hand-listed derived buffer (binding 27). Measured on the branch at `b7a120b`: 1386 tests on both presets, 0 failed, 2 skipped by design, all 108 GPU tests passed.
+
 ### Banded CPU-GPU parity: any Vulkan 1.1 device is admitted (2026-10-05)
 
 - **The RTX 3060 Ti, and any device that cannot preserve fp32 denormals, now runs the Vulkan path** (`CORE-5`, the user's ruling of 2026-10-05). No kernel requests a denormal mode (`SPIR-V rule P3`), so each device runs them legally with its own default. Vulkan results are banded against the CPU (`TD-14`), not bit-identical; the CPU stays the reference for goldens and replays.
