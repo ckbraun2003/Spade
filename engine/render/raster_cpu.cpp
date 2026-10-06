@@ -1117,7 +1117,7 @@ void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene
     const RayGrid grid = ray_grid(camera, fb.width, fb.height);
     for (const FlowLayer& layer : scene.flow_layers) {
         // render() has refused a malformed layer.
-        const PreparedFlowLayer prepared = prepare_flow_layer(layer);
+        const PreparedFlowLayer prepared = prepare_flow_layer(layer, &scene.lighting);
         FlowLayerReport layer_report;
         for (const PreparedTransfer& transfer : prepared.transfers) {
             layer_report.ranges.push_back(transfer.range);
@@ -1146,6 +1146,11 @@ void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene
                     }
                     if (r.transmittance == 1.0f && r.colour == glm::vec3(0.0f)) {
                         continue;  // nothing absorbed or emitted
+                    }
+                    if (std::isfinite(r.opaque_t)) {
+                        // An opaque iso-surface is a surface: later layers and
+                        // overlays are depth-tested against it.
+                        fb.depth[idx] = std::max(fb.depth[idx], 1.0 / (static_cast<double>(r.opaque_t) * cos_theta));
                     }
                     uint8_t* px = &fb.pixels[idx * 4u];  // B, G, R, X
                     const glm::vec3 behind(static_cast<float>(px[2]) / 255.0f, static_cast<float>(px[1]) / 255.0f,

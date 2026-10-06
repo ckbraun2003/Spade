@@ -23,12 +23,25 @@
 // quantities contributes nothing (it is clear), and the ray reports that it
 // crossed no-data, so the frame's report counts the pixel.
 //
+// ISO-SURFACES (plan section 3) are ray-cast in the same march, not meshed.
+// A sign change of (value - iso) between two steps' samples is refined by
+// four bisections on the trilinear field; the hit's normal is the field's
+// gradient (central differences one cell apart), turned toward the eye and
+// lit by the scene's sun through shade_vertex_color(). Its colour is fixed,
+// or another quantity at the hit through a transfer function's colours (the
+// standard "Q coloured by speed"). An opaque hit ends the ray and writes
+// depth; a translucent one composites and the ray goes on. The volume adds
+// light up to the step whose sample passes the hit.
+//
 // Colours are display values, composited in that space, as the field
-// layer's are. Volumes write no depth. Overlays draw after them, on top.
+// layer's are. A volume writes no depth; an opaque iso-surface does.
+// Overlays draw after them, on top.
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -41,37 +54,71 @@
 
 namespace spade::render {
 
+struct Lighting;  // render/scene.hpp, which includes this header
+
 inline constexpr std::size_t kMaxFlowTransfers = 4;
+inline constexpr std::size_t kMaxIsoSurfaces = 4;
+inline constexpr uint32_t kIsoBisections = 4;
+
+// One level set of one quantity. For the Q-criterion, iso on q_hat at
+// sqrt(Q0): no division, no transcendental.
+struct IsoSurface {
+    FlowQuantity quantity = FlowQuantity::q_hat;
+    float value = 0.0f;              // the level, in the quantity's units
+    glm::vec3 colour{0.8f};          // used unless colour_by is set
+    std::optional<TransferFunction> colour_by;  // only its quantity, colours and range are used
+    float opacity = 1.0f;            // (0, 1]; 1 ends the ray
+};
+
 inline constexpr float kFlowEarlyExitTransmittance = 1.0f / 256.0f;
 
-// One published volume and the transfer functions that draw it. The volume
-// is the caller's (the airflow module's publish output) and outlives every
-// render() that reads it.
+// One published volume and the transfer functions and iso-surfaces that
+// draw it. The volume is the caller's (the airflow module's publish output)
+// and outlives every render() that reads it.
 struct FlowLayer {
     const FlowVolume* volume = nullptr;
-    std::vector<TransferFunction> transfers;  // 1 to kMaxFlowTransfers
+    std::vector<TransferFunction> transfers;  // 0 to kMaxFlowTransfers
+    std::vector<IsoSurface> isos;             // 0 to kMaxIsoSurfaces; one of the two is non-empty
 };
 
 // invalid_argument, by name: no volume, a volume that fails
-// validate_flow_volume(), no transfer function or more than four, or a
-// transfer function that fails validate_transfer_function().
+// validate_flow_volume(), more than four transfer functions or iso-surfaces,
+// neither, a transfer function that fails validate_transfer_function(), or
+// an iso-surface whose level is not finite, whose opacity is outside
+// (0, 1], whose colour is outside [0, 1], or whose colour_by fails
+// validation.
 [[nodiscard]] Result<void> validate_flow_layer(const FlowLayer& layer);
 
 // A validated layer with its per-frame constants hoisted.
+// An iso-surface's fields, copied flat: no optional holding a vector, which
+// gcc 13's -O2 flow analysis misreads as maybe-uninitialized.
+struct PreparedIso {
+    FlowQuantity quantity = FlowQuantity::q_hat;
+    float value = 0.0f;
+    glm::vec3 colour{0.8f};
+    float opacity = 1.0f;
+    bool coloured_by = false;    // colour_by applies
+    PreparedTransfer colour_by;  // read only when coloured_by
+};
+
 struct PreparedFlowLayer {
     FlowSampler sampler;
     std::vector<PreparedTransfer> transfers;
+    std::vector<PreparedIso> isos;
+    const Lighting* lighting = nullptr;  // the scene's sun for iso-surfaces; null draws them unlit
     Aabb box;
     float step = 0.0f;  // half a cell
     float inv_step = 0.0f;
 };
 
-[[nodiscard]] PreparedFlowLayer prepare_flow_layer(const FlowLayer& layer);
+// `lighting` (the scene's) outlives the prepared layer.
+[[nodiscard]] PreparedFlowLayer prepare_flow_layer(const FlowLayer& layer, const Lighting* lighting = nullptr);
 
 struct FlowRayResult {
     glm::vec3 colour{0.0f};      // C: emitted light reaching the eye
     float transmittance = 1.0f;  // T: what lets C_behind through
     bool crossed_no_data = false;
+    float opaque_t = std::numeric_limits<float>::infinity();  // an opaque iso-surface's hit, else infinity
 };
 
 // The march over [t_start, t_end] of origin + t dir; dir is unit length.
