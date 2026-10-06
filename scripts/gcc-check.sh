@@ -13,11 +13,27 @@
 # container uses, so a check never reads a volume a leg is building and any
 # number of checks can run beside legs. GCC_CHECK_VOLUME=<volume> picks one.
 #
+# --compile (first argument): compile each named .cpp in full, with the leg
+# volume's own Release command line (-O3), plus -Wall -Wextra -Wpedantic
+# -Werror. -fsyntax-only never runs the optimiser, so it misses the warnings
+# only optimisation finds (maybe-uninitialized, array-bounds); a leg finds
+# them minutes later. This finds them in seconds. A header is still checked
+# with -fsyntax-only; a .cpp the volume's build never compiled (a new file)
+# fails with the reason. scripts/gcc_check_compile.py does the compiling.
+#
+#   scripts/gcc-check.sh --compile engine/render/flow_render.cpp
+#
 # Exit: 0 every file passed, 1 a file failed, 2 usage, or no usable volume.
 set -u
 prefix=spade-docker-leg
+here=$(cd "$(dirname "$0")" && pwd -W)
 
-[ $# -ge 1 ] || { echo "usage: scripts/gcc-check.sh <file>..." >&2; exit 2; }
+mode=syntax
+if [ "${1:-}" = "--compile" ]; then
+    mode=compile
+    shift
+fi
+[ $# -ge 1 ] || { echo "usage: scripts/gcc-check.sh [--compile] <file>..." >&2; exit 2; }
 if [ ! -d engine ] || [ ! -d tests ]; then
     echo "gcc-check: run it from the worktree root (no engine/ or tests/ here)" >&2
     exit 2
@@ -57,15 +73,19 @@ if [ -z "$volume" ]; then
 fi
 
 MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
-  -v "$volume:/leg:ro" -v "$(pwd -W):/src:ro" "$image" bash -c '
-  volume=$1; shift
+  -v "$volume:/leg:ro" -v "$(pwd -W):/src:ro" -v "$here:/gcc-check:ro" "$image" bash -c '
+  volume=$1; mode=$2; shift 2
   if [ ! -d /leg/build/_deps ]; then
     echo "gcc-check: volume $volume has no configured build (/leg/build/_deps)"; exit 2
   fi
   echo "gcc-check: volume $volume, commit $(cat /leg/commit 2>/dev/null || echo unrecorded); $(g++-13 --version | head -n 1)"
-  mkdir -p /tmp/s && cp -r /src/engine /src/sandbox /src/tests /tmp/s && cd /tmp/s
-  D=/leg/build/_deps; rc=0
+  mkdir -p /tmp/s && for d in engine sandbox tests include src examples; do
+    if [ -d /src/$d ]; then cp -r /src/$d /tmp/s; fi
+  done; cd /tmp/s
+  D=/leg/build/_deps; rc=0; compile=()
   for f in "$@"; do
+    # --compile: a .cpp goes to the full compile below; a header stays here.
+    if [ "$mode" = compile ] && [ "${f##*.}" = cpp ]; then compile+=("$f"); continue; fi
     tu=$f; case $f in *.hpp) printf "#include \"/tmp/s/%s\"\n" "$f" > /tmp/hdr.cpp; tu=/tmp/hdr.cpp ;; esac
     g++-13 -std=gnu++23 -fsyntax-only -Wall -Wextra -Wpedantic -Werror -ffp-contract=off \
       -DGLM_ENABLE_EXPERIMENTAL -DGLFW_INCLUDE_NONE -DYAML_CPP_STATIC_DEFINE \
@@ -77,4 +97,8 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
       -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
       -isystem $D/googletest-src/googletest/include -isystem $D/benchmark-src/include \
       "$tu" && echo "gcc ok:   $f" || { echo "gcc FAIL: $f"; rc=1; }
-  done; exit $rc' _ "$volume" "$@"
+  done
+  if [ ${#compile[@]} -gt 0 ]; then
+    python3 /gcc-check/gcc_check_compile.py "$volume" "${compile[@]}" || rc=1
+  fi
+  exit $rc' _ "$volume" "$mode" "$@"
