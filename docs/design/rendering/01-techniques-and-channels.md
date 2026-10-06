@@ -17,11 +17,13 @@ A **camera** is a **technique** plus one or more **channels**. The same camera s
 |---|---|---|---|
 | Raster | CPU (`render/raster_cpu`) | The reference picture, the headless and CI surface, and the no-GPU fallback | **reference**. It computes in fp64, which the charter's numerics note allows when declared, and its frames are byte-exact goldens |
 | Ray-march | CPU (`render/raymarch`) | Sphere-traces the SDF that collision evaluates. It is the geometric truth the raster is checked against (`RS4`), not a presentation path | **reference** for coverage only |
-| Raster | OpenGL (`render_gl/GlRenderer`) | The interactive viewport when a GL 4.3 context exists | **best-effort** until it has a band |
+| Raster | OpenGL (`render_gl/GlRenderer`) | The interactive viewport when a GL 4.3 context exists | **best-effort**, with bands measured on one device (the RTX 3060 Ti, `TD-13`): background, field layer, overlays, shadows and CSG (`07-status.md`) |
 | Raster | Vulkan compute (`render/vulkan/`) | Fast, and a future camera sensor without a window | **banded**: coverage against the CPU (`compare_silhouettes`) plus a colour oracle, which does not exist yet |
 | Ray-trace | none | Not designed yet | — |
 
 **Grade note (`RND-6`, signed 2026-10-04):** every raster backend draws a heightfield only within the world bounds, as `PA-5` grids it, and `RS4` holds there. Past the bounds the SDF, and collision, have terrain that the raster does not draw. An analytic heightfield background (A1, backlog) would lift this note.
+
+**Geometry note (`RS3`, as replaced 2026-10-05):** the CPU and GL rasters ray-march each CSG subtree per pixel within its box in shaded and velocity frames, with the reference's own rays and `sphere_trace()` (B2: CPU `d895c32`, GL `fa3a8f3`). A wall of any thickness draws whole. The subtree's mesh, at B1's resolution, draws wireframe and casts the sun's shadow (Q2, `0740b34`). On CSG pixels, `RS4`'s bands therefore check the raster's integration around the march, not the march (`TD-4`, the band file's version 2 note).
 
 **Rules for every technique:**
 - **A pure function of its inputs.** No clock, no RNG, no static mutable state. The same scene, camera and options give the same pixels on that backend.

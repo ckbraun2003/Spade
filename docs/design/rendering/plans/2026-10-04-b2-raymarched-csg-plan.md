@@ -1,6 +1,6 @@
 # Ray-marched CSG in the raster (B2): plan
 
-**Owner:** Rendering. **Status:** approved, being built. The user signed the `RS3` replacement below on 2026-10-05 (via lead). The lead's calls the same day: Q2 is decided in step 5 from measurements, leaning toward the 48-cell mesh for wireframe and shadows if the shadow edges change little; Q3 is a hand-ported GLSL evaluator; Q4 is one material per subtree; Q5 is done (`4821796`). B1 (a world-space cell size, `rendering/csg-cell-size`) lands first. The user ruled on 2026-10-04 to plan B2 (`../../backlog.md`).
+**Owner:** Rendering. **Status:** done, all six steps merged by 2026-10-05 (Outcome, at the end); Q2 was settled as no, from measurement. The user signed the `RS3` replacement below on 2026-10-05 (via lead). The lead's calls the same day: Q2 is decided in step 5 from measurements, leaning toward the 48-cell mesh for wireframe and shadows if the shadow edges change little; Q3 is a hand-ported GLSL evaluator; Q4 is one material per subtree; Q5 is done (`4821796`). B1 (a world-space cell size, `rendering/csg-cell-size`) lands first. The user ruled on 2026-10-04 to plan B2 (`../../backlog.md`).
 
 ## What B2 is
 
@@ -101,3 +101,15 @@ Each step goes red then green, gets the gcc check, and goes to review.
 - **Q3.** GL: a hand-ported GLSL evaluator (recommended), or a `slangc` spike first?
 - **Q4.** Material: keep one material per CSG subtree (recommended, no visible change), or resolve per leaf like the reference?
 - **Q5.** B1's per-frame cost is real today, before B2. Should `07-status` record it as debt now, with B2 or Q2 as its fix?
+
+## Outcome (2026-10-05)
+
+All six steps landed, each red then green, gcc-checked and reviewed:
+1. CPU pass, `d895c32`. The 0.02 m wall from inside, depth both ways, a camera inside the solid, byte-identical frames.
+2. CSG frame golden `csg_slab_and_blob_shaded`, `5b4f60d`, reproduced on gcc (`TD-12`).
+3. GL pass, `fa3a8f3`: a box back-face proxy with depth clamp, a hand-ported GLSL evaluator (Q3), `gl_FragDepth` in the mesh pass's convention, a 64-node cap. Band on the RTX 3060 Ti: 0 misses, at most 1 level (`TD-13`). Cost at 1080p: 1.6–3.9 ms for small programs, 29.6 ms for a 25-node box cut by 12 holes (debt).
+4. Agreement bands version 2, `f68e2c1`: attested on three toolchains, `shower`'s inside view back at d = 0, with Test/Docs' `TD-4` note.
+5. Fold warning narrowed to wireframe and shadows, with the mesh's own cell figure, `0740b34`.
+6. Docs: the `RS3` row, `01-techniques`, `07-status`.
+
+**Q2, settled from measurement: no.** Wireframe and shadow casting keep B1's mesh. On a bowl's lit inside, each sun-facing marched pixel's shadow-map verdict was compared with a march toward the sun. At 160x120, of 10 906 pixels on a 16 m bowl (B1 at its 160-cell cap): B1 had 20 acne and 198 leaks, 48 cells 3 and 696. On an 8 m bowl: B1 5 and 195, 48 cells 0 and 682. The acne is a speckle at the thin rim. 48 cells leaks about 3.5x and holes the rim's shadow. `CsgRaster.ShadowsOnMarchedSurfacesStayCloseToTheTruth` pins it.
