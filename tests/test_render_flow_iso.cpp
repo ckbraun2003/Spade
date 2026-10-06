@@ -239,8 +239,10 @@ TEST(RenderFlowIso, ALambOseenVorticityIsoIsACylinderOfTheAnalyticRadius) {
     return mask;
 }
 
-// A closed 3D topology against the analytic ray-cast. The band is measured
-// (MSVC release, 2026-10-06) and recorded in the assertion.
+// A closed 3D topology against the analytic ray-cast. The band is measured:
+// 5 of 1878 covered pixels differ (MSVC release, 2026-10-06), all on the
+// silhouette. It is set at twice that, because this file's std::sin and
+// std::cos build the volume and may move a pixel on another toolchain.
 TEST(RenderFlowIso, ATaylorGreenQIsoMatchesTheAnalyticRayCast) {
     const spade::FlowVolume volume = tgv_volume();
     const double q0 = 0.1;
@@ -259,7 +261,7 @@ TEST(RenderFlowIso, ATaylorGreenQIsoMatchesTheAnalyticRayCast) {
     }
     std::printf("[ TGV iso ] analytic hits %zu, mismatched %zu\n", hits, mismatched);
     EXPECT_GE(hits, 500u) << "the blobs must fill enough of the frame to mean something";
-    EXPECT_LE(mismatched, hits / 50u) << "within 2% of the analytic coverage";
+    EXPECT_LE(mismatched, 10u) << "the measured band: 5 differ, on the silhouette";
 }
 
 // --- Colour, translucency, depth -----------------------------------------
