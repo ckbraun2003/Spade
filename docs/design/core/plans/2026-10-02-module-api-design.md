@@ -1,6 +1,6 @@
 # Module API, scheduler and fields — design
 
-**Owner:** Core. **Status:** approved by the user 2026-10-02 (as of `4d481eb`). The plan is `2026-10-02-module-api-plan.md`.
+**Owner:** Core. **Status:** approved by the user 2026-10-02 (as of `4d481eb`); amended by §15, approved as principles 2026-10-05 (user, via lead). The plan is `2026-10-02-module-api-plan.md`.
 **Builds:** `../../01-engine-model.md`'s foundation (`../../backlog.md`, step 3). **Rulings this rests on (user, 2026-10-02):** scope A (Q1), sample buffers (Q2), kinematic behaviors first in Fields (Q2), `CORE-4`.
 **Inputs:** Physics' requirements (`../../physics/plans/2026-10-02-module-api-requirements.md`); Interface's open items (`../../interface/01-editor.md`); Rendering's field channels (`../../rendering/01-techniques-and-channels.md`).
 
@@ -182,3 +182,11 @@ Each stage keeps every golden unchanged and is merged on its own:
 4. Sensors as modules (`CORE-4`) and module-declared seeded streams.
 5. Grades, roles and component-type availability.
 6. The lock module, its golden, and the Vulkan path. Then Interface switches the drone box.
+
+## 15. Amendment: device-resident state and hashed module configuration
+
+**Status:** approved as principles 2026-10-05 (user, via lead), with the airflow spec (`../../physics/plans/2026-10-05-airflow-design.md`, Q11 and Q12; Core's answers, `../2026-10-05-airflow-spec-core-answers.md`). Stage 7's design section returns to the user for sign-off before any code.
+
+- **Device-resident state.** A module may keep state resident on the device. For that state, the host arena stops being the one authoritative copy. Every host read path must sync that state from the device first, or refuse by name (`L6`): snapshots, `state_digest`, the readback calls, `sample_medium` and CPU state views. The CPU stays the reference (`L3`, `L4`): a device-resident module has a CPU reference implementation, so its goldens come from the CPU and its Vulkan results are banded against it (`TD-14`).
+- **Hashed module configuration.** A module's configuration, such as an airflow grid's extent and resolution, is folded into the configuration identity and `config_hash`. A restore under another configuration is then refused (`L2`). The standard set has no configured modules, so its identity does not change.
+- **Order of work.** Stages 4 → 5 → 6 → 7: stage 7 (airflow's GPU groundwork) builds on stage 5's grades and stage 6's fixed-binding pattern. Airflow comes before SPH. The user's bar for airflow is "F1 level, nasa level aerodynamics".
