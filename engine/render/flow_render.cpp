@@ -63,9 +63,15 @@ PreparedFlowLayer prepare_flow_layer(const FlowLayer& layer, const Lighting* lig
         p.transfers.push_back(prepare_transfer(tf, h));
     }
     for (const IsoSurface& iso : layer.isos) {
-        PreparedIso prepared{iso, std::nullopt};
-        if (iso.colour_by) prepared.colour_by = prepare_transfer(*iso.colour_by, h);
-        p.isos.push_back(std::move(prepared));
+        PreparedIso& prepared = p.isos.emplace_back();
+        prepared.quantity = iso.quantity;
+        prepared.value = iso.value;
+        prepared.colour = iso.colour;
+        prepared.opacity = iso.opacity;
+        if (iso.colour_by.has_value()) {
+            prepared.coloured_by = true;
+            prepared.colour_by = prepare_transfer(iso.colour_by.value(), h);
+        }
     }
     p.lighting = lighting;
     const glm::vec3 extent(static_cast<float>(h.nx), static_cast<float>(h.ny), static_cast<float>(h.nz));
@@ -85,9 +91,9 @@ struct IsoHit {
 // Iso-surface k's offset from its level at t, or nullopt for no-data.
 [[nodiscard]] std::optional<float> iso_offset(const PreparedFlowLayer& layer, std::size_t k, glm::vec3 origin,
                                               glm::vec3 dir, float t) {
-    const FlowValue v = sample_quantity(layer.sampler, layer.isos[k].iso.quantity, origin + dir * t);
+    const FlowValue v = sample_quantity(layer.sampler, layer.isos[k].quantity, origin + dir * t);
     if (v.no_data) return std::nullopt;
-    return v.value - layer.isos[k].iso.value;
+    return v.value - layer.isos[k].value;
 }
 
 // The crossing in [ta, tb], whose offsets differ in sign: kIsoBisections
@@ -116,13 +122,13 @@ struct IsoHit {
 // eye, when the layer has lighting.
 [[nodiscard]] glm::vec3 shade_iso(const PreparedFlowLayer& layer, const PreparedIso& iso, glm::vec3 q, glm::vec3 dir,
                                   FlowRayResult& r) {
-    glm::vec3 base = iso.iso.colour;
-    if (iso.colour_by) {
-        const FlowValue v = sample_quantity(layer.sampler, iso.colour_by->tf.quantity, q);
+    glm::vec3 base = iso.colour;
+    if (iso.coloured_by) {
+        const FlowValue v = sample_quantity(layer.sampler, iso.colour_by.tf.quantity, q);
         if (v.no_data) {
             r.crossed_no_data = true;  // the surface keeps its own colour there
         } else {
-            base = apply_transfer(*iso.colour_by, v.value).colour;
+            base = apply_transfer(iso.colour_by, v.value).colour;
         }
     }
     if (layer.lighting == nullptr) {
@@ -135,8 +141,8 @@ struct IsoHit {
     for (int a = 0; a < 3 && ok; ++a) {
         glm::vec3 e(0.0f);
         e[a] = h;
-        const FlowValue hi = sample_quantity(layer.sampler, iso.iso.quantity, q + e);
-        const FlowValue lo = sample_quantity(layer.sampler, iso.iso.quantity, q - e);
+        const FlowValue hi = sample_quantity(layer.sampler, iso.quantity, q + e);
+        const FlowValue lo = sample_quantity(layer.sampler, iso.quantity, q - e);
         ok = !hi.no_data && !lo.no_data;
         grad[a] = hi.value - lo.value;
     }
@@ -166,6 +172,7 @@ FlowRayResult march_flow_ray(const PreparedFlowLayer& layer, glm::vec3 origin, g
     const float last = std::max(0.0f, length - full * layer.step);
     const uint32_t n = n_full + (last > 0.0f ? 1u : 0u);
     // Each iso-surface's previous sample: its offset from the level and t.
+    const std::size_t n_isos = std::min(layer.isos.size(), kMaxIsoSurfaces);  // validated; bounds the arrays
     std::array<float, kMaxIsoSurfaces> prev_f{};
     std::array<float, kMaxIsoSurfaces> prev_t{};
     std::array<bool, kMaxIsoSurfaces> prev_valid{};
@@ -178,14 +185,14 @@ FlowRayResult march_flow_ray(const PreparedFlowLayer& layer, glm::vec3 origin, g
         // Iso-surfaces crossed since the previous sample, nearest first.
         std::array<IsoHit, kMaxIsoSurfaces> hits{};
         std::size_t n_hits = 0;
-        for (std::size_t k = 0; k < layer.isos.size(); ++k) {
-            const FlowValue v = sample_quantity(layer.sampler, layer.isos[k].iso.quantity, p);
+        for (std::size_t k = 0; k < n_isos; ++k) {
+            const FlowValue v = sample_quantity(layer.sampler, layer.isos[k].quantity, p);
             if (v.no_data) {
                 r.crossed_no_data = true;
                 prev_valid[k] = false;  // never a crossing through no-data
                 continue;
             }
-            const float f = v.value - layer.isos[k].iso.value;
+            const float f = v.value - layer.isos[k].value;
             if (prev_valid[k] && (prev_f[k] < 0.0f) != (f < 0.0f)) {
                 hits[n_hits++] = IsoHit{refine_crossing(layer, k, origin, dir, prev_t[k], prev_f[k], tm, f), k};
             }
@@ -193,18 +200,23 @@ FlowRayResult march_flow_ray(const PreparedFlowLayer& layer, glm::vec3 origin, g
             prev_t[k] = tm;
             prev_valid[k] = true;
         }
-        std::sort(hits.begin(), hits.begin() + static_cast<std::ptrdiff_t>(n_hits),
-                  [](const IsoHit& a, const IsoHit& b) { return a.t < b.t; });
+        // Insertion sort: at most four, and std::sort's unrolled insertion
+        // trips gcc 13's -O2 array-bounds analysis on a four-slot array.
+        for (std::size_t a = 1; a < n_hits; ++a) {
+            for (std::size_t b = a; b > 0 && hits[b].t < hits[b - 1].t; --b) {
+                std::swap(hits[b], hits[b - 1]);
+            }
+        }
         for (std::size_t h = 0; h < n_hits; ++h) {
             const PreparedIso& iso = layer.isos[hits[h].k];
             const glm::vec3 shaded = shade_iso(layer, iso, origin + dir * hits[h].t, dir, r);
-            r.colour += r.transmittance * iso.iso.opacity * shaded;
-            if (iso.iso.opacity >= 1.0f) {
+            r.colour += r.transmittance * iso.opacity * shaded;
+            if (iso.opacity >= 1.0f) {
                 r.transmittance = 0.0f;
                 r.opaque_t = hits[h].t;
                 return r;
             }
-            r.transmittance *= 1.0f - iso.iso.opacity;
+            r.transmittance *= 1.0f - iso.opacity;
         }
 
         if (layer.transfers.empty()) {

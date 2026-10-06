@@ -90,9 +90,15 @@ struct FlowLayer {
 [[nodiscard]] Result<void> validate_flow_layer(const FlowLayer& layer);
 
 // A validated layer with its per-frame constants hoisted.
+// An iso-surface's fields, copied flat: no optional holding a vector, which
+// gcc 13's -O2 flow analysis misreads as maybe-uninitialized.
 struct PreparedIso {
-    IsoSurface iso;
-    std::optional<PreparedTransfer> colour_by;
+    FlowQuantity quantity = FlowQuantity::q_hat;
+    float value = 0.0f;
+    glm::vec3 colour{0.8f};
+    float opacity = 1.0f;
+    bool coloured_by = false;    // colour_by applies
+    PreparedTransfer colour_by;  // read only when coloured_by
 };
 
 struct PreparedFlowLayer {
