@@ -232,6 +232,16 @@ struct StateArrayShape {
     uint32_t capacity_per_world = 0;
 };
 
+// A declared scratch's shape (module-API stage 4, Task 7b). Declared here; the
+// rules land with the GREEN commit.
+inline constexpr uint32_t kNoBinding = 0xFFFF'FFFFu;
+struct ScratchShape {
+    std::string name{};
+    uint32_t elem_size = 0;
+    uint32_t capacity_per_world = 0;
+    uint32_t binding = kNoBinding;
+};
+
 struct StepShape {
     uint32_t world_count = 0;
     uint32_t body_capacity = 0;
@@ -243,6 +253,7 @@ struct StepShape {
     uint32_t sdf_node_count = 0;       // total SDF nodes across every world
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
     std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
+    std::vector<ScratchShape> scratch{};    // every declared scratch (Task 7b)
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

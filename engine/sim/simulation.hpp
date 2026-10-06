@@ -530,6 +530,11 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 [[nodiscard]] Result<std::vector<compute::StateArrayShape>> state_array_shapes(
     const modules::CompiledSchedule& schedule, const compute::StepShape& shape);
 
+// Every declared scratch's shape for the GPU mirror (Task 7b). Declared here;
+// the rules land with the GREEN commit.
+[[nodiscard]] std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
+                                                                const compute::StepShape& shape);
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------

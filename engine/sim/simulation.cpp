@@ -317,6 +317,11 @@ Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::
     return out;
 }
 
+// Task 7b RED: a stub, so the tests compile and fail on behaviour.
+std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule&, const compute::StepShape&) {
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------

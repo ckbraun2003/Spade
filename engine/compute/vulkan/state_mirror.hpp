@@ -75,6 +75,19 @@
 
 namespace spade::compute {
 
+// One derived buffer's shape (module-API stage 4, Task 7b). Declared here; the
+// rules land with the GREEN commit.
+struct DerivedBufferShape {
+    std::string name{};
+    uint32_t elem_size = 0;
+    uint64_t count = 0;
+    uint64_t byte_size = 0;
+    uint32_t binding = 0;
+};
+
+[[nodiscard]] Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& shape,
+                                                                            uint32_t binding_count);
+
 class StateMirror {
 public:
     [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(VulkanContext& ctx,

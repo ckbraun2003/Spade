@@ -234,6 +234,11 @@ static_assert(sizeof(VkDeviceSize) >= 8 && sizeof(std::size_t) >= 8,
 
 }  // namespace
 
+// Task 7b RED: a stub, so the tests compile and fail on behaviour.
+Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape&, uint32_t) {
+    return std::unexpected(Error{Code::internal, "derived_buffer_shapes: not implemented (Task 7b RED)"});
+}
+
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------

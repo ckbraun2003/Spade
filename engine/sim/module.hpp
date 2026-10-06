@@ -362,6 +362,16 @@ struct RowInitRequest {
 
 using VehicleRowsFn = void (*)(const VehicleRows& vehicle, std::vector<RowInitRequest>& out);
 
+// SCRATCH (stage 4, Task 7b). Declared here; the rules land with the GREEN commit.
+inline constexpr uint32_t kNoBinding = compute::kNoBinding;
+
+struct ScratchDecl {
+    std::string_view name;
+    uint32_t elem_size = 0;
+    Extent extent = Extent::per_world;
+    uint32_t binding = kNoBinding;
+};
+
 // One request, its record copied in by value: what a hook appends.
 template <class Spawn>
 [[nodiscard]] RowInitRequest init_request(std::string_view array, uint32_t slot, const Spawn& spawn) noexcept {
@@ -382,6 +392,7 @@ struct ModuleDesc {
     std::span<const StreamDecl> streams{};        // the seeded streams this module's rows hold
     std::span<const ConfigTableDecl> tables{};    // the configuration tables this module builds
     VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
+    std::span<const ScratchDecl> scratch{};       // the scratch this module owns
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -395,7 +406,7 @@ inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 // that configuration table (Task 7), its index in CompiledSchedule::tables. A
 // core quantity, a field, a stateless module's token, and an optional read of
 // an absent module bind nothing: an absent view, so every access keeps its slot.
-enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2 };
+enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2, scratch = 3 };
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
     uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays (array) or ::tables (table)
@@ -457,6 +468,15 @@ struct CompiledVehicleRows {
     VehicleRowsFn rows = nullptr;
 };
 
+// One declared scratch (Task 7b).
+struct CompiledScratch {
+    std::string module;
+    std::string name;
+    uint32_t elem_size = 0;
+    Extent extent = Extent::per_world;
+    uint32_t binding = kNoBinding;
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -480,6 +500,8 @@ struct CompiledSchedule {
     std::vector<CompiledTable> tables{};
     // The vehicle-spawn hooks, in set order: the order spawn() calls them in.
     std::vector<CompiledVehicleRows> vehicle_rows{};
+    // The declared scratch (Task 7b).
+    std::vector<CompiledScratch> scratch{};
 };
 
 // Orders every pass of `modules`:

@@ -2736,3 +2736,485 @@ TEST(StandardModules, DeclareNoTablesAndNoVehicleHooks) {
     EXPECT_TRUE(s->vehicle_rows.empty());
     EXPECT_EQ(s->identity, kStandardIdentity);
 }
+
+// Stage 4, Task 7b: a declared SCRATCH (sim/module.hpp's ScratchDecl). Rows a
+// module's passes reach through SubstepContext::state like an array's, sized at
+// create() and zero-filled there, and kept zero at every substep boundary by the
+// MODULE: the engine does not walk, digest, snapshot, restore or clear them.
+// Physics' contact_dv (the IMU contact plan's option A) is to be the first: PHY-7
+// landed it hand-held (Simulation's contact_dv_, the mirror's twelfth
+// hand-listed derived buffer, binding 27), and Physics converts it after this.
+namespace {
+
+using spade::modules::ScratchDecl;
+
+// Physics' contact_dv row: xyz and a pad, 16 bytes, one size on the CPU and
+// the GPU.
+struct DvRow {
+    float x;
+    float y;
+    float z;
+    float _pad;
+};
+constexpr uint32_t kDvSize = spade::modules::row_size<DvRow>();
+
+// "stamped": one per_body scratch and a pass that writes g_stamp into every
+// row's x, remembering the largest x it found there first. Stamping a non-zero
+// value breaks the module's own zero invariant ON PURPOSE, so a test can see
+// what the engine does and does not do with the rows.
+float g_stamp = 0.0f;
+float g_max_seen = 0.0f;
+uint32_t g_stamped_rows = 0;
+void stamp_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 1) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        for (DvRow& row : spade::world_rows<DvRow>(ctx.state[0], w)) {
+            g_max_seen = std::max(g_max_seen, row.x);
+            row.x = g_stamp;
+            ++g_stamped_rows;
+        }
+    }
+}
+constexpr ScratchDecl kStampedScratch[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+constexpr QuantityAccess kStampAccess[] = {{"stamped.dv", Access::write}};
+constexpr PassDecl kStampPasses[] = {
+    {.name = "stamp", .phase = Phase::forces, .access = kStampAccess, .cpu = &stamp_pass}};
+
+[[nodiscard]] spade::modules::ModuleSet standard_plus_stamped() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "stamped", .passes = kStampPasses, .scratch = kStampedScratch});
+    return set;
+}
+
+// "scratchy": a per_body and a per_world scratch. `look` (Forces) records what
+// it sees of both in a per_world array of its own; `fill` (Integrate) writes
+// g_fill into every row of both, after `look` in every substep.
+struct ScratchSeenRow {
+    uint32_t body_rows;   // rows the per_body view held for this world
+    uint32_t world_rows;  // rows the per_world view held for this world
+    uint32_t nonzero;     // rows of either whose x was non-zero
+    uint32_t present;     // 1 if both views were present
+};
+float g_fill = 0.0f;
+void look_scratch_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 3) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<ScratchSeenRow> out = spade::world_rows<ScratchSeenRow>(ctx.state[2], w);
+        if (out.empty()) continue;
+        const std::span<const DvRow> body = spade::world_rows<const DvRow>(ctx.state[0], w);
+        const std::span<const DvRow> world = spade::world_rows<const DvRow>(ctx.state[1], w);
+        uint32_t nonzero = 0;
+        for (const DvRow& row : body) nonzero += row.x != 0.0f ? 1u : 0u;
+        for (const DvRow& row : world) nonzero += row.x != 0.0f ? 1u : 0u;
+        out[0].body_rows = static_cast<uint32_t>(body.size());
+        out[0].world_rows = static_cast<uint32_t>(world.size());
+        out[0].nonzero = nonzero;
+        out[0].present = ctx.state[0].present() && ctx.state[1].present() ? 1u : 0u;
+    }
+}
+void fill_scratch_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 2) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        for (DvRow& row : spade::world_rows<DvRow>(ctx.state[0], w)) row.x = g_fill;
+        for (DvRow& row : spade::world_rows<DvRow>(ctx.state[1], w)) row.x = g_fill;
+    }
+}
+constexpr ScratchDecl kScratchyScratch[] = {
+    {.name = "body_dv", .elem_size = kDvSize, .extent = Extent::per_body},
+    {.name = "world_dv", .elem_size = kDvSize, .extent = Extent::per_world}};
+constexpr spade::modules::ArrayDecl kScratchyArrays[] = {
+    {.name = "scratch_seen", .elem_size = spade::modules::row_size<ScratchSeenRow>()}};
+constexpr QuantityAccess kLookScratchAccess[] = {{"scratchy.body_dv", Access::read},
+                                                 {"scratchy.world_dv", Access::read},
+                                                 {"scratchy.scratch_seen", Access::write}};
+constexpr QuantityAccess kFillScratchAccess[] = {{"scratchy.body_dv", Access::write},
+                                                 {"scratchy.world_dv", Access::write}};
+constexpr PassDecl kScratchyPasses[] = {
+    {.name = "look", .phase = Phase::forces, .access = kLookScratchAccess, .cpu = &look_scratch_pass},
+    {.name = "fill", .phase = Phase::integrate, .access = kFillScratchAccess, .cpu = &fill_scratch_pass}};
+
+// One standard pass with one more access appended: the copy the set's span
+// points at lives here, so it must outlive every compile of the set.
+struct Widened {
+    std::vector<QuantityAccess> access;
+    std::array<PassDecl, 1> pass{};
+};
+void widen(spade::modules::ModuleSet& set, std::string_view module, QuantityAccess extra, Widened& keep) {
+    const auto m = std::ranges::find(set, module, &ModuleDesc::name);
+    ASSERT_NE(m, set.end()) << module;
+    ASSERT_EQ(m->passes.size(), 1u) << module;
+    keep.access.assign(m->passes[0].access.begin(), m->passes[0].access.end());
+    keep.access.push_back(extra);
+    keep.pass = {m->passes[0]};
+    keep.pass[0].access = keep.access;
+    m->passes = keep.pass;
+}
+
+// THE PHYSICS PATTERN (the coordinator's input, 2026-10-05): integrate owns
+// contact_dv -- it reads it into the specific force and zeroes every slot, a
+// write -- and the two contact passes accumulate into it, as REQUIRED accesses
+// from other modules. Built from the standard set, with nothing else changed.
+constexpr ScratchDecl kContactDv[] = {{.name = "contact_dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+struct ContactDvSet {
+    Widened statics;
+    Widened dynamics;
+    Widened integrate;
+    spade::modules::ModuleSet set;
+};
+void make_contact_dv_set(ContactDvSet& out, std::span<const ScratchDecl> scratch) {
+    out.set = spade::modules::standard_modules();
+    widen(out.set, "static_contact", {"integrate.contact_dv", Access::accumulate}, out.statics);
+    widen(out.set, "dynamic_contact", {"integrate.contact_dv", Access::accumulate}, out.dynamics);
+    widen(out.set, "integrate", {"integrate.contact_dv", Access::write}, out.integrate);
+    std::ranges::find(out.set, std::string_view("integrate"), &ModuleDesc::name)->scratch = scratch;
+}
+
+[[nodiscard]] uint32_t scratch_index(const CompiledSchedule& s, std::string_view name) {
+    const auto it = std::ranges::find(s.scratch, std::string(name), &spade::modules::CompiledScratch::name);
+    return it == s.scratch.end() ? spade::modules::kNoArray : static_cast<uint32_t>(it - s.scratch.begin());
+}
+
+}  // namespace
+
+// Writing a scratch changes no state_digest, no walk entry and no schema hash:
+// two twins that differ only in what their scratch holds digest alike.
+TEST(ModuleScratch, IsNotWalkedSchemaHashedOrDigested) {
+    auto stamped = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_stamped());
+    auto plain = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_stamped());
+    ASSERT_TRUE(stamped.has_value()) << stamped.error().context;
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    auto standard = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(standard.has_value()) << standard.error().context;
+    EXPECT_EQ(walk_names(*stamped), walk_names(*standard)) << "today's 22 entries: the scratch is not in the walk";
+    EXPECT_EQ(spade::schema_hash(stamped->arenas().registry()), kOneBodySchema) << "master's value";
+    const auto missing = stamped->module_array("dv");
+    ASSERT_FALSE(missing.has_value()) << "a scratch is not an array";
+    EXPECT_EQ(missing.error().code, spade::Code::not_found);
+
+    g_stamped_rows = 0;
+    g_stamp = 7.0f;
+    ASSERT_TRUE(stamped->step(3).has_value());
+    EXPECT_EQ(g_stamped_rows, 6u) << "one body row, 3 steps x 2 substeps: the pass reached the scratch";
+    g_stamp = 0.0f;
+    ASSERT_TRUE(plain->step(3).has_value());
+    EXPECT_EQ(spade::testing::state_digest(*stamped), spade::testing::state_digest(*plain))
+        << "only the scratch differs, and the digest does not fold it";
+}
+
+// Zero after create(), reached by a pass per world, per_body and per_world
+// alike -- and NOT cleared by the engine between steps: keeping it zero at every
+// boundary is the module's invariant, and this module breaks it on purpose.
+TEST(ModuleScratch, IsZeroAfterCreateReachedByAPassAndNotClearedByTheEngine) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(
+        {.name = "scratchy", .passes = kScratchyPasses, .state = kScratchyArrays, .scratch = kScratchyScratch});
+    auto sim = spade::Simulation::create(two_worlds_with(spade::Capacities{3, 1, 1, 1}), 1'000'000, 1, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const auto seen = [&sim](uint32_t w) { return (*sim->module_rows<ScratchSeenRow>("scratch_seen", w))[0]; };
+
+    g_fill = 0.0f;
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ(seen(w).present, 1u) << "world " << w;
+        EXPECT_EQ(seen(w).body_rows, 3u) << "world " << w << ": per_body, the body capacity";
+        EXPECT_EQ(seen(w).world_rows, 1u) << "world " << w << ": per_world, one row";
+        EXPECT_EQ(seen(w).nonzero, 0u) << "world " << w << ": zero-filled at create()";
+    }
+    g_fill = 5.0f;  // fill runs after look, so this step's look still sees zero
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (uint32_t w = 0; w < 2; ++w) EXPECT_EQ(seen(w).nonzero, 0u) << "world " << w;
+    g_fill = 0.0f;  // the module restores its invariant in this step's fill
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ(seen(w).nonzero, 4u) << "world " << w << ": the engine kept last step's rows (3 + 1)";
+    }
+    ASSERT_TRUE(sim->step(1).has_value());
+    for (uint32_t w = 0; w < 2; ++w) EXPECT_EQ(seen(w).nonzero, 0u) << "world " << w;
+}
+
+// A snapshot does not carry the scratch, and restore() leaves it as it finds it:
+// the module's invariant makes it zero at the boundary a snapshot is taken at.
+TEST(ModuleScratch, SnapshotAndRestoreIgnoreIt) {
+    auto stamped = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_stamped());
+    auto plain = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_stamped());
+    auto fresh = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_plus_stamped());
+    ASSERT_TRUE(stamped.has_value() && plain.has_value() && fresh.has_value());
+    g_stamp = 7.0f;
+    ASSERT_TRUE(stamped->step(2).has_value());
+    g_stamp = 0.0f;
+    ASSERT_TRUE(plain->step(2).has_value());
+    const auto stamped_blob = stamped->snapshot();
+    const auto plain_blob = plain->snapshot();
+    ASSERT_TRUE(stamped_blob.has_value() && plain_blob.has_value());
+    EXPECT_TRUE(std::ranges::equal(stamped_blob->bytes(), plain_blob->bytes()))
+        << "the blobs differ only if the scratch is in them";
+
+    // restore() does not clear it: the stamped rows survive a restore of the
+    // plain blob...
+    ASSERT_TRUE(stamped->restore(*plain_blob).has_value());
+    g_max_seen = 0.0f;
+    ASSERT_TRUE(stamped->step(1).has_value());
+    EXPECT_EQ(g_max_seen, 7.0f) << "restore() left the scratch as it found it";
+    // ...and does not bring any: a fresh simulation restored from the stamped
+    // blob still holds the zeroes create() gave it.
+    ASSERT_TRUE(fresh->restore(*stamped_blob).has_value());
+    g_max_seen = 0.0f;
+    g_stamped_rows = 0;
+    ASSERT_TRUE(fresh->step(1).has_value());
+    EXPECT_GT(g_stamped_rows, 0u) << "the pass reached the scratch";
+    EXPECT_EQ(g_max_seen, 0.0f) << "the blob carried no scratch";
+}
+
+// A scratch shares the array and table namespace: one name, one thing. It is
+// per_body or per_world, it has a row size, and two scratches never share a
+// GPU binding. (The binding's range and the registry's own bindings are the
+// mirror's to check: only compute/ sees the generated registry.)
+TEST(ModuleScratch, ANameExtentSizeAndBindingAreChecked) {
+    static constexpr ScratchDecl ok[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+    static constexpr ScratchDecl own_array[] = {{.name = "mass_copies", .elem_size = kDvSize}};
+    static constexpr ScratchDecl own_table[] = {{.name = "masses", .elem_size = kDvSize}};
+    static constexpr ScratchDecl builtin_array[] = {{.name = "rotors", .elem_size = kDvSize}};
+    static constexpr ScratchDecl core_array[] = {{.name = "bodies", .elem_size = kDvSize}};
+    static constexpr ScratchDecl dotted[] = {{.name = "a.b", .elem_size = kDvSize}};
+    static constexpr ScratchDecl unnamed[] = {{.name = "", .elem_size = kDvSize}};
+    static constexpr ScratchDecl twice[] = {{.name = "dv", .elem_size = kDvSize}, {.name = "dv", .elem_size = kDvSize}};
+    static constexpr ScratchDecl sizeless[] = {{.name = "dv", .elem_size = 0}};
+    static constexpr ScratchDecl per_element[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_element}};
+    static constexpr ScratchDecl per_sensor[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_sensor}};
+    static constexpr ScratchDecl per_row[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_row}};
+    static constexpr ScratchDecl unknown[] = {{.name = "dv", .elem_size = kDvSize, .extent = static_cast<Extent>(9)}};
+    // Binding 40: a test binding, clear of the generated range (PHY-7's
+    // contact_dv holds 27, the last in use).
+    static constexpr ScratchDecl shared_binding[] = {
+        {.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body, .binding = 40},
+        {.name = "dv_b", .elem_size = kDvSize, .extent = Extent::per_world, .binding = 40}};
+    static constexpr ScratchDecl cpu_only_pair[] = {
+        {.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body},
+        {.name = "dv_b", .elem_size = kDvSize, .extent = Extent::per_world}};
+    const auto with = [](std::span<const ScratchDecl> scratch) {
+        return standard_plus({.name = "massed", .state = kMassCopyArrays, .tables = kMassTables, .scratch = scratch});
+    };
+    const auto control = with(ok);
+    ASSERT_TRUE(control.has_value()) << control.error().context;
+    ASSERT_EQ(control->scratch.size(), 1u);
+    EXPECT_EQ(control->scratch[0].module, "massed");
+    EXPECT_EQ(control->scratch[0].name, "dv");
+    EXPECT_EQ(control->scratch[0].elem_size, kDvSize);
+    EXPECT_EQ(control->scratch[0].extent, Extent::per_body);
+    EXPECT_EQ(control->scratch[0].binding, spade::modules::kNoBinding) << "CPU-only unless it names a binding";
+    EXPECT_TRUE(with(cpu_only_pair).has_value()) << "two CPU-only scratches share no binding";
+
+    EXPECT_TRUE(refused_naming(with(own_array), "mass_copies")) << "its own array's name";
+    EXPECT_TRUE(refused_naming(with(own_table), "masses")) << "its own table's name";
+    EXPECT_TRUE(refused_naming(with(builtin_array), "rotors")) << "another module's array's name";
+    EXPECT_TRUE(refused_naming(with(core_array), "bodies"));
+    EXPECT_TRUE(refused_naming(with(dotted), "a.b"));
+    EXPECT_TRUE(refused_naming(with(unnamed), "massed"));
+    EXPECT_TRUE(refused_naming(with(twice), "dv"));
+    EXPECT_TRUE(refused_naming(with(sizeless), "dv"));
+    EXPECT_TRUE(refused_naming(with(per_element), "dv"));
+    EXPECT_TRUE(refused_naming(with(per_sensor), "dv"));
+    EXPECT_TRUE(refused_naming(with(per_row), "dv"));
+    EXPECT_TRUE(refused_naming(with(unknown), "dv"));
+    EXPECT_TRUE(refused_naming(with(shared_binding), "dv_b")) << "two scratches, one binding";
+
+    spade::modules::ModuleSet two = spade::modules::standard_modules();
+    two.push_back({.name = "massed", .state = kMassCopyArrays, .tables = kMassTables, .scratch = ok});
+    two.push_back({.name = "other", .scratch = ok});
+    EXPECT_TRUE(refused_naming(compile_schedule(two), "dv")) << "two modules, one scratch name";
+    static constexpr spade::modules::ArrayDecl dv_array[] = {{.name = "dv", .elem_size = kDvSize}};
+    spade::modules::ModuleSet array_after = spade::modules::standard_modules();
+    array_after.push_back({.name = "first", .scratch = ok});
+    array_after.push_back({.name = "second", .state = dv_array});
+    EXPECT_TRUE(refused_naming(compile_schedule(array_after), "dv")) << "an array named like an earlier scratch";
+}
+
+// A pass reaches a scratch by the array rules: its module's names are checked
+// (a module that declares only scratch is stateful), another module may read,
+// write or accumulate it as a required access, an optional read binds it when
+// its module is present and nothing when it is absent, and an optional write is
+// refused.
+TEST(ModuleScratch, APassReachesItByTheArrayRules) {
+    static constexpr ScratchDecl dv[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+    static constexpr QuantityAccess own_write[] = {{"dvmod.dv", Access::write}};
+    static constexpr QuantityAccess misspelt[] = {{"dvmod.dvv", Access::write}};
+    static constexpr PassDecl own[] = {{.name = "zero", .phase = Phase::integrate, .access = own_write, .cpu = &noop}};
+    static constexpr PassDecl bad[] = {{.name = "zero", .phase = Phase::integrate, .access = misspelt, .cpu = &noop}};
+    const auto with = [](std::span<const PassDecl> owner, std::span<const QuantityAccess> other) {
+        const PassDecl probe[] = {{.name = "probe", .phase = Phase::forces, .access = other, .cpu = &noop}};
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back({.name = "probe", .passes = probe});
+        set.push_back({.name = "dvmod", .passes = owner, .scratch = dv});
+        return compile_schedule(set);
+    };
+    static constexpr QuantityAccess read[] = {{"dvmod.dv", Access::read}};
+    static constexpr QuantityAccess write[] = {{"dvmod.dv", Access::write}};
+    static constexpr QuantityAccess add[] = {{"dvmod.dv", Access::accumulate}};
+    static constexpr QuantityAccess optional_read[] = {{.quantity = "dvmod.dv", .access = Access::read, .optional = true}};
+    static constexpr QuantityAccess optional_write[] = {
+        {.quantity = "dvmod.dv", .access = Access::write, .optional = true}};
+    static constexpr QuantityAccess optional_nope[] = {
+        {.quantity = "dvmod.nope", .access = Access::read, .optional = true}};
+
+    for (const std::span<const QuantityAccess> access :
+         {std::span<const QuantityAccess>(read), std::span<const QuantityAccess>(write),
+          std::span<const QuantityAccess>(add), std::span<const QuantityAccess>(optional_read)}) {
+        SCOPED_TRACE(static_cast<int>(access[0].access) + (access[0].optional ? 10 : 0));
+        const auto s = with(own, access);
+        ASSERT_TRUE(s.has_value()) << s.error().context;
+        const spade::modules::CompiledPass* probe = compiled_pass(*s, "probe", "probe");
+        const spade::modules::CompiledPass* zero = compiled_pass(*s, "dvmod", "zero");
+        ASSERT_NE(probe, nullptr);
+        ASSERT_NE(zero, nullptr);
+        ASSERT_EQ(probe->state.size(), 1u);
+        ASSERT_EQ(zero->state.size(), 1u);
+        EXPECT_EQ(probe->state[0].kind, BindingKind::scratch) << "another module's scratch";
+        EXPECT_EQ(probe->state[0].index, scratch_index(*s, "dv"));
+        EXPECT_EQ(zero->state[0].kind, BindingKind::scratch) << "its own";
+        EXPECT_EQ(zero->state[0].index, scratch_index(*s, "dv"));
+    }
+    EXPECT_TRUE(refused_naming(with(bad, read), "dvmod.dvv")) << "a module that declares only scratch is stateful";
+    EXPECT_TRUE(refused_naming(with(own, optional_write), "dvmod.dv")) << "an optional write";
+    EXPECT_TRUE(refused_naming(with(own, optional_nope), "dvmod.nope")) << "present, but no such scratch";
+
+    // Absent: the optional read binds nothing and orders nothing.
+    const PassDecl probe[] = {{.name = "probe", .phase = Phase::forces, .access = optional_read, .cpu = &noop}};
+    spade::modules::ModuleSet absent = spade::modules::standard_modules();
+    absent.push_back({.name = "probe", .passes = probe});
+    const auto alone = compile_schedule(absent);
+    ASSERT_TRUE(alone.has_value()) << alone.error().context;
+    const spade::modules::CompiledPass* lone = compiled_pass(*alone, "probe", "probe");
+    ASSERT_NE(lone, nullptr);
+    ASSERT_EQ(lone->state.size(), 1u);
+    EXPECT_EQ(lone->state[0].kind, BindingKind::absent);
+}
+
+// The hazard graph orders scratch accesses like array accesses, in one phase:
+// a reader after its writer whatever the set order, accumulators with no edge
+// in set order, and two writers (or a writer and an accumulator) only with an
+// edge.
+TEST(ModuleScratch, TheHazardGraphOrdersItLikeAnArray) {
+    static constexpr ScratchDecl dv[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+    static constexpr QuantityAccess reads[] = {{"dvmod.dv", Access::read}};
+    static constexpr QuantityAccess writes[] = {{"dvmod.dv", Access::write}};
+    static constexpr QuantityAccess adds[] = {{"dvmod.dv", Access::accumulate}};
+    static constexpr std::string_view after_owner[] = {"dvmod.set"};
+    static constexpr PassDecl reader[] = {{.name = "get", .phase = Phase::constraints, .access = reads, .cpu = &noop}};
+    static constexpr PassDecl adder[] = {{.name = "add", .phase = Phase::constraints, .access = adds, .cpu = &noop}};
+    static constexpr PassDecl writer[] = {{.name = "put", .phase = Phase::constraints, .access = writes, .cpu = &noop}};
+    static constexpr PassDecl ordered_writer[] = {
+        {.name = "put", .phase = Phase::constraints, .access = writes, .after = after_owner, .cpu = &noop}};
+    static constexpr PassDecl owner[] = {{.name = "set", .phase = Phase::constraints, .access = writes, .cpu = &noop}};
+    static constexpr PassDecl owner_adds[] = {
+        {.name = "set", .phase = Phase::constraints, .access = adds, .cpu = &noop}};
+    const auto with = [](std::span<const PassDecl> first, std::span<const PassDecl> owner_passes) {
+        const ModuleDesc set[] = {{.name = "first", .passes = first},
+                                  {.name = "dvmod", .passes = owner_passes, .scratch = dv}};
+        return compile_schedule(set);
+    };
+
+    const auto read_after = with(reader, owner);
+    ASSERT_TRUE(read_after.has_value()) << read_after.error().context;
+    EXPECT_EQ(names(*read_after), (Names{"dvmod.set", "first.get"})) << "the reader runs after the writer";
+    const spade::modules::CompiledPass* get = compiled_pass(*read_after, "first", "get");
+    ASSERT_NE(get, nullptr);
+    ASSERT_EQ(get->state.size(), 1u);
+    EXPECT_EQ(get->state[0].kind, BindingKind::scratch);
+
+    const auto two_adders = with(adder, owner_adds);
+    ASSERT_TRUE(two_adders.has_value()) << two_adders.error().context;
+    EXPECT_EQ(names(*two_adders), (Names{"first.add", "dvmod.set"})) << "accumulators: no edge, set order";
+
+    EXPECT_TRUE(refused_naming(with(writer, owner), "dvmod.dv")) << "two writers, no edge";
+    EXPECT_TRUE(refused_naming(with(adder, owner), "dvmod.dv")) << "a writer and an accumulator, no edge";
+    const auto edged = with(ordered_writer, owner);
+    ASSERT_TRUE(edged.has_value()) << edged.error().context;
+    EXPECT_EQ(names(*edged), (Names{"dvmod.set", "first.put"}));
+}
+
+// The coordinator's pattern, exactly (Physics' contact_dv): integrate owns the
+// scratch, reads it and zeroes it (a write, in Integrate); static_contact and
+// dynamic_contact accumulate into it (required accesses, in Constraints). It
+// compiles to TODAY'S order and identity with no new edge: the phases order the
+// owner after both accumulators, two accumulators need no edge, and the
+// existing `after: static_contact.resolve` (dynamic's, for body.pose) already
+// fixes their fp32 accumulation order. On the CPU it moves nothing.
+TEST(ModuleScratch, ContactDvOwnedByIntegrateKeepsTodaysOrder) {
+    ContactDvSet pattern;
+    make_contact_dv_set(pattern, kContactDv);
+    const auto s = compile_schedule(pattern.set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(names(*s), names(*compile_schedule(spade::modules::standard_modules())))
+        << "StandardModules.CompileToTodaysOrder's order";
+    EXPECT_EQ(s->identity, kStandardIdentity) << "master's value";
+    ASSERT_EQ(s->scratch.size(), 1u);
+    EXPECT_EQ(s->scratch[0].module, "integrate");
+    EXPECT_EQ(s->scratch[0].name, "contact_dv");
+    EXPECT_EQ(s->scratch[0].elem_size, 16u) << "one 16-byte row size for the CPU and the GPU";
+    for (const auto& [module, pass] : {std::pair{"static_contact", "resolve"}, std::pair{"dynamic_contact", "resolve"},
+                                       std::pair{"integrate", "integrate"}}) {
+        SCOPED_TRACE(module);
+        const spade::modules::CompiledPass* p = compiled_pass(*s, module, pass);
+        ASSERT_NE(p, nullptr);
+        ASSERT_FALSE(p->state.empty());
+        EXPECT_EQ(p->state.back().kind, BindingKind::scratch);
+        EXPECT_EQ(p->state.back().index, 0u);
+    }
+    for (const ModuleDesc& m : pattern.set) {
+        for (const PassDecl& p : m.passes) EXPECT_TRUE(p.before.empty()) << m.name << "." << p.name << ": no new edge";
+    }
+
+    // The same set runs on the CPU, and the scratch moves no digest: the
+    // built-in passes do not reach it -- they still use PHY-7's hand-held
+    // contact_dv, which Physics converts after this lands.
+    auto with = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, pattern.set);
+    auto plain = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(with.has_value()) << with.error().context;
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    ASSERT_TRUE(with->spawn(0, spade::BodySpawn{}).has_value());
+    ASSERT_TRUE(plain->spawn(0, spade::BodySpawn{}).has_value());
+    ASSERT_TRUE(with->step(5).has_value() && plain->step(5).has_value());
+    EXPECT_EQ(spade::testing::state_digest(*with), spade::testing::state_digest(*plain));
+}
+
+// Kernels bind statically, so a scratch a GPU pass declares must carry its
+// binding. Without one, the Vulkan set is refused at create() -- before any
+// device is asked for -- naming the pass and the scratch.
+TEST(ModuleScratch, AVulkanSetWhoseGpuPassNeedsAnUnboundScratchIsRefused) {
+    ContactDvSet pattern;
+    make_contact_dv_set(pattern, kContactDv);
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                               spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan},
+                                               pattern.set);
+    ASSERT_FALSE(sim.has_value()) << "a kernel cannot reach a scratch that has no binding";
+    EXPECT_EQ(sim.error().code, spade::Code::unavailable) << sim.error().context;
+    EXPECT_NE(sim.error().context.find("static_contact.resolve"), std::string::npos) << sim.error().context;
+    EXPECT_NE(sim.error().context.find("integrate.contact_dv"), std::string::npos) << sim.error().context;
+}
+
+// What Simulation hands the GPU mirror (StepShape::scratch): every declared
+// scratch in set order, then declaration order, with its row size, its
+// extent's per-world rows and its binding as declared.
+TEST(ModuleScratch, ItsMirrorShapeIsItsDeclaration) {
+    static constexpr ScratchDecl declared[] = {
+        {.name = "body_dv", .elem_size = kDvSize, .extent = Extent::per_body, .binding = 40},
+        {.name = "world_dv", .elem_size = 32, .extent = Extent::per_world}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "dvmod", .scratch = declared});
+    auto sim = spade::Simulation::create(two_shaped_worlds(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const std::vector<spade::compute::ScratchShape> shapes =
+        spade::scratch_shapes(sim->schedule(), capacities_of(*sim));
+    ASSERT_EQ(shapes.size(), 2u);
+    EXPECT_EQ(shapes[0].name, "body_dv");
+    EXPECT_EQ(shapes[0].elem_size, kDvSize);
+    EXPECT_EQ(shapes[0].capacity_per_world, sim->layout().body_capacity);
+    EXPECT_EQ(shapes[0].binding, 40u);
+    EXPECT_EQ(shapes[1].name, "world_dv");
+    EXPECT_EQ(shapes[1].elem_size, 32u);
+    EXPECT_EQ(shapes[1].capacity_per_world, 1u);
+    EXPECT_EQ(shapes[1].binding, spade::compute::kNoBinding);
+    EXPECT_TRUE(
+        spade::scratch_shapes(*compile_schedule(spade::modules::standard_modules()), capacities_of(*sim)).empty())
+        << "the standard set declares none";
+}
