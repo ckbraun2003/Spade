@@ -97,6 +97,19 @@ TEST(CoreFlowVolume, AMalformedVolumeIsRefused) {
         refused(v, "a long S texture");
     }
     {
+        // Core's review: 2^22 cubed x 4 halves is 2^68, 0 modulo 2^64, so an
+        // unchecked product would accept two empty textures.
+        FlowVolume v;
+        v.header.cell = 1.0f;
+        v.header.nx = v.header.ny = v.header.nz = 1u << 22;
+        refused(v, "dimensions whose half count overflows, with empty textures");
+    }
+    {
+        FlowVolume v = make_volume();
+        v.header.no_data = 2u * 3u * 4u * 8u + 1u;
+        refused(v, "a no-data count past the volume's halves");
+    }
+    {
         FlowVolume v = make_volume();
         v.header.channel_min[spade::kFlowPressure] = 2.0f;
         v.header.channel_max[spade::kFlowPressure] = 1.0f;
