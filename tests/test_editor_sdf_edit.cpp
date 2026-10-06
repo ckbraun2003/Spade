@@ -294,6 +294,14 @@ TEST(EditorSdfEdit, AnOperatorTakesOnlyTheParametersItUses) {
     ASSERT_TRUE(radius.has_value()) << radius.error().context;
     EXPECT_EQ(radius->nodes[blend].params.x, 0.5f);
     EXPECT_TRUE(ed::set_node_params(p, join, glm::vec4(0.0f)).has_value());  // its own zeros: a no-op
+
+    // -0 is not 0 to the writer or the hash (Core's nit), so it is refused too,
+    // except as a smooth union's radius, which is the user's own value.
+    const Result<SdfProgram> negative_zero = ed::set_node_params(p, join, glm::vec4(-0.0f, 0, 0, 0));
+    ASSERT_FALSE(negative_zero.has_value());
+    EXPECT_NE(negative_zero.error().context.find("union"), std::string::npos) << negative_zero.error().context;
+    EXPECT_FALSE(ed::set_node_params(p, blend, glm::vec4(0.25f, 0, -0.0f, 0)).has_value());
+    EXPECT_TRUE(ed::set_node_params(p, blend, glm::vec4(-0.0f, 0, 0, 0)).has_value());
 }
 
 // Core's review, pinned rather than changed: a non-zero material on a world
