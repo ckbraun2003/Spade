@@ -69,6 +69,10 @@ A row, with illustrative values:
 //          history, irisplus-2125 (final tick, disjunctive): max 4.1e-7 -> {2e-6, 1e-5}
 ```
 
+## Validation against published data
+
+Two kinds of tolerance are set in opposite ways. An **implementation band** (CPU against GPU, gcc against MSVC) says how faithfully one implementation reproduces another, so it is measured and then pinned with margin (`TD-2`, `TD-14`). A **validation tolerance** (the physics against published reference data, `../physics/plans/2026-10-05-airflow-design.md` §11) is never set that way: pinning it at 4× our own solver's error would fit the tolerance to our answer and make the check circular. Each case's tolerance is fixed in §11.2 before its first run, argued from the literature (the published spread, and the resolution the case states), and its record states that argument. A case that misses is reported as a miss; its tolerance is never loosened after a run without a lead decision recorded with its reason. The reference data is reviewed like a golden before the case's first run (`TD-1`): it cites the source's table or figure, and says how it was verified or digitized.
+
 ## SPIR-V scanner
 
 `engine/testing/spirv_scan.hpp` reads compiled SPIR-V as a word stream; it needs no SDK tool. It applies two profiles: **parity** kernels obey `SPIR-V rule P1`–`P5`, and **`fp32_math`** modules also obey `E1`/`E2`. `P3` was amended on 2026-10-05 and now holds that no module requests an fp32 denormal mode, so every device runs the kernels with its own default (`00-decisions.md`). Every compiled variant is scanned, and the module count comes from the build, so a new kernel cannot slip past unscanned. Run by `test_slang_layouts.cpp`, which needs no device.
