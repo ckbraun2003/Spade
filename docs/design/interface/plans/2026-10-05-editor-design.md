@@ -149,6 +149,7 @@ Each need is reported to Core through the lead, and nothing widens an include pa
 - **EDT-018** A setting the world file cannot hold MUST be shown as not saved with the world.
 - **EDT-019** A model parameter edit MUST reach only the selected vehicle; a model an opened scene shares MUST be copied for that vehicle before the edit commits.
 - **EDT-020** Save to library MUST write a new library item and MUST NOT overwrite an existing one.
+- **EDT-021** The editor's and the sandbox's UI MUST follow §13: one theme, consolidated dockable panels, collapsible sections and aligned property rows, and no boxes or separators for structure. A source scan checks the conventions.
 
 ## 11. Testing
 
@@ -161,6 +162,7 @@ Each need is reported to Core through the lead, and nothing widens an include pa
 - **Run:** composing and instantiating the documents equals `compose_file()` on their saved files (the first state digest); a rebuild carries a vehicle's pose and rates within the step's tolerance; a refusal keeps the old run.
 - **Headless:** the command line opens, edits, saves and runs a scene and a world with no window, in `spade_tests` and a CLI test.
 - **Live smoke:** an `editor` main function with a step per operation.
+- **Look and feel:** the source scan over `sandbox/` (§13), plus the live smoke's still of each panel and of the default layout, for the user's review.
 
 ## 12. Order of work (for the plan)
 
@@ -170,6 +172,48 @@ Each need is reported to Core through the lead, and nothing widens an include pa
 4. The inspector's tables: vehicle, model (every `ModelType` field, with `issues()`), asset, world.
 5. The SDF edit helper, with Core's review.
 6. Run, pause, step; rebuild with carry.
-7. The window: library panel, hierarchy, inspector, scene and world panels, run bar, menus, on the existing sessions.
+7. The window, to §13: toolbar, hierarchy, inspector, library and viewport, docked, on the existing sessions.
 8. The live smoke's `editor` main function.
 9. The scene picker: the built-in scenes as scene files, saved scenes, and the test scenarios as composer task 5 converts them.
+
+## 13. Look and feel
+
+The user's direction (2026-10-06 00:42 UTC, relayed by the lead; `backlog.md`): "I want a sleek feel where things look consolidated and properly in place ... I really am going for a simplistic yet powerful editor, unity and unreal do a great job with this." It applies to the editor and to the sandbox's existing panels and HUD.
+
+**Principles**
+
+- **Consolidated panels**, as in Unity and Unreal:
+  - a toolbar: run, pause, step and the tick; undo and redo; save;
+  - the scene hierarchy;
+  - the inspector;
+  - the library;
+  - the viewport.
+  Scene and world settings show in the inspector when the scene or the world is selected in the hierarchy; they get no panels of their own. The sandbox's scenes split the same way.
+- **No boxes inside panels.** A panel's content sits on the panel. There are no bordered child regions, frames, group borders, or separators drawn for structure. A list scrolls with its panel.
+- **Collapsible sections instead of boxed groups:** flat, full-width, one level deep where possible.
+- **Properties as aligned rows:** the label in a fixed left column and the value filling the right, one property per row. Units go in the value's format, not the label.
+- **One spacing scale and one type scale:** every gap is a multiple of one base unit. Text uses one font at one size, and headings are the sections' own headers.
+- **Quiet colours:** neutral greys, plus one accent used only for selection, focus, hover and active state. A warning colour is used for status, such as a refusal, which `INT-2` requires to be shown.
+- **Progressive disclosure:** common settings are open and advanced ones are folded by default. Examples: a model's IMU noise and parts, a world's sky colours, the frame-time breakdown.
+- **Dockable:** every panel docks, tabs and undocks. The default layout puts the hierarchy on the left, the inspector on the right, the library at the bottom, the toolbar at the top and the viewport in the centre. "Reset layout" restores it.
+
+The HUD overlay (frame timing, the controls legend, and later the airflow readouts) is the one floating window. It is translucent and undocked by design, with the same theme and rows and no separators.
+
+**ImGui conventions (what the check reads)**
+
+- **Theme:** one function, `apply_spade_theme()` in `sandbox/ui_theme.hpp`, runs once after `ImGui::CreateContext()`. Nothing else sets style colours or style variables. Its values:
+  - base unit 4 px;
+  - `WindowPadding` (8, 8), `FramePadding` (6, 4), `ItemSpacing` (8, 6), `ItemInnerSpacing` (6, 4), `IndentSpacing` 12, `ScrollbarSize` 10;
+  - `FrameRounding`, `GrabRounding` and `TabRounding` 3, `WindowRounding` 0;
+  - `WindowBorderSize`, `ChildBorderSize`, `FrameBorderSize` and `TabBorderSize` 0, `PopupBorderSize` 1.
+- **Font:** ImGui's default font at one size, until a proportional UI font is vendored. That is a follow-up, with its licence checked.
+- **Panels:** `ImGui::Begin` windows docked into `DockSpaceOverViewport` with a pass-through central node, so the viewport shows through. The default layout is built once with the DockBuilder API.
+- **Sections:** `ImGui::CollapsingHeader`, with `ImGuiTreeNodeFlags_DefaultOpen` only on the common ones.
+- **Rows:** one helper, `property_row(label)`, over a two-column `BeginTable` with `ImGuiTableFlags_SizingStretchProp` and no border flags, so every row aligns.
+- **Lists:** `Selectable` rows directly in the panel.
+- **Status text:** one helper, `status_text()`, in the theme's warning colour.
+- **Not used in `sandbox/`:**
+  - `ImGui::Separator`, `SeparatorText`, `BeginGroup` used as a box;
+  - `BeginChild` with `ImGuiChildFlags_Borders`, or `BeginChild` for a list;
+  - `TextColored`, `PushStyleColor`, `PushStyleVar` and `StyleColors*` outside `ui_theme.hpp`.
+- **Checked by** a source scan in `spade_tests` over `sandbox/`, in the manner of `TD-3`'s canary: none of the calls above appear, and the style calls appear only in `ui_theme.hpp`. The live smoke also takes a still of each panel and of the default layout, for the user to review.

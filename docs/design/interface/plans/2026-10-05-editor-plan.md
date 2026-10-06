@@ -72,7 +72,7 @@ Core's queue, as the lead gave it: T4, module-API stage 4, world file v3, model 
 | 7 Run | — (single rotor speed carried until Task 16) | 001, 007, 009, 018 |
 | 8 Edit text and CLI | — | 002 |
 | 9 Library, built-ins | — | 012 |
-| 10 Window | — | 008, 013 |
+| 10 Window | — | 008, 013, 021 |
 | 11 Scene picker | — | (`SL13`) |
 | 12 Live smoke | — | 011 |
 | 13 Library files | model and asset YAML | 020 |
@@ -530,18 +530,29 @@ struct EditorPanels {                      // what the sink's ImGui code reads a
 class EditorSession { /* create(OpenedScene) no window; attach(GlTargetSink&); frame(const FrameInput&, float dt) */ };
 ```
 
-The panels are:
+The window follows the spec's §13 (look and feel, the user's direction of 2026-10-06; EDT-021). Its panels, docked into one dockspace with a default layout, are:
+- the toolbar: run, pause, step and the tick; undo and redo; save; and the menus (Open, Save, Save As, scene sources);
+- the hierarchy, in scene order, with the scene and the world as its first two rows;
+- the inspector, for the selection:
+  - a vehicle: its start, then its model through `model_params()`, with the parts and the IMU noise folded;
+  - an asset: its pose and material;
+  - the scene: its materials and spare counts;
+  - the world: its environment, capacities, lighting, spawns and props, with the sky colours folded;
+  - the records not saved with the world (EDT-018), labelled as such;
 - the library, by kind;
-- the hierarchy, in scene order;
-- the inspector, driven by `model_params()` and each edit type's fields;
-- the scene and world panels;
-- the run bar: run, pause, step and the tick;
-- the menus: Open, Save, Save As, Undo, Redo, scene sources.
+- the viewport, as the dockspace's pass-through centre.
 
 Each widget queues an edit on release; the session applies the queue, so nothing in ImGui code decides.
 
-- [ ] **Step 1: failing tests** for `pick`: a ray at a box asset returns its name; one at a drone returns the vehicle's name; a ray into the sky returns nothing.
+**Files, in addition:**
+- create `sandbox/ui_theme.hpp`, holding `apply_spade_theme()`, `property_row()`, `status_text()` and the default dock layout;
+- test `tests/test_sandbox_ui_conventions.cpp`, the source scan.
+
+- [ ] **Step 1: failing tests:**
+  - `pick`: a ray at a box asset returns its name; one at a drone returns the vehicle's name; a ray into the sky returns nothing.
+  - The source scan: no `Separator`, `SeparatorText` or bordered `BeginChild` in `sandbox/`, and style calls only in `ui_theme.hpp`. It is red against today's panels until the sandbox cleanup lands.
 - [ ] **Steps 2–5** as in Task 1. Then a live check in the window, and the live smoke in Task 12.
+- [ ] **Acceptance:** the live smoke's stills of the default layout and of each panel (hierarchy, inspector for a vehicle, a model with its sections open, the world, the library, the toolbar). The lead sends the set to the user.
 
 ### Task 11: The scene picker (`SL13`)
 
@@ -648,5 +659,5 @@ The tasks, their interfaces and their tests are written once the spec names its 
 - §1 done-when 1–7: Tasks 5, 2/9/1, 3/10, 4/5/6/15, 7, 8, 12.
 - §2 scope: everything in the first-cut column has a task. The later column stays out: components, mesh browser, model authoring, regions, scrub.
 - §3 documents: Tasks 1, 2 and 4. §4 library and inspector: Tasks 3, 9, 10 and 13. §5 running: Tasks 7 and 16. §6 worlds: Tasks 4, 5, 6, 14 and 15. §7 saving and opening: Tasks 5 and 11. §8 API needs: the order table.
-- EDT-001 to EDT-020 each map to a task in the order table.
+- EDT-001 to EDT-021 each map to a task in the order table (EDT-021, the look and feel, added 2026-10-06 from the user's direction).
 - The review focus items map to Tasks 3, 2, 5, 1 and 7, each with its test.
