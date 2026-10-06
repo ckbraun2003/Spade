@@ -362,21 +362,21 @@ Aliasing vorticity with the backward MacCormack set would save 24 MiB; this tabl
 
 | Buffer | MiB | Where |
 |---|---|---|
-| Render volume V, RGBA16F (`u, v, w`, dye), and S, RG16F (pressure gauge, `|ω|`): 12 B/cell (§5) | 24 | VRAM (Vulkan) |
-| Its staging copy | 24 | host memory *(unconfirmed: depends on the memory type the mirror picks)* |
-| GL 3D textures, V and S | 24 | VRAM (GL) |
+| Render volume V, RGBA16F (`u, v, w`, dye), and S, RGBA16F (pressure gauge, `|ω|`, `q̂`, 0): 16 B/cell (§5) | 32 | VRAM (Vulkan) |
+| Its staging copy | 32 | host memory *(unconfirmed: depends on the memory type the mirror picks)* |
+| GL 3D textures, V and S | 32 | VRAM (GL) |
 | Streamlines: 4,096 seeds × 128 points × 16 B | 8 | VRAM |
 | Smoke particles, 262,144 × 32 B (if used) | 8 | VRAM |
-| **VRAM total** | **≈ 64** | |
+| **VRAM total** | **≈ 80** | |
 
 **Against 8 GiB.** Proposed cap for airflow: 4 GiB. That leaves about 4 GiB for Windows and the desktop, the driver, the GL editor and the engine's own buffers *(the reserve is unmeasured; Core measures it with `VK_EXT_memory_budget`)*.
 
 | Configuration | Real-time | LBM (D3Q27, one copy) | Render | Total |
 |---|---|---|---|---|
-| **128³ both tiers** | 194 | 274 | 64 | **≈ 532 MiB** |
-| 192³ both | 655 | 925 | ≈ 180 | ≈ 1.7 GiB |
-| 256³ real-time + 192³ LBM | 1,552 | 925 | ≈ 400 | ≈ 2.8 GiB |
-| 256³ both, the volume decimated by 2 | 1,552 | 2,192 | ≈ 64 | ≈ 3.7 GiB (at full resolution, ≈ 400 and ≈ 4.0 GiB: over the cap) |
+| **128³ both tiers** | 194 | 274 | 80 | **≈ 548 MiB** |
+| 192³ both | 655 | 925 | ≈ 230 | ≈ 1.8 GiB |
+| 256³ real-time + 192³ LBM | 1,552 | 925 | ≈ 530 | ≈ 2.9 GiB |
+| 256³ both, the volume decimated by 2 | 1,552 | 2,192 | ≈ 80 | ≈ 3.7 GiB (at full resolution, ≈ 530 and ≈ 4.2 GiB: over the cap) |
 
 Batching (`L8`): the module set belongs to the simulation and array capacity is uniform, so **every world carries the largest region's arrays**, with or without a region of its own. 32 worlds at 64³ (real-time tier, 24 MiB each) use 776 MiB. `create()` refuses a set whose declared footprint exceeds the budget, naming the region (`L6`).
 
@@ -443,10 +443,10 @@ The target is 1e-4 relative. Above 1e-3 is a grade change (`TD-2`), never a wide
 
 **Owner:** Rendering.
 
-The views read only Publish (`L5`, the engine model). `airflow.publish` writes a render volume at the region's resolution, or decimated by 2, cell-centred (it interpolates off the MAC faces), as two textures: **V**, RGBA16F = (`u, v, w`, dye), and **S**, RG16F = (pressure gauge, vorticity magnitude). The velocity is a vector because the streamlines and tracers need it; speed is `|uvw|` in the shader. That is 12 B/cell: 24 MiB at 128³, 3 MiB decimated. Each frame carries a small header: the world box (origin, cell size, dims), since a box can recentre (§8 Q1), and a finite min and max per channel for the transfer functions. The f32 → f16 conversion rounds to nearest even and keeps subnormals; a non-finite sample is flagged no-data and drawn transparent (`L6`), never as a value, as the field layer does. Publish runs only on frames that request it, never at substep rate. (Rendering, 2026-10-05.)
+The views read only Publish (`L5`, the engine model). `airflow.publish` writes a render volume at the region's resolution, or decimated by 2, cell-centred (it interpolates off the MAC faces), as two textures: **V**, RGBA16F = (`u, v, w`, dye), and **S**, RGBA16F = (pressure gauge, vorticity magnitude, `q̂`, reserved 0). The velocity is a vector because the streamlines and tracers need it; speed is `|uvw|` in the shader. `q̂ = sign(Q)·√|Q|` (1/s), where `Q = ½(|Ω|² − |S|²)` is the Q-criterion (`Ω` and `S` the rotation and strain-rate tensors), computed by Publish in fp32 from the MAC grid's staggered derivatives; it uses only `sqrt` (`TD-3`). An iso-surface at `Q = Q₀` is `q̂ = √Q₀`. Publish computes it, not the renderer, because rebuilding `Q` from f16 velocities differences values that agree to three digits, and `Q` itself overflows f16 in a tip vortex (`|ω|` ≈ 10³ 1/s gives `Q` ≈ ¼|ω|² ≈ 2.5·10⁵, past 65 504) while `q̂` stays in range. That is 16 B/cell: 32 MiB at 128³, 4 MiB decimated. Each frame carries a small header: the world box (origin, cell size, dims), since a box can recentre (§8 Q1), and a finite min and max per channel for the transfer functions. The f32 → f16 conversion rounds to nearest even and keeps subnormals; a non-finite sample, or a finite one past f16's range (±65 504), is flagged no-data, counted in the header and drawn transparent (`L6`), never saturated or drawn as a value, as the field layer does. Publish runs only on frames that request it, never at substep rate. (Rendering, 2026-10-05.)
 
 **Volume rendering (GL, the editor's path, `RND-4`).**
-- The volume reaches GL by readback: 24 MiB per frame, about 1 ms over PCIe 4.0 *(estimate)*, then uploaded to two 3D textures.
+- The volume reaches GL by readback: 32 MiB per frame, about 1.3 ms over PCIe 4.0 *(estimate)*, then uploaded to two 3D textures.
 - A fragment ray-march uses front-to-back compositing with early exit, at 1–2 samples per cell. A transfer function per channel: speed, pressure (diverging) and vorticity. Dye is absorption plus one constant in-scatter colour, so smoke reads as smoke, not ink; no self-shadowing at first. The march reads the scene's depth, so solid geometry hides the air behind it: `GlRenderer` draws into the caller's framebuffer, whose depth may be a renderbuffer, so Rendering redraws depth only into an internal texture. Estimated 2–4 ms at 1080p *(unmeasured; Rendering measures it in M3, against 2–4 ms measured for small GL CSG marches on the same card)*.
 - Vulkan-GL interop (`VK_KHR_external_memory_win32` with `GL_EXT_memory_object_win32` and semaphores) removes the copy. It comes only if the readback measures too slow (§8 Q7).
 
@@ -586,7 +586,7 @@ Validation runs alongside, as V1–V4 (§11.6): V1 with M3, V2 with M4, V3 with 
 - Q2 C and Q10 A confirmed; Q8 is Cameron's (Core neutral). Its decisions for Cameron are Q11 and Q12. The scratch kind joins stage 4 as Task 7b (the lead approved it, 2026-10-05).
 
 **Rendering** (confirmed 2026-10-05, with its amendments folded into §4.3 and §5)
-- The Publish volume format: **amended** to two cell-centred textures, V (RGBA16F: `u, v, w`, dye) and S (RG16F: pressure, `|ω|`), with a per-frame header and no-data for non-finite samples.
+- The Publish volume format: **amended** to two cell-centred textures, V (RGBA16F: `u, v, w`, dye) and S (RGBA16F: pressure, `|ω|`, `q̂`, 0; Rendering's amendment, 2026-10-05, the lead agreeing), with a per-frame header and no-data for non-finite samples.
 - GL ray-march by readback; streamlines in a GL compute shader; dye as absorption: **amended**: a depth-only redraw into an internal texture, dye with one in-scatter colour, and streamlines on the CPU first.
 - The CPU volume reference and its frame golden: **amended**: the golden renders a synthetic analytic volume, so it pins rendering alone.
 - That the Vulkan raster needs nothing now: **confirmed.**
