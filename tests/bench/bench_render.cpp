@@ -417,11 +417,14 @@ void BM_CsgMeshShell(benchmark::State& state) {
         mesh = std::move(*made);
         benchmark::DoNotOptimize(mesh.positions.data());
     }
-    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(world->sdf, root, mesh);
+    const spade::render::CsgFoldReport folds = spade::render::find_folded_triangles(
+        world->sdf, root, mesh, spade::render::csg_mesh_cell_size(world->sdf, root, *bounds, limits));
     state.counters["cells"] = static_cast<double>(spade::render::csg_cells_per_axis(*bounds, limits));
     state.counters["triangles"] = static_cast<double>(folds.triangles);
     state.counters["folded_pct"] =
         100.0 * static_cast<double>(folds.folded) / static_cast<double>(std::max(folds.triangles, 1u));
+    state.counters["thin_folds"] = static_cast<double>(folds.thin);
+    state.counters["sharp_folds"] = static_cast<double>(folds.sharp);
 }
 
 // One frame of the shell above, drawn four ways. The raster draws its B1
