@@ -236,11 +236,16 @@ class GlTargetSink final : public TargetSink {
     // HUD includes the readback.
     void capture_next_present() noexcept;
 
-    // Shows or hides the HUD legend. F1 calls this from poll(), and the live
-    // smoke calls it too, so the tour drives the key's own path.
+    // Shows or hides the HUD. F1 calls this from poll(), and the live smoke
+    // calls it too, so the tour drives the key's own path.
     void toggle_help() noexcept;
-    // True when the last presented frame drew the legend.
+    // True when the last presented frame drew the HUD's stats line (fps, ms,
+    // MB). Its legend is a folded "Controls" section (§13), so the stats
+    // line is what "the HUD is showing" means.
     [[nodiscard]] bool help_drawn() const noexcept;
+    // True when the UI font loaded (sandbox/ui_theme.hpp); when it did not,
+    // the window announced it and draws in ImGui's built-in font.
+    [[nodiscard]] bool ui_font_loaded() const noexcept;
 
   private:
     // Draws the caption and the card on the foreground draw list, so no panel

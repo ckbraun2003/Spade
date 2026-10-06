@@ -6,3 +6,6 @@
 # keeps the golden corpus the same way. eol=lf, not -text: they are read.
 *.world.yaml text eol=lf
 *.scene.yaml text eol=lf
+
+# Fonts are binary: never convert their line endings.
+*.ttf binary

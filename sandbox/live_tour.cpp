@@ -522,17 +522,18 @@ void drone_box(Tour& t, DroneSession& d) {
     });
 
     // F1's own path: poll() calls toggle_help() on the key's press. The checks
-    // read whether the presented frames drew the legend, not the flag.
+    // read whether the presented frames drew the HUD's stats line, not the
+    // flag (the key legend is a folded section, §13).
     t.step("drone_box", "hud", [&] {
         const auto drawn = [&t] { return std::string(t.sink().help_drawn() ? "drawn" : "not drawn"); };
         const bool before = t.sink().help_drawn();
         t.sink().toggle_help();
         t.pump(60, idle, draw);
         s.check(before && !t.sink().help_drawn(), "hidden",
-                "legend " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
+                "HUD stats line " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
         t.sink().toggle_help();
         t.pump(60, idle, draw);
-        s.check(t.sink().help_drawn(), "shown", "legend " + drawn());
+        s.check(t.sink().help_drawn(), "shown", "HUD stats line " + drawn());
     });
 }
 
@@ -1089,6 +1090,10 @@ int run_live_smoke(const TourOptions& options) {
     // What the run leaves behind, checked rather than assumed: ffmpeg given no
     // frames still exits 0, and a poster request can go unanswered.
     (void)smoke.check(rec.video_frames() > 0u, "frames-recorded", std::to_string(rec.video_frames()) + " frames");
+    // The UI font (the editor design's §13): a missing font is announced, so
+    // the recording must not quietly show ImGui's built-in one instead.
+    (void)smoke.check(sink->ui_font_loaded(), "ui-font",
+                      sink->ui_font_loaded() ? "Inter loaded" : "the UI font did not load; see stderr");
     if (rec.piped()) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);
