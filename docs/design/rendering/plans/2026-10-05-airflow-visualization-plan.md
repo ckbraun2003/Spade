@@ -1,6 +1,12 @@
 # Airflow visualization plan
 
-**Owner:** Rendering. **Status:** proposed, for the lead's review (2026-10-05).
+**Owner:** Rendering. **Status:** approved by the lead, 2026-10-05; steps 1–5 started. The lead's answers:
+- **Q1:** Core's call, asked directly; `core/` if Core agrees.
+- **Q2:** asked of Physics as a spec amendment; the lead supports it.
+- **Q3:** ray-cast iso-surfaces, yes.
+- **Q4:** arc-length RK4 at a fixed quarter cell, yes; adaptive steps can come later as an opt-in.
+- **Q5:** fixed ranges by default, yes; the auto range is an explicit opt-in that announces the range it chose (`L6`).
+- **λ₂:** out for now. A follow-up is recorded in `07-status`: a symmetric 3×3 eigen-solve by fixed-sweep cyclic Jacobi needs only `√`, so it is `TD-3`-clean and deterministic.
 
 **Inputs:**
 - The joint spec `../../physics/plans/2026-10-05-airflow-design.md`: §5 (Rendering), §6 (the views and live-smoke checks Interface needs), §11 (`PHY-9`: "F1 level, NASA level aerodynamics").
