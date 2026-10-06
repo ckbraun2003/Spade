@@ -13,7 +13,7 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 | `scripts\demo.ps1` | Builds if needed and launches one viewer scene | `-Scene <name>`, `-Preset`, `-Backend cpu\|vulkan` |
 | `scripts\docker-leg.ps1` | The Docker leg (below): builds and tests one commit on Linux/gcc in a container, then the consumer smoke | `-Commit <rev>` (default `HEAD`), `-Run <id>` (default the commit's short sha), `-Step all\|image\|sync\|configure\|build\|test\|consumer`, `-Memory` (default `8g`), `-Jobs` (default 8), `-NoSeed`, `-Follow`, `-Stop`, `-Clean`, `-Prune [-Keep N]` (default 4) |
 | `scripts/docker-leg.sh` | The leg's steps inside the container. The driver runs the commit's copy for the step, and its own copy for `seed` and `sync` | `<step> [--jobs N]`, `seed [--from VOLUME]` |
-| `scripts/gcc-check.sh` | The gcc check before review (below), from Git Bash | `<file>...`; `GCC_CHECK_VOLUME=<volume>` picks the volume |
+| `scripts/gcc-check.sh` | The gcc check before review (below), from Git Bash | `[--compile] <file>...`; `GCC_CHECK_VOLUME=<volume>` picks the volume |
 | `scripts/consumer-smoke.sh` | **Interface's.** Installs Spade into a fresh prefix, then builds and runs `tests/consumer` against it | `--vulkan ON\|OFF --work DIR [--from-build DIR] [--deps DIR] [--jobs N]` |
 
 ## Presets and options
@@ -55,13 +55,15 @@ A red leg is reported per realm with the failing `file:line`, and each realm fix
 
 **Before "ready for review", every C++ file a branch adds or changes is compiled with gcc-13 in the leg's image, and the message says so.** This is the lead's standing practice from 2026-10-03, after master was gcc-red from `da2fcf5` to `7ed7572` over a warning MSVC never raised.
 
-- **It is a syntax check** (`-fsyntax-only` with the engine's `-Wall -Wextra -Wpedantic -Werror`). It catches front-end warnings such as `dangling-else` and `missing-field-initializers`. It does not catch warnings that need the optimiser, such as `-Wmaybe-uninitialized`; only a leg run finds those.
+- **By default it is a syntax check** (`-fsyntax-only` with the engine's `-Wall -Wextra -Wpedantic -Werror`). It catches front-end warnings such as `dangling-else` and `missing-field-initializers`. It does not run the optimiser, so it misses warnings only optimisation finds, such as `-Wmaybe-uninitialized` and `-Warray-bounds`.
+- **`--compile` compiles each `.cpp` in full,** with the leg volume's own Release command line (`-O3`, from `ninja -t compdb`) plus `-Wall -Wextra -Wpedantic -Werror`, so those optimiser warnings show up in seconds rather than a leg's minutes. Headers still get the syntax check. A `.cpp` the volume's build never compiled (a new file) fails with that reason, and needs a leg. Use it on every changed `.cpp` before review (Rendering's practice from `flow-iso`, made a script mode on 2026-10-06).
 - **Some files it cannot check honestly.** A file that depends on generated headers newer than the leg volume's (any change under `engine/shaders/`), or on a target's own compile definitions, is named in the message instead, and the lead schedules a leg run before merge.
 
 From the worktree root, in Git Bash:
 
 ```bash
 scripts/gcc-check.sh tests/test_example.cpp engine/render/example.hpp
+scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 ```
 
 - **What it does:**
@@ -73,7 +75,11 @@ scripts/gcc-check.sh tests/test_example.cpp engine/render/example.hpp
 - **Its compile line was proved red, then green,** on 2026-10-03, when it was still a command pasted from this page:
   - at `da2fcf5` it failed `tests/test_render_agreement_matrix.cpp` at :95, :97 and :100 (`missing-field-initializers`);
   - at `ec6e2da` the fixed file passed, and so did two headers.
-- **Cost:** about a minute per heavy test file on the old box (126 s for three files); on this machine, 11 s for one heavy test file and one header.
+- **`--compile` was proved the same way** on 2026-10-06, with Rendering's `flow-iso` commits and the leg volumes built from them:
+  - at `81a6438` it failed `engine/render/flow_render.cpp` with both `-O3` errors the leg had found: `array-bounds` in `std::sort`'s insertion pass, and `maybe-uninitialized` copying an optional vector. The syntax check passed the same file;
+  - at `02ac4bd` the fixed file passed;
+  - a `.cpp` the volume never built failed with its reason, and a header fell back to the syntax check;
+  - cost: 49 s for two files.- **Cost:** about a minute per heavy test file on the old box (126 s for three files); on this machine, 11 s for one heavy test file and one header.
 - **When to run it:** whenever it's needed, with as many files as you like, beside any number of legs. It refuses (exit 2) only when no leg volume is idle.
 
 ## This machine
