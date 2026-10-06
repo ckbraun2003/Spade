@@ -91,6 +91,7 @@ struct PreparedTransfer {
     TransferFunction tf;
     ResolvedRange range;
     float inv_span = 0.0f;  // 1 / (max - min), or 0 for an empty span (every value maps to t = 0)
+    std::array<float, kMaxExtinctionPoints - 1> extinction_inv_width{};  // 1 / each segment's width
 };
 
 [[nodiscard]] PreparedTransfer prepare_transfer(const TransferFunction& tf, const FlowVolumeHeader& header);
