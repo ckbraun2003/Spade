@@ -31,7 +31,8 @@ Result<void> validate_flow_layer(const FlowLayer& layer) {
     return {};
 }
 
-PreparedFlowLayer prepare_flow_layer(const FlowLayer& layer) {
+PreparedFlowLayer prepare_flow_layer(const FlowLayer& layer, const Lighting* lighting) {
+    (void)lighting;  // RED: iso-surfaces are not marched yet
     const FlowVolumeHeader& h = layer.volume->header;
     PreparedFlowLayer p;
     p.sampler = make_flow_sampler(*layer.volume);
