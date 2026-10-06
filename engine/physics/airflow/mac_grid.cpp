@@ -19,6 +19,11 @@ Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc) {
     if (uint64_t{shape.nx} * shape.ny * shape.nz > (uint64_t{1} << 31)) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow grid: more than 2^31 cells"});
     }
+    if (const uint64_t bytes = grid_bytes(shape); bytes > kGridByteCap) {
+        return std::unexpected(Error{Code::capacity_exceeded, "airflow grid: " + std::to_string(bytes) +
+                                                                  " bytes of faces and cells, past the cap of " +
+                                                                  std::to_string(kGridByteCap)});
+    }
     const uint32_t size[3] = {shape.nx, shape.ny, shape.nz};
     for (uint32_t axis = 0; axis < 3; ++axis) {
         const bool lo = bc.face[2 * axis] == FaceBc::periodic;

@@ -85,11 +85,24 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
     }
 }
 
+// The largest grid make_grid() allocates: the spec's 4 GiB airflow cap (§4.3).
+inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
+
+// The bytes of a grid's u, v, w and p, in 64 bits.
+[[nodiscard]] inline uint64_t grid_bytes(const GridShape& s) noexcept {
+    const uint64_t nx = s.nx;
+    const uint64_t ny = s.ny;
+    const uint64_t nz = s.nz;
+    const uint64_t floats = (nx + 1u) * ny * nz + nx * (ny + 1u) * nz + nx * ny * (nz + 1u) + nx * ny * nz;
+    return floats * sizeof(float);
+}
+
 // A grid at rest: every face and cell 0. Refused (invalid_argument, naming
 // what): a zero dimension; dx not positive and finite; a periodic face whose
 // opposite face is not periodic; a periodic axis of odd size other than 1,
 // since red-black colouring needs an even ring. capacity_exceeded past 2^31
-// cells.
+// cells, or past kGridByteCap bytes (naming both), before anything is
+// allocated.
 [[nodiscard]] Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc);
 
 }  // namespace spade::physics::airflow
