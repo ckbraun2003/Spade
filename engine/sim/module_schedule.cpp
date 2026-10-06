@@ -1,5 +1,6 @@
 #include "sim/module.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <map>
 #include <string>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "core/rng.hpp"
+#include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
 namespace spade::modules {
 namespace {
@@ -34,28 +36,129 @@ constexpr std::string_view kFieldPrefix = "field.";
 
 using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field name -> declaring module
 
-[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
-                                  const FieldOwners& fields) noexcept {
+[[nodiscard]] bool is_core_quantity(std::string_view q) noexcept {
     for (const std::string_view core : kCoreQuantities) {
         if (q == core) return true;
     }
-    if (q.starts_with(kFieldPrefix)) return fields.contains(field_name_of(q));
+    return false;
+}
+
+// "<module>.<name>" split at its first '.'; false if either half is empty.
+[[nodiscard]] bool split_quantity(std::string_view q, std::string_view& owner, std::string_view& name) noexcept {
     const std::size_t dot = q.find('.');
     if (dot == std::string_view::npos || dot == 0 || dot + 1 == q.size()) return false;
-    const std::string_view owner = q.substr(0, dot);
-    const std::string_view name = q.substr(dot + 1);
+    owner = q.substr(0, dot);
+    name = q.substr(dot + 1);
+    return true;
+}
+
+[[nodiscard]] const ModuleDesc* find_module(std::span<const ModuleDesc> modules, std::string_view name) noexcept {
     for (const ModuleDesc& m : modules) {
-        if (m.name != owner) continue;
-        // A stateful module's quantities name its arrays (stage 4), so a
-        // misspelt array cannot drop a hazard. A stateless module's tokens
-        // stay free, as in stage 1.
-        if (m.state.empty()) return true;
-        for (const ArrayDecl& a : m.state) {
-            if (a.name == name) return true;
-        }
-        return false;
+        if (m.name == name) return &m;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] bool declares_array(const ModuleDesc& m, std::string_view name) noexcept {
+    for (const ArrayDecl& a : m.state) {
+        if (a.name == name) return true;
     }
     return false;
+}
+
+[[nodiscard]] bool declares_table(const ModuleDesc& m, std::string_view name) noexcept {
+    for (const ConfigTableDecl& t : m.tables) {
+        if (t.name == name) return true;
+    }
+    return false;
+}
+
+// "<module>.<table>" for a table a module in the set declares (Task 7).
+[[nodiscard]] bool names_table(std::string_view q, std::span<const ModuleDesc> modules) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    if (!split_quantity(q, owner, name)) return false;
+    const ModuleDesc* m = find_module(modules, owner);
+    return m != nullptr && declares_table(*m, name);
+}
+
+[[nodiscard]] bool known_quantity(std::string_view q, std::span<const ModuleDesc> modules,
+                                  const FieldOwners& fields) noexcept {
+    if (is_core_quantity(q)) return true;
+    if (q.starts_with(kFieldPrefix)) return fields.contains(field_name_of(q));
+    std::string_view owner;
+    std::string_view name;
+    if (!split_quantity(q, owner, name)) return false;
+    const ModuleDesc* m = find_module(modules, owner);
+    if (m == nullptr) return false;
+    // A stateful module's quantities name its arrays or its tables (stage 4),
+    // so a misspelt array cannot drop a hazard and a misspelt table cannot bind
+    // nothing. A module with neither keeps free tokens, as in stage 1.
+    if (m->state.empty() && m->tables.empty()) return true;
+    return declares_array(*m, name) || declares_table(*m, name);
+}
+
+// OPTIONAL ACCESSES (Task 6; module.hpp's QuantityAccess). Legal only as a
+// read of "<module>.<name>". A core quantity and a field are never absent, so
+// optional would mean nothing there. When the module is in the set, <name>
+// must be one of its arrays or tables (Task 7): an optional read binds an
+// array, a table or nothing, so a present module's misspelt name cannot bind
+// nothing in silence.
+[[nodiscard]] Result<void> check_optional(const std::string& pass, const QuantityAccess& qa,
+                                          std::span<const ModuleDesc> modules) {
+    const std::string where = pass + ": optional access to '" + std::string(qa.quantity) + "'";
+    if (qa.access != Access::read) {
+        return std::unexpected(invalid(where + ": only a read may be optional; a write or an accumulation of "
+                                               "what may be absent would change state no ordering accounts for"));
+    }
+    std::string_view owner;
+    std::string_view name;
+    if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
+        !split_quantity(qa.quantity, owner, name)) {
+        return std::unexpected(invalid(where + ": optional is for <module>.<array> of a module the set may not "
+                                               "hold; a core quantity or a field is never absent"));
+    }
+    if (const ModuleDesc* m = find_module(modules, owner);
+        m != nullptr && !declares_array(*m, name) && !declares_table(*m, name)) {
+        return std::unexpected(invalid(where + ": module '" + std::string(owner) +
+                                       "' is in the set and declares no array or table '" + std::string(name) +
+                                       "'"));
+    }
+    return {};
+}
+
+// An access that binds nothing and orders nothing: an optional read of a
+// module the set does not hold.
+[[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    return qa.optional && split_quantity(qa.quantity, owner, name) && find_module(modules, owner) == nullptr;
+}
+
+// What one declared access binds (module.hpp's CompiledBinding): the array a
+// "<module>.<array>" quantity names, or the table a "<module>.<table>" one
+// does, whichever module owns it; or nothing. Core quantities are checked
+// first, as known_quantity() checks them. Arrays and tables share one
+// namespace (compile_tables), so at most one of the two loops can match.
+[[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays,
+                                         const std::vector<CompiledTable>& tables) noexcept {
+    std::string_view owner;
+    std::string_view name;
+    if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
+        !split_quantity(qa.quantity, owner, name)) {
+        return {};
+    }
+    for (std::size_t i = 0; i < arrays.size(); ++i) {
+        if (arrays[i].module == owner && arrays[i].name == name) {
+            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i)};
+        }
+    }
+    for (std::size_t i = 0; i < tables.size(); ++i) {
+        if (tables[i].module == owner && tables[i].name == name) {
+            return CompiledBinding{BindingKind::table, static_cast<uint32_t>(i)};
+        }
+    }
+    return {};
 }
 
 [[nodiscard]] bool is_core_array(std::string_view name) noexcept {
@@ -70,6 +173,10 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
         if (name == legacy) return true;
     }
     return false;
+}
+
+[[nodiscard]] bool is_attached(Extent e) noexcept {
+    return e == Extent::per_body || e == Extent::per_element || e == Extent::per_sensor;
 }
 
 [[nodiscard]] std::string_view extent_name(Extent e) noexcept {
@@ -124,15 +231,50 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 if (a.extent != Extent::per_row && (!a.owner.empty() || a.depth != 1)) {
                     return std::unexpected(invalid(where + ": only a per_row array takes an owner or a depth"));
                 }
+                // ROW INITS (Task 4). An attached row (per_body, per_element or
+                // per_sensor) is written only by its module's init, at the
+                // boundary attach_row() queued it for, so it needs one; a
+                // slot-allocated one starts with the uint32_t body_slot the
+                // despawn cascade reads. A per_row array may carry an init too:
+                // the plan's vehicle-row hook (Task 7) initializes rows owned
+                // by rotors. A per_world row is never queued, so an init, a
+                // validate or a spawn size there would never be used.
+                if (a.spawn_size > kMaxSpawnBytes) {
+                    return std::unexpected(invalid(where + ": spawn_size " + std::to_string(a.spawn_size) +
+                                                   " exceeds kMaxSpawnBytes (" + std::to_string(kMaxSpawnBytes) +
+                                                   "); the structural queue carries the record by value"));
+                }
+                if (is_attached(a.extent)) {
+                    if (a.init == nullptr) {
+                        return std::unexpected(invalid(where + ": an attached array (" +
+                                                       std::string(extent_name(a.extent)) +
+                                                       ") needs an init; attach_row runs it at the step boundary"));
+                    }
+                    if (a.extent != Extent::per_body && a.elem_size < sizeof(uint32_t)) {
+                        return std::unexpected(invalid(where + ": a " + std::string(extent_name(a.extent)) +
+                                                       " row starts with its uint32_t body_slot, so it is at "
+                                                       "least 4 bytes"));
+                    }
+                } else if (a.extent == Extent::per_world &&
+                           (a.spawn_size != 0 || a.init != nullptr || a.validate != nullptr)) {
+                    return std::unexpected(invalid(where + ": a per_world row is never attached or queued, so it "
+                                                           "takes no spawn size, init or validate"));
+                }
                 if (mod.legacy_walk && !is_legacy_array(a.name)) {
                     return std::unexpected(invalid(
                         where + ": the module carries the legacy walk marker, which registers before "
                                 "replay_config and is only for the arrays that predate it (drag_bodies, dryden, "
                                 "imu_sensors, imu_ring, rotors)"));
                 }
+                if (!mod.legacy_walk && is_legacy_array(a.name)) {
+                    return std::unexpected(invalid(
+                        where + ": an array that predates replay_config registers before it, so its module "
+                                "must carry the legacy walk marker; without it the walk would move"));
+                }
                 by_name.emplace(std::string(a.name), out.size());
                 out.push_back(CompiledArray{std::string(mod.name), std::string(a.name), a.elem_size, a.extent,
-                                            kNoArray, a.depth, mod.legacy_walk});
+                                            kNoArray, a.depth, mod.legacy_walk, a.spawn_size, a.init,
+                                            a.validate});
                 owners.push_back(a.owner);
             }
         }
@@ -154,6 +296,99 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                                            "per_sensor)"));
         }
         c.owner = static_cast<uint32_t>(it->second);
+    }
+    return out;
+}
+
+// THE STREAM TABLE (stage 4, Task 5), in set order and then each module's
+// declaration order: the order create() and reseed() derive the streams in.
+// For the standard set that is dryden, imu, gnss -- the order reseed()'s
+// hand-written blocks ran in before the declarations replaced them.
+[[nodiscard]] Result<std::vector<CompiledStream>> compile_streams(std::span<const ModuleDesc> modules,
+                                                                  const std::vector<CompiledArray>& arrays) {
+    std::vector<CompiledStream> out;
+    std::map<std::string, std::size_t, std::less<>> by_tag;  // tag -> its entry in `out`
+    for (const ModuleDesc& mod : modules) {
+        for (const StreamDecl& s : mod.streams) {
+            if (s.tag.empty()) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) + "': the stream on array '" +
+                                               std::string(s.array) + "' needs a tag"));
+            }
+            const std::string where = "stream '" + std::string(s.tag) + "' (module '" + std::string(mod.name) + "')";
+            if (s.tag == kWorldSeedDomainTag) {
+                return std::unexpected(invalid(where + ": the tag is reserved; every world's own seed is derived "
+                                                       "under it (kWorldSeedDomainTag)"));
+            }
+            if (const auto it = by_tag.find(s.tag); it != by_tag.end()) {
+                if (out[it->second].module == mod.name) {
+                    return std::unexpected(invalid(where + ": declared twice"));
+                }
+                return std::unexpected(invalid("stream '" + std::string(s.tag) + "' is declared by module '" +
+                                               out[it->second].module + "' and module '" + std::string(mod.name) +
+                                               "'; a tag names one stream, or two modules would draw the same "
+                                               "numbers"));
+            }
+            if (s.reseed == nullptr) {
+                return std::unexpected(invalid(where + ": no reseed function, so reseed() could not re-derive it"));
+            }
+            const auto array = std::ranges::find(arrays, s.array, &CompiledArray::name);
+            if (array == arrays.end() || array->module != mod.name) {
+                return std::unexpected(invalid(where + ": its array '" + std::string(s.array) +
+                                               "' is not one this module declares"));
+            }
+            // Liveness is the arena's: a per_world row is always live, and a
+            // slot-allocated row while its map names the world. A per_body or
+            // per_row row has no liveness of its own to walk.
+            if (array->extent != Extent::per_world && array->extent != Extent::per_element &&
+                array->extent != Extent::per_sensor) {
+                return std::unexpected(invalid(where + ": its array '" + array->name + "' is " +
+                                               std::string(extent_name(array->extent)) +
+                                               "; a stream lives in a per_world, per_element or per_sensor array, "
+                                               "whose liveness the arena keeps"));
+            }
+            by_tag.emplace(std::string(s.tag), out.size());
+            out.push_back(CompiledStream{std::string(mod.name), std::string(s.tag),
+                                         static_cast<uint32_t>(array - arrays.begin()), s.reseed});
+        }
+    }
+    return out;
+}
+
+// THE CONFIGURATION TABLES (Task 7; module.hpp's ConfigTableDecl), in set
+// order and then each module's declaration order: the order Simulation builds
+// them in. A table's name shares the array namespace, so "<module>.<name>"
+// names one thing, whichever kind it is.
+[[nodiscard]] Result<std::vector<CompiledTable>> compile_tables(std::span<const ModuleDesc> modules,
+                                                                const std::vector<CompiledArray>& arrays) {
+    std::vector<CompiledTable> out;
+    for (const ModuleDesc& mod : modules) {
+        for (const ConfigTableDecl& t : mod.tables) {
+            if (t.name.empty() || t.name.find('.') != std::string_view::npos) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) + "': table '" +
+                                               std::string(t.name) + "': a table needs a name with no '.'"));
+            }
+            const std::string where = "table '" + std::string(t.name) + "' (module '" + std::string(mod.name) + "')";
+            if (is_core_array(t.name)) {
+                return std::unexpected(invalid(where + ": '" + std::string(t.name) +
+                                               "' is a core array's name; a table shares the array namespace"));
+            }
+            if (const auto array = std::ranges::find(arrays, t.name, &CompiledArray::name); array != arrays.end()) {
+                return std::unexpected(invalid(where + ": module '" + array->module +
+                                               "' declares an array of that name; a table shares the array "
+                                               "namespace, so <module>.<name> names one thing"));
+            }
+            if (const auto twice = std::ranges::find(out, t.name, &CompiledTable::name); twice != out.end()) {
+                if (twice->module == mod.name) return std::unexpected(invalid(where + ": declared twice"));
+                return std::unexpected(invalid("table '" + std::string(t.name) + "' is declared by module '" +
+                                               twice->module + "' and module '" + std::string(mod.name) +
+                                               "'; a table has one owner"));
+            }
+            if (t.build == nullptr) {
+                return std::unexpected(
+                    invalid(where + ": no build function, so register_model() could not build it"));
+            }
+            out.push_back(CompiledTable{std::string(mod.name), std::string(t.name), t.build});
+        }
     }
     return out;
 }
@@ -268,11 +503,25 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 return std::unexpected(invalid(full + ": declared twice"));
             }
             for (const QuantityAccess& qa : p.access) {
+                if (qa.optional) {
+                    // A read, so never a field write: nothing below applies.
+                    if (Result<void> ok = check_optional(full, qa, modules); !ok) return std::unexpected(ok.error());
+                    continue;
+                }
                 if (!known_quantity(qa.quantity, modules, field_owner)) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
                                                    "' (a core quantity, field.<name> for a field a module "
                                                    "declares, or <module>.<name> for a module in the set, "
-                                                   "where <name> is one of its arrays if it declares any)"));
+                                                   "where <name> is one of its arrays or tables if it declares "
+                                                   "any)"));
+                }
+                // A table changes only in register_model() (Task 7), so no
+                // pass writes or accumulates it -- its own module's included.
+                if (qa.access != Access::read && names_table(qa.quantity, modules)) {
+                    return std::unexpected(invalid(full + (qa.access == Access::write ? ": writes" : ": accumulates") +
+                                                   " table '" + std::string(qa.quantity) +
+                                                   "'; a configuration table changes only in register_model(), "
+                                                   "so a pass may only read it"));
                 }
                 if (const std::string_view field = field_name_of(qa.quantity);
                     !field.empty() && qa.access != Access::read) {
@@ -300,6 +549,10 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
 
     Result<std::vector<CompiledArray>> arrays = compile_arrays(modules);
     if (!arrays) return std::unexpected(arrays.error());
+    Result<std::vector<CompiledStream>> streams = compile_streams(modules, *arrays);
+    if (!streams) return std::unexpected(streams.error());
+    Result<std::vector<CompiledTable>> tables = compile_tables(modules, *arrays);
+    if (!tables) return std::unexpected(tables.error());
 
     // Every declared field has a pass in its provider module that writes it.
     for (const auto& [field, m] : field_owner) {
@@ -353,6 +606,25 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 edge_path[it->second][i] = true;
             }
         }
+        // `before`, the mirror (Task 6): the target runs after this pass. A
+        // target in a later phase already does; one in an earlier phase never
+        // can.
+        for (const std::string_view target : nodes[i].pass->before) {
+            const auto it = by_name.find(target);
+            if (it == by_name.end()) {
+                return std::unexpected(invalid(nodes[i].full + ": before edge to '" + std::string(target) +
+                                               "', which no module in the set declares"));
+            }
+            const Node& t = nodes[it->second];
+            if (t.pass->phase < nodes[i].pass->phase) {
+                return std::unexpected(
+                    invalid(nodes[i].full + ": before edge to '" + t.full + "', which runs in an earlier phase"));
+            }
+            if (t.pass->phase == nodes[i].pass->phase) {
+                preds[it->second].push_back(i);
+                edge_path[i][it->second] = true;
+            }
+        }
     }
     for (std::size_t k = 0; k < n; ++k) {
         for (std::size_t i = 0; i < n; ++i) {
@@ -376,7 +648,12 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 }
             }
             for (const QuantityAccess& qa : a.access) {
+                // An optional read of an absent module is no hazard (Task 6).
+                // Nothing else can name that module -- it would be an unknown
+                // quantity -- so this only says so rather than relying on it.
+                if (absent_access(qa, modules)) continue;
                 for (const QuantityAccess& qb : b.access) {
+                    if (absent_access(qb, modules)) continue;
                     if (qa.quantity != qb.quantity) continue;
                     if (needs_edge(qa.access, qb.access)) {
                         // A different placement already orders the pair.
@@ -425,8 +702,13 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         done[best] = true;
         for (const std::size_t s : succs[best]) --indegree[s];
         const Node& nd = nodes[best];
+        // One binding per declared access, in declaration order, so a pass
+        // indexes SubstepContext::state by its own access list.
+        std::vector<CompiledBinding> bindings;
+        bindings.reserve(nd.pass->access.size());
+        for (const QuantityAccess& qa : nd.pass->access) bindings.push_back(binding_of(qa, *arrays, *tables));
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
-                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu});
+                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings)});
     }
 
     // The recipe is not folded: it is bound to the CPU function (checked above),
@@ -449,6 +731,15 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
+    out.streams = std::move(*streams);
+    out.tables = std::move(*tables);
+    // The vehicle-spawn hooks, in set order (Task 7): the order spawn() calls
+    // them in, checking every request against the vehicle.
+    for (const ModuleDesc& mod : modules) {
+        if (mod.vehicle_rows != nullptr) {
+            out.vehicle_rows.push_back(CompiledVehicleRows{std::string(mod.name), mod.vehicle_rows});
+        }
+    }
     return out;
 }
 

@@ -1,7 +1,9 @@
 #include "compute/vulkan/state_mirror.hpp"
 
 #include <cstring>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "bindings.gen.hpp"
@@ -11,13 +13,7 @@
 #include "compute/step_params.hpp"
 #include "physics/contacts.hpp"
 #include "physics/field_row.hpp"
-#include "physics/forces.hpp"
 #include "physics/grid.hpp"
-#include "sensors/gnss.hpp"
-#include "sensors/imu.hpp"
-#include "sensors/rings.hpp"
-#include "state/layout.hpp"
-#include "vehicles/rotor.hpp"
 #include "world/medium.hpp"
 
 namespace spade::compute {
@@ -156,63 +152,47 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// The nine registered arrays' per-world capacity and element size, computed
-// from `shape` in EXACTLY sim/simulation.cpp's Simulation::create()
-// registration order and formula (kWorldParamsArray..kReplayConfigArray) --
-// see that function for the array names' own authoritative spelling, which
-// this table's `name` fields intentionally duplicate (a snapshot blob keys
-// by name, so the spelling itself is a contract this mirror must match
-// exactly to find its counterpart in ArenaSet::registry()'s walk).
+// ONE BUFFER'S SIZE, COUNTED IN 64 BITS (module-API stage 4). `count` is the
+// buffer's element count: world_count * capacity_per_world for a walk entry,
+// the element count for a derived buffer -- a product the caller takes in 64
+// bits, because a uint32 product wraps (2^16 worlds of 2^16 bodies is 2^32
+// slots, which wraps to 0).
 //
-// SIZES ARE sizeof(T) FOR EIGHT OF THE NINE, #included here purely for their
-// declarations (no spade_physics/spade_world/spade_sensors/spade_vehicles
-// LINK dependency -- see this file's header comment and
-// compute/layout_check.cpp's identical, already-shipped precedent for why a
-// plain #include is sufficient and no new target_link_libraries edge is
-// needed). The ninth, replay_config, is HARDCODED (32, sim/simulation.hpp's
-// ReplayConfig) rather than included: sim/simulation.hpp is the one header
-// that would create a real dependency cycle (it is the header that #includes
-// compute/vulkan/backend.hpp -- Simulation owns a VulkanBackend). Every size
-// here, hardcoded or not, is cross-checked against the LIVE ArenaSet
-// registry's own elem_size on every upload()/readback() call, so a drift is
-// a returned invalid_argument, never a silently wrong buffer.
+// Refused with capacity_exceeded, naming the buffer, when the count exceeds
+// 2^32-1: a slot index is a uint32 everywhere -- in the arena
+// (ArenaSet::register_array() refuses the same product), in every kernel, and
+// in Entry's own fields -- so a larger buffer could not be addressed. Below
+// that, the byte size cannot wrap: both factors are under 2^32, so the product
+// fits VkDeviceSize and the size_t a host copy takes (64 bits, asserted).
+// Whether the device can ALLOCATE it is still the driver's answer, and
+// tests/test_gpu_state_mirror.cpp's absurd-shape fault path relies on that
+// answer being asked.
 // ---------------------------------------------------------------------------
-struct ArrayShape {
-    const char* name;
-    uint32_t elem_size;
-    uint32_t capacity_per_world;
-};
+static_assert(sizeof(VkDeviceSize) >= 8 && sizeof(std::size_t) >= 8,
+              "buffer_bytes() assumes a 64-bit byte count (uint32 elements * uint32 stride)");
 
-[[nodiscard]] std::vector<ArrayShape> array_shapes(const StepShape& shape) {
-    return {
-        {"world_params", static_cast<uint32_t>(sizeof(WorldParams)), 1u},
-        {"bodies", static_cast<uint32_t>(sizeof(BodyState)), shape.body_capacity},
-        {"body_generation", static_cast<uint32_t>(sizeof(uint32_t)), shape.body_capacity},
-        {"drag_bodies", static_cast<uint32_t>(sizeof(physics::DragBodyRow)), shape.element_capacity},
-        {"dryden", static_cast<uint32_t>(sizeof(DrydenState)), 1u},
-        {"imu_sensors", static_cast<uint32_t>(sizeof(sensors::ImuSensorRow)), shape.sensor_capacity},
-        {"imu_ring", static_cast<uint32_t>(sizeof(sensors::ImuSample)),
-         shape.sensor_capacity * sensors::kRingDepth},
-        {"rotors", static_cast<uint32_t>(sizeof(vehicles::RotorRow)), shape.element_capacity},
-        {"replay_config", 32u, 1u},
-        // APPENDED BELOW replay_config, matching sim/simulation.cpp's
-        // registration order. This table's order is not itself a contract (the
-        // mirror finds its counterpart by NAME), but keeping it in walk order
-        // is what lets a reader check the two files against each other by eye.
-        {"gnss_sensors", static_cast<uint32_t>(sizeof(sensors::GnssSensorRow)), shape.sensor_capacity},
-        {"gnss_ring", static_cast<uint32_t>(sizeof(sensors::GnssFix)),
-         shape.sensor_capacity * sensors::kRingDepth},
-    };
+[[nodiscard]] Result<VkDeviceSize> buffer_bytes(std::string_view name, uint32_t elem_size, uint64_t count) {
+    if (count > std::numeric_limits<uint32_t>::max()) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     "StateMirror::create: buffer '" + std::string(name) + "' would hold " +
+                                         std::to_string(count) +
+                                         " elements, past what a uint32 slot index addresses (2^32-1)"});
+    }
+    return static_cast<VkDeviceSize>(count) * static_cast<VkDeviceSize>(elem_size);
 }
 
-// Binding index for the 16 of 22 walk entries that bindings.slang binds (the
-// eleven registered arrays plus the five `.slot_to_world` siblings a kernel
-// dispatched over a global slot space needs -- bindings.slang sections B and
-// E). Returns false for the other six siblings.
+// Binding index for the 16 of the standard walk's 22 entries that
+// bindings.slang binds (the eleven registered arrays plus the five
+// `.slot_to_world` siblings a kernel dispatched over a global slot space needs
+// -- bindings.slang sections B and E). Returns false for every other entry: the
+// standard walk's other six siblings, and any module array no kernel reads (a
+// developer's, say, and its map).
 //
-// ALL SIX ARE STILL ALLOCATED, UPLOADED AND READ BACK -- they are simply never
-// written into the descriptor set. The per-entry has_binding flag below is what
-// makes REGISTERED and BOUND separable.
+// EVERY ONE OF THEM IS STILL ALLOCATED, UPLOADED AND READ BACK -- they are simply
+// never written into the descriptor set. The per-entry has_binding flag below is
+// what makes REGISTERED and BOUND separable. The buffers come from the shape's
+// walk (StepShape::arrays); only the bindings are by name here, because they
+// belong to the generated registry (bindings.gen.hpp).
 //
 // THE GNSS ARRAYS WERE IN THAT UNBOUND SET FOR EXACTLY ONE LEG. While no kernel
 // read them, binding them would have been a descriptor slot and two Slang
@@ -259,6 +239,34 @@ struct ArrayShape {
 // ---------------------------------------------------------------------------
 
 Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, const StepShape& shape) {
+    // -----------------------------------------------------------------------
+    // THE REGISTERED WALK IS THE SHAPE'S (module-API stage 4): one buffer per
+    // StepShape::arrays entry, which Simulation::create() fills from the
+    // module set's declarations (sim/simulation.hpp's state_array_shapes()).
+    // This file keeps no list of the walk's arrays or their sizes; binding_for()
+    // above names only the generated registry's bindings. An empty list is
+    // refused rather than read as "no state": every Simulation registers at
+    // least the core's four arrays, so an empty walk means a caller that never
+    // said what it was.
+    //
+    // Every entry is sized BEFORE anything is created, so a shape the mirror
+    // cannot size is refused by name with nothing to tear down.
+    // -----------------------------------------------------------------------
+    if (shape.arrays.empty()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "StateMirror::create: StepShape::arrays is empty; it carries the registered "
+                                     "walk, one entry per device buffer (sim/simulation.hpp's "
+                                     "state_array_shapes())"});
+    }
+    std::vector<VkDeviceSize> walk_bytes;
+    walk_bytes.reserve(shape.arrays.size());
+    for (const StateArrayShape& array : shape.arrays) {
+        Result<VkDeviceSize> bytes = buffer_bytes(
+            array.name, array.elem_size, uint64_t{shape.world_count} * uint64_t{array.capacity_per_world});
+        if (!bytes) return std::unexpected(bytes.error());
+        walk_bytes.push_back(*bytes);
+    }
+
     auto self = std::unique_ptr<StateMirror>(new StateMirror());
     self->device_ = ctx.device();
     self->physical_device_ = ctx.physical_device();
@@ -288,9 +296,11 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     }
 
     // -----------------------------------------------------------------------
-    // The registered walk: every array plus its `.slot_to_world`
-    // sibling, in the same order state/arenas.hpp's
-    // register_array() contributes them (elements, then the map).
+    // The registered walk: one entry per StepShape::arrays element, in its
+    // order -- each array and then its `.slot_to_world` map, as
+    // state/arenas.hpp's register_array() contributes them. The order is not
+    // itself a contract (upload() and readback() find each entry by NAME), but
+    // keeping the walk's lets a reader check the two against each other.
     // -----------------------------------------------------------------------
     // NO LEAK ON A MID-LOOP FAILURE: each Entry is push_back()ed onto
     // self->entries_ the moment its NAME/SHAPE is known, BEFORE either of
@@ -298,67 +308,38 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // that reaches the vector element directly (never a separate local that
     // could go out of scope still owning a live handle nothing will free).
     // If create_buffer() fails partway -- the absurd-size fault-path test
-    // this task adds relies on exactly this -- self->entries_ already holds
-    // every handle successfully created so far, and the caller's early
+    // relies on exactly this -- self->entries_ already holds every handle
+    // successfully created so far, and the caller's early
     // `return std::unexpected(...)` runs this object's destructor, whose
     // destroy() walks entries_ and frees precisely those, nothing orphaned.
-    self->entries_.reserve(array_shapes(shape).size() * 2);
-    for (const ArrayShape& array : array_shapes(shape)) {
+    // The reserve() means no push_back below reallocates, so `e` stays valid.
+    self->entries_.reserve(shape.arrays.size());
+    for (std::size_t i = 0; i < shape.arrays.size(); ++i) {
         constexpr VkBufferUsageFlags kDeviceUsage =
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         constexpr VkBufferUsageFlags kStagingUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
+        const StateArrayShape& array = shape.arrays[i];
         self->entries_.push_back(Entry{});
-        Entry& elements = self->entries_.back();
-        elements.name = array.name;
-        elements.elem_size = array.elem_size;
-        elements.world_count = shape.world_count;
-        elements.capacity_per_world = array.capacity_per_world;
-        elements.byte_size = static_cast<VkDeviceSize>(array.elem_size) *
-                              static_cast<VkDeviceSize>(shape.world_count) *
-                              static_cast<VkDeviceSize>(array.capacity_per_world);
-        elements.has_binding = binding_for(elements.name, elements.binding);
+        Entry& e = self->entries_.back();
+        e.name = array.name;
+        e.elem_size = array.elem_size;
+        e.world_count = shape.world_count;
+        e.capacity_per_world = array.capacity_per_world;
+        e.byte_size = walk_bytes[i];
+        e.has_binding = binding_for(e.name, e.binding);
 
         void* unused_device_mapped = nullptr;  // create_buffer(map=false) always writes null here; never read
-        if (Result<void> made = create_buffer(self->device_, self->physical_device_, elements.byte_size,
-                                               kDeviceUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false,
-                                               elements.device_buffer, elements.device_memory, unused_device_mapped);
+        if (Result<void> made = create_buffer(self->device_, self->physical_device_, e.byte_size, kDeviceUsage,
+                                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, e.device_buffer,
+                                               e.device_memory, unused_device_mapped);
             !made) {
             return std::unexpected(made.error());
         }
         if (Result<void> made =
-                create_buffer(self->device_, self->physical_device_, elements.byte_size, kStagingUsage,
+                create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
-                              elements.staging_buffer, elements.staging_memory, elements.staging_mapped);
-            !made) {
-            return std::unexpected(made.error());
-        }
-
-        const std::string elements_name = elements.name;  // copy: `elements` reference may be invalidated below
-
-        self->entries_.push_back(Entry{});
-        Entry& slot_to_world = self->entries_.back();
-        slot_to_world.name = elements_name + std::string(kSlotToWorldSuffix);
-        slot_to_world.elem_size = static_cast<uint32_t>(sizeof(uint32_t));
-        slot_to_world.world_count = shape.world_count;
-        slot_to_world.capacity_per_world = array.capacity_per_world;
-        slot_to_world.byte_size = static_cast<VkDeviceSize>(slot_to_world.elem_size) *
-                                   static_cast<VkDeviceSize>(shape.world_count) *
-                                   static_cast<VkDeviceSize>(array.capacity_per_world);
-        slot_to_world.has_binding = binding_for(slot_to_world.name, slot_to_world.binding);
-
-        void* unused_sibling_device_mapped = nullptr;
-        if (Result<void> made = create_buffer(self->device_, self->physical_device_, slot_to_world.byte_size,
-                                               kDeviceUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false,
-                                               slot_to_world.device_buffer, slot_to_world.device_memory,
-                                               unused_sibling_device_mapped);
-            !made) {
-            return std::unexpected(made.error());
-        }
-        if (Result<void> made = create_buffer(
-                self->device_, self->physical_device_, slot_to_world.byte_size, kStagingUsage,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
-                slot_to_world.staging_buffer, slot_to_world.staging_memory, slot_to_world.staging_mapped);
+                              e.staging_buffer, e.staging_memory, e.staging_mapped);
             !made) {
             return std::unexpected(made.error());
         }
@@ -380,13 +361,19 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // Task 6 takes the derived-buffer count from one to seven, and seven
     // hand-unrolled copies of the same sequence is exactly the kind of
     // transcription a reviewer cannot check.
-    const auto make_derived = [&](Entry& e, const char* name, uint32_t elem_size, uint32_t count,
+    //
+    // `count` is 64 bits so a caller sizing a buffer by a product (world_count
+    // * body_capacity, say) passes it unwrapped, and buffer_bytes() refuses it
+    // by name past 2^32-1.
+    const auto make_derived = [&](Entry& e, const char* name, uint32_t elem_size, uint64_t count,
                                    uint32_t binding) -> Result<void> {
+        Result<VkDeviceSize> bytes = buffer_bytes(name, elem_size, count);
+        if (!bytes) return std::unexpected(bytes.error());
         e.name = name;
         e.elem_size = elem_size;
-        e.world_count = count;          // element COUNT for the non-per-world buffers
+        e.world_count = static_cast<uint32_t>(count);  // element COUNT for the non-per-world buffers
         e.capacity_per_world = 1u;
-        e.byte_size = static_cast<VkDeviceSize>(elem_size) * static_cast<VkDeviceSize>(count);
+        e.byte_size = *bytes;
         e.has_binding = true;
         e.binding = binding;
         void* unused_device_mapped = nullptr;

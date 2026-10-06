@@ -1,5 +1,6 @@
 #include "sim/simulation.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -17,6 +18,7 @@
 #include "core/validate.hpp"
 #include "objects/behavior.hpp"
 #include "physics/integrator.hpp"
+#include "sim/builtin_state.hpp"
 #include "vehicles/model_identity.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -36,11 +38,16 @@ namespace {
     return Error{Code::internal, std::move(context)};
 }
 
+// Where an EMPTY configuration table's view points (rebuild_views): the view
+// has zero rows, so nothing ever reads or writes these bytes. They exist so
+// that the view's data is not null, which would read as an absent module.
+alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
+
 // A 64-bit identity, for an error message. Hex because that is how config
 // hashes and digests are written everywhere else in this tree
 // (the golden corpus's expected_digest, the schema hash) -- a decimal one would
 // be ungreppable against them. Hand-rolled rather than via <format>/ostringstream:
-// this is one call site on an error path, and neither of those belongs in an
+// its callers are restore()'s error paths, and neither of those belongs in an
 // engine TU that otherwise allocates nothing but the message itself.
 [[nodiscard]] std::string hex64(uint64_t value) {
     static constexpr char kDigits[] = "0123456789abcdef";
@@ -53,21 +60,15 @@ namespace {
 }
 
 // The array names are the snapshot blob's stable identities (a blob keys
-// entries by name, never by walk position), so they are spelled once, here, and
-// changing one invalidates every recorded blob and every committed digest. The
-// ninth, "replay_config", is spelled in sim/simulation.hpp instead
-// (kReplayConfigArray) because callers outside this file key on it -- see the
-// note at that constant.
+// entries by name, never by walk position), so changing one invalidates every
+// recorded blob and every committed digest. The core's are spelled here, except
+// "replay_config", which is spelled in sim/simulation.hpp (kReplayConfigArray)
+// because callers outside this file key on it -- see the note at that constant.
+// A module's arrays are spelled by its declarations (module-API stage 4; the
+// built-ins' in sim/standard_modules.cpp).
 constexpr const char* kWorldParamsArray = "world_params";
 constexpr const char* kBodiesArray = "bodies";
 constexpr const char* kBodyGenerationArray = "body_generation";
-constexpr const char* kDragElementsArray = "drag_bodies";
-constexpr const char* kDrydenArray = "dryden";
-constexpr const char* kImuSensorsArray = "imu_sensors";
-constexpr const char* kImuRingArray = "imu_ring";
-constexpr const char* kRotorsArray = "rotors";
-constexpr const char* kGnssSensorsArray = "gnss_sensors";
-constexpr const char* kGnssRingArray = "gnss_ring";
 
 
 // ---------------------------------------------------------------------------
@@ -98,13 +99,15 @@ constexpr const char* kGnssRingArray = "gnss_ring";
 // the storage is SHARED; here the storage is deliberately not shared and the
 // kinds are a closed compile-time set, which is the shape a template fits.
 //
-// NOT TEMPLATED, DELIBERATELY: add_imu_sensor / add_gnss_sensor. Those two are
-// not identical -- the validation is sensor-specific (mount_orient and four
-// sigmas versus bias_tau_s and sigma_bias) and the queued op carries a
-// different field. Templating them needs a validation policy, which is more
-// machinery than the duplication it removes. THE DUPLICATION WORTH DELETING IS
-// THE DUPLICATION THAT IS IDENTICAL; forcing the remaining pair into the same
-// mould is how a dedup becomes a framework.
+// NOT HERE: adding a sensor and freeing one. Those were never identical -- the
+// validation is sensor-specific (mount_orient and four sigmas versus
+// bias_tau_s and sigma_bias) and the row's init differs -- and since module-API
+// stage 4 neither is a sensor-family operation at all. Each sensor module
+// DECLARES its validate and init (sim/builtin_state.cpp), add_imu_sensor() and
+// add_gnss_sensor() are thin fronts over the one attach_row() door, and the
+// despawn cascade frees every attached row, and its ring, by declaration
+// (free_rows_of). What stays here is what is still identical: the ref check,
+// the poll and the row read.
 // ---------------------------------------------------------------------------
 
 template <class Row>
@@ -161,62 +164,158 @@ template <class Row>
     return &(*rows)[slot];
 }
 
-// ---------------------------------------------------------------------------
-// THIS REPLACES A FIELD-WISE WRITE, AND IT STATES THAT WRITE'S PURPOSE DIRECTLY
-// RATHER THAN EMULATING IT.
-//
-// clear_imu_ring() used to name all six ImuSample fields, with a comment
-// explaining that "ImuSample has no implicit padding (sensors/imu.hpp asserts
-// it), so naming all six fields zeroes every byte -- which is what makes a
-// freed sensor's ring read as zeroes in a snapshot". THE GOAL WAS ALWAYS
-// EVERY BYTE, and the field list was a way of reaching it that depended on the
-// reader knowing the padding argument. memset says it.
-//
-// A VALUE-INITIALIZED ASSIGNMENT (`*it = Sample{}`) WOULD NOT HAVE BEEN
-// EQUIVALENT and is the trap here: it zero-initializes every MEMBER and leaves
-// padding bytes unspecified. That is invisible in a test and visible in a
-// snapshot digest, which folds raw bytes.
-// ---------------------------------------------------------------------------
-template <class Sample>
-void clear_sensor_ring(ArenaSet& arenas, ArrayId<Sample> ring_id, uint32_t slot) {
-    static_assert(std::is_trivially_copyable_v<Sample>,
-                  "a ring payload is zeroed byte-wise, so it must be trivially copyable");
-    Result<std::span<Sample>> ring = arenas.array(ring_id);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-    std::memset(ring->data() + begin, 0, sensors::kRingDepth * sizeof(Sample));
+// "elem_size 80, per_element, spawn_size 52" or "elem_size 32, per_row: 64 per
+// row of 'imu_sensors'".
+[[nodiscard]] std::string describe_array(uint32_t elem_size, modules::Extent extent, std::string_view owner,
+                                         uint32_t depth, uint32_t spawn_size) {
+    std::string out = "elem_size " + std::to_string(elem_size) + ", ";
+    const std::string spawn = ", spawn_size " + std::to_string(spawn_size);
+    switch (extent) {
+        case modules::Extent::per_world: return out + "per_world";
+        case modules::Extent::per_body: return out + "per_body" + spawn;
+        case modules::Extent::per_element: return out + "per_element" + spawn;
+        case modules::Extent::per_sensor: return out + "per_sensor" + spawn;
+        case modules::Extent::per_row:
+            return out + "per_row: " + std::to_string(depth) + " per row of '" + std::string(owner) + "'";
+    }
+    return out + "an unknown extent";
 }
 
-template <class Row, class Sample>
-void free_sensors_of(ArenaSet& arenas, ArrayId<Row> rows_id, ArrayId<Sample> ring_id,
-                     const WorldSetLayout& layout, uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas.slot_to_world(rows_id);
-    Result<std::span<Row>> rows = arenas.array(rows_id);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout.body_capacity;
-    const uint32_t begin = world_index * layout.sensor_capacity;
-    const uint32_t end = begin + layout.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // sensors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas.free_slot(rows_id, slot); freed) {
-            // free_slot zeroes the ROW; the samples live in a second,
-            // direct-indexed array that nothing else would clear. See
-            // Simulation::despawn's contract.
-            clear_sensor_ring(arenas, ring_id, slot);
+// THE BUILT-IN ARRAYS (module-API stage 4; open question 1, approved). The
+// engine's own calls -- spawn()'s rotors, add_drag_element(), add_imu_sensor(),
+// add_gnss_sensor(), the polls, the step's views -- use the
+// seven arrays the standard set declares, through typed ids minted from the
+// table. So a set must declare each of them exactly as the standard set does:
+// the same row size, extent, owner and depth, and the same spawn size, the
+// record its typed front hands attach_row(). One that omits or reshapes one is
+// refused here, before anything is registered, naming the array. (Where it sits
+// in the walk is compile_schedule's: only the legacy marker registers before
+// replay_config, and only the legacy arrays carry it.)
+//
+// THE BUILT-IN STREAMS (L6). A streamed built-in array (dryden, imu_sensors,
+// gnss_sensors) must also keep its stream: declared on that array under the
+// standard set's tag (compile_schedule already requires a reseed function).
+// One whose module dropped it, or retagged it, would hold noise reseed() never
+// reaches -- silently -- so it is refused too, naming the module, the array and
+// the tag.
+[[nodiscard]] Result<void> check_builtin_arrays(const modules::CompiledSchedule& schedule) {
+    for (const modules::ModuleDesc& standard : modules::standard_modules()) {
+        for (const modules::ArrayDecl& want : standard.state) {
+            const auto have = std::ranges::find(schedule.arrays, want.name, &modules::CompiledArray::name);
+            if (have == schedule.arrays.end()) {
+                return std::unexpected(invalid("module set: no module declares the built-in array '" +
+                                               std::string(want.name) + "' (the standard set's module '" +
+                                               std::string(standard.name) +
+                                               "' does); the engine's own calls use it, so a set must keep it"));
+            }
+            const std::string_view owner = have->owner == modules::kNoArray
+                                               ? std::string_view{}
+                                               : std::string_view(schedule.arrays[have->owner].name);
+            if (have->elem_size != want.elem_size || have->extent != want.extent || have->depth != want.depth ||
+                owner != want.owner || have->spawn_size != want.spawn_size) {
+                return std::unexpected(invalid(
+                    "module set: the built-in array '" + have->name + "' (module '" + have->module +
+                    "') is declared as " +
+                    describe_array(have->elem_size, have->extent, owner, have->depth, have->spawn_size) +
+                    "; the engine's is " +
+                    describe_array(want.elem_size, want.extent, want.owner, want.depth, want.spawn_size)));
+            }
         }
     }
+    for (const modules::ModuleDesc& standard : modules::standard_modules()) {
+        for (const modules::StreamDecl& want : standard.streams) {
+            const bool kept = std::ranges::any_of(schedule.streams, [&](const modules::CompiledStream& s) {
+                return s.tag == want.tag && s.reseed != nullptr && schedule.arrays[s.array].name == want.array;
+            });
+            if (kept) continue;
+            // The loop above found every built-in array, so `have` is real.
+            const auto have = std::ranges::find(schedule.arrays, want.array, &modules::CompiledArray::name);
+            return std::unexpected(invalid(
+                "module set: the built-in array '" + std::string(want.array) + "' (module '" + have->module +
+                "') has no stream declared under the tag '" + std::string(want.tag) +
+                "'; its rows hold noise that reseed() would never re-derive, so a set must keep the stream"));
+        }
+    }
+    return {};
+}
+
+// The per-world rows the three capacity extents resolve to: a WorldSetLayout's
+// when create() registers an array, a StepShape's when state_array_shapes()
+// sizes its device buffer -- the same three numbers, read from either.
+struct ExtentRows {
+    uint32_t body = 0;
+    uint32_t element = 0;
+    uint32_t sensor = 0;
+};
+
+// A module array's per-world capacity: its extent's formula, as create()
+// sized the built-ins by hand before stage 4 (sim/module.hpp's Extent). A
+// per_row array's owner holds rows itself (never per_world or per_row;
+// compile_schedule checked), and the product is taken in 64 bits so an
+// overflow is refused rather than wrapped.
+[[nodiscard]] Result<uint32_t> array_capacity(const modules::CompiledSchedule& schedule, std::size_t index,
+                                              const ExtentRows& rows) {
+    const auto extent_rows = [&rows](modules::Extent extent) -> uint32_t {
+        switch (extent) {
+            case modules::Extent::per_world: return 1u;
+            case modules::Extent::per_body: return rows.body;
+            case modules::Extent::per_element: return rows.element;
+            case modules::Extent::per_sensor: return rows.sensor;
+            case modules::Extent::per_row: break;
+        }
+        return 0u;  // unreachable: compile_schedule refused an unknown extent, and per_row is handled below
+    };
+    const modules::CompiledArray& a = schedule.arrays[index];
+    if (a.extent != modules::Extent::per_row) return extent_rows(a.extent);
+    const uint64_t owned = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
+    if (owned > std::numeric_limits<uint32_t>::max()) {
+        return std::unexpected(Error{Code::capacity_exceeded, "array '" + a.name + "' (module '" + a.module +
+                                                                  "'): its owner's rows times its depth exceed "
+                                                                  "2^32-1 per world"});
+    }
+    return static_cast<uint32_t>(owned);
 }
 
 }  // namespace
+
+// The walk create() registers, as data for the GPU mirror. walk_order() is the
+// registration order. The core's four arrays are sized as create() registers
+// them by hand, and every module array by array_capacity(), the function
+// create() registers it with; ModuleState.TheMirrorsShapesAreTheRegistryWalk
+// EntryForEntry holds this list to the registry on every box.
+Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::CompiledSchedule& schedule,
+                                                                 const compute::StepShape& shape) {
+    const ExtentRows rows{shape.body_capacity, shape.element_capacity, shape.sensor_capacity};
+    std::vector<compute::StateArrayShape> out;
+    out.reserve(2 * (std::size(modules::kCoreArrays) + schedule.arrays.size()));
+    const auto add = [&out](const std::string& name, uint32_t elem_size, uint32_t capacity_per_world) {
+        out.push_back({name, elem_size, capacity_per_world});
+        out.push_back({name + std::string(kSlotToWorldSuffix), static_cast<uint32_t>(sizeof(uint32_t)),
+                       capacity_per_world});
+    };
+    for (const std::string& name : modules::walk_order(schedule)) {
+        if (name == kWorldParamsArray) {
+            add(name, static_cast<uint32_t>(sizeof(WorldParams)), 1u);
+        } else if (name == kBodiesArray) {
+            add(name, static_cast<uint32_t>(sizeof(BodyState)), shape.body_capacity);
+        } else if (name == kBodyGenerationArray) {
+            add(name, static_cast<uint32_t>(sizeof(uint32_t)), shape.body_capacity);
+        } else if (name == kReplayConfigArray) {
+            add(name, static_cast<uint32_t>(sizeof(ReplayConfig)), 1u);
+        } else {
+            const auto it = std::ranges::find(schedule.arrays, name, &modules::CompiledArray::name);
+            if (it == schedule.arrays.end()) {
+                // walk_order() spells only the core's four and the table's names.
+                return std::unexpected(internal("state_array_shapes: '" + name + "' is in the walk but not the table"));
+            }
+            const auto index = static_cast<std::size_t>(it - schedule.arrays.begin());
+            const Result<uint32_t> capacity = array_capacity(schedule, index, rows);
+            if (!capacity) return std::unexpected(capacity.error());
+            add(name, it->elem_size, *capacity);
+        }
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // create
@@ -260,6 +359,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
 
     Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
     if (!compiled) return std::unexpected(compiled.error());
+    if (Result<void> builtins = check_builtin_arrays(*compiled); !builtins) return std::unexpected(builtins.error());
     if (backend.kind == compute::BackendKind::vulkan) {
         // A pass with no GPU kernel would be missing from the GPU chain: the
         // GPU would run a different experiment from the CPU (L6). Refuse it by
@@ -372,71 +472,39 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (!body_gen_id) return std::unexpected(body_gen_id.error());
     sim.body_gen_id_ = *body_gen_id;
 
-    Result<ArrayId<physics::DragBodyRow>> drag_id =
-        sim.arenas_.register_array<physics::DragBodyRow>(kDragElementsArray, layout->element_capacity);
-    if (!drag_id) return std::unexpected(drag_id.error());
-    sim.drag_id_ = *drag_id;
-
-    // One Dryden filter row per world. This is the FIRST production registration
-    // of the turbulence state (Task 16 shipped the model and its tests; nothing
-    // in the engine had registered the array yet), and registering it here is
-    // what makes "snapshot the world, restore it, resume the identical gust
-    // sequence" true rather than aspirational.
-    Result<ArrayId<DrydenState>> dryden_id = sim.arenas_.register_array<DrydenState>(kDrydenArray, 1);
-    if (!dryden_id) return std::unexpected(dryden_id.error());
-    sim.dryden_id_ = *dryden_id;
-
-    // The sensor table and its output rings (Task 19). REGISTERED, which is
-    // what makes "snapshot mid-flight, restore, and the IMU resumes the
-    // identical noise sequence AND the identical unread samples" true: the
-    // rows carry the bias random walk, the rate-divider phase, the rng stream
-    // and the ring write cursor; the ring array carries the samples themselves.
-    // None of it lives in a Simulation member, deliberately.
+    // THE MODULE ARRAYS (module-API stage 4) are registered from the set's
+    // declarations. compile_schedule tabled them in registration order
+    // (schedule_.arrays), and each registers exactly what its hand-written
+    // register_array<T>(name, capacity) call registered before stage 4: the
+    // elements and the map, the same element size, the same per-world capacity
+    // (array_capacity() above), zero-filled. Each built-in array's own
+    // rationale -- why it is registered, why a ring is direct-indexed, why
+    // rotors share the force-element budget -- sits beside its declaration in
+    // sim/standard_modules.cpp.
     //
-    // APPENDED AFTER the five that came before, not inserted among them: the
-    // walk order is the schema, so appending keeps every earlier array at its
-    // existing position in the blob.
-    Result<ArrayId<sensors::ImuSensorRow>> imu_id =
-        sim.arenas_.register_array<sensors::ImuSensorRow>(kImuSensorsArray, layout->sensor_capacity);
-    if (!imu_id) return std::unexpected(imu_id.error());
-    sim.imu_id_ = *imu_id;
-
-    // kRingDepth samples PER SENSOR, laid out so that global sensor slot g owns
-    // ring slots [g * kRingDepth, (g+1) * kRingDepth) -- see clear_imu_ring().
-    // DIRECT-INDEXED, never slot-allocated: a ring window's lifetime is its
-    // sensor's, so an independent alloc/free would be a second lifecycle to
-    // keep in step with the first.
-    Result<ArrayId<sensors::ImuSample>> imu_ring_id = sim.arenas_.register_array<sensors::ImuSample>(
-        kImuRingArray, layout->sensor_capacity * sensors::kRingDepth);
-    if (!imu_ring_id) return std::unexpected(imu_ring_id.error());
-    sim.imu_ring_id_ = *imu_ring_id;
-
-    // The rotor table (Task 18). REGISTERED, and that is NOT optional the way
-    // it arguably is for the parameter-only drag rows: a RotorRow carries
-    // `omega` -- genuine dynamic state with its own time constant -- and
-    // `omega_cmd`, the command in force at the snapshot instant. A snapshot
-    // that missed them would restore a vehicle whose rotors are at the wrong
-    // speed, or spinning down toward zero, and whose next second of flight
-    // differs (vehicles/rotor.hpp says exactly this).
-    //
-    // SIZED BY THE FORCE-ELEMENT CAPACITY, which the drag table also uses.
-    // Rotors and drag bodies are both force elements (spec §3) and share ONE
-    // declared budget per world, so a world declaring N force elements can
-    // hold at most N rotors -- but the two arrays are separately allocated,
-    // which costs a world that never spawns a vehicle N unused RotorRows
-    // (80 bytes each; 320 bytes for the corpus's largest world). Accepted
-    // deliberately: the alternative is either a per-kind capacity in the world
-    // FILE (S5's format, for a distinction a world author should not have to
-    // predict) or a conditional registration, which would make the state
-    // layer's shape depend on its contents.
-    //
-    // APPENDED LAST, like the sensor arrays before it: the walk order is the
-    // schema, so appending keeps every earlier array at its existing position
-    // in the blob.
-    Result<ArrayId<vehicles::RotorRow>> rotors_id =
-        sim.arenas_.register_array<vehicles::RotorRow>(kRotorsArray, layout->element_capacity);
-    if (!rotors_id) return std::unexpected(rotors_id.error());
-    sim.rotors_id_ = *rotors_id;
+    // THE LEGACY MARKER is what keeps the goldens' walk. Five module arrays
+    // predate replay_config: drag_bodies, dryden, imu_sensors, imu_ring and
+    // rotors. The four modules that declare them (drag, dryden, imu, rotor)
+    // carry the marker, so their arrays register HERE, before replay_config,
+    // in set order -- and the standard set's order is the order these arrays
+    // were registered in by hand. compile_schedule lets no other array carry
+    // the marker and no legacy array go without it, so nothing else can
+    // register at or before replay_config's position.
+    sim.module_array_ids_.assign(sim.schedule_.arrays.size(), ArrayIndex{});
+    const ExtentRows rows{layout->body_capacity, layout->element_capacity, layout->sensor_capacity};
+    const auto register_module_arrays = [&sim, &rows](bool legacy) -> Result<void> {
+        for (std::size_t i = 0; i < sim.schedule_.arrays.size(); ++i) {
+            const modules::CompiledArray& array = sim.schedule_.arrays[i];
+            if (array.legacy_walk != legacy) continue;
+            const Result<uint32_t> capacity = array_capacity(sim.schedule_, i, rows);
+            if (!capacity) return std::unexpected(capacity.error());
+            const Result<ArrayIndex> index = sim.arenas_.register_bytes(array.name, array.elem_size, *capacity);
+            if (!index) return std::unexpected(index.error());
+            sim.module_array_ids_[i] = *index;
+        }
+        return {};
+    };
+    if (Result<void> legacy = register_module_arrays(true); !legacy) return std::unexpected(legacy.error());
 
     // THE RUN'S IDENTITY (ticket M-1): (dt_ns, substeps, config_hash), as
     // registered state so that it rides every blob and restore() can refuse a
@@ -479,50 +547,43 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (!replay_config_id) return std::unexpected(replay_config_id.error());
     sim.replay_config_id_ = *replay_config_id;
 
-    // THE APPEND THE PARAGRAPH ABOVE SANCTIONS, TAKEN FOR THE FIRST TIME. GNSS
-    // is the second sensor this platform has ever had, and registering it is
-    // the first real load on the walk's ability to grow. It goes BELOW
-    // replay_config for exactly the reason stated above: every earlier entry
-    // keeps its index, replay_config stays at 16, and each golden's
-    // continuation argument extends by a new suffix instead of being
+    // EVERY OTHER MODULE ARRAY, APPENDED BELOW replay_config: the move the
+    // paragraph above sanctions, in set order. In the standard set that is
+    // gnss_sensors and gnss_ring, the first time the append was taken: every
+    // earlier entry keeps its index, replay_config stays at 16, and each
+    // golden's continuation argument extends by a new suffix instead of being
     // invalidated. GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus
-    // is what turns that from a paragraph into a checked claim -- it folds the
-    // retired builder's digests forward over precisely these appended entries.
-    //
-    // NOT BOUND ON THE GPU, DELIBERATELY. No kernel reads either array, so
-    // neither is in the descriptor set (shaders/shared/bindings.slang section
-    // A). They are still registered, allocated, uploaded, read back and folded
-    // into the state digest -- compute/vulkan/state_mirror.cpp's per-entry
-    // has_binding flag is what makes "registered" and "bound" separable, and it
-    // is why a sensor with no kernel can join the walk without spending a
-    // descriptor slot.
-    Result<ArrayId<sensors::GnssSensorRow>> gnss_id =
-        sim.arenas_.register_array<sensors::GnssSensorRow>(kGnssSensorsArray, layout->sensor_capacity);
-    if (!gnss_id) return std::unexpected(gnss_id.error());
-    sim.gnss_id_ = *gnss_id;
+    // checks that claim over precisely those entries. A module appended to the
+    // standard set registers after them, so the standard walk's 22 entries
+    // keep their indices too.
+    if (Result<void> appended = register_module_arrays(false); !appended) {
+        return std::unexpected(appended.error());
+    }
 
-    // ONE RING SLOT BLOCK PER SENSOR, same shape as the IMU ring: sensor g owns
-    // ring slots [g * kRingDepth, (g+1) * kRingDepth). kRingDepth lives in
-    // sensors/rings.hpp, not in imu.hpp -- it is shared ring vocabulary rather
-    // than an IMU constant, so reusing it here is correct and not a copy.
-    //
-    // THAT REUSE IS A CHOICE AND NOT AN INHERITANCE. A GNSS fix arrives at
-    // roughly 5-10 Hz against the IMU's ~1 kHz, so 64 slots is ~6-12 s of
-    // history here against ~64 ms there. The depths happening to match is
-    // convenient, not principled; if the rates ever justify a separate
-    // kGnssRingDepth, that is a deliberate commit, not a drive-by.
-    Result<ArrayId<sensors::GnssFix>> gnss_ring_id = sim.arenas_.register_array<sensors::GnssFix>(
-        kGnssRingArray, layout->sensor_capacity * sensors::kRingDepth);
-    if (!gnss_ring_id) return std::unexpected(gnss_ring_id.error());
-    sim.gnss_ring_id_ = *gnss_ring_id;
+    // THE BUILT-INS' TYPED IDS, minted from the table by name.
+    // check_builtin_arrays() above refused a set that omits one of these or
+    // declares it with another shape, so each lookup finds its array with its
+    // row's size; a misspelt name here fails every create(), never silently.
+    const auto mint = [&sim]<class Row>(ArrayId<Row>& id, std::string_view name) -> Result<void> {
+        const Result<ArrayIndex> index = sim.module_array(name);
+        if (!index) return std::unexpected(index.error());
+        const Result<ArrayId<Row>> typed = sim.arenas_.typed<Row>(*index);
+        if (!typed) return std::unexpected(typed.error());
+        id = *typed;
+        return {};
+    };
+    for (const Result<void>& minted :
+         {mint(sim.drag_id_, "drag_bodies"), mint(sim.dryden_id_, "dryden"), mint(sim.imu_id_, "imu_sensors"),
+          mint(sim.imu_ring_id_, "imu_ring"), mint(sim.rotors_id_, "rotors"), mint(sim.gnss_id_, "gnss_sensors"),
+          mint(sim.gnss_ring_id_, "gnss_ring")}) {
+        if (!minted) return std::unexpected(minted.error());
+    }
 
     // -----------------------------------------------------------------------
     // Seed the per-world rows.
     // -----------------------------------------------------------------------
     Result<std::span<WorldParams>> params = sim.arenas_.array(sim.world_params_id_);
     if (!params) return std::unexpected(params.error());
-    Result<std::span<DrydenState>> dryden = sim.arenas_.array(sim.dryden_id_);
-    if (!dryden) return std::unexpected(dryden.error());
 
     for (uint32_t w = 0; w < layout->world_count; ++w) {
         const Environment& env = desc.worlds[w].world.environment;
@@ -548,10 +609,13 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         row.seed = desc.worlds[w].seed;
         row._reserved0 = 0;
 
-        // Places the filter on its stationary distribution using row.seed, so
-        // the world starts gusty rather than burning off a spin-up transient.
-        // Must come AFTER the seed is written.
-        dryden_init((*dryden)[w], row);
+        // THE DECLARED STREAMS (sim/module.hpp's SEEDED STREAMS), derived from
+        // row.seed, so this must come AFTER the seed is written. No attached
+        // row is live yet, so this derives the per_world ones: in the standard
+        // set, dryden's, whose dryden_init also places the filter on its
+        // stationary distribution so the world starts gusty rather than
+        // burning off a spin-up transient. reseed() runs the same walk.
+        if (Result<void> derived = sim.derive_streams(w); !derived) return std::unexpected(derived.error());
     }
 
     // -----------------------------------------------------------------------
@@ -585,8 +649,21 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     sim.views_.resize(layout->world_count);
+    // Every pass's declared-state views (module-API stage 4, Task 6), sized
+    // once; rebuild_views() below fills them.
+    sim.pass_view_begin_.reserve(sim.schedule_.passes.size() + 1);
+    sim.pass_view_begin_.push_back(0);
+    for (const modules::CompiledPass& pass : sim.schedule_.passes) {
+        sim.pass_view_begin_.push_back(sim.pass_view_begin_.back() + static_cast<uint32_t>(pass.state.size()));
+    }
+    sim.pass_views_.assign(sim.pass_view_begin_.back(), StateView{});
     // The field sample rows, sized once and zero-filled (module-API stage 3).
     sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
+    // The configuration tables (module-API stage 4, Task 7), built here from
+    // no models -- so a pass that reads one before any model is registered
+    // sees an empty table -- and rebuilt by register_model().
+    sim.config_tables_.assign(sim.schedule_.tables.size(), std::vector<float>{});
+    sim.rebuild_config_tables();
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
     // run per body slot in the whole set.
@@ -633,6 +710,14 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         shape.batch_dynamic_collision = layout->uniform_dynamic_params;
         shape.sdf_node_count = sdf_node_count;
         shape.sdf_transform_count = sdf_transform_count;
+
+        // The registered walk, as data (module-API stage 4): the mirror makes
+        // one device buffer per entry, so every module array -- a developer's
+        // included -- reaches the device from its declaration. Registration
+        // above already refused any capacity this refuses.
+        Result<std::vector<compute::StateArrayShape>> arrays = state_array_shapes(sim.schedule_, shape);
+        if (!arrays) return std::unexpected(arrays.error());
+        shape.arrays = std::move(*arrays);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -738,21 +823,51 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     return sim;
 }
 
+// A linear scan in set order: the table is a handful of rows, and a lookup
+// happens at create() and in host calls, never in a step.
+Result<ArrayIndex> Simulation::module_array(std::string_view name) const {
+    for (std::size_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].name == name) return module_array_ids_[i];
+    }
+    return std::unexpected(
+        missing("module_array: no module in this set declares an array '" + std::string(name) + "'"));
+}
+
+// A linear scan, like module_array(): a host call, never in a step.
+Result<std::span<const float>> Simulation::config_table(std::string_view name) const {
+    for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        if (schedule_.tables[i].name == name) return std::span<const float>(config_tables_[i]);
+    }
+    return std::unexpected(
+        missing("config_table: no module in this set declares a table '" + std::string(name) + "'"));
+}
+
+void Simulation::rebuild_config_tables() {
+    for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        // EMPTY, then built: ConfigBuildFn's contract. clear() keeps the
+        // capacity, so a table that does not grow is rebuilt in place.
+        config_tables_[i].clear();
+        schedule_.tables[i].build(std::span<const vehicles::ModelType>(models_), config_tables_[i]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // views
 // ---------------------------------------------------------------------------
 //
-// FIVE ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params,
+// SIX ARRAYS ARE DIRECT-INDEXED RATHER THAN SLOT-ALLOCATED: world_params,
 // dryden and replay_config (one row per world, indexed by world id -- they have
 // no lifecycle, so alloc_slot/free_slot would be ceremony around a constant),
 // body_generation (one row per BODY slot, indexed by that slot -- it must
 // SURVIVE its slot being freed, and free_slot zero-fills, which would erase the
-// very counter it exists to preserve), and imu_ring (kRingDepth rows per SENSOR
-// slot, indexed by that slot -- its lifetime IS its sensor's, so a second
-// alloc/free lifecycle would only be a thing to keep in step; clear_imu_ring()
-// does the zeroing the sensor's own free_slot does for the row).
+// very counter it exists to preserve), and imu_ring and gnss_ring (kRingDepth
+// rows per SENSOR slot, indexed by that slot -- a ring's lifetime IS its
+// sensor's, so a second alloc/free lifecycle would only be a thing to keep in
+// step; the despawn cascade, free_rows_of(), zeroes a sensor's window when it
+// frees the sensor's row). Every per_world, per_body and per_row module array
+// is direct-indexed the same way.
 //
-// The consequence is that those five arrays' slot->world maps stay uniformly
+// The consequence is that those arrays' slot->world maps stay uniformly
 // kInvalidWorld. They are still carried by the registry walk, still snapshotted
 // and still resynced on restore -- an all-free map resyncs to an all-free set,
 // which is consistent -- and they cost four bytes a slot for the uniformity of
@@ -837,6 +952,45 @@ Result<void> Simulation::rebuild_views() {
         // RotorRow::body_slot (a WORLD-LOCAL body index, exactly like
         // DragBodyRow's) agree with the `bodies` span bound three lines up.
         view.rotors = rotors->subspan(elem_begin, layout_.element_capacity);
+    }
+
+    // THE PASSES' DECLARED STATE (module-API stage 4, Task 6), refilled in
+    // place: each declared access's view is the array its binding names --
+    // all worlds' rows, world-contiguous, which world_rows() slices by the
+    // same `w` the views above use -- or absent. The arenas never move, so
+    // this rewrites the same values every step; refilling rather than caching
+    // keeps the one rule this function exists for.
+    //
+    // A CONFIGURATION TABLE (Task 7) is one row of floats that every world
+    // shares: world_count 1, elem_size 4, as many rows as it has floats. Its
+    // storage moves only in register_model(), which never runs inside a step,
+    // and this runs at the top of every step. An empty table -- no model
+    // registered yet -- still reads as present(), since its module is in the
+    // set: its view points at g_no_table_rows and has no rows.
+    for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
+        const std::vector<modules::CompiledBinding>& bindings = schedule_.passes[p].state;
+        for (std::size_t k = 0; k < bindings.size(); ++k) {
+            StateView& view = pass_views_[pass_view_begin_[p] + k];
+            view = StateView{};
+            if (bindings[k].kind == modules::BindingKind::table) {
+                std::vector<float>& table = config_tables_[bindings[k].index];
+                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<std::byte*>(table.data());
+                view.elem_size = static_cast<uint32_t>(sizeof(float));
+                view.world_count = 1;
+                view.capacity_per_world = static_cast<uint32_t>(table.size());
+                continue;
+            }
+            if (bindings[k].kind != modules::BindingKind::array) continue;
+            const ArrayIndex id = module_array_ids_[bindings[k].index];
+            const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) return std::unexpected(bytes.error());
+            const Result<WorldRange> world0 = arenas_.range(id, 0);  // its count is the per-world capacity
+            if (!world0) return std::unexpected(world0.error());
+            view.data = bytes->data();
+            view.elem_size = schedule_.arrays[bindings[k].index].elem_size;
+            view.world_count = layout_.world_count;
+            view.capacity_per_world = world0->count;
+        }
     }
     return {};
 }
@@ -935,10 +1089,13 @@ Result<void> Simulation::step(uint64_t n) {
         ctx.tick = tick_;
 
         // The compiled module schedule (sim/module.hpp), in order, every
-        // substep. The order is the parity contract; create() fixed it.
+        // substep. The order is the parity contract; create() fixed it. Each
+        // pass sees its own declared state, and only that (Task 6).
+        const std::span<const StateView> pass_views(pass_views_);
         for (uint32_t s = 0; s < substeps_; ++s) {
-            for (const modules::CompiledPass& pass : schedule_.passes) {
-                pass.cpu(ctx);
+            for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
+                ctx.state = pass_views.subspan(pass_view_begin_[p], pass_view_begin_[p + 1] - pass_view_begin_[p]);
+                schedule_.passes[p].cpu(ctx);
             }
         }
 
@@ -1102,12 +1259,9 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
         }
 
         case OpKind::free_body: {
-            // Cascade first: the elements and sensors are addressed relative to
-            // the body that is about to stop existing.
-            free_drag_elements_of(op.world_index, op.slot);
-            free_imu_sensors_of(op.world_index, op.slot);
-            free_gnss_sensors_of(op.world_index, op.slot);
-            free_rotors_of(op.world_index, op.slot);
+            // Cascade first: the attached rows are addressed relative to the
+            // body that is about to stop existing.
+            free_rows_of(op.world_index, op.slot);
             if (Result<void> freed = arenas_.free_slot(bodies_id_, op.slot); !freed) {
                 return std::unexpected(internal("structural queue: freeing a body slot failed: " +
                                                 freed.error().context));
@@ -1115,339 +1269,150 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             return {};
         }
 
-        case OpKind::init_drag: {
-            Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: element slot out of range"));
+        case OpKind::init_row: {
+            if (op.array >= schedule_.arrays.size()) {
+                return std::unexpected(internal("structural queue: init_row names no module array"));
             }
-            // DEFENCE IN DEPTH: if this element's slot was released earlier in
-            // this same flush, its body no longer exists and there is nothing to
-            // initialize. With `body_slot` written at reservation time (see
-            // add_drag_element) the cascade cannot reach a row belonging to a
-            // DIFFERENT body, and a row belonging to the SAME body is always
-            // initialized before that body's free is applied (a ref for a body
-            // whose despawn is queued is rejected, so the element can only have
-            // been reserved first). So this is unreachable today -- and it is
-            // cheap insurance that a future queue reordering degrades to a
-            // no-op rather than to a live row in a free slot.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(drag_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            physics::DragBodyRow& row = (*rows)[op.slot];
-
-            // WORLD-LOCAL, not global: physics/forces.hpp documents body_slot as
-            // an index into the world's body slice, which is what apply_drag()
-            // is handed. Already written at reservation time; rewritten here so
-            // this function remains the complete statement of the row's contents.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.enabled = 1u;
-            row.mode = op.drag.mode;
-            row.area = op.drag.area;
-            row.local_pos = op.drag.local_pos;
-            row.local_orient = glm::normalize(op.drag.local_orient);
-            row.coeffs = op.drag.coeffs;
-            return {};
-        }
-
-        case OpKind::init_imu: {
-            Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: sensor slot out of range"));
+            const modules::CompiledArray& array = schedule_.arrays[op.array];
+            const ArrayIndex id = module_array_ids_[op.array];
+            Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) return std::unexpected(bytes.error());
+            const std::size_t row_bytes = array.elem_size;
+            if (std::size_t{op.slot} >= bytes->size() / row_bytes) {
+                return std::unexpected(internal("structural queue: row slot out of range in array '" + array.name +
+                                                "'"));
             }
-            // Same defence in depth as init_drag, for the same reason: if this
-            // slot was released earlier in this same flush its body no longer
-            // exists, so there is nothing to initialize. Unreachable today (the
-            // cascade's test is exact because `body_slot` is written at
-            // reservation time, below), cheap insurance against a future queue
-            // reordering.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(imu_id_);
+            // DEFENCE IN DEPTH: if this row's slot -- for a per_body row, its
+            // body's -- was released earlier in this same flush, its body no
+            // longer exists and there is nothing to initialize. With `body_slot`
+            // written at reservation time (see attach_row_impl) the cascade
+            // cannot reach a row belonging to a DIFFERENT body, and a row
+            // belonging to the SAME body is always initialized before that
+            // body's free is applied (a ref for a body whose despawn is queued
+            // is rejected, so the row can only have been reserved first). So
+            // this is unreachable today -- and it is cheap insurance that a
+            // future queue reordering degrades to a no-op rather than to a live
+            // row in a free slot.
+            //
+            // WHOSE MAP SAYS A ROW IS LIVE. A slot-allocated row's own; a
+            // per_body row's BODY's, at the same slot; and a per_row row's
+            // OWNER's, at row slot / depth (Task 7), read by the owner's own
+            // rule -- the body map for a per_body owner, else the owner's map.
+            // A per_row array's own map is never written (it is direct-indexed,
+            // like the rings), so reading it would skip every such row in
+            // silence: Task 4's check did, for every row a rotor owns.
+            uint32_t live_array = op.array;
+            uint32_t live_slot = op.slot;
+            if (array.extent == modules::Extent::per_row) {
+                live_array = array.owner;
+                live_slot = op.slot / array.depth;
+            }
+            const ArrayIndex liveness = schedule_.arrays[live_array].extent == modules::Extent::per_body
+                                            ? ArrayIndex(bodies_id_)
+                                            : module_array_ids_[live_array];
+            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(liveness);
             if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
+            if (live_slot >= map->size() || (*map)[live_slot] != op.world_index) return {};
 
             const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
             if (!params) return std::unexpected(params.error());
-
-            sensors::ImuSensorRow& row = (*rows)[op.slot];
-            const uint32_t local_slot = op.slot - op.world_index * layout_.sensor_capacity;
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body. Every field is
-            // written even where the arena's zero-fill would already have done
-            // it: the row's contents are this function's complete statement,
-            // not a coincidence of how the slot came to be free.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.rate_divider = op.imu.rate_divider;
-            row.phase = 0u;
-            row.mount_pos = op.imu.mount_pos;
-            row._p0 = 0.0f;
-            row.mount_orient = glm::normalize(op.imu.mount_orient);
-            row.sigma_a = op.imu.sigma_a;
-            row.sigma_g = op.imu.sigma_g;
-            row.sigma_ba = op.imu.sigma_ba;
-            row.sigma_bg = op.imu.sigma_bg;
-            row.bias_a = glm::vec3(0.0f);
-            row._p1 = 0.0f;
-            row.bias_g = glm::vec3(0.0f);
-            row._p2 = 0.0f;
-            // Seeded from the REGISTERED WorldParams row -- the world's rng
-            // authority (see WorldConfig's "NO `seed` MEMBER" note) -- and from
-            // the WORLD-LOCAL slot, so a world's noise does not depend on where
-            // that world sits in the set.
-            row.noise = sensors::imu_noise_stream((*params)[op.world_index].seed, local_slot);
-            row.last_index = 0;
-            row._reserved0 = 0;
-            // LAST, like body_flags::active in init_body: until `kind` is set
-            // the row is inert to the sensor passes, so a partially
-            // written row can never be sampled.
-            row.kind = sensors::sensor_kind::imu;
-            return {};
-        }
-
-        case OpKind::init_gnss: {
-            Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: gnss slot out of range"));
-            }
-            // Same defence in depth as init_imu, for the same reason.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            const Result<std::span<const WorldParams>> params = arenas_.array(world_params_id_);
-            if (!params) return std::unexpected(params.error());
-
-            sensors::GnssSensorRow& row = (*rows)[op.slot];
-            const uint32_t local_slot = op.slot - op.world_index * layout_.sensor_capacity;
-
-            // ⛔⛔ THE FIX PERIOD, NOT THE SUBSTEP. The Gauss-Markov bias
-            // advances ONCE PER EMITTED FIX -- it is the receiver's own error
-            // process and runs on the receiver's own clock -- so `dt` is
-            // rate_divider substeps, not one. Computed HERE rather than in
-            // add_gnss_sensor() because this is where the row is written and
-            // where the arena hands it over; `h_` is a member either way.
-            //
-            //   A CONSTANT COMPUTED FROM THE WRONG CLOCK IS STILL
-            //   DETERMINISTIC, AND DETERMINISM IS WHAT THIS SUITE CHECKS.
-            //
-            // A receiver at rate_divider = 200 on the substep clock decays 200x
-            // too slowly, both backends still agree bit for bit, every digest
-            // stays self-consistent, and the corpus pins it wrong forever. The
-            // only thing standing between that and this line is this comment.
-            const float fix_dt = static_cast<float>(op.gnss.rate_divider) * h_;
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body and init_imu. The
-            // row's contents are this function's complete statement.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.rate_divider = op.gnss.rate_divider;
-            row.phase = 0u;
-            row.mount_pos = op.gnss.mount_pos;
-            row._p0 = 0.0f;
-            row.bias = glm::vec3(0.0f);
-            row._p1 = 0.0f;
-            row.sigma_h = op.gnss.sigma_h;
-            row.sigma_v = op.gnss.sigma_v;
-            row.sigma_vel = op.gnss.sigma_vel;
-            row.bias_tau_s = op.gnss.bias_tau_s;
-            row.noise = sensors::gnss_noise_stream((*params)[op.world_index].seed, local_slot);
-            row.last_index = 0;
-            row.bias_retention = sensors::gnss_bias_retention(fix_dt, op.gnss.bias_tau_s);
-            row.bias_drive =
-                sensors::gnss_bias_drive(fix_dt, op.gnss.bias_tau_s, op.gnss.sigma_bias);
-            row.sigma_bias = op.gnss.sigma_bias;
-            row._p2 = 0.0f;
-            row._reserved0 = 0;
-            // LAST, like init_imu's: until `kind` is set the row is inert to
-            // the sensor passes, so a partially written row can never be
-            // sampled.
-            row.kind = sensors::sensor_kind::gnss;
-            return {};
-        }
-
-        case OpKind::init_rotor: {
-            Result<std::span<vehicles::RotorRow>> rows = arenas_.array(rotors_id_);
-            if (!rows) return std::unexpected(rows.error());
-            if (op.slot >= rows->size()) {
-                return std::unexpected(internal("structural queue: rotor slot out of range"));
-            }
-            // Same defence in depth as init_drag and init_imu, and for the
-            // same reason: a slot released earlier in this same flush belongs
-            // to a body that no longer exists.
-            const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(rotors_id_);
-            if (!map) return std::unexpected(map.error());
-            if ((*map)[op.slot] != op.world_index) return {};
-
-            vehicles::RotorRow& row = (*rows)[op.slot];
-
-            // FIELD-WISE, NOT WHOLE-OBJECT -- see init_body. Every field is
-            // written, including the four reserved lanes: rotor.hpp requires
-            // them to stay 0, and stating that here rather than relying on the
-            // arena's zero-fill makes this function the row's complete
-            // definition.
-            row.body_slot = op.body_slot - op.world_index * layout_.body_capacity;
-            row.tau = op.rotor.tau;
-            row.radius = op.rotor.radius;
-            row.local_pos = op.rotor.local_pos;
-            row.spin_dir = op.rotor.spin_dir;
-            row.local_orient = glm::normalize(op.rotor.local_orient);
-            // SPAWNED IN TRIM: omega and omega_cmd both take the spawn's
-            // rotor_omega, so a vehicle inserted mid-flight holds its speed
-            // instead of spinning up from rest. See VehicleSpawn.
-            row.omega = op.rotor_omega;
-            row.omega_cmd = op.rotor_omega;
-            row.thrust_coeff = op.rotor.thrust_coeff;
-            row.torque_coeff = op.rotor.torque_coeff;
-            row._r0 = 0.0f;
-            row._r1 = 0.0f;
-            row._r2 = 0.0f;
-            row._r3 = 0.0f;
-            // LAST, like body_flags::active in init_body and `kind` in
-            // init_imu: until `enabled` is set the row is inert to
-            // apply_rotors(), so a partially written row can never be stepped.
-            row.enabled = 1u;
+            const Result<WorldRange> range = arenas_.range(id, op.world_index);
+            if (!range) return std::unexpected(range.error());
+            // The module's init writes the row (sim/builtin_state.cpp has the
+            // built-ins'): field-wise, every field, its liveness flag last.
+            // Both slots it is handed are WORLD-LOCAL, so a world's rows -- and
+            // the noise streams seeded from them -- do not depend on where that
+            // world sits in the set.
+            array.init(modules::RowInit{
+                .row = bytes->subspan(std::size_t{op.slot} * row_bytes, row_bytes),
+                .spawn = std::span<const std::byte>(op.spawn.data(), op.spawn_size),
+                .params = &(*params)[op.world_index],
+                .local_slot = op.slot - range->begin,
+                .local_body = op.body_slot - op.world_index * layout_.body_capacity,
+                .h = h_,
+            });
             return {};
         }
     }
     return std::unexpected(internal("structural queue: unknown op kind"));
 }
 
-void Simulation::free_drag_elements_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(drag_id_);
-    Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-    if (!map || !rows) return;
-
+void Simulation::free_rows_of(uint32_t world_index, uint32_t body_slot) {
     const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.element_capacity;
-    const uint32_t end = begin + layout_.element_capacity;
+    // WALK ORDER (schedule_.arrays' order), so the cascade is a function of the
+    // declarations alone. It frees rotors before gnss_sensors, where the hand
+    // cascade it replaced freed them after; the bytes and every later
+    // allocation are the same, because each free touches only its own array's
+    // bytes, map and free list, and alloc_slot() consults only that array's
+    // free set (state/arenas.hpp). ModuleRows.InterleavedChurnLeavesTodaysSlots
+    // AndBytes pins it against the hand cascade's digests.
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        const modules::CompiledArray& array = schedule_.arrays[i];
+        const ArrayIndex id = module_array_ids_[i];
+        if (array.extent == modules::Extent::per_body) {
+            // The body's own row, direct-indexed by body slot: nothing to
+            // release, only to zero, as free_slot zeroes a released row.
+            Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+            if (!bytes) continue;
+            const std::size_t begin = std::size_t{body_slot} * array.elem_size;
+            if (begin + array.elem_size > bytes->size()) continue;
+            std::memset(bytes->data() + begin, 0, array.elem_size);
+            clear_children(i, body_slot);
+            continue;
+        }
+        if (array.extent != modules::Extent::per_element && array.extent != modules::Extent::per_sensor) continue;
 
-    // Ascending slot order, so the free sequence -- and therefore every future
-    // allocation out of the rebuilt free list -- is a function of the slot
-    // indices alone. Liveness comes from the slot->world map and NOT from the
-    // row's contents: a freed row is zero-filled, and body_slot 0 is a perfectly
-    // legitimate world-local index, so trusting the row would free live elements
-    // attached to body 0.
-    //
-    // `map` stays valid across the free_slot() calls below: it spans a vector
-    // that is sized once at registration and never resized, so only the VALUES
-    // change (to kInvalidWorld, for slots this loop has already passed).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        (void)arenas_.free_slot(drag_id_, slot);
-    }
-}
+        const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id);
+        const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        const Result<WorldRange> range = arenas_.range(id, world_index);
+        if (!map || !bytes || !range) continue;
 
-void Simulation::free_imu_sensors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(imu_id_);
-    Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.sensor_capacity;
-    const uint32_t end = begin + layout_.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // sensors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas_.free_slot(imu_id_, slot); freed) {
-            // free_slot zeroes the ROW; the samples live in a second,
-            // direct-indexed array that nothing else would clear. See
-            // Simulation::despawn's contract.
-            clear_imu_ring(slot);
+        // Ascending slot order, so the free sequence -- and therefore every
+        // future allocation out of the rebuilt free list -- is a function of
+        // the slot indices alone. Liveness comes from the slot->world map and
+        // NOT from the row's contents: a freed row is zero-filled, and
+        // body_slot 0 is a perfectly legitimate world-local index, so trusting
+        // the row would free live rows attached to body 0.
+        //
+        // `map` and `bytes` stay valid across the free_slot() calls below: they
+        // span storage that is sized once at registration and never moves, so
+        // only the VALUES change (to kInvalidWorld and zeroes, for slots this
+        // loop has already passed).
+        for (uint32_t slot = range->begin; slot < range->begin + range->count; ++slot) {
+            if ((*map)[slot] != world_index) continue;
+            // An attached row's body_slot is its first four bytes
+            // (modules::attached_row_size), copied out rather than read through
+            // a cast: the loop knows the row only as bytes.
+            uint32_t owner = 0;
+            std::memcpy(&owner, bytes->data() + std::size_t{slot} * array.elem_size, sizeof(owner));
+            if (owner != local_body) continue;
+            if (Result<void> freed = arenas_.free_slot(id, slot); freed) {
+                // free_slot zeroes the ROW; a ring's samples live in a second,
+                // direct-indexed array that nothing else would clear. See
+                // Simulation::despawn's contract.
+                clear_children(i, slot);
+            }
         }
     }
 }
 
-void Simulation::free_rotors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(rotors_id_);
-    Result<std::span<vehicles::RotorRow>> rows = arenas_.array(rotors_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    // The ROTOR partition is sized by element_capacity, the same number the
-    // drag table uses -- see create()'s registration note on the shared
-    // force-element budget.
-    const uint32_t begin = world_index * layout_.element_capacity;
-    const uint32_t end = begin + layout_.element_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_drag_elements_of does and for exactly the same two reasons (a
-    // deterministic free sequence; a zero-filled freed row's body_slot 0 is a
-    // legitimate world-local index, so trusting the row alone would free live
-    // rotors attached to body 0).
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        (void)arenas_.free_slot(rotors_id_, slot);
-    }
-}
-
-void Simulation::free_gnss_sensors_of(uint32_t world_index, uint32_t body_slot) {
-    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(gnss_id_);
-    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!map || !rows) return;
-
-    const uint32_t local_body = body_slot - world_index * layout_.body_capacity;
-    const uint32_t begin = world_index * layout_.sensor_capacity;
-    const uint32_t end = begin + layout_.sensor_capacity;
-
-    // Ascending slot order and liveness-from-the-map, exactly as
-    // free_imu_sensors_of does and for exactly the same reasons.
-    for (uint32_t slot = begin; slot < end; ++slot) {
-        if ((*map)[slot] != world_index) continue;
-        if ((*rows)[slot].body_slot != local_body) continue;
-        if (Result<void> freed = arenas_.free_slot(gnss_id_, slot); freed) {
-            clear_gnss_ring(slot);
-        }
-    }
-}
-
-void Simulation::clear_gnss_ring(uint32_t slot) {
-    Result<std::span<sensors::GnssFix>> ring = arenas_.array(gnss_ring_id_);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-
-    for (std::size_t i = 0; i < sensors::kRingDepth; ++i) {
-        // FIELD-WISE, like clear_imu_ring. GnssFix has no implicit padding
-        // (sensors/gnss.hpp asserts it), so naming all six fields zeroes every
-        // byte -- which is what makes a freed receiver's ring read as zeroes in
-        // a snapshot, the same as any other freed slot.
-        sensors::GnssFix& fix = (*ring)[begin + i];
-        fix.position = glm::vec3(0.0f);
-        fix.sigma_h = 0.0f;
-        fix.velocity = glm::vec3(0.0f);
-        fix.sigma_v = 0.0f;
-        fix.index = 0;
-        fix.tick = 0;
-    }
-}
-
-void Simulation::clear_imu_ring(uint32_t slot) {
-    Result<std::span<sensors::ImuSample>> ring = arenas_.array(imu_ring_id_);
-    if (!ring) return;
-    const std::size_t begin = static_cast<std::size_t>(slot) * sensors::kRingDepth;
-    if (begin + sensors::kRingDepth > ring->size()) return;
-
-    for (std::size_t i = 0; i < sensors::kRingDepth; ++i) {
-        // FIELD-WISE, like every other arena write in this file. ImuSample has
-        // no implicit padding (sensors/imu.hpp asserts it), so naming all six
-        // fields zeroes every byte -- which is what makes a freed sensor's ring
-        // read as zeroes in a snapshot, the same as any other freed slot.
-        sensors::ImuSample& sample = (*ring)[begin + i];
-        sample.accel = glm::vec3(0.0f);
-        sample._p0 = 0.0f;
-        sample.gyro = glm::vec3(0.0f);
-        sample._p1 = 0.0f;
-        sample.index = 0;
-        sample.tick = 0;
+void Simulation::clear_children(uint32_t array, uint32_t slot) {
+    for (uint32_t j = 0; j < schedule_.arrays.size(); ++j) {
+        const modules::CompiledArray& child = schedule_.arrays[j];
+        if (child.extent != modules::Extent::per_row || child.owner != array) continue;
+        Result<std::span<std::byte>> bytes = arenas_.bytes(module_array_ids_[j]);
+        if (!bytes) continue;
+        const std::size_t window = std::size_t{child.depth} * child.elem_size;
+        const std::size_t begin = std::size_t{slot} * window;
+        if (begin + window > bytes->size()) continue;
+        // EVERY BYTE, BY memset. A freed slot reads as zeroes, padding
+        // included, because snapshot digests fold raw bytes; a value-initialized
+        // assignment (`row = Row{}`) would zero every MEMBER and leave padding
+        // unspecified. For the built-in rings this writes exactly the bytes the
+        // field-wise clears it replaced wrote: ImuSample and GnssFix have no
+        // implicit padding (sensors/imu.hpp and sensors/gnss.hpp assert it), so
+        // naming all six fields of each zeroed every byte.
+        std::memset(bytes->data() + begin, 0, window);
     }
 }
 
@@ -1615,200 +1580,221 @@ Result<void> Simulation::despawn(BodyRef ref) {
     return {};
 }
 
-Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragElementSpawn& elem) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
+// ---------------------------------------------------------------------------
+// attached rows: the one door, and its typed fronts
+// ---------------------------------------------------------------------------
+
+Result<RowRef> Simulation::attach_row(BodyRef body, std::string_view array, std::span<const std::byte> spawn) {
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].name == array) return attach_row_impl(body, i, spawn, "attach_row");
+    }
+    return std::unexpected(
+        missing("attach_row: no module in this set declares an array '" + std::string(array) + "'"));
+}
+
+Result<RowRef> Simulation::attach_row_impl(BodyRef body, uint32_t array, std::span<const std::byte> spawn,
+                                           std::string_view what) {
+    if (Result<void> valid = validate_ref(body); !valid) {
         return std::unexpected(valid.error());
     }
-    if (!finite(elem.area) || !finite(elem.coeffs) || !finite(elem.local_pos) ||
-        !finite(elem.local_orient)) {
-        return std::unexpected(invalid("add_drag_element: parameters must all be finite"));
+    const std::string prefix = std::string(what) + ": ";
+    if (array >= schedule_.arrays.size()) {
+        // The typed fronts pass the arrays create() minted, which always exist.
+        return std::unexpected(internal(prefix + "the array is not in this set's table"));
     }
-    if (const char* why = physics::check_drag_law(elem.mode, elem.area, elem.coeffs).first()) {
-        return std::unexpected(invalid(std::string("add_drag_element: ") + why));
+    const modules::CompiledArray& decl = schedule_.arrays[array];
+    const bool slot_allocated =
+        decl.extent == modules::Extent::per_element || decl.extent == modules::Extent::per_sensor;
+    if (!slot_allocated && decl.extent != modules::Extent::per_body) {
+        return std::unexpected(invalid(prefix + "array '" + decl.name + "' (module '" + decl.module +
+                                       "') is not attached to a body; only a per_body, per_element or "
+                                       "per_sensor array is"));
     }
-    if (!(glm::dot(elem.local_orient, elem.local_orient) > 0.0f)) {
-        return std::unexpected(invalid("add_drag_element: local_orient must have non-zero length"));
+    if (spawn.size() != decl.spawn_size) {
+        return std::unexpected(invalid(prefix + "array '" + decl.name + "' takes a " +
+                                       std::to_string(decl.spawn_size) + "-byte spawn record, not " +
+                                       std::to_string(spawn.size())));
     }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    // THE SHARED FORCE-ELEMENT BUDGET (Task 18): rotors and drag bodies live
-    // in separate arena arrays but count against ONE declared capacity,
-    // because spec §3 calls them both force elements and a world file declares
-    // how many force elements a world holds, not how many of each kind. A
-    // world with rotors in it therefore has fewer drag slots available than it
-    // has drag STORAGE, which is the honest reading of its own declaration.
-    const Result<uint32_t> live = live_force_elements(ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_element_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_drag_element: world " + std::to_string(ref.world_index) +
-                                         " is at its declared force-element capacity (" +
-                                         std::to_string(config.declared_element_capacity) +
-                                         ", shared between drag bodies and rotors)"});
+    if (decl.validate != nullptr) {
+        if (Result<void> checked = decl.validate(spawn); !checked) {
+            return std::unexpected(Error{checked.error().code, prefix + checked.error().context});
+        }
     }
 
-    const Result<uint32_t> slot = arenas_.alloc_slot(drag_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
+    const WorldConfig& config = configs_[body.world_index];
+    const ArrayIndex id = module_array_ids_[array];
+    uint32_t slot = body.slot;  // per_body: the body's own row
+    if (slot_allocated) {
+        if (decl.extent == modules::Extent::per_element) {
+            // THE SHARED FORCE-ELEMENT BUDGET (Task 18): rotors and drag
+            // bodies -- and every other per_element array -- live in separate
+            // arena arrays but count against ONE declared capacity, because
+            // spec §3 calls them all force elements and a world file declares
+            // how many force elements a world holds, not how many of each kind.
+            // A world with rotors in it therefore has fewer drag slots
+            // available than it has drag STORAGE, which is the honest reading
+            // of its own declaration.
+            const Result<uint32_t> live = live_force_elements(body.world_index);
+            if (!live) return std::unexpected(live.error());
+            if (*live >= config.declared_element_capacity) {
+                return std::unexpected(Error{Code::capacity_exceeded,
+                                             prefix + "world " + std::to_string(body.world_index) +
+                                                 " is at its declared force-element capacity (" +
+                                                 std::to_string(config.declared_element_capacity) +
+                                                 ", shared between drag bodies and rotors)"});
+            }
+        } else {
+            // A per_sensor array counts ALONE: the declared sensor capacity
+            // bounds each sensor array's live rows, never their sum, so a world
+            // may hold `sensors` IMUs AND `sensors` receivers.
+            const Result<uint32_t> live = arenas_.live_count(id, body.world_index);
+            if (!live) return std::unexpected(live.error());
+            if (*live >= config.declared_sensor_capacity) {
+                return std::unexpected(Error{Code::capacity_exceeded,
+                                             prefix + "world " + std::to_string(body.world_index) +
+                                                 " is at its declared sensor capacity (" +
+                                                 std::to_string(config.declared_sensor_capacity) + ")"});
+            }
+        }
 
-    // -----------------------------------------------------------------------
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME; ONLY ITS PARAMETERS
-    // AND `enabled` WAIT FOR THE BOUNDARY. This is not an optimization, it
-    // closes an aliasing hole:
-    //
-    // a reserved row is otherwise the arena's zeroes, i.e. `body_slot == 0` --
-    // and 0 is a perfectly legitimate world-local body index. The despawn
-    // cascade (free_drag_elements_of) identifies a body's elements by exactly
-    // that field, so a row reserved while a despawn of world-local body 0 was
-    // already queued would be mistaken for one of body 0's elements and freed,
-    // after which the queued init_drag would write a live row into a slot the
-    // arena considers free -- breaking the "a freed slot reads as zeroes"
-    // invariant, under-counting live_count, letting a later reservation alias
-    // the same row, and leaving an orphan element that applies drag to whatever
-    // body next occupies that body slot. Every one of those is silent.
-    //
-    // Writing `body_slot` here makes the reserved row TRUTHFUL about which body
-    // it belongs to from the instant it exists, so the cascade's test is exact.
-    // `enabled` stays 0 (the arena's zero-fill), so the row is still inert to
-    // apply_drag until the boundary -- the same "reserved but not yet live"
-    // posture spawn() gives a body slot via body_flags::active.
-    // -----------------------------------------------------------------------
-    Result<std::span<physics::DragBodyRow>> rows = arenas_.array(drag_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
+        const Result<uint32_t> reserved = arenas_.alloc_slot(id, body.world_index);
+        if (!reserved) return std::unexpected(reserved.error());
+        slot = *reserved;
 
+        // -------------------------------------------------------------------
+        // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME; ONLY ITS
+        // PARAMETERS AND ITS LIVENESS FLAG WAIT FOR THE BOUNDARY. This is not
+        // an optimization, it closes an aliasing hole:
+        //
+        // a reserved row is otherwise the arena's zeroes, i.e. `body_slot == 0`
+        // -- and 0 is a perfectly legitimate world-local body index. The
+        // despawn cascade (free_rows_of) identifies a body's rows by exactly
+        // that field, so a row reserved while a despawn of world-local body 0
+        // was already queued would be mistaken for one of body 0's rows and
+        // freed, after which the queued init_row would write a live row into a
+        // slot the arena considers free -- breaking the "a freed slot reads as
+        // zeroes" invariant, under-counting live_count, letting a later
+        // reservation alias the same row, and leaving an orphan element that
+        // applies drag (say) to whatever body next occupies that body slot.
+        // Every one of those is silent.
+        //
+        // Writing `body_slot` here makes the reserved row TRUTHFUL about which
+        // body it belongs to from the instant it exists, so the cascade's test
+        // is exact. The liveness flag stays 0 (the arena's zero-fill), so the
+        // row is still inert to its pass until the boundary -- the same
+        // "reserved but not yet live" posture spawn() gives a body slot via
+        // body_flags::active.
+        // -------------------------------------------------------------------
+        Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        if (!bytes) return std::unexpected(bytes.error());
+        const uint32_t local_body = body.slot - body.world_index * layout_.body_capacity;
+        std::memcpy(bytes->data() + std::size_t{slot} * decl.elem_size, &local_body, sizeof(local_body));
+    }
+
+    queue_init_row(array, body.world_index, slot, body.slot, spawn);
+    return RowRef{body.world_index, slot};
+}
+
+void Simulation::queue_init_row(uint32_t array, uint32_t world_index, uint32_t slot, uint32_t body_slot,
+                                std::span<const std::byte> spawn) {
     StructuralOp op;
-    op.kind = OpKind::init_drag;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.drag = elem;
+    op.kind = OpKind::init_row;
+    op.world_index = world_index;
+    op.slot = slot;
+    op.body_slot = body_slot;
+    op.array = array;
+    // compile_schedule bounded every declared spawn_size by kMaxSpawnBytes,
+    // and attach_row_impl and spawn(vehicle) hand over exactly that many.
+    op.spawn_size = static_cast<uint32_t>(std::min<std::size_t>(spawn.size(), op.spawn.size()));
+    std::memcpy(op.spawn.data(), spawn.data(), op.spawn_size);
     queue_.push_back(op);
+}
 
-    return DragElementRef{ref.world_index, *slot};
+// THE RULES A VEHICLE HOOK'S REQUEST KEEPS (sim/module.hpp's VEHICLE-SPAWN
+// HOOK). Each is what makes the queued init safe without a reservation of its
+// own: the row is one this vehicle owns outright (its body's, or one in a
+// rotor window it just reserved), so no other body's row can be written, and
+// the despawn cascade frees it with that body or rotor.
+Result<uint32_t> Simulation::check_row_request(std::string_view module, const modules::VehicleRows& vehicle,
+                                               const modules::RowInitRequest& request) const {
+    const std::string who = "spawn(vehicle): module '" + std::string(module) + "' asks for a row of '" +
+                            std::string(request.array) + "'";
+    const auto it = std::ranges::find(schedule_.arrays, request.array, &modules::CompiledArray::name);
+    if (it == schedule_.arrays.end()) {
+        return std::unexpected(invalid(who + ", which no module in this set declares"));
+    }
+    const modules::CompiledArray& array = *it;
+    if (array.module != module) {
+        return std::unexpected(invalid(who + ", an array of module '" + array.module +
+                                       "'; a vehicle hook initializes only its own module's rows"));
+    }
+    if (array.init == nullptr) {
+        return std::unexpected(invalid(who + ", which declares no init to run"));
+    }
+    if (request.spawn_size != array.spawn_size) {
+        return std::unexpected(invalid(who + " with a " + std::to_string(request.spawn_size) +
+                                       "-byte record; the array takes " + std::to_string(array.spawn_size)));
+    }
+    if (array.extent == modules::Extent::per_body) {
+        if (request.slot != vehicle.body_slot) {
+            return std::unexpected(invalid(who + " at slot " + std::to_string(request.slot) +
+                                           "; the vehicle's per_body row is its body's, slot " +
+                                           std::to_string(vehicle.body_slot)));
+        }
+    } else if (array.extent == modules::Extent::per_row) {
+        if (array.owner != table_index(rotors_id_)) {
+            return std::unexpected(invalid(who + ", whose rows are owned by '" + schedule_.arrays[array.owner].name +
+                                           "'; a vehicle's per_row rows are its rotors'"));
+        }
+        // Row g of the owner owns rows [g * depth, (g + 1) * depth).
+        if (std::ranges::find(vehicle.rotor_slots, request.slot / array.depth) == vehicle.rotor_slots.end()) {
+            return std::unexpected(invalid(who + " at slot " + std::to_string(request.slot) +
+                                           ", which lies in none of the vehicle's rotor windows"));
+        }
+    } else {
+        return std::unexpected(invalid(who + ", which is neither per_body nor owned by rotors; a vehicle hook "
+                                             "initializes those, and attach_row() reserves the rest"));
+    }
+    return static_cast<uint32_t>(it - schedule_.arrays.begin());
+}
+
+uint32_t Simulation::table_index(ArrayIndex array) const noexcept {
+    for (uint32_t i = 0; i < module_array_ids_.size(); ++i) {
+        if (module_array_ids_[i] == array) return i;
+    }
+    return modules::kNoArray;
+}
+
+Result<DragElementRef> Simulation::add_drag_element(BodyRef ref, const DragElementSpawn& elem) {
+    const Result<RowRef> row = attach_row_impl(ref, table_index(drag_id_), std::as_bytes(std::span(&elem, 1)),
+                                               "add_drag_element");
+    if (!row) return std::unexpected(row.error());
+    return DragElementRef{row->world_index, row->slot};
 }
 
 Result<GnssSensorRef> Simulation::add_gnss_sensor(BodyRef ref, const GnssSensorSpawn& sensor) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
-        return std::unexpected(valid.error());
-    }
-    if (sensor.rate_divider == 0) {
-        return std::unexpected(invalid("add_gnss_sensor: rate_divider must be >= 1"));
-    }
-    if (!finite(sensor.mount_pos)) {
-        return std::unexpected(invalid("add_gnss_sensor: mount_pos must be finite"));
-    }
-    // Spelled `!(x >= 0)` so a NaN REJECTS rather than comparing false on both
-    // sides -- add_imu_sensor()'s discipline, and world_set.cpp's in_range().
-    // bias_tau_s joins the sigmas here: <= 0 legitimately DISABLES the bias
-    // (gnss_bias_retention returns 0), but a NEGATIVE tau is a caller error and
-    // a NaN one would propagate into every fix through a finite-looking row.
-    if (!(sensor.sigma_h >= 0.0f) || !(sensor.sigma_v >= 0.0f) ||
-        !(sensor.sigma_vel >= 0.0f) || !(sensor.sigma_bias >= 0.0f) ||
-        !(sensor.bias_tau_s >= 0.0f) || !finite(sensor.sigma_h) ||
-        !finite(sensor.sigma_v) || !finite(sensor.sigma_vel) ||
-        !finite(sensor.sigma_bias) || !finite(sensor.bias_tau_s)) {
-        return std::unexpected(
-            invalid("add_gnss_sensor: every sigma and bias_tau_s must be finite and >= 0"));
-    }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    const Result<uint32_t> live = arenas_.live_count(gnss_id_, ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_sensor_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_gnss_sensor: world " + std::to_string(ref.world_index) +
-                                         " is at its declared sensor capacity (" +
-                                         std::to_string(config.declared_sensor_capacity) + ")"});
-    }
-
-    const Result<uint32_t> slot = arenas_.alloc_slot(gnss_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
-
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME -- the same aliasing
-    // hole add_imu_sensor() and add_drag_element() close, for the same reason:
-    // a reserved row's zeroed `body_slot` is a legitimate world-local index
-    // (body 0), and free_gnss_sensors_of() identifies a body's receivers by
-    // exactly that field. `kind` stays 0, so the row is inert until the
-    // boundary.
-    Result<std::span<sensors::GnssSensorRow>> rows = arenas_.array(gnss_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
-
-    StructuralOp op;
-    op.kind = OpKind::init_gnss;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.gnss = sensor;
-    queue_.push_back(op);
-
-    return GnssSensorRef{ref.world_index, *slot};
+    const Result<RowRef> row = attach_row_impl(ref, table_index(gnss_id_), std::as_bytes(std::span(&sensor, 1)),
+                                               "add_gnss_sensor");
+    if (!row) return std::unexpected(row.error());
+    return GnssSensorRef{row->world_index, row->slot};
 }
 
 Result<ImuSensorRef> Simulation::add_imu_sensor(BodyRef ref, const ImuSensorSpawn& sensor) {
-    if (Result<void> valid = validate_ref(ref); !valid) {
-        return std::unexpected(valid.error());
-    }
-    if (sensor.rate_divider == 0) {
-        // 0 would mean "no rate at all". synthesize_imu() degrades it to 1
-        // rather than dividing by zero, but a caller who wrote 0 meant
-        // something, and it was not "every substep".
-        return std::unexpected(invalid("add_imu_sensor: rate_divider must be >= 1"));
-    }
-    if (!finite(sensor.mount_pos) || !finite(sensor.mount_orient)) {
-        return std::unexpected(invalid("add_imu_sensor: mount pose must be finite"));
-    }
-    if (!(glm::dot(sensor.mount_orient, sensor.mount_orient) > 0.0f)) {
-        return std::unexpected(invalid("add_imu_sensor: mount_orient must have non-zero length"));
-    }
-    if (!(sensor.sigma_a >= 0.0f) || !(sensor.sigma_g >= 0.0f) || !(sensor.sigma_ba >= 0.0f) ||
-        !(sensor.sigma_bg >= 0.0f) || !finite(sensor.sigma_a) || !finite(sensor.sigma_g) ||
-        !finite(sensor.sigma_ba) || !finite(sensor.sigma_bg)) {
-        // Spelled `!(x >= 0)` so a NaN rejects rather than comparing false on
-        // both sides -- the same discipline world_set.cpp's in_range() uses.
-        return std::unexpected(invalid("add_imu_sensor: every sigma must be finite and >= 0"));
-    }
-
-    const WorldConfig& config = configs_[ref.world_index];
-    const Result<uint32_t> live = arenas_.live_count(imu_id_, ref.world_index);
-    if (!live) return std::unexpected(live.error());
-    if (*live >= config.declared_sensor_capacity) {
-        return std::unexpected(Error{Code::capacity_exceeded,
-                                     "add_imu_sensor: world " + std::to_string(ref.world_index) +
-                                         " is at its declared sensor capacity (" +
-                                         std::to_string(config.declared_sensor_capacity) + ")"});
-    }
-
-    const Result<uint32_t> slot = arenas_.alloc_slot(imu_id_, ref.world_index);
-    if (!slot) return std::unexpected(slot.error());
-
-    // THE ROW'S IDENTITY IS WRITTEN AT RESERVATION TIME -- see the long note in
-    // add_drag_element() for the aliasing hole this closes. It is the same hole:
-    // a reserved row's zeroed `body_slot` is a legitimate world-local index
-    // (body 0), and free_imu_sensors_of() identifies a body's sensors by exactly
-    // that field. `kind` stays 0 (the arena's zero-fill), so the row is still
-    // inert to the sensor passes until the boundary.
-    Result<std::span<sensors::ImuSensorRow>> rows = arenas_.array(imu_id_);
-    if (!rows) return std::unexpected(rows.error());
-    (*rows)[*slot].body_slot = ref.slot - ref.world_index * layout_.body_capacity;
-
-    StructuralOp op;
-    op.kind = OpKind::init_imu;
-    op.world_index = ref.world_index;
-    op.slot = *slot;
-    op.body_slot = ref.slot;
-    op.imu = sensor;
-    queue_.push_back(op);
-
-    return ImuSensorRef{ref.world_index, *slot};
+    const Result<RowRef> row = attach_row_impl(ref, table_index(imu_id_), std::as_bytes(std::span(&sensor, 1)),
+                                               "add_imu_sensor");
+    if (!row) return std::unexpected(row.error());
+    return ImuSensorRef{row->world_index, row->slot};
 }
 
 Result<uint32_t> Simulation::live_force_elements(uint32_t world_index) const {
-    const Result<uint32_t> drag = arenas_.live_count(drag_id_, world_index);
-    if (!drag) return std::unexpected(drag.error());
-    const Result<uint32_t> rotors = arenas_.live_count(rotors_id_, world_index);
-    if (!rotors) return std::unexpected(rotors.error());
-    return *drag + *rotors;
+    uint32_t live = 0;
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].extent != modules::Extent::per_element) continue;
+        const Result<uint32_t> rows = arenas_.live_count(module_array_ids_[i], world_index);
+        if (!rows) return std::unexpected(rows.error());
+        live += *rows;
+    }
+    return live;
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,6 +1816,10 @@ Result<ModelTypeId> Simulation::register_model(vehicles::ModelType model) {
         return std::unexpected(Error{Code::capacity_exceeded, "register_model: model id space is full"});
     }
     models_.push_back(std::move(model));
+    // Every configuration table is a function of the whole registry, in
+    // registration order, so all of them are rebuilt -- here and only here,
+    // never in a step (sim/module.hpp's ConfigTableDecl).
+    rebuild_config_tables();
     // ONE-BASED: id 0 is the null id (see ModelTypeId), so the first model
     // registered is 1.
     return ModelTypeId{static_cast<uint32_t>(models_.size())};
@@ -1851,11 +1841,15 @@ Result<const vehicles::ModelType*> Simulation::model(ModelTypeId id) const {
 // single queue op is pushed, so the failure story has to be stated: the
 // capacity checks all happen before the first reservation, which makes a
 // mid-reservation failure unreachable, and if one happened anyway every slot
-// already taken is released here. A reserve/release pair leaves the arena's
+// already taken is released here. ONE UNWIND IS REACHABLE (module-API stage 4,
+// Task 7): a module's vehicle hook asks for its rows only once the slots are
+// reserved, and a request that breaks a rule is refused here, before the
+// generation bump. A reserve/release pair leaves the arena's
 // free SET exactly as it was (state/arenas.hpp: the bump-cursor/free-list pair
 // is canonical-equivalent, and alloc_slot only ever consults the free set), so
 // an unwound spawn is invisible to every future allocation -- which is what
 // keeps a failed spawn from perturbing a determinism replay.
+// ModuleVehicleRows.ARequestOutsideTheVehicleIsRefusedAndUnwinds pins it.
 // ---------------------------------------------------------------------------
 
 Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
@@ -1966,7 +1960,8 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     std::size_t sensors_taken = 0;
 
     // Releases everything taken so far, in the reverse order it was taken, and
-    // returns `error`. Unreachable given the checks above; see the unwind note.
+    // returns `error`. Reached by a refused vehicle-hook request; otherwise
+    // unreachable given the checks above. See the unwind note.
     const auto unwind = [&](Error error) -> std::unexpected<Error> {
         for (std::size_t i = sensors_taken; i-- > 0;) (void)arenas_.free_slot(imu_id_, sensor_slots[i]);
         for (std::size_t i = drags_taken; i-- > 0;) (void)arenas_.free_slot(drag_id_, drag_slots[i]);
@@ -1994,6 +1989,34 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         ++sensors_taken;
     }
 
+    // --- the modules' vehicle rows (module-API stage 4, Task 7) -------------
+    //
+    // Each module's hook, in set order, asks for rows of its own module. Every
+    // request is checked HERE, before the generation bump, so one that breaks
+    // a rule unwinds exactly like a failed reservation: nothing is committed
+    // and every slot taken above is released. Each hook fills a vector of its
+    // own, so it sees -- and can disturb -- only its own requests. A set with
+    // no hook allocates nothing here.
+    const modules::VehicleRows vehicle{.model = &model,
+                                       .models = std::span<const vehicles::ModelType>(models_),
+                                       .model_index = model_id.value - 1u,
+                                       .world_index = world_index,
+                                       .body_slot = *body_slot,
+                                       .rotor_slots = std::span<const uint32_t>(rotor_slots.data(), rotors_taken)};
+    std::vector<modules::RowInitRequest> requests;
+    std::vector<uint32_t> request_arrays;  // parallel to `requests`: each one's index in schedule_.arrays
+    std::vector<modules::RowInitRequest> asked;
+    for (const modules::CompiledVehicleRows& hook : schedule_.vehicle_rows) {
+        asked.clear();
+        hook.rows(vehicle, asked);
+        for (const modules::RowInitRequest& request : asked) {
+            const Result<uint32_t> array = check_row_request(hook.module, vehicle, request);
+            if (!array) return unwind(array.error());
+            requests.push_back(request);
+            request_arrays.push_back(*array);
+        }
+    }
+
     // Every reservation succeeded; from here nothing can fail, so the
     // generation bump and the queue pushes are safe to commit.
     Result<std::span<uint32_t>> generations = arenas_.array(body_gen_id_);
@@ -2006,7 +2029,7 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
 
     // -----------------------------------------------------------------------
     // THE ROWS' IDENTITY IS WRITTEN AT RESERVATION TIME -- the Task 13 lesson,
-    // spelled out at length in add_drag_element(). A reserved row is otherwise
+    // spelled out at length in attach_row_impl(). A reserved row is otherwise
     // the arena's zeroes, i.e. `body_slot == 0`, and 0 is a perfectly
     // legitimate world-local body index; the despawn cascade identifies a
     // body's rows by exactly that field, so a row reserved while a despawn of
@@ -2060,48 +2083,47 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                               1.0f / model.body.inertia_diag.z);
     queue_.push_back(body_op);
 
+    // Each row is an init_row of its module's array, with that module's spawn
+    // record -- the records attach_row() takes -- and no validate: the model
+    // was validated once, by register_model(), and the rows were reserved
+    // above. The body_slot of each is already written.
+    const uint32_t rotor_table = table_index(rotors_id_);
+    const uint32_t drag_table = table_index(drag_id_);
+    const uint32_t imu_table = table_index(imu_id_);
     for (std::size_t i = 0; i < rotors_taken; ++i) {
-        StructuralOp op;
-        op.kind = OpKind::init_rotor;
-        op.world_index = world_index;
-        op.slot = rotor_slots[i];
-        op.body_slot = *body_slot;
-        op.rotor = model.rotors[i];
-        op.rotor_omega = where.rotor_omega;
-        queue_.push_back(op);
+        const modules::builtin::RotorSpawn spawn{model.rotors[i], where.rotor_omega};
+        queue_init_row(rotor_table, world_index, rotor_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
     }
     for (std::size_t i = 0; i < drags_taken; ++i) {
         // The desc -> spawn-record mapping vehicles/model_type.hpp promises
         // lives in exactly one place. This is it, for drag bodies.
         const vehicles::DragBodyDesc& desc = model.drag_bodies[i];
-        StructuralOp op;
-        op.kind = OpKind::init_drag;
-        op.world_index = world_index;
-        op.slot = drag_slots[i];
-        op.body_slot = *body_slot;
-        op.drag.mode = desc.mode;
-        op.drag.area = desc.area;
-        op.drag.coeffs = desc.coeffs;
-        op.drag.local_pos = desc.local_pos;
-        op.drag.local_orient = desc.local_orient;
-        queue_.push_back(op);
+        DragElementSpawn spawn;
+        spawn.mode = desc.mode;
+        spawn.area = desc.area;
+        spawn.coeffs = desc.coeffs;
+        spawn.local_pos = desc.local_pos;
+        spawn.local_orient = desc.local_orient;
+        queue_init_row(drag_table, world_index, drag_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
     }
     for (std::size_t i = 0; i < sensors_taken; ++i) {
         // ... and this is it for IMU mounts.
         const vehicles::ImuMountDesc& desc = model.imu_mounts[i];
-        StructuralOp op;
-        op.kind = OpKind::init_imu;
-        op.world_index = world_index;
-        op.slot = sensor_slots[i];
-        op.body_slot = *body_slot;
-        op.imu.mount_pos = desc.mount_pos;
-        op.imu.mount_orient = desc.mount_orient;
-        op.imu.rate_divider = desc.rate_divider;
-        op.imu.sigma_a = desc.sigma_a;
-        op.imu.sigma_g = desc.sigma_g;
-        op.imu.sigma_ba = desc.sigma_ba;
-        op.imu.sigma_bg = desc.sigma_bg;
-        queue_.push_back(op);
+        ImuSensorSpawn spawn;
+        spawn.mount_pos = desc.mount_pos;
+        spawn.mount_orient = desc.mount_orient;
+        spawn.rate_divider = desc.rate_divider;
+        spawn.sigma_a = desc.sigma_a;
+        spawn.sigma_g = desc.sigma_g;
+        spawn.sigma_ba = desc.sigma_ba;
+        spawn.sigma_bg = desc.sigma_bg;
+        queue_init_row(imu_table, world_index, sensor_slots[i], *body_slot, std::as_bytes(std::span(&spawn, 1)));
+    }
+    // THEN THE MODULES' ROWS, checked above: hook order, then each hook's
+    // request order, so this too is a function of the model and the set.
+    for (std::size_t r = 0; r < requests.size(); ++r) {
+        queue_init_row(request_arrays[r], world_index, requests[r].slot, *body_slot,
+                       std::span<const std::byte>(requests[r].spawn.data(), requests[r].spawn_size));
     }
 
     VehicleRef ref;
@@ -2410,8 +2432,8 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // header (module-API plan Ruling 1), not in the digested replay_config row.
     if (blob.configuration_identity() != schedule_.identity) {
         return std::unexpected(invalid("restore: blob was taken under a different module set or schedule "
-                                       "(identity " + std::to_string(blob.configuration_identity()) +
-                                       ", this simulation runs " + std::to_string(schedule_.identity) +
+                                       "(identity " + hex64(blob.configuration_identity()) +
+                                       ", this simulation runs " + hex64(schedule_.identity) +
                                        "); restoring it here could replay different physics"));
     }
     // Snapshot format v3: the model registry, in registration order (L2). The
@@ -2477,9 +2499,9 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
 // reseed
 // ---------------------------------------------------------------------------
 //
-// See the doc comment in simulation.hpp for the full argument -- in particular
-// for why the blocks below are the complete list: one block per system that
-// derives a stream from the world seed.
+// See the doc comment in simulation.hpp for the full argument. What it
+// re-derives is no longer a list here: it is every stream the module set
+// declares (sim/module.hpp's SEEDED STREAMS), walked by derive_streams().
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::reseed(uint64_t scene_seed) {
@@ -2490,28 +2512,28 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
                                        "first."));
     }
 
+    // RESOLVE FIRST, WRITE SECOND, as the hand-written body did: every array
+    // the walk touches is resolved before any seed is written, so a refusal
+    // leaves every seed and every stream as it was.
     Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
     if (!params) return std::unexpected(params.error());
-    Result<std::span<DrydenState>> dryden = arenas_.array(dryden_id_);
-    if (!dryden) return std::unexpected(dryden.error());
-    Result<std::span<sensors::ImuSensorRow>> sensors_rows = arenas_.array(imu_id_);
-    if (!sensors_rows) return std::unexpected(sensors_rows.error());
-    // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's contents --
-    // the same discipline free_imu_sensors_of() states and for the same reason:
-    // a free row is zero-filled, and writing a fresh stream into one would break
-    // the engine-wide "a freed slot reads as zeroes" invariant and put sixteen
-    // non-zero bytes into every subsequent snapshot of a slot nothing owns.
-    Result<std::span<const uint32_t>> sensor_map = arenas_.slot_to_world(imu_id_);
-    if (!sensor_map) return std::unexpected(sensor_map.error());
-    Result<std::span<sensors::GnssSensorRow>> gnss_rows = arenas_.array(gnss_id_);
-    if (!gnss_rows) return std::unexpected(gnss_rows.error());
-    Result<std::span<const uint32_t>> gnss_map = arenas_.slot_to_world(gnss_id_);
-    if (!gnss_map) return std::unexpected(gnss_map.error());
+    for (const modules::CompiledStream& stream : schedule_.streams) {
+        const ArrayIndex id = module_array_ids_[stream.array];
+        if (const Result<std::span<std::byte>> bytes = arenas_.bytes(id); !bytes) {
+            return std::unexpected(bytes.error());
+        }
+        if (const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id); !map) {
+            return std::unexpected(map.error());
+        }
+    }
 
-    // Worlds in INDEX order, and each world's sensors in ascending slot order.
-    // Nothing here depends on the iteration order (each write is a pure function
-    // of the new world seed and the slot index), but the engine's determinism
-    // posture is that an ordered walk is the only kind there is.
+    // Worlds in INDEX order; within a world, derive_streams() walks the
+    // streams in declaration order and each array's rows in ascending slot
+    // order. Nothing here depends on the iteration order (each write is a pure
+    // function of the new world seed and the slot index), but the engine's
+    // determinism posture is that an ordered walk is the only kind there is.
+    // For the standard set the order is the hand-written body's: per world,
+    // dryden, then the live IMU rows, then the live GNSS rows.
     for (uint32_t w = 0; w < layout_.world_count; ++w) {
         WorldParams& row = (*params)[w];
 
@@ -2521,29 +2543,16 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
         // step.
         row.seed = rng::splitmix64(scene_seed ^ rng::fnv1a64(kWorldSeedDomainTag) ^ uint64_t{w});
 
-        // AFTER the seed write, exactly as create() does it: dryden_init reads
-        // row.seed and re-places the filter on its stationary distribution.
-        dryden_init((*dryden)[w], row);
-
-        const uint32_t begin = w * layout_.sensor_capacity;
-        const uint32_t end = begin + layout_.sensor_capacity;
-        for (uint32_t slot = begin; slot < end; ++slot) {
-            if ((*sensor_map)[slot] != w) continue;
-            // ONLY `noise`. The bias states, the divider phase, the ring cursor
-            // and the ring itself are HISTORY and stay exactly as they are --
-            // see the header: a reseed changes the future draws, not the past.
-            (*sensors_rows)[slot].noise = sensors::imu_noise_stream(row.seed, slot - begin);
-        }
-        for (uint32_t slot = begin; slot < end; ++slot) {
-            if ((*gnss_map)[slot] != w) continue;
-            (*gnss_rows)[slot].noise = sensors::gnss_noise_stream(row.seed, slot - begin);
-        }
+        // AFTER the seed write, exactly as create() does it. Every array was
+        // resolved above, so this cannot fail part-way.
+        if (Result<void> derived = derive_streams(w); !derived) return std::unexpected(derived.error());
     }
 
     // The device mirror is stale (S6 Task 6 review round 1, finding C1). Every
-    // write above lands in a REGISTERED array -- WorldParams, DrydenState and
-    // the live ImuSensorRow noise streams are all part of the walk the mirror
-    // uploads -- and none of them goes through the structural queue, so
+    // write above lands in a REGISTERED array -- WorldParams and every declared
+    // stream's array are part of the walk the mirror uploads (a developer's
+    // too: the mirror holds every module array, bound or not) -- and none of
+    // them goes through the structural queue, so
     // nothing else would say so. Unmarked, a reseed on the vulkan path would
     // be a call that appeared to succeed and changed nothing about the run:
     // the next step() would submit the OLD seeds and the readback would put
@@ -2557,6 +2566,45 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     // the mark is now load-bearing for the trajectory as well as for the bytes.
     mark_vulkan_dirty();
 
+    return {};
+}
+
+Result<void> Simulation::derive_streams(uint32_t world_index) {
+    Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
+    if (!params) return std::unexpected(params.error());
+    const WorldParams& world = (*params)[world_index];
+    for (const modules::CompiledStream& stream : schedule_.streams) {
+        const modules::CompiledArray& array = schedule_.arrays[stream.array];
+        const ArrayIndex id = module_array_ids_[stream.array];
+        const Result<std::span<std::byte>> bytes = arenas_.bytes(id);
+        if (!bytes) return std::unexpected(bytes.error());
+        const Result<WorldRange> range = arenas_.range(id, world_index);
+        if (!range) return std::unexpected(range.error());
+        const std::size_t row_bytes = array.elem_size;
+        const auto row = [&bytes, row_bytes](uint32_t slot) {
+            return bytes->subspan(std::size_t{slot} * row_bytes, row_bytes);
+        };
+
+        if (array.extent == modules::Extent::per_world) {
+            // The world's one row, always live (compile_schedule allows a
+            // stream only here or in a slot-allocated array).
+            stream.reseed(row(range->begin), world, 0);
+            continue;
+        }
+
+        // LIVENESS COMES FROM THE SLOT->WORLD MAP, never from the row's
+        // contents -- the same discipline free_rows_of() states and for the
+        // same reason: a free row is zero-filled, and writing a fresh stream
+        // into one would break the engine-wide "a freed slot reads as zeroes"
+        // invariant and put non-zero bytes into every later snapshot of a slot
+        // nothing owns. The slot handed over is WORLD-LOCAL, as init_row's is.
+        const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(id);
+        if (!map) return std::unexpected(map.error());
+        for (uint32_t slot = range->begin; slot < range->begin + range->count; ++slot) {
+            if ((*map)[slot] != world_index) continue;
+            stream.reseed(row(slot), world, slot - range->begin);
+        }
+    }
     return {};
 }
 

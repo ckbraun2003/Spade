@@ -95,6 +95,29 @@ Result<ArrayIndex> ArenaSet::register_array_impl(std::string name, uint32_t elem
     return ArrayIndex{static_cast<uint32_t>(arenas_.size() - 1)};
 }
 
+Result<ArrayIndex> ArenaSet::register_bytes(std::string name, uint32_t elem_size, uint32_t capacity_per_world) {
+    if (elem_size == 0) {
+        // arena_for() reads an expected size of 0 as "untyped caller", so a
+        // zero-sized array could never be told apart from a lookup.
+        return std::unexpected(bad_arg("register_bytes('" + name + "'): elem_size must be non-zero"));
+    }
+    return register_array_impl(std::move(name), elem_size, capacity_per_world);
+}
+
+Result<std::span<std::byte>> ArenaSet::bytes(ArrayIndex array) {
+    Result<const Arena*> found = arena_for(array, 0);
+    if (!found) return std::unexpected(found.error());
+    Arena& arena = arenas_[array.value];
+    return std::span<std::byte>(arena.bytes.get(), std::size_t{arena.total_slots()} * arena.elem_size);
+}
+
+Result<std::span<const std::byte>> ArenaSet::bytes(ArrayIndex array) const {
+    Result<const Arena*> found = arena_for(array, 0);
+    if (!found) return std::unexpected(found.error());
+    const Arena& arena = **found;
+    return std::span<const std::byte>(arena.bytes.get(), std::size_t{arena.total_slots()} * arena.elem_size);
+}
+
 Result<void> ArenaSet::resync_from_slot_to_world(ArrayIndex array) {
     Result<const Arena*> found = arena_for(array, 0);
     if (!found) return std::unexpected(found.error());

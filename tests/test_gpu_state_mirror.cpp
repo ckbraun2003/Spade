@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -126,11 +127,11 @@ namespace {
 // longer reads as "put it back".
 constexpr std::size_t kWalkEntryCount = 22;
 constexpr const char* kWalkDriftRemedy =
-    "the registered walk changed size. That is LEGAL -- registered state grows with a sensor or "
-    "feature that declares it (compute/vulkan/state_mirror.hpp has the rule). It is not a thing to "
-    "revert. Update this count, and check the same change also moved array_shapes(), "
-    "bindings.slang and test_slang_layouts.cpp's lists, because nothing else in the CPU suite sees "
-    "a registry-side addition at all.";
+    "the registered walk changed size. That is LEGAL -- registered state grows with a module that "
+    "declares it (compute/vulkan/state_mirror.hpp has the rule). It is not a thing to revert. Update "
+    "this count. The mirror sizes itself from the declarations (sim/simulation.hpp's "
+    "state_array_shapes()), so only an array a kernel reads also moves bindings.slang, "
+    "state_mirror.cpp's binding_for() and test_slang_layouts.cpp's lists.";
 
 using spade::BodySpawn;
 using spade::Result;
@@ -147,10 +148,28 @@ using spade::compute::vulkan_available;
 // The GPU chain a default Simulation records: the standard module set's
 // compiled passes (module-API plan, stage 2). This file builds VulkanBackends
 // directly, so it hands them the same list Simulation::create() would.
+[[nodiscard]] const spade::modules::CompiledSchedule& standard_schedule() {
+    static const spade::modules::CompiledSchedule schedule =
+        *spade::modules::compile_schedule(spade::modules::standard_modules());
+    return schedule;
+}
+
 [[nodiscard]] const std::vector<spade::compute::GpuPass>& standard_gpu_passes() {
-    static const std::vector<spade::compute::GpuPass> passes =
-        spade::modules::gpu_passes(*spade::modules::compile_schedule(spade::modules::standard_modules()));
+    static const std::vector<spade::compute::GpuPass> passes = spade::modules::gpu_passes(standard_schedule());
     return passes;
+}
+
+// The registered walk's shape for `shape`'s capacities (module-API stage 4):
+// the mirror makes one buffer per entry, so every StepShape this file builds
+// carries it, as Simulation::create() does.
+[[nodiscard]] std::vector<spade::compute::StateArrayShape> walk_shapes(
+    const spade::modules::CompiledSchedule& schedule, const StepShape& shape) {
+    Result<std::vector<spade::compute::StateArrayShape>> shapes = spade::state_array_shapes(schedule, shape);
+    if (!shapes) {
+        ADD_FAILURE() << "state_array_shapes: " << shapes.error().context;
+        return {};
+    }
+    return std::move(*shapes);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +247,7 @@ protected:
     shape.substeps = sim.substeps();
     shape.h = sim.substep_h();
     shape.batch_dynamic_collision = sim.layout().uniform_dynamic_params;
+    shape.arrays = walk_shapes(sim.schedule(), shape);
     return shape;
 }
 
@@ -548,6 +568,9 @@ TEST_F(GpuStateMirrorTest, AbsurdShapeAllocationFailureIsReportedNotCrashed) {
     shape.substeps = 1;
     shape.h = 0.001f;
     shape.batch_dynamic_collision = false;
+    // One world of 2^32-1 body slots still fits a uint32 slot index, so the
+    // mirror's sizing passes it and the allocation itself fails, for real.
+    shape.arrays = walk_shapes(standard_schedule(), shape);
 
     const Result<std::unique_ptr<VulkanBackend>> backend =
         VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
@@ -656,6 +679,7 @@ TEST_F(GpuStateMirrorTest, RecordedChainHasABarrierBetweenEveryAdjacentDispatchP
         shape.sensor_capacity = 2;
         shape.substeps = substeps;
         shape.h = 0.001f;
+        shape.arrays = walk_shapes(standard_schedule(), shape);
 
         Result<std::unique_ptr<VulkanBackend>> backend =
             VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
@@ -689,9 +713,165 @@ TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
     shape.sensor_capacity = 2;
     shape.substeps = 1;
     shape.h = 0.001f;
+    shape.arrays = walk_shapes(standard_schedule(), shape);
 
     Result<std::unique_ptr<VulkanBackend>> backend =
         VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
     ASSERT_TRUE(backend.has_value()) << backend.error().context;
     EXPECT_EQ((*backend)->bound_binding_count(), spade::compute::gen::kBindingCount_state);
+}
+
+// ===========================================================================
+// A module's array reaches the device from its declaration (module-API stage
+// 4, Task 3).
+//
+// `tally` declares one per_world array and no pass, so it needs no GPU recipe,
+// and no kernel binds it: the mirror allocates, uploads and reads it back like
+// the six unbound `.slot_to_world` maps. Until stage 4 the mirror's array list
+// was hand-written, so a Vulkan set with such an array passed create() and
+// failed at its first upload ("no device buffer").
+// ===========================================================================
+
+namespace {
+
+struct TallyRow {
+    uint32_t count;
+    uint32_t _p[3];
+};
+constexpr spade::modules::ArrayDecl kTallyArrays[] = {
+    {.name = "tally_counts", .elem_size = spade::modules::row_size<TallyRow>()}};
+
+[[nodiscard]] spade::modules::ModuleSet standard_plus_tally() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "tally", .state = kTallyArrays});
+    return set;
+}
+
+// A recognisable, non-zero byte pattern over the developer's rows, so a
+// comparison against zero-filled buffers cannot pass.
+[[nodiscard]] std::vector<std::byte> fill_tally(const Simulation& sim) {
+    const Result<spade::ArrayIndex> index = sim.module_array("tally_counts");
+    if (!index) {
+        ADD_FAILURE() << index.error().context;
+        return {};
+    }
+    // const_cast justified as in round trip 1: `sim` is a test's own mutable
+    // Simulation, and this writes state no public call can reach.
+    spade::ArenaSet& arenas = const_cast<spade::ArenaSet&>(sim.arenas());  // NOLINT
+    const Result<std::span<std::byte>> bytes = arenas.bytes(*index);
+    if (!bytes) {
+        ADD_FAILURE() << bytes.error().context;
+        return {};
+    }
+    for (std::size_t i = 0; i < bytes->size(); ++i) {
+        (*bytes)[i] = static_cast<std::byte>((0x5Au ^ (i * 7u)) & 0xFFu);
+    }
+    return std::vector<std::byte>(bytes->begin(), bytes->end());
+}
+
+}  // namespace
+
+TEST_F(GpuStateMirrorTest, ADeclaredArrayWithNoBindingRoundTripsThroughTheMirror) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+
+    const Result<WorldSetDesc> set = gate_world_set(4, 0x7A11E5EEULL);
+    ASSERT_TRUE(set.has_value()) << set.error().context;
+    Result<Simulation> sim = Simulation::create(*set, 2'000'000, 2, {}, standard_plus_tally());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_FALSE(fill_tally(*sim).empty());
+
+    Result<std::unique_ptr<VulkanBackend>> backend = VulkanBackend::create(
+        BackendDesc{.kind = BackendKind::vulkan}, shape_of(*sim), spade::modules::gpu_passes(sim->schedule()));
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+
+    // Round trip 1's sequence: snapshot, upload, corrupt, read back, compare.
+    std::vector<std::pair<std::string, std::vector<std::byte>>> before;
+    sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
+        before.emplace_back(array.name, std::vector<std::byte>(array.data, array.data + array.byte_size()));
+    });
+    ASSERT_EQ(before.size(), kWalkEntryCount + 2) << "the standard walk and tally_counts with its map";
+
+    const Result<void> uploaded = (*backend)->upload(sim->arenas());
+    ASSERT_TRUE(uploaded.has_value()) << uploaded.error().context;
+    spade::ArenaSet& mutable_arenas = const_cast<spade::ArenaSet&>(sim->arenas());  // NOLINT
+    mutable_arenas.registry().for_each_array(
+        [](const spade::RegisteredArray& array) { std::memset(array.data, 0xCD, array.byte_size()); });
+    const Result<void> read = (*backend)->readback(mutable_arenas);
+    ASSERT_TRUE(read.has_value()) << read.error().context;
+
+    std::size_t checked = 0;
+    sim->arenas().registry().for_each_array([&](const spade::RegisteredArray& array) {
+        const auto found =
+            std::find_if(before.begin(), before.end(), [&](const auto& p) { return p.first == array.name; });
+        ASSERT_NE(found, before.end()) << array.name;
+        EXPECT_EQ(std::memcmp(array.data, found->second.data(), array.byte_size()), 0)
+            << "round-trip mismatch for '" << array.name << "'";
+        ++checked;
+    });
+    EXPECT_EQ(checked, kWalkEntryCount + 2);
+}
+
+// The same array through Simulation's own Vulkan path: create() hands the
+// backend the walk's shapes, and a step uploads the developer's rows and reads
+// them back unchanged, since no kernel writes them.
+TEST_F(GpuStateMirrorTest, AVulkanSimulationCarriesADeclaredArrayThroughAStep) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+
+    const Result<WorldSetDesc> set = gate_world_set(1, 0x7A11E5EFULL);
+    ASSERT_TRUE(set.has_value()) << set.error().context;
+    Result<Simulation> sim =
+        Simulation::create(*set, 2'000'000, 2, BackendDesc{.kind = BackendKind::vulkan}, standard_plus_tally());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    const std::vector<std::byte> written = fill_tally(*sim);
+    ASSERT_FALSE(written.empty());
+
+    const Result<void> stepped = sim->step(1);
+    ASSERT_TRUE(stepped.has_value()) << stepped.error().context;
+    EXPECT_EQ(sim->vulkan_upload_count(), 1u) << "the first step uploads";
+
+    const Result<spade::ArrayIndex> index = sim->module_array("tally_counts");
+    ASSERT_TRUE(index.has_value()) << index.error().context;
+    const Result<std::span<const std::byte>> after = sim->arenas().bytes(*index);
+    ASSERT_TRUE(after.has_value()) << after.error().context;
+    EXPECT_TRUE(std::ranges::equal(*after, written)) << "tally_counts came back from the device changed";
+}
+
+// ===========================================================================
+// A shape the mirror cannot size is refused, by name, before it allocates.
+//
+// No arrays says nothing about the walk. And 2^16 worlds of 2^16 body slots
+// is 2^32 slots per per-body buffer: a uint32 count wraps it to 0, and a
+// uint32 slot index cannot address it, so the mirror counts in 64 bits and
+// refuses with capacity_exceeded naming the buffer -- the refusal
+// ArenaSet::register_array() makes for the same product -- rather than leaving
+// the diagnosis to a driver's allocation failure.
+// ===========================================================================
+
+TEST_F(GpuStateMirrorTest, AShapeTheMirrorCannotSizeIsRefusedByName) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+
+    StepShape shape{};
+    shape.world_count = 2;
+    shape.body_capacity = 8;
+    shape.element_capacity = 4;
+    shape.sensor_capacity = 2;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+    const Result<std::unique_ptr<VulkanBackend>> empty =
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
+    EXPECT_FALSE(empty.has_value()) << "a shape with no arrays must be refused";
+    if (!empty) {
+        EXPECT_EQ(empty.error().code, spade::Code::invalid_argument) << empty.error().context;
+    }
+
+    shape.world_count = 1u << 16;
+    shape.body_capacity = 1u << 16;
+    shape.element_capacity = 1;
+    shape.sensor_capacity = 1;
+    shape.arrays = walk_shapes(standard_schedule(), shape);
+    const Result<std::unique_ptr<VulkanBackend>> wraps =
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
+    ASSERT_FALSE(wraps.has_value()) << "2^32 body slots must be refused";
+    EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded) << wraps.error().context;
+    EXPECT_NE(wraps.error().context.find("'bodies'"), std::string::npos) << wraps.error().context;
 }

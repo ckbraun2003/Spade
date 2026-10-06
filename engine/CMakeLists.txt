@@ -703,6 +703,7 @@ add_library(spade_sim STATIC
     physics/schedule.cpp
     sim/module_schedule.cpp
     sim/standard_modules.cpp
+    sim/builtin_state.cpp
     sim/design_frame.cpp
     # objects/spawn_helpers.cpp (SL9e, Plan A Task 11) -- HEADER DIRECTORY AND
     # COMPILING TARGET DELIBERATELY DIFFER, exactly as physics/schedule.cpp's
