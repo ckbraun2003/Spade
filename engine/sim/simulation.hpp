@@ -1887,6 +1887,12 @@ private:
     // SubstepContext::state, so a step allocates nothing.
     std::vector<StateView> pass_views_;
     std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
+    // Where every one of those views records a misuse (state/state_view.hpp;
+    // stage 5, Task 1): a view's StateView::id is its index in pass_views_.
+    // step() refuses a recorded fault at the end of the step, and clears it.
+    // Allocated once at create(), so its address, which every view holds,
+    // survives a move of the Simulation.
+    std::unique_ptr<ViewFault> view_fault_;
     physics::GridScratch scratch_;
     // Every world's field sample row, world-major, schedule_.field_stride floats
     // each. Scratch like scratch_: not registered, not in any blob or digest,
