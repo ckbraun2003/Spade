@@ -56,6 +56,16 @@
 #include "world/builder.hpp"
 #include "world/world_file.hpp"
 #include "world/world_ref.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("world_file");
+    return dir.path();
+}
+}  // namespace
 
 namespace {
 
@@ -696,7 +706,7 @@ TEST(WorldFile, EmissionIsCanonical) {
 TEST(WorldFile, SavesAndLoadsThroughTheFilesystem) {
     const WorldDesc original = maximal_world();
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_maximal.world.yaml";
+        temp_root() / "spade_test_maximal.world.yaml";
     std::filesystem::remove(path);
 
     ASSERT_OK(spade::save_world_file(original, path));
@@ -718,7 +728,7 @@ TEST(WorldFile, SavesAndLoadsThroughTheFilesystem) {
 
 TEST(WorldFile, MissingFileIsAnIoErrorNamingThePath) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_no_such.world.yaml";
+        temp_root() / "spade_test_no_such.world.yaml";
     std::filesystem::remove(path);
     const spade::Result<WorldDesc> loaded = spade::load_world_file(path);
     EXPECT_EQ(code_of(loaded), code(spade::Code::io_error));
@@ -1045,7 +1055,7 @@ TEST(WorldFileRejects, AVersionMismatchKeepsItsCodeThroughTheFileLayer) {
     // has to survive that re-wrap, or the distinction above is invisible to
     // everyone who reads files rather than strings.
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_v3.world.yaml";
+        temp_root() / "spade_test_v3.world.yaml";
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(out.good());
@@ -1370,7 +1380,7 @@ TEST(WorldFileRejects, PropMaterialIndexOutOfRangeViaYamlIsInvalid) {
 
 TEST(WorldFileRejects, ErrorsFromLoadCarryTheFilePath) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_broken.world.yaml";
+        temp_root() / "spade_test_broken.world.yaml";
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(out.good());
@@ -1654,7 +1664,7 @@ TEST(WorldSetFrom, PathRefAndDescRefProduceIdenticalWorldSets) {
 
 TEST(WorldSetFrom, MissingFileErrorCarriesThePath) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_world_set_from_missing.world.yaml";
+        temp_root() / "spade_test_world_set_from_missing.world.yaml";
     std::filesystem::remove(path);
 
     const spade::Result<spade::WorldSetDesc> result =
@@ -1674,7 +1684,7 @@ TEST(WorldSetFrom, ZeroCountIsRejected) {
     // count == 0 is rejected BEFORE resolving -- a missing/broken path never
     // gets read for a fleet the caller is about to throw away.
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_test_world_set_from_zero_count.world.yaml";
+        temp_root() / "spade_test_world_set_from_zero_count.world.yaml";
     std::filesystem::remove(path);
     const spade::Result<spade::WorldSetDesc> path_result =
         spade::world_set_from(spade::WorldRef{path}, 0, 1, fleet_prototype());

@@ -7,7 +7,7 @@
 // with the same test in another tree, and the loser fails for no reason of
 // its own: gate 5 lost two editor tests that way (2026-10-06).
 // tests/unique_temp.hpp names temp paths per process, so it is the one place
-// allowed to ask for the temp directory.
+// allowed to ask for the temp directory (with its own test; see kAllowed).
 //
 // HOW. Like BitPortability.NoLibmTranscendentalInEngineOrGoldenTestSource
 // (test_m1b_bar.cpp), this reads the sources with their comments stripped and
@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -32,8 +33,10 @@ namespace {
 // Split so this file's own source text never contains the pattern.
 const std::string kPattern = std::string("temp_directory") + "_path";
 
-// The one file allowed to call it, relative to tests/.
-constexpr const char* kAllowed = "unique_temp.hpp";
+// The files allowed to call it, relative to tests/: the header that names
+// every temp path, and its own test, which checks those names against the
+// real temp directory and writes nothing there.
+constexpr const char* kAllowed[] = {"unique_temp.hpp", "test_unique_temp.cpp"};
 
 // The text with // and /* */ comments blanked, keeping line breaks so line
 // numbers survive. String literals are not parsed; a "//" inside one only
@@ -83,7 +86,11 @@ TEST(TestHygiene, NoTempDirectoryPathOutsideUniqueTemp) {
         const std::vector<fs::path> files = sources_under(root);
         ASSERT_FALSE(files.empty()) << "no sources under " << root.string() << " -- is the scan root right?";
         for (const fs::path& file : files) {
-            if (file.lexically_normal() == (tests_dir / kAllowed).lexically_normal()) continue;
+            if (std::any_of(std::begin(kAllowed), std::end(kAllowed), [&](const char* allowed) {
+                    return file.lexically_normal() == (tests_dir / allowed).lexically_normal();
+                })) {
+                continue;
+            }
             std::ifstream in(file, std::ios::binary);
             std::stringstream buffer;
             buffer << in.rdbuf();
@@ -109,7 +116,7 @@ TEST(TestHygiene, NoTempDirectoryPathOutsideUniqueTemp) {
     ASSERT_GT(scanned, 0u);
     std::string report;
     for (const std::string& h : hits) report += "\n  " + h;
-    EXPECT_TRUE(hits.empty()) << hits.size() << " fixed-name temp path(s) outside tests/" << kAllowed
+    EXPECT_TRUE(hits.empty()) << hits.size() << " fixed-name temp path(s) outside tests/unique_temp.hpp"
                               << ". Concurrent runs on this box share %TEMP%; name the path through "
-                              << "tests/" << kAllowed << " instead:" << report;
+                              << "tests/unique_temp.hpp instead:" << report;
 }

@@ -18,6 +18,16 @@
 #include "state/layout.hpp"
 #include "state/registry.hpp"
 #include "state/snapshot.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("snapshot");
+    return dir.path();
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Snapshot save/restore -- the replay/determinism contract.
@@ -181,8 +191,7 @@ const BlobSection* find_section(const std::vector<BlobSection>& sections, std::s
 }
 
 std::filesystem::path temp_blob_path(const std::string& stem) {
-    std::error_code ec;
-    std::filesystem::path path = std::filesystem::temp_directory_path(ec) / ("spade_snapshot_" + stem + ".bin");
+    std::filesystem::path path = temp_root() / ("spade_snapshot_" + stem + ".bin");
     return path;
 }
 

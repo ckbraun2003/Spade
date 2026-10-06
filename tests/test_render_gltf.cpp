@@ -56,6 +56,16 @@
 #include "core/error.hpp"
 #include "render/gltf.hpp"
 #include "render/scene.hpp"
+#include "unique_temp.hpp"
+
+namespace {
+// This file's scratch folder: unique to the process (tests/unique_temp.hpp, so
+// concurrent runs on one box cannot collide), removed when the process exits.
+const std::filesystem::path& temp_root() {
+    static const spade::test::TempDir dir("render_gltf");
+    return dir.path();
+}
+}  // namespace
 
 namespace {
 
@@ -140,7 +150,7 @@ void write_file(const std::filesystem::path& path, const std::vector<uint8_t>& b
 // A fresh scratch directory per test (never reused -- avoids cross-test
 // interference the way tests/test_world_file.cpp's own temp-file helpers do).
 [[nodiscard]] std::filesystem::path scratch_dir(const char* unique_name) {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "spade_gltf_test" / unique_name;
+    const std::filesystem::path dir = temp_root() / "spade_gltf_test" / unique_name;
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
     return dir;
@@ -258,7 +268,7 @@ TEST(RenderGltf, LoadingTwiceIsByteIdentical) {
 
 TEST(RenderGltf, LoadGltfMissingFileReturnsIoError) {
     const std::filesystem::path path =
-        std::filesystem::temp_directory_path() / "spade_gltf_test_no_such_file.gltf";
+        temp_root() / "spade_gltf_test_no_such_file.gltf";
     std::filesystem::remove(path);
     const Result<MeshData> result = load_gltf(path);
     EXPECT_EQ(code_of(result), code(Code::io_error));
@@ -319,7 +329,7 @@ TEST(RenderGltf, ExternalBinFileMissingReturnsIoError) {
 [[nodiscard]] std::filesystem::path base_dir_for_parse_only_tests() {
     // parse_gltf's base_dir is unused by every test below that never
     // references an external buffer -- any existing directory will do.
-    return std::filesystem::temp_directory_path();
+    return temp_root();
 }
 
 TEST(RenderGltf, NotJsonReturnsError) {
