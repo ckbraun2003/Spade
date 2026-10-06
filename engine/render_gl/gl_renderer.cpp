@@ -1516,6 +1516,13 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                      "GlRenderer::draw: raymarch is a CPU technique (render/raymarch.hpp); "
                                      "draw it with render::render()"});
     }
+    // L6: GL has no flow-volume pass yet, and a frame without the volume
+    // would be a different picture under the same scene.
+    if (!scene.flow_layers.empty()) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "GlRenderer::draw: GL has no flow-volume pass yet (airflow visualization "
+                                     "plan step 7); draw flow layers with render::render()"});
+    }
     if (s.meshes.size() != scene.meshes.size()) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "GlRenderer::draw: this scene has " +
