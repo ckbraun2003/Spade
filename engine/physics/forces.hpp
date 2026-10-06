@@ -22,8 +22,9 @@
 // only kind this task ships (YAGNI).
 //
 // ELEMENT TABLES ARE REGISTERED, WORLD-PARTITIONED STATE, the same shape as
-// the bodies array itself: one ArenaSet array per element kind
-// (`arenas.register_array<DragBodyRow>("drag_bodies", capacity)`), so it is
+// the bodies array itself: one ArenaSet array per element kind, which the
+// `drag` module declares (sim/standard_modules.cpp, an ArrayDecl; create()
+// registers it through register_bytes, module-API stage 4), so it is
 // snapshot-covered automatically (state/registry.hpp's "no unregistered
 // state" invariant) and so a GPU dispatch will one day be able to bound a
 // world's element partition the same way it bounds a world's body partition
@@ -83,7 +84,7 @@ struct DragLawCheck {
 
 // ---------------------------------------------------------------------------
 // DragBodyRow -- one drag element. One row of the world-partitioned
-// "drag_bodies" array registered via ArenaSet::register_array<DragBodyRow>.
+// "drag_bodies" array the `drag` module declares (an ArrayDecl, stage 4).
 //
 // Four 16-byte rows, following state/layout.hpp's std430 discipline. This
 // struct does NOT live in layout.hpp -- that file is frozen by Task 6's

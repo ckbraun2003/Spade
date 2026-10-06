@@ -268,7 +268,8 @@ public:
 // 4. WHERE THE STATE LIVES, AND THE CALL CONTRACT
 //
 // DrydenMedium OWNS NOTHING. One DrydenState row per world lives in a
-// registered state array (ArenaSet::register_array<DrydenState>), so it is
+// registered state array the `dryden` module declares (an ArrayDecl; create()
+// registers it through register_bytes, module-API stage 4), so it is
 // snapshot-covered by construction and a replay resumes the identical gust
 // sequence. The medium is a per-world VIEW over one such row plus its
 // parameters; sample() reads the CURRENT filter output and never advances it.
