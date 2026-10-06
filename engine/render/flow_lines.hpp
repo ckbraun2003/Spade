@@ -62,4 +62,51 @@ struct Streamline {
 // in the plane through centre normal to the axis. sin32/cos32 (TD-3).
 [[nodiscard]] std::vector<glm::vec3> seed_ring(glm::vec3 centre, glm::vec3 axis, float radius, uint32_t n);
 
+// ---------------------------------------------------------------------------
+// TRACERS (streaklines, the smoke the eye knows): particles the published
+// field carries, dx/dt = u, by classic RK4 in time at the caller's dt.
+// Each source emits one tracer at every multiple of its interval of
+// simulated time, k * interval for k = 0, 1, ...: a fixed schedule, no RNG.
+// A tracer emitted inside a step is carried for the rest of that step, so
+// how a run is cut into steps does not change when tracers appear.
+//
+// A tracer RETIRES, counted by reason (L6), when a step ends outside the
+// box, when any stage meets no-data, or when it passes max_age_s. The
+// state is the caller's, passed in and out, so the technique stays a pure
+// function of its inputs. Capacity is fixed: an emission past it is
+// dropped and counted, never a silent grow.
+// ---------------------------------------------------------------------------
+
+struct TracerSource {
+    glm::vec3 position{0.0f};
+    float interval_s = 0.1f;  // one tracer per interval, > 0
+};
+
+struct TracerOptions {
+    uint32_t capacity = 4096;  // live tracers, 1 to 2^24
+    float max_age_s = 10.0f;   // > 0
+};
+
+struct TracerState {
+    std::vector<glm::vec3> positions;
+    std::vector<float> ages;        // seconds since emission
+    std::vector<uint32_t> sources;  // the emitting source's index
+    double clock_s = 0.0;           // simulated time advanced so far
+    uint64_t dropped = 0;           // emissions refused at capacity
+    uint64_t retired_left_box = 0;
+    uint64_t retired_no_data = 0;
+    uint64_t retired_aged = 0;
+};
+
+// Advances every live tracer by dt, retires those that must, then emits
+// what the schedule holds in [clock, clock + dt), and advances the clock.
+// invalid_argument, by name, before any change: a volume that fails
+// validate_flow_volume(), dt not finite and > 0, a capacity outside 1 to
+// 2^24, max_age_s not finite and > 0, a source not finite or whose interval
+// is not finite and > 0, a source that would emit more than 2^20 tracers in
+// one step, or a state whose arrays disagree in length or exceed capacity.
+[[nodiscard]] Result<void> advance_tracers(TracerState& state, const FlowVolume& volume,
+                                           std::span<const TracerSource> sources, float dt,
+                                           const TracerOptions& options = {});
+
 }  // namespace spade::render

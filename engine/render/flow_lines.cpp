@@ -156,3 +156,13 @@ std::vector<glm::vec3> seed_ring(glm::vec3 centre, glm::vec3 axis, float radius,
 }
 
 }  // namespace spade::render
+
+namespace spade::render {
+
+// RED: a stub.
+Result<void> advance_tracers(TracerState&, const FlowVolume&, std::span<const TracerSource>, float,
+                             const TracerOptions&) {
+    return {};
+}
+
+}  // namespace spade::render
