@@ -88,7 +88,33 @@ struct FlowVolume {
 // invalid_argument for a zero dimension, a cell that is not finite and
 // positive, an origin that is not finite, a texture of the wrong size, or a
 // channel range that is not finite with min <= max.
-// RED: not yet implemented.
-[[nodiscard]] inline Result<void> validate_flow_volume(const FlowVolume&) { return {}; }
+[[nodiscard]] inline Result<void> validate_flow_volume(const FlowVolume& volume) {
+    const FlowVolumeHeader& h = volume.header;
+    const auto refuse = [](const std::string& why) {
+        return std::unexpected(Error{Code::invalid_argument, "flow volume: " + why});
+    };
+    if (h.nx == 0u || h.ny == 0u || h.nz == 0u) {
+        return refuse("a dimension is zero");
+    }
+    if (!(std::isfinite(h.cell) && h.cell > 0.0f)) {
+        return refuse("the cell size is not finite and positive");
+    }
+    if (!(std::isfinite(h.origin.x) && std::isfinite(h.origin.y) && std::isfinite(h.origin.z))) {
+        return refuse("the origin is not finite");
+    }
+    const uint64_t halves = uint64_t{h.nx} * h.ny * h.nz * kFlowHalvesPerCell;
+    if (volume.v.size() != halves || volume.s.size() != halves) {
+        return refuse("the textures hold " + std::to_string(volume.v.size()) + " and " +
+                      std::to_string(volume.s.size()) + " halves, not " + std::to_string(halves));
+    }
+    for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
+        const float lo = h.channel_min[c];
+        const float hi = h.channel_max[c];
+        if (!(std::isfinite(lo) && std::isfinite(hi) && lo <= hi)) {
+            return refuse("channel " + std::to_string(c) + "'s range is not finite with min <= max");
+        }
+    }
+    return {};
+}
 
 }  // namespace spade
