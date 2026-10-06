@@ -6,6 +6,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "physics/contact_dv.hpp"
+
 #include <glm/glm.hpp>
 
 #include "physics/contacts.hpp"  // ContactParams (shared material record)
@@ -578,7 +580,7 @@ inline constexpr float kMaxCellCoord = 2.0e9f;
 // Empty: none kept. The Jacobi gather below keeps none yet: it is not wired.
 void resolve_dynamic_contacts(std::span<BodyState> bodies, std::span<const uint32_t> slot_to_world,
                               const GridParams& grid, const ContactParams& params,
-                              GridScratch& scratch, std::span<glm::vec3> contact_dv = {}) noexcept;
+                              GridScratch& scratch, std::span<ContactDvRow> contact_dv = {}) noexcept;
 
 // ---------------------------------------------------------------------------
 // THE SAME PASS AS A JACOBI GATHER -- one iteration, no in-place coupling.

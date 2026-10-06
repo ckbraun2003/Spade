@@ -488,7 +488,7 @@ inline constexpr float kRotorLagSeriesThreshold = 0.25f;
 
 // ---------------------------------------------------------------------------
 // RotorRow -- one rotor. One row of the world-partitioned "rotors" array
-// registered via ArenaSet::register_array<RotorRow>, exactly like
+// the `rotor` module declares (an ArrayDecl, module-API stage 4), exactly like
 // physics/forces.hpp's DragBodyRow: REGISTERED, WORLD-PARTITIONED STATE, so
 // it is snapshot-covered automatically (state/registry.hpp's "no unregistered
 // state" invariant) and a replay resumes with the identical shaft speeds.

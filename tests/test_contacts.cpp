@@ -855,18 +855,18 @@ TEST(Contacts, TheContactScratchIsZeroAtTheBoundaryForEverySlot) {
     const WorldParams wp = MakeWorld(glm::vec3(0.0f, 0.0f, -kG));
 
     std::vector<BodyState> bodies(2, MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(1.0f, 0.0f, -2.0f)));
-    std::vector<glm::vec3> dv(bodies.size(), glm::vec3(0.0f));
+    std::vector<spade::physics::ContactDvRow> dv(bodies.size());
     const glm::vec3 vel_in = bodies[0].vel;
 
     resolve_static_contacts(bodies, prog, cp, kH, dv);
-    ASSERT_NE(dv[0], glm::vec3(0.0f)) << "the contact pass wrote no velocity change";
-    EXPECT_EQ(dv[0], bodies[0].vel - vel_in) << "the scratch must hold the change the state took, exactly";
-    EXPECT_EQ(dv[1], dv[0]);
+    ASSERT_NE(dv[0].dv, glm::vec3(0.0f)) << "the contact pass wrote no velocity change";
+    EXPECT_EQ(dv[0].dv, bodies[0].vel - vel_in) << "the scratch must hold the change the state took, exactly";
+    EXPECT_EQ(dv[1].dv, dv[0].dv);
 
     bodies[1].flags = 0u;  // skipped by Integrate from here, as a despawn between the passes would leave it
     integrate_bodies(bodies, wp, kH, dv);
-    EXPECT_EQ(dv[0], glm::vec3(0.0f)) << "an active body's contact change outlived its substep";
-    EXPECT_EQ(dv[1], glm::vec3(0.0f))
+    EXPECT_EQ(dv[0].dv, glm::vec3(0.0f)) << "an active body's contact change outlived its substep";
+    EXPECT_EQ(dv[1].dv, glm::vec3(0.0f))
         << "a body Integrate skips kept its contact change: it would read as a phantom contact later";
 }
 
@@ -880,9 +880,9 @@ TEST(Contacts, IntegrateAddsTheContactChangeToTheSpecificForceAndNothingElse) {
 
     std::vector<BodyState> bodies{MakeUnitBody(glm::vec3(0.0f, 0.0f, 0.05f), glm::vec3(1.0f, 0.0f, -2.0f))};
     bodies[0].orient = q;
-    std::vector<glm::vec3> dv(1, glm::vec3(0.0f));
+    std::vector<spade::physics::ContactDvRow> dv(1);
     resolve_static_contacts(bodies, prog, cp, kH, dv);
-    const glm::vec3 change = dv[0];
+    const glm::vec3 change = dv[0].dv;
     ASSERT_NE(change, glm::vec3(0.0f));
 
     std::vector<BodyState> plain = bodies;

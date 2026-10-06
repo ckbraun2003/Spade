@@ -2742,9 +2742,10 @@ TEST(StandardModules, DeclareNoTablesAndNoVehicleHooks) {
 // module's passes reach through SubstepContext::state like an array's, sized at
 // create() and zero-filled there, and kept zero at every substep boundary by the
 // MODULE: the engine does not walk, digest, snapshot, restore or clear them.
-// Physics' contact_dv (the IMU contact plan's option A) is to be the first: PHY-7
+// Physics' contact_dv (the IMU contact plan's option A) is the first: PHY-7
 // landed it hand-held (Simulation's contact_dv_, the mirror's twelfth
-// hand-listed derived buffer, binding 27), and Physics converts it after this.
+// hand-listed derived buffer, binding 27), and Physics converted it to
+// integrate's declared scratch at the same binding.
 namespace {
 
 using spade::modules::ScratchDecl;
@@ -2984,8 +2985,8 @@ TEST(ModuleScratch, ANameExtentSizeAndBindingAreChecked) {
     static constexpr ScratchDecl per_sensor[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_sensor}};
     static constexpr ScratchDecl per_row[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_row}};
     static constexpr ScratchDecl unknown[] = {{.name = "dv", .elem_size = kDvSize, .extent = static_cast<Extent>(9)}};
-    // Binding 40: a test binding, clear of the generated range (PHY-7's
-    // contact_dv holds 27, the last in use).
+    // Binding 40: clear of the standard set's own scratch (integrate's
+    // contact_dv, binding 27), so the refusal can only be these two's.
     static constexpr ScratchDecl shared_binding[] = {
         {.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body, .binding = 40},
         {.name = "dv_b", .elem_size = kDvSize, .extent = Extent::per_world, .binding = 40}};
@@ -2997,12 +2998,15 @@ TEST(ModuleScratch, ANameExtentSizeAndBindingAreChecked) {
     };
     const auto control = with(ok);
     ASSERT_TRUE(control.has_value()) << control.error().context;
-    ASSERT_EQ(control->scratch.size(), 1u);
-    EXPECT_EQ(control->scratch[0].module, "massed");
-    EXPECT_EQ(control->scratch[0].name, "dv");
-    EXPECT_EQ(control->scratch[0].elem_size, kDvSize);
-    EXPECT_EQ(control->scratch[0].extent, Extent::per_body);
-    EXPECT_EQ(control->scratch[0].binding, spade::modules::kNoBinding) << "CPU-only unless it names a binding";
+    // Set order: the standard set's own scratch (integrate's contact_dv,
+    // PHY-7) first, then massed's.
+    ASSERT_EQ(control->scratch.size(), 2u);
+    EXPECT_EQ(control->scratch[0].module, "integrate");
+    EXPECT_EQ(control->scratch[1].module, "massed");
+    EXPECT_EQ(control->scratch[1].name, "dv");
+    EXPECT_EQ(control->scratch[1].elem_size, kDvSize);
+    EXPECT_EQ(control->scratch[1].extent, Extent::per_body);
+    EXPECT_EQ(control->scratch[1].binding, spade::modules::kNoBinding) << "CPU-only unless it names a binding";
     EXPECT_TRUE(with(cpu_only_pair).has_value()) << "two CPU-only scratches share no binding";
 
     EXPECT_TRUE(refused_naming(with(own_array), "mass_copies")) << "its own array's name";
@@ -3206,16 +3210,21 @@ TEST(ModuleScratch, ItsMirrorShapeIsItsDeclaration) {
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
     const std::vector<spade::compute::ScratchShape> shapes =
         spade::scratch_shapes(sim->schedule(), capacities_of(*sim));
-    ASSERT_EQ(shapes.size(), 2u);
-    EXPECT_EQ(shapes[0].name, "body_dv");
-    EXPECT_EQ(shapes[0].elem_size, kDvSize);
+    // Set order: the standard set's contact_dv (integrate, PHY-7) first.
+    ASSERT_EQ(shapes.size(), 3u);
+    EXPECT_EQ(shapes[0].name, "contact_dv");
+    EXPECT_EQ(shapes[0].elem_size, 16u);
     EXPECT_EQ(shapes[0].capacity_per_world, sim->layout().body_capacity);
-    EXPECT_EQ(shapes[0].binding, 40u);
-    EXPECT_EQ(shapes[1].name, "world_dv");
-    EXPECT_EQ(shapes[1].elem_size, 32u);
-    EXPECT_EQ(shapes[1].capacity_per_world, 1u);
-    EXPECT_EQ(shapes[1].binding, spade::compute::kNoBinding);
-    EXPECT_TRUE(
-        spade::scratch_shapes(*compile_schedule(spade::modules::standard_modules()), capacities_of(*sim)).empty())
-        << "the standard set declares none";
+    EXPECT_EQ(shapes[1].name, "body_dv");
+    EXPECT_EQ(shapes[1].elem_size, kDvSize);
+    EXPECT_EQ(shapes[1].capacity_per_world, sim->layout().body_capacity);
+    EXPECT_EQ(shapes[1].binding, 40u);
+    EXPECT_EQ(shapes[2].name, "world_dv");
+    EXPECT_EQ(shapes[2].elem_size, 32u);
+    EXPECT_EQ(shapes[2].capacity_per_world, 1u);
+    EXPECT_EQ(shapes[2].binding, spade::compute::kNoBinding);
+    const auto standard =
+        spade::scratch_shapes(*compile_schedule(spade::modules::standard_modules()), capacities_of(*sim));
+    ASSERT_EQ(standard.size(), 1u) << "the standard set declares one: integrate's contact_dv (PHY-7)";
+    EXPECT_EQ(standard[0].name, "contact_dv");
 }
