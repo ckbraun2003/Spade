@@ -25,6 +25,9 @@
     },
     "flow_vortex_ring": {
       "sha256": "0a43986bc5740ef8439bc653962f25194e2fd2a4bcd1f364c134c92f15c01f8b"
+    },
+    "flow_vortex_ring_q": {
+      "sha256": "pending: measured in the green commit"
     }
   },
   "_changelog_f3_cross_platform": "REGENERATED 2026-09-17 -- ONE frame moved: cylinder_static_dynamic_box_top_down, d617a2fd6527... -> a4dec5698192... CAUSE, root-caused not guessed: commit 9cff29e2 (the ruled F3 overlay change) made raster_cpu.cpp read `if (item.mesh_index != kNoMesh) continue;` in the body-marker pass, so the marker no longer overdraws a body that has its own geometry. Correct, deliberate, and it changes DRAWN OUTPUT. Goldens were last regenerated at feaeb58a, eight days earlier. THE CONTROL WAS ALREADY IN THE FIXTURES AND NEEDED NO BUILD: exactly two golden scenes populate scene.dynamics. box_shaded_with_overlays has mesh_index == kNoMesh, so its marker still draws and its hash MUST NOT move -- it did not, on either platform. This one has mesh_index == 1, so its marker is suppressed and its hash MUST move. THE ONLY FIXTURE THAT COULD MOVE IS THE ONE THAT DID. CROSS-PLATFORM BIT-IDENTITY VERIFIED BEFORE PROMOTION, WHICH IS WHY THIS SAT UNPROMOTED FOR NINE DAYS: this manifest holds ONE sha per frame, so it asserts the two platforms agree, and a value measured on one of them is half a measurement. MSVC/Windows computed a4dec56981920a8cdafbbeb29943a942b5da4694d5033731d7eec395cca71953 on 2026-09-11; gcc-13/Linux (ubuntu:24.04 container, CI flags verbatim: -DCMAKE_BUILD_TYPE=Release -DSPADE_BUILD_V1=OFF -DSPADE_VULKAN=ON) computed the SAME 64 characters on 2026-09-17. Compared in FULL, never by prefix. Had they differed, the rule was and remains PROMOTE NOTHING -- two platforms disagreeing is a larger finding than a stale golden.",

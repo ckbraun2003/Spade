@@ -83,6 +83,7 @@ template <class Field>
 //   |u| = G / (2 pi d) (1 - exp(-d^2 / a^2)), swirling about the core.
 // The axis is z tilted 30 degrees about x, so the camera sees the ring as
 // a ring with depth. The dye is a Gaussian blob of radius b on the core.
+// q-hat = sign(Q) sqrt(|Q|) carries the core's local Lamb-Oseen Q.
 [[nodiscard]] inline auto vortex_ring_with_dye() {
     return [](glm::vec3 p) {
         constexpr float kR = 0.55f, kA = 0.12f, kG = 1.0f, kB = 0.2f;
@@ -99,6 +100,16 @@ template <class Field>
             const float d = std::sqrt(d2);
             const float g = spade::math::exp32(-d2 / (kA * kA));
             c[kFlowVorticity] = kG / (kPi * kA * kA) * g;
+            // The core's local Q-criterion, Q = (u / d) du/dd, as a straight
+            // Lamb-Oseen vortex has it; on the core circle its limit, (G / (2 pi a^2))^2.
+            const float omega0 = kG / (2.0f * kPi * kA * kA);
+            float q_crit = omega0 * omega0;
+            if (d > 1.0e-6f) {
+                const float u = kG / (2.0f * kPi * d) * (1.0f - g);
+                const float du = kG / (2.0f * kPi) * (-(1.0f - g) / d2 + 2.0f * g / (kA * kA));
+                q_crit = u / d * du;
+            }
+            c[kFlowQHat] = q_crit < 0.0f ? -std::sqrt(-q_crit) : std::sqrt(q_crit);
             if (d > 1.0e-6f) {
                 const glm::vec3 t(-q.y / rho, q.x / rho, 0.0f);  // the ring's tangent
                 const glm::vec3 swirl(t.y * r.z - t.z * r.y, t.z * r.x - t.x * r.z, t.x * r.y - t.y * r.x);

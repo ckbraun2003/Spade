@@ -1705,6 +1705,49 @@ TEST(RasterGolden, FlowVortexRingMatchesCommittedManifest) {
     check_against_manifest("flow_vortex_ring", pixels);
 }
 
+// Airflow visualization plan step 3: the Q-criterion golden. The same ring,
+// drawn as its Q iso-surface at 30% of the core's peak Q (q-hat at
+// sqrt(0.3) of its peak), coloured by speed through viridis and lit by the
+// scene's sun: the standard "Q iso coloured by speed". At 64^3, not the
+// volume golden's 32^3: there the Q tube is about 1.3 cells across, and its
+// gradient normals shade it in blotches (looked at, 2026-10-06); at 64^3
+// it is 2.6 cells across and shades smoothly.
+TEST(RasterGolden, FlowVortexRingQIsoMatchesCommittedManifest) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    ASSERT_TRUE(spade::validate_flow_volume(volume).has_value());
+    const float q_hat_peak = volume.header.channel_max[spade::kFlowQHat];
+    ASSERT_GT(q_hat_peak, 0.0f);
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * q_hat_peak;  // sqrt(0.3): Q at 30% of its peak
+    q_iso.colour_by = speed;
+    RenderScene scene;
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 2.2f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+
+    const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
+        << "sanity floor: this scene/camera must actually show something before its hash means anything";
+
+    // Guard beside the hash: the colour must come from the speed, not the
+    // iso's own colour.
+    {
+        RenderScene plain = scene;
+        plain.flow_layers[0].isos[0].colour_by.reset();
+        EXPECT_NE(pixels, render_golden(plain, camera, options)) << "the iso must be coloured by speed";
+    }
+
+    check_against_manifest("flow_vortex_ring_q", pixels);
+}
+
 // ===========================================================================
 // 8. Task R5b (controller ruling SR-15): exact near/far triangle clipping.
 // Before this task, draw_world_triangle and draw_mesh_triangle_shaded both
