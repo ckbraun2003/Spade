@@ -2624,13 +2624,14 @@ TEST(ModuleTables, APassBindsItsOwnTableAndAnotherModulesOptionally) {
     for (const spade::StateView& view : {g_masses_view, g_look_view}) {
         EXPECT_TRUE(view.present());
         EXPECT_EQ(view.elem_size, sizeof(float));
-        EXPECT_EQ(view.world_count, 1u) << "one table serves every world";
+        EXPECT_TRUE(view.shared) << "one table every world shares";
+        EXPECT_EQ(view.world_count, 2u) << "the set's worlds, each of which reads the whole table";
         EXPECT_EQ(view.capacity_per_world, 1u) << "one float per registered model";
     }
     for (uint32_t w = 0; w < 2; ++w) {
         const MassCopyRow row = (*sim->module_rows<MassCopyRow>("mass_copies", w))[0];
         EXPECT_EQ(row.first, 1.5f) << "world " << w;
-        EXPECT_EQ(row.world_count, 1u) << "world " << w;
+        EXPECT_EQ(row.world_count, 2u) << "world " << w;
     }
 }
 
@@ -2659,6 +2660,224 @@ TEST(ModuleTables, ATableNameSharesTheArrayNamespace) {
     two.push_back({.name = "massed", .state = kMassCopyArrays, .tables = kMassTables});
     two.push_back({.name = "other", .tables = kMassTables});
     EXPECT_TRUE(refused_naming(compile_schedule(two), "masses")) << "two modules, one table name";
+}
+
+// Stage 5, Task 1 (L6; the lead's rulings on Q1 and Q8). A configuration table
+// is SHARED: a pass running any world reads the whole table, through
+// world_rows or table_rows. all_rows reads an array's every world at once, as a
+// batched sweep does. And a misused accessor never reads as empty silently: it
+// records a fault, and the step refuses at its end, naming the module, the pass
+// and the view.
+namespace {
+
+// "wmassed": massed's table and rows, read from INSIDE the world loop, as a pass
+// that also reads per-world rows naturally does.
+void copy_mass_each_world_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 2) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<const float> masses = spade::world_rows<const float>(ctx.state[0], w);
+        const std::span<MassCopyRow> out = spade::world_rows<MassCopyRow>(ctx.state[1], w);
+        if (out.empty()) continue;
+        out[0].first = masses.empty() ? -1.0f : masses[0];
+        out[0].count = static_cast<uint32_t>(masses.size());
+        out[0].present = ctx.state[0].present() ? 1u : 0u;
+        out[0].world_count = ctx.state[0].world_count;
+    }
+}
+constexpr QuantityAccess kEachWorldAccess[] = {{.quantity = "wmassed.masses", .access = Access::read},
+                                               {.quantity = "wmassed.mass_copies", .access = Access::write}};
+constexpr PassDecl kEachWorldPasses[] = {
+    {.name = "copy", .phase = Phase::forces, .access = kEachWorldAccess, .cpu = &copy_mass_each_world_pass}};
+
+// "misuser": a table, a per_world array, and an optional read of a module no
+// set here holds. Its pass misuses one view as g_misuse says, then makes every
+// correct read -- which must not clear the fault -- and counts its runs.
+enum class Misuse : uint8_t {
+    none,
+    row_type,           // world_rows with the wrong row type
+    world,              // world_rows for a world outside the set
+    table_world,        // the same, on the table
+    not_table,          // table_rows on an array
+    table_row_type,     // table_rows with the wrong row type
+    all_rows_row_type,  // all_rows with the wrong row type
+    all_rows_table,     // all_rows on a table
+    twice,              // world, then row_type: the first one sticks
+};
+Misuse g_misuse = Misuse::none;
+struct ViewMarkRow {
+    float table_first;    // the table's first float, read at this world; -1 when it read none
+    uint32_t table_rows;  // table_rows' length
+    uint32_t all_rows;    // all_rows' length over this array
+    uint32_t runs;        // passes run in this world
+};
+void misuse_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 3) return;
+    const spade::StateView& weights = ctx.state[0];
+    const spade::StateView& marks = ctx.state[1];
+    const spade::StateView& absent = ctx.state[2];
+    switch (g_misuse) {
+        case Misuse::none: break;
+        case Misuse::row_type: (void)spade::world_rows<uint64_t>(marks, 0); break;
+        case Misuse::world: (void)spade::world_rows<ViewMarkRow>(marks, 2); break;
+        case Misuse::table_world: (void)spade::world_rows<const float>(weights, 2); break;
+        case Misuse::not_table: (void)spade::table_rows<ViewMarkRow>(marks); break;
+        case Misuse::table_row_type: (void)spade::table_rows<double>(weights); break;
+        case Misuse::all_rows_row_type: (void)spade::all_rows<uint64_t>(marks); break;
+        case Misuse::all_rows_table: (void)spade::all_rows<float>(weights); break;
+        case Misuse::twice:
+            (void)spade::world_rows<ViewMarkRow>(marks, 2);
+            (void)spade::world_rows<uint64_t>(marks, 0);
+            break;
+    }
+    // An absent view reads as empty through every accessor, by design: no fault.
+    (void)spade::world_rows<ViewMarkRow>(absent, 0);
+    (void)spade::table_rows<float>(absent);
+    (void)spade::all_rows<ViewMarkRow>(absent);
+    const std::span<const float> table = spade::table_rows<float>(weights);
+    const std::span<ViewMarkRow> all = spade::all_rows<ViewMarkRow>(marks);
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        const std::span<ViewMarkRow> mine = spade::world_rows<ViewMarkRow>(marks, w);
+        if (mine.empty()) continue;
+        const std::span<const float> at_w = spade::world_rows<const float>(weights, w);
+        mine[0].table_first = at_w.empty() ? -1.0f : at_w[0];
+        mine[0].table_rows = static_cast<uint32_t>(table.size());
+        mine[0].all_rows = static_cast<uint32_t>(all.size());
+        ++mine[0].runs;
+    }
+}
+constexpr ConfigTableDecl kWeightTables[] = {{.name = "weights", .build = &build_masses}};
+constexpr spade::modules::ArrayDecl kViewMarkArrays[] = {
+    {.name = "marks", .elem_size = spade::modules::row_size<ViewMarkRow>()}};
+constexpr QuantityAccess kMisuseAccess[] = {
+    {.quantity = "misuser.weights", .access = Access::read},
+    {.quantity = "misuser.marks", .access = Access::write},
+    {.quantity = "absentee.rows", .access = Access::read, .optional = true}};
+constexpr PassDecl kMisusePasses[] = {
+    {.name = "misuse", .phase = Phase::forces, .access = kMisuseAccess, .cpu = &misuse_pass}};
+
+// Two worlds, two substeps, one model of 1.5 kg registered: the table is {1.5}.
+[[nodiscard]] spade::Simulation make_misuser_sim() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "misuser", .passes = kMisusePasses, .state = kViewMarkArrays, .tables = kWeightTables});
+    spade::Simulation sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set).value();
+    EXPECT_TRUE(sim.register_model(quad_of_mass(1.5f)).has_value());
+    return sim;
+}
+
+}  // namespace
+
+TEST(ModuleTables, APassRunningAnyWorldReadsTheWholeTable) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "wmassed", .passes = kEachWorldPasses, .state = kMassCopyArrays, .tables = kMassTables});
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.5f)).has_value());
+    ASSERT_TRUE(sim->step(1).has_value()) << "a correct read records no fault";
+    for (uint32_t w = 0; w < 2; ++w) {
+        const MassCopyRow row = (*sim->module_rows<MassCopyRow>("mass_copies", w))[0];
+        EXPECT_EQ(row.count, 1u) << "world " << w << " reads the one table every world shares";
+        EXPECT_EQ(row.first, 1.5f) << "world " << w;
+    }
+}
+
+TEST(ModuleTables, TableRowsReadsATableWithNoWorld) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(massed_module());
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.5f)).has_value());
+    g_masses_view = {};
+    ASSERT_TRUE(sim->step(1).has_value());
+    const auto expected = sim->config_table("masses");
+    ASSERT_TRUE(expected.has_value()) << expected.error().context;
+
+    const std::span<const float> table = spade::table_rows<float>(g_masses_view);
+    EXPECT_EQ(std::vector<float>(table.begin(), table.end()), std::vector<float>{1.5f});
+    EXPECT_EQ(table.data(), expected->data()) << "the table itself, not a copy";
+    EXPECT_TRUE(spade::table_rows<float>(spade::StateView{}).empty()) << "an absent view";
+    for (uint32_t w = 0; w < 2; ++w) {
+        const std::span<const float> rows = spade::world_rows<const float>(g_masses_view, w);
+        EXPECT_EQ(rows.data(), expected->data()) << "world " << w << " reads the whole table";
+        EXPECT_EQ(rows.size(), 1u) << "world " << w;
+    }
+    ASSERT_TRUE(sim->step(1).has_value()) << "correct reads record no fault";
+}
+
+TEST(ModuleViews, AllRowsIsEveryWorldsRowsContiguous) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    g_tally_view = {};
+    ASSERT_TRUE(sim->step(3).has_value());
+    const std::span<TallyRow> all = spade::all_rows<TallyRow>(g_tally_view);
+    ASSERT_EQ(all.size(), 2u) << "two worlds of one per_world row";
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ(&all[w], spade::world_rows<TallyRow>(g_tally_view, w).data()) << "world " << w << " in place";
+        EXPECT_EQ(all[w].count, 6u) << "world " << w;
+    }
+    EXPECT_TRUE(spade::all_rows<TallyRow>(spade::StateView{}).empty()) << "an absent view";
+    ASSERT_TRUE(sim->step(1).has_value()) << "correct reads record no fault";
+}
+
+TEST(ModuleViews, ACorrectReadOfEveryKindRecordsNoFault) {
+    spade::Simulation sim = make_misuser_sim();
+    g_misuse = Misuse::none;
+    const spade::Result<void> stepped = sim.step(3);
+    ASSERT_TRUE(stepped.has_value()) << stepped.error().context;
+    for (uint32_t w = 0; w < 2; ++w) {
+        const ViewMarkRow row = (*sim.module_rows<ViewMarkRow>("marks", w))[0];
+        EXPECT_EQ(row.table_first, 1.5f) << "world " << w << ": world_rows on the table";
+        EXPECT_EQ(row.table_rows, 1u) << "world " << w << ": table_rows";
+        EXPECT_EQ(row.all_rows, 2u) << "world " << w << ": all_rows, both worlds' rows";
+        EXPECT_EQ(row.runs, 6u) << "world " << w << ": 3 steps x 2 substeps";
+    }
+}
+
+TEST(ModuleViews, AMisusedViewRefusesTheStepAtItsEndNamingTheModulePassAndView) {
+    struct Case {
+        Misuse misuse = Misuse::none;
+        std::string_view view;        // the misused view, as the refusal names it
+        std::string_view detail;      // what was wrong
+        std::string_view not_named{}; // a later misuse in the same step, which the first one hides
+    };
+    const Case cases[] = {
+        {.misuse = Misuse::row_type, .view = "array 'misuser.marks'", .detail = "row type of 8 bytes"},
+        {.misuse = Misuse::world, .view = "array 'misuser.marks'", .detail = "world 2"},
+        {.misuse = Misuse::table_world, .view = "table 'misuser.weights'", .detail = "world 2"},
+        {.misuse = Misuse::not_table, .view = "array 'misuser.marks'", .detail = "table_rows"},
+        {.misuse = Misuse::table_row_type, .view = "table 'misuser.weights'", .detail = "row type of 8 bytes"},
+        {.misuse = Misuse::all_rows_row_type, .view = "array 'misuser.marks'", .detail = "row type of 8 bytes"},
+        {.misuse = Misuse::all_rows_table, .view = "table 'misuser.weights'", .detail = "all_rows"},
+        {.misuse = Misuse::twice,
+         .view = "array 'misuser.marks'",
+         .detail = "world 2",
+         .not_named = "row type of 8 bytes"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(testing::Message() << "misuse " << static_cast<int>(c.misuse));
+        spade::Simulation sim = make_misuser_sim();
+        g_misuse = c.misuse;
+        const spade::Result<void> refused = sim.step(3);
+        EXPECT_TRUE(refused_naming(refused, "module 'misuser'"));
+        EXPECT_TRUE(refused_naming(refused, "pass 'misuse'"));
+        EXPECT_TRUE(refused_naming(refused, c.view));
+        EXPECT_TRUE(refused_naming(refused, c.detail));
+        if (!c.not_named.empty() && !refused.has_value()) {
+            EXPECT_EQ(refused.error().context.find(c.not_named), std::string::npos)
+                << "the first misuse sticks: " << refused.error().context;
+        }
+        EXPECT_EQ(sim.tick().value, 1u) << "the first step ran to its end and refused; the other two did not run";
+        for (uint32_t w = 0; w < 2; ++w) {
+            EXPECT_EQ((*sim.module_rows<ViewMarkRow>("marks", w))[0].runs, 2u)
+                << "world " << w << ": both substeps ran, the correct reads after the misuse included";
+        }
+        g_misuse = Misuse::none;
+        const spade::Result<void> next = sim.step(1);
+        EXPECT_TRUE(next.has_value()) << "the refusal reported the fault, so the next step starts clean: "
+                                      << (next.has_value() ? std::string() : next.error().context);
+    }
+    g_misuse = Misuse::none;
 }
 
 // A hook sees the whole registry and its model's place in it, so it can point a

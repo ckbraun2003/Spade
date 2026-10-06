@@ -33,6 +33,7 @@ struct StateView {
     uint32_t elem_size = 0;           // bytes per row
     uint32_t world_count = 0;
     uint32_t capacity_per_world = 0;  // rows per world; world w owns rows [w * capacity, (w + 1) * capacity)
+    bool shared = false;              // RED STUB (Task 1): declared, never set yet
     [[nodiscard]] bool present() const noexcept { return data != nullptr; }
 };
 
@@ -45,6 +46,18 @@ template <class T>
     if (v.data == nullptr || sizeof(T) != v.elem_size || world >= v.world_count) return {};
     std::byte* const begin = v.data + static_cast<std::size_t>(world) * v.capacity_per_world * v.elem_size;
     return std::span<T>(reinterpret_cast<T*>(begin), v.capacity_per_world);
+}
+
+// RED STUBS (Task 1): declared so the failing tests compile; they read nothing yet.
+template <class T>
+[[nodiscard]] std::span<const T> table_rows(const StateView&) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
+    return {};
+}
+template <class T>
+[[nodiscard]] std::span<T> all_rows(const StateView&) noexcept {
+    static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
+    return {};
 }
 
 }  // namespace spade
