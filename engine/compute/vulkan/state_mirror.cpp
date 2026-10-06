@@ -1,10 +1,13 @@
 #include "compute/vulkan/state_mirror.hpp"
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "bindings.gen.hpp"
 
@@ -235,6 +238,139 @@ static_assert(sizeof(VkDeviceSize) >= 8 && sizeof(std::size_t) >= 8,
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// The derived buffers' table (state_mirror.hpp). The hand-listed twelve keep
+// the sizes, counts and bindings create() gave them one by one before Task 7b;
+// only the place they are spelt moved.
+// ---------------------------------------------------------------------------
+Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& shape, uint32_t binding_count) {
+    // The CollisionDynamic key array (binding 21, S6 Task 7) and the gather's
+    // shadow (binding 22) are sized from grid_domain_of() -- the same function
+    // StepRecorder sizes its dispatch grids from -- and refused here, by name,
+    // if the shape asks for more than compute/grid_entry.hpp's ceiling, rather
+    // than letting a 48 GB vkAllocateMemory be the diagnostic. Both from one
+    // call, so a sizing change cannot move one without the other.
+    const GridDomain domain = grid_domain_of(shape);
+    if (!domain.ok) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     "StateMirror::create: the CollisionDynamic key array for this shape "
+                                     "would exceed compute/grid_entry.hpp's kMaxGridEntries ceiling"});
+    }
+
+    struct Row {
+        const char* name;
+        uint32_t elem_size;
+        uint64_t count;
+        uint32_t binding;
+    };
+    // In derived_entries() order; create() pairs them by position.
+    const Row hand_listed[] = {
+        {.name = "dryden_params",
+         .elem_size = static_cast<uint32_t>(sizeof(DrydenParams)),
+         .count = shape.world_count,
+         .binding = gen::kBinding_dryden_params},
+        {.name = "sdf_nodes",
+         .elem_size = static_cast<uint32_t>(sizeof(SdfNodeRow)),
+         .count = shape.sdf_node_count,
+         .binding = gen::kBinding_sdf_nodes},
+        {.name = "sdf_transforms",
+         .elem_size = static_cast<uint32_t>(sizeof(SdfTransformRow)),
+         .count = shape.sdf_transform_count,
+         .binding = gen::kBinding_sdf_transforms},
+        {.name = "sdf_world_ranges",
+         .elem_size = static_cast<uint32_t>(sizeof(SdfWorldRange)),
+         .count = shape.world_count,
+         .binding = gen::kBinding_sdf_world_ranges},
+        // The one buffer with no device half (state_mirror.hpp): one StepParams.
+        {.name = "step_params",
+         .elem_size = static_cast<uint32_t>(sizeof(StepParams)),
+         .count = 1u,
+         .binding = gen::kBinding_step_params},
+        {.name = "step_witness",
+         .elem_size = static_cast<uint32_t>(sizeof(StepWitness)),
+         .count = 1u,
+         .binding = gen::kBinding_step_witness},
+        {.name = "contact_params",
+         .elem_size = static_cast<uint32_t>(sizeof(physics::ContactParams)),
+         .count = shape.world_count,
+         .binding = gen::kBinding_contact_params},
+        {.name = "grid_params",
+         .elem_size = static_cast<uint32_t>(sizeof(physics::GridParams)),
+         .count = shape.world_count,
+         .binding = gen::kBinding_grid_params},
+        {.name = "grid_entries",
+         .elem_size = static_cast<uint32_t>(sizeof(GridEntryRow)),
+         .count = domain.entry_count,
+         .binding = gen::kBinding_grid_entries},
+        {.name = "body_snapshot",
+         .elem_size = static_cast<uint32_t>(sizeof(spade::physics::GatherBody)),
+         .count = domain.entry_count,
+         .binding = gen::kBinding_body_snapshot},
+        // The field sample rows (binding 26, module-API stage 3), one per world.
+        {.name = "field_samples",
+         .elem_size = static_cast<uint32_t>(sizeof(spade::physics::FieldSampleRow)),
+         .count = shape.world_count,
+         .binding = gen::kBinding_field_samples},
+        // The contact scratch (binding 27, PHY-7), one float4 per body slot of
+        // every world, zero-filled at create and zero at every substep boundary.
+        // The count is a 64-bit product, so a shape past 2^32 - 1 rows is
+        // refused by name.
+        {.name = "contact_dv",
+         .elem_size = static_cast<uint32_t>(4 * sizeof(float)),
+         .count = uint64_t{shape.world_count} * shape.body_capacity,
+         .binding = gen::kBinding_contact_dv},
+    };
+
+    std::vector<DerivedBufferShape> out;
+    out.reserve(std::size(hand_listed) + shape.scratch.size());
+    for (const Row& row : hand_listed) {
+        Result<VkDeviceSize> bytes = buffer_bytes(row.name, row.elem_size, row.count);
+        if (!bytes) return std::unexpected(bytes.error());
+        out.push_back(DerivedBufferShape{
+            .name = row.name, .elem_size = row.elem_size, .count = row.count, .byte_size = *bytes, .binding = row.binding});
+    }
+
+    // THE DECLARED SCRATCH (Task 7b). Every binding already held, with what
+    // holds it, so a refusal names both sides: the walk entries a kernel reads
+    // (binding_for()), the hand-listed buffers above, then each scratch as it
+    // is placed.
+    std::vector<std::pair<uint32_t, std::string>> held;
+    for (const StateArrayShape& array : shape.arrays) {
+        uint32_t binding = 0;
+        if (binding_for(array.name, binding)) held.emplace_back(binding, "walk entry '" + array.name + "'");
+    }
+    for (const DerivedBufferShape& derived : out) {
+        held.emplace_back(derived.binding, "derived buffer '" + derived.name + "'");
+    }
+    for (const ScratchShape& scratch : shape.scratch) {
+        if (scratch.binding == kNoBinding) continue;  // CPU-only: no device buffer
+        const std::string where = "StateMirror::create: scratch '" + scratch.name + "'";
+        if (scratch.binding >= binding_count) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         where + ": binding " + std::to_string(scratch.binding) +
+                                             " is outside the generated range [0, " + std::to_string(binding_count) +
+                                             "); a scratch's binding is a gen::kBinding_* constant bindings.slang "
+                                             "declares"});
+        }
+        if (const auto taken = std::ranges::find(held, scratch.binding, &std::pair<uint32_t, std::string>::first);
+            taken != held.end()) {
+            return std::unexpected(Error{Code::invalid_argument, where + ": binding " +
+                                                                     std::to_string(scratch.binding) +
+                                                                     " is already bound to " + taken->second});
+        }
+        const uint64_t count = uint64_t{shape.world_count} * uint64_t{scratch.capacity_per_world};
+        Result<VkDeviceSize> bytes = buffer_bytes(scratch.name, scratch.elem_size, count);
+        if (!bytes) return std::unexpected(bytes.error());
+        held.emplace_back(scratch.binding, "scratch '" + scratch.name + "'");
+        out.push_back(DerivedBufferShape{.name = scratch.name,
+                                         .elem_size = scratch.elem_size,
+                                         .count = count,
+                                         .byte_size = *bytes,
+                                         .binding = scratch.binding});
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
 
@@ -351,31 +487,41 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // something real to bind; the matching upload_*() calls fill them in,
     // separately, once Simulation::create() has the per-world configuration in
     // scope.
+    //
+    // FROM ONE TABLE (module-API stage 4, Task 7b): derived_buffer_shapes()
+    // spells every derived buffer's name, size and binding -- the hand-listed
+    // twelve in derived_entries() order, then every declared scratch that names
+    // a binding -- and refuses, by name, a shape or a scratch binding the
+    // mirror cannot take. It runs after the walk's buffers are made, where the
+    // derived sizing always ran, so a shape the walk cannot allocate still
+    // fails there first (AbsurdShapeAllocationFailureIsReportedNotCrashed).
     // -----------------------------------------------------------------------
     constexpr VkBufferUsageFlags kDeviceUsage =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     constexpr VkBufferUsageFlags kStagingUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-    // Builds one derived entry's device+staging pair. A lambda rather than a
-    // fifth copy of the twenty lines dryden_params used to spell inline: S6
-    // Task 6 takes the derived-buffer count from one to seven, and seven
-    // hand-unrolled copies of the same sequence is exactly the kind of
+    Result<std::vector<DerivedBufferShape>> derived = derived_buffer_shapes(shape, gen::kBindingCount_state);
+    if (!derived) return std::unexpected(derived.error());
+    const std::array<Entry*, 12> hand_listed = self->derived_entries();
+    if (derived->size() < hand_listed.size()) {
+        return std::unexpected(Error{Code::internal, "StateMirror::create: the derived table lost a hand-listed row"});
+    }
+    // Sized once, before any buffer is made, so no Entry moves after.
+    self->scratch_entries_.resize(derived->size() - hand_listed.size());
+
+    // Builds one derived entry's device+staging pair from its row. A lambda
+    // rather than a copy of the twenty lines dryden_params used to spell inline
+    // per buffer: S6 Task 6 took the derived-buffer count from one to seven,
+    // and hand-unrolled copies of the same sequence are exactly the kind of
     // transcription a reviewer cannot check.
-    //
-    // `count` is 64 bits so a caller sizing a buffer by a product (world_count
-    // * body_capacity, say) passes it unwrapped, and buffer_bytes() refuses it
-    // by name past 2^32-1.
-    const auto make_derived = [&](Entry& e, const char* name, uint32_t elem_size, uint64_t count,
-                                   uint32_t binding) -> Result<void> {
-        Result<VkDeviceSize> bytes = buffer_bytes(name, elem_size, count);
-        if (!bytes) return std::unexpected(bytes.error());
-        e.name = name;
-        e.elem_size = elem_size;
-        e.world_count = static_cast<uint32_t>(count);  // element COUNT for the non-per-world buffers
+    const auto make_derived = [&](Entry& e, const DerivedBufferShape& row) -> Result<void> {
+        e.name = row.name;
+        e.elem_size = row.elem_size;
+        e.world_count = static_cast<uint32_t>(row.count);  // element COUNT for the non-per-world buffers
         e.capacity_per_world = 1u;
-        e.byte_size = *bytes;
+        e.byte_size = row.byte_size;
         e.has_binding = true;
-        e.binding = binding;
+        e.binding = row.binding;
         void* unused_device_mapped = nullptr;
         if (Result<void> made = create_buffer(self->device_, self->physical_device_, e.byte_size, kDeviceUsage,
                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, e.device_buffer,
@@ -388,120 +534,37 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
                              e.staging_buffer, e.staging_memory, e.staging_mapped);
     };
 
-    if (Result<void> made = make_derived(self->dryden_params_, "dryden_params",
-                                          static_cast<uint32_t>(sizeof(DrydenParams)), shape.world_count,
-                                          gen::kBinding_dryden_params);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->sdf_nodes_, "sdf_nodes",
-                                          static_cast<uint32_t>(sizeof(SdfNodeRow)), shape.sdf_node_count,
-                                          gen::kBinding_sdf_nodes);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->sdf_transforms_, "sdf_transforms",
-                                          static_cast<uint32_t>(sizeof(SdfTransformRow)),
-                                          shape.sdf_transform_count, gen::kBinding_sdf_transforms);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->sdf_ranges_, "sdf_world_ranges",
-                                          static_cast<uint32_t>(sizeof(SdfWorldRange)), shape.world_count,
-                                          gen::kBinding_sdf_world_ranges);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->step_witness_, "step_witness",
-                                          static_cast<uint32_t>(sizeof(StepWitness)), 1u,
-                                          gen::kBinding_step_witness);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->contact_params_, "contact_params",
-                                          static_cast<uint32_t>(sizeof(physics::ContactParams)),
-                                          shape.world_count, gen::kBinding_contact_params);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    if (Result<void> made = make_derived(self->grid_params_, "grid_params",
-                                          static_cast<uint32_t>(sizeof(physics::GridParams)), shape.world_count,
-                                          gen::kBinding_grid_params);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    // The CollisionDynamic key array (binding 21, S6 Task 7). Sized from
-    // grid_domain_of() -- the same function StepRecorder sizes its dispatch
-    // grids from -- and refused here, by name, if the shape asks for more than
-    // compute/grid_entry.hpp's ceiling, rather than letting a 48 GB
-    // vkAllocateMemory be the diagnostic.
-    {
-        const GridDomain domain = grid_domain_of(shape);
-        if (!domain.ok) {
-            return std::unexpected(Error{Code::capacity_exceeded,
-                                         "StateMirror::create: the CollisionDynamic key array for this shape "
-                                         "would exceed compute/grid_entry.hpp's kMaxGridEntries ceiling"});
+    for (std::size_t i = 0; i < derived->size(); ++i) {
+        const DerivedBufferShape& row = (*derived)[i];
+        Entry& e = i < hand_listed.size() ? *hand_listed[i] : self->scratch_entries_[i - hand_listed.size()];
+        if (&e != &self->step_params_) {
+            if (Result<void> made = make_derived(e, row); !made) return std::unexpected(made.error());
+            continue;
         }
-        if (Result<void> made = make_derived(self->grid_entries_, "grid_entries",
-                                              static_cast<uint32_t>(sizeof(GridEntryRow)), domain.entry_count,
-                                              gen::kBinding_grid_entries);
+        // -------------------------------------------------------------------
+        // step_params (binding 17) -- the ONE buffer with no device half. See
+        // state_mirror.hpp's member note for why: the host rewrites it before
+        // every submit, so it is host-visible, coherent and persistently
+        // mapped, and the descriptor binds that buffer directly. Zeroed at
+        // creation so a read before the first submit sees a defined 0 rather
+        // than driver garbage.
+        // -------------------------------------------------------------------
+        e.name = row.name;
+        e.elem_size = row.elem_size;
+        e.world_count = 1u;
+        e.capacity_per_world = 1u;
+        e.byte_size = row.byte_size;
+        e.has_binding = true;
+        e.binding = row.binding;
+        if (Result<void> made = create_buffer(
+                self->device_, self->physical_device_, e.byte_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true, e.staging_buffer,
+                e.staging_memory, e.staging_mapped);
             !made) {
             return std::unexpected(made.error());
         }
-
-        // The gather's shadow, one row per entry -- the SAME domain, from the
-        // same grid_domain_of(shape) call, so a sizing change cannot move one
-        // without the other.
-        if (Result<void> made = make_derived(self->body_snapshot_, "body_snapshot",
-                                              static_cast<uint32_t>(sizeof(spade::physics::GatherBody)),
-                                              domain.entry_count, gen::kBinding_body_snapshot);
-            !made) {
-            return std::unexpected(made.error());
-        }
+        std::memset(e.staging_mapped, 0, static_cast<std::size_t>(e.byte_size));
     }
-
-    // The field sample rows (binding 26, module-API stage 3), one per world.
-    if (Result<void> made = make_derived(self->field_samples_, "field_samples",
-                                          static_cast<uint32_t>(sizeof(spade::physics::FieldSampleRow)),
-                                          shape.world_count, gen::kBinding_field_samples);
-        !made) {
-        return std::unexpected(made.error());
-    }
-
-    // The contact scratch (binding 27, PHY-7), one float4 per body slot of
-    // every world, zero-filled here and zero at every substep boundary. The
-    // count is a 64-bit product, so a shape past 2^32 - 1 rows is refused by name.
-    if (Result<void> made = make_derived(self->contact_dv_, "contact_dv", static_cast<uint32_t>(4 * sizeof(float)),
-                                          uint64_t{shape.world_count} * shape.body_capacity, gen::kBinding_contact_dv);
-        !made) {
-        return std::unexpected(made.error());
-    }
-
-    // -----------------------------------------------------------------------
-    // step_params (binding 17) -- the ONE buffer with no device half. See
-    // state_mirror.hpp's member note for why: the host rewrites it before
-    // every submit, so it is host-visible, coherent and persistently mapped,
-    // and the descriptor binds that buffer directly. Zeroed at creation so a
-    // read before the first submit sees a defined 0 rather than driver
-    // garbage.
-    // -----------------------------------------------------------------------
-    self->step_params_.name = "step_params";
-    self->step_params_.elem_size = static_cast<uint32_t>(sizeof(StepParams));
-    self->step_params_.world_count = 1u;
-    self->step_params_.capacity_per_world = 1u;
-    self->step_params_.byte_size = static_cast<VkDeviceSize>(sizeof(StepParams));
-    self->step_params_.has_binding = true;
-    self->step_params_.binding = gen::kBinding_step_params;
-    if (Result<void> made = create_buffer(
-            self->device_, self->physical_device_, self->step_params_.byte_size,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
-            self->step_params_.staging_buffer, self->step_params_.staging_memory,
-            self->step_params_.staging_mapped);
-        !made) {
-        return std::unexpected(made.error());
-    }
-    std::memset(self->step_params_.staging_mapped, 0, sizeof(StepParams));
 
     // -----------------------------------------------------------------------
     // ZERO-FILL EVERY DEVICE-LOCAL DERIVED BUFFER, ONCE, HERE. Not tidiness:
@@ -543,27 +606,33 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // (device-local memory comes back UNDEFINED from vkAllocateMemory, and a
     // caller need not upload every derived buffer before first use), not
     // because zero is this buffer's meaningful empty state.
+    //
+    // A DECLARED SCRATCH (Task 7b) is zero-filled here for its own reason: zero
+    // is its state at every substep boundary (sim/module.hpp's ScratchDecl),
+    // and this is the only time the mirror writes it. After this its module's
+    // kernels keep it zero; nothing uploads or reads it back.
     // -----------------------------------------------------------------------
     {
         // Every derived buffer with a device half; step_params_ has none.
-        std::vector<Entry*> derived;
-        for (Entry* e : self->derived_entries()) {
-            if (e->device_buffer != VK_NULL_HANDLE) derived.push_back(e);
-        }
-        for (Entry* e : derived) {
+        std::vector<Entry*> derived_buffers;
+        self->for_each_derived([&derived_buffers](Entry& e) {
+            if (e.device_buffer != VK_NULL_HANDLE) derived_buffers.push_back(&e);
+        });
+        for (Entry* e : derived_buffers) {
             if (e->byte_size > 0) std::memset(e->staging_mapped, 0, static_cast<std::size_t>(e->byte_size));
         }
         if (Result<void> zeroed = run_copy_batch(self->device_, self->cmd_, self->queue_, self->fence_,
-                                                  /*to_device=*/true, derived);
+                                                  /*to_device=*/true, derived_buffers);
             !zeroed) {
             return std::unexpected(zeroed.error());
         }
     }
 
     // -----------------------------------------------------------------------
-    // Descriptor set layout + pool + set: kBindingCount_state bindings (the 13
-    // bound walk entries plus the nine derived buffers -- S6 Task 7's
-    // `grid_entries` is the ninth), all
+    // Descriptor set layout + pool + set: every bound walk entry, every
+    // hand-listed derived buffer and every bound scratch -- for the standard
+    // set, kBindingCount_state bindings, the census
+    // DescriptorSetBindsEveryRegistryBinding pins -- all
     // VK_DESCRIPTOR_TYPE_STORAGE_BUFFER -- bindings.slang binds both
     // RWStructuredBuffer and (read-only) StructuredBuffer as storage buffers;
     // Vulkan's descriptor type does not distinguish read/write access, only
@@ -594,12 +663,12 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     for (const Entry& e : self->entries_) {
         if (e.has_binding) add_binding(e.binding, e.device_buffer, e.byte_size);
     }
-    // The derived buffers, from the one list (state_mirror.hpp). step_params_
-    // binds its STAGING buffer -- it has no device half at all.
-    for (Entry* e : self->derived_entries()) {
-        add_binding(e->binding, e->device_buffer != VK_NULL_HANDLE ? e->device_buffer : e->staging_buffer,
-                    e->byte_size);
-    }
+    // The derived buffers, hand-listed then scratch, through the one walk
+    // (state_mirror.hpp's for_each_derived()). step_params_ binds its STAGING
+    // buffer -- it has no device half at all.
+    self->for_each_derived([&add_binding](Entry& e) {
+        add_binding(e.binding, e.device_buffer != VK_NULL_HANDLE ? e.device_buffer : e.staging_buffer, e.byte_size);
+    });
 
     self->bound_binding_count_ = static_cast<uint32_t>(layout_bindings.size());
 
@@ -776,8 +845,8 @@ Result<void> StateMirror::readback(ArenaSet& arenas) {
 
     // Pass 1: validate every entry's shape WITHOUT writing a single
     // destination byte -- see backend.hpp's readback() doc comment. A
-    // mismatch discovered at entry 7 of 18 must not have already overwritten
-    // entries 0..6 with device bytes while leaving 8..17 untouched and the
+    // mismatch discovered at entry 7 of 22 must not have already overwritten
+    // entries 0..6 with device bytes while leaving 8..21 untouched and the
     // call reporting failure; validating the whole walk first, and only then
     // running the copy + the memcpy-back pass, is what makes that true.
     arenas.registry().for_each_array([&](const RegisteredArray& array) {
@@ -1022,7 +1091,8 @@ void StateMirror::destroy() noexcept {
         set_layout_ = VK_NULL_HANDLE;
     }
 
-    for (Entry* e : derived_entries()) destroy_entry(device_, *e);
+    for_each_derived([this](Entry& e) { destroy_entry(device_, e); });
+    scratch_entries_.clear();
     for (Entry& e : entries_) destroy_entry(device_, e);
     entries_.clear();
 

@@ -5,7 +5,8 @@
 // compile_schedule(). Stages 1-3 of the plan: passes, each naming the built-in
 // GPU kernel that matches its CPU function, and the fields a module provides.
 // Stage 4: the arrays a module owns (its state), the rows it attaches to
-// bodies and the seeded streams those rows hold. Grades and roles join the
+// bodies, the seeded streams those rows hold, and the scratch its passes share
+// within a substep. Grades and roles join the
 // descriptor in later stages.
 #pragma once
 
@@ -362,6 +363,65 @@ struct RowInitRequest {
 
 using VehicleRowsFn = void (*)(const VehicleRows& vehicle, std::vector<RowInitRequest>& out);
 
+// SCRATCH (stage 4, Task 7b; agreed with Physics 2026-10-05 for the IMU contact
+// plan's contact_dv, option A). Rows a module's passes hand each other WITHIN a
+// substep and do not keep across it -- the contact passes' velocity change,
+// which integrate reads and clears in the same substep. NOT STATE:
+//
+//   NOT WALKED, DIGESTED OR SNAPSHOTTED. A scratch is never registered, so it
+//   is in no walk entry, schema hash, state_digest or blob, and declaring one
+//   moves none of them, nor the configuration identity.
+//
+//   ZERO-FILLED AT create(), AND ONLY THERE. After that, keeping every row zero
+//   at every substep boundary is THE MODULE'S INVARIANT, not the engine's:
+//   contact_dv's integrate zeroes every slot it reads. The engine does not clear
+//   a scratch per step or per substep, so a row a module leaves non-zero at a
+//   boundary is still there in the next substep, on either backend.
+//
+//   RESTORE NEEDS NOTHING, given that invariant. A blob is taken at a step
+//   boundary, where every row is zero, so restore() neither carries a scratch
+//   nor clears one, and the run resumes as the snapshotted one would have.
+//
+// A scratch has a NAME in its module's namespace, which its arrays and tables
+// share (unique in the set, no '.', never a core array's); a ROW SIZE by
+// row_size<T>()'s rules, which sizes its CPU rows AND its device buffer -- one
+// size for both, so a GPU row needs no layout of its own (contact_dv is xyz
+// and a pad, 16 bytes); and an EXTENT, per_body (the body capacity, indexed by
+// body slot) or per_world (one row per world). No other extent: nothing
+// attaches, frees or owns a scratch row.
+//
+// A PASS REACHES IT AS IT REACHES AN ARRAY: "<module>.<name>" in its access
+// list binds it (BindingKind::scratch), every world's rows world-contiguous,
+// through SubstepContext::state, sliced with world_rows<T>(). The access rules
+// are the array rules: its own module or any other may read, write or
+// accumulate it as a required access, the hazard graph orders those accesses as
+// it orders an array's, an optional read of an absent module's scratch binds an
+// absent view, and an optional write is refused. Its rows are allocated at
+// create(), so a step allocates nothing.
+//
+// ON THE GPU kernels bind statically, so a scratch a kernel reaches names its
+// fixed BINDING, a gen::kBinding_* constant generated from
+// shaders/shared/bindings.slang. The state mirror creates, sizes (a 64-bit
+// count), zero-fills and binds every bound scratch from its declaration, as it
+// does its hand-listed derived buffers, and never uploads or reads one back.
+// So on the Vulkan path the device rows are the scratch, and the CPU rows stay
+// as create() left them. A scratch with kNoBinding is CPU-only and gets no
+// device buffer; a Vulkan set in which a pass declares one is refused at
+// create() (unavailable, naming the pass and the scratch). The mirror refuses,
+// by name, a binding outside the generated range, or one a walk entry, a
+// hand-listed derived buffer or another scratch already holds; compile_schedule
+// refuses two scratches with one binding on every backend. (bindings.gen.hpp
+// exists only in a SPADE_VULKAN build, so a declaration in a TU that must also
+// build without it spells kNoBinding there, where no backend could bind it.)
+inline constexpr uint32_t kNoBinding = compute::kNoBinding;
+
+struct ScratchDecl {
+    std::string_view name;              // shares the array namespace: unique in the set, no '.', not a core array
+    uint32_t elem_size = 0;             // row_size<T>(): the CPU rows' size and the device buffer's stride
+    Extent extent = Extent::per_world;  // per_body or per_world
+    uint32_t binding = kNoBinding;      // a gen::kBinding_* constant (bindings.slang), or kNoBinding: CPU-only
+};
+
 // One request, its record copied in by value: what a hook appends.
 template <class Spawn>
 [[nodiscard]] RowInitRequest init_request(std::string_view array, uint32_t slot, const Spawn& spawn) noexcept {
@@ -382,6 +442,7 @@ struct ModuleDesc {
     std::span<const StreamDecl> streams{};        // the seeded streams this module's rows hold
     std::span<const ConfigTableDecl> tables{};    // the configuration tables this module builds
     VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
+    std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -391,14 +452,16 @@ inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 // What one declared access of a compiled pass binds (stage 4, Task 6): the
 // view Simulation hands the pass as SubstepContext::state[i] for its i-th
 // access. "<module>.<array>" binds that array -- its index in
-// CompiledSchedule::arrays, whichever module owns it -- and "<module>.<table>"
-// that configuration table (Task 7), its index in CompiledSchedule::tables. A
-// core quantity, a field, a stateless module's token, and an optional read of
-// an absent module bind nothing: an absent view, so every access keeps its slot.
-enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2 };
+// CompiledSchedule::arrays, whichever module owns it -- "<module>.<table>"
+// that configuration table (Task 7), its index in CompiledSchedule::tables, and
+// "<module>.<scratch>" that scratch (Task 7b), its index in
+// CompiledSchedule::scratch. A core quantity, a field, a stateless module's
+// token, and an optional read of an absent module bind nothing: an absent view,
+// so every access keeps its slot.
+enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2, scratch = 3 };
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
-    uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays (array) or ::tables (table)
+    uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays, ::tables or ::scratch, by kind
 };
 
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set
@@ -457,6 +520,15 @@ struct CompiledVehicleRows {
     VehicleRowsFn rows = nullptr;
 };
 
+// One declared scratch (Task 7b), as declared.
+struct CompiledScratch {
+    std::string module;
+    std::string name;
+    uint32_t elem_size = 0;
+    Extent extent = Extent::per_world;  // per_body or per_world
+    uint32_t binding = kNoBinding;      // kNoBinding: CPU-only
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -480,6 +552,10 @@ struct CompiledSchedule {
     std::vector<CompiledTable> tables{};
     // The vehicle-spawn hooks, in set order: the order spawn() calls them in.
     std::vector<CompiledVehicleRows> vehicle_rows{};
+    // The declared scratch in set order, then each module's declaration order
+    // (Task 7b). Not part of the identity: a scratch is not state, and a
+    // changed row rides the module's version, like a changed array's.
+    std::vector<CompiledScratch> scratch{};
 };
 
 // Orders every pass of `modules`:
@@ -499,8 +575,11 @@ struct CompiledSchedule {
 // built-in field with another kind or unit; a module named "field"; a provider
 // module with no pass that writes its field; a write of "field.<name>" outside
 // its provider, or outside the Fields phase; an unknown
-// quantity, including "<module>.<name>" where the module declares arrays or
-// tables and <name> is none of them; a write or an accumulation of a table; a
+// quantity, including "<module>.<name>" where the module declares arrays,
+// tables or scratch and <name> is none of them; a write or an accumulation of a
+// table; a scratch with no name, a '.' in its name, a core array's name, the
+// name of an array, a table or another scratch in the set, elem_size 0, an
+// extent other than per_body or per_world, or the binding of another scratch; a
 // table with no name, a '.' in its name, a core array's name, the name of an
 // array or another table in the set, or no build function; an array with no
 // name, a '.' in its name, a core
@@ -517,7 +596,7 @@ struct CompiledSchedule {
 // per_element or per_sensor arrays; an
 // optional access that is not a read, that names a core quantity, a field or
 // anything but "<module>.<name>", or whose module is in the set without an
-// array or table of that name; an `after` edge to a pass no module declares or
+// array, table or scratch of that name; an `after` edge to a pass no module declares or
 // to a later phase; a `before` edge to a pass no module declares or to an earlier
 // phase; two
 // writers, or a writer and an accumulator, of one quantity with no edge
@@ -527,10 +606,10 @@ struct CompiledSchedule {
 // module in set order, its name, 0x00 and its version as 4 bytes little-endian;
 // then 0x01; then for each compiled pass, module, '.', pass, 0x00 and the phase
 // as one byte. FNV-1a 64 (core/rng.hpp's constants) over those bytes. State,
-// stream and table declarations and vehicle hooks are not spelt: the schema
-// hash refuses a blob whose arrays differ, a table's contents are the model
-// registry's (whose identity the blob carries), and a changed row, tag, build
-// or hook rides the module's version. Edges,
+// stream, table and scratch declarations and vehicle hooks are not spelt: the
+// schema hash refuses a blob whose arrays differ, a table's contents are the
+// model registry's (whose identity the blob carries), a scratch is in no blob,
+// and a changed row, tag, build or hook rides the module's version. Edges,
 // optional reads and bindings are not spelt either: what they decide is the
 // compiled order, which is.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);

@@ -530,6 +530,16 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 [[nodiscard]] Result<std::vector<compute::StateArrayShape>> state_array_shapes(
     const modules::CompiledSchedule& schedule, const compute::StepShape& shape);
 
+// Every declared scratch's shape for the GPU mirror (module-API stage 4, Task
+// 7b; sim/module.hpp's ScratchDecl), in the order schedule.scratch tables them:
+// its name, its declared row size, its extent's rows per world (per_body: the
+// shape's body capacity; per_world: 1) and its binding as declared. create()
+// hands the list to the Vulkan backend as StepShape::scratch, every scratch
+// included; the mirror makes a buffer for each one that names a binding and
+// for none that does not. create() sizes the CPU rows by the same rule.
+[[nodiscard]] std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
+                                                                const compute::StepShape& shape);
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------
@@ -597,8 +607,12 @@ public:
     // after it, each in set order, so a module appended to the standard set
     // registers after the standard walk's 22 entries (sim/module.hpp). The
     // engine's own calls use the seven arrays the standard set declares, so a
-    // set that omits one, or declares one with another row size, extent, owner
-    // or depth, is refused with invalid_argument, naming the array.
+    // set that omits one, or declares one with another row size, extent, owner,
+    // depth or spawn size, is refused with invalid_argument, naming the array;
+    // so is a set that drops or retags the stream on dryden, imu_sensors or
+    // gnss_sensors, naming the module, the array and the tag. A Vulkan set in
+    // which a pass declares a CPU-only scratch is refused with unavailable,
+    // naming the pass and the scratch.
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
@@ -864,12 +878,14 @@ public:
     // ROWS), by declaration, in walk order: every drag element, IMU, rotor and
     // GNSS receiver -- and any module's attached row -- in the same world whose
     // body_slot names this body is freed too, in ascending slot order within
-    // each array. Without the cascade an element would outlive its body, be
-    // inert (apply_drag and synthesize_imu both skip rows whose body is not
-    // active) and leak its slot -- so a long run with spawn/despawn churn would
-    // exhaust capacity while appearing to work.
+    // each array, and every per_body row at the body's slot is zeroed. Without
+    // the cascade an element would outlive its body, be inert (apply_drag and
+    // synthesize_imu both skip rows whose body is not active) and leak its
+    // slot -- so a long run with spawn/despawn churn would exhaust capacity
+    // while appearing to work.
     //
-    // FREEING A ROW ALSO ZEROES ITS per_row CHILDREN -- a sensor's ring window.
+    // FREEING A ROW ALSO ZEROES ITS per_row CHILDREN -- a sensor's ring window,
+    // or a row a module keeps per rotor.
     // ArenaSet zero-fills a freed slot's own bytes, but a sensor's samples live
     // in a SECOND array that is direct-indexed rather than slot-allocated, so
     // nothing else would clear them. Leaving them would break the engine-wide
@@ -1813,6 +1829,20 @@ private:
     // CONFIGURATION, like models_: not registered, so not walked, digested or
     // snapshotted.
     std::vector<std::vector<float>> config_tables_;
+
+    // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
+    // ScratchDecl), parallel to schedule_.scratch: one allocation per scratch
+    // of world_count * capacity_per_world rows, world-contiguous like an arena,
+    // 16-byte aligned (row_size<T>()'s bound) and zero-filled in create() --
+    // and never touched by the engine again. Not registered, so not walked,
+    // digested, snapshotted or restored; keeping it zero at every substep
+    // boundary is the declaring module's invariant. Null `bytes` for a scratch
+    // with no rows.
+    struct ScratchRows {
+        std::unique_ptr<std::byte[], detail::AlignedArenaDelete> bytes{};
+        uint32_t capacity_per_world = 0;
+    };
+    std::vector<ScratchRows> scratch_rows_;
 
     // The core's four arrays, registered by hand in create().
     ArrayId<WorldParams> world_params_id_{};

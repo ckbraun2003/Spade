@@ -190,12 +190,13 @@ struct BackendDesc {
 // ---------------------------------------------------------------------------
 // StepShape (S6 Task 5) -- the fixed shape a VulkanBackend is created for:
 // world/body/element/sensor capacities plus the two scalars (substeps, h) and
-// the one config flag (batch_dynamic_collision) the schedule needs. Mirrors
-// Simulation::create()'s VALIDATED WorldSetLayout (sim/world_set.hpp) plus the
-// substep decomposition create() itself derives -- see sim/simulation.cpp's
-// create(), which is the one place all seven values are already in scope
-// together and is where a Simulation on the vulkan path builds one of these
-// to hand to VulkanBackend::create().
+// the one config flag (batch_dynamic_collision) the schedule needs, the two SDF
+// extents, and the registered walk and declared scratch as data (each below).
+// Mirrors Simulation::create()'s VALIDATED WorldSetLayout (sim/world_set.hpp)
+// plus the substep decomposition create() itself derives -- see
+// sim/simulation.cpp's create(), which is the one place all of these are
+// already in scope together and is where a Simulation on the vulkan path
+// builds one of these to hand to VulkanBackend::create().
 //
 // DELIBERATELY DOES NOT CARRY ContactParams/GridParams. Those are per-WORLD
 // material/solver records (physics/contacts.hpp, physics/grid.hpp) that reach
@@ -232,6 +233,22 @@ struct StateArrayShape {
     uint32_t capacity_per_world = 0;
 };
 
+// A DECLARED SCRATCH is shape too (module-API stage 4, Task 7b; sim/module.hpp's
+// ScratchDecl): rows a module's passes share within a substep, which are not
+// registered state. `scratch` holds one ScratchShape per declared scratch, as
+// data, so compute/ keeps no list of them either. The state mirror makes a
+// derived buffer for each one that names a binding -- world_count *
+// capacity_per_world rows of elem_size bytes, zero-filled at create() and
+// bound at `binding` -- and none for one with kNoBinding, which is CPU-only.
+// A scratch's buffer is never uploaded or read back.
+inline constexpr uint32_t kNoBinding = 0xFFFF'FFFFu;
+struct ScratchShape {
+    std::string name{};
+    uint32_t elem_size = 0;           // the declared row size: the CPU rows' and the buffer's stride
+    uint32_t capacity_per_world = 0;  // per_body: the body capacity; per_world: 1
+    uint32_t binding = kNoBinding;    // a bindings.slang binding, or kNoBinding: no device buffer
+};
+
 struct StepShape {
     uint32_t world_count = 0;
     uint32_t body_capacity = 0;
@@ -243,6 +260,7 @@ struct StepShape {
     uint32_t sdf_node_count = 0;       // total SDF nodes across every world
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
     std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
+    std::vector<ScratchShape> scratch{};    // every declared scratch, in the schedule's order (Task 7b)
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

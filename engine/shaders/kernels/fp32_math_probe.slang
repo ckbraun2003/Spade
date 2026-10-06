@@ -8,8 +8,8 @@
 //
 // WHY IT HAS ITS OWN BINDINGS AND DOES NOT IMPORT bindings.slang. The state
 // binding registry (shaders/shared/bindings.slang, set 0) is the ABI the host's
-// descriptor writes depend on and covers the nine registered arrays exactly;
-// a probe that needed two scratch buffers has no business in it. This kernel
+// descriptor writes depend on and holds only the state mirror's buffers; a
+// probe that needed two scratch buffers has no business in it. This kernel
 // declares its OWN set 0 with its OWN two bindings, which is a different
 // descriptor-set layout on a different pipeline and touches nothing the
 // registry owns. engine/compute/vulkan/probe_runner.hpp is the host half and

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "compute/vulkan/backend.hpp"
 #include "bindings.gen.hpp"
 #include "compute/vulkan/context.hpp"
+#include "compute/vulkan/state_mirror.hpp"
 #include "gpu_skip.hpp"
 #include "core/error.hpp"
 #include "sim/module.hpp"
@@ -874,4 +876,180 @@ TEST_F(GpuStateMirrorTest, AShapeTheMirrorCannotSizeIsRefusedByName) {
     ASSERT_FALSE(wraps.has_value()) << "2^32 body slots must be refused";
     EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded) << wraps.error().context;
     EXPECT_NE(wraps.error().context.find("'bodies'"), std::string::npos) << wraps.error().context;
+}
+
+// ===========================================================================
+// A declared SCRATCH reaches the device as a derived buffer (module-API stage
+// 4, Task 7b): created, sized in 64 bits, zero-filled and bound from its
+// declaration, like the hand-listed derived buffers; never uploaded or read
+// back. A scratch with no binding is CPU-only and gets no device buffer.
+//
+// THESE RUN ON THE HOST, NOT THE DEVICE, AND THAT IS FORCED, NOT CHOSEN. Every
+// binding in the generated range (0 .. gen::kBindingCount_state - 1) is taken
+// by the registry's walk entries and the twelve hand-listed derived buffers --
+// PHY-7's contact_dv, binding 27, is the twelfth -- so no scratch can be bound
+// without a new binding in bindings.slang. So the mirror's table is checked
+// here, as data: the test scratches sit at bindings 40 and 41, clear of the
+// generated range, and each call widens the range just enough to hold them.
+// Not Gpu-prefixed, so no "gpu" label: nothing here touches a device.
+// ===========================================================================
+
+namespace {
+
+namespace gen = spade::compute::gen;
+using spade::compute::DerivedBufferShape;
+using spade::compute::ScratchShape;
+
+// The hand-listed twelve, in derived_entries() order, with their bindings: the
+// buffers and bindings this task must not move. PHY-7's contact_dv is the
+// twelfth.
+struct HandListed {
+    std::string_view name;
+    uint32_t binding;
+};
+constexpr HandListed kHandListed[] = {
+    {"dryden_params", gen::kBinding_dryden_params},   {"sdf_nodes", gen::kBinding_sdf_nodes},
+    {"sdf_transforms", gen::kBinding_sdf_transforms}, {"sdf_world_ranges", gen::kBinding_sdf_world_ranges},
+    {"step_params", gen::kBinding_step_params},       {"step_witness", gen::kBinding_step_witness},
+    {"contact_params", gen::kBinding_contact_params}, {"grid_params", gen::kBinding_grid_params},
+    {"grid_entries", gen::kBinding_grid_entries},     {"body_snapshot", gen::kBinding_body_snapshot},
+    {"field_samples", gen::kBinding_field_samples},   {"contact_dv", gen::kBinding_contact_dv}};
+
+// The test scratches' bindings: past the generated range, so a test scratch
+// never collides with a real binding, and the range each call passes is
+// widened to hold them. Moves only if bindings.slang grows this far.
+constexpr uint32_t kScratchBinding = 40;
+static_assert(gen::kBindingCount_state <= kScratchBinding,
+              "the test scratches' bindings must stay clear of the generated range");
+
+[[nodiscard]] StepShape scratch_test_shape() {
+    StepShape shape{};
+    shape.world_count = 2;
+    shape.body_capacity = 8;
+    shape.element_capacity = 4;
+    shape.sensor_capacity = 2;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+    shape.arrays = walk_shapes(standard_schedule(), shape);
+    return shape;
+}
+
+// Refused with invalid_argument, by a message that names every one of `what`.
+[[nodiscard]] testing::AssertionResult refused_naming_all(const Result<std::vector<DerivedBufferShape>>& r,
+                                                          std::initializer_list<std::string_view> what) {
+    if (r.has_value()) return testing::AssertionFailure() << "accepted";
+    if (r.error().code != spade::Code::invalid_argument) {
+        return testing::AssertionFailure() << "code " << static_cast<int>(r.error().code) << ": " << r.error().context;
+    }
+    for (const std::string_view w : what) {
+        if (r.error().context.find(w) == std::string::npos) {
+            return testing::AssertionFailure() << "'" << w << "' is not named in: " << r.error().context;
+        }
+    }
+    return testing::AssertionSuccess();
+}
+
+}  // namespace
+
+TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSize) {
+    // The declarations, through Simulation's own conversion (scratch_shapes):
+    // a per_body scratch at a test binding, a CPU-only one, and a per_world one
+    // at the binding after it.
+    static constexpr spade::modules::ScratchDecl declared[] = {
+        {.name = "body_dv", .elem_size = 16, .extent = spade::modules::Extent::per_body,
+         .binding = kScratchBinding},
+        {.name = "cpu_dv", .elem_size = 16, .extent = spade::modules::Extent::per_body},
+        {.name = "world_dv", .elem_size = 32, .extent = spade::modules::Extent::per_world,
+         .binding = kScratchBinding + 1}};
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "dvmod", .scratch = declared});
+    const auto schedule = spade::modules::compile_schedule(set);
+    ASSERT_TRUE(schedule.has_value()) << schedule.error().context;
+    StepShape shape = scratch_test_shape();
+    shape.scratch = spade::scratch_shapes(*schedule, shape);
+
+    const auto derived = spade::compute::derived_buffer_shapes(shape, kScratchBinding + 2);
+    ASSERT_TRUE(derived.has_value()) << derived.error().context;
+    ASSERT_EQ(derived->size(), std::size(kHandListed) + 2) << "the twelve, then the two bound scratches";
+    for (std::size_t i = 0; i < std::size(kHandListed); ++i) {
+        EXPECT_EQ((*derived)[i].name, kHandListed[i].name) << i;
+        EXPECT_EQ((*derived)[i].binding, kHandListed[i].binding) << kHandListed[i].name;
+    }
+    const DerivedBufferShape& dv = (*derived)[std::size(kHandListed)];
+    EXPECT_EQ(dv.name, "body_dv");
+    EXPECT_EQ(dv.binding, kScratchBinding);
+    EXPECT_EQ(dv.elem_size, 16u) << "the declared row size: one size for the CPU rows and the device buffer";
+    EXPECT_EQ(dv.count, 16u) << "per_body: 2 worlds x 8 body slots";
+    EXPECT_EQ(dv.byte_size, 256u);
+    const DerivedBufferShape& world = (*derived)[std::size(kHandListed) + 1];
+    EXPECT_EQ(world.name, "world_dv");
+    EXPECT_EQ(world.binding, kScratchBinding + 1);
+    EXPECT_EQ(world.count, 2u) << "per_world: one row per world";
+    EXPECT_EQ(world.byte_size, 64u);
+
+    // Sized in 64 bits: 2^16 worlds of 2^16 - 1 rows fit a uint32 count but not
+    // a uint32 byte size; 2^16 rows do not fit the count, and are refused by
+    // name rather than wrapped.
+    StepShape wide = scratch_test_shape();
+    wide.world_count = 1u << 16;
+    wide.body_capacity = 1;
+    wide.arrays = walk_shapes(standard_schedule(), wide);
+    wide.scratch = {ScratchShape{.name = "huge_dv", .elem_size = 16, .capacity_per_world = (1u << 16) - 1u,
+                                 .binding = kScratchBinding}};
+    const auto fits = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
+    ASSERT_TRUE(fits.has_value()) << fits.error().context;
+    EXPECT_EQ(fits->back().count, (uint64_t{1} << 32) - (uint64_t{1} << 16));
+    EXPECT_EQ(fits->back().byte_size, ((uint64_t{1} << 32) - (uint64_t{1} << 16)) * 16u) << "past 2^32 bytes";
+    wide.scratch[0].capacity_per_world = 1u << 16;
+    const auto wraps = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
+    ASSERT_FALSE(wraps.has_value()) << "2^32 rows would wrap a uint32 slot index";
+    EXPECT_EQ(wraps.error().code, spade::Code::capacity_exceeded) << wraps.error().context;
+    EXPECT_NE(wraps.error().context.find("'huge_dv'"), std::string::npos) << wraps.error().context;
+
+    // Today's range: the standard set's shape is the twelve and nothing else,
+    // contact_dv last at PHY-7's size -- one 16-byte row per body slot of every
+    // world.
+    const auto standard = spade::compute::derived_buffer_shapes(scratch_test_shape(), gen::kBindingCount_state);
+    ASSERT_TRUE(standard.has_value()) << standard.error().context;
+    ASSERT_EQ(standard->size(), std::size(kHandListed));
+    EXPECT_EQ(standard->back().name, "contact_dv");
+    EXPECT_EQ(standard->back().binding, gen::kBinding_contact_dv);
+    EXPECT_EQ(standard->back().elem_size, 16u);
+    EXPECT_EQ(standard->back().count, 16u) << "2 worlds x 8 body slots";
+    EXPECT_EQ(standard->back().byte_size, 256u);
+}
+
+TEST(StateMirrorScratch, AScratchBindingIsRefusedByName) {
+    const auto with = [](std::vector<ScratchShape> scratch, uint32_t binding_count) {
+        StepShape shape = scratch_test_shape();
+        shape.scratch = std::move(scratch);
+        return spade::compute::derived_buffer_shapes(shape, binding_count);
+    };
+    const auto at = [](std::string name, uint32_t binding) {
+        return ScratchShape{.name = std::move(name), .elem_size = 16, .capacity_per_world = 8, .binding = binding};
+    };
+    const uint32_t range = gen::kBindingCount_state;
+    const std::string range_text = std::to_string(range);
+    const std::string binding_text = std::to_string(kScratchBinding);
+    ASSERT_TRUE(with({at("dv", kScratchBinding)}, kScratchBinding + 1).has_value())
+        << "the control: a binding the range holds, unused";
+    ASSERT_TRUE(with({at("dv", spade::compute::kNoBinding), at("dv_b", spade::compute::kNoBinding)}, range).has_value())
+        << "CPU-only scratches take no binding";
+
+    EXPECT_TRUE(refused_naming_all(with({at("dv", kScratchBinding)}, range), {"dv", binding_text, range_text}))
+        << "outside the generated range";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_bodies)}, range), {"dv", "bodies"}))
+        << "a walk entry's binding";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_gnss_sensors_slot_to_world)}, range),
+                                   {"dv", "gnss_sensors.slot_to_world"}))
+        << "a bound map's binding";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_dryden_params)}, range), {"dv", "dryden_params"}))
+        << "a hand-listed derived buffer's binding";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_field_samples)}, range), {"dv", "field_samples"}))
+        << "field_samples' binding";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", gen::kBinding_contact_dv)}, range), {"'dv'", "contact_dv"}))
+        << "the last hand-listed derived buffer's binding (PHY-7's contact_dv)";
+    EXPECT_TRUE(refused_naming_all(with({at("dv", kScratchBinding), at("dv_b", kScratchBinding)}, kScratchBinding + 1),
+                                   {"dv_b", "'dv'"}))
+        << "another scratch's binding";
 }

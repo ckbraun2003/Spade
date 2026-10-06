@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -38,9 +40,10 @@ namespace {
     return Error{Code::internal, std::move(context)};
 }
 
-// Where an EMPTY configuration table's view points (rebuild_views): the view
-// has zero rows, so nothing ever reads or writes these bytes. They exist so
-// that the view's data is not null, which would read as an absent module.
+// Where an EMPTY configuration table's view points (rebuild_views), and a
+// scratch's with no rows: the view has zero rows, so nothing ever reads or
+// writes these bytes. They exist so that the view's data is not null, which
+// would read as an absent module.
 alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
 
 // A 64-bit identity, for an error message. Hex because that is how config
@@ -276,6 +279,13 @@ struct ExtentRows {
     return static_cast<uint32_t>(owned);
 }
 
+// A scratch's rows per world (Task 7b): per_body has the world's body capacity,
+// per_world one row. compile_schedule allows no other extent.
+[[nodiscard]] uint32_t scratch_rows_per_world(const modules::CompiledScratch& scratch,
+                                              uint32_t body_capacity) noexcept {
+    return scratch.extent == modules::Extent::per_body ? body_capacity : 1u;
+}
+
 }  // namespace
 
 // The walk create() registers, as data for the GPU mirror. walk_order() is the
@@ -313,6 +323,21 @@ Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::
             if (!capacity) return std::unexpected(capacity.error());
             add(name, it->elem_size, *capacity);
         }
+    }
+    return out;
+}
+
+// The scratch the GPU mirror makes buffers from (Task 7b): every declared one,
+// sized by scratch_rows_per_world(), the rule create() sizes the CPU rows by.
+std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
+                                                  const compute::StepShape& shape) {
+    std::vector<compute::ScratchShape> out;
+    out.reserve(schedule.scratch.size());
+    for (const modules::CompiledScratch& s : schedule.scratch) {
+        out.push_back(compute::ScratchShape{.name = s.name,
+                                            .elem_size = s.elem_size,
+                                            .capacity_per_world = scratch_rows_per_world(s, shape.body_capacity),
+                                            .binding = s.binding});
     }
     return out;
 }
@@ -376,6 +401,24 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // order (VulkanBackend::create() below is handed gpu_passes()), so any
         // set whose passes all name a recipe runs the same experiment on both
         // backends.
+        //
+        // A KERNEL BINDS ITS BUFFERS STATICALLY (Task 7b), so a scratch a pass
+        // declares reaches the device only at the binding its declaration
+        // names. One with none is CPU-only (sim/module.hpp's ScratchDecl), and
+        // the kernel would run without it: refused, by pass and scratch.
+        for (const modules::CompiledPass& pass : compiled->passes) {
+            for (const modules::CompiledBinding& binding : pass.state) {
+                if (binding.kind != modules::BindingKind::scratch) continue;
+                const modules::CompiledScratch& scratch = compiled->scratch[binding.index];
+                if (scratch.binding == modules::kNoBinding) {
+                    return std::unexpected(Error{
+                        Code::unavailable, "module set: pass '" + pass.module + "." + pass.pass +
+                                               "' declares scratch '" + scratch.module + "." + scratch.name +
+                                               "', which names no GPU binding; a kernel binds its buffers "
+                                               "statically, so the set runs only on the CPU"});
+                }
+            }
+        }
     }
 
     const Result<WorldSetLayout> layout = validate_world_set(desc);
@@ -416,16 +459,17 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
     // each array's name, element size and extents in registration order, and
-    // restore() rejects a blob whose hash differs -- so reordering the calls
-    // below, or renaming an array, invalidates every recorded snapshot and
+    // restore() rejects a blob whose hash differs -- so reordering the
+    // registrations below (the core's calls, or the standard set's module
+    // order), or renaming an array, invalidates every recorded snapshot and
     // every committed digest. That is the intended cost of a layout change; it
     // is not a thing to do casually.
     //
-    // Each call contributes TWO registry entries (the elements and the
+    // Each registration contributes TWO registry entries (the elements and the
     // slot->world map), atomically.
     //
-    // APPEND-ONLY. A new array belongs AFTER every call below it, never
-    // between two existing ones: FOUR of the five golden scenario headers
+    // APPEND-ONLY. A new array belongs AFTER every existing one, never between
+    // two: FOUR of the five golden scenario headers
     // (tests/golden/scenarios/*.scenario.yaml) carry an
     // `old + suffix = actual, match=YES` line, and a mid-list insertion would
     // silently invalidate that argument for every one of them at once rather
@@ -433,6 +477,11 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // line: it is the fifth scenario, generated after that regeneration
     // rather than continued through it -- which is the "not merely add a
     // fifth to check" the test's own comment refers to.)
+    //
+    // A module's arrays are placed by its declarations, not by a call here:
+    // only the legacy marker (below) registers any before replay_config, and
+    // compile_schedule allows the marker on the five legacy arrays alone, so a
+    // module appended to a set can only append to the walk.
     //
     // AND IT IS ENFORCED BY A TEST, NOT BY THIS COMMENT -- which is what this
     // paragraph used to claim. test_determinism.cpp's
@@ -518,11 +567,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // so every earlier digest is the new one's prefix -- and that argument
     // survives exactly as long as nothing is registered at or before this call.
     //
-    // The rule is therefore about POSITION, not about being LAST. A tenth array
-    // APPENDED BELOW this one is the sanctioned move: every existing entry keeps
-    // its index, the corpus regenerates once for the new suffix, and this
-    // paragraph stays true. Registering it ABOVE this one -- or anywhere among
-    // the nine -- shifts every later entry and invalidates the continuation
+    // The rule is therefore about POSITION, not about being LAST. An array
+    // APPENDED BELOW this one is the sanctioned move (gnss_sensors and
+    // gnss_ring took it first): every existing entry keeps its index, the
+    // corpus regenerates once for the new suffix, and this paragraph stays
+    // true. Registering one ABOVE this one -- anywhere among the eight arrays
+    // before it -- shifts every later entry and invalidates the continuation
     // argument for all four digests at once, which is a different and much more
     // expensive act. ReplayConfig.OccupiesItsPinnedWalkPosition
     // (tests/test_determinism.cpp) enforces precisely that and nothing more: it
@@ -664,6 +714,30 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // sees an empty table -- and rebuilt by register_model().
     sim.config_tables_.assign(sim.schedule_.tables.size(), std::vector<float>{});
     sim.rebuild_config_tables();
+    // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
+    // ScratchDecl): allocated and zero-filled HERE, once, and never cleared by
+    // the engine again -- zero at every substep boundary is the declaring
+    // module's invariant. Not registered, so nothing here moves the walk, the
+    // schema hash, a digest or a blob. Aligned like an arena (row_size<T>()
+    // allows a 16-byte row alignment), and nothrow like one, so a failed
+    // allocation is capacity_exceeded rather than an exception. The row count
+    // cannot overflow: world_count * body_capacity already sized `bodies`.
+    sim.scratch_rows_.resize(sim.schedule_.scratch.size());
+    for (std::size_t i = 0; i < sim.schedule_.scratch.size(); ++i) {
+        const modules::CompiledScratch& scratch = sim.schedule_.scratch[i];
+        ScratchRows& storage = sim.scratch_rows_[i];
+        storage.capacity_per_world = scratch_rows_per_world(scratch, layout->body_capacity);
+        const std::size_t byte_size =
+            std::size_t{layout->world_count} * storage.capacity_per_world * scratch.elem_size;
+        if (byte_size == 0) continue;
+        void* raw = ::operator new[](byte_size, std::align_val_t{kStd430StructAlignment}, std::nothrow);
+        if (raw == nullptr) {
+            return std::unexpected(Error{Code::capacity_exceeded, "Simulation::create: scratch '" + scratch.module +
+                                                                      "." + scratch.name + "': allocation failed"});
+        }
+        std::memset(raw, 0, byte_size);
+        storage.bytes.reset(static_cast<std::byte*>(raw));
+    }
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
     // run per body slot in the whole set.
@@ -683,8 +757,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // S6 Task 5: the vulkan-path backend. StepShape mirrors the VALIDATED
     // layout this function already derived above (`*layout`) plus the two
     // scalars (substeps, h) and the config flag this function also already
-    // has in scope -- see compute/backend.hpp's StepShape doc comment for
-    // why it carries exactly these seven fields and no others.
+    // has in scope, the two SDF extents, and, as data, the registered walk and
+    // the declared scratch -- see compute/backend.hpp's StepShape doc comment
+    // for why it carries these and nothing else.
     // -----------------------------------------------------------------------
     if (backend.kind == compute::BackendKind::vulkan) {
         // NO UNPORTED-PASS GATE HERE ANY MORE (S6 Task 8). Through Task 7 this
@@ -723,6 +798,10 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         Result<std::vector<compute::StateArrayShape>> arrays = state_array_shapes(sim.schedule_, shape);
         if (!arrays) return std::unexpected(arrays.error());
         shape.arrays = std::move(*arrays);
+        // The declared scratch, as data (Task 7b): the mirror makes, zero-fills
+        // and binds a derived buffer for each one that names a binding, and
+        // never uploads or reads one back.
+        shape.scratch = scratch_shapes(sim.schedule_, shape);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -984,6 +1063,17 @@ Result<void> Simulation::rebuild_views() {
                 view.elem_size = static_cast<uint32_t>(sizeof(float));
                 view.world_count = 1;
                 view.capacity_per_world = static_cast<uint32_t>(table.size());
+                continue;
+            }
+            // A SCRATCH (Task 7b) is viewed like an array -- every world's rows,
+            // world-contiguous -- from storage create() allocated, which never
+            // moves. One with no rows is still present(), like an empty table.
+            if (bindings[k].kind == modules::BindingKind::scratch) {
+                const ScratchRows& rows = scratch_rows_[bindings[k].index];
+                view.data = rows.bytes ? rows.bytes.get() : g_no_table_rows;
+                view.elem_size = schedule_.scratch[bindings[k].index].elem_size;
+                view.world_count = layout_.world_count;
+                view.capacity_per_world = rows.capacity_per_world;
                 continue;
             }
             if (bindings[k].kind != modules::BindingKind::array) continue;
@@ -2468,8 +2558,8 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // -----------------------------------------------------------------------
     // THE DEVICE MIRROR NOW DISAGREES WITH EVERY REGISTERED BYTE (S6 Task 6
     // review round 1, finding C1). This is the largest arena mutation in the
-    // whole API -- spade::restore() above rewrote all nine arrays and both
-    // their free lists -- and it is not a structural-queue op, so
+    // whole API -- spade::restore() above rewrote every registered array, its
+    // map and its free list -- and it is not a structural-queue op, so
     // flush_structural() never sees it. Without this call, a restore followed
     // by a step() on the vulkan path would submit the STALE PRE-RESTORE state
     // to the device and then have the readback overwrite the freshly restored

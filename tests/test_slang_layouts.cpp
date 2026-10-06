@@ -30,7 +30,7 @@
 //      its buffers from the declarations (StepShape::arrays, module-API stage
 //      4), ModuleState.TheMirrorsShapesAreTheRegistryWalkEntryForEntry holds
 //      those to the registry on every box, and an array a kernel reads still
-//      needs its binding added here by hand.
+//      needs its binding, and its kBoundArrays entry below, added by hand.
 //
 //   3. THE SPIR-V FLOAT-CONTROLS GATE. SlangSpirv.FloatControlsPinned scans
 //      the embedded SPIR-V of every compiled kernel against
@@ -285,8 +285,8 @@ TEST(SlangLayouts, BindingRegistryCoversEveryRegisteredArray) {
     }
 }
 
-// The registry holds the nine arrays, the four bound siblings, and the nine
-// derived buffers -- and NOTHING else. kBindingCount_state is generated from
+// The registry holds the eleven bound arrays, the five bound siblings, and the
+// twelve derived buffers -- and NOTHING else. kBindingCount_state is generated from
 // the reflection record, so a binding added to bindings.slang without a
 // corresponding decision recorded here moves this number and fails.
 TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {

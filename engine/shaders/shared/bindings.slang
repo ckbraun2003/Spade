@@ -78,23 +78,23 @@
 //      kBindingCount_state, which is generated from slangc reflection, and
 //      BindingRegistryHasNoUnlistedEntries fails.
 //
-//      REGISTRY SIDE, NOT GUARDED BY ANY TEST IN THAT FILE. Its
-//      kRegisteredArrays is a hardcoded list of string literals compared
-//      against the test's own kExpectedRegistry; nothing there walks the live
-//      StateRegistry, so an array registered in sim/simulation.cpp passes every
-//      test in that file silently.
+//      REGISTRY SIDE, NOT GUARDED BY ANY TEST IN THAT FILE. Its kBoundArrays
+//      is a hardcoded list of string literals compared against the test's own
+//      kExpectedRegistry; nothing there walks the live StateRegistry, so an
+//      array a module declares passes every test in that file silently.
 //
 //    THE LIST MUST STAY HARDCODED -- its own comment is right that a test
 //    reading its expectations out of the artifact under test would assert
 //    nothing. The independence that makes it a good expectation is the same
 //    property that makes it blind to the thing it names; both halves are true
-//    at once, which is why the old sentence read as correct. The real guard on
-//    the registry side is RUNTIME: StateMirror::upload() walks the live
-//    registry and refuses an array it has no buffer for. WARNING: that path is
-//    Vulkan-only and its tests are GTEST_SKIP()-gated on vulkan_available(),
-//    and A SKIPPED TEST COUNTS AS PASSED -- so on a box with no device, a
-//    registry-side addition is invisible: CPU suite fully green, backend broken
-//    at runtime.
+//    at once, which is why the old sentence read as correct. The blindness
+//    costs nothing at runtime: the state mirror makes one buffer per walk
+//    entry from the module declarations (StepShape::arrays), and
+//    ModuleState.TheMirrorsShapesAreTheRegistryWalkEntryForEntry holds those
+//    to the registry on every box, with or without a device. An array no
+//    binding names is allocated, uploaded and read back unbound. What the list
+//    still guards is a binding: an array a kernel reads needs one here, and
+//    its kBoundArrays entry, added by hand.
 //
 // B. FOUR .slot_to_world SIBLINGS (bindings 9..12). Every registered array has
 //    one (state/arenas.hpp: register_array("bodies", ...) contributes both
@@ -217,7 +217,7 @@
 
 import layouts;
 
-// -- A. the nine registered arrays, in registered-walk order ----------------
+// -- A. the first nine registered arrays, in registered-walk order ----------
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<WorldParams>  world_params;
 [[vk::binding(1, 0)]] RWStructuredBuffer<BodyState>    bodies;

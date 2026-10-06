@@ -49,7 +49,8 @@ struct RegisteredArray {
 // right.
 //
 // THE "NO UNREGISTERED STATE" INVARIANT, stated precisely:
-//   * ArenaSet has exactly one way to obtain storage -- register_array() --
+//   * ArenaSet has exactly one way to obtain storage -- register_array(), or
+//     its untyped twin register_bytes(), which the module declarations use --
 //     and that call registers the array here as part of allocating it. There
 //     is no ArenaSet API that hands out arena bytes without a registry
 //     entry, so "arena state a snapshot walk would miss" is structurally

@@ -73,6 +73,13 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return false;
 }
 
+[[nodiscard]] bool declares_scratch(const ModuleDesc& m, std::string_view name) noexcept {
+    for (const ScratchDecl& s : m.scratch) {
+        if (s.name == name) return true;
+    }
+    return false;
+}
+
 // "<module>.<table>" for a table a module in the set declares (Task 7).
 [[nodiscard]] bool names_table(std::string_view q, std::span<const ModuleDesc> modules) noexcept {
     std::string_view owner;
@@ -91,19 +98,20 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     if (!split_quantity(q, owner, name)) return false;
     const ModuleDesc* m = find_module(modules, owner);
     if (m == nullptr) return false;
-    // A stateful module's quantities name its arrays or its tables (stage 4),
-    // so a misspelt array cannot drop a hazard and a misspelt table cannot bind
-    // nothing. A module with neither keeps free tokens, as in stage 1.
-    if (m->state.empty() && m->tables.empty()) return true;
-    return declares_array(*m, name) || declares_table(*m, name);
+    // A stateful module's quantities name its arrays, its tables or its
+    // scratch (stage 4), so a misspelt array or scratch cannot drop a hazard and
+    // a misspelt table cannot bind nothing. A module with none keeps free
+    // tokens, as in stage 1.
+    if (m->state.empty() && m->tables.empty() && m->scratch.empty()) return true;
+    return declares_array(*m, name) || declares_table(*m, name) || declares_scratch(*m, name);
 }
 
 // OPTIONAL ACCESSES (Task 6; module.hpp's QuantityAccess). Legal only as a
 // read of "<module>.<name>". A core quantity and a field are never absent, so
 // optional would mean nothing there. When the module is in the set, <name>
-// must be one of its arrays or tables (Task 7): an optional read binds an
-// array, a table or nothing, so a present module's misspelt name cannot bind
-// nothing in silence.
+// must be one of its arrays, tables (Task 7) or scratch (Task 7b): an optional
+// read binds one of those or nothing, so a present module's misspelt name
+// cannot bind nothing in silence.
 [[nodiscard]] Result<void> check_optional(const std::string& pass, const QuantityAccess& qa,
                                           std::span<const ModuleDesc> modules) {
     const std::string where = pass + ": optional access to '" + std::string(qa.quantity) + "'";
@@ -119,10 +127,10 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                                                "hold; a core quantity or a field is never absent"));
     }
     if (const ModuleDesc* m = find_module(modules, owner);
-        m != nullptr && !declares_array(*m, name) && !declares_table(*m, name)) {
+        m != nullptr && !declares_array(*m, name) && !declares_table(*m, name) && !declares_scratch(*m, name)) {
         return std::unexpected(invalid(where + ": module '" + std::string(owner) +
-                                       "' is in the set and declares no array or table '" + std::string(name) +
-                                       "'"));
+                                       "' is in the set and declares no array, table or scratch '" +
+                                       std::string(name) + "'"));
     }
     return {};
 }
@@ -136,12 +144,14 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 }
 
 // What one declared access binds (module.hpp's CompiledBinding): the array a
-// "<module>.<array>" quantity names, or the table a "<module>.<table>" one
-// does, whichever module owns it; or nothing. Core quantities are checked
-// first, as known_quantity() checks them. Arrays and tables share one
-// namespace (compile_tables), so at most one of the two loops can match.
+// "<module>.<array>" quantity names, the table a "<module>.<table>" one does,
+// or the scratch a "<module>.<scratch>" one does, whichever module owns it; or
+// nothing. Core quantities are checked first, as known_quantity() checks them.
+// Arrays, tables and scratch share one namespace (compile_tables,
+// compile_scratch), so at most one of the three loops can match.
 [[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays,
-                                         const std::vector<CompiledTable>& tables) noexcept {
+                                         const std::vector<CompiledTable>& tables,
+                                         const std::vector<CompiledScratch>& scratch) noexcept {
     std::string_view owner;
     std::string_view name;
     if (is_core_quantity(qa.quantity) || qa.quantity.starts_with(kFieldPrefix) ||
@@ -156,6 +166,11 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     for (std::size_t i = 0; i < tables.size(); ++i) {
         if (tables[i].module == owner && tables[i].name == name) {
             return CompiledBinding{BindingKind::table, static_cast<uint32_t>(i)};
+        }
+    }
+    for (std::size_t i = 0; i < scratch.size(); ++i) {
+        if (scratch[i].module == owner && scratch[i].name == name) {
+            return CompiledBinding{BindingKind::scratch, static_cast<uint32_t>(i)};
         }
     }
     return {};
@@ -393,6 +408,70 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return out;
 }
 
+// THE SCRATCH TABLE (Task 7b; module.hpp's ScratchDecl), in set order and then
+// each module's declaration order: the order create() allocates them in and
+// the mirror makes their buffers in. A scratch shares the array and table
+// namespace, so "<module>.<name>" names one thing, whichever kind it is.
+//
+// Its BINDING is checked here only against the other scratches: two buffers
+// cannot share one, on any backend. Whether a binding lies in the generated
+// range, and whether a walk entry or a hand-listed derived buffer already holds
+// it, the state mirror checks: only compute/ sees the generated registry.
+[[nodiscard]] Result<std::vector<CompiledScratch>> compile_scratch(std::span<const ModuleDesc> modules,
+                                                                   const std::vector<CompiledArray>& arrays,
+                                                                   const std::vector<CompiledTable>& tables) {
+    std::vector<CompiledScratch> out;
+    for (const ModuleDesc& mod : modules) {
+        for (const ScratchDecl& s : mod.scratch) {
+            if (s.name.empty() || s.name.find('.') != std::string_view::npos) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) + "': scratch '" +
+                                               std::string(s.name) + "': a scratch needs a name with no '.'"));
+            }
+            const std::string where =
+                "scratch '" + std::string(s.name) + "' (module '" + std::string(mod.name) + "')";
+            if (is_core_array(s.name)) {
+                return std::unexpected(invalid(where + ": '" + std::string(s.name) +
+                                               "' is a core array's name; a scratch shares the array namespace"));
+            }
+            if (const auto array = std::ranges::find(arrays, s.name, &CompiledArray::name); array != arrays.end()) {
+                return std::unexpected(invalid(where + ": module '" + array->module +
+                                               "' declares an array of that name; a scratch shares the array "
+                                               "namespace, so <module>.<name> names one thing"));
+            }
+            if (const auto table = std::ranges::find(tables, s.name, &CompiledTable::name); table != tables.end()) {
+                return std::unexpected(invalid(where + ": module '" + table->module +
+                                               "' declares a table of that name; a scratch shares the array "
+                                               "namespace, so <module>.<name> names one thing"));
+            }
+            if (const auto twice = std::ranges::find(out, s.name, &CompiledScratch::name); twice != out.end()) {
+                if (twice->module == mod.name) return std::unexpected(invalid(where + ": declared twice"));
+                return std::unexpected(invalid("scratch '" + std::string(s.name) + "' is declared by module '" +
+                                               twice->module + "' and module '" + std::string(mod.name) +
+                                               "'; a scratch has one owner"));
+            }
+            if (s.elem_size == 0) {
+                return std::unexpected(invalid(where + ": elem_size is 0; a row has a size"));
+            }
+            if (s.extent != Extent::per_body && s.extent != Extent::per_world) {
+                return std::unexpected(invalid(where + ": its extent is " + std::string(extent_name(s.extent)) +
+                                               "; a scratch is per_body or per_world, since nothing attaches, "
+                                               "frees or owns its rows"));
+            }
+            if (s.binding != kNoBinding) {
+                if (const auto shared = std::ranges::find(out, s.binding, &CompiledScratch::binding);
+                    shared != out.end()) {
+                    return std::unexpected(invalid(where + ": GPU binding " + std::to_string(s.binding) +
+                                                   " is scratch '" + shared->name + "''s (module '" +
+                                                   shared->module + "'); two buffers cannot share one binding"));
+                }
+            }
+            out.push_back(CompiledScratch{std::string(mod.name), std::string(s.name), s.elem_size, s.extent,
+                                          s.binding});
+        }
+    }
+    return out;
+}
+
 // The built-in fields' fixed shapes (module.hpp). The GPU row depends on them.
 struct BuiltinField {
     std::string_view name;
@@ -512,8 +591,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                     return std::unexpected(invalid(full + ": unknown quantity '" + std::string(qa.quantity) +
                                                    "' (a core quantity, field.<name> for a field a module "
                                                    "declares, or <module>.<name> for a module in the set, "
-                                                   "where <name> is one of its arrays or tables if it declares "
-                                                   "any)"));
+                                                   "where <name> is one of its arrays, tables or scratch if it "
+                                                   "declares any)"));
                 }
                 // A table changes only in register_model() (Task 7), so no
                 // pass writes or accumulates it -- its own module's included.
@@ -553,6 +632,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     if (!streams) return std::unexpected(streams.error());
     Result<std::vector<CompiledTable>> tables = compile_tables(modules, *arrays);
     if (!tables) return std::unexpected(tables.error());
+    Result<std::vector<CompiledScratch>> scratch = compile_scratch(modules, *arrays, *tables);
+    if (!scratch) return std::unexpected(scratch.error());
 
     // Every declared field has a pass in its provider module that writes it.
     for (const auto& [field, m] : field_owner) {
@@ -706,7 +787,9 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         // indexes SubstepContext::state by its own access list.
         std::vector<CompiledBinding> bindings;
         bindings.reserve(nd.pass->access.size());
-        for (const QuantityAccess& qa : nd.pass->access) bindings.push_back(binding_of(qa, *arrays, *tables));
+        for (const QuantityAccess& qa : nd.pass->access) {
+            bindings.push_back(binding_of(qa, *arrays, *tables, *scratch));
+        }
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
                                           nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings)});
     }
@@ -733,6 +816,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     out.arrays = std::move(*arrays);
     out.streams = std::move(*streams);
     out.tables = std::move(*tables);
+    out.scratch = std::move(*scratch);
     // The vehicle-spawn hooks, in set order (Task 7): the order spawn() calls
     // them in, checking every request against the vehicle.
     for (const ModuleDesc& mod : modules) {

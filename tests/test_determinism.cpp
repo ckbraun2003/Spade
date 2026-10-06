@@ -1560,7 +1560,7 @@ TEST(StructuralQueue, BodyCountMirrorsLiveCountAndDespawnCascadesToElements) {
 // The hole: a reserved-but-uninitialized element row is the arena's zeroes, so
 // its `body_slot` reads 0 -- and 0 is a legitimate world-local body index. The
 // cascade identifies a body's elements by exactly that field, so it would free
-// the innocent row, after which the queued init_drag would write a LIVE row
+// the innocent row, after which its queued init_row would write a LIVE row
 // into a slot the arena considers free: `live_count` under-counts, the next
 // reservation aliases the same row, and the orphan then applies drag to
 // whatever body later occupies that body slot. Every step of that is silent.
@@ -1991,16 +1991,17 @@ TEST(ReplayConfig, EveryWorldRowCarriesTheRunsIdentityAndNothingElse) {
 //
 // IT PINS THE POSITION, NOT THE LAST-NESS, and the difference is the whole
 // point of the test. An assertion that replay_config is LAST would fail the
-// moment a tenth array is appended -- which is the SANCTIONED move -- and its
-// failure message would then read as "make replay_config last again", whose
-// easiest remedy is to register the new array BEFORE it. That is exactly the
+// moment an array is appended after it -- which is the SANCTIONED move, and
+// gnss_sensors and gnss_ring took it -- and its failure message would then
+// read as "make replay_config last again", whose easiest remedy is to
+// register the new array BEFORE it. That is exactly the
 // mid-list insertion this test exists to prevent, arrived at by obeying the
 // test. Pinning the INDEX instead means appending is silent (the index does not
 // move) and only an insertion at or before it can fail.
 TEST(ReplayConfig, OccupiesItsPinnedWalkPosition) {
-    // Nine registered arrays, each contributing its elements then its
-    // slot->world map, so replay_config's elements are walk entry 16 and its
-    // map entry 17. See sim/simulation.cpp's registration block.
+    // Eight registered arrays come before it, each contributing its elements
+    // then its slot->world map, so replay_config's elements are walk entry 16
+    // and its map entry 17. See sim/simulation.cpp's registration block.
     constexpr std::size_t kReplayConfigWalkIndex = 16;
     const char* const kRemedy =
         "a new array must be appended AFTER replay_config, never before it -- appending leaves "
