@@ -1,0 +1,6 @@
+# Edits for the command-line test EditorCli.EditsAndRunsAScene (tests/CMakeLists.txt):
+# spade_sandbox --edit assets/scenes/hover.scene.yaml --apply <this file> --run 25.
+# It saves nothing, so the committed scene and world are never written.
+scene add-asset crate box 0.5 0.5 0.5 pos 2 0.5 0 rot 1 0 0 0 scale 1
+scene duplicate hover_quad_0
+world set-capacities bodies 4 force-elements 8 sensors 2 contacts 4
