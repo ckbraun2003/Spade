@@ -1089,6 +1089,10 @@ int run_live_smoke(const TourOptions& options) {
     // What the run leaves behind, checked rather than assumed: ffmpeg given no
     // frames still exits 0, and a poster request can go unanswered.
     (void)smoke.check(rec.video_frames() > 0u, "frames-recorded", std::to_string(rec.video_frames()) + " frames");
+    // The UI font (the editor design's §13): a missing font is announced, so
+    // the recording must not quietly show ImGui's built-in one instead.
+    (void)smoke.check(sink->ui_font_loaded(), "ui-font",
+                      sink->ui_font_loaded() ? "Inter loaded" : "the UI font did not load; see stderr");
     if (rec.piped()) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);

@@ -241,6 +241,9 @@ class GlTargetSink final : public TargetSink {
     void toggle_help() noexcept;
     // True when the last presented frame drew the legend.
     [[nodiscard]] bool help_drawn() const noexcept;
+    // True when the UI font loaded (sandbox/ui_theme.hpp); when it did not,
+    // the window announced it and draws in ImGui's built-in font.
+    [[nodiscard]] bool ui_font_loaded() const noexcept;
 
   private:
     // Draws the caption and the card on the foreground draw list, so no panel

@@ -107,6 +107,18 @@ else()
         "The target builds and --headless works; the window refuses at runtime with the cause.")
 endif()
 
+# The UI font (the editor design's §13; assets/fonts/README.md), copied beside
+# the executable, where the window loads it from whatever the working
+# directory. Its OFL licence travels with it, as the licence requires.
+set(SPADE_SANDBOX_FONTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/fonts/Inter-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/fonts/Inter-SemiBold.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../assets/fonts/OFL.txt")
+add_custom_command(TARGET spade_sandbox POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:spade_sandbox>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPADE_SANDBOX_FONTS} "$<TARGET_FILE_DIR:spade_sandbox>/fonts/"
+    VERBATIM)
+
 # NOT installed, and that is deliberate: SL2a gives Spade a release identity of
 # eleven LIBRARY modules. The sandbox is a consumer of that surface, not part
 # of it -- installing it would put a developer tool in a package whose whole
