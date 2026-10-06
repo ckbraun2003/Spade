@@ -248,9 +248,11 @@ TEST(EditorSdfEdit, NodeParamsAreSetAndValidated) {
 
 TEST(EditorSdfEdit, NodeMaterialsStayParallelToTheNodes) {
     WorldBuilder b = builder();
+    spade::MaterialDesc base;  // the builder's palette starts empty: this is index 0, red index 1
+    base.name = "base";
     spade::MaterialDesc red;
     red.name = "red";
-    b.material(red).plane(glm::vec3(0, 1, 0), 0.0f).box(glm::vec3(0.5f), kBoxAt).material_for_last_node(1).union_();
+    b.material(base).material(red).plane(glm::vec3(0, 1, 0), 0.0f).box(glm::vec3(0.5f), kBoxAt).material_for_last_node(1).union_();
     const SdfProgram p = built(b);
     ASSERT_EQ(p.node_materials.size(), p.nodes.size());
     const Result<SdfProgram> added = ed::add_primitive(p, SdfPrim::sphere, glm::vec4(0.5f, 0, 0, 0), kBallAt, 1);
