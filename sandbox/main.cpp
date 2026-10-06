@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -50,6 +51,7 @@
 
 #include "builder_scene.hpp"   // the builder's object model and its whole interaction
 #include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
+#include "editor_cli.hpp"      // --edit: the editor's command line, no window
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
@@ -87,6 +89,9 @@ void print_usage() {
     std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
     std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
+    std::puts("  --edit <scene.yaml>   FIRST ARGUMENT ONLY: the editor's command line, no window:");
+    std::puts("                        [--apply <edits.txt>] [--save <scene.yaml>] [--save-world <world.yaml>]");
+    std::puts("                        [--run <steps>]; exit 0 done, 1 refused, 2 bad arguments");
     std::puts("  --help                this text\n");
     std::puts("In the window -- THE DRONE SIM BOX (default):");
     std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
@@ -539,6 +544,13 @@ int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap
 }  // namespace
 
 int main(int argc, char** argv) {
+    // --edit IS ITS OWN PROGRAM: the editor's command line (editor_cli.hpp)
+    // takes every argument after it, parses them itself, and never opens a
+    // window, so it is dispatched before any of the modes below.
+    if (argc >= 2 && std::strcmp(argv[1], "--edit") == 0) {
+        return spade::sandbox::editor::edit_cli(std::vector<std::string>(argv + 2, argv + argc), std::cout,
+                                                std::cerr);
+    }
     // ⚠ THE DEFAULT MODE CHANGED AT C2, AND THE OLD REFUSAL'S REASONING WENT
     // WITH IT. C0 refused to run without --headless because "no arguments"
     // could plausibly have meant "open a window", which did not exist. It

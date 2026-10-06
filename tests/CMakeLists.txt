@@ -304,6 +304,8 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_files.cpp
         test_editor_hash_follow.cpp
         test_editor_run.cpp
+        test_editor_edit_text.cpp
+        test_editor_cli.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
@@ -435,6 +437,21 @@ target_compile_definitions(spade_tests PRIVATE
     # AgreementMatrix's measurements (SPADE_AGREEMENT_MEASURE).
     SPADE_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
 )
+
+# The editor's command line, run as the real executable once (editor plan
+# Task 8; EDT-002). test_editor_cli.cpp tests the same code in process; this
+# proves main() reaches it. The edits file saves nothing, so the committed
+# scene and world are never written. LABELS spade, or test.ps1's -L spade
+# would skip it.
+if(SPADE_BUILD_SANDBOX)
+    add_test(NAME SandboxEditCli.RunsTheExecutable
+        COMMAND $<TARGET_FILE:spade_sandbox> --edit "${SPADE_ASSETS_DIR_NORMALIZED}/scenes/hover.scene.yaml"
+                --apply "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/editor/hover_edits.txt" --run 25)
+    set_tests_properties(SandboxEditCli.RunsTheExecutable PROPERTIES
+        LABELS spade
+        PASS_REGULAR_EXPRESSION "done: applied 3 edits, ran 25 steps"
+        TIMEOUT 120)
+endif()
 
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a
