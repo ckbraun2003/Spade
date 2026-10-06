@@ -426,12 +426,13 @@ struct DrydenParams {
 };
 
 // ---------------------------------------------------------------------------
-// ReplayConfig -- the last of the nine registered arrays (sim/simulation.hpp):
-// the step decomposition and the world-set config hash a restore checks
-// against. NO KERNEL READS IT, and it is mirrored and bound anyway: the
-// binding registry's contract is that it covers the registered walk exactly,
-// so an array present in the walk and absent from the registry would be the
-// silent omission test_slang_layouts.cpp exists to catch.
+// ReplayConfig -- the ninth of the standard walk's eleven registered arrays
+// (sim/simulation.hpp), at walk index 16: the step decomposition and the
+// world-set config hash a restore checks against. NO KERNEL READS IT, and it
+// is mirrored and bound anyway: the binding registry's contract is that it
+// covers the standard walk's arrays exactly, so one present in that walk and
+// absent from the registry would be the silent omission test_slang_layouts.cpp
+// exists to catch.
 // ---------------------------------------------------------------------------
 // @cpp-type   spade::ReplayConfig
 // @cpp-header sim/simulation.hpp

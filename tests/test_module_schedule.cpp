@@ -1048,10 +1048,10 @@ TEST(ModuleState, AStateArrayShapeThatWouldWrapIsRefusedByName) {
 }
 
 // Stage 4, Task 4: attached rows go through one queued init and one declared
-// cascade. The first two tests below pin the cascade's END STATE against
-// today's hand cascade (drag, imu, gnss, rotors). The declared one runs in walk
-// order (drag, imu, rotors, gnss), and each free touches only its own array and
-// free list, so nothing may move.
+// cascade. The first two tests below pin the cascade's END STATE against the
+// hand cascade it replaced (drag, imu, gnss, rotors). The declared one runs in
+// walk order (drag, imu, rotors, gnss), and each free touches only its own
+// array and free list, so nothing may move.
 namespace {
 
 [[nodiscard]] spade::vehicles::ModelType test_quad() {
@@ -1187,11 +1187,12 @@ TEST(ModuleRows, DespawnLeavesEveryAttachedArrayAsAFreshSimulationHasIt) {
 }
 
 // The plan's "Bytes" argument, pinned (the lead's request). The declared
-// cascade frees in walk order, rotors before gnss_sensors; today's hand cascade
-// freed gnss_sensors before rotors. Spawns and despawns interleave -- a vehicle
-// reserved while a despawn is queued, and two bodies freed in one flush, one of
-// them carrying rotors AND a receiver -- and every reservation's slot, and the
-// whole walk's digest at three boundaries, must be what today's order produced.
+// cascade frees in walk order, rotors before gnss_sensors; the hand cascade it
+// replaced freed gnss_sensors before rotors. Spawns and despawns interleave -- a
+// vehicle reserved while a despawn is queued, and two bodies freed in one flush,
+// one of them carrying rotors AND a receiver -- and every reservation's slot,
+// and the whole walk's digest at three boundaries, must be what the hand
+// cascade's order produced.
 // The digests were printed on a346cda's hand cascade before any Task 4 engine
 // change: they are its values, not regenerated ones.
 TEST(ModuleRows, InterleavedChurnLeavesTodaysSlotsAndBytes) {

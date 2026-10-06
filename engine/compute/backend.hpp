@@ -190,12 +190,13 @@ struct BackendDesc {
 // ---------------------------------------------------------------------------
 // StepShape (S6 Task 5) -- the fixed shape a VulkanBackend is created for:
 // world/body/element/sensor capacities plus the two scalars (substeps, h) and
-// the one config flag (batch_dynamic_collision) the schedule needs. Mirrors
-// Simulation::create()'s VALIDATED WorldSetLayout (sim/world_set.hpp) plus the
-// substep decomposition create() itself derives -- see sim/simulation.cpp's
-// create(), which is the one place all seven values are already in scope
-// together and is where a Simulation on the vulkan path builds one of these
-// to hand to VulkanBackend::create().
+// the one config flag (batch_dynamic_collision) the schedule needs, the two SDF
+// extents, and the registered walk and declared scratch as data (each below).
+// Mirrors Simulation::create()'s VALIDATED WorldSetLayout (sim/world_set.hpp)
+// plus the substep decomposition create() itself derives -- see
+// sim/simulation.cpp's create(), which is the one place all of these are
+// already in scope together and is where a Simulation on the vulkan path
+// builds one of these to hand to VulkanBackend::create().
 //
 // DELIBERATELY DOES NOT CARRY ContactParams/GridParams. Those are per-WORLD
 // material/solver records (physics/contacts.hpp, physics/grid.hpp) that reach

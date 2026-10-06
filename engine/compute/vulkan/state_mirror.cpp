@@ -845,8 +845,8 @@ Result<void> StateMirror::readback(ArenaSet& arenas) {
 
     // Pass 1: validate every entry's shape WITHOUT writing a single
     // destination byte -- see backend.hpp's readback() doc comment. A
-    // mismatch discovered at entry 7 of 18 must not have already overwritten
-    // entries 0..6 with device bytes while leaving 8..17 untouched and the
+    // mismatch discovered at entry 7 of 22 must not have already overwritten
+    // entries 0..6 with device bytes while leaving 8..21 untouched and the
     // call reporting failure; validating the whole walk first, and only then
     // running the copy + the memcpy-back pass, is what makes that true.
     arenas.registry().for_each_array([&](const RegisteredArray& array) {

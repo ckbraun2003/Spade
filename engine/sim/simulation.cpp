@@ -459,16 +459,17 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
     // each array's name, element size and extents in registration order, and
-    // restore() rejects a blob whose hash differs -- so reordering the calls
-    // below, or renaming an array, invalidates every recorded snapshot and
+    // restore() rejects a blob whose hash differs -- so reordering the
+    // registrations below (the core's calls, or the standard set's module
+    // order), or renaming an array, invalidates every recorded snapshot and
     // every committed digest. That is the intended cost of a layout change; it
     // is not a thing to do casually.
     //
-    // Each call contributes TWO registry entries (the elements and the
+    // Each registration contributes TWO registry entries (the elements and the
     // slot->world map), atomically.
     //
-    // APPEND-ONLY. A new array belongs AFTER every call below it, never
-    // between two existing ones: FOUR of the five golden scenario headers
+    // APPEND-ONLY. A new array belongs AFTER every existing one, never between
+    // two: FOUR of the five golden scenario headers
     // (tests/golden/scenarios/*.scenario.yaml) carry an
     // `old + suffix = actual, match=YES` line, and a mid-list insertion would
     // silently invalidate that argument for every one of them at once rather
@@ -476,6 +477,11 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // line: it is the fifth scenario, generated after that regeneration
     // rather than continued through it -- which is the "not merely add a
     // fifth to check" the test's own comment refers to.)
+    //
+    // A module's arrays are placed by its declarations, not by a call here:
+    // only the legacy marker (below) registers any before replay_config, and
+    // compile_schedule allows the marker on the five legacy arrays alone, so a
+    // module appended to a set can only append to the walk.
     //
     // AND IT IS ENFORCED BY A TEST, NOT BY THIS COMMENT -- which is what this
     // paragraph used to claim. test_determinism.cpp's
@@ -561,11 +567,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // so every earlier digest is the new one's prefix -- and that argument
     // survives exactly as long as nothing is registered at or before this call.
     //
-    // The rule is therefore about POSITION, not about being LAST. A tenth array
-    // APPENDED BELOW this one is the sanctioned move: every existing entry keeps
-    // its index, the corpus regenerates once for the new suffix, and this
-    // paragraph stays true. Registering it ABOVE this one -- or anywhere among
-    // the nine -- shifts every later entry and invalidates the continuation
+    // The rule is therefore about POSITION, not about being LAST. An array
+    // APPENDED BELOW this one is the sanctioned move (gnss_sensors and
+    // gnss_ring took it first): every existing entry keeps its index, the
+    // corpus regenerates once for the new suffix, and this paragraph stays
+    // true. Registering one ABOVE this one -- anywhere among the eight arrays
+    // before it -- shifts every later entry and invalidates the continuation
     // argument for all four digests at once, which is a different and much more
     // expensive act. ReplayConfig.OccupiesItsPinnedWalkPosition
     // (tests/test_determinism.cpp) enforces precisely that and nothing more: it
@@ -750,8 +757,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // S6 Task 5: the vulkan-path backend. StepShape mirrors the VALIDATED
     // layout this function already derived above (`*layout`) plus the two
     // scalars (substeps, h) and the config flag this function also already
-    // has in scope -- see compute/backend.hpp's StepShape doc comment for
-    // why it carries exactly these seven fields and no others.
+    // has in scope, the two SDF extents, and, as data, the registered walk and
+    // the declared scratch -- see compute/backend.hpp's StepShape doc comment
+    // for why it carries these and nothing else.
     // -----------------------------------------------------------------------
     if (backend.kind == compute::BackendKind::vulkan) {
         // NO UNPORTED-PASS GATE HERE ANY MORE (S6 Task 8). Through Task 7 this
@@ -2550,8 +2558,8 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // -----------------------------------------------------------------------
     // THE DEVICE MIRROR NOW DISAGREES WITH EVERY REGISTERED BYTE (S6 Task 6
     // review round 1, finding C1). This is the largest arena mutation in the
-    // whole API -- spade::restore() above rewrote all nine arrays and both
-    // their free lists -- and it is not a structural-queue op, so
+    // whole API -- spade::restore() above rewrote every registered array, its
+    // map and its free list -- and it is not a structural-queue op, so
     // flush_structural() never sees it. Without this call, a restore followed
     // by a step() on the vulkan path would submit the STALE PRE-RESTORE state
     // to the device and then have the readback overwrite the freshly restored

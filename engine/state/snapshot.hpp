@@ -34,9 +34,9 @@
 // arena bytes without resyncing produces a set whose NEXT allocation diverges
 // from the uninterrupted run, silently.
 //
-// FORMAT (version 2). Little of it is negotiable; all of it is versioned.
+// FORMAT (version 3). Little of it is negotiable; all of it is versioned.
 //
-//   SnapshotHeader                       40 bytes
+//   SnapshotHeader                       48 bytes
 //   for each registered array, in walk order:
 //       SnapshotSectionHeader            24 bytes
 //       name                             name_length bytes, not NUL-terminated
@@ -51,8 +51,8 @@
 // format: the payloads are raw std430 state images whose float and struct
 // layouts are already host/ABI facts, so byte-swapping the scalars in the
 // header would buy nothing. `version` exists so that the day a cross-host
-// format is actually needed, it can be version 2 rather than a silent
-// reinterpretation of version 1 blobs.
+// format is actually needed, it can be a new version rather than a silent
+// reinterpretation of today's blobs.
 //
 // TRUST BOUNDARY. Registry descriptors are trusted: they point at memory the
 // registrant owns and their extents describe that memory (StateRegistry
