@@ -274,6 +274,11 @@ TEST(EditorEditText, AMalformedLineNamesItsFirstBadToken) {
     const Result<ed::WorldEdit> short_line = ed::parse_world_edit("world set-capacities bodies 1 force-elements 2 sensors 3");
     ASSERT_FALSE(short_line.has_value());
     EXPECT_NE(short_line.error().context.find("contacts"), std::string::npos) << short_line.error().context;
+    const Result<ed::WorldEdit> cone =
+        ed::parse_world_edit("world add-terrain cone 1 1 0 0 pos 0 0 0 rot 1 0 0 0 scale 1 material 0");
+    ASSERT_FALSE(cone.has_value());
+    EXPECT_NE(cone.error().context.find("'cone'"), std::string::npos) << cone.error().context;
+    EXPECT_NE(cone.error().context.find("heightfield"), std::string::npos) << cone.error().context;
 }
 
 TEST(EditorEditText, AModelParameterIsReadByItsTableKind) {
