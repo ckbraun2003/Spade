@@ -294,6 +294,12 @@ if(SPADE_BUILD_SANDBOX)
         # The editor (plans/2026-10-05-editor-plan.md), display-free: one
         # file per task's unit, sharing editor_test_support.hpp.
         test_editor_document.cpp
+        test_editor_scene_edits.cpp
+        test_editor_model_params.cpp
+        test_editor_world_edits.cpp
+        test_editor_files.cpp
+        test_editor_hash_follow.cpp
+        test_editor_run.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
