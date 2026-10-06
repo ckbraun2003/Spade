@@ -89,3 +89,7 @@ The first build fetches its dependencies. `scripts\test.ps1` is the gate: green 
 | `CHANGELOG.md` | What changed |
 
 Spade began inside the KAT monorepo and became its own repository on 2026-09-28. KAT is now a consumer; see `docs/design/consumers.md`.
+
+## License
+
+Apache License 2.0, see `LICENSE`; third-party components in `THIRD_PARTY_NOTICES.md`.
