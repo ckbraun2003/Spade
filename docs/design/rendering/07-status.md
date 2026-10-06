@@ -100,6 +100,10 @@ These were measured on the branches, not on the merged `master`, which also carr
 
 **GL CSG band** (`GpuGlRenderer.CsgMatchesTheCpuWithinItsBand`). Measured at `e11d2d5` on the RTX 3060 Ti, driver 572.83, at 160x120: 2709 covered pixels on each path, 0 misses either way, and at most 1 level apart over the 2335 interior pixels. Pinned at 0 and 1. The scene's tessellated balls are unlit: a lit mesh is Gouraud on the CPU (`SR-18`) and per pixel on GL, which alone moves a lit ball's pixels by up to 11 levels.
 
+## Lessons for every realm
+
+- **`-fsyntax-only` misses the optimiser's warnings (2026-10-06).** `maybe-uninitialized` and `array-bounds` fire only in a real optimised compile. `flow_render.cpp` passed the syntax check, then failed a fresh leg's Release `-O3` build twice: copying a struct whose `std::optional` held a struct with a `std::vector` (a gcc 13 false positive), and `std::sort` over a 4-slot `std::array`. A cheap middle step catches both: compile the changed TU in full with the leg's own command from `ninja -t commands <object>` (keep `-c`, send `-o` to `/tmp`), adding `-Wall -Wextra -Wpedantic -Werror`. Prove it with a control: the unfixed file must fail. Offered to Test/Docs for `scripts/gcc-check.sh` (the lead, 2026-10-06).
+
 ## Corrections to earlier records
 
 - 2026-10-01: the consolidation's status said S7b was "NOT STARTED". The Vulkan raster's stages 1–2 had landed (`038b82b`, `018fc09`, `95333c5`).
