@@ -485,6 +485,7 @@ add_library(spade_render STATIC
     render/agreement.cpp
     render/transfer_function.cpp
     render/colour_maps.cpp
+    render/flow_sample.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)
