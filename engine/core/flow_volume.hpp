@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -85,9 +86,10 @@ struct FlowVolume {
 }
 
 // L6: a reader refuses a malformed volume rather than drawing part of it.
-// invalid_argument for a zero dimension, a cell that is not finite and
-// positive, an origin that is not finite, a texture of the wrong size, or a
-// channel range that is not finite with min <= max.
+// invalid_argument for a zero dimension, dimensions whose half count
+// overflows, a cell that is not finite and positive, an origin that is not
+// finite, a texture of the wrong size, a no-data count past the volume's
+// halves, or a channel range that is not finite with min <= max.
 [[nodiscard]] inline Result<void> validate_flow_volume(const FlowVolume& volume) {
     const FlowVolumeHeader& h = volume.header;
     const auto refuse = [](const std::string& why) {
@@ -102,10 +104,24 @@ struct FlowVolume {
     if (!(std::isfinite(h.origin.x) && std::isfinite(h.origin.y) && std::isfinite(h.origin.z))) {
         return refuse("the origin is not finite");
     }
-    const uint64_t halves = uint64_t{h.nx} * h.ny * h.nz * kFlowHalvesPerCell;
+    // Each multiply checked: an unchecked product wraps (a 2^22 cube is 2^68
+    // halves, 0 modulo 2^64) and would pass empty textures to unchecked reads.
+    constexpr uint64_t kMax = std::numeric_limits<std::size_t>::max();
+    uint64_t halves = kFlowHalvesPerCell;
+    for (const uint32_t n : {h.nx, h.ny, h.nz}) {
+        if (halves > kMax / n) {
+            return refuse("its " + std::to_string(h.nx) + " x " + std::to_string(h.ny) + " x " +
+                          std::to_string(h.nz) + " cells overflow a texture's size");
+        }
+        halves *= n;
+    }
     if (volume.v.size() != halves || volume.s.size() != halves) {
         return refuse("the textures hold " + std::to_string(volume.v.size()) + " and " +
                       std::to_string(volume.s.size()) + " halves, not " + std::to_string(halves));
+    }
+    if (h.no_data > 2u * halves) {
+        return refuse("its no-data count " + std::to_string(h.no_data) + " is past its " +
+                      std::to_string(2u * halves) + " halves");
     }
     for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
         const float lo = h.channel_min[c];
