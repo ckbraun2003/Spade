@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "scene/scene_file.hpp"
+#include "unique_temp.hpp"
 #include "world/world_file.hpp"
 
 namespace spade::sandbox::editor::test {
@@ -112,28 +113,19 @@ namespace spade::sandbox::editor::test {
 
 // ---- files (Task 5 onward) ----
 
-// A fresh folder for one test, named after it and removed when it goes out of
-// scope. Tests may run in parallel processes, so the name is the test's own.
-class TempDir {
+// A fresh folder for one test, removed when it goes out of scope. Its name
+// carries the test's for a reader, and tests/unique_temp.hpp makes it unique
+// per process and per instance: every realm's suite runs on this machine at
+// once, in one temp folder.
+class TempDir : public ::spade::test::TempDir {
   public:
-    TempDir() {
-        const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        path_ = std::filesystem::temp_directory_path() /
-                ("spade_editor_" + std::string(info->test_suite_name()) + "_" + info->name());
-        std::error_code ec;
-        std::filesystem::remove_all(path_, ec);
-        std::filesystem::create_directories(path_);
-    }
-    ~TempDir() {
-        std::error_code ec;
-        std::filesystem::remove_all(path_, ec);
-    }
-    TempDir(const TempDir&) = delete;
-    TempDir& operator=(const TempDir&) = delete;
-    [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+    TempDir() : ::spade::test::TempDir(tag()) {}
 
   private:
-    std::filesystem::path path_;
+    [[nodiscard]] static std::string tag() {
+        const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+        return "editor_" + std::string(info->test_suite_name()) + "_" + info->name();
+    }
 };
 
 [[nodiscard]] inline std::string read_bytes(const std::filesystem::path& p) {

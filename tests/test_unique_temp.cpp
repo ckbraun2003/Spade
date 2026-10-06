@@ -34,7 +34,8 @@ TEST(UniqueTemp, APathNamesItsProcessAndTag) {
     const std::string name = p.filename().string();
     EXPECT_NE(name.find("_" + std::to_string(spade::test::process_id()) + "_"), std::string::npos) << name;
     EXPECT_TRUE(name.ends_with("_probe.yaml")) << name;
-    EXPECT_EQ(p.parent_path(), fs::temp_directory_path());
+    // temp_directory_path() ends in a separator on Windows; parent_path() does not.
+    EXPECT_EQ((p.parent_path() / "x").lexically_normal(), (fs::temp_directory_path() / "x").lexically_normal());
     EXPECT_FALSE(fs::exists(p));  // a path is named, not created
     EXPECT_NE(spade::test::unique_temp_path("probe.yaml"), p);
 }
