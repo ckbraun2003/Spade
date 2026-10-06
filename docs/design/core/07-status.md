@@ -27,16 +27,17 @@
 
 ## Needs a user decision
 
-None open. The sensor dedup was ruled on 2026-10-02: the module API absorbs it (`CORE-4`).
+None open. The sensor dedup (`CORE-4`) is done: stage 4 collapsed the IMU/GNSS pairs (`bd0f640`).
 
 ## Next
 
 - **The drone builder, Core's part** (`plans/2026-10-03-drone-builder-core-plan.md`): done. A, `transform_of` public, merged `65c2295`. B, the design frame, `7532259`. C, snapshot format v3 with the model registry's identity, `7d46b6d`. D, the scene-file schema and its first golden, `43eac56`.
-- **Module API, stage 4: modules own their state** (`CORE-4`, `plans/2026-10-05-module-api-stage4-plan.md`).
+- **Module API, stage 4: modules own their state** (`CORE-4`, `plans/2026-10-05-module-api-stage4-plan.md`): done, merged 2026-10-06.
   - The spec was approved 2026-10-02 (`plans/2026-10-02-module-api-design.md`). Stages 1, 2 and 3 are merged (`062e1fa`, `dca7cfb`, `42b352a`).
-  - Task 1 is merged (`eb57d4d`), and Tasks 2 to 7 (`a698ea4`). Task 7b, the scratch kind, and Task 8, this prose, are on `core/module-state` for review.
+  - Task 1 is merged (`eb57d4d`), Tasks 2 to 7 (`a698ea4`), and Task 7b, the scratch kind, with Task 8, this prose (head `5663293`).
   - The configuration tables' GPU mirror waits for stage 6's fixed bindings.
-- **Stages 5 and 6 follow:** grades, roles and component availability, then the translation lock.
+- **Module API, stage 5: grades, roles, component availability** (`plans/2026-10-05-module-api-stage5-plan.md`, approved 2026-10-05). Task 1 first: tables shared by every world, `table_rows<T>`, `all_rows<T>`, and a sticky fault for a misused accessor.
+- **Then stage 6** (the translation lock), **then stage 7** (airflow's GPU groundwork, design to the user before code; spec §15).
 
 ## Debt
 
