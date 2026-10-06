@@ -468,18 +468,22 @@ TEST_F(GpuGlRenderer, BackgroundMatchesTheCpuWithinItsMeasuredBand) {
 // measured and pinned (03-verification): a regression guard on a
 // best-effort technique (RND-3), not a grade.
 TEST_F(GpuGlRenderer, OverlaysMatchTheCpuWithinTheirBand) {
-    // Measured 2026-10-05 on rendering/gl-overlays, 160x120, on an NVIDIA
-    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 4 of the CPU's 3277
-    // overlay pixels miss, and 0 of GL's. The 4 are where a bounds edge
-    // crosses grid lines on screen: GL's bounds line covers a pixel that is
-    // grid on the CPU (3), and one grid pixel lands on bare ground in GL.
+    // Re-measured 2026-10-06 on rendering/line-gaps, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), after the CPU's
+    // rasterizeLine() stopped skipping columns (named cause, TD-2): 2 of the
+    // CPU's 3284 overlay pixels miss, at (9, 45) and (28, 55), and 1 of GL's
+    // 3282, at (17, 49). All three are grid pixels (grey 90) that the other
+    // path draws a pixel further off. Before the fix (2026-10-05, on
+    // rendering/gl-overlays): 4 of the CPU's 3277 and 0 of GL's, where a
+    // bounds edge crossed grid lines. Gap-free CPU lines agree with GL on
+    // those, and add one grid pixel GL places elsewhere.
     // Pinned at the measurement. Another device may differ; re-measure there
     // before widening (03-verification). Known difference, within the band:
     // GL biases each vertex before clipping, and a vertex behind the eye gets
     // no bias, so a grid line crossing the eye plane bends by about 0.2 px
     // against the CPU, which biases after clipping.
-    constexpr size_t kBandCpuMisses = 4;
-    constexpr size_t kBandGlMisses = 0;
+    constexpr size_t kBandCpuMisses = 2;
+    constexpr size_t kBandGlMisses = 1;
 
     RenderScene scene = make_ground_scene();
     // Off the grid lines: a bounds edge on a grid line would tie with it, and
