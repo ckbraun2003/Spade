@@ -177,3 +177,41 @@ TEST(EditorWorldEdits, PropsAreAddedEditedAndRemovedByIndex) {
     for (int i = 0; i < 3; ++i) ASSERT_TRUE(d.undo());
     EXPECT_EQ(support::world_text_of(d.desc()), before);
 }
+
+// Terrain (editor plan Task 15): the edits go through editor_sdf_edit.hpp, so
+// they are validated and undone like every other world edit.
+TEST(EditorWorldEdits, TerrainIsEditedThroughTheHelperAndUndone) {
+    auto d = doc_of(support::sample_world());
+    const std::string before = support::world_text_of(d.desc());
+    spade::SdfPose at;
+    at.position = glm::vec3(2.0f, 0.5f, 0.0f);
+    ASSERT_TRUE(ed::apply(d, ed::AddTerrainPrimitive{spade::SdfPrim::box, glm::vec4(0.5f, 0.5f, 0.5f, 0.0f), at, 0})
+                    .has_value());
+    const std::vector<ed::SdfPiece> pieces = ed::union_pieces(d.desc().sdf).value();
+    ASSERT_EQ(pieces.size(), 2u);
+    at.position.y = 1.5f;
+    ASSERT_TRUE(ed::apply(d, ed::ReposeTerrainPiece{1, at}).has_value());
+    ASSERT_TRUE(ed::apply(d, ed::SetTerrainParams{pieces[1].last, glm::vec4(1.0f, 0.5f, 0.5f, 0.0f)}).has_value());
+    ASSERT_TRUE(ed::apply(d, ed::RemoveTerrainPiece{1}).has_value());
+    EXPECT_EQ(support::world_text_of(d.desc()), before);  // add, then remove, restores the bytes
+    for (int i = 0; i < 4; ++i) ASSERT_TRUE(d.undo());
+    EXPECT_EQ(support::world_text_of(d.desc()), before);
+}
+
+TEST(EditorWorldEdits, ARefusedTerrainEditChangesNothing) {
+    auto d = doc_of(support::sample_world());  // the ground is its only piece
+    const Result<void> r = ed::apply(d, ed::RemoveTerrainPiece{0});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("only piece"), std::string::npos) << r.error().context;
+    EXPECT_FALSE(d.can_undo());
+}
+
+TEST(EditorWorldEdits, ANoOpTerrainEditCommitsNothing) {
+    auto d = doc_of(support::sample_world());
+    spade::SdfPose at;
+    at.position = glm::vec3(2.0f, 0.5f, 0.0f);
+    ASSERT_TRUE(ed::apply(d, ed::AddTerrainPrimitive{spade::SdfPrim::sphere, glm::vec4(0.5f, 0, 0, 0), at, 0}).has_value());
+    d.mark_saved();
+    ASSERT_TRUE(ed::apply(d, ed::ReposeTerrainPiece{1, at}).has_value());  // the pose it has
+    EXPECT_FALSE(d.dirty());
+}
