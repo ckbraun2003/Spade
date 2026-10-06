@@ -1122,6 +1122,24 @@ TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
+// L6: nor does GL draw streamlines or tracers yet (plan step 7).
+TEST_F(GpuGlRenderer, RefusesFlowLinesAndPointsUntilItsPassLands) {
+    RenderScene scene = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    RenderScene lines = scene;
+    lines.flow_polylines.push_back(spade::render::FlowPolyline{{glm::vec3(0.0f), glm::vec3(1.0f)},
+                                                               {glm::vec3(1.0f), glm::vec3(1.0f)}});
+    const auto drew = renderer_->draw(lines, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value()) << "streamlines GL cannot draw must be refused";
+    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+    RenderScene points = scene;
+    points.flow_points.positions = {glm::vec3(0.0f)};
+    points.flow_points.colours = {glm::vec3(1.0f)};
+    const auto dotted = renderer_->draw(points, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    ASSERT_FALSE(dotted.has_value()) << "tracers GL cannot draw must be refused";
+    EXPECT_EQ(dotted.error().code, spade::Code::unavailable);
+}
+
 // validate()'s own code comes through: a program needing more stack than
 // kMaxSdfDepth is capacity_exceeded, not invalid_argument.
 TEST_F(GpuGlRenderer, PassesThroughAProgramsCapacityRefusal) {

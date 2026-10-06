@@ -291,4 +291,13 @@ std::vector<glm::vec3> seed_ring(glm::vec3 centre, glm::vec3 axis, float radius,
     return out;
 }
 
+// RED: stubs.
+Result<void> validate_flow_polyline(const FlowPolyline&) { return {}; }
+
+Result<void> validate_flow_points(const FlowPoints&) { return {}; }
+
+FlowPolyline colour_streamline(const Streamline&, const PreparedTransfer&) { return {}; }
+
+FlowPoints tracer_points(const TracerState&, glm::vec3, uint32_t) { return {}; }
+
 }  // namespace spade::render

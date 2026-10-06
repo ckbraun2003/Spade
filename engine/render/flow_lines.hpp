@@ -26,6 +26,7 @@
 
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "render/transfer_function.hpp"
 
 namespace spade::render {
 
@@ -108,5 +109,35 @@ struct TracerState {
 [[nodiscard]] Result<void> advance_tracers(TracerState& state, const FlowVolume& volume,
                                            std::span<const TracerSource> sources, float dt,
                                            const TracerOptions& options = {});
+
+// ---------------------------------------------------------------------------
+// DRAWING. A streamline becomes a polyline with a colour per point; tracers
+// become points. The raster modes draw both after the flow layers and
+// before the overlays, depth-tested and unlit. A segment takes the mean of
+// its two points' colours; a point is a square of size_px pixels. GL
+// refuses them until its pass lands (plan step 7).
+// ---------------------------------------------------------------------------
+
+struct FlowPolyline {
+    std::vector<glm::vec3> points;
+    std::vector<glm::vec3> colours;  // one per point, in [0, 1]
+};
+
+struct FlowPoints {
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> colours;  // one per position, in [0, 1]
+    uint32_t size_px = 3;            // 1 to 16
+};
+
+// invalid_argument, by name: not one colour per point, a point that is not
+// finite, a colour outside [0, 1], or (points) a size outside 1 to 16.
+[[nodiscard]] Result<void> validate_flow_polyline(const FlowPolyline& line);
+[[nodiscard]] Result<void> validate_flow_points(const FlowPoints& points);
+
+// A streamline coloured by its speeds through `by_speed`'s colours.
+[[nodiscard]] FlowPolyline colour_streamline(const Streamline& line, const PreparedTransfer& by_speed);
+
+// Live tracers as points of one colour (smoke).
+[[nodiscard]] FlowPoints tracer_points(const TracerState& state, glm::vec3 colour, uint32_t size_px = 3);
 
 }  // namespace spade::render
