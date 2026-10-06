@@ -288,6 +288,27 @@ TEST(RenderFlowIso, AnIsoColouredBySpeedTakesTheSpeedColourAtTheHit) {
     EXPECT_NEAR(r.opaque_t, 1.0 - r0, 0.004) << "the hit is the cylinder's near side";
 }
 
+// The hit lands on the cylinder: rays at several offsets from the axis
+// enter it at t = 1 - sqrt(r0^2 - x^2). The steps are half a cell (9.4 mm)
+// apart, so only the refinement brings every hit within the tolerance.
+TEST(RenderFlowIso, TheRefinedHitLiesOnTheAnalyticSurface) {
+    const spade::FlowVolume volume = lamb_oseen_volume();
+    const double q0 = 0.5 * lo_q(0.0);
+    const double r0 = lo_radius_of(q0);
+    const auto prepared =
+        spade::render::prepare_flow_layer(FlowLayer{&volume, {}, {red_iso(FlowQuantity::q_hat, q_hat(q0))}});
+    double worst = 0.0;
+    for (int k = 0; k < 9; ++k) {
+        const double x = 0.011 * k;
+        const auto r = spade::render::march_flow_ray(prepared, glm::vec3(static_cast<float>(x), 0.0f, 1.0f),
+                                                     glm::vec3(0.0f, 0.0f, -1.0f), 0.0f, 2.0f);
+        ASSERT_TRUE(std::isfinite(r.opaque_t)) << "offset " << x;
+        worst = std::max(worst, std::fabs(r.opaque_t - (1.0 - std::sqrt(r0 * r0 - x * x))));
+    }
+    std::printf("[ iso hit ] worst |t - analytic| = %.6f m\n", worst);
+    EXPECT_LT(worst, 0.001) << "metres";
+}
+
 // A translucent iso composites at each crossing and lets the ray go on; an
 // opaque one ends it.
 TEST(RenderFlowIso, TranslucentIsosCompositeAndOpaqueOnesEndTheRay) {
