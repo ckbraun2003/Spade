@@ -1168,6 +1168,36 @@ void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene
     }
 }
 
+// Streamlines and tracers (render/flow_lines.hpp), depth-tested and unlit:
+// each segment in the mean of its ends' colours, each point a square of
+// size_px pixels about its projection. render() has refused malformed ones.
+void draw_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    for (const FlowPolyline& line : scene.flow_polylines) {
+        for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+            const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+            draw_world_segment(fb, vc, vec3d(line.points[i]), vec3d(line.points[i + 1u]), to_byte(c.r), to_byte(c.g),
+                               to_byte(c.b));
+        }
+    }
+    const FlowPoints& points = scene.flow_points;
+    const int size = static_cast<int>(points.size_px);
+    for (size_t i = 0; i < points.positions.size(); ++i) {
+        const Vec3 pc = worldToCameraSpace(vc, vec3d(points.positions[i]));
+        if (!(-pc.z >= vc.nearP && -pc.z <= vc.farP)) {
+            continue;
+        }
+        const ScreenPoint sp = projectCameraSpace(vc, pc);
+        const int x0 = static_cast<int>(std::floor(sp.x - 0.5 * size));
+        const int y0 = static_cast<int>(std::floor(sp.y - 0.5 * size));
+        const glm::vec3& c = points.colours[i];
+        for (int y = y0; y < y0 + size; ++y) {
+            for (int x = x0; x < x0 + size; ++x) {
+                setPixelIfCloser(fb, x, y, sp.invDepth, to_byte(c.r), to_byte(c.g), to_byte(c.b));
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Overlay passes (RenderOptions::overlays, PA-4) -- ported from the
 // wireframe rasterizer's drawGroundGrid/drawWorldBounds/drawSpawnMarkers/
@@ -1713,6 +1743,15 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
                 Error{valid.error().code, "render: flow layer " + std::to_string(i) + ": " + valid.error().context});
         }
     }
+    for (size_t i = 0; i < scene.flow_polylines.size(); ++i) {
+        if (Result<void> valid = validate_flow_polyline(scene.flow_polylines[i]); !valid) {
+            return std::unexpected(
+                Error{valid.error().code, "render: flow polyline " + std::to_string(i) + ": " + valid.error().context});
+        }
+    }
+    if (Result<void> valid = validate_flow_points(scene.flow_points); !valid) {
+        return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+    }
     if (flow_report != nullptr) {
         flow_report->layers.clear();  // the ray-march mode draws no flow layers, and reports none
     }
@@ -1854,6 +1893,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     }
     draw_field_layers(fb, vc, scene);
     draw_flow_layers(fb, vc, scene, camera, flow_report);
+    draw_flow_lines(fb, vc, scene);
 
     // Overlays: overlay_geometry() decides what draws and in what order; GL
     // draws the same lists.

@@ -291,13 +291,51 @@ std::vector<glm::vec3> seed_ring(glm::vec3 centre, glm::vec3 axis, float radius,
     return out;
 }
 
-// RED: stubs.
-Result<void> validate_flow_polyline(const FlowPolyline&) { return {}; }
+namespace {
 
-Result<void> validate_flow_points(const FlowPoints&) { return {}; }
+[[nodiscard]] Result<void> check_coloured(const std::vector<glm::vec3>& points, const std::vector<glm::vec3>& colours,
+                                          const char* what) {
+    const auto refuse = [what](const std::string& why) {
+        return std::unexpected(Error{Code::invalid_argument, std::string(what) + ": " + why});
+    };
+    if (colours.size() != points.size()) {
+        return refuse(std::to_string(colours.size()) + " colours for " + std::to_string(points.size()) + " points");
+    }
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        if (!finite(points[i])) return refuse("point " + std::to_string(i) + " is not finite");
+        const glm::vec3& c = colours[i];
+        for (const float x : {c.x, c.y, c.z}) {
+            if (!(x >= 0.0f && x <= 1.0f)) return refuse("colour " + std::to_string(i) + " is outside [0, 1]");
+        }
+    }
+    return {};
+}
 
-FlowPolyline colour_streamline(const Streamline&, const PreparedTransfer&) { return {}; }
+}  // namespace
 
-FlowPoints tracer_points(const TracerState&, glm::vec3, uint32_t) { return {}; }
+Result<void> validate_flow_polyline(const FlowPolyline& line) {
+    return check_coloured(line.points, line.colours, "flow polyline");
+}
+
+Result<void> validate_flow_points(const FlowPoints& points) {
+    if (points.size_px < 1u || points.size_px > 16u) {
+        return std::unexpected(Error{Code::invalid_argument, "flow points: the size is not 1 to 16 pixels"});
+    }
+    return check_coloured(points.positions, points.colours, "flow points");
+}
+
+FlowPolyline colour_streamline(const Streamline& line, const PreparedTransfer& by_speed) {
+    FlowPolyline out;
+    out.points = line.points;
+    out.colours.reserve(line.speeds.size());
+    for (const float speed : line.speeds) {
+        out.colours.push_back(apply_transfer(by_speed, speed).colour);
+    }
+    return out;
+}
+
+FlowPoints tracer_points(const TracerState& state, glm::vec3 colour, uint32_t size_px) {
+    return FlowPoints{state.positions, std::vector<glm::vec3>(state.positions.size(), colour), size_px};
+}
 
 }  // namespace spade::render
