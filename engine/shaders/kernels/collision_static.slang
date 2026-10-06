@@ -157,6 +157,7 @@ void collision_static(uint3 tid : SV_DispatchThreadID) {
     const float3 n = float3(s.gradient.x / grad_len, s.gradient.y / grad_len, s.gradient.z / grad_len);
 
     float3 vel = bodies[slot].vel;
+    const float3 vel_in = vel;  // PHY-7: the change below is the IMU's
 
     // 1. NORMAL IMPULSE, only for an APPROACHING contact (contacts.cpp:94-110).
     //    `j_n` is MASS-NORMALIZED -- a speed, not an impulse in N s: against a
@@ -182,6 +183,7 @@ void collision_static(uint3 tid : SV_DispatchThreadID) {
         vel = vel - dv_t * float3(v_t.x / v_t_len, v_t.y / v_t_len, v_t.z / v_t_len);
     }
     bodies[slot].vel = vel;
+    contact_dv[slot] = float4(contact_dv[slot].xyz + (vel - vel_in), 0.0f);
 
     // 3. POSITIONAL CORRECTION (contacts.cpp:152-187). No velocity
     //    contribution -- that is what keeps it from adding energy. Spelled with

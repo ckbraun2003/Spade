@@ -186,9 +186,9 @@ constexpr float kG = 9.80665f;
 
 // The wrench that holds a unit-mass body exactly stationary against gravity:
 // force_acc becomes m*|g| upward, so accel_ext + gravity is exactly zero and
-// neither vel nor pos changes. This is also the ONLY way to get a static
-// reading -- contact response is impulse-based and never touches force_acc, so
-// a body resting on an SDF reads ~0, not +g (sensors/imu.hpp section 5).
+// neither vel nor pos changes. A body resting on an SDF reads +g as well, since
+// PHY-7 (ImuContact.*, sensors/imu.hpp section 5); this wrench keeps the body
+// off every contact, so its reading is force_acc's alone.
 [[nodiscard]] glm::vec3 antigravity_force(float mass) { return glm::vec3(0.0f, mass * kG, 0.0f); }
 
 // A rotation of +90 degrees about the body's Z axis, as a (w, x, y, z)
@@ -1589,4 +1589,167 @@ TEST(Imu, ReseedRederivesALiveSensorsStreamAndLeavesItsHistoryAlone) {
         << matching_stale << " of " << after.size()
         << " post-reseed samples match the OLD stream's continuation: the reseed re-derived "
            "WorldParams::seed but left this already-live sensor row behind";
+}
+
+// ---------------------------------------------------------------------------
+// PHY-7: the specific force includes the contact response. To an
+// accelerometer a floor's reaction is a force like any other: at rest it reads
+// +g up, and through an impact it reads the velocity change less gravity,
+// sample by sample (Kat's report; physics/plans/2026-10-05-imu-contact-
+// specific-force-plan.md). The body below never rotates and the IMU sits at
+// its COM, so body, mount and world axes coincide.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr float kBallRadius = 0.1f;
+
+[[nodiscard]] spade::Result<WorldSetDesc> contact_world_set(uint32_t bodies, uint32_t sensors, float restitution,
+                                                            bool floor) {
+    WorldBuilder builder;
+    builder.name(floor ? "floor" : "open")
+        .environment(default_environment())
+        .capacities(capacities(bodies, 1, sensors));
+    if (floor) builder.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+    const spade::Result<spade::WorldDesc> world = builder.build();
+    if (!world) return std::unexpected(world.error());
+
+    WorldInstanceDesc instance;
+    instance.world = *world;
+    instance.seed = 0xF1002ULL;
+    instance.turbulence = spade::dryden_params(TurbulenceLevel::none);
+    instance.contacts = no_contacts();
+    instance.contacts.restitution_e = restitution;
+    instance.contacts.proxy_radius = kBallRadius;
+    instance.grid = unit_grid();
+    return WorldSetDesc{{instance}};
+}
+
+// One substep per step; after each, the body's newest sample against the
+// state: (v_k - v_{k-1}) / h - gravity. Counts the steps that disagree and
+// keeps the first, so a red run reports one line, not hundreds.
+struct Tracked {
+    BodyRef body;
+    ImuSensorRef imu;
+    SampleIndex since = 0;
+    glm::vec3 v_prev{0.0f};
+    glm::vec3 peak{0.0f};  // the largest |component| seen, signed
+    int mismatches = 0;
+    std::string first{};
+};
+
+void step_and_check(Simulation& sim, std::span<Tracked> tracked, int steps) {
+    const float h = sim.substep_h();
+    const glm::vec3 g = default_environment().gravity;
+    std::vector<ImuSample> buffer(kRingDepth);
+    for (Tracked& t : tracked) {
+        const spade::Result<const spade::BodyState*> state = sim.body(t.body);
+        ASSERT_OK(state);
+        t.v_prev = (*state)->vel;
+    }
+    for (int k = 0; k < steps; ++k) {
+        ASSERT_OK(sim.step(1));
+        for (Tracked& t : tracked) {
+            const spade::Result<ImuPoll> poll = sim.poll_imu(t.imu, t.since, buffer);
+            ASSERT_OK(poll);
+            ASSERT_EQ(poll->samples.size(), 1u);
+            t.since = poll->next_since;
+            const spade::Result<const spade::BodyState*> state = sim.body(t.body);
+            ASSERT_OK(state);
+            const glm::vec3 v = (*state)->vel;
+            const glm::vec3 want = (v - t.v_prev) / h - g;
+            const glm::vec3 got = poll->samples[0].accel;
+            const float tol = 1e-2f + 1e-4f * glm::length(want);
+            if (glm::length(got - want) > tol) {
+                if (t.mismatches++ == 0) {
+                    t.first = "step " + std::to_string(k) + ": reads (" + std::to_string(got.x) + ", " +
+                              std::to_string(got.y) + ", " + std::to_string(got.z) + "), the state says (" +
+                              std::to_string(want.x) + ", " + std::to_string(want.y) + ", " +
+                              std::to_string(want.z) + ")";
+                }
+            }
+            for (int i = 0; i < 3; ++i) {
+                if (std::fabs(got[i]) > std::fabs(t.peak[i])) t.peak[i] = got[i];
+            }
+            t.v_prev = v;
+        }
+    }
+}
+
+}  // namespace
+
+TEST(ImuContact, AtRestOnTheFloorItReadsPlusGUp) {
+    const spade::Result<WorldSetDesc> set = contact_world_set(1, 1, /*restitution=*/0.0f, /*floor=*/true);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    BodySpawn spawn = unit_body();
+    spawn.pos = glm::vec3(0.0f, kBallRadius, 0.0f);
+    const spade::Result<BodyRef> body = sim->spawn(0, spawn);
+    ASSERT_OK(body);
+    const spade::Result<ImuSensorRef> imu = sim->add_imu_sensor(*body, ImuSensorSpawn{});
+    ASSERT_OK(imu);
+    ASSERT_OK(sim->flush_structural());
+
+    std::vector<ImuSample> samples;
+    collect_samples(*sim, *imu, 1000, kPollBlock, samples);
+    ASSERT_EQ(samples.size(), 1000u);
+    glm::vec3 mean(0.0f);
+    for (std::size_t i = samples.size() - 64; i < samples.size(); ++i) mean += samples[i].accel;
+    mean /= 64.0f;
+    EXPECT_NEAR(mean.x, 0.0f, 1e-4f);
+    EXPECT_NEAR(mean.y, kG, 1e-3f) << "an IMU resting on the floor must read +g up; 0 is the contact-blind "
+                                      "reading PHY-7 removes";
+    EXPECT_NEAR(mean.z, 0.0f, 1e-4f);
+}
+
+TEST(ImuContact, ThroughABounceItReadsTheVelocityChangeLessGravity) {
+    const spade::Result<WorldSetDesc> set = contact_world_set(1, 1, /*restitution=*/0.5f, /*floor=*/true);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    BodySpawn spawn = unit_body();
+    spawn.pos = glm::vec3(0.0f, 0.5f, 0.0f);
+    const spade::Result<BodyRef> body = sim->spawn(0, spawn);
+    ASSERT_OK(body);
+    const spade::Result<ImuSensorRef> imu = sim->add_imu_sensor(*body, ImuSensorSpawn{});
+    ASSERT_OK(imu);
+    ASSERT_OK(sim->flush_structural());
+
+    // 0.7 s: the fall (0.29 s), the first bounce, the second impact (~0.57 s).
+    Tracked t{*body, *imu};
+    step_and_check(*sim, std::span<Tracked>(&t, 1), 700);
+    EXPECT_EQ(t.mismatches, 0) << t.first;
+    // The impact: about (1 + e) * sqrt(2 g (0.5 - r)) / h = 1.5 * 2.8 / 1e-3, some 430 g, at full size (no
+    // range clamp).
+    EXPECT_GT(t.peak.y, 100.0f * kG);
+}
+
+TEST(ImuContact, TwoBodiesThatCollideReadEqualAndOppositeReactions) {
+    const spade::Result<WorldSetDesc> set = contact_world_set(2, 2, /*restitution=*/1.0f, /*floor=*/false);
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    BodySpawn left = unit_body();
+    left.pos = glm::vec3(-0.5f, 100.0f, 0.0f);
+    left.vel = glm::vec3(2.0f, 0.0f, 0.0f);
+    BodySpawn right = unit_body();
+    right.pos = glm::vec3(0.0f, 100.0f, 0.0f);
+    const spade::Result<BodyRef> a = sim->spawn(0, left);
+    ASSERT_OK(a);
+    const spade::Result<BodyRef> b = sim->spawn(0, right);
+    ASSERT_OK(b);
+    const spade::Result<ImuSensorRef> imu_a = sim->add_imu_sensor(*a, ImuSensorSpawn{});
+    ASSERT_OK(imu_a);
+    const spade::Result<ImuSensorRef> imu_b = sim->add_imu_sensor(*b, ImuSensorSpawn{});
+    ASSERT_OK(imu_b);
+    ASSERT_OK(sim->flush_structural());
+
+    // They touch after (0.5 - 2r) / 2 = 0.15 s; equal masses and e = 1 swap
+    // their velocities, a 2 m/s change each in one substep.
+    Tracked t[2] = {{*a, *imu_a}, {*b, *imu_b}};
+    step_and_check(*sim, t, 300);
+    EXPECT_EQ(t[0].mismatches, 0) << "the moving body: " << t[0].first;
+    EXPECT_EQ(t[1].mismatches, 0) << "the struck body: " << t[1].first;
+    EXPECT_LT(t[0].peak.x, -1000.0f);
+    EXPECT_GT(t[1].peak.x, 1000.0f);
 }

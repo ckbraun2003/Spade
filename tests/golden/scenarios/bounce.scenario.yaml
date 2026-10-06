@@ -61,10 +61,19 @@
 #       bounce: old=0x883ac9f095d08b85 old+suffix=0x8b6bd5f0df9ff4fa actual=0x8b6bd5f0df9ff4fa match=YES
 #       previous digest 0x883ac9f095d08b85 (S1-S4 close-out, 2026-08-11)
 #
-#   generated  2026-08-11 (Task 3 regeneration; first generated at Task 16)
+#   * REGENERATED 2026-10-05 -- PHY-7: the IMU's specific force includes the
+#     contact response. The contact passes add each body's velocity change to a
+#     transient scratch, and Integrate adds it over h to `specific_force`, which
+#     the walk digests. Nothing else changed: vel, pos and every other array take
+#     the same values, and contact-free scenarios (ballistic, gnss_tumble,
+#     quad_hover) keep their digests, -0.0 included.
+#       previous digest 0x050b4abb291af8a8 (S5 Task 3, 2026-08-11)
+#
+#   generated  2026-10-05 (PHY-7 regeneration; first generated at Task 16)
 #   toolchain  MSVC 19.44 (VS 2022 Community) x64, /fp:precise, Ninja
-#   cross-check gcc-13 Release -ffp-contract=off (spade-linux CI) produces this
-#              same value; msvc-ninja-release AND msvc-ninja-debug agree
+#   cross-check msvc-ninja-release AND msvc-ninja-debug agree; the gcc-13 Docker
+#              leg (TD-12) reproduces it on a fresh -NoSeed volume
+#              (spade-docker-leg-83d33ae26902, PASS 1168/1168)
 # -----------------------------------------------------------------------------
 
 scenario_version: 1
@@ -144,4 +153,4 @@ inputs: []
 #   introduces no hand-copied constant, so the continuation above is asserted
 #   on every run rather than asserted once in a comment.
 #
-expected_digest: "0x050b4abb291af8a8"
+expected_digest: "0xcbf4f1e5c6b57845"

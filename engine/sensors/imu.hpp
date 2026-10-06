@@ -203,17 +203,19 @@
 // perturb anything else in the world.
 //
 // ===========================================================================
-// 5. WHAT THIS SENSOR CANNOT SEE, WHICH IS NOT A BUG BUT IS A SURPRISE
+// 5. WHAT THIS SENSOR FEELS OF CONTACT (PHY-7)
 //
-// force_acc is the accelerometer's whole input, and CONTACT RESPONSE DOES NOT
-// GO THROUGH IT: physics/contacts.cpp resolves contacts at the VELOCITY level
-// (impulses applied straight to BodyState::vel) and at the POSITION level
-// (Baumgarte), never as a force. So a body resting on the world SDF reads
-// approximately ZERO, not +g -- the ground's normal force is not modelled as a
-// force. A test that wants a static +g reading holds the body up with
-// Simulation::apply_wrench(), which is a force and does flow through force_acc.
-// Impulse-based contact and force-based sensing is a real seam; making the two
-// agree is a contact-model question (S7+), not a sensor question.
+// Contact response does not go through force_acc: physics/contacts.cpp and
+// grid.cpp resolve contacts at the VELOCITY level (impulses applied straight
+// to BodyState::vel) and at the POSITION level (Baumgarte), never as a force.
+// So the contact passes also add each body's velocity change to a transient
+// per-body scratch, and Integrate adds that change over h to the specific
+// force it captures (integrator.cpp step 2; integrate.slang the same). A body
+// resting on the world SDF reads +g up, as a held one does through force_acc,
+// and an impact reads its reaction at full size: there is NO RANGE CLAMP, so a
+// hard landing reads thousands of m/s^2, the input a real sensor would see
+// before its own saturation. The Baumgarte correction is not felt: it moves
+// pos, not vel. Before PHY-7 a resting body read about zero.
 // ---------------------------------------------------------------------------
 
 namespace spade::sensors {

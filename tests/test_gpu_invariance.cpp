@@ -564,18 +564,21 @@ constexpr uint64_t kTwoWorldSteps = 300;
 // replica of the scenario is transcribed correctly, never as this test's own
 // claim (that is TwoWorldIsolationMatchesTheCpuWithinBands's job, elsewhere).
 //
-// REGENERATED WITH THE CORPUS TWICE, and the two reasons were different:
+// REGENERATED WITH THE CORPUS THREE TIMES, each for a different reason:
 // 0xaab013d47c0eba42 -> 0xe43eedcf57f740dc when the GNSS arena JOINED the
 // state walk (four new entries), then -> 0x69c6467bf2df206c when the GNSS
 // ROW GREW 96 -> 112 bytes (state_digest folds elem_size, so a row that
-// changes size moves every digest even though the walk did not change). That is correct for THIS constant
-// and would be wrong for the four in test_determinism.cpp's GoldenCorpus table:
+// changes size moves every digest even though the walk did not change), then
+// -> 0x78567f754a4b7590 when PHY-7 put the contact response into the bodies'
+// specific_force (2026-10-05; the scenario rests on its floor). That is correct for THIS constant
+// and would be wrong for the builder digest left in test_determinism.cpp's GoldenCorpus table
+// (ballistic's; the other three left it at PHY-7):
 // this one is a MIRROR of the yaml, whose only job is to catch a transcription
 // slip in the replica beside it, so it must track the yaml. Those four are the
 // retired builder's own output, and not moving them is the entire independence
 // claim. Two hardcoded digests, opposite regeneration rules, and the difference
 // is what each number is a copy OF.
-constexpr uint64_t kTwoWorldIsolationExpectedDigest = 0x69c6467bf2df206cULL;
+constexpr uint64_t kTwoWorldIsolationExpectedDigest = 0x78567f754a4b7590ULL;
 
 [[nodiscard]] Result<WorldInstanceDesc> two_world_isolation_instance(uint64_t seed) {
     const Result<WorldDesc> world =

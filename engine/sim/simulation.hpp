@@ -1858,6 +1858,12 @@ private:
     std::vector<StateView> pass_views_;
     std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
     physics::GridScratch scratch_;
+    // The contact scratch (physics/schedule.hpp, PHY-7): one vec3 per body
+    // slot, all worlds, parallel to the bodies array. Zero-filled at create()
+    // and zero at every substep boundary (Integrate zeroes every slot), so
+    // like scratch_ it is not registered, not in any blob or digest, and
+    // restore needs nothing.
+    std::vector<glm::vec3> contact_dv_;
     // Every world's field sample row, world-major, schedule_.field_stride floats
     // each. Scratch like scratch_: not registered, not in any blob or digest,
     // rewritten by the Fields phase's providers every substep before any reader.

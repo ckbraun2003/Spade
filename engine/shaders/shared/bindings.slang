@@ -332,6 +332,15 @@ import layouts;
 // diagnostic). Binding 26 because 25 was the last in use.
 [[vk::binding(26, 0)]] RWStructuredBuffer<FieldSampleRow> field_samples;
 
+// The contact scratch (PHY-7; physics/schedule.hpp's scratch rule), one row
+// per body slot, all worlds: the world-axes velocity change the contact
+// kernels gave that body this substep, in xyz (w unused: 16-byte rows, so no
+// layout mirror is needed). collision_static and collision_dynamic add to it,
+// integrate reads it into the specific force and zeroes EVERY slot. DERIVED,
+// like field_samples: never uploaded, zero-filled at create, never read back,
+// in no snapshot or digest. Binding 27 because 26 was the last in use.
+[[vk::binding(27, 0)]] RWStructuredBuffer<float4> contact_dv;
+
 // ---------------------------------------------------------------------------
 // E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound
 // because a kernel now reads it.

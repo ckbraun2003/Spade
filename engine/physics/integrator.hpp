@@ -113,13 +113,18 @@ inline constexpr uint32_t active = 1u << 0;
 // angularly accelerated"); `orient` a unit quaternion (integrate_orientation
 // renormalizes on the way out, so this self-corrects after the first call).
 // ---------------------------------------------------------------------------
-void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h) noexcept;
+//
+// `contact_dv`: the contact scratch (physics/schedule.hpp), read into the
+// specific force and zeroed for every slot; see step 2.
+void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
+                      std::span<glm::vec3> contact_dv = {}) noexcept;
 
 // The same step with gravity read from a world's params: a forwarder, kept so
 // callers holding a WorldParams row need not unpack it. The schedule's
 // Integrate pass passes the sampled gravity field instead (module-API stage 3).
-inline void integrate_bodies(std::span<BodyState> bodies, const WorldParams& params, float h) noexcept {
-    integrate_bodies(bodies, params.gravity, h);
+inline void integrate_bodies(std::span<BodyState> bodies, const WorldParams& params, float h,
+                             std::span<glm::vec3> contact_dv = {}) noexcept {
+    integrate_bodies(bodies, params.gravity, h, contact_dv);
 }
 
 }  // namespace spade::physics

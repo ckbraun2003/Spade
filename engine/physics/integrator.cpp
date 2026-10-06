@@ -7,13 +7,27 @@
 
 namespace spade::physics {
 
-void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h) noexcept {
+void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
+                      std::span<glm::vec3> contact_dv) noexcept {
     // `gravity` is per-world, not per-body: the caller reads it once (the
     // schedule's Integrate pass, from the gravity field), which keeps the
     // per-body op sequence below identical to what a GPU thread executes (it
     // reads its world's field row once, before the body loop body).
 
-    for (BodyState& body : bodies) {
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        BodyState& body = bodies[i];
+
+        // This substep's contact velocity change (PHY-7), taken and zeroed
+        // for EVERY slot, BEFORE the inert-slot skip below: the scratch must
+        // be zero at the substep boundary for a slot this pass skips too, or
+        // a body deactivated after a contact would carry it into a later
+        // substep as a phantom contact (physics/schedule.hpp's scratch rule).
+        glm::vec3 contact(0.0f);
+        if (!contact_dv.empty()) {
+            contact = contact_dv[i];
+            contact_dv[i] = glm::vec3(0.0f);
+        }
+
         // Inert slots -- freed, tombstoned, or never spawned -- are skipped
         // whole. `continue` BEFORE step 1 is deliberate: it means a skipped
         // body's force_acc/torque_acc are not cleared by step 7 either, so a
@@ -73,7 +87,21 @@ void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h) n
         //    would instead smear one substep of rotation into every IMU
         //    sample -- a bias proportional to omega*h that no downstream
         //    filter could distinguish from a real accelerometer error.
-        body.specific_force = glm::conjugate(body.orient) * accel_ext;
+        //
+        //    THE CONTACT RESPONSE (PHY-7). Contact acts on vel by impulse,
+        //    before this pass, never through force_acc; to an accelerometer
+        //    it is a force like any other, so its velocity change over h joins
+        //    the specific force here -- and ONLY here: vel already took the
+        //    impulse, so step 3 must not see it. At rest that is +g up; an
+        //    impact reads its reaction at full size (sensors/imu.hpp section
+        //    5). Added only when non-zero: adding a zero vector would turn a
+        //    -0.0 component into +0.0, and every contact-free digest with it.
+        //    A DIVIDE by h, not a multiply by 1/h, as in step 1.
+        glm::vec3 felt = accel_ext;
+        if (contact != glm::vec3(0.0f)) {
+            felt = accel_ext + contact / h;
+        }
+        body.specific_force = glm::conjugate(body.orient) * felt;
 
         // 3. Linear velocity, from the total acceleration. Gravity enters the
         //    dynamics here and only here (see integrator.hpp on the Gravity

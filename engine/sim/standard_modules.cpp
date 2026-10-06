@@ -195,7 +195,11 @@ constexpr PassDecl kBehaviorPasses[] = {
      .cpu = &physics::pass_behaviors_force, .gpu = compute::GpuRecipe::behaviors_force},
 };
 
-constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write}};
+// body.contact_dv: the contact scratch (physics/schedule.hpp, PHY-7). Both
+// contact passes add to it; Integrate reads it into the specific force and
+// zeroes it.
+constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write},
+                                             {"body.contact_dv", Access::accumulate}};
 constexpr PassDecl kStaticPasses[] = {{.name = "resolve",
                                        .phase = Phase::constraints,
                                        .access = kContactAccess,
@@ -213,6 +217,7 @@ constexpr PassDecl kDynamicPasses[] = {{.name = "resolve",
 constexpr QuantityAccess kIntegrateAccess[] = {{"body.pose", Access::write},
                                                {"body.wrench", Access::write},
                                                {"body.specific_force", Access::write},
+                                               {"body.contact_dv", Access::write},
                                                {"field.gravity", Access::read}};
 constexpr PassDecl kIntegratePasses[] = {
     {.name = "integrate", .phase = Phase::integrate, .access = kIntegrateAccess, .cpu = &physics::pass_integrate,

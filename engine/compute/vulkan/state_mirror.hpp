@@ -298,15 +298,19 @@ private:
     // substep. Derived like grid_entries_; read back only by
     // read_field_samples().
     Entry field_samples_;
+    // contact_dv_ (binding 27, PHY-7) -- the contact scratch: one float4 per
+    // body slot, zero-filled at create, written and zeroed by the step's own
+    // kernels, never uploaded or read back (physics/schedule.hpp's rule).
+    Entry contact_dv_;
 
     // THE ONE LIST of the derived buffers above. create() zero-fills and binds
     // from it and destroy() tears down from it, so a derived buffer cannot be
     // created in one place and forgotten in another. Until 2026-10-02 those
     // were three hand-kept lists, and body_snapshot_ was missing from two.
-    [[nodiscard]] std::array<Entry*, 11> derived_entries() noexcept {
-        return {&dryden_params_,  &sdf_nodes_,   &sdf_transforms_, &sdf_ranges_,
-                &step_params_,    &step_witness_, &contact_params_, &grid_params_,
-                &grid_entries_,   &body_snapshot_, &field_samples_};
+    [[nodiscard]] std::array<Entry*, 12> derived_entries() noexcept {
+        return {&dryden_params_,  &sdf_nodes_,     &sdf_transforms_, &sdf_ranges_,
+                &step_params_,    &step_witness_,  &contact_params_, &grid_params_,
+                &grid_entries_,   &body_snapshot_, &field_samples_,  &contact_dv_};
     }
 
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer

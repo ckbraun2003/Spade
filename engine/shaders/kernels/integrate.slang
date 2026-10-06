@@ -139,6 +139,12 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
         step_witness[0]._r0 = 0u;
     }
 
+    // PHY-7: this substep's contact velocity change, taken and zeroed for
+    // EVERY slot before any skip, so the scratch is zero at the substep
+    // boundary whatever this kernel skips (integrator.cpp, the same rule).
+    const float3 contact = contact_dv[slot].xyz;
+    contact_dv[slot] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
     // Global body slot -> owning world (bindings.slang section B: the dispatch
     // is over the global slot space and liveness is not otherwise knowable).
     const uint world = bodies_slot_to_world[slot];
@@ -174,7 +180,14 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
     //    (integrator.cpp:48-76). The conjugate of a unit quaternion is its
     //    inverse, so this takes the world-frame acceleration into the body
     //    frame the sensor is bolted to.
-    bodies[slot].specific_force = glm_quat_rotate(glm_quat_conjugate(orient), accel_ext);
+    // The contact response joins the specific force only (vel already took
+    // the impulse), and only when non-zero, so a -0.0 survives (integrator.cpp
+    // step 2). A divide by h, as the CPU's.
+    float3 felt = accel_ext;
+    if (contact.x != 0.0f || contact.y != 0.0f || contact.z != 0.0f) {
+        felt = accel_ext + float3(contact.x / h, contact.y / h, contact.z / h);
+    }
+    bodies[slot].specific_force = glm_quat_rotate(glm_quat_conjugate(orient), felt);
 
     // 3. Linear velocity. Gravity enters the dynamics HERE and only here --
     //    there is no gravity pass on either backend (integrator.cpp:78-81;

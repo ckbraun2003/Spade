@@ -321,7 +321,12 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // PRECONDITION: `world_sdf` has passed SdfProgram::validate(). This is the
 // physics inner loop; it does not revalidate.
 // ---------------------------------------------------------------------------
+//
+// `contact_dv` (PHY-7): each contact's velocity change, the state's own
+// (vel after the impulse and friction, minus vel before), added to the
+// body's slot of the contact scratch (physics/schedule.hpp). Empty: none kept.
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
-                             const ContactParams& params, float h) noexcept;
+                             const ContactParams& params, float h,
+                             std::span<glm::vec3> contact_dv = {}) noexcept;
 
 }  // namespace spade::physics

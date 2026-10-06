@@ -76,9 +76,10 @@
 // scenario, and every digest matched. That run's literal output is recorded in
 // GoldenCorpus.TheDataScenariosReproduceTheRetiredBuilderCorpus below, which is
 // the committed record that the S1-S4 builder corpus and the S5 data corpus are
-// THE SAME CORPUS -- and which keeps asserting those four numbers from a second,
+// THE SAME CORPUS -- and which kept asserting those four numbers from a second,
 // independently-spelled source, so an accidental edit to a scenario file's own
-// `expected_digest` cannot pass unnoticed.
+// `expected_digest` could not pass unnoticed. Since PHY-7 it asserts
+// ballistic's alone; the other three left it (see its note).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1089,19 +1090,36 @@ TEST(Determinism, DigestsMatchTheCommittedGoldenCorpus) {
 // suffix-continuation argument is INVALIDATED, NOT MERELY EXTENDED, and this
 // test must be replaced by an honest statement that the corpus has become a
 // two-site tamper check. Say that plainly; do not paper it.
+//
+// WHAT HAPPENED, PART THREE: PHY-7 (2026-10-05). bounce, shower and
+// two_world_isolation LEFT THIS TEST. PHY-7 put the contact response into
+// the IMU's specific force, a field of the bodies array, so it changed the
+// CONTENT of walk entries 0..17 in every scenario with a contact -- the first
+// deliberate change to pre-GNSS entry content since the builder retired.
+// No fold of appended entries can reach a digest whose earlier entries
+// changed, so for those three the continuation is gone, and refreshing their
+// builder digests would only have recorded today's value twice. They are
+// pinned from now on by their scenario files alone (the corpus tests above),
+// cross-checked by the gcc leg under TD-12: a tamper check, not an
+// independence proof. Their builder digests, kept here as a record and never
+// to be asserted again: bounce 0x8b6bd5f0df9ff4fa, shower 0xbc94f5b048b45473,
+// two_world_isolation 0xaab013d47c0eba42.
+//
+// ballistic has no contact, so its entries 0..17 are untouched and it stays:
+// the corpus's one remaining independent pin. If a later deliberate change
+// moves it too (PHY-8 may), this test retires then, with the same kind of
+// statement. Never refresh the constant.
 // ---------------------------------------------------------------------------
 TEST(GoldenCorpus, TheDataScenariosReproduceTheRetiredBuilderCorpus) {
     struct Migrated {
         const char* name;
         uint64_t builder_digest;  // what the S1-S4 lambda produced; see the note above
     };
-    // NOT REGENERATED, EVER. These are the retired builder's own output and the
-    // only reason this test is independent of the files it loads.
+    // NOT REGENERATED, EVER. This is the retired builder's own output and the
+    // only reason this test is independent of the file it loads. The other
+    // three left at PHY-7 (see the note above).
     const Migrated migrated[] = {
         {"ballistic", 0x234f74d4c3c53563ULL},
-        {"bounce", 0x8b6bd5f0df9ff4faULL},
-        {"shower", 0xbc94f5b048b45473ULL},
-        {"two_world_isolation", 0xaab013d47c0eba42ULL},
     };
 
     // The latch: the builder-era walk ended with replay_config's elements and
@@ -1171,8 +1189,8 @@ TEST(GoldenCorpus, TheDataScenariosReproduceTheRetiredBuilderCorpus) {
             << " appended walk entries = " << hex64(seed) << ", but the run produced "
             << hex64(digest)
             << ".\nSomething in walk entries 0..17 changed -- a pinned op order, layout, rng or "
-               "schedule change in the PRE-GNSS state, which is exactly what these four numbers "
-               "exist to catch. Do NOT refresh them.";
+               "schedule change in the PRE-GNSS state, which is exactly what this number "
+               "exists to catch. Do NOT refresh it.";
     }
 }
 

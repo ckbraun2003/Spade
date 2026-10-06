@@ -83,7 +83,7 @@ void pass_sensor_gnss(const SubstepContext& ctx) noexcept {
 
 void pass_collision_static(const SubstepContext& ctx) noexcept {
     for (const WorldSubstepView& w : ctx.worlds) {
-        resolve_static_contacts(w.bodies, *w.sdf, w.contacts, ctx.h);
+        resolve_static_contacts(w.bodies, *w.sdf, w.contacts, ctx.h, w.contact_dv);
     }
 }
 
@@ -92,14 +92,15 @@ void pass_collision_dynamic(const SubstepContext& ctx) noexcept {
         // D8's shape: one sweep, every world, cross-world pairs structurally
         // impossible because the sort key leads with the world id.
         resolve_dynamic_contacts(ctx.all_bodies, ctx.all_slot_to_world, ctx.dynamic_grid,
-                                 ctx.dynamic_contacts, *ctx.scratch);
+                                 ctx.dynamic_contacts, *ctx.scratch, ctx.all_contact_dv);
         return;
     }
 
     // Heterogeneous materials: one sweep per world, each with its own record.
     // Numerically identical per world to the batched form (see the header).
     for (const WorldSubstepView& w : ctx.worlds) {
-        resolve_dynamic_contacts(w.bodies, w.body_slot_to_world, w.grid, w.contacts, *ctx.scratch);
+        resolve_dynamic_contacts(w.bodies, w.body_slot_to_world, w.grid, w.contacts, *ctx.scratch,
+                                 w.contact_dv);
     }
 }
 
@@ -109,7 +110,7 @@ void pass_integrate(const SubstepContext& ctx) noexcept {
         // does), copied from WorldParams by environment.sample this substep.
         const glm::vec3 gravity(w.fields[kFieldGravityOffset + 0], w.fields[kFieldGravityOffset + 1],
                                 w.fields[kFieldGravityOffset + 2]);
-        integrate_bodies(w.bodies, gravity, ctx.h);
+        integrate_bodies(w.bodies, gravity, ctx.h, w.contact_dv);
     }
 }
 
