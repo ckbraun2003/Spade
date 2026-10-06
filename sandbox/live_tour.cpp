@@ -522,17 +522,18 @@ void drone_box(Tour& t, DroneSession& d) {
     });
 
     // F1's own path: poll() calls toggle_help() on the key's press. The checks
-    // read whether the presented frames drew the legend, not the flag.
+    // read whether the presented frames drew the HUD's stats line, not the
+    // flag (the key legend is a folded section, §13).
     t.step("drone_box", "hud", [&] {
         const auto drawn = [&t] { return std::string(t.sink().help_drawn() ? "drawn" : "not drawn"); };
         const bool before = t.sink().help_drawn();
         t.sink().toggle_help();
         t.pump(60, idle, draw);
         s.check(before && !t.sink().help_drawn(), "hidden",
-                "legend " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
+                "HUD stats line " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
         t.sink().toggle_help();
         t.pump(60, idle, draw);
-        s.check(t.sink().help_drawn(), "shown", "legend " + drawn());
+        s.check(t.sink().help_drawn(), "shown", "HUD stats line " + drawn());
     });
 }
 

@@ -658,10 +658,12 @@ void GlTargetSink::draw_overlay() {
 
     impl_->help_drawn = false;
     if (impl_->show_help) {
-        // THE HUD: the one floating window (§13). The instrumentation the user
-        // asked for and the controls legend, as aligned rows, in the
-        // viewport's lower left, clear of the panels and the smoke's caption.
-        // F1 dismisses it.
+        // THE HUD: the one floating window (§13), as minimal as Unity's and
+        // Unreal's overlays. One stats line -- the instrumentation the user
+        // asked for, memory beside the fps -- then two folded sections: where
+        // the frame went, and the controls. In the viewport's lower left,
+        // clear of the panels and the smoke's caption. F1 hides it all, and
+        // help_drawn() reports whether the stats line was drawn.
         ImVec2 at;
         ImVec2 size;
         ui::viewport_rect(dockspace, at, size);
@@ -669,24 +671,34 @@ void GlTargetSink::draw_overlay() {
                                 ImVec2(0.0f, 1.0f));
         ImGui::SetNextWindowBgAlpha(ui::kHudAlpha);
         if (ImGui::Begin("##hud", nullptr, ui::kHudFlags)) {
-            impl_->help_drawn = true;
             const Timings a = impl_->win_avg;
             const double mb = static_cast<double>(working_set_bytes()) / (1024.0 * 1024.0);
             if (!impl_->ui_font_loaded) {
                 ui::status_text(ui::fonts().missing);
             }
-            if (ui::begin_properties("hud", ui::kHudLabelWidth)) {
+            ImGui::Text("%.1f fps%s%.1f ms%s%.1f MB", a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, ui::kDot,
+                        a.total_ms, ui::kDot, mb);
+            impl_->help_drawn = true;
+            // SL10: the GPU path's gap is shown, not hidden.
+            if (!impl_->gap_line.empty()) {
+                ImGui::TextDisabled("%s", impl_->gap_line.c_str());
+            }
+            // WHERE THE FRAME WENT: the stages have different remedies, and
+            // one of them is not a cost.
+            if (ui::section("Frame time", false) && ui::begin_properties("frame time", ui::kHudLabelWidth)) {
                 // The FRAMEBUFFER size: what both paths render at. The texture
                 // size it used to show is set only by the CPU fallback's
                 // accept(), so on the GPU path it read 0x0.
-                ui::value_row("frame", "%ux%u%s%.1f fps%s%.1f ms", impl_->fb_width, impl_->fb_height, ui::kDot,
-                              a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, ui::kDot, a.total_ms);
-                // The user's ask: memory beside the fps, same overlay, same cadence.
-                ui::value_row("memory", "%.1f MB", mb);
-                // SL10: the GPU path's gap is shown, not hidden.
-                if (!impl_->gap_line.empty()) {
-                    ui::value_row("not drawn", "%s", impl_->gap_line.c_str());
-                }
+                ui::value_row("frame", "%ux%u", impl_->fb_width, impl_->fb_height);
+                ui::value_row("physics", "%.2f ms", a.physics_ms);
+                ui::value_row("render", "%.2f ms", a.render_ms);
+                ui::value_row("convert", "%.2f ms", a.convert_ms);
+                ui::value_row("upload", "%.2f ms", a.upload_ms);
+                ui::value_row("ui", "%.2f ms", a.ui_ms);
+                ui::value_row("swap", "%.2f ms%s", a.swap_ms, impl_->options.vsync ? "  (vsync: waiting is normal)" : "");
+                ui::end_properties();
+            }
+            if (ui::section("Controls", false) && ui::begin_properties("controls", ui::kHudLabelWidth)) {
                 if (impl_->drone != nullptr) {
                     ui::value_row("attitude", "%s", ui::joined({"arrows pitch/roll", "Z/X yaw", "R level"}).c_str());
                     ui::value_row("camera", "%s",
@@ -702,17 +714,6 @@ void GlTargetSink::draw_overlay() {
                     }
                 }
                 ui::value_row("window", "%s", ui::joined({"F1 hide", "Esc quit"}).c_str());
-                ui::end_properties();
-            }
-            // WHERE THE FRAME WENT, folded by default (§13): the stages have
-            // different remedies, and one of them is not a cost.
-            if (ui::section("Frame time", false) && ui::begin_properties("frame time", ui::kHudLabelWidth)) {
-                ui::value_row("physics", "%.2f ms", a.physics_ms);
-                ui::value_row("render", "%.2f ms", a.render_ms);
-                ui::value_row("convert", "%.2f ms", a.convert_ms);
-                ui::value_row("upload", "%.2f ms", a.upload_ms);
-                ui::value_row("ui", "%.2f ms", a.ui_ms);
-                ui::value_row("swap", "%.2f ms%s", a.swap_ms, impl_->options.vsync ? "  (vsync: waiting is normal)" : "");
                 ui::end_properties();
             }
         }
