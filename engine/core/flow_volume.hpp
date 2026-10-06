@@ -79,8 +79,10 @@ struct FlowVolume {
     return i + std::size_t{h.nx} * (j + std::size_t{h.ny} * k);
 }
 
-// The raw half of `channel` at cell `cell`. Precondition: a validated volume.
-[[nodiscard]] inline uint16_t flow_half(const FlowVolume& volume, std::size_t cell, uint32_t channel) noexcept {
+// The raw half of `channel` at cell `cell`. Precondition: a validated volume
+// and cell < nx ny nz. The channel is a FlowChannel, so an integer past the
+// eight channels is a type error rather than a read of the wrong lane.
+[[nodiscard]] inline uint16_t flow_half(const FlowVolume& volume, std::size_t cell, FlowChannel channel) noexcept {
     const std::vector<uint16_t>& texture = channel < kFlowHalvesPerCell ? volume.v : volume.s;
     return texture[cell * kFlowHalvesPerCell + (channel % kFlowHalvesPerCell)];
 }

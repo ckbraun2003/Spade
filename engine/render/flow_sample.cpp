@@ -47,7 +47,7 @@ struct Stencil {
 // fraction is above 0 (its weight is then above 0, since every fraction is
 // below 1); an unread corner stays 0, and a lerp at f = 0 returns its first
 // argument exactly.
-[[nodiscard]] FlowValue interpolate(const FlowSampler& s, const Stencil& st, uint32_t channel) {
+[[nodiscard]] FlowValue interpolate(const FlowSampler& s, const Stencil& st, FlowChannel channel) {
     const FlowVolumeHeader& h = s.volume->header;
     float c[2][2][2] = {};
     for (uint32_t dz = 0; dz <= (st.z.f > 0.0f ? 1u : 0u); ++dz) {
@@ -72,7 +72,7 @@ FlowSampler make_flow_sampler(const FlowVolume& volume) {
     return FlowSampler{&volume, volume.header.origin, 1.0f / volume.header.cell};
 }
 
-FlowValue sample_channel(const FlowSampler& sampler, uint32_t channel, glm::vec3 p) {
+FlowValue sample_channel(const FlowSampler& sampler, FlowChannel channel, glm::vec3 p) {
     return interpolate(sampler, stencil_at(sampler, p), channel);
 }
 

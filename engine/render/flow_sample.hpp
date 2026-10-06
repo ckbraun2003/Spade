@@ -44,7 +44,7 @@ struct FlowValue {
     bool no_data = false;  // value is 0 then, and never drawn
 };
 
-[[nodiscard]] FlowValue sample_channel(const FlowSampler& sampler, uint32_t channel, glm::vec3 p);
+[[nodiscard]] FlowValue sample_channel(const FlowSampler& sampler, FlowChannel channel, glm::vec3 p);
 
 [[nodiscard]] FlowValue sample_quantity(const FlowSampler& sampler, FlowQuantity quantity, glm::vec3 p);
 

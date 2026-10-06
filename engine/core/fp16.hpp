@@ -61,7 +61,7 @@ namespace detail {
     const uint32_t sig = mant | 0x800000u;
     uint32_t magnitude = 0;
     if (exp < 113u) {
-        // A half subnormal: units of 2^-24, so shift by 126 - exp (13 to 24).
+        // A half subnormal: units of 2^-24, so shift by 126 - exp (14 to 24).
         // A carry out of the mantissa lands on the smallest normal, 0x0400.
         magnitude = detail::shift_right_rne(sig, 126u - exp);
     } else {

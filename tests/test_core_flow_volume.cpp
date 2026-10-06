@@ -45,7 +45,7 @@ TEST(CoreFlowVolume, EachChannelReadsItsTextureAndLane) {
     const FlowVolume volume = make_volume();
     for (size_t cell : {size_t{0}, size_t{7}, size_t{23}}) {
         for (uint32_t ch = 0; ch < spade::kFlowChannelCount; ++ch) {
-            EXPECT_EQ(spade::flow_half(volume, cell, ch), static_cast<uint16_t>(cell * 8u + ch))
+            EXPECT_EQ(spade::flow_half(volume, cell, static_cast<spade::FlowChannel>(ch)), static_cast<uint16_t>(cell * 8u + ch))
                 << "cell " << cell << ", channel " << ch;
         }
     }
