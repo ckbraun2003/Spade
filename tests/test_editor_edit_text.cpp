@@ -234,13 +234,17 @@ TEST(EditorEditText, APrimitiveAssetUsesTheShortForm) {
     EXPECT_NE(full.find(" transforms 2 "), std::string::npos) << full;
 }
 
+// Raw strings stay out of the EXPECT macros: MSVC's preprocessor mis-splits a
+// raw string holding \" inside a macro argument.
 TEST(EditorEditText, NamesThatNeedItAreQuoted) {
+    constexpr std::string_view kQuoted = R"(scene rename box_1 "big \"box\"")";
+    constexpr std::string_view kEmpty = R"(scene rename "" x)";
     const std::string line = ed::format_edit(ed::RenameObject{"box_1", "big \"box\""}).value();
-    EXPECT_EQ(line, R"(scene rename box_1 "big \"box\"")");
+    EXPECT_EQ(line, kQuoted);
     const Result<ed::SceneEdit> back = ed::parse_edit(line);
     ASSERT_TRUE(back.has_value()) << back.error().context;
     EXPECT_EQ(std::get<ed::RenameObject>(*back).to, "big \"box\"");
-    EXPECT_EQ(ed::format_edit(ed::RenameObject{"", "x"}).value(), R"(scene rename "" x)");
+    EXPECT_EQ(ed::format_edit(ed::RenameObject{"", "x"}).value(), kEmpty);
 }
 
 TEST(EditorEditText, AMalformedLineNamesItsFirstBadToken) {
@@ -253,7 +257,8 @@ TEST(EditorEditText, AMalformedLineNamesItsFirstBadToken) {
     EXPECT_NE(bad_number.find("'x'"), std::string::npos) << bad_number;
     EXPECT_NE(error_of("scene frobnicate a").find("'frobnicate'"), std::string::npos);
     EXPECT_NE(error_of("scene remove a extra").find("'extra'"), std::string::npos);
-    EXPECT_NE(error_of(R"(scene rename "unterminated)").find("unterminated"), std::string::npos);
+    constexpr std::string_view kUnterminated = R"(scene rename "unterminated)";
+    EXPECT_NE(error_of(kUnterminated).find("unterminated"), std::string::npos);
     EXPECT_NE(error_of("scene").find("end of the line"), std::string::npos);
     EXPECT_NE(error_of("scene move box_1 -1").find("'-1'"), std::string::npos);
     EXPECT_NE(error_of("world rename x").find("'world'"), std::string::npos);  // a world line is not a scene edit
