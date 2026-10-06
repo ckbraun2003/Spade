@@ -70,6 +70,7 @@
 #include "render/field_layer.hpp"  // FieldLayer, RenderScene::field_layers
 #include "render/flow_render.hpp"  // FlowLayer, RenderScene::flow_layers
 #include "render/flow_lines.hpp"   // FlowPolyline, FlowPoints, RenderScene::flow_polylines
+#include "render/flow_field.hpp"   // FlowSurfaceColouring, RenderScene::flow_surface_colouring
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
 #include "render/target.hpp"   // Aabb, kNoMaterial, kNoMesh (Task 0) -- do not redeclare
 #include "world/builder.hpp"   // WorldDesc
@@ -601,6 +602,10 @@ struct RenderScene {
     // lands. Empty unless a caller adds them.
     std::vector<FlowPolyline> flow_polylines;
     FlowPoints flow_points;
+    // Surface colouring by a flow quantity (render/flow_field.hpp): the
+    // raster modes apply it after the meshes and CSG; the ray-march mode does
+    // not; GL refuses it until its pass lands. Unset unless a caller sets it.
+    std::optional<FlowSurfaceColouring> flow_surface_colouring;
     // CSG subtrees, which shaded and velocity modes ray-march per pixel
     // within their bounds (RS3). Empty for a hand-built RenderScene; only
     // scene_from_world() fills it, one entry per CSG root.
