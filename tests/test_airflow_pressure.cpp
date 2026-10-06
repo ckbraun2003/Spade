@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "physics/airflow/boundaries.hpp"
+#include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pressure.hpp"
 
 namespace {
@@ -103,6 +104,50 @@ TEST(AirflowPressure, AColourSweepDoesNotDependOnItsCellOrder) {
         }
     }
     EXPECT_EQ(forward.p, reverse.p);
+}
+
+TEST(AirflowMultigrid, HalvesEveryParticipatingAxisUntilOneIsTooSmall) {
+    const Multigrid slab = make_multigrid(128, 128, 1);
+    ASSERT_EQ(slab.levels.size(), 7u);
+    EXPECT_EQ(slab.levels.back().nx, 2u);
+    EXPECT_EQ(slab.levels.back().nz, 1u) << "a size-1 axis takes no part";
+    const Multigrid box = make_multigrid(64, 64, 128);
+    ASSERT_EQ(box.levels.size(), 6u);
+    EXPECT_EQ(box.levels.back().nx, 2u);
+    EXPECT_EQ(box.levels.back().nz, 4u);
+    EXPECT_EQ(make_multigrid(6, 6, 6).levels.size(), 2u) << "6 -> 3, and 3 is odd";
+}
+
+TEST(AirflowMultigrid, OneVCycleCutsTheResidualAtLeastThreefold) {
+    for (const std::array<uint32_t, 3>& n : {std::array<uint32_t, 3>{32, 32, 32}, std::array<uint32_t, 3>{64, 64, 1}}) {
+        Multigrid mg = make_multigrid(n[0], n[1], n[2]);
+        std::array<FaceKind, 6> kinds = all(FaceKind::pressure_outlet);
+        kinds[kYMinus] = kinds[kYPlus] = FaceKind::fixed_velocity;
+        if (n[2] == 1u) kinds[kZMinus] = kinds[kZPlus] = FaceKind::periodic;
+        set_kinds(mg, kinds);
+        Lcg rng;
+        for (float& x : mg.levels[0].b) x = rng.next();
+        residual(mg.levels[0]);
+        const float r0 = max_abs(mg.levels[0].r);
+        v_cycle(mg);
+        residual(mg.levels[0]);
+        const float r1 = max_abs(mg.levels[0].r);
+        std::printf("V(2,2) on %ux%ux%u: residual %.3e -> %.3e, factor %.1f\n", n[0], n[1], n[2],
+                    static_cast<double>(r0), static_cast<double>(r1), static_cast<double>(r0 / r1));
+        EXPECT_LT(r1, r0 / 3.0f) << n[0] << "x" << n[1] << "x" << n[2];
+    }
+}
+
+TEST(AirflowMultigrid, TwoRunsAreBitIdentical) {
+    const auto run = [] {
+        Multigrid mg = make_multigrid(16, 16, 16);
+        set_kinds(mg, all(FaceKind::pressure_outlet));
+        Lcg rng;
+        for (float& x : mg.levels[0].b) x = rng.next();
+        for (int n = 0; n < 3; ++n) v_cycle(mg);
+        return mg.levels[0].p;
+    };
+    EXPECT_EQ(run(), run());
 }
 
 }  // namespace
