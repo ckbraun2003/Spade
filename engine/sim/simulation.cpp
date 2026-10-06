@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
 #include <string>
 #include <utility>
 
@@ -38,9 +40,10 @@ namespace {
     return Error{Code::internal, std::move(context)};
 }
 
-// Where an EMPTY configuration table's view points (rebuild_views): the view
-// has zero rows, so nothing ever reads or writes these bytes. They exist so
-// that the view's data is not null, which would read as an absent module.
+// Where an EMPTY configuration table's view points (rebuild_views), and a
+// scratch's with no rows: the view has zero rows, so nothing ever reads or
+// writes these bytes. They exist so that the view's data is not null, which
+// would read as an absent module.
 alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
 
 // A 64-bit identity, for an error message. Hex because that is how config
@@ -276,6 +279,13 @@ struct ExtentRows {
     return static_cast<uint32_t>(owned);
 }
 
+// A scratch's rows per world (Task 7b): per_body has the world's body capacity,
+// per_world one row. compile_schedule allows no other extent.
+[[nodiscard]] uint32_t scratch_rows_per_world(const modules::CompiledScratch& scratch,
+                                              uint32_t body_capacity) noexcept {
+    return scratch.extent == modules::Extent::per_body ? body_capacity : 1u;
+}
+
 }  // namespace
 
 // The walk create() registers, as data for the GPU mirror. walk_order() is the
@@ -317,9 +327,19 @@ Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::
     return out;
 }
 
-// Task 7b RED: a stub, so the tests compile and fail on behaviour.
-std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule&, const compute::StepShape&) {
-    return {};
+// The scratch the GPU mirror makes buffers from (Task 7b): every declared one,
+// sized by scratch_rows_per_world(), the rule create() sizes the CPU rows by.
+std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
+                                                  const compute::StepShape& shape) {
+    std::vector<compute::ScratchShape> out;
+    out.reserve(schedule.scratch.size());
+    for (const modules::CompiledScratch& s : schedule.scratch) {
+        out.push_back(compute::ScratchShape{.name = s.name,
+                                            .elem_size = s.elem_size,
+                                            .capacity_per_world = scratch_rows_per_world(s, shape.body_capacity),
+                                            .binding = s.binding});
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +401,24 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // order (VulkanBackend::create() below is handed gpu_passes()), so any
         // set whose passes all name a recipe runs the same experiment on both
         // backends.
+        //
+        // A KERNEL BINDS ITS BUFFERS STATICALLY (Task 7b), so a scratch a pass
+        // declares reaches the device only at the binding its declaration
+        // names. One with none is CPU-only (sim/module.hpp's ScratchDecl), and
+        // the kernel would run without it: refused, by pass and scratch.
+        for (const modules::CompiledPass& pass : compiled->passes) {
+            for (const modules::CompiledBinding& binding : pass.state) {
+                if (binding.kind != modules::BindingKind::scratch) continue;
+                const modules::CompiledScratch& scratch = compiled->scratch[binding.index];
+                if (scratch.binding == modules::kNoBinding) {
+                    return std::unexpected(Error{
+                        Code::unavailable, "module set: pass '" + pass.module + "." + pass.pass +
+                                               "' declares scratch '" + scratch.module + "." + scratch.name +
+                                               "', which names no GPU binding; a kernel binds its buffers "
+                                               "statically, so the set runs only on the CPU"});
+                }
+            }
+        }
     }
 
     const Result<WorldSetLayout> layout = validate_world_set(desc);
@@ -669,6 +707,30 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // sees an empty table -- and rebuilt by register_model().
     sim.config_tables_.assign(sim.schedule_.tables.size(), std::vector<float>{});
     sim.rebuild_config_tables();
+    // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
+    // ScratchDecl): allocated and zero-filled HERE, once, and never cleared by
+    // the engine again -- zero at every substep boundary is the declaring
+    // module's invariant. Not registered, so nothing here moves the walk, the
+    // schema hash, a digest or a blob. Aligned like an arena (row_size<T>()
+    // allows a 16-byte row alignment), and nothrow like one, so a failed
+    // allocation is capacity_exceeded rather than an exception. The row count
+    // cannot overflow: world_count * body_capacity already sized `bodies`.
+    sim.scratch_rows_.resize(sim.schedule_.scratch.size());
+    for (std::size_t i = 0; i < sim.schedule_.scratch.size(); ++i) {
+        const modules::CompiledScratch& scratch = sim.schedule_.scratch[i];
+        ScratchRows& storage = sim.scratch_rows_[i];
+        storage.capacity_per_world = scratch_rows_per_world(scratch, layout->body_capacity);
+        const std::size_t byte_size =
+            std::size_t{layout->world_count} * storage.capacity_per_world * scratch.elem_size;
+        if (byte_size == 0) continue;
+        void* raw = ::operator new[](byte_size, std::align_val_t{kStd430StructAlignment}, std::nothrow);
+        if (raw == nullptr) {
+            return std::unexpected(Error{Code::capacity_exceeded, "Simulation::create: scratch '" + scratch.module +
+                                                                      "." + scratch.name + "': allocation failed"});
+        }
+        std::memset(raw, 0, byte_size);
+        storage.bytes.reset(static_cast<std::byte*>(raw));
+    }
     // One-shot sizing so the broad phase never allocates in the steady state
     // (physics/grid.hpp's GridScratch note). Worst case is one entry and one
     // run per body slot in the whole set.
@@ -728,6 +790,10 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         Result<std::vector<compute::StateArrayShape>> arrays = state_array_shapes(sim.schedule_, shape);
         if (!arrays) return std::unexpected(arrays.error());
         shape.arrays = std::move(*arrays);
+        // The declared scratch, as data (Task 7b): the mirror makes, zero-fills
+        // and binds a derived buffer for each one that names a binding, and
+        // never uploads or reads one back.
+        shape.scratch = scratch_shapes(sim.schedule_, shape);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -989,6 +1055,17 @@ Result<void> Simulation::rebuild_views() {
                 view.elem_size = static_cast<uint32_t>(sizeof(float));
                 view.world_count = 1;
                 view.capacity_per_world = static_cast<uint32_t>(table.size());
+                continue;
+            }
+            // A SCRATCH (Task 7b) is viewed like an array -- every world's rows,
+            // world-contiguous -- from storage create() allocated, which never
+            // moves. One with no rows is still present(), like an empty table.
+            if (bindings[k].kind == modules::BindingKind::scratch) {
+                const ScratchRows& rows = scratch_rows_[bindings[k].index];
+                view.data = rows.bytes ? rows.bytes.get() : g_no_table_rows;
+                view.elem_size = schedule_.scratch[bindings[k].index].elem_size;
+                view.world_count = layout_.world_count;
+                view.capacity_per_world = rows.capacity_per_world;
                 continue;
             }
             if (bindings[k].kind != modules::BindingKind::array) continue;

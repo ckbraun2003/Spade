@@ -530,8 +530,13 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 [[nodiscard]] Result<std::vector<compute::StateArrayShape>> state_array_shapes(
     const modules::CompiledSchedule& schedule, const compute::StepShape& shape);
 
-// Every declared scratch's shape for the GPU mirror (Task 7b). Declared here;
-// the rules land with the GREEN commit.
+// Every declared scratch's shape for the GPU mirror (module-API stage 4, Task
+// 7b; sim/module.hpp's ScratchDecl), in the order schedule.scratch tables them:
+// its name, its declared row size, its extent's rows per world (per_body: the
+// shape's body capacity; per_world: 1) and its binding as declared. create()
+// hands the list to the Vulkan backend as StepShape::scratch, every scratch
+// included; the mirror makes a buffer for each one that names a binding and
+// for none that does not. create() sizes the CPU rows by the same rule.
 [[nodiscard]] std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
                                                                 const compute::StepShape& shape);
 
@@ -1818,6 +1823,20 @@ private:
     // CONFIGURATION, like models_: not registered, so not walked, digested or
     // snapshotted.
     std::vector<std::vector<float>> config_tables_;
+
+    // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
+    // ScratchDecl), parallel to schedule_.scratch: one allocation per scratch
+    // of world_count * capacity_per_world rows, world-contiguous like an arena,
+    // 16-byte aligned (row_size<T>()'s bound) and zero-filled in create() --
+    // and never touched by the engine again. Not registered, so not walked,
+    // digested, snapshotted or restored; keeping it zero at every substep
+    // boundary is the declaring module's invariant. Null `bytes` for a scratch
+    // with no rows.
+    struct ScratchRows {
+        std::unique_ptr<std::byte[], detail::AlignedArenaDelete> bytes{};
+        uint32_t capacity_per_world = 0;
+    };
+    std::vector<ScratchRows> scratch_rows_;
 
     // The core's four arrays, registered by hand in create().
     ArrayId<WorldParams> world_params_id_{};

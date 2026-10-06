@@ -6,7 +6,9 @@
 // pass's own declaration order. A view is untyped -- the arena's bytes, all
 // worlds, world-contiguous -- and world_rows<T>() types one world's rows. A
 // configuration table (Task 7) is a read-only view with world_count 1 and
-// elem_size 4, which every world reads as world_rows<const float>(view, 0).
+// elem_size 4, which every world reads as world_rows<const float>(view, 0). A
+// declared scratch (Task 7b) is viewed exactly like an array, over rows the
+// Simulation allocated beside the arenas rather than in them.
 //
 // ABSENT is a view with no data. A core quantity, a field, a stateless
 // module's token and an optional read of a module the set does not contain all

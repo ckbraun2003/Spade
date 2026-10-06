@@ -8,7 +8,8 @@
 // module set, eleven registered arrays plus their eleven `.slot_to_world`
 // siblings, 22 entries; more for a set whose modules declare more), plus the
 // derived, backend-internal buffers that are not part of the registered walk
-// (dryden_params, bindings.slang binding 13, and the rest of derived_entries()).
+// (dryden_params, bindings.slang binding 13, the rest of derived_entries(), and
+// every declared scratch that names a binding -- derived_buffer_shapes()).
 //
 // THE WALK GROWS. An earlier form of this comment said the global constraint
 // was "Registered state is FROZEN at 18 walk entries". That sentence was a
@@ -75,14 +76,35 @@
 
 namespace spade::compute {
 
-// One derived buffer's shape (module-API stage 4, Task 7b). Declared here; the
-// rules land with the GREEN commit.
+// ---------------------------------------------------------------------------
+// THE DERIVED BUFFERS' TABLE (module-API stage 4, Task 7b): every buffer the
+// mirror makes beside the registered walk, as data -- the twelve hand-listed
+// ones (StateMirror::derived_entries(), in that order), then every declared
+// scratch that names a binding (StepShape::scratch, in its order). create()
+// makes, zero-fills and binds each buffer from its row, so a derived buffer's
+// size and binding are spelt once, here. It needs no device, so a test reads
+// the mirror's shapes and bindings on any host.
+//
+// `count` is the buffer's element count, taken in 64 bits and refused with
+// capacity_exceeded, naming the buffer, past 2^32-1 (a slot index is a uint32);
+// `byte_size` is count * elem_size, which may exceed 2^32. capacity_exceeded
+// too for a shape whose CollisionDynamic key array would pass
+// compute/grid_entry.hpp's kMaxGridEntries.
+//
+// A SCRATCH WITH kNoBinding IS CPU-ONLY and has no row. Each bound scratch is
+// refused, invalid_argument naming it and what it collides with, when its
+// binding lies outside the generated range [0, binding_count) -- create()
+// passes gen::kBindingCount_state -- or is already held by a bound walk entry
+// (state_mirror.cpp's binding_for()), a hand-listed derived buffer or an
+// earlier scratch. A scratch is never uploaded or read back: upload() and
+// readback() walk the registry, and a scratch is not in it.
+// ---------------------------------------------------------------------------
 struct DerivedBufferShape {
     std::string name{};
     uint32_t elem_size = 0;
-    uint64_t count = 0;
-    uint64_t byte_size = 0;
-    uint32_t binding = 0;
+    uint64_t count = 0;      // elements
+    uint64_t byte_size = 0;  // count * elem_size
+    uint32_t binding = 0;    // its bindings.slang binding
 };
 
 [[nodiscard]] Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& shape,
@@ -316,14 +338,30 @@ private:
     // kernels, never uploaded or read back (physics/schedule.hpp's rule).
     Entry contact_dv_;
 
-    // THE ONE LIST of the derived buffers above. create() zero-fills and binds
-    // from it and destroy() tears down from it, so a derived buffer cannot be
-    // created in one place and forgotten in another. Until 2026-10-02 those
-    // were three hand-kept lists, and body_snapshot_ was missing from two.
+    // Every DECLARED SCRATCH that names a binding (module-API stage 4, Task
+    // 7b), in StepShape::scratch's order: derived buffers like field_samples_,
+    // sized and bound from the module's declaration, zero-filled here, never
+    // uploaded or read back. Sized once in create(), before any is made, so an
+    // Entry never moves.
+    std::vector<Entry> scratch_entries_;
+
+    // THE HAND-LISTED derived buffers above, in derived_buffer_shapes()' row
+    // order. Until 2026-10-02 there were three hand-kept lists of them, and
+    // body_snapshot_ was missing from two.
     [[nodiscard]] std::array<Entry*, 12> derived_entries() noexcept {
         return {&dryden_params_,  &sdf_nodes_,     &sdf_transforms_, &sdf_ranges_,
                 &step_params_,    &step_witness_,  &contact_params_, &grid_params_,
                 &grid_entries_,   &body_snapshot_, &field_samples_,  &contact_dv_};
+    }
+
+    // THE ONE WALK over every derived buffer: the hand-listed ones, then every
+    // scratch. create() zero-fills and binds through it and destroy() tears down
+    // through it, so a derived buffer cannot be created in one place and
+    // forgotten in another.
+    template <class F>
+    void for_each_derived(F&& f) {
+        for (Entry* e : derived_entries()) f(*e);
+        for (Entry& e : scratch_entries_) f(e);
     }
 
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer

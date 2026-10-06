@@ -244,7 +244,8 @@ struct SubstepContext {
     // views what the pass's i-th declared access names (sim/module.hpp's
     // CompiledBinding) -- a module array, which may be another module's; a
     // configuration table, read-only, one row of floats every world shares
-    // (Task 7); or an absent view for a core quantity, a field, a stateless
+    // (Task 7); a declared scratch, viewed like an array (Task 7b); or an
+    // absent view for a core quantity, a field, a stateless
     // module's token or an optional read of a module the set does not hold.
     // So a pass indexes it by its own access list, and sees nothing it did not
     // declare.
