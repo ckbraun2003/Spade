@@ -336,8 +336,8 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             // wall (RS3), but the mesh still draws wireframe and casts the
             // sun's shadow. Named rather than left wrong in silence (L6), with
             // the cell the mesh really samples (csg_mesh_cell_size()).
-            if (const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh); folds.folded > 0u) {
-                const float cell = csg_mesh_cell_size(world.sdf, root_node, *subtree_bounds, kCsgMeshDefaults);
+            const float cell = csg_mesh_cell_size(world.sdf, root_node, *subtree_bounds, kCsgMeshDefaults);
+            if (const CsgFoldReport folds = find_folded_triangles(world.sdf, root_node, *mesh, cell); folds.folded > 0u) {
                 const glm::vec3& lo = folds.bounds.min;
                 const glm::vec3& hi = folds.bounds.max;
                 scene.warnings.push_back(std::format(

@@ -505,7 +505,9 @@ float csg_mesh_cell_size(const SdfProgram& program, uint32_t root_node, const Aa
     return cells == 0u ? 0.0f : longest / static_cast<float>(cells);
 }
 
-CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh) {
+CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_node, const MeshData& mesh,
+                                    float cell) {
+    (void)cell;  // RED: every fold still reads as a thin wall
     CsgFoldReport report;
     if (root_node >= program.nodes.size()) {
         return report;
@@ -530,6 +532,8 @@ CsgFoldReport find_folded_triangles(const SdfProgram& program, uint32_t root_nod
     }
     if (report.folded > 0u) {
         report.bounds = Aabb{.min = lo, .max = hi};
+        report.thin = report.folded;
+        report.thin_bounds = report.bounds;
     }
     return report;
 }
