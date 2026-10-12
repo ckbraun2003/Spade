@@ -246,26 +246,29 @@ TEST(RenderFlowFeed, TaylorGreenDecaysAtTheViscousStepsRate) {
     EXPECT_LE(std::abs(ratio[1] - ratio[0]), 1e-5);
 }
 
-// The actuator disc's wake (Task 9): a disc of radius R = 0.2 m near the top
-// of an open 1.6 m box, pushing down with 1.2 N, for 80 steps of 5 ms. Plan
+// The actuator disc's wake (Task 9): a disc of radius R = 0.2 m, 0.9 m up an
+// open 1.2 m box (24^3), pushing down with 1.2 N, for 70 steps of 5 ms: the
+// fewest at which the wake reaches the bottom, kept small because debug
+// runs this under ctest's 60 s limit (first sized at 32^3 and 80 steps, which
+// took 65 s in debug; found by Core 2026-10-12). Plan
 // section 4's rotor-seed check: seeds half a radius below the hub, on a ring
 // of half the radius, move down faster than half the hover induced velocity
 // v_h = sqrt(T / (2 rho pi R^2)), about 2 m/s here, and their streamlines
 // leave the box through its bottom. The volume and Q iso views draw the
 // wake from the published field, as smoke tests.
 TEST(RenderFlowFeed, TheActuatorDiscsWakeCarriesTheRotorSeedsDown) {
-    constexpr uint32_t n = 32;
+    constexpr uint32_t n = 24;
     constexpr float dx = 0.05f;
     const DomainBc bc;  // open on every face, still air outside
     MacGrid g = *make_grid({n, n, n, dx}, bc);
-    const ActuatorDisc disc{.centre = glm::vec3(0.8f, 1.2f, 0.8f),
+    const ActuatorDisc disc{.centre = glm::vec3(0.6f, 0.9f, 0.6f),
                             .axis = glm::vec3(0.0f, -1.0f, 0.0f),
                             .radius = 0.2f,
                             .thrust = 1.2f};
     ASSERT_TRUE(check_disc(disc, g.shape).has_value());
     const FluidConfig cfg{.nu = 1.5e-5f, .h = 0.005f};
     FluidScratch scratch = *make_fluid_scratch(g, bc, cfg);
-    for (int step = 0; step < 80; ++step) {
+    for (int step = 0; step < 70; ++step) {
         spread_actuator(disc, g.shape, cfg.rho, cfg.h, scratch.du, scratch.dv, scratch.dw);
         ASSERT_EQ(fluid_step(g, bc, cfg, scratch).fault, FluidFault::none) << "step " << step;
     }
@@ -311,7 +314,7 @@ TEST(RenderFlowFeed, TheActuatorDiscsWakeCarriesTheRotorSeedsDown) {
     q_iso.colour_by = speed;
     ASSERT_GT(q_iso.value, 0.0f);
     Camera camera;
-    camera.position = glm::vec3(0.8f, 0.8f, 3.4f);
+    camera.position = glm::vec3(0.6f, 0.6f, 2.6f);
     const std::vector<uint8_t> bare = draw(RenderScene{}, camera);
     for (const bool iso : {false, true}) {
         RenderScene scene;
@@ -326,8 +329,8 @@ TEST(RenderFlowFeed, TheActuatorDiscsWakeCarriesTheRotorSeedsDown) {
                          : 0u;
         }
         std::printf("[ disc ] %s view: %zu px drawn\n", iso ? "Q iso" : "volume", drawn);
-        // Measured 2026-10-12: the volume draws 986 pixels, an hourglass of
-        // fast air through the disc; the Q iso 228, the disc's edge ring and
+        // Measured 2026-10-12: the volume draws 1578 pixels, an hourglass of
+        // fast air through the disc; the Q iso 362, the disc's edge ring and
         // the starting vortex below it, seen edge on. Looked at. The floor
         // only asks that each view draw the wake at all.
         EXPECT_GT(drawn, 100u) << (iso ? "the Q iso must draw the wake" : "the volume must draw the wake");
