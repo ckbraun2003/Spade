@@ -275,6 +275,12 @@ One per rotor, in the case. A blade design can then vary between cases for the s
 
 ## 11. Open questions (for the lead, Kat's lead and Physics)
 
+**Ruled by the lead, 2026-10-12 (INT-6):**
+- **A1:** A, the new installed target `spade::analysis`, owned by Interface. Core reviews its CMake, install rules and layering, and it gets a `consumers.md` line when it lands.
+- **A2:** A, the display-free API only, with the sandbox panels as the reference host.
+- **A3:** Physics' call.
+- **A4:** A, constant inputs plus a live run's recording.
+
 **A1. Where is the analysis API installed?**
 - **A (recommended).** A new installed target, `spade::analysis` (`engine/analysis/`), owned by Interface, on Physics' and Rendering's installed API.
 - **B.** Inside Physics' airflow headers.
