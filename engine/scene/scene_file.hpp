@@ -19,6 +19,11 @@
 //      are refused at every level of the text.
 //   3. A VERSION GATE. A scene_version this build does not read is
 //      schema_mismatch, so a caller can tell "upgrade" from "fix your file".
+//      The version WRITTEN is a function of the content: the oldest version
+//      that carries everything in the scene. Version 2 adds a model's parts
+//      (CORE-7), so a scene whose models have none is written as version 1,
+//      byte for byte the text it always was, and an older build reading a
+//      scene with parts says "upgrade" rather than "unknown key".
 //
 // What it checks is what the scene alone decides. What needs the world -- the
 // world hash (SCN-001) and a scene material reusing a world material's name
@@ -44,8 +49,13 @@
 
 namespace spade::scene {
 
-// The scene-file schema this build reads and writes.
-inline constexpr uint32_t kSceneFileVersion = 1;
+// The newest scene-file schema this build reads, and the oldest. It reads
+// every version in between, and writes each scene as the oldest version that
+// carries it (property 3):
+//   1  materials, models, assets, vehicles and spare (SCN-001..009);
+//   2  adds `parts` to a model (CORE-7), written only when a model has parts.
+inline constexpr uint32_t kSceneFileVersion = 2;
+inline constexpr uint32_t kSceneFileOldestVersion = 1;
 
 // The world a scene is placed in (SCN-001).
 struct SceneWorldRef {
@@ -117,8 +127,11 @@ struct SceneDesc {
 //   - world.file: non-empty, relative, forward slashes only;
 //   - materials: the world palette's rules (non-empty name, finite colour,
 //     known shading);
-//   - models: ModelType::validate(), and design_to_principal a unit
-//     quaternion (SCN-009);
+//   - models: ModelType::validate(), its parts' rules included (CORE-7: the
+//     model's own message, which names the part and the field), and
+//     design_to_principal a unit quaternion (SCN-009); each part's shape
+//     expressible in the SDF text encoding (check_sdf_representable), with
+//     the model, the part and the node named;
 //   - assets: a finite pose with scale > 0 and a unit orientation; a collider
 //     that SdfProgram::validate() accepts, with no indices in node_materials
 //     and collider_materials empty or one non-empty name per node, and no
@@ -132,11 +145,13 @@ struct SceneDesc {
 // Text -> SceneDesc. Parses, then runs validate_scene(). Codes:
 // schema_mismatch for a scene_version this build does not read;
 // invalid_argument for everything else, with the offending key's dotted path
-// and its line and column.
+// and its line and column. A model's `parts` is read only in a version-2
+// file: in a version-1 file it is an unknown key, blamed on version 1.
 [[nodiscard]] Result<SceneDesc> scene_from_yaml(std::string_view yaml_text);
 
 // SceneDesc -> canonical text (SCN-002). Runs validate_scene() first, so the
-// writer never emits a document the reader would refuse.
+// writer never emits a document the reader would refuse. Writes version 2
+// only when a model has parts, and version 1 otherwise (property 3).
 [[nodiscard]] Result<std::string> scene_to_yaml(const SceneDesc& scene);
 
 // Reads `path` and runs scene_from_yaml(). io_error when it cannot be read;
