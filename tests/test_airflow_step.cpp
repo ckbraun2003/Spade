@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 
 namespace {
@@ -190,6 +191,58 @@ TEST(AirflowStep, AHealthyStepReportsNoFault) {
     const FluidConfig cfg{.h = 0.01f};
     FluidScratch s = *make_fluid_scratch(g, bc, cfg);
     EXPECT_EQ(fluid_step(g, bc, cfg, s).fault, FluidFault::none);
+}
+
+TEST(AirflowActuator, TheKernelSumsToOneAlongAnAxis) {
+    Lcg rng;
+    for (int n = 0; n < 100; ++n) {
+        const float x = 0.5f * (rng.next() + 1.0f);  // in [0, 1)
+        float sum = 0.0f;
+        for (int k = -2; k <= 3; ++k) sum += peskin4(x - static_cast<float>(k));
+        EXPECT_NEAR(sum, 1.0f, 1.0e-6f) << x;
+    }
+}
+
+TEST(AirflowActuator, TheDiscAddsExactlyItsImpulse) {
+    const GridShape shape{32, 32, 32, 1.0f / 32.0f};
+    const MacGrid g = *make_grid(shape, DomainBc{});
+    const ActuatorDisc disc{.centre = {0.5f, 0.5f, 0.5f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.2f, .thrust = 2.0f};
+    ASSERT_TRUE(check_disc(disc, shape).has_value());
+    std::vector<float> du(g.u.size(), 0.0f), dv(g.v.size(), 0.0f), dw(g.w.size(), 0.0f);
+    const float rho = 1.225f;
+    const float h = 0.004f;
+    spread_actuator(disc, shape, rho, h, du, dv, dw);
+    const double cell = static_cast<double>(shape.dx) * shape.dx * shape.dx;
+    const auto momentum = [&](const std::vector<float>& d) {
+        double m = 0.0;
+        for (float x : d) m += static_cast<double>(x) * rho * cell;
+        return m;
+    };
+    const double expected = -static_cast<double>(h) * 2.0;  // along -y
+    EXPECT_NEAR(momentum(dv), expected, 1.0e-5 * std::fabs(expected));
+    EXPECT_EQ(momentum(du), 0.0) << "the axis has no x component";
+    EXPECT_EQ(momentum(dw), 0.0);
+}
+
+// Review Focus 2.
+TEST(AirflowActuator, ADiscWhoseSupportLeavesTheGridIsRefused) {
+    const GridShape shape{32, 32, 32, 1.0f / 32.0f};
+    const auto refused = [&](const ActuatorDisc& d, const char* what) {
+        const auto r = check_disc(d, shape);
+        if (r.has_value()) return testing::AssertionFailure() << "accepted";
+        if (r.error().context.find(what) == std::string::npos) return testing::AssertionFailure() << r.error().context;
+        return testing::AssertionSuccess();
+    };
+    const ActuatorDisc ok{.centre = {0.5f, 0.5f, 0.5f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.2f, .thrust = 1.0f};
+    ActuatorDisc edge = ok;
+    edge.centre.x = 0.1f;
+    EXPECT_TRUE(refused(edge, "leaves the grid"));
+    ActuatorDisc long_axis = ok;
+    long_axis.axis = {0.0f, -2.0f, 0.0f};
+    EXPECT_TRUE(refused(long_axis, "unit"));
+    ActuatorDisc flat = ok;
+    flat.radius = 0.0f;
+    EXPECT_TRUE(refused(flat, "radius"));
 }
 
 }  // namespace
