@@ -46,6 +46,64 @@ namespace {
 // would read as an absent module.
 alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
 
+// The refusal for a misused view (state/state_view.hpp; stage 5, Task 1): the
+// module and pass the view was bound for, the array, table or scratch it views,
+// and what the accessor was asked. Pass p's views are
+// [pass_view_begin[p], pass_view_begin[p + 1]), so the view's pass is the last
+// one whose window starts at or before it; a pass with no views has an empty
+// window and is never that pass.
+[[nodiscard]] std::string view_fault_message(const ViewFault& fault, const modules::CompiledSchedule& schedule,
+                                             std::span<const uint32_t> pass_view_begin,
+                                             std::span<const StateView> views, uint32_t world_count) {
+    const auto after = std::upper_bound(pass_view_begin.begin(), pass_view_begin.end(), fault.view);
+    if (fault.view >= views.size() || after == pass_view_begin.begin() || after == pass_view_begin.end()) {
+        return "step: a pass misused a view (view " + std::to_string(fault.view) + "), so the step refuses (L6)";
+    }
+    const std::size_t p = static_cast<std::size_t>(after - pass_view_begin.begin()) - 1;
+    const modules::CompiledPass& pass = schedule.passes[p];
+    const std::size_t k = fault.view - pass_view_begin[p];
+    const modules::CompiledBinding binding = pass.state[k];
+    std::string what;
+    switch (binding.kind) {
+        case modules::BindingKind::array:
+            what = "array '" + schedule.arrays[binding.index].module + "." + schedule.arrays[binding.index].name + "'";
+            break;
+        case modules::BindingKind::table:
+            what = "table '" + schedule.tables[binding.index].module + "." + schedule.tables[binding.index].name + "'";
+            break;
+        case modules::BindingKind::scratch:
+            what = "scratch '" + schedule.scratch[binding.index].module + "." + schedule.scratch[binding.index].name +
+                   "'";
+            break;
+        case modules::BindingKind::absent:
+            what = "absent view " + std::to_string(k);  // unreachable: an absent view reads as empty, no fault
+            break;
+    }
+    std::string detail;
+    switch (fault.misuse) {
+        case ViewMisuse::row_type:
+            detail = "was read with a row type of " + std::to_string(fault.row_size) + " bytes; its rows are " +
+                     std::to_string(views[fault.view].elem_size) + " bytes";
+            break;
+        case ViewMisuse::world:
+            detail = "was read for world " + std::to_string(fault.world) + ", outside the set of " +
+                     std::to_string(world_count) + " worlds";
+            break;
+        case ViewMisuse::not_table:
+            detail = "was read with table_rows, which reads only a configuration table";
+            break;
+        case ViewMisuse::table:
+            detail = "was read with all_rows; a configuration table is one set of rows every world shares, read "
+                     "with table_rows or world_rows";
+            break;
+        case ViewMisuse::none:
+            detail = "was misused";
+            break;
+    }
+    return "step: module '" + pass.module + "', pass '" + pass.pass + "': its " + what + " " + detail +
+           ". A misused view reads as empty, so the step ran to its end and refuses (L6)";
+}
+
 // A 64-bit identity, for an error message. Hex because that is how config
 // hashes and digests are written everywhere else in this tree
 // (the golden corpus's expected_digest, the schema hash) -- a decimal one would
@@ -707,6 +765,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         sim.pass_view_begin_.push_back(sim.pass_view_begin_.back() + static_cast<uint32_t>(pass.state.size()));
     }
     sim.pass_views_.assign(sim.pass_view_begin_.back(), StateView{});
+    sim.view_fault_ = std::make_unique<ViewFault>();
     // The field sample rows, sized once and zero-filled (module-API stage 3).
     sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
     // The configuration tables (module-API stage 4, Task 7), built here from
@@ -1041,22 +1100,30 @@ Result<void> Simulation::rebuild_views() {
     // keeps the one rule this function exists for.
     //
     // A CONFIGURATION TABLE (Task 7) is one row of floats that every world
-    // shares: world_count 1, elem_size 4, as many rows as it has floats. Its
+    // SHARES (stage 5, Task 1): elem_size 4, as many rows as it has floats, the
+    // set's world_count and `shared`, so world_rows() returns the whole table
+    // for every world in the set and table_rows() reads it with no world. Its
     // storage moves only in register_model(), which never runs inside a step,
     // and this runs at the top of every step. An empty table -- no model
     // registered yet -- still reads as present(), since its module is in the
     // set: its view points at g_no_table_rows and has no rows.
+    //
+    // Every view, absent ones included, carries its index here as its id and
+    // points at view_fault_, where an accessor records a misuse for step() to
+    // refuse (state/state_view.hpp).
     for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
         const std::vector<modules::CompiledBinding>& bindings = schedule_.passes[p].state;
         for (std::size_t k = 0; k < bindings.size(); ++k) {
-            StateView& view = pass_views_[pass_view_begin_[p] + k];
-            view = StateView{};
+            const uint32_t view_id = pass_view_begin_[p] + static_cast<uint32_t>(k);
+            StateView& view = pass_views_[view_id];
+            view = StateView{.id = view_id, .fault = view_fault_.get()};
             if (bindings[k].kind == modules::BindingKind::table) {
                 std::vector<float>& table = config_tables_[bindings[k].index];
                 view.data = table.empty() ? g_no_table_rows : reinterpret_cast<std::byte*>(table.data());
                 view.elem_size = static_cast<uint32_t>(sizeof(float));
-                view.world_count = 1;
+                view.world_count = layout_.world_count;
                 view.capacity_per_world = static_cast<uint32_t>(table.size());
+                view.shared = true;
                 continue;
             }
             // A SCRATCH (Task 7b) is viewed like an array -- every world's rows,
@@ -1090,6 +1157,14 @@ Result<void> Simulation::rebuild_views() {
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::step(uint64_t n) {
+    // POISONED (the lead's ruling on stage 5, Task 1): a step ran with a
+    // misused view and refused (the cpu loop's end, below), so the state is
+    // invalid from that step on. Refused here, before anything -- the flush,
+    // n == 0 and the vulkan branch included -- with the original fault; the
+    // tick stays. Only a successful restore() clears it.
+    if (!poisoned_.empty()) [[unlikely]] {
+        return std::unexpected(invalid(poisoned_));
+    }
     if (n == 0) {
         // "Advance zero steps" is still a step boundary, so the queue is still
         // applied. Anything else would make step(0) observably different from
@@ -1113,7 +1188,10 @@ Result<void> Simulation::step(uint64_t n) {
         // anything moves, rather than skipped (SL6: a refusal, never a silent
         // fallback). Any non-empty registry counts, including one whose
         // behaviors all declare a record_gpu half, because nothing calls that
-        // half yet. step(0) above is unaffected: it runs no behaviors.
+        // half yet. step(0) above is unaffected: it runs no behaviors. This
+        // refusal does NOT poison the Simulation, unlike a misused view's
+        // (below): it refuses before anything moves, so the state is still
+        // valid, and detaching the registry lets the same Simulation step.
         if (behaviors_ != nullptr && behaviors_->size() > 0) {
             return std::unexpected(Error{Code::unavailable,
                                          "behaviors are CPU-only today; the Vulkan step cannot run "
@@ -1192,6 +1270,25 @@ Result<void> Simulation::step(uint64_t n) {
         // Tick counts STEPS, not substeps (engine A9). One increment, after the
         // last substep.
         ++tick_;
+
+        // A MISUSED VIEW (state/state_view.hpp; stage 5, Task 1, L6). A pass
+        // that asked an accessor for a row type of another size, a world
+        // outside the set, table_rows of an array or all_rows of a table got
+        // an empty span, and its view recorded the first such misuse here. The
+        // step has run to its end, its tick included; it refuses now, through
+        // the same error return as CORE-1's refusal above, rather than return
+        // as if the pass had read what it asked for. The rest of `n` does not
+        // run. The record is cleared, and the Simulation is POISONED: the
+        // state is invalid from this step on, so every later step() and
+        // snapshot() refuses, naming this step's tick and this refusal, until
+        // a restore() replaces the state.
+        if (view_fault_->misuse != ViewMisuse::none) [[unlikely]] {
+            const ViewFault fault = std::exchange(*view_fault_, ViewFault{});
+            std::string refusal =
+                view_fault_message(fault, schedule_, pass_view_begin_, pass_views_, layout_.world_count);
+            poisoned_ = "step: state invalid since tick " + std::to_string(ctx.tick.value) + ": " + refusal;
+            return std::unexpected(invalid(std::move(refusal)));
+        }
     }
 
     return {};
@@ -2347,6 +2444,11 @@ Result<void> Simulation::apply_wrench(BodyRef ref, glm::vec3 world_force, glm::v
 // ---------------------------------------------------------------------------
 
 Result<SnapshotBlob> Simulation::snapshot() const {
+    // Poisoned by a misused view (step()): the state is invalid, so no blob of
+    // it may exist, and any blob a restore() reads is from before the fault.
+    if (!poisoned_.empty()) {
+        return std::unexpected(invalid(poisoned_));
+    }
     if (!queue_.empty()) {
         return std::unexpected(invalid("snapshot: the structural queue is not empty; pending "
                                        "spawn/despawn ops are not part of the registry walk. Call "
@@ -2582,7 +2684,14 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     scratch_.entries.clear();
     scratch_.runs.clear();
 
-    return rebuild_views();
+    if (Result<void> views = rebuild_views(); !views) {
+        return views;
+    }
+    // The state a misused view invalidated (step()) has been replaced by the
+    // blob's, and a poisoned Simulation writes no blob, so the poison is
+    // cleared -- by a successful restore only.
+    poisoned_.clear();
+    return {};
 }
 
 // ---------------------------------------------------------------------------

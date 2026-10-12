@@ -242,18 +242,27 @@ struct SubstepContext {
     // CompiledBinding) -- a module array, which may be another module's; a
     // configuration table (Task 7), read-only by declaration (compile_schedule
     // refuses a write or accumulate, its own module's included; the view's
-    // bytes are not const), one float per row in a single world that every
-    // world shares, so a pass reads it as world_rows<float>(view, 0) whatever
-    // world it is running; a declared scratch, viewed like an array (Task 7b);
+    // bytes are not const), one float per row that every world SHARES (stage
+    // 5, Task 1), read with table_rows<float>(view), or with
+    // world_rows<const float>(view, w), which returns the whole table for every
+    // world w of the set; a declared scratch, viewed like an array (Task 7b);
     // or an absent view for a core quantity, a field, a stateless module's
     // token or an optional read of a module the set does not hold. So a pass
     // indexes it by its own access list, and sees nothing it did not declare.
     // Simulation::step() sets it before each pass from views it refills in
-    // place; nothing is allocated.
+    // place; nothing is allocated. world_rows<T>(view, w) reads one world of
+    // an array or a scratch, and all_rows<T>(view) every world's rows at once,
+    // as a batched sweep reads them. A misused accessor (a row type of another
+    // size, a world outside the set, table_rows of an array, all_rows of a
+    // table) reads as empty and records a fault, and the step refuses at its
+    // end with invalid_argument (state/state_view.hpp). That refusal poisons
+    // the Simulation: every later step() and snapshot() refuses until a
+    // restore() (sim/simulation.hpp's step()).
     //
-    // The built-in passes do not read it: they keep their typed members of
-    // WorldSubstepView above until the GPU module ABI (stage-4 plan, open
-    // question 5), so no pass body moved.
+    // Of the built-in passes, only the contact passes and integrate read it,
+    // for the contact scratch integrate declares (contact_dv, above). The rest
+    // keep their typed members of WorldSubstepView above until the GPU module
+    // ABI (stage-4 plan, open question 5).
     std::span<const StateView> state{};
 };
 #if defined(_MSC_VER)

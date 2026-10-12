@@ -287,13 +287,16 @@ struct StreamDecl {
 // A table is CONFIGURATION, NOT STATE: it is not registered, so it is not in
 // the walk, the digest or the snapshot, and restore() does not rebuild it.
 // A pass reads it as a bound view: "<module>.<table>" in its access list binds
-// it (BindingKind::table), as one row of floats -- world_count 1 and elem_size
-// 4, read with world_rows<float>(view, 0) -- because one table serves every
-// world. A pass may only READ a table: compile_schedule refuses a write or an
-// accumulation, since a table changes only in register_model(). Another module
-// may read it, plainly or optionally, by the same rules as an array. Table names
-// share the array namespace: unique among every array and table in the set,
-// with no '.', and never a core array's name.
+// it (BindingKind::table), as one row of floats, elem_size 4, that every world
+// SHARES (stage 5, Task 1): table_rows<float>(view) reads it with no world, and
+// world_rows<const float>(view, w) returns the whole table for every world w of
+// the set, so a pass may read it inside its world loop; all_rows on a table is
+// a misuse, which refuses the step (state/state_view.hpp). A pass may only READ
+// a table: compile_schedule refuses a write or an accumulation, since a table
+// changes only in register_model(). Another module may read it, plainly or
+// optionally, by the same rules as an array. Table names share the array
+// namespace: unique among every array and table in the set, with no '.', and
+// never a core array's name.
 //
 // THE IDENTITY RULE. A table is a pure function of the registered models (and
 // its build function, whose changes ride the module's version, like a pass's).
@@ -392,7 +395,8 @@ using VehicleRowsFn = void (*)(const VehicleRows& vehicle, std::vector<RowInitRe
 //
 // A PASS REACHES IT AS IT REACHES AN ARRAY: "<module>.<name>" in its access
 // list binds it (BindingKind::scratch), every world's rows world-contiguous,
-// through SubstepContext::state, sliced with world_rows<T>(). The access rules
+// through SubstepContext::state, sliced with world_rows<T>() or read whole with
+// all_rows<T>(), as a batched sweep does (state/state_view.hpp). The access rules
 // are the array rules: its own module or any other may read, write or
 // accumulate it as a required access, the hazard graph orders those accesses as
 // it orders an array's, an optional read of an absent module's scratch binds an
