@@ -215,11 +215,13 @@ Two more face types, for validation (§11) and enclosed scenes: **wall** (no-sli
 
 In still air every face is open with `p = 0`, so the wake leaves the box. The face classification follows the gust per fluid step. The LBM tier uses equilibrium inflow at the ambient (or, nested, at the outer grid's velocity) and zero-gradient outflow.
 
-**Moving bodies.** In the real-time tier, vehicles are **porous**: they reach the air only through momentum sources (§3), never as solids. A quad's body blocks little of its rotors' wakes. A solid moving body (a body-frame SDF in its model, faces inside it taking `v + ω × r`, and the pressure force integrated over its surface in place of its drag element) belongs to the LBM tier and to large bodies later (§8 Q4). Treating a body as both solid and dragged would count its drag twice.
+**Moving bodies** (**amended by Cameron, 2026-10-12, `PHY-10`**; this replaces "porous in the real-time tier"). A vehicle is a **solid wall in both tiers**: a body-frame SDF posed each fluid step gives the face apertures in the body's support box, faces inside it take `v + ω × r`, velocity is extrapolated into it as for static solids, and the pressure on its surface is integrated, for display one-way and in place of its drag element two-way, so its drag is never counted twice. **Porous** (momentum sources only) stays an option per body. His words: "The drone should be modeled as a solid wall, remember that drone modeling is to be complex and extremely accurate, this engine will eventually be used in f1 modeling and other hyper complex systems that need extreme accuracy capabilities. There should be the porous option but this relates to the previous question." The work and its order are in `2026-10-12-airflow-drone-demonstration-plan.md` (P2, P3).
 
 ## 3. Coupling
 
 **Owner:** Physics.
+
+**Rotor models** (**Cameron, 2026-10-12, `PHY-10`**): three, selectable per rotor and per analysis. The **actuator disc** (below) is the real-time model. The **actuator line** puts blade-element forces on rotating lines, from airfoil polars, chord and twist, so it makes swirl and helical tip vortices; its step is limited by the blade tip, so it runs in slow motion. **Blade-resolved** treats the rotating blades as a moving solid in a nested fine grid and runs offline. His words: "I want the blade resolved, an actuator line, and the disk option all available. The drone builder is going to be a mini drone cfd analysis system on top of the builder with cad design inputs and proper geometry for each part. The analysis is expected to have multiple modeling options, with real time analysis being cool and all, but some stuff will take processing time and that is expected for larger sims." Run time and validation per model: the demonstration plan.
 
 ### 3.1 Rotors as actuator disks
 
@@ -531,7 +533,7 @@ Kat runs the CPU backend today *(per the lead's brief; not stated in this reposi
 
 **Q3. Rotor two-way coupling.** (A) Staged: one-way first (rotors push air, read Dryden), then probe-and-subtract. (B) Probe-and-subtract from the start. (C) Grid-resolved inflow. **Recommend A,** with C kept for the LBM tier. The first milestone then cannot double-count, and B lands with its own measurement. **Decided (Cameron, 2026-10-05, `PHY-9`): A, staged one-way then probe-and-subtract, with C kept for LBM.**
 
-**Q4. Vehicles in the grid.** (A) Porous: momentum sources only. (B) Solid moving bodies from a body SDF. (C) A per tier: porous in the real-time tier, solid as an option in the LBM tier. **Recommend C.**
+**Q4. Vehicles in the grid.** (A) Porous: momentum sources only. (B) Solid moving bodies from a body SDF. (C) A per tier: porous in the real-time tier, solid as an option in the LBM tier. **Recommend C.** **Decided (Cameron, 2026-10-12, `PHY-10`): B in both tiers, with porous kept as an option per body.** This supersedes the realm-settled C (§2).
 
 **Q5. The LBM lattice.** (A) D3Q19 with TRT and Smagorinsky: 210 MiB at 128³, the cheapest. (B) D3Q27, regularized, with Smagorinsky: 274 MiB, better isotropy in jets. (C) D3Q27 cumulant: the most stable at high Reynolds number, and the most code for both twins. **Recommend B.**
 
