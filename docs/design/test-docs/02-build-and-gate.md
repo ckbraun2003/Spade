@@ -79,7 +79,8 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - at `81a6438` it failed `engine/render/flow_render.cpp` with both `-O3` errors the leg had found: `array-bounds` in `std::sort`'s insertion pass, and `maybe-uninitialized` copying an optional vector. The syntax check passed the same file;
   - at `02ac4bd` the fixed file passed;
   - a `.cpp` the volume never built failed with its reason, and a header fell back to the syntax check;
-  - cost: 49 s for two files.- **Cost:** about a minute per heavy test file on the old box (126 s for three files); on this machine, 11 s for one heavy test file and one header.
+  - cost: 49 s for two files.
+- **Cost:** about a minute per heavy test file on the old box (126 s for three files); on this machine, 11 s for one heavy test file and one header.
 - **When to run it:** whenever it's needed, with as many files as you like, beside any number of legs. It refuses (exit 2) only when no leg volume is idle.
 
 ## This machine
