@@ -344,7 +344,7 @@ Real time needs the fluid at no more than about half of `h_f`, leaving the rest 
 | Face apertures (fp16), finest and coarse | 1.5 + | derived | 13.8 |
 | Static SDF distance at cells | 1 | derived | 8.0 |
 | **Total** | ≈ 97 B/cell | | **≈ 194** |
-| Later, moving solids: solid face velocity | 3 | scratch | +24.2 |
+| Moving solids (`PHY-10`: the drone is a wall): `φ`, the owner part and the wall velocity at faces (Core's stage 7 design §5.2) | 3–4 | scratch | +48 to +72 *(estimate)* |
 
 Aliasing vorticity with the backward MacCormack set would save 24 MiB; this table does not count it. **It counts device-local bytes only.** Today every walked and derived buffer also has an equal staging buffer, about 194 MiB more of host-visible memory at 128³, unless scratch and derived buffers become device-only (stage 7); the host arena holds its own copy of the state; and per-cell `slot_to_world` maps would double the state's bytes, which the grid-row form avoids (Core).
 
@@ -402,7 +402,7 @@ Which state is which: velocity, pressure and dye are walked, snapshotted and res
 ### 4.5 Determinism per device
 
 - **No atomics.** Every scatter is written as a gather in a fixed order (sources by slot, points by index).
-- **No order-dependent reductions in the step.** The pressure solve runs a fixed number of cycles and never tests a residual. The only reductions are exact maxima (the CFL monitor) and diagnostics that stepping never reads, computed with a fixed tree.
+- **Reductions that feed stepping are fixed-tile and fixed-order** (amended 2026-10-12, with Core's stage 7 design §5.5). The pressure solve runs a fixed number of cycles and never tests a residual. Two kinds of reduction do feed stepping: two-way loads and a closed domain's mean pressure (plan A Task 5). Both use Core's one reduction on both backends, in fp32 with no fp64. Fixed tiles (4×4×4 cells) are each summed in (k, j, i) order, then the tiles in tile order, independent of workgroup size. Only each operation's rounding can differ between backends, and that difference is banded. Exact maxima (the CFL monitor) and diagnostics that stepping never reads stay as they were.
 - **Per-cell kernels.** Advection, red-black smoothing, sources and projection compute one cell's value from its neighbours only, so they are invariant to workgroup size (the existing `{32, 64, 128}` tests extend to airflow). The 4³ coarse solve runs in one workgroup with barriers between sweeps.
 - **The recording choice is a function of the tick** (`tick mod j`), never of state.
 - **Operation order is the contract** (`engine D2`). The CPU twin writes every stencil in the GPU's order, uses the lerp form, uses `fp32_math` for any transcendental (`sqrt` is allowed, `SR-14`), and allows no contraction.

@@ -42,7 +42,8 @@ public:
 
 - **Buffers.**
   - Every buffer is device-local and lives as long as the runner. One host-visible staging buffer, the largest of any upload or read, is reused.
-  - One descriptor set layout of N storage buffers, binding i = buffer i. It is its own layout, not `bindings.slang`'s state set, so no generated binding and no mirror is touched (G1).
+  - **Each buffer is tagged with its kind** (Core's stage 7 design §9): device-only, resident or staged, the same three kinds the mirror gets. So the list maps one-to-one onto stage 7's `ScratchShape` and resident arrays.
+  - **Bindings:** the kernels bind at the fixed indices of an **airflow block that Core reserves now in `bindings.slang`**, so plan C's module binds the same kernels unchanged. The runner builds its own descriptor set layout with those binding numbers. It is not the state set, so no `StepShape` or mirror is touched (G1).
   - A fluid step is one recorded chain, resubmitted. Publish is a second chain.
 - **Refusals, by name (`L6`).** `create()` and `record()` refuse when:
   - a buffer's bytes exceed `maxStorageBufferRange`;
@@ -60,7 +61,10 @@ public:
 ## 3. Determinism, and its one exception
 
 - The chain runs in a fixed order, with the barrier rule above. Every kernel mirrors plan A's expressions term for term, in the same order: faces −x, +x, −y, +y, −z, +z; the lerp form; red then black. GPU results are graded against the CPU within `TD-14` bands.
-- **The exception, named (the lead, 2026-10-12):** plan A's `remove_mean`, for closed domains, is a sequential double sum. The GPU computes it as a **fixed-shape tree reduction**, the same tree for every run on a device. That is deterministic per device, and its difference from the CPU's sum is banded under `TD-14`. A literal mirror would be one thread, or fp64 at 1/64 rate.
+- **Reductions** (amended after Core's stage 7 design §5.5, superseding the lead's "fixed-shape tree" note of 2026-10-12):
+  - Plan A's closed-domain mean (`remove_mean`) uses Core's one fixed-order reduction on **both** backends: fp32 tiles of 4×4×4 cells, each summed in (k, j, i) order, then the tiles in tile order.
+  - Physics moves the CPU reference to that order **before Task 8 pins the golden**, so no golden moves twice.
+  - The GPU then runs the same sums in the same order, so only rounding differs, banded under `TD-14`. There is no exception to expression-for-expression left, and no fp64.
 
 ## 4. Tests (plan B's first task, before any solver kernel)
 
@@ -76,5 +80,5 @@ All of these are GPU-labelled, so they run only when no game is up (Cameron's th
 
 ## 5. What stage 7 takes, and what it drops
 
-- **Takes:** `dispatch_chain` (already shared), the limit and budget refusals, and the record-once pattern.
+- **Takes:** `dispatch_chain` (already shared), the limit and budget refusals (§7.1's checks: the runner calls them, never copies them, once they exist), the reserved binding block, the three buffer kinds, and the record-once pattern. The demo's volume readback becomes stage 7 §6.4's publish kernels.
 - **Drops:** `ChainRunner`. The `airflow` module's buffers become stage 7's resident arrays with their hashed configuration (`PHY-9`, Q12), and plan C retires the runner, except as a bench.
