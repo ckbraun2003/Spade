@@ -15,6 +15,7 @@ using Channels = std::array<float, kFlowChannelCount>;
 struct Context {
     const MacGrid& g;
     float inv_dx;
+    std::array<bool, 3> periodic;
 };
 
 // The velocity component c averaged to the centre of cell (i, j, k).
@@ -41,10 +42,14 @@ struct Context {
     G[2][2] = (x.g.w[w_index(s, i, j, k + 1u)] - x.g.w[w_index(s, i, j, k)]) * x.inv_dx;
     for (uint32_t a = 0; a < 3; ++a) {
         const uint32_t at[3] = {i, j, k};
-        const uint32_t lo_q = at[a] == 0u ? 0u : at[a] - 1u;
-        const uint32_t hi_q = at[a] + 1u == n[a] ? at[a] : at[a] + 1u;
-        if (lo_q == hi_q) continue;  // an axis of one cell: no difference along it
-        const float scale = hi_q - lo_q == 2u ? 0.5f * x.inv_dx : x.inv_dx;
+        if (n[a] == 1u) continue;  // an axis of one cell: no difference along it
+        // A periodic axis wraps at its edges (a central difference everywhere);
+        // any other goes one-sided there.
+        const bool wrap = x.periodic[a];
+        const uint32_t lo_q = at[a] == 0u ? (wrap ? n[a] - 1u : 0u) : at[a] - 1u;
+        const uint32_t hi_q = at[a] + 1u == n[a] ? (wrap ? 0u : at[a]) : at[a] + 1u;
+        const bool central = wrap || (lo_q + 2u == hi_q);
+        const float scale = central ? 0.5f * x.inv_dx : x.inv_dx;
         uint32_t lo[3] = {i, j, k};
         uint32_t hi[3] = {i, j, k};
         lo[a] = lo_q;
@@ -91,7 +96,7 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                                                                  std::to_string(in.solid.size()) + " cells, not " +
                                                                  std::to_string(cells)});
     }
-    const Context x{g, 1.0f / s.dx};
+    const Context x{g, 1.0f / s.dx, in.periodic};
     const auto is_solid = [&](uint32_t i, uint32_t j, uint32_t k) {
         return !in.solid.empty() && in.solid[cell_index(s, i, j, k)] != 0u;
     };

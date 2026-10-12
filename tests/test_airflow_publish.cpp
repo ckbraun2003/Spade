@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include "core/flow_volume.hpp"
@@ -143,6 +144,32 @@ TEST(AirflowPublish, AMismatchedSolidMaskIsRefused) {
     const auto counts = publish_render_volume(g, {.solid = solid}, vol);
     ASSERT_FALSE(counts.has_value());
     EXPECT_EQ(counts.error().code, spade::Code::invalid_argument);
+}
+
+
+// Rendering's finding (2026-10-12): on a periodic axis the edge cells'
+// differences must wrap, not go one-sided. u = sin(k y) in a box periodic in
+// y: omega_z = -du/dy, and the central difference at every cell -- the edges
+// included -- is k cos(k y) sin(k dx) / (k dx).
+TEST(AirflowPublish, APeriodicAxisWrapsItsEdgeDifferences) {
+    const uint32_t n = 16;
+    const double L = 2.0;
+    const double k = 2.0 * std::numbers::pi / L;
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({4, n, 2, static_cast<float>(L / n)}, bc);
+    for_each_sample(g.shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        g.u[idx] = static_cast<float>(std::sin(k * static_cast<double>(x.y)));
+    });
+    FlowVolume vol;
+    ASSERT_TRUE(publish_render_volume(g, {.periodic = {true, true, true}}, vol).has_value());
+    const double dx = L / n;
+    const double factor = std::sin(k * dx) / (k * dx);
+    for (uint32_t j : {0u, 1u, n / 2u, n - 1u}) {
+        const double y = (j + 0.5) * dx;
+        const double expected = std::fabs(k * std::cos(k * y) * factor);
+        EXPECT_NEAR(channel(vol, 1, j, 1, spade::kFlowVorticity), expected, 2.0e-3 * k + 1.0e-3 * expected) << j;
+    }
 }
 
 }  // namespace
