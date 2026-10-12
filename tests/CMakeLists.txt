@@ -586,6 +586,7 @@ add_executable(spade_bench
     bench/bench_core.cpp
     bench/bench_sim.cpp
     bench/bench_render.cpp
+    bench/bench_airflow.cpp
 )
 
 # spade_fp_strict here too, same reasoning as spade_tests above: bench_core.cpp

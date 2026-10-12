@@ -1,6 +1,7 @@
 #include "physics/airflow/viscous.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "physics/airflow/boundaries.hpp"
 
@@ -19,12 +20,45 @@ void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, co
                               bc.face[kZMinus] == FaceBc::periodic};
     const auto cl = static_cast<glm::length_t>(c);
     std::copy(x.begin(), x.end(), rhs.begin());
+    // THE INTERIOR FAST PATH (the airflow CPU-performance task, 2026-10-12): a
+    // sample whose six neighbours are all plain samples -- along its own axis
+    // neither a wrap nor a skipped boundary, across it no domain edge -- takes
+    // the same additions in the same order as the general body below, and the
+    // diagonal 1 + alpha summed six times in that order. `extra` stays a
+    // literal + 0.0f, which turns a -0 sum into +0 exactly as the general body
+    // does. Only samples on the edges pay for the face kinds.
+    float diag_interior = 1.0f;
+    for (int n6 = 0; n6 < 6; ++n6) diag_interior += alpha;
+    // The interior per axis, inclusive, from 1: along the own axis to n - 1
+    // (the samples 0 and n are boundaries) or, periodic, to n - 2 (0 and n - 1
+    // wrap); across it to n - 2 (0 and n - 1 are domain edges).
+    int64_t hi[3];
+    for (uint32_t a = 0; a < 3; ++a) {
+        hi[a] = (a == c && !periodic[c]) ? int64_t{n[a]} - 1 : int64_t{n[a]} - 2;
+    }
+    const auto in_range = [&](uint32_t a, uint32_t q) { return q >= 1u && int64_t{q} <= hi[a]; };
+    const std::size_t sy = cnt[0];
+    const std::size_t sz = std::size_t{cnt[0]} * cnt[1];
+    float* xp = x.data();
+    const float* rp = rhs.data();
     for (uint32_t sweep = 0; sweep < sweeps; ++sweep) {
         for (uint32_t colour = 0; colour < 2; ++colour) {
             for (uint32_t k = 0; k < cnt[2]; ++k) {
                 for (uint32_t j = 0; j < cnt[1]; ++j) {
-                    for (uint32_t i = 0; i < cnt[0]; ++i) {
-                        if (((i + j + k) & 1u) != colour) continue;
+                    const bool row_inside = in_range(1, j) && in_range(2, k);
+                    for (uint32_t i = (j + k + colour) & 1u; i < cnt[0]; i += 2u) {
+                        if (row_inside && in_range(0, i)) {
+                            const std::size_t self = at(i, j, k);
+                            float sum = 0.0f;
+                            sum += alpha * xp[self - 1u];
+                            sum += alpha * xp[self + 1u];
+                            sum += alpha * xp[self - sy];
+                            sum += alpha * xp[self + sy];
+                            sum += alpha * xp[self - sz];
+                            sum += alpha * xp[self + sz];
+                            xp[self] = ((rp[self] + sum) + 0.0f) / diag_interior;
+                            continue;
+                        }
                         const uint32_t idx[3] = {i, j, k};
                         const uint32_t own = idx[c];
                         // The periodic alias face, or a boundary face the velocity conditions hold.

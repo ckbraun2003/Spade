@@ -10,6 +10,15 @@ namespace spade::physics::airflow {
 
 namespace {
 
+// The per-cell helpers are forced inline: called out of line they cost most
+// of the publish (the airflow CPU-performance task, 2026-10-12). The code is
+// unchanged, so the published bits are too.
+#if defined(_MSC_VER)
+#define SPADE_AIRFLOW_HOT __forceinline
+#else
+#define SPADE_AIRFLOW_HOT inline __attribute__((always_inline))
+#endif
+
 using Channels = std::array<float, kFlowChannelCount>;
 
 struct Context {
@@ -19,7 +28,7 @@ struct Context {
 };
 
 // The velocity component c averaged to the centre of cell (i, j, k).
-[[nodiscard]] float centred(const Context& x, uint32_t c, uint32_t i, uint32_t j, uint32_t k) noexcept {
+[[nodiscard]] SPADE_AIRFLOW_HOT float centred(const Context& x, uint32_t c, uint32_t i, uint32_t j, uint32_t k) noexcept {
     const GridShape& s = x.g.shape;
     switch (c) {
         case 0:
@@ -32,7 +41,7 @@ struct Context {
 }
 
 // G[c][a] = d u_c / d x_a at the centre of cell (i, j, k).
-[[nodiscard]] std::array<std::array<float, 3>, 3> gradient(const Context& x, uint32_t i, uint32_t j,
+[[nodiscard]] SPADE_AIRFLOW_HOT std::array<std::array<float, 3>, 3> gradient(const Context& x, uint32_t i, uint32_t j,
                                                            uint32_t k) noexcept {
     const GridShape& s = x.g.shape;
     const uint32_t n[3] = {s.nx, s.ny, s.nz};
@@ -63,7 +72,7 @@ struct Context {
 }
 
 // The fluid cell's channels: u, v, w, dye, p, |omega|, q-hat, reserved.
-[[nodiscard]] Channels fluid_channels(const Context& x, uint32_t i, uint32_t j, uint32_t k) noexcept {
+[[nodiscard]] SPADE_AIRFLOW_HOT Channels fluid_channels(const Context& x, uint32_t i, uint32_t j, uint32_t k) noexcept {
     const auto G = gradient(x, i, j, k);
     const float wx = G[2][1] - G[1][2];
     const float wy = G[0][2] - G[2][0];
