@@ -135,9 +135,9 @@ GPU coverage on a one-machine gate, the third open question, is `TD-13`. Its int
 
 1. **The bench baselines are re-seeded on this machine** (the lead's choice (a), 2026-10-05; `test-docs/baselines-reseed`):
    - the CPU families were re-measured at master `b08d139`: 27 cases in 8 families, in the lead's announced quiet window;
-   - the old box's 7 GPU entries are kept, labelled with that box, because the GPU families cannot run here (above);
+   - the old box's 7 GPU entries are kept, labelled with that box, as history;
    - `_meta` names Core's module-API stage 2 commit, `198eab1` (merged as `dca7cfb`), which moved the GPU timing basis (`TD-8`).
 
-   A GPU seed waits for a device the default build admits. Since `e146575` it admits the RTX 3060 Ti, so the seed can be taken in a quiet window the lead announces.
+   **The GPU families were seeded on 2026-10-12** (block `gpu_DESKTOP-1SG90PU_2026-10-12`): 14 entries in 4 families, on the RTX 3060 Ti (driver 572.83), in the lead's quiet window across both trees. The binary was built from master `e7c805f`; master's later commits leave the timed paths alone, and its `_meta` says how that was checked. Kat's build overlapped the first run's start, so the whole set was run again with nothing else running, and that clean run is the seed. Two complete runs differed by a median of 0.6% and at most 9.2% (`BM_StepQuadWorldsGpu/64`), which is this box's run-to-run spread for these families. Every sample ran at P0 at 1755–1935 MHz, and the GPU reached at most 51 °C.
 2. **GPU coverage** (`TD-13`): every gate report states how many `gpu` tests ran and names any skip. Since `e146575` all 104 run here, so a skip is a finding again.
 3. **The leg** runs when the work needs it. Each run has its own volume (`plans/2026-10-04-parallel-legs.md`), and a golden made final under `TD-12` uses a fresh volume (`-NoSeed`).
