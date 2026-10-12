@@ -320,6 +320,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_edit_text.cpp
         test_editor_cli.cpp
         test_editor_library.cpp
+        test_editor_pick.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
