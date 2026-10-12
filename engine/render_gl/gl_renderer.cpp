@@ -1392,6 +1392,7 @@ struct GlRenderer::Impl {
     std::vector<glm::vec4> field_colours;
 
     uint32_t last_draw_calls = 0;
+    GlRenderer::FlowQuality flow_quality;
     uint32_t last_instances = 0;
 
     std::string renderer_name;
@@ -2761,6 +2762,8 @@ std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions
 
 uint32_t GlRenderer::last_draw_calls() const noexcept { return impl_->last_draw_calls; }
 uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instances; }
+void GlRenderer::set_flow_quality(const FlowQuality& quality) noexcept { impl_->flow_quality = quality; }
+GlRenderer::FlowQuality GlRenderer::flow_quality() const noexcept { return impl_->flow_quality; }
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }
 const std::string& GlRenderer::version_string() const noexcept { return impl_->version_string; }
 

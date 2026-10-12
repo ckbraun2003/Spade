@@ -157,10 +157,20 @@ class GlRenderer {
     // so "one draw per mesh" is checkable by a caller with no display, against
     // a scene whose instance count it chose. The count is one per mesh and
     // submesh drawn, plus one per ray-marched CSG subtree. The background
-    // pass, the shadow casters, each field layer and the overlays are more
-    // draws, and are not counted.
+    // pass, the shadow casters, each field layer, the flow passes and the
+    // overlays are more draws, and are not counted.
     [[nodiscard]] uint32_t last_draw_calls() const noexcept;
     [[nodiscard]] uint32_t last_instances() const noexcept;
+
+    // How a flow layer's march spends its time (airflow plan §7.2, RND-7).
+    // Skipping empty space changes no pixel: a brick of the volume where no
+    // transfer absorbs and no iso-surface can cross is stepped over. On by
+    // default; off only to measure what it saves.
+    struct FlowQuality {
+        bool skip_empty_space = true;
+    };
+    void set_flow_quality(const FlowQuality& quality) noexcept;
+    [[nodiscard]] FlowQuality flow_quality() const noexcept;
 
     // What the driver says it is. Reported rather than assumed, because the
     // difference between a real driver and a software implementation changes

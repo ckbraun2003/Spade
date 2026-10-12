@@ -1337,7 +1337,8 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     RenderScene iso_scene = ring_cut_scene();
     iso_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
-    const auto median_ms = [&](const RenderScene& scene) {
+    const auto median_ms = [&](const RenderScene& scene, bool skip) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = skip});
         EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
         std::vector<double> ms;
         for (int i = 0; i < 10; ++i) {
@@ -1354,19 +1355,70 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
         std::sort(ms.begin(), ms.end());
         return 0.5 * (ms[3] + ms[4]);
     };
-    const double volume_ms = median_ms(volume_scene);
-    const double iso_ms = median_ms(iso_scene);
+    const double volume_full_ms = median_ms(volume_scene, false);
+    const double iso_full_ms = median_ms(iso_scene, false);
+    const double volume_ms = median_ms(volume_scene, true);
+    const double iso_ms = median_ms(iso_scene, true);
     RecordProperty("volume_ms_x100", static_cast<int>(volume_ms * 100.0));
     RecordProperty("iso_ms_x100", static_cast<int>(iso_ms * 100.0));
-    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms, iso %.2f ms; on %s\n", volume_ms, iso_ms,
-                device.c_str());
-    EXPECT_LT(volume_ms, 1000.0) << device;
-    EXPECT_LT(iso_ms, 1000.0) << device;
+    RecordProperty("volume_unskipped_ms_x100", static_cast<int>(volume_full_ms * 100.0));
+    RecordProperty("iso_unskipped_ms_x100", static_cast<int>(iso_full_ms * 100.0));
+    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms (%.2f unskipped), iso %.2f ms (%.2f unskipped); "
+                "on %s\n",
+                volume_ms, volume_full_ms, iso_ms, iso_full_ms, device.c_str());
+    EXPECT_LT(volume_full_ms, 1000.0) << device;
+    EXPECT_LT(iso_full_ms, 1000.0) << device;
+    // Plan step 7e: the ring is sparse, so skipping empty space must at least
+    // halve both. Measured against the unskipped march in the same run.
+    EXPECT_LT(volume_ms, 0.5 * volume_full_ms) << device;
+    EXPECT_LT(iso_ms, 0.5 * iso_full_ms) << device;
+    renderer_->set_flow_quality({});
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &colour);
     glDeleteRenderbuffers(1, &depth);
+}
+
+// Plan step 7e: skipping empty space changes no pixel. The flow goldens'
+// volume and iso layers, through the cut quad, skipped and not: identical
+// frames, byte for byte.
+TEST_F(GpuGlRenderer, FlowSkippingChangesNoPixel) {
+    const spade::FlowVolume ring32 = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    const spade::FlowVolume ring64 = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * ring64.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    RenderScene volume_scene = ring_cut_scene();
+    volume_scene.flow_layers.push_back(spade::render::FlowLayer{&ring32, {vorticity, smoke}, {}});
+    RenderScene iso_scene = ring_cut_scene();
+    iso_scene.flow_layers.push_back(spade::render::FlowLayer{&ring64, {}, {q_iso}});
+
+    for (const RenderScene* scene : {&volume_scene, &iso_scene}) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = false});
+        const std::vector<uint8_t> full = draw_and_read(*scene, comparable_options(), camera_on_ring());
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = true});
+        const std::vector<uint8_t> skipped = draw_and_read(*scene, comparable_options(), camera_on_ring());
+        ASSERT_EQ(full.size(), kPixels * 4u);
+        EXPECT_EQ(count_differing(full, skipped), 0u) << "skipping empty space must change no pixel";
+    }
+    renderer_->set_flow_quality({});
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
