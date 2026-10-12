@@ -4,6 +4,12 @@
 **Base:** master `cfa92be`.
 **The goal** (Cameron, 2026-10-12): a full 3D view of a drone and the air around it, with propeller flow, vortices, surface pressure, and the CFD analyses behind it. Interface's part is the airflow scene and its panel, the view toggles, the airspeed, α/β and forces readouts, and the live-smoke steps that record it.
 
+**Revised 2026-10-12, after Cameron's answers (`backlog.md`, cd298d6):**
+- **The scene takes the drone-box premise (Q4):** the drone held at the box's centre, flown by hand (attitude and throttle), with real arm and disarm, an optional floor (ground effect), and the wind through the box for forward flight. `--flight forward:<v>` maps to the wind and `--height` to the floor.
+- **The airflow settings become a case (`.case.yaml`, Q8)** through Spade's analysis API, no longer session options. That answers the flag below about a scene-file field.
+- **The panel is the API's first client and reference host.** Kat's builder is the other host (Q1).
+- See `plans/2026-10-12-drone-builder-cfd-design.md`.
+
 ## Summary
 
 - **One stepping core, two front ends.** A display-free `AirflowRun` steps the drone and the fluid. A headless recording command (D1) and the window (D2) both drive it.
