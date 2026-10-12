@@ -10,7 +10,7 @@ Active Physics plans, one file each, named `YYYY-MM-DD-<topic>.md`.
 - `2026-10-05-imu-contact-specific-force-plan.md`: the IMU's specific force includes the contact response (Kat's report), and the reported velocity at rest.
 - `2026-10-05-airflow-design.md`: the joint spec, 3D airflow as grid-solver field providers (`PHY-9`). Every realm's answers folded in; Cameron's answers marked in §8; §11 the fidelity and validation section.
 - `2026-10-12-airflow-chain-runner-design.md`: DRAFT for Core. Plan B's GPU chain runner: one record-once chain pattern shared with `StepRecorder` (a Core hunk), a spike target outside the engine, refusals by name on device limits and VRAM.
-- `2026-10-12-airflow-drone-demonstration-plan.md`: DRAFT. The user's goal, a 3D drone with its airflow, propeller flow, vortices and surface pressure, validated (`PHY-10`). Milestones D1 (one-way CPU, recorded) to D4 (the module, two-way); the work beyond plans A, B and C, per realm.
+- `2026-10-12-airflow-drone-demonstration-plan.md`: approved by the user 2026-10-12. The user's goal, a 3D drone with its airflow, propeller flow, vortices and surface pressure, validated (`PHY-10`). Milestones D1 (one-way CPU, recorded) to D4 (the module, two-way); the work beyond plans A, B and C, per realm.
 - `2026-10-05-airflow-solver-core-plan.md`: plan A, the CPU reference solver core and V1 (the cavity, the Taylor–Green report, the actuator disc's wake). Plans B (the GPU twin and the spike, with Core) and C (the `airflow` module, after stage 7) follow.
 
 The drone sim box's Physics task (the rotor wake) was in the lead's plan, `../../plans/2026-10-01-drone-sim-box-plan.md`, Task 2. SPH gets its own plan here when it resumes (`PHY-4`, `../01-fields-and-media.md`).

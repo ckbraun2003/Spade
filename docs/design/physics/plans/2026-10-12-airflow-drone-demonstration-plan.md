@@ -1,6 +1,6 @@
 # The drone airflow demonstration — plan
 
-**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** DRAFT for the lead, who takes it to Cameron.
+**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** **approved by Cameron as written, 2026-10-12** (via the lead; `PHY-10`). Later folds: Core's `CORE-7` parts and the porous model, and Interface's inputs.
 **Goal** (Cameron, 2026-10-12, word for word): "I want to ensure that regarding Spade, the aerodynamics grid solver, pressure surface visualizations, and overall computational fluid dynamics analyses are present with the conclusion and validation being a full 3D visualization of a drone and the airflow around that drone, including propeller flow, vortices, etc."
 **Rests on:** `PHY-9` and the airflow spec (`2026-10-05-airflow-design.md`), plus Cameron's three answers of 2026-10-12, recorded as `PHY-10`:
 - **Path:** a sandbox demo first, then the engine module.
