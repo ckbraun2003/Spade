@@ -42,7 +42,38 @@
 //
 //   r_b = R_bd (p_d - c)          q_b = q_bd * q_d
 //
-// So an IMU authored with the identity orientation reads in design axes.
+// So an IMU authored with the identity orientation reads in design axes. A
+// part's mount is its record's pose (the record's centre of mass and its
+// orientation), converted the same way.
+//
+// PARTS (CORE-7; docs/design/core/2026-10-12-model-parts-design.md section
+// 1.5). One record gives both the inertia and the model part (TD-9). Each
+// record whose inertia shape is a solid becomes a body-frame WALL part: one
+// SdfProgram primitive at the identity in the record's frame, its size
+// rounded to float once, and min_feature the solid's smallest dimension:
+//
+//   inertia shape   solid                                     min_feature
+//   sphere          SdfPrim::sphere (r)                       2r
+//   box             SdfPrim::box (size / 2)                   the smallest extent
+//   cylinder        SdfPrim::cylinder (r, length / 2)         min(2r, length)
+//   tube            the same solid cylinder, its outer wall   min(2r, length)
+//   point, tensor   none
+//
+// A cylinder or tube of length 0, which the mass accepts, is a disc with no
+// volume and gives no part either.
+//
+// Both kinds run along local +Y, so a cylinder needs no turn. The parts come
+// in gather order, after the IMU mounts: the spec's records (named by
+// PartInertia::geometry, "parts[k]" when it gives no name, or opted out with
+// source none), then a shaped motor at each hub ("motor[k]", role "motor"),
+// a shaped ESC ("esc") and a shaped battery ("battery"). A block of zero mass
+// gathers no record and gives no part. A propeller never does: its disc is
+// mass only, and the rotor is an actuator disc. Every part is rigid, a
+// motor's too, whose solid is centred on its hub, as its mass is. Geometry is
+// imported (CORE-6, amended 2026-10-12), so the compile authors no shape of
+// its own. No mass or drag rule reads a record's geometry, and parts are not
+// folded into model_identity() (stage 7), so the mass, drag, fit and identity
+// are what they were without parts.
 //
 // DETERMINISM. Double arithmetic in a fixed order, sqrt the only
 // non-arithmetic call (IEEE 754 rounds it correctly), fixed iteration counts,
@@ -58,8 +89,12 @@
 // the blocks; the parts' (composite_inertia_issues); and the model's rules
 // (ModelType::issues(), TD-9), run over the model as the spec writes it,
 // before anything is fitted or normalized, so a zero mount orientation is
-// refused rather than normalized to the identity. A propulsion problem the
-// fit finds is listed too whenever the blocks and parts let the fit run.
+// refused rather than normalized to the identity. A part's problem is listed
+// at its record, as parts[k].geometry.<field>: an unknown source (the
+// compile's own rule), or a name the model's rules refuse. A block's part has
+// a fixed name, so a record whose name it repeats is the one listed. A part
+// problem does not stop the fit. A propulsion problem the fit finds is listed
+// too whenever the blocks and parts let the fit run.
 // compile_airframe() runs the same checks and, on any problem, returns them
 // joined in its error.
 // ===========================================================================
@@ -204,8 +239,9 @@ struct AirframeSpec {
 // "esc", "battery", "rotors", "drag", "imus", "model"), its index within that
 // kind (0 for the single blocks), the field and a message. A block's shape is
 // "<block>[0].shape"; a bad pose is "rotors[k].hub", "drag[k].mount" or
-// "imus[k].mount", once; a list too long is "<list>[0].count". "model" is
-// only a fitted value the model refuses, which should not happen.
+// "imus[k].mount", once; a list too long is "<list>[0].count"; a part
+// record's geometry is "parts[k].geometry.<field>". "model" is only a fitted
+// value the model refuses, which should not happen.
 struct AirframeIssue {
     Code code = Code::invalid_argument;
     std::string kind;

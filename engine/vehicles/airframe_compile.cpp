@@ -1,5 +1,6 @@
 #include "vehicles/airframe_compile.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <span>
 #include <string>
@@ -144,7 +145,7 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
 }
 
 [[nodiscard]] PartInertia block_part(double mass, const MountPose& pose, const std::optional<BlockShape>& shape,
-                                     const BlockShape& fallback) {
+                                     const BlockShape& fallback, PartGeometrySpec geometry) {
     const BlockShape& s = shape ? *shape : fallback;
     PartInertia p;
     p.mass = mass;
@@ -153,13 +154,16 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     p.shape = s.shape;
     p.size = s.size;
     p.tensor = s.tensor;
+    p.geometry = std::move(geometry);
     return p;
 }
 
 // Every mass: the spec's parts, then a motor and a propeller at each hub, then
 // the ESC and the battery. `origin` records, for each, its kind and index, so
 // a part issue can name what the caller wrote. A block of zero mass adds no
-// part.
+// part. Each record carries its geometry (CORE-7, TD-9: one record per part):
+// a spec record's own, named "parts[k]" when it gives no name; a block's,
+// named for the block; a propeller's, none.
 struct PartList {
     std::vector<PartInertia> parts;
     std::vector<std::pair<std::string, std::size_t>> origin;
@@ -173,7 +177,18 @@ struct PartList {
         out.origin.emplace_back(std::move(kind), index);
         out.drag_source.push_back(drag);
     };
-    for (std::size_t k = 0; k < s.parts.size(); ++k) push(s.parts[k], "parts", k, true);
+    for (std::size_t k = 0; k < s.parts.size(); ++k) {
+        PartInertia p = s.parts[k];
+        if (p.geometry.name.empty()) p.geometry.name = "parts[" + std::to_string(k) + "]";
+        push(std::move(p), "parts", k, true);
+    }
+    const auto block = [](std::string name, std::string role) {
+        return PartGeometrySpec{.source = GeometrySource::inertia_shape, .name = std::move(name),
+                                .role = std::move(role)};
+    };
+    // The propeller's disc is mass only: the rotor is an actuator disc, and a
+    // propeller never becomes a part (the model parts design, section 1.5).
+    const PartGeometrySpec mass_only{.source = GeometrySource::none, .name = {}, .role = {}};
     const BlockShape point{};
     // A thin disc across the diameter, or a point when the diameter is
     // unusable, which is then reported once, as prop.diameter.
@@ -183,14 +198,100 @@ struct PartList {
         disc.size = glm::dvec3(0.5 * s.prop.diameter, 0.0, 0.0);
     }
     for (std::size_t k = 0; k < s.rotors.size(); ++k) {
-        if (s.motor.mass > 0.0) push(block_part(s.motor.mass, s.rotors[k].hub, s.motor.shape, point), "motor", k, true);
-        if (s.prop.mass > 0.0) push(block_part(s.prop.mass, s.rotors[k].hub, s.prop.shape, disc), "prop", k, false);
+        if (s.motor.mass > 0.0) {
+            push(block_part(s.motor.mass, s.rotors[k].hub, s.motor.shape, point,
+                            block("motor[" + std::to_string(k) + "]", "motor")),
+                 "motor", k, true);
+        }
+        if (s.prop.mass > 0.0) {
+            push(block_part(s.prop.mass, s.rotors[k].hub, s.prop.shape, disc, mass_only), "prop", k, false);
+        }
     }
-    if (s.esc.mass > 0.0) push(block_part(s.esc.mass, s.esc.mount, s.esc.shape, point), "esc", 0, true);
+    if (s.esc.mass > 0.0) {
+        push(block_part(s.esc.mass, s.esc.mount, s.esc.shape, point, block("esc", "esc")), "esc", 0, true);
+    }
     if (s.battery.mass > 0.0) {
-        push(block_part(s.battery.mass, s.battery.mount, s.battery.shape, point), "battery", 0, true);
+        push(block_part(s.battery.mass, s.battery.mount, s.battery.shape, point, block("battery", "battery")),
+             "battery", 0, true);
     }
     return out;
+}
+
+// THE SOLID A RECORD'S INERTIA SHAPE STANDS FOR (CORE-7; the model parts
+// design, section 1.5), in the record's own frame, whose origin is its centre
+// of mass: one primitive, in double here and rounded to float once where the
+// part is built. min_feature is the solid's smallest dimension. Both kinds of
+// shape run along local +Y (composite_inertia.hpp, world/sdf.hpp), so a
+// cylinder needs no turn. None for a point, a tensor, a cylinder or tube of
+// length 0, or a record whose geometry is not inertia_shape.
+struct Solid {
+    SdfPrim kind = SdfPrim::sphere;
+    glm::dvec4 params{0.0};
+    double min_feature = 0.0;
+};
+
+[[nodiscard]] std::optional<Solid> solid_of(const PartInertia& p) noexcept {
+    if (p.geometry.source != GeometrySource::inertia_shape) return std::nullopt;
+    const glm::dvec3& z = p.size;
+    switch (p.shape) {
+        case PartShape::sphere:  // (r); the diameter
+            return Solid{.kind = SdfPrim::sphere, .params = glm::dvec4(z.x, 0.0, 0.0, 0.0), .min_feature = 2.0 * z.x};
+        case PartShape::box:  // the half extents; the smallest extent
+            return Solid{.kind = SdfPrim::box,
+                         .params = glm::dvec4(0.5 * z.x, 0.5 * z.y, 0.5 * z.z, 0.0),
+                         .min_feature = std::min(z.x, std::min(z.y, z.z))};
+        case PartShape::cylinder:  // (r, length / 2); min(2r, length)
+        case PartShape::tube:      // the same solid: the tube's outer wall
+            // A length of 0, which the mass accepts, is a disc with no
+            // volume: mass only, as the propeller's disc is.
+            if (!(z.y > 0.0)) return std::nullopt;
+            return Solid{.kind = SdfPrim::cylinder,
+                         .params = glm::dvec4(z.x, 0.5 * z.y, 0.0, 0.0),
+                         .min_feature = std::min(2.0 * z.x, z.y)};
+        case PartShape::point:
+        case PartShape::tensor:
+            return std::nullopt;
+    }
+    return std::nullopt;  // not a PartShape: composite_inertia_issues lists it
+}
+
+// The records that become the model's parts, in gather order: entry i is the
+// record of the model's part i.
+[[nodiscard]] std::vector<std::size_t> solid_records(const PartList& parts) {
+    std::vector<std::size_t> out;
+    for (std::size_t k = 0; k < parts.parts.size(); ++k) {
+        if (solid_of(parts.parts[k])) out.push_back(k);
+    }
+    return out;
+}
+
+// One primitive at the identity: a part's solid in its own frame.
+[[nodiscard]] SdfProgram one_primitive(SdfPrim kind, glm::vec4 params) {
+    SdfProgram program;
+    program.nodes.push_back(SdfNode{.kind = static_cast<uint32_t>(kind),
+                                    .op = static_cast<uint32_t>(SdfOp::none),
+                                    .transform = 0,
+                                    ._pad = 0,
+                                    .params = params});
+    program.transforms.push_back(
+        SdfTransform{.world_to_local = glm::mat4(1.0f), .scale = 1.0f, ._pad = {0.0f, 0.0f, 0.0f}});
+    return program;
+}
+
+// Every derived part is a wall (Physics' answer, 2026-10-12).
+constexpr PartSurface kWall{.kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f};
+
+// The geometry rule only the compile owns (CORE-7): a known source. A part's
+// own rules, a unique name among them, are ModelType's, listed by
+// add_model_issues (TD-9).
+void check_geometry(const AirframeSpec& s, Issues& out) {
+    for (std::size_t k = 0; k < s.parts.size(); ++k) {
+        const GeometrySource g = s.parts[k].geometry.source;
+        if (g != GeometrySource::inertia_shape && g != GeometrySource::none) {
+            out.add("parts", k, "geometry.source",
+                    "must be inertia_shape (0) or none (1), found " + std::to_string(static_cast<uint32_t>(g)));
+        }
+    }
 }
 
 // The local projected areas of one shape, onto the planes normal to its local
@@ -261,6 +362,11 @@ struct PartList {
                      static_cast<float>(q.z));
 }
 
+[[nodiscard]] glm::vec4 to_float(const glm::dvec4& v) noexcept {
+    return glm::vec4(static_cast<float>(v.x), static_cast<float>(v.y), static_cast<float>(v.z),
+                     static_cast<float>(v.w));
+}
+
 struct Built {
     Issues issues;
     std::optional<CompiledAirframe> result;
@@ -307,7 +413,13 @@ struct Built {
 // stand-ins where the composite and the fit will supply the values. A zero or
 // non-finite orientation therefore reaches ModelType's rules as written;
 // glm::normalize would have turned a zero into the identity.
-[[nodiscard]] ModelType provisional_model(const AirframeSpec& s) {
+//
+// The parts (CORE-7) carry their names and roles as written. Their solids and
+// mounts are stand-ins, a unit sphere at the body origin, because the record's
+// own checks already list a bad shape, size or pose once (composite_inertia_
+// issues, the block's shape, the hub or the mount), and a valid record gives
+// a valid solid and mount.
+[[nodiscard]] ModelType provisional_model(const AirframeSpec& s, const PartList& parts) {
     ModelType m;
     m.name = s.name;
     m.param_schema_id = s.param_schema_id;
@@ -343,16 +455,31 @@ struct Built {
         d.sigma_bg = static_cast<float>(i.sigma_bg);
         m.imu_mounts.push_back(d);
     }
+    for (const std::size_t k : solid_records(parts)) {
+        const PartGeometrySpec& g = parts.parts[k].geometry;
+        m.parts.push_back(PartDesc{.name = g.name,
+                                   .role = g.role,
+                                   .attach = PartAttach::body,
+                                   .rotor = 0,
+                                   .mount_pos = glm::vec3(0.0f),
+                                   .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                   .shape = one_primitive(SdfPrim::sphere, glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)),
+                                   .surface = kWall,
+                                   .min_feature = 2.0f});
+    }
     return m;
 }
 
 // Every model rule the spec breaks (TD-9: ModelType::issues() owns them),
 // listed where the spec wrote the value: a pose as rotors[k].hub,
 // drag[k].mount or imus[k].mount, once; a count as <list>[0].count; the
-// model's own fields under "airframe".
-void add_model_issues(const AirframeSpec& s, Issues& out) {
+// model's own fields under "airframe"; a part's at its record, as
+// parts[k].geometry.<field>.
+void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out) {
     using E = ModelIssue::Element;
-    for (const ModelIssue& i : provisional_model(s).issues()) {
+    const ModelType provisional = provisional_model(s, parts);
+    const std::vector<std::size_t> solids = solid_records(parts);
+    for (const ModelIssue& i : provisional.issues()) {
         switch (i.element) {
             case E::model:
                 if (i.field == "rotors") {
@@ -386,10 +513,28 @@ void add_model_issues(const AirframeSpec& s, Issues& out) {
                     out.add("imus", i.index, i.field, i.message);
                 }
                 break;
-            case E::part:
-                // The compile emits no parts yet; listed as given until Task A4 maps them.
-                out.add("parts", i.index, i.field, i.message);
+            case E::part: {
+                // At the part's record (TD-9: one record per part). Only a
+                // name can fault here; the rest are stand-ins or fixed. A
+                // block's part has a fixed name, so a block's part that
+                // repeats a name lists the record whose name it repeats.
+                std::size_t record = solids[i.index];
+                if (i.field == "name" && parts.origin[record].first != "parts") {
+                    for (std::size_t j = 0; j < i.index; ++j) {
+                        if (provisional.parts[j].name == provisional.parts[i.index].name) {
+                            record = solids[j];
+                            break;
+                        }
+                    }
+                }
+                const auto& [kind, index] = parts.origin[record];
+                if (kind == "parts") {
+                    out.add_once(kind, index, "geometry." + i.field, i.message);
+                } else {
+                    out.add_once(kind, 0, i.field, i.message);
+                }
                 break;
+            }
         }
     }
 }
@@ -416,8 +561,11 @@ void add_model_issues(const AirframeSpec& s, Issues& out) {
     // ONE CALL LISTS EVERYTHING (Kat's question 2). A block or part problem
     // stops the composite and the fit; a model-rule problem stops only the
     // final model, so the fit still runs and its own problems are listed too.
+    // A part's geometry is read by no mass or drag rule, so its problems stop
+    // only the final model, like a model rule's.
     const bool fit_possible = out.issues.list.empty();
-    add_model_issues(s, out.issues);
+    check_geometry(s, out.issues);
+    add_model_issues(s, parts, out.issues);
     if (!fit_possible) return out;
 
     // --- the body -------------------------------------------------------------
@@ -562,6 +710,24 @@ void add_model_issues(const AirframeSpec& s, Issues& out) {
         d.sigma_ba = static_cast<float>(i.sigma_ba);
         d.sigma_bg = static_cast<float>(i.sigma_bg);
         model.imu_mounts.push_back(d);
+    }
+
+    // The parts (CORE-7): each record's solid, in gather order, at the
+    // record's pose, converted as every other mount is. Rigid walls. Nothing
+    // above read a record's geometry, so the mass, the drag and the fit are
+    // what they were without it.
+    for (const PartInertia& p : parts.parts) {
+        const std::optional<Solid> solid = solid_of(p);
+        if (!solid) continue;
+        model.parts.push_back(PartDesc{.name = p.geometry.name,
+                                       .role = p.geometry.role,
+                                       .attach = PartAttach::body,
+                                       .rotor = 0,
+                                       .mount_pos = to_body_pos(p.position),
+                                       .mount_orient = to_body_rot(p.orientation),
+                                       .shape = one_primitive(solid->kind, to_float(solid->params)),
+                                       .surface = kWall,
+                                       .min_feature = static_cast<float>(solid->min_feature)});
     }
 
     if (const Result<void> v = model.validate(); !v) {
