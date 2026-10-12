@@ -246,7 +246,7 @@ void model_param_rows(ed::EditorPanels& p, const std::string& vehicle, const veh
                 const glm::quat& q = std::get<glm::quat>(*value);
                 const float wxyz[4] = {q.w, q.x, q.y, q.z};
                 float out[4];
-                if (drag_floats(id.c_str(), wxyz, 4, 0.001f, out, "%.4f")) queue(glm::quat(out[0], out[1], out[2], out[3]));
+                if (drag_floats(id.c_str(), wxyz, 4, 0.001f, out, "%.3f")) queue(glm::quat(out[0], out[1], out[2], out[3]));
                 break;
             }
             case ed::ParamKind::text: {
@@ -370,7 +370,7 @@ void inspect_world(ed::EditorPanels& p) {
     ui::title(w.name.c_str());
     if (ui::section("Environment", true) && ui::begin_properties("environment")) {
         Environment next = w.environment;
-        bool changed = vec3_row("Gravity", "##gravity", w.environment.gravity, 0.01f, next.gravity, "%.3f m/s\xC2\xB2");
+        bool changed = vec3_row("Gravity", "##gravity", w.environment.gravity, 0.01f, next.gravity, "%.2f m/s\xC2\xB2");
         changed |= vec3_row("Wind", "##wind", w.environment.wind, 0.05f, next.wind, "%.2f m/s");
         changed |= float_row("Air density", "##rho", w.environment.air_density, 0.001f, next.air_density, "%.4f kg/m\xC2\xB3");
         changed |= float_row("Temperature", "##temp", w.environment.temperature_k, 0.1f, next.temperature_k, "%.2f K");
