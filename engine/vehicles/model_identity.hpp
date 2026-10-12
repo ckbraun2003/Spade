@@ -26,7 +26,9 @@
 //     w x y z, rate_divider (u32), sigma_a, sigma_g, sigma_ba, sigma_bg.
 // visual_ref is NOT folded: it is render data and never reaches the step (L5).
 // parts are NOT folded until a step reads them (stage 7, CORE-7), so a model
-// that gains parts keeps its identity and every stored v3 blob restores.
+// that gains parts keeps its identity and every stored v3 blob restores. A
+// mesh part folds nothing either: stage 7 will fold its mesh's content_hash()
+// (CORE-6), which make_mesh() computes once.
 // design_to_principal is folded as stored. register_model() stores
 // canonical_design_rotation()'s value, so hash a model as it would be
 // registered. A field added to ModelType that reaches state or the design

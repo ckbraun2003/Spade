@@ -109,9 +109,13 @@ struct PosedParts {
 // primitives' transform indices offset, and one union_ follows each part but
 // the first (compose()'s join, without materials). No wall part: no nodes.
 //
+// unavailable for a posed wall part that is a mesh, naming it: a mesh has no
+// SdfProgram form, so read it through sample_parts() (Task B4; CORE-6). A
+// porous mesh part, or one the filter left out, is not refused.
 // capacity_exceeded past kMaxSdfDepth (naming the part that crosses it), or
 // past 2^32 - 1 transforms. invalid_argument for a posed part that is not in
-// `model`, or a shape that does not validate (a model that does not validate).
+// `model`, a wall part with neither shape nor mesh, or a shape that does not
+// validate (a model that does not validate).
 [[nodiscard]] Result<SdfProgram> posed_program(const ModelType& model, const PosedParts& posed);
 
 // vel + omega x (x - com) + spin x (x - hub), for posed.parts[i], in that

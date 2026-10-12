@@ -149,6 +149,18 @@ Result<SdfProgram> posed_program(const ModelType& model, const PosedParts& posed
         if (part.surface.kind != PartSurface::Kind::wall) {
             continue;  // a porous part is the grid's sink, not a wall
         }
+        // A mesh has no SdfProgram form (Task B4; CORE-6), and an empty shape
+        // validates at depth 0: joined, either would leave a union with one
+        // operand. Refused by name, before anything is appended.
+        if (part.mesh != nullptr) {
+            return std::unexpected(Error{Code::unavailable,
+                                         where + part_label(part, p.part) +
+                                             " is a mesh; one world SDF cannot hold it; use sample_parts"});
+        }
+        if (part.shape.empty()) {
+            return std::unexpected(invalid(where + part_label(part, p.part) +
+                                           " has neither shape nor mesh (a model that does not validate)"));
+        }
         const std::string label = where + part_label(part, p.part) + ": ";
 
         // The depth: the first part's own, and each later part's one more,

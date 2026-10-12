@@ -248,21 +248,31 @@ std::vector<ModelIssue> ModelType::issues() const {
             refuse("mount_orient", "mount_orient must be finite and have non-zero length");
         }
 
-        // The shape: present, valid (a depth past kMaxSdfDepth keeps
+        // The geometry: exactly one of shape and mesh (CORE-6), refused at
+        // `shape` either way. A mesh came from make_mesh(), so it is valid as
+        // it stands. A shape is valid (a depth past kMaxSdfDepth keeps
         // capacity_exceeded, as validate_scene() does), free of render data,
-        // and bounded.
-        if (part.shape.empty()) {
-            refuse("shape", "shape must not be empty: a part is a solid");
-        } else if (const Result<uint32_t> valid = part.shape.validate(); !valid) {
-            refuse("shape", "shape: " + valid.error().context, valid.error().code);
-        } else {
-            if (!part.shape.node_materials.empty()) {
-                refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid sees "
-                                "is the part's surface");
-            }
-            if (!bounded(part.shape)) {
-                refuse("shape", "shape is unbounded: a plane or a heightfield fills half of space, so bound it "
-                                "inside an intersect or cut it from a bounded shape");
+        // and bounded; those checks read the shape alone, so they run
+        // whenever one is set.
+        const bool has_shape = !part.shape.empty();
+        const bool has_mesh = part.mesh != nullptr;
+        if (has_shape && has_mesh) {
+            refuse("shape", "both shape and mesh are set: a part's geometry is exactly one of them");
+        } else if (!has_shape && !has_mesh) {
+            refuse("shape", "neither shape nor mesh is set: a part is a solid, given by exactly one of them");
+        }
+        if (has_shape) {
+            if (const Result<uint32_t> valid = part.shape.validate(); !valid) {
+                refuse("shape", "shape: " + valid.error().context, valid.error().code);
+            } else {
+                if (!part.shape.node_materials.empty()) {
+                    refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid "
+                                    "sees is the part's surface");
+                }
+                if (!bounded(part.shape)) {
+                    refuse("shape", "shape is unbounded: a plane or a heightfield fills half of space, so bound it "
+                                    "inside an intersect or cut it from a bounded shape");
+                }
             }
         }
 
