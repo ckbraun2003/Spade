@@ -149,7 +149,7 @@ After the CPU reference:
 
 **The Vulkan raster needs nothing** (spec §5); when it resumes, this is a compute pass over the published buffer.
 
-### 7.1 Step 7 in detail (2026-10-12)
+### 7.1 Step 7 in detail (2026-10-12; approved by the lead as written, 2026-10-12)
 
 The user's goal (the lead, 2026-10-12) ends in a live demo in the sandbox: a drone in 3D with its airflow. So GL needs every view, not only the volume. Four sub-steps, each red then green, each with its GL band measured against the CPU on the RTX 3060 Ti (`TD-13`):
 
