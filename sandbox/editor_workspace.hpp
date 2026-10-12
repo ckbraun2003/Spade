@@ -67,7 +67,29 @@ namespace detail {
     }
 }
 
+// An asset's half extents about its origin, before its pose: a one-primitive
+// collider's own, or a unit's.
+[[nodiscard]] inline glm::vec3 asset_half_extents(const scene::SceneAsset& a) {
+    if (a.collider.nodes.size() != 1) return glm::vec3(0.5f);
+    const SdfNode& n = a.collider.nodes[0];
+    const glm::vec4 q = n.params;
+    switch (static_cast<SdfPrim>(n.kind)) {
+        case SdfPrim::sphere: return glm::vec3(q.x);
+        case SdfPrim::box: return glm::vec3(q.x, q.y, q.z);
+        case SdfPrim::cylinder: return glm::vec3(q.x, q.y, q.x);
+        case SdfPrim::capsule: return glm::vec3(q.x, q.x + q.y, q.x);
+        case SdfPrim::torus: return glm::vec3(q.x + q.y, q.y, q.x + q.y);
+        default: return glm::vec3(0.5f);
+    }
+}
+
 }  // namespace detail
+
+// Where "Frame selected" looks, and how much it must fit.
+struct Framing {
+    glm::vec3 centre{0.0f};
+    float radius = 0.0f;
+};
 
 class EditorWorkspace {
   public:
@@ -171,6 +193,29 @@ class EditorWorkspace {
             panels_.selection = Selection{};
         }
         if (panels_.armed && *panels_.armed >= panels_.library.size()) panels_.armed.reset();
+    }
+
+    // The selected object's framing: a vehicle within its reach, where the run
+    // has it; an asset within its posed box. None for nothing, the scene or
+    // the world, which have no place of their own.
+    [[nodiscard]] std::optional<Framing> selection_framing() const {
+        if (panels_.selection.kind != Selection::Kind::object) return std::nullopt;
+        const scene::SceneDesc& s = docs_.scene.desc();
+        if (const scene::SceneVehicle* v = find_vehicle(s, panels_.selection.name)) {
+            for (const vehicles::ModelType& m : s.models) {
+                if (m.name != v->model) continue;
+                glm::vec3 at = v->start.pos;
+                if (run_) {
+                    if (const std::optional<FrameState> now = run_->state_of(v->name)) at = now->pos;
+                }
+                return Framing{at, detail::reach_of(m)};
+            }
+            return std::nullopt;
+        }
+        if (const scene::SceneAsset* a = find_asset(s, panels_.selection.name)) {
+            return Framing{a->pose.position, glm::length(detail::asset_half_extents(*a)) * a->pose.scale};
+        }
+        return std::nullopt;
     }
 
     [[nodiscard]] static const scene::SceneVehicle* find_vehicle(const scene::SceneDesc& s, std::string_view name) {

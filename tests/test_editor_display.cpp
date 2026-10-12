@@ -57,3 +57,10 @@ TEST(EditorDisplay, AValueThatRoundsToZeroShowsAsZero) {
     EXPECT_EQ(std::bit_cast<uint32_t>(ed::shown(-0.0004f, 3)), 0u);
     EXPECT_TRUE(std::isnan(ed::shown(std::numeric_limits<float>::quiet_NaN(), 1)));
 }
+
+TEST(EditorDisplay, TheDecimalsComeFromTheFormat) {
+    EXPECT_EQ(ed::decimals_of("%.2f m"), 2);
+    EXPECT_EQ(ed::decimals_of("%.1f"), 1);
+    EXPECT_EQ(ed::decimals_of("%f"), 6);
+    EXPECT_EQ(ed::decimals_of("%.5g"), 5);
+}
