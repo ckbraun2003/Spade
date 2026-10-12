@@ -130,3 +130,28 @@ TEST(EditorDocument, TheWorldDocumentValidatesWithValidateWorldDesc) {
     EXPECT_NE(r.error().context.find("bodies"), std::string::npos) << r.error().context;
     EXPECT_EQ(d.desc().capacities.bodies, support::sample_world().capacities.bodies);
 }
+
+// A gizmo drag is one undo step (Unity, Unreal): its first pose commits and
+// every pose after it amends that commit.
+TEST(EditorDocument, AnAmendReplacesTheCurrentStateWithoutAHistoryStep) {
+    Document<int> d = counter(1);
+    ASSERT_TRUE(d.commit(2).has_value());
+    const uint64_t committed = d.serial();
+    ASSERT_TRUE(d.amend(3).has_value());
+    ASSERT_TRUE(d.amend(4).has_value());
+    EXPECT_EQ(d.desc(), 4);
+    EXPECT_NE(d.serial(), committed);  // a view redraws
+    EXPECT_TRUE(d.undo());
+    EXPECT_EQ(d.desc(), 1);  // the whole drag at once
+    EXPECT_TRUE(d.redo());
+    EXPECT_EQ(d.desc(), 4);
+}
+
+TEST(EditorDocument, ARefusedAmendChangesNothing) {
+    Document<int> d = counter(1);
+    ASSERT_TRUE(d.commit(2).has_value());
+    const uint64_t serial = d.serial();
+    EXPECT_FALSE(d.amend(-1).has_value());
+    EXPECT_EQ(d.desc(), 2);
+    EXPECT_EQ(d.serial(), serial);
+}
