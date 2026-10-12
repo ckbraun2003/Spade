@@ -85,10 +85,19 @@ constexpr std::array kSteps = {
     StepName{"gate", "open"},            StepName{"gate", "lobs"},
     StepName{"hover", "open"},           StepName{"hover", "holds"},
     StepName{"wind", "open"},            StepName{"wind", "gusts"},
-    StepName{"editor", "open"},          StepName{"editor", "select"},
-    StepName{"editor", "place"},         StepName{"editor", "world"},
-    StepName{"editor", "run"},
+    StepName{"editor", "open"},          StepName{"editor", "picker"},
+    StepName{"editor", "select"},        StepName{"editor", "place"},
+    StepName{"editor", "move"},          StepName{"editor", "inspect"},
+    StepName{"editor", "undo"},          StepName{"editor", "run"},
+    StepName{"editor", "world"},         StepName{"editor", "conflict"},
+    StepName{"editor", "save"},
 };
+
+// The extra stills a run writes beside the posters (Tour::snapshot), declared
+// so that a later run into the same folder owns them.
+constexpr std::array<std::string_view, 7> kSnapshots = {"editor_picker", "editor_vehicle",  "editor_place",
+                                                        "editor_inspect", "editor_running", "editor_world",
+                                                        "editor_conflict"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -331,7 +340,14 @@ class Tour {
 
     // An extra still beside the posters, <out>/<name>.png: the next captured
     // frame. The editor's panels each get one for the user to review (§13).
-    void snapshot(std::string_view name) { rec_.want_poster(options_.out_dir / (std::string(name) + ".png")); }
+    void snapshot(std::string_view name) {
+        if (std::find(kSnapshots.begin(), kSnapshots.end(), name) == kSnapshots.end()) {
+            smoke_.anomaly("harness/snapshot-undeclared", name);
+            return;
+        }
+        rec_.want_poster(options_.out_dir / (std::string(name) + ".png"));
+    }
+    [[nodiscard]] const fs::path& out_dir() const noexcept { return options_.out_dir; }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_; }
     [[nodiscard]] uint64_t frames() const noexcept { return frame_; }
@@ -982,21 +998,64 @@ void editor_tour(Tour& t, const fs::path& assets) {
     const DrawFn draw = [&session, &t](const FrameInput& in) { return session->frame(in, t.sink().delta_seconds()); };
     const auto idle = InputFn{};
     const auto open = [&]() -> bool { return s.check(session != nullptr, "open", "the editor is open"); };
+    const auto w = [&]() -> editor::EditorWorkspace& { return session->workspace(); };
+    const auto scene_now = [&]() -> const scene::SceneDesc& { return session->workspace().documents().scene.desc(); };
+    const auto text_of = [](const scene::SceneDesc& d) {
+        const Result<std::string> t = scene::scene_to_yaml(d);
+        return t ? *t : std::string("<refused: ") + t.error().context + ">";
+    };
+    // The panels' queue is applied by the session's next frame, as a click would be.
+    const auto then = [&](int frames) { t.pump(frames, idle, draw); };
+    const auto command = [&](editor::Command c) {
+        w().panels().commands.push_back(c);
+        then(5);
+    };
     // A click in the view along the ray from the camera's eye to `at`.
     const auto click_towards = [&](glm::vec3 at) {
         const glm::vec3 eye = session->camera().to_render_camera().position;
-        session->workspace().click(eye, at - eye);
+        w().click(eye, at - eye);
     };
+    const auto arm = [&](std::string_view item) {
+        for (std::size_t i = 0; i < w().panels().library.size(); ++i) {
+            if (w().panels().library[i].name == item) w().panels().armed = i;
+        }
+    };
+    const auto model_of = [&](std::string_view vehicle) -> const vehicles::ModelType* {
+        const scene::SceneVehicle* v = editor::EditorWorkspace::find_vehicle(scene_now(), vehicle);
+        if (v == nullptr) return nullptr;
+        for (const vehicles::ModelType& m : scene_now().models) {
+            if (m.name == v->model) return &m;
+        }
+        return nullptr;
+    };
+    // THE WORK COPY. Saving writes the world's own file, so the editor works on
+    // a copy of assets/scenes and assets/worlds in the run's folder, never on
+    // assets/; the copy is removed when the section ends.
+    const fs::path work = t.out_dir() / "editor_work";
+    std::string drone;
 
     t.step("editor", "open", [&] {
-        const fs::path file = assets / "scenes" / "hover.scene.yaml";
-        spade::Result<editor::OpenedScene> opened = editor::open_scene(file);
+        std::error_code ec;
+        fs::remove_all(work, ec);
+        for (const char* dir : {"scenes", "worlds"}) {
+            fs::create_directories(work / dir, ec);
+            for (fs::directory_iterator it(assets / dir, ec), end; !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file()) {
+                    fs::copy_file(it->path(), work / dir / it->path().filename(), fs::copy_options::overwrite_existing,
+                                  ec);
+                }
+            }
+        }
+        if (!s.check(!ec, "work-copy", ec ? ec.message() : "assets/scenes and assets/worlds copied")) return;
+        const fs::path file = work / "scenes" / "hover.scene.yaml";
+        Result<editor::OpenedScene> opened = editor::open_scene(file);
         if (!s.check(opened.has_value(), "opens", opened ? file.filename().string() : opened.error().context)) return;
-        spade::Result<std::unique_ptr<EditorSession>> made = EditorSession::create(std::move(*opened));
+        Result<std::unique_ptr<EditorSession>> made = EditorSession::create(std::move(*opened));
         if (!s.check(made.has_value(), "composes", made ? "hover" : made.error().context)) return;
         session = std::move(*made);
         session->attach(t.sink());
-        t.pump(60, idle, draw);
+        drone = scene_now().vehicles.at(0).name;
+        then(60);
         // §13's default layout: the toolbar above, the hierarchy and the
         // inspector at the sides, the library below, and the scene between.
         const ViewportRect v = t.sink().viewport();
@@ -1006,77 +1065,195 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 "view-between-panels",
                 "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " at (" + std::to_string(v.x) +
                     ", " + std::to_string(v.y) + ") of " + std::to_string(fw) + "x" + std::to_string(fh));
-        const std::size_t rows = session->workspace().panels().hierarchy.size();
-        s.check(rows == 3u, "hierarchy", std::to_string(rows) + " rows: the scene, the world, the drone");
         t.poster("editor");
-        t.pump(30, idle, draw);
+        then(30);
+    });
+
+    t.step("editor", "picker", [&] {
+        if (!open()) return;
+        const std::size_t n = w().panels().sources.size();
+        s.check(n > 1u, "lists-scenes", std::to_string(n) + " scenes in the File menu");
+        w().panels().file_menu = true;
+        then(40);
+        t.snapshot("editor_picker");
+        then(20);
+        w().panels().file_menu = false;
+        then(10);
     });
 
     t.step("editor", "select", [&] {
         if (!open()) return;
-        editor::EditorWorkspace& w = session->workspace();
-        const std::string name = w.documents().scene.desc().vehicles.at(0).name;
-        click_towards(w.documents().scene.desc().vehicles.at(0).start.pos);
-        s.check(w.panels().selection == editor::Selection{editor::Selection::Kind::object, name}, "selects-vehicle",
-                "selected '" + w.panels().selection.name + "'");
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        click_towards(at);
+        s.check(w().panels().selection == editor::Selection{editor::Selection::Kind::object, drone}, "selects-vehicle",
+                "selected '" + w().panels().selection.name + "'");
         // F frames it ("Frame selected"), from wherever the camera was.
-        const glm::vec3 drone = w.documents().scene.desc().vehicles.at(0).start.pos;
         session->camera().target = glm::vec3(0.0f);
         session->camera().distance = 12.0f;
-        t.pump(20, idle, draw);
+        then(20);
         t.pump(1, [](int) { FrameInput in; in.frame_pressed = true; return in; }, draw);
-        const float off = glm::length(session->camera().target - drone);
+        const float off = glm::length(session->camera().target - at);
         s.check(off < 1e-4f && session->camera().distance < 2.0f, "frames-selection",
                 "camera " + fmt(off) + " m off the drone, " + fmt(session->camera().distance) + " m away");
-        t.pump(30, idle, draw);
+        then(30);
         t.snapshot("editor_vehicle");
-        t.pump(30, idle, draw);
+        then(30);
+        session->camera().distance = 5.0f;  // back out, so the boxes placed next are in view
     });
 
     t.step("editor", "place", [&] {
         if (!open()) return;
-        editor::EditorWorkspace& w = session->workspace();
-        for (std::size_t i = 0; i < w.panels().library.size(); ++i) {
-            if (w.panels().library[i].name == "box") w.panels().armed = i;
-        }
-        const glm::vec3 drone = w.documents().scene.desc().vehicles.at(0).start.pos;
-        click_towards(glm::vec3(drone.x + 1.5f, 0.0f, drone.z));
-        const std::size_t assets_now = w.documents().scene.desc().assets.size();
-        s.check(assets_now == 1u, "placed", std::to_string(assets_now) + " assets");
-        s.check(w.panels().selection.name == "box", "selects-placed", "selected '" + w.panels().selection.name + "'");
-        t.pump(30, idle, draw);
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        arm("box");
+        click_towards(glm::vec3(at.x + 1.0f, 0.0f, at.z));
+        arm("box");
+        click_towards(glm::vec3(at.x - 1.0f, 0.0f, at.z));
+        std::string names;
+        for (const scene::SceneAsset& a : scene_now().assets) names += (names.empty() ? "" : ", ") + a.name;
+        s.check(scene_now().assets.size() == 2u && scene_now().assets[0].name != scene_now().assets[1].name,
+                "unique-names", names);
+        then(30);
         t.snapshot("editor_place");
-        t.pump(30, idle, draw);
+        then(20);
     });
 
-    t.step("editor", "world", [&] {
+    // There is no drag in the view yet; the inspector's Position is the move.
+    t.step("editor", "move", [&] {
+        if (!open() || scene_now().assets.empty()) return;
+        const scene::SceneAsset box = scene_now().assets[0];
+        SdfPose moved = box.pose;
+        moved.position.z += 1.0f;
+        w().panels().pending.push_back(editor::SetAssetPose{box.name, moved});
+        then(5);
+        const scene::SceneAsset* now = editor::EditorWorkspace::find_asset(scene_now(), box.name);
+        s.check(now != nullptr && now->pose.position == moved.position, "pose-changed",
+                "z " + fmt(box.pose.position.z) + " -> " + fmt(now != nullptr ? now->pose.position.z : 0.0f));
+        then(20);
+    });
+
+    // A parameter edit reaches its vehicle alone (copy on edit, Task 3).
+    t.step("editor", "inspect", [&] {
         if (!open()) return;
-        editor::EditorWorkspace& w = session->workspace();
-        w.panels().selection = w.panels().hierarchy.at(1).target;  // what the hierarchy's World row does
-        t.pump(30, idle, draw);
-        s.check(w.panels().selection.kind == editor::Selection::Kind::world, "selects-world",
-                "the inspector shows the world");
-        t.snapshot("editor_world");
-        t.pump(30, idle, draw);
+        w().panels().pending.push_back(editor::DuplicateObject{drone});
+        then(5);
+        const std::string twin = scene_now().vehicles.back().name;
+        const vehicles::ModelType* mine = model_of(drone);
+        if (!s.check(mine != nullptr && twin != drone, "duplicated", "'" + twin + "'")) return;
+        const float before = mine->rotors.at(0).radius;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, drone};
+        w().panels().pending.push_back(
+            editor::SetModelParam{drone, vehicles::ModelIssue::Element::rotor, 0, "radius", before + 0.02f});
+        then(5);
+        const vehicles::ModelType* edited = model_of(drone);
+        const vehicles::ModelType* other = model_of(twin);
+        s.check(edited != nullptr && std::abs(edited->rotors.at(0).radius - (before + 0.02f)) < 1e-6f, "edited",
+                "rotor 0 radius " + fmt(before) + " -> " + fmt(edited != nullptr ? edited->rotors.at(0).radius : 0.0f));
+        s.check(other != nullptr && other->rotors.at(0).radius == before, "other-unchanged",
+                "'" + twin + "' keeps " + fmt(other != nullptr ? other->rotors.at(0).radius : 0.0f));
+        then(30);
+        t.snapshot("editor_inspect");
+        then(20);
     });
 
+    t.step("editor", "undo", [&] {
+        if (!open()) return;
+        const std::string before = text_of(scene_now());
+        command(editor::Command::undo);
+        const bool changed = text_of(scene_now()) != before;
+        command(editor::Command::redo);
+        s.check(changed && text_of(scene_now()) == before, "bytes-equal",
+                changed ? "undo changed it; redo restored every byte" : "undo changed nothing");
+        then(20);
+    });
+
+    // An edit while running rebuilds the run, carrying each vehicle's state.
     t.step("editor", "run", [&] {
         if (!open()) return;
-        editor::EditorWorkspace& w = session->workspace();
-        w.panels().selection = editor::Selection{};
-        w.panels().commands.push_back(editor::Command::run);
-        t.pump(120, idle, draw);
-        s.check(w.run() != nullptr && w.run()->tick() > 0u, "runs",
-                "tick " + std::to_string(w.run() != nullptr ? w.run()->tick() : 0u));
+        w().panels().selection = editor::Selection{};
+        command(editor::Command::run);
+        then(90);
+        const editor::EditorRun* run = w().run();
+        if (!s.check(run != nullptr && run->tick() > 0u, "runs",
+                     "tick " + std::to_string(run != nullptr ? run->tick() : 0u))) {
+            return;
+        }
+        const uint64_t tick = run->tick();
+        const glm::vec3 before = run->state_of(drone).value_or(FrameState{}).pos;
+        // Queued, then applied as the session's next frame applies it, before it steps.
+        SdfPose moved = scene_now().assets.at(0).pose;
+        moved.position.x += 0.5f;
+        w().panels().pending.push_back(editor::SetAssetPose{scene_now().assets.at(0).name, moved});
+        w().apply_panels();
+        run = w().run();
+        const glm::vec3 after = run != nullptr ? run->state_of(drone).value_or(FrameState{}).pos : glm::vec3(0.0f);
+        s.check(run != nullptr && run->tick() == tick && glm::length(after - before) < 1e-5f, "carries-pose",
+                "tick " + std::to_string(tick) + ", drone moved " + fmt(glm::length(after - before)) + " m in the rebuild");
+        then(60);
         t.snapshot("editor_running");
-        t.pump(30, idle, draw);
-        w.panels().commands.push_back(editor::Command::stop);
-        w.panels().commands.push_back(editor::Command::undo);
-        t.pump(10, idle, draw);
-        s.check(w.run() == nullptr && w.documents().scene.desc().assets.empty(), "stop-undo",
-                std::to_string(w.documents().scene.desc().assets.size()) + " assets after Stop, Undo");
+        then(20);
+        command(editor::Command::stop);
     });
+
+    // A world edit, saved: the world first, then the scene re-pinned to it.
+    t.step("editor", "world", [&] {
+        if (!open()) return;
+        w().panels().selection = w().panels().hierarchy.at(1).target;  // what the World row does
+        Environment windy = w().documents().world.desc().environment;
+        windy.wind = glm::vec3(2.0f, 0.0f, 0.0f);
+        w().panels().pending_world.push_back(editor::SetEnvironment{windy});
+        then(10);
+        command(editor::Command::save);
+        const Result<uint64_t> hash = scene::world_hash(w().documents().world.desc());
+        const bool pinned = hash.has_value() && scene_now().world.hash == *hash;
+        s.check(pinned && !w().documents().scene.dirty() && !w().documents().world.dirty(), "re-pinned",
+                pinned ? "the scene pins the saved world; both clean" : "status: " + w().panels().status);
+        then(20);
+        t.snapshot("editor_world");
+        then(20);
+    });
+
+    // The scene follows its world: a world edit that no longer composes with
+    // the scene is shown, by name, and undo resolves it.
+    t.step("editor", "conflict", [&] {
+        if (!open()) return;
+        MaterialDesc red;
+        red.name = "red";
+        w().panels().pending.push_back(editor::AddMaterial{red});
+        w().panels().pending_world.push_back(editor::AddWorldMaterial{red});
+        then(10);
+        const std::string status = w().panels().status;
+        s.check(status.find("'red'") != std::string::npos, "shown", status.empty() ? "no status" : status);
+        then(20);
+        t.snapshot("editor_conflict");
+        then(20);
+        command(editor::Command::undo);
+        s.check(w().panels().status.empty(), "undo-resolves", "status after undo: '" + w().panels().status + "'");
+    });
+
+    t.step("editor", "save", [&] {
+        if (!open()) return;
+        std::error_code ec;
+        fs::create_directories(work / "saved", ec);
+        const fs::path copy = work / "saved" / "hover_copy.scene.yaml";
+        const auto bytes_of = [](const fs::path& f) {
+            std::ifstream in(f, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        w().panels().path = copy.string();
+        command(editor::Command::save_as);
+        const std::string mine = text_of(scene_now());
+        const Result<editor::OpenedScene> back = editor::open_scene(copy);
+        const bool equal = back.has_value() && text_of(back->scene.desc()) == mine &&
+                           bytes_of(copy) == mine;
+        s.check(equal, "byte-equal",
+                back ? (equal ? "saved, reopened, every byte equal" : "differs") : back.error().context);
+        then(20);
+    });
+
     session.reset();  // detaches its panels while the window is still open
+    std::error_code ec;
+    fs::remove_all(work, ec);
+    if (ec) s.note("the editor's work copy was not removed: " + ec.message());
 }
 
 // Clears an earlier run's files so a stale frame never poses as a new one.
@@ -1129,7 +1306,9 @@ int run_live_smoke(const TourOptions& options) {
         std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", valid.error().context.c_str());
         return 2;
     }
-    if (const Result<void> swept = sweep(options.out_dir, owned_names(kMains)); !swept) {
+    std::vector<std::string> owned = owned_names(kMains);
+    for (const std::string_view snap : kSnapshots) owned.push_back(std::string(snap) + ".png");
+    if (const Result<void> swept = sweep(options.out_dir, owned); !swept) {
         std::fprintf(stderr, "spade_sandbox: live smoke: %s\n", swept.error().context.c_str());
         return 2;
     }
