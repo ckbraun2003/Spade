@@ -74,10 +74,12 @@ namespace {
     X(PFNGLBINDTEXTUREPROC, BindTexture) \
     X(PFNGLBINDVERTEXARRAYPROC, BindVertexArray) \
     X(PFNGLBLENDEQUATIONPROC, BlendEquation) \
+    X(PFNGLBLENDFUNCPROC, BlendFunc) \
     X(PFNGLBUFFERDATAPROC, BufferData) \
     X(PFNGLBUFFERSUBDATAPROC, BufferSubData) \
     X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, CheckFramebufferStatus) \
     X(PFNGLCLEARPROC, Clear) \
+    X(PFNGLCLEARBUFFERFVPROC, ClearBufferfv) \
     X(PFNGLCOMPILESHADERPROC, CompileShader) \
     X(SpadePfnGlCopyImageSubData, CopyImageSubData) \
     X(PFNGLCREATEPROGRAMPROC, CreateProgram) \
@@ -93,6 +95,7 @@ namespace {
     X(PFNGLDEPTHMASKPROC, DepthMask) \
     X(PFNGLDISABLEPROC, Disable) \
     X(PFNGLDRAWARRAYSPROC, DrawArrays) \
+    X(PFNGLDRAWBUFFERPROC, DrawBuffer) \
     X(PFNGLDRAWARRAYSINSTANCEDPROC, DrawArraysInstanced) \
     X(PFNGLDRAWELEMENTSINSTANCEDPROC, DrawElementsInstanced) \
     X(PFNGLENABLEPROC, Enable) \
@@ -111,14 +114,18 @@ namespace {
     X(PFNGLGETUNIFORMLOCATIONPROC, GetUniformLocation) \
     X(PFNGLLINKPROGRAMPROC, LinkProgram) \
     X(PFNGLPOLYGONMODEPROC, PolygonMode) \
+    X(PFNGLREADBUFFERPROC, ReadBuffer) \
+    X(PFNGLPOINTSIZEPROC, PointSize) \
     X(PFNGLSHADERSOURCEPROC, ShaderSource) \
     X(PFNGLTEXIMAGE2DPROC, TexImage2D) \
+    X(PFNGLTEXIMAGE3DPROC, TexImage3D) \
     X(PFNGLTEXPARAMETERIPROC, TexParameteri) \
     X(PFNGLUNIFORM1FPROC, Uniform1f) \
     X(PFNGLUNIFORM1UIPROC, Uniform1ui) \
     X(PFNGLUNIFORM2FPROC, Uniform2f) \
     X(PFNGLUNIFORM2UIPROC, Uniform2ui) \
     X(PFNGLUNIFORM3FVPROC, Uniform3fv) \
+    X(PFNGLUNIFORM4FVPROC, Uniform4fv) \
     X(PFNGLUNIFORMMATRIX4FVPROC, UniformMatrix4fv) \
     X(PFNGLUSEPROGRAMPROC, UseProgram) \
     X(PFNGLVERTEXATTRIBPOINTERPROC, VertexAttribPointer) \
@@ -250,6 +257,367 @@ void main() {
 }
 )GLSL";
 
+// The flow volume on GL (airflow visualization plan §7.1), a port of
+// render/flow_sample.cpp. V and S are GL_RGBA16UI 3D textures of raw halves.
+// Trilinear is cell-centred, by nested lerps, and reads a corner only when
+// its axis fraction is above 0. A read corner whose exponent bits are all
+// ones (inf or NaN) is no-data. Bit tests and unpackHalf2x16 keep the
+// driver's own half and NaN handling out of it. The colour maps are their 256
+// stops, a row per ColourMapId, interpolated as colour_map_at() does.
+constexpr const char* kFlowSampleSrc = R"GLSL(
+layout(binding = 1) uniform usampler3D uFlowV;  // u, v, w, dye
+layout(binding = 2) uniform usampler3D uFlowS;  // p, |omega|, q-hat, reserved
+layout(binding = 3) uniform sampler2D uFlowColourTable;  // 256 x 3, a row per ColourMapId
+uniform vec3 uFlowOrigin;
+uniform float uFlowInvCell;  // 1 / cell, as the CPU's FlowSampler holds it
+
+void flow_axis(float coordinate, float origin, int n, out int i0, out int i1, out float f) {
+    float g = clamp((coordinate - origin) * uFlowInvCell - 0.5, 0.0, float(n - 1));
+    float base = floor(g);
+    i0 = int(base);
+    i1 = min(i0 + 1, n - 1);
+    f = g - base;
+}
+
+// False on no-data. `channel` is a FlowChannel: 0-3 in V, 4-7 in S.
+bool flow_sample_channel(vec3 p, uint channel, out float value) {
+    ivec3 n = textureSize(uFlowV, 0);
+    int x0, x1, y0, y1, z0, z1;
+    float fx, fy, fz;
+    flow_axis(p.x, uFlowOrigin.x, n.x, x0, x1, fx);
+    flow_axis(p.y, uFlowOrigin.y, n.y, y0, y1, fy);
+    flow_axis(p.z, uFlowOrigin.z, n.z, z0, z1, fz);
+    float c[8] = float[8](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    for (int dz = 0; dz <= (fz > 0.0 ? 1 : 0); ++dz) {
+        for (int dy = 0; dy <= (fy > 0.0 ? 1 : 0); ++dy) {
+            for (int dx = 0; dx <= (fx > 0.0 ? 1 : 0); ++dx) {
+                ivec3 cell = ivec3(dx == 1 ? x1 : x0, dy == 1 ? y1 : y0, dz == 1 ? z1 : z0);
+                uvec4 t = channel < 4u ? texelFetch(uFlowV, cell, 0) : texelFetch(uFlowS, cell, 0);
+                uint h = t[int(channel & 3u)];
+                if ((h & 0x7C00u) == 0x7C00u) {
+                    value = 0.0;
+                    return false;
+                }
+                c[dz * 4 + dy * 2 + dx] = unpackHalf2x16(h).x;
+            }
+        }
+    }
+    float a = c[0] + (c[1] - c[0]) * fx;
+    float b = c[2] + (c[3] - c[2]) * fx;
+    float d = c[4] + (c[5] - c[4]) * fx;
+    float e = c[6] + (c[7] - c[6]) * fx;
+    float lo = a + (b - a) * fy;
+    float hi = d + (e - d) * fy;
+    value = lo + (hi - lo) * fz;
+    return true;
+}
+
+// `quantity` is a FlowQuantity: 0 speed, then u, v, w, dye, pressure,
+// vorticity and q-hat, which are FlowChannel 0 to 6.
+bool flow_sample_quantity(vec3 p, uint quantity, out float value) {
+    if (quantity == 0u) {
+        float u, v, w;
+        if (!flow_sample_channel(p, 0u, u) || !flow_sample_channel(p, 1u, v) || !flow_sample_channel(p, 2u, w)) {
+            value = 0.0;
+            return false;
+        }
+        value = sqrt(u * u + v * v + w * w);
+        return true;
+    }
+    return flow_sample_channel(p, quantity - 1u, value);
+}
+
+vec3 flow_colour_map(float t, uint map) {
+    int row = int(map);
+    float x = clamp(t, 0.0, 1.0) * 255.0;
+    if (!(x < 255.0)) return texelFetch(uFlowColourTable, ivec2(255, row), 0).rgb;
+    int i = int(x);
+    float u = x - float(i);
+    vec3 a = texelFetch(uFlowColourTable, ivec2(i, row), 0).rgb;
+    vec3 b = texelFetch(uFlowColourTable, ivec2(i + 1, row), 0).rgb;
+    return a + (b - a) * u;
+}
+)GLSL";
+
+// Surface colouring (render/flow_field.hpp), for the mesh and CSG programs.
+// A fragment inside the volume's box takes its quantity's colour at its own
+// world point, unlit. raster_cpu's draw_flow_surface_colouring() colours the
+// point it rebuilds from depth. No-data keeps the shaded colour. Off in a
+// program that never sets uFlowColouring. Needs kFlowSampleSrc before it.
+constexpr const char* kFlowSurfaceSrc = R"GLSL(
+uniform uint uFlowColouring;
+uniform uint uFlowQuantity;
+uniform uint uFlowColourMap;
+uniform vec3 uFlowBoxMin;
+uniform vec3 uFlowBoxMax;
+uniform float uFlowRangeMin;
+uniform float uFlowInvSpan;
+uniform uint uFlowConstant;
+uniform vec3 uFlowConstantColour;
+
+vec3 flow_colour_surface(vec3 world, vec3 shaded) {
+    if (uFlowColouring == 0u) return shaded;
+    if (any(lessThan(world, uFlowBoxMin)) || any(greaterThan(world, uFlowBoxMax))) return shaded;
+    float value;
+    if (!flow_sample_quantity(world, uFlowQuantity, value)) return shaded;
+    if (uFlowConstant != 0u) return uFlowConstantColour;
+    return flow_colour_map((value - uFlowRangeMin) * uFlowInvSpan, uFlowColourMap);
+}
+)GLSL";
+
+// A flow layer, ray-marched (airflow visualization plan §7.1, step 7c): a
+// port of render/flow_render.cpp's march_flow_ray(), drawn on the layer's
+// box's back faces (kCsgVertexSrc) with depth clamp, so every pixel the box
+// covers runs one march. The ray, the box clip and the near and far limits
+// are the CSG pass's. The march stops at the frame's opaque depth, which a
+// depth-only copy of the opaque passes leaves in uOpaqueDepth. Half-cell
+// steps by multiplication, the last one partial; iso crossings refined by
+// four bisections and a linear step, nearest first; emission and absorption
+// with every transfer at once; out at T < 1/256. GLSL's exp() stands in for
+// exp32(). The result blends as C + T * behind (ONE, SRC_ALPHA). An opaque
+// iso writes its depth; any other pixel writes back the depth it had.
+// Needs kFlowSampleSrc before it.
+constexpr const char* kFlowVolumeFragmentSrc = R"GLSL(
+uniform mat4 uViewProj;
+uniform vec3 uBoxMin;
+uniform vec3 uBoxMax;
+uniform vec3 uCamPos;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform vec3 uForward;
+uniform float uInvTanHalfFov;
+uniform float uAspect;
+uniform vec2 uViewport;
+uniform float uNear;
+uniform float uFar;
+uniform float uProj22;  // the projection's depth terms, to undo window depth
+uniform float uProj32;
+layout(binding = 4) uniform sampler2D uOpaqueDepth;
+uniform float uStep;
+uniform float uInvStep;
+uniform uint uTransferCount;
+uniform uint uIsoCount;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform vec3 uAmbient;
+uniform float uSunIntensity;
+// The layer's prepared transfers and isos as scalars (see draw()):
+// transfer k at 36 k; iso k at 144 + 44 k, its colour_by transfer 8 later.
+uniform vec4 uFlowParams[80];
+
+out vec4 fragColor;
+
+const int kIsoBase = 144;
+const int kIsoFloats = 44;
+
+float P(int i) { return uFlowParams[i >> 2][i & 3]; }
+
+// A prepared transfer at `b`: quantity, map, constant?, range min, inverse
+// span, point count, -, -, constant colour, -, then 8 (value, sigma) points
+// and 7 inverse widths. apply_transfer()'s colour and extinction.
+vec3 transfer_colour(int b, float value) {
+    if (P(b + 2) != 0.0) return vec3(P(b + 8), P(b + 9), P(b + 10));
+    return flow_colour_map((value - P(b + 3)) * P(b + 4), uint(P(b + 1)));
+}
+
+float transfer_sigma(int b, float value) {
+    int last = int(P(b + 5)) - 1;
+    if (!(value > P(b + 12))) return P(b + 13);
+    if (!(value < P(b + 12 + 2 * last))) return P(b + 13 + 2 * last);
+    int i = 0;
+    while (!(value < P(b + 12 + 2 * (i + 1)))) ++i;
+    float u = (value - P(b + 12 + 2 * i)) * P(b + 28 + i);
+    return P(b + 13 + 2 * i) + (P(b + 15 + 2 * i) - P(b + 13 + 2 * i)) * u;
+}
+
+bool iso_offset(int k, vec3 origin, vec3 dir, float t, out float f) {
+    int b = kIsoBase + k * kIsoFloats;
+    float v;
+    if (!flow_sample_quantity(origin + dir * t, uint(P(b)), v)) {
+        f = 0.0;
+        return false;
+    }
+    f = v - P(b + 1);
+    return true;
+}
+
+float refine_crossing(int k, vec3 origin, vec3 dir, float ta, float fa, float tb, float fb) {
+    for (int i = 0; i < 4; ++i) {  // kIsoBisections
+        float tm = 0.5 * (ta + tb);
+        float fm;
+        if (!iso_offset(k, origin, dir, tm, fm)) break;
+        if ((fa < 0.0) != (fm < 0.0)) {
+            tb = tm;
+            fb = fm;
+        } else {
+            ta = tm;
+            fa = fm;
+        }
+    }
+    float span = fa - fb;
+    return span != 0.0 ? ta + (tb - ta) * (fa / span) : 0.5 * (ta + tb);
+}
+
+// shade_iso(): its colour or colour_by's, lit about the field's gradient
+// (central differences one cell apart), turned toward the eye.
+vec3 shade_iso(int k, vec3 q, vec3 dir, inout bool crossed_no_data) {
+    int b = kIsoBase + k * kIsoFloats;
+    uint quantity = uint(P(b));
+    vec3 base = vec3(P(b + 4), P(b + 5), P(b + 6));
+    if (P(b + 3) != 0.0) {
+        float v;
+        if (!flow_sample_quantity(q, uint(P(b + 8)), v)) {
+            crossed_no_data = true;
+        } else {
+            base = transfer_colour(b + 8, v);
+        }
+    }
+    vec3 grad = vec3(0.0);
+    bool ok = true;
+    for (int a = 0; a < 3 && ok; ++a) {
+        vec3 e = vec3(0.0);
+        e[a] = uStep;
+        float hi, lo;
+        bool hi_ok = flow_sample_quantity(q + e, quantity, hi);
+        bool lo_ok = flow_sample_quantity(q - e, quantity, lo);
+        ok = hi_ok && lo_ok;
+        grad[a] = hi - lo;
+    }
+    float len = sqrt(grad.x * grad.x + grad.y * grad.y + grad.z * grad.z);
+    vec3 normal = ok && len > 0.0 ? grad / len : -dir;
+    if (dot(normal, dir) > 0.0) normal = -normal;
+    float ndl = max(dot(normal, uSunDir), 0.0);
+    return base * (uSunColor * (uSunIntensity * ndl) + uAmbient);
+}
+
+void main() {
+    float x_ndc = 2.0 * gl_FragCoord.x / uViewport.x - 1.0;
+    float y_ndc = 2.0 * gl_FragCoord.y / uViewport.y - 1.0;
+    vec3 ray = uForward + uRight * (x_ndc * uAspect / uInvTanHalfFov) + uUp * (y_ndc / uInvTanHalfFov);
+    vec3 dir = normalize(ray);
+    float cos_theta = dot(dir, uForward);
+
+    float t_enter = -3.402823466e+38;
+    float t_exit = 3.402823466e+38;
+    for (int a = 0; a < 3; ++a) {
+        if (dir[a] == 0.0) {
+            if (uCamPos[a] < uBoxMin[a] || uCamPos[a] > uBoxMax[a]) discard;
+            continue;
+        }
+        float inv = 1.0 / dir[a];
+        float ta = (uBoxMin[a] - uCamPos[a]) * inv;
+        float tb = (uBoxMax[a] - uCamPos[a]) * inv;
+        t_enter = max(t_enter, min(ta, tb));
+        t_exit = min(t_exit, max(ta, tb));
+    }
+    if (!(t_enter <= t_exit && t_exit >= 0.0)) discard;
+    float depth = texelFetch(uOpaqueDepth, ivec2(gl_FragCoord.xy), 0).r;
+    float t_end = min(uFar / cos_theta, t_exit);
+    if (depth < 1.0) {
+        // An opaque surface hides the air behind it.
+        t_end = min(t_end, (uProj32 / ((2.0 * depth - 1.0) + uProj22)) / cos_theta);
+    }
+    float t_start = max(uNear / cos_theta, t_enter);
+
+    vec3 colour = vec3(0.0);
+    float transmittance = 1.0;
+    bool crossed_no_data = false;
+    float opaque_t = -1.0;
+    if (t_start < t_end) {
+        float length = t_end - t_start;
+        float full = floor(length * uInvStep);
+        uint n_full = uint(full);
+        float last = max(0.0, length - full * uStep);
+        uint n = n_full + (last > 0.0 ? 1u : 0u);
+        int n_isos = int(uIsoCount);
+        float prev_f[4] = float[4](0.0, 0.0, 0.0, 0.0);
+        float prev_t[4] = float[4](0.0, 0.0, 0.0, 0.0);
+        bool prev_valid[4] = bool[4](false, false, false, false);
+        for (uint i = 0u; i < n && opaque_t < 0.0; ++i) {
+            float t0 = t_start + float(i) * uStep;
+            float dt = i < n_full ? uStep : last;
+            float tm = t0 + 0.5 * dt;
+            vec3 p = uCamPos + dir * tm;
+
+            float hit_t[4];
+            int hit_k[4];
+            int n_hits = 0;
+            for (int k = 0; k < n_isos; ++k) {
+                float f;
+                if (!iso_offset(k, uCamPos, dir, tm, f)) {
+                    crossed_no_data = true;
+                    prev_valid[k] = false;
+                    continue;
+                }
+                if (prev_valid[k] && (prev_f[k] < 0.0) != (f < 0.0)) {
+                    hit_t[n_hits] = refine_crossing(k, uCamPos, dir, prev_t[k], prev_f[k], tm, f);
+                    hit_k[n_hits] = k;
+                    ++n_hits;
+                }
+                prev_f[k] = f;
+                prev_t[k] = tm;
+                prev_valid[k] = true;
+            }
+            for (int a = 1; a < n_hits; ++a) {
+                for (int b = a; b > 0 && hit_t[b] < hit_t[b - 1]; --b) {
+                    float tt = hit_t[b];
+                    hit_t[b] = hit_t[b - 1];
+                    hit_t[b - 1] = tt;
+                    int kk = hit_k[b];
+                    hit_k[b] = hit_k[b - 1];
+                    hit_k[b - 1] = kk;
+                }
+            }
+            for (int h = 0; h < n_hits && opaque_t < 0.0; ++h) {
+                int b = kIsoBase + hit_k[h] * kIsoFloats;
+                float opacity = P(b + 2);
+                vec3 shaded = shade_iso(hit_k[h], uCamPos + dir * hit_t[h], dir, crossed_no_data);
+                colour += transmittance * opacity * shaded;
+                if (opacity >= 1.0) {
+                    transmittance = 0.0;
+                    opaque_t = hit_t[h];
+                } else {
+                    transmittance *= 1.0 - opacity;
+                }
+            }
+            if (opaque_t >= 0.0 || uTransferCount == 0u) continue;
+
+            float sigma = 0.0;
+            vec3 weighted = vec3(0.0);
+            bool no_data = false;
+            for (int k = 0; k < int(uTransferCount); ++k) {
+                int b = 36 * k;
+                float v;
+                if (!flow_sample_quantity(p, uint(P(b)), v)) {
+                    no_data = true;
+                    break;
+                }
+                float sk = transfer_sigma(b, v);
+                sigma += sk;
+                weighted += sk * transfer_colour(b, v);
+            }
+            if (no_data) {
+                crossed_no_data = true;
+                continue;
+            }
+            if (!(sigma > 0.0)) continue;
+            float tau = exp(-sigma * dt);
+            colour += transmittance * (1.0 - tau) * (weighted / sigma);
+            transmittance *= tau;
+            if (transmittance < 1.0 / 256.0) break;  // kFlowEarlyExitTransmittance
+        }
+    }
+    if (transmittance == 1.0 && colour == vec3(0.0)) discard;  // nothing absorbed or emitted
+    fragColor = vec4(colour, transmittance);
+    if (opaque_t >= 0.0) {
+        vec4 clip = uViewProj * vec4(uCamPos + dir * opaque_t, 1.0);
+        gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
+    } else {
+        gl_FragDepth = depth;
+    }
+}
+)GLSL";
+
 // The surface shading the mesh and CSG programs share: the material table,
 // the sun, velocity's ramp, the shadow lookup and the SR-17a blend, as
 // raster_cpu shades a mesh fragment. Needs kCommonSrc before it.
@@ -323,12 +691,12 @@ void main() {
     vec3 base = m.base_color.rgb;
     // Wireframe edges take the unlit material colour, as raster_cpu draws them.
     if (uMode == 1u) {
-        fragColor = vec4(base, 1.0);
+        fragColor = vec4(flow_colour_surface(vWorld, base), 1.0);
         return;
     }
     // Velocity swaps the colour and keeps the material's shading, as raster_cpu does.
     if (uMode == 3u) { base = velocity_ramp(uSpeed[vInstance], uVelocityScale); }
-    fragColor = vec4(shade_surface(m.shading, base, normalize(vNormal), vWorld), 1.0);
+    fragColor = vec4(flow_colour_surface(vWorld, shade_surface(m.shading, base, normalize(vNormal), vWorld)), 1.0);
 }
 )GLSL";
 
@@ -826,7 +1194,7 @@ void main() {
     vec3 g = sdf_gradient(p);
     float g_len = length(g);
     vec3 n = g_len > 0.0 ? g / g_len : vec3(0.0, 1.0, 0.0);
-    fragColor = vec4(shade_surface(m.shading, base, n, p), 1.0);
+    fragColor = vec4(flow_colour_surface(p, shade_surface(m.shading, base, n, p)), 1.0);
 }
 )GLSL";
 
@@ -984,6 +1352,20 @@ struct GlRenderer::Impl {
     GLuint shadow_static_tex = 0;
     GLuint shadow_work_tex = 0;
     GLuint shadow_fbo = 0;
+
+    // Surface colouring's volume (V and S, raw halves) on units 1 and 2, and
+    // its colour table on unit 3. Uploaded by each draw() that colours.
+    GLuint flow_v_tex = 0;
+    GLuint flow_s_tex = 0;
+    GLuint flow_colour_tex = 0;
+
+    // A flow layer's march (step 7c), and the frame's opaque depth it stops
+    // at: a depth-only copy of the opaque passes, sized to the frame.
+    GLuint flow_program = 0;
+    GLuint flow_depth_tex = 0;
+    GLuint flow_depth_fbo = 0;
+    uint32_t flow_depth_width = 0;
+    uint32_t flow_depth_height = 0;
     uint32_t shadow_size = 0;  // 0: the scene has no map, so nothing is shadowed
     bool r32f_renderable = false;  // create() asks the driver once
     glm::mat4 shadow_light_view_proj{1.0f};
@@ -1053,6 +1435,19 @@ struct GlRenderer::Impl {
         GLint enabled = -1, light_view_proj = -1, size = -1, no_occluder = -1, bias = -1;
     } mesh_shadow, bg_shadow, csg_shadow;
 
+    // kFlowSampleSrc's and kFlowSurfaceSrc's, in the mesh and CSG programs.
+    struct FlowSurfaceUniforms {
+        GLint on = -1, quantity = -1, box_min = -1, box_max = -1, origin = -1, inv_cell = -1, range_min = -1,
+              inv_span = -1, constant = -1, constant_colour = -1, colour_map = -1;
+    } mesh_flow, csg_flow;
+
+    struct FlowLayerUniforms {
+        GLint view_proj = -1, box_min = -1, box_max = -1, cam_pos = -1, right = -1, up = -1, forward = -1,
+              inv_tan_half_fov = -1, aspect = -1, viewport = -1, near_plane = -1, far_plane = -1, proj22 = -1,
+              proj32 = -1, step = -1, inv_step = -1, transfer_count = -1, iso_count = -1, sun_dir = -1,
+              sun_color = -1, ambient = -1, sun_intensity = -1, params = -1, origin = -1, inv_cell = -1;
+    } flow_layer;
+
     ~Impl() {
         for (GpuMesh& m : meshes) {
             if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
@@ -1063,6 +1458,12 @@ struct GlRenderer::Impl {
         if (shadow_fbo != 0) gl.DeleteFramebuffers(1, &shadow_fbo);
         if (shadow_work_tex != 0) gl.DeleteTextures(1, &shadow_work_tex);
         if (shadow_static_tex != 0) gl.DeleteTextures(1, &shadow_static_tex);
+        if (flow_colour_tex != 0) gl.DeleteTextures(1, &flow_colour_tex);
+        if (flow_s_tex != 0) gl.DeleteTextures(1, &flow_s_tex);
+        if (flow_v_tex != 0) gl.DeleteTextures(1, &flow_v_tex);
+        if (flow_depth_fbo != 0) gl.DeleteFramebuffers(1, &flow_depth_fbo);
+        if (flow_depth_tex != 0) gl.DeleteTextures(1, &flow_depth_tex);
+        if (flow_program != 0) gl.DeleteProgram(flow_program);
         if (caster_program != 0) gl.DeleteProgram(caster_program);
         if (ssbo_csg_transforms != 0) gl.DeleteBuffers(1, &ssbo_csg_transforms);
         if (ssbo_csg_nodes != 0) gl.DeleteBuffers(1, &ssbo_csg_nodes);
@@ -1121,7 +1522,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     }
 
     const Result<GLuint> mesh_program =
-        link(gl, {kGlslVersion, kCommonSrc, kVertexSrc}, {kGlslVersion, kCommonSrc, kSurfaceSrc, kFragmentSrc}, "mesh");
+        link(gl, {kGlslVersion, kCommonSrc, kVertexSrc},
+             {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kFlowSurfaceSrc, kFragmentSrc}, "mesh");
     if (!mesh_program) return std::unexpected(mesh_program.error());
     impl->program = *mesh_program;
     const Result<GLuint> background_program = link(gl, {kGlslVersion, kBackgroundVertexSrc},
@@ -1141,9 +1543,15 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     if (!caster_program) return std::unexpected(caster_program.error());
     impl->caster_program = *caster_program;
     const Result<GLuint> csg_program = link(gl, {kGlslVersion, kCsgVertexSrc},
-                                            {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kCsgFragmentSrc}, "csg");
+                                            {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc,
+                                             kFlowSurfaceSrc, kCsgFragmentSrc},
+                                            "csg");
     if (!csg_program) return std::unexpected(csg_program.error());
     impl->csg_program = *csg_program;
+    const Result<GLuint> flow_program =
+        link(gl, {kGlslVersion, kCsgVertexSrc}, {kGlslVersion, kFlowSampleSrc, kFlowVolumeFragmentSrc}, "flow volume");
+    if (!flow_program) return std::unexpected(flow_program.error());
+    impl->flow_program = *flow_program;
 
     const GLuint p = impl->program;
     impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
@@ -1231,6 +1639,74 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     shadow_uniforms(impl->program, impl->mesh_shadow);
     shadow_uniforms(impl->background_program, impl->bg_shadow);
     shadow_uniforms(impl->csg_program, impl->csg_shadow);
+    const auto flow_uniforms = [&gl](GLuint program, Impl::FlowSurfaceUniforms& u) {
+        u.on = gl.GetUniformLocation(program, "uFlowColouring");
+        u.quantity = gl.GetUniformLocation(program, "uFlowQuantity");
+        u.box_min = gl.GetUniformLocation(program, "uFlowBoxMin");
+        u.box_max = gl.GetUniformLocation(program, "uFlowBoxMax");
+        u.origin = gl.GetUniformLocation(program, "uFlowOrigin");
+        u.inv_cell = gl.GetUniformLocation(program, "uFlowInvCell");
+        u.range_min = gl.GetUniformLocation(program, "uFlowRangeMin");
+        u.inv_span = gl.GetUniformLocation(program, "uFlowInvSpan");
+        u.constant = gl.GetUniformLocation(program, "uFlowConstant");
+        u.constant_colour = gl.GetUniformLocation(program, "uFlowConstantColour");
+        u.colour_map = gl.GetUniformLocation(program, "uFlowColourMap");
+    };
+    flow_uniforms(impl->program, impl->mesh_flow);
+    flow_uniforms(impl->csg_program, impl->csg_flow);
+    {
+        Impl::FlowLayerUniforms& u = impl->flow_layer;
+        const GLuint fp = impl->flow_program;
+        u.view_proj = gl.GetUniformLocation(fp, "uViewProj");
+        u.box_min = gl.GetUniformLocation(fp, "uBoxMin");
+        u.box_max = gl.GetUniformLocation(fp, "uBoxMax");
+        u.cam_pos = gl.GetUniformLocation(fp, "uCamPos");
+        u.right = gl.GetUniformLocation(fp, "uRight");
+        u.up = gl.GetUniformLocation(fp, "uUp");
+        u.forward = gl.GetUniformLocation(fp, "uForward");
+        u.inv_tan_half_fov = gl.GetUniformLocation(fp, "uInvTanHalfFov");
+        u.aspect = gl.GetUniformLocation(fp, "uAspect");
+        u.viewport = gl.GetUniformLocation(fp, "uViewport");
+        u.near_plane = gl.GetUniformLocation(fp, "uNear");
+        u.far_plane = gl.GetUniformLocation(fp, "uFar");
+        u.proj22 = gl.GetUniformLocation(fp, "uProj22");
+        u.proj32 = gl.GetUniformLocation(fp, "uProj32");
+        u.step = gl.GetUniformLocation(fp, "uStep");
+        u.inv_step = gl.GetUniformLocation(fp, "uInvStep");
+        u.transfer_count = gl.GetUniformLocation(fp, "uTransferCount");
+        u.iso_count = gl.GetUniformLocation(fp, "uIsoCount");
+        u.sun_dir = gl.GetUniformLocation(fp, "uSunDir");
+        u.sun_color = gl.GetUniformLocation(fp, "uSunColor");
+        u.ambient = gl.GetUniformLocation(fp, "uAmbient");
+        u.sun_intensity = gl.GetUniformLocation(fp, "uSunIntensity");
+        u.params = gl.GetUniformLocation(fp, "uFlowParams");
+        u.origin = gl.GetUniformLocation(fp, "uFlowOrigin");
+        u.inv_cell = gl.GetUniformLocation(fp, "uFlowInvCell");
+    }
+    gl.GenTextures(1, &impl->flow_v_tex);
+    gl.GenTextures(1, &impl->flow_s_tex);
+    gl.GenTextures(1, &impl->flow_colour_tex);
+    gl.GenTextures(1, &impl->flow_depth_tex);
+    gl.GenFramebuffers(1, &impl->flow_depth_fbo);
+    {
+        // Every colour map's stops, a row per ColourMapId, once.
+        static_assert(static_cast<uint32_t>(render::ColourMapId::viridis) == 0u &&
+                      static_cast<uint32_t>(render::ColourMapId::inferno) == 1u &&
+                      static_cast<uint32_t>(render::ColourMapId::cool_warm) == 2u);
+        static_assert(render::kColourMapEntries == 256 && sizeof(glm::vec3) == 3 * sizeof(float));
+        std::vector<glm::vec3> rows;
+        for (const render::ColourMapId id :
+             {render::ColourMapId::viridis, render::ColourMapId::inferno, render::ColourMapId::cool_warm}) {
+            const auto& table = render::colour_map_table(id);
+            rows.insert(rows.end(), table.begin(), table.end());
+        }
+        gl.BindTexture(GL_TEXTURE_2D, impl->flow_colour_tex);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, static_cast<GLsizei>(render::kColourMapEntries), 3, 0, GL_RGB,
+                      GL_FLOAT, rows.data());
+        gl.BindTexture(GL_TEXTURE_2D, 0);
+    }
     gl.GenTextures(1, &impl->shadow_static_tex);
     gl.GenTextures(1, &impl->shadow_work_tex);
     gl.GenFramebuffers(1, &impl->shadow_fbo);
@@ -1516,14 +1992,49 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                      "GlRenderer::draw: raymarch is a CPU technique (render/raymarch.hpp); "
                                      "draw it with render::render()"});
     }
-    // L6: GL has no flow pass yet, and a frame without the volume, lines or
-    // tracers would be a different picture under the same scene.
-    if (!scene.flow_layers.empty() || !scene.flow_polylines.empty() || !scene.flow_points.positions.empty() ||
-        scene.flow_surface_colouring) {
-        return std::unexpected(Error{Code::unavailable,
-                                     "GlRenderer::draw: GL has no flow pass yet (airflow visualization plan "
-                                     "step 7); draw flow layers, streamlines, tracers and surface colouring "
-                                     "with render::render()"});
+    // L6: GL marches one flow layer per frame; a frame with fewer would be a
+    // different picture under the same scene.
+    if (scene.flow_layers.size() > 1u) {
+        return std::unexpected(Error{Code::unavailable, "GlRenderer::draw: GL marches one flow layer per frame, and "
+                                                        "this scene has " +
+                                                            std::to_string(scene.flow_layers.size()) +
+                                                            "; draw them with render::render()"});
+    }
+    // The flow inputs GL draws, validated before any pixel, as render() does.
+    for (size_t i = 0; i < scene.flow_polylines.size(); ++i) {
+        if (Result<void> valid = render::validate_flow_polyline(scene.flow_polylines[i]); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::draw: flow polyline " + std::to_string(i) +
+                                                                 ": " + valid.error().context});
+        }
+    }
+    if (Result<void> valid = render::validate_flow_points(scene.flow_points); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+    }
+    GLint max_3d = 0;
+    gl.GetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_3d);
+    const auto fits_3d = [max_3d](const FlowVolumeHeader& h) {
+        return std::max(h.nx, std::max(h.ny, h.nz)) <= static_cast<uint32_t>(std::max(max_3d, 0));
+    };
+    const auto too_big = [max_3d](const char* what, const FlowVolumeHeader& h) {
+        return std::unexpected(Error{Code::unavailable, std::string("GlRenderer::draw: ") + what + " is " +
+                                                            std::to_string(h.nx) + "x" + std::to_string(h.ny) + "x" +
+                                                            std::to_string(h.nz) +
+                                                            " cells, past this device's 3D texture size " +
+                                                            std::to_string(max_3d)});
+    };
+    if (scene.flow_surface_colouring) {
+        if (Result<void> valid = render::validate_flow_surface_colouring(*scene.flow_surface_colouring); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+        }
+        const FlowVolumeHeader& h = scene.flow_surface_colouring->volume->header;
+        if (!fits_3d(h)) return too_big("the surface colouring's volume", h);
+    }
+    if (!scene.flow_layers.empty()) {
+        if (Result<void> valid = render::validate_flow_layer(scene.flow_layers[0]); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::draw: flow layer: " + valid.error().context});
+        }
+        const FlowVolumeHeader& h = scene.flow_layers[0].volume->header;
+        if (!fits_3d(h)) return too_big("the flow layer's volume", h);
     }
     if (s.meshes.size() != scene.meshes.size()) {
         return std::unexpected(Error{Code::invalid_argument,
@@ -1705,6 +2216,48 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     }
     gl.ActiveTexture(GL_TEXTURE0);
     gl.BindTexture(GL_TEXTURE_2D, shadows ? shadow_tex : 0u);
+    // Surface colouring (airflow plan step 7b): the volume's halves as they
+    // are, and the colour maps' table. Integer and unmipmapped textures need
+    // NEAREST to be complete; the shader reads them by texelFetch.
+    render::PreparedTransfer flow_colours;
+    if (scene.flow_surface_colouring) {
+        const render::FlowSurfaceColouring& fc = *scene.flow_surface_colouring;
+        const FlowVolumeHeader& h = fc.volume->header;
+        const auto upload_halves = [&gl, &h](GLuint tex, const std::vector<uint16_t>& halves) {
+            gl.BindTexture(GL_TEXTURE_3D, tex);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16UI, static_cast<GLsizei>(h.nx), static_cast<GLsizei>(h.ny),
+                          static_cast<GLsizei>(h.nz), 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, halves.data());
+        };
+        gl.ActiveTexture(GL_TEXTURE1);
+        upload_halves(s.flow_v_tex, fc.volume->v);
+        gl.ActiveTexture(GL_TEXTURE2);
+        upload_halves(s.flow_s_tex, fc.volume->s);
+        gl.ActiveTexture(GL_TEXTURE3);
+        gl.BindTexture(GL_TEXTURE_2D, s.flow_colour_tex);
+        gl.ActiveTexture(GL_TEXTURE0);
+        flow_colours = render::prepare_transfer(fc.colours, h);
+    }
+    const auto set_flow_uniforms = [&](const Impl::FlowSurfaceUniforms& u) {
+        gl.Uniform1ui(u.on, scene.flow_surface_colouring ? 1u : 0u);
+        if (!scene.flow_surface_colouring) return;
+        const FlowVolumeHeader& h = scene.flow_surface_colouring->volume->header;
+        // raster_cpu's box and sampler, in the same float arithmetic.
+        const glm::vec3 extent(static_cast<float>(h.nx), static_cast<float>(h.ny), static_cast<float>(h.nz));
+        const glm::vec3 box_max = h.origin + extent * h.cell;
+        gl.Uniform1ui(u.quantity, static_cast<GLuint>(flow_colours.tf.quantity));
+        gl.Uniform1ui(u.colour_map, static_cast<GLuint>(flow_colours.tf.colours));
+        gl.Uniform3fv(u.box_min, 1, glm::value_ptr(h.origin));
+        gl.Uniform3fv(u.box_max, 1, glm::value_ptr(box_max));
+        gl.Uniform3fv(u.origin, 1, glm::value_ptr(h.origin));
+        gl.Uniform1f(u.inv_cell, 1.0f / h.cell);
+        gl.Uniform1f(u.range_min, flow_colours.range.min);
+        gl.Uniform1f(u.inv_span, flow_colours.inv_span);
+        gl.Uniform1ui(u.constant, flow_colours.tf.constant_colour ? 1u : 0u);
+        const glm::vec3 constant = flow_colours.tf.constant_colour.value_or(glm::vec3(0.0f));
+        gl.Uniform3fv(u.constant_colour, 1, glm::value_ptr(constant));
+    };
     const auto set_shadow_uniforms = [&](const Impl::ShadowUniforms& u) {
         gl.Uniform1ui(u.enabled, shadows ? 1u : 0u);
         gl.UniformMatrix4fv(u.light_view_proj, 1, GL_FALSE, glm::value_ptr(s.shadow_light_view_proj));
@@ -1764,165 +2317,380 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.DepthMask(GL_TRUE);
     }
 
-    // --- meshes ------------------------------------------------------------
-    gl.Enable(GL_DEPTH_TEST);
-    gl.DepthFunc(GL_LESS);
-    if (wireframe) {
-        // SR-13: wireframe culls nothing, so both windings draw the same edges.
-        gl.Disable(GL_CULL_FACE);
-        gl.PolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    } else {
-        // SR-13: shaded mode culls back faces, as raster_cpu does (velocity
-        // too, through the same CPU function). Front is CCW seen from the
-        // camera, the CPU's edge-function sign, so an outward-wound mesh
-        // loses nothing and an inward-wound one shows its winding bug here.
-        gl.Enable(GL_CULL_FACE);
-        gl.CullFace(GL_BACK);
-        gl.FrontFace(GL_CCW);
-    }
-
-    gl.UseProgram(s.program);
-    gl.UniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-    gl.Uniform1ui(s.u_no_material, render::kNoMaterial);
-    gl.Uniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
-    gl.Uniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
-    gl.Uniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
-    gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
-    gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
-    gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
-    set_shadow_uniforms(s.mesh_shadow);
-    gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
-    gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
-    gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
-    gl.Uniform1f(s.u_horizon_strength, horizon_strength);
-    gl.Uniform1f(s.u_horizon_onset, options.horizon_blend_onset);
-
+    // The opaque passes: meshes, CSG subtrees and field layers. A flow layer
+    // marches to their depth, so it gets them once more, depth only, first.
     uint32_t draw_calls = 0;
-    for (size_t i = 0; i < mesh_count; ++i) {
-        const uint32_t count = s.batch_count[i];
-        if (count == 0u) continue;  // a mesh nothing instances costs nothing
-
-        const GpuMesh& m = s.meshes[i];
-        gl.BindVertexArray(m.vao);
-        gl.Uniform1ui(s.u_instance_base, s.batch_base[i]);
-
-        // ONE DRAW PER SUBMESH, and submeshes exist because materials differ
-        // within a mesh. Still O(meshes x submeshes) and never O(objects),
-        // which is the property the whole module is for.
-        for (size_t sm = 0; sm < m.submesh_first_index.size(); ++sm) {
-            const uint32_t first = m.submesh_first_index[sm];
-            const uint32_t n = m.submesh_index_count[sm];
-            if (n == 0u) continue;
-            gl.Uniform1ui(s.u_submesh_material, m.submesh_material[sm]);
-            gl.DrawElementsInstanced(
-                GL_TRIANGLES, static_cast<GLsizei>(n), GL_UNSIGNED_INT,
-                reinterpret_cast<const void*>(static_cast<uintptr_t>(first) * sizeof(uint32_t)),
-                static_cast<GLsizei>(count));
-            ++draw_calls;
+    const auto draw_opaque = [&]() {
+        // --- meshes ------------------------------------------------------------
+        gl.Enable(GL_DEPTH_TEST);
+        gl.DepthFunc(GL_LESS);
+        if (wireframe) {
+            // SR-13: wireframe culls nothing, so both windings draw the same edges.
+            gl.Disable(GL_CULL_FACE);
+            gl.PolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        } else {
+            // SR-13: shaded mode culls back faces, as raster_cpu does (velocity
+            // too, through the same CPU function). Front is CCW seen from the
+            // camera, the CPU's edge-function sign, so an outward-wound mesh
+            // loses nothing and an inward-wound one shows its winding bug here.
+            gl.Enable(GL_CULL_FACE);
+            gl.CullFace(GL_BACK);
+            gl.FrontFace(GL_CCW);
         }
-    }
-    gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-    // --- CSG subtrees, ray-marched -------------------------------------------
-    // After every mesh, as raster_cpu draws them, depth-tested against them
-    // with the depth each fragment writes. The box's back faces are the
-    // proxy, and depth clamp keeps the parts beyond the far plane, so every
-    // pixel the box covers runs one march.
-    if (march_csg && !scene.materials.empty()) {
-        const Impl::CsgUniforms& cu = s.csg;
+        gl.UseProgram(s.program);
+        gl.UniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+        gl.Uniform1ui(s.u_no_material, render::kNoMaterial);
+        gl.Uniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
+        gl.Uniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
+        gl.Uniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
+        gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
+        gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
+        gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
+        set_shadow_uniforms(s.mesh_shadow);
+        set_flow_uniforms(s.mesh_flow);
+        gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
+        gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
+        gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
+        gl.Uniform1f(s.u_horizon_strength, horizon_strength);
+        gl.Uniform1f(s.u_horizon_onset, options.horizon_blend_onset);
+
+        for (size_t i = 0; i < mesh_count; ++i) {
+            const uint32_t count = s.batch_count[i];
+            if (count == 0u) continue;  // a mesh nothing instances costs nothing
+
+            const GpuMesh& m = s.meshes[i];
+            gl.BindVertexArray(m.vao);
+            gl.Uniform1ui(s.u_instance_base, s.batch_base[i]);
+
+            // ONE DRAW PER SUBMESH, and submeshes exist because materials differ
+            // within a mesh. Still O(meshes x submeshes) and never O(objects),
+            // which is the property the whole module is for.
+            for (size_t sm = 0; sm < m.submesh_first_index.size(); ++sm) {
+                const uint32_t first = m.submesh_first_index[sm];
+                const uint32_t n = m.submesh_index_count[sm];
+                if (n == 0u) continue;
+                gl.Uniform1ui(s.u_submesh_material, m.submesh_material[sm]);
+                gl.DrawElementsInstanced(
+                    GL_TRIANGLES, static_cast<GLsizei>(n), GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(static_cast<uintptr_t>(first) * sizeof(uint32_t)),
+                    static_cast<GLsizei>(count));
+                ++draw_calls;
+            }
+        }
+        gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        // --- CSG subtrees, ray-marched -------------------------------------------
+        // After every mesh, as raster_cpu draws them, depth-tested against them
+        // with the depth each fragment writes. The box's back faces are the
+        // proxy, and depth clamp keeps the parts beyond the far plane, so every
+        // pixel the box covers runs one march.
+        if (march_csg && !scene.materials.empty()) {
+            const Impl::CsgUniforms& cu = s.csg;
+            const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+            const glm::vec3 up = camera.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+            const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+            const auto inv_tan_half_fov =
+                static_cast<float>(1.0 / render::tan32(static_cast<double>(camera.fov_y_radians) * 0.5));
+
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_LESS);
+            gl.DepthMask(GL_TRUE);
+            gl.Enable(GL_CULL_FACE);
+            gl.CullFace(GL_FRONT);
+            gl.FrontFace(GL_CCW);
+            gl.Enable(GL_DEPTH_CLAMP);
+            gl.UseProgram(s.csg_program);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, s.ssbo_csg_nodes);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, s.ssbo_csg_transforms);
+            gl.UniformMatrix4fv(cu.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+            gl.Uniform1f(cu.gradient_step, kSdfGradientStep);
+            gl.Uniform3fv(cu.right, 1, glm::value_ptr(right));
+            gl.Uniform3fv(cu.up, 1, glm::value_ptr(up));
+            gl.Uniform3fv(cu.forward, 1, glm::value_ptr(forward));
+            gl.Uniform1f(cu.inv_tan_half_fov, inv_tan_half_fov);
+            gl.Uniform1f(cu.aspect, aspect);
+            gl.Uniform2f(cu.viewport, static_cast<float>(width), static_cast<float>(height));
+            gl.Uniform1f(cu.near_plane, camera.near_plane);
+            gl.Uniform1f(cu.far_plane, camera.far_plane);
+            gl.Uniform1ui(cu.march_max_steps, render::kRaymarchMaxSteps);
+            gl.Uniform1f(cu.march_epsilon, render::kRaymarchSurfaceEpsilon);
+            gl.Uniform3fv(cu.sun_dir, 1, glm::value_ptr(light.sun_direction));
+            gl.Uniform3fv(cu.sun_color, 1, glm::value_ptr(light.sun_color));
+            gl.Uniform3fv(cu.ambient, 1, glm::value_ptr(light.ambient_color));
+            gl.Uniform1f(cu.sun_intensity, light.sun_intensity);
+            gl.Uniform1ui(cu.mode, static_cast<GLuint>(options.mode));
+            gl.Uniform1f(cu.velocity_scale, options.velocity_scale_mps);
+            gl.Uniform3fv(cu.cam_pos, 1, glm::value_ptr(camera.position));
+            gl.Uniform3fv(cu.sky_zenith, 1, glm::value_ptr(light.sky_zenith));
+            gl.Uniform3fv(cu.sky_horizon, 1, glm::value_ptr(light.sky_horizon));
+            gl.Uniform1f(cu.horizon_strength, horizon_strength);
+            gl.Uniform1f(cu.horizon_onset, options.horizon_blend_onset);
+            set_shadow_uniforms(s.csg_shadow);
+            set_flow_uniforms(s.csg_flow);
+            gl.BindVertexArray(s.empty_vao);
+            for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+                const render::CsgSubtree& sub = scene.csg_subtrees[i];
+                const GpuCsgSubtree& g = s.csg_subtrees[i];
+                const render::DrawItem& item = scene.statics[sub.draw_item];
+                // The draw item's material, as draw_csg_subtrees() resolves it.
+                const uint32_t wanted = item.material_override != render::kNoMaterial ? item.material_override : 0u;
+                const uint32_t material = wanted < scene.materials.size() ? wanted : 0u;
+                gl.Uniform3fv(cu.box_min, 1, glm::value_ptr(sub.bounds.min));
+                gl.Uniform3fv(cu.box_max, 1, glm::value_ptr(sub.bounds.max));
+                gl.Uniform1ui(cu.node_base, g.node_base);
+                gl.Uniform1ui(cu.node_count, g.node_count);
+                gl.Uniform1ui(cu.transform_base, g.transform_base);
+                gl.Uniform1ui(cu.material, material);
+                gl.Uniform1f(cu.speed, item.speed_mps);
+                gl.DrawArrays(GL_TRIANGLES, 0, 36);
+                ++draw_calls;
+            }
+            gl.Disable(GL_DEPTH_CLAMP);
+            gl.CullFace(GL_BACK);
+        }
+
+        // --- field layers ------------------------------------------------------
+        // Filled in every raster mode, because a layer is data. Depth-tested
+        // against the meshes, culling nothing, so both sides draw.
+        if (!scene.field_layers.empty()) {
+            s.field_colours.clear();
+            for (const render::FieldLayer& layer : scene.field_layers) {
+                const float top = render::resolved_range_max(layer);
+                for (const float value : layer.values) {
+                    s.field_colours.emplace_back(render::field_cell_colour(layer.colour_map, value, top), 1.0f);
+                }
+            }
+            upload_in_place(gl, s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);
+            gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_field_colours);
+
+            gl.Disable(GL_CULL_FACE);
+            gl.UseProgram(s.field_program);
+            gl.UniformMatrix4fv(s.field.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+            gl.BindVertexArray(s.empty_vao);
+            GLuint base = 0;
+            for (const render::FieldLayer& layer : scene.field_layers) {
+                gl.Uniform3fv(s.field.center, 1, glm::value_ptr(layer.center));
+                gl.Uniform3fv(s.field.right, 1, glm::value_ptr(layer.right));
+                gl.Uniform3fv(s.field.up, 1, glm::value_ptr(layer.up));
+                gl.Uniform2f(s.field.size, layer.width, layer.height);
+                gl.Uniform2ui(s.field.cells, layer.cells_u, layer.cells_v);
+                gl.Uniform1ui(s.field.cell_base, base);
+                const GLuint cells = layer.cells_u * layer.cells_v;
+                gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
+                base += cells;
+            }
+        }
+
+    };
+    if (!scene.flow_layers.empty()) {
+        // The caller's depth may be a renderbuffer, which no shader can read
+        // (airflow plan §7.1), so the march reads this copy.
+        if (s.flow_depth_width != width || s.flow_depth_height != height) {
+            gl.BindTexture(GL_TEXTURE_2D, s.flow_depth_tex);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, static_cast<GLsizei>(width),
+                          static_cast<GLsizei>(height), 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+            gl.BindTexture(GL_TEXTURE_2D, 0);
+            s.flow_depth_width = width;
+            s.flow_depth_height = height;
+        }
+        GLint prev_draw = 0, prev_read = 0;
+        gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+        gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, s.flow_depth_fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, s.flow_depth_tex, 0);
+        gl.DrawBuffer(GL_NONE);
+        gl.ReadBuffer(GL_NONE);
+        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+            const GLfloat far_depth = 1.0f;
+            gl.DepthMask(GL_TRUE);
+            gl.ClearBufferfv(GL_DEPTH, 0, &far_depth);
+            draw_opaque();
+        }
+        gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
+        gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
+        draw_calls = 0;  // the frame's own passes count; the copy does not
+    }
+    draw_opaque();
+
+    // --- flow layer (render/flow_render.hpp) ----------------------------------
+    // After the opaque passes, as raster_cpu's draw_flow_layers(). Depth test
+    // ALWAYS: the march clips itself to the opaque depth, and every pixel's
+    // depth is written, the iso's where one is opaque and the old one
+    // elsewhere. Blending makes C + T * behind.
+    if (!scene.flow_layers.empty()) {
+        const render::FlowLayer& layer = scene.flow_layers[0];
+        const render::PreparedFlowLayer prepared = render::prepare_flow_layer(layer, &scene.lighting);
+        const FlowVolumeHeader& h = layer.volume->header;
+        const auto upload_halves = [&gl, &h](GLuint tex, const std::vector<uint16_t>& halves) {
+            gl.BindTexture(GL_TEXTURE_3D, tex);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16UI, static_cast<GLsizei>(h.nx), static_cast<GLsizei>(h.ny),
+                          static_cast<GLsizei>(h.nz), 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, halves.data());
+        };
+        gl.ActiveTexture(GL_TEXTURE1);
+        upload_halves(s.flow_v_tex, layer.volume->v);
+        gl.ActiveTexture(GL_TEXTURE2);
+        upload_halves(s.flow_s_tex, layer.volume->s);
+        gl.ActiveTexture(GL_TEXTURE3);
+        gl.BindTexture(GL_TEXTURE_2D, s.flow_colour_tex);
+        gl.ActiveTexture(GL_TEXTURE4);
+        gl.BindTexture(GL_TEXTURE_2D, s.flow_depth_tex);
+        gl.ActiveTexture(GL_TEXTURE0);
+
+        // The prepared transfers and isos as kFlowVolumeFragmentSrc reads them.
+        std::array<float, 320> params{};
+        const auto pack_transfer = [&params](size_t b, const render::PreparedTransfer& t) {
+            params[b + 0] = static_cast<float>(static_cast<uint32_t>(t.tf.quantity));
+            params[b + 1] = static_cast<float>(static_cast<uint32_t>(t.tf.colours));
+            params[b + 2] = t.tf.constant_colour ? 1.0f : 0.0f;
+            params[b + 3] = t.range.min;
+            params[b + 4] = t.inv_span;
+            const size_t n = std::min(t.tf.extinction.size(), render::kMaxExtinctionPoints);
+            params[b + 5] = static_cast<float>(n);
+            if (t.tf.constant_colour) {
+                params[b + 8] = t.tf.constant_colour->r;
+                params[b + 9] = t.tf.constant_colour->g;
+                params[b + 10] = t.tf.constant_colour->b;
+            }
+            for (size_t i = 0; i < n; ++i) {
+                params[b + 12 + 2 * i] = t.tf.extinction[i].value;
+                params[b + 13 + 2 * i] = t.tf.extinction[i].sigma;
+            }
+            for (size_t i = 0; i < t.extinction_inv_width.size(); ++i) {
+                params[b + 28 + i] = t.extinction_inv_width[i];
+            }
+        };
+        static_assert(render::kMaxFlowTransfers == 4 && render::kMaxIsoSurfaces == 4 &&
+                      render::kMaxExtinctionPoints == 8);
+        const size_t n_transfers = std::min(prepared.transfers.size(), render::kMaxFlowTransfers);
+        const size_t n_isos = std::min(prepared.isos.size(), render::kMaxIsoSurfaces);
+        for (size_t k = 0; k < n_transfers; ++k) {
+            pack_transfer(36 * k, prepared.transfers[k]);
+        }
+        for (size_t k = 0; k < n_isos; ++k) {
+            const render::PreparedIso& iso = prepared.isos[k];
+            const size_t b = 144 + 44 * k;
+            params[b + 0] = static_cast<float>(static_cast<uint32_t>(iso.quantity));
+            params[b + 1] = iso.value;
+            params[b + 2] = iso.opacity;
+            params[b + 3] = iso.coloured_by ? 1.0f : 0.0f;
+            params[b + 4] = iso.colour.r;
+            params[b + 5] = iso.colour.g;
+            params[b + 6] = iso.colour.b;
+            if (iso.coloured_by) pack_transfer(b + 8, iso.colour_by);
+        }
+
         const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
         const glm::vec3 up = camera.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
         const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
         const auto inv_tan_half_fov =
             static_cast<float>(1.0 / render::tan32(static_cast<double>(camera.fov_y_radians) * 0.5));
-
+        const Impl::FlowLayerUniforms& u = s.flow_layer;
         gl.Enable(GL_DEPTH_TEST);
-        gl.DepthFunc(GL_LESS);
+        gl.DepthFunc(GL_ALWAYS);
         gl.DepthMask(GL_TRUE);
         gl.Enable(GL_CULL_FACE);
         gl.CullFace(GL_FRONT);
         gl.FrontFace(GL_CCW);
         gl.Enable(GL_DEPTH_CLAMP);
-        gl.UseProgram(s.csg_program);
-        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, s.ssbo_csg_nodes);
-        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 7, s.ssbo_csg_transforms);
-        gl.UniformMatrix4fv(cu.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-        gl.Uniform1f(cu.gradient_step, kSdfGradientStep);
-        gl.Uniform3fv(cu.right, 1, glm::value_ptr(right));
-        gl.Uniform3fv(cu.up, 1, glm::value_ptr(up));
-        gl.Uniform3fv(cu.forward, 1, glm::value_ptr(forward));
-        gl.Uniform1f(cu.inv_tan_half_fov, inv_tan_half_fov);
-        gl.Uniform1f(cu.aspect, aspect);
-        gl.Uniform2f(cu.viewport, static_cast<float>(width), static_cast<float>(height));
-        gl.Uniform1f(cu.near_plane, camera.near_plane);
-        gl.Uniform1f(cu.far_plane, camera.far_plane);
-        gl.Uniform1ui(cu.march_max_steps, render::kRaymarchMaxSteps);
-        gl.Uniform1f(cu.march_epsilon, render::kRaymarchSurfaceEpsilon);
-        gl.Uniform3fv(cu.sun_dir, 1, glm::value_ptr(light.sun_direction));
-        gl.Uniform3fv(cu.sun_color, 1, glm::value_ptr(light.sun_color));
-        gl.Uniform3fv(cu.ambient, 1, glm::value_ptr(light.ambient_color));
-        gl.Uniform1f(cu.sun_intensity, light.sun_intensity);
-        gl.Uniform1ui(cu.mode, static_cast<GLuint>(options.mode));
-        gl.Uniform1f(cu.velocity_scale, options.velocity_scale_mps);
-        gl.Uniform3fv(cu.cam_pos, 1, glm::value_ptr(camera.position));
-        gl.Uniform3fv(cu.sky_zenith, 1, glm::value_ptr(light.sky_zenith));
-        gl.Uniform3fv(cu.sky_horizon, 1, glm::value_ptr(light.sky_horizon));
-        gl.Uniform1f(cu.horizon_strength, horizon_strength);
-        gl.Uniform1f(cu.horizon_onset, options.horizon_blend_onset);
-        set_shadow_uniforms(s.csg_shadow);
+        gl.Enable(GL_BLEND);
+        gl.BlendEquation(GL_FUNC_ADD);
+        gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
+        gl.UseProgram(s.flow_program);
+        gl.UniformMatrix4fv(u.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+        gl.Uniform3fv(u.box_min, 1, glm::value_ptr(prepared.box.min));
+        gl.Uniform3fv(u.box_max, 1, glm::value_ptr(prepared.box.max));
+        gl.Uniform3fv(u.cam_pos, 1, glm::value_ptr(camera.position));
+        gl.Uniform3fv(u.right, 1, glm::value_ptr(right));
+        gl.Uniform3fv(u.up, 1, glm::value_ptr(up));
+        gl.Uniform3fv(u.forward, 1, glm::value_ptr(forward));
+        gl.Uniform1f(u.inv_tan_half_fov, inv_tan_half_fov);
+        gl.Uniform1f(u.aspect, aspect);
+        gl.Uniform2f(u.viewport, static_cast<float>(width), static_cast<float>(height));
+        gl.Uniform1f(u.near_plane, camera.near_plane);
+        gl.Uniform1f(u.far_plane, camera.far_plane);
+        gl.Uniform1f(u.proj22, proj[2][2]);
+        gl.Uniform1f(u.proj32, proj[3][2]);
+        gl.Uniform1f(u.step, prepared.step);
+        gl.Uniform1f(u.inv_step, prepared.inv_step);
+        gl.Uniform1ui(u.transfer_count, static_cast<GLuint>(n_transfers));
+        gl.Uniform1ui(u.iso_count, static_cast<GLuint>(n_isos));
+        gl.Uniform3fv(u.sun_dir, 1, glm::value_ptr(light.sun_direction));
+        gl.Uniform3fv(u.sun_color, 1, glm::value_ptr(light.sun_color));
+        gl.Uniform3fv(u.ambient, 1, glm::value_ptr(light.ambient_color));
+        gl.Uniform1f(u.sun_intensity, light.sun_intensity);
+        gl.Uniform4fv(u.params, static_cast<GLsizei>(params.size() / 4u), params.data());
+        gl.Uniform3fv(u.origin, 1, glm::value_ptr(h.origin));
+        gl.Uniform1f(u.inv_cell, prepared.sampler.inv_cell);
         gl.BindVertexArray(s.empty_vao);
-        for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
-            const render::CsgSubtree& sub = scene.csg_subtrees[i];
-            const GpuCsgSubtree& g = s.csg_subtrees[i];
-            const render::DrawItem& item = scene.statics[sub.draw_item];
-            // The draw item's material, as draw_csg_subtrees() resolves it.
-            const uint32_t wanted = item.material_override != render::kNoMaterial ? item.material_override : 0u;
-            const uint32_t material = wanted < scene.materials.size() ? wanted : 0u;
-            gl.Uniform3fv(cu.box_min, 1, glm::value_ptr(sub.bounds.min));
-            gl.Uniform3fv(cu.box_max, 1, glm::value_ptr(sub.bounds.max));
-            gl.Uniform1ui(cu.node_base, g.node_base);
-            gl.Uniform1ui(cu.node_count, g.node_count);
-            gl.Uniform1ui(cu.transform_base, g.transform_base);
-            gl.Uniform1ui(cu.material, material);
-            gl.Uniform1f(cu.speed, item.speed_mps);
-            gl.DrawArrays(GL_TRIANGLES, 0, 36);
-            ++draw_calls;
-        }
+        gl.DrawArrays(GL_TRIANGLES, 0, 36);
+        gl.BindVertexArray(0);
+        gl.Disable(GL_BLEND);
+        gl.BlendFunc(GL_ONE, GL_ZERO);
         gl.Disable(GL_DEPTH_CLAMP);
         gl.CullFace(GL_BACK);
+        gl.DepthFunc(GL_LESS);
     }
 
-    // --- field layers ------------------------------------------------------
-    // Filled in every raster mode, because a layer is data. Depth-tested
-    // against the meshes, culling nothing, so both sides draw.
-    if (!scene.field_layers.empty()) {
-        s.field_colours.clear();
-        for (const render::FieldLayer& layer : scene.field_layers) {
-            const float top = render::resolved_range_max(layer);
-            for (const float value : layer.values) {
-                s.field_colours.emplace_back(render::field_cell_colour(layer.colour_map, value, top), 1.0f);
+    // --- streamlines and tracers (render/flow_lines.hpp) -----------------------
+    // As raster_cpu's draw_flow_lines(): after the field layers, before the
+    // overlays, depth-tested and written, unlit, with no depth bias. Each
+    // segment's two vertices carry the mean of its ends' colours, so GL draws
+    // the CPU's flat segment colour; tracers are GL_POINTS of size_px.
+    // draw() validated them before any pixel.
+    if (!scene.flow_polylines.empty() || !scene.flow_points.positions.empty()) {
+        std::vector<float>& v = s.overlay_vertices;
+        v.clear();
+        // Colours go up as raster_cpu's own bytes (to_byte, then /255), which
+        // GL's float-to-unorm8 conversion returns exactly. An arbitrary float
+        // near a rounding boundary can land a level apart on the two paths.
+        const auto push = [&v](const glm::vec3& p, const glm::vec3& c) {
+            v.insert(v.end(), {p.x, p.y, p.z, static_cast<float>(render::to_byte(c.r)) / 255.0f,
+                               static_cast<float>(render::to_byte(c.g)) / 255.0f,
+                               static_cast<float>(render::to_byte(c.b)) / 255.0f});
+        };
+        for (const render::FlowPolyline& line : scene.flow_polylines) {
+            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+                push(line.points[i], c);
+                push(line.points[i + 1u], c);
             }
         }
-        upload_in_place(gl, s.ssbo_field_colours, s.field_colours_capacity, s.field_colours);
-        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_field_colours);
-
-        gl.Disable(GL_CULL_FACE);
-        gl.UseProgram(s.field_program);
-        gl.UniformMatrix4fv(s.field.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-        gl.BindVertexArray(s.empty_vao);
-        GLuint base = 0;
-        for (const render::FieldLayer& layer : scene.field_layers) {
-            gl.Uniform3fv(s.field.center, 1, glm::value_ptr(layer.center));
-            gl.Uniform3fv(s.field.right, 1, glm::value_ptr(layer.right));
-            gl.Uniform3fv(s.field.up, 1, glm::value_ptr(layer.up));
-            gl.Uniform2f(s.field.size, layer.width, layer.height);
-            gl.Uniform2ui(s.field.cells, layer.cells_u, layer.cells_v);
-            gl.Uniform1ui(s.field.cell_base, base);
-            const GLuint cells = layer.cells_u * layer.cells_v;
-            gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
-            base += cells;
+        const auto line_vertices = static_cast<GLsizei>(v.size() / 6u);
+        for (size_t i = 0; i < scene.flow_points.positions.size(); ++i) {
+            push(scene.flow_points.positions[i], scene.flow_points.colours[i]);
         }
+        const auto point_vertices = static_cast<GLsizei>(v.size() / 6u) - line_vertices;
+        gl.BindBuffer(GL_ARRAY_BUFFER, s.overlay_vbo);
+        if (v.size() > s.overlay_capacity) {
+            gl.BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(),
+                          GL_STREAM_DRAW);
+            s.overlay_capacity = v.size();
+        } else {
+            gl.BufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data());
+        }
+        gl.BindBuffer(GL_ARRAY_BUFFER, 0);
+        gl.Enable(GL_DEPTH_TEST);
+        gl.DepthFunc(GL_LESS);
+        gl.DepthMask(GL_TRUE);
+        gl.Disable(GL_CULL_FACE);
+        gl.UseProgram(s.overlay_program);
+        gl.UniformMatrix4fv(s.overlay.view, 1, GL_FALSE, glm::value_ptr(view));
+        gl.UniformMatrix4fv(s.overlay.proj, 1, GL_FALSE, glm::value_ptr(proj));
+        gl.Uniform1f(s.overlay.depth_bias, 0.0f);
+        gl.BindVertexArray(s.overlay_vao);
+        if (line_vertices > 0) gl.DrawArrays(GL_LINES, 0, line_vertices);
+        if (point_vertices > 0) {
+            gl.PointSize(static_cast<GLfloat>(scene.flow_points.size_px));
+            gl.DrawArrays(GL_POINTS, line_vertices, point_vertices);
+            gl.PointSize(1.0f);
+        }
+        gl.BindVertexArray(0);
     }
 
     // --- overlays ------------------------------------------------------------

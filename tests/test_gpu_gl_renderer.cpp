@@ -18,9 +18,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -48,6 +50,8 @@
 #include "world/sdf.hpp"
 #include "world/builder.hpp"
 #include "render_gl/gl_renderer.hpp"
+
+#include "flow_synthetic.hpp"
 
 namespace {
 
@@ -1113,46 +1117,419 @@ TEST_F(GpuGlRenderer, RefusesAnEmptyOrUnattachedCsgSubtree) {
     }
 }
 
-// L6: GL has no flow-volume pass yet (airflow visualization plan step 7),
-// so a scene with a flow layer is refused, never drawn without it.
-TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
+// L6: GL marches one flow layer per frame. The demo's layer carries all its
+// transfers and iso-surfaces, so it needs only one. More is refused, never
+// drawn as fewer.
+TEST_F(GpuGlRenderer, RefusesMoreThanOneFlowLayer) {
     RenderScene scene = slab_scene();
     ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    const spade::FlowVolume volume;
-    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {spade::render::TransferFunction{}}, {}});
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 0.25f, 8, 8, 8,
+                                                                   spade::test::uniform_flow(glm::vec3(1.0f, 0.0f, 0.0f)));
+    spade::render::TransferFunction speed;
+    speed.extinction = {{0.0f, 1.0f}, {2.0f, 1.0f}};
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
     const spade::Result<void> drew =
         renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "a flow layer GL cannot draw must be refused";
+    ASSERT_FALSE(drew.has_value()) << "a second flow layer GL cannot draw must be refused";
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
-// L6: nor does GL draw streamlines or tracers yet (plan step 7).
-TEST_F(GpuGlRenderer, RefusesFlowLinesAndPointsUntilItsPassLands) {
-    RenderScene scene = slab_scene();
-    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    RenderScene lines = scene;
-    lines.flow_polylines.push_back(spade::render::FlowPolyline{{glm::vec3(0.0f), glm::vec3(1.0f)},
-                                                               {glm::vec3(1.0f), glm::vec3(1.0f)}});
-    const auto drew = renderer_->draw(lines, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "streamlines GL cannot draw must be refused";
-    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
-    RenderScene points = scene;
-    points.flow_points.positions = {glm::vec3(0.0f)};
-    points.flow_points.colours = {glm::vec3(1.0f)};
-    const auto dotted = renderer_->draw(points, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(dotted.has_value()) << "tracers GL cannot draw must be refused";
-    EXPECT_EQ(dotted.error().code, spade::Code::unavailable);
+// Per channel, between two frames: the largest difference in levels, how
+// many pixels differ at all, and how many by more than two levels.
+struct ChannelDiff {
+    int worst = 0;
+    size_t differing = 0;
+    size_t over_two = 0;
+};
+[[nodiscard]] ChannelDiff channel_diff(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    ChannelDiff d;
+    for (size_t p = 0; p < kPixels; ++p) {
+        int m = 0;
+        for (size_t c = 0; c < 3; ++c) m = std::max(m, std::abs(int{a[p * 4u + c]} - int{b[p * 4u + c]}));
+        d.worst = std::max(d.worst, m);
+        d.differing += m > 0 ? 1u : 0u;
+        d.over_two += m > 2 ? 1u : 0u;
+    }
+    return d;
+}
+
+// The flow goldens' camera, 2.2 m out on +z, and an opaque quad over the left
+// half at z = -0.2, through the ring, where the march must stop.
+[[nodiscard]] Camera camera_on_ring() {
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
+    return camera;
+}
+[[nodiscard]] RenderScene ring_cut_scene() {
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.2f, -1.2f, -0.2f), glm::vec3(0.0f, -1.2f, -0.2f), glm::vec3(0.0f, 1.2f, -0.2f),
+                      glm::vec3(-1.2f, 1.2f, -0.2f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{.base_color = glm::vec4(0.3f, 0.35f, 0.4f, 1.0f)}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    return scene;
+}
+
+// Airflow visualization plan step 7c: GL marches a flow layer as the CPU
+// does. The flow_vortex_ring golden's layer: vorticity through inferno with a
+// ramped extinction, and the dye as smoke, 32^3, through the cut quad.
+TEST_F(GpuGlRenderer, FlowVolumeMatchesTheCpuWithinItsBand) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}, {}});
+    RenderScene bare = scene;
+    bare.flow_layers.clear();
+    const Camera camera = camera_on_ring();
+
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw flow layers now";
+    const size_t marched = count_differing(cpu, cpu_bare);
+    ASSERT_GT(marched, kPixels / 10u) << "the volume must reach a good part of the frame";
+    const ChannelDiff d = channel_diff(cpu, gl);
+    RecordProperty("marched_pixels", static_cast<int>(marched));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow volume ] %zu px marched; worst %d levels, %zu pixels differ; on %s\n", marched, d.worst,
+                d.differing, device.c_str());
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): of 3986 marched pixels, 3134 differ, by at most
+    // two levels. GLSL's exp() for exp32(), float order in the sums, and the
+    // framebuffer's blend in place of the CPU's to_byte() rounding.
+    constexpr int kBandWorstLevels = 2;
+    constexpr size_t kBandDifferingPixels = 3134;
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// The flow_vortex_ring_q golden's layer: the Q iso at 30% of its peak,
+// coloured by speed and lit, 64^3, through the cut quad. A streamline along x
+// through the tube's cores tests the iso's depth: the lines pass is
+// depth-tested against it on both paths.
+TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    const float q_hat_peak = volume.header.channel_max[spade::kFlowQHat];
+    ASSERT_GT(q_hat_peak, 0.0f);
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * q_hat_peak;  // sqrt(0.3): Q at 30% of its peak
+    q_iso.colour_by = speed;
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    spade::render::FlowPolyline line;
+    for (int i = 0; i <= 30; ++i) {
+        line.points.push_back(glm::vec3(-1.5f + 0.1f * static_cast<float>(i), 0.0f, 0.0f));
+        line.colours.push_back(glm::vec3(1.0f));
+    }
+    scene.flow_polylines.push_back(line);
+    RenderScene bare = scene;
+    bare.flow_layers.clear();
+    const Camera camera = camera_on_ring();
+
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw iso-surfaces now";
+    const size_t marched = count_differing(cpu, cpu_bare);
+    ASSERT_GT(marched, kPixels / 20u) << "the iso-surface must reach the frame";
+    const ChannelDiff d = channel_diff(cpu, gl);
+    RecordProperty("marched_pixels", static_cast<int>(marched));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow iso ] %zu px marched; worst %d levels, %zu over two; %zu pixels differ; on %s\n", marched,
+                d.worst, d.over_two, d.differing, device.c_str());
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): 693 pixels differ, 674 of them by one or two
+    // levels. The other 19 are the CPU line rasterizer's known gaps along the
+    // streamline (rendering 07-status; fixed on rendering/line-gaps): GL draws
+    // the line's pixel where the CPU skipped it. Every iso pixel is within two
+    // levels, and the line hides behind the iso on both. When this branch
+    // sits on line-gaps, re-measure: over two should fall to 0.
+    constexpr size_t kBandOverTwoPixels = 19;
+    constexpr size_t kBandDifferingPixels = 693;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// Whether an opt-in gate is set, as test_core_fp16.cpp asks it.
+[[nodiscard]] bool env_gate_is_set(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name) != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// Plan step 7c's cost: a flow layer at 128^3, drawn at 1920x1080, against
+// the airflow spec section 5 budget of 2 to 4 ms. A measurement, so opt-in
+// (SPADE_GL_FLOW_COST=1; about 17 s, most of it building the volume). Each
+// frame's time (draw() to glFinish(), median of 8 after 2 warm-ups) includes
+// uploading the volume's 32 MB of halves, as a live run does every frame.
+// Measured 2026-10-12 on the RTX 3060 Ti (572.83), two runs with the box
+// under different load: volume 165 and 108 ms, iso 83 and 51 ms. About 5 ms
+// of that is the upload, the depth copy and the rest of the frame (march
+// skipped, measured). The march is 25 to 40 times the budget; the lead has
+// it. The ceiling only catches a pass gone pathological.
+TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
+    if (!env_gate_is_set("SPADE_GL_FLOW_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_FLOW_COST=1 to run it";
+    }
+    constexpr int kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kW, kH);
+
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 128.0f, 128, 128, 128,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+
+    RenderScene volume_scene = ring_cut_scene();
+    volume_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}, {}});
+    RenderScene iso_scene = ring_cut_scene();
+    iso_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const auto median_ms = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        std::vector<double> ms;
+        for (int i = 0; i < 10; ++i) {
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> drew =
+                renderer_->draw(scene, camera_on_ring(), comparable_options(), static_cast<uint32_t>(kW),
+                                static_cast<uint32_t>(kH));
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(drew.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[3] + ms[4]);
+    };
+    const double volume_ms = median_ms(volume_scene);
+    const double iso_ms = median_ms(iso_scene);
+    RecordProperty("volume_ms_x100", static_cast<int>(volume_ms * 100.0));
+    RecordProperty("iso_ms_x100", static_cast<int>(iso_ms * 100.0));
+    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms, iso %.2f ms; on %s\n", volume_ms, iso_ms,
+                device.c_str());
+    EXPECT_LT(volume_ms, 1000.0) << device;
+    EXPECT_LT(iso_ms, 1000.0) << device;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
+// Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
+// Lines as GL_LINES, each segment in the mean of its ends' colours; points as
+// squares of size_px. Depth-tested against the ground. Lines rasterize by
+// different rules on the two paths, so a pixel may sit one pixel apart; the
+// colours are flat and must match exactly. A miss is a flow pixel on one path
+// with no flow pixel of the same colour within 1 px on the other: the
+// overlay band's measure. Both counts are measured and pinned (03-verification).
+TEST_F(GpuGlRenderer, FlowLinesAndPointsMatchTheCpuWithinTheirBand) {
+    RenderScene scene = make_ground_scene();
+    // Five helical streamlines over the ground, coloured along their length,
+    // and tracers along a rake; some dip below the ground and are hidden.
+    for (int k = 0; k < 5; ++k) {
+        spade::render::FlowPolyline line;
+        for (int i = 0; i <= 40; ++i) {
+            const float s = static_cast<float>(i) / 40.0f;
+            const float a = 6.0f * s + 1.3f * static_cast<float>(k);
+            line.points.push_back(glm::vec3(-2.0f + 4.0f * s, 0.6f + 0.4f * static_cast<float>(k) * 0.3f + 0.5f * std::sin(a),
+                                            -1.0f + 0.5f * std::cos(a) + 0.3f * static_cast<float>(k)));
+            line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+        }
+        scene.flow_polylines.push_back(std::move(line));
+    }
+    for (int i = 0; i < 9; ++i) {
+        scene.flow_points.positions.push_back(glm::vec3(-1.6f + 0.4f * static_cast<float>(i), 1.4f, 0.4f));
+        scene.flow_points.colours.push_back(glm::vec3(0.95f));
+    }
+    scene.flow_points.size_px = 3;
+    RenderScene bare = scene;
+    bare.flow_polylines.clear();
+    bare.flow_points = {};
+    const Camera camera = camera_over_ground();
+
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_off = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(bare, comparable_options(), camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u) << "GL must draw streamlines and tracers now";
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+
+    std::vector<uint8_t> cpu_flow(kPixels), gl_flow(kPixels);
+    size_t cpu_count = 0, gl_count = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        cpu_flow[p] = static_cast<uint8_t>(same_pixel(cpu_on, cpu_off, p) ? 0 : 1);
+        gl_flow[p] = static_cast<uint8_t>(same_pixel(gl_on, gl_off, p) ? 0 : 1);
+        cpu_count += cpu_flow[p];
+        gl_count += gl_flow[p];
+    }
+    ASSERT_GT(cpu_count, 200u) << "the CPU frame must hold streamlines and tracers";
+
+    const auto misses = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& a_mask,
+                           const std::vector<uint8_t>& b, const std::vector<uint8_t>& b_mask) {
+        size_t n = 0;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+                if (a_mask[p] == 0u) continue;
+                bool found = false;
+                for (int dy = -1; dy <= 1 && !found; ++dy) {
+                    for (int dx = -1; dx <= 1 && !found; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= kWidth || ny >= kHeight) continue;
+                        const size_t q = static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx);
+                        found = b_mask[q] != 0u && a[p * 4u] == b[q * 4u] && a[p * 4u + 1u] == b[q * 4u + 1u] &&
+                                a[p * 4u + 2u] == b[q * 4u + 2u];
+                    }
+                }
+                if (!found) ++n;
+            }
+        }
+        return n;
+    };
+    const size_t cpu_misses = misses(cpu_on, cpu_flow, gl_on, gl_flow);
+    const size_t gl_misses = misses(gl_on, gl_flow, cpu_on, cpu_flow);
+    RecordProperty("cpu_flow_pixels", static_cast<int>(cpu_count));
+    RecordProperty("gl_flow_pixels", static_cast<int>(gl_count));
+    RecordProperty("cpu_misses", static_cast<int>(cpu_misses));
+    RecordProperty("gl_misses", static_cast<int>(gl_misses));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow lines ] CPU %zu px, %zu miss; GL %zu px, %zu miss; on %s\n", cpu_count, cpu_misses, gl_count,
+                gl_misses, device.c_str());
+    // Measured 2026-10-12 on rendering/gl-flow-lines, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 10 of the CPU's 279
+    // flow pixels miss, and 59 of GL's 374. GL's misses are the CPU line
+    // rasterizer's known gaps (rendering 07-status; fixed on
+    // rendering/line-gaps): GL draws a pixel where the CPU skipped one. With
+    // that fix applied (a local probe), 11 of the CPU's 409 and 4 of GL's 374.
+    // So re-measure, and narrow this band, when this branch sits on
+    // line-gaps. Colours go to GL as the CPU's own bytes; without that, about
+    // 7% of pixels split one level apart in rounding.
+    constexpr size_t kBandCpuMisses = 10;
+    constexpr size_t kBandGlMisses = 59;
+    EXPECT_LE(cpu_misses, kBandCpuMisses) << device;
+    EXPECT_LE(gl_misses, kBandGlMisses) << device;
 }
 
 // L6: nor surface colouring by a flow quantity (plan step 7).
-TEST_F(GpuGlRenderer, RefusesFlowSurfaceColouringUntilItsPassLands) {
-    RenderScene scene = slab_scene();
-    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    const spade::FlowVolume volume;
-    scene.flow_surface_colouring = spade::render::FlowSurfaceColouring{&volume, spade::render::TransferFunction{}};
-    const auto drew = renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "a surface colouring GL cannot draw must be refused";
-    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+TEST_F(GpuGlRenderer, SurfaceColouringMatchesTheCpuWithinItsBand) {
+    // Airflow plan step 7b: the C_p view on GL. A quad facing the camera at
+    // z = 0 inside a volume holding p = 2x - y + 0.5z (dyadic: f16 holds it
+    // exactly), coloured by pressure through cool-warm over [-2, 2]. GL colours
+    // each fragment at its own world point; the CPU rebuilds the point from
+    // depth. Compared per channel over the frame. A corner of the volume is
+    // no-data (NaN), where both keep the shaded colour: GL tests the half's
+    // bit pattern, not the driver's NaN.
+    const spade::FlowVolume volume =
+        spade::test::make_flow_volume(glm::vec3(-1.0f, -2.0f, -1.0f), 0.25f, 8, 16, 8, [](glm::vec3 p) {
+            spade::test::FlowChannels c{};
+            c[spade::kFlowPressure] = p.x > 0.5f && p.y > 0.5f ? std::numeric_limits<float>::quiet_NaN()
+                                                                : 2.0f * p.x - p.y + 0.5f * p.z;
+            return c;
+        });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -2.0f;
+    colours.range_max = 2.0f;
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.5f, -1.5f, 0.0f), glm::vec3(1.5f, -1.5f, 0.0f), glm::vec3(1.5f, 1.5f, 0.0f),
+                      glm::vec3(-1.5f, 1.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    RenderScene coloured = scene;
+    coloured.flow_surface_colouring = spade::render::FlowSurfaceColouring{&volume, colours};
+
+    const std::vector<uint8_t> cpu = cpu_rgba(coloured, camera_on_plus_z(), comparable_options());
+    const std::vector<uint8_t> cpu_plain = cpu_rgba(scene, camera_on_plus_z(), comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(coloured);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw surface colouring now";
+    const size_t coloured_pixels = count_differing(cpu, cpu_plain);
+    ASSERT_GT(coloured_pixels, kPixels / 10u) << "the colouring must change a good part of the frame";
+    int worst = 0;
+    size_t differing = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        int d = 0;
+        for (size_t c = 0; c < 3; ++c) d = std::max(d, std::abs(int{cpu[p * 4u + c]} - int{gl[p * 4u + c]}));
+        worst = std::max(worst, d);
+        differing += d > 0 ? 1u : 0u;
+    }
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    RecordProperty("coloured_pixels", static_cast<int>(coloured_pixels));
+    RecordProperty("worst_levels", worst);
+    RecordProperty("differing_pixels", static_cast<int>(differing));
+    std::printf("[ surface colouring ] %zu px coloured; worst %d levels, %zu pixels differ; on %s\n", coloured_pixels,
+                worst, differing, device.c_str());
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): of 2305 coloured pixels, 861 differ, each by one
+    // level. GL reaches the point by the fragment's interpolated world
+    // position; the CPU rebuilds it from depth. Before the no-data corner, a
+    // probe that rounded GL's colour as to_byte() does left 681 of 874, so
+    // the point, not the byte conversion, is most of it. One level is
+    // invisible in a C_p view.
+    constexpr int kBandWorstLevels = 1;
+    constexpr size_t kBandDifferingPixels = 861;
+    EXPECT_LE(worst, kBandWorstLevels) << device;
+    EXPECT_LE(differing, kBandDifferingPixels) << device;
 }
 
 // validate()'s own code comes through: a program needing more stack than
