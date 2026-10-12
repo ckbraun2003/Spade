@@ -35,7 +35,9 @@ const glm::vec3 kForward(0.0f, 0.0f, -1.0f);
     spade::SdfPose pose;
     pose.position = at;
     for (const ed::LibraryItem& item : ed::builtin_library()) {
-        if (item.name == "box") EXPECT_TRUE(ed::place(doc, item, pose).has_value());
+        if (item.name == "box") {
+            EXPECT_TRUE(ed::place(doc, item, pose).has_value());
+        }
     }
     return doc.desc();
 }
