@@ -124,11 +124,11 @@ struct CavityResult {
                 "visc_sweeps 8, rho 1, U 1\n"
                 "measure: max |u - u_Ghia| on x = 0.5 = %.4f\n"
                 "reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (plan A Task 11, spec §11.2, fixed before the first run)\n"
+                "tolerance: <= %.2f (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
                 "verdict: %s\n"
                 "measure: %s = %.4f\n"
                 "reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (plan A Task 11, spec §11.2, fixed before the first run)\n"
+                "tolerance: <= %.2f (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
                 "verdict: %s\n",
                 re, n, n, path_line().c_str(), n, n, re, t_end, steps, static_cast<double>(cfg.h), r.u_error,
                 tolerance, verdict(r.u_error <= tolerance), v_quantity.c_str(), r.v_error, tolerance,
@@ -263,7 +263,7 @@ TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {
                 "h = %.6f, n_v 2, %u steps\n"
                 "measure: axial velocity on the axis 2R below the disc, mean of the last %u steps = %.4f m/s\n"
                 "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
-                "tolerance: within 10%% (plan A Task 11, spec §11.2, fixed before the first run)\n"
+                "tolerance: within 10%% (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
                 "verdict: %s\n",
                 path_line().c_str(), static_cast<double>(disc.thrust), static_cast<double>(cfg.h), steps, window,
                 measured, expected, verdict(within));
