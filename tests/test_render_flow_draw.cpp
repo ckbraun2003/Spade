@@ -66,14 +66,12 @@ TEST(RenderFlowDraw, APolylineDrawsAlongItsProjectionInItsColours) {
     RenderScene scene;
     scene.flow_polylines.push_back(red_line(0.0f));
     const Frame got = draw(scene);
-    // KNOWN DEFECT (07-status, raised with the lead 2026-10-06): the shared
-    // rasterizeLine() truncates its step count, so a segment 11.4 pixels
-    // long advances 1.04 pixels a step and skips a column (here column 16).
-    // Overlays and wireframe share it. Until the fix lands, at least 9 of
-    // these 10 columns; then all 10.
+    // Every one of the 10 columns the line crosses. rasterizeLine() once
+    // truncated its step count and skipped column 16 here (rendering/
+    // line-gaps, fixed: it steps ceil(max(|dx|, |dy|)) times).
     uint32_t red = 0;
     for (uint32_t x = 12; x <= 21; ++x) red += got.rgb(x, 16) == glm::vec3(255.0f, 0.0f, 0.0f) ? 1u : 0u;
-    EXPECT_GE(red, 9u);
+    EXPECT_EQ(red, 10u);
     for (uint32_t y = 0; y < kH; ++y) {
         for (uint32_t x = 0; x < kW; ++x) {
             if (got.rgb(x, y) == glm::vec3(255.0f, 0.0f, 0.0f)) {
