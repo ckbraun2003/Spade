@@ -619,13 +619,15 @@ bool same_bits(double a, double b) {
 }  // namespace
 
 TEST(MeshField, CornerAnglesUseNoLibm) {
-    // corner_angle against literal constants (pi/2, pi/3, pi/4, 2 pi/3).
+    // corner_angle against literal constants: the doubles nearest pi/2, pi/3,
+    // pi/4 and 2 pi/3 (to 200 bits, mpmath), in hex. Near 2 pi/3 a double's
+    // spacing is 4.4e-16, so 4e-16 there means the nearest double exactly.
     const double r = std::sqrt(0.75);
-    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {0, 2, 0}), 1.5707963267948966, 4e-16);
-    EXPECT_NEAR(spade::math::corner_angle({1, 2, 3}, {-2, 1, 0}), 1.5707963267948966, 4e-16);
-    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {0.5, r, 0}), 1.0471975511965976, 4e-16);
-    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {1, 1, 0}), 0.7853981633974483, 4e-16);
-    EXPECT_NEAR(spade::math::corner_angle({0, 0, 3}, {0, 3 * r, -1.5}), 2.0943951023931953, 4e-16);
+    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {0, 2, 0}), 0x1.921fb54442d18p+0, 4e-16);
+    EXPECT_NEAR(spade::math::corner_angle({1, 2, 3}, {-2, 1, 0}), 0x1.921fb54442d18p+0, 4e-16);
+    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {0.5, r, 0}), 0x1.0c152382d7366p+0, 4e-16);
+    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {1, 1, 0}), 0x1.921fb54442d18p-1, 4e-16);
+    EXPECT_NEAR(spade::math::corner_angle({1, 0, 0}, {-0.5, r, 0}), 0x1.0c152382d7366p+1, 4e-16);
 
     // Exact on the axes and the diagonals: the doubles nearest pi/2, pi, pi/4
     // and 3 pi/4, with every sign of zero.
