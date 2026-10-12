@@ -26,13 +26,13 @@ using spade::VelocityGradient;
 constexpr double kPi = 3.14159265358979323846;
 
 // The bands, each against the double-precision answer and over the scale
-// its test names. Red: a priori, about four float epsilons; pinned at green
-// from the measured worst (each test prints it).
-constexpr double kPinnedLambOseen = 5e-7;
-constexpr double kPinnedRandom = 5e-7;
-constexpr double kPinnedSweeps = 5e-7;
-constexpr double kPinnedSweepsMiddle = 5e-7;  // lambda2's own eigenvalue
-constexpr uint64_t kPinnedDigest = 0;  // pinned at green, from MSVC
+// its test names, measured 2026-10-12 on MSVC (each test prints its worst)
+// and pinned with headroom. gcc must give the same bits (the digest).
+constexpr double kPinnedLambOseen = 1e-7;      // measured 4.97e-8
+constexpr double kPinnedRandom = 2e-7;         // measured 9.0e-8
+constexpr double kPinnedSweeps = 3e-7;         // measured 1.94e-7 from 3 sweeps on
+constexpr double kPinnedSweepsMiddle = 3e-7;   // lambda2's own eigenvalue: the same
+constexpr uint64_t kPinnedDigest = 0x8F870E7D8C0F6973ull;
 
 // A deterministic generator, the same on every compiler (std's
 // distributions are not).
@@ -266,6 +266,9 @@ TEST(CoreLambda2, MatchesADoublePrecisionSolveOnRandomGradients) {
 // scales. Each is rounded to float and then solved with 1 to 8 sweeps;
 // the error is the worst of the three eigenvalues against the double solve
 // of the same float matrix, over the largest eigenvalue's magnitude.
+// Measured 2026-10-12: 1 sweep 6.8e-2, 2 sweeps 3.7e-4, and 3 to 8 sweeps
+// 1.94e-7, float's own rounding (1.6 epsilon). kLambda2Sweeps = 6 is twice
+// what this needs, and costs about 60 flops a sweep.
 TEST(CoreLambda2, SixSweepsConvergeOnNearDegenerateEigenvalues) {
     struct Pattern {  // eigenvalue k is base[k] + step[k] * delta
         double base[3];
