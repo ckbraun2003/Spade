@@ -17,9 +17,13 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -92,6 +96,47 @@ struct LibraryItem {
     primitive("sphere", SdfPrim::sphere, glm::vec4(0.5f, 0.0f, 0.0f, 0.0f));
     primitive("cylinder", SdfPrim::cylinder, glm::vec4(0.5f, 0.5f, 0.0f, 0.0f));
     primitive("capsule", SdfPrim::capsule, glm::vec4(0.25f, 0.25f, 0.0f, 0.0f));
+    return out;
+}
+
+// ---- the scene picker (SL13; editor plan Task 11) ----
+
+// A scene the editor can open: a built-in scene file (assets/scenes/), a
+// test scenario once composer task 5 converts them to scene files (none
+// until then), or a scene the user saved.
+struct SceneSource {
+    enum class Kind { builtin, test_scenario, saved };
+    Kind kind = Kind::builtin;
+    std::string name;  // the file's name without ".scene.yaml"
+    std::filesystem::path file;
+};
+
+namespace detail {
+
+// The *.scene.yaml files directly in `dir`, by name; none for a folder that
+// does not exist (a saved folder is made by the first save).
+inline void add_scene_files(std::vector<SceneSource>& out, const std::filesystem::path& dir, SceneSource::Kind kind) {
+    constexpr std::string_view kSuffix = ".scene.yaml";
+    std::vector<SceneSource> found;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string file = it->path().filename().string();
+        if (!it->is_regular_file(ec) || !file.ends_with(kSuffix)) continue;
+        found.push_back(SceneSource{kind, file.substr(0, file.size() - kSuffix.size()), it->path()});
+    }
+    std::sort(found.begin(), found.end(), [](const SceneSource& a, const SceneSource& b) { return a.name < b.name; });
+    out.insert(out.end(), found.begin(), found.end());
+}
+
+}  // namespace detail
+
+// The picker's list: the built-in scenes of `assets`/scenes/, then the
+// scenes saved in `saved_dir`, each by name.
+[[nodiscard]] inline std::vector<SceneSource> scene_sources(const std::filesystem::path& assets,
+                                                            const std::filesystem::path& saved_dir) {
+    std::vector<SceneSource> out;
+    detail::add_scene_files(out, assets / "scenes", SceneSource::Kind::builtin);
+    if (!saved_dir.empty()) detail::add_scene_files(out, saved_dir, SceneSource::Kind::saved);
     return out;
 }
 
