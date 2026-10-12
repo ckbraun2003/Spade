@@ -629,6 +629,7 @@ add_library(spade_physics STATIC
     physics/airflow/pressure.cpp
     physics/airflow/multigrid.cpp
     physics/airflow/projection.cpp
+    physics/airflow/advect.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
 set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)
