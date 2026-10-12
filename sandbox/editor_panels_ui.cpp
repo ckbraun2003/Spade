@@ -170,6 +170,13 @@ void toolbar(ed::EditorPanels& p) {
     press("Undo", ed::Command::undo, p.can_undo);
     press("Redo", ed::Command::redo, p.can_redo);
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
+    // The gizmo: its tool (W, E) and snapping (Ctrl flips it while held).
+    if (ImGui::RadioButton("Move", p.tool == ed::GizmoTool::move)) p.tool = ed::GizmoTool::move;
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Rotate", p.tool == ed::GizmoTool::rotate)) p.tool = ed::GizmoTool::rotate;
+    ImGui::SameLine();
+    ImGui::Checkbox("Snap", &p.snap);
+    ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);
     // The live smoke opens and closes the menu by request, as a click would.
     const bool open_request = p.file_menu.has_value() && *p.file_menu;

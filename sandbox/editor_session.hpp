@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/error.hpp"
@@ -50,6 +51,11 @@ class EditorSession {
     EditorSession() = default;
     [[nodiscard]] Result<void> rebuild_scene();
     void draw_items();
+    // The gizmo's object: the selected asset's pose, or the selected
+    // vehicle's start when no run moves it; none for anything else.
+    [[nodiscard]] std::optional<editor::GizmoPose> gizmo_target() const;
+    // The edit that gives the selection `pose`, its scale and the rest kept.
+    [[nodiscard]] std::optional<editor::SceneEdit> pose_edit(const editor::GizmoPose& pose) const;
 
     std::unique_ptr<editor::EditorWorkspace> workspace_;
     GlTargetSink* sink_ = nullptr;
@@ -60,6 +66,8 @@ class EditorSession {
     uint64_t drawn_composition_ = 0;
     std::unique_ptr<GpuRenderer> gpu_;
     OrbitCamera camera_;
+    std::optional<editor::GizmoDrag> drag_;  // the gizmo's drag, from press to release
+    editor::GizmoHandle hot_;                // the handle under the cursor, or dragged
     std::vector<uint8_t> pixels_;
 };
 

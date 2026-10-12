@@ -219,3 +219,33 @@ TEST(EditorWorkspace, TheFileMenuListsTheBuiltInScenes) {
     });
     EXPECT_TRUE(lists_hover);
 }
+
+// The gizmo's drag: however many poses one drag passes through, it is one
+// undo step; the next drag is a step of its own.
+TEST(EditorWorkspace, OneDragIsOneUndoStep) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = scene_of(*w).vehicles.at(0).name;
+    const auto start = scene_of(*w).vehicles.at(0).start;
+    w->panels().selection = object(quad);
+    for (int i = 1; i <= 3; ++i) {
+        auto moved = start;
+        moved.pos.x += 0.1f * static_cast<float>(i);
+        w->drag(ed::SetVehicleStart{quad, moved});
+    }
+    w->end_drag();
+    const float dragged = quad_start(*w).x;
+    EXPECT_NEAR(dragged, start.pos.x + 0.3f, 1e-6f);
+    command(*w, Command::undo);
+    EXPECT_EQ(quad_start(*w), start.pos);
+    command(*w, Command::redo);
+    EXPECT_EQ(quad_start(*w).x, dragged);
+
+    auto again = start;
+    again.pos.z += 1.0f;
+    w->drag(ed::SetVehicleStart{quad, again});
+    w->end_drag();
+    command(*w, Command::undo);
+    EXPECT_EQ(quad_start(*w).x, dragged);
+    EXPECT_EQ(quad_start(*w).z, start.pos.z);
+}

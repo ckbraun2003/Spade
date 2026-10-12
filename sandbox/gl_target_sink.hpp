@@ -27,7 +27,9 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "editor_gizmo.hpp"
 #include "orbit_camera.hpp"
 #include "target_sink.hpp"
 #include "viewport_rect.hpp"
@@ -191,6 +193,10 @@ class GlTargetSink final : public TargetSink {
     // (render_gap.hpp), or "" for none. Held until replaced, so the
     // application sets it whenever the path or the options can change.
     void set_gap_line(std::string line);
+
+    // The editor's gizmo, as segments in the 3D view's pixels: drawn over the
+    // view and under every panel. Held until replaced; empty draws none.
+    void set_view_lines(std::vector<editor::GizmoLine> lines);
 
     // Attach the builder's model, or nullptr to detach. While attached, the
     // hierarchy and inspector are drawn by WHICHEVER path presents the frame

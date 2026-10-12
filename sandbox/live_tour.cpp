@@ -95,9 +95,9 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 7> kSnapshots = {"editor_picker", "editor_vehicle",  "editor_place",
-                                                        "editor_inspect", "editor_running", "editor_world",
-                                                        "editor_conflict"};
+constexpr std::array<std::string_view, 8> kSnapshots = {"editor_picker",   "editor_vehicle", "editor_place",
+                                                        "editor_gizmo",    "editor_inspect", "editor_running",
+                                                        "editor_world",    "editor_conflict"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -1117,17 +1117,53 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(20);
     });
 
-    // There is no drag in the view yet; the inspector's Position is the move.
+    // The gizmo: the box's x arm dragged as a hand drags it (over the arm,
+    // press, move, release), one undo step.
     t.step("editor", "move", [&] {
         if (!open() || scene_now().assets.empty()) return;
         const scene::SceneAsset box = scene_now().assets[0];
-        SdfPose moved = box.pose;
-        moved.position.z += 1.0f;
-        w().panels().pending.push_back(editor::SetAssetPose{box.name, moved});
-        then(5);
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, box.name};
+        w().panels().tool = editor::GizmoTool::move;
+        then(10);
+        const ViewportRect v = t.sink().viewport();
+        const render::Camera cam = session->camera().to_render_camera();
+        const glm::vec3 x(1.0f, 0.0f, 0.0f);
+        const float arm = editor::gizmo_size(cam, box.pose.position);
+        const std::optional<glm::vec2> from = editor::project(cam, box.pose.position + 0.6f * arm * x, v.width, v.height);
+        const std::optional<glm::vec2> to =
+            editor::project(cam, box.pose.position + (0.6f * arm + 1.0f) * x, v.width, v.height);
+        if (!s.check(from.has_value() && to.has_value(), "handle-in-view", "the x arm and 1 m past it are in view")) {
+            return;
+        }
+        const auto mouse = [](glm::vec2 at, bool click, bool down, bool release) {
+            return [=](int) {
+                FrameInput in;
+                in.mouse_x = at.x;
+                in.mouse_y = at.y;
+                in.left_click = click;
+                in.left_down = down;
+                in.left_release = release;
+                return in;
+            };
+        };
+        t.pump(5, mouse(*from, false, false, false), draw);  // over the arm: it lights
+        t.pump(1, mouse(*from, true, true, false), draw);    // press
+        constexpr int kSteps = 30;
+        for (int i = 1; i <= kSteps; ++i) {
+            const float f = static_cast<float>(i) / static_cast<float>(kSteps);
+            t.pump(1, mouse(*from + (*to - *from) * f, false, true, false), draw);
+            if (i == kSteps / 2) t.snapshot("editor_gizmo");
+        }
+        t.pump(1, mouse(*to, false, false, true), draw);  // release
         const scene::SceneAsset* now = editor::EditorWorkspace::find_asset(scene_now(), box.name);
-        s.check(now != nullptr && now->pose.position == moved.position, "pose-changed",
-                "z " + fmt(box.pose.position.z) + " -> " + fmt(now != nullptr ? now->pose.position.z : 0.0f));
+        const glm::vec3 d = now != nullptr ? now->pose.position - box.pose.position : glm::vec3(0.0f);
+        s.check(now != nullptr && std::abs(d.x - 1.0f) < 0.05f && d.y == 0.0f && d.z == 0.0f, "drags-along-x",
+                "moved " + fmt(d.x) + " m along x, " + fmt(d.y) + " in y, " + fmt(d.z) + " in z");
+        command(editor::Command::undo);
+        const scene::SceneAsset* back = editor::EditorWorkspace::find_asset(scene_now(), box.name);
+        s.check(back != nullptr && back->pose.position == box.pose.position, "one-undo",
+                "one undo puts the whole drag back");
+        command(editor::Command::redo);
         then(20);
     });
 

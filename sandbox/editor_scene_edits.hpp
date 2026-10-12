@@ -321,15 +321,17 @@ inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
                                [&](std::string_view n) { return detail::model_taken(s, n); });
 }
 
-// Applies `edit` to the document's scene and commits it. A refusal, from the
-// edit or from validate_scene(), leaves the document unchanged and says why;
-// an edit that changes nothing (a rename to the same name) commits nothing.
-[[nodiscard]] inline Result<void> apply(SceneDocument& doc, const SceneEdit& edit) {
+// Applies `edit` to the document's scene and commits it, or with `amend`
+// amends the current state in place (Document::amend, a drag's later poses).
+// A refusal, from the edit or from validate_scene(), leaves the document
+// unchanged and says why; an edit that changes nothing (a rename to the same
+// name) commits nothing.
+[[nodiscard]] inline Result<void> apply(SceneDocument& doc, const SceneEdit& edit, bool amend = false) {
     scene::SceneDesc next = doc.desc();
     const Result<bool> changed = std::visit([&](const auto& e) { return detail::change(next, e); }, edit);
     if (!changed) return std::unexpected(changed.error());
     if (!*changed) return {};
-    return doc.commit(std::move(next));
+    return amend ? doc.amend(std::move(next)) : doc.commit(std::move(next));
 }
 
 }  // namespace spade::sandbox::editor

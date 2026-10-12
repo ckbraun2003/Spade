@@ -62,6 +62,21 @@ class Document {
         return {};
     }
 
+    // Validates `next` and makes it current in place of the current state,
+    // with a new serial and no history step: a gizmo drag commits its first
+    // pose and amends it with every pose after, so the whole drag undoes at
+    // once. On a refusal nothing changes.
+    [[nodiscard]] Result<void> amend(Desc next) {
+        if (validate_) {
+            if (Result<void> ok = validate_(next); !ok) {
+                return std::unexpected(ok.error());
+            }
+        }
+        redo_.clear();
+        current_ = Entry{std::move(next), ++last_serial_};
+        return {};
+    }
+
     // False when there is nothing to undo.
     bool undo() {
         if (undo_.empty()) return false;

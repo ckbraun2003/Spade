@@ -217,6 +217,20 @@ void draw_view_image(GLuint texture, const ViewportRect& r, bool bottom_up) {
                                              bottom_up ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f));
 }
 
+// The gizmo's lines over the 3D view: on the same background list as its
+// image and after it, so over the scene and under every panel.
+void draw_view_lines(const std::vector<editor::GizmoLine>& lines, const ViewportRect& r) {
+    const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    const float sx = scale.x > 0.0f ? scale.x : 1.0f;
+    const float sy = scale.y > 0.0f ? scale.y : 1.0f;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    for (const editor::GizmoLine& g : lines) {
+        const ImVec2 a((static_cast<float>(r.x) + g.a.x) / sx, (static_cast<float>(r.y) + g.a.y) / sy);
+        const ImVec2 b((static_cast<float>(r.x) + g.b.x) / sx, (static_cast<float>(r.y) + g.b.y) / sy);
+        dl->AddLine(a, b, ui::axis_colour(g.axis, g.hot), g.hot ? 3.0f : 2.0f);
+    }
+}
+
 // The folder holding this executable, where the build puts the UI font. Not
 // the working directory: the sandbox is launched from anywhere.
 std::filesystem::path executable_dir() {
@@ -301,6 +315,8 @@ struct GlTargetSink::Impl {
     bool del_was_down = false;
     bool dup_was_down = false;
     bool frame_was_down = false;  // F
+    bool w_was_down = false;      // W, the gizmo's move tool
+    bool e_was_down = false;      // E, its rotate tool
     bool level_was_down = false;  // R
     bool view_was_down = false;   // V
     // Non-owning. The application owns the model and outlives the sink;
@@ -311,6 +327,8 @@ struct GlTargetSink::Impl {
 
     // What the active path does not draw ("" for none); see set_gap_line().
     std::string gap_line;
+    // The editor's gizmo, in the view's pixels; see set_view_lines().
+    std::vector<editor::GizmoLine> view_lines;
 
     // The docked layout last built, rebuilt when the scene on screen changes
     // panels (the live smoke tours several scenes in one window), and whether
@@ -599,9 +617,20 @@ FrameInput GlTargetSink::poll() {
         // same frame -- a shortcut that quietly does a second thing.
         const bool ctrl = glfwGetKey(impl_->window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
                           glfwGetKey(impl_->window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
-        in.move_forward = held(GLFW_KEY_W) - held(GLFW_KEY_S);
-        in.move_right = (ctrl ? 0.0f : held(GLFW_KEY_D)) - held(GLFW_KEY_A);
-        in.move_up = held(GLFW_KEY_E) - held(GLFW_KEY_Q);
+        // In the editor, as in Unity and Unreal, WASD/QE fly the camera only
+        // while the right button is held; with it up, W and E pick the
+        // gizmo's tool. Elsewhere they always fly.
+        const bool fly = impl_->editor == nullptr || rdown;
+        in.move_forward = fly ? held(GLFW_KEY_W) - held(GLFW_KEY_S) : 0.0f;
+        in.move_right = fly ? (ctrl ? 0.0f : held(GLFW_KEY_D)) - held(GLFW_KEY_A) : 0.0f;
+        in.move_up = fly ? held(GLFW_KEY_E) - held(GLFW_KEY_Q) : 0.0f;
+        const bool w_key = !fly && held(GLFW_KEY_W) > 0.0f;
+        in.tool_move_pressed = w_key && !impl_->w_was_down;
+        impl_->w_was_down = w_key;
+        const bool e_key = !fly && held(GLFW_KEY_E) > 0.0f;
+        in.tool_rotate_pressed = e_key && !impl_->e_was_down;
+        impl_->e_was_down = e_key;
+        in.snap_held = ctrl;
         // EDGE-TRIGGERED, not level. glfwGetKey reports the key as HELD for
         // every frame it is down, so a level test would fire ~60 times per
         // press and the overlay could only ever end up in one state. This is
@@ -699,6 +728,7 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     // ImGui already has a textured-quad pipeline and it is already verified.
     // The image was rendered at the view's size and goes in the view (§13).
     draw_view_image(impl_->texture, viewport(), false);
+    draw_view_lines(impl_->view_lines, viewport());
 
     draw_overlay();
 
@@ -866,6 +896,9 @@ void GlTargetSink::draw_overlay() {
                                       ui::joined({"click select", "library item, click places", "F frames", "Del removes",
                                                   "Ctrl+D duplicates"})
                                           .c_str());
+                        ui::value_row("gizmo", "%s",
+                                      ui::joined({"drag a handle", "W move", "E rotate", "Ctrl snaps"}).c_str());
+                        ui::value_row("fly", "%s", ui::joined({"hold right", "WASD, Q/E"}).c_str());
                     }
                 }
                 ui::value_row("window", "%s", ui::joined({"F1 hide", "F2 reset layout", "Esc quit"}).c_str());
@@ -1197,6 +1230,14 @@ void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
 #endif
 }
 
+void GlTargetSink::set_view_lines(std::vector<editor::GizmoLine> lines) {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->view_lines = std::move(lines);
+#else
+    (void)lines;
+#endif
+}
+
 void GlTargetSink::set_gap_line(std::string line) {
 #if SPADE_SANDBOX_HAS_GL
     impl_->gap_line = std::move(line);
@@ -1376,6 +1417,7 @@ void GlTargetSink::present_overlay(float render_ms, float physics_ms) {
         draw_view_image(impl_->view_color,
                         ViewportRect{viewport().x, viewport().y, impl_->view_fbo_width, impl_->view_fbo_height}, true);
     }
+    draw_view_lines(impl_->view_lines, viewport());
     draw_overlay();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
