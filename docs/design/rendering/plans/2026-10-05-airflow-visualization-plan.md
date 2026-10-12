@@ -173,6 +173,26 @@ Step 6 (plan A's feed, Physics' Task 8b) goes in whenever 8b lands; the demo nee
 - **D1:** recorded frames from the CPU `render()`.
 - **D2:** live frames in the sandbox once 7a–7c land.
 
+### 7.2 The march's cost (2026-10-12; `RND-7`)
+
+Measured at `bfa459c`: at 128³ and 1920×1080 on the RTX 3060 Ti, the volume view takes 108–165 ms and the Q iso 51–83 ms. With the march skipped, the volume upload, the depth copy and the rest of the frame take about 5 ms. So the march is 25 to 40 times §5's 2–4 ms. The lead ruled A, then B:
+
+- **7e. Exact empty-space skipping (A).**
+  - **Brick ranges:** each frame, a compute pass reduces the volume to bricks of 8³ cells: each channel's min and max over the brick plus a one-cell apron (every cell a sample inside the brick can read), and whether any of those cells is no-data.
+  - **Empty bricks:** a brick is empty when, over its ranges:
+    - every transfer's extinction is 0 (the piecewise-linear maximum, at the range's ends and the points inside it);
+    - every iso's level lies strictly outside its quantity's range, with no no-data.
+    Speed's range is bounded by the velocity channels' extremes, which is conservative.
+  - **Skipping:** a step whose midpoint falls in an empty brick runs as usual. The march then jumps to the last step whose midpoint is still in that brick, and runs it as usual too. The steps between can neither emit, absorb nor cross an iso. Running the run's first and last steps keeps every iso's previous sample, sign and t exactly the CPU's. Steps stay `t_start + i·h` by multiplication.
+  - **The result:** every frame is the one the unskipped march gives, so the 7c bands hold unchanged. A test pins this: skipping on and off must produce identical frames.
+  - **Measurement:** cost on the synthetic ring, and on a real rotor wake (Physics' TGV or disc test) once Task 8b publishes one.
+- **7f. A live-only reduced march (B).**
+  - **The setting:** a quality setting of Full, Half or Auto, where Auto picks the largest scale that holds the frame budget. At Half, the march runs at half resolution against a downsampled copy of the opaque depth, then upsamples depth-aware over the frame.
+  - **Announced (L6):** whenever the scale is below Full, the run line or HUD says "live view at ½ res". This announcement is Interface's to show; GL reports the scale it used.
+  - **Full resolution kept:** bands, recorded frames and "quality" frames are always Full.
+- **C** (hardware trilinear on float textures, with a no-data mask) stays in reserve. It reverses §7.1's raw-halves rule, so it comes back to the lead with numbers if A and B fall short.
+- **The cold shader compile** (about 13 s once per driver cache) shows in the UI as "compiling flow shaders…", and may be warmed at startup when an airflow scene is open. Both are Interface's, through a GL query that says whether the flow program is ready.
+
 ## 8. Steps
 
 Each step is red then green, gcc-checked, and reviewed. Goldens wait for `TD-12`.
