@@ -8,11 +8,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_library.hpp"
 #include "editor_test_support.hpp"
 
@@ -152,4 +155,57 @@ TEST(EditorLibrary, TheTemplatesVehicleKindIsQuadrotor) {
     six.rotors.push_back(six.rotors.front());
     six.rotors.push_back(six.rotors.front());
     EXPECT_EQ(ed::vehicle_kind_of(six), "multirotor");
+}
+
+// ---- the scene picker (SL13; editor plan Task 11) ----
+
+// Every scene file in assets/scenes/ is a built-in source, by name, in order.
+TEST(EditorSceneSources, EveryBuiltInSceneFileIsListed) {
+    namespace fs = std::filesystem;
+    const fs::path assets(SPADE_ASSETS_DIR);
+    const std::vector<ed::SceneSource> sources = ed::scene_sources(assets, fs::path());
+    std::vector<std::string> expected;
+    for (const auto& entry : fs::directory_iterator(assets / "scenes")) {
+        const std::string file = entry.path().filename().string();
+        if (file.ends_with(".scene.yaml")) expected.push_back(file.substr(0, file.size() - 11));
+    }
+    std::sort(expected.begin(), expected.end());
+    std::vector<std::string> names;
+    for (const ed::SceneSource& s : sources) {
+        EXPECT_EQ(s.kind, ed::SceneSource::Kind::builtin) << s.name;
+        names.push_back(s.name);
+    }
+    EXPECT_EQ(names, expected);
+    EXPECT_FALSE(names.empty());
+}
+
+// A scene saved in the saved folder is listed after the built-ins; anything
+// that is not a scene file is not.
+TEST(EditorSceneSources, ASavedSceneIsListedAsSaved) {
+    const support::TempDir tmp;
+    const std::filesystem::path copy = support::mirror({std::filesystem::path(SPADE_ASSETS_DIR), support::hover_scene()},
+                                                       tmp.path());
+    support::write_bytes(copy.parent_path() / "notes.txt", "not a scene");
+    const std::vector<ed::SceneSource> sources =
+        ed::scene_sources(std::filesystem::path(SPADE_ASSETS_DIR), copy.parent_path());
+    ASSERT_FALSE(sources.empty());
+    const ed::SceneSource& last = sources.back();
+    EXPECT_EQ(last.kind, ed::SceneSource::Kind::saved);
+    EXPECT_EQ(last.name, "hover");
+    EXPECT_EQ(last.file, copy);
+    for (const ed::SceneSource& s : sources) EXPECT_NE(s.name, "notes") << s.file;
+}
+
+TEST(EditorSceneSources, EachListedSceneOpens) {
+    for (const ed::SceneSource& s : ed::scene_sources(std::filesystem::path(SPADE_ASSETS_DIR), {})) {
+        const spade::Result<ed::OpenedScene> opened = ed::open_scene(s.file);
+        EXPECT_TRUE(opened.has_value()) << s.file << ": " << (opened ? "" : opened.error().context);
+    }
+}
+
+// A saved folder that does not exist yet lists nothing for it, and no error.
+TEST(EditorSceneSources, AMissingSavedFolderListsNoSavedScenes) {
+    const std::vector<ed::SceneSource> sources =
+        ed::scene_sources(std::filesystem::path(SPADE_ASSETS_DIR), std::filesystem::path("no_such_folder_here"));
+    for (const ed::SceneSource& s : sources) EXPECT_NE(s.kind, ed::SceneSource::Kind::saved) << s.file;
 }
