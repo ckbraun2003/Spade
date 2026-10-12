@@ -12,6 +12,7 @@
 
 #include "physics/airflow/advect.hpp"
 #include "physics/airflow/boundaries.hpp"
+#include "physics/airflow/viscous.hpp"
 
 namespace {
 
@@ -134,6 +135,69 @@ TEST(AirflowAdvect, AVelocityFarPastTheGridStaysFinite) {
         for (float x : out.v) ASSERT_TRUE(std::isfinite(x));
         for (float x : out.w) ASSERT_TRUE(std::isfinite(x));
     }
+}
+
+[[nodiscard]] std::vector<float> rhs_for(const MacGrid& g) {
+    return std::vector<float>(std::max({g.u.size(), g.v.size(), g.w.size()}), 0.0f);
+}
+
+TEST(AirflowViscous, WithoutViscosityNothingChanges) {
+    const DomainBc bc = periodic_box();
+    MacGrid g = *make_grid({8, 8, 8, 0.125f}, bc);
+    Lcg rng;
+    for (float& x : g.u) x = rng.next();
+    const MacGrid before = g;
+    std::vector<float> rhs = rhs_for(g);
+    diffuse(g, bc, 0.0f, 0.01f, 8, rhs);
+    EXPECT_EQ(g.u, before.u);
+}
+
+// Plane Couette flow: a wall at rest at y = 0, a wall moving at 1 m/s along x
+// at y = 1. The discrete steady state with the no-slip ghost is exactly
+// linear, u = y.
+TEST(AirflowViscous, CouetteFlowSettlesToALinearProfile) {
+    DomainBc bc = periodic_box();
+    bc.face[kYMinus] = bc.face[kYPlus] = FaceBc::wall;
+    bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
+    MacGrid g = *make_grid({4, 16, 1, 1.0f / 16.0f}, bc);
+    std::vector<float> rhs = rhs_for(g);
+    for (int step = 0; step < 200; ++step) diffuse(g, bc, 1.0f, 1.0f, 50, rhs);
+    for (uint32_t j = 0; j < 16; ++j) {
+        const float expected = (static_cast<float>(j) + 0.5f) / 16.0f;
+        EXPECT_NEAR(g.u[u_index(g.shape, 1, j, 0)], expected, 1.0e-4f) << j;
+    }
+}
+
+// One converged implicit step damps a sine mode by exactly the discrete
+// backward-Euler factor 1 / (1 + 4 alpha sin^2(pi dx / L)).
+TEST(AirflowViscous, ASineModeDecaysAtTheImplicitRate) {
+    const DomainBc bc = periodic_box();
+    const uint32_t n = 32;
+    MacGrid g = *make_grid({4, n, 1, 1.0f / static_cast<float>(n)}, bc);
+    for_each_sample(g.shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        g.u[idx] = static_cast<float>(std::sin(2.0 * std::numbers::pi * x.y));
+    });
+    const std::vector<float> start = g.u;
+    const float nu = 0.5f;
+    const float h = 1.0f / static_cast<float>(n * n);  // alpha = nu h / dx^2 = 0.5
+    std::vector<float> rhs = rhs_for(g);
+    diffuse(g, bc, nu, h, 400, rhs);
+    const double s = std::sin(std::numbers::pi / n);
+    const double factor = 1.0 / (1.0 + 4.0 * 0.5 * s * s);
+    for (std::size_t i = 0; i < start.size(); ++i) {
+        EXPECT_NEAR(g.u[i], static_cast<float>(factor * start[i]), 1.0e-5f) << i;
+    }
+}
+
+TEST(AirflowViscous, AMovingWallDragsTheFluidBesideIt) {
+    DomainBc bc = periodic_box();
+    bc.face[kYMinus] = bc.face[kYPlus] = FaceBc::wall;
+    bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
+    MacGrid g = *make_grid({4, 8, 1, 0.125f}, bc);
+    std::vector<float> rhs = rhs_for(g);
+    diffuse(g, bc, 0.01f, 0.01f, 8, rhs);
+    EXPECT_GT(g.u[u_index(g.shape, 1, 7, 0)], 0.0f) << "the row beside the lid";
+    EXPECT_GT(g.u[u_index(g.shape, 1, 7, 0)], g.u[u_index(g.shape, 1, 6, 0)]);
 }
 
 }  // namespace
