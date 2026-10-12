@@ -25,7 +25,8 @@ struct ProjectionScratch {
     std::vector<float> div;
 };
 
-[[nodiscard]] ProjectionScratch make_projection_scratch(const GridShape& shape);
+// The hierarchy follows the domain's periodic axes (make_multigrid).
+[[nodiscard]] ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc);
 
 void project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s) noexcept;
 

@@ -57,8 +57,9 @@ struct FluidScratch {
     FluidHealth health;             // sticky: once faulted, every later step refuses
 };
 
-// The bytes of a grid and of the scratch its step needs, in 64 bits.
-[[nodiscard]] uint64_t fluid_bytes(const GridShape& shape) noexcept;
+// The bytes of a grid and of the scratch its step needs, in 64 bits (the
+// multigrid's depth follows the domain's periodic axes).
+[[nodiscard]] uint64_t fluid_bytes(const GridShape& shape, const DomainBc& bc) noexcept;
 
 // A closed domain (no pressure outlet) must not take a net prescribed flux
 // through its walls: the outward normal flux of every wall face, summed, must

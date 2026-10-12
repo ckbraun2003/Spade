@@ -120,6 +120,30 @@ TEST(AirflowMultigrid, HalvesEveryParticipatingAxisUntilOneIsTooSmall) {
     EXPECT_EQ(make_multigrid(6, 6, 6).levels.size(), 2u) << "6 -> 3, and 3 is odd";
 }
 
+// The final review's I2 (2026-10-12): a periodic axis is never coarsened to an
+// odd size. On an odd periodic ring the cells either side of the wrap share a
+// colour and are neighbours, so a red-black sweep's result would depend on its
+// order (and a parallel sweep, plan B's, would race). So coarsening stops
+// before a periodic axis would go odd; a non-periodic axis may still end odd.
+TEST(AirflowMultigrid, APeriodicAxisIsNeverCoarsenedToAnOddSize) {
+    for (const std::array<uint32_t, 3>& n :
+         {std::array<uint32_t, 3>{12, 8, 6}, std::array<uint32_t, 3>{16, 16, 16}, std::array<uint32_t, 3>{48, 24, 12},
+          std::array<uint32_t, 3>{20, 20, 20}, std::array<uint32_t, 3>{64, 64, 1}}) {
+        const Multigrid mg = make_multigrid(n[0], n[1], n[2], {true, true, true});
+        uint64_t cells = 0;
+        for (const PoissonLevel& L : mg.levels) {
+            for (const uint32_t m : {L.nx, L.ny, L.nz}) {
+                EXPECT_TRUE(m == 1u || m % 2u == 0u) << n[0] << "x" << n[1] << "x" << n[2] << " has a level of " << m;
+            }
+            cells += uint64_t{L.nx} * L.ny * L.nz;
+        }
+        EXPECT_EQ(multigrid_cells(n[0], n[1], n[2], {true, true, true}), cells);
+    }
+    EXPECT_EQ(make_multigrid(12, 8, 6, {true, true, true}).levels.size(), 1u) << "6 would halve to 3";
+    EXPECT_EQ(make_multigrid(16, 16, 16, {true, true, true}).levels.size(), 4u) << "16, 8, 4, 2";
+    EXPECT_EQ(make_multigrid(12, 8, 6).levels.size(), 2u) << "not periodic: 6 -> 3 as before";
+}
+
 TEST(AirflowMultigrid, OneVCycleCutsTheResidualAtLeastThreefold) {
     for (const std::array<uint32_t, 3>& n : {std::array<uint32_t, 3>{32, 32, 32}, std::array<uint32_t, 3>{64, 64, 1}}) {
         Multigrid mg = make_multigrid(n[0], n[1], n[2]);
@@ -172,7 +196,7 @@ TEST(AirflowProjection, AUniformFlowPassesThroughUntouched) {
     std::fill(g.u.begin(), g.u.end(), 1.5f);
     std::fill(g.v.begin(), g.v.end(), -0.5f);
     const MacGrid before = g;
-    ProjectionScratch s = make_projection_scratch(g.shape);
+    ProjectionScratch s = make_projection_scratch(g.shape, bc);
     project(g, bc, 1.225f, 0.004f, 2, s);
     EXPECT_EQ(g.u, before.u);
     EXPECT_EQ(g.v, before.v);
@@ -188,7 +212,7 @@ TEST(AirflowProjection, MoreCyclesLeaveLessDivergence) {
         randomise(g, 7u);
         apply_velocity_boundaries(g, bc);
         const float before = max_divergence(g);
-        ProjectionScratch s = make_projection_scratch(g.shape);
+        ProjectionScratch s = make_projection_scratch(g.shape, bc);
         project(g, bc, 1.225f, 0.004f, n_v, s);
         const float after = max_divergence(g);
         std::printf("n_v %u: max |div| %.3e -> %.3e\n", n_v, static_cast<double>(before), static_cast<double>(after));
@@ -210,7 +234,7 @@ TEST(AirflowProjection, AClosedBoxStaysFiniteAndItsDivergenceFalls) {
     randomise(g, 11u);
     apply_velocity_boundaries(g, bc);
     const float before = max_divergence(g);
-    ProjectionScratch s = make_projection_scratch(g.shape);
+    ProjectionScratch s = make_projection_scratch(g.shape, bc);
     for (int n = 0; n < 20; ++n) project(g, bc, 1.225f, 0.004f, 2, s);
     for (float x : g.p) ASSERT_TRUE(std::isfinite(x));
     EXPECT_LT(max_divergence(g), 1.0e-3f * before);
@@ -223,7 +247,7 @@ TEST(AirflowProjection, AFaceFollowsTheAmbientEachStep) {
     MacGrid g = *make_grid({8, 4, 4, 0.1f}, bc);
     randomise(g, 3u);
     apply_velocity_boundaries(g, bc);
-    ProjectionScratch s = make_projection_scratch(g.shape);
+    ProjectionScratch s = make_projection_scratch(g.shape, bc);
     project(g, bc, 1.225f, 0.004f, 2, s);
     EXPECT_EQ(g.u[u_index(g.shape, 0, 2, 2)], 1.0f) << "an inflow face is fixed";
     bc.ambient = glm::vec3(-1.0f, 0.0f, 0.0f);  // now x- is an outlet
@@ -244,7 +268,7 @@ TEST(AirflowProjection, AClosedBoxsPressureIsRepeatableWithZeroMean) {
             MacGrid g = *make_grid({16, 16, 16, 0.05f}, bc);
             randomise(g, 11u);
             apply_velocity_boundaries(g, bc);
-            ProjectionScratch s = make_projection_scratch(g.shape);
+            ProjectionScratch s = make_projection_scratch(g.shape, bc);
             for (int n = 0; n < 5; ++n) project(g, bc, 1.225f, 0.004f, 2, s);
             return g.p;
         };

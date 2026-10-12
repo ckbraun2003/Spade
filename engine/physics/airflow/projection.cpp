@@ -33,9 +33,9 @@ void subtract_gradient(uint32_t n, uint32_t m1, uint32_t m2, FaceKind lo, FaceKi
 
 }  // namespace
 
-ProjectionScratch make_projection_scratch(const GridShape& shape) {
+ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc) {
     ProjectionScratch s;
-    s.mg = make_multigrid(shape.nx, shape.ny, shape.nz);
+    s.mg = make_multigrid(shape.nx, shape.ny, shape.nz, periodic_axes(bc));
     s.div.assign(std::size_t{shape.nx} * shape.ny * shape.nz, 0.0f);
     return s;
 }

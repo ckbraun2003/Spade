@@ -96,7 +96,7 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
     return "airflow fluid step: unknown fault";
 }
 
-uint64_t fluid_bytes(const GridShape& s) noexcept {
+uint64_t fluid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
     const uint64_t nx = s.nx;
     const uint64_t ny = s.ny;
     const uint64_t nz = s.nz;
@@ -108,7 +108,7 @@ uint64_t fluid_bytes(const GridShape& s) noexcept {
     const uint64_t floats = (faces + cells)                       // the grid
                             + (faces + cells)                     // next, advection's output
                             + 3u * faces                          // advection's hat, lo and hi
-                            + 3u * multigrid_cells(s.nx, s.ny, s.nz)  // every level's p, b and r
+                            + 3u * multigrid_cells(s.nx, s.ny, s.nz, periodic_axes(bc))  // every level's p, b, r
                             + cells                               // the divergence
                             + std::max({uf, vf, wf})              // the viscous right side
                             + faces;                              // du, dv and dw
@@ -135,7 +135,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (cfg.n_v == 0u) return refuse("n_v must be at least 1");
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) return refuse("visc_sweeps must be at least 1 when nu > 0");
     if (Result<void> ok = check_domain(bc, g.shape); !ok) return std::unexpected(ok.error());
-    if (const uint64_t bytes = fluid_bytes(g.shape); bytes > kGridByteCap) {
+    if (const uint64_t bytes = fluid_bytes(g.shape, bc); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) +
                                                                   " bytes of grid and scratch, past the cap of " +
                                                                   std::to_string(kGridByteCap)});
@@ -143,7 +143,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     FluidScratch s;
     s.next = g;
     s.advect = make_advect_scratch(g.shape);
-    s.projection = make_projection_scratch(g.shape);
+    s.projection = make_projection_scratch(g.shape, bc);
     s.rhs.assign(std::max({g.u.size(), g.v.size(), g.w.size()}), 0.0f);
     s.du.assign(g.u.size(), 0.0f);
     s.dv.assign(g.v.size(), 0.0f);

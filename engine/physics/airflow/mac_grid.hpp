@@ -85,6 +85,13 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
     }
 }
 
+// Per axis, whether the domain wraps there (make_grid refuses an unpaired
+// periodic face, so the minus face decides).
+[[nodiscard]] inline std::array<bool, 3> periodic_axes(const DomainBc& bc) noexcept {
+    return {bc.face[kXMinus] == FaceBc::periodic, bc.face[kYMinus] == FaceBc::periodic,
+            bc.face[kZMinus] == FaceBc::periodic};
+}
+
 // The largest grid make_grid() allocates: the spec's 4 GiB airflow cap (§4.3).
 inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
 

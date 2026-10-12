@@ -132,11 +132,12 @@ TEST(AirflowStep, AFluidScratchPastTheByteCapIsRefusedBeforeAllocating) {
     MacGrid g;
     g.shape = {512, 512, 256, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone
     ASSERT_LE(grid_bytes(g.shape), kGridByteCap) << "the grid alone fits";
-    ASSERT_GT(fluid_bytes(g.shape), kGridByteCap) << "the grid and its scratch do not";
+    ASSERT_GT(fluid_bytes(g.shape, DomainBc{}), kGridByteCap) << "the grid and its scratch do not";
     const auto s = make_fluid_scratch(g, DomainBc{}, {.h = 0.001f});
     ASSERT_FALSE(s.has_value());
     EXPECT_EQ(s.error().code, spade::Code::capacity_exceeded);
-    EXPECT_NE(s.error().context.find(std::to_string(fluid_bytes(g.shape))), std::string::npos) << s.error().context;
+    EXPECT_NE(s.error().context.find(std::to_string(fluid_bytes(g.shape, DomainBc{}))), std::string::npos)
+        << s.error().context;
     EXPECT_NE(s.error().context.find(std::to_string(kGridByteCap)), std::string::npos) << s.error().context;
 }
 

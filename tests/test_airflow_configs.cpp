@@ -20,6 +20,8 @@
 //              bit-identical
 //   cross-check MSVC debug agrees
 //   gcc        the Docker leg (TD-12) on a fresh -NoSeed volume: PENDING
+//   moved      before the gcc leg, by the final review's fixes (2026-10-12):
+//              I2, periodic axes never coarsened to an odd size ("periodic 12x8x6")
 // A change to any value here is a golden regeneration under TD-1, with its
 // reason in the commit.
 #include <gtest/gtest.h>
@@ -73,7 +75,7 @@ struct Config {
     std::vector<Config> out;
     out.push_back({"periodic 16^3", {16, 16, 16, 0.1f}, all(FaceBc::periodic), 0.01f, false, 0xffac53ad3e83e74dull});
     out.push_back(
-        {"periodic 12x8x6, disc", {12, 8, 6, 0.1f}, all(FaceBc::periodic), 0.0f, true, 0xde414c4206641fdbull});
+        {"periodic 12x8x6, disc", {12, 8, 6, 0.1f}, all(FaceBc::periodic), 0.0f, true, 0xe5a602db88c494d9ull});
     {
         DomainBc bc = all(FaceBc::wall);
         bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.2f);
