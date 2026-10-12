@@ -1261,14 +1261,12 @@ TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
     std::printf("[ flow iso ] %zu px marched; worst %d levels, %zu over two; %zu pixels differ; on %s\n", marched,
                 d.worst, d.over_two, d.differing, device.c_str());
     // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
-    // 4.3.0, driver 572.83): 693 pixels differ, 674 of them by one or two
-    // levels. The other 19 are the CPU line rasterizer's known gaps along the
-    // streamline (rendering 07-status; fixed on rendering/line-gaps): GL draws
-    // the line's pixel where the CPU skipped it. Every iso pixel is within two
-    // levels, and the line hides behind the iso on both. When this branch
-    // sits on line-gaps, re-measure: over two should fall to 0.
-    constexpr size_t kBandOverTwoPixels = 19;
-    constexpr size_t kBandDifferingPixels = 693;
+    // 4.3.0, driver 572.83), on master ae57288 (gap-free CPU lines): 674
+    // pixels differ, every one by a single level, and none by more than two.
+    // The line hides behind the iso on both. (Before line-gaps, 19 more
+    // differed: the CPU's gaps along the streamline.)
+    constexpr size_t kBandOverTwoPixels = 0;
+    constexpr size_t kBandDifferingPixels = 674;
     EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
@@ -1451,17 +1449,18 @@ TEST_F(GpuGlRenderer, FlowLinesAndPointsMatchTheCpuWithinTheirBand) {
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     std::printf("[ flow lines ] CPU %zu px, %zu miss; GL %zu px, %zu miss; on %s\n", cpu_count, cpu_misses, gl_count,
                 gl_misses, device.c_str());
-    // Measured 2026-10-12 on rendering/gl-flow-lines, 160x120, on an NVIDIA
-    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 10 of the CPU's 279
-    // flow pixels miss, and 59 of GL's 374. GL's misses are the CPU line
-    // rasterizer's known gaps (rendering 07-status; fixed on
-    // rendering/line-gaps): GL draws a pixel where the CPU skipped one. With
-    // that fix applied (a local probe), 11 of the CPU's 409 and 4 of GL's 374.
-    // So re-measure, and narrow this band, when this branch sits on
-    // line-gaps. Colours go to GL as the CPU's own bytes; without that, about
-    // 7% of pixels split one level apart in rounding.
-    constexpr size_t kBandCpuMisses = 10;
-    constexpr size_t kBandGlMisses = 59;
+    // Measured 2026-10-12 on master ae57288 (gap-free CPU lines), 160x120, on
+    // an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 11 of the
+    // CPU's 409 flow pixels miss, and 4 of GL's 374. Located: all 15 are
+    // streamline pixels in rows 68 to 77, where the helices are densest, and
+    // each has a flow pixel within 1 px on the other path, of another colour.
+    // So coverage agrees; the two paths give a pixel at a segment joint or a
+    // crossing to different segments. The tracers match everywhere. (Before
+    // line-gaps: 10 of 279 and 59 of 374, GL's misses being the CPU's gaps.)
+    // Colours go to GL as the CPU's own bytes; without that, about 7% of
+    // pixels split one level apart in rounding.
+    constexpr size_t kBandCpuMisses = 11;
+    constexpr size_t kBandGlMisses = 4;
     EXPECT_LE(cpu_misses, kBandCpuMisses) << device;
     EXPECT_LE(gl_misses, kBandGlMisses) << device;
 }
