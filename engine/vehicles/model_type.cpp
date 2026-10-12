@@ -1,5 +1,6 @@
 #include "vehicles/model_type.hpp"
 
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -16,10 +17,6 @@
 namespace spade::vehicles {
 namespace {
 
-[[nodiscard]] Error invalid(std::string context) {
-    return Error{Code::invalid_argument, std::move(context)};
-}
-
 // A rotation that can be normalized: finite and of non-zero length. The spawn
 // path normalizes it, so this is exactly the precondition that makes the
 // passes' unit-quaternion requirement hold from the first substep.
@@ -31,27 +28,60 @@ namespace {
     return "rotor " + std::to_string(index) + ": ";
 }
 
+// Whether a part's shape is bounded (CORE-7; the lead's answer of 2026-10-12:
+// an unbounded part is refused, since it would fill half of space). A postfix
+// walk beside SdfProgram's own stack machine: a plane and a heightfield are
+// unbounded, every other primitive is bounded; union and smooth_union are
+// bounded when both operands are, intersect when either is, and subtract
+// ("a minus b") when its left operand `a` is.
+//
+// PRECONDITION: shape.validate() passed, so the program is non-empty, every
+// operator has two operands, and the stack never holds more than kMaxSdfDepth
+// values, as eval()'s does.
+[[nodiscard]] bool bounded(const SdfProgram& shape) noexcept {
+    bool stack[kMaxSdfDepth] = {};
+    uint32_t sp = 0;
+    for (const SdfNode& node : shape.nodes) {
+        if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+            const auto kind = static_cast<SdfPrim>(node.kind);
+            stack[sp++] = kind != SdfPrim::plane && kind != SdfPrim::heightfield;
+            continue;
+        }
+        const bool b = stack[--sp];
+        const bool a = stack[--sp];
+        const auto which = static_cast<SdfOp>(node.op);
+        stack[sp++] = which == SdfOp::intersect ? (a || b) : which == SdfOp::subtract ? a : (a && b);
+    }
+    return sp == 1 && stack[0];
+}
+
 }  // namespace
 
 Result<void> ModelType::validate() const {
     std::vector<ModelIssue> all = issues();
     if (all.empty()) return {};
-    return std::unexpected(invalid(std::move(all.front().message)));
+    ModelIssue& first = all.front();
+    return std::unexpected(Error{first.code, std::move(first.message)});
 }
 
 // THE COLLECT-ALL RULE. Every check runs, in the order validate() has always
 // used, and each problem is listed once. A check that reads a value an earlier
 // check refused, or would divide by or normalize it, is skipped after that
 // refusal, so nothing listed is only an echo of an earlier problem and nothing
-// reads out of range. Today no check depends on another: each reads only its
-// own field, and the element loops walk the vectors themselves, so an
-// over-long element list is listed once and its elements are still checked.
+// reads out of range. Outside the parts no check depends on another: each
+// reads only its own field, and the element loops walk the vectors
+// themselves, so an over-long element list is listed once and its elements
+// are still checked. A part's checks skip after a refusal three times: the
+// rotor index after an unknown attach, the bounded walk after a shape
+// SdfProgram::validate() refuses, and the wall's zero rule after a
+// coefficient that is negative or non-finite.
 std::vector<ModelIssue> ModelType::issues() const {
     using E = ModelIssue::Element;
     std::vector<ModelIssue> out;
-    const auto add = [&out](E element, std::size_t index, const char* field, std::string message) {
+    const auto add = [&out](E element, std::size_t index, const char* field, std::string message,
+                            Code code = Code::invalid_argument) {
         out.push_back(ModelIssue{
-            .element = element, .index = index, .field = field, .message = std::move(message), .code = Code::invalid_argument});
+            .element = element, .index = index, .field = field, .message = std::move(message), .code = code});
     };
 
     if (name.empty()) add(E::model, 0, "name", "model type: name must not be empty");
@@ -174,6 +204,90 @@ std::vector<ModelIssue> ModelType::issues() const {
             !(imu.sigma_bg >= 0.0f) || !finite(imu.sigma_a) || !finite(imu.sigma_g) ||
             !finite(imu.sigma_ba) || !finite(imu.sigma_bg)) {
             add(E::imu_mount, i, "sigma", where + "every sigma must be finite and >= 0");
+        }
+    }
+
+    // --- parts (CORE-7), in PartDesc's field order --------------------------
+    // Each message names the part by index and name, then the field.
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const PartDesc& part = parts[i];
+        const std::string where = at + "part " + std::to_string(i) + " '" + part.name + "': ";
+        const auto refuse = [&](const char* field, const std::string& why, Code code = Code::invalid_argument) {
+            add(E::part, i, field, where + why, code);
+        };
+
+        // name: non-empty, and unique. The later of two equal names is listed.
+        if (part.name.empty()) {
+            refuse("name", "name must not be empty");
+        } else {
+            for (std::size_t j = 0; j < i; ++j) {
+                if (parts[j].name == part.name) {
+                    refuse("name",
+                           "name repeats part " + std::to_string(j) + "'s; a part's name is unique in its model");
+                    break;
+                }
+            }
+        }
+
+        // attach, then rotor, which means something only for a known attach.
+        const bool on_body = part.attach == PartAttach::body;
+        const bool on_rotor = part.attach == PartAttach::rotor;
+        if (!on_body && !on_rotor) {
+            refuse("attach", "attach must be body (0) or rotor (1), found " +
+                                 std::to_string(static_cast<uint32_t>(part.attach)));
+        } else if (on_rotor && part.rotor >= rotors.size()) {
+            refuse("rotor", "rotor " + std::to_string(part.rotor) + " is out of range: the model has " +
+                                std::to_string(rotors.size()) + " rotors");
+        } else if (on_body && part.rotor != 0) {
+            refuse("rotor", "rotor must be 0 on a part attached to the body, found " + std::to_string(part.rotor));
+        }
+
+        // The mount: the body frame, or a rotor part's hub frame.
+        if (!finite(part.mount_pos)) refuse("mount_pos", "mount_pos must be finite");
+        if (!orientable(part.mount_orient)) {
+            refuse("mount_orient", "mount_orient must be finite and have non-zero length");
+        }
+
+        // The shape: present, valid (a depth past kMaxSdfDepth keeps
+        // capacity_exceeded, as validate_scene() does), free of render data,
+        // and bounded.
+        if (part.shape.empty()) {
+            refuse("shape", "shape must not be empty: a part is a solid");
+        } else if (const Result<uint32_t> valid = part.shape.validate(); !valid) {
+            refuse("shape", "shape: " + valid.error().context, valid.error().code);
+        } else {
+            if (!part.shape.node_materials.empty()) {
+                refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid sees "
+                                "is the part's surface");
+            }
+            if (!bounded(part.shape)) {
+                refuse("shape", "shape is unbounded: a plane or a heightfield fills half of space, so bound it "
+                                "inside an intersect or cut it from a bounded shape");
+            }
+        }
+
+        // The surface: a known kind, and coefficients finite and >= 0, both 0
+        // on a wall (Physics, 2026-10-12).
+        const bool wall = part.surface.kind == PartSurface::Kind::wall;
+        if (!wall && part.surface.kind != PartSurface::Kind::porous) {
+            refuse("surface", "surface.kind must be wall (0) or porous (1), found " +
+                                  std::to_string(static_cast<uint32_t>(part.surface.kind)));
+        }
+        const std::pair<const char*, float> coefficients[] = {{"inv_permeability", part.surface.inv_permeability},
+                                                              {"inertial_coeff", part.surface.inertial_coeff}};
+        for (const auto& [label, value] : coefficients) {
+            if (!(value >= 0.0f) || !finite(value)) {
+                refuse("surface", std::string("surface.") + label + " must be finite and >= 0");
+            } else if (wall && value != 0.0f) {
+                refuse("surface", std::string("surface.") + label + " must be 0 on a wall; only a porous part "
+                                                                     "takes coefficients");
+            }
+        }
+
+        // The smallest feature: declared, by the author or the compile.
+        if (!(part.min_feature > 0.0f) || !finite(part.min_feature)) {
+            refuse("min_feature", "min_feature must be finite and > 0 (m): the smallest feature the fluid grid "
+                                  "must resolve (CORE-8 D5)");
         }
     }
     return out;
