@@ -27,18 +27,31 @@ using spade::Code;
     return s ? s->models.at(0) : spade::vehicles::ModelType{};
 }
 
+// A wall part: a 1 cm sphere declaring `feature` as its smallest feature.
+[[nodiscard]] spade::vehicles::PartDesc ball(std::string name, float feature) {
+    spade::vehicles::PartDesc p;
+    p.name = std::move(name);
+    p.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(0.01f, 0.0f, 0.0f, 0.0f);
+    p.shape.nodes = {n};
+    p.min_feature = feature;
+    return p;
+}
+
 // A case with every section filled, pinned to `m`.
 [[nodiscard]] an::AnalysisCase full_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
     c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m)};
     c.controls = an::Controls{.armed = true, .throttle = 0.55f, .pitch_deg = -5.0f, .roll_deg = 2.5f, .yaw_deg = 0.0f};
-    c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 4.0f, .floor_height = 0.5f};
+    c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 4.0f, .heading_deg = 10.0f, .floor_height = 0.5f};
     c.grid = an::GridSetup{.box = 3.2f, .spacing = 0.025f, .nests = 2};
     for (std::size_t i = 0; i < m.rotors.size(); ++i) c.rotors.push_back(an::RotorSetup{an::RotorModel::line, "5x4"});
     an::BladeDefinition b;
     b.name = "5x4";
     b.blade_count = 2;
-    b.radius = m.rotors.at(0).radius;
     b.hub_radius = 0.01f;
     b.collective_deg = 1.5f;
     b.stations = {an::BladeStation{0.2f, 0.012f, 22.0f, "clarky"}, an::BladeStation{0.6f, 0.016f, 12.5f, "clarky"},
@@ -49,7 +62,7 @@ using spade::Code;
     a.source = "XFOIL 6.99, Re 1e5, Ncrit 9";
     a.polars = {an::Polar{100000.0f, {-10.0f, 0.0f, 10.0f}, {-0.6f, 0.35f, 1.2f}, {0.03f, 0.012f, 0.05f}}};
     c.airfoils = {a};
-    c.time = an::TimeSetup{.duration = 2.0f, .startup = 0.5f, .step = 0.0f};
+    c.time = an::TimeSetup{.duration = 2.0f, .startup = 0.5f, .step = std::nullopt};
     c.outputs = an::Outputs{.history_every = 0.01f, .snapshot_every = 0.25f};
     return c;
 }
@@ -84,7 +97,29 @@ TEST(AnalysisCaseFile, RoundTripsByteForByte) {
     EXPECT_EQ(back->blades.at(0).stations.at(1).twist_deg, 12.5f);
     EXPECT_EQ(back->airfoils.at(0).polars.at(0).alpha_deg.at(2), 10.0f);
     EXPECT_EQ(back->flight.kind, an::FlightKind::forward);
+    EXPECT_EQ(back->flight.heading_deg, 10.0f);
     EXPECT_EQ(back->rotors.at(3).model, an::RotorModel::line);
+}
+
+// What is absent is written as absent, and read back so: never a 0 that
+// means "default" or "none".
+TEST(AnalysisCaseFile, AnAbsentValueStaysAbsent) {
+    an::AnalysisCase c = full_case(quad());
+    c.grid = an::GridSetup{};
+    c.flight = an::Flight{};
+    c.outputs = an::Outputs{};
+    const std::string text = an::case_to_yaml(c).value_or("");
+    for (const char* key : {"box:", "spacing:", "floor_height:", "step:", "history_every:", "snapshot_every:"}) {
+        EXPECT_EQ(text.find(key), std::string::npos) << key << " written though absent";
+    }
+    const spade::Result<an::AnalysisCase> back = an::case_from_yaml(text);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    EXPECT_FALSE(back->grid.box.has_value());
+    EXPECT_FALSE(back->grid.spacing.has_value());
+    EXPECT_FALSE(back->flight.floor_height.has_value());
+    EXPECT_FALSE(back->time.step.has_value());
+    EXPECT_FALSE(back->outputs.history_every.has_value());
+    EXPECT_FALSE(back->outputs.snapshot_every.has_value());
 }
 
 TEST(AnalysisCaseFile, SavesAndLoads) {
@@ -133,11 +168,15 @@ TEST(AnalysisCase, ItsOwnFieldsAreCheckedByName) {
     };
     refused([](an::AnalysisCase& c) { c.controls.throttle = 1.5f; }, "controls.throttle");
     refused([](an::AnalysisCase& c) { c.grid.nests = 4; }, "grid.nests");
-    refused([](an::AnalysisCase& c) { c.flight = an::Flight{an::FlightKind::hover, 2.0f, 0.0f}; }, "flight.speed");
-    refused([](an::AnalysisCase& c) { c.flight = an::Flight{an::FlightKind::forward, 0.0f, 0.0f}; }, "flight.speed");
+    refused([](an::AnalysisCase& c) { c.flight = an::Flight{.kind = an::FlightKind::hover, .speed = 2.0f}; },
+            "flight.speed");
+    refused([](an::AnalysisCase& c) { c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 0.0f}; },
+            "flight.speed");
+    refused([](an::AnalysisCase& c) { c.flight.floor_height = 0.0f; }, "flight.floor_height");
+    refused([](an::AnalysisCase& c) { c.grid.spacing = 0.0f; }, "grid.spacing");
     refused([](an::AnalysisCase& c) { c.time.startup = c.time.duration; }, "time.startup");
     refused([](an::AnalysisCase& c) { c.fluid.density = 0.0f; }, "fluid.density");
-    refused([](an::AnalysisCase& c) { c.blades.at(0).hub_radius = c.blades.at(0).radius; }, "blades[0].hub_radius");
+    refused([](an::AnalysisCase& c) { c.blades.at(0).hub_radius = -0.01f; }, "blades[0].hub_radius");
     refused([](an::AnalysisCase& c) { c.blades.at(0).stations.at(1).r_over_radius = 0.1f; },
             "blades[0].stations[1].r_over_radius");
     refused([](an::AnalysisCase& c) { c.blades.at(0).stations.at(2).chord = 0.0f; }, "blades[0].stations[2].chord");
@@ -146,6 +185,21 @@ TEST(AnalysisCase, ItsOwnFieldsAreCheckedByName) {
     refused([](an::AnalysisCase& c) { c.airfoils.at(0).polars.at(0).cd.pop_back(); }, "airfoils[0].polars[0].cd");
     refused([](an::AnalysisCase& c) { c.blades.push_back(c.blades.at(0)); }, "blades[1].name");
     EXPECT_TRUE(an::validate_case(full_case(m)).has_value());
+}
+
+// A host's form shows every problem at once; validate_case() is the first.
+TEST(AnalysisCase, CaseIssuesListsEveryProblem) {
+    an::AnalysisCase c = full_case(quad());
+    c.controls.throttle = 1.5f;
+    c.fluid.density = 0.0f;
+    c.blades.at(0).stations.at(2).chord = 0.0f;
+    const std::vector<an::CaseIssue> issues = an::case_issues(c);
+    EXPECT_TRUE(names(issues, "controls.throttle", "[0, 1]")) << listed(issues);
+    EXPECT_TRUE(names(issues, "fluid.density", "above 0")) << listed(issues);
+    EXPECT_TRUE(names(issues, "blades[0].stations[2].chord", "above 0")) << listed(issues);
+    const spade::Result<void> first = an::validate_case(c);
+    ASSERT_FALSE(first.has_value());
+    EXPECT_EQ(first.error().context, issues.front().field + ": " + issues.front().message);
 }
 
 // ---- resolving against the model ----
@@ -159,11 +213,14 @@ TEST(AnalysisCaseResolve, FillsTheDefaultsAndSaysSo) {
     ASSERT_TRUE(resolved.has_value()) << listed(resolved.error());
     EXPECT_EQ(resolved->box_source, an::Source::default_value);
     EXPECT_EQ(resolved->spacing_source, an::Source::default_value);
-    EXPECT_NEAR(resolved->spec.grid.box, an::kDefaultBoxReaches * an::reach_of(m), 1e-6f);
-    EXPECT_NEAR(resolved->spec.grid.spacing, resolved->spec.grid.box / static_cast<float>(an::kDefaultCellsAcross), 1e-7f);
+    ASSERT_TRUE(resolved->spec.grid.box.has_value());
+    ASSERT_TRUE(resolved->spec.grid.spacing.has_value());
+    EXPECT_NEAR(*resolved->spec.grid.box, an::kDefaultBoxReaches * spade::vehicles::model_reach(m), 1e-6f);
+    EXPECT_NEAR(*resolved->spec.grid.spacing, *resolved->spec.grid.box / static_cast<float>(an::kDefaultCellsAcross),
+                1e-7f);
     EXPECT_EQ(resolved->base.nx, an::kDefaultCellsAcross);
     EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base));
-    EXPECT_EQ(resolved->finest_spacing, resolved->spec.grid.spacing);
+    EXPECT_EQ(resolved->finest_spacing, *resolved->spec.grid.spacing);
     // The hash names the run: the resolved case's own text.
     EXPECT_EQ(resolved->hash, spade::rng::fnv1a64(an::case_to_yaml(resolved->spec).value_or("")));
     const auto again = an::resolve(c, m);
@@ -184,10 +241,11 @@ TEST(AnalysisCaseResolve, AGivenGridIsKeptAndNestsHalveTheCell) {
 TEST(AnalysisCaseResolve, AChangedModelMustBeRepinned) {
     spade::vehicles::ModelType m = quad();
     const an::AnalysisCase c = full_case(m);
+    // A part's change is refused by the parts pin, with Core's parts_identity.
     m.body.mass += 0.1f;
-    const auto resolved = an::resolve(c, m);
-    ASSERT_FALSE(resolved.has_value());
-    EXPECT_TRUE(names(resolved.error(), "model.identity", "re-pin")) << listed(resolved.error());
+    const auto body_changed = an::resolve(c, m);
+    ASSERT_FALSE(body_changed.has_value());
+    EXPECT_TRUE(names(body_changed.error(), "model.identity", "re-pin")) << listed(body_changed.error());
 }
 
 TEST(AnalysisCaseResolve, EveryModelRotorNeedsItsSetup) {
@@ -219,15 +277,21 @@ TEST(AnalysisCaseResolve, BladeResolvedNeedsThirtyTwoCellsAcrossTheChord) {
     EXPECT_TRUE(names(refused.error(), "rotors[1]", "0.25 mm")) << listed(refused.error());  // 8 mm / 32
 }
 
-TEST(AnalysisCaseResolve, ABladeMustExistAndMatchItsRotor) {
+// A blade takes its rotor's radius: the case never holds a second one.
+TEST(AnalysisCaseResolve, ABladeTakesItsRotorsRadius) {
     const spade::vehicles::ModelType m = quad();
     an::AnalysisCase c = full_case(m);
     c.rotors.at(2).blade = "";
-    c.blades.at(0).radius = 0.2f;
+    c.blades.at(0).hub_radius = m.rotors.at(0).radius;
     const auto refused = an::resolve(c, m);
     ASSERT_FALSE(refused.has_value());
     EXPECT_TRUE(names(refused.error(), "rotors[2].blade", "needs a blade")) << listed(refused.error());
-    EXPECT_TRUE(names(refused.error(), "rotors[0].blade", "radius")) << listed(refused.error());
+    EXPECT_TRUE(names(refused.error(), "rotors[0].blade", "hub")) << listed(refused.error());
+
+    const auto resolved = an::resolve(full_case(m), m);
+    ASSERT_TRUE(resolved.has_value()) << listed(resolved.error());
+    EXPECT_EQ(resolved->rotors.at(0).radius, m.rotors.at(0).radius);
+    EXPECT_EQ(resolved->rotors.at(0).radius_source, an::Source::derived);
 }
 
 TEST(AnalysisCaseResolve, AnAirfoilWithoutPolarsIsEstimated) {
@@ -242,21 +306,12 @@ TEST(AnalysisCaseResolve, AnAirfoilWithoutPolarsIsEstimated) {
 
 TEST(AnalysisCaseResolve, AWallFeatureNeedsTwoCells) {
     spade::vehicles::ModelType m = quad();
-    spade::vehicles::PartDesc arm;
-    arm.name = "arm";
-    arm.shape.transforms.push_back(spade::SdfTransform{});
-    spade::SdfNode n{};
-    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
-    n.op = static_cast<uint32_t>(spade::SdfOp::none);
-    n.params = glm::vec4(0.01f, 0.0f, 0.0f, 0.0f);
-    arm.shape.nodes = {n};
-    arm.min_feature = 0.01f;  // 1 cm: 1.6 cells at 6.25 mm
-    m.parts.push_back(arm);
-    an::AnalysisCase c = full_case(m);
+    m.parts.push_back(ball("arm", 0.01f));  // 1 cm: 1.6 cells at 6.25 mm
+    const an::AnalysisCase c = full_case(m);
     const auto refused = an::resolve(c, m);
     ASSERT_FALSE(refused.has_value());
     EXPECT_TRUE(names(refused.error(), "parts[0]", "'arm'")) << listed(refused.error());
-    EXPECT_TRUE(names(refused.error(), "parts[0]", "5 mm")) << listed(refused.error());
+    EXPECT_TRUE(names(refused.error(), "parts[0]", "at most 5 mm")) << listed(refused.error());
 }
 
 TEST(AnalysisCaseResolve, AGridPastTheCapIsRefusedBeforeRunning) {
@@ -267,4 +322,15 @@ TEST(AnalysisCaseResolve, AGridPastTheCapIsRefusedBeforeRunning) {
     const auto refused = an::resolve(c, m);
     ASSERT_FALSE(refused.has_value());
     EXPECT_TRUE(names(refused.error(), "grid.spacing", "GiB")) << listed(refused.error());
+}
+
+// ---- vehicles::model_reach (Core's; the editor and the analysis share it) ----
+
+TEST(ModelReach, IsTheFarthestRotorTipOrTheContactRadius) {
+    spade::vehicles::ModelType m = quad();
+    float tip = 0.0f;
+    for (const spade::vehicles::RotorDesc& r : m.rotors) tip = std::max(tip, glm::length(r.local_pos) + r.radius);
+    EXPECT_EQ(spade::vehicles::model_reach(m), std::max(tip, m.proxy_radius));
+    m.proxy_radius = 10.0f;
+    EXPECT_EQ(spade::vehicles::model_reach(m), 10.0f);
 }
