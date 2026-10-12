@@ -9,6 +9,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "vehicles/model_part.hpp"  // PartGeometrySpec, PartInertia::geometry (CORE-7)
 
 // ===========================================================================
 // composite_inertia.hpp -- one rigid body from an airframe's parts
@@ -58,6 +59,10 @@ struct PartInertia {
     PartShape shape = PartShape::point;
     glm::dvec3 size{0.0};                         // m; meaning per shape, above
     glm::dmat3 tensor{0.0};                       // kg m^2, local frame; PartShape::tensor only
+    // The record's model part, for the airframe compile (CORE-7, TD-9: one
+    // record per part). composite_inertia() and composite_inertia_issues()
+    // never read it.
+    PartGeometrySpec geometry{};
 };
 
 struct CompositeInertia {
