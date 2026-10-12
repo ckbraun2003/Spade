@@ -111,6 +111,7 @@ namespace {
     X(PFNGLGETUNIFORMLOCATIONPROC, GetUniformLocation) \
     X(PFNGLLINKPROGRAMPROC, LinkProgram) \
     X(PFNGLPOLYGONMODEPROC, PolygonMode) \
+    X(PFNGLPOINTSIZEPROC, PointSize) \
     X(PFNGLSHADERSOURCEPROC, ShaderSource) \
     X(PFNGLTEXIMAGE2DPROC, TexImage2D) \
     X(PFNGLTEXPARAMETERIPROC, TexParameteri) \
@@ -1516,14 +1517,12 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                      "GlRenderer::draw: raymarch is a CPU technique (render/raymarch.hpp); "
                                      "draw it with render::render()"});
     }
-    // L6: GL has no flow pass yet, and a frame without the volume, lines or
-    // tracers would be a different picture under the same scene.
-    if (!scene.flow_layers.empty() || !scene.flow_polylines.empty() || !scene.flow_points.positions.empty() ||
-        scene.flow_surface_colouring) {
+    // L6: GL has no flow-volume or surface-colouring pass yet, and a frame
+    // without them would be a different picture under the same scene.
+    if (!scene.flow_layers.empty() || scene.flow_surface_colouring) {
         return std::unexpected(Error{Code::unavailable,
                                      "GlRenderer::draw: GL has no flow pass yet (airflow visualization plan "
-                                     "step 7); draw flow layers, streamlines, tracers and surface colouring "
-                                     "with render::render()"});
+                                     "step 7); draw flow layers and surface colouring with render::render()"});
     }
     if (s.meshes.size() != scene.meshes.size()) {
         return std::unexpected(Error{Code::invalid_argument,
@@ -1923,6 +1922,71 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(cells));
             base += cells;
         }
+    }
+
+    // --- streamlines and tracers (render/flow_lines.hpp) -----------------------
+    // As raster_cpu's draw_flow_lines(): after the field layers, before the
+    // overlays, depth-tested and written, unlit, with no depth bias. Each
+    // segment's two vertices carry the mean of its ends' colours, so GL draws
+    // the CPU's flat segment colour; tracers are GL_POINTS of size_px.
+    // render() refused malformed ones on the CPU; GL validates the same way.
+    for (size_t i = 0; i < scene.flow_polylines.size(); ++i) {
+        if (Result<void> valid = render::validate_flow_polyline(scene.flow_polylines[i]); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::draw: flow polyline " + std::to_string(i) +
+                                                                 ": " + valid.error().context});
+        }
+    }
+    if (Result<void> valid = render::validate_flow_points(scene.flow_points); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+    }
+    if (!scene.flow_polylines.empty() || !scene.flow_points.positions.empty()) {
+        std::vector<float>& v = s.overlay_vertices;
+        v.clear();
+        // Colours go up as raster_cpu's own bytes (to_byte, then /255), which
+        // GL's float-to-unorm8 conversion returns exactly. An arbitrary float
+        // near a rounding boundary can land a level apart on the two paths.
+        const auto push = [&v](const glm::vec3& p, const glm::vec3& c) {
+            v.insert(v.end(), {p.x, p.y, p.z, static_cast<float>(render::to_byte(c.r)) / 255.0f,
+                               static_cast<float>(render::to_byte(c.g)) / 255.0f,
+                               static_cast<float>(render::to_byte(c.b)) / 255.0f});
+        };
+        for (const render::FlowPolyline& line : scene.flow_polylines) {
+            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+                push(line.points[i], c);
+                push(line.points[i + 1u], c);
+            }
+        }
+        const auto line_vertices = static_cast<GLsizei>(v.size() / 6u);
+        for (size_t i = 0; i < scene.flow_points.positions.size(); ++i) {
+            push(scene.flow_points.positions[i], scene.flow_points.colours[i]);
+        }
+        const auto point_vertices = static_cast<GLsizei>(v.size() / 6u) - line_vertices;
+        gl.BindBuffer(GL_ARRAY_BUFFER, s.overlay_vbo);
+        if (v.size() > s.overlay_capacity) {
+            gl.BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data(),
+                          GL_STREAM_DRAW);
+            s.overlay_capacity = v.size();
+        } else {
+            gl.BufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(v.size() * sizeof(float)), v.data());
+        }
+        gl.BindBuffer(GL_ARRAY_BUFFER, 0);
+        gl.Enable(GL_DEPTH_TEST);
+        gl.DepthFunc(GL_LESS);
+        gl.DepthMask(GL_TRUE);
+        gl.Disable(GL_CULL_FACE);
+        gl.UseProgram(s.overlay_program);
+        gl.UniformMatrix4fv(s.overlay.view, 1, GL_FALSE, glm::value_ptr(view));
+        gl.UniformMatrix4fv(s.overlay.proj, 1, GL_FALSE, glm::value_ptr(proj));
+        gl.Uniform1f(s.overlay.depth_bias, 0.0f);
+        gl.BindVertexArray(s.overlay_vao);
+        if (line_vertices > 0) gl.DrawArrays(GL_LINES, 0, line_vertices);
+        if (point_vertices > 0) {
+            gl.PointSize(static_cast<GLfloat>(scene.flow_points.size_px));
+            gl.DrawArrays(GL_POINTS, line_vertices, point_vertices);
+            gl.PointSize(1.0f);
+        }
+        gl.BindVertexArray(0);
     }
 
     // --- overlays ------------------------------------------------------------
