@@ -27,6 +27,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "builtin_records.hpp"
+#include "editor_session.hpp"
 #include "gl_target_sink.hpp"
 #include "png_writer.hpp"
 #include "scene_checks.hpp"
@@ -84,12 +85,15 @@ constexpr std::array kSteps = {
     StepName{"gate", "open"},            StepName{"gate", "lobs"},
     StepName{"hover", "open"},           StepName{"hover", "holds"},
     StepName{"wind", "open"},            StepName{"wind", "gusts"},
+    StepName{"editor", "open"},          StepName{"editor", "select"},
+    StepName{"editor", "place"},         StepName{"editor", "world"},
+    StepName{"editor", "run"},
 };
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
-constexpr std::array<std::string_view, 7> kMains = {"drone_box", "builder", "shower", "bounce",
-                                                    "gate",      "hover",   "wind"};
+constexpr std::array<std::string_view, 8> kMains = {"drone_box", "builder", "shower", "bounce",
+                                                    "gate",      "hover",   "wind",   "editor"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
@@ -324,6 +328,10 @@ class Tour {
         rec_.want_poster(options_.out_dir /
                          poster_name(static_cast<uint32_t>(std::distance(kMains.begin(), it)) + 1u, main));
     }
+
+    // An extra still beside the posters, <out>/<name>.png: the next captured
+    // frame. The editor's panels each get one for the user to review (§13).
+    void snapshot(std::string_view name) { rec_.want_poster(options_.out_dir / (std::string(name) + ".png")); }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_; }
     [[nodiscard]] uint64_t frames() const noexcept { return frame_; }
@@ -962,6 +970,106 @@ void wind(Tour& t, const fs::path& assets) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// MAIN FUNCTION: THE EDITOR (editor plan Task 10). The editor's window on the
+// hover scene: the default layout, a vehicle selected, a box placed from the
+// library, the world's settings, and a run. The stills are §13's review set.
+// Edits stay in memory: nothing is saved into assets/.
+// ---------------------------------------------------------------------------
+void editor_tour(Tour& t, const fs::path& assets) {
+    Smoke& s = t.smoke();
+    std::unique_ptr<EditorSession> session;
+    const DrawFn draw = [&session, &t](const FrameInput& in) { return session->frame(in, t.sink().delta_seconds()); };
+    const auto idle = InputFn{};
+    const auto open = [&]() -> bool { return s.check(session != nullptr, "open", "the editor is open"); };
+    // A click in the view along the ray from the camera's eye to `at`.
+    const auto click_towards = [&](glm::vec3 at) {
+        const glm::vec3 eye = session->camera().to_render_camera().position;
+        session->workspace().click(eye, at - eye);
+    };
+
+    t.step("editor", "open", [&] {
+        const fs::path file = assets / "scenes" / "hover.scene.yaml";
+        spade::Result<editor::OpenedScene> opened = editor::open_scene(file);
+        if (!s.check(opened.has_value(), "opens", opened ? file.filename().string() : opened.error().context)) return;
+        spade::Result<std::unique_ptr<EditorSession>> made = EditorSession::create(std::move(*opened));
+        if (!s.check(made.has_value(), "composes", made ? "hover" : made.error().context)) return;
+        session = std::move(*made);
+        session->attach(t.sink());
+        t.pump(60, idle, draw);
+        // §13's default layout: the toolbar above, the hierarchy and the
+        // inspector at the sides, the library below, and the scene between.
+        const ViewportRect v = t.sink().viewport();
+        const uint32_t fw = t.sink().framebuffer_width();
+        const uint32_t fh = t.sink().framebuffer_height();
+        s.check(v.x > 0u && v.y > 0u && v.x + v.width < fw && v.y + v.height < fh && !v.empty(),
+                "view-between-panels",
+                "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " at (" + std::to_string(v.x) +
+                    ", " + std::to_string(v.y) + ") of " + std::to_string(fw) + "x" + std::to_string(fh));
+        const std::size_t rows = session->workspace().panels().hierarchy.size();
+        s.check(rows == 3u, "hierarchy", std::to_string(rows) + " rows: the scene, the world, the drone");
+        t.poster("editor");
+        t.pump(30, idle, draw);
+    });
+
+    t.step("editor", "select", [&] {
+        if (!open()) return;
+        editor::EditorWorkspace& w = session->workspace();
+        const std::string name = w.documents().scene.desc().vehicles.at(0).name;
+        click_towards(w.documents().scene.desc().vehicles.at(0).start.pos);
+        s.check(w.panels().selection == editor::Selection{editor::Selection::Kind::object, name}, "selects-vehicle",
+                "selected '" + w.panels().selection.name + "'");
+        t.pump(30, idle, draw);
+        t.snapshot("editor_vehicle");
+        t.pump(30, idle, draw);
+    });
+
+    t.step("editor", "place", [&] {
+        if (!open()) return;
+        editor::EditorWorkspace& w = session->workspace();
+        for (std::size_t i = 0; i < w.panels().library.size(); ++i) {
+            if (w.panels().library[i].name == "box") w.panels().armed = i;
+        }
+        const glm::vec3 drone = w.documents().scene.desc().vehicles.at(0).start.pos;
+        click_towards(glm::vec3(drone.x + 1.5f, 0.0f, drone.z));
+        const std::size_t assets_now = w.documents().scene.desc().assets.size();
+        s.check(assets_now == 1u, "placed", std::to_string(assets_now) + " assets");
+        s.check(w.panels().selection.name == "box", "selects-placed", "selected '" + w.panels().selection.name + "'");
+        t.pump(30, idle, draw);
+        t.snapshot("editor_place");
+        t.pump(30, idle, draw);
+    });
+
+    t.step("editor", "world", [&] {
+        if (!open()) return;
+        editor::EditorWorkspace& w = session->workspace();
+        w.panels().selection = w.panels().hierarchy.at(1).target;  // what the hierarchy's World row does
+        t.pump(30, idle, draw);
+        s.check(w.panels().selection.kind == editor::Selection::Kind::world, "selects-world",
+                "the inspector shows the world");
+        t.snapshot("editor_world");
+        t.pump(30, idle, draw);
+    });
+
+    t.step("editor", "run", [&] {
+        if (!open()) return;
+        editor::EditorWorkspace& w = session->workspace();
+        w.panels().selection = editor::Selection{};
+        w.panels().commands.push_back(editor::Command::run);
+        t.pump(120, idle, draw);
+        s.check(w.run() != nullptr && w.run()->tick() > 0u, "runs",
+                "tick " + std::to_string(w.run() != nullptr ? w.run()->tick() : 0u));
+        t.snapshot("editor_running");
+        t.pump(30, idle, draw);
+        w.panels().commands.push_back(editor::Command::stop);
+        w.panels().commands.push_back(editor::Command::undo);
+        t.pump(10, idle, draw);
+        s.check(w.run() == nullptr && w.documents().scene.desc().assets.empty(), "stop-undo",
+                std::to_string(w.documents().scene.desc().assets.size()) + " assets after Stop, Undo");
+    });
+    session.reset();  // detaches its panels while the window is still open
+}
+
 // Clears an earlier run's files so a stale frame never poses as a new one.
 // Deletes only names a run writes (plan_sweep in live_smoke.hpp); a folder
 // that holds anything else is refused before anything is deleted.
@@ -1093,6 +1201,9 @@ int run_live_smoke(const TourOptions& options) {
     for (void (*scene)(Tour&, const fs::path&) : {&shower, &bounce, &gate, &hover, &wind}) {
         if (tour.stopped()) break;
         scene(tour, options.assets_dir);
+    }
+    if (!tour.stopped()) {
+        editor_tour(tour, options.assets_dir);
     }
 
     // The closing card shows the tour's verdict. Closing ffmpeg comes after it
