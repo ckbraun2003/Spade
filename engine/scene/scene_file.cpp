@@ -52,14 +52,23 @@ using yaml_text::vec3_field;
     return Error{Code::invalid_argument, std::move(context)};
 }
 
-// The schema an unknown key is blamed on.
-[[nodiscard]] std::string schema() {
-    return "scene schema v" + dec(kSceneFileVersion);
+// The first scene version that carries a model's parts (CORE-7). Task B5's
+// mesh parts will be version 3.
+constexpr uint32_t kPartsVersion = 2;
+static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion <= kSceneFileVersion,
+              "this build reads the version that carries parts");
+
+// The schema a diagnostic blames: the file's OWN declared version wherever
+// the reader has one, because a key set is version-gated (a model's `parts`),
+// so "unknown in the current version" would blame the wrong one (the world
+// file's check_map note has the case that taught it).
+[[nodiscard]] std::string schema(uint32_t version) {
+    return "scene schema v" + dec(version);
 }
 
 [[nodiscard]] Result<void> check_map(const YAML::Node& node, std::string_view what,
-                                     std::initializer_list<std::string_view> allowed) {
-    return yaml_text::check_map(node, what, allowed, schema());
+                                     std::initializer_list<std::string_view> allowed, std::string_view schema) {
+    return yaml_text::check_map(node, what, allowed, schema);
 }
 
 // The world file's unit-quaternion test (validate_world_desc): 1e-3 on the
@@ -76,13 +85,35 @@ constexpr std::string_view kDragModeNames[] = {"quadratic", "componentwise"};
 static_assert(physics::drag_mode::quadratic == 0 && physics::drag_mode::componentwise == 1,
               "kDragModeNames is indexed by physics::drag_mode");
 
+// A part's attachment and surface kind by NAME; index into each table IS the
+// enumerator's value.
+constexpr std::string_view kPartAttachNames[] = {"body", "rotor"};
+static_assert(static_cast<uint32_t>(vehicles::PartAttach::body) == 0 &&
+                  static_cast<uint32_t>(vehicles::PartAttach::rotor) == 1,
+              "kPartAttachNames is indexed by PartAttach");
+constexpr std::string_view kPartSurfaceNames[] = {"wall", "porous"};
+static_assert(static_cast<uint32_t>(vehicles::PartSurface::Kind::wall) == 0 &&
+                  static_cast<uint32_t>(vehicles::PartSurface::Kind::porous) == 1,
+              "kPartSurfaceNames is indexed by PartSurface::Kind");
+
+// The version a scene is written as: the oldest that carries everything in it
+// (scene_file.hpp, property 3). Task B5 returns 3 for a mesh part.
+[[nodiscard]] uint32_t written_version(const SceneDesc& scene) {
+    for (const vehicles::ModelType& m : scene.models) {
+        if (!m.parts.empty()) return kPartsVersion;
+    }
+    return kSceneFileOldestVersion;
+}
+
 // ===========================================================================
 // Emission
 // ===========================================================================
 
-constexpr std::string_view kFileHeader = R"YAML(# =============================================================================
-# Spade scene file -- schema version 1.
-#
+// The header's first two lines are the rule and "-- schema version N.", the
+// version written; the rest follows.
+constexpr std::string_view kHeaderRule =
+    "# =============================================================================\n";
+constexpr std::string_view kFileHeader = R"YAML(#
 # WHAT THIS IS: a world reference plus the objects placed in it -- materials,
 # vehicle models, static assets, and vehicles with their start states.
 # spade::scene::compose() turns it into one runnable world.
@@ -117,6 +148,45 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
         out += kHex[(value >> shift) & 0xfu];
     }
     return out;
+}
+
+// An SDF program's `transforms` and `nodes` keys at `indent`, each list's
+// items two spaces deeper: the world file's encoding, shared by an asset's
+// collider and a part's shape.
+void emit_sdf_lists(std::string& out, const SdfProgram& program, const std::string& indent) {
+    const std::string items = indent + "  ";
+    if (program.transforms.empty()) {
+        out += indent + "transforms: []\n";
+    } else {
+        out += indent + "transforms:\n";
+        append_sdf_transforms(out, program.transforms, items);
+    }
+    if (program.nodes.empty()) {
+        out += indent + "nodes: []\n";
+    } else {
+        out += indent + "nodes:\n";
+        append_sdf_nodes(out, program.nodes, items);
+    }
+}
+
+// One part, in PartDesc's field order. The shape is `{sdf: {transforms,
+// nodes}}`, the world file's encoding with no node_materials (render data,
+// which validate_scene() has already refused on a part). Task B5 adds the
+// alternative `{mesh: {file, hash}}`, written as version 3.
+void emit_part(std::string& out, const vehicles::PartDesc& p) {
+    out += "      - name: " + quote_yaml(p.name) + "\n";
+    out += "        role: " + quote_yaml(p.role) + "\n";
+    out += "        attach: " + quote_yaml(kPartAttachNames[static_cast<uint32_t>(p.attach)]) + "\n";
+    out += "        rotor: " + dec(p.rotor) + "\n";
+    out += "        mount: {position: " + vec3_list(p.mount_pos) + ", orientation: " + quat_list(p.mount_orient) +
+           "}\n";
+    out += "        surface: {kind: " + quote_yaml(kPartSurfaceNames[static_cast<uint32_t>(p.surface.kind)]) +
+           ", inv_permeability: " + format_float(p.surface.inv_permeability) +
+           ", inertial_coeff: " + format_float(p.surface.inertial_coeff) + "}\n";
+    out += "        min_feature: " + format_float(p.min_feature) + "\n";
+    out += "        shape:\n";
+    out += "          sdf:\n";
+    emit_sdf_lists(out, p.shape, "            ");
 }
 
 void emit_model(std::string& out, const vehicles::ModelType& m) {
@@ -168,6 +238,15 @@ void emit_model(std::string& out, const vehicles::ModelType& m) {
                    ", sigma_bg: " + format_float(i.sigma_bg) + "}\n";
         }
     }
+
+    // Parts (version 2, CORE-7): written only when there are any, so a model
+    // without them is the text it always was. No `parts: []`.
+    if (!m.parts.empty()) {
+        out += "    parts:\n";
+        for (const vehicles::PartDesc& p : m.parts) {
+            emit_part(out, p);
+        }
+    }
 }
 
 void emit_asset(std::string& out, const SceneAsset& a) {
@@ -179,18 +258,7 @@ void emit_asset(std::string& out, const SceneAsset& a) {
     // The world file's SDF encoding, nested; its node_materials by name.
     out += "    collider:\n";
     out += "      sdf:\n";
-    if (a.collider.transforms.empty()) {
-        out += "        transforms: []\n";
-    } else {
-        out += "        transforms:\n";
-        append_sdf_transforms(out, a.collider.transforms, "          ");
-    }
-    if (a.collider.nodes.empty()) {
-        out += "        nodes: []\n";
-    } else {
-        out += "        nodes:\n";
-        append_sdf_nodes(out, a.collider.nodes, "          ");
-    }
+    emit_sdf_lists(out, a.collider, "        ");
     out += "        node_materials: [";
     for (std::size_t i = 0; i < a.collider_materials.size(); ++i) {
         if (i != 0) out += ", ";
@@ -212,11 +280,14 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
 }
 
 [[nodiscard]] std::string emit(const SceneDesc& scene) {
+    const uint32_t version = written_version(scene);
     std::string out;
     out.reserve(4096);
+    out += kHeaderRule;
+    out += "# Spade scene file -- schema version " + dec(version) + ".\n";
     out += kFileHeader;
 
-    out += "\nscene_version: " + dec(kSceneFileVersion);
+    out += "\nscene_version: " + dec(version);
     out += "\nname: " + quote_yaml(scene.name) + "\n";
 
     out +=
@@ -247,6 +318,12 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
         "# design frame into the principal-axis body frame; `com_offset` is the\n"
         "# centre of mass from the design origin, in the design frame. Rotor, drag\n"
         "# and IMU mounts are in the body frame.\n";
+    if (version >= kPartsVersion) {
+        out +=
+            "# Parts (scene version 2): a part's mount is in the body frame, or, on a\n"
+            "# rotor, in that rotor's hub frame at azimuth 0. Its shape is the world\n"
+            "# file's SDF encoding, in the part's own frame.\n";
+    }
     if (scene.models.empty()) {
         out += "models: []\n";
     } else {
@@ -308,10 +385,10 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
 }
 
 [[nodiscard]] Result<YAML::Node> map_field(const YAML::Node& map, const char* key, std::string_view what,
-                                           std::initializer_list<std::string_view> allowed) {
+                                           std::initializer_list<std::string_view> allowed, std::string_view schema) {
     Result<YAML::Node> node = field(map, key, what);
     if (!node) return std::unexpected(node.error());
-    if (Result<void> r = check_map(*node, std::string(what) + "." + key, allowed); !r) {
+    if (Result<void> r = check_map(*node, std::string(what) + "." + key, allowed, schema); !r) {
         return std::unexpected(r.error());
     }
     return node;
@@ -332,10 +409,32 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     return value;
 }
 
-[[nodiscard]] Result<vehicles::RotorDesc> parse_rotor(const YAML::Node& node, const std::string& what) {
+// One of `names` by name, at `map[key]`: the index is the enumerator's value.
+template <std::size_t N>
+[[nodiscard]] Result<uint32_t> named_field(const YAML::Node& map, const char* key, const std::string& what,
+                                           const std::string_view (&names)[N], std::string_view kind) {
+    const Result<YAML::Node> node = field(map, key, what);
+    if (!node) return std::unexpected(node.error());
+    const std::string where = what + "." + key;
+    const Result<std::string> name = scalar(*node, where);
+    if (!name) return std::unexpected(name.error());
+    const std::string_view* found = std::find(std::begin(names), std::end(names), std::string_view(*name));
+    if (found != std::end(names)) return static_cast<uint32_t>(found - std::begin(names));
+    std::string expected;
+    for (std::size_t i = 0; i < N; ++i) {
+        expected += (i == 0) ? "" : (i + 1 == N) ? " or " : ", ";
+        expected += names[i];
+    }
+    return std::unexpected(
+        at(*node, where + ": unknown " + std::string(kind) + " '" + *name + "' (expected " + expected + ")"));
+}
+
+[[nodiscard]] Result<vehicles::RotorDesc> parse_rotor(const YAML::Node& node, const std::string& what,
+                                                      std::string_view schema) {
     if (Result<void> r = check_map(node, what,
                                    {"local_pos", "local_orient", "spin_dir", "tau", "radius",
-                                    "thrust_coeff", "torque_coeff"});
+                                    "thrust_coeff", "torque_coeff"},
+                                   schema);
         !r) {
         return std::unexpected(r.error());
     }
@@ -364,8 +463,9 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     return out;
 }
 
-[[nodiscard]] Result<vehicles::DragBodyDesc> parse_drag_body(const YAML::Node& node, const std::string& what) {
-    if (Result<void> r = check_map(node, what, {"mode", "area", "coeffs", "local_pos", "local_orient"}); !r) {
+[[nodiscard]] Result<vehicles::DragBodyDesc> parse_drag_body(const YAML::Node& node, const std::string& what,
+                                                             std::string_view schema) {
+    if (Result<void> r = check_map(node, what, {"mode", "area", "coeffs", "local_pos", "local_orient"}, schema); !r) {
         return std::unexpected(r.error());
     }
     vehicles::DragBodyDesc out{};
@@ -395,10 +495,12 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     return out;
 }
 
-[[nodiscard]] Result<vehicles::ImuMountDesc> parse_imu_mount(const YAML::Node& node, const std::string& what) {
+[[nodiscard]] Result<vehicles::ImuMountDesc> parse_imu_mount(const YAML::Node& node, const std::string& what,
+                                                             std::string_view schema) {
     if (Result<void> r = check_map(node, what,
                                    {"mount_pos", "mount_orient", "rate_divider", "sigma_a", "sigma_g",
-                                    "sigma_ba", "sigma_bg"});
+                                    "sigma_ba", "sigma_bg"},
+                                   schema);
         !r) {
         return std::unexpected(r.error());
     }
@@ -427,12 +529,119 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     return out;
 }
 
-[[nodiscard]] Result<vehicles::ModelType> parse_model(const YAML::Node& node, const std::string& what) {
+// An SDF program's `transforms` and `nodes` lists, in the mapping `sdf` (whose
+// keys the caller has checked): the world file's encoding, shared by an
+// asset's collider and a part's shape.
+[[nodiscard]] Result<SdfProgram> parse_sdf_lists(const YAML::Node& sdf, const std::string& sdf_what,
+                                                 std::string_view schema) {
+    SdfProgram out{};
+    const Result<YAML::Node> transforms = sequence_field(sdf, "transforms", sdf_what);
+    if (!transforms) return std::unexpected(transforms.error());
+    for (std::size_t i = 0; i < transforms->size(); ++i) {
+        const Result<SdfTransform> t =
+            yaml_text::parse_sdf_transform((*transforms)[i], sdf_what + ".transforms[" + dec(i) + "]", schema);
+        if (!t) return std::unexpected(t.error());
+        out.transforms.push_back(*t);
+    }
+    const Result<YAML::Node> nodes = sequence_field(sdf, "nodes", sdf_what);
+    if (!nodes) return std::unexpected(nodes.error());
+    for (std::size_t i = 0; i < nodes->size(); ++i) {
+        const Result<SdfNode> n = yaml_text::parse_sdf_node((*nodes)[i], sdf_what + ".nodes[" + dec(i) + "]", schema);
+        if (!n) return std::unexpected(n.error());
+        out.nodes.push_back(*n);
+    }
+    return out;
+}
+
+// One part (version 2, CORE-7). Only the text's shape is checked here; the
+// part's rules are ModelType::issues()'s, which validate_scene() runs (TD-9).
+[[nodiscard]] Result<vehicles::PartDesc> parse_part(const YAML::Node& node, const std::string& what,
+                                                    std::string_view schema) {
     if (Result<void> r = check_map(node, what,
-                                   {"name", "version", "param_schema_id", "visual_ref",
-                                    "design_to_principal", "com_offset", "body", "proxy_radius",
-                                    "rotors", "drag_bodies", "imu_mounts"});
+                                   {"name", "role", "attach", "rotor", "mount", "surface", "min_feature", "shape"},
+                                   schema);
         !r) {
+        return std::unexpected(r.error());
+    }
+    vehicles::PartDesc out{};
+    const Result<std::string> name = string_field(node, "name", what);
+    if (!name) return std::unexpected(name.error());
+    const Result<std::string> role = string_field(node, "role", what);
+    if (!role) return std::unexpected(role.error());
+    const Result<uint32_t> attach = named_field(node, "attach", what, kPartAttachNames, "part attachment");
+    if (!attach) return std::unexpected(attach.error());
+    const Result<uint32_t> rotor = uint_field<uint32_t>(node, "rotor", what);
+    if (!rotor) return std::unexpected(rotor.error());
+
+    const std::string mount_what = what + ".mount";
+    const Result<YAML::Node> mount = map_field(node, "mount", what, {"position", "orientation"}, schema);
+    if (!mount) return std::unexpected(mount.error());
+    const Result<glm::vec3> position = vec3_field(*mount, "position", mount_what);
+    if (!position) return std::unexpected(position.error());
+    const Result<glm::quat> orientation = quat_field(*mount, "orientation", mount_what);
+    if (!orientation) return std::unexpected(orientation.error());
+
+    const std::string surface_what = what + ".surface";
+    const Result<YAML::Node> surface =
+        map_field(node, "surface", what, {"kind", "inv_permeability", "inertial_coeff"}, schema);
+    if (!surface) return std::unexpected(surface.error());
+    const Result<uint32_t> kind = named_field(*surface, "kind", surface_what, kPartSurfaceNames, "part surface");
+    if (!kind) return std::unexpected(kind.error());
+    const Result<float> inv_permeability = float_field(*surface, "inv_permeability", surface_what);
+    if (!inv_permeability) return std::unexpected(inv_permeability.error());
+    const Result<float> inertial_coeff = float_field(*surface, "inertial_coeff", surface_what);
+    if (!inertial_coeff) return std::unexpected(inertial_coeff.error());
+
+    const Result<float> min_feature = float_field(node, "min_feature", what);
+    if (!min_feature) return std::unexpected(min_feature.error());
+
+    // shape: {sdf: {transforms, nodes}} -- no node_materials, which is render
+    // data a part never carries, so it is an unknown key here. THE SEAM FOR
+    // MESH PARTS: Task B5 adds `mesh` beside `sdf` (one of the two), read
+    // only in a version-3 file, so this version's key set stays as it is.
+    const std::string shape_what = what + ".shape";
+    const Result<YAML::Node> shape = map_field(node, "shape", what, {"sdf"}, schema);
+    if (!shape) return std::unexpected(shape.error());
+    const Result<YAML::Node> sdf = map_field(*shape, "sdf", shape_what, {"transforms", "nodes"}, schema);
+    if (!sdf) return std::unexpected(sdf.error());
+    Result<SdfProgram> program = parse_sdf_lists(*sdf, shape_what + ".sdf", schema);
+    if (!program) return std::unexpected(program.error());
+
+    out.name = *name;
+    out.role = *role;
+    out.attach = static_cast<vehicles::PartAttach>(*attach);
+    out.rotor = *rotor;
+    out.mount_pos = *position;
+    out.mount_orient = *orientation;
+    out.shape = std::move(*program);
+    out.surface.kind = static_cast<vehicles::PartSurface::Kind>(*kind);
+    out.surface.inv_permeability = *inv_permeability;
+    out.surface.inertial_coeff = *inertial_coeff;
+    out.min_feature = *min_feature;
+    return out;
+}
+
+// `file_version` is the file's own: a model's key set is version-gated (`parts`
+// from version 2), and every diagnostic blames that version.
+[[nodiscard]] Result<vehicles::ModelType> parse_model(const YAML::Node& node, const std::string& what,
+                                                      uint32_t file_version) {
+    const std::string file_schema = schema(file_version);
+    const bool reads_parts = file_version >= kPartsVersion;
+    if (reads_parts) {
+        if (Result<void> r = check_map(node, what,
+                                       {"name", "version", "param_schema_id", "visual_ref", "design_to_principal",
+                                        "com_offset", "body", "proxy_radius", "rotors", "drag_bodies",
+                                        "imu_mounts", "parts"},
+                                       file_schema);
+            !r) {
+            return std::unexpected(r.error());
+        }
+    } else if (Result<void> r = check_map(node, what,
+                                          {"name", "version", "param_schema_id", "visual_ref",
+                                           "design_to_principal", "com_offset", "body", "proxy_radius",
+                                           "rotors", "drag_bodies", "imu_mounts"},
+                                          file_schema);
+               !r) {
         return std::unexpected(r.error());
     }
     vehicles::ModelType out{};
@@ -449,7 +658,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     const Result<glm::vec3> com_offset = vec3_field(node, "com_offset", what);
     if (!com_offset) return std::unexpected(com_offset.error());
 
-    const Result<YAML::Node> body = map_field(node, "body", what, {"mass", "inertia_diag"});
+    const Result<YAML::Node> body = map_field(node, "body", what, {"mass", "inertia_diag"}, file_schema);
     if (!body) return std::unexpected(body.error());
     const Result<float> mass = float_field(*body, "mass", what + ".body");
     if (!mass) return std::unexpected(mass.error());
@@ -471,7 +680,8 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     const Result<YAML::Node> rotors = sequence_field(node, "rotors", what);
     if (!rotors) return std::unexpected(rotors.error());
     for (std::size_t i = 0; i < rotors->size(); ++i) {
-        const Result<vehicles::RotorDesc> r = parse_rotor((*rotors)[i], what + ".rotors[" + dec(i) + "]");
+        const Result<vehicles::RotorDesc> r =
+            parse_rotor((*rotors)[i], what + ".rotors[" + dec(i) + "]", file_schema);
         if (!r) return std::unexpected(r.error());
         out.rotors.push_back(*r);
     }
@@ -479,7 +689,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     if (!drag) return std::unexpected(drag.error());
     for (std::size_t i = 0; i < drag->size(); ++i) {
         const Result<vehicles::DragBodyDesc> d =
-            parse_drag_body((*drag)[i], what + ".drag_bodies[" + dec(i) + "]");
+            parse_drag_body((*drag)[i], what + ".drag_bodies[" + dec(i) + "]", file_schema);
         if (!d) return std::unexpected(d.error());
         out.drag_bodies.push_back(*d);
     }
@@ -487,15 +697,28 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     if (!imus) return std::unexpected(imus.error());
     for (std::size_t i = 0; i < imus->size(); ++i) {
         const Result<vehicles::ImuMountDesc> m =
-            parse_imu_mount((*imus)[i], what + ".imu_mounts[" + dec(i) + "]");
+            parse_imu_mount((*imus)[i], what + ".imu_mounts[" + dec(i) + "]", file_schema);
         if (!m) return std::unexpected(m.error());
         out.imu_mounts.push_back(*m);
+    }
+
+    // parts: optional, as the writer omits it for a model without them; an
+    // empty list is no parts.
+    if (reads_parts && has(node, "parts")) {
+        const Result<YAML::Node> parts = sequence_field(node, "parts", what);
+        if (!parts) return std::unexpected(parts.error());
+        for (std::size_t i = 0; i < parts->size(); ++i) {
+            Result<vehicles::PartDesc> p = parse_part((*parts)[i], what + ".parts[" + dec(i) + "]", file_schema);
+            if (!p) return std::unexpected(p.error());
+            out.parts.push_back(std::move(*p));
+        }
     }
     return out;
 }
 
-[[nodiscard]] Result<SceneAsset> parse_asset(const YAML::Node& node, const std::string& what) {
-    if (Result<void> r = check_map(node, what, {"name", "pose", "collider", "visual"}); !r) {
+[[nodiscard]] Result<SceneAsset> parse_asset(const YAML::Node& node, const std::string& what,
+                                             std::string_view schema) {
+    if (Result<void> r = check_map(node, what, {"name", "pose", "collider", "visual"}, schema); !r) {
         return std::unexpected(r.error());
     }
     SceneAsset out{};
@@ -504,7 +727,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     out.name = *name;
 
     const std::string pose_what = what + ".pose";
-    const Result<YAML::Node> pose = map_field(node, "pose", what, {"position", "orientation", "scale"});
+    const Result<YAML::Node> pose = map_field(node, "pose", what, {"position", "orientation", "scale"}, schema);
     if (!pose) return std::unexpected(pose.error());
     const Result<glm::vec3> position = vec3_field(*pose, "position", pose_what);
     if (!position) return std::unexpected(position.error());
@@ -519,29 +742,16 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     // collider: {sdf: {transforms, nodes, node_materials}} -- the world file's
     // transform and node encodings; node_materials holds NAMES here.
     const std::string collider_what = what + ".collider";
-    const Result<YAML::Node> collider = map_field(node, "collider", what, {"sdf"});
+    const Result<YAML::Node> collider = map_field(node, "collider", what, {"sdf"}, schema);
     if (!collider) return std::unexpected(collider.error());
     const std::string sdf_what = collider_what + ".sdf";
     const Result<YAML::Node> sdf =
-        map_field(*collider, "sdf", collider_what, {"transforms", "nodes", "node_materials"});
+        map_field(*collider, "sdf", collider_what, {"transforms", "nodes", "node_materials"}, schema);
     if (!sdf) return std::unexpected(sdf.error());
 
-    const Result<YAML::Node> transforms = sequence_field(*sdf, "transforms", sdf_what);
-    if (!transforms) return std::unexpected(transforms.error());
-    for (std::size_t i = 0; i < transforms->size(); ++i) {
-        const Result<SdfTransform> t = yaml_text::parse_sdf_transform(
-            (*transforms)[i], sdf_what + ".transforms[" + dec(i) + "]", schema());
-        if (!t) return std::unexpected(t.error());
-        out.collider.transforms.push_back(*t);
-    }
-    const Result<YAML::Node> nodes = sequence_field(*sdf, "nodes", sdf_what);
-    if (!nodes) return std::unexpected(nodes.error());
-    for (std::size_t i = 0; i < nodes->size(); ++i) {
-        const Result<SdfNode> n =
-            yaml_text::parse_sdf_node((*nodes)[i], sdf_what + ".nodes[" + dec(i) + "]", schema());
-        if (!n) return std::unexpected(n.error());
-        out.collider.nodes.push_back(*n);
-    }
+    Result<SdfProgram> program = parse_sdf_lists(*sdf, sdf_what, schema);
+    if (!program) return std::unexpected(program.error());
+    out.collider = std::move(*program);
     const Result<YAML::Node> names = sequence_field(*sdf, "node_materials", sdf_what);
     if (!names) return std::unexpected(names.error());
     for (std::size_t i = 0; i < names->size(); ++i) {
@@ -551,7 +761,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     }
 
     const std::string visual_what = what + ".visual";
-    const Result<YAML::Node> visual = map_field(node, "visual", what, {"mesh_ref", "material"});
+    const Result<YAML::Node> visual = map_field(node, "visual", what, {"mesh_ref", "material"}, schema);
     if (!visual) return std::unexpected(visual.error());
     const Result<std::string> mesh_ref = string_field(*visual, "mesh_ref", visual_what);
     if (!mesh_ref) return std::unexpected(mesh_ref.error());
@@ -562,8 +772,9 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     return out;
 }
 
-[[nodiscard]] Result<SceneVehicle> parse_vehicle(const YAML::Node& node, const std::string& what) {
-    if (Result<void> r = check_map(node, what, {"name", "model", "start"}); !r) {
+[[nodiscard]] Result<SceneVehicle> parse_vehicle(const YAML::Node& node, const std::string& what,
+                                                 std::string_view schema) {
+    if (Result<void> r = check_map(node, what, {"name", "model", "start"}, schema); !r) {
         return std::unexpected(r.error());
     }
     SceneVehicle out{};
@@ -576,7 +787,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
 
     const std::string start_what = what + ".start";
     const Result<YAML::Node> start = map_field(
-        node, "start", what, {"position", "orientation", "velocity", "omega_body", "rotor_omega"});
+        node, "start", what, {"position", "orientation", "velocity", "omega_body", "rotor_omega"}, schema);
     if (!start) return std::unexpected(start.error());
     const Result<glm::vec3> position = vec3_field(*start, "position", start_what);
     if (!position) return std::unexpected(position.error());
@@ -598,9 +809,9 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
 
 // spare is optional, and so is each of its counts (SCN-007): absent means 0.
 // Its keys are still accounted for, unknown and duplicate alike.
-[[nodiscard]] Result<SceneSpare> parse_spare(const YAML::Node& node) {
+[[nodiscard]] Result<SceneSpare> parse_spare(const YAML::Node& node, std::string_view schema) {
     constexpr std::string_view kWhat = "scene.spare";
-    if (Result<void> r = check_map(node, kWhat, {"bodies", "force_elements", "sensors", "contacts"}); !r) {
+    if (Result<void> r = check_map(node, kWhat, {"bodies", "force_elements", "sensors", "contacts"}, schema); !r) {
         return std::unexpected(r.error());
     }
     SceneSpare out{};
@@ -629,16 +840,22 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     if (!version_node) return std::unexpected(version_node.error());
     const Result<uint32_t> version = parse_uint<uint32_t>(*version_node, "scene.scene_version");
     if (!version) return std::unexpected(version.error());
-    if (*version != kSceneFileVersion) {
+    if (*version < kSceneFileOldestVersion || *version > kSceneFileVersion) {
+        static_assert(kSceneFileVersion == kSceneFileOldestVersion + 1, "the message below names two versions");
         return std::unexpected(Error{Code::schema_mismatch,
-                                     "scene file is schema version " + dec(*version) +
-                                         ", this build reads version " + dec(kSceneFileVersion) + " only" +
-                                         mark_of(*version_node)});
+                                     "scene file is schema version " + dec(*version) + ", this build reads versions " +
+                                         dec(kSceneFileOldestVersion) + " and " + dec(kSceneFileVersion) +
+                                         " only" + mark_of(*version_node)});
     }
+    // Every diagnostic below blames the file's own version.
+    const std::string file_schema = schema(*version);
 
+    // The top level is the same in every version this build reads; a model's
+    // key set is not (parse_model).
     if (Result<void> r = check_map(root, "scene",
                                    {"scene_version", "name", "world", "materials", "models", "assets",
-                                    "vehicles", "spare"});
+                                    "vehicles", "spare"},
+                                   file_schema);
         !r) {
         return std::unexpected(r.error());
     }
@@ -648,7 +865,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     if (!name) return std::unexpected(name.error());
     out.name = *name;
 
-    const Result<YAML::Node> world = map_field(root, "world", "scene", {"file", "hash"});
+    const Result<YAML::Node> world = map_field(root, "world", "scene", {"file", "hash"}, file_schema);
     if (!world) return std::unexpected(world.error());
     const Result<std::string> file = string_field(*world, "file", "scene.world");
     if (!file) return std::unexpected(file.error());
@@ -663,7 +880,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     if (!materials) return std::unexpected(materials.error());
     for (std::size_t i = 0; i < materials->size(); ++i) {
         const Result<MaterialDesc> m =
-            yaml_text::parse_material((*materials)[i], "scene.materials[" + dec(i) + "]", schema());
+            yaml_text::parse_material((*materials)[i], "scene.materials[" + dec(i) + "]", file_schema);
         if (!m) return std::unexpected(m.error());
         out.materials.push_back(*m);
     }
@@ -671,15 +888,15 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     const Result<YAML::Node> models = sequence_field(root, "models", "scene");
     if (!models) return std::unexpected(models.error());
     for (std::size_t i = 0; i < models->size(); ++i) {
-        const Result<vehicles::ModelType> m = parse_model((*models)[i], "scene.models[" + dec(i) + "]");
+        Result<vehicles::ModelType> m = parse_model((*models)[i], "scene.models[" + dec(i) + "]", *version);
         if (!m) return std::unexpected(m.error());
-        out.models.push_back(*m);
+        out.models.push_back(std::move(*m));
     }
 
     const Result<YAML::Node> assets = sequence_field(root, "assets", "scene");
     if (!assets) return std::unexpected(assets.error());
     for (std::size_t i = 0; i < assets->size(); ++i) {
-        const Result<SceneAsset> a = parse_asset((*assets)[i], "scene.assets[" + dec(i) + "]");
+        const Result<SceneAsset> a = parse_asset((*assets)[i], "scene.assets[" + dec(i) + "]", file_schema);
         if (!a) return std::unexpected(a.error());
         out.assets.push_back(*a);
     }
@@ -687,13 +904,14 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     const Result<YAML::Node> vehicle_list = sequence_field(root, "vehicles", "scene");
     if (!vehicle_list) return std::unexpected(vehicle_list.error());
     for (std::size_t i = 0; i < vehicle_list->size(); ++i) {
-        const Result<SceneVehicle> v = parse_vehicle((*vehicle_list)[i], "scene.vehicles[" + dec(i) + "]");
+        const Result<SceneVehicle> v =
+            parse_vehicle((*vehicle_list)[i], "scene.vehicles[" + dec(i) + "]", file_schema);
         if (!v) return std::unexpected(v.error());
         out.vehicles.push_back(*v);
     }
 
     if (has(root, "spare")) {
-        const Result<SceneSpare> spare = parse_spare(root["spare"]);
+        const Result<SceneSpare> spare = parse_spare(root["spare"], file_schema);
         if (!spare) return std::unexpected(spare.error());
         out.spare = *spare;
     }
@@ -764,6 +982,15 @@ Result<void> validate_scene(const SceneDesc& scene) {
             return std::unexpected(
                 invalid("model '" + m.name + "': design_to_principal must be a unit quaternion"));
         }
+        // A part's shape must be expressible as its file (SCN-002), as an
+        // asset's collider must. Every other part rule is the model's, above.
+        for (const vehicles::PartDesc& p : m.parts) {
+            if (Result<void> r = yaml_text::check_sdf_representable(
+                    p.shape, "model '" + m.name + "' part '" + p.name + "' shape", schema(kPartsVersion));
+                !r) {
+                return r;
+            }
+        }
         for (std::size_t j = 0; j < i; ++j) {
             if (scene.models[j].name == m.name) {
                 return std::unexpected(invalid("duplicate model name '" + m.name + "'"));
@@ -822,7 +1049,9 @@ Result<void> validate_scene(const SceneDesc& scene) {
         }
         // A scene must be expressible as its own file (SCN-002), or a save and
         // reload composes to another config_hash.
-        if (Result<void> r = yaml_text::check_sdf_representable(collider, where + "collider SDF", schema()); !r) {
+        if (Result<void> r = yaml_text::check_sdf_representable(collider, where + "collider SDF",
+                                                                schema(kSceneFileOldestVersion));
+            !r) {
             return r;
         }
         if (!a.collider_materials.empty() && a.collider_materials.size() != collider.nodes.size()) {
