@@ -1144,6 +1144,17 @@ TEST_F(GpuGlRenderer, RefusesFlowLinesAndPointsUntilItsPassLands) {
     EXPECT_EQ(dotted.error().code, spade::Code::unavailable);
 }
 
+// L6: nor surface colouring by a flow quantity (plan step 7).
+TEST_F(GpuGlRenderer, RefusesFlowSurfaceColouringUntilItsPassLands) {
+    RenderScene scene = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    const spade::FlowVolume volume;
+    scene.flow_surface_colouring = spade::render::FlowSurfaceColouring{&volume, spade::render::TransferFunction{}};
+    const auto drew = renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value()) << "a surface colouring GL cannot draw must be refused";
+    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+}
+
 // validate()'s own code comes through: a program needing more stack than
 // kMaxSdfDepth is capacity_exceeded, not invalid_argument.
 TEST_F(GpuGlRenderer, PassesThroughAProgramsCapacityRefusal) {
