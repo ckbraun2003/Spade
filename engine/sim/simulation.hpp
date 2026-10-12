@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -790,6 +791,19 @@ public:
     // advance tick_ by `n`. Errors are whatever the flush/upload/step/
     // readback stage that failed reports -- see VulkanBackend's own doc
     // comments (compute/vulkan/backend.hpp) for that taxonomy.
+    //
+    // A MISUSED VIEW (state/state_view.hpp; stage 5, Task 1): a cpu step in
+    // which a pass misused one of its views runs to its end, advances the
+    // tick, and returns invalid_argument naming the module, the pass and the
+    // view; the rest of `n` does not run. It POISONS the Simulation: every
+    // later step(), n == 0 and the vulkan path included, refuses at its top
+    // with invalid_argument, "step: state invalid since tick N: <that
+    // refusal>" (N: the tick the faulting step stamped), stepping nothing,
+    // and so does snapshot(). A successful restore() clears it; a fresh
+    // create() starts clean. Reads stay open (views, module_rows, digests,
+    // readbacks), to inspect the bad state. CORE-1's refusal (a vulkan step
+    // with behaviors attached, Code::unavailable) does not poison: it refuses
+    // before anything moves.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> step(uint64_t n = 1);
 
@@ -1171,6 +1185,10 @@ public:
     // snapshotting over pending ops would silently drop them and leave the
     // restored set holding reserved-but-never-initialized slots. Call step() or
     // flush_structural() first.
+    //
+    // Refuses (invalid_argument) while the Simulation is poisoned by a misused
+    // view (see step()), with step()'s text: no blob of the invalid state can
+    // exist, so a restore always restores state from before the fault.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<SnapshotBlob> snapshot() const;
 
@@ -1889,10 +1907,18 @@ private:
     std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
     // Where every one of those views records a misuse (state/state_view.hpp;
     // stage 5, Task 1): a view's StateView::id is its index in pass_views_.
-    // step() refuses a recorded fault at the end of the step, and clears it.
-    // Allocated once at create(), so its address, which every view holds,
-    // survives a move of the Simulation.
+    // step() refuses a recorded fault at the end of the step, clears it, and
+    // poisons the Simulation (poisoned_ below). Allocated once at create(), so
+    // its address, which every view holds, survives a move of the Simulation.
     std::unique_ptr<ViewFault> view_fault_;
+    // POISONED (the lead's ruling on stage 5, Task 1): empty while the state is
+    // valid. Once a step has run with a misused view and refused, it holds
+    // "step: state invalid since tick N: <that refusal>", N the tick the
+    // faulting step stamped, and every later step() and snapshot() refuses
+    // with it until a successful restore() clears it. Reads stay open, so the
+    // bad state can be inspected. CORE-1's refusal does not poison: it refuses
+    // before anything moves.
+    std::string poisoned_;
     physics::GridScratch scratch_;
     // Every world's field sample row, world-major, schedule_.field_stride floats
     // each. Scratch like scratch_: not registered, not in any blob or digest,

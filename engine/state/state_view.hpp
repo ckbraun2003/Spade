@@ -35,9 +35,11 @@
 // thrown. The record is STICKY: the first misuse stays, and no later call,
 // correct or not, clears or overwrites it. Simulation::step() reads it at the
 // end of the step and refuses with invalid_argument, naming the module, the
-// pass and the view, and clears it. The checks are the same in every build,
-// Release included. A view with no ViewFault -- one built by hand, not by a
-// Simulation -- has nowhere to record, and records nothing.
+// pass and the view; the Simulation is then poisoned, refusing every later
+// step and snapshot until a restore (sim/simulation.hpp's step()). The checks
+// are the same in every build, Release included. A view with no ViewFault --
+// one built by hand, not by a Simulation -- has nowhere to record, and records
+// nothing.
 //
 // Non-owning, like every view a pass sees: Simulation refills the views in
 // place from storage that never moves, so nothing here is allocated.

@@ -1157,6 +1157,14 @@ Result<void> Simulation::rebuild_views() {
 // ---------------------------------------------------------------------------
 
 Result<void> Simulation::step(uint64_t n) {
+    // POISONED (the lead's ruling on stage 5, Task 1): a step ran with a
+    // misused view and refused (the cpu loop's end, below), so the state is
+    // invalid from that step on. Refused here, before anything -- the flush,
+    // n == 0 and the vulkan branch included -- with the original fault; the
+    // tick stays. Only a successful restore() clears it.
+    if (!poisoned_.empty()) [[unlikely]] {
+        return std::unexpected(invalid(poisoned_));
+    }
     if (n == 0) {
         // "Advance zero steps" is still a step boundary, so the queue is still
         // applied. Anything else would make step(0) observably different from
@@ -1180,7 +1188,10 @@ Result<void> Simulation::step(uint64_t n) {
         // anything moves, rather than skipped (SL6: a refusal, never a silent
         // fallback). Any non-empty registry counts, including one whose
         // behaviors all declare a record_gpu half, because nothing calls that
-        // half yet. step(0) above is unaffected: it runs no behaviors.
+        // half yet. step(0) above is unaffected: it runs no behaviors. This
+        // refusal does NOT poison the Simulation, unlike a misused view's
+        // (below): it refuses before anything moves, so the state is still
+        // valid, and detaching the registry lets the same Simulation step.
         if (behaviors_ != nullptr && behaviors_->size() > 0) {
             return std::unexpected(Error{Code::unavailable,
                                          "behaviors are CPU-only today; the Vulkan step cannot run "
@@ -1267,11 +1278,16 @@ Result<void> Simulation::step(uint64_t n) {
         // step has run to its end, its tick included; it refuses now, through
         // the same error return as CORE-1's refusal above, rather than return
         // as if the pass had read what it asked for. The rest of `n` does not
-        // run, and the record is cleared, so the next step starts clean.
+        // run. The record is cleared, and the Simulation is POISONED: the
+        // state is invalid from this step on, so every later step() and
+        // snapshot() refuses, naming this step's tick and this refusal, until
+        // a restore() replaces the state.
         if (view_fault_->misuse != ViewMisuse::none) [[unlikely]] {
             const ViewFault fault = std::exchange(*view_fault_, ViewFault{});
-            return std::unexpected(
-                invalid(view_fault_message(fault, schedule_, pass_view_begin_, pass_views_, layout_.world_count)));
+            std::string refusal =
+                view_fault_message(fault, schedule_, pass_view_begin_, pass_views_, layout_.world_count);
+            poisoned_ = "step: state invalid since tick " + std::to_string(ctx.tick.value) + ": " + refusal;
+            return std::unexpected(invalid(std::move(refusal)));
         }
     }
 
@@ -2428,6 +2444,11 @@ Result<void> Simulation::apply_wrench(BodyRef ref, glm::vec3 world_force, glm::v
 // ---------------------------------------------------------------------------
 
 Result<SnapshotBlob> Simulation::snapshot() const {
+    // Poisoned by a misused view (step()): the state is invalid, so no blob of
+    // it may exist, and any blob a restore() reads is from before the fault.
+    if (!poisoned_.empty()) {
+        return std::unexpected(invalid(poisoned_));
+    }
     if (!queue_.empty()) {
         return std::unexpected(invalid("snapshot: the structural queue is not empty; pending "
                                        "spawn/despawn ops are not part of the registry walk. Call "
@@ -2663,7 +2684,14 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     scratch_.entries.clear();
     scratch_.runs.clear();
 
-    return rebuild_views();
+    if (Result<void> views = rebuild_views(); !views) {
+        return views;
+    }
+    // The state a misused view invalidated (step()) has been replaced by the
+    // blob's, and a poisoned Simulation writes no blob, so the poison is
+    // cleared -- by a successful restore only.
+    poisoned_.clear();
+    return {};
 }
 
 // ---------------------------------------------------------------------------

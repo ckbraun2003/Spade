@@ -255,11 +255,14 @@ struct SubstepContext {
     // as a batched sweep reads them. A misused accessor (a row type of another
     // size, a world outside the set, table_rows of an array, all_rows of a
     // table) reads as empty and records a fault, and the step refuses at its
-    // end with invalid_argument (state/state_view.hpp).
+    // end with invalid_argument (state/state_view.hpp). That refusal poisons
+    // the Simulation: every later step() and snapshot() refuses until a
+    // restore() (sim/simulation.hpp's step()).
     //
-    // The built-in passes do not read it: they keep their typed members of
-    // WorldSubstepView above until the GPU module ABI (stage-4 plan, open
-    // question 5), so no pass body moved.
+    // Of the built-in passes, only the contact passes and integrate read it,
+    // for the contact scratch integrate declares (contact_dv, above). The rest
+    // keep their typed members of WorldSubstepView above until the GPU module
+    // ABI (stage-4 plan, open question 5).
     std::span<const StateView> state{};
 };
 #if defined(_MSC_VER)
