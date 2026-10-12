@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -52,6 +53,7 @@
 #include "builder_scene.hpp"   // the builder's object model and its whole interaction
 #include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
 #include "editor_cli.hpp"      // --edit: the editor's command line, no window
+#include "editor_session.hpp"  // --editor: the editor's window
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
@@ -92,6 +94,8 @@ void print_usage() {
     std::puts("  --edit <scene.yaml>   FIRST ARGUMENT ONLY: the editor's command line, no window:");
     std::puts("                        [--apply <edits.txt>] [--save <scene.yaml>] [--save-world <world.yaml>]");
     std::puts("                        [--run <steps>]; exit 0 done, 1 refused, 2 bad arguments");
+    std::puts("  --editor [scene.yaml] FIRST ARGUMENT ONLY: the editor's window on a scene file");
+    std::puts("                        (default: assets/scenes/hover.scene.yaml from the working directory)");
     std::puts("  --help                this text\n");
     std::puts("In the window -- THE DRONE SIM BOX (default):");
     std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
@@ -496,6 +500,44 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
     return 0;
 }
 
+// --editor [scene.yaml]: the editor's window (editor plan Task 10). The
+// scene is opened and composed before the window, so one that will not open
+// refuses with no window.
+int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width, uint32_t height, bool vsync) {
+    std::unique_ptr<spade::sandbox::GlTargetSink> sink;  // destroyed last: the session detaches from it
+    spade::Result<spade::sandbox::editor::OpenedScene> opened = spade::sandbox::editor::open_scene(scene_file);
+    if (!opened) {
+        std::fprintf(stderr, "spade_sandbox: --editor %s: %s\n", scene_file.string().c_str(),
+                     opened.error().context.c_str());
+        return 1;
+    }
+    spade::Result<std::unique_ptr<spade::sandbox::EditorSession>> made =
+        spade::sandbox::EditorSession::create(std::move(*opened));
+    if (!made) {
+        std::fprintf(stderr, "spade_sandbox: --editor %s: %s\n", scene_file.string().c_str(),
+                     made.error().context.c_str());
+        return 1;
+    }
+    sink = spade::sandbox::open_window(width, height, vsync);
+    if (!sink) {
+        return 3;
+    }
+    spade::sandbox::EditorSession& session = **made;
+    session.attach(*sink);
+    while (!sink->should_close()) {
+        const spade::sandbox::FrameInput in = sink->poll();
+        if (in.want_close) {
+            break;
+        }
+        if (const spade::Result<void> drew = session.frame(in, sink->delta_seconds()); !drew) {
+            std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
+            return 1;
+        }
+    }
+    print_exit_summary(*sink, width, height, vsync);
+    return 0;
+}
+
 // --headless --scene drone: deterministic -- 250 fixed steps (0.5 s) with the
 // controller holding level, one CPU frame from a fixed camera.
 int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap, const char* out_path) {
@@ -550,6 +592,24 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::strcmp(argv[1], "--edit") == 0) {
         return spade::sandbox::editor::edit_cli(std::vector<std::string>(argv + 2, argv + argc), std::cout,
                                                 std::cerr);
+    }
+    // --editor is the editor's window on one scene file, so it too takes the
+    // arguments after it as its own.
+    if (argc >= 2 && std::strcmp(argv[1], "--editor") == 0) {
+        if (argc > 3) {
+            std::fprintf(stderr, "spade_sandbox: --editor takes one scene file at most\n");
+            return 2;
+        }
+        const std::filesystem::path scene = argc == 3 ? std::filesystem::path(argv[2])
+                                                      : std::filesystem::path("assets/scenes/hover.scene.yaml");
+        if (!std::filesystem::is_regular_file(scene)) {
+            std::fprintf(stderr,
+                         "spade_sandbox: --editor: no scene file at %s; give one: spade_sandbox --editor "
+                         "<scene.yaml>\n",
+                         scene.string().c_str());
+            return 2;
+        }
+        return run_windowed_editor(scene, 1280u, 720u, true);
     }
     // ⚠ THE DEFAULT MODE CHANGED AT C2, AND THE OLD REFUSAL'S REASONING WENT
     // WITH IT. C0 refused to run without --headless because "no arguments"

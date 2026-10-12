@@ -81,6 +81,7 @@ class EditorWorkspace {
     }
 
     [[nodiscard]] EditorPanels& panels() noexcept { return panels_; }
+    [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
     [[nodiscard]] const EditorRun* run() const noexcept { return run_ ? &*run_ : nullptr; }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }

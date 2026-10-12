@@ -1,0 +1,66 @@
+// The editor in a window (editor plan Task 10): the workspace
+// (editor_workspace.hpp), which decides everything, drawn.
+//
+// Each frame: the camera moves; a click in the view picks or places; Delete
+// and Ctrl+D act on the selection; what the panels queued last frame is
+// applied; the run steps; and the scene is drawn between the panels, with a
+// box around the selection. The render scene is rebuilt only when the
+// composition changes, so an idle editor uploads nothing.
+
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "core/error.hpp"
+#include "editor_files.hpp"
+#include "editor_workspace.hpp"
+#include "orbit_camera.hpp"
+#include "render/scene.hpp"
+#include "scene_sessions.hpp"
+#include "vehicle_draw.hpp"
+
+namespace spade::sandbox {
+
+class GlTargetSink;
+
+class EditorSession {
+  public:
+    // Opens the documents in a workspace and builds what draws them. Needs no
+    // window, so a scene that will not compose refuses before one opens.
+    [[nodiscard]] static Result<std::unique_ptr<EditorSession>> create(editor::OpenedScene opened);
+
+    // Shows the panels in `sink` and starts the GPU renderer in its context,
+    // or announces the CPU fallback. `sink` must outlive this. Call once.
+    void attach(GlTargetSink& sink);
+
+    ~EditorSession();
+    EditorSession(const EditorSession&) = delete;
+    EditorSession& operator=(const EditorSession&) = delete;
+
+    // One frame, `dt` seconds after the last.
+    [[nodiscard]] Result<void> frame(const FrameInput& in, float dt);
+
+    [[nodiscard]] editor::EditorWorkspace& workspace() noexcept { return *workspace_; }
+    [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
+    [[nodiscard]] bool gpu_active() const noexcept { return gpu_ != nullptr; }
+
+  private:
+    EditorSession() = default;
+    [[nodiscard]] Result<void> rebuild_scene();
+    void draw_items();
+
+    std::unique_ptr<editor::EditorWorkspace> workspace_;
+    GlTargetSink* sink_ = nullptr;
+    render::RenderScene scene_;
+    render::RenderOptions options_;
+    VehicleLook look_;
+    uint32_t selected_material_ = 0;
+    uint64_t drawn_composition_ = 0;
+    std::unique_ptr<GpuRenderer> gpu_;
+    OrbitCamera camera_;
+    std::vector<uint8_t> pixels_;
+};
+
+}  // namespace spade::sandbox

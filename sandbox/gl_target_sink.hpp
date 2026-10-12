@@ -40,6 +40,9 @@ namespace spade::sandbox {
 // merely wants to open a window.
 struct BuilderScene;
 struct DronePanelModel;
+namespace editor {
+struct EditorPanels;
+}
 
 class GlTargetSink final : public TargetSink {
   public:
@@ -212,6 +215,11 @@ class GlTargetSink final : public TargetSink {
     // same reasons as the builder. The panel only writes the model; what an
     // edit DOES is decided by drone_view.hpp's apply_panel_edits.
     void attach_drone(DronePanelModel* model) noexcept;
+
+    // The editor's panels (editor_panels_ui.hpp): toolbar, hierarchy,
+    // inspector and library, docked to §13's default layout. They read and
+    // queue into `panels`; the editor's workspace decides. Null detaches.
+    void attach_editor(editor::EditorPanels* panels) noexcept;
 
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.

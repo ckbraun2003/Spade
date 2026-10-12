@@ -35,6 +35,7 @@
 
 #include "builder_scene.hpp"  // the builder's model -- pure, no UI in it
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
+#include "editor_panels_ui.hpp"  // the editor's panels, drawn; the workspace decides
 
 #include <algorithm>
 #include <cfloat>   // FLT_MAX, ImFont::CalcTextSizeA's "no wrap"
@@ -305,6 +306,7 @@ struct GlTargetSink::Impl {
     // the sink only reads and writes it while drawing a panel.
     BuilderScene* builder = nullptr;
     DronePanelModel* drone = nullptr;
+    editor::EditorPanels* editor = nullptr;
 
     // What the active path does not draw ("" for none); see set_gap_line().
     std::string gap_line;
@@ -770,9 +772,10 @@ void GlTargetSink::draw_overlay() {
     // camera's input. The default layout is rebuilt whenever the scene on
     // screen changes panels; nothing is saved (no imgui.ini), so a restart
     // restores it.
-    const ui::Layout layout = impl_->builder != nullptr ? ui::Layout::builder
-                              : impl_->drone != nullptr ? ui::Layout::drone
-                                                        : ui::Layout::none;
+    const ui::Layout layout = impl_->editor != nullptr    ? ui::Layout::editor
+                              : impl_->builder != nullptr ? ui::Layout::builder
+                              : impl_->drone != nullptr   ? ui::Layout::drone
+                                                          : ui::Layout::none;
     const ImGuiID dockspace = ImGui::GetID("spade dockspace");
     if (!impl_->layout_ever_built || layout != impl_->layout_built) {
         ui::build_layout(dockspace, layout);
@@ -848,10 +851,16 @@ void GlTargetSink::draw_overlay() {
                 } else {
                     ui::value_row("camera", "%s",
                                   ui::joined({"right-drag orbit", "scroll dolly", "WASD pan", "Q/E down/up"}).c_str());
-                    // Only the builder edits; the scene-file scenes are watched.
+                    // Only the builder and the editor edit; the scene-file scenes are watched.
                     if (impl_->builder != nullptr) {
                         ui::value_row("edit", "%s",
                                       ui::joined({"click place/select", "drag moves", "Del removes"}).c_str());
+                    }
+                    if (impl_->editor != nullptr) {
+                        ui::value_row("edit", "%s",
+                                      ui::joined({"click select", "library item, click places", "Del removes",
+                                                  "Ctrl+D duplicates"})
+                                          .c_str());
                     }
                 }
                 ui::value_row("window", "%s", ui::joined({"F1 hide", "F2 reset layout", "Esc quit"}).c_str());
@@ -867,6 +876,9 @@ void GlTargetSink::draw_overlay() {
     }
     if (impl_->drone != nullptr) {
         draw_drone_panel(*impl_->drone);
+    }
+    if (impl_->editor != nullptr) {
+        draw_editor_panels(*impl_->editor);
     }
     draw_live_smoke_text();
 #endif
@@ -1177,6 +1189,14 @@ void GlTargetSink::set_gap_line(std::string line) {
     impl_->gap_line = std::move(line);
 #else
     (void)line;
+#endif
+}
+
+void GlTargetSink::attach_editor(editor::EditorPanels* panels) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->editor = panels;
+#else
+    (void)panels;
 #endif
 }
 

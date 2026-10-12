@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdarg>
 #include <filesystem>
 #include <initializer_list>
@@ -38,6 +39,8 @@ inline constexpr float kLabelWidth = 30.0f * kBase;  // the property label colum
 inline constexpr const char* kHierarchy = "Hierarchy";
 inline constexpr const char* kInspector = "Inspector";
 inline constexpr const char* kDrone = "Drone";
+inline constexpr const char* kToolbar = "Toolbar";
+inline constexpr const char* kLibrary = "Library";
 
 // ---- the fonts ----
 inline constexpr std::string_view kFontRegular = "Inter-Regular.ttf";
@@ -275,10 +278,12 @@ inline constexpr const char* kDot = "  \xC2\xB7  ";
 
 // ---- the docked layout ----
 
-enum class Layout { none, builder, drone };
+enum class Layout { none, builder, drone, editor };
 
 // The default layout for the scene on screen: the hierarchy on the left and
 // the inspector on the right (the builder), or the drone's panel on the right.
+// The editor's is §13's: the toolbar along the top, the hierarchy and the
+// inspector full height at the sides, and the library under the viewport.
 // The centre is the viewport, which lets the scene show and take input through.
 inline void build_layout(ImGuiID dockspace, Layout layout) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -298,6 +303,23 @@ inline void build_layout(ImGuiID dockspace, Layout layout) {
     } else if (layout == Layout::drone) {
         const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
         ImGui::DockBuilderDockWindow(kDrone, right);
+    } else if (layout == Layout::editor) {
+        // A toolbar one row high, with no tab: it is a bar, not a panel.
+        const float bar = (kFontPixels + 4.0f * kBase) / std::max(viewport->WorkSize.y, 1.0f);
+        const ImGuiID top = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Up, bar, nullptr, &centre);
+        const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.24f, nullptr, &centre);
+        if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(top)) {
+            ImGuiDockNodeFlags bar_flags = node->LocalFlags;
+            bar_flags |= ImGuiDockNodeFlags_NoTabBar;
+            bar_flags |= ImGuiDockNodeFlags_NoResize;
+            node->LocalFlags = bar_flags;
+        }
+        ImGui::DockBuilderDockWindow(kToolbar, top);
+        ImGui::DockBuilderDockWindow(kHierarchy, left);
+        ImGui::DockBuilderDockWindow(kInspector, right);
+        ImGui::DockBuilderDockWindow(kLibrary, bottom);
     }
     ImGui::DockBuilderFinish(dockspace);
 }
