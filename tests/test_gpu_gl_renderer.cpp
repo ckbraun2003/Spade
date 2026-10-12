@@ -1112,17 +1112,143 @@ TEST_F(GpuGlRenderer, RefusesAnEmptyOrUnattachedCsgSubtree) {
     }
 }
 
-// L6: GL has no flow-volume pass yet (airflow visualization plan step 7),
-// so a scene with a flow layer is refused, never drawn without it.
-TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
+// L6: GL marches one flow layer per frame. The demo's layer carries all its
+// transfers and iso-surfaces, so it needs only one. More is refused, never
+// drawn as fewer.
+TEST_F(GpuGlRenderer, RefusesMoreThanOneFlowLayer) {
     RenderScene scene = slab_scene();
     ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    const spade::FlowVolume volume;
-    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {spade::render::TransferFunction{}}, {}});
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 0.25f, 8, 8, 8,
+                                                                   spade::test::uniform_flow(glm::vec3(1.0f, 0.0f, 0.0f)));
+    spade::render::TransferFunction speed;
+    speed.extinction = {{0.0f, 1.0f}, {2.0f, 1.0f}};
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
     const spade::Result<void> drew =
         renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "a flow layer GL cannot draw must be refused";
+    ASSERT_FALSE(drew.has_value()) << "a second flow layer GL cannot draw must be refused";
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+}
+
+// Per channel, between two frames: the largest difference in levels, and how
+// many pixels differ at all.
+struct ChannelDiff {
+    int worst = 0;
+    size_t differing = 0;
+};
+[[nodiscard]] ChannelDiff channel_diff(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
+    ChannelDiff d;
+    for (size_t p = 0; p < kPixels; ++p) {
+        int m = 0;
+        for (size_t c = 0; c < 3; ++c) m = std::max(m, std::abs(int{a[p * 4u + c]} - int{b[p * 4u + c]}));
+        d.worst = std::max(d.worst, m);
+        d.differing += m > 0 ? 1u : 0u;
+    }
+    return d;
+}
+
+// The flow goldens' camera, 2.2 m out on +z, and an opaque quad over the left
+// half at z = -0.2, through the ring, where the march must stop.
+[[nodiscard]] Camera camera_on_ring() {
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
+    return camera;
+}
+[[nodiscard]] RenderScene ring_cut_scene() {
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.2f, -1.2f, -0.2f), glm::vec3(0.0f, -1.2f, -0.2f), glm::vec3(0.0f, 1.2f, -0.2f),
+                      glm::vec3(-1.2f, 1.2f, -0.2f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{.base_color = glm::vec4(0.3f, 0.35f, 0.4f, 1.0f)}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    return scene;
+}
+
+// Airflow visualization plan step 7c: GL marches a flow layer as the CPU
+// does. The flow_vortex_ring golden's layer: vorticity through inferno with a
+// ramped extinction, and the dye as smoke, 32^3, through the cut quad.
+TEST_F(GpuGlRenderer, FlowVolumeMatchesTheCpuWithinItsBand) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}, {}});
+    RenderScene bare = scene;
+    bare.flow_layers.clear();
+    const Camera camera = camera_on_ring();
+
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw flow layers now";
+    const size_t marched = count_differing(cpu, cpu_bare);
+    ASSERT_GT(marched, kPixels / 10u) << "the volume must reach a good part of the frame";
+    const ChannelDiff d = channel_diff(cpu, gl);
+    RecordProperty("marched_pixels", static_cast<int>(marched));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow volume ] %zu px marched; worst %d levels, %zu pixels differ; on %s\n", marched, d.worst,
+                d.differing, device.c_str());
+    // RED: no band yet; measured and pinned in the green commit.
+    EXPECT_LE(d.worst, 0);
+}
+
+// The flow_vortex_ring_q golden's layer: the Q iso at 30% of its peak,
+// coloured by speed and lit, 64^3, through the cut quad. A streamline along x
+// through the tube's cores tests the iso's depth: the lines pass is
+// depth-tested against it on both paths.
+TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    const float q_hat_peak = volume.header.channel_max[spade::kFlowQHat];
+    ASSERT_GT(q_hat_peak, 0.0f);
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * q_hat_peak;  // sqrt(0.3): Q at 30% of its peak
+    q_iso.colour_by = speed;
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    spade::render::FlowPolyline line;
+    for (int i = 0; i <= 30; ++i) {
+        line.points.push_back(glm::vec3(-1.5f + 0.1f * static_cast<float>(i), 0.0f, 0.0f));
+        line.colours.push_back(glm::vec3(1.0f));
+    }
+    scene.flow_polylines.push_back(line);
+    RenderScene bare = scene;
+    bare.flow_layers.clear();
+    const Camera camera = camera_on_ring();
+
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw iso-surfaces now";
+    const size_t marched = count_differing(cpu, cpu_bare);
+    ASSERT_GT(marched, kPixels / 20u) << "the iso-surface must reach the frame";
+    const ChannelDiff d = channel_diff(cpu, gl);
+    RecordProperty("marched_pixels", static_cast<int>(marched));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow iso ] %zu px marched; worst %d levels, %zu pixels differ; on %s\n", marched, d.worst,
+                d.differing, device.c_str());
+    // RED: no band yet; measured and pinned in the green commit.
+    EXPECT_LE(d.worst, 0);
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
