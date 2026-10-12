@@ -2238,6 +2238,21 @@ git commit -m "feat(physics): the airflow fluid step and the solver core's golde
 
 ---
 
+### Task 8b: The render volume (added by the lead, 2026-10-12; built at `d491d1d`)
+
+**Files:** `engine/physics/airflow/publish.hpp/.cpp`; `tests/test_airflow_publish.cpp`.
+**Produces:** `publish_render_volume(const MacGrid&, const PublishInput{origin, solid mask}, spade::FlowVolume&) -> Result<PublishCounts{extrapolated}>`, callable once per frame.
+**What it writes** (spec §5, as Rendering amended it):
+- V is (u, v, w, dye) at cell centres. Dye is 0 until the solver carries the dye scalar.
+- S is (p gauge, |ω|, q̂, 0). Here q̂ = sign(Q)√|Q| and Q = |ω|²/4 − |S|²/2. The gradient's diagonal comes from the cell's own faces, its off-diagonal from central differences of the centred velocities (one-sided at the edges).
+- Every half goes through `fp16::from_f32`. NaN, ±inf and |x| ≥ 65520 are no-data: counted, and left out of the ranges.
+- With a solid mask, the first solid layer takes its fluid face-neighbours' mean, and deeper solid cells are no-data (the demonstration plan, P6).
+
+**Tests:** `AirflowPublish`, 6: uniform flow; solid-body rotation (|ω| = 2W, q̂ = W); pure strain (q̂ = −a); no-data counted and kept out of the ranges; the solid layers; a mismatched mask refused.
+**Not yet:** decimation by 2, and a header field for the extrapolated count (Core's and Rendering's call).
+
+---
+
 ### Task 9: The actuator-disc source
 
 **Files:**
