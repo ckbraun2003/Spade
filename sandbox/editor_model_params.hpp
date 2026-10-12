@@ -85,6 +85,7 @@ using ParamValue = std::variant<float, uint32_t, glm::vec3, glm::quat, std::stri
         case E::rotor: return "rotor " + std::to_string(index);
         case E::drag_body: return "drag body " + std::to_string(index);
         case E::imu_mount: return "IMU mount " + std::to_string(index);
+        case E::part: return "part " + std::to_string(index);
     }
     return "part " + std::to_string(index);
 }
@@ -150,6 +151,7 @@ struct FieldRef {
         case E::rotor: return m.rotors.size();
         case E::drag_body: return m.drag_bodies.size();
         case E::imu_mount: return m.imu_mounts.size();
+        case E::part: return m.parts.size();
     }
     return 0;
 }
@@ -161,6 +163,7 @@ struct FieldRef {
         case E::rotor: return "rotors";
         case E::drag_body: return "drag bodies";
         case E::imu_mount: return "IMU mounts";
+        case E::part: return "parts";
     }
     return "parts";
 }

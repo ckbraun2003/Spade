@@ -10,6 +10,7 @@
 
 #include "core/error.hpp"
 #include "physics/forces.hpp"  // drag_mode:: -- the element mode a DragBodyDesc names
+#include "vehicles/model_part.hpp"  // PartDesc -- a model's solid geometry, part by part (CORE-7)
 
 // ===========================================================================
 // ModelType -- the MODEL-TYPE LAYER (engine design spec S6 "Vehicles -- the
@@ -22,6 +23,9 @@
 //
 //     body template . proxy . element descs . sensor mounts . visual refs
 //     . param schema id
+//
+// and, since CORE-7, the model's solid geometry, part by part (`parts`,
+// vehicles/model_part.hpp): description only, read by no step yet.
 //
 // ---------------------------------------------------------------------------
 // WHAT A ModelType IS NOT, STATED FIRST BECAUSE IT IS THE WHOLE DESIGN
@@ -194,16 +198,21 @@ struct ImuMountDesc {
 // reorders its rotors between two runs is a different model.
 // ---------------------------------------------------------------------------
 // One problem ModelType::issues() finds: the element at fault (the model
-// itself, or one rotor, drag body or IMU mount, with its index), the field,
-// named as its struct names it ("spin_dir", "local_orient", "body.mass", and
-// for the three element counts "rotors", "drag_bodies", "imu_mounts"), and
-// the message validate() returns for it, word for word.
+// itself, or one rotor, drag body, IMU mount or part, with its index), the
+// field, named as its struct names it ("spin_dir", "local_orient",
+// "body.mass", and for the three element counts "rotors", "drag_bodies",
+// "imu_mounts"), the message validate() returns for it, word for word, and
+// the code validate() returns with it.
+//
+// AN EXHAUSTIVE SWITCH OVER Element needs a case for each value; `part` was
+// added after imu_mount (CORE-7).
 struct ModelIssue {
-    enum class Element : uint8_t { model, rotor, drag_body, imu_mount };
+    enum class Element : uint8_t { model, rotor, drag_body, imu_mount, part };
     Element element = Element::model;
     std::size_t index = 0;
-    std::string field;
-    std::string message;
+    std::string field{};
+    std::string message{};
+    Code code = Code::invalid_argument;  // invalid_argument, except a part shape deeper than kMaxSdfDepth
 };
 
 struct ModelType {
@@ -236,6 +245,12 @@ struct ModelType {
     std::vector<DragBodyDesc> drag_bodies;
     std::vector<ImuMountDesc> imu_mounts;
 
+    // The model's solid geometry, part by part (CORE-7; vehicles/
+    // model_part.hpp). Empty by default. Declaration order is the part index
+    // every refusal names. NOT folded into model_identity() until a step reads
+    // the parts (stage 7), and read by no step today.
+    std::vector<PartDesc> parts;
+
     // How many of this world's declared Capacities::force_elements one
     // instance consumes. Rotors and drag bodies live in SEPARATE arena arrays
     // but share ONE declared budget, because spec S3 calls them both force
@@ -261,7 +276,10 @@ struct ModelType {
     // world_set.cpp's in_range() and contacts.cpp's guards both use.
     //
     // Codes: invalid_argument for every failure (a bad model is a caller
-    // error, not a capacity one).
+    // error, not a capacity one), with one exception: a part shape that needs
+    // more than kMaxSdfDepth evaluation slots keeps SdfProgram::validate()'s
+    // capacity_exceeded, as validate_scene() does. validate() returns the
+    // first issue's own code.
     // -----------------------------------------------------------------------
     [[nodiscard]] Result<void> validate() const;
 
