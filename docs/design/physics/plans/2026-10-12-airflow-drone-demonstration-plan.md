@@ -16,6 +16,10 @@ Inputs: Core (`../../core/2026-10-12-airflow-demo-core-inputs.md`, `a411a50`), I
 - **Thrust follows the throttle,** with real arm and disarm, so the rotors spin up and down through the motor model. Spin-up sheds the start-up vortex ring.
 - **The floor is optional.** With a floor, the box's lower face is a no-slip wall at the chosen height below the drone (ground effect, the outwash). Without one, that face is an outlet.
 - **Wind gives forward-flight conditions:** an inflow face at the wind speed and an outlet opposite. In still air every face is an outlet, as in V1's C8.
+- **Two flight conditions, and they differ only at the floor:**
+  - **Forward flight at `v`:** in the drone's frame the air and the ground both pass at `−v`. Plan A's `DomainBc` gives this directly: the open faces carry `ambient = −v`, and the floor is a moving wall (`wall_velocity = −v`, a rolling road, as in an F1 tunnel). Without that, the floor would grow a boundary layer that real flight doesn't have.
+  - **Hover in a wind:** the air passes and the ground is still, so `wall_velocity = 0`.
+  - Interface's flags name the two conditions separately.
 
 The scene shows:
 - **The drone as a solid wall.** Its surfaces are coloured by the pressure coefficient `C_p` from the solved wall pressure.
@@ -67,6 +71,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
     - the blade count and radius, the hub radius, and stations along the span, each with chord, twist and an airfoil;
     - the airfoil's polars, `C_l` and `C_d` against α, imported with their source;
     - absent a polar, a flat-plate default, labelled "estimated" wherever it shows;
+    - a polar that stops short of ±90° (XFOIL and tunnel tables stop near ±15–20°) is extended there by Viterna–Corrigan, with the blade's aspect ratio, labelled "extrapolated" (decided with Interface, 2026-10-12);
     - P5 lofts the blade mesh from the same definition.
   - The format is shared with Interface (the case format, Q8). The flat plate's trigonometry goes through `core/fp32_math` (`TD-3`). Each element's force is spread with a Gaussian kernel of width about 2 `dx`. The time step is limited by the tip (1 cell per step). It is selectable per rotor beside the disc. Its integrated thrust is reported against the sim's `k_T ω²`, since one-way they can differ.
 - **P5. Blade-resolved.** Rotating blade geometry as a moving immersed solid in a nested fine grid (spec §11.4's nests), with a wall model. **One decision to bring back with measurements:** this belongs in the real-time NS tier with nests, or in the LBM tier (spec §1.6, where bounce-back handles moving walls directly).
