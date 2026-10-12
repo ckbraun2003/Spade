@@ -84,6 +84,7 @@ Every run of a validation case leaves one record, in its case's records folder (
 **The shape**, so a reader (the report, and the sandbox's Validation readout, I2) can parse it:
 - One file per case, for example `c1-cavity.md`. Records are appended in date order, each in its own fenced `text` block, which readers skip as fence lines.
 - A record opens with `=== validation record: <case> ===`, then one `key: value` per line. The keys are `commit`, `date`, `path`, `config`, then for each measure in order: `measure`, `reference`, `tolerance` and `verdict`.
+- `measure` is `<quantity> = <value>`, with the unit after the value where there is one (`= 0.0123`, `= 3.41 m/s`). Readers split at the last ` = `. `reference` names its source with its table or figure, and its data file when there is one.
 - The test prints the opening line and everything from `path` down; whoever pastes inserts `commit` and `date` after the opening line.
 
 ```text
