@@ -29,7 +29,8 @@
 //
 // SOLID CELLS (the demonstration plan, P6). With a solid mask, the first layer
 // of solid cells -- any solid cell with a fluid face-neighbour -- takes the
-// mean of its fluid face-neighbours' channels (faces -x, +x, -y, +y, -z, +z),
+// mean of its fluid face-neighbours' channels (faces -x, +x, -y, +y, -z, +z;
+// across the wrap on a periodic axis),
 // so a surface sampled for C_p reads the wall's pressure; deeper solid cells
 // are no-data in every channel but the reserved one.
 // ---------------------------------------------------------------------------

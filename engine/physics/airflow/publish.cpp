@@ -149,16 +149,22 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                 if (!is_solid(i, j, k)) {
                     ch = fluid_channels(x, i, j, k);
                 } else {
-                    // The fluid face-neighbours, -x, +x, -y, +y, -z, +z.
+                    // The fluid face-neighbours, -x, +x, -y, +y, -z, +z; across the wrap
+                    // on a periodic axis of more than one cell (the final review's M3).
                     const uint32_t n[3] = {s.nx, s.ny, s.nz};
                     const uint32_t at[3] = {i, j, k};
                     Channels sum{};
                     uint32_t fluid = 0;
                     for (uint32_t a = 0; a < 3; ++a) {
                         for (uint32_t dir = 0; dir < 2; ++dir) {
-                            if (dir == 0 ? at[a] == 0u : at[a] + 1u == n[a]) continue;
+                            const bool edge = dir == 0 ? at[a] == 0u : at[a] + 1u == n[a];
+                            if (edge && !(in.periodic[a] && n[a] > 1u)) continue;
                             uint32_t nb[3] = {i, j, k};
-                            nb[a] = dir == 0 ? at[a] - 1u : at[a] + 1u;
+                            if (edge) {
+                                nb[a] = dir == 0 ? n[a] - 1u : 0u;
+                            } else {
+                                nb[a] = dir == 0 ? at[a] - 1u : at[a] + 1u;
+                            }
                             if (is_solid(nb[0], nb[1], nb[2])) continue;
                             const Channels f = fluid_channels(x, nb[0], nb[1], nb[2]);
                             for (uint32_t c = 0; c < kFlowChannelCount; ++c) sum[c] += f[c];

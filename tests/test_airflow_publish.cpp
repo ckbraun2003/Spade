@@ -172,4 +172,30 @@ TEST(AirflowPublish, APeriodicAxisWrapsItsEdgeDifferences) {
     }
 }
 
+
+// The final review's M3 (2026-10-12): on a periodic axis the solid layer's
+// fluid neighbour across the wrap counts. A wall of solid cells at i = 0 in a
+// box periodic in x: its only fluid face-neighbours are at i = 1 and, across
+// the wrap, i = n - 1. Pressure 1 at i = 1 and 3 at i = n - 1: the wall reads
+// their mean, 2, not 1.
+TEST(AirflowPublish, APeriodicAxisWrapsTheSolidLayersFluidNeighbours) {
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({6, 2, 2, 0.5f}, bc);
+    std::vector<uint8_t> solid(g.p.size(), 0);
+    for (uint32_t k = 0; k < 2; ++k) {
+        for (uint32_t j = 0; j < 2; ++j) {
+            solid[cell_index(g.shape, 0, j, k)] = 1;
+            for (uint32_t i = 0; i < 6; ++i) g.p[cell_index(g.shape, i, j, k)] = i == 5 ? 3.0f : 1.0f;
+        }
+    }
+    FlowVolume vol;
+    const auto counts = publish_render_volume(g, {.solid = solid, .periodic = {true, true, true}}, vol);
+    ASSERT_TRUE(counts.has_value());
+    EXPECT_EQ(counts->extrapolated, 4u);
+    for (uint32_t k = 0; k < 2; ++k) {
+        for (uint32_t j = 0; j < 2; ++j) EXPECT_EQ(channel(vol, 0, j, k, spade::kFlowPressure), 2.0f) << j << "," << k;
+    }
+}
+
 }  // namespace
