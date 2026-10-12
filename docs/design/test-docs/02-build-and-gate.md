@@ -98,6 +98,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 
   Full speed resumes when the game closes. A bench window needs no game running, as well as both trees quiet.
 - **Stop only processes you started, by PID or task id, never by name or pattern** (Kat's rule, adopted for Spade by the lead on 2026-10-12). The box is shared, so `Stop-Process -Name`, `pkill`, `taskkill /IM` or `docker stop $(docker ps -q)` can kill another session's build, suite or leg. Record the id when you start a background job or a leg, and stop that id: `Stop-Process -Id`, `taskkill /PID`, or `docker stop <container>` for a container you started. If you can't prove a process is yours, leave it and tell the lead.
+- **Check free memory before each heavy run** (a build, a full or chunked suite, a leg; the lead, 2026-10-12). In PowerShell, `(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB` gives free GB. Under 6 GB, wait a few minutes and check again rather than start. Run suites serially (no `ctest -j`), in foreground chunks of under 10 minutes each. Why: Rendering's debug run was killed at 3.9 GB free with no game running, while Kat's builds and several Spade realms' `-j8` builds and suites ran at once.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 
