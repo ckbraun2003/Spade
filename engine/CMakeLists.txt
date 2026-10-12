@@ -169,7 +169,8 @@ install(DIRECTORY core/ DESTINATION include/core FILES_MATCHING PATTERN "*.hpp")
 
 # ------------------------------------------------------------------------------
 # spade_world: the analytic SDF scene program (world/sdf.*) plus the
-# WorldBuilder and its WorldDesc product (world/builder.*). STATIC rather than
+# WorldBuilder and its WorldDesc product (world/builder.*), and a part's
+# triangle mesh (world/mesh.*, CORE-6; its readers are NOT here). STATIC rather than
 # INTERFACE because it has translation units -- the SDF evaluator lives in one
 # .cpp so its pinned fp32 op order sits in a single, reviewable place.
 #
@@ -195,6 +196,7 @@ add_library(spade_world STATIC
     world/builder.cpp
     world/medium.cpp
     world/world_file.cpp
+    world/mesh.cpp
 )
 add_library(spade::world ALIAS spade_world)
 set_target_properties(spade_world PROPERTIES EXPORT_NAME world)

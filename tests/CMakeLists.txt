@@ -60,6 +60,7 @@ add_executable(spade_tests
     test_path_text.cpp
     test_unique_temp.cpp
     test_sdf.cpp
+    test_mesh.cpp
     test_state.cpp
     test_snapshot.cpp
     test_rng_medium.cpp
