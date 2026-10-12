@@ -2629,7 +2629,6 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1f(u.inv_cell, prepared.sampler.inv_cell);
         gl.BindVertexArray(s.empty_vao);
         gl.DrawArrays(GL_TRIANGLES, 0, 36);
-        ++draw_calls;
         gl.BindVertexArray(0);
         gl.Disable(GL_BLEND);
         gl.BlendFunc(GL_ONE, GL_ZERO);

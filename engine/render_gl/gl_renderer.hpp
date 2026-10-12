@@ -121,17 +121,24 @@ class GlRenderer {
     // modes, as raster_cpu does, and drawn from their meshes in wireframe
     // (RS3). Field layers draw filled in every mode, as raster_cpu draws them,
     // and so do the overlays, from raster_cpu's own lists
-    // (render::overlay_geometry()). Raymarch is refused with
-    // Code::unavailable: it is a CPU technique. A malformed field layer is
-    // refused with Code::invalid_argument, and so is a scene whose meshes or
-    // CSG subtrees are not the ones uploaded.
+    // (render::overlay_geometry()). The airflow views draw as raster_cpu
+    // draws them, each within a band measured against it: surface colouring
+    // on meshes and CSG, streamlines and tracers, and one flow layer per
+    // frame, marched with its iso-surfaces. Raymarch is refused with
+    // Code::unavailable: it is a CPU technique; so is a second flow layer,
+    // and a flow volume past the device's 3D texture size. A malformed field
+    // layer or flow input is refused with its validator's code, and a scene
+    // whose meshes or CSG subtrees are not the ones uploaded with
+    // Code::invalid_argument.
     //
     // Renders into the CURRENTLY BOUND framebuffer at the given size and
     // covers every pixel. It does not present: that belongs to whoever owns
-    // the window. It changes depth, cull, polygon-mode, blend and texture
-    // unit 0 state, so a caller drawing its own geometry afterwards sets the
-    // state it needs. A frame with dynamic casters draws them into its own
-    // framebuffer first, and rebinds the caller's after.
+    // the window. It changes depth, cull, polygon-mode, blend, point-size and
+    // texture units 0 to 4 state, so a caller drawing its own geometry
+    // afterwards sets the state it needs. A frame with dynamic casters draws
+    // them into its own framebuffer first, and so does a frame with a flow
+    // layer (a depth-only copy of its opaque passes); each rebinds the
+    // caller's after.
     [[nodiscard]] Result<void> draw(const render::RenderScene& scene, const render::Camera& camera,
                                     const render::RenderOptions& options, uint32_t width,
                                     uint32_t height);
