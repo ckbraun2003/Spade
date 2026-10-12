@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -188,4 +189,19 @@ TEST(EditorWorkspace, ASelectionThatUndoRemovesIsCleared) {
     ASSERT_EQ(w->panels().selection, object("sphere"));
     command(*w, Command::undo);
     EXPECT_EQ(w->panels().selection.kind, Selection::Kind::none);
+}
+
+// F frames the selection: a vehicle within its reach, an asset within its box.
+TEST(EditorWorkspace, TheSelectionsFramingSurroundsIt) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    EXPECT_FALSE(w->selection_framing().has_value());  // nothing selected
+    w->click(quad_start(*w) + glm::vec3(0.0f, 0.0f, 6.0f), kForward);
+    const std::optional<ed::Framing> drone = w->selection_framing();
+    ASSERT_TRUE(drone.has_value());
+    EXPECT_EQ(drone->centre, quad_start(*w));
+    EXPECT_GT(drone->radius, 0.25f);  // its arms and rotors
+    EXPECT_LT(drone->radius, 0.5f);
+    w->panels().selection = Selection{Selection::Kind::world, {}};
+    EXPECT_FALSE(w->selection_framing().has_value());
 }

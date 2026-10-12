@@ -373,3 +373,17 @@ TEST(SandboxDroneOrbit, DCarriesTheEyeToTheCamerasRight) {
     spade::sandbox::apply_drone_orbit(cam, in, 0.1f);
     EXPECT_GT(glm::dot(cam.eye_position() - before, right), 0.0f);
 }
+
+// "Frame selected" (the editor's F, as in Unity and Unreal): the camera looks
+// at the selection from as far as fits it in the view, with a margin.
+TEST(SandboxOrbitCamera, FramingLooksAtTheCentreFromWhereTheRadiusFits) {
+    spade::sandbox::OrbitCamera cam;
+    cam.frame(glm::vec3(1.0f, 2.0f, 3.0f), 0.5f);
+    EXPECT_EQ(cam.target, glm::vec3(1.0f, 2.0f, 3.0f));
+    const float half_fov = 0.5f * spade::render::Camera{}.fov_y_radians;
+    EXPECT_NEAR(cam.distance, 0.5f / std::sin(half_fov) * spade::sandbox::OrbitCamera::kFrameMargin, 1e-4f);
+    cam.frame(glm::vec3(0.0f), 1e6f);  // bounded like the dolly
+    EXPECT_EQ(cam.distance, spade::sandbox::OrbitCamera::kMaxDistance);
+    cam.frame(glm::vec3(0.0f), 0.0f);
+    EXPECT_EQ(cam.distance, spade::sandbox::OrbitCamera::kMinDistance);
+}

@@ -1019,6 +1019,15 @@ void editor_tour(Tour& t, const fs::path& assets) {
         click_towards(w.documents().scene.desc().vehicles.at(0).start.pos);
         s.check(w.panels().selection == editor::Selection{editor::Selection::Kind::object, name}, "selects-vehicle",
                 "selected '" + w.panels().selection.name + "'");
+        // F frames it ("Frame selected"), from wherever the camera was.
+        const glm::vec3 drone = w.documents().scene.desc().vehicles.at(0).start.pos;
+        session->camera().target = glm::vec3(0.0f);
+        session->camera().distance = 12.0f;
+        t.pump(20, idle, draw);
+        t.pump(1, [](int) { FrameInput in; in.frame_pressed = true; return in; }, draw);
+        const float off = glm::length(session->camera().target - drone);
+        s.check(off < 1e-4f && session->camera().distance < 2.0f, "frames-selection",
+                "camera " + fmt(off) + " m off the drone, " + fmt(session->camera().distance) + " m away");
         t.pump(30, idle, draw);
         t.snapshot("editor_vehicle");
         t.pump(30, idle, draw);

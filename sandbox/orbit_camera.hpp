@@ -77,6 +77,7 @@ struct FrameInput {
 
     bool delete_pressed = false;     // Delete/Backspace -- remove the selection
     bool duplicate_pressed = false;  // Ctrl+D
+    bool frame_pressed = false;      // F, edge -- the editor frames the selection
 
     // ----- Drone sim box input ---------------------------------------------
     // Held axes, -1..1, each nudging an attitude target that holds when
@@ -117,6 +118,16 @@ struct OrbitCamera {
     // NaN quaternion and every subsequent frame is garbage. The clamp is a
     // CORRECTNESS bound, which is why it is a named constant and not a nudge.
     static constexpr float kPitchLimit = 1.5533430342749532f;  // pi/2 - 0.0175 (~1 degree)
+
+    // "Frame selected" (the editor's F, as in Unity and Unreal): look at
+    // `centre` from as far as fits a sphere of `radius` in the vertical field
+    // of view, times a margin, bounded like the dolly. The angles are kept.
+    static constexpr float kFrameMargin = 1.6f;
+    void frame(glm::vec3 centre, float radius) noexcept {
+        target = centre;
+        const float d = radius / std::sin(0.5f * spade::render::Camera{}.fov_y_radians) * kFrameMargin;
+        distance = std::clamp(std::isfinite(d) ? d : kMaxDistance, kMinDistance, kMaxDistance);
+    }
 
     void apply(const FrameInput& in, float dt_seconds) noexcept {
         yaw -= in.orbit_dx * orbit_radians_per_pixel;
