@@ -16,8 +16,9 @@
 // channels each, stored as raw halves (core/fp16.hpp's rule):
 //   V = (u, v, w) in m/s, dye (dimensionless);
 //   S = gauge pressure in Pa, vorticity magnitude |w| in 1/s,
-//       q-hat = sign(Q) sqrt(|Q|) in 1/s for the Q-criterion, and a channel
-//       reserved as zero.
+//       q-hat = sign(Q) sqrt(|Q|) in 1/s for the Q-criterion, and
+//       lambda2-hat = sign(lambda2) sqrt(|lambda2|) in 1/s for the lambda2
+//       criterion (core/lambda2.hpp; below zero in a vortex core).
 // A sample that is NaN, infinite or past binary16's range is no-data
 // (fp16::kNoDataBits), counted in the header, and drawn as clear (L6).
 //
@@ -51,7 +52,9 @@ enum FlowChannel : uint32_t {
     kFlowPressure = 4,
     kFlowVorticity = 5,
     kFlowQHat = 6,
-    kFlowReserved = 7,
+    kFlowLambda2Hat = 7,
+    // The channel's old name, until Publish fills it (Physics); then it goes.
+    kFlowReserved = kFlowLambda2Hat,
 };
 inline constexpr uint32_t kFlowChannelCount = 8;
 inline constexpr uint32_t kFlowHalvesPerCell = 4;  // per texture

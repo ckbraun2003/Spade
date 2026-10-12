@@ -100,11 +100,16 @@ target_compile_options(spade_fp_strict INTERFACE
 # own atan2 in double (corner angles, import time) and the fp32 closest point
 # on a triangle (the mesh query), built once under spade_fp_strict. Its header
 # is internal: the install rule below leaves it out.
+#
+# core/lambda2.cpp is the same choice for the flow volume's vortex criterion.
+# Publish writes it into a channel that Physics' airflow golden folds, so its
+# Jacobi solve is built once, under spade_fp_strict.
 # ------------------------------------------------------------------------------
 add_library(spade_core STATIC
     core/math_ops.cpp
     core/fp32_math.cpp
     core/detail/math_ops_f64.cpp
+    core/lambda2.cpp
 )
 add_library(spade::core ALIAS spade_core)
 
