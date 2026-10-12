@@ -1130,11 +1130,12 @@ TEST_F(GpuGlRenderer, RefusesMoreThanOneFlowLayer) {
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
-// Per channel, between two frames: the largest difference in levels, and how
-// many pixels differ at all.
+// Per channel, between two frames: the largest difference in levels, how
+// many pixels differ at all, and how many by more than two levels.
 struct ChannelDiff {
     int worst = 0;
     size_t differing = 0;
+    size_t over_two = 0;
 };
 [[nodiscard]] ChannelDiff channel_diff(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b) {
     ChannelDiff d;
@@ -1143,6 +1144,7 @@ struct ChannelDiff {
         for (size_t c = 0; c < 3; ++c) m = std::max(m, std::abs(int{a[p * 4u + c]} - int{b[p * 4u + c]}));
         d.worst = std::max(d.worst, m);
         d.differing += m > 0 ? 1u : 0u;
+        d.over_two += m > 2 ? 1u : 0u;
     }
     return d;
 }
@@ -1202,8 +1204,14 @@ TEST_F(GpuGlRenderer, FlowVolumeMatchesTheCpuWithinItsBand) {
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     std::printf("[ flow volume ] %zu px marched; worst %d levels, %zu pixels differ; on %s\n", marched, d.worst,
                 d.differing, device.c_str());
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(d.worst, 0);
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): of 3986 marched pixels, 3134 differ, by at most
+    // two levels. GLSL's exp() for exp32(), float order in the sums, and the
+    // framebuffer's blend in place of the CPU's to_byte() rounding.
+    constexpr int kBandWorstLevels = 2;
+    constexpr size_t kBandDifferingPixels = 3134;
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
 // The flow_vortex_ring_q golden's layer: the Q iso at 30% of its peak,
@@ -1245,10 +1253,19 @@ TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
     RecordProperty("worst_levels", d.worst);
     RecordProperty("differing_pixels", static_cast<int>(d.differing));
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
-    std::printf("[ flow iso ] %zu px marched; worst %d levels, %zu pixels differ; on %s\n", marched, d.worst,
-                d.differing, device.c_str());
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(d.worst, 0);
+    std::printf("[ flow iso ] %zu px marched; worst %d levels, %zu over two; %zu pixels differ; on %s\n", marched,
+                d.worst, d.over_two, d.differing, device.c_str());
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): 693 pixels differ, 674 of them by one or two
+    // levels. The other 19 are the CPU line rasterizer's known gaps along the
+    // streamline (rendering 07-status; fixed on rendering/line-gaps): GL draws
+    // the line's pixel where the CPU skipped it. Every iso pixel is within two
+    // levels, and the line hides behind the iso on both. When this branch
+    // sits on line-gaps, re-measure: over two should fall to 0.
+    constexpr size_t kBandOverTwoPixels = 19;
+    constexpr size_t kBandDifferingPixels = 693;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
