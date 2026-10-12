@@ -1,13 +1,13 @@
 # The drone airflow demonstration — plan
 
-**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** DRAFT for the lead, who takes it to Cameron. Interface's inputs are still to come.
+**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** DRAFT for the lead, who takes it to Cameron.
 **Goal** (Cameron, 2026-10-12, word for word): "I want to ensure that regarding Spade, the aerodynamics grid solver, pressure surface visualizations, and overall computational fluid dynamics analyses are present with the conclusion and validation being a full 3D visualization of a drone and the airflow around that drone, including propeller flow, vortices, etc."
 **Rests on:** `PHY-9` and the airflow spec (`2026-10-05-airflow-design.md`), plus Cameron's three answers of 2026-10-12, recorded as `PHY-10`:
 - **Path:** a sandbox demo first, then the engine module.
 - **Rotors:** the disc, the actuator line and blade-resolved, all three available.
 - **Surfaces:** the drone is a solid wall, with porous as an option.
 
-Inputs: Core (`../../core/2026-10-12-airflow-demo-core-inputs.md`, `a411a50`) and Rendering (2026-10-12).
+Inputs: Core (`../../core/2026-10-12-airflow-demo-core-inputs.md`, `a411a50`), Interface (`../../interface/2026-10-12-airflow-demo-interface-inputs.md`, `7292cbd`) and Rendering (2026-10-12).
 
 ## What the demonstration shows
 
@@ -56,6 +56,11 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 - **P7. The coupler.** A pure function in `physics/airflow/`, used by the sandbox harness in D1–D3 and by plan C's module in D4:
   - In: each rotor's hub, axis, ω, spin, radius and torque; thrust recomputed on the host (Core: not stored); the body's pose and velocity; the drone's SDF.
   - Out: the sources and the moving boundary for one fluid step.
+  - What Interface's harness binds to, all in `physics/airflow/`:
+    - **(i)** the coupler takes the rotors as a plain list the harness fills, one row per rotor: hub, axis, ω, spin, radius, torque, thrust, and the rotor's model;
+    - **(ii)** the fluid-substep rule is one function: the flow CFL, plus the actuator line's tip rule (at most 1 cell per step). The harness calls it and never copies it;
+    - **(iii)** the rotor model per rotor (disc, line, resolved) and the surface per body or part (wall, or porous with its two coefficients) are plain data, so the panel binds to them;
+    - **(iv)** the flow-volume publish (8b) is callable per frame.
 - **P8. The flow volume on the GPU.** Pack f16 on the device, or read back fp32 and pack on the CPU, whichever the spike measures cheaper. It is part of plan B (Core: no plan held it).
 - **P9. Rotor validation data**, with provenance, reviewed by Test/Docs like Ghia. The candidates, each to be read from its source:
   - Caradonna & Tung (1981, NASA TM 81232): blade pressure and tip-vortex positions in hover, at the low-Mach condition. Incompressible at tip Mach 0.44, about a 10% compressibility caveat, stated.
@@ -70,9 +75,15 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 
 **Rendering:** R1, offline CPU `render()` to frames (D1). R2, the `C_p` surface view (D1). R3, step 7, GL live: volume, iso, lines, points and surfaces (D2). Seed rings per hub come from P7's rotor list.
 
-**Interface (inputs to come):**
-- I1: the sandbox's airflow demo harness. It steps the `Simulation` on the CPU; each frame it reads the rotors and the pose, calls P7 and the solver, publishes, and renders or records. It also carries the model, grid and real-time-ratio display.
-- I2: the live mode, with HUD panels for the validation numbers.
+**Interface** (`7292cbd`):
+- **I1, the harness:** `sandbox/airflow_run.hpp`, display-free, with one stepping core.
+  - `advance()` moves one frame (1/30 s). Each fluid substep reads the rotors and the pose, calls P7, and steps the solver; the volume is published at frame end.
+  - It is one-way, with no wall clock in stepped code.
+  - Two front ends drive it. The headless one, `spade_sandbox --airflow-record --rotor disc|line|resolved --surface solid|porous --grid N --flight hover|forward:<v> --height h --seconds s --out dir`, serves D1 and D3. The window serves D2.
+- **The panel:** an "Airflow" window with the rotor model for all rotors plus a per-rotor override (blade-resolved is greyed live: offline only), the surface per body, the grid (dx and R/dx shown), the flight state, the ground height, and the views. Changing the model, surface or grid restarts the flow.
+- **The run line** is in every frame and caption, e.g. "actuator line · 128³, dx 5 mm, R/dx 24 · 0.004× real time · t = 0.250 s".
+- **I2, the readouts:** airspeed, α/β, and per-rotor thrust as `k_T ω²` beside the actuator-line integral. Also the P3 wall force and moment, `C_T`, and a Validation section read from `tests/data/airflow/records/`.
+- **Live smoke:** an `airflow` tour main. It checks that each view drew, the volume was published, `C_p` is finite and the run line was shown, and that the mp4 is under 30 MB.
 
 **Test/Docs:** T1, the record format (on `test-docs/validation-tolerances`). T2, the review of P9's reference data. T3, a small-grid golden of the coupler (P7) on the CPU.
 
