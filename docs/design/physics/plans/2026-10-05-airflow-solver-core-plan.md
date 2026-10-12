@@ -2596,6 +2596,10 @@ git commit -m "test(physics): airflow reference data with provenance, reviewed b
 **The cases and their tolerances**, fixed here before the first run (spec §11.2):
 - **C1, gate:** 32 × 32 (a quasi-2D slab, `nz` = 1 periodic), `Re` = 100, `T` = 20. Max over Ghia's points of `|u − u_Ghia|` and `|v − v_Ghia|` ≤ **0.06** (`U` = 1). This guards against regressions; the validation figure is the next one.
 - **C1, opt-in:** 128 × 128, `Re` = 100 (`T` = 40) and 400 (`T` = 60). Both measures ≤ **0.02**.
+- **Table II, point 117 at `Re` = 400 is left out of the `v` maximum** (decided 2026-10-12, before any run, as Test/Docs' a-priori rule requires). The paper prints −0.23827. That breaks the trend between −0.22847 and −0.44993 and is a suspected typo in the original: two reproductions flag it, and every source copies it. The data keeps it as printed (`kGhiaTableIIPoint117`). The `Re` = 400 record's measure line names the exclusion and its reason. `Re` = 100 keeps all 17 points.
+- **The records** follow Test/Docs' shape (`01-verification`):
+  - the opening line, then `path:`, `config:`, and per measure `measure: <quantity> = <value> [unit]`, `reference:`, `tolerance:` with its origin, and `verdict:` (within, MISS or report only), computed from the same comparison as the EXPECT;
+  - the person pasting adds `commit:` and `date:`.
 - **C0, opt-in:** 64³, inviscid, `T` = 10. Report only: the kinetic energy every 0.5, finite, and lower at `T` than at the start.
 - **C8, opt-in:** an actuator disc, `R` = 0.1 m = 10 cells, in a 64 × 128 × 64 box at `dx` = 1 cm, still air, inviscid, `v_h` = 4 m/s. The axial velocity on the axis at `2R` below the disc, time-averaged over the last 128 of 384 steps, within **10%** of momentum theory's `v_h (1 + 2/√5)`. About 6–7 minutes in release.
 - **Opt-in** cases skip by name unless `SPADE_AIRFLOW_VALIDATION=1`. Run them with the release binary and `--gtest_filter`, which has no ctest timeout.
