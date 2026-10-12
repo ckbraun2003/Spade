@@ -5,6 +5,7 @@
 //
 //   scene set-asset-pose box_1 pos 0 1.79999995 0 rot 1 0 0 0 scale 1
 //   world set-capacities bodies 4 force-elements 8 sensors 2 contacts 4
+//   world add-terrain box 0.5 0.5 0.5 0 pos 3 0.5 0 rot 1 0 0 0 scale 1 material 0
 //
 // - Tokens are separated by spaces. A name that is empty, starts with '#', or
 //   holds a space, a tab, a quote or a backslash is written in double quotes,
@@ -814,12 +815,62 @@ inline Result<void> put_edit(Writer& w, const RemoveProp& e) {
     return {};
 }
 
+// Terrain (Task 15). Every primitive kind has a word, and all four parameters
+// are written: the plane and the heightfield use all four (sdf.hpp's packing).
+inline constexpr std::array<std::string_view, kSdfPrimCount> kTerrainKinds = {
+    "plane", "sphere", "box", "cylinder", "capsule", "torus", "heightfield"};
+inline constexpr std::string_view kTerrainKindList =
+    "a terrain primitive (plane, sphere, box, cylinder, capsule, torus or heightfield)";
+
+inline Result<void> put_edit(Writer& w, const AddTerrainPrimitive& e) {
+    const auto kind = static_cast<std::size_t>(e.kind);
+    if (kind >= kTerrainKinds.size()) {
+        return std::unexpected(Error{Code::invalid_argument, "add-terrain: primitive kind " + std::to_string(kind) +
+                                                                 " has no word; the kinds are numbered 0 to " +
+                                                                 std::to_string(kTerrainKinds.size() - 1)});
+    }
+    w.kw("add-terrain").kw(kTerrainKinds[kind]).v4(e.params);
+    put(w, e.pose);
+    w.kw("material").u(e.material);
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const RemoveTerrainPiece& e) {
+    w.kw("remove-terrain").u(e.piece);
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const ReposeTerrainPiece& e) {
+    w.kw("repose-terrain").u(e.piece);
+    put(w, e.pose);
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
+    w.kw("set-terrain-params").u(e.node).v4(e.params);
+    return {};
+}
+
+[[nodiscard]] inline AddTerrainPrimitive get_add_terrain(Reader& r) {
+    AddTerrainPrimitive e;
+    const std::string word = r.word(kTerrainKindList);
+    const auto found = std::find(kTerrainKinds.begin(), kTerrainKinds.end(), std::string_view(word));
+    if (found == kTerrainKinds.end()) {
+        r.reject(kTerrainKindList);
+        return e;
+    }
+    e.kind = static_cast<SdfPrim>(found - kTerrainKinds.begin());
+    e.params = r.v4("four parameters");
+    e.pose = get_pose(r);
+    r.expect("material");
+    e.material = r.u32("a material index");
+    return e;
+}
+
 inline constexpr std::string_view kSceneVerbs =
     "a scene edit (add-asset, add-vehicle, remove, rename, duplicate, move, set-asset-pose, set-asset-material, "
     "set-vehicle-start, add-material, repoint-world or set-model-param)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
-    "set-spawn, remove-spawn, add-prop, set-prop or remove-prop)";
+    "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
+    "set-terrain-params)";
 
 }  // namespace text
 
@@ -960,6 +1011,20 @@ inline constexpr std::string_view kWorldVerbs =
         out = e;
     } else if (verb == "remove-prop") {
         out = RemoveProp{static_cast<std::size_t>(r.u("a prop index, from 0"))};
+    } else if (verb == "add-terrain") {
+        out = text::get_add_terrain(r);
+    } else if (verb == "remove-terrain") {
+        out = RemoveTerrainPiece{static_cast<std::size_t>(r.u("a terrain piece, from 0"))};
+    } else if (verb == "repose-terrain") {
+        ReposeTerrainPiece e;
+        e.piece = static_cast<std::size_t>(r.u("a terrain piece, from 0"));
+        e.pose = text::get_pose(r);
+        out = e;
+    } else if (verb == "set-terrain-params") {
+        SetTerrainParams e;
+        e.node = static_cast<std::size_t>(r.u("a terrain node, from 0"));
+        e.params = r.v4("four parameters");
+        out = e;
     } else {
         r.reject(text::kWorldVerbs);
     }

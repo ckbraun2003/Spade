@@ -41,7 +41,8 @@ using spade::Result;
     return s;
 }
 
-// The hover world plus a spawn "pad" and a prop.
+// The hover world plus a spawn "pad", a prop, and a terrain box (piece 1,
+// node 1) beside the ground.
 [[nodiscard]] spade::WorldDesc base_world() {
     spade::WorldDesc w = support::sample_world();
     spade::SpawnPoint pad;
@@ -51,6 +52,9 @@ using spade::Result;
     spade::PropDesc crate;
     crate.mesh_ref = "crate.glb";
     w.props.push_back(crate);
+    spade::SdfPose box_at;
+    box_at.position = glm::vec3(3.0f, 0.5f, 0.0f);
+    w.sdf = ed::add_primitive(w.sdf, spade::SdfPrim::box, glm::vec4(0.5f, 0.5f, 0.5f, 0.0f), box_at).value();
     return w;
 }
 
@@ -163,6 +167,11 @@ using spade::Result;
         ed::AddProp{barrel},
         ed::SetProp{0, barrel},
         ed::RemoveProp{0},
+        ed::AddTerrainPrimitive{spade::SdfPrim::sphere, glm::vec4(0.75f, 0.0f, 0.0f, 0.0f),
+                                pose_of(glm::vec3(-2.0f, 1.0f, 0.5f), 0.3f, 1.0f), 0},
+        ed::RemoveTerrainPiece{1},
+        ed::ReposeTerrainPiece{1, pose_of(glm::vec3(4.0f, 0.5f, -1.0f), 0.8f, 1.25f)},
+        ed::SetTerrainParams{1, glm::vec4(1.0f, 0.25f, 0.5f, 0.0f)},
     };
 }
 
@@ -265,6 +274,11 @@ TEST(EditorEditText, AMalformedLineNamesItsFirstBadToken) {
     const Result<ed::WorldEdit> short_line = ed::parse_world_edit("world set-capacities bodies 1 force-elements 2 sensors 3");
     ASSERT_FALSE(short_line.has_value());
     EXPECT_NE(short_line.error().context.find("contacts"), std::string::npos) << short_line.error().context;
+    const Result<ed::WorldEdit> cone =
+        ed::parse_world_edit("world add-terrain cone 1 1 0 0 pos 0 0 0 rot 1 0 0 0 scale 1 material 0");
+    ASSERT_FALSE(cone.has_value());
+    EXPECT_NE(cone.error().context.find("'cone'"), std::string::npos) << cone.error().context;
+    EXPECT_NE(cone.error().context.find("heightfield"), std::string::npos) << cone.error().context;
 }
 
 TEST(EditorEditText, AModelParameterIsReadByItsTableKind) {

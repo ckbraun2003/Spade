@@ -9,8 +9,8 @@
 // name. So a material is only appended or changed, never removed, which keeps
 // every reference to it stable.
 //
-// Terrain (the SDF program) is edited through the helper in Task 15, which
-// Core reviews.
+// Terrain (the SDF program) is edited through editor_sdf_edit.hpp (Task 15),
+// which Core reviews; an exact no-op there commits nothing here.
 //
 // docs/design/interface/plans/2026-10-05-editor-design.md §6;
 // 2026-10-05-editor-plan.md Task 4.
@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -30,6 +31,7 @@
 
 #include "editor_document.hpp"
 #include "editor_scene_edits.hpp"
+#include "editor_sdf_edit.hpp"
 
 namespace spade::sandbox::editor {
 
@@ -72,9 +74,29 @@ struct SetProp {
 struct RemoveProp {
     std::size_t index = 0;
 };
+// Terrain, through editor_sdf_edit.hpp (Task 15). Pieces and nodes are
+// addressed by their place in the program, which is their only identity.
+struct AddTerrainPrimitive {
+    SdfPrim kind = SdfPrim::box;
+    glm::vec4 params{0.0f};  // sdf.hpp's packing for `kind`
+    SdfPose pose;
+    uint32_t material = 0;
+};
+struct RemoveTerrainPiece {
+    std::size_t piece = 0;
+};
+struct ReposeTerrainPiece {
+    std::size_t piece = 0;
+    SdfPose pose;
+};
+struct SetTerrainParams {
+    std::size_t node = 0;
+    glm::vec4 params{0.0f};
+};
 
 using WorldEdit = std::variant<RenameWorld, SetEnvironment, SetCapacities, AddWorldMaterial, SetWorldMaterial,
-                               SetLighting, AddSpawn, SetSpawn, RemoveSpawn, AddProp, SetProp, RemoveProp>;
+                               SetLighting, AddSpawn, SetSpawn, RemoveSpawn, AddProp, SetProp, RemoveProp,
+                               AddTerrainPrimitive, RemoveTerrainPiece, ReposeTerrainPiece, SetTerrainParams>;
 
 namespace detail {
 
@@ -166,6 +188,37 @@ inline Result<bool> change(WorldDesc& w, const SetProp& e) {
     if (e.index >= w.props.size()) return std::unexpected(past_end("prop", e.index, w.props.size()));
     w.props[e.index] = e.prop;
     return true;
+}
+
+// A terrain edit's result: committed unless the helper found an exact no-op
+// and returned the program as it was.
+[[nodiscard]] inline Result<bool> set_terrain(WorldDesc& w, Result<SdfProgram> next) {
+    if (!next) return std::unexpected(next.error());
+    const bool same = next->nodes.size() == w.sdf.nodes.size() &&
+                      next->transforms.size() == w.sdf.transforms.size() &&
+                      next->node_materials == w.sdf.node_materials &&
+                      std::memcmp(next->nodes.data(), w.sdf.nodes.data(), next->nodes.size() * sizeof(SdfNode)) == 0 &&
+                      std::memcmp(next->transforms.data(), w.sdf.transforms.data(),
+                                  next->transforms.size() * sizeof(SdfTransform)) == 0;
+    if (same) return false;
+    w.sdf = std::move(*next);
+    return true;
+}
+
+inline Result<bool> change(WorldDesc& w, const AddTerrainPrimitive& e) {
+    return set_terrain(w, add_primitive(w.sdf, e.kind, e.params, e.pose, e.material));
+}
+
+inline Result<bool> change(WorldDesc& w, const RemoveTerrainPiece& e) {
+    return set_terrain(w, remove_piece(w.sdf, e.piece));
+}
+
+inline Result<bool> change(WorldDesc& w, const ReposeTerrainPiece& e) {
+    return set_terrain(w, repose_piece(w.sdf, e.piece, e.pose));
+}
+
+inline Result<bool> change(WorldDesc& w, const SetTerrainParams& e) {
+    return set_terrain(w, set_node_params(w.sdf, e.node, e.params));
 }
 
 inline Result<bool> change(WorldDesc& w, const RemoveProp& e) {
