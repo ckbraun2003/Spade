@@ -50,6 +50,8 @@
 #include "world/builder.hpp"
 #include "render_gl/gl_renderer.hpp"
 
+#include "flow_synthetic.hpp"
+
 namespace {
 
 using spade::render::Camera;
@@ -1219,14 +1221,52 @@ TEST_F(GpuGlRenderer, FlowLinesAndPointsMatchTheCpuWithinTheirBand) {
 }
 
 // L6: nor surface colouring by a flow quantity (plan step 7).
-TEST_F(GpuGlRenderer, RefusesFlowSurfaceColouringUntilItsPassLands) {
-    RenderScene scene = slab_scene();
-    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    const spade::FlowVolume volume;
-    scene.flow_surface_colouring = spade::render::FlowSurfaceColouring{&volume, spade::render::TransferFunction{}};
-    const auto drew = renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "a surface colouring GL cannot draw must be refused";
-    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+TEST_F(GpuGlRenderer, SurfaceColouringMatchesTheCpuWithinItsBand) {
+    // Airflow plan step 7b: the C_p view on GL. A quad facing the camera at
+    // z = 0 inside a volume holding p = 2x - y + 0.5z (dyadic: f16 holds it
+    // exactly), coloured by pressure through cool-warm over [-2, 2]. GL colours
+    // each fragment at its own world point; the CPU rebuilds the point from
+    // depth. Compared per channel over the frame.
+    const spade::FlowVolume volume =
+        spade::test::make_flow_volume(glm::vec3(-1.0f, -2.0f, -1.0f), 0.25f, 8, 16, 8, [](glm::vec3 p) {
+            spade::test::FlowChannels c{};
+            c[spade::kFlowPressure] = 2.0f * p.x - p.y + 0.5f * p.z;
+            return c;
+        });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -2.0f;
+    colours.range_max = 2.0f;
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.5f, -1.5f, 0.0f), glm::vec3(1.5f, -1.5f, 0.0f), glm::vec3(1.5f, 1.5f, 0.0f),
+                      glm::vec3(-1.5f, 1.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    RenderScene coloured = scene;
+    coloured.flow_surface_colouring = spade::render::FlowSurfaceColouring{&volume, colours};
+
+    const std::vector<uint8_t> cpu = cpu_rgba(coloured, camera_on_plus_z(), comparable_options());
+    const std::vector<uint8_t> cpu_plain = cpu_rgba(scene, camera_on_plus_z(), comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(coloured);
+    ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw surface colouring now";
+    ASSERT_GT(count_differing(cpu, cpu_plain), kPixels / 10u) << "the colouring must change a good part of the frame";
+    int worst = 0;
+    size_t differing = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        int d = 0;
+        for (size_t c = 0; c < 3; ++c) d = std::max(d, std::abs(int{cpu[p * 4u + c]} - int{gl[p * 4u + c]}));
+        worst = std::max(worst, d);
+        differing += d > 0 ? 1u : 0u;
+    }
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ surface colouring ] worst %d levels, %zu pixels differ; on %s\n", worst, differing, device.c_str());
+    // RED: no band yet; measured and pinned in the green commit.
+    EXPECT_LE(worst, 0);
 }
 
 // validate()'s own code comes through: a program needing more stack than
