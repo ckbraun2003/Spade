@@ -81,6 +81,25 @@ Every run of a validation case leaves one record, in its case's records folder (
 - the commit and the date;
 - each measure: its value; the reference and its source (the data file and the paper's table or figure); the tolerance and where it was fixed (spec §11.2, or the plan that fixed it before the first run); and the verdict, `within` or `MISS`. A report-only case says `report only` instead.
 
+**The shape**, so a reader (the report, and the sandbox's Validation readout, I2) can parse it:
+- One file per case, for example `c1-cavity.md`. Records are appended in date order, each in its own fenced `text` block, which readers skip as fence lines.
+- A record opens with `=== validation record: <case> ===`, then one `key: value` per line. The keys are `commit`, `date`, `path`, `config`, then for each measure in order: `measure`, `reference`, `tolerance` and `verdict`.
+- The test prints the opening line and everything from `path` down; whoever pastes inserts `commit` and `date` after the opening line.
+
+```text
+=== validation record: C1 lid-driven cavity ===
+commit: 0123abc
+date: 2026-10-14
+path: CPU reference, MSVC 19.43, release
+config: 128x128 (quasi-2D slab), Re 100, T 40
+measure: max |u - u_Ghia| on x = 0.5 = 0.0123
+reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)
+tolerance: <= 0.02 (spec §11.2, fixed before the first run)
+verdict: within
+```
+
+(Illustrative values.)
+
 A record is never edited. A re-run adds a new dated record beside the old one, and a miss stays on record with its own entry.
 
 ## SPIR-V scanner
