@@ -1558,6 +1558,7 @@ struct GlRenderer::Impl {
 
     uint32_t last_draw_calls = 0;
     GlRenderer::FlowQuality flow_quality;
+    float last_flow_scale = 0.0f;
     uint32_t last_instances = 0;
 
     std::string renderer_name;
@@ -2953,6 +2954,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.UseProgram(0);
 
     s.last_draw_calls = draw_calls;
+    s.last_flow_scale = scene.flow_layers.empty() ? 0.0f : 1.0f;
     s.last_instances = total_instances;
     return {};
 }
@@ -2970,6 +2972,7 @@ uint32_t GlRenderer::last_draw_calls() const noexcept { return impl_->last_draw_
 uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instances; }
 void GlRenderer::set_flow_quality(const FlowQuality& quality) noexcept { impl_->flow_quality = quality; }
 GlRenderer::FlowQuality GlRenderer::flow_quality() const noexcept { return impl_->flow_quality; }
+float GlRenderer::last_flow_scale() const noexcept { return impl_->last_flow_scale; }
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }
 const std::string& GlRenderer::version_string() const noexcept { return impl_->version_string; }
 

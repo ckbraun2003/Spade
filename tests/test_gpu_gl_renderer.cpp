@@ -1384,6 +1384,62 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     glDeleteRenderbuffers(1, &depth);
 }
 
+// Plan step 7f: the live-only reduced march. Half marches a quarter of the
+// rays and says so through last_flow_scale(); a frame with no flow layer
+// says 0. The half frame is held to the full one by a measured band: a live
+// view, not the CPU's frame.
+TEST_F(GpuGlRenderer, FlowHalfScaleMarchesAtHalfAndSaysSo) {
+    const spade::FlowVolume ring = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                 spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&ring, {vorticity}, {}});
+
+    const std::vector<uint8_t> full = draw_and_read(scene, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 1.0f);
+    renderer_->set_flow_quality(GlRenderer::FlowQuality{.scale = GlRenderer::FlowScale::half});
+    const std::vector<uint8_t> half = draw_and_read(scene, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 0.5f) << "a half-resolution march must say so";
+    RenderScene bare = ring_cut_scene();
+    (void)draw_and_read(bare, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 0.0f) << "a frame without a flow layer says 0";
+    renderer_->set_flow_quality({});
+
+    ASSERT_EQ(half.size(), kPixels * 4u);
+    const ChannelDiff d = channel_diff(full, half);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow half ] against full: worst %d levels, %zu over two, %zu differ; on %s\n", d.worst,
+                d.over_two, d.differing, device.c_str());
+    // RED: no band yet; measured and pinned in the green commit.
+    EXPECT_GT(d.differing, 0u) << "a half-resolution march is not the full frame";
+}
+
+// Automatic picks half when the march misses its budget, and full when it
+// holds it, judged from the frames before.
+TEST_F(GpuGlRenderer, FlowAutomaticScaleFollowsTheBudget) {
+    const spade::FlowVolume ring = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                 spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&ring, {vorticity}, {}});
+    const auto settle = [&](float budget_ms) {
+        renderer_->set_flow_quality(
+            GlRenderer::FlowQuality{.scale = GlRenderer::FlowScale::automatic, .march_budget_ms = budget_ms});
+        for (int i = 0; i < 4; ++i) (void)draw_and_read(scene, comparable_options(), camera_on_ring());
+        return renderer_->last_flow_scale();
+    };
+    EXPECT_EQ(settle(1e-6f), 0.5f) << "a march over its budget drops to half";
+    EXPECT_EQ(settle(1e6f), 1.0f) << "a march well within its budget returns to full";
+    renderer_->set_flow_quality({});
+}
+
 // Plan step 7e: skipping empty space changes no pixel. The flow goldens'
 // volume and iso layers, through the cut quad, skipped and not: identical
 // frames, byte for byte. And a one-cell sheet of vorticity at x index 8, the

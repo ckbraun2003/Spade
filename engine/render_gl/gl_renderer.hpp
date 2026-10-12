@@ -166,11 +166,24 @@ class GlRenderer {
     // Skipping empty space changes no pixel: a brick of the volume where no
     // transfer absorbs and no iso-surface can cross is stepped over. On by
     // default; off only to measure what it saves.
+    //
+    // The scale is the march's resolution. Full is the frame the bands
+    // measure, and the one for recordings and quality frames. Half marches a
+    // quarter of the rays and upsamples; automatic picks the larger of the
+    // two that keeps the march within march_budget_ms, judged from the
+    // frames before. Both are live views: a caller announces any frame
+    // marched below full (L6), from last_flow_scale().
+    enum class FlowScale { full, half, automatic };
     struct FlowQuality {
         bool skip_empty_space = true;
+        FlowScale scale = FlowScale::full;
+        float march_budget_ms = 4.0f;  // automatic's target, the march alone
     };
     void set_flow_quality(const FlowQuality& quality) noexcept;
     [[nodiscard]] FlowQuality flow_quality() const noexcept;
+    // The scale the last frame's flow layer was marched at: 1 or 0.5, or 0
+    // when the frame had none.
+    [[nodiscard]] float last_flow_scale() const noexcept;
 
     // What the driver says it is. Reported rather than assumed, because the
     // difference between a real driver and a software implementation changes
