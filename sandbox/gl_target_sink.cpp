@@ -1045,7 +1045,11 @@ ViewportRect GlTargetSink::viewport() const noexcept {
     return v;
 }
 
-void GlTargetSink::reset_layout() noexcept { impl_->layout_ever_built = false; }
+void GlTargetSink::reset_layout() noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->layout_ever_built = false;
+#endif
+}
 
 void GlTargetSink::draw_builder_panel(BuilderScene& model) {
 #if SPADE_SANDBOX_HAS_GL
