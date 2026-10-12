@@ -414,6 +414,7 @@ target_link_libraries(spade_tests PRIVATE
     # every configuration and v1-free (engine/CMakeLists.txt).
     spade_viewer_scenes
     spade::scene
+    spade::analysis
 )
 
 # spade::compute + volk + Vulkan::Headers (S6 Task 1): same

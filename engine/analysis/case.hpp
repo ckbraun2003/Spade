@@ -1,0 +1,195 @@
+// The drone CFD analysis's case: one drone held at the centre of a box of air,
+// flown by hand or by a constant program, and what a run of it needs (INT-5,
+// INT-6; docs/design/interface/plans/2026-10-12-drone-builder-cfd-design.md
+// §4, §7). Display-free. A host (Kat's builder, the sandbox's airflow scene)
+// reads and writes a case only through this header (DBC-004).
+//
+// THE FILE, `.case.yaml`, version 1. Written in one fixed order, every float
+// with format_float's 9 significant digits, so a case saved twice is the same
+// bytes. Angles are DEGREES here as in the file (the `_deg` fields), because
+// that is how blade tables and polars arrive and because a degree written,
+// read and written again is the same text; resolve() gives Physics radians.
+//
+// Owned by Interface (INT-6).
+
+#pragma once
+
+#include <cstdint>
+#include <expected>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "core/error.hpp"
+#include "physics/airflow/mac_grid.hpp"
+#include "vehicles/model_type.hpp"
+
+namespace spade::analysis {
+
+inline constexpr uint32_t kCaseFileVersion = 1;
+
+// The flight condition (Physics' plan A domain conditions): they differ at the
+// floor. Forward flight at v moves the air AND the ground past the drone at
+// -v (the floor a rolling road); hover in a wind moves only the air.
+enum class FlightKind : uint32_t { hover = 0, forward = 1, hover_in_wind = 2 };
+
+enum class RotorModel : uint32_t { disc = 0, line = 1, blade_resolved = 2 };
+
+// The model a case is for, as a scene pins its world: by file, and by
+// vehicles::model_identity() when the case was saved.
+struct ModelRef {
+    std::string file;
+    uint64_t identity = 0;
+};
+
+// The drone-box inputs (Q4), held for the whole run (A4's constant program).
+// The attitude signs are the drone sim box's: + pitch nose up, + roll right
+// side down, + yaw nose left.
+struct Controls {
+    bool armed = false;      // disarmed rotors are stopped
+    float throttle = 0.0f;   // 0..1
+    float pitch_deg = 0.0f;
+    float roll_deg = 0.0f;
+    float yaw_deg = 0.0f;
+};
+
+struct Flight {
+    FlightKind kind = FlightKind::hover;
+    float speed = 0.0f;         // m/s: the forward speed, or the wind; 0 in hover
+    float floor_height = 0.0f;  // m below the hub plane; 0 for no floor
+};
+
+// ISA at sea level, 15 C.
+struct Fluid {
+    float density = 1.225f;                 // kg/m3
+    float kinematic_viscosity = 1.4607e-5f;  // m2/s
+};
+
+struct GridSetup {
+    float box = 0.0f;      // the cube's side, m; 0 for kDefaultBoxReaches x the drone's reach
+    float spacing = 0.0f;  // the base cell, m; 0 for the box / kDefaultCellsAcross
+    uint32_t nests = 0;    // static 2:1 levels around the drone (R1), 0..kMaxNests
+};
+
+// A blade (Q3; Physics' P4 reads the same fields in radians).
+struct BladeStation {
+    float r_over_radius = 0.0f;  // (0, 1], increasing from hub to tip
+    float chord = 0.0f;          // m
+    float twist_deg = 0.0f;      // about the pitch axis, + nose up
+    std::string airfoil;         // an Airfoil's id; one without polars is a flat plate, "estimated"
+};
+
+struct BladeDefinition {
+    std::string name;            // what a rotor's setup names
+    uint32_t blade_count = 2;
+    float radius = 0.0f;         // m; must equal the rotor's
+    float hub_radius = 0.0f;     // m
+    float collective_deg = 0.0f;
+    std::vector<BladeStation> stations;
+};
+
+struct Polar {
+    float reynolds = 0.0f;
+    std::vector<float> alpha_deg;  // increasing
+    std::vector<float> cl;
+    std::vector<float> cd;
+};
+
+struct Airfoil {
+    std::string id;
+    std::string source;  // the file and citation, or "estimated"
+    std::vector<Polar> polars;
+};
+
+// One per model rotor, in the model's order.
+struct RotorSetup {
+    RotorModel model = RotorModel::disc;
+    std::string blade;  // a BladeDefinition's name; the line and blade-resolved need one
+};
+
+struct TimeSetup {
+    float duration = 1.0f;  // simulated s
+    float startup = 0.0f;   // s discarded before averaging, < duration
+    float step = 0.0f;      // the fluid step, s; 0 for the solver's own rule
+};
+
+struct Outputs {
+    float history_every = 0.0f;   // s between force and moment samples; 0 for every step
+    float snapshot_every = 0.0f;  // s between field snapshots; 0 for none
+};
+
+struct AnalysisCase {
+    ModelRef model;
+    Controls controls;
+    Flight flight;
+    Fluid fluid;
+    GridSetup grid;
+    std::vector<RotorSetup> rotors;
+    std::vector<BladeDefinition> blades;
+    std::vector<Airfoil> airfoils;
+    TimeSetup time;
+    Outputs outputs;
+};
+
+inline constexpr float kDefaultBoxReaches = 10.0f;   // the default box: this many of the drone's reach
+inline constexpr uint32_t kDefaultCellsAcross = 128;  // the default base grid (the airflow spec's 128^3)
+inline constexpr uint32_t kMaxNests = 3;              // R1
+inline constexpr float kWallCells = 2.0f;             // a wall feature's cells (P2)
+inline constexpr float kLineCellsPerRadius = 20.0f;   // the actuator line's R/dx (P4)
+inline constexpr float kBladeCellsPerChord = 32.0f;   // blade-resolved's cells across the chord (P5)
+
+// The case's own fields, without the model: the first problem, by its field
+// path ("blades[0].stations[1].chord: ...").
+[[nodiscard]] Result<void> validate_case(const AnalysisCase& c);
+
+// The file's text, and back. Both validate. Reading refuses an unknown or
+// duplicate key with its line, and a version other than kCaseFileVersion as
+// a schema mismatch.
+[[nodiscard]] Result<std::string> case_to_yaml(const AnalysisCase& c);
+[[nodiscard]] Result<AnalysisCase> case_from_yaml(std::string_view text);
+[[nodiscard]] Result<AnalysisCase> load_case(const std::filesystem::path& file);
+[[nodiscard]] Result<void> save_case(const AnalysisCase& c, const std::filesystem::path& file);
+
+// Where a resolved value came from (honesty rule 1).
+enum class Source : uint32_t { given = 0, default_value = 1, derived = 2 };
+
+struct ResolvedRotor {
+    RotorModel model = RotorModel::disc;
+    float radius = 0.0f;               // m, the model's
+    float cells_across_radius = 0.0f;  // R over the finest cell
+    bool estimated_polars = false;     // a station's airfoil has no polars: flat plate
+};
+
+// A case with every default filled, and what follows from it. `spec` is
+// exactly what a run receives (DBC-016); `hash` names the run.
+struct ResolvedCase {
+    AnalysisCase spec;
+    uint64_t hash = 0;  // rng::fnv1a64 of case_to_yaml(spec)
+    Source box_source = Source::given;
+    Source spacing_source = Source::given;
+    float finest_spacing = 0.0f;           // spacing / 2^nests, around the drone
+    physics::airflow::GridShape base{};    // the base grid
+    uint64_t base_bytes = 0;               // physics::airflow::fluid_bytes(base); the nests' come with R1
+    std::vector<ResolvedRotor> rotors;
+};
+
+// One refusal: the field it names and why, with the value it needs (DBC-003).
+struct CaseIssue {
+    std::string field;
+    std::string message;
+};
+
+// The drone's reach, m: the farthest rotor tip (hub distance plus radius) or
+// its contact radius, whichever is larger.
+[[nodiscard]] float reach_of(const vehicles::ModelType& model) noexcept;
+
+// The case against `model`: every refusal, not the first. Refused: an invalid
+// case or model, a model changed since the case pinned it, a rotor without
+// its setup, a missing or mismatched blade, and whatever the finest cell
+// cannot resolve (a wall feature, the line's R, blade-resolved's chord) or the
+// solver cannot hold, each with the spacing it needs (DBC-013..017).
+[[nodiscard]] std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c,
+                                                                          const vehicles::ModelType& model);
+
+}  // namespace spade::analysis
