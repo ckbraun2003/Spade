@@ -149,6 +149,30 @@ After the CPU reference:
 
 **The Vulkan raster needs nothing** (spec §5); when it resumes, this is a compute pass over the published buffer.
 
+### 7.1 Step 7 in detail (2026-10-12)
+
+The user's goal (the lead, 2026-10-12) ends in a live demo in the sandbox: a drone in 3D with its airflow. So GL needs every view, not only the volume. Four sub-steps, each red then green, each with its GL band measured against the CPU on the RTX 3060 Ti (`TD-13`):
+
+- **7a. Lines and points.**
+  - Streamlines draw as `GL_LINES` through the overlay program, and tracers as `GL_POINTS` at `size_px`.
+  - Each segment's two vertices carry the segment's mean colour, so GL draws the CPU's flat segment colour.
+  - Band: misses within 1 px, as the overlay band measures them.
+- **7b. Surface colouring.**
+  - On GL a surface fragment knows its own world position, so no depth reconstruction is needed. `shade_surface()`, shared by the mesh and CSG passes, samples the volume there when colouring is on.
+  - Band: per-channel levels, as the field layer's band.
+- **7c. The volume and iso pass.**
+  - **Upload:** the volume's halves go up as two `GL_RGBA16UI` 3D textures, as raw bits. The shader decodes them with `unpackHalf2x16` and tests no-data by its bit pattern (exponent all ones). No float texture format, and no `isnan` on a driver that may drop it. Trilinear is manual, by `texelFetch`, in the CPU's nested-lerp order.
+  - **Transfer functions:** the colour tables go up as one SSBO of 3 × 256 entries; extinction points and ranges as uniforms.
+  - **Depth:** the opaque depth comes from an internal depth texture, redrawn depth-only (spec §5's amendment), since the caller's depth may be a renderbuffer.
+  - **The march:** a box back-face proxy with depth clamp, as B2's CSG pass. Same step rule, last partial step and early exit as the CPU. GLSL `exp()` stands for `exp32`, which is inside the band. Opaque iso hits write `gl_FragDepth`.
+  - **Band and cost:** measured on the two goldens' scenes (vortex ring volume, Q iso). Cost at 128³ and 1080p against §5's 2–4 ms.
+- **7d. Refusals lift.**
+  - GL draws what it now draws. It refuses what it still cannot, with each refusal test turned into a band test.
+
+Step 6 (plan A's feed, Physics' Task 8b) goes in whenever 8b lands; the demo needs it. Milestones toward the demo:
+- **D1:** recorded frames from the CPU `render()`.
+- **D2:** live frames in the sandbox once 7a–7c land.
+
 ## 8. Steps
 
 Each step is red then green, gcc-checked, and reviewed. Goldens wait for `TD-12`.
