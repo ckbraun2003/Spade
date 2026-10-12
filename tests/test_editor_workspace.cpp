@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -204,4 +205,17 @@ TEST(EditorWorkspace, TheSelectionsFramingSurroundsIt) {
     EXPECT_LT(drone->radius, 0.5f);
     w->panels().selection = Selection{Selection::Kind::world, {}};
     EXPECT_FALSE(w->selection_framing().has_value());
+}
+
+// The File menu's scene picker (Task 11): opened on a built-in scene, the
+// workspace lists the built-in scenes, the open one among them.
+TEST(EditorWorkspace, TheFileMenuListsTheBuiltInScenes) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const auto& sources = w->panels().sources;
+    ASSERT_FALSE(sources.empty());
+    const bool lists_hover = std::any_of(sources.begin(), sources.end(), [](const ed::SceneSource& s) {
+        return s.name == "hover" && s.kind == ed::SceneSource::Kind::builtin;
+    });
+    EXPECT_TRUE(lists_hover);
 }
