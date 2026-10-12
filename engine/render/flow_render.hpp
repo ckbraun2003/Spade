@@ -135,6 +135,7 @@ struct FlowLayerReport {
 
 struct FlowFrameReport {
     std::vector<FlowLayerReport> layers;  // one per RenderScene::flow_layers entry, in order
+    uint64_t surface_pixels_no_data = 0;  // surface-coloured pixels whose sample was no-data (render/flow_field.hpp)
 };
 
 }  // namespace spade::render

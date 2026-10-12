@@ -1104,6 +1104,54 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
     }
 }
 
+// Paints each opaque pixel inside the colouring volume's box with its
+// quantity's colour at the pixel's surface point, rebuilt from depth along
+// the camera ray (render/flow_field.hpp). Unlit; colour only. A no-data
+// sample keeps the shaded colour and is counted in `report`.
+void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
+                                 const Camera& camera, FlowFrameReport* report) {
+    if (!scene.flow_surface_colouring) {
+        return;
+    }
+    // render() has refused a malformed colouring.
+    const FlowSurfaceColouring& colouring = *scene.flow_surface_colouring;
+    const FlowVolumeHeader& h = colouring.volume->header;
+    const PreparedTransfer prepared = prepare_transfer(colouring.colours, h);
+    const FlowSampler sampler = make_flow_sampler(*colouring.volume);
+    const glm::vec3 extent(static_cast<float>(h.nx), static_cast<float>(h.ny), static_cast<float>(h.nz));
+    const Aabb box{h.origin, h.origin + extent * h.cell};
+    PixelRect rect;
+    if (!box_pixel_rect(vc, box, rect)) {
+        return;
+    }
+    const RayGrid grid = ray_grid(camera, fb.width, fb.height);
+    for (int y = rect.y0; y <= rect.y1; ++y) {
+        for (int x = rect.x0; x <= rect.x1; ++x) {
+            const size_t idx = static_cast<size_t>(y) * fb.width + static_cast<size_t>(x);
+            if (!(fb.depth[idx] > 0.0)) {
+                continue;  // no surface here
+            }
+            const CameraRay ray = camera_ray(grid, static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+            const float t = static_cast<float>(1.0 / fb.depth[idx]) / -ray.dir_cam.z;
+            const glm::vec3 p = grid.origin + ray.dir_world * t;
+            if (p.x < box.min.x || p.y < box.min.y || p.z < box.min.z || p.x > box.max.x || p.y > box.max.y ||
+                p.z > box.max.z) {
+                continue;
+            }
+            const FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p);
+            if (v.no_data) {
+                if (report != nullptr) ++report->surface_pixels_no_data;
+                continue;
+            }
+            const glm::vec3 c = apply_transfer(prepared, v.value).colour;
+            uint8_t* px = &fb.pixels[idx * 4u];  // B, G, R, X
+            px[0] = to_byte(c.b);
+            px[1] = to_byte(c.g);
+            px[2] = to_byte(c.r);
+        }
+    }
+}
+
 // Composites each flow layer over the frame (render/flow_render.hpp): per
 // pixel of its box, the camera ray clipped to the box, the near and far
 // planes and the opaque depth already drawn, marched by march_flow_ray(),
@@ -1752,8 +1800,14 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (Result<void> valid = validate_flow_points(scene.flow_points); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
+    if (scene.flow_surface_colouring) {
+        if (Result<void> valid = validate_flow_surface_colouring(*scene.flow_surface_colouring); !valid) {
+            return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+        }
+    }
     if (flow_report != nullptr) {
         flow_report->layers.clear();  // the ray-march mode draws no flow layers, and reports none
+        flow_report->surface_pixels_no_data = 0;
     }
     // So is a CSG subtree with no program, or one naming a draw item past the
     // statics: either would vanish from the frame in silence.
@@ -1891,6 +1945,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (march_csg) {
         draw_csg_subtrees(fb, vc, scene, camera, options, shadow);
     }
+    draw_flow_surface_colouring(fb, vc, scene, camera, flow_report);
     draw_field_layers(fb, vc, scene);
     draw_flow_layers(fb, vc, scene, camera, flow_report);
     draw_flow_lines(fb, vc, scene);

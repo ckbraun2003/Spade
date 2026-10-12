@@ -1518,10 +1518,12 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     }
     // L6: GL has no flow pass yet, and a frame without the volume, lines or
     // tracers would be a different picture under the same scene.
-    if (!scene.flow_layers.empty() || !scene.flow_polylines.empty() || !scene.flow_points.positions.empty()) {
+    if (!scene.flow_layers.empty() || !scene.flow_polylines.empty() || !scene.flow_points.positions.empty() ||
+        scene.flow_surface_colouring) {
         return std::unexpected(Error{Code::unavailable,
                                      "GlRenderer::draw: GL has no flow pass yet (airflow visualization plan "
-                                     "step 7); draw flow layers, streamlines and tracers with render::render()"});
+                                     "step 7); draw flow layers, streamlines, tracers and surface colouring "
+                                     "with render::render()"});
     }
     if (s.meshes.size() != scene.meshes.size()) {
         return std::unexpected(Error{Code::invalid_argument,
