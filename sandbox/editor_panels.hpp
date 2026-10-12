@@ -66,6 +66,7 @@ struct EditorPanels {
     std::vector<WorldEdit> pending_world;
     std::vector<Command> commands;
     std::string path;                         // what Open and Save As use
+    std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
 
     // ---- Both: the last refusal, verbatim (INT-2); empty when none.
     std::string status;

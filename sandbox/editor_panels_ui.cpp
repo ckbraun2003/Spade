@@ -171,8 +171,13 @@ void toolbar(ed::EditorPanels& p) {
     press("Redo", ed::Command::redo, p.can_redo);
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);
-    if (ImGui::Button("File")) ImGui::OpenPopup("file");
+    // The live smoke opens and closes the menu by request, as a click would.
+    const bool open_request = p.file_menu.has_value() && *p.file_menu;
+    const bool close_request = p.file_menu.has_value() && !*p.file_menu;
+    p.file_menu.reset();
+    if (ImGui::Button("File") || open_request) ImGui::OpenPopup("file");
     if (ImGui::BeginPopup("file")) {
+        if (close_request) ImGui::CloseCurrentPopup();
         // The scene picker (SL13): the built-in scenes, then the saved ones.
         if (!p.sources.empty()) {
             ImGui::TextDisabled("Scenes");
