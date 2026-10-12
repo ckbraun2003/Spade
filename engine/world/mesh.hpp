@@ -64,6 +64,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/error.hpp"
+#include "world/sdf.hpp"
 
 namespace spade {
 
@@ -130,5 +131,17 @@ private:
     uint32_t shell_count_ = 0;
     uint64_t content_hash_ = 0;
 };
+
+// The most shells a mesh may hold: the nesting check is O(shells^2) queries.
+inline constexpr uint32_t kMaxMeshShells = 4096;
+
+struct MeshSample {
+    float distance = kSdfEmptyDistance;  // exact Euclidean distance to the surface, negative inside
+    glm::vec3 gradient{0.0f};            // sign * (p - c) / |p - c|; on the surface, the feature's unit pseudonormal
+    uint32_t triangle = 0;               // the closest: minimum (distance squared, triangle index)
+};
+
+[[nodiscard]] MeshSample mesh_sample(const TriangleMesh& mesh, glm::vec3 p) noexcept;
+[[nodiscard]] float mesh_eval(const TriangleMesh& mesh, glm::vec3 p) noexcept;  // mesh_sample(p).distance
 
 }  // namespace spade

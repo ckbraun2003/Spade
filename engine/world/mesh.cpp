@@ -509,4 +509,13 @@ Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input, st
     return std::shared_ptr<const TriangleMesh>(std::move(mesh));
 }
 
+// RED stubs (Task B2 step 2): the tests fail on behaviour.
+MeshSample mesh_sample(const TriangleMesh&, glm::vec3) noexcept {
+    return {};
+}
+
+float mesh_eval(const TriangleMesh&, glm::vec3) noexcept {
+    return kSdfEmptyDistance;
+}
+
 }  // namespace spade
