@@ -1,6 +1,6 @@
 # The drone airflow demonstration — plan
 
-**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** **approved by Cameron as written, 2026-10-12** (via the lead; `PHY-10`). Later folds: Core's `CORE-7` parts and the porous model, and Interface's inputs.
+**Owner:** Physics, with Rendering, Interface, Core and Test/Docs. **Status:** **approved by Cameron as written, 2026-10-12** (via the lead; `PHY-10`). Later folds: Core's `CORE-7` parts and the porous model, Interface's inputs, and Cameron's drone-box premise and blade definition (backlog `cd298d6`).
 **Goal** (Cameron, 2026-10-12, word for word): "I want to ensure that regarding Spade, the aerodynamics grid solver, pressure surface visualizations, and overall computational fluid dynamics analyses are present with the conclusion and validation being a full 3D visualization of a drone and the airflow around that drone, including propeller flow, vortices, etc."
 **Rests on:** `PHY-9` and the airflow spec (`2026-10-05-airflow-design.md`), plus Cameron's three answers of 2026-10-12, recorded as `PHY-10`:
 - **Path:** a sandbox demo first, then the engine module.
@@ -11,7 +11,13 @@ Inputs: Core (`../../core/2026-10-12-airflow-demo-core-inputs.md`, `a411a50`), I
 
 ## What the demonstration shows
 
-A quadrotor in 3D, hovering and then in slow forward flight, near the ground and away from it. The scene shows:
+**The scene is the drone box** (Cameron, 2026-10-12, backlog `cd298d6`, his words: "The current drone conditions will be like the drone sandbox, with a drone in the center plane, and the same manual movement, just with actual arm/disarm, adding a floor, etc, but the sandbox drone view premise is optimal especially since demonstrating the drone in different orientations and thrust states mimics a real drone visual much better and rhe aerodynamics can look much cleaner."):
+- **The drone is fixed at the domain's centre.** It turns in attitude under the sandbox's manual controls, but never translates, and the box does not follow it.
+- **Thrust follows the throttle,** with real arm and disarm, so the rotors spin up and down through the motor model. Spin-up sheds the start-up vortex ring.
+- **The floor is optional.** With a floor, the box's lower face is a no-slip wall at the chosen height below the drone (ground effect, the outwash). Without one, that face is an outlet.
+- **Wind gives forward-flight conditions:** an inflow face at the wind speed and an outlet opposite. In still air every face is an outlet, as in V1's C8.
+
+The scene shows:
 - **The drone as a solid wall.** Its surfaces are coloured by the pressure coefficient `C_p` from the solved wall pressure.
 - **Propeller flow.** The slipstream, its contraction and rotation (swirl), the ground outwash, and the start-up vortex ring.
 - **Vortices.** Q-criterion iso-surfaces coloured by speed: the helical tip vortices from the actuator line (D1 onward) and, in D3, from the resolved blades.
@@ -36,7 +42,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 
 | | Contents | Depends on |
 |---|---|---|
-| **D1, one-way CPU demo, recorded** | Solid drone; actuator disc with swirl, then actuator line. The sandbox drives the standalone solver (one-way, slow motion). Rendering renders frames offline on the CPU. `C_p` on the surfaces, tip vortices from the actuator line | plan A to Task 9 and 8b; P1–P4, P6, P7 below; R1–R2; I1 |
+| **D1, one-way CPU demo, recorded** | The drone-box scene: the solid drone fixed at the centre, turned in attitude, throttle with arm and disarm, an optional floor, wind for forward flight. Actuator disc with swirl, then actuator line. The sandbox drives the standalone solver (one-way, slow motion). Rendering renders frames offline on the CPU. `C_p` on the surfaces, tip vortices from the actuator line | plan A to Task 9 and 8b; P1–P4, P6, P7 below; R1–R2; I1 |
 | **D2, GPU real time, live** | The same scene live: the disc in real time, the actuator line in slow motion (shown as such). Plan B's chain runner and kernels, a GPU pack of the flow volume, Rendering's GL views | D1; plan B; P8; R3; I2 |
 | **D3, blade-resolved, offline** | One rotor resolved and validated against Caradonna–Tung. Then the drone's rotors from the builder's part geometry, a few revolutions recorded | D2; P5, P9; Core C1 |
 | **D4, the engine module, two-way** | Plan C after stage 7: probe-and-subtract, drag pushback, and the solid body's pressure force replacing its drag element | stage 7 (Cameron signs its design); plan C |
@@ -46,7 +52,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 
 **Physics**
 - **P1. Swirl in the actuator disc** (spec §3.1). Plan A Task 9 carries thrust only. Add torque and spin direction: a tangential force with `Σ r_i |f_i| = Q`. A small addendum to plan A, after Task 9.
-- **P2. Immersed solids in the real-time tier: static first, then moving.** Apertures `θ` per face from a posed body SDF each fluid step, evaluated only in the body's support box. The projection is weighted by `θ` (spec §2, Batty et al.). Solid faces take `v + ω × r`. Velocity is extrapolated two layers into the solid. Static solids also serve V2's cylinder. **Porous stays an option per part** (Cameron).
+- **P2. Immersed solids in the real-time tier: static first, then rotating about the fixed centre.** Apertures `θ` per face from a posed body SDF each fluid step, evaluated only in the body's support box. The projection is weighted by `θ` (spec §2, Batty et al.). In the drone box the body never translates, so its solid faces take `ω × r` about the domain's centre. The general `v + ω × r` waits for a translating body (D4's module, or a later following box). Velocity is extrapolated two layers into the solid. Static solids also serve V2's cylinder. **Porous stays an option per part** (Cameron).
   - **The porous model is Darcy–Forchheimer** (confirming Core's `CORE-7` proposal). Each porous part carries a viscous resistance `1/K` (1/m²) and an inertial coefficient `C₂` (1/m). The grid applies the sink `−(ν/K) u − ½ C₂ |u| u` over the cells the part occupies, weighted by its SDF fraction. It is point-implicit, `u ← u / (1 + h (ν/K + ½ C₂ |u|))`, because large coefficients are stiff, and that form is stable at any `h`.
   - **The minimum resolution** (Core's stage 7 rule D5, numbers set by Physics):
     - a wall part's smallest declared feature must span **at least 2 cells**; the actuator line needs **R/dx ≥ 20**, with smoothing width 2 dx; a blade-resolved rotor needs **at least 32 cells across the chord and 2 across the thickness**;
@@ -56,7 +62,13 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - **The fluid sub-step:** the actuator line and blade-resolved models need `m_f` fluid sub-steps per substep (stage 7 §4.1): the tip moves at most about 1 cell per fluid step. Spec §1.4's `h_f = j · dt` gains that second cadence.
   - **Drag elements:** a wall part has none once the coupling is two-way (D4), because the grid's integrated wall force replaces it. In one-way (D1–D3) the sim keeps its drag model for flight, and the grid's wall force is display only. So the drag element's presence follows the coupling mode, not the part's surface kind. A porous part's drag, two-way, is its Darcy–Forchheimer sink's reaction.
 - **P3. Wall pressure.** The surface pressure at body surface points, and the integrated force and moment, for display (one-way). In D4 that force replaces the body's drag element, so nothing is counted twice.
-- **P4. The actuator line.** Per blade: elements along a rotating line, with lift and drag from tabulated airfoil polars, chord and twist. Each element's force is spread with a Gaussian kernel of width about 2 `dx`. The time step is limited by the tip (1 cell per step). It is selectable per rotor beside the disc. Its integrated thrust is reported against the sim's `k_T ω²`, since one-way they can differ.
+- **P4. The actuator line.** Per blade: elements along a rotating line, with lift and drag from tabulated airfoil polars, chord and twist.
+  - **Its input is one blade definition per rotor** (Cameron, backlog `cd298d6`, Q3):
+    - the blade count and radius, the hub radius, and stations along the span, each with chord, twist and an airfoil;
+    - the airfoil's polars, `C_l` and `C_d` against α, imported with their source;
+    - absent a polar, a flat-plate default, labelled "estimated" wherever it shows;
+    - P5 lofts the blade mesh from the same definition.
+  - The format is shared with Interface (the case format, Q8). The flat plate's trigonometry goes through `core/fp32_math` (`TD-3`). Each element's force is spread with a Gaussian kernel of width about 2 `dx`. The time step is limited by the tip (1 cell per step). It is selectable per rotor beside the disc. Its integrated thrust is reported against the sim's `k_T ω²`, since one-way they can differ.
 - **P5. Blade-resolved.** Rotating blade geometry as a moving immersed solid in a nested fine grid (spec §11.4's nests), with a wall model. **One decision to bring back with measurements:** this belongs in the real-time NS tier with nests, or in the LBM tier (spec §1.6, where bounce-back handles moving walls directly).
 - **P6. Publish's rule in solid cells** (Rendering's ask; it goes into plan A Task 8b). The first layer of solid cells (any solid cell with a fluid face-neighbour) takes a fluid-side extrapolation, so `C_p` reads the wall pressure. Deeper cells stay no-data. The header counts the extrapolated cells: a new `FlowVolumeHeader` field, which is Core's call too.
 - **P7. The coupler.** A pure function in `physics/airflow/`, used by the sandbox harness in D1–D3 and by plan C's module in D4:
@@ -87,6 +99,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - `advance()` moves one frame (1/30 s). Each fluid substep reads the rotors and the pose, calls P7, and steps the solver; the volume is published at frame end.
   - It is one-way, with no wall clock in stepped code.
   - Two front ends drive it. The headless one, `spade_sandbox --airflow-record --rotor disc|line|resolved --surface solid|porous --grid N --flight hover|forward:<v> --height h --seconds s --out dir`, serves D1 and D3. The window serves D2.
+  - Under the drone-box premise, `--flight forward:<v>` becomes the wind through the box and `--height` the optional floor. The attitude and throttle come from the manual controls, or from a recorded input script when headless. Interface sets the exact flags.
 - **The panel:** an "Airflow" window with the rotor model for all rotors plus a per-rotor override (blade-resolved is greyed live: offline only), the surface per body, the grid (dx and R/dx shown), the flight state, the ground height, and the views. Changing the model, surface or grid restarts the flow.
 - **The run line** is in every frame and caption, e.g. "actuator line · 128³, dx 5 mm, R/dx 24 · 0.004× real time · t = 0.250 s".
 - **I2, the readouts:** airspeed, α/β, and per-rotor thrust as `k_T ω²` beside the actuator-line integral. Also the P3 wall force and moment, `C_T`, and a Validation section read from `tests/data/airflow/records/`.
@@ -99,7 +112,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 1. Plan A Tasks 7–12. Task 8 adds the closed-domain refusal and the health check; 8b adds P6. V1's records come out of this step.
 2. The chain-runner design note to Core, now, in parallel.
 3. P1 (swirl).
-4. P2 and P3 (solids and wall pressure).
+4. P2 and P3 (solids and wall pressure): static, then rotating about the fixed centre (the drone box).
 5. P7 (the coupler).
 6. P4 (the actuator line). D1 needs P1, P2, P3, P4 and P7.
 7. Plan B with P8. D2 needs it.
