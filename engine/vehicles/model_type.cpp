@@ -1,5 +1,6 @@
 #include "vehicles/model_type.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -314,6 +315,12 @@ glm::quat canonical_design_rotation(const glm::quat& q) noexcept {
         n = -n;
     }
     return n;
+}
+
+float model_reach(const ModelType& model) noexcept {
+    float reach = model.proxy_radius;
+    for (const RotorDesc& r : model.rotors) reach = std::max(reach, glm::length(r.local_pos) + r.radius);
+    return reach;
 }
 
 }  // namespace spade::vehicles

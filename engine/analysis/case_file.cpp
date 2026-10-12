@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -25,6 +26,7 @@ using yaml_text::field;
 using yaml_text::float_field;
 using yaml_text::float_list;
 using yaml_text::format_float;
+using yaml_text::has;
 using yaml_text::path_text;
 using yaml_text::quote_yaml;
 using yaml_text::scalar;
@@ -69,13 +71,14 @@ constexpr std::array<std::string_view, 3> kRotorModelNames = {"disc", "line", "b
     out += "flight:\n";
     out += "  kind: " + quote_yaml(kFlightNames[static_cast<std::size_t>(c.flight.kind)]) + "\n";
     out += "  speed: " + format_float(c.flight.speed) + "\n";
-    out += "  floor_height: " + format_float(c.flight.floor_height) + "\n";
+    out += "  heading_deg: " + format_float(c.flight.heading_deg) + "\n";
+    if (c.flight.floor_height) out += "  floor_height: " + format_float(*c.flight.floor_height) + "\n";
     out += "fluid:\n";
     out += "  density: " + format_float(c.fluid.density) + "\n";
     out += "  kinematic_viscosity: " + format_float(c.fluid.kinematic_viscosity) + "\n";
     out += "grid:\n";
-    out += "  box: " + format_float(c.grid.box) + "\n";
-    out += "  spacing: " + format_float(c.grid.spacing) + "\n";
+    if (c.grid.box) out += "  box: " + format_float(*c.grid.box) + "\n";
+    if (c.grid.spacing) out += "  spacing: " + format_float(*c.grid.spacing) + "\n";
     out += "  nests: " + dec(c.grid.nests) + "\n";
     out += c.rotors.empty() ? "rotors: []\n" : "rotors:\n";
     for (const RotorSetup& r : c.rotors) {
@@ -86,7 +89,6 @@ constexpr std::array<std::string_view, 3> kRotorModelNames = {"disc", "line", "b
     for (const BladeDefinition& b : c.blades) {
         out += "  - name: " + quote_yaml(b.name) + "\n";
         out += "    blade_count: " + dec(b.blade_count) + "\n";
-        out += "    radius: " + format_float(b.radius) + "\n";
         out += "    hub_radius: " + format_float(b.hub_radius) + "\n";
         out += "    collective_deg: " + format_float(b.collective_deg) + "\n";
         out += b.stations.empty() ? "    stations: []\n" : "    stations:\n";
@@ -112,10 +114,11 @@ constexpr std::array<std::string_view, 3> kRotorModelNames = {"disc", "line", "b
     out += "time:\n";
     out += "  duration: " + format_float(c.time.duration) + "\n";
     out += "  startup: " + format_float(c.time.startup) + "\n";
-    out += "  step: " + format_float(c.time.step) + "\n";
-    out += "outputs:\n";
-    out += "  history_every: " + format_float(c.outputs.history_every) + "\n";
-    out += "  snapshot_every: " + format_float(c.outputs.snapshot_every) + "\n";
+    if (c.time.step) out += "  step: " + format_float(*c.time.step) + "\n";
+    const Outputs& o = c.outputs;
+    out += o.history_every || o.snapshot_every ? "outputs:\n" : "outputs: {}\n";
+    if (o.history_every) out += "  history_every: " + format_float(*o.history_every) + "\n";
+    if (o.snapshot_every) out += "  snapshot_every: " + format_float(*o.snapshot_every) + "\n";
     return out;
 }
 
@@ -193,6 +196,14 @@ template <std::size_t N>
     return value;
 }
 
+// An optional float: absent from the file, absent here.
+[[nodiscard]] Result<std::optional<float>> optional_float(const YAML::Node& map, const char* key, std::string_view what) {
+    if (!has(map, key)) return std::optional<float>{};
+    const Result<float> v = float_field(map, key, what);
+    if (!v) return std::unexpected(v.error());
+    return std::optional<float>(*v);
+}
+
 // Each `TRY(x, expr)` binds the value of a Result or returns its error.
 #define SPADE_CASE_TRY(name, expr)                                  \
     auto name##_r = (expr);                                         \
@@ -228,11 +239,12 @@ template <std::size_t N>
     SPADE_CASE_TRY(yaw, float_field(controls, "yaw_deg", "case.controls"));
     c.controls = Controls{armed, throttle, pitch, roll, yaw};
 
-    SPADE_CASE_TRY(flight, map_field(root, "flight", "case", {"kind", "speed", "floor_height"}));
+    SPADE_CASE_TRY(flight, map_field(root, "flight", "case", {"kind", "speed", "heading_deg", "floor_height"}));
     SPADE_CASE_TRY(kind, name_field(flight, "kind", "case.flight", kFlightNames));
     SPADE_CASE_TRY(speed, float_field(flight, "speed", "case.flight"));
-    SPADE_CASE_TRY(floor_height, float_field(flight, "floor_height", "case.flight"));
-    c.flight = Flight{static_cast<FlightKind>(kind), speed, floor_height};
+    SPADE_CASE_TRY(heading, float_field(flight, "heading_deg", "case.flight"));
+    SPADE_CASE_TRY(floor_height, optional_float(flight, "floor_height", "case.flight"));
+    c.flight = Flight{static_cast<FlightKind>(kind), speed, heading, floor_height};
 
     SPADE_CASE_TRY(fluid, map_field(root, "fluid", "case", {"density", "kinematic_viscosity"}));
     SPADE_CASE_TRY(density, float_field(fluid, "density", "case.fluid"));
@@ -240,8 +252,8 @@ template <std::size_t N>
     c.fluid = Fluid{density, nu};
 
     SPADE_CASE_TRY(grid, map_field(root, "grid", "case", {"box", "spacing", "nests"}));
-    SPADE_CASE_TRY(box, float_field(grid, "box", "case.grid"));
-    SPADE_CASE_TRY(spacing, float_field(grid, "spacing", "case.grid"));
+    SPADE_CASE_TRY(box, optional_float(grid, "box", "case.grid"));
+    SPADE_CASE_TRY(spacing, optional_float(grid, "spacing", "case.grid"));
     SPADE_CASE_TRY(nests, uint_field<uint32_t>(grid, "nests", "case.grid"));
     c.grid = GridSetup{box, spacing, nests};
 
@@ -260,19 +272,17 @@ template <std::size_t N>
         const std::string what = "case.blades[" + dec(i) + "]";
         const YAML::Node b = blades[i];
         if (Result<void> ok =
-                check_map(b, what, {"name", "blade_count", "radius", "hub_radius", "collective_deg", "stations"});
+                check_map(b, what, {"name", "blade_count", "hub_radius", "collective_deg", "stations"});
             !ok) {
             return std::unexpected(ok.error());
         }
         BladeDefinition def;
         SPADE_CASE_TRY(name, string_field(b, "name", what));
         SPADE_CASE_TRY(count, uint_field<uint32_t>(b, "blade_count", what));
-        SPADE_CASE_TRY(radius, float_field(b, "radius", what));
         SPADE_CASE_TRY(hub, float_field(b, "hub_radius", what));
         SPADE_CASE_TRY(collective, float_field(b, "collective_deg", what));
         def.name = name;
         def.blade_count = count;
-        def.radius = radius;
         def.hub_radius = hub;
         def.collective_deg = collective;
         SPADE_CASE_TRY(stations, sequence_field(b, "stations", what));
@@ -320,12 +330,12 @@ template <std::size_t N>
     SPADE_CASE_TRY(timing, map_field(root, "time", "case", {"duration", "startup", "step"}));
     SPADE_CASE_TRY(duration, float_field(timing, "duration", "case.time"));
     SPADE_CASE_TRY(startup, float_field(timing, "startup", "case.time"));
-    SPADE_CASE_TRY(step, float_field(timing, "step", "case.time"));
+    SPADE_CASE_TRY(step, optional_float(timing, "step", "case.time"));
     c.time = TimeSetup{duration, startup, step};
 
     SPADE_CASE_TRY(outputs, map_field(root, "outputs", "case", {"history_every", "snapshot_every"}));
-    SPADE_CASE_TRY(history, float_field(outputs, "history_every", "case.outputs"));
-    SPADE_CASE_TRY(snapshot, float_field(outputs, "snapshot_every", "case.outputs"));
+    SPADE_CASE_TRY(history, optional_float(outputs, "history_every", "case.outputs"));
+    SPADE_CASE_TRY(snapshot, optional_float(outputs, "snapshot_every", "case.outputs"));
     c.outputs = Outputs{history, snapshot};
     return c;
 }
