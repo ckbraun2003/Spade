@@ -51,6 +51,9 @@
 #include "world/sdf.hpp"
 #include "world/builder.hpp"
 #include "render_gl/gl_renderer.hpp"
+#include "physics/airflow/actuator.hpp"
+#include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/publish.hpp"
 
 #include "flow_synthetic.hpp"
 
@@ -1595,6 +1598,109 @@ TEST_F(GpuGlRenderer, FlowAutomaticScaleFollowsTheBudget) {
     EXPECT_EQ(settle(1e-6f), 0.5f) << "a march over its budget drops to half";
     EXPECT_EQ(settle(1e6f), 1.0f) << "a march well within its budget returns to full";
     renderer_->set_flow_quality({});
+}
+
+// RND-7's ask: 7e's skipping measured on a real rotor wake, not only the
+// sparse synthetic ring. Plan A's actuator disc (Task 9) at 32^3 for 80
+// steps, as RenderFlowFeed's test drives it, published, and marched at
+// 1920x1080 by speed and by Q, skipped and not. Opt-in with the cost test
+// (SPADE_GL_FLOW_COST=1). Skipping must change no pixel here too.
+TEST_F(GpuGlRenderer, FlowSkippingOnTheActuatorDiscsWake) {
+    if (!env_gate_is_set("SPADE_GL_FLOW_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_FLOW_COST=1 to run it";
+    }
+    namespace air = spade::physics::airflow;
+    const air::DomainBc bc;
+    air::MacGrid g = *air::make_grid({32, 32, 32, 0.05f}, bc);
+    const air::ActuatorDisc disc{.centre = glm::vec3(0.8f, 1.2f, 0.8f),
+                                 .axis = glm::vec3(0.0f, -1.0f, 0.0f),
+                                 .radius = 0.2f,
+                                 .thrust = 1.2f};
+    ASSERT_TRUE(air::check_disc(disc, g.shape).has_value());
+    const air::FluidConfig cfg{.nu = 1.5e-5f, .h = 0.005f};
+    air::FluidScratch scratch = *air::make_fluid_scratch(g, bc, cfg);
+    for (int step = 0; step < 80; ++step) {
+        air::spread_actuator(disc, g.shape, cfg.rho, cfg.h, scratch.du, scratch.dv, scratch.dw);
+        ASSERT_EQ(air::fluid_step(g, bc, cfg, scratch).fault, air::FluidFault::none);
+    }
+    spade::FlowVolume wake;
+    ASSERT_TRUE(air::publish_render_volume(g, air::PublishInput{}, wake).has_value());
+    const float v_h = std::sqrt(disc.thrust / (2.0f * cfg.rho * 3.14159265f * disc.radius * disc.radius));
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 2.0f * v_h;
+    speed.extinction = {{0.25f * v_h, 0.0f}, {2.0f * v_h, 6.0f}};
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.3f * wake.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    RenderScene volume_scene;
+    volume_scene.flow_layers.push_back(spade::render::FlowLayer{&wake, {speed}, {}});
+    RenderScene iso_scene;
+    iso_scene.flow_layers.push_back(spade::render::FlowLayer{&wake, {}, {q_iso}});
+    Camera camera;
+    camera.position = glm::vec3(0.8f, 0.8f, 3.4f);
+
+    // Identical frames at the fixture's size first.
+    for (const RenderScene* scene : {&volume_scene, &iso_scene}) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = false});
+        const std::vector<uint8_t> full = draw_and_read(*scene, comparable_options(), camera);
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = true});
+        const std::vector<uint8_t> skipped = draw_and_read(*scene, comparable_options(), camera);
+        ASSERT_EQ(full.size(), kPixels * 4u);
+        EXPECT_EQ(count_differing(full, skipped), 0u) << "skipping must change no pixel of the wake";
+    }
+
+    constexpr int kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kW, kH);
+    const auto median_ms = [&](const RenderScene& scene, bool skip) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = skip});
+        std::vector<double> ms;
+        for (int i = 0; i < 10; ++i) {
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(renderer_->draw(scene, camera, comparable_options(), static_cast<uint32_t>(kW),
+                                        static_cast<uint32_t>(kH))
+                            .has_value());
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[3] + ms[4]);
+    };
+    const double volume_full = median_ms(volume_scene, false);
+    const double volume_skip = median_ms(volume_scene, true);
+    const double iso_full = median_ms(iso_scene, false);
+    const double iso_skip = median_ms(iso_scene, true);
+    renderer_->set_flow_quality({});
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    RecordProperty("volume_ms_x100", static_cast<int>(volume_skip * 100.0));
+    RecordProperty("volume_unskipped_ms_x100", static_cast<int>(volume_full * 100.0));
+    RecordProperty("iso_ms_x100", static_cast<int>(iso_skip * 100.0));
+    RecordProperty("iso_unskipped_ms_x100", static_cast<int>(iso_full * 100.0));
+    std::printf("[ wake cost ] disc wake 32^3 at 1920x1080: volume %.2f ms (%.2f unskipped), iso %.2f ms (%.2f "
+                "unskipped); on %s\n",
+                volume_skip, volume_full, iso_skip, iso_full, device.c_str());
+    EXPECT_LT(volume_skip, 1000.0) << device;
+    EXPECT_LT(iso_skip, 1000.0) << device;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 // Plan step 7e: skipping empty space changes no pixel. The flow goldens'
