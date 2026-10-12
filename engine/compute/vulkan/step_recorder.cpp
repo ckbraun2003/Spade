@@ -417,55 +417,11 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
 
 Result<void> StepRecorder::make_pipeline(const SpirvVariantSet& variants, VkShaderModule& out_module,
                                            VkPipeline& out_pipeline) {
-    // THE SELECTION (S6 Task 9b). A null answer means the build did not compile
-    // this kernel for the size create() accepted -- i.e.
-    // cmake/SpadeSlang.cmake's SPADE_SLANG_WORKGROUP_SIZES and
-    // compute/backend.hpp's kSupportedWorkgroupSizes have drifted apart. That is
-    // a build-configuration defect rather than a caller error, and it must be a
-    // loud one HERE, because the alternative -- falling back to some other
-    // variant -- would dispatch a module on a grid divided by a different
-    // number and produce wrong physics silently.
-    const SpirvVariant* variant = variants.for_size(workgroup_size_);
-    if (variant == nullptr) {
-        return std::unexpected(Error{
-            Code::invalid_argument,
-            std::string("StepRecorder: kernel '") + variants.name + "' has no variant compiled for local size " +
-                std::to_string(workgroup_size_) +
-                ". cmake/SpadeSlang.cmake's SPADE_SLANG_WORKGROUP_SIZES must list every size "
-                "compute/backend.hpp's kSupportedWorkgroupSizes admits."});
-    }
-
-    VkShaderModuleCreateInfo shader_info{};
-    shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_info.codeSize = variant->word_count * sizeof(uint32_t);
-    shader_info.pCode = variant->words;
-    if (VkResult r = vkCreateShaderModule(device_, &shader_info, nullptr, &out_module); r != VK_SUCCESS) {
-        return std::unexpected(map_vk_error(r, "vkCreateShaderModule (StepRecorder)"));
-    }
-
-    VkPipelineShaderStageCreateInfo stage_info{};
-    stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage_info.module = out_module;
-    // Entry point name: "main", regardless of what the Slang function is
-    // called. Verified against every embedded module's own OpEntryPoint
-    // literal (tests/test_slang_layouts.cpp asserts it for each): slangc's
-    // direct-to-SPIR-V compile names the sole compute entry point "main", so
-    // vkCreateComputePipelines's pName must match THAT. Getting this wrong
-    // once already produced a pipeline the driver could not run (S6 Task 5's
-    // own SEH-crash regression, round 1).
-    stage_info.pName = "main";
-
-    VkComputePipelineCreateInfo pipeline_info{};
-    pipeline_info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipeline_info.stage = stage_info;
-    pipeline_info.layout = pipeline_layout_;
-    if (VkResult r =
-            vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &out_pipeline);
-        r != VK_SUCCESS) {
-        return std::unexpected(map_vk_error(r, "vkCreateComputePipelines"));
-    }
-    return {};
+    // The selection, the shader module and the pipeline: dispatch_chain.hpp's
+    // make_compute_pipeline, shared with the airflow chain runner (its design
+    // note §1). The messages name "StepRecorder", as they always have.
+    return make_compute_pipeline(device_, pipeline_layout_, variants, workgroup_size_, "StepRecorder", out_module,
+                                 out_pipeline);
 }
 
 // ---------------------------------------------------------------------------
@@ -545,15 +501,11 @@ Result<void> StepRecorder::record() {
     // and the last `substeps` barriers of every recording were silently
     // dropped. A pass's timestamp mark follows its last dispatch's barrier, as
     // it always has.
-    struct Command {
-        bool is_dispatch = false;
-        uint32_t pipeline = 0;  // dispatch: PipelineSlot
-        PassParams params{};    // dispatch: its push constant
-        uint32_t groups = 0;    // dispatch: group count
-        uint32_t substep = 0;   // mark: which substep
-        uint32_t boundary = 0;  // mark: which boundary of that substep
-    };
-    std::vector<Command> commands;
+    // The list's entries are dispatch_chain.hpp's ChainCommand: a dispatch
+    // (its PipelineSlot, its PassParams' bytes, its group count) or a mark
+    // (which substep, which boundary of it).
+    static_assert(sizeof(PassParams) <= kMaxChainPushBytes, "PassParams must fit a chain command's push block");
+    std::vector<ChainCommand> commands;
 
     PassParams base{};
     base.world_count = shape_.world_count;
@@ -566,10 +518,12 @@ Result<void> StepRecorder::record() {
     base.grid_segment_slots = grid_.segment_slots;
 
     const auto emit = [&](uint32_t pipeline, const PassParams& params, uint32_t groups) {
-        commands.push_back(Command{.is_dispatch = true, .pipeline = pipeline, .params = params, .groups = groups});
+        ChainCommand c{.is_dispatch = true, .pipeline = pipeline, .groups = {groups, 1u, 1u}};
+        std::memcpy(c.push.data(), &params, sizeof(PassParams));
+        commands.push_back(c);
     };
     const auto mark = [&](uint32_t substep, uint32_t boundary) {
-        commands.push_back(Command{.substep = substep, .boundary = boundary});
+        commands.push_back(ChainCommand{.mark_a = substep, .mark_b = boundary});
     };
 
     // The pass names as the walk below visits them, once (substep 0), for
@@ -675,34 +629,17 @@ Result<void> StepRecorder::record() {
         }
     }
 
-    // Record the list. The last dispatch is found from the list itself.
-    std::size_t last_dispatch = 0;
-    for (std::size_t i = 0; i < commands.size(); ++i) {
-        if (commands[i].is_dispatch) last_dispatch = i;
-    }
+    // Record the list (dispatch_chain.hpp: the last dispatch is found from
+    // the list itself, and the barrier follows every dispatch but that one).
     chain_ = RecordedChain{.sort_stages = sort_stage_count()};
     chain_.passes = std::move(walked);
-    for (std::size_t i = 0; i < commands.size(); ++i) {
-        const Command& c = commands[i];
-        if (!c.is_dispatch) {
-            timestamps_->record_mark(cmd_, c.substep, c.boundary);
-            continue;
-        }
-        vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines_[c.pipeline]);
-        vkCmdPushConstants(cmd_, pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, gen::kPushConstantOffset,
-                            gen::kPushConstantSize, &c.params);
-        vkCmdDispatch(cmd_, c.groups, 1, 1);
-        ++chain_.dispatches;
-        if (i < last_dispatch) {
-            VkMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(cmd_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                  0, 1, &barrier, 0, nullptr, 0, nullptr);
-            ++chain_.barriers;
-        }
-    }
+    const ChainCounts counts = record_dispatch_chain(
+        cmd_, pipeline_layout_, pipelines_, commands, gen::kPushConstantOffset, gen::kPushConstantSize,
+        [this](VkCommandBuffer cmd, uint32_t substep, uint32_t boundary) {
+            timestamps_->record_mark(cmd, substep, boundary);
+        });
+    chain_.dispatches = counts.dispatches;
+    chain_.barriers = counts.barriers;
 
     if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkEndCommandBuffer (StepRecorder record)"));

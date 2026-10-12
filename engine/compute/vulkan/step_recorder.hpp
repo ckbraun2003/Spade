@@ -76,6 +76,7 @@
 #include "compute/spirv_variants.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/context.hpp"
+#include "compute/vulkan/dispatch_chain.hpp"
 #include "compute/vulkan/timestamps.hpp"
 #include "core/error.hpp"
 
