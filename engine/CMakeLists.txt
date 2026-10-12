@@ -827,6 +827,7 @@ add_library(spade_vehicles STATIC
     vehicles/rotor.cpp
     vehicles/rotor_wake.cpp
     vehicles/model_type.cpp
+    vehicles/model_part.cpp
     vehicles/model_identity.cpp
     vehicles/part_pose.cpp
     vehicles/quadrotor.cpp

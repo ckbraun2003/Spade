@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
@@ -20,6 +21,7 @@
 #include "vehicles/quadrotor.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 namespace {
@@ -157,6 +159,43 @@ TEST(ModelSnapshot, ABlobRestoresAfterTheModelsGainParts) {
         .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
         .shape = box,
         .surface = PartSurface{.kind = PartSurface::Kind::porous, .inv_permeability = 1.0e6f, .inertial_coeff = 20.0f},
+        .min_feature = 0.004f});
+    auto target = with_models({dressed});
+    const auto restored = target.restore(*blob);
+    EXPECT_TRUE(restored.has_value()) << (restored ? "" : restored.error().context);
+}
+
+// CORE-6, CORE-7: a mesh part folds nothing either (stage 7 will fold its
+// content_hash()), so a v3 blob taken before a model gained one restores into
+// a registry where it has it.
+TEST(ModelSnapshot, ABlobRestoresAfterAModelGainsAMeshPart) {
+    auto source = with_models({quad("a")});
+    ASSERT_TRUE(source.step(3).has_value());
+    const auto blob = source.snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+
+    // A 10 cm right-corner tetrahedron, counter-clockwise seen from outside.
+    const spade::MeshInput input{
+        .positions = {{0.0, 0.0, 0.0}, {0.1, 0.0, 0.0}, {0.0, 0.1, 0.0}, {0.0, 0.0, 0.1}},
+        .indices = {0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3},
+        .unit = spade::MeshUnit::metre};
+    const auto mesh = spade::make_mesh(input, "wedge");
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+
+    using spade::vehicles::PartAttach;
+    using spade::vehicles::PartDesc;
+    using spade::vehicles::PartSurface;
+    spade::vehicles::ModelType dressed = quad("a");
+    dressed.parts.push_back(PartDesc{
+        .name = "wedge",
+        .role = "body",
+        .attach = PartAttach::body,
+        .rotor = 0,
+        .mount_pos = glm::vec3(0.0f, 0.03f, 0.0f),
+        .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        .shape = spade::SdfProgram{},
+        .mesh = *mesh,
+        .surface = PartSurface{.kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
         .min_feature = 0.004f});
     auto target = with_models({dressed});
     const auto restored = target.restore(*blob);

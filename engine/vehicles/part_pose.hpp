@@ -27,12 +27,13 @@
 //   posed_program(): the WALL parts as one world-frame SdfProgram, the form a
 //     solver takes for the static world SDF.
 //   sample_parts(): every posed part, wall or porous, each evaluated in its
-//     own frame (part_sample). The smallest distance wins, and A TIE GOES TO
-//     THE LOWER PART INDEX (CORE-8 section 5.2): the parts are visited in
-//     declaration order and a later part replaces the winner only when its
-//     distance is strictly smaller. It reports the winner's index, surface
-//     kind and wall velocity. A mesh part (Task B4) has no SdfProgram form,
-//     so sample_parts is the interface a solver reads every part through.
+//     own frame (part_sample, vehicles/model_part.hpp). The smallest
+//     distance wins, and A TIE GOES TO THE LOWER PART INDEX (CORE-8 section
+//     5.2): the parts are visited in declaration order and a later part
+//     replaces the winner only when its distance is strictly smaller. It
+//     reports the winner's index, surface kind and wall velocity. A mesh part
+//     (Task B4) has no SdfProgram form, so sample_parts is the interface a
+//     solver reads every part through.
 //   The two agree within rounding on the wall parts (tests/test_part_pose.cpp).
 //
 // PSI is the blade azimuth, in radians, any finite value: the caller wraps it
@@ -59,7 +60,8 @@
 
 #include "core/error.hpp"
 #include "state/layout.hpp"         // BodyState
-#include "vehicles/model_type.hpp"  // ModelType, PartDesc, PartSurface, kNoPart
+#include "vehicles/model_part.hpp"  // PartDesc, part_sample: a part's own geometry, in its part frame
+#include "vehicles/model_type.hpp"  // ModelType, PartSurface, kNoPart
 #include "world/sdf.hpp"            // SdfProgram, SdfSample, SdfTransform
 
 namespace spade::vehicles {
@@ -107,18 +109,18 @@ struct PosedParts {
 // primitives' transform indices offset, and one union_ follows each part but
 // the first (compose()'s join, without materials). No wall part: no nodes.
 //
+// unavailable for a posed wall part that is a mesh, naming it: a mesh has no
+// SdfProgram form, so read it through sample_parts() (Task B4; CORE-6). A
+// porous mesh part, or one the filter left out, is not refused.
 // capacity_exceeded past kMaxSdfDepth (naming the part that crosses it), or
 // past 2^32 - 1 transforms. invalid_argument for a posed part that is not in
-// `model`, or a shape that does not validate (a model that does not validate).
+// `model`, a wall part with neither shape nor mesh, or a shape that does not
+// validate (a model that does not validate).
 [[nodiscard]] Result<SdfProgram> posed_program(const ModelType& model, const PosedParts& posed);
 
 // vel + omega x (x - com) + spin x (x - hub), for posed.parts[i], in that
 // order. i < posed.parts.size().
 [[nodiscard]] glm::vec3 part_wall_velocity(const PosedParts& posed, std::size_t i, glm::vec3 x) noexcept;
-
-// One part, in its own frame: sample(part.shape, p_part). The one evaluation
-// interface a solver reads a part through; Task B4 adds the mesh branch.
-[[nodiscard]] SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept;
 
 // What sample_parts() reports at a world point. surface and velocity are the
 // owner's, and mean nothing while owner is kNoPart.
