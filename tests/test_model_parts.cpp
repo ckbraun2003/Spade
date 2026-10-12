@@ -4,20 +4,30 @@
 // by its index, its name and the field at fault, and validate() returns the
 // first issue's own code. Parts are not folded into the model identity until a
 // step reads them (stage 7).
+//
+// Task B4 (CORE-6, import only): a part's geometry is an SdfProgram OR a
+// triangle mesh, exactly one, and part_sample() reads either through the
+// same {distance, gradient} contract. The mesh expectations are the boxes'
+// own coordinates and the SDF box beside them (TD-4).
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "core/rng.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "vehicles/model_identity.hpp"
@@ -25,10 +35,12 @@
 #include "vehicles/quadrotor.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 namespace {
 
+using MeshPtr = std::shared_ptr<const spade::TriangleMesh>;
 using spade::vehicles::ModelIssue;
 using spade::vehicles::ModelType;
 using spade::vehicles::PartAttach;
@@ -84,9 +96,57 @@ constexpr float kInf = std::numeric_limits<float>::infinity();
                     .mount_pos = glm::vec3(0.0f),
                     .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                     .shape = sphere(0.01f),
+                    .mesh = nullptr,
                     .surface = PartSurface{
                         .kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
                     .min_feature = 0.005f};
+}
+
+// A box's twelve triangles, counter-clockwise seen from outside, its corners
+// numbered x + 2y + 4z (tests/test_mesh_field.cpp's cube).
+constexpr uint32_t kBoxTriangles[12][3] = {
+    {0, 2, 1}, {1, 2, 3},  // -z
+    {4, 5, 6}, {5, 7, 6},  // +z
+    {0, 1, 4}, {1, 5, 4},  // -y
+    {2, 6, 3}, {3, 6, 7},  // +y
+    {0, 4, 2}, {2, 4, 6},  // -x
+    {1, 3, 5}, {3, 7, 5},  // +x
+};
+
+// A box `size` long on each axis about `centre`, both given in `unit`, built by
+// make_mesh(), which scales it to metres once.
+[[nodiscard]] MeshPtr box_mesh(glm::dvec3 centre, glm::dvec3 size, spade::MeshUnit unit) {
+    std::vector<glm::dvec3> positions;
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::dvec3 corner{(v & 1u) != 0 ? 0.5 : -0.5, ((v >> 1) & 1u) != 0 ? 0.5 : -0.5,
+                                ((v >> 2) & 1u) != 0 ? 0.5 : -0.5};
+        positions.push_back(centre + size * corner);
+    }
+    std::vector<uint32_t> indices;
+    for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
+    const spade::MeshInput input{.positions = std::move(positions), .indices = std::move(indices), .unit = unit};
+    return spade::make_mesh(input, "box").value();
+}
+
+// The 0.3 x 0.1 x 0.2 m hull about its part origin, in metres.
+[[nodiscard]] MeshPtr hull_mesh() {
+    return box_mesh(glm::dvec3(0.0), glm::dvec3(0.3, 0.1, 0.2), spade::MeshUnit::metre);
+}
+
+// A valid wall part whose geometry is `mesh` (no SdfProgram), declaring a
+// 4 mm smallest feature.
+[[nodiscard]] PartDesc mesh_part(std::string name, MeshPtr mesh) {
+    return PartDesc{.name = std::move(name),
+                    .role = "body",
+                    .attach = PartAttach::body,
+                    .rotor = 0,
+                    .mount_pos = glm::vec3(0.0f),
+                    .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                    .shape = spade::SdfProgram{},
+                    .mesh = std::move(mesh),
+                    .surface = PartSurface{
+                        .kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
+                    .min_feature = 0.004f};
 }
 
 [[nodiscard]] PartSurface porous(float inv_permeability, float inertial_coeff) {
@@ -346,4 +406,164 @@ TEST(ModelParts, RegisterModelRefusesABadPart) {
 
     const spade::Result<spade::ModelTypeId> once = sim.register_model(quad_with({part("arm0"), part("arm1")}));
     EXPECT_TRUE(once.has_value()) << (once ? "" : once.error().context);
+}
+
+// --- Task B4: a mesh as a part's geometry (CORE-6) --------------------------
+
+TEST(ModelParts, APartHasExactlyOneOfShapeOrMesh) {
+    const MeshPtr hull = hull_mesh();
+
+    // Either form alone is a part.
+    for (const PartDesc& ok : {part("sdf"), mesh_part("mesh", hull)}) {
+        const ModelType m = quad_with({ok});
+        const std::vector<ModelIssue> issues = m.issues();
+        EXPECT_TRUE(issues.empty()) << ok.name << ": " << (issues.empty() ? "" : issues[0].message);
+        EXPECT_TRUE(m.validate().has_value()) << ok.name;
+    }
+
+    // Both, or neither, is refused at `shape`, naming the part and the mesh.
+    PartDesc both = part("both");
+    both.mesh = hull;
+    struct Case {
+        const char* why;
+        PartDesc bad;
+        const char* says;
+    };
+    for (const Case& c : {Case{"both", both, "both shape and mesh"},
+                          Case{"neither", mesh_part("neither", nullptr), "neither shape nor mesh"}}) {
+        const ModelType m = quad_with({part("arm0"), c.bad});
+        const std::vector<ModelIssue> issues = m.issues();
+        ASSERT_EQ(issues.size(), 1u) << c.why;
+        EXPECT_EQ(issues[0].element, ModelIssue::Element::part) << c.why;
+        EXPECT_EQ(issues[0].index, 1u) << c.why;
+        EXPECT_EQ(issues[0].field, "shape") << c.why;
+        EXPECT_EQ(issues[0].code, spade::Code::invalid_argument) << c.why;
+        const std::string named = "model type 'parts_quad': part 1 '" + c.bad.name + "': ";
+        EXPECT_EQ(issues[0].message.rfind(named, 0), 0u) << c.why << ": " << issues[0].message;
+        EXPECT_NE(issues[0].message.find(c.says), std::string::npos) << c.why << ": " << issues[0].message;
+        const spade::Result<void> v = m.validate();
+        ASSERT_FALSE(v.has_value()) << c.why;
+        EXPECT_EQ(v.error().context, issues[0].message) << c.why;
+    }
+}
+
+TEST(ModelParts, AMeshPartTakesEveryOtherPartCheck) {
+    // A mesh replaces the SdfProgram and nothing else: min_feature is still
+    // declared, finite and > 0 (CORE-8 D5), and the mount, the attachment and
+    // the surface are checked as on any part. Each is the one issue, at its
+    // own field.
+    const MeshPtr hull = hull_mesh();
+    struct Case {
+        const char* why;
+        PartDesc bad;
+        const char* field;
+    };
+    std::vector<Case> cases;
+    for (const float feature : {0.0f, -0.001f, kNaN, kInf}) {
+        PartDesc p = mesh_part("hull", hull);
+        p.min_feature = feature;
+        cases.push_back({"min_feature", p, "min_feature"});
+    }
+    {
+        PartDesc p = mesh_part("hull", hull);
+        p.mount_pos.y = kNaN;
+        cases.push_back({"a NaN mount", p, "mount_pos"});
+    }
+    {
+        PartDesc p = mesh_part("hull", hull);
+        p.attach = PartAttach::rotor;
+        p.rotor = 9;
+        cases.push_back({"rotor 9 of 4", p, "rotor"});
+    }
+    {
+        PartDesc p = mesh_part("hull", hull);
+        p.surface.inertial_coeff = 20.0f;
+        cases.push_back({"a coefficient on a wall", p, "surface"});
+    }
+    for (const Case& c : cases) {
+        const std::vector<ModelIssue> issues = quad_with({part("arm0"), c.bad}).issues();
+        ASSERT_EQ(issues.size(), 1u) << c.why << ": " << (issues.empty() ? "" : issues[0].message);
+        EXPECT_EQ(issues[0].element, ModelIssue::Element::part) << c.why;
+        EXPECT_EQ(issues[0].index, 1u) << c.why;
+        EXPECT_EQ(issues[0].field, c.field) << c.why << ": " << issues[0].message;
+    }
+
+    // A porous mesh part, and a mesh part on a rotor, are parts.
+    PartDesc canopy = mesh_part("canopy", hull);
+    canopy.surface = porous(1.0e6f, 20.0f);
+    PartDesc bell = mesh_part("bell", hull);
+    bell.attach = PartAttach::rotor;
+    bell.rotor = 3;
+    const std::vector<ModelIssue> fine = quad_with({canopy, bell}).issues();
+    EXPECT_TRUE(fine.empty()) << (fine.empty() ? "" : fine[0].message);
+}
+
+TEST(ModelParts, AMeshPartSamplesAsTheEquivalentSdfPart) {
+    // part_sample() is a host call that never throws, for either form.
+    static_assert(
+        noexcept(spade::vehicles::part_sample(std::declval<const PartDesc&>(), std::declval<const glm::vec3&>())));
+
+    // One 0.3 x 0.1 x 0.2 m box, centred at (0.02, -0.01, 0.005) m in its part
+    // frame, twice: as an SdfProgram, and as a mesh authored in MILLIMETRES,
+    // which make_mesh() turned into metres once. The part frame is the mesh's
+    // own frame; posing (the mount) is the caller's.
+    const glm::vec3 half(0.15f, 0.05f, 0.1f);
+    const glm::vec3 centre(0.02f, -0.01f, 0.005f);
+    PartDesc sdf = part("sdf");
+    sdf.shape = program({leaf(spade::SdfPrim::box, glm::vec4(half, 0.0f))});
+    sdf.shape.transforms.push_back(
+        spade::transform_of(spade::SdfPose{
+                                .position = centre, .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f), .scale = 1.0f})
+            .value());
+    sdf.shape.nodes[0].transform = 1;
+    ASSERT_TRUE(sdf.shape.validate().has_value());
+    const PartDesc mesh = mesh_part(
+        "mesh", box_mesh(glm::dvec3(20.0, -10.0, 5.0), glm::dvec3(300.0, 100.0, 200.0), spade::MeshUnit::millimetre));
+
+    // 1000 points in a 1 m cube about the part origin, then 1000 in a box
+    // 0.4 x 0.2 x 0.3 m about the hull's centre, a quarter of them inside.
+    spade::rng::Stream s{.state = 0xb4a5e5b0c5ULL, .cached_gauss = 0.0f, .has_cached = 0u};
+    int gradients = 0;
+    int inside = 0;
+    for (int i = 0; i < 2000; ++i) {
+        const glm::vec3 r{s.next_float() - 0.5f, s.next_float() - 0.5f, s.next_float() - 0.5f};
+        const glm::vec3 p = i < 1000 ? r : centre + glm::vec3(0.4f, 0.2f, 0.3f) * r;
+        const spade::SdfSample want = spade::vehicles::part_sample(sdf, p);
+        const spade::SdfSample got = spade::vehicles::part_sample(mesh, p);
+        ASSERT_EQ(want.distance, spade::sample(sdf.shape, p).distance) << "an SDF part is sample() itself";
+
+        // The distance: exact for both, so they agree within fp32 rounding.
+        ASSERT_NEAR(got.distance, want.distance, 2e-6f)
+            << "point " << i << " (" << p.x << ", " << p.y << ", " << p.z << ")";
+        if (std::abs(want.distance) > 2e-6f) {
+            ASSERT_EQ(got.distance < 0.0f, want.distance < 0.0f) << "point " << i;
+        }
+
+        // The gradient, a unit vector out of the solid, where it is defined
+        // for both: a centimetre off the surface and, inside, a millimetre
+        // off the box's medial planes, so the nearest face is not in doubt.
+        const glm::dvec3 q = glm::abs(glm::dvec3(p) - glm::dvec3(centre)) - glm::dvec3(half);
+        double depth[3] = {q.x, q.y, q.z};
+        std::sort(depth, depth + 3);
+        const bool clear = std::abs(want.distance) >= 1e-2f && (want.distance > 0.0f || depth[2] - depth[1] >= 1e-3);
+        if (!clear) continue;
+        ++gradients;
+        inside += want.distance < 0.0f ? 1 : 0;
+        EXPECT_NEAR(got.gradient.x, want.gradient.x, 1e-4f) << "point " << i;
+        EXPECT_NEAR(got.gradient.y, want.gradient.y, 1e-4f) << "point " << i;
+        EXPECT_NEAR(got.gradient.z, want.gradient.z, 1e-4f) << "point " << i;
+    }
+    EXPECT_GT(gradients, 1000) << "too few points compared the gradient";
+    EXPECT_GT(inside, 100) << "too few points compared the gradient inside";
+}
+
+TEST(ModelParts, AMeshPartLeavesTheIdentityAlone) {
+    // CORE-7: parts are not folded until a step reads them (stage 7), and a
+    // mesh part folds nothing either: stage 7 will fold its content_hash().
+    // Green at red: a pin.
+    const ModelType bare = quad_with({});
+    const ModelType dressed = quad_with({part("arm0"), mesh_part("hull", hull_mesh())});
+    EXPECT_EQ(spade::vehicles::model_identity(dressed), spade::vehicles::model_identity(bare));
+    EXPECT_EQ(spade::vehicles::model_registry_identity(std::vector<ModelType>{dressed}),
+              spade::vehicles::model_registry_identity(std::vector<ModelType>{bare}));
 }

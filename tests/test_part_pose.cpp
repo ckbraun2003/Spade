@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -32,6 +33,7 @@
 #include "vehicles/part_pose.hpp"
 #include "vehicles/quadrotor.hpp"
 #include "world/builder.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 namespace {
@@ -173,6 +175,47 @@ template <class T>
 
 constexpr std::array<float, 4> kDroneOmega{900.0f, 910.0f, 920.0f, 930.0f};
 constexpr std::array<float, 4> kDronePsi{0.7f, 1.1f, -2.0f, 3.0f};
+
+// A box's twelve triangles, counter-clockwise seen from outside, its corners
+// numbered x + 2y + 4z (tests/test_mesh_field.cpp's cube).
+constexpr uint32_t kBoxTriangles[12][3] = {
+    {0, 2, 1}, {1, 2, 3},  // -z
+    {4, 5, 6}, {5, 7, 6},  // +z
+    {0, 1, 4}, {1, 5, 4},  // -y
+    {2, 6, 3}, {3, 6, 7},  // +y
+    {0, 4, 2}, {2, 4, 6},  // -x
+    {1, 3, 5}, {3, 7, 5},  // +x
+};
+
+// A box with half-extents `half` about the part origin, in metres, as a mesh
+// (Task B4; CORE-6).
+[[nodiscard]] std::shared_ptr<const spade::TriangleMesh> box_mesh(glm::dvec3 half) {
+    std::vector<glm::dvec3> positions;
+    for (uint32_t v = 0; v < 8; ++v) {
+        positions.push_back(glm::dvec3((v & 1u) != 0 ? half.x : -half.x, ((v >> 1) & 1u) != 0 ? half.y : -half.y,
+                                       ((v >> 2) & 1u) != 0 ? half.z : -half.z));
+    }
+    std::vector<uint32_t> indices;
+    for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
+    const spade::MeshInput input{
+        .positions = std::move(positions), .indices = std::move(indices), .unit = spade::MeshUnit::metre};
+    return spade::make_mesh(input, "box").value();
+}
+
+// A wall part on the body whose geometry is `mesh`, with no SdfProgram.
+[[nodiscard]] PartDesc mesh_part(std::string name, std::shared_ptr<const spade::TriangleMesh> mesh,
+                                 glm::vec3 mount_pos = glm::vec3(0.0f), glm::quat mount_orient = kIdentity) {
+    return PartDesc{.name = std::move(name),
+                    .role = "test",
+                    .attach = PartAttach::body,
+                    .rotor = 0,
+                    .mount_pos = mount_pos,
+                    .mount_orient = mount_orient,
+                    .shape = spade::SdfProgram{},
+                    .mesh = std::move(mesh),
+                    .surface = PartSurface{.kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
+                    .min_feature = 0.001f};
+}
 
 }  // namespace
 
@@ -601,4 +644,82 @@ TEST(PartPose, VehiclesAndWorldIncludeNothingAboveThem) {
         }
         EXPECT_GT(scanned, 0) << dir.string();
     }
+}
+
+// --- Task B4: a mesh part through the posing rule (CORE-6) -----------------
+
+TEST(PartPose, AMeshPartSamplesAsTheEquivalentSdfPart) {
+    // One 0.3 x 0.1 x 0.2 m hull, mounted off the centre of mass and turned,
+    // as an SdfProgram and as a mesh, on the tilted, moving, turning body.
+    // sample_parts() reads both through part_sample(): the same distance
+    // within fp32 rounding, the same owner, the same wall velocity.
+    const glm::vec3 mount(0.03f, -0.01f, 0.02f);
+    const glm::quat turn = glm::angleAxis(0.4f, glm::normalize(glm::vec3(1.0f, 2.0f, 0.5f)));
+    const ModelType sdf_model = quad_with({part("hull", box(glm::vec3(0.15f, 0.05f, 0.1f)), mount, turn)});
+    const ModelType mesh_model = quad_with({mesh_part("hull", box_mesh(glm::dvec3(0.15, 0.05, 0.1)), mount, turn)});
+    const spade::BodyState b = walled_drone_body();
+    const auto a = spade::vehicles::posed_parts(sdf_model, b, {}, {}, PartFilter::all);
+    const auto m = spade::vehicles::posed_parts(mesh_model, b, {}, {}, PartFilter::all);
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    ASSERT_TRUE(m.has_value()) << m.error().context;
+
+    spade::rng::Stream s{.state = 0xb4b05e5ULL, .cached_gauss = 0.0f, .has_cached = 0u};
+    int gradients = 0;
+    for (int i = 0; i < 2000; ++i) {
+        const glm::vec3 r{s.next_float() - 0.5f, s.next_float() - 0.5f, s.next_float() - 0.5f};
+        const glm::vec3 x = b.pos + r;  // within 0.5 m of the centre of mass on each axis
+        const PartSample sa = spade::vehicles::sample_parts(sdf_model, *a, x);
+        const PartSample sm = spade::vehicles::sample_parts(mesh_model, *m, x);
+        ASSERT_NEAR(sm.distance, sa.distance, 2e-6f) << "point " << i;
+        ASSERT_EQ(sm.owner, 0u) << "point " << i;
+        EXPECT_EQ(sm.surface, PartSurface::Kind::wall);
+        EXPECT_TRUE(same_bytes(sm.velocity, sa.velocity)) << "point " << i;
+        // The gradient, outside and a centimetre off the surface, where it is
+        // the unit direction from the closest point for both.
+        if (sa.distance < 1e-2f) continue;
+        ++gradients;
+        EXPECT_NEAR(sm.gradient.x, sa.gradient.x, 1e-4f) << "point " << i;
+        EXPECT_NEAR(sm.gradient.y, sa.gradient.y, 1e-4f) << "point " << i;
+        EXPECT_NEAR(sm.gradient.z, sa.gradient.z, 1e-4f) << "point " << i;
+    }
+    EXPECT_GT(gradients, 1000);
+}
+
+TEST(PartPose, PosedProgramRefusesAMeshPartByName) {
+    // One world SDF cannot hold a mesh, so posed_program() refuses a posed
+    // wall part that is a mesh, naming it, rather than build a union with a
+    // missing operand. sample_parts() is the way to read it.
+    const auto mesh = box_mesh(glm::dvec3(0.05, 0.02, 0.05));
+    const spade::BodyState b = walled_drone_body();
+    const ModelType both = quad_with({part("hull", box(glm::vec3(0.08f, 0.03f, 0.05f))),
+                                      mesh_part("canopy", mesh, glm::vec3(0.0f, 0.04f, 0.0f))});
+    const auto posed = spade::vehicles::posed_parts(both, b, {}, {}, PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    const auto refused = spade::vehicles::posed_program(both, *posed);
+    ASSERT_FALSE(refused.has_value()) << "a mesh wall part has no SdfProgram form";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("part 1 'canopy'"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("sample_parts"), std::string::npos) << refused.error().context;
+
+    // A mesh that is not a posed wall part is not refused: a porous one is the
+    // grid's sink, and one on a rotor is left out by rigid_only.
+    const ModelType others = quad_with({part("hull", box(glm::vec3(0.08f, 0.03f, 0.05f))),
+                                        made_porous(mesh_part("canopy", mesh)), on_rotor(mesh_part("bell", mesh), 0)});
+    const auto rigid = spade::vehicles::posed_parts(others, b, {}, {}, PartFilter::rigid_only);
+    ASSERT_TRUE(rigid.has_value()) << rigid.error().context;
+    const auto program = spade::vehicles::posed_program(others, *rigid);
+    ASSERT_TRUE(program.has_value()) << program.error().context;
+    EXPECT_EQ(program->nodes.size(), 1u) << "the hull alone";
+    EXPECT_TRUE(program->validate().has_value());
+
+    // A wall part with neither form (a model that does not validate) is
+    // refused too, never joined as an empty operand.
+    const ModelType hollow =
+        quad_with({part("hull", box(glm::vec3(0.08f, 0.03f, 0.05f))), mesh_part("ghost", nullptr)});
+    const auto hollow_posed = spade::vehicles::posed_parts(hollow, b, {}, {}, PartFilter::all);
+    ASSERT_TRUE(hollow_posed.has_value()) << hollow_posed.error().context;
+    const auto none = spade::vehicles::posed_program(hollow, *hollow_posed);
+    ASSERT_FALSE(none.has_value()) << "an empty shape must not be joined";
+    EXPECT_EQ(none.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(none.error().context.find("part 1 'ghost'"), std::string::npos) << none.error().context;
 }

@@ -198,10 +198,6 @@ glm::vec3 part_wall_velocity(const PosedParts& posed, std::size_t i, glm::vec3 x
     return posed.vel + glm::cross(posed.omega, x - posed.com) + glm::cross(p.spin, x - p.hub);
 }
 
-SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept {
-    return sample(part.shape, p_part);
-}
-
 PartSample sample_parts(const ModelType& model, const PosedParts& posed, glm::vec3 x) noexcept {
     PartSample out{};
     std::size_t winner = posed.parts.size();
