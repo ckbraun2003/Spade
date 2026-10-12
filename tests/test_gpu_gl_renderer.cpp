@@ -1288,11 +1288,11 @@ TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
 // (SPADE_GL_FLOW_COST=1; about 17 s, most of it building the volume). Each
 // frame's time (draw() to glFinish(), median of 8 after 2 warm-ups) includes
 // uploading the volume's 32 MB of halves, as a live run does every frame.
-// Measured 2026-10-12 on the RTX 3060 Ti (572.83), two runs with the box
-// under different load: volume 165 and 108 ms, iso 83 and 51 ms. About 5 ms
+// Measured 2026-10-12 on the RTX 3060 Ti (572.83), unskipped, across runs
+// under different box load: volume 84 to 165 ms, iso 41 to 83 ms. About 5 ms
 // of that is the upload, the depth copy and the rest of the frame (march
-// skipped, measured). The march is 25 to 40 times the budget; the lead has
-// it. The ceiling only catches a pass gone pathological.
+// skipped, measured). The march is 20 to 40 times the budget; the lead has
+// it (RND-7). The ceiling only catches a pass gone pathological.
 TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     if (!env_gate_is_set("SPADE_GL_FLOW_COST")) {
         GTEST_SKIP() << "a measurement: set SPADE_GL_FLOW_COST=1 to run it";
@@ -1337,7 +1337,9 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     RenderScene iso_scene = ring_cut_scene();
     iso_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
-    const auto median_ms = [&](const RenderScene& scene) {
+    const auto median_ms = [&](const RenderScene& scene, bool skip,
+                               GlRenderer::FlowScale scale = GlRenderer::FlowScale::full) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = skip, .scale = scale});
         EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
         std::vector<double> ms;
         for (int i = 0; i < 10; ++i) {
@@ -1354,19 +1356,163 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
         std::sort(ms.begin(), ms.end());
         return 0.5 * (ms[3] + ms[4]);
     };
-    const double volume_ms = median_ms(volume_scene);
-    const double iso_ms = median_ms(iso_scene);
+    const double volume_full_ms = median_ms(volume_scene, false);
+    const double iso_full_ms = median_ms(iso_scene, false);
+    const double volume_ms = median_ms(volume_scene, true);
+    const double iso_ms = median_ms(iso_scene, true);
+    const double volume_half_ms = median_ms(volume_scene, true, GlRenderer::FlowScale::half);
+    const double iso_half_ms = median_ms(iso_scene, true, GlRenderer::FlowScale::half);
+    RecordProperty("volume_half_ms_x100", static_cast<int>(volume_half_ms * 100.0));
+    RecordProperty("iso_half_ms_x100", static_cast<int>(iso_half_ms * 100.0));
+    std::printf("[ flow cost ] at half scale: volume %.2f ms, iso %.2f ms\n", volume_half_ms, iso_half_ms);
     RecordProperty("volume_ms_x100", static_cast<int>(volume_ms * 100.0));
     RecordProperty("iso_ms_x100", static_cast<int>(iso_ms * 100.0));
-    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms, iso %.2f ms; on %s\n", volume_ms, iso_ms,
-                device.c_str());
-    EXPECT_LT(volume_ms, 1000.0) << device;
-    EXPECT_LT(iso_ms, 1000.0) << device;
+    RecordProperty("volume_unskipped_ms_x100", static_cast<int>(volume_full_ms * 100.0));
+    RecordProperty("iso_unskipped_ms_x100", static_cast<int>(iso_full_ms * 100.0));
+    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms (%.2f unskipped), iso %.2f ms (%.2f unskipped); "
+                "on %s\n",
+                volume_ms, volume_full_ms, iso_ms, iso_full_ms, device.c_str());
+    EXPECT_LT(volume_full_ms, 1000.0) << device;
+    EXPECT_LT(iso_full_ms, 1000.0) << device;
+    // Plan steps 7e and 7f, each against the slower march in the same run.
+    // Measured 2026-10-12 with the box quiet: skipping took the volume to
+    // 0.6 of unskipped and the iso to 0.35. The volume skips less because its
+    // smoke cannot be skipped exactly: the dye blob's Gaussian tail stays
+    // above fp16's smallest subnormal out to 0.82 m, so a third of the box
+    // still absorbs a little. Half scale took both to about 0.47 of skipped
+    // full. With other realms building, the ratios drift (skipping 0.57 to
+    // 0.71, half up to 0.56), so these bounds only hold each saving to be
+    // clearly real; the numbers themselves are in the run's properties.
+    EXPECT_LT(volume_ms, 0.9 * volume_full_ms) << device;
+    EXPECT_LT(iso_ms, 0.9 * iso_full_ms) << device;
+    EXPECT_LT(volume_half_ms, 0.75 * volume_ms) << device;
+    EXPECT_LT(iso_half_ms, 0.75 * iso_ms) << device;
+    renderer_->set_flow_quality({});
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &colour);
     glDeleteRenderbuffers(1, &depth);
+}
+
+// Plan step 7f: the live-only reduced march. Half marches a quarter of the
+// rays and says so through last_flow_scale(); a frame with no flow layer
+// says 0. The half frame is held to the full one by a measured band: a live
+// view, not the CPU's frame.
+TEST_F(GpuGlRenderer, FlowHalfScaleMarchesAtHalfAndSaysSo) {
+    const spade::FlowVolume ring = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                 spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&ring, {vorticity}, {}});
+
+    const std::vector<uint8_t> full = draw_and_read(scene, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 1.0f);
+    renderer_->set_flow_quality(GlRenderer::FlowQuality{.scale = GlRenderer::FlowScale::half});
+    const std::vector<uint8_t> half = draw_and_read(scene, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 0.5f) << "a half-resolution march must say so";
+    RenderScene bare = ring_cut_scene();
+    (void)draw_and_read(bare, comparable_options(), camera_on_ring());
+    EXPECT_EQ(renderer_->last_flow_scale(), 0.0f) << "a frame without a flow layer says 0";
+    renderer_->set_flow_quality({});
+
+    ASSERT_EQ(half.size(), kPixels * 4u);
+    const ChannelDiff d = channel_diff(full, half);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow half ] against full: worst %d levels, %zu over two, %zu differ; on %s\n", d.worst,
+                d.over_two, d.differing, device.c_str());
+    // Measured 2026-10-12, 160x120 (so an 80x60 march), on an NVIDIA GeForce
+    // RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 3186 pixels differ from the
+    // full frame, 2349 by more than two levels, the worst by 32. Looked at:
+    // the ring is the same ring, softer; the large differences sit on its
+    // edges and along the quad's edge, where one half pixel's march spans the
+    // opaque edge. A live view's band, announced as such, not the CPU's.
+    constexpr int kBandWorstLevels = 32;
+    constexpr size_t kBandOverTwoPixels = 2349;
+    constexpr size_t kBandDifferingPixels = 3186;
+    EXPECT_GT(d.differing, 0u) << "a half-resolution march is not the full frame";
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// Automatic picks half when the march misses its budget, and full when it
+// holds it, judged from the frames before.
+TEST_F(GpuGlRenderer, FlowAutomaticScaleFollowsTheBudget) {
+    const spade::FlowVolume ring = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                 spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&ring, {vorticity}, {}});
+    const auto settle = [&](float budget_ms) {
+        renderer_->set_flow_quality(
+            GlRenderer::FlowQuality{.scale = GlRenderer::FlowScale::automatic, .march_budget_ms = budget_ms});
+        for (int i = 0; i < 4; ++i) (void)draw_and_read(scene, comparable_options(), camera_on_ring());
+        return renderer_->last_flow_scale();
+    };
+    EXPECT_EQ(settle(1e-6f), 0.5f) << "a march over its budget drops to half";
+    EXPECT_EQ(settle(1e6f), 1.0f) << "a march well within its budget returns to full";
+    renderer_->set_flow_quality({});
+}
+
+// Plan step 7e: skipping empty space changes no pixel. The flow goldens'
+// volume and iso layers, through the cut quad, skipped and not: identical
+// frames, byte for byte. And a one-cell sheet of vorticity at x index 8, the
+// first cell of the second brick: the first brick's cells are all 0, yet the
+// rays down the last half cell of that brick read the sheet. Only the brick
+// pass's one-cell apron keeps that brick from being skipped there.
+TEST_F(GpuGlRenderer, FlowSkippingChangesNoPixel) {
+    const spade::FlowVolume sheet =
+        spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32, [](glm::vec3 p) {
+            spade::test::FlowChannels c{};
+            const long i = std::lround((p.x + 1.0f) * 16.0f - 0.5f);  // the cell's x index
+            c[spade::kFlowVorticity] = i == 8 ? 20.0f : 0.0f;
+            return c;
+        });
+    const spade::FlowVolume ring32 = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    const spade::FlowVolume ring64 = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * ring64.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    RenderScene volume_scene = ring_cut_scene();
+    volume_scene.flow_layers.push_back(spade::render::FlowLayer{&ring32, {vorticity, smoke}, {}});
+    RenderScene iso_scene = ring_cut_scene();
+    iso_scene.flow_layers.push_back(spade::render::FlowLayer{&ring64, {}, {q_iso}});
+    RenderScene sheet_scene;
+    sheet_scene.flow_layers.push_back(spade::render::FlowLayer{&sheet, {vorticity}, {}});
+
+    for (const RenderScene* scene : {&volume_scene, &iso_scene, &sheet_scene}) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = false});
+        const std::vector<uint8_t> full = draw_and_read(*scene, comparable_options(), camera_on_ring());
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = true});
+        const std::vector<uint8_t> skipped = draw_and_read(*scene, comparable_options(), camera_on_ring());
+        ASSERT_EQ(full.size(), kPixels * 4u);
+        EXPECT_EQ(count_differing(full, skipped), 0u) << "skipping empty space must change no pixel";
+    }
+    renderer_->set_flow_quality({});
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.

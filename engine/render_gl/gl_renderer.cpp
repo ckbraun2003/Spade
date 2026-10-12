@@ -43,6 +43,20 @@ typedef void(APIENTRYP SpadePfnGlCopyImageSubData)(GLuint src, GLenum src_target
                                                    GLint dst_level, GLint dst_x, GLint dst_y, GLint dst_z,
                                                    GLsizei width, GLsizei height, GLsizei depth);
 
+// And three for the flow march's empty-space pass (airflow plan §7.2), a
+// compute shader writing an image: 4.2's glBindImageTexture and
+// glMemoryBarrier, 4.3's glDispatchCompute.
+typedef void(APIENTRYP SpadePfnGlBindImageTexture)(GLuint unit, GLuint texture, GLint level, GLboolean layered,
+                                                   GLint layer, GLenum access, GLenum format);
+typedef void(APIENTRYP SpadePfnGlDispatchCompute)(GLuint groups_x, GLuint groups_y, GLuint groups_z);
+typedef void(APIENTRYP SpadePfnGlMemoryBarrier)(GLbitfield barriers);
+#ifndef GL_COMPUTE_SHADER
+#define GL_COMPUTE_SHADER 0x91B9
+#endif
+#ifndef GL_TEXTURE_FETCH_BARRIER_BIT
+#define GL_TEXTURE_FETCH_BARRIER_BIT 0x00000008
+#endif
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -71,6 +85,7 @@ namespace {
     X(PFNGLBINDBUFFERPROC, BindBuffer) \
     X(PFNGLBINDBUFFERBASEPROC, BindBufferBase) \
     X(PFNGLBINDFRAMEBUFFERPROC, BindFramebuffer) \
+    X(SpadePfnGlBindImageTexture, BindImageTexture) \
     X(PFNGLBINDTEXTUREPROC, BindTexture) \
     X(PFNGLBINDVERTEXARRAYPROC, BindVertexArray) \
     X(PFNGLBLENDEQUATIONPROC, BlendEquation) \
@@ -88,14 +103,17 @@ namespace {
     X(PFNGLDELETEBUFFERSPROC, DeleteBuffers) \
     X(PFNGLDELETEFRAMEBUFFERSPROC, DeleteFramebuffers) \
     X(PFNGLDELETEPROGRAMPROC, DeleteProgram) \
+    X(PFNGLDELETEQUERIESPROC, DeleteQueries) \
     X(PFNGLDELETESHADERPROC, DeleteShader) \
     X(PFNGLDELETETEXTURESPROC, DeleteTextures) \
     X(PFNGLDELETEVERTEXARRAYSPROC, DeleteVertexArrays) \
     X(PFNGLDEPTHFUNCPROC, DepthFunc) \
     X(PFNGLDEPTHMASKPROC, DepthMask) \
     X(PFNGLDISABLEPROC, Disable) \
+    X(SpadePfnGlDispatchCompute, DispatchCompute) \
     X(PFNGLDRAWARRAYSPROC, DrawArrays) \
     X(PFNGLDRAWBUFFERPROC, DrawBuffer) \
+    X(PFNGLDRAWBUFFERSPROC, DrawBuffers) \
     X(PFNGLDRAWARRAYSINSTANCEDPROC, DrawArraysInstanced) \
     X(PFNGLDRAWELEMENTSINSTANCEDPROC, DrawElementsInstanced) \
     X(PFNGLENABLEPROC, Enable) \
@@ -104,15 +122,21 @@ namespace {
     X(PFNGLFRONTFACEPROC, FrontFace) \
     X(PFNGLGENBUFFERSPROC, GenBuffers) \
     X(PFNGLGENFRAMEBUFFERSPROC, GenFramebuffers) \
+    X(PFNGLGENQUERIESPROC, GenQueries) \
     X(PFNGLGENTEXTURESPROC, GenTextures) \
     X(PFNGLGENVERTEXARRAYSPROC, GenVertexArrays) \
     X(PFNGLGETINTEGERVPROC, GetIntegerv) \
     X(PFNGLGETPROGRAMINFOLOGPROC, GetProgramInfoLog) \
     X(PFNGLGETPROGRAMIVPROC, GetProgramiv) \
+    X(PFNGLGETQUERYOBJECTIVPROC, GetQueryObjectiv) \
+    X(PFNGLGETQUERYOBJECTUI64VPROC, GetQueryObjectui64v) \
+    X(PFNGLBEGINQUERYPROC, BeginQuery) \
+    X(PFNGLENDQUERYPROC, EndQuery) \
     X(PFNGLGETSHADERINFOLOGPROC, GetShaderInfoLog) \
     X(PFNGLGETSHADERIVPROC, GetShaderiv) \
     X(PFNGLGETUNIFORMLOCATIONPROC, GetUniformLocation) \
     X(PFNGLLINKPROGRAMPROC, LinkProgram) \
+    X(SpadePfnGlMemoryBarrier, MemoryBarrier) \
     X(PFNGLPOLYGONMODEPROC, PolygonMode) \
     X(PFNGLREADBUFFERPROC, ReadBuffer) \
     X(PFNGLPOINTSIZEPROC, PointSize) \
@@ -365,6 +389,140 @@ vec3 flow_colour_surface(vec3 world, vec3 shaded) {
 }
 )GLSL";
 
+// A flow layer's prepared transfers and isos as scalars (see draw()):
+// transfer k at 36 k; iso k at 144 + 44 k, its colour_by transfer 8 later.
+// Shared by the march and the brick pass. Needs kFlowSampleSrc before it.
+constexpr const char* kFlowParamsSrc = R"GLSL(
+uniform vec4 uFlowParams[80];
+
+const int kIsoBase = 144;
+const int kIsoFloats = 44;
+
+float P(int i) { return uFlowParams[i >> 2][i & 3]; }
+
+// A prepared transfer at `b`: quantity, map, constant?, range min, inverse
+// span, point count, -, -, constant colour, -, then 8 (value, sigma) points
+// and 7 inverse widths. apply_transfer()'s colour and extinction.
+vec3 transfer_colour(int b, float value) {
+    if (P(b + 2) != 0.0) return vec3(P(b + 8), P(b + 9), P(b + 10));
+    return flow_colour_map((value - P(b + 3)) * P(b + 4), uint(P(b + 1)));
+}
+
+float transfer_sigma(int b, float value) {
+    int last = int(P(b + 5)) - 1;
+    if (!(value > P(b + 12))) return P(b + 13);
+    if (!(value < P(b + 12 + 2 * last))) return P(b + 13 + 2 * last);
+    int i = 0;
+    while (!(value < P(b + 12 + 2 * (i + 1)))) ++i;
+    float u = (value - P(b + 12 + 2 * i)) * P(b + 28 + i);
+    return P(b + 13 + 2 * i) + (P(b + 15 + 2 * i) - P(b + 13 + 2 * i)) * u;
+}
+)GLSL";
+
+// Empty space (airflow plan §7.2, step 7e): one invocation per 8^3 brick
+// takes each channel's range over the brick and a one-cell apron (every
+// cell a sample inside the brick can read). The brick is empty when every
+// transfer's extinction is 0 over its quantity's range, and every iso's
+// level lies strictly outside its quantity's range with no no-data. There a
+// step can neither emit, absorb nor cross an iso. Ranges widen by a few
+// ulps of their largest magnitude, as far as a trilinear sample can round
+// past its corners. Needs kFlowSampleSrc and kFlowParamsSrc before it.
+constexpr const char* kFlowBrickSrc = R"GLSL(
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(binding = 0, r8ui) uniform writeonly uimage3D uFlowEmptyOut;
+uniform uint uTransferCount;
+uniform uint uIsoCount;
+
+// False when no cell holds a value for the quantity. Speed's range is
+// bounded by the velocity channels' largest magnitudes.
+bool quantity_range(uint q, float mn[8], float mx[8], out float lo, out float hi) {
+    lo = 0.0;
+    hi = 0.0;
+    if (q == 0u) {
+        float s2 = 0.0;
+        for (int c = 0; c < 3; ++c) {
+            if (mn[c] > mx[c]) return false;
+            float m = max(abs(mn[c]), abs(mx[c]));
+            s2 += m * m;
+        }
+        hi = sqrt(s2);
+    } else {
+        int c = int(q) - 1;
+        if (mn[c] > mx[c]) return false;
+        lo = mn[c];
+        hi = mx[c];
+    }
+    // A nested lerp can round a few ulps of its largest corner past the
+    // range, never more; a range of one value interpolates exactly.
+    float w = max(abs(lo), abs(hi)) * 1e-5;
+    lo -= w;
+    hi += w;
+    return true;
+}
+
+bool quantity_has_no_data(uint q, bool nd[8]) {
+    return q == 0u ? (nd[0] || nd[1] || nd[2]) : nd[int(q) - 1];
+}
+
+void main() {
+    ivec3 brick = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(brick, imageSize(uFlowEmptyOut)))) return;
+    ivec3 n = textureSize(uFlowV, 0);
+    ivec3 c0 = max(brick * 8 - 1, ivec3(0));
+    ivec3 c1 = min(brick * 8 + 8, n - 1);
+    float mn[8];
+    float mx[8];
+    bool nd[8];
+    for (int c = 0; c < 8; ++c) {
+        mn[c] = 3.402823466e+38;
+        mx[c] = -3.402823466e+38;
+        nd[c] = false;
+    }
+    for (int z = c0.z; z <= c1.z; ++z) {
+        for (int y = c0.y; y <= c1.y; ++y) {
+            for (int x = c0.x; x <= c1.x; ++x) {
+                uvec4 a = texelFetch(uFlowV, ivec3(x, y, z), 0);
+                uvec4 b = texelFetch(uFlowS, ivec3(x, y, z), 0);
+                for (int c = 0; c < 8; ++c) {
+                    uint h = c < 4 ? a[c] : b[c - 4];
+                    if ((h & 0x7C00u) == 0x7C00u) {
+                        nd[c] = true;
+                        continue;
+                    }
+                    float v = unpackHalf2x16(h).x;
+                    mn[c] = min(mn[c], v);
+                    mx[c] = max(mx[c], v);
+                }
+            }
+        }
+    }
+    bool empty = true;
+    for (int k = 0; k < int(uTransferCount) && empty; ++k) {
+        int b = 36 * k;
+        float lo, hi;
+        if (!quantity_range(uint(P(b)), mn, mx, lo, hi)) continue;  // every step there is clear
+        float m = max(transfer_sigma(b, lo), transfer_sigma(b, hi));
+        for (int i = 0; i < int(P(b + 5)); ++i) {
+            float e = P(b + 12 + 2 * i);
+            if (e > lo && e < hi) m = max(m, P(b + 13 + 2 * i));
+        }
+        if (m > 0.0) empty = false;
+    }
+    for (int k = 0; k < int(uIsoCount) && empty; ++k) {
+        int b = kIsoBase + k * kIsoFloats;
+        uint q = uint(P(b));
+        float lo, hi;
+        if (quantity_has_no_data(q, nd) || !quantity_range(q, mn, mx, lo, hi)) {
+            empty = false;
+        } else {
+            float level = P(b + 1);
+            if (!(hi < level || lo >= level)) empty = false;
+        }
+    }
+    imageStore(uFlowEmptyOut, brick, uvec4(empty ? 1u : 0u, 0u, 0u, 0u));
+}
+)GLSL";
+
 // A flow layer, ray-marched (airflow visualization plan §7.1, step 7c): a
 // port of render/flow_render.cpp's march_flow_ray(), drawn on the layer's
 // box's back faces (kCsgVertexSrc) with depth clamp, so every pixel the box
@@ -376,7 +534,12 @@ vec3 flow_colour_surface(vec3 world, vec3 shaded) {
 // with every transfer at once; out at T < 1/256. GLSL's exp() stands in for
 // exp32(). The result blends as C + T * behind (ONE, SRC_ALPHA). An opaque
 // iso writes its depth; any other pixel writes back the depth it had.
-// Needs kFlowSampleSrc before it.
+// With uSkip, a step in an empty brick (7e) runs, and so does the last step
+// whose midpoint is still in that brick; the steps between change nothing,
+// so the frame is the unskipped march's. With uHalf (7f) it marches a
+// half-scale image into this renderer's own target: (C, T) and an opaque
+// iso's depth, which kFlowCompositeSrc then lays over the frame. Needs
+// kFlowSampleSrc and kFlowParamsSrc before it.
 constexpr const char* kFlowVolumeFragmentSrc = R"GLSL(
 uniform mat4 uViewProj;
 uniform vec3 uBoxMin;
@@ -401,34 +564,12 @@ uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 uniform vec3 uAmbient;
 uniform float uSunIntensity;
-// The layer's prepared transfers and isos as scalars (see draw()):
-// transfer k at 36 k; iso k at 144 + 44 k, its colour_by transfer 8 later.
-uniform vec4 uFlowParams[80];
+layout(binding = 5) uniform usampler3D uFlowEmpty;  // 1 per empty 8^3 brick (7e)
+uniform uint uSkip;
+uniform uint uHalf;  // 1: a half-scale march into this renderer's own target (7f)
 
-out vec4 fragColor;
-
-const int kIsoBase = 144;
-const int kIsoFloats = 44;
-
-float P(int i) { return uFlowParams[i >> 2][i & 3]; }
-
-// A prepared transfer at `b`: quantity, map, constant?, range min, inverse
-// span, point count, -, -, constant colour, -, then 8 (value, sigma) points
-// and 7 inverse widths. apply_transfer()'s colour and extinction.
-vec3 transfer_colour(int b, float value) {
-    if (P(b + 2) != 0.0) return vec3(P(b + 8), P(b + 9), P(b + 10));
-    return flow_colour_map((value - P(b + 3)) * P(b + 4), uint(P(b + 1)));
-}
-
-float transfer_sigma(int b, float value) {
-    int last = int(P(b + 5)) - 1;
-    if (!(value > P(b + 12))) return P(b + 13);
-    if (!(value < P(b + 12 + 2 * last))) return P(b + 13 + 2 * last);
-    int i = 0;
-    while (!(value < P(b + 12 + 2 * (i + 1)))) ++i;
-    float u = (value - P(b + 12 + 2 * i)) * P(b + 28 + i);
-    return P(b + 13 + 2 * i) + (P(b + 15 + 2 * i) - P(b + 13 + 2 * i)) * u;
-}
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out float fragIsoDepth;  // an opaque iso's window depth, else 2
 
 bool iso_offset(int k, vec3 origin, vec3 dir, float t, out float f) {
     int b = kIsoBase + k * kIsoFloats;
@@ -511,7 +652,8 @@ void main() {
         t_exit = min(t_exit, max(ta, tb));
     }
     if (!(t_enter <= t_exit && t_exit >= 0.0)) discard;
-    float depth = texelFetch(uOpaqueDepth, ivec2(gl_FragCoord.xy), 0).r;
+    ivec2 depth_texel = ivec2(gl_FragCoord.xy) * (uHalf != 0u ? 2 : 1);
+    float depth = texelFetch(uOpaqueDepth, min(depth_texel, textureSize(uOpaqueDepth, 0) - 1), 0).r;
     float t_end = min(uFar / cos_theta, t_exit);
     if (depth < 1.0) {
         // An opaque surface hides the air behind it.
@@ -533,11 +675,29 @@ void main() {
         float prev_f[4] = float[4](0.0, 0.0, 0.0, 0.0);
         float prev_t[4] = float[4](0.0, 0.0, 0.0, 0.0);
         bool prev_valid[4] = bool[4](false, false, false, false);
-        for (uint i = 0u; i < n && opaque_t < 0.0; ++i) {
+        uint next = 0u;
+        for (uint i = 0u; i < n && opaque_t < 0.0; i = next) {
+            next = i + 1u;
             float t0 = t_start + float(i) * uStep;
             float dt = i < n_full ? uStep : last;
             float tm = t0 + 0.5 * dt;
             vec3 p = uCamPos + dir * tm;
+            if (uSkip != 0u && i + 2u < n_full) {
+                ivec3 nb = textureSize(uFlowEmpty, 0);
+                ivec3 brick = clamp(ivec3(floor((p - uFlowOrigin) * uFlowInvCell * 0.125)), ivec3(0), nb - 1);
+                if (texelFetch(uFlowEmpty, brick, 0).r != 0u) {
+                    vec3 bmin = uFlowOrigin + vec3(brick) * (8.0 / uFlowInvCell);
+                    vec3 bmax = bmin + vec3(8.0 / uFlowInvCell);
+                    float t_out = 3.402823466e+38;
+                    for (int a = 0; a < 3; ++a) {
+                        if (dir[a] > 0.0) t_out = min(t_out, (bmax[a] - uCamPos[a]) / dir[a]);
+                        if (dir[a] < 0.0) t_out = min(t_out, (bmin[a] - uCamPos[a]) / dir[a]);
+                    }
+                    // The last full step whose midpoint is still in the brick.
+                    float j = min(floor((t_out - t_start) * uInvStep - 0.5), float(n_full - 1u));
+                    if (j > float(i) + 1.0) next = uint(j);
+                }
+            }
 
             float hit_t[4];
             int hit_k[4];
@@ -609,12 +769,35 @@ void main() {
     }
     if (transmittance == 1.0 && colour == vec3(0.0)) discard;  // nothing absorbed or emitted
     fragColor = vec4(colour, transmittance);
+    float hit_depth = 2.0;
     if (opaque_t >= 0.0) {
         vec4 clip = uViewProj * vec4(uCamPos + dir * opaque_t, 1.0);
-        gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
-    } else {
-        gl_FragDepth = depth;
+        hit_depth = clamp((clip.z / clip.w) * 0.5 + 0.5, 0.0, 1.0);
     }
+    gl_FragDepth = hit_depth <= 1.0 ? hit_depth : depth;
+    fragIsoDepth = hit_depth;
+}
+)GLSL";
+
+// The half-scale march laid over the frame (7f): (C, T) filtered up from
+// the half image, blended as C + T * behind, with an opaque iso's depth
+// where the nearest half pixel has one and the frame's own depth elsewhere.
+// Drawn on kBackgroundVertexSrc's one triangle.
+constexpr const char* kFlowCompositeSrc = R"GLSL(
+layout(binding = 4) uniform sampler2D uOpaqueDepth;
+layout(binding = 6) uniform sampler2D uHalfColour;    // linear
+layout(binding = 7) uniform sampler2D uHalfIsoDepth;  // nearest
+uniform vec2 uViewport;
+
+out vec4 fragColor;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / uViewport;
+    vec4 ct = texture(uHalfColour, uv);
+    float iso = texture(uHalfIsoDepth, uv).r;
+    if (ct.a == 1.0 && ct.rgb == vec3(0.0) && iso > 1.0) discard;
+    fragColor = ct;
+    gl_FragDepth = iso <= 1.0 ? iso : texelFetch(uOpaqueDepth, ivec2(gl_FragCoord.xy), 0).r;
 }
 )GLSL";
 
@@ -1263,6 +1446,32 @@ struct GpuMesh {
     return sh;
 }
 
+// `program` if it linked, else the driver's log, and the program deleted.
+[[nodiscard]] Result<GLuint> linked(const GlApi& gl, GLuint program, const char* what) {
+    GLint ok = GL_FALSE;
+    gl.GetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+        GLint len = 0;
+        gl.GetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
+        std::string log(static_cast<size_t>(len > 0 ? len : 1), '\0');
+        gl.GetProgramInfoLog(program, len, nullptr, log.data());
+        gl.DeleteProgram(program);
+        return std::unexpected(Error{Code::internal, std::string("GlRenderer::create: link ") + what + ": " + log});
+    }
+    return program;
+}
+
+[[nodiscard]] Result<GLuint> link_compute(const GlApi& gl, std::initializer_list<const char*> compute,
+                                          const char* what) {
+    const Result<GLuint> cs = compile(gl, GL_COMPUTE_SHADER, compute, what);
+    if (!cs) return std::unexpected(cs.error());
+    const GLuint program = gl.CreateProgram();
+    gl.AttachShader(program, *cs);
+    gl.LinkProgram(program);
+    gl.DeleteShader(*cs);
+    return linked(gl, program, what);
+}
+
 [[nodiscard]] Result<GLuint> link(const GlApi& gl, std::initializer_list<const char*> vertex,
                                   std::initializer_list<const char*> fragment, const char* what) {
     const Result<GLuint> vs = compile(gl, GL_VERTEX_SHADER, vertex, what);
@@ -1278,18 +1487,7 @@ struct GpuMesh {
     gl.LinkProgram(program);
     gl.DeleteShader(*vs);
     gl.DeleteShader(*fs);
-
-    GLint linked = GL_FALSE;
-    gl.GetProgramiv(program, GL_LINK_STATUS, &linked);
-    if (linked != GL_TRUE) {
-        GLint len = 0;
-        gl.GetProgramiv(program, GL_INFO_LOG_LENGTH, &len);
-        std::string log(static_cast<size_t>(len > 0 ? len : 1), '\0');
-        gl.GetProgramInfoLog(program, len, nullptr, log.data());
-        gl.DeleteProgram(program);
-        return std::unexpected(Error{Code::internal, std::string("GlRenderer::create: link ") + what + ": " + log});
-    }
-    return program;
+    return linked(gl, program, what);
 }
 
 // Grows `buffer` only when `data` outgrows it, else writes in place (v1's
@@ -1362,6 +1560,21 @@ struct GlRenderer::Impl {
     // A flow layer's march (step 7c), and the frame's opaque depth it stops
     // at: a depth-only copy of the opaque passes, sized to the frame.
     GLuint flow_program = 0;
+    GLuint flow_brick_program = 0;
+    GLuint flow_empty_tex = 0;  // R8UI, one texel per 8^3 brick (7e)
+    // The half-scale march's target and composite (7f), and automatic's
+    // clock: the march's GPU time, read a frame later, never waited on.
+    GLuint flow_composite_program = 0;
+    GLint flow_composite_viewport = -1;
+    GLuint flow_half_fbo = 0;
+    GLuint flow_half_colour_tex = 0;
+    GLuint flow_half_depth_tex = 0;
+    uint32_t flow_half_width = 0;
+    uint32_t flow_half_height = 0;
+    GLuint flow_timer = 0;
+    bool flow_timer_pending = false;
+    double flow_last_march_ms = -1.0;  // none yet
+    bool flow_auto_half = false;
     GLuint flow_depth_tex = 0;
     GLuint flow_depth_fbo = 0;
     uint32_t flow_depth_width = 0;
@@ -1392,6 +1605,8 @@ struct GlRenderer::Impl {
     std::vector<glm::vec4> field_colours;
 
     uint32_t last_draw_calls = 0;
+    GlRenderer::FlowQuality flow_quality;
+    float last_flow_scale = 0.0f;
     uint32_t last_instances = 0;
 
     std::string renderer_name;
@@ -1445,8 +1660,12 @@ struct GlRenderer::Impl {
         GLint view_proj = -1, box_min = -1, box_max = -1, cam_pos = -1, right = -1, up = -1, forward = -1,
               inv_tan_half_fov = -1, aspect = -1, viewport = -1, near_plane = -1, far_plane = -1, proj22 = -1,
               proj32 = -1, step = -1, inv_step = -1, transfer_count = -1, iso_count = -1, sun_dir = -1,
-              sun_color = -1, ambient = -1, sun_intensity = -1, params = -1, origin = -1, inv_cell = -1;
+              sun_color = -1, ambient = -1, sun_intensity = -1, params = -1, origin = -1, inv_cell = -1,
+              skip = -1, half = -1;
     } flow_layer;
+    struct FlowBrickUniforms {
+        GLint transfer_count = -1, iso_count = -1, params = -1;
+    } flow_brick;
 
     ~Impl() {
         for (GpuMesh& m : meshes) {
@@ -1464,6 +1683,13 @@ struct GlRenderer::Impl {
         if (flow_depth_fbo != 0) gl.DeleteFramebuffers(1, &flow_depth_fbo);
         if (flow_depth_tex != 0) gl.DeleteTextures(1, &flow_depth_tex);
         if (flow_program != 0) gl.DeleteProgram(flow_program);
+        if (flow_brick_program != 0) gl.DeleteProgram(flow_brick_program);
+        if (flow_composite_program != 0) gl.DeleteProgram(flow_composite_program);
+        if (flow_half_fbo != 0) gl.DeleteFramebuffers(1, &flow_half_fbo);
+        if (flow_half_colour_tex != 0) gl.DeleteTextures(1, &flow_half_colour_tex);
+        if (flow_half_depth_tex != 0) gl.DeleteTextures(1, &flow_half_depth_tex);
+        if (flow_timer != 0) gl.DeleteQueries(1, &flow_timer);
+        if (flow_empty_tex != 0) gl.DeleteTextures(1, &flow_empty_tex);
         if (caster_program != 0) gl.DeleteProgram(caster_program);
         if (ssbo_csg_transforms != 0) gl.DeleteBuffers(1, &ssbo_csg_transforms);
         if (ssbo_csg_nodes != 0) gl.DeleteBuffers(1, &ssbo_csg_nodes);
@@ -1549,9 +1775,18 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
     if (!csg_program) return std::unexpected(csg_program.error());
     impl->csg_program = *csg_program;
     const Result<GLuint> flow_program =
-        link(gl, {kGlslVersion, kCsgVertexSrc}, {kGlslVersion, kFlowSampleSrc, kFlowVolumeFragmentSrc}, "flow volume");
+        link(gl, {kGlslVersion, kCsgVertexSrc},
+             {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowVolumeFragmentSrc}, "flow volume");
     if (!flow_program) return std::unexpected(flow_program.error());
     impl->flow_program = *flow_program;
+    const Result<GLuint> flow_brick_program =
+        link_compute(gl, {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowBrickSrc}, "flow bricks");
+    if (!flow_brick_program) return std::unexpected(flow_brick_program.error());
+    impl->flow_brick_program = *flow_brick_program;
+    const Result<GLuint> flow_composite_program =
+        link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc}, "flow composite");
+    if (!flow_composite_program) return std::unexpected(flow_composite_program.error());
+    impl->flow_composite_program = *flow_composite_program;
 
     const GLuint p = impl->program;
     impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
@@ -1682,7 +1917,20 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
         u.params = gl.GetUniformLocation(fp, "uFlowParams");
         u.origin = gl.GetUniformLocation(fp, "uFlowOrigin");
         u.inv_cell = gl.GetUniformLocation(fp, "uFlowInvCell");
+        u.skip = gl.GetUniformLocation(fp, "uSkip");
+        u.half = gl.GetUniformLocation(fp, "uHalf");
+        impl->flow_composite_viewport = gl.GetUniformLocation(impl->flow_composite_program, "uViewport");
+        Impl::FlowBrickUniforms& bu = impl->flow_brick;
+        const GLuint bp = impl->flow_brick_program;
+        bu.transfer_count = gl.GetUniformLocation(bp, "uTransferCount");
+        bu.iso_count = gl.GetUniformLocation(bp, "uIsoCount");
+        bu.params = gl.GetUniformLocation(bp, "uFlowParams");
     }
+    gl.GenTextures(1, &impl->flow_empty_tex);
+    gl.GenTextures(1, &impl->flow_half_colour_tex);
+    gl.GenTextures(1, &impl->flow_half_depth_tex);
+    gl.GenFramebuffers(1, &impl->flow_half_fbo);
+    gl.GenQueries(1, &impl->flow_timer);
     gl.GenTextures(1, &impl->flow_v_tex);
     gl.GenTextures(1, &impl->flow_s_tex);
     gl.GenTextures(1, &impl->flow_colour_tex);
@@ -2517,6 +2765,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     draw_opaque();
 
     // --- flow layer (render/flow_render.hpp) ----------------------------------
+    float flow_scale = 0.0f;  // what last_flow_scale() reports
     // After the opaque passes, as raster_cpu's draw_flow_layers(). Depth test
     // ALWAYS: the march clips itself to the opaque depth, and every pixel's
     // depth is written, the iso's where one is opaque and the old one
@@ -2585,22 +2834,113 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             if (iso.coloured_by) pack_transfer(b + 8, iso.colour_by);
         }
 
+        // The scale (7f): full; half when asked; automatic halves when the
+        // march's last measured time is over its budget, and returns to full
+        // when a quarter of the rays at full would fit with room to spare.
+        const GlRenderer::FlowQuality& quality = s.flow_quality;
+        if (s.flow_timer_pending) {
+            GLint available = 0;
+            gl.GetQueryObjectiv(s.flow_timer, GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available != 0) {
+                GLuint64 ns = 0;
+                gl.GetQueryObjectui64v(s.flow_timer, GL_QUERY_RESULT, &ns);
+                s.flow_last_march_ms = static_cast<double>(ns) * 1e-6;
+                s.flow_timer_pending = false;
+            }
+        }
+        if (quality.scale == GlRenderer::FlowScale::automatic && s.flow_last_march_ms >= 0.0) {
+            const double budget = quality.march_budget_ms;
+            if (!s.flow_auto_half && s.flow_last_march_ms > budget) {
+                s.flow_auto_half = true;
+            } else if (s.flow_auto_half && 4.0 * s.flow_last_march_ms < 0.8 * budget) {
+                s.flow_auto_half = false;
+            }
+        }
+        const bool half = quality.scale == GlRenderer::FlowScale::half ||
+                          (quality.scale == GlRenderer::FlowScale::automatic && s.flow_auto_half);
+        const bool timed = quality.scale == GlRenderer::FlowScale::automatic && !s.flow_timer_pending;
+        if (timed) gl.BeginQuery(GL_TIME_ELAPSED, s.flow_timer);
+        flow_scale = half ? 0.5f : 1.0f;
+
+        // Empty space (7e): which 8^3 bricks no step can change, for this
+        // layer's transfers and isos, into one R8UI texel each.
+        const bool skip = s.flow_quality.skip_empty_space;
+        if (skip) {
+            const auto bricks = [](uint32_t cells) { return static_cast<GLsizei>((cells + 7u) / 8u); };
+            const GLsizei bx = bricks(h.nx), by = bricks(h.ny), bz = bricks(h.nz);
+            gl.ActiveTexture(GL_TEXTURE5);
+            gl.BindTexture(GL_TEXTURE_3D, s.flow_empty_tex);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_R8UI, bx, by, bz, 0, GL_RED_INTEGER, GL_UNSIGNED_BYTE, nullptr);
+            gl.ActiveTexture(GL_TEXTURE0);
+            gl.UseProgram(s.flow_brick_program);
+            gl.Uniform1ui(s.flow_brick.transfer_count, static_cast<GLuint>(n_transfers));
+            gl.Uniform1ui(s.flow_brick.iso_count, static_cast<GLuint>(n_isos));
+            gl.Uniform4fv(s.flow_brick.params, static_cast<GLsizei>(params.size() / 4u), params.data());
+            gl.BindImageTexture(0, s.flow_empty_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R8UI);
+            const auto groups = [](GLsizei b) { return static_cast<GLuint>((b + 3) / 4); };
+            gl.DispatchCompute(groups(bx), groups(by), groups(bz));
+            gl.MemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+        }
+
         const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
         const glm::vec3 up = camera.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
         const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
         const auto inv_tan_half_fov =
             static_cast<float>(1.0 / render::tan32(static_cast<double>(camera.fov_y_radians) * 0.5));
         const Impl::FlowLayerUniforms& u = s.flow_layer;
-        gl.Enable(GL_DEPTH_TEST);
-        gl.DepthFunc(GL_ALWAYS);
-        gl.DepthMask(GL_TRUE);
+        const uint32_t march_width = half ? (width + 1u) / 2u : width;
+        const uint32_t march_height = half ? (height + 1u) / 2u : height;
+        GLint prev_draw = 0, prev_read = 0;
+        bool half_ready = false;
+        if (half) {
+            if (s.flow_half_width != march_width || s.flow_half_height != march_height) {
+                gl.BindTexture(GL_TEXTURE_2D, s.flow_half_colour_tex);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, static_cast<GLsizei>(march_width),
+                              static_cast<GLsizei>(march_height), 0, GL_RGBA, GL_FLOAT, nullptr);
+                gl.BindTexture(GL_TEXTURE_2D, s.flow_half_depth_tex);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.TexImage2D(GL_TEXTURE_2D, 0, GL_R32F, static_cast<GLsizei>(march_width),
+                              static_cast<GLsizei>(march_height), 0, GL_RED, GL_FLOAT, nullptr);
+                gl.BindTexture(GL_TEXTURE_2D, 0);
+                s.flow_half_width = march_width;
+                s.flow_half_height = march_height;
+            }
+            gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
+            gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
+            gl.BindFramebuffer(GL_FRAMEBUFFER, s.flow_half_fbo);
+            gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.flow_half_colour_tex, 0);
+            gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, s.flow_half_depth_tex, 0);
+            const GLenum targets[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+            gl.DrawBuffers(2, targets);
+            half_ready = gl.CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+            const GLfloat clear_colour[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            const GLfloat clear_depth[4] = {2.0f, 0.0f, 0.0f, 0.0f};
+            gl.ClearBufferfv(GL_COLOR, 0, clear_colour);
+            gl.ClearBufferfv(GL_COLOR, 1, clear_depth);
+            gl.Viewport(0, 0, static_cast<GLsizei>(march_width), static_cast<GLsizei>(march_height));
+            gl.Disable(GL_DEPTH_TEST);
+            gl.Disable(GL_BLEND);
+        } else {
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_ALWAYS);
+            gl.DepthMask(GL_TRUE);
+            gl.Enable(GL_BLEND);
+            gl.BlendEquation(GL_FUNC_ADD);
+            gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
+        }
         gl.Enable(GL_CULL_FACE);
         gl.CullFace(GL_FRONT);
         gl.FrontFace(GL_CCW);
         gl.Enable(GL_DEPTH_CLAMP);
-        gl.Enable(GL_BLEND);
-        gl.BlendEquation(GL_FUNC_ADD);
-        gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
         gl.UseProgram(s.flow_program);
         gl.UniformMatrix4fv(u.view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
         gl.Uniform3fv(u.box_min, 1, glm::value_ptr(prepared.box.min));
@@ -2611,7 +2951,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform3fv(u.forward, 1, glm::value_ptr(forward));
         gl.Uniform1f(u.inv_tan_half_fov, inv_tan_half_fov);
         gl.Uniform1f(u.aspect, aspect);
-        gl.Uniform2f(u.viewport, static_cast<float>(width), static_cast<float>(height));
+        gl.Uniform2f(u.viewport, static_cast<float>(march_width), static_cast<float>(march_height));
         gl.Uniform1f(u.near_plane, camera.near_plane);
         gl.Uniform1f(u.far_plane, camera.far_plane);
         gl.Uniform1f(u.proj22, proj[2][2]);
@@ -2627,13 +2967,41 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform4fv(u.params, static_cast<GLsizei>(params.size() / 4u), params.data());
         gl.Uniform3fv(u.origin, 1, glm::value_ptr(h.origin));
         gl.Uniform1f(u.inv_cell, prepared.sampler.inv_cell);
+        gl.Uniform1ui(u.skip, skip ? 1u : 0u);
+        gl.Uniform1ui(u.half, half ? 1u : 0u);
         gl.BindVertexArray(s.empty_vao);
-        gl.DrawArrays(GL_TRIANGLES, 0, 36);
+        if (!half || half_ready) gl.DrawArrays(GL_TRIANGLES, 0, 36);
+        gl.Disable(GL_DEPTH_CLAMP);
+        gl.CullFace(GL_BACK);
+        if (half) {
+            // Over the frame at full size: C + T * behind, depth ALWAYS, as
+            // the full-scale march blends and writes.
+            gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
+            gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
+            gl.Viewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+            gl.Disable(GL_CULL_FACE);
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_ALWAYS);
+            gl.DepthMask(GL_TRUE);
+            gl.Enable(GL_BLEND);
+            gl.BlendEquation(GL_FUNC_ADD);
+            gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
+            gl.ActiveTexture(GL_TEXTURE6);
+            gl.BindTexture(GL_TEXTURE_2D, s.flow_half_colour_tex);
+            gl.ActiveTexture(GL_TEXTURE7);
+            gl.BindTexture(GL_TEXTURE_2D, s.flow_half_depth_tex);
+            gl.ActiveTexture(GL_TEXTURE0);
+            gl.UseProgram(s.flow_composite_program);
+            gl.Uniform2f(s.flow_composite_viewport, static_cast<float>(width), static_cast<float>(height));
+            if (half_ready) gl.DrawArrays(GL_TRIANGLES, 0, 3);
+        }
+        if (timed) {
+            gl.EndQuery(GL_TIME_ELAPSED);
+            s.flow_timer_pending = true;
+        }
         gl.BindVertexArray(0);
         gl.Disable(GL_BLEND);
         gl.BlendFunc(GL_ONE, GL_ZERO);
-        gl.Disable(GL_DEPTH_CLAMP);
-        gl.CullFace(GL_BACK);
         gl.DepthFunc(GL_LESS);
     }
 
@@ -2746,6 +3114,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.UseProgram(0);
 
     s.last_draw_calls = draw_calls;
+    s.last_flow_scale = flow_scale;
     s.last_instances = total_instances;
     return {};
 }
@@ -2761,6 +3130,9 @@ std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions
 
 uint32_t GlRenderer::last_draw_calls() const noexcept { return impl_->last_draw_calls; }
 uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instances; }
+void GlRenderer::set_flow_quality(const FlowQuality& quality) noexcept { impl_->flow_quality = quality; }
+GlRenderer::FlowQuality GlRenderer::flow_quality() const noexcept { return impl_->flow_quality; }
+float GlRenderer::last_flow_scale() const noexcept { return impl_->last_flow_scale; }
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }
 const std::string& GlRenderer::version_string() const noexcept { return impl_->version_string; }
 
