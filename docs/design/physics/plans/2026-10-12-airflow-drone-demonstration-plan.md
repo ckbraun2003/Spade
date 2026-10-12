@@ -118,10 +118,17 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 2. The chain-runner design note to Core, now, in parallel.
 3. P1 (swirl).
 4. P2 and P3 (solids and wall pressure): static, then rotating about the fixed centre (the drone box).
-5. P7 (the coupler).
-6. P4 (the actuator line). D1 needs P1, P2, P3, P4 and P7.
-7. Plan B with P8. D2 needs it.
-8. P5 and P9. D3 needs them.
+5. **P2b, the drone box's boundaries** (Interface's spec §9). The wind and the floor are already in plan A's `DomainBc`:
+   - the wind is the open faces with `ambient`;
+   - the floor is the lower face as a wall, with `wall_velocity` the air's in forward flight (the rolling road) and 0 in hover in a wind.
+   P2b adds the box's placement, so the lower face sits `h` below the hub plane with the drone centred horizontally, and one function from the flight condition to the `DomainBc`, which the coupler (P7) calls. Its tests:
+   - a rolling-road floor under a uniform `ambient` leaves the flow uniform;
+   - a still floor under the same wind grows a boundary layer;
+   - a floor height that leaves the drone's parts outside the box, or within 2 cells of the floor, is refused by name.
+6. P7 (the coupler).
+7. P4 (the actuator line). D1 needs P1, P2, P2b, P3, P4 and P7.
+8. Plan B with P8. D2 needs it.
+9. P5 and P9. D3 needs them.
 
 ## Spec changes (Cameron's, 2026-10-12)
 
