@@ -57,6 +57,7 @@ struct EditorPanels {
     bool can_redo = false;
     std::vector<HierarchyRow> hierarchy;      // the scene, the world, then its assets and vehicles in order
     std::vector<LibraryItem> library;
+    std::vector<SceneSource> sources;         // the File menu's scene picker (SL13)
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;
