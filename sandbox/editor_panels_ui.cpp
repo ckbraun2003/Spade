@@ -21,6 +21,7 @@
 
 #include "drone_sim.hpp"
 #include "editor_library.hpp"
+#include "editor_display.hpp"
 #include "editor_model_params.hpp"
 #include "editor_panels.hpp"
 #include "ui_theme.hpp"
@@ -54,8 +55,10 @@ Held& held() {
 bool drag_floats(const char* id, const float* current, int n, float speed, float* out, const char* format = "%.3f") {
     Held& h = held();
     const ImGuiID key = ImGui::GetID(id);
+    // Shown as it prints: a value that rounds to zero shows as 0, never -0.
+    const int decimals = ed::decimals_of(format);
     float v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    for (int i = 0; i < n; ++i) v[i] = h.id == key ? h.v[i] : current[i];
+    for (int i = 0; i < n; ++i) v[i] = h.id == key ? h.v[i] : ed::shown(current[i], decimals);
     ImGui::SetNextItemWidth(-FLT_MIN);
     ImGui::DragScalarN(id, ImGuiDataType_Float, v, n, speed, nullptr, nullptr, format);
     if (ImGui::IsItemActive()) {
@@ -107,7 +110,7 @@ bool drag_attitude(const char* id, const glm::quat& current, glm::quat& out) {
     const AttitudeTarget a = attitude_from_quat(current);
     const float deg[3] = {a.yaw * kRadToDeg, a.pitch * kRadToDeg, a.roll * kRadToDeg};
     float next[3];
-    if (!drag_floats(id, deg, 3, 0.5f, next, "%.1f\xC2\xB0")) return false;
+    if (!drag_floats(id, deg, 3, 0.5f, next, "%.1f")) return false;
     out = attitude_quat(AttitudeTarget{next[0] / kRadToDeg, next[1] / kRadToDeg, next[2] / kRadToDeg});
     return true;
 }
@@ -212,16 +215,29 @@ void hierarchy(ed::EditorPanels& p) {
 
 // ---- the inspector ----------------------------------------------------------
 
+// Which of a part's rows to draw: the common ones, or the model's Advanced
+// fold (its internals, and its principal axes as a raw quaternion).
+enum class Rows { common, advanced };
+
 void model_param_rows(ed::EditorPanels& p, const std::string& vehicle, const vehicles::ModelType& m, Element element,
-                      std::size_t index) {
+                      std::size_t index, Rows rows) {
     for (const ed::ModelParam& param : ed::model_params()) {
         if (param.element != element) continue;
+        const ed::ParamDisplay display = ed::param_display(element, param.field);
+        // An orientation reads as angles; the model's own also as a raw
+        // quaternion, in Advanced, for whoever needs the exact numbers.
+        const bool raw_quaternion =
+            rows == Rows::advanced && param.kind == ed::ParamKind::quat && element == Element::model;
+        if (rows == Rows::common && display.advanced) continue;
+        if (rows == Rows::advanced && !display.advanced && !raw_quaternion) continue;
         const Result<ed::ParamValue> value = ed::get_model_param(m, element, index, param.field);
         if (!value) continue;
         const std::string field(param.field);
-        const std::string id = "##" + field;
+        const std::string id = "##" + field + (raw_quaternion ? "-raw" : "");
+        std::string label = display.label;
+        if (param.kind == ed::ParamKind::quat) label += raw_quaternion ? " (w x y z)" : " (\xC2\xB0)";
         ImGui::PushID(static_cast<int>(index));
-        ui::property_row(field.c_str());
+        ui::property_row(label.c_str());
         const auto queue = [&](ed::ParamValue v) {
             p.pending.push_back(ed::SetModelParam{vehicle, element, index, field, std::move(v)});
         };
@@ -244,9 +260,16 @@ void model_param_rows(ed::EditorPanels& p, const std::string& vehicle, const veh
             }
             case ed::ParamKind::quat: {
                 const glm::quat& q = std::get<glm::quat>(*value);
-                const float wxyz[4] = {q.w, q.x, q.y, q.z};
-                float out[4];
-                if (drag_floats(id.c_str(), wxyz, 4, 0.001f, out, "%.3f")) queue(glm::quat(out[0], out[1], out[2], out[3]));
+                if (raw_quaternion) {
+                    const float wxyz[4] = {q.w, q.x, q.y, q.z};
+                    float out[4];
+                    if (drag_floats(id.c_str(), wxyz, 4, 0.001f, out, "%.3f")) {
+                        queue(glm::quat(out[0], out[1], out[2], out[3]));
+                    }
+                } else {
+                    glm::quat out;
+                    if (drag_attitude(id.c_str(), q, out)) queue(out);
+                }
                 break;
             }
             case ed::ParamKind::text: {
@@ -268,17 +291,17 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
     if (model != nullptr) ImGui::TextDisabled("%s  flying %s", ed::vehicle_kind_of(*model).c_str(), model->name.c_str());
     if (ui::section("Start", true) && ui::begin_properties("start")) {
         VehicleSpawn next = v.start;
-        bool changed = vec3_row("Position", "##pos", v.start.pos, 0.01f, next.pos);
-        ui::property_row("Attitude");
+        bool changed = vec3_row("Position (m)", "##pos", v.start.pos, 0.01f, next.pos);
+        ui::property_row("Attitude (\xC2\xB0)");
         changed |= drag_attitude("##att", v.start.orient, next.orient);
-        changed |= vec3_row("Velocity", "##vel", v.start.vel, 0.01f, next.vel, "%.2f m/s");
+        changed |= vec3_row("Velocity (m/s)", "##vel", v.start.vel, 0.01f, next.vel, "%.2f");
         changed |= float_row("Rotor speed", "##rotor", v.start.rotor_omega, 1.0f, next.rotor_omega, "%.0f rad/s");
         if (changed) p.pending.push_back(ed::SetVehicleStart{v.name, next});
         ui::end_properties();
     }
     if (model == nullptr) return;
     if (ui::section("Model", true) && ui::begin_properties("model")) {
-        model_param_rows(p, v.name, *model, Element::model, 0);
+        model_param_rows(p, v.name, *model, Element::model, 0, Rows::common);
         ui::end_properties();
     }
     // The parts and the IMU's noise are advanced, folded (§13).
@@ -291,10 +314,15 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             ImGui::TextDisabled("%s", ed::part_name(e, i).c_str());
             const std::string table = heading + std::to_string(i);
             if (ui::begin_properties(table.c_str())) {
-                model_param_rows(p, v.name, *model, e, i);
+                model_param_rows(p, v.name, *model, e, i, Rows::common);
                 ui::end_properties();
             }
         }
+    }
+    // The internals, folded (§13's progressive disclosure).
+    if (ui::section("Advanced", false) && ui::begin_properties("advanced")) {
+        model_param_rows(p, v.name, *model, Element::model, 0, Rows::advanced);
+        ui::end_properties();
     }
 }
 
@@ -302,8 +330,8 @@ void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     ui::title(a.name.c_str());
     if (ui::section("Transform", true) && ui::begin_properties("transform")) {
         SdfPose next = a.pose;
-        bool changed = vec3_row("Position", "##pos", a.pose.position, 0.01f, next.position);
-        ui::property_row("Rotation");
+        bool changed = vec3_row("Position (m)", "##pos", a.pose.position, 0.01f, next.position);
+        ui::property_row("Rotation (\xC2\xB0)");
         changed |= drag_attitude("##rot", a.pose.rotation, next.rotation);
         float scale = a.pose.scale;
         if (float_row("Scale", "##scale", a.pose.scale, 0.01f, scale)) {
@@ -370,8 +398,8 @@ void inspect_world(ed::EditorPanels& p) {
     ui::title(w.name.c_str());
     if (ui::section("Environment", true) && ui::begin_properties("environment")) {
         Environment next = w.environment;
-        bool changed = vec3_row("Gravity", "##gravity", w.environment.gravity, 0.01f, next.gravity, "%.2f m/s\xC2\xB2");
-        changed |= vec3_row("Wind", "##wind", w.environment.wind, 0.05f, next.wind, "%.2f m/s");
+        bool changed = vec3_row("Gravity (m/s\xC2\xB2)", "##gravity", w.environment.gravity, 0.01f, next.gravity, "%.2f");
+        changed |= vec3_row("Wind (m/s)", "##wind", w.environment.wind, 0.05f, next.wind, "%.2f");
         changed |= float_row("Air density", "##rho", w.environment.air_density, 0.001f, next.air_density, "%.4f kg/m\xC2\xB3");
         changed |= float_row("Temperature", "##temp", w.environment.temperature_k, 0.1f, next.temperature_k, "%.2f K");
         if (changed) p.pending_world.push_back(ed::SetEnvironment{next});
@@ -412,7 +440,7 @@ void inspect_world(ed::EditorPanels& p) {
             for (const SpawnPoint& sp : w.spawns) {
                 ImGui::PushID(sp.name.c_str());
                 SpawnPoint next = sp;
-                if (vec3_row(sp.name.c_str(), "##spawn", sp.position, 0.01f, next.position)) {
+                if (vec3_row((sp.name + " (m)").c_str(), "##spawn", sp.position, 0.01f, next.position)) {
                     p.pending_world.push_back(ed::SetSpawn{sp.name, next});
                 }
                 ImGui::PopID();

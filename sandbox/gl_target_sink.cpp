@@ -300,6 +300,7 @@ struct GlTargetSink::Impl {
     bool last_left_down = false;
     bool del_was_down = false;
     bool dup_was_down = false;
+    bool frame_was_down = false;  // F
     bool level_was_down = false;  // R
     bool view_was_down = false;   // V
     // Non-owning. The application owns the model and outlives the sink;
@@ -630,6 +631,10 @@ FrameInput GlTargetSink::poll() {
         const bool dup = ctrl && glfwGetKey(impl_->window, GLFW_KEY_D) == GLFW_PRESS;
         in.duplicate_pressed = dup && !impl_->dup_was_down;
         impl_->dup_was_down = dup;
+        // F frames the selection (the editor's "Frame selected"), an edge too.
+        const bool frame_key = glfwGetKey(impl_->window, GLFW_KEY_F) == GLFW_PRESS;
+        in.frame_pressed = frame_key && !impl_->frame_was_down;
+        impl_->frame_was_down = frame_key;
 
         // The drone's attitude keys, mapped like a stick (orbit_camera.hpp's
         // FrameInput states the signs): Up pushes the nose down.
@@ -858,7 +863,7 @@ void GlTargetSink::draw_overlay() {
                     }
                     if (impl_->editor != nullptr) {
                         ui::value_row("edit", "%s",
-                                      ui::joined({"click select", "library item, click places", "Del removes",
+                                      ui::joined({"click select", "library item, click places", "F frames", "Del removes",
                                                   "Ctrl+D duplicates"})
                                           .c_str());
                     }
@@ -898,7 +903,15 @@ void GlTargetSink::draw_live_smoke_text() {
     if (!impl_->caption.empty()) {
         const float size = ImGui::GetFontSize() * 1.6f;
         const ImVec2 text = font->CalcTextSizeA(size, FLT_MAX, 0.0f, impl_->caption.c_str());
-        const ImVec2 at((display.x - text.x) * 0.5f, 10.0f);
+        // Centred at the top of the 3D view, below any toolbar, so it covers
+        // no panel (the lead's review of the editor's stills).
+        const ViewportRect v = viewport();
+        const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+        const float sx = scale.x > 0.0f ? scale.x : 1.0f;
+        const float sy = scale.y > 0.0f ? scale.y : 1.0f;
+        const float left = static_cast<float>(v.x) / sx;
+        const float width = static_cast<float>(v.width) / sx;
+        const ImVec2 at(left + (width - text.x) * 0.5f, static_cast<float>(v.y) / sy + 10.0f);
         dl->AddRectFilled(ImVec2(at.x - 12.0f, at.y - 6.0f), ImVec2(at.x + text.x + 12.0f, at.y + text.y + 6.0f),
                           IM_COL32(0, 0, 0, 185), 6.0f);
         dl->AddText(font, size, at, IM_COL32(255, 255, 255, 255), impl_->caption.c_str());

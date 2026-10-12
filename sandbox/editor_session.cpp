@@ -25,22 +25,10 @@ namespace {
     return std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-// An asset's box in the world, for the selection overlay: a one-primitive
-// collider's own extent, or a unit's; a sphere around it when it is turned.
+// An asset's box in the world, for the selection overlay: its collider's
+// extent, or a sphere around it when it is turned.
 [[nodiscard]] render::Aabb asset_box(const scene::SceneAsset& a) {
-    glm::vec3 half(0.5f);
-    if (a.collider.nodes.size() == 1) {
-        const SdfNode& n = a.collider.nodes[0];
-        const glm::vec4 q = n.params;
-        switch (static_cast<SdfPrim>(n.kind)) {
-            case SdfPrim::sphere: half = glm::vec3(q.x); break;
-            case SdfPrim::box: half = glm::vec3(q.x, q.y, q.z); break;
-            case SdfPrim::cylinder: half = glm::vec3(q.x, q.y, q.x); break;
-            case SdfPrim::capsule: half = glm::vec3(q.x, q.x + q.y, q.x); break;
-            case SdfPrim::torus: half = glm::vec3(q.x + q.y, q.y, q.x + q.y); break;
-            default: break;
-        }
-    }
+    glm::vec3 half = editor::detail::asset_half_extents(a);
     const glm::quat r = a.pose.rotation;
     if (std::abs(std::abs(r.w) - 1.0f) > 1e-6f) half = glm::vec3(glm::length(half));
     half *= a.pose.scale;
@@ -55,10 +43,19 @@ Result<std::unique_ptr<EditorSession>> EditorSession::create(editor::OpenedScene
     std::unique_ptr<EditorSession> s(new EditorSession());
     s->workspace_ = std::move(*workspace);
     if (Result<void> built = s->rebuild_scene(); !built) return std::unexpected(built.error());
-    // The camera looks at the first vehicle, or at the origin.
+    // The editor opens framed on the first vehicle, as F would frame it, or
+    // looking at the origin.
     const scene::SceneDesc& scene = s->workspace_->documents().scene.desc();
-    s->camera_.target = scene.vehicles.empty() ? glm::vec3(0.0f) : scene.vehicles.front().start.pos;
+    s->camera_.target = glm::vec3(0.0f);
     s->camera_.distance = 6.0f;
+    for (const scene::SceneVehicle& v : scene.vehicles) {
+        for (const vehicles::ModelType& m : scene.models) {
+            if (m.name == v.model) {
+                s->camera_.frame(v.start.pos, editor::detail::reach_of(m));
+                return s;
+            }
+        }
+    }
     return s;
 }
 
@@ -161,6 +158,9 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     if (!in.ui_captured_keyboard) {
         if (in.delete_pressed) w.key_delete();
         if (in.duplicate_pressed) w.key_duplicate();
+        if (in.frame_pressed) {
+            if (const std::optional<editor::Framing> f = w.selection_framing()) camera_.frame(f->centre, f->radius);
+        }
     }
     // What the panels queued while the last frame drew them.
     w.apply_panels();
