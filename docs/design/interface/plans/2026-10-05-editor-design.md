@@ -191,7 +191,7 @@ The user's direction (2026-10-06 00:42 UTC, relayed by the lead; `backlog.md`): 
   Scene and world settings show in the inspector when the scene or the world is selected in the hierarchy; they get no panels of their own. The sandbox's scenes split the same way.
 - **No boxes inside panels.** A panel's content sits on the panel. There are no bordered child regions, frames, group borders, or separators drawn for structure. A list scrolls with its panel.
 - **Collapsible sections instead of boxed groups:** flat, full-width, one level deep where possible.
-- **Properties as aligned rows:** the label in a fixed left column and the value filling the right, one property per row. Units go in the value's format, not the label.
+- **Properties as aligned rows:** the label in a fixed left column and the value filling the right, one property per row. Units go in the value's format; a vector row puts its unit in the label instead, so its fields keep their numbers (the lead's review of the first stills, 2026-10-12).
 - **One spacing scale and one type scale:** every gap is a multiple of one base unit. Text uses one font at one size, and headings are the sections' own headers.
 - **Quiet colours:** neutral greys, plus one accent used only for selection, focus, hover and active state. A warning colour is used for status, such as a refusal, which `INT-2` requires to be shown.
 - **Progressive disclosure:** common settings are open and advanced ones are folded by default. Examples: a model's IMU noise and parts, a world's sky colours, the frame-time breakdown.
