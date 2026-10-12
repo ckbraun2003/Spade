@@ -14,8 +14,9 @@
 // A CLOSED DOMAIN (no pressure outlet: every face a wall, or every axis
 // periodic) fixes p only up to a constant. Then the mean of the right side is
 // removed before the cycles, so the system is solvable, and the mean of p
-// after each cycle, so p never drifts: each mean is a sequential double sum in
-// array order, cast to float, so it is repeatable run to run.
+// after each cycle, so p never drifts: each mean is the fixed-tile fp32 sum
+// (reduce.hpp, spec §4.5), so it is repeatable run to run and the GPU twin
+// sums in the same order.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 
