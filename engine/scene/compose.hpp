@@ -36,21 +36,12 @@
 
 namespace spade::scene {
 
-// Poses an asset's collider transform by the asset's own transform, as
-// transform_of(asset.pose) gives it. A world point goes into the asset's frame
-// and then into the collider's, so world_to_local is collider x asset, and
-// the distance scales multiply.
-//
-// Two exact short-cuts, because a 4x4 product is not bitwise
-// identity-preserving ((-0)*1 + (+0) is +0, and config_hash folds bytes):
-//   (a) an asset transform that is exactly the identity returns the collider
-//       unchanged;
-//   (b) a collider transform that is exactly the identity returns the asset's
-//       transform verbatim, so a one-primitive asset gets exactly the bytes
-//       WorldBuilder gives that primitive at the asset's pose.
-// "Exactly the identity" compares values, so a -0 entry counts as 0, as it
-// does in a transform built analytically from a zero position.
-[[nodiscard]] SdfTransform compose_transform(const SdfTransform& collider, const SdfTransform& asset_pose);
+// compose_transform (an asset's collider transform, posed by the asset's own)
+// lives in world/builder.hpp, beside transform_of, since CORE-7: vehicles/
+// poses a model's parts with it, and vehicles/ may not include scene/.
+// spade::scene still names it, the same function, so every qualified call
+// compiles unchanged.
+using spade::compose_transform;
 
 // A vehicle of a composed scene.
 struct VehiclePlacement {

@@ -20,12 +20,6 @@
 namespace spade::scene {
 namespace {
 
-// Value comparison on purpose: -0 == 0, so a transform built analytically from
-// a zero position, whose translation is -0, counts as the identity.
-bool is_identity(const SdfTransform& t) {
-    return t.world_to_local == glm::mat4(1.0f) && t.scale == 1.0f;
-}
-
 [[nodiscard]] Error invalid(std::string context) {
     return Error{Code::invalid_argument, std::move(context)};
 }
@@ -151,19 +145,6 @@ bool is_identity(const SdfTransform& t) {
 }
 
 }  // namespace
-
-SdfTransform compose_transform(const SdfTransform& collider, const SdfTransform& asset_pose) {
-    if (is_identity(asset_pose)) {
-        return collider;  // short-cut (a)
-    }
-    if (is_identity(collider)) {
-        return asset_pose;  // short-cut (b)
-    }
-    SdfTransform out{};
-    out.world_to_local = collider.world_to_local * asset_pose.world_to_local;
-    out.scale = collider.scale * asset_pose.scale;
-    return out;
-}
 
 Result<ComposedScene> compose(const SceneDesc& scene, const WorldDesc& world) {
     // 1. The one validator (SCN-003). The reader ran it too, but a SceneDesc
