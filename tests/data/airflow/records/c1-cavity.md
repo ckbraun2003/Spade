@@ -33,3 +33,19 @@ reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavit
 tolerance: <= 0.02 (plan A Task 11, spec Â§11.2, fixed before the first run)
 verdict: within
 ```
+
+```text
+=== validation record: C1 lid-driven cavity, Re 400, 128x128 ===
+commit: 81a87da (physics/airflow-core)
+date: 2026-10-12
+path: CPU reference, MSVC 1943, release
+config: 128x128 (a quasi-2D slab, z periodic), Re 400, T 60 (15360 steps of h = 0.003906), n_v 2, visc_sweeps 8, rho 1, U 1
+measure: max |u - u_Ghia| on x = 0.5 = 0.0076
+reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)
+tolerance: <= 0.02 (plan A Task 11, spec §11.2, fixed before the first run)
+verdict: within
+measure: max |v - v_Ghia| on y = 0.5, Table II point 117 left out (printed -0.23827, a suspected typo in the original) = 0.0065
+reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavity.hpp)
+tolerance: <= 0.02 (plan A Task 11, spec §11.2, fixed before the first run)
+verdict: within
+```
