@@ -185,8 +185,8 @@ template <typename RenderOne>
         return 2;
     }
 
-    const uint32_t fw = sink.framebuffer_width();
-    const uint32_t fh = sink.framebuffer_height();
+    const uint32_t fw = sink.viewport().width;
+    const uint32_t fh = sink.viewport().height;
     std::printf("\nspade_sandbox: SMOKE -- scripted builder session at %ux%u\n", fw, fh);
     std::printf("  GPU renderer: %s\n", gpu != nullptr ? "ACTIVE" : "ABSENT (CPU fallback)");
 

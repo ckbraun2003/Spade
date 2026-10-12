@@ -363,6 +363,11 @@ void drone_box(Tour& t, DroneSession& d) {
         t.pump(90, idle, draw);
         s.check(d.gpu_active(), "gpu-path", d.panel().render_path);
         s.check(d.panel().readouts.tick > 0u, "stepping", "tick " + std::to_string(d.panel().readouts.tick));
+        // §13: the scene renders only beside the Drone panel, not under it.
+        const ViewportRect v = t.sink().viewport();
+        const uint32_t whole = t.sink().framebuffer_width();
+        s.check(v.x + v.width < whole && !v.empty(), "view-beside-panel",
+                "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " of " + std::to_string(whole));
     });
 
     t.step("drone_box", "orbit", [&] {
@@ -545,13 +550,21 @@ void builder(Tour& t, BuilderSession& b) {
     const DrawFn draw = [&b](const FrameInput& in) { return b.frame(in); };
     const auto idle = InputFn{};
     BuilderScene& model = b.builder();
-    const float fw = static_cast<float>(t.sink().framebuffer_width());
-    const float fh = static_cast<float>(t.sink().framebuffer_height());
-    // Three ground points in the lower half, where the ground is: the same
-    // points the builder's --smoke clicks.
-    const float x1 = fw * 0.50f, y1 = fh * 0.72f;
-    const float x2 = fw * 0.38f, y2 = fh * 0.66f;
-    const float x3 = fw * 0.62f, y3 = fh * 0.66f;
+    // Three ground points in the lower half of the VIEW, where the ground is:
+    // the same points the builder's --smoke clicks. The view is what lies
+    // between the panels (§13), so they are measured once "open" has docked
+    // them, and the cursor is measured from the view's corner (poll()).
+    float fw = 0.0f, fh = 0.0f;
+    float x1 = 0.0f, y1 = 0.0f, x2 = 0.0f, y2 = 0.0f, x3 = 0.0f, y3 = 0.0f;
+    const auto measure_view = [&] {
+        const ViewportRect v = t.sink().viewport();
+        fw = static_cast<float>(v.width);
+        fh = static_cast<float>(v.height);
+        x1 = fw * 0.50f, y1 = fh * 0.72f;
+        x2 = fw * 0.38f, y2 = fh * 0.66f;
+        x3 = fw * 0.62f, y3 = fh * 0.66f;
+        return v;
+    };
     const auto click_at = [](float x, float y) {
         return [x, y](int frame) {
             FrameInput in;
@@ -567,6 +580,13 @@ void builder(Tour& t, BuilderSession& b) {
         t.pump(60, idle, draw);
         s.check(b.gpu() != nullptr, "gpu-path", b.gpu() != nullptr ? "GPU (OpenGL)" : "CPU raster");
         s.check(model.objects.empty(), "empty", std::to_string(model.objects.size()) + " objects");
+        // §13's visible win: the scene renders only between the hierarchy on
+        // the left and the inspector on the right.
+        const ViewportRect v = measure_view();
+        const uint32_t whole = t.sink().framebuffer_width();
+        s.check(v.x > 0u && v.x + v.width < whole && !v.empty(), "view-between-panels",
+                "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " at x " + std::to_string(v.x) +
+                    " of " + std::to_string(whole));
     });
 
     t.step("builder", "place", [&] {

@@ -176,8 +176,8 @@ spade::Result<void> SceneFileSession::frame(const FrameInput& in, float dt) {
     const float physics_ms = ms_since(p0);
     draw_items();
 
-    const uint32_t fw = sink_->framebuffer_width();
-    const uint32_t fh = sink_->framebuffer_height();
+    const uint32_t fw = sink_->viewport().width;
+    const uint32_t fh = sink_->viewport().height;
     if (fw == 0u || fh == 0u) {
         return {};  // minimised: the runs keep stepping
     }

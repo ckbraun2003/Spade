@@ -76,6 +76,38 @@
 #define GL_CLAMP_TO_EDGE 0x812F
 #endif
 
+// THE VIEW'S OFFSCREEN TARGET (§13: the 3D view renders only between the
+// panels). The GPU renderer draws into the bound framebuffer at (0, 0) and
+// reads gl_FragCoord against its own size, so it cannot be offset into a
+// corner of the window; it draws into a framebuffer the view's size instead,
+// and that framebuffer's texture is placed in the view like the CPU path's
+// image. Framebuffer objects are GL 3.0, absent from Windows' GL 1.1 header and
+// from ImGui's loader, so the handful needed are fetched from GLFW, and their
+// enums are the registry's, defined where the header lacks them.
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER 0x8D40
+#endif
+#ifndef GL_RENDERBUFFER
+#define GL_RENDERBUFFER 0x8D41
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#endif
+#ifndef GL_DEPTH_STENCIL_ATTACHMENT
+#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#endif
+#ifndef GL_DEPTH24_STENCIL8
+#define GL_DEPTH24_STENCIL8 0x88F0
+#endif
+#ifndef GL_FRAMEBUFFER_COMPLETE
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#endif
+#ifdef _WIN32
+#define SPADE_GL_CALL __stdcall
+#else
+#define SPADE_GL_CALL
+#endif
+
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -128,6 +160,62 @@ void glfw_error_callback(int code, const char* description) {
 // for both, which is why it is here rather than a static_cast.
 ImTextureID as_texture_id(GLuint t) { return (ImTextureID)(std::uintptr_t)t; }
 
+// The framebuffer-object entry points the view's offscreen target needs (see
+// GL_FRAMEBUFFER above), fetched once the context is current.
+struct FramebufferApi {
+    void(SPADE_GL_CALL* gen_framebuffers)(GLsizei, GLuint*) = nullptr;
+    void(SPADE_GL_CALL* delete_framebuffers)(GLsizei, const GLuint*) = nullptr;
+    void(SPADE_GL_CALL* bind_framebuffer)(GLenum, GLuint) = nullptr;
+    void(SPADE_GL_CALL* framebuffer_texture_2d)(GLenum, GLenum, GLenum, GLuint, GLint) = nullptr;
+    void(SPADE_GL_CALL* gen_renderbuffers)(GLsizei, GLuint*) = nullptr;
+    void(SPADE_GL_CALL* delete_renderbuffers)(GLsizei, const GLuint*) = nullptr;
+    void(SPADE_GL_CALL* bind_renderbuffer)(GLenum, GLuint) = nullptr;
+    void(SPADE_GL_CALL* renderbuffer_storage)(GLenum, GLenum, GLsizei, GLsizei) = nullptr;
+    void(SPADE_GL_CALL* framebuffer_renderbuffer)(GLenum, GLenum, GLenum, GLuint) = nullptr;
+    GLenum(SPADE_GL_CALL* check_framebuffer_status)(GLenum) = nullptr;
+
+    [[nodiscard]] bool loaded() const noexcept {
+        return gen_framebuffers != nullptr && delete_framebuffers != nullptr && bind_framebuffer != nullptr &&
+               framebuffer_texture_2d != nullptr && gen_renderbuffers != nullptr && delete_renderbuffers != nullptr &&
+               bind_renderbuffer != nullptr && renderbuffer_storage != nullptr &&
+               framebuffer_renderbuffer != nullptr && check_framebuffer_status != nullptr;
+    }
+};
+
+template <class Fn>
+void fetch(Fn& fn, const char* name) {
+    fn = reinterpret_cast<Fn>(glfwGetProcAddress(name));
+}
+
+[[nodiscard]] FramebufferApi load_framebuffer_api() {
+    FramebufferApi api;
+    fetch(api.gen_framebuffers, "glGenFramebuffers");
+    fetch(api.delete_framebuffers, "glDeleteFramebuffers");
+    fetch(api.bind_framebuffer, "glBindFramebuffer");
+    fetch(api.framebuffer_texture_2d, "glFramebufferTexture2D");
+    fetch(api.gen_renderbuffers, "glGenRenderbuffers");
+    fetch(api.delete_renderbuffers, "glDeleteRenderbuffers");
+    fetch(api.bind_renderbuffer, "glBindRenderbuffer");
+    fetch(api.renderbuffer_storage, "glRenderbufferStorage");
+    fetch(api.framebuffer_renderbuffer, "glFramebufferRenderbuffer");
+    fetch(api.check_framebuffer_status, "glCheckFramebufferStatus");
+    return api;
+}
+
+// Draws `texture` over the 3D view, behind every panel. A GL framebuffer's
+// texture holds its bottom row first, so the GPU path's target is flipped; the
+// CPU path's image is uploaded top row first.
+void draw_view_image(GLuint texture, const ViewportRect& r, bool bottom_up) {
+    const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    const float sx = scale.x > 0.0f ? scale.x : 1.0f;
+    const float sy = scale.y > 0.0f ? scale.y : 1.0f;
+    const ImVec2 p0(static_cast<float>(r.x) / sx, static_cast<float>(r.y) / sy);
+    const ImVec2 p1(static_cast<float>(r.x + r.width) / sx, static_cast<float>(r.y + r.height) / sy);
+    ImGui::GetBackgroundDrawList()->AddImage(as_texture_id(texture), p0, p1,
+                                             bottom_up ? ImVec2(0.0f, 1.0f) : ImVec2(0.0f, 0.0f),
+                                             bottom_up ? ImVec2(1.0f, 0.0f) : ImVec2(1.0f, 1.0f));
+}
+
 // The folder holding this executable, where the build puts the UI font. Not
 // the working directory: the sandbox is launched from anywhere.
 std::filesystem::path executable_dir() {
@@ -160,6 +248,12 @@ struct GlTargetSink::Impl {
     uint64_t presented = 0;
     uint32_t fb_width = 0;
     uint32_t fb_height = 0;
+    // The 3D view: the dock's centre as the last overlay laid it out, or the
+    // whole framebuffer until one has (viewport()). The whole framebuffer too
+    // when the GPU path has no offscreen target (view_target_failed).
+    ViewportRect view;
+    bool view_laid_out = false;
+    bool view_target_failed = false;
 
     // Outside the GL guard with the rest of the logic. A WINDOWED mean for the
     // HUD (a per-frame readout is unreadable) and a LIFETIME mean for the exit
@@ -192,6 +286,14 @@ struct GlTargetSink::Impl {
     bool show_help = true;
     bool help_drawn = false;  // the last overlay drew the legend
     bool f1_was_down = false;
+    bool f2_was_down = false;  // reset layout
+    // The GPU path's offscreen target, the view's size (begin_gpu_frame()).
+    FramebufferApi fbo_api;
+    GLuint view_fbo = 0;
+    GLuint view_color = 0;
+    GLuint view_depth = 0;
+    uint32_t view_fbo_width = 0;
+    uint32_t view_fbo_height = 0;
     // Builder edges. Every one of these exists because glfwGetKey and
     // glfwGetMouseButton report a STATE and the builder needs an EVENT.
     bool last_left_down = false;
@@ -226,6 +328,9 @@ struct GlTargetSink::Impl {
         if (texture != 0) {
             glDeleteTextures(1, &texture);
         }
+        if (view_fbo != 0) fbo_api.delete_framebuffers(1, &view_fbo);
+        if (view_depth != 0) fbo_api.delete_renderbuffers(1, &view_depth);
+        if (view_color != 0) glDeleteTextures(1, &view_color);
         if (window != nullptr) {
             glfwDestroyWindow(window);
         }
@@ -311,6 +416,16 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
 
     glfwMakeContextCurrent(impl->window);
     glfwSwapInterval(options.vsync ? 1 : 0);
+    // The view's offscreen target needs GL 3.0's framebuffer objects. Without
+    // them the GPU path draws over the whole window, as it did before the
+    // docked panels, and says so (L6).
+    impl->fbo_api = load_framebuffer_api();
+    if (!impl->fbo_api.loaded()) {
+        impl->view_target_failed = true;
+        std::fprintf(stderr,
+                     "spade_sandbox: this GL context lacks framebuffer objects, so the 3D view fills the window "
+                     "behind the panels instead of sitting between them\n");
+    }
     glfwSetWindowUserPointer(impl->window, impl.get());
     glfwSetScrollCallback(impl->window, [](GLFWwindow* w, double, double yoffset) {
         // Accumulated rather than read live: a scroll can arrive several times
@@ -427,8 +542,12 @@ FrameInput GlTargetSink::poll() {
     glfwGetWindowSize(impl_->window, &ww, &wh);
     const float sx = ww > 0 ? static_cast<float>(impl_->fb_width) / static_cast<float>(ww) : 1.0f;
     const float sy = wh > 0 ? static_cast<float>(impl_->fb_height) / static_cast<float>(wh) : 1.0f;
-    in.mouse_x = static_cast<float>(cx) * sx;
-    in.mouse_y = static_cast<float>(cy) * sy;
+    // And the view is not the whole framebuffer (§13): the scene renders only
+    // between the panels, so the picker's pixel is measured from the view's
+    // corner, at the view's size (viewport()).
+    const glm::vec2 cursor = viewport().relative(glm::vec2(static_cast<float>(cx) * sx, static_cast<float>(cy) * sy));
+    in.mouse_x = cursor.x;
+    in.mouse_y = cursor.y;
 
     const bool rdown = glfwGetMouseButton(impl_->window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     // The drone scene has nothing for the left button to select or move, so
@@ -490,6 +609,13 @@ FrameInput GlTargetSink::poll() {
             toggle_help();
         }
         impl_->f1_was_down = f1;
+        // F2 puts the panels back where the default layout has them (§13's
+        // "Reset layout"), for a user who has undocked or moved them.
+        const bool f2 = glfwGetKey(impl_->window, GLFW_KEY_F2) == GLFW_PRESS;
+        if (f2 && !impl_->f2_was_down) {
+            reset_layout();
+        }
+        impl_->f2_was_down = f2;
 
         // Delete removes the selection; Ctrl+D duplicates it. Both edges, for
         // the reason stated above -- a level-triggered delete empties the
@@ -564,9 +690,8 @@ void GlTargetSink::accept(const spade::render::RenderTarget& target) {
     // THE FRAME IS DRAWN BY IMGUI'S OWN DRAW LIST, not by a quad of ours.
     // ⭐ That is why this file needs no shader, no VAO and no vertex buffer:
     // ImGui already has a textured-quad pipeline and it is already verified.
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    ImGui::GetBackgroundDrawList()->AddImage(as_texture_id(impl_->texture), ImVec2(0.0f, 0.0f),
-                                             display);
+    // The image was rendered at the view's size and goes in the view (§13).
+    draw_view_image(impl_->texture, viewport(), false);
 
     draw_overlay();
 
@@ -656,6 +781,20 @@ void GlTargetSink::draw_overlay() {
     }
     ImGui::DockSpaceOverViewport(dockspace, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
+    // THE VIEW FOR THE NEXT FRAME: the centre this layout leaves, in
+    // framebuffer pixels. Sessions render at its size and the cursor is
+    // measured from its corner (viewport()). One frame behind a panel being
+    // dragged wider, which a still never shows.
+    {
+        ImVec2 at;
+        ImVec2 size;
+        ui::viewport_rect(dockspace, at, size);
+        const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+        impl_->view = viewport_in_framebuffer(glm::vec2(at.x, at.y), glm::vec2(size.x, size.y),
+                                              glm::vec2(scale.x, scale.y), impl_->fb_width, impl_->fb_height);
+        impl_->view_laid_out = true;
+    }
+
     impl_->help_drawn = false;
     if (impl_->show_help) {
         // THE HUD: the one floating window (§13), as minimal as Unity's and
@@ -686,10 +825,12 @@ void GlTargetSink::draw_overlay() {
             // WHERE THE FRAME WENT: the stages have different remedies, and
             // one of them is not a cost.
             if (ui::section("Frame time", false) && ui::begin_properties("frame time", ui::kHudLabelWidth)) {
-                // The FRAMEBUFFER size: what both paths render at. The texture
-                // size it used to show is set only by the CPU fallback's
-                // accept(), so on the GPU path it read 0x0.
-                ui::value_row("frame", "%ux%u", impl_->fb_width, impl_->fb_height);
+                // The VIEW's size: what both paths render at, between the
+                // panels, in framebuffer pixels (on a HiDPI display, more than
+                // the window's). The texture size it once showed is set only by
+                // the CPU fallback's accept(), so on the GPU path it read 0x0.
+                const ViewportRect v = viewport();
+                ui::value_row("view", "%ux%u of %ux%u", v.width, v.height, impl_->fb_width, impl_->fb_height);
                 ui::value_row("physics", "%.2f ms", a.physics_ms);
                 ui::value_row("render", "%.2f ms", a.render_ms);
                 ui::value_row("convert", "%.2f ms", a.convert_ms);
@@ -713,7 +854,7 @@ void GlTargetSink::draw_overlay() {
                                       ui::joined({"click place/select", "drag moves", "Del removes"}).c_str());
                     }
                 }
-                ui::value_row("window", "%s", ui::joined({"F1 hide", "Esc quit"}).c_str());
+                ui::value_row("window", "%s", ui::joined({"F1 hide", "F2 reset layout", "Esc quit"}).c_str());
                 ui::end_properties();
             }
         }
@@ -840,11 +981,71 @@ void* (*GlTargetSink::proc_loader())(const char*) {
 
 void GlTargetSink::begin_gpu_frame() {
 #if SPADE_SANDBOX_HAS_GL
-    glViewport(0, 0, static_cast<GLsizei>(impl_->fb_width), static_cast<GLsizei>(impl_->fb_height));
+    // The GPU path draws into an offscreen target the view's size, placed in
+    // the view by present_overlay() (see GL_FRAMEBUFFER above). Resized when
+    // the view is, which is when a panel is dragged, not every frame.
+    const ViewportRect v = viewport();
+    Impl& m = *impl_;
+    if (!m.view_target_failed && !v.empty() &&
+        (m.view_fbo == 0 || m.view_fbo_width != v.width || m.view_fbo_height != v.height)) {
+        const FramebufferApi& gl = m.fbo_api;
+        if (m.view_fbo == 0) {
+            gl.gen_framebuffers(1, &m.view_fbo);
+            gl.gen_renderbuffers(1, &m.view_depth);
+            glGenTextures(1, &m.view_color);
+        }
+        glBindTexture(GL_TEXTURE_2D, m.view_color);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(v.width), static_cast<GLsizei>(v.height), 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);  // one texel per pixel
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        gl.bind_renderbuffer(GL_RENDERBUFFER, m.view_depth);
+        gl.renderbuffer_storage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, static_cast<GLsizei>(v.width),
+                                static_cast<GLsizei>(v.height));
+        gl.bind_renderbuffer(GL_RENDERBUFFER, 0);
+        gl.bind_framebuffer(GL_FRAMEBUFFER, m.view_fbo);
+        gl.framebuffer_texture_2d(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m.view_color, 0);
+        gl.framebuffer_renderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m.view_depth);
+        const GLenum status = gl.check_framebuffer_status(GL_FRAMEBUFFER);
+        gl.bind_framebuffer(GL_FRAMEBUFFER, 0);
+        m.view_fbo_width = v.width;
+        m.view_fbo_height = v.height;
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            // Announced, then the whole window as before (L6). This frame was
+            // sized for the view, so it alone draws small in the corner.
+            m.view_target_failed = true;
+            std::fprintf(stderr,
+                         "spade_sandbox: the view's offscreen target is incomplete (status 0x%04X), so the 3D view "
+                         "fills the window behind the panels instead of sitting between them\n",
+                         static_cast<unsigned>(status));
+        }
+    }
+    if (!m.view_target_failed && m.view_fbo != 0) {
+        m.fbo_api.bind_framebuffer(GL_FRAMEBUFFER, m.view_fbo);
+        glViewport(0, 0, static_cast<GLsizei>(m.view_fbo_width), static_cast<GLsizei>(m.view_fbo_height));
+    } else {
+        glViewport(0, 0, static_cast<GLsizei>(m.fb_width), static_cast<GLsizei>(m.fb_height));
+    }
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 #endif
 }
+
+ViewportRect GlTargetSink::viewport() const noexcept {
+    const ViewportRect whole{0u, 0u, impl_->fb_width, impl_->fb_height};
+    if (!impl_->view_laid_out || impl_->view_target_failed) return whole;
+    // Within the framebuffer as it is now: it can shrink after the overlay
+    // laid the view out.
+    ViewportRect v = impl_->view;
+    v.x = std::min(v.x, whole.width);
+    v.y = std::min(v.y, whole.height);
+    v.width = std::min(v.width, whole.width - v.x);
+    v.height = std::min(v.height, whole.height - v.y);
+    return v;
+}
+
+void GlTargetSink::reset_layout() noexcept { impl_->layout_ever_built = false; }
 
 void GlTargetSink::draw_builder_panel(BuilderScene& model) {
 #if SPADE_SANDBOX_HAS_GL
@@ -1122,9 +1323,22 @@ void GlTargetSink::present_overlay(float render_ms, float physics_ms) {
     t.physics_ms = physics_ms;
 #if SPADE_SANDBOX_HAS_GL
     const auto t2 = Clock::now();
+    // The frame went to the view's offscreen target (begin_gpu_frame()); the
+    // window is cleared behind the panels and the target placed in the view.
+    const bool offscreen = !impl_->view_target_failed && impl_->view_fbo != 0;
+    if (offscreen) {
+        impl_->fbo_api.bind_framebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, static_cast<GLsizei>(impl_->fb_width), static_cast<GLsizei>(impl_->fb_height));
+        glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    if (offscreen) {
+        draw_view_image(impl_->view_color,
+                        ViewportRect{viewport().x, viewport().y, impl_->view_fbo_width, impl_->view_fbo_height}, true);
+    }
     draw_overlay();
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
