@@ -1782,6 +1782,56 @@ TEST(RasterGolden, FlowVortexRingQIsoMatchesCommittedManifest) {
     check_against_manifest("flow_vortex_ring_q", pixels);
 }
 
+// Airflow visualization plan step 4: the streamline golden, now that the
+// CPU draws lines without gaps (rendering/line-gaps). The vortex ring at
+// 32^3, twelve seeds on a rake across the ring's plane through its centre,
+// traced both ways by RK4 (600 steps of a quarter cell each way) and drawn
+// in viridis by speed over [0, 0.9] m/s.
+TEST(RasterGolden, FlowStreamlinesMatchesCommittedManifest) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                   spade::test::vortex_ring_with_dye());
+    ASSERT_TRUE(spade::validate_flow_volume(volume).has_value());
+    const std::vector<glm::vec3> seeds =
+        spade::render::seed_rake(glm::vec3(-0.8f, 0.0f, 0.0f), glm::vec3(0.8f, 0.0f, 0.0f), 12);
+    spade::render::StreamlineOptions trace;
+    trace.max_steps = 600;
+    const auto lines = spade::render::trace_streamlines(volume, seeds, trace);
+    ASSERT_TRUE(lines.has_value());
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    const spade::render::PreparedTransfer by_speed = spade::render::prepare_transfer(speed, volume.header);
+    RenderScene scene;
+    for (const spade::render::Streamline& line : *lines) {
+        scene.flow_polylines.push_back(spade::render::colour_streamline(line, by_speed));
+    }
+    const Camera camera = camera_looking_down_neg_z(glm::vec3(0.0f, 0.0f, 2.2f));
+    RenderOptions options;
+    options.mode = DrawMode::shaded;
+    options.overlays = false;
+
+    const std::vector<uint8_t> pixels = render_golden(scene, camera, options);
+    const auto bg = render_background_only(camera, kGoldenWidth, kGoldenHeight);
+    ASSERT_GT(count_pixels_differing_from_reference(pixels, bg), 0u)
+        << "sanity floor: this scene/camera must actually show something before its hash means anything";
+
+    // Guard beside the hash: both directions of every line must reach the
+    // frame, so a regression to forward-only tracing cannot hide.
+    {
+        spade::render::StreamlineOptions forward_only = trace;
+        forward_only.backward = false;
+        const auto half_lines = spade::render::trace_streamlines(volume, seeds, forward_only);
+        ASSERT_TRUE(half_lines.has_value());
+        RenderScene forward_scene;
+        for (const spade::render::Streamline& line : *half_lines) {
+            forward_scene.flow_polylines.push_back(spade::render::colour_streamline(line, by_speed));
+        }
+        EXPECT_NE(pixels, render_golden(forward_scene, camera, options)) << "the backward halves must show";
+    }
+
+    check_against_manifest("flow_streamlines", pixels);
+}
+
 // ===========================================================================
 // 8. Task R5b (controller ruling SR-15): exact near/far triangle clipping.
 // Before this task, draw_world_triangle and draw_mesh_triangle_shaded both
