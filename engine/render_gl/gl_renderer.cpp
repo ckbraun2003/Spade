@@ -1713,7 +1713,8 @@ struct GlRenderer::Impl {
 GlRenderer::GlRenderer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GlRenderer::~GlRenderer() = default;
 
-Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
+Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, const CreateOptions& options) {
+    (void)options;  // RED: not yet honoured
     if (loader == nullptr) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::create: null proc loader"});
     }
@@ -3133,6 +3134,7 @@ uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instan
 void GlRenderer::set_flow_quality(const FlowQuality& quality) noexcept { impl_->flow_quality = quality; }
 GlRenderer::FlowQuality GlRenderer::flow_quality() const noexcept { return impl_->flow_quality; }
 float GlRenderer::last_flow_scale() const noexcept { return impl_->last_flow_scale; }
+bool GlRenderer::flow_ready() { return false; }  // RED: a stub
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }
 const std::string& GlRenderer::version_string() const noexcept { return impl_->version_string; }
 

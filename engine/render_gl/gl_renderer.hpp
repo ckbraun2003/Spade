@@ -83,7 +83,16 @@ class GlRenderer {
     // mechanism rests on SSBOs. Refused with the measured version named, never
     // degraded -- a renderer that silently falls back to something slower is
     // indistinguishable from the bug this module exists to fix.
-    [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader);
+    // flow_programs_in_background: the flow programs (the march, its brick
+    // pass, the half-scale composite) compile in the background where the
+    // driver can (KHR_parallel_shader_compile), so create() returns at once
+    // and flow_ready() says when they are done. Where it cannot, create()
+    // waits for them as it does when not asked.
+    struct CreateOptions {
+        bool flow_programs_in_background = false;
+    };
+    [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader,
+                                                                    const CreateOptions& options = {});
 
     ~GlRenderer();
     GlRenderer(const GlRenderer&) = delete;
@@ -184,6 +193,14 @@ class GlRenderer {
     // The scale the last frame's flow layer was marched at: 1 or 0.5, or 0
     // when the frame had none.
     [[nodiscard]] float last_flow_scale() const noexcept;
+
+    // Whether the flow programs are ready (airflow plan step 7g). A cold
+    // driver cache compiles them in about 13 s on the RTX 3060 Ti. Until
+    // they are ready, draw() refuses a flow layer with Code::unavailable,
+    // so a caller shows "compiling flow shaders..." and draws the frame
+    // again (L6). Never waits; always true unless create() was asked to
+    // compile them in the background.
+    [[nodiscard]] bool flow_ready();
 
     // What the driver says it is. Reported rather than assumed, because the
     // difference between a real driver and a software implementation changes

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -280,6 +281,14 @@ class GpuGlRenderer : public ::testing::Test {
     // How many pixels `scene` turns from black.
     [[nodiscard]] size_t covered_pixels(const RenderScene& scene, const RenderOptions& options = comparable_options()) {
         return count_non_black(draw_and_read(scene, options));
+    }
+
+    // The fixture's framebuffer, bound and cleared to black, for a renderer
+    // other than renderer_.
+    void bind_cleared_target() {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
     }
 
     std::unique_ptr<GlRenderer> renderer_;
@@ -1393,6 +1402,57 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &colour);
     glDeleteRenderbuffers(1, &depth);
+}
+
+// Plan step 7g: a renderer asked to compile its flow programs in the
+// background says when they are ready. Until then it refuses a flow layer
+// as compiling (L6); once ready, within two minutes even on a cold driver
+// cache, it draws the frame a renderer that waited at create() draws.
+TEST_F(GpuGlRenderer, FlowProgramsCompileInTheBackgroundAndSaySo) {
+    auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                   GlRenderer::CreateOptions{.flow_programs_in_background = true});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    GlRenderer& background = **made;
+    const spade::FlowVolume ring = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 32.0f, 32, 32, 32,
+                                                                 spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&ring, {vorticity}, {}});
+    ASSERT_TRUE(background.upload_scene(scene).has_value());
+    const auto draw_with = [&](GlRenderer& r) {
+        bind_cleared_target();
+        const spade::Result<void> drew = r.draw(scene, camera_on_ring(), comparable_options(), kWidth, kHeight);
+        std::vector<uint8_t> rgba;
+        if (drew) {
+            rgba.resize(kPixels * 4u);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        }
+        return std::pair{drew, rgba};
+    };
+    // Before it says ready, a draw is refused as compiling, or (the driver
+    // having finished meanwhile) drawn.
+    if (!background.flow_ready()) {
+        const auto [drew, rgba] = draw_with(background);
+        if (!drew) {
+            EXPECT_EQ(drew.error().code, spade::Code::unavailable);
+            EXPECT_NE(drew.error().context.find("compiling"), std::string::npos) << drew.error().context;
+        }
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    while (!background.flow_ready() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(background.flow_ready()) << "the flow programs must finish compiling";
+    const auto [drew, got] = draw_with(background);
+    ASSERT_TRUE(drew.has_value()) << drew.error().context;
+    ASSERT_TRUE(renderer_->flow_ready()) << "a renderer that waited at create() is ready at once";
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    const auto [drew_waited, want] = draw_with(*renderer_);
+    ASSERT_TRUE(drew_waited.has_value());
+    EXPECT_EQ(count_differing(got, want), 0u) << "the same programs draw the same frame";
 }
 
 // Plan step 7f: the live-only reduced march. Half marches a quarter of the
