@@ -50,6 +50,12 @@ typedef void(APIENTRYP SpadePfnGlBindImageTexture)(GLuint unit, GLuint texture, 
                                                    GLint layer, GLenum access, GLenum format);
 typedef void(APIENTRYP SpadePfnGlDispatchCompute)(GLuint groups_x, GLuint groups_y, GLuint groups_z);
 typedef void(APIENTRYP SpadePfnGlMemoryBarrier)(GLbitfield barriers);
+// KHR_parallel_shader_compile (and its ARB twin), optional: loaded only when
+// the driver lists it, for the flow programs' background compile (7g).
+typedef void(APIENTRYP SpadePfnGlMaxShaderCompilerThreads)(GLuint count);
+#ifndef GL_COMPLETION_STATUS_KHR
+#define GL_COMPLETION_STATUS_KHR 0x91B1
+#endif
 #ifndef GL_COMPUTE_SHADER
 #define GL_COMPUTE_SHADER 0x91B9
 #endif
@@ -80,6 +86,7 @@ namespace {
 // ---------------------------------------------------------------------------
 #define SPADE_GL_FUNCTIONS(X) \
     X(PFNGLGETSTRINGPROC, GetString) \
+    X(PFNGLGETSTRINGIPROC, GetStringi) \
     X(PFNGLACTIVETEXTUREPROC, ActiveTexture) \
     X(PFNGLATTACHSHADERPROC, AttachShader) \
     X(PFNGLBINDBUFFERPROC, BindBuffer) \
@@ -1440,10 +1447,45 @@ struct GpuMesh {
         // as "compile failed" sends the reader to guess; the log names a line.
         // `parts` are separate source strings, so a line is counted within
         // its own part on drivers that prefix the string index.
-        const char* kind = stage == GL_VERTEX_SHADER ? " vertex" : " fragment";
+        const char* kind = stage == GL_VERTEX_SHADER    ? " vertex"
+                           : stage == GL_COMPUTE_SHADER ? " compute"
+                                                        : " fragment";
         return std::unexpected(Error{Code::internal, std::string(what) + kind + " shader: " + log});
     }
     return sh;
+}
+
+// A shader compiled without asking how it went, so a driver that compiles
+// in parallel is not made to wait; linked() asks later.
+[[nodiscard]] GLuint start_shader(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts) {
+    const GLuint sh = gl.CreateShader(stage);
+    gl.ShaderSource(sh, static_cast<GLsizei>(parts.size()), parts.begin(), nullptr);
+    gl.CompileShader(sh);
+    return sh;
+}
+
+// A program linked without asking how it went (see start_shader()). Its
+// shaders are released now; GL keeps them until the program is done.
+[[nodiscard]] GLuint start_link(const GlApi& gl, std::initializer_list<const char*> vertex,
+                                std::initializer_list<const char*> fragment) {
+    const GLuint vs = start_shader(gl, GL_VERTEX_SHADER, vertex);
+    const GLuint fs = start_shader(gl, GL_FRAGMENT_SHADER, fragment);
+    const GLuint program = gl.CreateProgram();
+    gl.AttachShader(program, vs);
+    gl.AttachShader(program, fs);
+    gl.LinkProgram(program);
+    gl.DeleteShader(vs);
+    gl.DeleteShader(fs);
+    return program;
+}
+
+[[nodiscard]] GLuint start_link_compute(const GlApi& gl, std::initializer_list<const char*> compute) {
+    const GLuint cs = start_shader(gl, GL_COMPUTE_SHADER, compute);
+    const GLuint program = gl.CreateProgram();
+    gl.AttachShader(program, cs);
+    gl.LinkProgram(program);
+    gl.DeleteShader(cs);
+    return program;
 }
 
 // `program` if it linked, else the driver's log, and the program deleted.
@@ -1575,6 +1617,11 @@ struct GlRenderer::Impl {
     bool flow_timer_pending = false;
     double flow_last_march_ms = -1.0;  // none yet
     bool flow_auto_half = false;
+    // The flow programs' compile (7g): started by create(), finished there
+    // or, in the background, by flow_ready(). A failure is kept for draw().
+    bool flow_pending = false;
+    bool flow_failed = false;
+    Error flow_error;
     GLuint flow_depth_tex = 0;
     GLuint flow_depth_fbo = 0;
     uint32_t flow_depth_width = 0;
@@ -1667,6 +1714,58 @@ struct GlRenderer::Impl {
         GLint transfer_count = -1, iso_count = -1, params = -1;
     } flow_brick;
 
+    // The flow programs' link results and uniforms, once compiled.
+    Result<void> finish_flow_programs() {
+        flow_pending = false;
+        const std::pair<GLuint*, const char*> programs[3] = {
+            {&flow_program, "flow volume"}, {&flow_brick_program, "flow bricks"},
+            {&flow_composite_program, "flow composite"}};
+        for (const auto& [slot, what] : programs) {
+            if (Result<GLuint> ok = linked(gl, *slot, what); !ok) {
+                *slot = 0;  // linked() deleted it
+                flow_failed = true;
+                flow_error = ok.error();
+                return std::unexpected(flow_error);
+            }
+        }
+        FlowLayerUniforms& u = flow_layer;
+        const GLuint fp = flow_program;
+        u.view_proj = gl.GetUniformLocation(fp, "uViewProj");
+        u.box_min = gl.GetUniformLocation(fp, "uBoxMin");
+        u.box_max = gl.GetUniformLocation(fp, "uBoxMax");
+        u.cam_pos = gl.GetUniformLocation(fp, "uCamPos");
+        u.right = gl.GetUniformLocation(fp, "uRight");
+        u.up = gl.GetUniformLocation(fp, "uUp");
+        u.forward = gl.GetUniformLocation(fp, "uForward");
+        u.inv_tan_half_fov = gl.GetUniformLocation(fp, "uInvTanHalfFov");
+        u.aspect = gl.GetUniformLocation(fp, "uAspect");
+        u.viewport = gl.GetUniformLocation(fp, "uViewport");
+        u.near_plane = gl.GetUniformLocation(fp, "uNear");
+        u.far_plane = gl.GetUniformLocation(fp, "uFar");
+        u.proj22 = gl.GetUniformLocation(fp, "uProj22");
+        u.proj32 = gl.GetUniformLocation(fp, "uProj32");
+        u.step = gl.GetUniformLocation(fp, "uStep");
+        u.inv_step = gl.GetUniformLocation(fp, "uInvStep");
+        u.transfer_count = gl.GetUniformLocation(fp, "uTransferCount");
+        u.iso_count = gl.GetUniformLocation(fp, "uIsoCount");
+        u.sun_dir = gl.GetUniformLocation(fp, "uSunDir");
+        u.sun_color = gl.GetUniformLocation(fp, "uSunColor");
+        u.ambient = gl.GetUniformLocation(fp, "uAmbient");
+        u.sun_intensity = gl.GetUniformLocation(fp, "uSunIntensity");
+        u.params = gl.GetUniformLocation(fp, "uFlowParams");
+        u.origin = gl.GetUniformLocation(fp, "uFlowOrigin");
+        u.inv_cell = gl.GetUniformLocation(fp, "uFlowInvCell");
+        u.skip = gl.GetUniformLocation(fp, "uSkip");
+        u.half = gl.GetUniformLocation(fp, "uHalf");
+        flow_composite_viewport = gl.GetUniformLocation(flow_composite_program, "uViewport");
+        FlowBrickUniforms& bu = flow_brick;
+        const GLuint bp = flow_brick_program;
+        bu.transfer_count = gl.GetUniformLocation(bp, "uTransferCount");
+        bu.iso_count = gl.GetUniformLocation(bp, "uIsoCount");
+        bu.params = gl.GetUniformLocation(bp, "uFlowParams");
+        return {};
+    }
+
     ~Impl() {
         for (GpuMesh& m : meshes) {
             if (m.ebo != 0) gl.DeleteBuffers(1, &m.ebo);
@@ -1714,7 +1813,6 @@ GlRenderer::GlRenderer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GlRenderer::~GlRenderer() = default;
 
 Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, const CreateOptions& options) {
-    (void)options;  // RED: not yet honoured
     if (loader == nullptr) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::create: null proc loader"});
     }
@@ -1775,19 +1873,37 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
                                             "csg");
     if (!csg_program) return std::unexpected(csg_program.error());
     impl->csg_program = *csg_program;
-    const Result<GLuint> flow_program =
-        link(gl, {kGlslVersion, kCsgVertexSrc},
-             {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowVolumeFragmentSrc}, "flow volume");
-    if (!flow_program) return std::unexpected(flow_program.error());
-    impl->flow_program = *flow_program;
-    const Result<GLuint> flow_brick_program =
-        link_compute(gl, {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowBrickSrc}, "flow bricks");
-    if (!flow_brick_program) return std::unexpected(flow_brick_program.error());
-    impl->flow_brick_program = *flow_brick_program;
-    const Result<GLuint> flow_composite_program =
-        link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc}, "flow composite");
-    if (!flow_composite_program) return std::unexpected(flow_composite_program.error());
-    impl->flow_composite_program = *flow_composite_program;
+    // The flow programs (7g): in the background when asked and the driver
+    // compiles in parallel, so flow_ready() reports them; otherwise finished
+    // here, as every other program is.
+    bool parallel = false;
+    if (options.flow_programs_in_background) {
+        GLint extensions = 0;
+        gl.GetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+        for (GLint e = 0; e < extensions && !parallel; ++e) {
+            const auto* name = reinterpret_cast<const char*>(gl.GetStringi(GL_EXTENSIONS, static_cast<GLuint>(e)));
+            const std::string_view ext = name != nullptr ? name : "";
+            const char* entry = ext == "GL_KHR_parallel_shader_compile"   ? "glMaxShaderCompilerThreadsKHR"
+                                : ext == "GL_ARB_parallel_shader_compile" ? "glMaxShaderCompilerThreadsARB"
+                                                                          : nullptr;
+            if (entry == nullptr) continue;
+            const auto threads = reinterpret_cast<SpadePfnGlMaxShaderCompilerThreads>(loader(entry));
+            if (threads != nullptr) {
+                threads(0xFFFFFFFFu);  // as many as the driver likes
+                parallel = true;
+            }
+        }
+    }
+    impl->flow_program = start_link(gl, {kGlslVersion, kCsgVertexSrc},
+                                    {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowVolumeFragmentSrc});
+    impl->flow_brick_program =
+        start_link_compute(gl, {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowBrickSrc});
+    impl->flow_composite_program =
+        start_link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc});
+    impl->flow_pending = true;
+    if (!parallel) {
+        if (Result<void> done = impl->finish_flow_programs(); !done) return std::unexpected(done.error());
+    }
 
     const GLuint p = impl->program;
     impl->u_instance_base = gl.GetUniformLocation(p, "uInstanceBase");
@@ -1890,43 +2006,6 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     };
     flow_uniforms(impl->program, impl->mesh_flow);
     flow_uniforms(impl->csg_program, impl->csg_flow);
-    {
-        Impl::FlowLayerUniforms& u = impl->flow_layer;
-        const GLuint fp = impl->flow_program;
-        u.view_proj = gl.GetUniformLocation(fp, "uViewProj");
-        u.box_min = gl.GetUniformLocation(fp, "uBoxMin");
-        u.box_max = gl.GetUniformLocation(fp, "uBoxMax");
-        u.cam_pos = gl.GetUniformLocation(fp, "uCamPos");
-        u.right = gl.GetUniformLocation(fp, "uRight");
-        u.up = gl.GetUniformLocation(fp, "uUp");
-        u.forward = gl.GetUniformLocation(fp, "uForward");
-        u.inv_tan_half_fov = gl.GetUniformLocation(fp, "uInvTanHalfFov");
-        u.aspect = gl.GetUniformLocation(fp, "uAspect");
-        u.viewport = gl.GetUniformLocation(fp, "uViewport");
-        u.near_plane = gl.GetUniformLocation(fp, "uNear");
-        u.far_plane = gl.GetUniformLocation(fp, "uFar");
-        u.proj22 = gl.GetUniformLocation(fp, "uProj22");
-        u.proj32 = gl.GetUniformLocation(fp, "uProj32");
-        u.step = gl.GetUniformLocation(fp, "uStep");
-        u.inv_step = gl.GetUniformLocation(fp, "uInvStep");
-        u.transfer_count = gl.GetUniformLocation(fp, "uTransferCount");
-        u.iso_count = gl.GetUniformLocation(fp, "uIsoCount");
-        u.sun_dir = gl.GetUniformLocation(fp, "uSunDir");
-        u.sun_color = gl.GetUniformLocation(fp, "uSunColor");
-        u.ambient = gl.GetUniformLocation(fp, "uAmbient");
-        u.sun_intensity = gl.GetUniformLocation(fp, "uSunIntensity");
-        u.params = gl.GetUniformLocation(fp, "uFlowParams");
-        u.origin = gl.GetUniformLocation(fp, "uFlowOrigin");
-        u.inv_cell = gl.GetUniformLocation(fp, "uFlowInvCell");
-        u.skip = gl.GetUniformLocation(fp, "uSkip");
-        u.half = gl.GetUniformLocation(fp, "uHalf");
-        impl->flow_composite_viewport = gl.GetUniformLocation(impl->flow_composite_program, "uViewport");
-        Impl::FlowBrickUniforms& bu = impl->flow_brick;
-        const GLuint bp = impl->flow_brick_program;
-        bu.transfer_count = gl.GetUniformLocation(bp, "uTransferCount");
-        bu.iso_count = gl.GetUniformLocation(bp, "uIsoCount");
-        bu.params = gl.GetUniformLocation(bp, "uFlowParams");
-    }
     gl.GenTextures(1, &impl->flow_empty_tex);
     gl.GenTextures(1, &impl->flow_half_colour_tex);
     gl.GenTextures(1, &impl->flow_half_depth_tex);
@@ -2243,6 +2322,13 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     }
     // L6: GL marches one flow layer per frame; a frame with fewer would be a
     // different picture under the same scene.
+    // 7g: the flow programs compile in the background when asked; until
+    // they are done a flow layer is refused, not dropped (L6).
+    if (!scene.flow_layers.empty() && !flow_ready()) {
+        if (s.flow_failed) return std::unexpected(s.flow_error);
+        return std::unexpected(Error{Code::unavailable, "GlRenderer::draw: the flow shaders are still compiling "
+                                                        "(flow_ready()); say so and draw the frame again"});
+    }
     if (scene.flow_layers.size() > 1u) {
         return std::unexpected(Error{Code::unavailable, "GlRenderer::draw: GL marches one flow layer per frame, and "
                                                         "this scene has " +
@@ -3134,7 +3220,18 @@ uint32_t GlRenderer::last_instances() const noexcept { return impl_->last_instan
 void GlRenderer::set_flow_quality(const FlowQuality& quality) noexcept { impl_->flow_quality = quality; }
 GlRenderer::FlowQuality GlRenderer::flow_quality() const noexcept { return impl_->flow_quality; }
 float GlRenderer::last_flow_scale() const noexcept { return impl_->last_flow_scale; }
-bool GlRenderer::flow_ready() { return false; }  // RED: a stub
+bool GlRenderer::flow_ready() {
+    Impl& s = *impl_;
+    if (s.flow_pending) {
+        for (const GLuint p : {s.flow_program, s.flow_brick_program, s.flow_composite_program}) {
+            GLint done = GL_FALSE;
+            s.gl.GetProgramiv(p, GL_COMPLETION_STATUS_KHR, &done);
+            if (done != GL_TRUE) return false;
+        }
+        (void)s.finish_flow_programs();  // a failure is kept for draw()
+    }
+    return !s.flow_failed;
+}
 const std::string& GlRenderer::renderer_name() const noexcept { return impl_->renderer_name; }
 const std::string& GlRenderer::version_string() const noexcept { return impl_->version_string; }
 
