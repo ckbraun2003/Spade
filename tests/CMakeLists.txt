@@ -62,6 +62,7 @@ add_executable(spade_tests
     test_sdf.cpp
     test_mesh.cpp
     test_mesh_field.cpp
+    test_mesh_mass.cpp
     test_state.cpp
     test_snapshot.cpp
     test_rng_medium.cpp
