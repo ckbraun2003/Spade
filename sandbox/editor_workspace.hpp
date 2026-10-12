@@ -98,6 +98,7 @@ class EditorWorkspace {
         std::unique_ptr<EditorWorkspace> w(new EditorWorkspace(std::move(opened)));
         if (Result<void> composed = w->recompose(); !composed) return std::unexpected(composed.error());
         w->panels_.library = builtin_library();
+        w->list_sources();
         w->refresh_panels();
         return w;
     }
@@ -243,6 +244,20 @@ class EditorWorkspace {
 
     [[nodiscard]] Serials serials() const noexcept { return Serials{docs_.scene.serial(), docs_.world.serial()}; }
 
+    // The File menu's scenes (SL13). A built-in scene (assets/scenes/, beside
+    // assets/worlds/) tells where the built-ins are, which is kept; a scene
+    // elsewhere is the user's, and its folder lists as saved. Read when a
+    // scene is opened or saved, not every frame.
+    void list_sources() {
+        namespace fs = std::filesystem;
+        const fs::path dir = docs_.scene.path.parent_path();
+        std::error_code ec;
+        const bool builtin = !dir.empty() && dir.filename() == "scenes" &&
+                             fs::is_directory(dir.parent_path() / "worlds", ec);
+        if (builtin) assets_ = dir.parent_path();
+        panels_.sources = scene_sources(assets_, builtin ? fs::path() : dir);
+    }
+
     // After an action: a refusal goes to the status line; a change goes onto
     // the history (in the order the documents changed), clears the redo side,
     // and is composed and, while running, carried into the run. True when
@@ -356,6 +371,7 @@ class EditorWorkspace {
             case Command::save_as: {
                 const Serials before = serials();
                 save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path));
+                list_sources();
                 return;
             }
             case Command::open: open(panels_.path); return;
@@ -411,10 +427,12 @@ class EditorWorkspace {
         panels_.selection = Selection{};
         panels_.armed.reset();
         panels_.status.clear();
+        list_sources();
     }
 
     OpenedScene docs_;
     BuiltinRecords records_;
+    std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
     scene::ComposedScene composed_;
     uint64_t composition_ = 0;
     std::optional<EditorRun> run_;

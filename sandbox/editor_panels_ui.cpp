@@ -173,6 +173,22 @@ void toolbar(ed::EditorPanels& p) {
     press("Save", ed::Command::save);
     if (ImGui::Button("File")) ImGui::OpenPopup("file");
     if (ImGui::BeginPopup("file")) {
+        // The scene picker (SL13): the built-in scenes, then the saved ones.
+        if (!p.sources.empty()) {
+            ImGui::TextDisabled("Scenes");
+            for (std::size_t i = 0; i < p.sources.size(); ++i) {
+                const ed::SceneSource& source = p.sources[i];
+                ImGui::PushID(static_cast<int>(i));
+                const std::string label =
+                    source.name + (source.kind == ed::SceneSource::Kind::saved ? "  (saved)" : "");
+                if (ImGui::Selectable(label.c_str())) {
+                    p.path = source.file.string();
+                    p.commands.push_back(ed::Command::open);
+                }
+                ImGui::PopID();
+            }
+            ui::gap();
+        }
         ImGui::TextDisabled("Scene file");
         std::string path = p.path;
         if (edit_text("##path", p.path, path)) p.path = path;
