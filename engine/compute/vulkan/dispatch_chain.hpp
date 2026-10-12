@@ -53,6 +53,9 @@ using ChainMark = std::function<void(VkCommandBuffer, uint32_t, uint32_t)>;
 // each dispatch binds pipelines[pipeline], pushes `push_size` bytes at
 // `push_offset` and dispatches its groups, with the barrier above after every
 // dispatch but the last; each mark calls `mark(cmd, mark_a, mark_b)`.
+// PRECONDITION: push_offset + push_size <= kMaxChainPushBytes, since each push
+// is read from a command's kMaxChainPushBytes block (asserted; a caller with a
+// run-time push size refuses a larger one by name first).
 ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, std::span<const VkPipeline> pipelines,
                                   std::span<const ChainCommand> commands, uint32_t push_offset, uint32_t push_size,
                                   const ChainMark& mark);

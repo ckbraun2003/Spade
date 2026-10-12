@@ -1,5 +1,6 @@
 #include "compute/vulkan/dispatch_chain.hpp"
 
+#include <cassert>
 #include <string>
 #include <string_view>
 
@@ -30,6 +31,7 @@ namespace {
 ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, std::span<const VkPipeline> pipelines,
                                   std::span<const ChainCommand> commands, uint32_t push_offset, uint32_t push_size,
                                   const ChainMark& mark) {
+    assert(push_offset + push_size <= kMaxChainPushBytes && "a push must fit the command's block");
     std::size_t last_dispatch = 0;
     for (std::size_t i = 0; i < commands.size(); ++i) {
         if (commands[i].is_dispatch) last_dispatch = i;

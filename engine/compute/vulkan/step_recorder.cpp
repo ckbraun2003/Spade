@@ -505,6 +505,11 @@ Result<void> StepRecorder::record() {
     // (its PipelineSlot, its PassParams' bytes, its group count) or a mark
     // (which substep, which boundary of it).
     static_assert(sizeof(PassParams) <= kMaxChainPushBytes, "PassParams must fit a chain command's push block");
+    // The memcpy below copies sizeof(PassParams) bytes and the chain pushes
+    // gen::kPushConstantSize of them: the two must agree, and fit the block.
+    static_assert(sizeof(PassParams) == gen::kPushConstantSize, "PassParams must be exactly the push range");
+    static_assert(gen::kPushConstantOffset + gen::kPushConstantSize <= kMaxChainPushBytes,
+                  "the push range must fit a chain command's push block");
     std::vector<ChainCommand> commands;
 
     PassParams base{};
