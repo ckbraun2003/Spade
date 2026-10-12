@@ -1,6 +1,6 @@
 # Module API stage 7: the airflow module's GPU groundwork — design
 
-**Owner:** Core. **Status:** DRAFT for the lead, then for Cameron's sign-off before any code (module-API spec §15). Docs only: nothing edited, built or committed.
+**Owner:** Core. **Status:** SIGNED by the user 2026-10-12 (via lead; `CORE-8`), with D1-D7 at the recommendations. See "Rulings received" at the end.
 **Builds:** module-API spec §15 (`plans/2026-10-02-module-api-design.md:186-192`), approved as principles 2026-10-05. **Rests on:** Cameron's airflow rulings (`PHY-9`, 2026-10-05) and his demo rulings of 2026-10-12 (`backlog.md:66`: two-step path; disc, actuator line and blade-resolved rotors; the drone a solid wall, porous optional).
 **Inputs:** the airflow spec (`../physics/plans/2026-10-05-airflow-design.md`); Core's answers (`2026-10-05-airflow-spec-core-answers.md`); Core's demo inputs (`2026-10-12-airflow-demo-core-inputs.md`); the stage 4 and 5 plans; the per-part model geometry note (drafted in parallel; its working shape is assumed below, not redesigned).
 **Anchors:** **m** = master `80d564b`; **mg** = `core/module-grades` `0133ef3` (stage 5 Task 1); **pa** = `physics/airflow-core` `a80420f` (plan A Task 6). Estimates are marked *(estimate)*; facts not checked in the code are marked *(unconfirmed)*.
@@ -500,3 +500,18 @@ An outline, not a plan. Each task is test-first, both presets, the gcc check, th
 | `StateMirror`'s founding rule (`state_mirror.hpp:39-45`, m) | "The arena remains the one authoritative CPU-side store" | Changes as §15 approved (§2.2) |
 | Demo inputs §1b (`ModelType::collider`) | One collider per model | Superseded by the per-part note's parts. The identity rule carries over: fold when non-empty, once a step reads it |
 | Stage 5 plan, "Notes for later stages" | "Stage 7 grades nothing new" | It adds one compile rule: a resident array needs a CPU `reference` (§2.1) |
+
+## Rulings received
+
+- **The user, 2026-10-12 (via lead):** the design is signed. D1 [A], D2 [B], D3 [A], D4 [A], D5 [A], D6 as drafted, and D7 [A]: `CORE-5` reads "any Vulkan 1.1+ device is admitted if it meets the limits the module set declares; otherwise it is refused by name" (`CORE-5`, `CORE-8`).
+- **The lead, 2026-10-12, on "For the lead":**
+  1. `arenas()`: no silent stale read. The non-const `arenas()` syncs resident state before it returns. A const path that cannot sync refuses at run time when resident state is newer than the host copy. A raw "may be stale" view would break §15's sync-or-refuse. If the const call sites make this painful, the count goes to the lead.
+  2. `state_digest`: as proposed. Count the const call sites; add a refusing const overload if there are many.
+  3. Core owns the domain-neutral grid kernels; Physics reviews them.
+  4. Reserve airflow's binding block in `bindings.slang` now.
+- **Conflicts, resolved:**
+  - spec §4.5: two-way loads and the closed-domain mean both use §5.5's fixed-tile fp32 reduction on both backends. That is Physics' numerics call; Physics moves `remove_mean` to it before plan A Task 8 pins its golden (`af51484`).
+  - spec §2/Q4: amended to the solid wall (`c52b487`).
+  - §4.3: +48 to +72 MiB.
+  - §1.4: `m_f` accepted.
+  - D5's first thresholds (Physics, `af51484`; revised by validation): a wall feature ≥ 2 cells; actuator line R/dx ≥ 20 with ε = 2dx; blade-resolved ≥ 32 cells per chord and ≥ 2 per thickness. All refused by name, never silently made porous.
