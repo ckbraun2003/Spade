@@ -3,7 +3,8 @@
 // 8b) into the flow volume the views read, and the views are checked
 // against what the field is known to be. The Taylor-Green vortex is
 // analytic at t = 0, and decays at the viscous step's own rate at low
-// Reynolds number. The actuator disc's wake follows when Task 9 merges.
+// Reynolds number. The actuator disc (Task 9) drives a wake whose rotor
+// seeds must move down as momentum theory says, through every view.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -21,7 +23,10 @@
 #include "flow_synthetic.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/actuator.hpp"
 #include "physics/airflow/publish.hpp"
+#include "render/flow_lines.hpp"
+#include "render/flow_sample.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 
@@ -239,6 +244,94 @@ TEST(RenderFlowFeed, TaylorGreenDecaysAtTheViscousStepsRate) {
     // nonlinear transfer and advection's own damping.
     EXPECT_LE(std::abs(ratio[0] - expected), 0.001);
     EXPECT_LE(std::abs(ratio[1] - ratio[0]), 1e-5);
+}
+
+// The actuator disc's wake (Task 9): a disc of radius R = 0.2 m near the top
+// of an open 1.6 m box, pushing down with 1.2 N, for 80 steps of 5 ms. Plan
+// section 4's rotor-seed check: seeds half a radius below the hub, on a ring
+// of half the radius, move down faster than half the hover induced velocity
+// v_h = sqrt(T / (2 rho pi R^2)), about 2 m/s here, and their streamlines
+// leave the box through its bottom. The volume and Q iso views draw the
+// wake from the published field, as smoke tests.
+TEST(RenderFlowFeed, TheActuatorDiscsWakeCarriesTheRotorSeedsDown) {
+    constexpr uint32_t n = 32;
+    constexpr float dx = 0.05f;
+    const DomainBc bc;  // open on every face, still air outside
+    MacGrid g = *make_grid({n, n, n, dx}, bc);
+    const ActuatorDisc disc{.centre = glm::vec3(0.8f, 1.2f, 0.8f),
+                            .axis = glm::vec3(0.0f, -1.0f, 0.0f),
+                            .radius = 0.2f,
+                            .thrust = 1.2f};
+    ASSERT_TRUE(check_disc(disc, g.shape).has_value());
+    const FluidConfig cfg{.nu = 1.5e-5f, .h = 0.005f};
+    FluidScratch scratch = *make_fluid_scratch(g, bc, cfg);
+    for (int step = 0; step < 80; ++step) {
+        spread_actuator(disc, g.shape, cfg.rho, cfg.h, scratch.du, scratch.dv, scratch.dw);
+        ASSERT_EQ(fluid_step(g, bc, cfg, scratch).fault, FluidFault::none) << "step " << step;
+    }
+    const FlowVolume v = publish(g);
+    ASSERT_TRUE(spade::validate_flow_volume(v).has_value());
+    EXPECT_EQ(v.header.no_data, 0u);
+
+    const double kPi = kTwoPi / 2.0;
+    const float v_h = static_cast<float>(std::sqrt(disc.thrust / (2.0 * cfg.rho * kPi * disc.radius * disc.radius)));
+    const std::vector<glm::vec3> seeds =
+        spade::render::seed_ring(disc.centre + disc.axis * (0.5f * disc.radius), disc.axis, 0.5f * disc.radius, 12);
+    const spade::render::FlowSampler sampler = spade::render::make_flow_sampler(v);
+    float slowest = std::numeric_limits<float>::infinity();
+    for (const glm::vec3& seed : seeds) {
+        const spade::render::FlowVelocity u = spade::render::sample_velocity(sampler, seed);
+        ASSERT_FALSE(u.no_data);
+        slowest = std::min(slowest, glm::dot(u.u, disc.axis));
+    }
+    spade::render::StreamlineOptions trace;
+    trace.backward = false;
+    const auto lines = spade::render::trace_streamlines(v, seeds, trace);
+    ASSERT_TRUE(lines.has_value());
+    size_t out_the_bottom = 0;
+    for (const spade::render::Streamline& line : *lines) {
+        const bool left = line.forward_end == spade::render::LineEnd::left_box;
+        out_the_bottom += left && line.points.back().y < 0.1f ? 1u : 0u;
+    }
+    RecordProperty("slowest_over_v_h_x1000", static_cast<int>(slowest / v_h * 1000.0f));
+    std::printf("[ disc ] v_h %.3f m/s; slowest rotor seed moves down at %.3f m/s (%.2f v_h); %zu of %zu "
+                "streamlines leave through the bottom\n",
+                v_h, slowest, slowest / v_h, out_the_bottom, lines->size());
+    EXPECT_GT(slowest, 0.5f * v_h) << "plan section 4: rotor seeds move down faster than half of v_h";
+    EXPECT_EQ(out_the_bottom, lines->size()) << "every rotor seed's streamline leaves through the bottom";
+
+    // Smoke tests: the published wake draws in the volume and Q iso views.
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 2.0f * v_h;
+    speed.extinction = {{0.25f * v_h, 0.0f}, {2.0f * v_h, 6.0f}};
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.3f * v.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    ASSERT_GT(q_iso.value, 0.0f);
+    Camera camera;
+    camera.position = glm::vec3(0.8f, 0.8f, 3.4f);
+    const std::vector<uint8_t> bare = draw(RenderScene{}, camera);
+    for (const bool iso : {false, true}) {
+        RenderScene scene;
+        scene.flow_layers.push_back(iso ? spade::render::FlowLayer{&v, {}, {q_iso}}
+                                        : spade::render::FlowLayer{&v, {speed}, {}});
+        const std::vector<uint8_t> frame = draw(scene, camera);
+        size_t drawn = 0;
+        for (size_t p = 0; p < static_cast<size_t>(kW) * kH; ++p) {
+            drawn += frame[p * 4u] != bare[p * 4u] || frame[p * 4u + 1u] != bare[p * 4u + 1u] ||
+                             frame[p * 4u + 2u] != bare[p * 4u + 2u]
+                         ? 1u
+                         : 0u;
+        }
+        std::printf("[ disc ] %s view: %zu px drawn\n", iso ? "Q iso" : "volume", drawn);
+        // Measured 2026-10-12: the volume draws 986 pixels, an hourglass of
+        // fast air through the disc; the Q iso 228, the disc's edge ring and
+        // the starting vortex below it, seen edge on. Looked at. The floor
+        // only asks that each view draw the wake at all.
+        EXPECT_GT(drawn, 100u) << (iso ? "the Q iso must draw the wake" : "the volume must draw the wake");
+    }
 }
 
 }  // namespace
