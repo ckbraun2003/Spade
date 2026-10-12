@@ -103,7 +103,8 @@ TEST(AirflowStep, TwoRunsAreBitIdentical) {
 // 64 steps at CFL 0.5, folded by FNV-1a over u, v, w and p.
 //   generated  2026-10-12 by this test, MSVC release (VS 2022), on physics/airflow-core at
 //              3c4cb17 plus Task 8 (the commit that adds this test)
-//   cross-check MSVC debug agrees; the gcc-13 Docker leg (TD-12): <the leg>
+//   cross-check MSVC debug agrees; the gcc-13 Docker leg (TD-12) reproduces it on a fresh
+//              -NoSeed volume at 742f56e (build-docker/742f56ea2a52, 2026-10-12): FINAL
 // A change to any value here is a golden regeneration under TD-1, with its
 // reason in the commit.
 constexpr uint64_t kSolverCoreDigest = 0x7ea42593859fbcebull;
