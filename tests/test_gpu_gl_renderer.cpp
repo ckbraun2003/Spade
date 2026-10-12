@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -1122,22 +1123,89 @@ TEST_F(GpuGlRenderer, RefusesFlowLayersUntilItsPassLands) {
     EXPECT_EQ(drew.error().code, spade::Code::unavailable);
 }
 
-// L6: nor does GL draw streamlines or tracers yet (plan step 7).
-TEST_F(GpuGlRenderer, RefusesFlowLinesAndPointsUntilItsPassLands) {
-    RenderScene scene = slab_scene();
-    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
-    RenderScene lines = scene;
-    lines.flow_polylines.push_back(spade::render::FlowPolyline{{glm::vec3(0.0f), glm::vec3(1.0f)},
-                                                               {glm::vec3(1.0f), glm::vec3(1.0f)}});
-    const auto drew = renderer_->draw(lines, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(drew.has_value()) << "streamlines GL cannot draw must be refused";
-    EXPECT_EQ(drew.error().code, spade::Code::unavailable);
-    RenderScene points = scene;
-    points.flow_points.positions = {glm::vec3(0.0f)};
-    points.flow_points.colours = {glm::vec3(1.0f)};
-    const auto dotted = renderer_->draw(points, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
-    ASSERT_FALSE(dotted.has_value()) << "tracers GL cannot draw must be refused";
-    EXPECT_EQ(dotted.error().code, spade::Code::unavailable);
+// Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
+// Lines as GL_LINES, each segment in the mean of its ends' colours; points as
+// squares of size_px. Depth-tested against the ground. Lines rasterize by
+// different rules on the two paths, so a pixel may sit one pixel apart; the
+// colours are flat and must match exactly. A miss is a flow pixel on one path
+// with no flow pixel of the same colour within 1 px on the other: the
+// overlay band's measure. Both counts are measured and pinned (03-verification).
+TEST_F(GpuGlRenderer, FlowLinesAndPointsMatchTheCpuWithinTheirBand) {
+    RenderScene scene = make_ground_scene();
+    // Five helical streamlines over the ground, coloured along their length,
+    // and tracers along a rake; some dip below the ground and are hidden.
+    for (int k = 0; k < 5; ++k) {
+        spade::render::FlowPolyline line;
+        for (int i = 0; i <= 40; ++i) {
+            const float s = static_cast<float>(i) / 40.0f;
+            const float a = 6.0f * s + 1.3f * static_cast<float>(k);
+            line.points.push_back(glm::vec3(-2.0f + 4.0f * s, 0.6f + 0.4f * static_cast<float>(k) * 0.3f + 0.5f * std::sin(a),
+                                            -1.0f + 0.5f * std::cos(a) + 0.3f * static_cast<float>(k)));
+            line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+        }
+        scene.flow_polylines.push_back(std::move(line));
+    }
+    for (int i = 0; i < 9; ++i) {
+        scene.flow_points.positions.push_back(glm::vec3(-1.6f + 0.4f * static_cast<float>(i), 1.4f, 0.4f));
+        scene.flow_points.colours.push_back(glm::vec3(0.95f));
+    }
+    scene.flow_points.size_px = 3;
+    RenderScene bare = scene;
+    bare.flow_polylines.clear();
+    bare.flow_points = {};
+    const Camera camera = camera_over_ground();
+
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_off = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(bare, comparable_options(), camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u) << "GL must draw streamlines and tracers now";
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+
+    std::vector<uint8_t> cpu_flow(kPixels), gl_flow(kPixels);
+    size_t cpu_count = 0, gl_count = 0;
+    for (size_t p = 0; p < kPixels; ++p) {
+        cpu_flow[p] = static_cast<uint8_t>(same_pixel(cpu_on, cpu_off, p) ? 0 : 1);
+        gl_flow[p] = static_cast<uint8_t>(same_pixel(gl_on, gl_off, p) ? 0 : 1);
+        cpu_count += cpu_flow[p];
+        gl_count += gl_flow[p];
+    }
+    ASSERT_GT(cpu_count, 300u) << "the CPU frame must hold streamlines and tracers";
+
+    const auto misses = [](const std::vector<uint8_t>& a, const std::vector<uint8_t>& a_mask,
+                           const std::vector<uint8_t>& b, const std::vector<uint8_t>& b_mask) {
+        size_t n = 0;
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const size_t p = static_cast<size_t>(y) * kWidth + static_cast<size_t>(x);
+                if (a_mask[p] == 0u) continue;
+                bool found = false;
+                for (int dy = -1; dy <= 1 && !found; ++dy) {
+                    for (int dx = -1; dx <= 1 && !found; ++dx) {
+                        const int nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= kWidth || ny >= kHeight) continue;
+                        const size_t q = static_cast<size_t>(ny) * kWidth + static_cast<size_t>(nx);
+                        found = b_mask[q] != 0u && a[p * 4u] == b[q * 4u] && a[p * 4u + 1u] == b[q * 4u + 1u] &&
+                                a[p * 4u + 2u] == b[q * 4u + 2u];
+                    }
+                }
+                if (!found) ++n;
+            }
+        }
+        return n;
+    };
+    const size_t cpu_misses = misses(cpu_on, cpu_flow, gl_on, gl_flow);
+    const size_t gl_misses = misses(gl_on, gl_flow, cpu_on, cpu_flow);
+    RecordProperty("cpu_flow_pixels", static_cast<int>(cpu_count));
+    RecordProperty("gl_flow_pixels", static_cast<int>(gl_count));
+    RecordProperty("cpu_misses", static_cast<int>(cpu_misses));
+    RecordProperty("gl_misses", static_cast<int>(gl_misses));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow lines ] CPU %zu px, %zu miss; GL %zu px, %zu miss; on %s\n", cpu_count, cpu_misses, gl_count,
+                gl_misses, device.c_str());
+    // RED: no band yet; measured and pinned in the green commit.
+    EXPECT_LE(cpu_misses, 0u);
+    EXPECT_LE(gl_misses, 0u);
 }
 
 // L6: nor surface colouring by a flow quantity (plan step 7).
