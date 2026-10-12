@@ -137,6 +137,24 @@ class EditorWorkspace {
         refresh_panels();
     }
 
+    // A gizmo drag, one undo step however many poses it passes through: its
+    // first change is an ordinary edit, and each one after amends it. A
+    // refusal shows and keeps the last pose that was accepted.
+    void drag(const SceneEdit& e) {
+        const Serials before = serials();
+        if (!drag_step_) {
+            drag_step_ = settle(before, apply(docs_.scene, e));
+        } else if (const Result<void> amended = apply(docs_.scene, e, true); !amended) {
+            panels_.status = amended.error().context;
+        } else {
+            panels_.status.clear();
+            if (serials().scene != before.scene) after_change();
+        }
+        refresh_panels();
+    }
+    // The drag is over; the next one is a step of its own.
+    void end_drag() noexcept { drag_step_ = false; }
+
     // Delete and Ctrl+D act on the selected object.
     void key_delete() {
         if (panels_.selection.kind != Selection::Kind::object) return;
@@ -380,6 +398,7 @@ class EditorWorkspace {
 
     // One step back (or forward) in the shared history.
     void history(std::deque<Doc>& from, std::deque<Doc>& to, bool back) {
+        drag_step_ = false;  // an undo in a drag ends it: nothing may amend the state it went back to
         if (from.empty()) return;
         const Doc d = from.back();
         from.pop_back();
@@ -438,6 +457,7 @@ class EditorWorkspace {
     std::optional<EditorRun> run_;
     bool paused_ = false;
     uint64_t carry_ns_ = 0;
+    bool drag_step_ = false;  // a drag's step is committed; its next poses amend it
     std::deque<Doc> undo_;  // which document each step back undoes, oldest first
     std::deque<Doc> redo_;
     EditorPanels panels_;

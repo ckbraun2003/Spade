@@ -25,11 +25,13 @@ constexpr uint32_t kW = 800;
 constexpr uint32_t kH = 600;
 const glm::vec3 kCentre(1.0f, 0.5f, -0.5f);
 
-// The editor's camera, orbiting the centre from 5 m at its default angles.
+// The editor's camera, orbiting the centre from 5 m, turned so that no handle
+// is seen edge-on (an edge-on plane or ring is not drawn, as in Unity).
 [[nodiscard]] spade::render::Camera camera() {
     spade::sandbox::OrbitCamera c;
     c.target = kCentre;
     c.distance = 5.0f;
+    c.yaw = 0.6f;
     return c.to_render_camera();
 }
 
