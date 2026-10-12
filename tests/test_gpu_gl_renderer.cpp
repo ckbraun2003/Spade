@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1266,6 +1267,104 @@ TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
     constexpr size_t kBandDifferingPixels = 693;
     EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// Whether an opt-in gate is set, as test_core_fp16.cpp asks it.
+[[nodiscard]] bool env_gate_is_set(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name) != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// Plan step 7c's cost: a flow layer at 128^3, drawn at 1920x1080, against
+// the airflow spec section 5 budget of 2 to 4 ms. A measurement, so opt-in
+// (SPADE_GL_FLOW_COST=1; about 17 s, most of it building the volume). Each
+// frame's time (draw() to glFinish(), median of 8 after 2 warm-ups) includes
+// uploading the volume's 32 MB of halves, as a live run does every frame.
+// Measured 2026-10-12 on the RTX 3060 Ti (572.83), two runs with the box
+// under different load: volume 165 and 108 ms, iso 83 and 51 ms. About 5 ms
+// of that is the upload, the depth copy and the rest of the frame (march
+// skipped, measured). The march is 25 to 40 times the budget; the lead has
+// it. The ceiling only catches a pass gone pathological.
+TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
+    if (!env_gate_is_set("SPADE_GL_FLOW_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_FLOW_COST=1 to run it";
+    }
+    constexpr int kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kW, kH);
+
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 128.0f, 128, 128, 128,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction vorticity;
+    vorticity.quantity = spade::render::FlowQuantity::vorticity;
+    vorticity.colours = spade::render::ColourMapId::inferno;
+    vorticity.range_min = 0.0f;
+    vorticity.range_max = 22.0f;
+    vorticity.extinction = {{2.0f, 0.0f}, {22.0f, 12.0f}};
+    spade::render::TransferFunction smoke;
+    smoke.quantity = spade::render::FlowQuantity::dye;
+    smoke.constant_colour = glm::vec3(0.95f, 0.95f, 0.95f);
+    smoke.extinction = {{0.0f, 0.0f}, {1.0f, 15.0f}};
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+
+    RenderScene volume_scene = ring_cut_scene();
+    volume_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {vorticity, smoke}, {}});
+    RenderScene iso_scene = ring_cut_scene();
+    iso_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const auto median_ms = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        std::vector<double> ms;
+        for (int i = 0; i < 10; ++i) {
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> drew =
+                renderer_->draw(scene, camera_on_ring(), comparable_options(), static_cast<uint32_t>(kW),
+                                static_cast<uint32_t>(kH));
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(drew.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[3] + ms[4]);
+    };
+    const double volume_ms = median_ms(volume_scene);
+    const double iso_ms = median_ms(iso_scene);
+    RecordProperty("volume_ms_x100", static_cast<int>(volume_ms * 100.0));
+    RecordProperty("iso_ms_x100", static_cast<int>(iso_ms * 100.0));
+    std::printf("[ flow cost ] 128^3 at 1920x1080: volume %.2f ms, iso %.2f ms; on %s\n", volume_ms, iso_ms,
+                device.c_str());
+    EXPECT_LT(volume_ms, 1000.0) << device;
+    EXPECT_LT(iso_ms, 1000.0) << device;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
