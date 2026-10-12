@@ -17,7 +17,7 @@
 #include <glm/glm.hpp>
 
 #include "core/error.hpp"
-#include "core/math_ops_f64.hpp"
+#include "core/detail/math_ops_f64.hpp"
 #include "core/rng.hpp"
 #include "world/mesh.hpp"
 #include "world/sdf.hpp"
@@ -26,7 +26,7 @@
 // world/mesh.hpp's field: exact distance through the BVH, the sign from the
 // closest feature's angle-weighted pseudonormal, and the refusals that keep
 // the sign's precondition true (the parts and meshes plan, Task B2; CORE-6).
-// core/math_ops_f64.hpp's kernels: Spade's own atan2 (TD-3) and the
+// core/detail/math_ops_f64.hpp's kernels: Spade's own atan2 (TD-3) and the
 // per-triangle closest point.
 //
 // Every expectation is the fixture's own geometry, worked by hand or by an

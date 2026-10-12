@@ -1,7 +1,7 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// core/math_ops_f64.hpp -- Spade's own kernels for a triangle mesh (CORE-6;
+// core/detail/math_ops_f64.hpp -- Spade's own kernels for a triangle mesh (CORE-6;
 // the parts and meshes plan, Task B2). INTERNAL: world/mesh.cpp's, and not
 // installed (engine/CMakeLists.txt). Beside fp32_math and math_ops because
 // Spade's own transcendentals have one home (TD-9).

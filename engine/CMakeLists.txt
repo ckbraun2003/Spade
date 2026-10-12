@@ -96,7 +96,7 @@ target_compile_options(spade_fp_strict INTERFACE
 # `a*b+c` shape a contracting compiler fuses -- so this is not a stylistic
 # preference.
 #
-# math_ops_f64.cpp (CORE-6) is the same choice for the mesh's kernels: Spade's
+# core/detail/math_ops_f64.cpp (CORE-6) is the same choice for the mesh's kernels: Spade's
 # own atan2 in double (corner angles, import time) and the fp32 closest point
 # on a triangle (the mesh query), built once under spade_fp_strict. Its header
 # is internal: the install rule below leaves it out.
@@ -104,7 +104,7 @@ target_compile_options(spade_fp_strict INTERFACE
 add_library(spade_core STATIC
     core/math_ops.cpp
     core/fp32_math.cpp
-    core/math_ops_f64.cpp
+    core/detail/math_ops_f64.cpp
 )
 add_library(spade::core ALIAS spade_core)
 
@@ -171,10 +171,10 @@ install(TARGETS spade_core
     INCLUDES DESTINATION include
 )
 
-# math_ops_f64.hpp is internal (world/mesh.cpp's kernels; no installed header
-# includes it).
+# core/detail/ is internal, as world/detail/ is: no installed header includes
+# it (math_ops_f64.hpp: world/mesh.cpp's kernels), so it is not installed.
 install(DIRECTORY core/ DESTINATION include/core FILES_MATCHING PATTERN "*.hpp"
-    PATTERN "math_ops_f64.hpp" EXCLUDE)
+    PATTERN "detail" EXCLUDE)
 
 # ------------------------------------------------------------------------------
 # spade_world: the analytic SDF scene program (world/sdf.*) plus the

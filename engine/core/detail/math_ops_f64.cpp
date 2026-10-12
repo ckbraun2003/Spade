@@ -1,7 +1,7 @@
-// core/math_ops_f64.cpp -- see math_ops_f64.hpp for the contract. Every
+// core/detail/math_ops_f64.cpp -- see math_ops_f64.hpp for the contract. Every
 // expression below is spelt in the order it is evaluated; nothing here calls
 // libm but std::sqrt (correctly rounded by IEEE 754).
-#include "core/math_ops_f64.hpp"
+#include "core/detail/math_ops_f64.hpp"
 
 #include <bit>
 #include <cmath>

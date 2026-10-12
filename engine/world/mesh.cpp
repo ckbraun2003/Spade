@@ -8,7 +8,7 @@
 // in double, on the stored fp32 positions promoted exactly, with only
 // + - * / and sqrt (TD-3). The query (TriangleMesh::query, at the end) is
 // fp32, every expression spelt in its evaluation order, and its kernel is
-// core/math_ops_f64's closest_on_triangle.
+// core/detail/math_ops_f64's closest_on_triangle.
 #include "world/mesh.hpp"
 
 #include <algorithm>
@@ -23,7 +23,7 @@
 #include <string>
 #include <utility>
 
-#include "core/math_ops_f64.hpp"
+#include "core/detail/math_ops_f64.hpp"
 #include "core/rng.hpp"
 #include "core/validate.hpp"
 
