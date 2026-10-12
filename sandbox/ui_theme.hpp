@@ -92,6 +92,14 @@ inline bool load_fonts(const std::filesystem::path& dir) {
 inline constexpr ImVec4 kAccent{0.29f, 0.56f, 0.89f, 1.00f};
 inline constexpr ImVec4 kWarning{0.95f, 0.71f, 0.29f, 1.00f};
 
+// The gizmo's axes in the colours every 3D tool gives them (x red, y green,
+// z blue, the accent); the handle under the cursor or dragged in the warning
+// colour, as Unity marks it.
+[[nodiscard]] inline ImU32 axis_colour(int axis, bool hot) {
+    static constexpr ImVec4 kAxes[3] = {{0.89f, 0.32f, 0.29f, 1.00f}, {0.45f, 0.78f, 0.33f, 1.00f}, kAccent};
+    return ImGui::ColorConvertFloat4ToU32(hot ? kWarning : kAxes[axis < 0 || axis > 2 ? 0 : axis]);
+}
+
 inline void apply_theme() {
     ImGuiStyle& s = ImGui::GetStyle();
     s = ImGuiStyle();

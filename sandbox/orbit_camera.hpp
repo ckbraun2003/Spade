@@ -78,6 +78,12 @@ struct FrameInput {
     bool delete_pressed = false;     // Delete/Backspace -- remove the selection
     bool duplicate_pressed = false;  // Ctrl+D
     bool frame_pressed = false;      // F, edge -- the editor frames the selection
+    // The editor's gizmo. W and E pick its tool while the right button is up
+    // (the camera flies with WASD/QE only while it is held, as in Unity and
+    // Unreal); Ctrl held flips snapping for the drag.
+    bool tool_move_pressed = false;    // W, edge
+    bool tool_rotate_pressed = false;  // E, edge
+    bool snap_held = false;            // Ctrl, level
 
     // ----- Drone sim box input ---------------------------------------------
     // Held axes, -1..1, each nudging an attitude target that holds when

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "builtin_records.hpp"
+#include "editor_gizmo.hpp"
 #include "editor_library.hpp"
 #include "editor_scene_edits.hpp"
 #include "editor_world_edits.hpp"
@@ -67,6 +68,8 @@ struct EditorPanels {
     std::vector<Command> commands;
     std::string path;                         // what Open and Save As use
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
+    GizmoTool tool = GizmoTool::move;         // the gizmo's (W, E)
+    bool snap = false;                        // the gizmo snaps; Ctrl held flips it for a drag
 
     // ---- Both: the last refusal, verbatim (INT-2); empty when none.
     std::string status;

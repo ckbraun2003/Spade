@@ -69,7 +69,40 @@ EditorSession::~EditorSession() {
     if (sink_ != nullptr) {
         sink_->attach_editor(nullptr);
         sink_->set_gap_line({});
+        sink_->set_view_lines({});
     }
+}
+
+std::optional<editor::GizmoPose> EditorSession::gizmo_target() const {
+    const editor::EditorWorkspace& w = *workspace_;
+    const editor::Selection& selected = w.panels().selection;
+    if (selected.kind != editor::Selection::Kind::object) return std::nullopt;
+    const scene::SceneDesc& s = w.documents().scene.desc();
+    if (const scene::SceneAsset* a = editor::EditorWorkspace::find_asset(s, selected.name)) {
+        return editor::GizmoPose{a->pose.position, a->pose.rotation};
+    }
+    const scene::SceneVehicle* v = editor::EditorWorkspace::find_vehicle(s, selected.name);
+    if (v == nullptr || w.run() != nullptr) return std::nullopt;  // a running vehicle is where its run has it
+    return editor::GizmoPose{v->start.pos, v->start.orient};
+}
+
+std::optional<editor::SceneEdit> EditorSession::pose_edit(const editor::GizmoPose& pose) const {
+    const editor::EditorWorkspace& w = *workspace_;
+    const std::string& name = w.panels().selection.name;
+    const scene::SceneDesc& s = w.documents().scene.desc();
+    if (const scene::SceneAsset* a = editor::EditorWorkspace::find_asset(s, name)) {
+        SdfPose next = a->pose;
+        next.position = pose.position;
+        next.rotation = pose.rotation;
+        return editor::SetAssetPose{name, next};
+    }
+    if (const scene::SceneVehicle* v = editor::EditorWorkspace::find_vehicle(s, name)) {
+        auto next = v->start;
+        next.pos = pose.position;
+        next.orient = pose.rotation;
+        return editor::SetVehicleStart{name, next};
+    }
+    return std::nullopt;
 }
 
 // The composed world as a render scene, plus the meshes and materials the
@@ -148,12 +181,41 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     camera_.apply(in, dt);
     editor::EditorWorkspace& w = *workspace_;
 
-    // A click in the view picks or places, along the ray under the cursor
-    // (measured from the view's corner, at the view's size).
+    if (in.tool_move_pressed) w.panels().tool = editor::GizmoTool::move;
+    if (in.tool_rotate_pressed) w.panels().tool = editor::GizmoTool::rotate;
+
+    // The ray under the cursor (measured from the view's corner, at the
+    // view's size). A press on a gizmo handle starts a drag; any other press
+    // picks or places. A drag is one undo step (EditorWorkspace::drag()).
     const ViewportRect view = sink_->viewport();
-    if (in.left_click && !in.ui_captured_mouse && !view.empty()) {
-        const Ray ray = ray_from_screen(camera_.to_render_camera(), in.mouse_x, in.mouse_y, view.width, view.height);
-        w.click(ray.origin, ray.direction);
+    const render::Camera cam = camera_.to_render_camera();
+    const std::optional<Ray> ray =
+        view.empty() ? std::nullopt
+                     : std::optional<Ray>(ray_from_screen(cam, in.mouse_x, in.mouse_y, view.width, view.height));
+    if (drag_) {
+        if (in.left_down && ray) {
+            editor::Snap snap;
+            snap.on = w.panels().snap != in.snap_held;
+            if (const std::optional<editor::SceneEdit> e = pose_edit(drag_->update(ray->origin, ray->direction, snap))) {
+                w.drag(*e);
+            }
+        }
+        if (in.left_release || !in.left_down) {
+            w.end_drag();
+            drag_.reset();
+        }
+    } else {
+        const std::optional<editor::GizmoPose> target = gizmo_target();
+        hot_ = target && ray && !in.ui_captured_mouse
+                   ? editor::gizmo_hit(w.panels().tool, cam, target->position, ray->origin, ray->direction)
+                   : editor::GizmoHandle{};
+        if (in.left_click && !in.ui_captured_mouse && ray) {
+            if (hot_.kind != editor::GizmoHandle::Kind::none) {
+                drag_ = editor::GizmoDrag::begin(hot_, *target, ray->origin, ray->direction);
+            } else {
+                w.click(ray->origin, ray->direction);
+            }
+        }
     }
     if (!in.ui_captured_keyboard) {
         if (in.delete_pressed) w.key_delete();
@@ -176,6 +238,12 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
 
     if (view.empty()) return {};  // minimised: the run keeps stepping
     const render::Camera rc = camera_.to_render_camera();
+    // The gizmo, on the selection where it is now (after this frame's edits).
+    const std::optional<editor::GizmoPose> target = gizmo_target();
+    const editor::GizmoHandle shown = drag_ ? drag_->handle() : hot_;
+    sink_->set_view_lines(target ? editor::gizmo_lines(w.panels().tool, rc, view.width, view.height, target->position,
+                                                       shown)
+                                 : std::vector<editor::GizmoLine>{});
     // SL10: the HUD names what the active path does not draw.
     sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
     const auto r0 = std::chrono::steady_clock::now();
