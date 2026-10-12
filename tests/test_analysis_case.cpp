@@ -127,7 +127,9 @@ TEST(AnalysisCase, ItsOwnFieldsAreCheckedByName) {
         change(c);
         const spade::Result<void> r = an::validate_case(c);
         EXPECT_FALSE(r.has_value()) << field;
-        if (!r) EXPECT_NE(r.error().context.find(field), std::string::npos) << r.error().context;
+        if (!r) {
+            EXPECT_NE(r.error().context.find(field), std::string::npos) << r.error().context;
+        }
     };
     refused([](an::AnalysisCase& c) { c.controls.throttle = 1.5f; }, "controls.throttle");
     refused([](an::AnalysisCase& c) { c.grid.nests = 4; }, "grid.nests");
