@@ -91,8 +91,12 @@ class GlRenderer {
     struct CreateOptions {
         bool flow_programs_in_background = false;
     };
+    // Two overloads, not a defaulted argument: a nested class's member
+    // initializers are not usable in its enclosing class's default arguments
+    // (gcc refuses, CWG 1397).
+    [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader);
     [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader,
-                                                                    const CreateOptions& options = {});
+                                                                    const CreateOptions& options);
 
     ~GlRenderer();
     GlRenderer(const GlRenderer&) = delete;

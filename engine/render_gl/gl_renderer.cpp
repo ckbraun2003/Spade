@@ -1503,17 +1503,6 @@ struct GpuMesh {
     return program;
 }
 
-[[nodiscard]] Result<GLuint> link_compute(const GlApi& gl, std::initializer_list<const char*> compute,
-                                          const char* what) {
-    const Result<GLuint> cs = compile(gl, GL_COMPUTE_SHADER, compute, what);
-    if (!cs) return std::unexpected(cs.error());
-    const GLuint program = gl.CreateProgram();
-    gl.AttachShader(program, *cs);
-    gl.LinkProgram(program);
-    gl.DeleteShader(*cs);
-    return linked(gl, program, what);
-}
-
 [[nodiscard]] Result<GLuint> link(const GlApi& gl, std::initializer_list<const char*> vertex,
                                   std::initializer_list<const char*> fragment, const char* what) {
     const Result<GLuint> vs = compile(gl, GL_VERTEX_SHADER, vertex, what);
@@ -1811,6 +1800,10 @@ struct GlRenderer::Impl {
 
 GlRenderer::GlRenderer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GlRenderer::~GlRenderer() = default;
+
+Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
+    return create(loader, CreateOptions{});
+}
 
 Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, const CreateOptions& options) {
     if (loader == nullptr) {
