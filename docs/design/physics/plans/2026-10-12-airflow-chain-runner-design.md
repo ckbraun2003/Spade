@@ -1,6 +1,6 @@
 # The airflow chain runner — design note for Core
 
-**Owner:** Physics; Core reviews and approves it before any code (the lead, 2026-10-05). **Status:** DRAFT for Core.
+**Owner:** Physics; Core reviews it. **Status:** **approved by Core, 2026-10-12, with five amendments, folded in below (A1–A5).** Physics writes §1 too, and Core reviews it.
 **What it is for:** plan B, the GPU twin of plan A's solver and the 128³ spike; and the GPU half of the demonstration's first step (`PHY-10`: "the sandbox drives the airflow solver directly … then GPU via the chain runner").
 **Guards, adopted by the lead 2026-10-05:**
 - **G1.** A spike and bench harness in its own target. It is not linked into `Simulation`, makes no `StepShape` or mirror changes, and installs no header. Engine-path residency is stage 7's design, which Cameron signs first.
@@ -50,13 +50,20 @@ public:
   - the buffer count exceeds `maxPerStageDescriptorStorageBuffers` or `maxDescriptorSetStorageBuffers`;
   - the push size exceeds `maxPushConstantsSize`;
   - any dispatch's groups exceed `maxComputeWorkGroupCount` on an axis;
+  - a buffer exceeds `maxMemoryAllocationSize`, since each buffer is one allocation (**A3**);
+  - the workgroup shape exceeds `maxComputeWorkGroupSize` on an axis, or `maxComputeWorkGroupInvocations` (**A3**);
   - a pipeline index or binding is out of range;
   - the total bytes exceed the VRAM budget.
-- **The VRAM budget (a Core hunk in `VulkanContext`).**
-  - Enable `VK_EXT_memory_budget` when it is present, and expose the device-local heap's budget.
-  - The runner refuses past that budget less a stated reserve (the spec's 4 GiB airflow cap is the default ceiling).
-  - Without the extension, it refuses past half the device-local heap and says that it is using the fallback.
+- **The VRAM budget (a Core hunk in `VulkanContext`: a query, not an enable; A1).**
+  - `VulkanContext::memory_budget()` returns `{budget, usage, source}`, with `source` ∈ {`ext`, `half_heap`}.
+  - With `VK_EXT_memory_budget` advertised, it reads `VkPhysicalDeviceMemoryBudgetPropertiesEXT` through `vkGetPhysicalDeviceMemoryProperties2`, with no enable at device creation. Device creation and `CORE-5`'s admission stay byte for byte as they are.
+  - The fallback is announced through `source`, a query, not a log line.
+  - **The arithmetic (A2):** refuse when `requested > budget − usage − reserve`. `heapBudget` is the process's budget and `heapUsage` what the process already holds; in the demo the sandbox's Vulkan `Simulation` and the runner share the device, so its usage counts. The spec's 4 GiB airflow cap is also a ceiling.
+  - **The half-heap fallback** subtracts what this process allocated through the runner, which tracks its own allocations. It cannot see the backend's, and the query result says so.
 - **Timestamps:** `timestamps.hpp` as `StepRecorder` uses it, reset once per recording. On a device that cannot time compute work, `durations_ns` is empty, not an error.
+- **Queue sharing (A5).** The demo harness drives a Vulkan `Simulation` and the runner on one `VulkanContext`, so one `VkQueue`, and `vkQueueSubmit` needs external synchronization.
+  - **The rule:** the runner is single-threaded, or its caller serializes submits with the backend's.
+  - The runner allocates its **own** descriptor pool and command pool, never the backend's.
 
 ## 3. Determinism, and its one exception
 
@@ -68,13 +75,17 @@ public:
 
 ## 4. Tests (plan B's first task, before any solver kernel)
 
-- `DispatchChain` extraction: the existing `recorded_chain()` counts and the GPU parity suites, unchanged.
+- **`dispatch_chain` lands first, as its own pure-refactor commit, ahead of any runner code, with no behaviour change** (Core's condition).
+  - Neutrality is shown by these, all unchanged: `recorded_chain()`'s counts, `GpuStateMirrorTest.RecordedChainHasABarrierBetweenEveryAdjacentDispatchPair`, `GpuModuleSchedule`, `GpuParity` and `GpuInvariance`.
+  - Then `gcc-check --compile` and a leg.
+  - `StepRecorder`'s timestamp use moves intact.
 - The runner, using two tiny test kernels (copy, then add-one):
   - an upload followed by a read is exact;
   - a two-dispatch chain sees the first kernel's write (the barrier);
   - recording once and submitting n times gives n increments;
   - each refusal fires by name. The VRAM and range cases ask for one buffer of `maxStorageBufferRange + 4` bytes and are refused before any allocation;
-  - timestamps are present, or empty on an unsupported device.
+  - timestamps are present, or empty on an unsupported device;
+  - **A4:** the same fixed-tile reduction at workgroup sizes 32, 64 and 128 gives identical bits. The tile shape is fixed in elements, independent of the workgroup-size knob, as `GpuInvariance` pins.
 
 All of these are GPU-labelled, so they run only when no game is up (Cameron's throttle rule).
 
