@@ -143,6 +143,9 @@ add_executable(spade_tests
     # spade::scene's composer: compose_transform, compose, compose_file and
     # instantiate (the drone-builder joint spec, section 3).
     test_scene_compose.cpp
+    # spade::analysis: the drone CFD analysis's case, its file and resolving
+    # it (INT-5, INT-6; interface/plans/2026-10-12-drone-builder-cfd-design.md).
+    test_analysis_case.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
