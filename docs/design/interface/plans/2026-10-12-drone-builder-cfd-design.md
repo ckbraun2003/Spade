@@ -126,10 +126,12 @@ A case is a scene of one drone in a box of air, as the drone sim box is.
 - A queued run's inputs: either constant (one attitude, one throttle, armed), or keyframes, or a live run's recording.
 - How much of this the first cut covers is A4.
 
-**The floor and the wind**
-- The floor is optional: the box's lower face as a wall at a height below the drone (ground effect).
-- The wind blows through the box for forward-flight conditions. It needs an inflow face from Physics (§9).
-- Under this premise, the demo's `--flight forward:<v>` maps to the wind and `--height` to the floor (Physics' plan).
+**The flight condition, the floor and the wind.** Physics' domain conditions, plan A's `DomainBc`, already carry both. The conditions are named apart because they differ at the floor:
+- **Hover:** still air, and a still floor if there is one.
+- **Forward flight at v:** the air and the ground both pass the drone at −v. The ambient is −v (an open face is an inflow where the ambient enters, and an outlet elsewhere). The floor is a rolling road moving at −v; without it, the floor would grow a boundary layer that real flight doesn't have.
+- **Hover in a wind of v:** the ambient is v, and the floor stays still.
+- **The floor is optional:** the box's lower face as a wall, h below the hub plane (ground effect). The drone stays centred horizontally.
+- **Demo flags:** `--flight hover`, `--flight forward:<v>`, and `--flight hover --wind <v>`, with `--height <h>` for the floor.
 
 **The fluid**
 - Density and kinematic viscosity, from the ISA at an altitude or given, shown with their source.
@@ -242,7 +244,7 @@ One per rotor, in the case. A blade design can then vary between cases for the s
   - a polar whose α isn't increasing;
   - R/dx < 20 for the line (D5).
 
-  How a polar that doesn't reach ±90° is treated is Physics' call (A3).
+- **A polar short of ±90°** is extended by Viterna-Corrigan (Physics' ruling on A3), labelled "extrapolated" on the run line and in the records. Its C_d,max comes from the blade's aspect ratio (R over the mean chord, from the stations), so the file needs nothing more.
 - **Import:** XFOIL polar files and CSV tables.
 - **Lofting:** the blade mesh for blade-resolved runs is lofted from the same stations (P5). The analysis attaches it to the rotor for that run only, and Kat's model is unchanged.
 - **The disc** keeps the compile's fitted `k_T` and `k_Q`, or takes blade-element momentum values from the definition, labelled as such.
@@ -262,7 +264,7 @@ One per rotor, in the case. A blade design can then vary between cases for the s
 | Core's model YAML, which Kat's model file uses | Core | Unbuilt |
 | Walls and porous parts (P2); wall pressure and loads (P3) | Physics | Unbuilt |
 | The coupler (P7); swirl (P1); the line (P4) and blade-resolved (P5) | Physics | Unbuilt. The blade definition's fields are agreed in §7 |
-| An inflow face carrying the wind; the floor as a wall face at a height | Physics | Needed for Q4's wind and floor |
+| The wind and the floor | Physics | Exists in plan A's `DomainBc`: an open face with `ambient` set, and the lower face as a wall with `wall_velocity` (the rolling road) |
 | The drone held at the centre with its attitude driven, as in the drone sim box | Physics and Interface | The sandbox's drone box does this today for the analytic air |
 | Flow views; λ₂ | Rendering | Views merged; λ₂ a follow-up |
 | The record format and reader | Test/Docs | On `test-docs/validation-tolerances` |
@@ -278,7 +280,7 @@ One per rotor, in the case. A blade design can then vary between cases for the s
 **Ruled by the lead, 2026-10-12 (INT-6):**
 - **A1:** A, the new installed target `spade::analysis`, owned by Interface. Core reviews its CMake, install rules and layering, and it gets a `consumers.md` line when it lands.
 - **A2:** A, the display-free API only, with the sandbox panels as the reference host.
-- **A3:** Physics' call.
+- **A3:** Physics ruled A, Viterna-Corrigan, labelled "extrapolated" (§7).
 - **A4:** A, constant inputs plus a live run's recording.
 
 **A1. Where is the analysis API installed?**
