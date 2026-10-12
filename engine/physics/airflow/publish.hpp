@@ -40,7 +40,7 @@ struct PublishInput {
 };
 
 struct PublishCounts {
-    uint32_t extrapolated = 0;  // solid cells written from their fluid side
+    uint32_t extrapolated = 0;  // solid cells written from their fluid side (also header.extrapolated_cells)
 };
 
 // Refused (invalid_argument): a solid mask, or a grid array, whose size does

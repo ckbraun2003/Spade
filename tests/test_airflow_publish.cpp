@@ -38,6 +38,7 @@ TEST(AirflowPublish, AUniformFlowPublishesItsVelocityAndNoVorticity) {
     EXPECT_EQ(vol.header.origin, glm::vec3(1.0f, 2.0f, 3.0f));
     EXPECT_EQ(vol.header.no_data, 0u);
     EXPECT_EQ(counts->extrapolated, 0u);
+    EXPECT_EQ(vol.header.extrapolated_cells, 0u);
     for (uint32_t k = 0; k < 4; ++k) {
         for (uint32_t j = 0; j < 4; ++j) {
             for (uint32_t i = 0; i < 4; ++i) {
@@ -124,6 +125,7 @@ TEST(AirflowPublish, TheFirstSolidLayerTakesTheFluidSideAndDeeperCellsAreNoData)
     ASSERT_TRUE(counts.has_value()) << counts.error().context;
     ASSERT_TRUE(spade::validate_flow_volume(vol).has_value());
     EXPECT_EQ(counts->extrapolated, 9u);
+    EXPECT_EQ(vol.header.extrapolated_cells, 9u) << "the header carries the count (Core's field)";
     for (uint32_t k = 0; k < 3; ++k) {
         for (uint32_t j = 0; j < 3; ++j) {
             EXPECT_EQ(channel(vol, 3, j, k, spade::kFlowPressure), 3.0f) << "the fluid side's pressure, cell i = 2";

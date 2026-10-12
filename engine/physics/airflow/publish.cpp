@@ -172,6 +172,7 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
             }
         }
     }
+    h.extrapolated_cells = counts.extrapolated;
     return counts;
 }
 
