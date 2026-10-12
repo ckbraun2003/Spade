@@ -35,8 +35,11 @@
 //   * They are taken about the centre of the mesh's bounds, (lo + hi) / 2,
 //     which limits cancellation (a mesh far from its frame's origin loses
 //     no digits to the offset), and the second moments are then shifted to
-//     the centroid by the parallel-axis rule. A translation that fp32 holds
-//     exactly therefore moves the centroid and changes no other bit.
+//     the centroid by the parallel-axis rule. Moving a mesh therefore
+//     changes its volume and inertia by rounding alone, and not at all when
+//     the move keeps every vertex's offset from the centre exact (a short
+//     dyadic shift, as tests/test_mesh_mass.cpp's): then only the centroid
+//     moves.
 //   * Nothing is rounded to float: B4 hands the doubles to
 //     composite_inertia(), which rounds its own outputs once.
 //
