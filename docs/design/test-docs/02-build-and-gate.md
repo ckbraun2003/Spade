@@ -97,6 +97,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - CPU tests are fine, and so is `scripts/gcc-check.sh` in either mode (one translation unit, capped at 3 GB): only full `docker-leg.ps1` runs wait.
 
   Full speed resumes when the game closes. A bench window needs no game running, as well as both trees quiet.
+- **Stop only processes you started, by PID or task id, never by name or pattern** (Kat's rule, adopted for Spade by the lead on 2026-10-12). The box is shared, so `Stop-Process -Name`, `pkill`, `taskkill /IM` or `docker stop $(docker ps -q)` can kill another session's build, suite or leg. Record the id when you start a background job or a leg, and stop that id: `Stop-Process -Id`, `taskkill /PID`, or `docker stop <container>` for a container you started. If you can't prove a process is yours, leave it and tell the lead.
 - **Only Kat writes `build-host/` and `install-host/`** (Kat's `spade-prefix.ps1`, run by Kat's Spade Host realm). Never configure, build or install into either one.
 - **The old box** (about 7.6 GB, `-j1`, one build at a time) is history. Its rows below are marked as such.
 
