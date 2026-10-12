@@ -315,6 +315,7 @@ if(SPADE_BUILD_SANDBOX)
         test_sandbox_scene_checks.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
+        test_sandbox_viewport.cpp
         # The editor (plans/2026-10-05-editor-plan.md), display-free: one
         # file per task's unit, sharing editor_test_support.hpp.
         test_editor_document.cpp
@@ -327,6 +328,9 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_edit_text.cpp
         test_editor_cli.cpp
         test_editor_sdf_edit.cpp
+        test_editor_library.cpp
+        test_editor_pick.cpp
+        test_editor_workspace.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

@@ -292,8 +292,8 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
     panel_.readouts = drone_->readouts();
     panel_.target = drone_->target;
 
-    const uint32_t fw = sink_->framebuffer_width();
-    const uint32_t fh = sink_->framebuffer_height();
+    const uint32_t fw = sink_->viewport().width;
+    const uint32_t fh = sink_->viewport().height;
     if (fw == 0u || fh == 0u) {
         return {};  // minimised: the stand keeps stepping, capped by the accumulator
     }
@@ -372,12 +372,13 @@ BuilderSession::~BuilderSession() {
 spade::Result<void> BuilderSession::frame(const FrameInput& in) {
     camera_.apply(in, sink_->delta_seconds());
 
-    // The FRAMEBUFFER size, never the window size: on a HiDPI display they
+    // The VIEW's size in framebuffer pixels (between the panels, §13), never
+    // the window size: on a HiDPI display they
     // differ, and rendering at window size then letting GL stretch it is
     // precisely the blocky-viewport defect this estate has already diagnosed
     // once in the editor.
-    const uint32_t fw = sink_->framebuffer_width();
-    const uint32_t fh = sink_->framebuffer_height();
+    const uint32_t fw = sink_->viewport().width;
+    const uint32_t fh = sink_->viewport().height;
     if (fw == 0u || fh == 0u) {
         return {};  // minimised; there is nothing to render into
     }

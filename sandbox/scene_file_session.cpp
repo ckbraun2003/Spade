@@ -14,6 +14,7 @@
 #include "drone_view.hpp"      // detail::lambert(), the drone's part dimensions
 #include "gl_target_sink.hpp"
 #include "render_gap.hpp"
+#include "vehicle_draw.hpp"
 
 namespace spade::sandbox {
 namespace {
@@ -111,46 +112,13 @@ void SceneFileSession::draw_items() {
     for (std::size_t lane = 0; lane < runs_.size(); ++lane) {
         const Run& r = runs_[lane];
         const uint32_t ball = ball_material_ + static_cast<uint32_t>(lane % kLaneColours.size());
+        const VehicleLook look{box_mesh_, sphere_mesh_, disc_mesh_, body_material_, nose_material_, rotor_material_};
         for (std::size_t i = 0; i < r.run.vehicles.size(); ++i) {
             auto body = r.run.sim.body(r.run.vehicles[i].body);
             if (!body) continue;
-            const glm::mat4 pose = glm::translate(glm::mat4(1.0f), (*body)->pos) * glm::mat4_cast((*body)->orient);
             const spade::vehicles::ModelType& model = r.composed.models.at(r.composed.vehicles.at(i).model);
-            if (model.rotors.empty()) {
-                render::DrawItem item;
-                item.mesh_index = sphere_mesh_;
-                item.local_to_world = glm::scale(pose, glm::vec3(2.0f * r.records.contacts.proxy_radius));
-                item.material_override = ball;
-                scene_.dynamics.push_back(item);
-                continue;
-            }
-            render::DrawItem hull;
-            hull.mesh_index = box_mesh_;
-            hull.local_to_world = glm::scale(pose, 2.0f * kDroneBodyHalf);
-            hull.material_override = body_material_;
-            scene_.dynamics.push_back(hull);
-            for (std::size_t k = 0; k < model.rotors.size(); ++k) {
-                const spade::vehicles::RotorDesc& rotor = model.rotors[k];
-                const glm::vec3 flat(rotor.local_pos.x, 0.0f, rotor.local_pos.z);
-                const float reach = glm::length(flat);
-                // The arm mesh is a unit box along +X; turn it about +Y onto
-                // this arm (rotating +X by a about +Y gives (cos a, 0, -sin a)).
-                const float a = std::atan2(-flat.z, flat.x);
-                render::DrawItem arm;
-                arm.mesh_index = box_mesh_;
-                arm.local_to_world = glm::scale(pose * glm::translate(glm::mat4(1.0f), 0.5f * flat) *
-                                                    glm::rotate(glm::mat4(1.0f), a, glm::vec3(0.0f, 1.0f, 0.0f)),
-                                                glm::vec3(reach, 2.0f * kDroneArmHalfSection, 2.0f * kDroneArmHalfSection));
-                arm.material_override = k == 0 ? nose_material_ : body_material_;
-                scene_.dynamics.push_back(arm);
-                render::DrawItem disc;
-                disc.mesh_index = disc_mesh_;
-                disc.local_to_world = glm::scale(
-                    pose * glm::translate(glm::mat4(1.0f), rotor.local_pos + glm::vec3(0.0f, kDroneRotorLift, 0.0f)),
-                    glm::vec3(2.0f * rotor.radius, 2.0f * kDroneRotorHalfThickness, 2.0f * rotor.radius));
-                disc.material_override = k == 0 ? nose_material_ : rotor_material_;
-                scene_.dynamics.push_back(disc);
-            }
+            append_vehicle_items(scene_.dynamics, look, model, (*body)->pos, (*body)->orient,
+                                 2.0f * r.records.contacts.proxy_radius, ball);
         }
     }
 }
@@ -176,8 +144,8 @@ spade::Result<void> SceneFileSession::frame(const FrameInput& in, float dt) {
     const float physics_ms = ms_since(p0);
     draw_items();
 
-    const uint32_t fw = sink_->framebuffer_width();
-    const uint32_t fh = sink_->framebuffer_height();
+    const uint32_t fw = sink_->viewport().width;
+    const uint32_t fh = sink_->viewport().height;
     if (fw == 0u || fh == 0u) {
         return {};  // minimised: the runs keep stepping
     }

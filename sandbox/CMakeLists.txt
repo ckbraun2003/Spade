@@ -34,6 +34,10 @@ add_executable(spade_sandbox
     # --live-smoke: the recorded tour (scripts/live-smoke.ps1). Its verdict
     # machinery is display-free in live_smoke.hpp and tested in spade_tests.
     live_tour.cpp
+    # --editor: the editor's window. Its decisions are display-free in
+    # editor_workspace.hpp and tested in spade_tests; these draw them.
+    editor_session.cpp
+    editor_panels_ui.cpp
 )
 
 target_link_libraries(spade_sandbox PRIVATE

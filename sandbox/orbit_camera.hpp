@@ -63,7 +63,7 @@ struct FrameInput {
     // or place), `left_down` is the LEVEL (continue a drag), `left_release`
     // ends it. A builder written against the level alone re-picks every frame
     // of a drag and the object you are moving swaps under the cursor.
-    float mouse_x = 0.0f;   // framebuffer pixels, ORIGIN TOP-LEFT, +y DOWN
+    float mouse_x = 0.0f;   // framebuffer pixels from the 3D VIEW's top-left (GlTargetSink::viewport()), +y DOWN
     float mouse_y = 0.0f;
     bool left_click = false;
     bool left_down = false;

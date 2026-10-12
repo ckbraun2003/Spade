@@ -30,6 +30,7 @@
 
 #include "orbit_camera.hpp"
 #include "target_sink.hpp"
+#include "viewport_rect.hpp"
 
 namespace spade::sandbox {
 
@@ -39,6 +40,9 @@ namespace spade::sandbox {
 // merely wants to open a window.
 struct BuilderScene;
 struct DronePanelModel;
+namespace editor {
+struct EditorPanels;
+}
 
 class GlTargetSink final : public TargetSink {
   public:
@@ -80,12 +84,23 @@ class GlTargetSink final : public TargetSink {
 
     [[nodiscard]] bool should_close() const noexcept;
 
-    // The framebuffer size in pixels, which is what the render target must
-    // match. NOT the window size: on a HiDPI display they differ, and rendering
-    // at window size then stretching is exactly the blocky-viewport defect this
-    // estate already diagnosed once.
+    // The framebuffer size in pixels. NOT the window size: on a HiDPI display
+    // they differ, and rendering at window size then stretching is exactly the
+    // blocky-viewport defect this estate already diagnosed once.
     [[nodiscard]] uint32_t framebuffer_width() const noexcept;
     [[nodiscard]] uint32_t framebuffer_height() const noexcept;
+
+    // THE 3D VIEW, which is what a render must match: the dock's pass-through
+    // centre between the panels (editor spec §13), in framebuffer pixels, as
+    // the last frame laid it out; the whole framebuffer before the first frame,
+    // and when the GPU path has no offscreen target (announced). Sessions
+    // render at its size, both paths place the image in it, and poll() reports
+    // the cursor measured from its corner.
+    [[nodiscard]] ViewportRect viewport() const noexcept;
+
+    // Puts the panels back in the default layout on the next frame (§13's
+    // "Reset layout"). F2 calls this.
+    void reset_layout() noexcept;
 
     // Seconds since the previous poll(), for frame-rate-independent movement.
     [[nodiscard]] float delta_seconds() const noexcept;
@@ -200,6 +215,11 @@ class GlTargetSink final : public TargetSink {
     // same reasons as the builder. The panel only writes the model; what an
     // edit DOES is decided by drone_view.hpp's apply_panel_edits.
     void attach_drone(DronePanelModel* model) noexcept;
+
+    // The editor's panels (editor_panels_ui.hpp): toolbar, hierarchy,
+    // inspector and library, docked to §13's default layout. They read and
+    // queue into `panels`; the editor's workspace decides. Null detaches.
+    void attach_editor(editor::EditorPanels* panels) noexcept;
 
     // Process working set in bytes, 0 when unavailable. The user asked for
     // this beside the fps.

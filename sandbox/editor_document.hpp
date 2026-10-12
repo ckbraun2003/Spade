@@ -83,6 +83,9 @@ class Document {
     [[nodiscard]] bool can_undo() const noexcept { return !undo_.empty(); }
     [[nodiscard]] bool can_redo() const noexcept { return !redo_.empty(); }
 
+    // Which state is current: a new number for every commit, the old one again
+    // after an undo or redo. A view redraws when it changes.
+    [[nodiscard]] uint64_t serial() const noexcept { return current_.serial; }
     // The current state is what is on disk.
     void mark_saved() noexcept { saved_serial_ = current_.serial; }
     [[nodiscard]] bool dirty() const noexcept { return current_.serial != saved_serial_; }
