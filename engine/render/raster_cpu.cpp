@@ -316,7 +316,10 @@ void rasterizeLine(FrameBuffers& fb, const ScreenPoint& a, const ScreenPoint& b,
                     uint8_t bC) {
     const double dx = b.x - a.x;
     const double dy = b.y - a.y;
-    const int steps = static_cast<int>(std::max(std::fabs(dx), std::fabs(dy)));
+    // ceil, not truncation: every step advances at most one pixel on the
+    // major axis, so the line leaves no gaps (a truncated count stepped
+    // 1.04 px on an 11.4 px segment and skipped a column).
+    const int steps = static_cast<int>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
     if (steps == 0) {
         setPixelIfCloser(fb, static_cast<int>(std::floor(a.x)), static_cast<int>(std::floor(a.y)), a.invDepth, r, g,
                           bC);

@@ -6,19 +6,19 @@
   "tessellation_limits_version": "kTessellationDefaults@1",
   "frames": {
     "box_shaded_with_overlays": {
-      "sha256": "e2b8fb80f29c54e234f09e5dd918f74d6224ab3cb3afe715937e4a7b16afea1f"
+      "sha256": "09f7d6502aeec51241f59d2439cb2334264a4b3ec393ac0571a347c435b20b92"
     },
     "sphere_wireframe_no_overlays": {
-      "sha256": "aef02fd5877fc64b8e3271b1a592fbaaf0ea1fdc75d4d476bb8a7922254e1a6c"
+      "sha256": "717206b1d9de1de9948e44b2e8bb5fc1a0568b4deeb9ceca30c21e9a6d646bfc"
     },
     "cylinder_static_dynamic_box_top_down": {
-      "sha256": "20e004c340503c4140c3a5889b6b403226d11c0a07d43cac6acff2348042bba0"
+      "sha256": "360f07c5a03ced3d04fb10a96858a4416c4605e8d09dfcecfc275fa05302a1e2"
     },
     "shadowed_ground_with_caster": {
-      "sha256": "1acd84782179408542e711114e4cf29ed549c3e1e1010d229cda870de89b6184"
+      "sha256": "d94757bfb95b124cce5e263e6da4575d0d9a045fb5c959ee575e3775cac2a733"
     },
     "shadowed_ground_with_caster_atmospheric": {
-      "sha256": "c9e0fc7ccdbfc747bd732164e46d45b6776ee9042d8e66f7932b43410193339c"
+      "sha256": "15f94c1c1fb020d84217984e24df75545c21947ccea25dd0a87b612148bfdcee"
     },
     "csg_slab_and_blob_shaded": {
       "sha256": "e40c33dfc863514ad481c8f30a524ef8f2379690987e356855cbccf019b4778d"
@@ -40,5 +40,7 @@
   "_changelog_flow_q": "ADDED 2026-10-06, airflow visualization plan step 3: flow_vortex_ring_q. RasterGolden.FlowVortexRingQIsoMatchesCommittedManifest renders vortex_ring_with_dye() at 64^3 as its Q iso-surface (q-hat at sqrt(0.3) of its peak), coloured by speed through viridis over [0, 0.9] m/s, lit by the default sun, camera at (0, 0, 2.2). A guard checks that the frame differs without colour_by. vortex_ring_with_dye() gained q-hat; flow_vortex_ring draws no Q and did not move.",
   "_pending_td12_flow_q": "DISCHARGED 2026-10-06. flow_vortex_ring_q's hash, measured on Windows/MSVC (msvc-ninja-release), was reproduced by a fresh (-NoSeed) Docker gcc leg (TD-11, TD-12) on commit 02ac4bd (rendering/flow-iso): gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, Release. RasterGolden.FlowVortexRingQIsoMatchesCommittedManifest passed under gcc against that commit's manifest, so the sha256 matches. Leg: PASS, 1306 tests, 0 failed, 109 GPU tests excluded (TD-13).",
   "_pending_td12_flow": "DISCHARGED 2026-10-06. flow_vortex_ring's hash, measured on Windows/MSVC (msvc-ninja-release), was reproduced by a fresh (-NoSeed) Docker gcc leg (TD-11, TD-12) on commit e17ba85 (rendering/flow-vis): gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, Release. RasterGolden.FlowVortexRingMatchesCommittedManifest passed under gcc against that commit's manifest, so the sha256 matches. Leg: PASS, 1297 tests, 0 failed, 109 GPU tests excluded (TD-13).",
+  "_changelog_line_gaps": "REGENERATED 2026-10-06, rendering/line-gaps (the lead chose option A, 2026-10-06; rendering 07-status). Named cause (TD-1): raster_cpu.cpp's rasterizeLine() truncated its step count, so a line of non-integer pixel length advanced more than one pixel a step and skipped columns. It now steps ceil(max(|dx|, |dy|)) times. RasterCpu.ALineCoversEveryColumnItCrosses is the red-first test. Five frames that draw lines moved: box_shaded_with_overlays (e2b8fb80 -> 09f7d650), sphere_wireframe_no_overlays (aef02fd5 -> 717206b1), cylinder_static_dynamic_box_top_down (20e004c3 -> 360f07c5), shadowed_ground_with_caster (1acd8478 -> d94757bf), shadowed_ground_with_caster_atmospheric (c9e0fc7c -> 15f94c1c). Looked at before pinning: the overlays and the wireframe draw continuous lines. No other frame moved.",
+  "_pending_td12_line_gaps": "DISCHARGED 2026-10-12. The five regenerated hashes, measured on Windows/MSVC (msvc-ninja-release), were reproduced by a fresh (-NoSeed) Docker gcc leg (TD-11, TD-12) on commit a916921 (rendering/line-gaps): gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, Release. RasterGolden.BoxShadedWithOverlays, SphereWireframeNoOverlays, CylinderStaticAndDynamicBoxTopDown, AtmosphericTermOnAndOffAreTwoPinnedFramesThatMustDifferRulingSR17a and ShadowedGroundWithCaster passed under gcc against that commit's manifest, as did RasterCpu.ALineCoversEveryColumnItCrosses. Leg: PASS, 1318 tests, 0 failed, 108 GPU tests excluded (TD-13), 1426 registered. (A first leg on 2026-10-06 was killed for low memory before it reported; this is the rerun.)",
   "_pending_td12_b2": "DISCHARGED 2026-10-05. csg_slab_and_blob_shaded's hash, measured on Windows/MSVC (msvc-ninja-release), was reproduced by the Docker gcc leg (TD-11, TD-12) on commit dc16062b166a5dbe0ae903902250e4fa6cb2df99 (rendering/b2-golden, on rendering/b2-raster 9a679d7): gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, Release. RasterGolden.CsgSlabAndBlobRayMarchedMatchesCommittedManifest passed under gcc against that commit's manifest, so the sha256 matches. Leg: PASS, 1058 tests, 0 failed, 84 GPU tests excluded (TD-13)."
 }
