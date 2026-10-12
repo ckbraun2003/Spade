@@ -142,10 +142,11 @@ TEST(AirflowValidation, C1CavityAtRe100On32CellsIsWithinTheGateBand) {
     // tests' debug-gate budget (spec §4.6). The release gate runs it; this skip
     // goes when the CPU-performance task lands, with the new debug time.
     GTEST_SKIP() << "runs in the release gate; 67 s in debug (until the airflow CPU-performance task)";
-#endif
+#else
     const CavityResult r = run_cavity(32, 100.0, 20.0, ref::kGhiaU100, ref::kGhiaV100, 0.06, false);
     EXPECT_LE(r.u_error, 0.06);
     EXPECT_LE(r.v_error, 0.06);
+#endif
 }
 
 TEST(AirflowValidation, C1CavityAtRe100On128Cells) {
