@@ -130,9 +130,15 @@ TEST(RenderFlowFeed, TaylorGreenPublishesItsAnalyticQAndVorticity) {
     RecordProperty("vorticity_err_edge_x1e6", static_cast<int>(w_err[1] * 1e6));
     std::printf("[ tg t=0 ] interior: Q max error %.5f, |omega| %.5f; edge: Q %.5f, |omega| %.5f (peaks 1 and 2)\n",
                 q_err[0], w_err[0], q_err[1], w_err[1]);
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(q_err[0], 0.0);
-    EXPECT_LE(w_err[0], 0.0);
+    // Measured 2026-10-12: inside, Q 0.0215 of its peak 1 and |omega| 0.0221
+    // of its peak 2, the O(dx^2) of differences at dx = 2 pi / 32. On the
+    // edge cells |omega| is 0.129 off: Publish differences them one-sided,
+    // first order, because it is not told the axis is periodic (reported to
+    // Physics 2026-10-12). Tighten the edge bound if Publish learns to wrap.
+    EXPECT_LE(q_err[0], 0.022);
+    EXPECT_LE(w_err[0], 0.023);
+    EXPECT_LE(q_err[1], 0.022);
+    EXPECT_LE(w_err[1], 0.13);
 }
 
 // The Q iso of the published field draws where the analytic field's does:
@@ -189,8 +195,14 @@ TEST(RenderFlowFeed, TheQIsoOfThePublishedTaylorGreenDrawsLikeTheAnalyticOne) {
     RecordProperty("over_two", static_cast<int>(over_two));
     std::printf("[ tg iso ] %zu px drawn; published against analytic: %zu differ, %zu over two, worst %d levels\n",
                 drawn, differing, over_two, worst);
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(differing, 0u);
+    // Measured 2026-10-12 at 160x120: of 3404 pixels the iso draws, 2202
+    // differ, 259 by more than two levels. Looked at: the two frames show
+    // the same four lobes, and the 259 lie on the lobes' silhouettes, where
+    // a surface moved by the differences' O(dx^2) uncovers or covers a pixel.
+    // The rest are a level or two of colour: the published velocity is the
+    // faces' average, not the analytic value at the centre.
+    EXPECT_LE(over_two, 259u);
+    EXPECT_LE(differing, 2202u);
 }
 
 // At low Reynolds number the vortex decays as the viscous step damps its
@@ -222,9 +234,11 @@ TEST(RenderFlowFeed, TaylorGreenDecaysAtTheViscousStepsRate) {
     std::printf("[ tg decay ] peak |omega| ratio after %d steps: %.5f (8 sweeps), %.5f (32 sweeps); step rate %.5f, "
                 "continuum %.5f\n",
                 steps, ratio[0], ratio[1], expected, std::exp(-3.0 * nu * h * steps));
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(std::abs(ratio[0] - expected), 0.0);
-    EXPECT_LE(std::abs(ratio[1] - ratio[0]), 0.0);
+    // Measured 2026-10-12: 0.74399 at both sweep counts, against the step's
+    // 0.74479 (the continuum's exp(-0.3) is 0.74082). The 0.0008 left is the
+    // nonlinear transfer and advection's own damping.
+    EXPECT_LE(std::abs(ratio[0] - expected), 0.001);
+    EXPECT_LE(std::abs(ratio[1] - ratio[0]), 1e-5);
 }
 
 }  // namespace
