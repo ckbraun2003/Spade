@@ -1337,8 +1337,9 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     RenderScene iso_scene = ring_cut_scene();
     iso_scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
-    const auto median_ms = [&](const RenderScene& scene, bool skip) {
-        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = skip});
+    const auto median_ms = [&](const RenderScene& scene, bool skip,
+                               GlRenderer::FlowScale scale = GlRenderer::FlowScale::full) {
+        renderer_->set_flow_quality(GlRenderer::FlowQuality{.skip_empty_space = skip, .scale = scale});
         EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
         std::vector<double> ms;
         for (int i = 0; i < 10; ++i) {
@@ -1359,6 +1360,11 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     const double iso_full_ms = median_ms(iso_scene, false);
     const double volume_ms = median_ms(volume_scene, true);
     const double iso_ms = median_ms(iso_scene, true);
+    const double volume_half_ms = median_ms(volume_scene, true, GlRenderer::FlowScale::half);
+    const double iso_half_ms = median_ms(iso_scene, true, GlRenderer::FlowScale::half);
+    RecordProperty("volume_half_ms_x100", static_cast<int>(volume_half_ms * 100.0));
+    RecordProperty("iso_half_ms_x100", static_cast<int>(iso_half_ms * 100.0));
+    std::printf("[ flow cost ] at half scale: volume %.2f ms, iso %.2f ms\n", volume_half_ms, iso_half_ms);
     RecordProperty("volume_ms_x100", static_cast<int>(volume_ms * 100.0));
     RecordProperty("iso_ms_x100", static_cast<int>(iso_ms * 100.0));
     RecordProperty("volume_unskipped_ms_x100", static_cast<int>(volume_full_ms * 100.0));
@@ -1368,14 +1374,19 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
                 volume_ms, volume_full_ms, iso_ms, iso_full_ms, device.c_str());
     EXPECT_LT(volume_full_ms, 1000.0) << device;
     EXPECT_LT(iso_full_ms, 1000.0) << device;
-    // Plan step 7e, against the unskipped march in the same run. Measured
-    // 2026-10-12: volume 52 to 54 ms against 85 to 86 (0.63), iso 15 against
-    // 42 to 43 (0.35). The volume skips less because its smoke cannot be
-    // skipped exactly: the dye blob's Gaussian tail stays above fp16's
-    // smallest subnormal out to 0.82 m, so a third of the box still absorbs
-    // a little. The bounds sit just above what was measured.
-    EXPECT_LT(volume_ms, 0.75 * volume_full_ms) << device;
-    EXPECT_LT(iso_ms, 0.5 * iso_full_ms) << device;
+    // Plan steps 7e and 7f, each against the slower march in the same run.
+    // Measured 2026-10-12 with the box quiet: skipping took the volume to
+    // 0.6 of unskipped and the iso to 0.35. The volume skips less because its
+    // smoke cannot be skipped exactly: the dye blob's Gaussian tail stays
+    // above fp16's smallest subnormal out to 0.82 m, so a third of the box
+    // still absorbs a little. Half scale took both to about 0.47 of skipped
+    // full. With other realms building, the ratios drift (skipping 0.57 to
+    // 0.71, half up to 0.56), so these bounds only hold each saving to be
+    // clearly real; the numbers themselves are in the run's properties.
+    EXPECT_LT(volume_ms, 0.9 * volume_full_ms) << device;
+    EXPECT_LT(iso_ms, 0.9 * iso_full_ms) << device;
+    EXPECT_LT(volume_half_ms, 0.75 * volume_ms) << device;
+    EXPECT_LT(iso_half_ms, 0.75 * iso_ms) << device;
     renderer_->set_flow_quality({});
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1415,8 +1426,19 @@ TEST_F(GpuGlRenderer, FlowHalfScaleMarchesAtHalfAndSaysSo) {
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     std::printf("[ flow half ] against full: worst %d levels, %zu over two, %zu differ; on %s\n", d.worst,
                 d.over_two, d.differing, device.c_str());
-    // RED: no band yet; measured and pinned in the green commit.
+    // Measured 2026-10-12, 160x120 (so an 80x60 march), on an NVIDIA GeForce
+    // RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 3186 pixels differ from the
+    // full frame, 2349 by more than two levels, the worst by 32. Looked at:
+    // the ring is the same ring, softer; the large differences sit on its
+    // edges and along the quad's edge, where one half pixel's march spans the
+    // opaque edge. A live view's band, announced as such, not the CPU's.
+    constexpr int kBandWorstLevels = 32;
+    constexpr size_t kBandOverTwoPixels = 2349;
+    constexpr size_t kBandDifferingPixels = 3186;
     EXPECT_GT(d.differing, 0u) << "a half-resolution march is not the full frame";
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
 // Automatic picks half when the march misses its budget, and full when it
