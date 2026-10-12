@@ -486,11 +486,17 @@ TEST(SceneFile, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
 }
 
 TEST(SceneFile, AnotherSceneVersionIsASchemaMismatch) {
-    const spade::Result<SceneDesc> r =
-        spade::scene::scene_from_yaml(with(kMinimalScene, "scene_version: 1\n", "scene_version: 2\n"));
-    ASSERT_FALSE(r);
-    EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
-    EXPECT_TRUE(contains(r.error().context, "scene file is schema version 2")) << r.error().context;
+    // This build reads versions 1 and 2 (2 carries parts, CORE-7). Above and
+    // below that range is "upgrade", never "fix your file".
+    for (const std::string version : {"3", "0"}) {
+        SCOPED_TRACE(version);
+        const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
+            with(kMinimalScene, "scene_version: 1\n", "scene_version: " + version + "\n"));
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
+        EXPECT_TRUE(contains(r.error().context, "scene file is schema version " + version)) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "reads versions 1 and 2")) << r.error().context;
+    }
 }
 
 TEST(SceneFile, TheTextIsReadAsTheSchemaSpellsIt) {
@@ -686,6 +692,397 @@ TEST(SceneFile, AnAssetMayCarryEitherHalfAlone) {
         EXPECT_TRUE(contains(*text, "node_materials: []")) << *text;
         ASSERT_OK(spade::scene::scene_from_yaml(*text));
     }
+}
+
+// ===========================================================================
+// CORE-7: a model's parts, and scene version 2 (the parts and meshes plan,
+// Task A3). Version 2 is written ONLY when a model has parts, so every scene
+// without them -- gate_run's golden and every committed scene -- is still
+// version 1, byte for byte (AScenesTextRoundTripsByteForByte and
+// EditorFiles.EveryCommittedSceneSavesBackByteForByte, unedited, pin that).
+// ===========================================================================
+
+using spade::vehicles::PartAttach;
+using spade::vehicles::PartDesc;
+using spade::vehicles::PartSurface;
+
+// Rotations about +Y, as exact float constants (TD-3: no libm here).
+const glm::quat kYawPlus45(0.923879504f, 0.0f, 0.382683456f, 0.0f);
+
+// A one-transform, one-primitive shape.
+[[nodiscard]] spade::SdfProgram solid(SdfPrim kind, glm::vec4 params) {
+    spade::SdfProgram p;
+    p.transforms.push_back(SdfTransform{});
+    p.nodes.push_back(prim(kind, 0, params));
+    return p;
+}
+
+// A cylinder arm, mounted out along the diagonal and yawed 45 degrees.
+[[nodiscard]] PartDesc arm_part() {
+    PartDesc p{};
+    p.name = "arm_fl";
+    p.role = "arm";
+    p.mount_pos = {0.064f, 0.0f, 0.064f};
+    p.mount_orient = kYawPlus45;
+    p.shape = solid(SdfPrim::cylinder, {0.006f, 0.07f, 0.0f, 0.0f});
+    p.min_feature = 0.012f;
+    return p;
+}
+
+// kMinimalScene's model with one part, as a version-2 file. Every mapping a
+// key test mutates has a key/value pair that occurs nowhere else in the text.
+constexpr const char* kImuLine =
+    "    imu_mounts: [{mount_pos: [0, 0, 0], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, "
+    "sigma_ba: 0, sigma_bg: 0}]\n";
+constexpr const char* kPartShape =
+    R"({sdf: {transforms: [{world_to_local: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], scale: 2}], nodes: [{params: [0.75, 0.125, 0.125, 0], prim: box, transform: 0}]}})";
+[[nodiscard]] std::string parts_block() {
+    return std::string("    parts:\n"
+                       "      - name: \"arm\"\n"
+                       "        role: \"strut\"\n"
+                       "        attach: \"body\"\n"
+                       "        rotor: 0\n"
+                       "        mount: {position: [0.5, 0, 0], orientation: [1, 0, 0, 0]}\n"
+                       "        surface: {kind: \"wall\", inv_permeability: 0, inertial_coeff: 0}\n"
+                       "        min_feature: 0.25\n"
+                       "        shape: ") +
+           kPartShape + "\n";
+}
+[[nodiscard]] std::string minimal_parts_scene() {
+    return with(with(kMinimalScene, "scene_version: 1\n", "scene_version: 2\n"), kImuLine,
+                std::string(kImuLine) + parts_block());
+}
+
+TEST(SceneFile, ASceneWithPartsIsVersion2AndOneWithoutIsVersion1) {
+    // An old file still loads, and is still written as version 1: a scene
+    // with no parts anywhere is the text it always was.
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    const spade::Result<std::string> plain_text = spade::scene::scene_to_yaml(*plain);
+    ASSERT_OK(plain_text);
+    EXPECT_TRUE(contains(*plain_text, "\nscene_version: 1\n")) << *plain_text;
+    EXPECT_TRUE(contains(*plain_text, "# Spade scene file -- schema version 1.\n"));
+    EXPECT_FALSE(contains(*plain_text, "parts:")) << *plain_text;
+
+    SceneDesc dressed = *plain;
+    dressed.models.at(0).parts.push_back(arm_part());
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(dressed);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 2\n")) << *text;
+    EXPECT_TRUE(contains(*text, "# Spade scene file -- schema version 2.\n"));
+    EXPECT_TRUE(contains(*text, "\n    parts:\n      - name: \"arm_fl\"\n        role: \"arm\"\n")) << *text;
+    const spade::Result<SceneDesc> back = spade::scene::scene_from_yaml(*text);
+    ASSERT_OK(back);
+    ASSERT_EQ(back->models.at(0).parts.size(), 1u);
+    EXPECT_EQ(back->models.at(0).parts[0].name, "arm_fl");
+    const spade::Result<std::string> again = spade::scene::scene_to_yaml(*back);
+    ASSERT_OK(again);
+    EXPECT_TRUE(*again == *text) << "byte for byte (SCN-002): " << first_difference(*text, *again);
+}
+
+TEST(SceneFile, PartsRoundTripBitForBit) {
+    const spade::Result<SceneDesc> base = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(base);
+    SceneDesc s = *base;
+    s.models[0].rotors.push_back(s.models[0].rotors[0]);  // two rotors; a part rides the second
+
+    // A rigid wall: a three-node CSG shape, its second primitive under a
+    // rotated, translated, scaled transform; a mount with a negative zero.
+    PartDesc hull{};
+    hull.name = "hull";
+    hull.role = "body";
+    hull.mount_pos = {0.1f, -0.0f, -0.3f};
+    hull.mount_orient = kYawPlus30;
+    SdfTransform turned{};
+    const float inv_scale = 1.0f / 1.25f;
+    turned.world_to_local[0] = glm::vec4(0.866025388f * inv_scale, 0.0f, -0.5f * inv_scale, 0.0f);
+    turned.world_to_local[1] = glm::vec4(0.0f, inv_scale, 0.0f, 0.0f);
+    turned.world_to_local[2] = glm::vec4(0.5f * inv_scale, 0.0f, 0.866025388f * inv_scale, 0.0f);
+    turned.world_to_local[3] = glm::vec4(-0.1f / 3.0f, 0.025f, 1.0f / 7.0f, 1.0f);
+    turned.scale = 1.25f;
+    hull.shape.transforms = {SdfTransform{}, turned};
+    hull.shape.nodes = {prim(SdfPrim::box, 0, {0.07f, 0.02f, 0.05f, 0.0f}),
+                        prim(SdfPrim::capsule, 1, {0.011f, 0.033f, 0.0f, 0.0f}), op(SdfOp::smooth_union)};
+    hull.shape.nodes[2].params.x = 0.0035f;
+    hull.min_feature = 0.012f;
+
+    // A porous part on rotor 1, both coefficients set.
+    PartDesc duct{};
+    duct.name = "duct";
+    duct.role = "guard";
+    duct.attach = PartAttach::rotor;
+    duct.rotor = 1;
+    duct.mount_pos = {0.0f, 0.004f, 0.0f};
+    duct.mount_orient = kYawMinus15;
+    duct.shape = solid(SdfPrim::torus, {0.0635f, 0.0045f, 0.0f, 0.0f});
+    duct.surface = {.kind = PartSurface::Kind::porous, .inv_permeability = 3.3e6f, .inertial_coeff = 17.25f};
+    duct.min_feature = 1.0e-3f;
+
+    // A rotor wall on rotor 0, and a porous body part with one coefficient.
+    PartDesc blade{};
+    blade.name = "blade";
+    blade.role = "blade";
+    blade.attach = PartAttach::rotor;
+    blade.mount_pos = {0.03f, 0.0f, 0.0f};
+    blade.shape = solid(SdfPrim::box, {0.03f, 0.0008f, 0.006f, 0.0f});
+    blade.min_feature = 0.0016f;
+    PartDesc screen{};
+    screen.name = "screen";
+    screen.role = "filter";
+    screen.mount_orient = kYawPlus90;
+    screen.shape = solid(SdfPrim::sphere, {0.021f, 0.0f, 0.0f, 0.0f});
+    screen.surface = {.kind = PartSurface::Kind::porous, .inv_permeability = 0.0f, .inertial_coeff = 0.7f};
+    screen.min_feature = 2.0e-4f;
+
+    s.models[0].parts = {hull, duct, blade, screen};
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(text);
+    const spade::Result<SceneDesc> back = spade::scene::scene_from_yaml(*text);
+    ASSERT_OK(back);
+    const spade::Result<std::string> again = spade::scene::scene_to_yaml(*back);
+    ASSERT_OK(again);
+    EXPECT_TRUE(*again == *text) << first_difference(*text, *again);
+
+    const std::vector<PartDesc>& built = s.models[0].parts;
+    const std::vector<PartDesc>& read = back->models[0].parts;
+    ASSERT_EQ(read.size(), built.size());
+    for (std::size_t i = 0; i < built.size(); ++i) {
+        SCOPED_TRACE(built[i].name);
+        const PartDesc& a = built[i];
+        const PartDesc& b = read[i];
+        EXPECT_EQ(b.name, a.name);
+        EXPECT_EQ(b.role, a.role);
+        EXPECT_EQ(b.attach, a.attach);
+        EXPECT_EQ(b.rotor, a.rotor);
+        EXPECT_EQ(std::memcmp(&a.mount_pos, &b.mount_pos, sizeof a.mount_pos), 0);
+        EXPECT_EQ(std::memcmp(&a.mount_orient, &b.mount_orient, sizeof a.mount_orient), 0);
+        EXPECT_EQ(b.surface.kind, a.surface.kind);
+        EXPECT_EQ(std::memcmp(&a.surface.inv_permeability, &b.surface.inv_permeability, sizeof(float)), 0);
+        EXPECT_EQ(std::memcmp(&a.surface.inertial_coeff, &b.surface.inertial_coeff, sizeof(float)), 0);
+        EXPECT_EQ(std::memcmp(&a.min_feature, &b.min_feature, sizeof(float)), 0);
+        ASSERT_EQ(b.shape.transforms.size(), a.shape.transforms.size());
+        ASSERT_EQ(b.shape.nodes.size(), a.shape.nodes.size());
+        EXPECT_EQ(std::memcmp(a.shape.transforms.data(), b.shape.transforms.data(),
+                              a.shape.transforms.size() * sizeof(SdfTransform)),
+                  0);
+        EXPECT_EQ(std::memcmp(a.shape.nodes.data(), b.shape.nodes.data(), a.shape.nodes.size() * sizeof(SdfNode)), 0);
+        EXPECT_TRUE(b.shape.node_materials.empty());
+    }
+    EXPECT_TRUE(std::signbit(read[0].mount_pos.y)) << "a negative zero is a bit pattern too";
+}
+
+TEST(SceneFile, AVersion1FileMayNotCarryParts) {
+    // parts in a version-1 file: an unknown key, blamed on version 1, at its line.
+    const std::string v1 = with(kMinimalScene, kImuLine, std::string(kImuLine) + parts_block());
+    const spade::Result<SceneDesc> refused = spade::scene::scene_from_yaml(v1);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(why(refused), "unknown key 'parts' in scene.models[0] -- scene schema v1 does not define it"))
+        << why(refused);
+    EXPECT_TRUE(contains(why(refused), "(line 17, column 5)")) << why(refused);
+
+    // The same text as version 2 reads.
+    const spade::Result<SceneDesc> v2 = spade::scene::scene_from_yaml(minimal_parts_scene());
+    ASSERT_OK(v2);
+    ASSERT_EQ(v2->models[0].parts.size(), 1u);
+    EXPECT_EQ(v2->models[0].parts[0].role, "strut");
+
+    // A version-2 file with no parts reads, and is written back as version 1:
+    // the version is a function of the content.
+    const spade::Result<SceneDesc> bare =
+        spade::scene::scene_from_yaml(with(kMinimalScene, "scene_version: 1\n", "scene_version: 2\n"));
+    ASSERT_OK(bare);
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(*bare);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 1\n")) << *text;
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    const spade::Result<std::string> plain_text = spade::scene::scene_to_yaml(*plain);
+    ASSERT_OK(plain_text);
+    EXPECT_TRUE(*text == *plain_text) << first_difference(*plain_text, *text);
+}
+
+TEST(SceneFile, APartsShapeMustBeRepresentable) {
+    const spade::Result<SceneDesc> base = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(base);
+    const std::vector<Refusal> cases = {
+        {"a node with non-zero padding", [](SceneDesc& s) { s.models[0].parts[0].shape.nodes[0]._pad = 1; },
+         "node 0 has non-zero padding"},
+        {"a transform with non-zero padding",
+         [](SceneDesc& s) { s.models[0].parts[0].shape.transforms[0]._pad[2] = 1.0f; },
+         "transform 0 has non-zero padding"},
+        {"an operator node carrying a primitive kind",
+         [](SceneDesc& s) {
+             spade::SdfProgram& shape = s.models[0].parts[0].shape;
+             spade::SdfNode join = op(SdfOp::union_);
+             join.kind = 2;
+             shape.nodes = {shape.nodes[0], shape.nodes[0], join};
+         },
+         "operator node 2 carries a non-zero primitive kind"},
+    };
+    for (const Refusal& c : cases) {
+        SCOPED_TRACE(c.what);
+        SceneDesc s = *base;
+        s.models[0].parts.push_back(arm_part());
+        c.edit(s);
+        ASSERT_OK(s.models[0].validate()) << "the model alone accepts it: the text encoding is the scene's rule";
+        const spade::Result<void> validated = spade::scene::validate_scene(s);
+        ASSERT_FALSE(validated);
+        EXPECT_EQ(validated.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(contains(why(validated), "model 'q' part 'arm_fl' shape " + c.needle)) << why(validated);
+        const spade::Result<std::string> written = spade::scene::scene_to_yaml(s);
+        ASSERT_FALSE(written);
+        EXPECT_TRUE(contains(why(written), "model 'q' part 'arm_fl' shape " + c.needle)) << why(written);
+    }
+
+    // node_materials is render data, which a part never carries: under a
+    // part's sdf it is an unknown key, at its line.
+    const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
+        with(minimal_parts_scene(), "{sdf: {transforms: [{world_to_local",
+             "{sdf: {node_materials: [\"m\"], transforms: [{world_to_local"));
+    EXPECT_TRUE(contains(why(r), "unknown key 'node_materials' in scene.models[0].parts[0].shape.sdf -- scene "
+                                 "schema v2 does not define it (line "))
+        << why(r);
+}
+
+TEST(SceneFile, APartsKeysAreRefusedAtEveryLevel) {
+    const std::string base = minimal_parts_scene();
+    ASSERT_OK(spade::scene::scene_from_yaml(base));
+
+    const std::string shape = kPartShape;
+    const std::string shape_body = shape.substr(1, shape.size() - 2) + ", ";  // "sdf: {...}, "
+    const std::vector<KeyCase> cases = {
+        block("scene.models[0].parts[0]", "        role: \"strut\"\n", "        "),
+        flow("scene.models[0].parts[0].mount", "position: [0.5, 0, 0], "),
+        flow("scene.models[0].parts[0].surface", "inv_permeability: 0, "),
+        {"scene.models[0].parts[0].shape", shape, "{bogus: 1, " + shape.substr(1), "{}",
+         "{" + shape_body + shape.substr(1)},
+        flow("scene.models[0].parts[0].shape.sdf",
+             "transforms: [{world_to_local: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], scale: 2}], "),
+        flow("scene.models[0].parts[0].shape.sdf.transforms[0]",
+             "world_to_local: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], "),
+        flow("scene.models[0].parts[0].shape.sdf.nodes[0]", "params: [0.75, 0.125, 0.125, 0], "),
+    };
+    for (const KeyCase& c : cases) {
+        SCOPED_TRACE(c.level);
+        const spade::Result<SceneDesc> unknown = spade::scene::scene_from_yaml(with(base, c.needle, c.unknown));
+        EXPECT_TRUE(contains(why(unknown), "unknown key 'bogus' in " + c.level + " -- scene schema v2"))
+            << why(unknown);
+        EXPECT_TRUE(contains(why(unknown), "(line ")) << why(unknown);
+
+        const spade::Result<SceneDesc> missing = spade::scene::scene_from_yaml(with(base, c.needle, c.missing));
+        EXPECT_TRUE(contains(why(missing), "missing required key")) << why(missing);
+        EXPECT_TRUE(contains(why(missing), c.level)) << why(missing);
+        EXPECT_TRUE(contains(why(missing), "(line ")) << why(missing);
+
+        const spade::Result<SceneDesc> duplicate =
+            spade::scene::scene_from_yaml(with(base, c.needle, c.duplicate));
+        EXPECT_TRUE(contains(why(duplicate), "duplicate key")) << why(duplicate);
+        EXPECT_TRUE(contains(why(duplicate), c.level)) << why(duplicate);
+    }
+
+    // The two enumerations are names, refused at their line.
+    const auto refused = [&](const std::string& from, const std::string& to, const std::string& needle) {
+        const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(with(base, from, to));
+        EXPECT_FALSE(r) << "accepted: " << to;
+        EXPECT_TRUE(contains(why(r), needle)) << why(r);
+        EXPECT_TRUE(contains(why(r), "(line ")) << why(r);
+    };
+    refused("attach: \"body\"", "attach: \"wheel\"", "scene.models[0].parts[0].attach: unknown part attachment 'wheel'");
+    refused("kind: \"wall\"", "kind: \"solid\"", "scene.models[0].parts[0].surface.kind: unknown part surface 'solid'");
+    refused("min_feature: 0.25", "min_feature: tiny", "scene.models[0].parts[0].min_feature: 'tiny' is not a decimal");
+
+    // `parts` is a list. An empty one is no parts, and is written as none.
+    const std::string v2 = with(kMinimalScene, "scene_version: 1\n", "scene_version: 2\n");
+    const spade::Result<SceneDesc> mapping =
+        spade::scene::scene_from_yaml(with(v2, kImuLine, std::string(kImuLine) + "    parts: {}\n"));
+    EXPECT_TRUE(contains(why(mapping), "scene.models[0].parts must be a sequence (line 17")) << why(mapping);
+    const spade::Result<SceneDesc> empty =
+        spade::scene::scene_from_yaml(with(v2, kImuLine, std::string(kImuLine) + "    parts: []\n"));
+    ASSERT_OK(empty);
+    EXPECT_TRUE(empty->models[0].parts.empty());
+}
+
+TEST(SceneFile, APartTheModelRefusesIsRefusedWithTheModelsOwnMessage) {
+    // The part rules are ModelType::issues()'s (A1), run by validate_scene()
+    // through ModelType::validate(): the scene repeats none of them (TD-9).
+    const spade::Result<SceneDesc> base = spade::scene::scene_from_yaml(minimal_parts_scene());
+    ASSERT_OK(base);
+    struct Case {
+        std::string what;
+        std::string from;
+        std::string to;
+        std::function<void(PartDesc&)> edit;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {"a rotor past the model's one rotor", "attach: \"body\"\n        rotor: 0\n",
+         "attach: \"rotor\"\n        rotor: 1\n",
+         [](PartDesc& p) {
+             p.attach = PartAttach::rotor;
+             p.rotor = 1;
+         },
+         "part 0 'arm': rotor 1 is out of range"},
+        {"a coefficient on a wall", "inv_permeability: 0, ", "inv_permeability: 2, ",
+         [](PartDesc& p) { p.surface.inv_permeability = 2.0f; }, "part 0 'arm': surface.inv_permeability must be 0"},
+        {"no smallest feature", "min_feature: 0.25", "min_feature: 0",
+         [](PartDesc& p) { p.min_feature = 0.0f; }, "part 0 'arm': min_feature must be finite and > 0"},
+        {"an unbounded shape", "params: [0.75, 0.125, 0.125, 0], prim: box", "params: [0, 1, 0, 0], prim: plane",
+         [](PartDesc& p) { p.shape.nodes[0] = prim(SdfPrim::plane, 0, {0.0f, 1.0f, 0.0f, 0.0f}); },
+         "part 0 'arm': shape is unbounded"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        SceneDesc s = *base;
+        c.edit(s.models[0].parts[0]);
+        const spade::Result<void> model = s.models[0].validate();
+        ASSERT_FALSE(model);
+        EXPECT_TRUE(contains(model.error().context, c.needle)) << model.error().context;
+        const spade::Result<void> scene = spade::scene::validate_scene(s);
+        ASSERT_FALSE(scene);
+        EXPECT_EQ(scene.error().code, model.error().code);
+        EXPECT_EQ(scene.error().context, model.error().context) << "the model's message, word for word";
+
+        // And through the reader, from the text.
+        const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(with(minimal_parts_scene(), c.from, c.to));
+        ASSERT_FALSE(read);
+        EXPECT_EQ(read.error().context, model.error().context) << "the model's message, word for word";
+    }
+}
+
+TEST(SceneFile, PartsTextMatchesTheGolden) {
+    // tests/golden/scenes/parts.scene.yaml is HAND-WRITTEN from the plan's
+    // schema (TD-4), not generated by the writer, so this test never writes
+    // it: a missing file is a failure. It is final once a fresh Docker gcc
+    // leg reproduces it (TD-12).
+    const std::filesystem::path path = golden("scenes/parts.scene.yaml");
+    std::string committed;
+    ASSERT_TRUE(read_file(path, committed)) << path << " is missing";
+    const std::size_t body = provenance_end(committed);
+    ASSERT_GT(body, 0u) << path << " carries no '" << kProvenance << "' lines (TD-1)";
+    const std::string canonical = committed.substr(body);
+
+    const spade::Result<SceneDesc> loaded = spade::scene::load_scene_file(path);
+    ASSERT_OK(loaded);
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(*loaded);
+    ASSERT_OK(text);
+    EXPECT_TRUE(canonical == *text) << first_difference(canonical, *text);
+
+    // What the text says, read by hand from it.
+    ASSERT_EQ(loaded->models.size(), 2u);
+    EXPECT_TRUE(loaded->models[1].parts.empty()) << "a model with no parts writes none, even in version 2";
+    const std::vector<PartDesc>& parts = loaded->models[0].parts;
+    ASSERT_EQ(parts.size(), 4u);
+    EXPECT_EQ(parts[0].name, "frame");
+    EXPECT_EQ(parts[1].mount_orient, kYawMinus45);
+    EXPECT_EQ(parts[1].shape.transforms.at(0).world_to_local[1][0], -1.0f);
+    EXPECT_EQ(parts[2].surface.kind, PartSurface::Kind::porous);
+    EXPECT_EQ(parts[2].surface.inv_permeability, 1.0e6f);
+    EXPECT_EQ(parts[2].shape.nodes.at(2).op, static_cast<uint32_t>(SdfOp::subtract));
+    EXPECT_EQ(parts[3].attach, PartAttach::rotor);
+    EXPECT_EQ(parts[3].rotor, 1u);
+    EXPECT_EQ(parts[3].shape.transforms.at(0).scale, 0.5f);
+    EXPECT_EQ(parts[3].min_feature, 0.00390625f);
 }
 
 // ===========================================================================
