@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "physics/airflow/reduce.hpp"
+
 namespace spade::physics::airflow {
 
 namespace {
@@ -29,14 +31,6 @@ void subtract_gradient(uint32_t n, uint32_t m1, uint32_t m2, FaceKind lo, FaceKi
     }
 }
 
-// Subtracts the mean, a sequential double sum in array order (k, j, i).
-void remove_mean(std::vector<float>& x) noexcept {
-    double sum = 0.0;
-    for (const float v : x) sum += v;
-    const auto mean = static_cast<float>(sum / static_cast<double>(x.size()));
-    for (float& v : x) v -= mean;
-}
-
 }  // namespace
 
 ProjectionScratch make_projection_scratch(const GridShape& shape) {
@@ -56,11 +50,11 @@ void project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, P
     for (std::size_t c = 0; c < f.b.size(); ++c) f.b[c] = b_coef * s.div[c];
     const bool closed = std::none_of(kinds.begin(), kinds.end(),
                                      [](FaceKind k) { return k == FaceKind::pressure_outlet; });
-    if (closed) remove_mean(f.b);
+    if (closed) remove_mean(f.b, sh.nx, sh.ny, sh.nz);
     std::copy(g.p.begin(), g.p.end(), f.p.begin());
     for (uint32_t n = 0; n < n_v; ++n) {
         v_cycle(s.mg);
-        if (closed) remove_mean(f.p);
+        if (closed) remove_mean(f.p, sh.nx, sh.ny, sh.nz);
     }
     std::copy(f.p.begin(), f.p.end(), g.p.begin());
 

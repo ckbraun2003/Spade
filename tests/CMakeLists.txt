@@ -69,6 +69,9 @@ add_executable(spade_tests
     test_forces.cpp
     test_airflow_grid.cpp
     test_airflow_pressure.cpp
+    test_airflow_advect.cpp
+    test_airflow_step.cpp
+    test_airflow_publish.cpp
     test_dryden.cpp
     test_rotor.cpp
     test_rotor_wake.cpp

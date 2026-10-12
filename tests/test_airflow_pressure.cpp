@@ -13,6 +13,7 @@
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pressure.hpp"
 #include "physics/airflow/projection.hpp"
+#include "physics/airflow/reduce.hpp"
 
 namespace {
 
@@ -255,6 +256,59 @@ TEST(AirflowProjection, AClosedBoxsPressureIsRepeatableWithZeroMean) {
         EXPECT_LE(std::fabs(mean), 1.0e-6 * static_cast<double>(max_abs(p)))
             << (kind == FaceBc::wall ? "walls" : "periodic") << ": mean " << mean;
     }
+}
+
+
+// THE FIXED-ORDER REDUCTION (spec §4.5 as amended 2026-10-12; Core's stage 7
+// design §5.5): 4x4x4 tiles, each summed in (k, j, i) order from 0, then the
+// tiles in (tk, tj, ti) order from 0, all in fp32. This is its definition,
+// written out independently of reduce.cpp; the GPU twin sums the same way.
+[[nodiscard]] float tile_sum_by_definition(const std::vector<float>& x, uint32_t nx, uint32_t ny, uint32_t nz) {
+    float total = 0.0f;
+    for (uint32_t tk = 0; tk < nz; tk += 4u) {
+        for (uint32_t tj = 0; tj < ny; tj += 4u) {
+            for (uint32_t ti = 0; ti < nx; ti += 4u) {
+                float tile = 0.0f;
+                for (uint32_t k = tk; k < std::min(tk + 4u, nz); ++k) {
+                    for (uint32_t j = tj; j < std::min(tj + 4u, ny); ++j) {
+                        for (uint32_t i = ti; i < std::min(ti + 4u, nx); ++i) {
+                            tile += x[i + std::size_t{nx} * (j + std::size_t{ny} * k)];
+                        }
+                    }
+                }
+                total += tile;
+            }
+        }
+    }
+    return total;
+}
+
+TEST(AirflowReduce, TheFixedTileSumIsItsDefinitionBitForBit) {
+    for (const std::array<uint32_t, 3>& n :
+         {std::array<uint32_t, 3>{8, 8, 8}, std::array<uint32_t, 3>{6, 5, 3}, std::array<uint32_t, 3>{16, 16, 1}}) {
+        std::vector<float> x(std::size_t{n[0]} * n[1] * n[2]);
+        Lcg rng;
+        for (float& v : x) v = 1000.0f * rng.next();
+        EXPECT_EQ(fixed_tile_sum(x, n[0], n[1], n[2]), tile_sum_by_definition(x, n[0], n[1], n[2]))
+            << n[0] << "x" << n[1] << "x" << n[2];
+    }
+}
+
+// The closed-domain mean (Task 5) is the fixed-tile sum times the host's
+// reciprocal of the count, subtracted in array order: bit for bit.
+TEST(AirflowReduce, RemovingTheMeanSubtractsTheFixedTileMean) {
+    const uint32_t nx = 6;
+    const uint32_t ny = 5;
+    const uint32_t nz = 3;
+    std::vector<float> x(std::size_t{nx} * ny * nz);
+    Lcg rng;
+    for (float& v : x) v = 3.0f + rng.next();
+    const auto inv_count = static_cast<float>(1.0 / static_cast<double>(x.size()));
+    const float mean = tile_sum_by_definition(x, nx, ny, nz) * inv_count;
+    std::vector<float> expected = x;
+    for (float& v : expected) v -= mean;
+    remove_mean(x, nx, ny, nz);
+    EXPECT_EQ(x, expected);
 }
 
 }  // namespace
