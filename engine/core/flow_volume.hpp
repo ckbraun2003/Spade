@@ -66,6 +66,11 @@ struct FlowVolumeHeader {
     std::array<float, kFlowChannelCount> channel_min{};
     std::array<float, kFlowChannelCount> channel_max{};
     uint32_t no_data = 0;  // samples written as fp16::kNoDataBits, both textures together
+    // CELLS (not halves) inside a solid that were written from their fluid
+    // side: the first solid layer takes the mean of its fluid face-neighbours,
+    // so a surface pressure coefficient reads the wall pressure. They are
+    // extrapolated, not solved; a reader may say so. At most nx ny nz.
+    uint32_t extrapolated_cells = 0;
 };
 
 struct FlowVolume {
