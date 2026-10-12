@@ -1226,11 +1226,14 @@ TEST_F(GpuGlRenderer, SurfaceColouringMatchesTheCpuWithinItsBand) {
     // z = 0 inside a volume holding p = 2x - y + 0.5z (dyadic: f16 holds it
     // exactly), coloured by pressure through cool-warm over [-2, 2]. GL colours
     // each fragment at its own world point; the CPU rebuilds the point from
-    // depth. Compared per channel over the frame.
+    // depth. Compared per channel over the frame. A corner of the volume is
+    // no-data (NaN), where both keep the shaded colour: GL tests the half's
+    // bit pattern, not the driver's NaN.
     const spade::FlowVolume volume =
         spade::test::make_flow_volume(glm::vec3(-1.0f, -2.0f, -1.0f), 0.25f, 8, 16, 8, [](glm::vec3 p) {
             spade::test::FlowChannels c{};
-            c[spade::kFlowPressure] = 2.0f * p.x - p.y + 0.5f * p.z;
+            c[spade::kFlowPressure] = p.x > 0.5f && p.y > 0.5f ? std::numeric_limits<float>::quiet_NaN()
+                                                                : 2.0f * p.x - p.y + 0.5f * p.z;
             return c;
         });
     spade::render::TransferFunction colours;
@@ -1254,7 +1257,8 @@ TEST_F(GpuGlRenderer, SurfaceColouringMatchesTheCpuWithinItsBand) {
     const std::vector<uint8_t> cpu_plain = cpu_rgba(scene, camera_on_plus_z(), comparable_options());
     const std::vector<uint8_t> gl = draw_and_read(coloured);
     ASSERT_EQ(gl.size(), kPixels * 4u) << "GL must draw surface colouring now";
-    ASSERT_GT(count_differing(cpu, cpu_plain), kPixels / 10u) << "the colouring must change a good part of the frame";
+    const size_t coloured_pixels = count_differing(cpu, cpu_plain);
+    ASSERT_GT(coloured_pixels, kPixels / 10u) << "the colouring must change a good part of the frame";
     int worst = 0;
     size_t differing = 0;
     for (size_t p = 0; p < kPixels; ++p) {
@@ -1264,9 +1268,22 @@ TEST_F(GpuGlRenderer, SurfaceColouringMatchesTheCpuWithinItsBand) {
         differing += d > 0 ? 1u : 0u;
     }
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
-    std::printf("[ surface colouring ] worst %d levels, %zu pixels differ; on %s\n", worst, differing, device.c_str());
-    // RED: no band yet; measured and pinned in the green commit.
-    EXPECT_LE(worst, 0);
+    RecordProperty("coloured_pixels", static_cast<int>(coloured_pixels));
+    RecordProperty("worst_levels", worst);
+    RecordProperty("differing_pixels", static_cast<int>(differing));
+    std::printf("[ surface colouring ] %zu px coloured; worst %d levels, %zu pixels differ; on %s\n", coloured_pixels,
+                worst, differing, device.c_str());
+    // Measured 2026-10-12, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL
+    // 4.3.0, driver 572.83): of 2305 coloured pixels, 861 differ, each by one
+    // level. GL reaches the point by the fragment's interpolated world
+    // position; the CPU rebuilds it from depth. Before the no-data corner, a
+    // probe that rounded GL's colour as to_byte() does left 681 of 874, so
+    // the point, not the byte conversion, is most of it. One level is
+    // invisible in a C_p view.
+    constexpr int kBandWorstLevels = 1;
+    constexpr size_t kBandDifferingPixels = 861;
+    EXPECT_LE(worst, kBandWorstLevels) << device;
+    EXPECT_LE(differing, kBandDifferingPixels) << device;
 }
 
 // validate()'s own code comes through: a program needing more stack than
