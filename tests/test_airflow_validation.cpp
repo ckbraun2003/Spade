@@ -87,7 +87,15 @@ namespace ref = spade::testing::airflow_reference;
 struct CavityResult {
     double u_error = 0.0;
     double v_error = 0.0;
+    bool u_within = false;  // the comparison the record's verdict and the EXPECT both use
+    bool v_within = false;
 };
+
+// The larger of the running maximum and e; a NaN, once in, stays (std::max
+// would drop it, and a faulted run's record would read "within").
+void take_max(double& worst, double e) noexcept {
+    if (std::isnan(e) || e > worst) worst = e;
+}
 
 // The cavity at `re` on an n x n slab to time t_end; the two measures against
 // Ghia's tables, each checked against `tolerance`. With `skip_v_point_117`,
@@ -110,10 +118,12 @@ struct CavityResult {
     }
     CavityResult r;
     for (int q = 0; q < 17; ++q) {
-        r.u_error = std::max(r.u_error, std::fabs(centreline_u(g, ref::kGhiaY[q]) - u_ref[q]));
+        take_max(r.u_error, std::fabs(centreline_u(g, ref::kGhiaY[q]) - u_ref[q]));
         if (skip_v_point_117 && q == ref::kGhiaTableIIPoint117) continue;
-        r.v_error = std::max(r.v_error, std::fabs(centreline_v(g, ref::kGhiaX[q]) - v_ref[q]));
+        take_max(r.v_error, std::fabs(centreline_v(g, ref::kGhiaX[q]) - v_ref[q]));
     }
+    r.u_within = r.u_error <= tolerance;  // false for a NaN
+    r.v_within = r.v_error <= tolerance;
     const std::string v_quantity = skip_v_point_117
                                        ? "max |v - v_Ghia| on y = 0.5, Table II point 117 left out (printed -0.23827, a "
                                          "suspected typo in the original)"
@@ -131,29 +141,28 @@ struct CavityResult {
                 "tolerance: <= %.2f (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
                 "verdict: %s\n",
                 re, n, n, path_line().c_str(), n, n, re, t_end, steps, static_cast<double>(cfg.h), r.u_error,
-                tolerance, verdict(r.u_error <= tolerance), v_quantity.c_str(), r.v_error, tolerance,
-                verdict(r.v_error <= tolerance));
+                tolerance, verdict(r.u_within), v_quantity.c_str(), r.v_error, tolerance, verdict(r.v_within));
     return r;
 }
 
 TEST(AirflowValidation, C1CavityAtRe100On32CellsIsWithinTheGateBand) {
     const CavityResult r = run_cavity(32, 100.0, 20.0, ref::kGhiaU100, ref::kGhiaV100, 0.06, false);
-    EXPECT_LE(r.u_error, 0.06);
-    EXPECT_LE(r.v_error, 0.06);
+    EXPECT_TRUE(r.u_within) << r.u_error;
+    EXPECT_TRUE(r.v_within) << r.v_error;
 }
 
 TEST(AirflowValidation, C1CavityAtRe100On128Cells) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 100";
     const CavityResult r = run_cavity(128, 100.0, 40.0, ref::kGhiaU100, ref::kGhiaV100, 0.02, false);
-    EXPECT_LE(r.u_error, 0.02);
-    EXPECT_LE(r.v_error, 0.02);
+    EXPECT_TRUE(r.u_within) << r.u_error;
+    EXPECT_TRUE(r.v_within) << r.v_error;
 }
 
 TEST(AirflowValidation, C1CavityAtRe400On128Cells) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 400";
     const CavityResult r = run_cavity(128, 400.0, 60.0, ref::kGhiaU400, ref::kGhiaV400, 0.02, true);
-    EXPECT_LE(r.u_error, 0.02);
-    EXPECT_LE(r.v_error, 0.02);
+    EXPECT_TRUE(r.u_within) << r.u_error;
+    EXPECT_TRUE(r.v_within) << r.v_error;
 }
 
 // The kinetic energy per unit mass, from the faces, the periodic alias faces left out.
@@ -197,7 +206,7 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
                 path_line().c_str(), static_cast<double>(cfg.h));
     const auto report = [](double t, double ke) {
         std::printf("measure: kinetic energy per unit mass at t = %.2f = %.6f\n"
-                    "reference: none (report only; DNS data enter at V3, spec §11.6)\n"
+                    "reference: none (report only; DNS data enter at V3, spec \xc2\xa7" "11.6)\n"
                     "tolerance: none (report only)\n"
                     "verdict: report only\n",
                     t, ke);
