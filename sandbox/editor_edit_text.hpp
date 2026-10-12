@@ -44,6 +44,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "editor_library.hpp"
 #include "editor_model_params.hpp"
 #include "editor_scene_edits.hpp"
 #include "editor_world_edits.hpp"
@@ -492,20 +493,7 @@ inline constexpr std::array<Primitive, 5> kPrimitives = {{
     {"torus", SdfPrim::torus, 2},
 }};
 
-// One primitive at its collider's origin, as WorldBuilder lays out its parameters.
-[[nodiscard]] inline scene::SceneAsset primitive_asset(std::string name, SdfPrim kind, glm::vec4 params,
-                                                       const SdfPose& pose) {
-    scene::SceneAsset a;
-    a.name = std::move(name);
-    a.pose = pose;
-    a.collider.transforms.push_back(SdfTransform{});
-    SdfNode n{};
-    n.kind = static_cast<uint32_t>(kind);
-    n.op = static_cast<uint32_t>(SdfOp::none);
-    n.params = params;
-    a.collider.nodes.push_back(n);
-    return a;
-}
+// primitive_asset() (editor_library.hpp) builds a short form's asset.
 
 // The scene file's canonical text of an asset or a vehicle, alone in a scene;
 // none when the scene file would refuse it.

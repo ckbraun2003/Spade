@@ -23,7 +23,8 @@ namespace support = spade::sandbox::editor::test;
 using spade::Result;
 using spade::SdfPose;
 
-[[nodiscard]] const ed::LibraryItem& item_named(const std::vector<ed::LibraryItem>& lib, std::string_view name) {
+// A copy: the library is often a temporary.
+[[nodiscard]] ed::LibraryItem item_named(const std::vector<ed::LibraryItem>& lib, std::string_view name) {
     for (const ed::LibraryItem& i : lib) {
         if (i.name == name) return i;
     }
@@ -145,7 +146,7 @@ TEST(EditorLibrary, APlacementIsOneUndo) {
 // The kind comes from the model, so a new kind needs no change to the panel
 // (editor spec §4). Drones are the only kind today.
 TEST(EditorLibrary, TheTemplatesVehicleKindIsQuadrotor) {
-    const spade::vehicles::ModelType& quad = *item_named(ed::builtin_library(), "quadrotor").model;
+    const spade::vehicles::ModelType quad = *item_named(ed::builtin_library(), "quadrotor").model;
     EXPECT_EQ(ed::vehicle_kind_of(quad), "quadrotor");
     spade::vehicles::ModelType six = quad;
     six.rotors.push_back(six.rotors.front());
