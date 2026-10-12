@@ -29,6 +29,21 @@ struct Taps {
     return {I, other, 0.75f, 0.25f};
 }
 
+// The coarsening rule, in one place: an axis of size 1 takes no part; a level
+// is coarsened when every participating axis is even and at least 4, halving
+// each. Returns false when `n` is the coarsest.
+[[nodiscard]] bool coarser(const uint32_t n[3], uint32_t out[3]) noexcept {
+    bool participates = false;
+    for (uint32_t a = 0; a < 3; ++a) {
+        if (n[a] == 1u) continue;
+        participates = true;
+        if (n[a] < 4u || n[a] % 2u != 0u) return false;
+    }
+    if (!participates) return false;
+    for (uint32_t a = 0; a < 3; ++a) out[a] = n[a] == 1u ? 1u : n[a] / 2u;
+    return true;
+}
+
 void cycle(Multigrid& mg, std::size_t l) noexcept {
     PoissonLevel& f = mg.levels[l];
     if (l + 1u == mg.levels.size()) {
@@ -52,18 +67,24 @@ Multigrid make_multigrid(uint32_t nx, uint32_t ny, uint32_t nz) {
     mg.levels.push_back(make_level(nx, ny, nz, {}));
     for (;;) {
         const uint32_t n[3] = {mg.levels.back().nx, mg.levels.back().ny, mg.levels.back().nz};
-        bool participates = false;
-        bool coarsens = true;
-        for (uint32_t a : n) {
-            if (a == 1u) continue;
-            participates = true;
-            if (a < 4u || a % 2u != 0u) coarsens = false;
-        }
-        if (!participates || !coarsens) break;
-        mg.levels.push_back(make_level(n[0] == 1u ? 1u : n[0] / 2u, n[1] == 1u ? 1u : n[1] / 2u,
-                                       n[2] == 1u ? 1u : n[2] / 2u, {}));
+        uint32_t c[3] = {};
+        if (!coarser(n, c)) break;
+        mg.levels.push_back(make_level(c[0], c[1], c[2], {}));
     }
     return mg;
+}
+
+uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz) noexcept {
+    uint32_t n[3] = {nx, ny, nz};
+    uint64_t cells = uint64_t{nx} * ny * nz;
+    uint32_t c[3] = {};
+    while (coarser(n, c)) {
+        cells += uint64_t{c[0]} * c[1] * c[2];
+        n[0] = c[0];
+        n[1] = c[1];
+        n[2] = c[2];
+    }
+    return cells;
 }
 
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept {
