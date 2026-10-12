@@ -102,6 +102,9 @@ add_executable(spade_tests
     test_render_flow_sample.cpp
     test_render_flow_volume.cpp
     test_render_flow_iso.cpp
+    test_render_flow_lines.cpp
+    test_render_flow_tracers.cpp
+    test_render_flow_draw.cpp
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp
