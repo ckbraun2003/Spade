@@ -56,6 +56,20 @@ TEST(CoreFlowVolume, AWellFormedVolumeValidates) {
     EXPECT_TRUE(ok.has_value()) << ok.error().context;
 }
 
+// The extrapolated count is in cells, at most nx ny nz: every cell may be
+// extrapolated, one more cannot be (L6).
+TEST(CoreFlowVolume, TheExtrapolatedCellCountIsBoundedByTheCells) {
+    FlowVolume v = make_volume();
+    v.header.extrapolated_cells = 2u * 3u * 4u;
+    const spade::Result<void> ok = spade::validate_flow_volume(v);
+    EXPECT_TRUE(ok.has_value()) << ok.error().context;
+    v.header.extrapolated_cells = 2u * 3u * 4u + 1u;
+    const spade::Result<void> r = spade::validate_flow_volume(v);
+    ASSERT_FALSE(r.has_value()) << "an extrapolated count past the volume's cells must be refused";
+    EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(r.error().context.find("extrapolated"), std::string::npos) << r.error().context;
+}
+
 // L6: each malformation is refused by name, never drawn in part.
 TEST(CoreFlowVolume, AMalformedVolumeIsRefused) {
     const auto refused = [](const FlowVolume& volume, const char* what) {

@@ -66,6 +66,11 @@ struct FlowVolumeHeader {
     std::array<float, kFlowChannelCount> channel_min{};
     std::array<float, kFlowChannelCount> channel_max{};
     uint32_t no_data = 0;  // samples written as fp16::kNoDataBits, both textures together
+    // CELLS (not halves) inside a solid that were written from their fluid
+    // side: the first solid layer takes the mean of its fluid face-neighbours,
+    // so a surface pressure coefficient reads the wall pressure. They are
+    // extrapolated, not solved; a reader may say so. At most nx ny nz.
+    uint32_t extrapolated_cells = 0;
 };
 
 struct FlowVolume {
@@ -91,7 +96,8 @@ struct FlowVolume {
 // invalid_argument for a zero dimension, dimensions whose half count
 // overflows, a cell that is not finite and positive, an origin that is not
 // finite, a texture of the wrong size, a no-data count past the volume's
-// halves, or a channel range that is not finite with min <= max.
+// halves, an extrapolated count past its cells, or a channel range that is
+// not finite with min <= max.
 [[nodiscard]] inline Result<void> validate_flow_volume(const FlowVolume& volume) {
     const FlowVolumeHeader& h = volume.header;
     const auto refuse = [](const std::string& why) {
@@ -124,6 +130,10 @@ struct FlowVolume {
     if (h.no_data > 2u * halves) {
         return refuse("its no-data count " + std::to_string(h.no_data) + " is past its " +
                       std::to_string(2u * halves) + " halves");
+    }
+    if (const uint64_t cells = halves / kFlowHalvesPerCell; h.extrapolated_cells > cells) {
+        return refuse("its extrapolated count " + std::to_string(h.extrapolated_cells) + " is past its " +
+                      std::to_string(cells) + " cells");
     }
     for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
         const float lo = h.channel_min[c];
