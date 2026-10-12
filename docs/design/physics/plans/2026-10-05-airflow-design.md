@@ -89,6 +89,7 @@ A vehicle outside every airflow box reads Dryden, and its sources are dropped (�
 
 - **Real-time tier:** `h_f = j · dt`, with `j ≥ 1` in the configuration (hashed). The fluid step runs in Fields of substep 0 of every `j`-th step. Bodies sample the latest fluid field at their current position every substep, so positions move at substep rate and the air at fluid rate.
 - **LBM tier:** `m` LBM steps per physics substep, `m = ceil(u_design · h / (u_lat,max · dx))`, fixed at `create()`.
+- **Rotating blades** (amended 2026-10-12 with Core's stage 7 design §4.1, signed by Cameron). The actuator line and blade-resolved rotors (`PHY-10`) need a second cadence: `m_f` fluid sub-steps per physics substep, `m_f ≥ ceil(ω_design · h / Δψ_max)` with the blade tip moving at most about one cell per fluid step. `m_f` is fixed at `create()` and hashed. The disc keeps `h_f = j · dt`.
 
 **Why a fixed multiple, not adaptive CFL.** A count chosen from the state's maximum speed is deterministic per device (a max is exact), but a CPU and a GPU run would pick different counts near a boundary, and the recorded command buffer cannot change its dispatch count per submit. Instead:
 - the backtrace is subdivided at `create()` so each segment moves at most one cell at the declared design speed `u_design` (default 30 m/s; `n_trace = ceil(u_design · h_f / dx)`);
