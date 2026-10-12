@@ -386,6 +386,10 @@ void add_model_issues(const AirframeSpec& s, Issues& out) {
                     out.add("imus", i.index, i.field, i.message);
                 }
                 break;
+            case E::part:
+                // The compile emits no parts yet; listed as given until Task A4 maps them.
+                out.add("parts", i.index, i.field, i.message);
+                break;
         }
     }
 }

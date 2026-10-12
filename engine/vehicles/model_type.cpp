@@ -50,7 +50,8 @@ std::vector<ModelIssue> ModelType::issues() const {
     using E = ModelIssue::Element;
     std::vector<ModelIssue> out;
     const auto add = [&out](E element, std::size_t index, const char* field, std::string message) {
-        out.push_back(ModelIssue{element, index, field, std::move(message)});
+        out.push_back(ModelIssue{
+            .element = element, .index = index, .field = field, .message = std::move(message), .code = Code::invalid_argument});
     };
 
     if (name.empty()) add(E::model, 0, "name", "model type: name must not be empty");

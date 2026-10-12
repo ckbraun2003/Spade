@@ -20,6 +20,7 @@
 #include "vehicles/quadrotor.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -116,6 +117,50 @@ TEST(ModelSnapshot, AVisualRefDoesNotEnterTheIdentity) {
     const spade::vehicles::ModelType other[] = {dressed};
     EXPECT_EQ(spade::vehicles::model_registry_identity(one), spade::vehicles::model_registry_identity(other))
         << "visual_ref is render data (L5); it never reaches the step";
+}
+
+// CORE-7: parts are not folded until a step reads them (stage 7), so a v3 blob
+// taken before a model gained parts restores into a registry where it has
+// them. Green at red: a pin of "every stored v3 blob restores".
+TEST(ModelSnapshot, ABlobRestoresAfterTheModelsGainParts) {
+    auto source = with_models({quad("a")});
+    ASSERT_TRUE(source.step(3).has_value());
+    const auto blob = source.snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+
+    spade::SdfProgram box;
+    box.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode node{};
+    node.kind = static_cast<uint32_t>(spade::SdfPrim::box);
+    node.params = glm::vec4(0.05f, 0.02f, 0.05f, 0.0f);
+    box.nodes.push_back(node);
+    using spade::vehicles::PartAttach;
+    using spade::vehicles::PartDesc;
+    using spade::vehicles::PartSurface;
+    spade::vehicles::ModelType dressed = quad("a");
+    dressed.parts.push_back(PartDesc{
+        .name = "frame",
+        .role = "body",
+        .attach = PartAttach::body,
+        .rotor = 0,
+        .mount_pos = glm::vec3(0.0f),
+        .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        .shape = box,
+        .surface = PartSurface{.kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
+        .min_feature = 0.004f});
+    dressed.parts.push_back(PartDesc{
+        .name = "canopy",
+        .role = "body",
+        .attach = PartAttach::body,
+        .rotor = 0,
+        .mount_pos = glm::vec3(0.0f, 0.04f, 0.0f),
+        .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        .shape = box,
+        .surface = PartSurface{.kind = PartSurface::Kind::porous, .inv_permeability = 1.0e6f, .inertial_coeff = 20.0f},
+        .min_feature = 0.004f});
+    auto target = with_models({dressed});
+    const auto restored = target.restore(*blob);
+    EXPECT_TRUE(restored.has_value()) << (restored ? "" : restored.error().context);
 }
 
 TEST(ModelSnapshot, TheDesignFrameEntersTheIdentity) {
