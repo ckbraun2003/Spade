@@ -67,6 +67,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
     - **(ii)** the fluid-substep rule is one function: the flow CFL, plus the actuator line's tip rule (at most 1 cell per step). The harness calls it and never copies it;
     - **(iii)** the rotor model per rotor (disc, line, resolved) and the surface per body or part (wall, or porous with its two coefficients) are plain data, so the panel binds to them;
     - **(iv)** the flow-volume publish (8b) is callable per frame.
+  - **No libm transcendental anywhere in P7** (`TD-3`): the blade azimuth, swirl and any trigonometry go through `core/fp32_math`, and `sqrt` is fine. Test/Docs' T3 golden of the coupler is pinned on MSVC and gcc and final on a fresh `-NoSeed` leg, so P7 is built this way from the start.
 - **P8. The flow volume on the GPU.** Pack f16 on the device, or read back fp32 and pack on the CPU, whichever the spike measures cheaper. It is part of plan B (Core: no plan held it).
 - **P9. Rotor validation data**, with provenance, reviewed by Test/Docs like Ghia. The candidates, each to be read from its source:
   - Caradonna & Tung (1981, NASA TM 81232): blade pressure and tip-vortex positions in hover, at the low-Mach condition. Incompressible at tip Mach 0.44, about a 10% compressibility caveat, stated.
