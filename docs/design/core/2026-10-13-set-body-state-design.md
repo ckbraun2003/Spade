@@ -81,6 +81,7 @@ The call ends with `mark_vulkan_dirty()`, like `apply_wrench()` (`simulation.cpp
 8. **Bad arguments (Kat 6).** Every refusal in §2: NaN and Inf in each field; \|q\| just outside each bound, and 0; a null, stale, foreign or despawn-queued ref; a buried pose; poisoned (with `step()`'s text). After each, `state_digest` is unchanged.
 9. **Restore after a set (Kat 7: the return to spawn is Kat-side only).** Our half: snapshot, set, step, restore, and the state equals the snapshot's. Also: a snapshot taken after a set restores the set state.
 10. **CPU and GPU agree after a set**, within the parity bands (`engine/testing/parity.hpp`).
+12. **The |q| edge (the lead, once Runtime confirms 1 ± 2e-6).** A quaternion Kat accepts, built in double at |q| = 1 + 0.99e-6 and converted to fp32 as kat_host_spade does, is accepted here; one at 1 ± 2.5e-6 is refused.
 11. **Census (the lead's Q4 guard).** Every per-body array of the standard set is listed and classified "kept" or "cleared". An unlisted per-body array fails the test by name.
 
 ## 7. Open questions
