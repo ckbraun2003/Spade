@@ -107,7 +107,7 @@ FlowValue sample_quantity(const FlowSampler& sampler, FlowQuantity quantity, glm
         case FlowQuantity::q_hat:
             return sample_channel(sampler, kFlowQHat, p);
         case FlowQuantity::lambda2_hat:
-            break;  // RED: not yet sampled
+            return sample_channel(sampler, kFlowLambda2Hat, p);
     }
     return FlowValue{0.0f, true};
 }

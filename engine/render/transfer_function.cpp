@@ -26,7 +26,7 @@ namespace {
         case FlowQuantity::q_hat:
             return kFlowQHat;
         case FlowQuantity::lambda2_hat:
-            break;  // RED: not yet read
+            return kFlowLambda2Hat;
         case FlowQuantity::speed:
             break;
     }
