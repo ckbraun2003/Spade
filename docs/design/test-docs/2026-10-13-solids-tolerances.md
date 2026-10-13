@@ -19,7 +19,7 @@ Every reference here is exact: an analytic solution of the equations the solver 
 
 **Reference.** Potential flow past a sphere of radius `R` in a stream `U` (Batchelor 1967, *An Introduction to Fluid Dynamics*, ch. 6), evaluated in double at each sample point. With `a = (R/r)³`: `u_r = U cos ϑ (1 − a)`, `u_ϑ = −U sin ϑ (1 + a/2)`, `C_p = 1 − |u|²/U²`. On the surface that is `1 − (9/4) sin²ϑ`. The steady force is zero (d'Alembert). Started impulsively, the same flow gives the sphere an impulse of half its displaced mass times `U` (added-mass coefficient `C_M = ½`).
 
-**Configuration.** Inviscid, with the free-slip option. A cubic box of side `8R` with the sphere's centre at its centre, which is a cell corner, so the apertures are mirror-symmetric on all three axes. Inflow `U` on −x; the other faces open. `U h/dx = 0.1`, `n_v = 16`. `R/dx = 6` (the design's 12 cells per diameter), and `R/dx = 12` for the order check.
+**Configuration.** Inviscid, with the free-slip option. A cubic box of side `8R` with the sphere's centre at its centre, which is a cell corner, so the apertures are mirror-symmetric on all three axes. Inflow `U` on −x; the other faces open. `U h/dx = 0.1`, `n_v = 16`. With solids the projection runs CG preconditioned by a V-cycle, and `n_v` counts its iterations (Physics, 2026-10-13); the solve must reach 10⁻⁴ of its starting residual, and the record prints it. `R/dx = 6` (the design's 12 cells per diameter), and `R/dx = 12` for the order check.
 
 **When it is read: before a wake can form.** An inviscid run on a first-order wall separates numerically on the lee side once the flow has moved a fraction of a radius, and from then on potential flow is the wrong reference.
 - The added-mass impulse is read at step 1. Advecting a uniform field is exact (spec §1.5), so step 1's projection alone turns the uniform stream into the discrete potential flow, and its pressure is the impulse over `h`.
@@ -58,7 +58,7 @@ The design's case, a cylinder spinning in still air, has no closed form before i
 
 **Reference.** A channel of length `L`, periodic along x and holding a uniform `u = U`, is blocked across its whole section by a sheet. One projection must stop the flow, `u ≡ 0`. The pressure impulse `p h` then rises along x at `ρU` per metre and drops by `ρ U L` across the sheet, which is 1D and exact. The force on the sheet is `ρ U L A / h`, with `A` the section.
 
-**Configuration.** Inviscid, `L = 32 dx`, a section of 8 × 8 cells periodic in y and z, and a plate 0.25 `dx` thick across it (a sheet by the design's §4 rule). One step, `n_v = 32` from a cold start. It runs twice, with the sheet on an even fine face plane and on an odd one. The multigrid's coarse faces lie only on even fine planes, so a sheet on an odd plane is invisible to its coarse levels (finding 3).
+**Configuration.** Inviscid, `L = 32 dx`, a section of 8 × 8 cells periodic in y and z, and a plate 0.25 `dx` thick across it (a sheet by the design's §4 rule). One step, `n_v = 32` CG iterations from a cold start. Physics' check that both parities converge to 10⁻³ within 8 iterations is an implementation band under `TD-2` (measured at 4 in its port), not one of these tolerances. It runs twice, with the sheet on an even fine face plane and on an odd one. The multigrid's coarse faces lie only on even fine planes, so a sheet on an odd plane is invisible to its coarse levels (finding 3).
 
 | Measure | Tolerance | Built from |
 |---|---|---|
@@ -77,7 +77,7 @@ The design's case, a cylinder spinning in still air, has no closed form before i
 | Measure | Tolerance | Built from |
 |---|---|---|
 | `Δp` between the cell centres two cells outside each end, over the law's `Δp` | 1 ± 0.005 | The slab's sink is exact: for a face-normal end at any offset, the ramp `s` sums to `L/dx` over the faces. The uniform flow has no other pressure gradient. The splitting factor `1/(1 + s h c)` is at most 10⁻³ off by the configuration. Rounding and the warm solve are under 10⁻⁴ |
-| The same at `h c = 1` | report only | The splitting factor predicts 0.5 (1.0 if finding 1 is taken up) |
+| The same at `h c = 1` | 1 ± 0.005 | Finding 1 is taken up (Physics, 2026-10-13): with `β = 1/(1 + s h c)` in the projection's face weight, the steady drop is exact at any `h`, so the same terms apply |
 
 **Why `h c` is held small.** The sink is applied before the projection, and the projection restores the velocity the sink took. At a steady state `u = u/(1 + s h c) − (h/ρ) ∂p/∂x`, so the pressure gradient is `ρ s c u / (1 + s h c)`, not `ρ s c u`. The drop is low by the factor `1/(1 + s h c)`: a first-order splitting error in `h` that does not go away at steady state.
 
@@ -104,11 +104,13 @@ In a tangential jump, a central difference fakes `|ω|` but leaves `Q` and λ₂
 
 ## Records
 
-S1 to S4 leave records in the shape of `01-verification.md` ("Validation records"), in `tests/data/airflow/records/`: `s1-sphere.md`, `s2-couette.md`, `s3-sheet.md` and `s4-porous.md`. The opening line names the case and its configuration, for example `=== validation record: S1 sphere in a uniform stream, R/dx 6 ===`. Each `tolerance:` line cites this note, for example `<= 0.32 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)`. The order checks and the porous case at `h c = 1` print their own tolerance or `report only`, as above. S5 is a unit test and leaves no record.
+S1 to S4 leave records in the shape of `01-verification.md` ("Validation records"), in `tests/data/airflow/records/`: `s1-sphere.md`, `s2-couette.md`, `s3-sheet.md` and `s4-porous.md`. The opening line names the case and its configuration, for example `=== validation record: S1 sphere in a uniform stream, R/dx 6 ===`. Each `tolerance:` line cites this note, for example `<= 0.32 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)`. The order checks print their own tolerance, or `report only` below their floor, as above. S5 is a unit test and leaves no record.
 
 S1 at `R/dx` 12 (96³, three steps) is opt-in under `SPADE_AIRFLOW_VALIDATION`, like V1's opt-in cases. The rest look small enough for the gate, which Physics' timings settle.
 
 ## What the analysis found (for Physics)
+
+2026-10-13: Physics took up all six, before any run: β in the face weight (1); CG preconditioned by a V-cycle whenever solids exist (3; spec §1.5 had rejected it, so the lead rules on the spec); a mean per closed region, a closed region with a net flux refused, and a new test 9 (4); S5's jumps and S1's added mass (5); and no-slip by a ghost-fluid Dirichlet on φ = 0 (6; Gibou et al. 2002).
 
 1. **The porous sink's steady drop depends on `h`** (S4). Split before the projection, the point-implicit sink leaves a steady drop of `1/(1 + s h c)` of the law's. Take a screen with loss coefficient `k` = 1, modelled as a block 2 cells thick at `dx` = 6 mm: in a 5 m/s stream it has `½ C₂ U` ≈ 200 per second, so at `h` = 1 ms its drop is 17% low. A foam with `K` near 10⁻⁷ m² adds `ν/K` ≈ 150 per second. The fix is to divide the projection's face weight by `(1 + s h c)`, `u = (u* − (h/ρ)∇p) / (1 + s h c)`, the porous counterpart of θ. That makes the steady drop exact at any `h`. Otherwise `h c` needs a refusal or a label. S4 holds `h c ≤ 10⁻³` either way.
 2. **A sphere separates numerically** (S1). An inviscid run on a first-order wall grows a lee-side wake, and potential flow describes it only before that, hence S1's early readings. A late reading would compare against the wrong reference.
