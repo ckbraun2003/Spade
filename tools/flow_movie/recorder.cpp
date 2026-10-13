@@ -253,6 +253,9 @@ spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const
     for (uint32_t y = 0; y < height_; ++y) {
         std::memcpy(rgba.data() + y * row, bottom_first_.data() + (height_ - 1u - y) * row, row);
     }
+    // The march leaves its transmittance in alpha (0 behind an opaque iso):
+    // a frame is a picture, so every pixel is opaque.
+    for (std::size_t p = 3; p < rgba.size(); p += 4u) rgba[p] = 255u;
     return {};
 }
 

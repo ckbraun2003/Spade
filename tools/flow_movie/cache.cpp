@@ -91,14 +91,16 @@ uint32_t cached_frames(const fs::path& dir) {
     return n;
 }
 
-void mark_cache(const fs::path& dir, const std::string& identity) {
-    std::ofstream(dir / "film.txt", std::ios::binary) << identity << '\n';
+void mark_cache(const fs::path& dir, const CacheMark& mark) {
+    std::ofstream(dir / "film.txt", std::ios::binary) << mark.film << '\n' << mark.build << '\n';
 }
 
-bool cache_matches(const fs::path& dir, const std::string& identity) {
+CacheMark read_mark(const fs::path& dir) {
     std::ifstream in(dir / "film.txt", std::ios::binary);
-    std::string line;
-    return static_cast<bool>(std::getline(in, line)) && line == identity;
+    CacheMark mark;
+    std::getline(in, mark.film);
+    std::getline(in, mark.build);
+    return mark;
 }
 
 spade::Result<void> write_state(const fs::path& dir, uint32_t frame, uint64_t step,

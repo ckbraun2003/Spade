@@ -33,10 +33,17 @@ struct FrameLog {
 // How many frames the cache holds, counted from 0 without a gap.
 [[nodiscard]] uint32_t cached_frames(const std::filesystem::path& dir);
 
-// Which film a cache belongs to (a line naming the case, the frame count and
-// the step), so a cache is only ever continued by the film that began it.
-void mark_cache(const std::filesystem::path& dir, const std::string& identity);
-[[nodiscard]] bool cache_matches(const std::filesystem::path& dir, const std::string& identity);
+// Which film a cache belongs to: its case (the case, frames, steps and grid)
+// and the build that simulated it. A cache is only ever continued by its own
+// case AND build; a finished one may be drawn by another build, which its
+// card then names beside the simulating one.
+struct CacheMark {
+    std::string film;
+    std::string build;
+};
+void mark_cache(const std::filesystem::path& dir, const CacheMark& mark);
+// The mark, or empty strings for a cache without one.
+[[nodiscard]] CacheMark read_mark(const std::filesystem::path& dir);
 
 // The solver's state after `frame` was written: the grid's u, v, w, p and the
 // step. One per cache, replaced atomically. read_state() fills a grid made

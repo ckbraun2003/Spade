@@ -8,7 +8,10 @@
 //   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
 //              [--resimulate] [--keep-cache] [--simulate-only]
-//              [--budget-seconds S] [--frame-budget N]
+//              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
+//
+// --cpu draws stills on the CPU renderer, the GL views' reference; --view
+// limits stills to one view.
 //
 // The simulation keeps the solver's state every 20 frames, so a run stopped
 // by --budget-seconds or --frame-budget (exit 3), or by the box, continues
@@ -41,6 +44,7 @@
 #include "views.hpp"
 
 #include "physics/airflow/publish.hpp"
+#include "render/raster_cpu.hpp"
 
 #ifdef FLOW_MOVIE_HAS_ANALYSIS
 #include "analysis/validation.hpp"
@@ -140,15 +144,14 @@ struct Film {
 
 // --- simulate once -------------------------------------------------------------------
 
-// What a cache must have been made by to be continued or used: the film,
-// its frames and steps, its grid, and the build (Physics' and the lead's
-// rule: a snapshot never resumes into another case or commit).
+// The case a cache holds: the film, its frames and steps, and its grid.
+// With the build (build_identity()), what a snapshot must match to be
+// continued (Physics' and the lead's rule: never into another case or commit).
 [[nodiscard]] std::string film_identity(const Film& film) {
     const AirflowCase& c = film.airflow;
     return film.stem + ": " + std::to_string(film.frames) + " frames over " + std::to_string(total_steps(c)) +
            " steps of h " + fixed(c.fluid.h, 6) + " on " + std::to_string(c.shape.nx) + "x" +
-           std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) + " at dx " + fixed(c.shape.dx, 6) + "; " +
-           build_identity();
+           std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) + " at dx " + fixed(c.shape.dx, 6);
 }
 
 constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
@@ -157,7 +160,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 // when it has one. Stops early, with the state written, past `budget_s` of
 // wall time or `frame_budget` new frames (0: no limit). True when every frame
 // is in.
-[[nodiscard]] spade::Result<bool> simulate(const Film& film, const fs::path& cache, const std::string& identity,
+[[nodiscard]] spade::Result<bool> simulate(const Film& film, const fs::path& cache, const CacheMark& mark,
                                            double budget_s, uint32_t frame_budget) {
     const AirflowCase& c = film.airflow;
     auto made = airflow::make_grid(c.shape, c.bc);
@@ -185,7 +188,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         std::printf("[ %s ] continuing after frame %u (step %llu) from %s\n", film.stem.c_str(), *at + 1u,
                     static_cast<unsigned long long>(step), (cache / "state.bin").string().c_str());
     } else {
-        mark_cache(cache, identity);
+        mark_cache(cache, mark);
     }
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
@@ -297,8 +300,30 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 }
 
 // N evenly spaced frames of each view, as PNGs, to look at the shots.
+// One frame on the CPU renderer (raster_cpu), the GL views' reference, as
+// RGBA8 with the top row first.
+[[nodiscard]] spade::Result<void> draw_cpu(const render::RenderScene& scene, const render::Camera& camera,
+                                           const Encoder& encoder, std::vector<uint8_t>& rgba) {
+    std::vector<uint8_t> bgrx(static_cast<std::size_t>(encoder.width) * encoder.height * 4u);
+    render::RenderTarget target{.pixels = std::span<uint8_t>(bgrx), .width = encoder.width,
+                                .height = encoder.height, .stride = encoder.width * 4u};
+    render::RenderOptions options;
+    options.shadows = false;
+    options.overlays = false;
+    if (auto drew = render::render(scene, camera, options, target); !drew) return drew;
+    rgba.resize(bgrx.size());
+    for (std::size_t p = 0; p < bgrx.size(); p += 4u) {
+        rgba[p] = bgrx[p + 2u];
+        rgba[p + 1u] = bgrx[p + 1u];
+        rgba[p + 2u] = bgrx[p];
+        rgba[p + 3u] = 255u;
+    }
+    return {};
+}
+
 [[nodiscard]] spade::Result<void> render_stills(const Film& film, const fs::path& cache, GlStage& stage,
-                                                const Encoder& encoder, const fs::path& dir, uint32_t stills) {
+                                                const Encoder& encoder, const fs::path& dir, uint32_t stills,
+                                                bool cpu, const std::string& only_view) {
     spade::FlowVolume volume;
     FrameLog log;
     std::vector<uint8_t> rgba;
@@ -308,11 +333,17 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const uint32_t k = stills <= 1u ? film.frames - 1u : s * (film.frames - 1u) / (stills - 1u);
         if (auto read = read_frame(cache, k, volume, log); !read) return read;
         for (const View& view : film.views) {
+            if (!only_view.empty() && view.name != only_view) continue;
             render::RenderScene scene = dark_scene(volume);
             render::Camera camera;
             if (auto shot = view.shot(volume, k, film.frames, scene, camera); !shot) return shot;
-            if (auto drew = stage.draw(scene, camera, rgba); !drew) return drew;
-            const fs::path png = dir / (film.stem + "-" + view.name + "-" + std::to_string(k) + ".png");
+            if (cpu) {
+                if (auto drew = draw_cpu(scene, camera, encoder, rgba); !drew) return drew;
+            } else if (auto drew = stage.draw(scene, camera, rgba); !drew) {
+                return drew;
+            }
+            const fs::path png =
+                dir / (film.stem + "-" + view.name + "-" + std::to_string(k) + (cpu ? "-cpu" : "") + ".png");
             if (auto saved = save_png(encoder, rgba, png); !saved) return saved;
             std::printf("still: %s (t %s)\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str());
         }
@@ -361,14 +392,16 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     const float speed_max = 12.0f;  // the far wake: about 2 v_h = 10.7 m/s
     const glm::vec3 target(0.0f, -0.3f, 0.0f);
     const auto speed_colours = colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, speed_max);
-    const auto orbit_at = [target](uint32_t k, uint32_t n) { return orbit(target, 1.9f, sweep_azimuth(25.0f, 90.0f, k, n), 18.0f); };
+    const auto orbit_at = [target](uint32_t k, uint32_t n) {
+        return orbit(target, 1.4f, sweep_azimuth(25.0f, 90.0f, k, n), 18.0f);
+    };
     film.views.push_back(View{
         "lambda2", "lambda2 vortex surfaces (lambda2 from the published velocity), coloured by speed |u|, 0 to 12 m/s",
         [q, speed_colours, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                      render::Camera& camera) -> spade::Result<void> {
             render::IsoSurface iso;
             iso.quantity = render::FlowQuantity::lambda2_hat;
-            iso.value = -60.0f;
+            iso.value = -120.0f;  // lambda2-hat in 1/s; the wake's cores reach about -600
             iso.colour_by = speed_colours;
             scene.flow_layers.push_back(render::FlowLayer{&v, {}, {iso}});
             add_rims(scene, q);
@@ -422,7 +455,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
             if (auto ok = add_streamlines(scene, v, seeds, options, speed_colours); !ok) return ok;
             add_rims(scene, q);
             // Straight down the axis but for 10 degrees: +x right, -z up.
-            camera = orbit(glm::vec3(0.0f, 0.0f, 0.0f), 0.85f, 0.0f, 80.0f);
+            camera = orbit(glm::vec3(0.0f, 0.0f, 0.0f), 0.6f, 0.0f, 80.0f);
             return {};
         }});
     film.views.push_back(View{
@@ -442,7 +475,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
                 return ok;
             }
             add_rims(scene, q);
-            camera = orbit(plane.center, 1.75f, 0.0f, 0.0f);
+            camera = orbit(plane.center, 1.55f, 0.0f, 0.0f);
             return {};
         }});
     return film;
@@ -603,6 +636,8 @@ struct Options {
     bool resimulate = false;
     bool keep_cache = false;
     bool simulate_only = false;
+    bool cpu = false;  // stills on the CPU renderer instead of GL
+    std::string view;  // stills of this view only
     double budget_seconds = 0.0;  // 0: none
     uint32_t frame_budget = 0;    // 0: none
 };
@@ -629,20 +664,24 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
 [[nodiscard]] spade::Result<std::optional<std::vector<fs::path>>> run_film(const Film& film, const Options& opt,
                                                                            GlStage& stage, const Encoder& encoder) {
     const fs::path cache = opt.out / "cache" / film.stem;
-    const std::string identity = film_identity(film);
+    const CacheMark mine{film_identity(film), build_identity()};
     std::error_code ec;
     if (opt.resimulate) fs::remove_all(cache, ec);
-    if (fs::exists(cache, ec) && !fs::is_empty(cache, ec) && !cache_matches(cache, identity)) {
-        std::ifstream marker(cache / "film.txt", std::ios::binary);
-        std::string theirs;
-        std::getline(marker, theirs);
-        return std::unexpected(spade::Error{
-            spade::Code::invalid_argument,
-            "the cache " + cache.string() + " belongs to another film or build (\"" + theirs + "\"); this run is \"" +
-                identity + "\". --resimulate starts it again"});
+    const bool started = fs::exists(cache, ec) && !fs::is_empty(cache, ec);
+    const bool finished = started && cached_frames(cache) == film.frames && !fs::exists(cache / "state.bin", ec);
+    const CacheMark theirs = read_mark(cache);
+    const auto refuse_cache = [&](const std::string& what, const std::string& found, const std::string& wanted) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument,
+                                            "the cache " + cache.string() + " holds another " + what + " (\"" +
+                                                found + "\"); this run is \"" + wanted +
+                                                "\". --resimulate starts it again"});
+    };
+    if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
+    if (started && !finished && theirs.build != mine.build) {
+        return refuse_cache("build's unfinished simulation", theirs.build, mine.build);
     }
-    if (cached_frames(cache) != film.frames || fs::exists(cache / "state.bin", ec)) {
-        auto done = simulate(film, cache, identity, opt.budget_seconds, opt.frame_budget);
+    if (!finished) {
+        auto done = simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
         if (!done) return std::unexpected(done.error());
         if (!*done) return std::optional<std::vector<fs::path>>{};
     } else {
@@ -650,7 +689,7 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     }
     if (opt.simulate_only) return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     if (opt.stills > 0u) {
-        if (auto drew = render_stills(film, cache, stage, encoder, opt.out / "stills", opt.stills); !drew) {
+        if (auto drew = render_stills(film, cache, stage, encoder, opt.out / "stills", opt.stills, opt.cpu, opt.view); !drew) {
             return std::unexpected(drew.error());
         }
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
@@ -671,9 +710,18 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     return e.code == spade::Code::unavailable ? kExitUnavailable : 1;
 }
 
+// The builds behind a film's frames: the one that simulated them (its cache's
+// mark) and, when different, the one drawing them.
+[[nodiscard]] std::string builds_line(const Film& film, const fs::path& out) {
+    const CacheMark mark = read_mark(out / "cache" / film.stem);
+    const std::string drawn = build_identity();
+    if (mark.build.empty() || mark.build == drawn) return "this clip: " + drawn;
+    return "this clip: simulated on " + mark.build + "; drawn on " + drawn;
+}
+
 // A film's card: its name, settings and record, on a still frame.
 [[nodiscard]] spade::Result<fs::path> film_card(const Encoder& encoder, const fs::path& dir, const Film& film,
-                                                double seconds) {
+                                                double seconds, const std::string& builds) {
     const CaptionText extra = film.captions && false ? CaptionText{} : CaptionText{};
     std::vector<std::string> top{film.airflow.settings};
     if (film.stem == "quad-wake") {
@@ -682,7 +730,7 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     }
     (void)extra;
     std::vector<std::string> bottom = film.record;
-    bottom.push_back("this clip: " + build_identity());
+    bottom.push_back(builds);
     return title_card(encoder, dir, film.stem + "-title", seconds, layout(film.airflow.name, top, bottom));
 }
 
@@ -739,6 +787,10 @@ int main(int argc, char** argv) {
             opt.resimulate = true;
         } else if (arg == "--keep-cache") {
             opt.keep_cache = true;
+        } else if (arg == "--cpu") {
+            opt.cpu = true;
+        } else if (arg == "--view") {
+            opt.view = value();
         } else if (arg == "--simulate-only") {
             opt.simulate_only = true;
         } else if (arg == "--budget-seconds") {
@@ -762,6 +814,7 @@ int main(int argc, char** argv) {
         encoder.width = 640;
         encoder.height = 360;
     }
+
     if (auto ok = check_ffmpeg(encoder); !ok) return fail(ok.error());
     auto stage = GlStage::create(encoder.width, encoder.height);
     if (!stage) return fail(stage.error());
@@ -815,11 +868,12 @@ int main(int argc, char** argv) {
         if (!opening) return fail(opening.error());
         parts.push_back(*opening);
         for (const auto& item : reel) {
+            const std::string builds = builds_line(*item.film, opt.out);  // before the cache goes
             auto clips = run_film(*item.film, opt, **stage, encoder);
             if (!clips) return fail(clips.error());
             if (!*clips) return kExitIncomplete;
             if (opt.stills > 0u || opt.simulate_only) continue;
-            auto card = film_card(encoder, opt.out / "clips", *item.film, 5.0);
+            auto card = film_card(encoder, opt.out / "clips", *item.film, 5.0, builds);
             if (!card) return fail(card.error());
             parts.push_back(*card);
             parts.insert(parts.end(), (*clips)->begin(), (*clips)->end());
@@ -839,11 +893,12 @@ int main(int argc, char** argv) {
     }
 
     for (const Film& film : films) {
+        const std::string builds = builds_line(film, opt.out);  // before the cache goes
         auto clips = run_film(film, opt, **stage, encoder);
         if (!clips) return fail(clips.error());
         if (!*clips) return kExitIncomplete;
         if (opt.stills > 0u || opt.simulate_only) continue;
-        auto card = film_card(encoder, opt.out / "clips", film, opt.video == "smoke" ? 0.2 : 4.0);
+        auto card = film_card(encoder, opt.out / "clips", film, opt.video == "smoke" ? 0.2 : 4.0, builds);
         if (!card) return fail(card.error());
         std::vector<fs::path> parts{*card};
         for (const fs::path& clip : **clips) parts.push_back(clip);
