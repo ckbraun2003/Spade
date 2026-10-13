@@ -1883,3 +1883,65 @@ TEST(AirframeCompile, AnAllMeshAirframeWithoutADragSpecNamesTheFirstMesh) {
     ASSERT_TRUE(c.has_value()) << c.error().context;
     EXPECT_EQ(c->model.parts.size(), 3u) << "three mesh parts; the blocks are unshaped";
 }
+
+// THE TENSOR'S CONVENTION, END TO END (Physics' ask, 2026-10-13). A box's
+// tensor is diagonal in its own axes; a corner tetrahedron's is not. The
+// tetrahedron (0, s e_x, s e_y, s e_z), s = 1/16, has volume s^3 / 6 and
+// centroid s/4 (1, 1, 1), and about the centroid, per unit density, s^5/80
+// on the diagonal and +s^5/480 off it: minus the integral of xy, which is
+// -s^5/480 there (tests/test_mesh_mass.cpp's ACornerTetrahedronIsShiftedTo
+// ItsCentroid works it by hand). As a mesh record it compiles to the body of
+// a hand-entered PartShape::tensor record of the same mass, centre and
+// textbook tensor times rho, so a product of the wrong sign, or a tensor
+// read in the wrong frame, fails the compile here, not only in mesh_mass.
+// Unturned, the composite's float outputs agree bit for bit; turned off
+// every axis, within a few float ulps; the double tensor within B3's bound
+// either way.
+TEST(AirframeCompile, AMeshTensorWithProductsCompilesAsTheTextbookTensor) {
+    const double s = 0.0625;
+    spade::MeshInput in;
+    in.unit = spade::MeshUnit::metre;
+    in.positions = {glm::dvec3(0.0), glm::dvec3(s, 0.0, 0.0), glm::dvec3(0.0, s, 0.0), glm::dvec3(0.0, 0.0, s)};
+    in.indices = {0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3};
+    const MeshPtr tetrahedron = mesh_of(in);
+    ASSERT_NE(tetrahedron, nullptr);
+    const double s5 = s * s * s * s * s;
+    glm::dmat3 textbook(0.0);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) textbook[i][j] = i == j ? s5 / 80.0 : s5 / 480.0;
+    }
+
+    const glm::dvec3 at(0.03125, 0.015625, -0.03125);
+    struct Case {
+        glm::dquat q;
+        bool bit_exact;
+        const char* what;
+    };
+    const std::array<Case, 2> cases = {{
+        {kIdentity, true, "unturned"},
+        {glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25)), false, "turned off every axis"},
+    }};
+    for (const Case& c : cases) {
+        AirframeSpec mesh_spec = with_drag(reference_quad());
+        mesh_spec.parts.push_back(mesh_record(tetrahedron, kCanopyDensity, at, c.q, "wedge"));
+        PartInertia hand;
+        hand.mass = kCanopyDensity * (s * s * s / 6.0);
+        hand.position = at + glm::mat3_cast(glm::normalize(c.q)) * glm::dvec3(s / 4.0);
+        hand.orientation = c.q;
+        hand.shape = PartShape::tensor;
+        hand.tensor = kCanopyDensity * textbook;
+        hand.geometry = PartGeometrySpec{.source = GeometrySource::none, .name = "wedge", .role = {}};
+        AirframeSpec hand_spec = with_drag(reference_quad());
+        hand_spec.parts.push_back(hand);
+
+        const auto mesh = compile_airframe(mesh_spec);
+        const auto want = compile_airframe(hand_spec);
+        ASSERT_TRUE(mesh.has_value()) << c.what << ": " << mesh.error().context;
+        ASSERT_TRUE(want.has_value()) << c.what << ": " << want.error().context;
+        // The wedge gives the composite products of inertia (the reference
+        // quad alone has none); its own, about 2.5e-6 kg m^2, are far above
+        // the tolerance, so their sign is pinned.
+        ASSERT_GT(std::abs(want->inertia.inertia_design[0][1]), 1e-8) << c.what;
+        expect_same_body(*mesh, *want, c.bit_exact, c.what);
+    }
+}
