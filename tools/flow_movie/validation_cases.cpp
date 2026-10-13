@@ -68,7 +68,7 @@ AirflowCase smoke_case() {
     c.discs = {airflow::ActuatorDisc{.centre = {0.6f, 0.9f, 0.6f}, .axis = {0.0f, -1.0f, 0.0f},
                                      .radius = 0.2f, .thrust = 1.2f}};
     c.spins = {0};
-    c.t_end = 20.0f * c.fluid.h;
+    c.t_end = 60.0f * c.fluid.h;
     return c;
 }
 

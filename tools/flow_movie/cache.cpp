@@ -38,18 +38,24 @@ template <class T>
 spade::Result<void> write_frame(const fs::path& dir, uint32_t frame, const spade::FlowVolume& volume,
                                 const FrameLog& log) {
     const fs::path path = frame_path(dir, frame);
-    std::ofstream out(path, std::ios::binary);
-    if (!out) return refuse("cannot write " + path.string());
-    out.write(kMagic, sizeof kMagic);
-    put(out, volume.header);
-    put(out, log.step);
-    put(out, log.time);
-    put(out, static_cast<uint64_t>(log.live.size()));
-    for (const double x : log.live) put(out, x);
-    put(out, static_cast<uint64_t>(volume.v.size()));
-    out.write(reinterpret_cast<const char*>(volume.v.data()), static_cast<std::streamsize>(volume.v.size() * 2u));
-    out.write(reinterpret_cast<const char*>(volume.s.data()), static_cast<std::streamsize>(volume.s.size() * 2u));
-    if (!out) return refuse("writing " + path.string() + " failed");
+    const fs::path tmp = dir / "frame.tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        if (!out) return refuse("cannot write " + tmp.string());
+        out.write(kMagic, sizeof kMagic);
+        put(out, volume.header);
+        put(out, log.step);
+        put(out, log.time);
+        put(out, static_cast<uint64_t>(log.live.size()));
+        for (const double x : log.live) put(out, x);
+        put(out, static_cast<uint64_t>(volume.v.size()));
+        out.write(reinterpret_cast<const char*>(volume.v.data()), static_cast<std::streamsize>(volume.v.size() * 2u));
+        out.write(reinterpret_cast<const char*>(volume.s.data()), static_cast<std::streamsize>(volume.s.size() * 2u));
+        if (!out) return refuse("writing " + tmp.string() + " failed");
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);  // atomic: a frame is whole or absent
+    if (ec) return refuse("cannot write " + path.string() + ": " + ec.message());
     return {};
 }
 
@@ -83,6 +89,56 @@ uint32_t cached_frames(const fs::path& dir) {
     std::error_code ec;
     while (fs::exists(frame_path(dir, n), ec)) ++n;
     return n;
+}
+
+void mark_cache(const fs::path& dir, const std::string& identity) {
+    std::ofstream(dir / "film.txt", std::ios::binary) << identity << '\n';
+}
+
+bool cache_matches(const fs::path& dir, const std::string& identity) {
+    std::ifstream in(dir / "film.txt", std::ios::binary);
+    std::string line;
+    return static_cast<bool>(std::getline(in, line)) && line == identity;
+}
+
+spade::Result<void> write_state(const fs::path& dir, uint32_t frame, uint64_t step,
+                                const spade::physics::airflow::MacGrid& g) {
+    const fs::path tmp = dir / "state.tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary);
+        if (!out) return refuse("cannot write " + tmp.string());
+        out.write(kMagic, sizeof kMagic);
+        put(out, frame);
+        put(out, step);
+        for (const std::vector<float>* f : {&g.u, &g.v, &g.w, &g.p}) {
+            put(out, static_cast<uint64_t>(f->size()));
+            out.write(reinterpret_cast<const char*>(f->data()), static_cast<std::streamsize>(f->size() * 4u));
+        }
+        if (!out) return refuse("writing " + tmp.string() + " failed");
+    }
+    std::error_code ec;
+    fs::rename(tmp, dir / "state.bin", ec);  // atomic: a kill leaves the old state or the new
+    if (ec) return refuse("cannot replace " + (dir / "state.bin").string() + ": " + ec.message());
+    return {};
+}
+
+spade::Result<uint32_t> read_state(const fs::path& dir, uint64_t& step, spade::physics::airflow::MacGrid& g) {
+    const fs::path path = dir / "state.bin";
+    std::ifstream in(path, std::ios::binary);
+    char magic[sizeof kMagic] = {};
+    uint32_t frame = 0;
+    if (!in || !in.read(magic, sizeof magic) || !std::equal(magic, magic + sizeof magic, kMagic) || !get(in, frame) ||
+        !get(in, step)) {
+        return refuse(path.string() + " is not a solver state");
+    }
+    for (std::vector<float>* f : {&g.u, &g.v, &g.w, &g.p}) {
+        uint64_t n = 0;
+        if (!get(in, n) || n != f->size()) return refuse(path.string() + ": a field's size is not this grid's");
+        if (!in.read(reinterpret_cast<char*>(f->data()), static_cast<std::streamsize>(n * 4u))) {
+            return refuse(path.string() + ": short");
+        }
+    }
+    return frame;
 }
 
 }  // namespace flow_movie
