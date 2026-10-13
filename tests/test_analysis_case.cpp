@@ -168,10 +168,18 @@ TEST(AnalysisCase, ItsOwnFieldsAreCheckedByName) {
     };
     refused([](an::AnalysisCase& c) { c.controls.throttle = 1.5f; }, "controls.throttle");
     refused([](an::AnalysisCase& c) { c.grid.nests = 4; }, "grid.nests");
-    refused([](an::AnalysisCase& c) { c.flight = an::Flight{.kind = an::FlightKind::hover, .speed = 2.0f}; },
-            "flight.speed");
-    refused([](an::AnalysisCase& c) { c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 0.0f}; },
-            "flight.speed");
+    refused(
+        [](an::AnalysisCase& c) {
+            c.flight = an::Flight{
+                .kind = an::FlightKind::hover, .speed = 2.0f, .heading_deg = 0.0f, .floor_height = std::nullopt};
+        },
+        "flight.speed");
+    refused(
+        [](an::AnalysisCase& c) {
+            c.flight = an::Flight{
+                .kind = an::FlightKind::forward, .speed = 0.0f, .heading_deg = 0.0f, .floor_height = std::nullopt};
+        },
+        "flight.speed");
     refused([](an::AnalysisCase& c) { c.flight.floor_height = 0.0f; }, "flight.floor_height");
     refused([](an::AnalysisCase& c) { c.grid.spacing = 0.0f; }, "grid.spacing");
     refused([](an::AnalysisCase& c) { c.time.startup = c.time.duration; }, "time.startup");
