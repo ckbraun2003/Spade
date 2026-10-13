@@ -2,22 +2,26 @@
 // parts and meshes plan, Task A1). ModelType::parts holds named, mounted,
 // exact SDF parts with a wall or porous surface. issues() refuses a bad part
 // by its index, its name and the field at fault, and validate() returns the
-// first issue's own code. Parts are not folded into the model identity until a
-// step reads them (stage 7).
+// first issue's own code. Parts are never folded into the model identity.
 //
 // Task B4 (CORE-6, import only): a part's geometry is an SdfProgram OR a
 // triangle mesh, exactly one, and part_sample() reads either through the
 // same {distance, gradient} contract. The mesh expectations are the boxes'
 // own coordinates and the SDF box beside them (TD-4).
+//
+// parts_identity() (vehicles/model_identity.hpp) is the parts' own identity,
+// the one an Interface CFD case pins beside model_identity.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -298,7 +302,8 @@ TEST(ModelParts, EachPartRefusalNamesThePartAndItsField) {
 }
 
 TEST(ModelParts, PartsLeaveTheModelIdentityAlone) {
-    // CORE-7: not folded until a step reads them (stage 7). Green at red: a pin.
+    // CORE-7: model_identity never folds parts (parts_identity() does), and
+    // the registry identity does not until stage 7. Green at red: a pin.
     const ModelType bare = quad_with({});
     PartDesc canopy = part("canopy");
     canopy.surface = porous(1.0e6f, 20.0f);
@@ -558,12 +563,178 @@ TEST(ModelParts, AMeshPartSamplesAsTheEquivalentSdfPart) {
 }
 
 TEST(ModelParts, AMeshPartLeavesTheIdentityAlone) {
-    // CORE-7: parts are not folded until a step reads them (stage 7), and a
-    // mesh part folds nothing either: stage 7 will fold its content_hash().
-    // Green at red: a pin.
+    // CORE-7: model_identity never folds parts, a mesh part included
+    // (parts_identity() folds its content_hash()), and the registry identity
+    // does not fold them until stage 7. Green at red: a pin.
     const ModelType bare = quad_with({});
     const ModelType dressed = quad_with({part("arm0"), mesh_part("hull", hull_mesh())});
     EXPECT_EQ(spade::vehicles::model_identity(dressed), spade::vehicles::model_identity(bare));
     EXPECT_EQ(spade::vehicles::model_registry_identity(std::vector<ModelType>{dressed}),
               spade::vehicles::model_registry_identity(std::vector<ModelType>{bare}));
+}
+
+// --- parts_identity(): the parts' own identity (TD-9: the one rule) ---------
+
+namespace {
+
+using spade::vehicles::kNoPartsIdentity;
+using spade::vehicles::parts_identity;
+
+// A small fixed model: two SdfProgram parts and one mesh part. Every literal
+// is fixed, so its parts_identity is the same on every toolchain.
+//   arm0  a 1 cm sphere on the body, 9 cm out along +X, turned 90 degrees
+//         about +Z (sqrt(1/2) as a float literal, not a libm call);
+//   bell  on rotor 2, porous: a sphere smooth-unioned with a box 2 cm along
+//         +X (a second transform, written out: world_to_local's translation
+//         column is (-0.02, 0, 0, 1));
+//   hull  the 0.3 x 0.1 x 0.2 m box mesh, 1 cm below the body origin.
+[[nodiscard]] ModelType fixed_parts_model() {
+    PartDesc arm = part("arm0");
+    arm.mount_pos = glm::vec3(0.09f, 0.0f, 0.0f);
+    arm.mount_orient = glm::quat(0.70710677f, 0.0f, 0.0f, 0.70710677f);
+
+    PartDesc bell = part("bell");
+    bell.role = "motor";
+    bell.attach = PartAttach::rotor;
+    bell.rotor = 2;
+    bell.mount_pos = glm::vec3(0.0f, 0.01f, 0.0f);
+    spade::SdfTransform along_x{};
+    along_x.world_to_local[3] = glm::vec4(-0.02f, 0.0f, 0.0f, 1.0f);
+    bell.shape = program({sphere_node(0.01f), box_node(0.008f), op(spade::SdfOp::smooth_union)});
+    bell.shape.transforms.push_back(along_x);
+    bell.shape.nodes[1].transform = 1;
+    bell.shape.nodes[2].params = glm::vec4(0.002f, 0.0f, 0.0f, 0.0f);
+    bell.surface = porous(1.0e6f, 20.0f);
+    bell.min_feature = 0.002f;
+
+    PartDesc hull = mesh_part("hull", hull_mesh());
+    hull.mount_pos = glm::vec3(0.0f, -0.01f, 0.0f);
+
+    return quad_with({arm, bell, hull});
+}
+
+// fixed_parts_model()'s parts_identity: PINNED, and the cross-toolchain
+// check (the gcc leg must reproduce it). Taken from an independent Python
+// port of the fold, written byte by byte from model_identity.hpp's comment
+// before the C++ fold existed (TD-4: not the code's own output read back).
+constexpr uint64_t kFixedPartsIdentity = 0xb493dade88ddc89aull;
+
+}  // namespace
+
+TEST(PartsIdentity, NoPartsIsTheDocumentedConstant) {
+    // kNoPartsIdentity, spelt here independently: FNV-1a 64 over the domain
+    // tag (0xFF, then "parts_identity") and a zero part count (u32 LE).
+    uint64_t h = spade::rng::kFnv1aOffsetBasis;
+    const auto fold = [&h](uint8_t b) {
+        h ^= b;
+        h *= spade::rng::kFnv1aPrime;
+    };
+    fold(0xFF);
+    for (const char c : std::string_view("parts_identity")) fold(static_cast<uint8_t>(c));
+    for (int i = 0; i < 4; ++i) fold(0);
+    EXPECT_EQ(kNoPartsIdentity, h) << std::hex << h;
+    EXPECT_NE(kNoPartsIdentity, 0u) << "0 would read as never computed";
+
+    // Any model with no parts, whatever else it holds: parts alone are folded.
+    ModelType bare = quad_with({});
+    EXPECT_EQ(parts_identity(bare), kNoPartsIdentity) << std::hex << parts_identity(bare);
+    bare.name = "another";
+    bare.body.mass = 2.0f;
+    EXPECT_EQ(parts_identity(bare), kNoPartsIdentity);
+}
+
+TEST(PartsIdentity, AFixedModelHasAPinnedValue) {
+    const ModelType m = fixed_parts_model();
+    ASSERT_TRUE(m.validate().has_value()) << "hash a valid model";
+    EXPECT_EQ(parts_identity(m), kFixedPartsIdentity) << std::hex << parts_identity(m);
+    EXPECT_EQ(parts_identity(m), parts_identity(fixed_parts_model())) << "built twice";
+}
+
+TEST(PartsIdentity, EveryFoldedFieldMovesIt) {
+    const MeshPtr longer = box_mesh(glm::dvec3(0.0), glm::dvec3(0.3, 0.1, 0.21), spade::MeshUnit::metre);
+    const std::vector<std::pair<const char*, std::function<void(ModelType&)>>> changes = {
+        {"a mount shift by one ulp",
+         [](ModelType& m) { m.parts[0].mount_pos.x = std::nextafter(m.parts[0].mount_pos.x, 1.0f); }},
+        {"-0 for +0 in a mount", [](ModelType& m) { m.parts[0].mount_pos.y = -0.0f; }},
+        {"a mount turn by one ulp",
+         [](ModelType& m) { m.parts[0].mount_orient.w = std::nextafter(m.parts[0].mount_orient.w, 0.0f); }},
+        {"a shape parameter", [](ModelType& m) { m.parts[0].shape.nodes[0].params.x = 0.011f; }},
+        {"a node's kind",
+         [](ModelType& m) { m.parts[1].shape.nodes[1].kind = static_cast<uint32_t>(spade::SdfPrim::sphere); }},
+        {"a node's operator",
+         [](ModelType& m) { m.parts[1].shape.nodes[2].op = static_cast<uint32_t>(spade::SdfOp::union_); }},
+        {"a node's transform index", [](ModelType& m) { m.parts[1].shape.nodes[1].transform = 0; }},
+        {"a transform's matrix", [](ModelType& m) { m.parts[1].shape.transforms[1].world_to_local[3][0] = -0.03f; }},
+        {"a transform's scale", [](ModelType& m) { m.parts[1].shape.transforms[1].scale = 2.0f; }},
+        {"a surface coefficient", [](ModelType& m) { m.parts[1].surface.inv_permeability = 2.0e6f; }},
+        {"the other surface coefficient", [](ModelType& m) { m.parts[1].surface.inertial_coeff = 21.0f; }},
+        {"the surface kind", [](ModelType& m) { m.parts[1].surface.kind = PartSurface::Kind::wall; }},
+        {"min_feature", [](ModelType& m) { m.parts[2].min_feature = 0.003f; }},
+        {"a name", [](ModelType& m) { m.parts[0].name = "arm1"; }},
+        {"the role", [](ModelType& m) { m.parts[0].role = "strut"; }},
+        {"the name and role split elsewhere (lengths are folded)",
+         [](ModelType& m) {
+             m.parts[0].name = "arm0a";  // "arm0" + "arm" -> "arm0a" + "rm": the same bytes
+             m.parts[0].role = "rm";
+         }},
+        {"the attach", [](ModelType& m) { m.parts[1].attach = PartAttach::body; }},
+        {"the rotor", [](ModelType& m) { m.parts[1].rotor = 3; }},
+        {"a different mesh", [longer](ModelType& m) { m.parts[2].mesh = longer; }},
+        {"an SDF part made a mesh part",
+         [](ModelType& m) {
+             m.parts[0].shape = spade::SdfProgram{};
+             m.parts[0].mesh = hull_mesh();
+         }},
+        {"two parts swapped", [](ModelType& m) { std::swap(m.parts[0], m.parts[1]); }},
+        {"a part dropped", [](ModelType& m) { m.parts.pop_back(); }},
+    };
+    const uint64_t base = parts_identity(fixed_parts_model());
+    const uint64_t model = spade::vehicles::model_identity(fixed_parts_model());
+    for (const auto& [why, change] : changes) {
+        ModelType m = fixed_parts_model();
+        change(m);
+        EXPECT_NE(parts_identity(m), base) << why;
+        EXPECT_EQ(spade::vehicles::model_identity(m), model) << why << ": model_identity never folds parts";
+    }
+}
+
+TEST(PartsIdentity, ACopyKeepsIt) {
+    const ModelType m = fixed_parts_model();
+    const ModelType copied = m;  // shares the mesh, copies the programs
+    ModelType assigned = quad_with({part("other")});
+    assigned = m;
+    ModelType rebuilt = quad_with({});
+    rebuilt.parts = std::vector<PartDesc>(m.parts.begin(), m.parts.end());
+    for (const ModelType* c : std::vector<const ModelType*>{&m, &copied, &assigned, &rebuilt}) {
+        EXPECT_EQ(parts_identity(*c), kFixedPartsIdentity) << std::hex << parts_identity(*c);
+    }
+}
+
+TEST(PartsIdentity, AMeshIsFoldedByItsContentHash) {
+    // The same triangles, made again by another make_mesh() call: another
+    // TriangleMesh, the same content_hash, the same identity. The same box
+    // authored in millimetres stores the same fp32 metres (make_mesh()
+    // scales once), so it is the same geometry: the unit is not folded.
+    const ModelType m = fixed_parts_model();
+    const MeshPtr again = hull_mesh();
+    const MeshPtr in_mm = box_mesh(glm::dvec3(0.0), glm::dvec3(300.0, 100.0, 200.0), spade::MeshUnit::millimetre);
+    ASSERT_NE(again.get(), m.parts[2].mesh.get());
+    ASSERT_EQ(again->content_hash(), m.parts[2].mesh->content_hash());
+    ASSERT_EQ(in_mm->content_hash(), m.parts[2].mesh->content_hash()) << "the same stored metres";
+    for (const MeshPtr& same : {again, in_mm}) {
+        ModelType remade = m;
+        remade.parts[2].mesh = same;
+        EXPECT_EQ(parts_identity(remade), kFixedPartsIdentity) << std::hex << parts_identity(remade);
+    }
+
+    // Different triangles move it: a box moved by a millimetre, and one a
+    // centimetre longer.
+    for (const MeshPtr& other :
+         {box_mesh(glm::dvec3(0.001, 0.0, 0.0), glm::dvec3(0.3, 0.1, 0.2), spade::MeshUnit::metre),
+          box_mesh(glm::dvec3(0.0), glm::dvec3(0.31, 0.1, 0.2), spade::MeshUnit::metre)}) {
+        ASSERT_NE(other->content_hash(), m.parts[2].mesh->content_hash());
+        ModelType moved = m;
+        moved.parts[2].mesh = other;
+        EXPECT_NE(parts_identity(moved), parts_identity(m));
+    }
 }

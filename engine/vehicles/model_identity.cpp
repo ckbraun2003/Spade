@@ -97,4 +97,8 @@ uint64_t model_registry_identity(std::span<const ModelType> models) noexcept {
     return f.value();
 }
 
+uint64_t parts_identity(const ModelType& /*m*/) noexcept {
+    return 0;  // RED stub
+}
+
 }  // namespace spade::vehicles

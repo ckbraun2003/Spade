@@ -878,3 +878,57 @@ TEST(AirframeCompile, ThePosedReferenceQuadIsSolidWhereItsPartsAre) {
         EXPECT_TRUE(at.velocity == glm::vec3(0.0f)) << p.where << ": the body is at rest";
     }
 }
+
+// model_identity never folds parts (CORE-7, agreed with Interface 2026-10-12):
+// the reference quad's pin above holds whatever parts it carries, and only
+// parts_identity() moves. A CFD case pins the pair.
+TEST(AirframeCompile, PartsMoveOnlyThePartsIdentity) {
+    const auto c = compile_airframe(reference_quad());
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const ModelType& m = c->model;
+    ASSERT_EQ(m.parts.size(), 10u) << "the compile emits parts (A4)";
+    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;  // the pin above
+    EXPECT_EQ(model_identity(m), kPinned) << std::hex << model_identity(m);
+
+    // The compiled quad's parts_identity: PINNED (msvc-ninja-release on
+    // core/parts-identity, 2026-10-12; the gcc leg must reproduce it). It is
+    // the compile's own output read back, a regression pin; the independent
+    // check is PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
+    // The coming motor-offset task moves the motors' mounts, so it moves this
+    // value: a named regeneration, never a silent one.
+    constexpr uint64_t kPartsPinned = 0x2578117f1aa83070ull;
+    EXPECT_EQ(parts_identity(m), kPartsPinned) << std::hex << parts_identity(m);
+    EXPECT_EQ(parts_identity(m), parts_identity(compile_airframe(reference_quad())->model)) << "compiled twice";
+
+    // Without its parts: the constant, and the same model_identity.
+    ModelType bare = m;
+    bare.parts.clear();
+    EXPECT_EQ(model_identity(bare), kPinned);
+    EXPECT_EQ(parts_identity(bare), kNoPartsIdentity) << std::hex << parts_identity(bare);
+
+    // A part changed (an arm's mount, one ulp; the battery's min_feature) or
+    // added (a canopy): parts_identity moves, model_identity does not.
+    ModelType nudged = m;
+    nudged.parts[1].mount_pos.x = std::nextafter(nudged.parts[1].mount_pos.x, 1.0f);
+    ModelType finer = m;
+    finer.parts[9].min_feature = 0.03f;
+    spade::SdfNode canopy_box{};
+    canopy_box.kind = static_cast<uint32_t>(spade::SdfPrim::box);
+    canopy_box.op = static_cast<uint32_t>(spade::SdfOp::none);
+    canopy_box.params = glm::vec4(0.04f, 0.01f, 0.04f, 0.0f);
+    PartDesc canopy{};
+    canopy.name = "canopy";
+    canopy.role = "body";
+    canopy.mount_pos = glm::vec3(0.0f, 0.03f, 0.0f);
+    canopy.shape.transforms.push_back(spade::SdfTransform{});
+    canopy.shape.nodes.push_back(canopy_box);
+    canopy.min_feature = 0.02f;
+    ModelType dressed = m;
+    dressed.parts.push_back(canopy);
+    ASSERT_TRUE(dressed.validate().has_value());
+    for (const ModelType* changed : {&nudged, &finer, &dressed}) {
+        EXPECT_EQ(model_identity(*changed), kPinned) << "parts never enter model_identity";
+        EXPECT_NE(parts_identity(*changed), kPartsPinned);
+        EXPECT_NE(parts_identity(*changed), kNoPartsIdentity);
+    }
+}
