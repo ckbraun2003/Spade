@@ -18,7 +18,9 @@
 //
 // THIS SLICE: the grid, the hold, the time, the frames and the publish. The
 // rotors' commands join with Core's throttle command, the discs with
-// Physics' P7a, and the solids with P2.
+// Physics' P7a, and the solids with P2. Until the rotors are coupled, a
+// model with rotors starts but doesn't step (unavailable, "rotors not
+// coupled yet"), so nothing records still air under a thrusting drone.
 //
 // Long calls: start() and advance_frame(). A host runs them off its GUI
 // thread. A LiveRun is used from one thread at a time.

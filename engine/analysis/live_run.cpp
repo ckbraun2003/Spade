@@ -144,6 +144,15 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
 Result<void> LiveRun::step(const Controls& controls) {
     Impl& r = *impl_;
     if (!r.fault.empty()) return std::unexpected(Error{Code::internal, r.fault});
+    // L6, the lead's condition: until the rotors are coupled, a model with
+    // rotors doesn't step, so no path records still air under a drone that
+    // should be thrusting.
+    if (!r.model.rotors.empty()) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "rotors not coupled yet (P7a, Core's command): the model '" + r.model.name +
+                                         "' has " + std::to_string(r.model.rotors.size()) +
+                                         " rotors, and a live run doesn't step them yet"});
+    }
     const uint64_t now_ns = r.state.steps * r.h_ns;
 
     // The flight, as a program: a point wherever the controls change.
