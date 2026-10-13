@@ -1,6 +1,6 @@
 # Mass from a mesh part's geometry (plan stub)
 
-**Owner:** Core, joint with Physics, which owns the airframe compile and reviews it. **Status:** a STUB for the lead and Physics, slotted right after the motor offset (the lead, 2026-10-13).
+**Owner:** Core, joint with Physics, which owns the airframe compile and reviews it. **Status:** APPROVED by the lead 2026-10-13. Starts after the motor offset merges. The open questions below go as recommended unless Physics objects; Physics' review is pending.
 **Why:** under import-only (`CORE-6`, amended 2026-10-12), CAD meshes are how parts arrive. An imported part's mass, centre of mass and inertia must come from its geometry, from the same record as its solid (`TD-9`: one source). Today the compile takes mesh-part mass only from hand-entered records, so mass and geometry can disagree. Found in Task A5 (`ecaa5c4`); B4 had deferred it to A4, and A4 covered only the analytic shapes.
 **Builds on:** B3's `mesh_mass_properties()` (volume, centroid and inertia about the centroid, per unit density, in double, bit-identical across MSVC and gcc), B4's mesh parts, and A4's `PartGeometrySpec`.
 
