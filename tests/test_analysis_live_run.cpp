@@ -36,6 +36,15 @@ namespace fs = std::filesystem;
     return m;
 }
 
+// The quad without its rotors either: until the rotors are coupled (P7a and
+// Core's throttle command) LiveRun refuses to step a model that has them, so
+// the stepping tests fly a body alone.
+[[nodiscard]] spade::vehicles::ModelType rotorless() {
+    spade::vehicles::ModelType m = quad();
+    m.rotors.clear();
+    return m;
+}
+
 // An 8^3 box of 0.8 m (10 cm cells), stepped every 4 ms: small enough for
 // debug ctest's budget.
 [[nodiscard]] an::AnalysisCase tiny_case(const spade::vehicles::ModelType& m) {
@@ -106,17 +115,33 @@ TEST(AnalysisLiveRun, RefusesACaseWithoutAStep) {
 
 // Whole nanoseconds: 250 steps of 4 ms are exactly 1 s.
 TEST(AnalysisLiveRun, CountsTimeInWholeSteps) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::LiveRun run = started(tiny_case(m), m);
     for (int i = 0; i < 250; ++i) ASSERT_TRUE(run.step(an::Controls{}).has_value());
     EXPECT_EQ(run.state().steps, 250u);
     EXPECT_EQ(run.state().t_s, 1.0);
 }
 
+// No path records still air under a drone that should be thrusting (L6;
+// the lead's condition): a model with rotors starts, but doesn't step, until
+// its rotors are coupled. The commit that couples them removes this test.
+TEST(AnalysisLiveRun, RefusesToStepRotorsBeforeTheyAreCoupled) {
+    const spade::vehicles::ModelType m = quad();
+    an::LiveRun run = started(tiny_case(m), m);
+    const spade::Result<void> step = run.step(an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f});
+    ASSERT_FALSE(step.has_value());
+    EXPECT_EQ(step.error().code, spade::Code::unavailable);
+    EXPECT_NE(step.error().context.find("rotors not coupled yet (P7a, Core's command)"), std::string::npos)
+        << step.error().context;
+    spade::FlowVolume volume;
+    EXPECT_FALSE(run.advance_frame(an::Controls{}, volume).has_value());
+    EXPECT_EQ(run.state().steps, 0u);
+}
+
 // A frame ends at the first step at or past k/30 s: with 4 ms steps, frame 1
 // at step 9 (36 ms, past 33.3 ms) and frame 2 at step 17 (68 ms, past 66.7 ms).
 TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::LiveRun run = started(tiny_case(m), m);
     spade::FlowVolume volume;
     const spade::Result<an::LiveFrame> first = run.advance_frame(an::Controls{}, volume);
@@ -139,7 +164,7 @@ TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {
 // The hold turns the drone toward the controls' attitude at kHoldRateDegPerS,
 // and its rate is the hold's omega_body.
 TEST(AnalysisLiveRun, TheHoldTurnsAtItsRate) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::LiveRun run = started(tiny_case(m), m);
     an::Controls pitch{};
     pitch.pitch_deg = 90.0f;
@@ -160,7 +185,7 @@ TEST(AnalysisLiveRun, TheHoldTurnsAtItsRate) {
 
 // Wind blows through the box; still air stays still with the rotors stopped.
 TEST(AnalysisLiveRun, TheWindBlowsThroughTheBox) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::AnalysisCase windy = tiny_case(m);
     windy.flight.kind = an::FlightKind::forward;
     windy.flight.speed = 3.0f;
@@ -176,7 +201,7 @@ TEST(AnalysisLiveRun, TheWindBlowsThroughTheBox) {
 
 // The same case and controls give the same bits.
 TEST(AnalysisLiveRun, IsDeterministic) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::AnalysisCase windy = tiny_case(m);
     windy.flight.kind = an::FlightKind::forward;
     windy.flight.speed = 3.0f;
@@ -197,7 +222,7 @@ TEST(AnalysisLiveRun, IsDeterministic) {
 
 // What it flew is a control program: a point wherever the controls changed.
 TEST(AnalysisLiveRun, RecordsTheControlsItFlew) {
-    const spade::vehicles::ModelType m = quad();
+    const spade::vehicles::ModelType m = rotorless();
     an::LiveRun run = started(tiny_case(m), m);
     const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 5; ++i) ASSERT_TRUE(run.step(an::Controls{}).has_value());
