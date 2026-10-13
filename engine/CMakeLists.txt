@@ -967,9 +967,11 @@ add_library(spade_analysis STATIC
     analysis/case.cpp
     analysis/case_file.cpp
     analysis/coefficients.cpp
+    analysis/launch.cpp
     analysis/run.cpp
     analysis/runner.cpp
     analysis/detail/atomic_file.cpp
+    analysis/detail/process.cpp
 )
 add_library(spade::analysis ALIAS spade_analysis)
 set_target_properties(spade_analysis PROPERTIES EXPORT_NAME analysis)

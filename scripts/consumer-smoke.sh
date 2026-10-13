@@ -171,10 +171,11 @@ stage() {
 # The targets `cmake --install` copies. The OFF list is every installed module
 # (engine/CMakeLists.txt's install(TARGETS ...) rules); ON adds spade_compute.
 # A module added to the install rules but not here makes the install stage fail
-# on the missing archive, so this list cannot drift into a silent pass.
+# on the missing archive, so this list cannot drift into a silent pass. The
+# installed tools are here too (tools/: spade_analysis_runner).
 lib_targets=(spade_core spade_state spade_world spade_objects spade_physics
              spade_render spade_sim spade_vehicles spade_scene spade_analysis
-             spade_mesh_import)
+             spade_mesh_import spade_analysis_runner)
 [ "$vulkan" = ON ] && lib_targets+=(spade_compute)
 
 from_build_mode() {

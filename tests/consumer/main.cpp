@@ -44,6 +44,7 @@
 #include <glm/vec3.hpp>
 
 #include "analysis/case.hpp"
+#include "analysis/launch.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
@@ -218,6 +219,25 @@ int main() {
         return 1;
     }
     std::printf("spade::mesh_import OK: a glTF tetrahedron read as one closed mesh of 4 triangles\n");
+
+    // The installed analysis runner (INT-7): spade::analysis_runner names the
+    // file the install put in bin/. launch_run() takes it as the runner, then
+    // refuses a folder that holds no case; the call pulls launch.cpp and the
+    // process code from the archive.
+    const std::filesystem::path runner = SPADE_ANALYSIS_RUNNER;
+    if (!std::filesystem::is_regular_file(runner)) {
+        std::fprintf(stderr, "the installed spade_analysis_runner is missing: %s\n", runner.string().c_str());
+        return 1;
+    }
+    spade::analysis::LaunchOptions dry_run;
+    dry_run.kind = spade::analysis::RunKind::dry_run;
+    const spade::Result<spade::analysis::RunRecord> launched =
+        spade::analysis::launch_run(runner, spade::test::unique_temp_path("consumer_smoke_no_run"), dry_run);
+    if (launched || launched.error().context.find("case.yaml") == std::string::npos) {
+        std::fprintf(stderr, "spade::analysis::launch_run did not refuse a folder without a case\n");
+        return 1;
+    }
+    std::printf("spade::analysis OK: the installed runner is in bin/, and launch_run refused a folder without a case\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).
