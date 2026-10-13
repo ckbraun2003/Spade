@@ -406,7 +406,7 @@ TEST(MeshMass, PropertiesArePerUnitDensityInMetres) {
     // A 10 mm cube declared in millimetres: the mesh holds metres, so its
     // side is s = float(0.01) m, V = s^3 m^3 and I = V (s^2 + s^2) / 12 =
     // s^5 / 6 m^5 on each axis -- per unit density, because neither the mesh
-    // nor the result holds one (the part gets its density later, Task B4).
+    // nor the result holds one (no part takes its mass from a mesh yet).
     MeshInput mm = box_mesh({10.0, 10.0, 10.0}, {5.0, 5.0, 5.0});
     mm.unit = MeshUnit::millimetre;
     const MeshPtr cube = build(mm, "mm");

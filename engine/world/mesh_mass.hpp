@@ -5,10 +5,11 @@
 // (CORE-6; the parts and meshes plan, Task B3). A host call, made once at
 // import or compile time; no step reads it.
 //
-// PER UNIT DENSITY. Neither the mesh nor this result holds a density: the
-// part gets one later (Task B4's mass_from_geometry, uniform density rho).
-// Its mass is then rho * volume and its inertia rho * inertia, about the
-// centroid, at the centroid.
+// PER UNIT DENSITY. Neither the mesh nor this result holds a density. A
+// caller that gives one, a uniform rho, gets the mass rho * volume and the
+// inertia rho * inertia, about the centroid, at the centroid. Nothing in the
+// engine calls this yet: the compile does not take a part's mass from its
+// mesh (the plan's mass_from_geometry is not built).
 //
 // THE CONVENTIONS are PartInertia::tensor's (vehicles/composite_inertia.hpp),
 // so the compile can hand the result straight to composite_inertia():
@@ -40,7 +41,7 @@
 //     the move keeps every vertex's offset from the centre exact (a short
 //     dyadic shift, as tests/test_mesh_mass.cpp's): then only the centroid
 //     moves.
-//   * Nothing is rounded to float: B4 hands the doubles to
+//   * Nothing is rounded to float: a caller hands the doubles to
 //     composite_inertia(), which rounds its own outputs once.
 //
 // DETERMINISM. One input gives one result, bit for bit, on every toolchain:
