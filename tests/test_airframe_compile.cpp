@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -12,12 +13,15 @@
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "state/layout.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/battery.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/motor.hpp"
+#include "vehicles/part_pose.hpp"
 #include "vehicles/propeller.hpp"
 #include "vehicles/propulsion_flags.hpp"
+#include "world/sdf.hpp"
 
 // ===========================================================================
 // The airframe compile (vehicles/airframe_compile.hpp, DBP-44). Expectations
@@ -128,6 +132,32 @@ constexpr double kArm = 0.11;
         if (i.kind == kind && i.index == index && i.field == field) return true;
     }
     return false;
+}
+
+// A double rounded to float once: how the compile rounds every solid's size.
+[[nodiscard]] float f(double x) { return static_cast<float>(x); }
+
+// A part's solid is one primitive at the identity, in the part's frame.
+void expect_solid(const PartDesc& p, spade::SdfPrim kind, glm::vec4 params, float min_feature) {
+    ASSERT_EQ(p.shape.nodes.size(), 1u) << p.name;
+    ASSERT_EQ(p.shape.transforms.size(), 1u) << p.name;
+    EXPECT_TRUE(p.shape.node_materials.empty()) << p.name;
+    EXPECT_EQ(p.shape.nodes[0].kind, static_cast<uint32_t>(kind)) << p.name;
+    EXPECT_EQ(p.shape.nodes[0].op, static_cast<uint32_t>(spade::SdfOp::none)) << p.name;
+    EXPECT_EQ(p.shape.nodes[0].transform, 0u) << p.name;
+    EXPECT_TRUE(p.shape.nodes[0].params == params) << p.name;
+    EXPECT_TRUE(p.shape.transforms[0].world_to_local == glm::mat4(1.0f)) << p.name;
+    EXPECT_EQ(p.shape.transforms[0].scale, 1.0f) << p.name;
+    EXPECT_EQ(p.min_feature, min_feature) << p.name;
+}
+
+// Every float lane of a glm vector or quaternion, bit for bit.
+template <class V>
+[[nodiscard]] bool same_bits(const V& a, const V& b) {
+    for (glm::length_t i = 0; i < V::length(); ++i) {
+        if (std::bit_cast<uint32_t>(a[i]) != std::bit_cast<uint32_t>(b[i])) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -566,4 +596,285 @@ TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
     // msvc-ninja-release at 1b61a41; gcc-13 leg at 3e4b589 (2026-10-04).
     constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;
     EXPECT_EQ(model_identity(a->model), kPinned) << std::hex << model_identity(a->model);
+}
+
+// ===========================================================================
+// PARTS (CORE-7; the parts and meshes plan, Task A4). One record gives both
+// the inertia and the model part (TD-9). Each sphere, box, cylinder or tube
+// record, and each shaped motor, ESC or battery block, becomes a body-frame
+// wall part: one primitive at the identity in the record's frame, its size
+// rounded to float once, and its mount the record's pose, converted as every
+// other mount is. min_feature is the solid's smallest dimension: a sphere's
+// diameter, a box's smallest extent, a cylinder's or a tube's min(2r, length).
+// ===========================================================================
+
+TEST(AirframeCompile, ShapedPartsBecomeWallPartsInTheBodyFrame) {
+    // The reference quad: a box frame, four tube arms, a cylinder motor at
+    // each hub, a box battery, and an ESC with no shape.
+    const AirframeSpec s = reference_quad();
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const ModelType& m = c->model;
+    ASSERT_EQ(m.parts.size(), 10u) << "frame, four arms, four motors, the battery; no ESC, never a propeller";
+    EXPECT_TRUE(m.issues().empty()) << "the compiled parts pass the model's rules";
+
+    const std::array<const char*, 10> names = {"parts[0]", "parts[1]", "parts[2]", "parts[3]", "parts[4]",
+                                               "motor[0]", "motor[1]", "motor[2]", "motor[3]", "battery"};
+    const std::array<const char*, 10> roles = {"", "", "", "", "", "motor", "motor", "motor", "motor", "battery"};
+    for (std::size_t i = 0; i < m.parts.size(); ++i) {
+        const PartDesc& p = m.parts[i];
+        EXPECT_EQ(p.name, names[i]);
+        EXPECT_EQ(p.role, roles[i]) << p.name;
+        EXPECT_EQ(p.attach, PartAttach::body) << p.name << ": rigid, a motor's included";
+        EXPECT_EQ(p.rotor, 0u) << p.name;
+        EXPECT_EQ(p.surface.kind, PartSurface::Kind::wall) << p.name;
+        EXPECT_EQ(p.surface.inv_permeability, 0.0f) << p.name;
+        EXPECT_EQ(p.surface.inertial_coeff, 0.0f) << p.name;
+    }
+
+    // The frame, a 0.12 x 0.03 x 0.12 m box: its half extents, and its
+    // smallest extent.
+    expect_solid(m.parts[0], spade::SdfPrim::box, glm::vec4(f(0.06), f(0.015), f(0.06), 0.0f), f(0.03));
+    // An arm, a tube of radius 0.006 and length 0.11: the solid cylinder of
+    // its outer wall. 2r is the smaller.
+    for (std::size_t i = 1; i <= 4; ++i) {
+        expect_solid(m.parts[i], spade::SdfPrim::cylinder, glm::vec4(f(0.006), f(0.055), 0.0f, 0.0f), f(0.012));
+    }
+    // A motor, a cylinder of radius 0.014 and length 0.018: the length is the
+    // smaller.
+    for (std::size_t i = 5; i <= 8; ++i) {
+        expect_solid(m.parts[i], spade::SdfPrim::cylinder, glm::vec4(f(0.014), f(0.009), 0.0f, 0.0f), f(0.018));
+    }
+    // The battery, a 0.07 x 0.035 x 0.035 m box.
+    expect_solid(m.parts[9], spade::SdfPrim::box, glm::vec4(f(0.035), f(0.0175), f(0.0175), 0.0f), f(0.035));
+
+    // Mounts in the body frame by the rule every mount uses, r_b = R_bd (p_d - c).
+    // The reference quad's principal frame is its design frame
+    // (ASymmetricQuadKeepsItsAxesAndMovesMountsByTheCentreOfMass), so r_b = p_d - c.
+    const glm::dvec3 com(m.com_offset);
+    const auto expect_at = [&](const PartDesc& p, const glm::dvec3& design) {
+        const glm::dvec3 e = design - com;
+        EXPECT_EQ(p.mount_pos.x, f(e.x)) << p.name;
+        EXPECT_EQ(p.mount_pos.y, f(e.y)) << p.name;
+        EXPECT_EQ(p.mount_pos.z, f(e.z)) << p.name;
+    };
+    for (std::size_t k = 0; k < 5; ++k) expect_at(m.parts[k], s.parts[k].position);
+    for (std::size_t k = 0; k < 4; ++k) {
+        expect_at(m.parts[5 + k], s.rotors[k].hub.position);
+        // A motor sits at its rotor's hub, posed as the rotor is.
+        EXPECT_TRUE(m.parts[5 + k].mount_pos == m.rotors[k].local_pos) << "motor " << k;
+        EXPECT_TRUE(m.parts[5 + k].mount_orient == m.rotors[k].local_orient) << "motor " << k;
+    }
+    expect_at(m.parts[9], s.battery.mount.position);
+    // An unturned record keeps the identity. An arm's mount turns its +Y, the
+    // cylinder's axis, onto the arm's line: -X, +Z, -X, +Z.
+    EXPECT_TRUE(m.parts[0].mount_orient == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    const std::array<glm::vec3, 4> lines = {glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f),
+                                            glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)};
+    for (std::size_t k = 0; k < 4; ++k) {
+        const glm::vec3 axis = m.parts[1 + k].mount_orient * glm::vec3(0.0f, 1.0f, 0.0f);
+        EXPECT_NEAR(axis.x, lines[k].x, 1e-6f) << "arm " << k;
+        EXPECT_NEAR(axis.y, lines[k].y, 1e-6f) << "arm " << k;
+        EXPECT_NEAR(axis.z, lines[k].z, 1e-6f) << "arm " << k;
+    }
+}
+
+// The table's other rows. A sphere gives its solid, min_feature its diameter;
+// a point, a tensor or a cylinder of length 0 (a disc, which the mass
+// accepts, with no volume) gives no part, and neither does a record marked
+// none. A record's name and role are its part's.
+TEST(AirframeCompile, ASphereGivesItsSolidAndNoneAPointATensorOrADiscGivesNoPart) {
+    AirframeSpec s = reference_quad();
+    s.parts[0].geometry = PartGeometrySpec{.source = GeometrySource::inertia_shape, .name = "frame", .role = "body"};
+    s.parts[2].geometry.source = GeometrySource::none;  // an arm, mass only
+    PartInertia gps = make_part(PartShape::sphere, 0.008, glm::dvec3(0.0, 0.03, 0.0), glm::dvec3(0.012, 0.0, 0.0));
+    gps.geometry = PartGeometrySpec{.source = GeometrySource::inertia_shape, .name = "gps", .role = "sensor"};
+    s.parts.push_back(gps);  // record 5
+    s.parts.push_back(make_part(PartShape::point, 0.004, glm::dvec3(0.0, 0.01, 0.0), glm::dvec3(0.0)));  // record 6
+    PartInertia receiver = make_part(PartShape::tensor, 0.004, glm::dvec3(0.0, -0.01, 0.0), glm::dvec3(0.0));
+    receiver.tensor = glm::dmat3(1e-7);
+    s.parts.push_back(receiver);  // record 7
+    s.parts.push_back(make_part(PartShape::cylinder, 0.002, glm::dvec3(0.0, 0.016, 0.0),
+                                glm::dvec3(0.01, 0.0, 0.0)));  // record 8, a disc
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const ModelType& m = c->model;
+
+    const std::array<const char*, 10> names = {"frame", "parts[1]", "parts[3]", "parts[4]", "gps",
+                                               "motor[0]", "motor[1]", "motor[2]", "motor[3]", "battery"};
+    ASSERT_EQ(m.parts.size(), names.size()) << "no part for the arm marked none, the point, the tensor or the disc";
+    for (std::size_t i = 0; i < names.size(); ++i) EXPECT_EQ(m.parts[i].name, names[i]);
+    EXPECT_EQ(m.parts[0].role, "body");
+    EXPECT_EQ(m.parts[4].role, "sensor");
+    expect_solid(m.parts[4], spade::SdfPrim::sphere, glm::vec4(f(0.012), 0.0f, 0.0f, 0.0f), f(0.024));
+    EXPECT_EQ(m.parts[4].surface.kind, PartSurface::Kind::wall);
+}
+
+// The propeller never becomes a part: its disc is mass only, and the rotor is
+// an actuator disc. A shaped propeller still gives its mass. A shaped ESC
+// becomes "esc", at its mount.
+TEST(AirframeCompile, APropellerIsNeverAGeometryPart) {
+    AirframeSpec s = reference_quad();
+    s.prop.shape = BlockShape{.shape = PartShape::cylinder, .size = glm::dvec3(0.0762, 0.004, 0.0),
+                              .tensor = glm::dmat3(0.0)};
+    s.esc.shape = BlockShape{.shape = PartShape::box, .size = glm::dvec3(0.03, 0.006, 0.03),
+                             .tensor = glm::dmat3(0.0)};
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const ModelType& m = c->model;
+    ASSERT_EQ(m.parts.size(), 11u) << "the shaped ESC joins; the shaped propellers do not";
+    for (const PartDesc& p : m.parts) {
+        EXPECT_EQ(p.name.find("prop"), std::string::npos) << p.name;
+        EXPECT_NE(p.role, "prop") << p.name;
+    }
+    EXPECT_EQ(m.parts[9].name, "esc");
+    EXPECT_EQ(m.parts[9].role, "esc");
+    expect_solid(m.parts[9], spade::SdfPrim::box, glm::vec4(f(0.015), f(0.003), f(0.015), 0.0f), f(0.006));
+    const glm::dvec3 at = s.esc.mount.position - glm::dvec3(m.com_offset);
+    EXPECT_NEAR(m.parts[9].mount_pos.x, at.x, 1e-6);
+    EXPECT_NEAR(m.parts[9].mount_pos.y, at.y, 1e-6);
+    EXPECT_NEAR(m.parts[9].mount_pos.z, at.z, 1e-6);
+    EXPECT_EQ(m.parts[10].name, "battery");
+    EXPECT_NEAR(m.body.mass, 0.526, 1e-6) << "every propeller's mass is still the body's";
+}
+
+// A part's problem is listed at its record, in the one call that lists
+// everything (Kat's question 2): a name the model's rules refuse at
+// parts[k].geometry.name, an unknown source at parts[k].geometry.source. A
+// block's part has a fixed name, so when it repeats a record's, the record is
+// at fault. Neither stops the fit, which still lists its own problem.
+TEST(AirframeCompile, APartProblemIsListedAtItsRecord) {
+    AirframeSpec s = reference_quad();
+    s.parts[1].geometry.name = "arm";
+    s.parts[3].geometry.name = "arm";      // repeats parts[1]'s
+    s.parts[0].geometry.name = "battery";  // the battery block's part repeats it
+    s.parts[2].geometry.source = static_cast<GeometrySource>(7);
+    s.battery.mass = 20.0;  // and the chain cannot lift it
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "parts", 3, "geometry.name")) << "the later of two equal names";
+    EXPECT_FALSE(has_issue(issues, "parts", 1, "geometry.name"));
+    EXPECT_TRUE(has_issue(issues, "parts", 0, "geometry.name")) << "a block's part's name is fixed";
+    EXPECT_FALSE(has_issue(issues, "battery", 0, "name"));
+    EXPECT_TRUE(has_issue(issues, "parts", 2, "geometry.source"));
+    EXPECT_TRUE(has_issue(issues, "airframe", 0, "propulsion")) << "the fit still runs, and lists its own";
+
+    s.battery.mass = reference_quad().battery.mass;
+    const auto c = compile_airframe(s);
+    ASSERT_FALSE(c.has_value());
+    EXPECT_NE(c.error().context.find("parts[3].geometry.name"), std::string::npos) << c.error().context;
+    EXPECT_NE(c.error().context.find("parts[0].geometry.name"), std::string::npos) << c.error().context;
+    EXPECT_NE(c.error().context.find("parts[2].geometry.source"), std::string::npos) << c.error().context;
+}
+
+// TD-9: no mass or drag rule reads a part's geometry. The reference quad as
+// is, and with every record's geometry none, compile to the same composite,
+// fit and model, bit for bit, but for the parts; model_identity, which folds
+// every field but visual_ref and the parts, agrees. Physics' answer: a part
+// does not touch a drag element.
+TEST(AirframeCompile, PartsChangeNeitherTheMassNorTheDrag) {
+    AirframeSpec bare = reference_quad();
+    for (PartInertia& p : bare.parts) p.geometry.source = GeometrySource::none;
+    const auto a = compile_airframe(reference_quad());
+    const auto b = compile_airframe(bare);
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    ASSERT_TRUE(b.has_value()) << b.error().context;
+    ASSERT_EQ(a->model.parts.size(), 10u);
+    ASSERT_EQ(b->model.parts.size(), 5u) << "the shaped blocks still give theirs";
+
+    // The composite.
+    EXPECT_EQ(std::bit_cast<uint32_t>(a->inertia.mass), std::bit_cast<uint32_t>(b->inertia.mass));
+    EXPECT_TRUE(same_bits(a->inertia.center_of_mass, b->inertia.center_of_mass));
+    EXPECT_TRUE(same_bits(a->inertia.principal_moments, b->inertia.principal_moments));
+    EXPECT_TRUE(same_bits(a->inertia.design_to_body, b->inertia.design_to_body));
+    EXPECT_TRUE(a->inertia.inertia_design == b->inertia.inertia_design);
+
+    // The model: its body, its design frame, its rotors and its drag.
+    const ModelType& ma = a->model;
+    const ModelType& mb = b->model;
+    EXPECT_EQ(std::bit_cast<uint32_t>(ma.body.mass), std::bit_cast<uint32_t>(mb.body.mass));
+    EXPECT_TRUE(same_bits(ma.body.inertia_diag, mb.body.inertia_diag));
+    EXPECT_TRUE(same_bits(ma.design_to_principal, mb.design_to_principal));
+    EXPECT_TRUE(same_bits(ma.com_offset, mb.com_offset));
+    ASSERT_EQ(ma.rotors.size(), mb.rotors.size());
+    for (std::size_t k = 0; k < ma.rotors.size(); ++k) {
+        EXPECT_TRUE(same_bits(ma.rotors[k].local_pos, mb.rotors[k].local_pos)) << "rotor " << k;
+        EXPECT_TRUE(same_bits(ma.rotors[k].local_orient, mb.rotors[k].local_orient)) << "rotor " << k;
+        EXPECT_EQ(std::bit_cast<uint32_t>(ma.rotors[k].tau), std::bit_cast<uint32_t>(mb.rotors[k].tau));
+        EXPECT_EQ(std::bit_cast<uint32_t>(ma.rotors[k].thrust_coeff),
+                  std::bit_cast<uint32_t>(mb.rotors[k].thrust_coeff));
+        EXPECT_EQ(std::bit_cast<uint32_t>(ma.rotors[k].torque_coeff),
+                  std::bit_cast<uint32_t>(mb.rotors[k].torque_coeff));
+    }
+    ASSERT_EQ(ma.drag_bodies.size(), mb.drag_bodies.size());
+    for (std::size_t k = 0; k < ma.drag_bodies.size(); ++k) {
+        EXPECT_EQ(ma.drag_bodies[k].mode, mb.drag_bodies[k].mode) << "drag " << k;
+        EXPECT_EQ(std::bit_cast<uint32_t>(ma.drag_bodies[k].area), std::bit_cast<uint32_t>(mb.drag_bodies[k].area));
+        EXPECT_TRUE(same_bits(ma.drag_bodies[k].coeffs, mb.drag_bodies[k].coeffs)) << "drag " << k;
+        EXPECT_TRUE(same_bits(ma.drag_bodies[k].local_pos, mb.drag_bodies[k].local_pos)) << "drag " << k;
+    }
+    EXPECT_EQ(model_identity(ma), model_identity(mb)) << "every folded field, bit for bit";
+
+    // The fit.
+    EXPECT_EQ(a->fit.hover_duty, b->fit.hover_duty);
+    EXPECT_EQ(a->fit.hover_omega, b->fit.hover_omega);
+    EXPECT_EQ(a->fit.hover_thrust, b->fit.hover_thrust);
+    EXPECT_EQ(a->fit.thrust_coeff, b->fit.thrust_coeff);
+    EXPECT_EQ(a->fit.torque_coeff, b->fit.torque_coeff);
+    EXPECT_EQ(a->fit.tau, b->fit.tau);
+    EXPECT_EQ(a->fit.rotor_inertia, b->fit.rotor_inertia);
+    EXPECT_EQ(a->fit.solver_flags, b->fit.solver_flags);
+    EXPECT_EQ(a->fit.drag, b->fit.drag);
+}
+
+// The compiled parts are a model's parts like any other (vehicles/
+// part_pose.hpp). Posed with the body, the wall reads inside at the frame's
+// centre, a motor's and the battery's, and outside above and below the
+// airframe, in posed_program() and sample_parts() alike. Distances are worked
+// by hand from the solids; posing is rigid, so a turned and moved body reads
+// the same.
+TEST(AirframeCompile, ThePosedReferenceQuadIsSolidWhereItsPartsAre) {
+    const auto c = compile_airframe(reference_quad());
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const ModelType& m = c->model;
+    ASSERT_EQ(m.parts.size(), 10u);
+
+    spade::BodyState b{};
+    b.pos = glm::vec3(0.5f, 1.0f, -0.25f);
+    b.orient = glm::normalize(glm::quat(0.70710678f, 0.0f, 0.70710678f, 0.0f));  // a quarter turn about +Y
+    const auto posed = posed_parts(m, b, {}, {}, PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    const auto wall = posed_program(m, *posed);
+    ASSERT_TRUE(wall.has_value()) << wall.error().context;
+
+    // A design point in the world: x = pos + orient (p_d - c), the principal
+    // frame being the design frame here.
+    const glm::vec3 com = m.com_offset;
+    const auto world = [&](glm::vec3 design) { return b.pos + b.orient * (design - com); };
+    struct Probe {
+        glm::vec3 design;
+        float distance;
+        uint32_t owner;
+        const char* where;
+    };
+    const std::array<Probe, 5> probes = {{
+        {.design = glm::vec3(0.0f), .distance = -0.015f, .owner = 0u,
+         .where = "the frame's centre: 0.015 m inside its top and bottom"},
+        {.design = glm::vec3(0.11f, 0.02f, 0.0f), .distance = -0.009f, .owner = 5u,
+         .where = "motor 0's centre: 0.009 m inside its caps"},
+        {.design = glm::vec3(0.0f, -0.03f, 0.0f), .distance = -0.0175f, .owner = 9u,
+         .where = "the battery's centre: 0.0175 m inside four faces"},
+        {.design = glm::vec3(0.0f, 0.2f, 0.0f), .distance = 0.185f, .owner = 0u,
+         .where = "above the frame's top, at y = 0.015"},
+        {.design = glm::vec3(0.0f, -0.1f, 0.0f), .distance = 0.0525f, .owner = 9u,
+         .where = "below the battery's bottom, at y = -0.0475"},
+    }};
+    for (const Probe& p : probes) {
+        const glm::vec3 x = world(p.design);
+        EXPECT_NEAR(spade::eval(*wall, x), p.distance, 1e-6f) << p.where;
+        const PartSample at = sample_parts(m, *posed, x);
+        EXPECT_NEAR(at.distance, p.distance, 1e-6f) << p.where;
+        EXPECT_EQ(at.owner, p.owner) << p.where;
+        EXPECT_EQ(at.surface, PartSurface::Kind::wall) << p.where;
+        EXPECT_TRUE(at.velocity == glm::vec3(0.0f)) << p.where << ": the body is at rest";
+    }
 }

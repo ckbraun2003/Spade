@@ -64,6 +64,23 @@ struct PartSurface {
 // "No part": the index a per-part query returns when no part answers.
 inline constexpr uint32_t kNoPart = std::numeric_limits<uint32_t>::max();
 
+// THE AIRFRAME COMPILE'S GEOMETRY FOR ONE PART RECORD (CORE-7, the parts and
+// meshes plan, Task A4): PartInertia::geometry (vehicles/composite_inertia.
+// hpp). One record gives both the inertia and the part (TD-9). Geometry is
+// imported (CORE-6, amended 2026-10-12), so the compile authors no shape: it
+// turns the inertia shape it already has into the matching solid, and that
+// is all (vehicles/airframe_compile.hpp, PARTS).
+enum class GeometrySource : uint8_t {
+    inertia_shape = 0,  // sphere, box, cylinder and tube give their solid; point and tensor give none
+    none = 1,           // mass only: the record gives no part
+};
+
+struct PartGeometrySpec {
+    GeometrySource source = GeometrySource::inertia_shape;
+    std::string name{};  // the model part's name; empty: "parts[k]", k the record's index
+    std::string role{};  // a free label; the engine never reads it (L7)
+};
+
 // One part. Every member has a default, so gcc's missing-field-initializers
 // never fires on a designated initializer that leaves one out.
 //
