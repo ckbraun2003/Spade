@@ -69,6 +69,41 @@ A row, with illustrative values:
 //          history, irisplus-2125 (final tick, disjunctive): max 4.1e-7 -> {2e-6, 1e-5}
 ```
 
+## Validation against published data
+
+Two kinds of tolerance are set in opposite ways. An **implementation band** (CPU against GPU, gcc against MSVC) says how faithfully one implementation reproduces another, so it is measured and then pinned with margin (`TD-2`, `TD-14`). A **validation tolerance** (the physics against published reference data, `../physics/plans/2026-10-05-airflow-design.md` §11) is never set that way: pinning it at 4× our own solver's error would fit the tolerance to our answer and make the check circular. Each case's tolerance is fixed in §11.2 before its first run, argued from the literature (the published spread, and the resolution the case states), and its record states that argument. A case that misses is reported as a miss; its tolerance is never loosened after a run without a lead decision recorded with its reason. The reference data is reviewed like a golden before the case's first run (`TD-1`): it cites the source's table or figure, and says how it was verified or digitized.
+
+### Validation records
+
+Every run of a validation case leaves one record, in its case's records folder (airflow: `tests/data/airflow/records/`). The measured lines are pasted from the block the test prints, never retyped. The record holds:
+- the case and its configuration: resolution, `Re`, `T` or steps and `h`, and the solver settings that change the answer;
+- the path that ran it: the CPU reference (toolchain and preset), or the GPU (the `describe()` device line);
+- the commit and the date;
+- each measure: its value; the reference and its source (the data file and the paper's table or figure); the tolerance and where it was fixed (spec §11.2, or the plan that fixed it before the first run); and the verdict, `within` or `MISS`. A report-only case says `report only` instead.
+
+**The shape**, so a reader (the report, and the sandbox's Validation readout, I2) can parse it:
+- One file per case, for example `c1-cavity.md`. A case run in several configurations keeps them all in its file (C1: Re 100 at 32² and 128², Re 400 at 128²). Records are appended in date order, each in its own fenced `text` block, which readers skip as fence lines.
+- A record's opening line names its case and configuration, and is its identity: the newest record of a configuration is the last block with that opening line, not the file's last block.
+- A record opens with `=== validation record: <case> ===`, then one `key: value` per line. The keys are `commit`, `date`, `path`, `config`, then for each measure in order: `measure`, `reference`, `tolerance` and `verdict`.
+- `measure` is `<quantity> = <value>`, with the unit after the value where there is one (`= 0.0123`, `= 3.41 m/s`). Readers split at the last ` = `. `reference` names its source with its table or figure, and its data file when there is one.
+- The test prints the opening line and everything from `path` down; whoever pastes inserts `commit` and `date` after the opening line.
+
+```text
+=== validation record: C1 lid-driven cavity ===
+commit: 0123abc
+date: 2026-10-14
+path: CPU reference, MSVC 19.43, release
+config: 128x128 (quasi-2D slab), Re 100, T 40
+measure: max |u - u_Ghia| on x = 0.5 = 0.0123
+reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)
+tolerance: <= 0.02 (spec §11.2, fixed before the first run)
+verdict: within
+```
+
+(Illustrative values.)
+
+A record is never edited. A re-run adds a new dated record beside the old one, and a miss stays on record with its own entry.
+
 ## SPIR-V scanner
 
 `engine/testing/spirv_scan.hpp` reads compiled SPIR-V as a word stream; it needs no SDK tool. It applies two profiles: **parity** kernels obey `SPIR-V rule P1`–`P5`, and **`fp32_math`** modules also obey `E1`/`E2`. `P3` was amended on 2026-10-05 and now holds that no module requests an fp32 denormal mode, so every device runs the kernels with its own default (`00-decisions.md`). Every compiled variant is scanned, and the module count comes from the build, so a new kernel cannot slip past unscanned. Run by `test_slang_layouts.cpp`, which needs no device.
