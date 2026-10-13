@@ -418,6 +418,28 @@ TEST(AirframeCompile, ABadHubIsReportedOnce) {
     EXPECT_TRUE(has_issue(issues, "rotors", 2, "hub"));
 }
 
+// A zero or non-finite hub orientation is the hub's one issue, whichever side
+// its motor is on. The motor, moved off its hub along the hub's +Y (THE
+// MOTOR'S PLACE, below), stays on a hub with no usable orientation, so it
+// lists nothing of its own and makes no NaN position (Physics' guard,
+// 2026-10-12). It passed before the motor moved too, when the motor sat on
+// its hub; it pins the guard against a regression.
+TEST(AirframeCompile, ABadHubOrientationIsReportedOnceWithItsMotor) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::array<glm::dquat, 2> orientations = {glm::dquat(0.0, 0.0, 0.0, 0.0), glm::dquat(nan, 0.0, 0.0, 1.0)};
+    for (const glm::dquat& q : orientations) {
+        for (const bool pusher : {false, true}) {
+            AirframeSpec s = reference_quad();
+            s.rotors[2].hub.orientation = q;
+            s.rotors[2].pusher = pusher;
+            const std::vector<AirframeIssue> issues = check_airframe(s);
+            ASSERT_EQ(issues.size(), 1u) << (pusher ? "a pusher" : "a tractor");
+            EXPECT_TRUE(has_issue(issues, "rotors", 2, "hub"));
+            for (const AirframeIssue& i : issues) EXPECT_NE(i.kind, "motor") << i.field << ": " << i.message;
+        }
+    }
+}
+
 // A block's shape is the block's: one issue, index 0, field "shape", however
 // many hubs carry it, and checked even when the block has no mass.
 TEST(AirframeCompile, ABadBlockShapeIsOneIssueOnTheBlock) {

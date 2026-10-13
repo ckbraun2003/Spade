@@ -187,7 +187,13 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     MountPose pose = r.hub;
     const double half = shape ? half_extent_along_y(*shape) : 0.0;
     if (!positive(half)) return pose;
-    const glm::dvec3 thrust = glm::normalize(r.hub.orientation) * glm::dvec3(0.0, 1.0, 0.0);
+    // A hub orientation that is zero or not finite leaves the motor on the
+    // hub: the hub check lists it once, and no NaN position is made from it
+    // (Physics' guard, 2026-10-12). A non-finite hub position needs none: the
+    // motor inherits it, and the hub check lists it.
+    const glm::dquat& q = r.hub.orientation;
+    if (!positive(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z)) return pose;
+    const glm::dvec3 thrust = glm::normalize(q) * glm::dvec3(0.0, 1.0, 0.0);
     pose.position += (r.pusher ? half : -half) * thrust;
     return pose;
 }
