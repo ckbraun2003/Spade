@@ -363,7 +363,8 @@ spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rg
 }
 
 std::string build_identity() {
-    const std::string git = "git -C " + in_quotes(FLOW_MOVIE_SOURCE_DIR);
+    // Any folder in the tree names its commit, and status covers the whole tree.
+    const std::string git = "git -C " + in_quotes(SPADE_ENGINE_DIR);
     auto [ok, sha] = run_capture(git + " rev-parse --short HEAD");
     while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
     const auto [listed, changes] = run_capture(git + " status --porcelain --untracked-files=no");

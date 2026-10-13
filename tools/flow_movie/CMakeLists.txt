@@ -17,16 +17,17 @@ add_executable(flow_movie
     views.hpp
     views.cpp)
 target_compile_features(flow_movie PRIVATE cxx_std_23)
-target_link_libraries(flow_movie PRIVATE spade::core spade::physics spade::render spade::render_gl glfw glad)
+# spade::analysis: the validation reel reads the V1 records through
+# Interface's one reader (TD-9).
+target_link_libraries(flow_movie PRIVATE
+    spade::core spade::physics spade::render spade::render_gl spade::analysis glfw glad)
 # GLFW_INCLUDE_NONE: glad declares GL, and glfw3.h must not pull in <GL/gl.h>.
+# SPADE_ENGINE_DIR and SPADE_TESTS_DIR are the tests' names, which the gcc
+# check defines too: git reads the build's commit from the engine's folder,
+# and the V1 records sit under tests/.
 target_compile_definitions(flow_movie PRIVATE GLFW_INCLUDE_NONE
-    FLOW_MOVIE_RECORDS_DIR="${CMAKE_SOURCE_DIR}/tests/data/airflow/records"
-    FLOW_MOVIE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-# The validation reel reads the V1 records through Interface's one reader.
-if(TARGET spade::analysis AND EXISTS "${CMAKE_SOURCE_DIR}/engine/analysis/validation.hpp")
-    target_link_libraries(flow_movie PRIVATE spade::analysis)
-    target_compile_definitions(flow_movie PRIVATE FLOW_MOVIE_HAS_ANALYSIS)
-endif()
+    SPADE_ENGINE_DIR="${CMAKE_SOURCE_DIR}/engine"
+    SPADE_TESTS_DIR="${CMAKE_SOURCE_DIR}/tests")
 if(WIN32)
     target_compile_definitions(flow_movie PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()

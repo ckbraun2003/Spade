@@ -48,9 +48,7 @@
 #include "core/fp16.hpp"
 #include "render/raster_cpu.hpp"
 
-#ifdef FLOW_MOVIE_HAS_ANALYSIS
 #include "analysis/validation.hpp"
-#endif
 
 namespace {
 
@@ -836,7 +834,6 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     return title_card(encoder, dir, film.stem + "-title", seconds, layout(film.airflow.name, top, bottom));
 }
 
-#ifdef FLOW_MOVIE_HAS_ANALYSIS
 // The newest V1 record in `source` whose identity begins `identity`, as
 // caption lines, every string verbatim from Interface's one reader (TD-9).
 // A long run of measures (C0's, every 0.5) shows its first and last.
@@ -866,7 +863,6 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     }
     return std::unexpected(spade::Error{spade::Code::not_found, "no V1 record \"" + identity + "\" in " + source});
 }
-#endif
 
 }  // namespace
 
@@ -944,10 +940,10 @@ int main(int argc, char** argv) {
     } else if (opt.video == "disc") {
         films.push_back(disc_film(frames_for(opt, 10.0, encoder), disc_wake_case(), "disc-wake"));
     } else if (opt.video == "validation") {
-#ifdef FLOW_MOVIE_HAS_ANALYSIS
         // Every record read first: a malformed one stops the reel before any
         // frame, never a partial reel (Interface's rule).
-        auto records = spade::analysis::validation_report(FLOW_MOVIE_RECORDS_DIR);
+        auto records =
+            spade::analysis::validation_report(fs::path(SPADE_TESTS_DIR) / "data" / "airflow" / "records");
         if (!records) return fail(records.error());
         Film cavity = cavity_film(frames_for(opt, 12.0, encoder));
         Film tgv = taylor_green_film(frames_for(opt, 12.0, encoder));
@@ -993,10 +989,6 @@ int main(int argc, char** argv) {
         if (auto joined = concatenate(encoder, parts, out); !joined) return fail(joined.error());
         std::printf("validation-reel: wrote %s\n", out.string().c_str());
         return 0;
-#else
-        return fail(spade::Error{spade::Code::unavailable,
-                                 "the validation reel needs spade::analysis's validation_report (Interface)"});
-#endif
     } else {
         std::fprintf(stderr, "flow_movie: unknown video %s\n", opt.video.c_str());
         return 2;
