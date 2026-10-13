@@ -1,5 +1,6 @@
 #include "render/flow_field.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -63,8 +64,29 @@ Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouri
     return {};
 }
 
-Result<TransferFunction> cp_colours(float, float, float, float, ColourMapId) {
-    return TransferFunction{};  // RED: a stub
+Result<TransferFunction> cp_colours(float q_ref, float p_ref, float cp_min, float cp_max, ColourMapId map) {
+    const auto refuse = [](const std::string& why) {
+        return std::unexpected(Error{Code::invalid_argument, "C_p colours: " + why});
+    };
+    if (!(std::isfinite(q_ref) && q_ref > 0.0f)) {
+        return refuse("q_ref " + std::to_string(q_ref) + " Pa is not finite and > 0");
+    }
+    if (!std::isfinite(p_ref)) {
+        return refuse("p_ref is not finite");
+    }
+    if (!(std::isfinite(cp_min) && std::isfinite(cp_max) && cp_min < cp_max)) {
+        return refuse("the C_p range is not finite with min < max");
+    }
+    TransferFunction tf;
+    tf.quantity = FlowQuantity::pressure;
+    tf.colours = map;
+    tf.range_min = p_ref + cp_min * q_ref;
+    tf.range_max = p_ref + cp_max * q_ref;
+    if (!(std::isfinite(tf.range_min) && std::isfinite(tf.range_max) && tf.range_min < tf.range_max)) {
+        return refuse("its pressure range collapses in float: q_ref " + std::to_string(q_ref) +
+                      " Pa is too small beside p_ref " + std::to_string(p_ref) + " Pa");
+    }
+    return tf;
 }
 
 }  // namespace spade::render

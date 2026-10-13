@@ -18,7 +18,7 @@
 // changes no geometry. The raster applies it after the meshes and CSG and
 // before the field layers, so slices, volumes and lines draw over it. A
 // pixel whose sample is no-data keeps its shaded colour and is counted.
-// GL refuses it until its pass lands (plan step 7).
+// GL draws it in its mesh and CSG passes, banded against the CPU.
 // ---------------------------------------------------------------------------
 
 #include "core/error.hpp"
