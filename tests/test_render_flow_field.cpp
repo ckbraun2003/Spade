@@ -258,6 +258,11 @@ TEST(RenderFlowField, AColouringsOffsetIsRefusedOutsideItsRange) {
     FlowSurfaceColouring fine{&volume, colours};
     fine.offset_cells = spade::render::kMaxSurfaceOffsetCells;
     EXPECT_TRUE(spade::render::validate_flow_surface_colouring(fine).has_value());
+    FlowSurfaceColouring at_the_wall{&volume, colours};
+    at_the_wall.extrapolate = true;  // with offset 0: two reads at one point
+    const auto refused = spade::render::validate_flow_surface_colouring(at_the_wall);
+    ASSERT_FALSE(refused.has_value()) << "extrapolating from the wall itself";
+    EXPECT_NE(refused.error().context.find("extrapolat"), std::string::npos) << refused.error().context;
 }
 
 // Two quads in the box, side by side: the left one a wall in the flow, the
@@ -398,6 +403,11 @@ constexpr uint32_t kChosenCellsPerRadius = 8;
 constexpr float kChosenOffsetCells = 1.0f;
 constexpr double kChosenWorstCp = 0.44;  // measured 0.432
 
+// Extrapolated, 2 v(delta) - v(2 delta), at the same offset and resolution.
+// RED: a priori, from a model of the same grid and sampler (0.202); pinned at
+// green.
+constexpr double kChosenExtrapolatedWorstCp = 0.21;
+
 // R2.4's measurement. Each pixel on the sphere (tests/cp_sphere.hpp), its
 // colour turned back into C_p through the map, against 1 - 9/4 sin^2(theta) at
 // its point, for read offsets of 0 to 1.5 cells at 4, 8 and 16 cells per
@@ -418,13 +428,19 @@ TEST(RenderFlowField, ReadingOffTheWallRecoversASpheresSurfaceCp) {
     scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
     Camera camera;
     camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
-    spade::test::CpError chosen;
+    struct Read {
+        float offset;
+        bool extrapolate;
+    };
+    const Read reads[] = {{0.0f, false}, {0.5f, false}, {1.0f, false}, {1.5f, false}, {0.5f, true}, {1.0f, true}};
+    spade::test::CpError chosen, chosen_extrapolated;
     for (const uint32_t per_radius : {4u, 8u, 16u}) {
         const spade::FlowVolume volume = spade::test::potential_sphere_volume(per_radius);
-        for (const float offset : {0.0f, 0.5f, 1.0f, 1.5f}) {
+        for (const auto& [offset, extrapolate] : reads) {
             FlowSurfaceColouring colouring{&volume, *colours};
             colouring.walls_only = true;
             colouring.offset_cells = offset;
+            colouring.extrapolate = extrapolate;
             scene.flow_surface_colouring = colouring;
             std::vector<uint8_t> px(static_cast<size_t>(kPx) * kPx * 4u, 0u);
             RenderTarget target{.pixels = std::span<uint8_t>(px), .width = kPx, .height = kPx, .stride = kPx * 4u};
@@ -437,15 +453,19 @@ TEST(RenderFlowField, ReadingOffTheWallRecoversASpheresSurfaceCp) {
                     const size_t i = (static_cast<size_t>(y) * kPx + x) * 4u;
                     return glm::vec3(px[i + 2], px[i + 1], px[i + 0]);
                 });
-            std::printf("[ sphere C_p ] R/dx %2u, offset %.1f: worst |dC_p| %.3f at sin^2 %.2f, mean %.4f over %zu px; "
-                        "%zu unmapped, %llu no-data\n",
-                        per_radius, offset, e.worst, e.worst_sin2, e.mean, e.count, e.unmapped,
-                        static_cast<unsigned long long>(report.surface_pixels_no_data));
-            if (per_radius == kChosenCellsPerRadius && offset == kChosenOffsetCells) chosen = e;
+            std::printf("[ sphere C_p ] R/dx %2u, offset %.1f%s: worst |dC_p| %.3f at sin^2 %.2f, mean %.4f over %zu "
+                        "px; %zu unmapped, %llu no-data\n",
+                        per_radius, offset, extrapolate ? " extrapolated" : "", e.worst, e.worst_sin2, e.mean, e.count,
+                        e.unmapped, static_cast<unsigned long long>(report.surface_pixels_no_data));
+            if (per_radius == kChosenCellsPerRadius && offset == kChosenOffsetCells) {
+                (extrapolate ? chosen_extrapolated : chosen) = e;
+            }
         }
     }
     EXPECT_LE(chosen.worst, kChosenWorstCp);
     EXPECT_EQ(chosen.unmapped, 0u) << "every pixel on the sphere takes a C_p colour";
+    EXPECT_LE(chosen_extrapolated.worst, kChosenExtrapolatedWorstCp);
+    EXPECT_EQ(chosen_extrapolated.unmapped, 0u);
 }
 
 TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {

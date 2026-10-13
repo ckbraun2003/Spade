@@ -50,12 +50,19 @@ struct FlowSurfaceColouring {
     // a sheet, keeps each side's own). 0 reads at the surface. A face normal
     // on meshes, the distance gradient on CSG.
     float offset_cells = 0.0f;
+    // With an offset, read at delta and 2 delta and take 2 v(delta) - v(2
+    // delta): the value extrapolated linearly to the wall. On a curved wall a
+    // single read is biased by dp/dn = rho u_t^2 / R; this removes the
+    // first-order part (R2.4: at 8 cells per radius, 0.43 in C_p becomes
+    // about 0.2) for up to three times a read's noise. Meant for pressure.
+    bool extrapolate = false;
 };
 inline constexpr float kMaxSurfaceOffsetCells = 4.0f;
 
 // invalid_argument, by name: no volume, a volume that fails
-// validate_flow_volume(), colours that fail validate_transfer_function(), or
-// an offset that is not finite in [0, kMaxSurfaceOffsetCells].
+// validate_flow_volume(), colours that fail validate_transfer_function(), an
+// offset that is not finite in [0, kMaxSurfaceOffsetCells], or extrapolate
+// with no offset to extrapolate from.
 [[nodiscard]] Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouring);
 
 // The C_p view's colours (RND-8): a fixed-range pressure transfer function

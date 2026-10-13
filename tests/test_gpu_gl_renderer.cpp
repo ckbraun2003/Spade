@@ -55,6 +55,7 @@
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/publish.hpp"
 
+#include "cp_sphere.hpp"
 #include "flow_synthetic.hpp"
 
 namespace {
@@ -1598,6 +1599,62 @@ TEST_F(GpuGlRenderer, FlowSurfaceOnCsgWallsMatchesTheCpu) {
     EXPECT_LE(w.band.worst, kCsgWallsWorst) << device;
     EXPECT_LE(w.band.over_two, kCsgWallsOverTwo);
     EXPECT_LE(w.band.differing, kCsgWallsDiffering);
+}
+
+// CpOffASphereMatchesTheCpu's bands. RED: GL's C_p a priori as the CPU
+// test's extrapolated choice; the band placeholders pinned at green.
+constexpr double kSphereGlWorstCp = 0.21;
+constexpr int kSphereWorst = 0;
+constexpr size_t kSphereOverTwo = 0;
+constexpr size_t kSphereDiffering = 0;
+
+// RND-8's C_p view on GL: the potential-flow sphere at 8 cells per radius,
+// read one cell off the wall and extrapolated to it. GL's frame is judged on
+// its own against 1 - 9/4 sin^2(theta), by the CPU test's rule
+// (tests/cp_sphere.hpp), and banded against the CPU's frame.
+TEST_F(GpuGlRenderer, CpOffASphereMatchesTheCpu) {
+    const float cp_min = -1.25f, cp_max = 1.0f;
+    const auto colours = spade::render::cp_colours(0.5f, 0.0f, cp_min, cp_max);
+    ASSERT_TRUE(colours.has_value());
+    const spade::FlowVolume volume = spade::test::potential_sphere_volume(8);
+    RenderScene scene;
+    scene.meshes.push_back(spade::test::potential_sphere_mesh());
+    scene.materials = {Material{}};
+    DrawItem sphere{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)};
+    sphere.flow_wall = true;
+    scene.statics.push_back(sphere);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    spade::render::FlowSurfaceColouring colouring{&volume, *colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    colouring.extrapolate = true;
+    scene.flow_surface_colouring = colouring;
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    const auto judge = [&](const std::vector<uint8_t>& rgba) {
+        return spade::test::potential_sphere_cp_error(
+            camera, static_cast<uint32_t>(kWidth), static_cast<uint32_t>(kHeight), cp_min, cp_max,
+            [&](uint32_t x, uint32_t y) {
+                const size_t i = ((static_cast<size_t>(kHeight) - 1u - y) * kWidth + x) * 4u;  // bottom row first
+                return glm::vec3(rgba[i], rgba[i + 1u], rgba[i + 2u]);
+            });
+    };
+    const spade::test::CpError on_gl = judge(gl), on_cpu = judge(cpu);
+    const ChannelDiff band = channel_diff(cpu, gl);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ sphere C_p ] GL worst %.3f, mean %.4f over %zu px, %zu unmapped; CPU worst %.3f; GL-CPU worst %d "
+                "levels, %zu over two, %zu differ; on %s\n",
+                on_gl.worst, on_gl.mean, on_gl.count, on_gl.unmapped, on_cpu.worst, band.worst, band.over_two,
+                band.differing, device.c_str());
+    EXPECT_GE(on_gl.count, 1000u);
+    EXPECT_EQ(on_gl.unmapped, 0u) << "every pixel on the sphere takes a C_p colour";
+    EXPECT_LE(on_gl.worst, kSphereGlWorstCp);
+    EXPECT_LE(band.worst, kSphereWorst) << device;
+    EXPECT_LE(band.over_two, kSphereOverTwo);
+    EXPECT_LE(band.differing, kSphereDiffering);
 }
 
 // Plan step 7g: a renderer asked to compile its flow programs in the
