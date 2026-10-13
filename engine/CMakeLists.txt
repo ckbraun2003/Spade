@@ -967,7 +967,9 @@ add_library(spade_analysis STATIC
     analysis/case.cpp
     analysis/case_file.cpp
     analysis/coefficients.cpp
+    analysis/controls.cpp
     analysis/launch.cpp
+    analysis/live_run.cpp
     analysis/queue.cpp
     analysis/run.cpp
     analysis/runner.cpp
@@ -984,6 +986,7 @@ target_include_directories(spade_analysis PUBLIC
 target_link_libraries(spade_analysis
     PUBLIC spade::vehicles spade::physics
     PRIVATE
+        spade::sim  # LiveRun's held drone (I1; the lead's ruling Q4), behind its Impl
         $<BUILD_INTERFACE:yaml-cpp::yaml-cpp>
         $<BUILD_LOCAL_INTERFACE:spade_warnings>
         $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
