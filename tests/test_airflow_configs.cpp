@@ -20,7 +20,8 @@
 //              after it (05099fa), which is how that task proved itself
 //              bit-identical
 //   cross-check MSVC debug agrees
-//   gcc        the Docker leg (TD-12) on a fresh -NoSeed volume: PENDING
+//   gcc        the gcc-13 Docker leg (TD-12) reproduces all nine on a fresh -NoSeed
+//              volume at 4622f84 (build-docker/4622f84a242b, 2026-10-12): FINAL
 //   moved      before the gcc leg, by the final review's fixes (2026-10-12):
 //              I2, periodic axes never coarsened to an odd size ("periodic 12x8x6");
 //              M3, the solid layer's fluid neighbour across a periodic wrap
