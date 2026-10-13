@@ -103,6 +103,8 @@ target_link_libraries(spade_consumer_smoke PRIVATE
     spade::scene
     spade::vehicles
     spade::analysis
+    # A model's parts drawn (RND-9); main.cpp binds a posed part through it.
+    spade::render_parts
     # The CAD mesh readers (CORE-6, Task B6); main.cpp reads a glTF through it.
     spade::mesh_import
     glm::glm

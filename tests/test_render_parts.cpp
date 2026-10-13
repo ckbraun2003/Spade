@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -218,27 +219,36 @@ void bind(const ModelType& model, const PosedParts& posed, const PartsLook& look
 }  // namespace
 
 // Every vertex of every bound mesh, taken to the world by its draw item, lies
-// on the field Core samples for the posed quad: a tessellated primitive's
-// vertices sit on its surface, so the band is float rounding at a metre.
+// on its own part's surface as Core samples it, the part posed alone (the
+// quad's parts overlap: an arm's end sits inside the hull, where the union of
+// all parts is below zero). A tessellated primitive's vertices sit on its
+// surface, so the band is float rounding at a metre.
 TEST(RenderParts, TheReferenceQuadsPartsLieOnThePosedField) {
     const ModelType model = reference_model();
     ASSERT_FALSE(model.parts.empty());
     const auto posed = spade::vehicles::posed_parts(model, tilted(), {}, {}, PartFilter::all);
     ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    const auto prepared = prepare_parts(model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
     RenderScene scene = empty_scene();
-    bind(model, *posed, PartsLook{}, scene);
-    ASSERT_GE(scene.statics.size(), model.parts.size());
+    ASSERT_TRUE(bind_parts(*prepared, *posed, PartsLook{}, scene).has_value());
+    const auto items = items_by_part(*prepared, *posed, scene);
+    ASSERT_EQ(items.size(), posed->parts.size());
     std::size_t vertices = 0;
     float worst = 0.0f;
-    for (const DrawItem& item : scene.statics) {
-        for (const glm::vec3& v : scene.meshes[item.mesh_index].positions) {
-            const glm::vec3 x = glm::vec3(item.local_to_world * glm::vec4(v, 1.0f));
-            worst = std::max(worst, std::abs(spade::vehicles::sample_parts(model, *posed, x).distance));
-            ++vertices;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        PosedParts alone = *posed;
+        alone.parts = {posed->parts[i]};
+        for (const DrawItem& item : items[i]) {
+            for (const glm::vec3& v : scene.meshes[item.mesh_index].positions) {
+                const glm::vec3 x = glm::vec3(item.local_to_world * glm::vec4(v, 1.0f));
+                worst = std::max(worst, std::abs(spade::vehicles::sample_parts(model, alone, x).distance));
+                ++vertices;
+            }
         }
     }
     EXPECT_GT(vertices, 100u);
-    EXPECT_LE(worst, 2.0e-6f) << "the worst vertex is " << worst << " m off the posed field";
+    EXPECT_LE(worst, 2.0e-6f) << "the worst vertex is " << worst << " m off its part's surface";
 }
 
 // A CPU frame of the bound parts covers the pixels a CPU ray-march of Core's
@@ -260,16 +270,26 @@ TEST(RenderParts, ACpuFrameOfTheReferenceQuadMatchesTheMarchedField) {
     const std::vector<uint8_t> drawn = draw(parts, camera);
 
     const spade::render::RayGrid grid = spade::render::ray_grid(camera, kW, kH);
-    std::size_t marched = 0, mismatched = 0;
+    std::size_t marched = 0, mismatched = 0, march_only = 0;
     for (uint32_t y = 0; y < kH; ++y) {
         for (uint32_t x = 0; x < kW; ++x) {
             const glm::vec3 dir = spade::render::camera_ray(grid, x, y).dir_world;
             const bool hit = spade::render::sphere_trace(*field, camera.position, dir, 0.0f, 10.0f).hit;
+            const bool drawn_here = differs(background, drawn, x, y);
             marched += hit ? 1u : 0u;
-            mismatched += hit != differs(background, drawn, x, y) ? 1u : 0u;
+            mismatched += hit != drawn_here ? 1u : 0u;
+            march_only += hit && !drawn_here ? 1u : 0u;
         }
     }
-    constexpr std::size_t kSilhouetteBand = 0;  // pinned from the green step's measurement
+    std::printf("[ parts ] reference quad: %zu marched pixels, %zu mismatched (%zu marched only)\n", marched,
+                mismatched, march_only);
+    // Measured 32 mismatched of 4498 marched (MSVC 1943 release, 2026-10-13),
+    // all 32 pixels the march covers and the raster misses: the curved parts
+    // (the tube arms and the motors' cylinders) tessellate with their
+    // vertices on the surface, so their facets fall just inside the exact
+    // silhouette. The CPU raster is the fp64 reference, so another build
+    // differs by rounding at most; the band allows 25% over.
+    constexpr std::size_t kSilhouetteBand = 40;
     EXPECT_GT(marched, 2000u) << "the quad should fill a good part of the frame";
     EXPECT_LE(mismatched, kSilhouetteBand) << "of " << marched << " marched pixels";
 }
@@ -329,6 +349,7 @@ TEST(RenderParts, OnlyTheWallPartsTakeTheCpColour) {
     RenderScene scene = empty_scene();
     bind(model, *posed, PartsLook{}, scene);
     const Camera camera = looking_at(glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f));
+    const std::vector<uint8_t> background = draw(empty_scene(), camera);
     const std::vector<uint8_t> plain = draw(scene, camera);
 
     const spade::FlowVolume volume =
@@ -346,15 +367,24 @@ TEST(RenderParts, OnlyTheWallPartsTakeTheCpColour) {
     scene.flow_surface_colouring->walls_only = true;
     const std::vector<uint8_t> coloured = draw(scene, camera);
 
-    std::size_t wall = 0, screen = 0;
+    std::size_t wall = 0, coloured_wall = 0, screen = 0, coloured_screen = 0;
     for (uint32_t y = 0; y < kH; ++y) {
         for (uint32_t x = 0; x < kW; ++x) {
-            if (!differs(plain, coloured, x, y)) continue;
-            (x < kW / 2 ? wall : screen) += 1;
+            const bool covered = differs(background, plain, x, y);
+            const bool changed = differs(plain, coloured, x, y);
+            if (x < kW / 2) {
+                wall += covered ? 1u : 0u;
+                coloured_wall += changed ? 1u : 0u;
+            } else {
+                screen += covered ? 1u : 0u;
+                coloured_screen += changed ? 1u : 0u;
+            }
         }
     }
-    EXPECT_GT(wall, 500u) << "the wall takes the colour map";
-    EXPECT_EQ(screen, 0u) << "the porous screen draws as before";
+    ASSERT_GT(wall, 300u) << "the wall is in view";
+    ASSERT_GT(screen, 300u) << "the screen is in view";
+    EXPECT_GE(coloured_wall * 10u, wall * 9u) << coloured_wall << " of the wall's " << wall << " pixels coloured";
+    EXPECT_EQ(coloured_screen, 0u) << "the porous screen draws as before";
 }
 
 // A mesh part binds its own triangles: each vertex where the body and then
@@ -415,12 +445,25 @@ TEST(RenderParts, ACsgPartMarchesWhereThePartIs) {
     }
     EXPECT_LE(worst, 1.0e-5f) << "the subtree's world program against the posed part";
 
+    // The drawn mesh sits on the marched surface: each vertex, through its draw
+    // item, within the surface-nets band of the program's zero set. This ties
+    // the draw item's pose to the program's; the program alone matching Core
+    // would pass with a mis-posed mesh.
     const DrawItem& item = scene.statics[csg.draw_item];
+    float off_surface = 0.0f;
     for (const glm::vec3& v : scene.meshes[item.mesh_index].positions) {
         const glm::vec3 x = glm::vec3(item.local_to_world * glm::vec4(v, 1.0f));
+        off_surface = std::max(off_surface, std::abs(spade::sample(csg.program, x).distance));
         EXPECT_TRUE(glm::all(glm::greaterThanEqual(x, lo - 1.0e-6f)) && glm::all(glm::lessThanEqual(x, hi + 1.0e-6f)))
             << "a mesh vertex outside the subtree's bounds";
     }
+    std::printf("[ parts ] CSG ring: mesh vertices at most %.6f m off the marched surface\n",
+                static_cast<double>(off_surface));
+    // Measured 1.67 mm (MSVC 1943 release, 2026-10-13): surface-nets vertices
+    // sit off the zero set at the ring's sharp edges (RS3 keeps the mesh for
+    // wireframe and shadow only). A draw item posed rotate-then-translate put
+    // them 0.61 m off.
+    EXPECT_LE(off_surface, 2.5e-3f) << "the CSG mesh is not where its program is";
 }
 
 // What can't be drawn is refused by name, and a refused bind appends nothing.
