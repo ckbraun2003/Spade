@@ -81,7 +81,9 @@ constexpr float kDx = static_cast<float>(kTwoPi / kN);
 
 [[nodiscard]] FlowVolume publish(const MacGrid& g) {
     FlowVolume out;
-    const auto counts = publish_render_volume(g, PublishInput{}, out);
+    PublishInput in;
+    in.periodic = {true, true, true};  // the box wraps on every axis
+    const auto counts = publish_render_volume(g, in, out);
     EXPECT_TRUE(counts.has_value());
     return out;
 }
