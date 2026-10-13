@@ -1,6 +1,6 @@
 # Mass from a mesh part's geometry (plan stub)
 
-**Owner:** Core, joint with Physics, which owns the airframe compile and reviews it. **Status:** APPROVED by the lead 2026-10-13. Starts after the motor offset merges. The open questions below go as recommended unless Physics objects; Physics' review is pending.
+**Owner:** Core, joint with Physics, which owns the airframe compile and reviews it. **Status:** APPROVED by the lead and by Physics, 2026-10-13. Starts after the motor offset merges. The open questions below go as recommended (Physics agreed). Physics' frame trap and extra refusals are folded in below.
 **Why:** under import-only (`CORE-6`, amended 2026-10-12), CAD meshes are how parts arrive. An imported part's mass, centre of mass and inertia must come from its geometry, from the same record as its solid (`TD-9`: one source). Today the compile takes mesh-part mass only from hand-entered records, so mass and geometry can disagree. Found in Task A5 (`ecaa5c4`); B4 had deferred it to A4, and A4 covered only the analytic shapes.
 **Builds on:** B3's `mesh_mass_properties()` (volume, centroid and inertia about the centroid, per unit density, in double, bit-identical across MSVC and gcc), B4's mesh parts, and A4's `PartGeometrySpec`.
 
@@ -20,7 +20,10 @@
   - mass = ρ·V;
   - centre of mass = the record's pose applied to the mesh centroid;
   - `PartShape::tensor` = ρ·I_centroid in the record's local frame.
-  So `composite_inertia()` and its tests are unchanged. The same record emits the part (B4's mesh geometry at the record's mount) with the declared `min_feature`.
+  So `composite_inertia()` and its tests are unchanged.
+- **The frame trap (Physics' review).** A mesh record's pose is its PLACEMENT (mesh local → design), and a mesh's origin is not its centroid. A4 emits each part at the record's position, which is right for the analytic solids because they are centred on their COM. Emitted from the RESOLVED record, a mesh part's solid would be shifted by R·centroid. So the resolve keeps both: the PLACEMENT pose for the part, and the COM for the inertia record. It produces a separate inertia record and leaves the placement in place for the part, never the COM. The same record emits the part at its placement, with the declared `min_feature`.
+- `I_centroid` is about the centroid in mesh-local axes, and the record's orientation rotates it, as `PartShape::tensor`'s "local frame" says. The parallel-axis term comes from `composite_inertia` through position = COM.
+- **Volume for P2.** P2's grid build adds a measured safeguard: per part, the cell centres found inside it are compared with its volume / dx³, so an unresolved part gets a sheet or a refusal with that evidence, whatever `min_feature` declares. Keep `mesh_mass_properties`' volume reachable for P2: store it on the part, or document that recomputing it is cheap. M2 rules on which.
 - Units: mesh positions are metres (B1), density is kg/m³, so ρ·V is kg and ρ·J (m⁵) is kg m². Double throughout, converted once where the model stores float, as today.
 
 ## Refusals (by record index, name and field, `L6`)
@@ -29,6 +32,8 @@
 - A density that isn't finite and > 0.
 - A `min_feature` that isn't finite and > 0.
 - A hand-entered `mass`, `shape` or `tensor` beside a mesh source (`TD-9`).
+- A volume that is ≤ 0 or not finite: an inside-out mesh (Physics). B6 already flips the winding under a negative-determinant node transform, so a mirrored import keeps a positive volume; an inside-out source mesh does not.
+- Scale: `PartInertia` and the part pose carry none. B6 BAKES every node transform (scale included) into the mesh positions at import, so no scale is left to drop. A record pose is rigid by construction (a unit quaternion). A test pins that a scaled glTF node's mass matches its baked geometry.
 - `make_mesh`'s own refusals pass through unchanged. Nothing is repaired.
 
 ## Tasks (outline; RED first, and the RED compiles alone, as in the parts and meshes plan)
@@ -36,6 +41,7 @@
 - **M1:** `GeometrySource::mesh`, its fields and the refusals.
 - **M2:** the compile resolves mesh records. Tests:
   - a mesh box of density ρ equals the analytic box record of the same mass and sides, within B3's stated bound (it's bit-exact when the sides are dyadic);
+  - an OFF-CENTRE mesh box (its origin at a corner) emits its part at the PLACEMENT pose and puts its COM at placement + R·centroid; `sample_parts` on the posed part agrees with the analytic box's surface (Physics);
   - the COM moves with the record's pose;
   - a cavity subtracts;
   - two mesh parts add;
