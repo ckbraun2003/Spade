@@ -101,8 +101,13 @@ void take_max(double& worst, double e) noexcept {
 // Ghia's tables, each checked against `tolerance`. With `skip_v_point_117`,
 // Table II's point 117 is left out of the v maximum (Re 400: printed
 // -0.23827, a suspected typo in the original; Task 10's note).
+// Where each band comes from: 0.02 is the spec's (section 11.2); 0.06 is plan
+// A Task 11's own gate band at 32^2 (Test/Docs' review, 2026-10-12).
+constexpr const char* kSpecOrigin = "plan A Task 11, spec \xc2\xa7" "11.2";
+constexpr const char* kGateOrigin = "plan A Task 11's gate band";
+
 [[nodiscard]] CavityResult run_cavity(uint32_t n, double re, double t_end, const double* u_ref, const double* v_ref,
-                                      double tolerance, bool skip_v_point_117) {
+                                      double tolerance, const char* origin, bool skip_v_point_117) {
     DomainBc bc;
     bc.face = {FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::periodic, FaceBc::periodic};
     bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
@@ -134,33 +139,34 @@ void take_max(double& worst, double e) noexcept {
                 "visc_sweeps 8, rho 1, U 1\n"
                 "measure: max |u - u_Ghia| on x = 0.5 = %.4f\n"
                 "reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
+                "tolerance: <= %.2f (%s, fixed before the first run)\n"
                 "verdict: %s\n"
                 "measure: %s = %.4f\n"
                 "reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
+                "tolerance: <= %.2f (%s, fixed before the first run)\n"
                 "verdict: %s\n",
                 re, n, n, path_line().c_str(), n, n, re, t_end, steps, static_cast<double>(cfg.h), r.u_error,
-                tolerance, verdict(r.u_within), v_quantity.c_str(), r.v_error, tolerance, verdict(r.v_within));
+                tolerance, origin, verdict(r.u_within), v_quantity.c_str(), r.v_error, tolerance, origin,
+                verdict(r.v_within));
     return r;
 }
 
 TEST(AirflowValidation, C1CavityAtRe100On32CellsIsWithinTheGateBand) {
-    const CavityResult r = run_cavity(32, 100.0, 20.0, ref::kGhiaU100, ref::kGhiaV100, 0.06, false);
+    const CavityResult r = run_cavity(32, 100.0, 20.0, ref::kGhiaU100, ref::kGhiaV100, 0.06, kGateOrigin, false);
     EXPECT_TRUE(r.u_within) << r.u_error;
     EXPECT_TRUE(r.v_within) << r.v_error;
 }
 
 TEST(AirflowValidation, C1CavityAtRe100On128Cells) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 100";
-    const CavityResult r = run_cavity(128, 100.0, 40.0, ref::kGhiaU100, ref::kGhiaV100, 0.02, false);
+    const CavityResult r = run_cavity(128, 100.0, 40.0, ref::kGhiaU100, ref::kGhiaV100, 0.02, kSpecOrigin, false);
     EXPECT_TRUE(r.u_within) << r.u_error;
     EXPECT_TRUE(r.v_within) << r.v_error;
 }
 
 TEST(AirflowValidation, C1CavityAtRe400On128Cells) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the 128x128 cavity at Re 400";
-    const CavityResult r = run_cavity(128, 400.0, 60.0, ref::kGhiaU400, ref::kGhiaV400, 0.02, true);
+    const CavityResult r = run_cavity(128, 400.0, 60.0, ref::kGhiaU400, ref::kGhiaV400, 0.02, kSpecOrigin, true);
     EXPECT_TRUE(r.u_within) << r.u_error;
     EXPECT_TRUE(r.v_within) << r.v_error;
 }
@@ -204,26 +210,27 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
                 "path: %s\n"
                 "config: 64^3 periodic 2 pi box, inviscid (the numerics' own dissipation), h = %.6f, n_v 2\n",
                 path_line().c_str(), static_cast<double>(cfg.h));
-    const auto report = [](double t, double ke) {
-        std::printf("measure: kinetic energy per unit mass at t = %.2f = %.6f\n"
+    // Every 0.5 (plan A's C0 line), at the first step at or past each mark,
+    // labelled with that step's actual time (Test/Docs' review, 2026-10-12).
+    const auto report = [](double t, double mark, double ke) {
+        std::printf("measure: kinetic energy per unit mass at t = %.3f (the first step at or past %.1f) = %.6f\n"
                     "reference: none (report only; DNS data enter at V3, spec \xc2\xa7" "11.6)\n"
                     "tolerance: none (report only)\n"
                     "verdict: report only\n",
-                    t, ke);
+                    t, mark, ke);
     };
-    report(0.0, ke0);
-    double t = 0.0;
+    report(0.0, 0.0, ke0);
     double ke = ke0;
-    double next_report = 2.5;
-    while (t < 10.0) {
+    double mark = 0.5;
+    for (uint64_t step = 1; mark <= 10.0; ++step) {
         const FluidHealth h = fluid_step(g, bc, cfg, s);
         ASSERT_EQ(h.fault, FluidFault::none) << describe(h, g.shape);
-        t += cfg.h;
-        if (t >= next_report) {
+        const double t = static_cast<double>(step) * static_cast<double>(cfg.h);
+        if (t >= mark) {
             ke = kinetic_energy(g);
             ASSERT_TRUE(std::isfinite(ke));
-            report(next_report, ke);
-            next_report += 2.5;
+            report(t, mark, ke);
+            mark += 0.5;
         }
     }
     EXPECT_LT(ke, ke0);
