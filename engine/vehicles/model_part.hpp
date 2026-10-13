@@ -24,10 +24,11 @@
 // SDF cannot hold a mesh (an SdfProgram has no mesh node), so the two forms
 // stay apart, and part_sample() is the one interface that reads either.
 //
-// NOT FOLDED. Parts do not enter model_identity() until a step reads them
-// (stage 7, CORE-7), so adding parts moves no identity and refuses no stored
-// v3 blob. A mesh part folds nothing either; its TriangleMesh::content_hash()
-// is what stage 7 will fold for its geometry.
+// IDENTITY. Parts never enter model_identity() (CORE-7), so adding parts
+// moves no model identity and refuses no stored v3 blob. Their own identity
+// is parts_identity() (vehicles/model_identity.hpp), the one rule for it: a
+// mesh part folds its TriangleMesh::content_hash() there. Stage 7 folds parts
+// into the snapshot's registry identity.
 //
 // Every rule below is checked by ModelType::issues(), which names the part
 // (index and name) and the field.
