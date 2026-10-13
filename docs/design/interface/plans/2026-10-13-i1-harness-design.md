@@ -1,6 +1,6 @@
 # I1: the drone-box airflow harness -- design
 
-**Owner:** Interface. **Status:** draft for the lead, 2026-10-13. The code waits for P2, P3 and P7 (the lead); this is the design to build against them.
+**Owner:** Interface. **Status:** **approved by the lead, 2026-10-13**, with the rulings below. LiveRun is coded against Physics' P7a, a disc-only coupler, as soon as its signature arrives. Solids (P2, P2b) and loads (P3) join as they land.
 **Base:** master `0d949a8`.
 **Answers to:** the demonstration plan's I1 (`../../physics/plans/2026-10-12-airflow-drone-demonstration-plan.md`), Interface's inputs (`../2026-10-12-airflow-demo-interface-inputs.md`), and the CFD spec's live runs and W1 (`2026-10-12-drone-builder-cfd-design.md` §3, §14).
 
@@ -38,7 +38,8 @@ class LiveRun {
 
 **One fluid step**, in order (one-way: the drone never feels the air):
 1. **The drone.** A `Simulation` of the case's model, one body, one step of `h`:
-   - `set_body_state()` holds it at the box's centre at the commanded attitude, with zero velocity. The attitude moves toward the controls' angles at a capped rate, so a stick input turns it smoothly. This uses Core's C5 contract, the one Kat's host uses.
+   - `set_body_state()` holds it at the box's centre at the commanded attitude, with zero velocity, and with `omega_body` set to the attitude's rate so the state is consistent. The attitude moves toward the controls' angles at a capped rate, so a stick input turns it smoothly. This uses Core's C5 contract, the one Kat's host uses, and it is Cameron's drone-box premise: held at the centre, orientations and thrust states by manual movement.
+   - **A held drone's IMU readings are meaningless** (the hold, not the air, sets its motion), so LiveRun exposes none and no view shows them.
    - `set_rotor_commands()` sets each rotor's `omega_cmd` from the throttle, or 0 when disarmed. The motor model spins the rotors up and down, which sheds the start-up ring.
 2. **The coupler (P7).** It reads the rotor rows and the pose, and gives the discs (P1, with swirl) or the lines (P4). It poses the parts (`posed_parts()`) and gives them to the solver's solids (P2's `set_solids()`, through a `SolidSampler` over `sample_parts()`).
 3. **The fluid.** `fluid_step()` with the case's `DomainBc` (the drone box, already resolved) and `FluidConfig`. A fault refuses the step by name (`describe(health)`) and sticks.
@@ -89,18 +90,20 @@ Each is refused by name, before any step where it can be:
 | The model: the scene's quad, with parts (`assets/scenes/hover.scene.yaml`); later Kat's model file (Core's model file) | Core | parts merged; model file proposed |
 | `flow_movie --case` (Q1) and a per-view drawn-or-refused report for the tour | Rendering | to agree |
 
-## Questions for the lead
+## Rulings (the lead, 2026-10-13)
 
-1. **The recorder:** `flow_movie --case` driving `LiveRun` (proposed), or a sandbox `--airflow-record`? One recorder either way.
-2. **The hold:** the attitude imposed through `set_body_state()` each step (proposed: deterministic, no controller in the engine, the same contract as Kat's host), or the sandbox's attitude controller flying a pinned drone (symmetric rotors either way at D1, since all four get the same throttle).
-3. **One rule for flight → `DomainBc`:** `analysis::resolve()` has it now (`drone_box_domain()`, the rolling-road floor in forward flight). P2b designs it too. Proposal: it moves into Physics' P2b, and `resolve()` calls it (TD-9).
-4. **Layering:** `LiveRun` needs `spade::sim` for the drone. `spade::analysis` links `spade::vehicles` and `spade::physics` today; it would add `spade::sim` (Core reviews).
-5. **Starting before P7:** the disc path (P1's discs, no solids) could be built now with a thin mapping from rotor rows to `ActuatorDisc`, replaced by P7 when it lands. That gets `LiveRun`, the runner's real path and the recording working early. Or wait for P7, as assigned.
+1. **One recorder.** `flow_movie` gains `--case` and drives `LiveRun`. D1's frames draw the solid drone too, agreed with Rendering: LiveRun exposes the posed parts per frame.
+2. **The hold** is `set_body_state()` each step at the commanded attitude, with `omega_body` the attitude's rate. The design says a held drone's IMU readings are meaningless and not shown.
+3. **One rule for flight → `DomainBc`:** it moves to Physics' P2b, `resolve()` calls it, and `analysis`'s `drone_box_domain()` goes (TD-9).
+4. **Layering:** `spade::analysis` links `spade::sim`, with Core reviewing the CMake.
+5. **Start now, on Physics' P7a**, not on an Interface-side mapping, which would be a second rotor rule (TD-9). P7a is a small, disc-only, one-way coupler in Physics: rotor rows plus the pose give `ActuatorDisc`s, with the spin-sign rule, lifted from their `quad_case.cpp`. Full P7 (lines, the solid sampler) extends it.
 
-## Order, once the lead answers
+Core takes "throttle → `omega_cmd`, and arm" ahead of B7. Interface sent the need: an installed per-rotor command from the model, a throttle and armed; the idle speed when armed; and the motor's own spin-up and spin-down.
 
-1. `LiveRun` with discs and no solids (now, if Q5 says so; otherwise on P7), the runner's real path, and the tiny-grid tests.
-2. P2's solids and P2b's placement, as they land.
+## Order
+
+1. `LiveRun` on P7a's discs, no solids: the drone's hold and commands (Core's throttle and arm), the time and frames, the runner's real path, and the tiny-grid tests.
+2. P2's solids and P2b's placement and face rule, as they land; `drone_box_domain()` goes.
 3. P3's loads, the history's force and moment columns, and `C_p` through `pressure_coefficient()`.
-4. `flow_movie --case` with Rendering (Q1): the D1 recording.
+4. `flow_movie --case` with Rendering: the D1 recording, the solid drone in the frames.
 5. The panel and the tour (D2, I2).
