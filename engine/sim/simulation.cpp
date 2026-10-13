@@ -2114,10 +2114,21 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                        "boundaries)"));
     }
 
+    // THE DESIGN FRAME (DBP-46): `where` is the design origin's state; the body
+    // row holds the centre of mass in principal axes. A model whose frames
+    // coincide passes `where` through untouched (sim/design_frame.hpp). The
+    // finite and non-zero checks above make the conversion safe here.
+    const FrameState start = to_body_state(FrameState{where.pos, where.orient, where.vel, where.omega_body},
+                                           model.design_to_principal, model.com_offset);
+
     // NOT BURIED IN THE WORLD -- the same predicate spawn(world, BodySpawn)
-    // applies (check_not_buried), at `effective_radius` above rather than
-    // unconditionally the world default -- see the D-S6-2 note.
-    if (Result<void> placed = check_not_buried(config.sdf, where.pos, effective_radius, "spawn(vehicle)");
+    // and set_body_state() apply (check_not_buried), at `effective_radius`
+    // above rather than unconditionally the world default -- see the D-S6-2
+    // note. Tested at the CENTRE OF MASS this spawn creates (start.pos), the
+    // point contact ejects from and the one set_body_state() tests, not at the
+    // design origin: a model whose centre of mass is offset is refused by both
+    // or by neither (the lead's follow-up, 2026-10-13).
+    if (Result<void> placed = check_not_buried(config.sdf, start.pos, effective_radius, "spawn(vehicle)");
         !placed) {
         return std::unexpected(placed.error());
     }
@@ -2259,12 +2270,8 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // each kind. The order does not matter to correctness (each op writes its
     // own reserved slot), and it is fixed anyway because the queue IS the
     // determinism contract: a flush applies ops front to back, so the sequence
-    // a spawn contributes must be a function of the model alone.
-    // THE DESIGN FRAME (DBP-46): `where` is the design origin's state; the body
-    // row holds the centre of mass in principal axes. A model whose frames
-    // coincide passes `where` through untouched (sim/design_frame.hpp).
-    const FrameState start = to_body_state(FrameState{where.pos, where.orient, where.vel, where.omega_body},
-                                           model.design_to_principal, model.com_offset);
+    // a spawn contributes must be a function of the model alone. The body row
+    // takes `start`, the design-frame conversion made before the burial check.
     StructuralOp body_op;
     body_op.kind = OpKind::init_body;
     body_op.world_index = world_index;

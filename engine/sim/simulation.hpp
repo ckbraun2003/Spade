@@ -1101,9 +1101,11 @@ public:
     // id; pos/vel/omega_body finite; orient finite with non-zero length;
     // rotor_omega finite and >= 0 (rotor.hpp: both curves are even in omega,
     // so a negative shaft speed would produce the thrust of its magnitude
-    // while the lag drove it further negative); and the body's spawn position
-    // not buried in the world SDF, exactly as spawn(world, BodySpawn) requires
-    // and for the same Baumgarte reason.
+    // while the lag drove it further negative); and the body's CENTRE OF MASS
+    // (the design origin's pose converted, where contact ejects from) not
+    // buried in the world SDF at the model's effective proxy radius, exactly
+    // as spawn(world, BodySpawn) and set_body_state() require (one shared
+    // predicate) and for the same Baumgarte reason.
     //
     // not_found for a null or out-of-range ModelTypeId. capacity_exceeded when
     // the world cannot fit the body, the force elements or the sensors.
