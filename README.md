@@ -71,7 +71,7 @@ The first build fetches its dependencies. `scripts\test.ps1` is the gate: green 
 
 | Directory | What it is |
 |---|---|
-| `engine/` | The engine: `core/ state/ world/ physics/ objects/ sim/ sensors/ vehicles/ render/ render_gl/ compute/ shaders/`, mostly one CMake target per directory with dependencies pointing strictly downward; `testing/` is test support and `tools/` the viewer |
+| `engine/` | The engine: `core/ state/ world/ physics/ objects/ sim/ sensors/ vehicles/ scene/ analysis/ render/ render_gl/ compute/ shaders/`, mostly one CMake target per directory with dependencies pointing strictly downward; `testing/` is test support and `tools/` the viewer |
 | `tests/` | The test suite, the golden corpus, the bench, and `tests/consumer/` (an out-of-tree `find_package(spade)` example) |
 | `sandbox/` | The sandbox application, which grows into Spade's editor |
 | `scripts/` | Build, test and demo scripts, and the pre-push guard |
