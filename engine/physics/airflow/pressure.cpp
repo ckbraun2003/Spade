@@ -47,6 +47,27 @@ struct Stencil {
     return s;
 }
 
+// THE INTERIOR FAST PATH (the airflow CPU-performance task, 2026-10-12): a
+// cell with all six neighbours inside the level takes the same six additions
+// in the same order (-x, +x, -y, +y, -z, +z, from 0.0f) and the diagonal 6
+// that stencil() would sum, so its bits are stencil()'s; only cells on the
+// level's edges pay for the face kinds. `c` is the cell's index.
+[[nodiscard]] inline float interior_sum(const float* p, std::size_t c, std::size_t sy, std::size_t sz) noexcept {
+    float sum = 0.0f;
+    sum += p[c - 1u];
+    sum += p[c + 1u];
+    sum += p[c - sy];
+    sum += p[c + sy];
+    sum += p[c - sz];
+    sum += p[c + sz];
+    return sum;
+}
+
+constexpr float kInteriorDiag = 6.0f;
+
+// Whether index q along an axis of n cells has both neighbours inside.
+[[nodiscard]] inline bool inside(uint32_t q, uint32_t n) noexcept { return q >= 1u && q + 1u < n; }
+
 }  // namespace
 
 PoissonLevel make_level(uint32_t nx, uint32_t ny, uint32_t nz, const std::array<FaceKind, 6>& kind) {
@@ -85,12 +106,23 @@ void smooth_one_cell(PoissonLevel& L, uint32_t i, uint32_t j, uint32_t k) noexce
 }
 
 void smooth_red_black(PoissonLevel& L, uint32_t sweeps) noexcept {
+    const std::size_t sy = L.nx;
+    const std::size_t sz = std::size_t{L.nx} * L.ny;
+    float* p = L.p.data();
+    const float* b = L.b.data();
     for (uint32_t sweep = 0; sweep < sweeps; ++sweep) {
         for (uint32_t colour = 0; colour < 2; ++colour) {
             for (uint32_t k = 0; k < L.nz; ++k) {
                 for (uint32_t j = 0; j < L.ny; ++j) {
-                    for (uint32_t i = 0; i < L.nx; ++i) {
-                        if (((i + j + k) & 1u) == colour) smooth_one_cell(L, i, j, k);
+                    // The cells of this colour in the row, in ascending i, as before.
+                    const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
+                    for (uint32_t i = (j + k + colour) & 1u; i < L.nx; i += 2u) {
+                        if (row_inside && inside(i, L.nx)) {
+                            const std::size_t c = at(L, i, j, k);
+                            p[c] = (interior_sum(p, c, sy, sz) - b[c]) / kInteriorDiag;
+                        } else {
+                            smooth_one_cell(L, i, j, k);
+                        }
                     }
                 }
             }
@@ -99,11 +131,19 @@ void smooth_red_black(PoissonLevel& L, uint32_t sweeps) noexcept {
 }
 
 void residual(PoissonLevel& L) noexcept {
+    const std::size_t sy = L.nx;
+    const std::size_t sz = std::size_t{L.nx} * L.ny;
+    const float* p = L.p.data();
     for (uint32_t k = 0; k < L.nz; ++k) {
         for (uint32_t j = 0; j < L.ny; ++j) {
+            const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
             for (uint32_t i = 0; i < L.nx; ++i) {
-                const Stencil st = stencil(L, i, j, k);
                 const std::size_t c = at(L, i, j, k);
+                if (row_inside && inside(i, L.nx)) {
+                    L.r[c] = L.b[c] - (interior_sum(p, c, sy, sz) - kInteriorDiag * p[c]);
+                    continue;
+                }
+                const Stencil st = stencil(L, i, j, k);
                 L.r[c] = L.b[c] - (st.sum - st.diag * L.p[c]);
             }
         }

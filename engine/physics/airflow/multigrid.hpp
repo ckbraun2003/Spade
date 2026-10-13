@@ -23,10 +23,19 @@ struct Multigrid {
 };
 
 // The hierarchy for an nx x ny x nz grid. Face kinds are set by set_kinds().
-[[nodiscard]] Multigrid make_multigrid(uint32_t nx, uint32_t ny, uint32_t nz);
+// Coarsening halves every axis of more than one cell while each is even and at
+// least 4; a periodic axis must also halve to an even size (n a multiple of
+// 4), so no level holds an odd periodic ring, whose red-black colouring would
+// make a sweep depend on its order (the final review's I2, 2026-10-12).
+// KNOWN LIMIT (the final review's M4): an axis of one cell takes no part, and
+// its outlet faces' Dirichlet ghost term keeps the finest level's weight on
+// the coarser levels, so a one-cell slab open on that axis gets a weaker
+// coarse correction (slower convergence, not a wrong answer).
+[[nodiscard]] Multigrid make_multigrid(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool, 3> periodic = {});
 // The cells of every level make_multigrid() would build, in 64 bits, with no
 // allocation (each level holds p, b and r: 3 floats per cell).
-[[nodiscard]] uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz) noexcept;
+[[nodiscard]] uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz,
+                                       std::array<bool, 3> periodic = {}) noexcept;
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 
 // coarse.b = (sum of the children's residuals) * (4 / children).

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 
@@ -18,8 +19,8 @@
 //       until the solver carries the dye scalar (the demonstration plan, P10).
 //   S = (p gauge, |omega|, q-hat, reserved 0). The velocity gradient G at the
 //       centre takes its diagonal from the cell's own faces and its off-
-//       diagonal from central differences of the centred velocities (one-sided
-//       at the grid's edges); omega is its curl, Q = |omega|^2 / 4 - |S|^2 / 2
+//       diagonal from central differences of the centred velocities (wrapped
+//       on a periodic axis, one-sided at any other axis' edges); omega is its curl, Q = |omega|^2 / 4 - |S|^2 / 2
 //       with S its symmetric part, and q-hat = sign(Q) sqrt|Q|. sqrt only
 //       (TD-3).
 // Every value goes through spade::fp16::from_f32: a NaN, an infinity or
@@ -28,7 +29,8 @@
 //
 // SOLID CELLS (the demonstration plan, P6). With a solid mask, the first layer
 // of solid cells -- any solid cell with a fluid face-neighbour -- takes the
-// mean of its fluid face-neighbours' channels (faces -x, +x, -y, +y, -z, +z),
+// mean of its fluid face-neighbours' channels (faces -x, +x, -y, +y, -z, +z;
+// across the wrap on a periodic axis),
 // so a surface sampled for C_p reads the wall's pressure; deeper solid cells
 // are no-data in every channel but the reserved one.
 // ---------------------------------------------------------------------------
@@ -37,10 +39,11 @@ namespace spade::physics::airflow {
 struct PublishInput {
     glm::vec3 origin{0.0f};            // the grid's minimum corner in the world, metres
     std::span<const uint8_t> solid{};  // one per cell, nonzero = solid; empty = all fluid
+    std::array<bool, 3> periodic{};    // per axis: the grid wraps there, so its edge differences wrap too
 };
 
 struct PublishCounts {
-    uint32_t extrapolated = 0;  // solid cells written from their fluid side
+    uint32_t extrapolated = 0;  // solid cells written from their fluid side (also header.extrapolated_cells)
 };
 
 // Refused (invalid_argument): a solid mask, or a grid array, whose size does

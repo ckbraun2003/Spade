@@ -40,9 +40,24 @@
 | Rotor wake | best-effort, CPU only, not read by stepping (`PHY-3`) | — | `test_rotor_wake.cpp` |
 | Drone builder: motor, battery, propeller | not placed: pure functions, unit-tested; reference with a golden once the rows exist (`DBP-60`) | not placed; banded once the kernels exist (`DBP-61`) | `test_motor.cpp`, `test_battery.cpp`, `test_propeller.cpp` |
 | Drone builder: composite inertia, steady-state solver | reference by closed forms; host utilities, never in the step | — | `test_composite_inertia.cpp`, `test_propulsion_steady.cpp` |
+| Airflow solver core, standalone (`PHY-9`, plan A) | reference: two goldens, `kSolverCoreDigest` (the walled cavity; the gcc leg reproduced it, `742f56e`) and nine boundary configurations (`test_airflow_configs.cpp`; the gcc leg reproduced it, `4622f84`) | not placed: the GPU twin is plan B | `test_airflow_step.cpp`, `test_airflow_configs.cpp`; V1 below |
 | Drone builder: the airframe compile (`DBP-44`) | mass, inertia and mounts: reference by closed forms. The fitted momentum rotor and the drag estimate: best-effort | — | `test_airframe_compile.cpp`; the τ fit is checked against a stepped response |
 
 A world's grade is its weakest module's (`L3`). Until the grade check exists (Core), this table is the declaration.
+
+## Validation (`PHY-9`, the airflow spec's §11)
+
+Against published data, beside the goldens. Each case's tolerance was fixed in plan A's Task 11 before its first run (spec §11.2). Each record is in `tests/data/airflow/records/`, in Test/Docs' format. The reference data, Ghia, Ghia & Shin (1982) at Re 100 and 400, have their provenance in `tests/data/airflow/`, reviewed by Test/Docs. The opt-in cases run with `SPADE_AIRFLOW_VALIDATION=1`.
+
+**V1** (plan A, 2026-10-12, CPU reference, MSVC release):
+
+| Case | Measure | Result | Tolerance | Verdict | Record |
+|---|---|---|---|---|---|
+| C1 lid-driven cavity, Re 100, 32² (in the gate) | max \|u − u_Ghia\| on x = 0.5; max \|v − v_Ghia\| on y = 0.5 | 0.0064; 0.0041 | ≤ 0.06 | within | `c1-cavity.md` |
+| C1, Re 100, 128² (opt-in) | the same | 0.0037; 0.0087 | ≤ 0.02 | within | `c1-cavity.md` |
+| C1, Re 400, 128² (opt-in) | the same; Table II's point 117 left out of v, as decided before any run | 0.0076; 0.0065 | ≤ 0.02 | within | `c1-cavity.md` |
+| C0 Taylor–Green vortex, 64³, inviscid (opt-in) | kinetic energy per unit mass, t = 0 to 10 | 0.125 to 0.0701 | none | report only (DNS data enter at V3) | `c0-taylor-green.md` |
+| C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within | `c8-actuator-disc.md` |
 
 ## Writing a physics test
 

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include "core/flow_volume.hpp"
@@ -38,6 +39,7 @@ TEST(AirflowPublish, AUniformFlowPublishesItsVelocityAndNoVorticity) {
     EXPECT_EQ(vol.header.origin, glm::vec3(1.0f, 2.0f, 3.0f));
     EXPECT_EQ(vol.header.no_data, 0u);
     EXPECT_EQ(counts->extrapolated, 0u);
+    EXPECT_EQ(vol.header.extrapolated_cells, 0u);
     for (uint32_t k = 0; k < 4; ++k) {
         for (uint32_t j = 0; j < 4; ++j) {
             for (uint32_t i = 0; i < 4; ++i) {
@@ -124,6 +126,7 @@ TEST(AirflowPublish, TheFirstSolidLayerTakesTheFluidSideAndDeeperCellsAreNoData)
     ASSERT_TRUE(counts.has_value()) << counts.error().context;
     ASSERT_TRUE(spade::validate_flow_volume(vol).has_value());
     EXPECT_EQ(counts->extrapolated, 9u);
+    EXPECT_EQ(vol.header.extrapolated_cells, 9u) << "the header carries the count (Core's field)";
     for (uint32_t k = 0; k < 3; ++k) {
         for (uint32_t j = 0; j < 3; ++j) {
             EXPECT_EQ(channel(vol, 3, j, k, spade::kFlowPressure), 3.0f) << "the fluid side's pressure, cell i = 2";
@@ -141,6 +144,58 @@ TEST(AirflowPublish, AMismatchedSolidMaskIsRefused) {
     const auto counts = publish_render_volume(g, {.solid = solid}, vol);
     ASSERT_FALSE(counts.has_value());
     EXPECT_EQ(counts.error().code, spade::Code::invalid_argument);
+}
+
+
+// Rendering's finding (2026-10-12): on a periodic axis the edge cells'
+// differences must wrap, not go one-sided. u = sin(k y) in a box periodic in
+// y: omega_z = -du/dy, and the central difference at every cell -- the edges
+// included -- is k cos(k y) sin(k dx) / (k dx).
+TEST(AirflowPublish, APeriodicAxisWrapsItsEdgeDifferences) {
+    const uint32_t n = 16;
+    const double L = 2.0;
+    const double k = 2.0 * std::numbers::pi / L;
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({4, n, 2, static_cast<float>(L / n)}, bc);
+    for_each_sample(g.shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        g.u[idx] = static_cast<float>(std::sin(k * static_cast<double>(x.y)));
+    });
+    FlowVolume vol;
+    ASSERT_TRUE(publish_render_volume(g, {.periodic = {true, true, true}}, vol).has_value());
+    const double dx = L / n;
+    const double factor = std::sin(k * dx) / (k * dx);
+    for (uint32_t j : {0u, 1u, n / 2u, n - 1u}) {
+        const double y = (j + 0.5) * dx;
+        const double expected = std::fabs(k * std::cos(k * y) * factor);
+        EXPECT_NEAR(channel(vol, 1, j, 1, spade::kFlowVorticity), expected, 2.0e-3 * k + 1.0e-3 * expected) << j;
+    }
+}
+
+
+// The final review's M3 (2026-10-12): on a periodic axis the solid layer's
+// fluid neighbour across the wrap counts. A wall of solid cells at i = 0 in a
+// box periodic in x: its only fluid face-neighbours are at i = 1 and, across
+// the wrap, i = n - 1. Pressure 1 at i = 1 and 3 at i = n - 1: the wall reads
+// their mean, 2, not 1.
+TEST(AirflowPublish, APeriodicAxisWrapsTheSolidLayersFluidNeighbours) {
+    DomainBc bc;
+    bc.face.fill(FaceBc::periodic);
+    MacGrid g = *make_grid({6, 2, 2, 0.5f}, bc);
+    std::vector<uint8_t> solid(g.p.size(), 0);
+    for (uint32_t k = 0; k < 2; ++k) {
+        for (uint32_t j = 0; j < 2; ++j) {
+            solid[cell_index(g.shape, 0, j, k)] = 1;
+            for (uint32_t i = 0; i < 6; ++i) g.p[cell_index(g.shape, i, j, k)] = i == 5 ? 3.0f : 1.0f;
+        }
+    }
+    FlowVolume vol;
+    const auto counts = publish_render_volume(g, {.solid = solid, .periodic = {true, true, true}}, vol);
+    ASSERT_TRUE(counts.has_value());
+    EXPECT_EQ(counts->extrapolated, 4u);
+    for (uint32_t k = 0; k < 2; ++k) {
+        for (uint32_t j = 0; j < 2; ++j) EXPECT_EQ(channel(vol, 0, j, k, spade::kFlowPressure), 2.0f) << j << "," << k;
+    }
 }
 
 }  // namespace

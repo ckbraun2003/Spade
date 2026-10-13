@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <numbers>
 #include <utility>
 #include <vector>
@@ -134,6 +135,31 @@ TEST(AirflowAdvect, AVelocityFarPastTheGridStaysFinite) {
         for (float x : out.u) ASSERT_TRUE(std::isfinite(x)) << (periodic ? "periodic" : "clamped");
         for (float x : out.v) ASSERT_TRUE(std::isfinite(x));
         for (float x : out.w) ASSERT_TRUE(std::isfinite(x));
+    }
+}
+
+// The final review's M8: the sampler's index arithmetic meets a NaN, an
+// infinity and a huge coordinate directly (a velocity that is itself not
+// finite). Each lands on a valid sample: the value and its range come from
+// the field's own values, never from outside the array.
+TEST(AirflowAdvect, ANonFiniteOrHugeCoordinateSamplesInsideTheField) {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (bool periodic : {true, false}) {
+        const DomainBc bc = periodic ? periodic_box() : DomainBc{};
+        MacGrid g = *make_grid({8, 8, 8, 0.125f}, bc);
+        for (std::size_t i = 0; i < g.u.size(); ++i) g.u[i] = 1.0f + static_cast<float>(i % 13u);
+        for (const float c : {nan, inf, -inf, 3.0e38f, -3.0e38f}) {
+            for (const glm::vec3 x : {glm::vec3(c, 0.3f, 0.3f), glm::vec3(0.3f, c, 0.3f), glm::vec3(0.3f, 0.3f, c),
+                                      glm::vec3(c)}) {
+                const Sample s = sample_component(g.shape, g.u, 0, x, bc);
+                EXPECT_TRUE(std::isfinite(s.value)) << (periodic ? "periodic " : "clamped ") << c;
+                EXPECT_GE(s.lo, 1.0f);
+                EXPECT_LE(s.hi, 13.0f);
+                EXPECT_GE(s.value, s.lo);
+                EXPECT_LE(s.value, s.hi);
+            }
+        }
     }
 }
 

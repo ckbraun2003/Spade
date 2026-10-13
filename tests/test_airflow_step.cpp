@@ -132,11 +132,12 @@ TEST(AirflowStep, AFluidScratchPastTheByteCapIsRefusedBeforeAllocating) {
     MacGrid g;
     g.shape = {512, 512, 256, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone
     ASSERT_LE(grid_bytes(g.shape), kGridByteCap) << "the grid alone fits";
-    ASSERT_GT(fluid_bytes(g.shape), kGridByteCap) << "the grid and its scratch do not";
+    ASSERT_GT(fluid_bytes(g.shape, DomainBc{}), kGridByteCap) << "the grid and its scratch do not";
     const auto s = make_fluid_scratch(g, DomainBc{}, {.h = 0.001f});
     ASSERT_FALSE(s.has_value());
     EXPECT_EQ(s.error().code, spade::Code::capacity_exceeded);
-    EXPECT_NE(s.error().context.find(std::to_string(fluid_bytes(g.shape))), std::string::npos) << s.error().context;
+    EXPECT_NE(s.error().context.find(std::to_string(fluid_bytes(g.shape, DomainBc{}))), std::string::npos)
+        << s.error().context;
     EXPECT_NE(s.error().context.find(std::to_string(kGridByteCap)), std::string::npos) << s.error().context;
 }
 
@@ -160,6 +161,33 @@ TEST(AirflowStep, AClosedDomainWhoseWallsPushANetFluxIsRefusedNamingTheFaces) {
     FluidScratch ok = *make_fluid_scratch(g, piston, {.h = 0.01f});
     const MacGrid before = g;
     const FluidHealth h = fluid_step(g, bc, {.h = 0.01f}, ok);
+    EXPECT_EQ(h.fault, FluidFault::ill_posed_domain);
+    EXPECT_NE(describe(h, g.shape).find("x-"), std::string::npos) << describe(h, g.shape);
+    EXPECT_EQ(g.u, before.u) << "a refused step changes nothing";
+}
+
+// The final review's I1 (2026-10-12): an open face the ambient enters is a
+// prescribed flux too. A box walled on five sides with the wind blowing in
+// through the sixth has no outlet, so its inflow has nowhere to go: refused
+// at setup, and faulted mid-run when a reversing gust makes that face an
+// inflow (before, the mean removal hid it as a uniform sink).
+TEST(AirflowStep, AClosedDomainWithAnInflowFaceAndNoOutletIsRefusedNamingTheFace) {
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    bc.face[kXMinus] = FaceBc::open;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);  // entering through x-: an inflow, and no outlet anywhere
+    MacGrid g = *make_grid({8, 8, 8, 0.125f}, bc);
+    const auto s = make_fluid_scratch(g, bc, {.h = 0.01f});
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("x-"), std::string::npos) << s.error().context;
+
+    DomainBc leaving = bc;
+    leaving.ambient = glm::vec3(-1.0f, 0.0f, 0.0f);  // leaving through x-: an outlet, well posed
+    FluidScratch ok = *make_fluid_scratch(g, leaving, {.h = 0.01f});
+    ASSERT_EQ(fluid_step(g, leaving, {.h = 0.01f}, ok).fault, FluidFault::none);
+    const MacGrid before = g;
+    const FluidHealth h = fluid_step(g, bc, {.h = 0.01f}, ok);  // the gust reverses
     EXPECT_EQ(h.fault, FluidFault::ill_posed_domain);
     EXPECT_NE(describe(h, g.shape).find("x-"), std::string::npos) << describe(h, g.shape);
     EXPECT_EQ(g.u, before.u) << "a refused step changes nothing";

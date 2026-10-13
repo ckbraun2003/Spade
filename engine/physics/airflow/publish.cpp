@@ -10,15 +10,25 @@ namespace spade::physics::airflow {
 
 namespace {
 
+// The per-cell helpers are forced inline: called out of line they cost most
+// of the publish (the airflow CPU-performance task, 2026-10-12). The code is
+// unchanged, so the published bits are too.
+#if defined(_MSC_VER)
+#define SPADE_AIRFLOW_HOT __forceinline
+#else
+#define SPADE_AIRFLOW_HOT inline __attribute__((always_inline))
+#endif
+
 using Channels = std::array<float, kFlowChannelCount>;
 
 struct Context {
     const MacGrid& g;
     float inv_dx;
+    std::array<bool, 3> periodic;
 };
 
 // The velocity component c averaged to the centre of cell (i, j, k).
-[[nodiscard]] float centred(const Context& x, uint32_t c, uint32_t i, uint32_t j, uint32_t k) noexcept {
+[[nodiscard]] SPADE_AIRFLOW_HOT float centred(const Context& x, uint32_t c, uint32_t i, uint32_t j, uint32_t k) noexcept {
     const GridShape& s = x.g.shape;
     switch (c) {
         case 0:
@@ -31,7 +41,7 @@ struct Context {
 }
 
 // G[c][a] = d u_c / d x_a at the centre of cell (i, j, k).
-[[nodiscard]] std::array<std::array<float, 3>, 3> gradient(const Context& x, uint32_t i, uint32_t j,
+[[nodiscard]] SPADE_AIRFLOW_HOT std::array<std::array<float, 3>, 3> gradient(const Context& x, uint32_t i, uint32_t j,
                                                            uint32_t k) noexcept {
     const GridShape& s = x.g.shape;
     const uint32_t n[3] = {s.nx, s.ny, s.nz};
@@ -41,10 +51,14 @@ struct Context {
     G[2][2] = (x.g.w[w_index(s, i, j, k + 1u)] - x.g.w[w_index(s, i, j, k)]) * x.inv_dx;
     for (uint32_t a = 0; a < 3; ++a) {
         const uint32_t at[3] = {i, j, k};
-        const uint32_t lo_q = at[a] == 0u ? 0u : at[a] - 1u;
-        const uint32_t hi_q = at[a] + 1u == n[a] ? at[a] : at[a] + 1u;
-        if (lo_q == hi_q) continue;  // an axis of one cell: no difference along it
-        const float scale = hi_q - lo_q == 2u ? 0.5f * x.inv_dx : x.inv_dx;
+        if (n[a] == 1u) continue;  // an axis of one cell: no difference along it
+        // A periodic axis wraps at its edges (a central difference everywhere);
+        // any other goes one-sided there.
+        const bool wrap = x.periodic[a];
+        const uint32_t lo_q = at[a] == 0u ? (wrap ? n[a] - 1u : 0u) : at[a] - 1u;
+        const uint32_t hi_q = at[a] + 1u == n[a] ? (wrap ? 0u : at[a]) : at[a] + 1u;
+        const bool central = wrap || (lo_q + 2u == hi_q);
+        const float scale = central ? 0.5f * x.inv_dx : x.inv_dx;
         uint32_t lo[3] = {i, j, k};
         uint32_t hi[3] = {i, j, k};
         lo[a] = lo_q;
@@ -58,7 +72,7 @@ struct Context {
 }
 
 // The fluid cell's channels: u, v, w, dye, p, |omega|, q-hat, reserved.
-[[nodiscard]] Channels fluid_channels(const Context& x, uint32_t i, uint32_t j, uint32_t k) noexcept {
+[[nodiscard]] SPADE_AIRFLOW_HOT Channels fluid_channels(const Context& x, uint32_t i, uint32_t j, uint32_t k) noexcept {
     const auto G = gradient(x, i, j, k);
     const float wx = G[2][1] - G[1][2];
     const float wy = G[0][2] - G[2][0];
@@ -91,7 +105,7 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                                                                  std::to_string(in.solid.size()) + " cells, not " +
                                                                  std::to_string(cells)});
     }
-    const Context x{g, 1.0f / s.dx};
+    const Context x{g, 1.0f / s.dx, in.periodic};
     const auto is_solid = [&](uint32_t i, uint32_t j, uint32_t k) {
         return !in.solid.empty() && in.solid[cell_index(s, i, j, k)] != 0u;
     };
@@ -135,16 +149,22 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                 if (!is_solid(i, j, k)) {
                     ch = fluid_channels(x, i, j, k);
                 } else {
-                    // The fluid face-neighbours, -x, +x, -y, +y, -z, +z.
+                    // The fluid face-neighbours, -x, +x, -y, +y, -z, +z; across the wrap
+                    // on a periodic axis of more than one cell (the final review's M3).
                     const uint32_t n[3] = {s.nx, s.ny, s.nz};
                     const uint32_t at[3] = {i, j, k};
                     Channels sum{};
                     uint32_t fluid = 0;
                     for (uint32_t a = 0; a < 3; ++a) {
                         for (uint32_t dir = 0; dir < 2; ++dir) {
-                            if (dir == 0 ? at[a] == 0u : at[a] + 1u == n[a]) continue;
+                            const bool edge = dir == 0 ? at[a] == 0u : at[a] + 1u == n[a];
+                            if (edge && !(in.periodic[a] && n[a] > 1u)) continue;
                             uint32_t nb[3] = {i, j, k};
-                            nb[a] = dir == 0 ? at[a] - 1u : at[a] + 1u;
+                            if (edge) {
+                                nb[a] = dir == 0 ? n[a] - 1u : 0u;
+                            } else {
+                                nb[a] = dir == 0 ? at[a] - 1u : at[a] + 1u;
+                            }
                             if (is_solid(nb[0], nb[1], nb[2])) continue;
                             const Channels f = fluid_channels(x, nb[0], nb[1], nb[2]);
                             for (uint32_t c = 0; c < kFlowChannelCount; ++c) sum[c] += f[c];
@@ -172,6 +192,7 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
             }
         }
     }
+    h.extrapolated_cells = counts.extrapolated;
     return counts;
 }
 

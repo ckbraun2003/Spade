@@ -75,8 +75,10 @@ add_executable(spade_tests
     test_airflow_grid.cpp
     test_airflow_pressure.cpp
     test_airflow_advect.cpp
+    test_airflow_configs.cpp
     test_airflow_step.cpp
     test_airflow_publish.cpp
+    test_airflow_validation.cpp
     test_dryden.cpp
     test_rotor.cpp
     test_rotor_wake.cpp
@@ -593,6 +595,7 @@ add_executable(spade_bench
     bench/bench_core.cpp
     bench/bench_sim.cpp
     bench/bench_render.cpp
+    bench/bench_airflow.cpp
 )
 
 # spade_fp_strict here too, same reasoning as spade_tests above: bench_core.cpp

@@ -22,8 +22,10 @@ void add_and_clear(std::vector<float>& vel, std::vector<float>& d) noexcept {
 
 [[nodiscard]] bool positive_finite(float x) noexcept { return x > 0.0f && std::isfinite(x); }
 
-// The wall faces whose prescribed normal fluxes do not balance in a closed
-// domain, as a bit per face; 0 when the domain has an outlet or balances.
+// The faces whose prescribed normal fluxes do not balance in a closed domain,
+// as a bit per face; 0 when the domain has an outlet or balances. A wall
+// prescribes its normal wall velocity; an open face the ambient enters (an
+// inflow) prescribes the ambient's normal component (the final review's I1).
 [[nodiscard]] uint8_t unbalanced_faces(const DomainBc& bc, const GridShape& s) noexcept {
     const std::array<FaceKind, 6> kinds = face_kinds(bc);
     if (std::any_of(kinds.begin(), kinds.end(), [](FaceKind k) { return k == FaceKind::pressure_outlet; })) {
@@ -35,9 +37,9 @@ void add_and_clear(std::vector<float>& vel, std::vector<float>& d) noexcept {
     double magnitude = 0.0;
     uint8_t faces = 0;
     for (uint32_t side = 0; side < 6; ++side) {
-        if (bc.face[side] != FaceBc::wall) continue;
+        if (kinds[side] != FaceKind::fixed_velocity) continue;  // walls and inflows; periodic faces carry no net flux
         const uint32_t axis = side / 2u;
-        const double normal = bc.wall_velocity[side][static_cast<glm::length_t>(axis)];
+        const double normal = fixed_normal_velocity(bc, static_cast<Side>(side));
         if (normal == 0.0) continue;
         const double area = n[(axis + 1u) % 3u] * n[(axis + 2u) % 3u] * dx2;
         const double outward = (side % 2u == 0u ? -normal : normal) * area;
@@ -77,7 +79,7 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
         case FluidFault::none:
             return "airflow fluid step: healthy";
         case FluidFault::ill_posed_domain:
-            return "airflow fluid step: a closed domain's prescribed wall fluxes do not balance (faces " +
+            return "airflow fluid step: a closed domain's prescribed face fluxes do not balance (faces " +
                    face_list(health.faces) + ")";
         case FluidFault::non_finite: {
             const uint32_t q = health.quantity;
@@ -94,7 +96,7 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
     return "airflow fluid step: unknown fault";
 }
 
-uint64_t fluid_bytes(const GridShape& s) noexcept {
+uint64_t fluid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
     const uint64_t nx = s.nx;
     const uint64_t ny = s.ny;
     const uint64_t nz = s.nz;
@@ -106,7 +108,7 @@ uint64_t fluid_bytes(const GridShape& s) noexcept {
     const uint64_t floats = (faces + cells)                       // the grid
                             + (faces + cells)                     // next, advection's output
                             + 3u * faces                          // advection's hat, lo and hi
-                            + 3u * multigrid_cells(s.nx, s.ny, s.nz)  // every level's p, b and r
+                            + 3u * multigrid_cells(s.nx, s.ny, s.nz, periodic_axes(bc))  // every level's p, b, r
                             + cells                               // the divergence
                             + std::max({uf, vf, wf})              // the viscous right side
                             + faces;                              // du, dv and dw
@@ -117,7 +119,7 @@ Result<void> check_domain(const DomainBc& bc, const GridShape& shape) {
     if (const uint8_t faces = unbalanced_faces(bc, shape); faces != 0u) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "airflow fluid step: a closed domain (no outlet) cannot take a net prescribed "
-                                     "flux through its walls; it does through faces " +
+                                     "flux through its walls and inflows; it does through faces " +
                                          face_list(faces)});
     }
     return {};
@@ -133,7 +135,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (cfg.n_v == 0u) return refuse("n_v must be at least 1");
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) return refuse("visc_sweeps must be at least 1 when nu > 0");
     if (Result<void> ok = check_domain(bc, g.shape); !ok) return std::unexpected(ok.error());
-    if (const uint64_t bytes = fluid_bytes(g.shape); bytes > kGridByteCap) {
+    if (const uint64_t bytes = fluid_bytes(g.shape, bc); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) +
                                                                   " bytes of grid and scratch, past the cap of " +
                                                                   std::to_string(kGridByteCap)});
@@ -141,7 +143,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     FluidScratch s;
     s.next = g;
     s.advect = make_advect_scratch(g.shape);
-    s.projection = make_projection_scratch(g.shape);
+    s.projection = make_projection_scratch(g.shape, bc);
     s.rhs.assign(std::max({g.u.size(), g.v.size(), g.w.size()}), 0.0f);
     s.du.assign(g.u.size(), 0.0f);
     s.dv.assign(g.v.size(), 0.0f);
