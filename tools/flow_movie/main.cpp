@@ -36,6 +36,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "cache.hpp"
 #include "cases.hpp"
@@ -91,9 +92,13 @@ struct CaptionText {
 
 // A title and wrapped lines down from the top left; wrapped lines up from the
 // bottom left, the first given highest.
+// 118 characters of 30 px Segoe UI fill 1840 px; a sidebar takes about half.
+constexpr std::size_t kFullWidth = 118;
+constexpr std::size_t kSidebarWidth = 62;
+
 [[nodiscard]] std::vector<Caption> layout(const std::string& title, const std::vector<std::string>& top,
-                                          const std::vector<std::string>& bottom) {
-    constexpr std::size_t kBodyWidth = 118;  // 30 px Segoe UI across 1840 px
+                                          const std::vector<std::string>& bottom,
+                                          std::size_t kBodyWidth = kFullWidth) {
     std::vector<Caption> out{{0, title, true}};
     int row = 1;
     for (const std::string& t : top) {
@@ -130,6 +135,10 @@ struct Film {
     std::function<std::vector<double>(const airflow::MacGrid&)> live;  // the case's measures per frame
     std::function<CaptionText(const FrameLog&)> captions;              // the case's lines past the standard ones
     std::vector<std::string> record;  // its V1 record's lines, above the view's (the validation reel)
+    // Where the volume's centre shows across the frame (-1 left, +1 right). A
+    // film with a record puts the picture right and its captions in a
+    // sidebar on the left; 0 centres both.
+    float picture_x = 0.0f;
     std::vector<View> views;
 };
 
@@ -251,12 +260,32 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     const CaptionText extra = film.captions ? film.captions(log) : CaptionText{};
     std::vector<std::string> top{c.settings};
     top.insert(top.end(), extra.top.begin(), extra.top.end());
-    std::vector<std::string> bottom = film.record;
+    std::vector<std::string> bottom;
+    if (film.picture_x != 0.0f) {
+        // The sidebar: the record under the settings, its references left to
+        // the card, which shows the record whole.
+        for (const std::string& line : film.record) {
+            if (line.rfind("reference: ", 0) != 0) top.push_back(line);
+        }
+    } else {
+        bottom = film.record;
+    }
     bottom.insert(bottom.end(), extra.bottom.begin(), extra.bottom.end());
     bottom.push_back(view.label);
     bottom.push_back("t = " + fixed(log.time, film.time_decimals) + film.time_unit + "   (step " +
                      std::to_string(log.step) + " of " + std::to_string(total_steps(c)) + ")");
-    return layout(c.name, top, bottom);
+    return layout(c.name, top, bottom, film.picture_x != 0.0f ? kSidebarWidth : kFullWidth);
+}
+
+// Moves the camera sideways, keeping its aim, so the volume's centre shows
+// at `x` of the frame's half-width from the middle (+ right).
+void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, float x, const Encoder& encoder) {
+    if (x == 0.0f) return;
+    const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+    const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    const float depth = glm::dot(volume_centre(volume) - camera.position, forward);
+    const float aspect = static_cast<float>(encoder.width) / static_cast<float>(encoder.height);
+    camera.position -= right * (x * depth * std::tan(0.5f * camera.fov_y_radians) * aspect);
 }
 
 // One clip per view, from the cached frames.
@@ -280,6 +309,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
             if (auto shot = film.views[v].shot(volume, k, film.frames, scene, camera); !shot) {
                 return std::unexpected(shot.error());
             }
+            offset_picture(camera, volume, film.picture_x, encoder);
             if (auto drew = stage.draw(scene, camera, rgba); !drew) return std::unexpected(drew.error());
             if (auto added = clips[v]->add_frame(rgba, standard_captions(film, film.views[v], log)); !added) {
                 return std::unexpected(added.error());
@@ -341,6 +371,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
             render::RenderScene scene = dark_scene(volume);
             render::Camera camera;
             if (auto shot = view.shot(volume, k, film.frames, scene, camera); !shot) return shot;
+            offset_picture(camera, volume, film.picture_x, encoder);
             if (cpu) {
                 if (auto drew = draw_cpu(scene, camera, encoder, rgba); !drew) return drew;
             } else if (auto drew = stage.draw(scene, camera, rgba); !drew) {
@@ -561,7 +592,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
         return CaptionText{{}, {"this run, instantaneous at the red cross: " + fixed(v, 2) + " m/s"}};
     };
     const float speed_max = 2.0f * vh;
-    const glm::vec3 target = hub - glm::vec3(0.0f, 2.5f * r, 0.0f);
+    const glm::vec3 target = hub - glm::vec3(0.0f, 4.5f * r, 0.0f);
     film.views.push_back(View{
         "speed", "speed |u| as a volume, 0 to " + fixed(speed_max, 1) + " m/s; streamlines from above the disc",
         [d, speed_max, target, hub, r](const spade::FlowVolume& v, uint32_t k, uint32_t n,
@@ -586,7 +617,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
             const float a = 0.25f * r;
             scene.flow_polylines.push_back(render::FlowPolyline{{probe - glm::vec3(a, 0, 0), probe + glm::vec3(a, 0, 0)}, {red, red}});
             scene.flow_polylines.push_back(render::FlowPolyline{{probe - glm::vec3(0, 0, a), probe + glm::vec3(0, 0, a)}, {red, red}});
-            camera = orbit(target, 10.0f * r, sweep_azimuth(20.0f, 70.0f, k, n), 12.0f);
+            camera = orbit(target, 16.0f * r, sweep_azimuth(20.0f, 70.0f, k, n), 12.0f);
             return {};
         }});
     return film;
@@ -932,6 +963,7 @@ int main(int argc, char** argv) {
             auto lines = record_lines(*records, item.source, item.identity);
             if (!lines) return fail(lines.error());
             item.film->record = std::move(*lines);
+            item.film->picture_x = 0.45f;
         }
         std::vector<fs::path> parts;
         auto opening = title_card(
