@@ -196,14 +196,15 @@ Result<std::vector<ValidationRecord>> validation_records(std::string_view text, 
         const std::string_view line = trim_right(text.substr(start, end - start));
         start = end + 1;
         ++number;
-        const bool fence = line.substr(0, kFence.size()) == kFence;
+        // Any ``` line opens a fence; only a bare one closes it, so a
+        // "```text" line inside another fence is that fence's content.
         if (in == In::prose) {
-            if (fence) {
+            if (line.substr(0, kFence.size()) == kFence) {
                 in = line == "```text" ? In::record : In::other_fence;
                 fence_line = number;
                 block.clear();
             }
-        } else if (fence) {
+        } else if (line == kFence) {
             if (in == In::record) {
                 if (block.empty()) return std::unexpected(refuse(source, fence_line, "an empty ```text block"));
                 Result<ValidationRecord> rec = read_record(source, block);
