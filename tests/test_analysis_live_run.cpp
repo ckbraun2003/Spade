@@ -36,13 +36,14 @@ namespace fs = std::filesystem;
     return m;
 }
 
-// A 16^3 box of 0.8 m (5 cm cells), stepped every 4 ms.
+// An 8^3 box of 0.8 m (10 cm cells), stepped every 4 ms: small enough for
+// debug ctest's budget.
 [[nodiscard]] an::AnalysisCase tiny_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
     c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
     c.rotors.assign(m.rotors.size(), an::RotorSetup{});
     c.grid.box = 0.8f;
-    c.grid.spacing = 0.05f;
+    c.grid.spacing = 0.1f;
     c.time.duration = 1.0f;
     c.time.step = 0.004f;
     return c;
@@ -87,8 +88,9 @@ TEST(AnalysisLiveRun, StartsHeldAtRestAtTimeZero) {
     for (const float w : run.state().rotor_omega) EXPECT_EQ(w, 0.0f);
     EXPECT_LT(quat_gap(run.state().attitude, glm::quat(1, 0, 0, 0)), 1e-6f);
     const std::string line = run.run_line();
-    EXPECT_NE(line.find("16"), std::string::npos) << line;
-    EXPECT_NE(line.find("dx 50 mm"), std::string::npos) << line;
+    EXPECT_NE(line.find("actuator disc"), std::string::npos) << line;
+    EXPECT_NE(line.find("8\xc2\xb3"), std::string::npos) << line;  // 8, superscript three
+    EXPECT_NE(line.find("dx 100 mm"), std::string::npos) << line;
     EXPECT_NE(line.find("t = 0.000 s"), std::string::npos) << line;
 }
 
@@ -122,9 +124,9 @@ TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {
     EXPECT_EQ(first->frame, 1u);
     EXPECT_EQ(first->steps, 9u);
     EXPECT_DOUBLE_EQ(first->t_s, 0.036);
-    EXPECT_EQ(volume.header.nx, 16u);
-    EXPECT_EQ(volume.header.ny, 16u);
-    EXPECT_EQ(volume.header.nz, 16u);
+    EXPECT_EQ(volume.header.nx, 8u);
+    EXPECT_EQ(volume.header.ny, 8u);
+    EXPECT_EQ(volume.header.nz, 8u);
     // The box is centred on the drone: its minimum corner is -0.4 m.
     EXPECT_FLOAT_EQ(volume.header.origin.x, -0.4f);
     const spade::Result<an::LiveFrame> second = run.advance_frame(an::Controls{}, volume);
