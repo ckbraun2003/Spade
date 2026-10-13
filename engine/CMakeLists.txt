@@ -737,6 +737,7 @@ add_library(spade_physics STATIC
     physics/airflow/actuator.cpp
     physics/airflow/rotor_discs.cpp
     physics/airflow/grid_io.cpp
+    physics/airflow/solids.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
 set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)
