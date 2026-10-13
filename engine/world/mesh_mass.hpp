@@ -10,10 +10,12 @@
 // inertia rho * inertia, about the centroid, at the centroid. make_mesh()
 // calls this once on every mesh it accepts, and the mesh keeps the result
 // (TriangleMesh::mass_properties(), world/mesh.hpp): read it there rather
-// than computing it again.
+// than computing it again. The airframe compile does, for a mesh record,
+// times the record's density (vehicles/airframe_compile.hpp, MASS FROM A
+// MESH).
 //
 // THE CONVENTIONS are PartInertia::tensor's (vehicles/composite_inertia.hpp),
-// so the compile can hand the result straight to composite_inertia():
+// so the compile hands the result, times rho, straight to composite_inertia():
 //   * metres, in the mesh's own frame (the part frame), as
 //     TriangleMesh::positions() gives them;
 //   * the inertia is about the CENTROID, not the frame's origin;

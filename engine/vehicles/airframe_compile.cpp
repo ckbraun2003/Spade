@@ -255,7 +255,6 @@ void check_mesh_records(const AirframeSpec& s, Issues& out) {
         const PartGeometrySpec& g = p.geometry;
         if (g.source != GeometrySource::mesh) continue;
         const std::string who = record_name(p, k);
-        const std::size_t before = out.list.size();
         // TD-9: the mesh and its density are this record's one source of
         // mass, solid and inertia. A second, hand-entered, is refused, never
         // silently overridden.
@@ -290,23 +289,44 @@ void check_mesh_records(const AirframeSpec& s, Issues& out) {
                     who + ": a mesh source declares its smallest feature, finite and > 0 m, found " +
                         shortest(static_cast<double>(g.min_feature)));
         }
-        // Until Task M2 resolves it, a mesh record gives no mass.
-        if (out.list.size() == before) {
-            out.add("parts", k, "geometry.source",
-                    who + ": a mesh source's mass is not taken from its mesh yet (the mass-from-mesh plan, M2)");
-        }
     }
 }
 
-// A mesh record as the composite's checks read it. A unit point mass at its
-// placement, so composite_inertia_issues() lists only its pose; every mesh
-// record is refused (check_mesh_records), so no composite or fit runs on it.
-[[nodiscard]] PartInertia mesh_stand_in(const PartInertia& p) {
+// THE RESOLVE (Task M2), before composite_inertia() runs: a mesh record
+// becomes an explicit PartShape::tensor record --
+//
+//   mass         rho V;
+//   position     the record's pose applied to the mesh's centroid, p + R c:
+//                its centre of mass, in the design frame;
+//   orientation  the record's (local -> design);
+//   tensor       rho I_centroid, about the centroid, in the mesh's own axes,
+//                which are the record's local frame;
+//
+// so composite_inertia() turns the tensor by the orientation and adds the
+// parallel-axis term through the position, as for any tensor record, and
+// it and its checks are unchanged. THE FRAME TRAP (Physics): the record's
+// pose is the mesh's PLACEMENT, and the mesh's origin is not its centroid,
+// so this record's position is not where the part goes; gather_parts()
+// keeps the placement for the part (PartList::placement).
+//
+// A record that cannot give its mass (check_mesh_records() lists why), or
+// whose orientation is zero or not finite (composite_inertia_issues() lists
+// it once, and no NaN centre is made from it), stands in as a unit point
+// mass at its placement, so the composite's checks read only its pose. A
+// listed issue stops the composite and the fit, so nothing runs on it.
+[[nodiscard]] PartInertia resolve_mesh_record(const PartInertia& p) {
     PartInertia r;
     r.mass = 1.0;
     r.position = p.position;
     r.orientation = p.orientation;
     r.geometry = p.geometry;
+    const std::optional<MeshMass> m = mesh_mass(p.geometry);
+    const glm::dquat& q = p.orientation;
+    if (!m || !positive(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z)) return r;
+    r.mass = m->mass;
+    r.position = p.position + glm::mat3_cast(glm::normalize(q)) * m->centroid;
+    r.shape = PartShape::tensor;
+    r.tensor = m->inertia;
     return r;
 }
 
@@ -316,16 +336,23 @@ void check_mesh_records(const AirframeSpec& s, Issues& out) {
 // caller wrote. A block of zero mass adds no part. Each record carries its
 // geometry (CORE-7, TD-9: one record per part):
 // a spec record's own, named "parts[k]" when it gives no name; a block's,
-// named for the block; a propeller's, none.
+// named for the block; a propeller's, none. A mesh record is resolved
+// (resolve_mesh_record). `placement` is where each record's part goes: the
+// record's pose as written, read before the resolve. For an analytic solid,
+// centred on its centre of mass, that is the record's own pose; for a mesh
+// record it is the mesh's placement, not its centre of mass.
 struct PartList {
     std::vector<PartInertia> parts;
     std::vector<std::pair<std::string, std::size_t>> origin;
     std::vector<bool> drag_source;  // false for propellers: their aero is the rotor's
+    std::vector<MountPose> placement;
 };
 
 [[nodiscard]] PartList gather_parts(const AirframeSpec& s) {
     PartList out;
     const auto push = [&](PartInertia p, std::string kind, std::size_t index, bool drag) {
+        out.placement.push_back(MountPose{.position = p.position, .orientation = p.orientation});
+        if (p.geometry.source == GeometrySource::mesh) p = resolve_mesh_record(p);
         out.parts.push_back(std::move(p));
         out.origin.emplace_back(std::move(kind), index);
         out.drag_source.push_back(drag);
@@ -333,7 +360,6 @@ struct PartList {
     for (std::size_t k = 0; k < s.parts.size(); ++k) {
         PartInertia p = s.parts[k];
         if (p.geometry.name.empty()) p.geometry.name = "parts[" + std::to_string(k) + "]";
-        if (p.geometry.source == GeometrySource::mesh) p = mesh_stand_in(p);
         push(std::move(p), "parts", k, true);
     }
     const auto block = [](std::string name, std::string role) {
@@ -410,11 +436,13 @@ struct Solid {
 }
 
 // The records that become the model's parts, in gather order: entry i is the
-// record of the model's part i.
+// record of the model's part i. A solid from an inertia shape, or a mesh
+// record's mesh.
 [[nodiscard]] std::vector<std::size_t> solid_records(const PartList& parts) {
     std::vector<std::size_t> out;
     for (std::size_t k = 0; k < parts.parts.size(); ++k) {
-        if (solid_of(parts.parts[k])) out.push_back(k);
+        const PartInertia& p = parts.parts[k];
+        if (p.geometry.source == GeometrySource::mesh || solid_of(p)) out.push_back(k);
     }
     return out;
 }
@@ -585,8 +613,9 @@ struct Built {
 // The parts (CORE-7) carry their names and roles as written. Their solids and
 // mounts are stand-ins, a unit sphere at the body origin, because the record's
 // own checks already list a bad shape, size or pose once (composite_inertia_
-// issues, the block's shape, the hub or the mount), and a valid record gives
-// a valid solid and mount.
+// issues, the block's shape, the hub or the mount; a mesh record's mesh and
+// min_feature, check_mesh_records), and a valid record gives a valid solid
+// and mount.
 [[nodiscard]] ModelType provisional_model(const AirframeSpec& s, const PartList& parts) {
     ModelType m;
     m.name = s.name;
@@ -884,18 +913,38 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     }
 
     // The parts (CORE-7): each record's solid, in gather order, at the
-    // record's pose, converted as every other mount is. Rigid walls. Nothing
-    // above read a record's geometry, so the mass, the drag and the fit are
-    // what they were without it.
-    for (const PartInertia& p : parts.parts) {
+    // record's PLACEMENT, converted as every other mount is. Rigid walls. An
+    // analytic solid is centred on its centre of mass, so its placement is
+    // its record's pose; a mesh record's part is its mesh at the mesh's
+    // placement, never at its centre of mass (THE FRAME TRAP,
+    // resolve_mesh_record), with the min_feature it declares. Nothing above
+    // read an analytic record's geometry, so the mass, the drag and the fit
+    // are what they were without it; a mesh record's mass is its mesh's.
+    for (std::size_t k = 0; k < parts.parts.size(); ++k) {
+        const PartInertia& p = parts.parts[k];
+        const MountPose& at = parts.placement[k];
+        if (p.geometry.source == GeometrySource::mesh) {
+            model.parts.push_back(PartDesc{.name = p.geometry.name,
+                                           .role = p.geometry.role,
+                                           .attach = PartAttach::body,
+                                           .rotor = 0,
+                                           .mount_pos = to_body_pos(at.position),
+                                           .mount_orient = to_body_rot(at.orientation),
+                                           .shape = {},
+                                           .mesh = p.geometry.mesh,
+                                           .mesh_file = {},
+                                           .surface = kWall,
+                                           .min_feature = p.geometry.min_feature});
+            continue;
+        }
         const std::optional<Solid> solid = solid_of(p);
         if (!solid) continue;
         model.parts.push_back(PartDesc{.name = p.geometry.name,
                                        .role = p.geometry.role,
                                        .attach = PartAttach::body,
                                        .rotor = 0,
-                                       .mount_pos = to_body_pos(p.position),
-                                       .mount_orient = to_body_rot(p.orientation),
+                                       .mount_pos = to_body_pos(at.position),
+                                       .mount_orient = to_body_rot(at.orientation),
                                        .shape = one_primitive(solid->kind, to_float(solid->params)),
                                        .surface = kWall,
                                        .min_feature = static_cast<float>(solid->min_feature)});

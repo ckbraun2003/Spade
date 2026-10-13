@@ -121,6 +121,8 @@ struct PartGeometrySpec {
 //                 shares it. Every TriangleMesh came from make_mesh(), so a
 //                 non-null mesh is valid. Null on an SdfProgram part. Exactly
 //                 one of shape and mesh is set (refused at field `shape`).
+//                 Its volume, centroid and inertia per unit density are
+//                 mesh->mass_properties(), computed once (world/mesh.hpp).
 //   mesh_file     the .spmesh sidecar a scene file names `mesh` by: a path
 //                 relative to the scene file's directory, forward slashes,
 //                 UTF-8 (world/mesh_file.hpp; Task B5). The scene reader
@@ -130,8 +132,9 @@ struct PartGeometrySpec {
 //                 SdfProgram part. Nothing but the scene file reads it.
 //   min_feature   m, the smallest feature the grid must resolve (CORE-8 D5);
 //                 finite and > 0. An authored part declares it; the airframe
-//                 compile fills it with its solid's smallest dimension
-//                 (vehicles/airframe_compile.hpp, PARTS).
+//                 compile fills it with its solid's smallest dimension, or a
+//                 mesh record's declared one (vehicles/airframe_compile.hpp,
+//                 PARTS).
 struct PartDesc {
     std::string name{};
     std::string role{};

@@ -61,7 +61,11 @@ struct PartInertia {
     glm::dmat3 tensor{0.0};                       // kg m^2, local frame; PartShape::tensor only
     // The record's model part, for the airframe compile (CORE-7, TD-9: one
     // record per part). composite_inertia() and composite_inertia_issues()
-    // never read it.
+    // never read it. A mesh source is the airframe compile's alone: there,
+    // position and orientation are the mesh's placement, mass, shape, size
+    // and tensor stay unset, and the compile resolves the record into a
+    // tensor record before composite_inertia() runs
+    // (vehicles/airframe_compile.hpp, MASS FROM A MESH).
     PartGeometrySpec geometry{};
 };
 
