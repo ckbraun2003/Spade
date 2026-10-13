@@ -91,10 +91,17 @@
 // stays at the placement, never at the centre of mass. Nothing is rounded to
 // float but the outputs, as for every record. The volume P2 reads is the
 // part's mesh's (mass_properties().volume), not folded into parts_identity()
-// (the content hash covers it). A mesh record has no inertia shape, so like
-// a tensor record it adds no area to the best-effort drag estimate. Scale:
-// none is left to drop, since B6 bakes every node transform into the mesh's
-// positions and a record's pose is rigid.
+// (the content hash covers it). Scale: none is left to drop, since B6 bakes
+// every node transform into the mesh's positions and a record's pose is
+// rigid.
+//
+// DRAG AND MESHES (Physics' rule, 2026-10-13). The best-effort drag estimate
+// reads the records' inertia shapes, and a mesh record has none; yet its
+// solid is real external area, unlike a point or a tensor record. So with no
+// DragSpec, an airframe with ANY mesh record, mixed or all-mesh, is refused
+// with one issue at drag, naming the first mesh record ("and N more" for the
+// rest): give a DragSpec (zero coefficients for none). The estimate never
+// silently leaves a mesh out.
 //
 // THE MOTOR'S PLACE (the lead's ruling, 2026-10-12). A motor sits beside its
 // propeller, not across the rotor plane: its one record, mass and solid
@@ -128,7 +135,9 @@
 // no mesh, a volume or density not finite and > 0 (no default), a density
 // whose mass or inertia overflows, a min_feature not finite and > 0
 // (geometry.<field>), and a hand-entered mass, shape, size or tensor beside
-// it (TD-9; at that field). A propulsion problem the fit finds is listed too
+// it (TD-9; at that field). No DragSpec beside a mesh record is one issue at
+// drag (DRAG AND MESHES), listed whether or not the fit runs, and it does
+// not stop the fit. A propulsion problem the fit finds is listed too
 // whenever the blocks and parts let the fit run.
 // compile_airframe() runs the same checks and, on any problem, returns them
 // joined in its error.
@@ -272,7 +281,7 @@ struct AirframeSpec {
     EscBlock esc;
     BatteryBlock battery;
     std::vector<RotorSpec> rotors;  // at least one
-    std::vector<DragSpec> drag;     // empty: estimated from the parts (best-effort)
+    std::vector<DragSpec> drag;     // empty: estimated from the parts (best-effort); refused beside a mesh record
     std::vector<ImuSpec> imus;
     double proxy_radius = 0.0;      // m, >= 0
 

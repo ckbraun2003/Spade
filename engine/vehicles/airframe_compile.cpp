@@ -490,6 +490,29 @@ void check_geometry(const AirframeSpec& s, Issues& out) {
     }
 }
 
+// PHYSICS' DRAG RULE (2026-10-13). With no DragSpec the drag is estimated
+// from the records' inertia shapes (local_areas), and a mesh record has
+// none; yet its solid is real external area, unlike a point or a tensor
+// record. So with no DragSpec, any mesh record among the drag sources
+// refuses the estimate rather than leaving it out (L6): one issue at drag,
+// naming the first mesh record, with the count of the rest. It reads only
+// the spec and the gathered records, so it is listed whether or not the
+// composite runs, and, like a model rule, it stops only the final model.
+void check_mesh_drag(const AirframeSpec& s, const PartList& parts, Issues& out) {
+    if (!s.drag.empty()) return;
+    std::size_t first = 0;
+    std::size_t meshes = 0;
+    for (std::size_t k = 0; k < parts.parts.size(); ++k) {
+        if (!parts.drag_source[k] || parts.parts[k].geometry.source != GeometrySource::mesh) continue;
+        if (meshes++ == 0) first = k;
+    }
+    if (meshes == 0) return;
+    const std::string more = meshes > 1 ? " (and " + std::to_string(meshes - 1) + " more)" : "";
+    out.add("drag", 0, "",
+            "none given, and " + record_name(parts.parts[first], parts.origin[first].second) + " is a mesh" + more +
+                ", whose area the estimate cannot see: give a DragSpec (zero coefficients for none)");
+}
+
 // The local projected areas of one shape, onto the planes normal to its local
 // x, y and z: what a flow along that axis sees.
 [[nodiscard]] glm::dvec3 local_areas(const PartInertia& p) noexcept {
@@ -765,6 +788,7 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     // whose mesh and density ARE its mass (check_mesh_records, above).
     const bool fit_possible = out.issues.list.empty();
     check_geometry(s, out.issues);
+    check_mesh_drag(s, parts, out.issues);
     add_model_issues(s, parts, out.issues);
     if (!fit_possible) return out;
 
@@ -786,7 +810,10 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     // over the parts. A rotated part projects as sum_j |M_ij| A_j: exact for a
     // box at any angle and for an axis-aligned part, an overestimate for a
     // tilted cylinder; parts that shield each other are counted twice.
-    // Propellers are left out: their aerodynamics are the rotor's.
+    // Propellers are left out: their aerodynamics are the rotor's. A mesh
+    // record's area is not seen, so check_mesh_drag() has already refused the
+    // estimate if any record is a mesh, and this rule then adds nothing more
+    // at drag.
     glm::dvec3 area(0.0);
     if (s.drag.empty()) {
         for (std::size_t k = 0; k < parts.parts.size(); ++k) {
@@ -801,9 +828,9 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
             }
         }
         if (!(area.x > 0.0 || area.y > 0.0 || area.z > 0.0)) {
-            out.issues.add("drag", 0, "",
-                           "none given, and no part has a shape to estimate it from: give a DragSpec "
-                           "(zero coefficients for none)");
+            out.issues.add_once("drag", 0, "",
+                                "none given, and no part has a shape to estimate it from: give a DragSpec "
+                                "(zero coefficients for none)");
         }
     }
 
