@@ -65,6 +65,7 @@ add_executable(spade_tests
     test_mesh_field.cpp
     test_mesh_mass.cpp
     test_mesh_file.cpp
+    test_mesh_import.cpp
     test_state.cpp
     test_snapshot.cpp
     test_rng_medium.cpp
@@ -416,6 +417,8 @@ target_link_libraries(spade_tests PRIVATE
     spade_viewer_scenes
     spade::scene
     spade::analysis
+    # The CAD mesh readers (CORE-6, Task B6): test_mesh_import.cpp.
+    spade::mesh_import
 )
 
 # spade::compute + volk + Vulkan::Headers (S6 Task 1): same
