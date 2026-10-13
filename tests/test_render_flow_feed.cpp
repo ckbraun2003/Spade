@@ -113,8 +113,8 @@ TEST(RenderFlowFeed, TaylorGreenPublishesItsAnalyticQAndVorticity) {
     const FlowVolume v = publish(taylor_green_grid());
     ASSERT_TRUE(spade::validate_flow_volume(v).has_value());
     EXPECT_EQ(v.header.no_data, 0u);
-    // [0] interior cells, [1] cells on the grid's edge: Publish differences
-    // those one-sided, as it cannot know the axis is periodic.
+    // [0] interior cells, [1] cells on the grid's edge. Told the axes are
+    // periodic, Publish differences the edge cells across the wrap.
     double q_err[2] = {0.0, 0.0}, w_err[2] = {0.0, 0.0};
     for (uint32_t k = 0; k < kN; ++k) {
         for (uint32_t j = 0; j < kN; ++j) {
@@ -136,14 +136,13 @@ TEST(RenderFlowFeed, TaylorGreenPublishesItsAnalyticQAndVorticity) {
     std::printf("[ tg t=0 ] interior: Q max error %.5f, |omega| %.5f; edge: Q %.5f, |omega| %.5f (peaks 1 and 2)\n",
                 q_err[0], w_err[0], q_err[1], w_err[1]);
     // Measured 2026-10-12: inside, Q 0.0215 of its peak 1 and |omega| 0.0221
-    // of its peak 2, the O(dx^2) of differences at dx = 2 pi / 32. On the
-    // edge cells |omega| is 0.129 off: Publish differences them one-sided,
-    // first order, because it is not told the axis is periodic (reported to
-    // Physics 2026-10-12). Tighten the edge bound if Publish learns to wrap.
+    // of its peak 2, the O(dx^2) of differences at dx = 2 pi / 32. The edge
+    // cells hold the interior's bound now that Publish wraps periodic axes
+    // (PublishInput::periodic). One-sided, they were 0.129 off in |omega|.
     EXPECT_LE(q_err[0], 0.022);
     EXPECT_LE(w_err[0], 0.023);
     EXPECT_LE(q_err[1], 0.022);
-    EXPECT_LE(w_err[1], 0.13);
+    EXPECT_LE(w_err[1], 0.023);
 }
 
 // The Q iso of the published field draws where the analytic field's does:
