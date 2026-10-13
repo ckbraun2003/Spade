@@ -5,14 +5,17 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "cp_sphere.hpp"
 #include "flow_synthetic.hpp"
 #include "render/flow_field.hpp"
 #include "render/raster_cpu.hpp"
@@ -21,6 +24,7 @@
 #include "world/builder.hpp"
 
 namespace {
+
 
 using spade::render::Camera;
 using spade::render::ColourMapId;
@@ -373,6 +377,75 @@ TEST(RenderFlowField, ACsgWallTakesTheColourOffItsSeenSide) {
     EXPECT_EQ(rgb(draw(scene), 16, 16), shaded) << "not a flow wall: no colour";
     scene.statics[scene.csg_subtrees[0].draw_item].flow_wall = true;
     expect_map_colour(rgb(draw(scene), 16, 16), 1.0f, "a flow wall, one cell off: the seen side's +1");
+}
+
+// --- R2.4: where to read the wall pressure (RND-8) --------------------------
+
+// R2.4's table, measured 2026-10-13 (MSVC release; worst |dC_p| over the
+// pixels at least 0.3 face-on, of about 1930):
+//
+//   R/dx   offset 0          0.5              1      1.5
+//    4     1.05, 708 no-data  0.55, 8 no-data  0.70   0.85
+//    8     1.04, 772 no-data  0.33, 52 no-data 0.43   0.57
+//   16     1.05, 888 no-data  0.19, 40 no-data 0.25   0.35
+//
+// At the wall, a stencil reaches the deeper solid cells (no-data), and
+// about 40% of the sphere goes uncoloured. Half a cell out, some still do.
+// From one cell out none does, but a single read is biased by about
+// 4.5 (delta dx / a) sin^2(theta): on a curved wall dp/dn = rho u_t^2 / R.
+// One cell is chosen, the nearest that colours every pixel.
+constexpr uint32_t kChosenCellsPerRadius = 8;
+constexpr float kChosenOffsetCells = 1.0f;
+constexpr double kChosenWorstCp = 0.44;  // measured 0.432
+
+// R2.4's measurement. Each pixel on the sphere (tests/cp_sphere.hpp), its
+// colour turned back into C_p through the map, against 1 - 9/4 sin^2(theta) at
+// its point, for read offsets of 0 to 1.5 cells at 4, 8 and 16 cells per
+// radius. It prints the table above, and pins the chosen offset's worst error
+// and full coverage.
+TEST(RenderFlowField, ReadingOffTheWallRecoversASpheresSurfaceCp) {
+    constexpr uint32_t kPx = 129;
+    const float cp_min = -1.25f, cp_max = 1.0f;
+    const auto colours = spade::render::cp_colours(0.5f, 0.0f, cp_min, cp_max);
+    ASSERT_TRUE(colours.has_value());
+    RenderScene scene;
+    scene.meshes.push_back(spade::test::potential_sphere_mesh());
+    scene.materials = {spade::render::Material{}};
+    spade::render::DrawItem sphere{.mesh_index = 0, .local_to_world = glm::mat4(1.0f),
+                                   .material_override = spade::render::kNoMaterial};
+    sphere.flow_wall = true;
+    scene.statics.push_back(sphere);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
+    spade::test::CpError chosen;
+    for (const uint32_t per_radius : {4u, 8u, 16u}) {
+        const spade::FlowVolume volume = spade::test::potential_sphere_volume(per_radius);
+        for (const float offset : {0.0f, 0.5f, 1.0f, 1.5f}) {
+            FlowSurfaceColouring colouring{&volume, *colours};
+            colouring.walls_only = true;
+            colouring.offset_cells = offset;
+            scene.flow_surface_colouring = colouring;
+            std::vector<uint8_t> px(static_cast<size_t>(kPx) * kPx * 4u, 0u);
+            RenderTarget target{.pixels = std::span<uint8_t>(px), .width = kPx, .height = kPx, .stride = kPx * 4u};
+            RenderOptions options;
+            options.overlays = false;
+            spade::render::FlowFrameReport report;
+            ASSERT_TRUE(spade::render::render(scene, camera, options, target, nullptr, &report).has_value());
+            const spade::test::CpError e =
+                spade::test::potential_sphere_cp_error(camera, kPx, kPx, cp_min, cp_max, [&](uint32_t x, uint32_t y) {
+                    const size_t i = (static_cast<size_t>(y) * kPx + x) * 4u;
+                    return glm::vec3(px[i + 2], px[i + 1], px[i + 0]);
+                });
+            std::printf("[ sphere C_p ] R/dx %2u, offset %.1f: worst |dC_p| %.3f at sin^2 %.2f, mean %.4f over %zu px; "
+                        "%zu unmapped, %llu no-data\n",
+                        per_radius, offset, e.worst, e.worst_sin2, e.mean, e.count, e.unmapped,
+                        static_cast<unsigned long long>(report.surface_pixels_no_data));
+            if (per_radius == kChosenCellsPerRadius && offset == kChosenOffsetCells) chosen = e;
+        }
+    }
+    EXPECT_LE(chosen.worst, kChosenWorstCp);
+    EXPECT_EQ(chosen.unmapped, 0u) << "every pixel on the sphere takes a C_p colour";
 }
 
 TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {
