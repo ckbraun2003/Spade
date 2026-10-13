@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include <glm/glm.hpp>
 
 namespace spade::physics {
@@ -16,6 +18,15 @@ namespace spade::physics {
 // the GPU's float4 rows (shaders/shared/bindings.slang) carry `dv` in xyz and
 // leave w unused, as `_pad` is here.
 // ---------------------------------------------------------------------------
+// WHERE THE PASSES REACH IT: its index in each pass's access list
+// (sim/standard_modules.cpp's kContactAccess and kIntegrateAccess). The passes
+// read ctx.state at these indices (physics/schedule.cpp), and
+// standard_modules.cpp static_asserts that the lists name the scratch there,
+// so reordering a list is a compile error rather than a wrong view (Core's
+// suggestion, 2026-10-06).
+inline constexpr std::size_t kContactPassContactDvAccess = 1;
+inline constexpr std::size_t kIntegratePassContactDvAccess = 3;
+
 struct ContactDvRow {
     glm::vec3 dv{0.0f};
     float _pad = 0.0f;

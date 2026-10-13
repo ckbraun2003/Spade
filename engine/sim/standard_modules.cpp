@@ -204,10 +204,13 @@ constexpr PassDecl kBehaviorPasses[] = {
 // a declared scratch `integrate` owns (stage 4 Task 7b). Both contact passes
 // accumulate into it -- required writes to another module's scratch, ordered
 // by the phases and by dynamic's `after` -- and Integrate reads it into the
-// specific force and zeroes it. Its index here (1) and in kIntegrateAccess (3)
-// is how the passes reach it (physics/schedule.cpp).
+// specific force and zeroes it. Its index here and in kIntegrateAccess is how
+// the passes reach it: physics/contact_dv.hpp names both, and the asserts
+// below pin them, so a reordered list fails to compile.
 constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write},
                                              {"integrate.contact_dv", Access::accumulate}};
+static_assert(kContactAccess[physics::kContactPassContactDvAccess].quantity == "integrate.contact_dv",
+              "the contact passes read the contact scratch at physics::kContactPassContactDvAccess");
 constexpr PassDecl kStaticPasses[] = {{.name = "resolve",
                                        .phase = Phase::constraints,
                                        .access = kContactAccess,
@@ -227,6 +230,8 @@ constexpr QuantityAccess kIntegrateAccess[] = {{"body.pose", Access::write},
                                                {"body.specific_force", Access::write},
                                                {"integrate.contact_dv", Access::write},
                                                {"field.gravity", Access::read}};
+static_assert(kIntegrateAccess[physics::kIntegratePassContactDvAccess].quantity == "integrate.contact_dv",
+              "integrate reads the contact scratch at physics::kIntegratePassContactDvAccess");
 // The contact scratch's declaration: per body, 16-byte rows on both sides,
 // at binding 27 on the GPU. bindings.gen.hpp exists only in a SPADE_VULKAN
 // build; without it no backend could bind the scratch, so it is CPU-only there.
