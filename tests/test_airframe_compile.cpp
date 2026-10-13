@@ -622,15 +622,24 @@ TEST(AirframeCompile, AnAirframeThatReachesTheEscTotalWithBrakingCompiles) {
 }
 
 // DETERMINISM (Kat's question 1). The reference quad's compiled model has one
-// identity, here and on every platform. FINAL under TD-12's discipline: the
-// Docker gcc leg reproduced the MSVC value at 3e4b589.
+// identity, here and on every platform. PENDING under TD-12's discipline:
+// final once a fresh Docker gcc leg reproduces the regenerated value below.
 TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
     const auto a = compile_airframe(reference_quad());
     const auto b = compile_airframe(reference_quad());
     ASSERT_TRUE(a.has_value() && b.has_value());
     EXPECT_EQ(model_identity(a->model), model_identity(b->model)) << "the same spec, compiled twice";
-    // msvc-ninja-release at 1b61a41; gcc-13 leg at 3e4b589 (2026-10-04).
-    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;
+    // REGENERATED 2026-10-13 (TD-1). Cause: the motor record offset half its
+    // extent off the rotor plane, 2026-10-12, the lead's ruling
+    // (RotorSpec::pusher). The reference quad's motors are tractors, so each
+    // motor's mass and solid moved 0.009 m below its hub; the centre of mass,
+    // the inertia and every body-frame mount moved with them. Its drag is the
+    // estimate: one element at the centre of mass, so it follows the moved
+    // centre; its coefficients (projected areas) do not change. Was
+    // 0x9be262bdf825ba41 (msvc-ninja-release at 1b61a41; gcc-13 leg at
+    // 3e4b589, 2026-10-04). Now msvc-ninja-release at 68720be; final once a
+    // fresh gcc leg reproduces it (TD-12).
+    constexpr uint64_t kPinned = 0x78fdc769a0503ff6ull;
     EXPECT_EQ(model_identity(a->model), kPinned) << std::hex << model_identity(a->model);
 }
 
@@ -924,16 +933,20 @@ TEST(AirframeCompile, PartsMoveOnlyThePartsIdentity) {
     ASSERT_TRUE(c.has_value()) << c.error().context;
     const ModelType& m = c->model;
     ASSERT_EQ(m.parts.size(), 10u) << "the compile emits parts (A4)";
-    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;  // the pin above
+    constexpr uint64_t kPinned = 0x78fdc769a0503ff6ull;  // the pin above
     EXPECT_EQ(model_identity(m), kPinned) << std::hex << model_identity(m);
 
-    // The compiled quad's parts_identity: PINNED (msvc-ninja-release on
-    // core/parts-identity, 2026-10-12; the gcc leg reproduces it). It is
-    // the compile's own output read back, a regression pin; the independent
-    // check is PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
-    // The coming motor-offset task moves the motors' mounts, so it moves this
-    // value: a named regeneration, never a silent one.
-    constexpr uint64_t kPartsPinned = 0x2578117f1aa83070ull;
+    // The compiled quad's parts_identity: PINNED. It is the compile's own
+    // output read back, a regression pin; the independent check is
+    // PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
+    // REGENERATED 2026-10-13 (TD-1). Cause: the motor record offset half its
+    // extent off the rotor plane, 2026-10-12, the lead's ruling
+    // (RotorSpec::pusher): the motors' mounts moved, and so did the centre of
+    // mass every mount is measured from. Was 0x2578117f1aa83070
+    // (msvc-ninja-release on core/parts-identity, 2026-10-12; the gcc leg
+    // reproduced it). Now msvc-ninja-release at 68720be; final once a fresh
+    // gcc leg reproduces it (TD-12).
+    constexpr uint64_t kPartsPinned = 0x1f0c49d9fd04ed42ull;
     EXPECT_EQ(parts_identity(m), kPartsPinned) << std::hex << parts_identity(m);
     EXPECT_EQ(parts_identity(m), parts_identity(compile_airframe(reference_quad())->model)) << "compiled twice";
 
