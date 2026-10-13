@@ -165,6 +165,21 @@ TEST(RenderTransferFunction, AutoRangesKeepZeroCentredAndBoundSpeed) {
     EXPECT_FLOAT_EQ(s.max, 5.0f);  // |(-3, 4, 0)|
 }
 
+// lambda2-hat ranges over its own channel, and on a diverging map keeps
+// zero, the vortex boundary, at the neutral centre.
+TEST(RenderTransferFunction, Lambda2HatRangesOverItsOwnChannel) {
+    TransferFunction l2;
+    l2.quantity = FlowQuantity::lambda2_hat;
+    l2.auto_range = true;
+    const auto plain = resolve_range(l2, header_with(spade::kFlowLambda2Hat, -3.0f, 0.5f));
+    EXPECT_EQ(plain.min, -3.0f);
+    EXPECT_EQ(plain.max, 0.5f);
+    l2.colours = ColourMapId::cool_warm;
+    const auto centred = resolve_range(l2, header_with(spade::kFlowLambda2Hat, -3.0f, 0.5f));
+    EXPECT_EQ(centred.min, -3.0f);
+    EXPECT_EQ(centred.max, 3.0f);
+}
+
 // An empty span maps every value to the bottom, never divides by zero.
 TEST(RenderTransferFunction, AnEmptyAutoRangeMapsToTheBottom) {
     TransferFunction tf;

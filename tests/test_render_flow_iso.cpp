@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +20,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/lambda2.hpp"
 #include "flow_synthetic.hpp"
 #include "render/flow_render.hpp"
 #include "render/raster_cpu.hpp"
@@ -37,6 +39,7 @@ using spade::render::RenderTarget;
 using spade::render::TransferFunction;
 
 constexpr double kPi = 3.14159265358979323846;
+
 
 // --- Lamb-Oseen: a straight vortex along y, core a, circulation G. ------
 constexpr double kA = 0.25, kG = 1.0;
@@ -77,6 +80,8 @@ constexpr double kA = 0.25, kG = 1.0;
                                              c[spade::kFlowVorticity] = static_cast<float>(
                                                  kG / (kPi * kA * kA) * std::exp(-r * r / (kA * kA)));
                                              c[spade::kFlowQHat] = q_hat(lo_q(r));
+                                             // A plane flow: lambda2 = -Q.
+                                             c[spade::kFlowLambda2Hat] = -c[spade::kFlowQHat];
                                              return c;
                                          });
 }
@@ -160,6 +165,162 @@ TEST(RenderFlowIso, ALambOseenQIsoIsACylinderOfTheAnalyticRadius) {
         widest = std::max(widest, width);
         EXPECT_LE(mismatched, 2u) << "row " << y << ": at most one pixel at each edge";
     }
+    EXPECT_GE(widest, 20u) << "the cylinder must be wide enough for the edges to mean something";
+}
+
+// lambda2's iso on a straight vortex is Q's: in a plane flow lambda2 = -Q,
+// so lambda2-hat = -q-hat, and the iso at -sqrt(Q0) is the cylinder of
+// radius r0. Negation is exact through the halves, the trilinear lerps and
+// the crossing search, and the shading turns the normal to the eye, so the
+// two frames match bit for bit.
+TEST(RenderFlowIso, ALambOseenLambda2IsoIsItsQIsosCylinder) {
+    const spade::FlowVolume volume = lamb_oseen_volume();
+    const double q0 = 0.25 * lo_q(0.0);
+    const Camera camera = camera_at(glm::vec3(0.0f, 0.0f, 1.0f));
+    RenderScene by_q;
+    by_q.flow_layers.push_back(FlowLayer{&volume, {}, {red_iso(FlowQuantity::q_hat, q_hat(q0))}});
+    RenderScene by_lambda2;
+    by_lambda2.flow_layers.push_back(FlowLayer{&volume, {}, {red_iso(FlowQuantity::lambda2_hat, -q_hat(q0))}});
+    const Frame want = draw(by_q, camera);
+    const Frame got = draw(by_lambda2, camera);
+    const std::vector<bool> drawn = covered(got, draw(RenderScene{}, camera));
+    EXPECT_GE(std::count(drawn.begin(), drawn.end(), true), 500) << "the cylinder must be drawn";
+    EXPECT_EQ(got.px, want.px) << "lambda2's iso must draw exactly as Q's on a plane flow";
+}
+
+// --- Burgers: Lamb-Oseen's swirl about y, stretched along it ------------
+// u = swirl + alpha (-x / 2, y, -z / 2). Not a plane flow, so lambda2 is not
+// -Q: on the axis lambda2 = -W^2 + alpha^2 / 4 but Q = W^2 - 3 alpha^2 / 4,
+// for the core's rotation W = G / (2 pi a^2) = 2.55 1/s. With alpha = 3 the
+// strain hides the core from Q (Q < 0 everywhere) but not from lambda2
+// (-4.2 1/s^2 on the axis): the case lambda2 was made for.
+constexpr double kAlpha = 3.0;
+
+using Gradient = std::array<std::array<double, 3>, 3>;
+
+// G[c][a] = d u_c / d x_a at (x, any y, z).
+[[nodiscard]] Gradient burgers_gradient(double x, double z) {
+    const double r = std::sqrt(x * x + z * z);
+    double f = kG / (2.0 * kPi * kA * kA), df = 0.0;  // u_theta / r and its radial derivative
+    double xr = 0.0, zr = 0.0;
+    if (r > 1e-9) {
+        const double g = std::exp(-r * r / (kA * kA));
+        const double du = kG / (2.0 * kPi) * (-(1.0 - g) / (r * r) + 2.0 * g / (kA * kA));
+        f = lo_u_theta(r) / r;
+        df = (du - f) / r;
+        xr = x / r;
+        zr = z / r;
+    }
+    // The swirl u = -f z, w = f x, as lamb_oseen_volume() has it.
+    return {{{-df * xr * z - 0.5 * kAlpha, 0.0, -f - df * zr * z},
+             {0.0, kAlpha, 0.0},
+             {f + df * xr * x, 0.0, df * zr * x - 0.5 * kAlpha}}};
+}
+
+// Q = -tr(G^2) / 2.
+[[nodiscard]] double q_of(const Gradient& g) {
+    double t = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        for (int k = 0; k < 3; ++k) t += g[i][k] * g[k][i];
+    }
+    return -0.5 * t;
+}
+
+// lambda2 in double: the middle eigenvalue of (G^2 + (G^2)^T) / 2 by the
+// trigonometric closed form, independent of core/lambda2.cpp's Jacobi solve.
+[[nodiscard]] double lambda2_of(const Gradient& g) {
+    double m[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            double pij = 0.0, pji = 0.0;
+            for (int k = 0; k < 3; ++k) {
+                pij += g[i][k] * g[k][j];
+                pji += g[j][k] * g[k][i];
+            }
+            m[i][j] = 0.5 * (pij + pji);
+        }
+    }
+    const double p1 = m[0][1] * m[0][1] + m[0][2] * m[0][2] + m[1][2] * m[1][2];
+    const double q = (m[0][0] + m[1][1] + m[2][2]) / 3.0;
+    const double p2 =
+        (m[0][0] - q) * (m[0][0] - q) + (m[1][1] - q) * (m[1][1] - q) + (m[2][2] - q) * (m[2][2] - q) + 2.0 * p1;
+    if (p2 == 0.0) return q;
+    const double p = std::sqrt(p2 / 6.0);
+    const double b00 = (m[0][0] - q) / p, b11 = (m[1][1] - q) / p, b22 = (m[2][2] - q) / p;
+    const double b01 = m[0][1] / p, b02 = m[0][2] / p, b12 = m[1][2] / p;
+    const double det = b00 * (b11 * b22 - b12 * b12) - b01 * (b01 * b22 - b12 * b02) + b02 * (b01 * b12 - b11 * b02);
+    const double phi = std::acos(std::clamp(det / 2.0, -1.0, 1.0)) / 3.0;
+    const double hi = q + 2.0 * p * std::cos(phi);
+    const double lo = q + 2.0 * p * std::cos(phi + 2.0 * kPi / 3.0);
+    return 3.0 * q - hi - lo;
+}
+
+// The radius where lambda2 rises to l0, by bisection (it rises from the axis).
+[[nodiscard]] double burgers_radius_of(double l0) {
+    double lo = 0.0, hi = 1.12 * kA;
+    for (int i = 0; i < 100; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        if (lambda2_of(burgers_gradient(mid, 0.0)) < l0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+
+// Its volume, as Publish writes one: lambda2-hat from core/lambda2.hpp on the
+// gradient, q-hat from Q.
+[[nodiscard]] spade::FlowVolume burgers_volume(uint32_t n = 64) {
+    const float half = 0.6f;
+    return spade::test::make_flow_volume(
+        glm::vec3(-half), 2.0f * half / static_cast<float>(n), n, n, n, [](glm::vec3 p) {
+            spade::test::FlowChannels c{};
+            const double r = std::sqrt(double{p.x} * p.x + double{p.z} * p.z);
+            const double ut = r < 1e-9 ? 0.0 : lo_u_theta(r);
+            c[spade::kFlowU] = static_cast<float>((r > 1e-9 ? -ut * p.z / r : 0.0) - 0.5 * kAlpha * p.x);
+            c[spade::kFlowV] = static_cast<float>(kAlpha * p.y);
+            c[spade::kFlowW] = static_cast<float>((r > 1e-9 ? ut * p.x / r : 0.0) - 0.5 * kAlpha * p.z);
+            const Gradient g = burgers_gradient(p.x, p.z);
+            c[spade::kFlowQHat] = q_hat(q_of(g));
+            spade::VelocityGradient gf{};
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) gf[i][j] = static_cast<float>(g[i][j]);
+            }
+            c[spade::kFlowLambda2Hat] = spade::lambda2_hat(gf);
+            return c;
+        });
+}
+
+// A strained core Q cannot see: lambda2's iso is the cylinder of the analytic
+// radius, drawn from the side as the Q cylinder is above.
+TEST(RenderFlowIso, ABurgersVortexsLambda2IsoIsACylinderQCannotSee) {
+    const spade::FlowVolume volume = burgers_volume();
+    EXPECT_LT(volume.header.channel_max[spade::kFlowQHat], 0.0f) << "the strain must hide the core from Q";
+    const double l_axis = lambda2_of(burgers_gradient(0.0, 0.0));
+    EXPECT_NEAR(l_axis, -std::pow(kG / (2.0 * kPi * kA * kA), 2.0) + kAlpha * kAlpha / 4.0, 1e-9);
+    const double l0 = 0.25 * l_axis;
+    const double r0 = burgers_radius_of(l0);
+    const Camera camera = camera_at(glm::vec3(0.0f, 0.0f, 1.0f));
+    RenderScene scene;
+    scene.flow_layers.push_back(FlowLayer{&volume, {}, {red_iso(FlowQuantity::lambda2_hat, q_hat(l0))}});
+    const std::vector<bool> got = covered(draw(scene, camera), draw(RenderScene{}, camera));
+    const spade::render::RayGrid grid = spade::render::ray_grid(camera, kW, kH);
+    uint32_t widest = 0;
+    for (uint32_t y = 40; y <= 56; ++y) {
+        uint32_t mismatched = 0, width = 0;
+        for (uint32_t x = 0; x < kW; ++x) {
+            const glm::vec3 d = spade::render::camera_ray(grid, x, y).dir_world;
+            const double dist = std::fabs(double{camera.position.z} * d.x) / std::sqrt(double{d.x} * d.x + double{d.z} * d.z);
+            const bool want = dist < r0;
+            width += want ? 1u : 0u;
+            mismatched += (got[static_cast<size_t>(y) * kW + x] != want) ? 1u : 0u;
+        }
+        widest = std::max(widest, width);
+        EXPECT_LE(mismatched, 2u) << "row " << y << ": at most one pixel at each edge";
+    }
+    std::printf("[ Burgers lambda2 iso ] lambda2 on the axis %.4f 1/s^2, level %.4f, radius %.4f m, %u px wide\n",
+                l_axis, l0, r0, widest);
     EXPECT_GE(widest, 20u) << "the cylinder must be wide enough for the edges to mean something";
 }
 

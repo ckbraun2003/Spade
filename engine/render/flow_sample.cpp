@@ -106,6 +106,8 @@ FlowValue sample_quantity(const FlowSampler& sampler, FlowQuantity quantity, glm
             return sample_channel(sampler, kFlowVorticity, p);
         case FlowQuantity::q_hat:
             return sample_channel(sampler, kFlowQHat, p);
+        case FlowQuantity::lambda2_hat:
+            return sample_channel(sampler, kFlowLambda2Hat, p);
     }
     return FlowValue{0.0f, true};
 }

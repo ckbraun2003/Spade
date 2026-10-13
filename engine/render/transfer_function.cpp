@@ -25,6 +25,8 @@ namespace {
             return kFlowVorticity;
         case FlowQuantity::q_hat:
             return kFlowQHat;
+        case FlowQuantity::lambda2_hat:
+            return kFlowLambda2Hat;
         case FlowQuantity::speed:
             break;
     }

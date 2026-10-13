@@ -344,7 +344,7 @@ bool flow_sample_channel(vec3 p, uint channel, out float value) {
 }
 
 // `quantity` is a FlowQuantity: 0 speed, then u, v, w, dye, pressure,
-// vorticity and q-hat, which are FlowChannel 0 to 6.
+// vorticity, q-hat and lambda2-hat, which are FlowChannel 0 to 7.
 bool flow_sample_quantity(vec3 p, uint quantity, out float value) {
     if (quantity == 0u) {
         float u, v, w;

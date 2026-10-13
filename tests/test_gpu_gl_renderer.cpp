@@ -1407,6 +1407,41 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     glDeleteRenderbuffers(1, &depth);
 }
 
+// lambda2's iso on GL. The ring's cores are straight Lamb-Oseen vortices
+// locally, a plane flow where lambda2 = -Q, so the ring carries lambda2-hat =
+// -q-hat (flow_synthetic.hpp). The lambda2-hat iso at -L must then draw
+// GL's Q iso at +L bit for bit: negation is exact through the halves, the
+// lerps and the crossing search, and the normal is turned to the eye. So
+// FlowIsoMatchesTheCpuWithinItsBand's band holds for lambda2 as it is.
+TEST_F(GpuGlRenderer, FlowLambda2IsoDrawsTheQIsoOfAStraightCore) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    const float q_hat_peak = volume.header.channel_max[spade::kFlowQHat];
+    ASSERT_GT(q_hat_peak, 0.0f);
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * q_hat_peak;
+    q_iso.colour_by = speed;
+    spade::render::IsoSurface l2_iso = q_iso;
+    l2_iso.quantity = spade::render::FlowQuantity::lambda2_hat;
+    l2_iso.value = -q_iso.value;
+    RenderScene by_q = ring_cut_scene();
+    by_q.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    RenderScene by_lambda2 = ring_cut_scene();
+    by_lambda2.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {l2_iso}});
+    RenderScene bare = ring_cut_scene();
+    const Camera camera = camera_on_ring();
+    const std::vector<uint8_t> want = draw_and_read(by_q, comparable_options(), camera);
+    const std::vector<uint8_t> got = draw_and_read(by_lambda2, comparable_options(), camera);
+    const std::vector<uint8_t> nothing = draw_and_read(bare, comparable_options(), camera);
+    ASSERT_EQ(got.size(), kPixels * 4u);
+    EXPECT_GT(count_differing(got, nothing), kPixels / 20u) << "the lambda2 iso must reach the frame";
+    EXPECT_EQ(count_differing(got, want), 0u) << "lambda2's iso must draw exactly as Q's on a plane flow";
+}
+
 // Plan step 7g: a renderer asked to compile its flow programs in the
 // background says when they are ready. Until then it refuses a flow layer
 // as compiling (L6); once ready, within two minutes even on a cold driver
