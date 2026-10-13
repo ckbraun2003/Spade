@@ -4,6 +4,38 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Per-part model geometry and triangle meshes (2026-10-12)
+
+The parts and meshes plan (`docs/design/core/plans/2026-10-12-parts-meshes-plan.md`; `CORE-6`, `CORE-7`): Part A, and Part B's Tasks B1 to B5.
+
+- **A model's solid geometry, part by part** (`CORE-7`). `ModelType::parts` is a list of `PartDesc` (`vehicles/model_part.hpp`), empty by default. A part has a name, a free `role` label, an attachment (`PartAttach::body`, or `rotor` with the rotor's index), a mount pose in the body frame (a rotor part's in its hub frame), its geometry, a `PartSurface` (a wall, or porous with `inv_permeability` and `inertial_coeff`), and `min_feature`, the smallest feature a grid must resolve. A part carries no mass. Nothing in `step()` reads a part; `register_model()` validates and copies them once.
+- **A part's geometry is exactly one of two forms:** an exact `SdfProgram` (`shape`), or a shared, immutable triangle mesh (`mesh`). `vehicles::part_sample()` reads either, in the part frame.
+- **The posing rule** (`vehicles/part_pose.hpp`), the one CPU rule that stage 7's GPU raster will mirror:
+  - `posed_parts()` poses each part by the body, and a rotor part by its hub and the blade azimuth ψ (radians, an input; Physics owns ψ). `PartFilter::rigid_only` leaves the rotor parts out;
+  - `posed_program()` gives the wall parts as one world-frame `SdfProgram`, the form a solver takes for the static world SDF;
+  - `sample_parts()` evaluates every posed part, wall or porous, mesh or SDF, in its own frame. The smallest distance wins, and a tie goes to the lower part index (`CORE-8` §5.2). It reports the owner, its surface kind and its wall velocity;
+  - `part_wall_velocity()` is `v + ω × (x − com)`, plus the rotor's spin about its hub.
+
+  `compose_transform` moved down to `world/builder.hpp`, byte for byte, so `vehicles/` never includes `scene/`. `spade::scene::compose_transform` still compiles.
+- **The airframe compile emits parts.** `PartInertia` gains `geometry` (`PartGeometrySpec`: `source`, `name`, `role`), which `composite_inertia()` never reads. Each sphere, box, cylinder or tube record, and each shaped motor, ESC or battery block, becomes a body-frame wall part: one primitive in the record's frame, with `min_feature` the solid's smallest dimension. A propeller never does, and `GeometrySource::none` opts a record out. The reference quad compiles to ten parts.
+- **`vehicles::parts_identity(model)`** (`vehicles/model_identity.hpp`) is the parts' own identity, the one rule for it (`TD-9`): a field-by-field fold, a mesh part by its content hash. `kNoPartsIdentity` (`0x1bffc7475bebbf17`) is a model with none. It is the same on MSVC and gcc. A consumer that must notice a geometry change pins the pair (`model_identity`, `parts_identity`). `model_identity` never folds parts (`CORE-7`, amended 2026-10-12). Stage 7 will fold `parts_identity` into the snapshot's registry identity, for a model with parts.
+- **Triangle meshes** (`CORE-6`, `world/mesh.hpp`).
+  - `make_mesh()` builds a `TriangleMesh` from a `MeshInput` with a declared unit. It stores fp32 metres, rounded once, and an FNV-1a content hash.
+  - `mesh_sample()` and `mesh_eval()` give the exact distance through a two-level BVH, bit-equal to brute force, signed by angle-weighted pseudonormals. Corner angles use Spade's own `atan2`, in double, in the internal `core/detail/math_ops_f64.hpp` (`TD-3`: no libm).
+  - `mesh_mass_properties()` (`world/mesh_mass.hpp`) gives the volume, centroid and inertia per unit density, in double, in a fixed order, bit-identical across toolchains. Nothing in the engine calls it yet.
+- **Mesh sidecars and scene file v3.** A mesh lives in a `.spmesh` file (`world/mesh_file.hpp`: `save_mesh_file()`, `load_mesh_file()`), named in the scene by a relative path and its content hash, as a scene names its world. `PartDesc::mesh_file` holds that path. `scene_from_yaml()` gains a defaulted `base_dir`, and `load_scene_file()` passes the file's directory.
+- **Scene versions follow the content.** A scene is written as version 3 only when a part holds a mesh, version 2 only when a model has parts, and version 1 otherwise. The reader reads versions 1 to 3. `tests/golden/scenes/parts.scene.yaml` is the first version-2 text, hand-written and reproduced on gcc.
+- **What is refused now:**
+  - a bad part, by its index, name and field: an empty or repeated name; an unknown attachment, a rotor out of range, or a rotor index on a body part; a non-finite mount or a zero orientation; both or neither of `shape` and `mesh`; a shape that does not validate, holds `node_materials` or is unbounded; an unknown surface kind, a negative or non-finite coefficient, or any coefficient on a wall; a `min_feature` that is not finite and positive. `ModelIssue` gains `code` and `Element::part`, and `validate()` returns the first issue's own code, so a shape deeper than `kMaxSdfDepth` keeps `capacity_exceeded`;
+  - `posed_program()` with a posed wall part that is a mesh (`unavailable`, naming it: read it through `sample_parts()`), or a wall part with no geometry;
+  - a mesh with no unit, or one that is not a closed, oriented, 2-manifold, non-self-intersecting solid with its shells correctly nested, by name and with counts. `make_mesh()` repairs nothing;
+  - a sidecar whose content is not the hash the scene names (both hashes given), a corrupt or truncated sidecar, a mesh part read with no base directory, and a mesh part written with no `mesh_file`;
+  - `parts` in a version-1 scene and `mesh` in a version-2 one (unknown keys, blamed on the file's own version), and a scene version past 3 (`schema_mismatch`);
+  - in `check_airframe()`, an unknown geometry source, and a part problem, listed at its record as `parts[k].geometry.<field>`.
+- **Import only** (`CORE-6`, amended 2026-10-12 by the user). There is no native part authoring in any UI: Kat hosts the builder, and Spade provides the analysis. Geometry comes from CAD meshes, and STEP through an offline converter. The readers come next: glTF (B6), binary STL and OBJ (B7), and 3MF (B8), then the STEP converter.
+- **Nothing moved.** The standard identity (`0x3303cfc86821f502`), the one-body schema hash (`0x1f60a6fef22e254a`), the standard walk, every golden digest and every `model_identity` are unchanged, the reference quad's `0x9be262bdf825ba41` included, with its parts. Snapshot format v3 holds, and every stored v3 blob restores after its models gain parts. Every version-1 scene text is unchanged byte for byte, `gate_run.scene.yaml` included, and version 3 left every version-2 text as A3 writes it. One golden was added and none regenerated.
+- **Merged** as `86a9c80` (B1), `1949df8` (B2), `6302fcb` (A1), `2e5e41f` (B3), `0503350` (A2), `4a39929` (A3), `b52d7e2` (B4), `0870cf0` (A4), `40b49b7` (B5) and `57772c8` (`parts_identity`).
+
 ### Module API, stage 4: modules own their state (2026-10-05)
 
 - **Modules declare their arrays** (`ModuleDesc::state`, `ArrayDecl`). Each has a name, a row size and an extent: per world, per body slot, per force element, per sensor, or a fixed number of rows per row of another array (`per_row`, such as a sensor's ring). `compile_schedule` tables them in walk order and refuses, by name, a bad name, size, extent or owner, or a name declared twice. A stateful module's `<module>.<name>` quantities must name its own arrays, so the standard set's tokens changed:
