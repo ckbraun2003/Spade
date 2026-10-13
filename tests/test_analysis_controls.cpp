@@ -94,14 +94,17 @@ TEST(AnalysisControls, RefusesWhatIsNotAProgram) {
     const spade::Result<an::ControlProgram> v2 = an::program_from_yaml(version);
     ASSERT_FALSE(v2.has_value());
     EXPECT_EQ(v2.error().code, spade::Code::schema_mismatch);
-    // Parsed but not a valid program: refused with its first issue's field.
-    an::ControlProgram late = flight();
-    late.points[0].t_s = 0.5f;
-    late.points[1].t_s = 0.75f;
-    const spade::Result<an::ControlProgram> r = an::program_from_yaml(an::program_to_yaml(late).value_or(""));
+    // Parsed but not a valid program (its first point at 0.5 s): refused with
+    // its first issue's field. The text is edited by hand, since the writer
+    // would refuse to write it.
+    std::string late_text = good;
+    late_text.replace(late_text.find("{t: 0,"), 6, "{t: 0.5,");
+    const spade::Result<an::ControlProgram> r = an::program_from_yaml(late_text);
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().context.find("points[0].t"), std::string::npos) << r.error().context;
     // Writing refuses an invalid program too.
+    an::ControlProgram late = flight();
+    late.points[0].t_s = 0.5f;
     EXPECT_FALSE(an::program_to_yaml(late).has_value());
 }
 

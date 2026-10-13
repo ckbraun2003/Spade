@@ -967,6 +967,7 @@ add_library(spade_analysis STATIC
     analysis/case.cpp
     analysis/case_file.cpp
     analysis/coefficients.cpp
+    analysis/controls.cpp
     analysis/launch.cpp
     analysis/queue.cpp
     analysis/run.cpp
