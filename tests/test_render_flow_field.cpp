@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -178,6 +179,60 @@ TEST(RenderFlowField, SurfaceColouringPaintsEachPixelWithItsPointsValue) {
     }
     EXPECT_GE(checked, 8u);
     EXPECT_EQ(rgb(got, 16, 1), rgb(plain, 16, 1)) << "sky has no surface to colour";
+}
+
+// The C_p view's colours (RND-8): C_p's ends land on the map's ends and
+// C_p = 0 on p_ref, from the host's q_ref and p_ref.
+TEST(RenderFlowField, CpColoursMapTheCoefficientOntoPressure) {
+    const float q_ref = 50.0f, p_ref = 10.0f;  // Pa
+    const auto made = spade::render::cp_colours(q_ref, p_ref, -1.5f, 1.0f);
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    const TransferFunction& tf = *made;
+    EXPECT_EQ(tf.quantity, FlowQuantity::pressure);
+    EXPECT_EQ(tf.colours, ColourMapId::cool_warm);
+    EXPECT_FALSE(tf.auto_range) << "a comparison needs the same mapping in every frame";
+    EXPECT_EQ(tf.range_min, -65.0f);  // p_ref - 1.5 q_ref
+    EXPECT_EQ(tf.range_max, 60.0f);   // p_ref + 1.0 q_ref
+    ASSERT_TRUE(spade::render::validate_transfer_function(tf).has_value());
+    spade::FlowVolumeHeader h;
+    const auto prepared = spade::render::prepare_transfer(tf, h);
+    // C_p at the map's position (cp - cp_min) / (cp_max - cp_min), to float's rounding.
+    const auto expect_at = [&](float cp, float t, const char* what) {
+        const glm::vec3 got = spade::render::apply_transfer(prepared, p_ref + cp * q_ref).colour;
+        const glm::vec3 want = spade::render::colour_map_at(ColourMapId::cool_warm, t);
+        EXPECT_NEAR(got.r, want.r, 1e-5f) << what;
+        EXPECT_NEAR(got.g, want.g, 1e-5f) << what;
+        EXPECT_NEAR(got.b, want.b, 1e-5f) << what;
+    };
+    expect_at(1.0f, 1.0f, "stagnation, C_p = 1, is the map's top");
+    expect_at(-1.5f, 0.0f, "C_p = -1.5 is its bottom");
+    expect_at(0.0f, 0.6f, "the ambient, C_p = 0, is 1.5 / 2.5 of the way up");
+    const auto viridis = spade::render::cp_colours(q_ref, p_ref, -1.5f, 1.0f, ColourMapId::viridis);
+    ASSERT_TRUE(viridis.has_value());
+    EXPECT_EQ(viridis->colours, ColourMapId::viridis);
+}
+
+// A reference render cannot use is refused by name, never drawn.
+TEST(RenderFlowField, CpColoursRefuseABadReference) {
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    struct Case {
+        float q_ref, p_ref, cp_min, cp_max;
+        const char* why;
+    };
+    const Case cases[] = {
+        {0.0f, 0.0f, -1.0f, 1.0f, "q_ref"},     {-5.0f, 0.0f, -1.0f, 1.0f, "q_ref"},
+        {nan, 0.0f, -1.0f, 1.0f, "q_ref"},      {inf, 0.0f, -1.0f, 1.0f, "q_ref"},
+        {50.0f, nan, -1.0f, 1.0f, "p_ref"},     {50.0f, 0.0f, 1.0f, 1.0f, "C_p range"},
+        {50.0f, 0.0f, 1.0f, -1.0f, "C_p range"}, {50.0f, 0.0f, nan, 1.0f, "C_p range"},
+        {1.0e-3f, 1.0e9f, -1.0f, 1.0f, "collapses"},  // a millipascal span on a gigapascal reference
+    };
+    for (const Case& c : cases) {
+        const auto made = spade::render::cp_colours(c.q_ref, c.p_ref, c.cp_min, c.cp_max);
+        ASSERT_FALSE(made.has_value()) << c.why;
+        EXPECT_EQ(made.error().code, spade::Code::invalid_argument) << c.why;
+        EXPECT_NE(made.error().context.find("C_p colours"), std::string::npos) << made.error().context;
+        EXPECT_NE(made.error().context.find(c.why), std::string::npos) << made.error().context;
+    }
 }
 
 TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {

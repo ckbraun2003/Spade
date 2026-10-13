@@ -63,4 +63,8 @@ Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouri
     return {};
 }
 
+Result<TransferFunction> cp_colours(float, float, float, float, ColourMapId) {
+    return TransferFunction{};  // RED: a stub
+}
+
 }  // namespace spade::render

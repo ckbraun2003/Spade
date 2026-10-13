@@ -46,4 +46,15 @@ struct FlowSurfaceColouring {
 // validate_flow_volume(), or colours that fail validate_transfer_function().
 [[nodiscard]] Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouring);
 
+// The C_p view's colours (RND-8): a fixed-range pressure transfer function
+// over [p_ref + cp_min q_ref, p_ref + cp_max q_ref], so the map reads
+// C_p = (p - p_ref) / q_ref. The host passes q_ref, the reference dynamic
+// pressure in Pa, and p_ref in Pa (0 is the outlets' ambient). spade::
+// analysis' reference_speed() gives the speed: the tip for rotorcraft, the
+// freestream for a propeller. Render chooses neither. invalid_argument, by
+// name: q_ref not finite and > 0, p_ref not finite, a C_p range not finite
+// with min < max, or a pressure range that collapses in float.
+[[nodiscard]] Result<TransferFunction> cp_colours(float q_ref, float p_ref, float cp_min, float cp_max,
+                                                  ColourMapId map = ColourMapId::cool_warm);
+
 }  // namespace spade::render
