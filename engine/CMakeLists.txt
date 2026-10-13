@@ -970,6 +970,7 @@ add_library(spade_analysis STATIC
     analysis/launch.cpp
     analysis/run.cpp
     analysis/runner.cpp
+    analysis/validation.cpp
     analysis/detail/atomic_file.cpp
     analysis/detail/process.cpp
 )
