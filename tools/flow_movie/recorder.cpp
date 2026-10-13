@@ -14,6 +14,14 @@
 
 #include "render_gl/gl_renderer.hpp"
 
+#if __has_include("flow_movie_identity.hpp")
+#include "flow_movie_identity.hpp"  // stamp_identity.cmake, at build time
+#else
+// Compiled outside the tool's build (the gcc check): no stamp.
+#define FLOW_MOVIE_COMMIT "unstamped"
+#define FLOW_MOVIE_DIRTY 0
+#endif
+
 namespace flow_movie {
 namespace {
 
@@ -363,13 +371,8 @@ spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rg
 }
 
 std::string build_identity() {
-    // Any folder in the tree names its commit, and status covers the whole tree.
-    const std::string git = "git -C " + in_quotes(SPADE_ENGINE_DIR);
-    auto [ok, sha] = run_capture(git + " rev-parse --short HEAD");
-    while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
-    const auto [listed, changes] = run_capture(git + " status --porcelain --untracked-files=no");
-    std::string id = ok && !sha.empty() ? "commit " + sha : "commit unknown";
-    if (listed && !changes.empty()) id += " with uncommitted changes";
+    std::string id = "commit " FLOW_MOVIE_COMMIT;
+    if (FLOW_MOVIE_DIRTY != 0) id += " with uncommitted changes";
 #if defined(_MSC_VER)
     id += ", MSVC " + std::to_string(_MSC_VER);
 #elif defined(__clang__)

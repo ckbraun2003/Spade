@@ -104,7 +104,9 @@ class Clip {
                                          const std::filesystem::path& path);
 
 // The code that makes the frames, for every card: "commit <sha>[ with
-// uncommitted changes], <toolchain>, <preset>". The records name theirs.
+// uncommitted changes], <toolchain>, <preset>", the commit and changes as they
+// were when this binary was BUILT (stamp_identity.cmake). The records name
+// theirs.
 [[nodiscard]] std::string build_identity();
 
 // Whether ffmpeg runs, with libx264 and libass.

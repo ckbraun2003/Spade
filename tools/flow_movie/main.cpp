@@ -924,6 +924,7 @@ int main(int argc, char** argv) {
     if (!stage) return fail(stage.error());
     std::printf("flow_movie: %s on %s, %ux%u at %u fps, into %s\n", opt.video.c_str(), (*stage)->device().c_str(),
                 encoder.width, encoder.height, encoder.fps, opt.out.string().c_str());
+    std::printf("flow_movie: built from %s\n", build_identity().c_str());
 
     std::vector<Film> films;
     if (opt.video == "smoke") {
