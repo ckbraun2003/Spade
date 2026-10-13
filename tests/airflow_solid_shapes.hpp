@@ -21,7 +21,7 @@ using spade::physics::airflow::SolidPart;
 using spade::physics::airflow::SolidQuery;
 using spade::physics::airflow::SolidSampler;
 
-enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y };
+enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y, two_boxes };
 
 // One shape in the grid's frame. `to_local` turns a point's offset from the
 // centre into the shape's own axes (a pure rotation; identity by default).
@@ -30,6 +30,8 @@ struct Shape {
     Kind kind = Kind::sphere;
     glm::vec3 centre{0.0f};
     glm::vec3 half{0.0f};          // box: half extents; wedge: (tip-to-back length, half height in y, 0)
+    glm::vec3 centre2{0.0f};       // two_boxes: the second box, axis-aligned
+    glm::vec3 half2{0.0f};
     float radius = 0.0f;           // sphere, cylinder: radius; wedge: half-angle, radians
     glm::mat3 to_local{1.0f};      // local = to_local * (x - centre)
     glm::vec3 omega{0.0f};         // rigid rotation about `centre`, rad/s
@@ -83,6 +85,12 @@ struct Field {
             f = {s.radius - r, r > 0.0f ? glm::vec3(-p.x / r, 0.0f, -p.z / r) : glm::vec3(1.0f, 0.0f, 0.0f)};
             break;
         }
+        case Kind::two_boxes: {  // the union of two axis-aligned boxes: the smaller distance wins
+            const Field a = box_field(p, s.half);
+            const Field b = box_field(x - s.centre2, s.half2);
+            f = b.d < a.d ? b : a;
+            break;
+        }
         case Kind::wedge_y: {
             // A wedge along local +x from its tip at the centre: |z| <= x tan(a),
             // 0 <= x <= L, |y| <= H, the intersection of half-spaces. The max
@@ -121,12 +129,19 @@ struct Field {
         case Kind::cylinder_y: local_half = glm::vec3(s.radius, 1.0e3f, s.radius); break;
         case Kind::outside_cylinder_y: local_half = glm::vec3(1.0e3f); break;
         case Kind::wedge_y: local_half = glm::vec3(s.half.x, s.half.y, s.half.x * std::tan(s.radius)); break;
+        case Kind::two_boxes: break;  // its box is the union, below
     }
     SolidPart p;
     p.name = s.name;
     p.porous = s.porous;
     p.min_feature = s.min_feature;
     p.extent = 2.0f * local_half;
+    if (s.kind == Kind::two_boxes) {
+        p.box_min = glm::min(s.centre - s.half, s.centre2 - s.half2);
+        p.box_max = glm::max(s.centre + s.half, s.centre2 + s.half2);
+        p.extent = p.box_max - p.box_min;
+        return p;
+    }
     // The rotated box's eight corners (the wedge's box from its tip).
     const glm::mat3 to_grid = glm::transpose(s.to_local);
     const glm::vec3 lo_local = s.kind == Kind::wedge_y ? glm::vec3(0.0f, -local_half.y, -local_half.z) : -local_half;
