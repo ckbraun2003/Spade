@@ -40,6 +40,7 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
 - **How it is labelled.** The run line and the records name each sheet part and its true thickness, for example "frame_top: sheet (2.0 mm < 2 dx = 12 mm)". Its pressure is integrated on both sides (§6).
 - **What is refused by name.** A part below 2 `dx` in more than one extent, such as a wire or a small fastener, is refused with the `dx` it needs. It is never porous and never dropped. Interface's panel shows the refusal and the grid that would resolve the part.
 - These thresholds are first values. Validation revises them: a flat plate normal to the flow, compared with the published drag against `Re`, is V2's case.
+- **A measured safeguard.** An imported mesh part's `min_feature` is declared, not measured (Core's mass-from-mesh plan). So at grid build each part's cell centres found inside it are compared with its volume / dx³. A part the grid does not resolve, whatever its declaration, becomes a sheet or is refused with that evidence, and never leaks silently.
 
 ## 5. Porous parts (Darcy–Forchheimer, confirmed 2026-10-12)
 
