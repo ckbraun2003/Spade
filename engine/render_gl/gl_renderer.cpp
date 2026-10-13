@@ -385,14 +385,36 @@ uniform float uFlowRangeMin;
 uniform float uFlowInvSpan;
 uniform uint uFlowConstant;
 uniform vec3 uFlowConstantColour;
+uniform uint uFlowWallsOnly;  // RND-8
+uniform float uFlowOffset;    // metres: offset_cells times the volume's cell
+uniform uint uFlowExtrapolate;  // 2 v(offset) - v(2 offset), as raster_cpu
 
-vec3 flow_colour_surface(vec3 world, vec3 shaded) {
+// `normal` is the surface's, unit and turned toward the eye, or 0 where
+// unknown; `wall` is DrawItem::flow_wall (RND-8). The value is read off the
+// wall along the normal, as raster_cpu reads it.
+vec3 flow_colour_surface(vec3 world, vec3 normal, bool wall, vec3 shaded) {
     if (uFlowColouring == 0u) return shaded;
+    if (uFlowWallsOnly != 0u && !wall) return shaded;
     if (any(lessThan(world, uFlowBoxMin)) || any(greaterThan(world, uFlowBoxMax))) return shaded;
     float value;
-    if (!flow_sample_quantity(world, uFlowQuantity, value)) return shaded;
+    if (!flow_sample_quantity(world + normal * uFlowOffset, uFlowQuantity, value)) return shaded;
+    if (uFlowExtrapolate != 0u) {
+        float far_value;
+        if (!flow_sample_quantity(world + normal * (2.0 * uFlowOffset), uFlowQuantity, far_value)) return shaded;
+        value = 2.0 * value - far_value;
+    }
     if (uFlowConstant != 0u) return uFlowConstantColour;
     return flow_colour_map((value - uFlowRangeMin) * uFlowInvSpan, uFlowColourMap);
+}
+
+// The face's normal from screen derivatives, turned toward the eye, as
+// raster_cpu takes the triangle's. Call it in uniform control flow.
+vec3 flow_face_normal(vec3 world) {
+    vec3 n = cross(dFdx(world), dFdy(world));
+    float len = length(n);
+    if (!(len > 0.0)) return vec3(0.0);
+    n /= len;
+    return dot(n, uCamPos - world) < 0.0 ? -n : n;
 }
 )GLSL";
 
@@ -865,6 +887,7 @@ flat in uint vInstance;
 
 layout(std430, binding = 1) readonly buffer Overrides  { uint uOverride[]; };
 layout(std430, binding = 4) readonly buffer Speeds { float uSpeed[]; };
+layout(std430, binding = 5) readonly buffer FlowWalls { uint uFlowWall[]; };  // DrawItem::flow_wall
 
 uniform uint uSubmeshMaterial;
 uniform uint uNoMaterial;
@@ -879,14 +902,16 @@ void main() {
     GpuMaterial m = uMaterials[mi];
 
     vec3 base = m.base_color.rgb;
+    bool wall = uFlowWall[vInstance] != 0u;
     // Wireframe edges take the unlit material colour, as raster_cpu draws them.
     if (uMode == 1u) {
-        fragColor = vec4(flow_colour_surface(vWorld, base), 1.0);
+        fragColor = vec4(flow_colour_surface(vWorld, vec3(0.0), wall, base), 1.0);
         return;
     }
     // Velocity swaps the colour and keeps the material's shading, as raster_cpu does.
     if (uMode == 3u) { base = velocity_ramp(uSpeed[vInstance], uVelocityScale); }
-    fragColor = vec4(flow_colour_surface(vWorld, shade_surface(m.shading, base, normalize(vNormal), vWorld)), 1.0);
+    fragColor = vec4(flow_colour_surface(vWorld, flow_face_normal(vWorld), wall,
+                                         shade_surface(m.shading, base, normalize(vNormal), vWorld)), 1.0);
 }
 )GLSL";
 
@@ -1318,6 +1343,7 @@ uniform float uFar;
 uniform uint uMarchMaxSteps;     // render/raymarch.hpp's kRaymarchMaxSteps
 uniform float uMarchEpsilon;     // kRaymarchSurfaceEpsilon (SR-28)
 uniform uint uSubtreeMaterial;   // the draw item's material
+uniform uint uSubtreeFlowWall;   // its DrawItem::flow_wall (RND-8)
 uniform float uSubtreeSpeed;     // the draw item's speed, for velocity mode
 
 out vec4 fragColor;
@@ -1384,7 +1410,8 @@ void main() {
     vec3 g = sdf_gradient(p);
     float g_len = length(g);
     vec3 n = g_len > 0.0 ? g / g_len : vec3(0.0, 1.0, 0.0);
-    fragColor = vec4(flow_colour_surface(p, shade_surface(m.shading, base, n, p)), 1.0);
+    vec3 n_eye = dot(n, uCamPos - p) < 0.0 ? -n : n;
+    fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall != 0u, shade_surface(m.shading, base, n, p)), 1.0);
 }
 )GLSL";
 
@@ -1549,11 +1576,13 @@ struct GlRenderer::Impl {
     GLuint ssbo_overrides = 0;
     GLuint ssbo_materials = 0;
     GLuint ssbo_speeds = 0;
+    GLuint ssbo_walls = 0;
     GLuint ssbo_planes = 0;
     size_t transforms_capacity = 0;  // in instances, so growth is in place after the first
     size_t overrides_capacity = 0;
     size_t materials_capacity = 0;
     size_t speeds_capacity = 0;
+    size_t walls_capacity = 0;
     size_t planes_capacity = 0;
 
     // The background program draws one triangle from gl_VertexID. A core
@@ -1632,6 +1661,7 @@ struct GlRenderer::Impl {
     std::vector<glm::mat4> instance_transforms;
     std::vector<uint32_t> instance_overrides;
     std::vector<float> instance_speeds;
+    std::vector<uint32_t> instance_walls;  // DrawItem::flow_wall, 1 or 0 (RND-8)
     std::vector<uint32_t> batch_base;    // per mesh: where its instances start
     std::vector<uint32_t> batch_count;   // per mesh: how many
     std::vector<uint32_t> batch_static;  // per mesh: how many of those are statics, which come first
@@ -1677,7 +1707,7 @@ struct GlRenderer::Impl {
         GLint gradient_step = -1, right = -1, up = -1, forward = -1, inv_tan_half_fov = -1, aspect = -1;
         GLint viewport = -1, near_plane = -1, far_plane = -1, march_max_steps = -1, march_epsilon = -1;
         GLint material = -1, speed = -1, sun_dir = -1, sun_color = -1, ambient = -1, sun_intensity = -1;
-        GLint mode = -1, velocity_scale = -1, cam_pos = -1;
+        GLint mode = -1, velocity_scale = -1, cam_pos = -1, flow_wall = -1;
         GLint sky_zenith = -1, sky_horizon = -1, horizon_strength = -1, horizon_onset = -1;
     } csg;
 
@@ -1689,7 +1719,8 @@ struct GlRenderer::Impl {
     // kFlowSampleSrc's and kFlowSurfaceSrc's, in the mesh and CSG programs.
     struct FlowSurfaceUniforms {
         GLint on = -1, quantity = -1, box_min = -1, box_max = -1, origin = -1, inv_cell = -1, range_min = -1,
-              inv_span = -1, constant = -1, constant_colour = -1, colour_map = -1;
+              inv_span = -1, constant = -1, constant_colour = -1, colour_map = -1, walls_only = -1, offset = -1,
+              extrapolate = -1;
     } mesh_flow, csg_flow;
 
     struct FlowLayerUniforms {
@@ -1788,6 +1819,7 @@ struct GlRenderer::Impl {
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
+        if (ssbo_walls != 0) gl.DeleteBuffers(1, &ssbo_walls);
         if (ssbo_materials != 0) gl.DeleteBuffers(1, &ssbo_materials);
         if (ssbo_overrides != 0) gl.DeleteBuffers(1, &ssbo_overrides);
         if (ssbo_transforms != 0) gl.DeleteBuffers(1, &ssbo_transforms);
@@ -1940,6 +1972,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     gl.GenBuffers(1, &impl->ssbo_overrides);
     gl.GenBuffers(1, &impl->ssbo_materials);
     gl.GenBuffers(1, &impl->ssbo_speeds);
+    gl.GenBuffers(1, &impl->ssbo_walls);
     gl.GenBuffers(1, &impl->ssbo_planes);
     gl.GenVertexArrays(1, &impl->empty_vao);
 
@@ -1996,6 +2029,9 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
         u.constant = gl.GetUniformLocation(program, "uFlowConstant");
         u.constant_colour = gl.GetUniformLocation(program, "uFlowConstantColour");
         u.colour_map = gl.GetUniformLocation(program, "uFlowColourMap");
+        u.walls_only = gl.GetUniformLocation(program, "uFlowWallsOnly");
+        u.offset = gl.GetUniformLocation(program, "uFlowOffset");
+        u.extrapolate = gl.GetUniformLocation(program, "uFlowExtrapolate");
     };
     flow_uniforms(impl->program, impl->mesh_flow);
     flow_uniforms(impl->csg_program, impl->csg_flow);
@@ -2071,6 +2107,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     cu.march_epsilon = gl.GetUniformLocation(c, "uMarchEpsilon");
     cu.material = gl.GetUniformLocation(c, "uSubtreeMaterial");
     cu.speed = gl.GetUniformLocation(c, "uSubtreeSpeed");
+    cu.flow_wall = gl.GetUniformLocation(c, "uSubtreeFlowWall");
     cu.sun_dir = gl.GetUniformLocation(c, "uSunDir");
     cu.sun_color = gl.GetUniformLocation(c, "uSunColor");
     cu.ambient = gl.GetUniformLocation(c, "uAmbient");
@@ -2430,6 +2467,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     s.instance_transforms.assign(total_instances, glm::mat4(1.0f));
     s.instance_overrides.assign(total_instances, render::kNoMaterial);
     s.instance_speeds.assign(total_instances, 0.0f);
+    s.instance_walls.assign(total_instances, 0u);
     std::vector<uint32_t> cursor(s.batch_base.begin(), s.batch_base.end());
     const auto place = [&](const render::DrawItem& d) {
         if (d.mesh_index >= mesh_count) return;
@@ -2437,6 +2475,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         s.instance_transforms[at] = d.local_to_world;
         s.instance_overrides[at] = d.material_override;
         s.instance_speeds[at] = d.speed_mps;
+        s.instance_walls[at] = d.flow_wall ? 1u : 0u;
     };
     for (size_t i = 0; i < scene.statics.size(); ++i) {
         if (s.static_marched[i] == 0u) place(scene.statics[i]);
@@ -2474,6 +2513,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     upload_in_place(gl, s.ssbo_transforms, s.transforms_capacity, s.instance_transforms);
     upload_in_place(gl, s.ssbo_overrides, s.overrides_capacity, s.instance_overrides);
     upload_in_place(gl, s.ssbo_speeds, s.speeds_capacity, s.instance_speeds);
+    upload_in_place(gl, s.ssbo_walls, s.walls_capacity, s.instance_walls);
     upload_in_place(gl, s.ssbo_planes, s.planes_capacity, s.gpu_planes);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -2482,6 +2522,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s.ssbo_materials);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, s.ssbo_planes);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s.ssbo_speeds);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_walls);
 
     // --- camera ------------------------------------------------------------
     // The engine's camera space is right-handed with forward = -Z
@@ -2585,6 +2626,10 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1ui(u.constant, flow_colours.tf.constant_colour ? 1u : 0u);
         const glm::vec3 constant = flow_colours.tf.constant_colour.value_or(glm::vec3(0.0f));
         gl.Uniform3fv(u.constant_colour, 1, glm::value_ptr(constant));
+        // RND-8, in raster_cpu's float arithmetic.
+        gl.Uniform1ui(u.walls_only, scene.flow_surface_colouring->walls_only ? 1u : 0u);
+        gl.Uniform1f(u.offset, scene.flow_surface_colouring->offset_cells * h.cell);
+        gl.Uniform1ui(u.extrapolate, scene.flow_surface_colouring->extrapolate ? 1u : 0u);
     };
     const auto set_shadow_uniforms = [&](const Impl::ShadowUniforms& u) {
         gl.Uniform1ui(u.enabled, shadows ? 1u : 0u);
@@ -2771,6 +2816,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                 gl.Uniform1ui(cu.transform_base, g.transform_base);
                 gl.Uniform1ui(cu.material, material);
                 gl.Uniform1f(cu.speed, item.speed_mps);
+                gl.Uniform1ui(cu.flow_wall, item.flow_wall ? 1u : 0u);
                 gl.DrawArrays(GL_TRIANGLES, 0, 36);
                 ++draw_calls;
             }

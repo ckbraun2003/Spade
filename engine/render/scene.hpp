@@ -528,6 +528,11 @@ struct DrawItem {
     // which is exactly right: a static does not move. Every other draw mode
     // ignores it, so adding it moves no existing golden.
     float speed_mps = 0.0f;
+
+    // A wall in the flow (RND-8): a FlowSurfaceColouring with walls_only
+    // colours this item, and no item without it. A rotor drawn under an
+    // actuator model is no wall: the solver never saw its surface.
+    bool flow_wall = false;
 };
 
 // A CSG subtree the raster ray-marches instead of drawing its mesh.
@@ -603,8 +608,8 @@ struct RenderScene {
     std::vector<FlowPolyline> flow_polylines;
     FlowPoints flow_points;
     // Surface colouring by a flow quantity (render/flow_field.hpp): the
-    // raster modes apply it after the meshes and CSG; the ray-march mode does
-    // not; GL refuses it until its pass lands. Unset unless a caller sets it.
+    // raster modes apply it after the meshes and CSG, and GL in their passes;
+    // the ray-march mode does not. Unset unless a caller sets it.
     std::optional<FlowSurfaceColouring> flow_surface_colouring;
     // CSG subtrees, which shaded and velocity modes ray-march per pixel
     // within their bounds (RS3). Empty for a hand-built RenderScene; only

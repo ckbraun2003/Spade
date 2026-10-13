@@ -55,6 +55,7 @@
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/publish.hpp"
 
+#include "cp_sphere.hpp"
 #include "flow_synthetic.hpp"
 
 namespace {
@@ -1440,6 +1441,223 @@ TEST_F(GpuGlRenderer, FlowLambda2IsoDrawsTheQIsoOfAStraightCore) {
     ASSERT_EQ(got.size(), kPixels * 4u);
     EXPECT_GT(count_differing(got, nothing), kPixels / 20u) << "the lambda2 iso must reach the frame";
     EXPECT_EQ(count_differing(got, want), 0u) << "lambda2's iso must draw exactly as Q's on a plane flow";
+}
+
+// --- RND-8 on GL: flow walls, and the value read off the wall ---------------
+
+// A pressure field that jumps across z = 0 like a sheet's: -1 below, +1
+// above, between the cell centres at z = -0.125 and 0.125 m.
+[[nodiscard]] spade::FlowVolume sheet_pressure() {
+    return spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = p.z > 0.0f ? 1.0f : -1.0f;
+        return c;
+    });
+}
+
+// Walls only, one cell off the wall, cool-warm over the sheet's [-1, 1].
+[[nodiscard]] spade::render::FlowSurfaceColouring walls_colouring(const spade::FlowVolume& volume) {
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    spade::render::FlowSurfaceColouring colouring{&volume, colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    return colouring;
+}
+
+// A frame with a flow wall in its left half and a surface that is not in its
+// right, coloured by walls_colouring(): GL against its own bare frame, which
+// needs no CPU, and against the CPU.
+struct FlowWalls {
+    size_t coloured = 0;        // the CPU's coloured pixels
+    size_t right_coloured = 0;  // GL's in the right half: 0 when only walls take the colour
+    size_t row_wall = 0;        // GL's coloured pixels on the middle row
+    size_t row_off = 0;         // of those, more than 2 levels from the seen side's +1
+    ChannelDiff band;           // GL against the CPU
+};
+
+[[nodiscard]] FlowWalls flow_walls(const std::vector<uint8_t>& gl, const std::vector<uint8_t>& gl_bare,
+                                   const std::vector<uint8_t>& cpu, const std::vector<uint8_t>& cpu_bare) {
+    FlowWalls w;
+    if (gl.size() != kPixels * 4u || gl_bare.size() != kPixels * 4u) {
+        ADD_FAILURE() << "a GL frame is missing";
+        return w;
+    }
+    w.coloured = count_differing(cpu, cpu_bare);
+    const glm::vec3 plus_one = 255.0f * spade::render::colour_map_at(spade::render::ColourMapId::cool_warm, 1.0f);
+    for (size_t y = 0; y < static_cast<size_t>(kHeight); ++y) {
+        for (size_t x = 0; x < static_cast<size_t>(kWidth); ++x) {
+            const size_t p = y * kWidth + x;
+            if (same_pixel(gl, gl_bare, p)) continue;
+            if (x >= static_cast<size_t>(kWidth) / 2u) {
+                ++w.right_coloured;
+            } else if (y == static_cast<size_t>(kHeight) / 2u) {
+                const glm::vec3 got(gl[p * 4u], gl[p * 4u + 1u], gl[p * 4u + 2u]);
+                const glm::vec3 diff = glm::abs(got - plus_one);
+                ++w.row_wall;
+                w.row_off += std::max({diff.x, diff.y, diff.z}) > 2.0f ? 1u : 0u;
+            }
+        }
+    }
+    w.band = channel_diff(cpu, gl);
+    return w;
+}
+
+// FlowSurfaceWallsAndOffsetMatchTheCpu's band. Measured 2026-10-13, 160x120,
+// on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), the same in
+// four runs: of 3080 coloured pixels, 566 differ, each by one level, as in
+// step 5's band (GL's interpolated point against the CPU's from depth). All
+// 55 wall pixels on the middle row read +1.
+constexpr int kWallsWorst = 1;
+constexpr size_t kWallsOverTwo = 0;
+constexpr size_t kWallsDiffering = 566;
+
+// Two quads at z = 0, the left a flow wall, across the sheet, seen from
+// z = 3: the wall reads the seen side's +1 and the other quad keeps its
+// shading. GL's face normal comes from derivatives, raster_cpu's from the
+// triangle; on these flat quads they agree.
+TEST_F(GpuGlRenderer, FlowSurfaceWallsAndOffsetMatchTheCpu) {
+    const spade::FlowVolume volume = sheet_pressure();
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-0.8f, -0.8f, 0.0f), glm::vec3(0.8f, -0.8f, 0.0f), glm::vec3(0.8f, 0.8f, 0.0f),
+                      glm::vec3(-0.8f, 0.8f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    RenderScene scene;
+    scene.meshes.push_back(quad);
+    scene.materials = {spade::render::Material{}};
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    for (const float x : {-1.0f, 1.0f}) {
+        spade::render::DrawItem item{.mesh_index = 0,
+                                     .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(x, 0.0f, 0.0f)),
+                                     .material_override = spade::render::kNoMaterial};
+        item.flow_wall = x < 0.0f;
+        scene.statics.push_back(item);
+    }
+    scene.flow_surface_colouring = walls_colouring(volume);
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    RenderScene bare = scene;
+    bare.flow_surface_colouring.reset();
+    const FlowWalls w =
+        flow_walls(draw_and_read(scene, comparable_options(), camera), draw_and_read(bare, comparable_options(), camera),
+                   cpu_rgba(scene, camera, comparable_options()), cpu_rgba(bare, camera, comparable_options()));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ flow walls ] %zu px coloured; row %zu, %zu off; worst %d levels, %zu over two; %zu differ; on %s\n",
+                w.coloured, w.row_wall, w.row_off, w.band.worst, w.band.over_two, w.band.differing, device.c_str());
+    ASSERT_GT(w.coloured, kPixels / 20u) << "the wall must take the colour";
+    EXPECT_EQ(w.right_coloured, 0u) << "only the flow wall takes the colour";
+    EXPECT_GE(w.row_wall, 10u);
+    EXPECT_EQ(w.row_off, 0u) << "the wall reads the seen side's +1";
+    EXPECT_LE(w.band.worst, kWallsWorst) << device;
+    EXPECT_LE(w.band.over_two, kWallsOverTwo);
+    EXPECT_LE(w.band.differing, kWallsDiffering);
+}
+
+// FlowSurfaceOnCsgWallsMatchesTheCpu's band, measured as the one above: of
+// 3053 coloured pixels none differ, and all 56 wall pixels on the middle row
+// read +1.
+constexpr size_t kCsgWallsRowOff = 0;
+constexpr int kCsgWallsWorst = 0;
+constexpr size_t kCsgWallsOverTwo = 0;
+constexpr size_t kCsgWallsDiffering = 0;
+
+// The same on GL's CSG pass: two 2 cm slabs with holes, marched, the left a
+// flow wall. The offset follows the distance gradient, on both paths.
+TEST_F(GpuGlRenderer, FlowSurfaceOnCsgWallsMatchesTheCpu) {
+    spade::WorldBuilder b = csg_builder();
+    for (const float x : {-1.0f, 1.0f}) {
+        b.box(glm::vec3(0.8f, 0.8f, 0.01f), spade::SdfPose{.position = glm::vec3(x, 0.0f, 0.0f)});
+        b.sphere(0.15f, spade::SdfPose{.position = glm::vec3(x + 0.4f, 0.4f, 0.0f)});
+        b.subtract();
+    }
+    b.union_();  // the program reduces to one value; each slab stays a subtree
+    RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 2u);
+    for (const spade::render::CsgSubtree& sub : scene.csg_subtrees) {
+        scene.statics[sub.draw_item].flow_wall = sub.bounds.max.x < 0.0f;
+    }
+    const spade::FlowVolume volume = sheet_pressure();
+    scene.flow_surface_colouring = walls_colouring(volume);
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    RenderScene bare = scene;
+    bare.flow_surface_colouring.reset();
+    const FlowWalls w =
+        flow_walls(draw_and_read(scene, comparable_options(), camera), draw_and_read(bare, comparable_options(), camera),
+                   cpu_rgba(scene, camera, comparable_options()), cpu_rgba(bare, camera, comparable_options()));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ csg walls ] %zu px coloured; row %zu, %zu off; worst %d levels, %zu over two; %zu differ; on %s\n",
+                w.coloured, w.row_wall, w.row_off, w.band.worst, w.band.over_two, w.band.differing, device.c_str());
+    ASSERT_GT(w.coloured, kPixels / 20u) << "the wall must take the colour";
+    EXPECT_EQ(w.right_coloured, 0u) << "only the flow wall takes the colour";
+    EXPECT_GE(w.row_wall, 10u);
+    EXPECT_LE(w.row_off, kCsgWallsRowOff) << "the wall reads the seen side's +1";
+    EXPECT_LE(w.band.worst, kCsgWallsWorst) << device;
+    EXPECT_LE(w.band.over_two, kCsgWallsOverTwo);
+    EXPECT_LE(w.band.differing, kCsgWallsDiffering);
+}
+
+// CpOffASphereMatchesTheCpu's bands. Measured 2026-10-13, 160x120, on an
+// NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), the same in
+// three runs: GL's worst |dC_p| 0.202 over 1672 pixels, none uncoloured, as
+// the CPU's (0.202); 952 pixels differ from the CPU's frame, each by one
+// level.
+constexpr double kSphereGlWorstCp = 0.21;
+constexpr int kSphereWorst = 1;
+constexpr size_t kSphereOverTwo = 0;
+constexpr size_t kSphereDiffering = 952;
+
+// RND-8's C_p view on GL: the potential-flow sphere at 8 cells per radius,
+// read one cell off the wall and extrapolated to it. GL's frame is judged on
+// its own against 1 - 9/4 sin^2(theta), by the CPU test's rule
+// (tests/cp_sphere.hpp), and banded against the CPU's frame.
+TEST_F(GpuGlRenderer, CpOffASphereMatchesTheCpu) {
+    const float cp_min = -1.25f, cp_max = 1.0f;
+    const auto colours = spade::render::cp_colours(0.5f, 0.0f, cp_min, cp_max);
+    ASSERT_TRUE(colours.has_value());
+    const spade::FlowVolume volume = spade::test::potential_sphere_volume(8);
+    RenderScene scene;
+    scene.meshes.push_back(spade::test::potential_sphere_mesh());
+    scene.materials = {Material{}};
+    DrawItem sphere{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)};
+    sphere.flow_wall = true;
+    scene.statics.push_back(sphere);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    spade::render::FlowSurfaceColouring colouring{&volume, *colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    colouring.extrapolate = true;
+    scene.flow_surface_colouring = colouring;
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 2.2f);
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    const auto judge = [&](const std::vector<uint8_t>& rgba) {
+        return spade::test::potential_sphere_cp_error(
+            camera, static_cast<uint32_t>(kWidth), static_cast<uint32_t>(kHeight), cp_min, cp_max,
+            [&](uint32_t x, uint32_t y) {
+                const size_t i = ((static_cast<size_t>(kHeight) - 1u - y) * kWidth + x) * 4u;  // bottom row first
+                return glm::vec3(rgba[i], rgba[i + 1u], rgba[i + 2u]);
+            });
+    };
+    const spade::test::CpError on_gl = judge(gl), on_cpu = judge(cpu);
+    const ChannelDiff band = channel_diff(cpu, gl);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ sphere C_p ] GL worst %.3f, mean %.4f over %zu px, %zu unmapped; CPU worst %.3f; GL-CPU worst %d "
+                "levels, %zu over two, %zu differ; on %s\n",
+                on_gl.worst, on_gl.mean, on_gl.count, on_gl.unmapped, on_cpu.worst, band.worst, band.over_two,
+                band.differing, device.c_str());
+    EXPECT_GE(on_gl.count, 1000u);
+    EXPECT_EQ(on_gl.unmapped, 0u) << "every pixel on the sphere takes a C_p colour";
+    EXPECT_LE(on_gl.worst, kSphereGlWorstCp);
+    EXPECT_LE(band.worst, kSphereWorst) << device;
+    EXPECT_LE(band.over_two, kSphereOverTwo);
+    EXPECT_LE(band.differing, kSphereDiffering);
 }
 
 // Plan step 7g: a renderer asked to compile its flow programs in the

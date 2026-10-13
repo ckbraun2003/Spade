@@ -287,11 +287,32 @@ size_t clipTriangleNearFar(const ViewContext& vc, const ClipVertex& a, const Cli
 // identically, so no code path can leave it unset.
 constexpr uint8_t kBgrxOpaqueByte = 0xFFu;
 
+// RND-8: what a flow surface colouring reads of each pixel's surface, kept
+// only when a colouring asks (walls_only, or an offset off the wall).
+struct SurfaceInfo {
+    glm::vec3 normal{0.0f};  // world, unit, turned toward the eye; 0 where unknown (lines)
+    bool flow_wall = false;  // DrawItem::flow_wall of the item drawn here
+};
+
 struct FrameBuffers {
     std::span<uint8_t> pixels;       // non-owning -- target.pixels is caller-owned (PA-1)
     std::vector<double>& depth;      // inverse view-space depth; 0 = infinitely far
     uint32_t width;
     uint32_t height;
+    std::vector<SurfaceInfo>* surfaces = nullptr;  // per pixel, when a colouring reads them
+    SurfaceInfo surface_now{};                     // what the pass drawing now records
+};
+
+// Sets what the pixels drawn in a scope record, and clears it after.
+class SurfaceScope {
+  public:
+    SurfaceScope(FrameBuffers& fb, const SurfaceInfo& info) : fb_(fb) { fb_.surface_now = info; }
+    ~SurfaceScope() { fb_.surface_now = SurfaceInfo{}; }
+    SurfaceScope(const SurfaceScope&) = delete;
+    SurfaceScope& operator=(const SurfaceScope&) = delete;
+
+  private:
+    FrameBuffers& fb_;
 };
 
 void setPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, uint8_t r, uint8_t g, uint8_t b) {
@@ -308,6 +329,7 @@ void setPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, uint8_t r
     px[1] = g;
     px[2] = r;
     px[3] = kBgrxOpaqueByte;
+    if (fb.surfaces != nullptr) (*fb.surfaces)[idx] = fb.surface_now;
 }
 
 // Simple parametric line walk (screen-space DDA) with linear invDepth
@@ -761,6 +783,19 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
 // vec3d(wa)/vec3d(wb)/vec3d(wc)) so the per-PIXEL shadow sampling downstream
 // has real per-vertex world positions to interpolate, per SR-24. Null when
 // shadows are off or there is no static shadow map to sample.
+// A triangle's unit normal turned toward the eye, or 0 for a degenerate one
+// (RND-8's offset direction; GL takes the same from screen derivatives).
+[[nodiscard]] glm::vec3 face_normal_toward_eye(const ViewContext& vc, const glm::vec3& a, const glm::vec3& b,
+                                               const glm::vec3& c) {
+    const glm::vec3 n = glm::cross(b - a, c - a);
+    const float len = glm::length(n);
+    if (!(len > 0.0f)) return glm::vec3(0.0f);
+    const glm::vec3 unit = n / len;
+    const glm::vec3 eye(static_cast<float>(vc.camPos[0]), static_cast<float>(vc.camPos[1]),
+                        static_cast<float>(vc.camPos[2]));
+    return glm::dot(unit, eye - a) < 0.0f ? -unit : unit;
+}
+
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
                                 const Material& material, const Lighting& lighting, const ShadowMap* shadow,
@@ -786,6 +821,9 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
         }
         const ShadedColor scb = shade_vertex_color(material, lighting, poly[i].normal);
         const ShadedColor scc = shade_vertex_color(material, lighting, poly[i + 1].normal);
+        if (fb.surfaces != nullptr) {
+            fb.surface_now.normal = face_normal_toward_eye(vc, poly[0].world, poly[i].world, poly[i + 1].world);
+        }
         rasterizeTriangleGouraud(fb, sa, sb, sc, sca.combined, scb.combined, scc.combined, sca.sun, scb.sun, scc.sun,
                                   poly[0].world, poly[i].world, poly[i + 1].world, shadow, atmo);
     }
@@ -836,6 +874,9 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
     }
+    // RND-8: this item's pixels record whether it is a wall in the flow;
+    // draw_mesh_triangle_shaded() adds each triangle's normal.
+    const SurfaceScope surface_scope(fb, SurfaceInfo{glm::vec3(0.0f), item.flow_wall});
     // SR-17a, distilled ONCE per item rather than per triangle or per pixel.
     // SHADED-ONLY, the same gate ruling SR-22 puts on the analytic ground and
     // the infinite grid: hazing a wireframe's edges would be a mode-contract
@@ -1042,6 +1083,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
         .onset = options.horizon_blend_onset,
     };
     const RayGrid grid = ray_grid(camera, fb.width, fb.height);
+    const SurfaceScope surface_scope(fb, SurfaceInfo{});  // set per pixel below
 
     for (const CsgSubtree& sub : scene.csg_subtrees) {
         // render() has refused an empty program and a draw item past the statics.
@@ -1101,6 +1143,10 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                     const glm::vec3 sky = sky_gradient_color(*atmo.lighting, eye_to_surface);
                     color = horizon_blend(color, sky, view_distance, atmo.onset, atmo.strength);
                 }
+                if (fb.surfaces != nullptr) {  // RND-8: the gradient, turned toward the eye
+                    fb.surface_now = SurfaceInfo{glm::dot(normal, ray.dir_world) > 0.0f ? -normal : normal,
+                                                 item.flow_wall};
+                }
                 setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), to_byte(color.r), to_byte(color.g), to_byte(color.b));
             }
         }
@@ -1141,7 +1187,21 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
                 p.z > box.max.z) {
                 continue;
             }
-            const FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p);
+            // RND-8: only walls in the flow, when asked; the value read off the
+            // wall along the normal, when asked.
+            const SurfaceInfo* surface = fb.surfaces != nullptr ? &(*fb.surfaces)[idx] : nullptr;
+            if (colouring.walls_only && (surface == nullptr || !surface->flow_wall)) {
+                continue;
+            }
+            glm::vec3 step(0.0f);
+            if (colouring.offset_cells > 0.0f && surface != nullptr) {
+                step = surface->normal * (colouring.offset_cells * h.cell);
+            }
+            FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p + step);
+            if (colouring.extrapolate && !v.no_data) {  // 2 v(delta) - v(2 delta), linearly to the wall
+                const FlowValue far = sample_quantity(sampler, colouring.colours.quantity, p + 2.0f * step);
+                v = far.no_data ? far : FlowValue{2.0f * v.value - far.value, false};
+            }
             if (v.no_data) {
                 if (report != nullptr) ++report->surface_pixels_no_data;
                 continue;
@@ -1850,6 +1910,13 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
 
     std::vector<double> depth(pixel_count, 0.0);  // 0 = infinitely far (ported convention)
     FrameBuffers fb{target.pixels, depth, width, height};
+    // RND-8: per-pixel surfaces, only when a colouring reads them.
+    std::vector<SurfaceInfo> surfaces;
+    if (scene.flow_surface_colouring &&
+        (scene.flow_surface_colouring->walls_only || scene.flow_surface_colouring->offset_cells > 0.0f)) {
+        surfaces.assign(static_cast<size_t>(width) * height, SurfaceInfo{});
+        fb.surfaces = &surfaces;
+    }
     const ViewContext vc = build_view_context(camera, width, height);
 
     // S7a Task R7 (Step 3): the STATIC half of the shadow map is built once,
