@@ -45,27 +45,16 @@ install-*/
 /cmake_test_discovery_*.json
 CMakeCache.txt
 CMakeFiles/
-*.cmake
-# Exception (S5 T9 ticket B): a genuine, committed CMake HELPER SCRIPT, not a
-# build-tree-generated artifact -- *.cmake above exists for the latter
-# (CMake's own generated Find*.cmake/config files live under build-ninja/,
-# already excluded by build/ above; this blanket pattern is broader than it
-# needs to be, but narrowing it further is out of this ticket's scope).
-!tests/AppendSpadeLabels.cmake
-# Same exception, same reason (S6 Task 3): cmake/SpadeSlang.cmake is an
-# authored, committed helper -- the D9 shader build's two functions -- that the
-# blanket *.cmake pattern above would otherwise hide from `git status`
-# entirely, so it could only ever be committed with `git add -f` and would
-# silently stop being tracked for edits. Nothing GENERATED is un-ignored here:
-# the D9 generated headers (layout_check.gen.hpp, bindings.gen.hpp,
-# <kernel>.spv.gen.hpp) and the .spv artifacts live under build-ninja/, already
-# excluded by build/ above, and are deliberately never committed.
-!cmake/SpadeSlang.cmake
-# Same exception, same reason: tools/flow_movie/stamp_identity.cmake is an
-# authored script that the flow_movie_identity target runs at build time.
-# Hidden by *.cmake, it never reached git, and every other checkout failed to
-# configure the tool's build ("Not a file"; Physics found it, 2026-10-13).
-!tools/flow_movie/stamp_identity.cmake
+# CMake's own in-source outputs, by name. Never a blanket *.cmake: that hid
+# three authored helpers (tests/AppendSpadeLabels.cmake, cmake/SpadeSlang.cmake,
+# tools/flow_movie/stamp_identity.cmake), and the last never reached git, so
+# every fresh checkout failed to configure (74736cb, 2026-10-13). CMake's
+# generated Find*.cmake and package-config files live in the build and install
+# trees, which build/, build-*/ and install-*/ above already ignore.
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
 Makefile
 
 # IDEs
