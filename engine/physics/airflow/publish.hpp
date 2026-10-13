@@ -17,7 +17,7 @@
 // frame).
 //   V = (u, v, w, dye): the face velocities averaged to the centre; dye is 0
 //       until the solver carries the dye scalar (the demonstration plan, P10).
-//   S = (p gauge, |omega|, q-hat, reserved 0). The velocity gradient G at the
+//   S = (p gauge, |omega|, q-hat, lambda2-hat). The velocity gradient G at the
 //       centre takes its diagonal from the cell's own faces and its off-
 //       diagonal from central differences of the centred velocities (wrapped
 //       on a periodic axis, one-sided at any other axis' edges); omega is its curl, Q = |omega|^2 / 4 - |S|^2 / 2
@@ -32,7 +32,7 @@
 // mean of its fluid face-neighbours' channels (faces -x, +x, -y, +y, -z, +z;
 // across the wrap on a periodic axis),
 // so a surface sampled for C_p reads the wall's pressure; deeper solid cells
-// are no-data in every channel but the reserved one.
+// are no-data in every channel.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 
