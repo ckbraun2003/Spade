@@ -141,4 +141,16 @@ struct PartDesc {
 // ModelType::validate() (exactly one form set).
 [[nodiscard]] SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept;
 
+// One part's box in its PART frame (the lead's ask of 2026-10-13: Physics'
+// P2 sizes its grid around it). A mesh part: the fp32 min and max of its
+// vertices, exact, so its solid and every vertex lie inside and touch each
+// face. An SdfProgram part: sdf_bounds(shape), conservative (world/sdf.hpp
+// says how). Posing the box is the caller's, as for part_sample().
+//
+// A host call. Refused by name ("part 'arm': ..."): a part with both forms or
+// neither, and whatever sdf_bounds() refuses (an invalid, unbounded or empty
+// shape, a singular transform). A part that passed ModelType::validate() can
+// still be refused for a shape proved empty, which validate() does not test.
+[[nodiscard]] Result<Aabb> part_bounds(const PartDesc& part);
+
 }  // namespace spade::vehicles
