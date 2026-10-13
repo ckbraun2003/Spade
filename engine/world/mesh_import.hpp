@@ -54,11 +54,13 @@
 // and primitive, the accessor, the bufferView and the buffer, by index.
 //   unavailable -- a well-formed file using what this build does not read:
 //     any extensionsRequired entry (Draco, meshopt, KHR_mesh_quantization,
-//     any other), named; a glTF version other than 2.x, or a minVersion past
-//     2.0; a primitive mode other than TRIANGLES (POINTS, LINES, LINE_LOOP,
-//     LINE_STRIP, and also TRIANGLE_STRIP and TRIANGLE_FAN: not converted);
-//     a sparse accessor; a POSITION that is not VEC3 FLOAT; morph targets; a
-//     skinned node; EXT_mesh_gpu_instancing on a node; a buffer URI with a
+//     any other), named; a glTF version other than 2.x, a minVersion other
+//     than 2.0, or a .glb container version other than 2; a primitive mode
+//     other than TRIANGLES (POINTS, LINES, LINE_LOOP, LINE_STRIP, and also
+//     TRIANGLE_STRIP and TRIANGLE_FAN: not converted); a sparse accessor; a
+//     POSITION that is not VEC3 FLOAT; morph targets; a skinned node;
+//     EXT_mesh_gpu_instancing on a node (reading the base pose or one
+//     instance would be silently different geometry); a buffer URI with a
 //     scheme other than data:.
 //   invalid_argument -- a malformed document: not JSON or not an object; a
 //     missing or mistyped field; an index past its array (scene, node,
@@ -72,14 +74,17 @@
 //     no mesh node; and every make_mesh() refusal.
 //   capacity_exceeded -- an object of more than kMaxMeshTriangles
 //     triangles, or more than 2^32 - 1 vertices before welding: refused from
-//     the accessors' counts, before any data is read.
+//     the accessors' counts, before any data is read. Running out of memory
+//     while reading is reported the same way.
 //   io_error -- an unreadable file or external buffer.
+//   internal -- any other exception, caught (none crosses this API).
 //
 // THE ORDER. Container, asset, extensionsRequired, the scene, then node by
-// node in traversal order. Within an object: each primitive's mode,
-// targets and accessor kinds in primitive order; then the object's counts;
-// then each primitive's data (ranges, buffers, index values); then the weld
-// and make_mesh(). The first refusal is returned.
+// node in traversal order: its children, its transform, its mesh, skin and
+// instancing. Within an object: each primitive's mode, targets and accessor
+// kinds in primitive order; then the object's counts; then each primitive's
+// data (ranges, buffers, index values); then the weld and make_mesh(). The
+// first refusal is returned.
 //
 // DETERMINISM. Arrays are read in index order, buffers are read whole and
 // decoded byte by byte (little-endian), the transform is + - * / in double

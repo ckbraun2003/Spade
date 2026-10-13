@@ -224,7 +224,9 @@ public:
     [[nodiscard]] Json embedded() const {
         return with_uri("data:application/octet-stream;base64," + base64(bin));
     }
-    [[nodiscard]] std::string text() const { return embedded().dump(); }
+    [[nodiscard]] std::string text() const {
+        return embedded().dump();
+    }
 
     // The document in a .glb container: buffer 0 is the BIN chunk.
     [[nodiscard]] std::vector<std::byte> glb() const {
@@ -459,12 +461,11 @@ TEST(MeshImport, UnsupportedGltfFeaturesAreUnavailableByName) {
              d["extensionsRequired"] = Json::array({"KHR_mesh_quantization"});
          },
          "KHR_mesh_quantization", "extension"},
-        {"mode 1, LINES", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 1; }, "LINES",
-         "mesh 0 primitive 0"},
+        {"mode 1, LINES", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 1; }, "LINES", "mesh 0 primitive 0"},
         {"mode 0, POINTS", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 0; }, "POINTS",
          "mesh 0 primitive 0"},
-        {"mode 5, TRIANGLE_STRIP", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 5; },
-         "TRIANGLE_STRIP", "mesh 0 primitive 0"},
+        {"mode 5, TRIANGLE_STRIP", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 5; }, "TRIANGLE_STRIP",
+         "mesh 0 primitive 0"},
         {"mode 6, TRIANGLE_FAN", [](Json& d) { d["meshes"][0]["primitives"][0]["mode"] = 6; }, "TRIANGLE_FAN",
          "mesh 0 primitive 0"},
         {"a sparse accessor",
@@ -515,16 +516,19 @@ TEST(MeshImport, AnOpenGltfObjectIsRefusedByItsName) {
     g.scene({g.node(n)});
 
     const spade::test::TempDir dir("mesh-import-open");
-    // "wuerfel.gltf" with a u-umlaut, as UTF-8.
-    const std::filesystem::path file = dir.path() / std::filesystem::path(u8"w\xC3\xBC" u8"rfel.gltf");
+    // "wuerfel.gltf" with a u-umlaut, as UTF-8 code units (spelt out: MSVC
+    // encodes a \x escape in a u8 literal as a code point).
+    std::u8string name{u8'w', char8_t{0xC3}, char8_t{0xBC}};
+    name += u8"rfel.gltf";
+    const std::filesystem::path file = dir.path() / std::filesystem::path(name);
     write_file(dir.path() / "lid off.bin", g.bin);
     write_file(file, bytes_of(g.with_uri("lid%20off.bin").dump()));
 
     const auto objects = spade::read_gltf(file);
     ASSERT_FALSE(objects.has_value());
     EXPECT_EQ(objects.error().code, Code::invalid_argument) << objects.error().context;
-    EXPECT_TRUE(contains(objects.error().context, "w\xC3\xBC" "rfel.gltf: object 'lid_off': "))
-        << objects.error().context;
+    const std::string needle = std::string("w\xC3\xBC") + "rfel.gltf: object 'lid_off': ";
+    EXPECT_TRUE(contains(objects.error().context, needle)) << objects.error().context;
     EXPECT_TRUE(contains(objects.error().context, "open edges")) << objects.error().context;
 }
 
@@ -626,21 +630,18 @@ TEST(MeshImport, MalformedGltfIsRefusedByElement) {
     const Case cases[] = {
         {"an index out of range", [](Json& d) { d["accessors"][0]["count"] = 7; }, Code::invalid_argument,
          "mesh 0 primitive 0 indices accessor 1"},
-        {"an index count not a multiple of 3", [](Json& d) { d["accessors"][1]["count"] = 35; },
-         Code::invalid_argument, "35 indices"},
-        {"a missing buffer", [](Json& d) { d["bufferViews"][0]["buffer"] = 3; }, Code::invalid_argument,
-         "buffer 3"},
-        {"a buffer with no uri", [](Json& d) { d["buffers"][0].erase("uri"); }, Code::invalid_argument,
-         "buffer 0"},
+        {"an index count not a multiple of 3", [](Json& d) { d["accessors"][1]["count"] = 35; }, Code::invalid_argument,
+         "35 indices"},
+        {"a missing buffer", [](Json& d) { d["bufferViews"][0]["buffer"] = 3; }, Code::invalid_argument, "buffer 3"},
+        {"a buffer with no uri", [](Json& d) { d["buffers"][0].erase("uri"); }, Code::invalid_argument, "buffer 0"},
         {"a byte-length mismatch",
          [](Json& d) { d["buffers"][0]["byteLength"] = d["buffers"][0]["byteLength"].get<uint64_t>() + 4; },
          Code::invalid_argument, "byteLength"},
-        {"an accessor past its bufferView", [](Json& d) { d["accessors"][0]["count"] = 9; },
-         Code::invalid_argument, "accessor 0"},
+        {"an accessor past its bufferView", [](Json& d) { d["accessors"][0]["count"] = 9; }, Code::invalid_argument,
+         "accessor 0"},
         {"a bufferView past its buffer", [](Json& d) { d["bufferViews"][1]["byteLength"] = 4096; },
          Code::invalid_argument, "bufferView 1"},
-        {"a mesh that does not exist", [](Json& d) { d["nodes"][0]["mesh"] = 4; }, Code::invalid_argument,
-         "mesh 4"},
+        {"a mesh that does not exist", [](Json& d) { d["nodes"][0]["mesh"] = 4; }, Code::invalid_argument, "mesh 4"},
         {"a node reached twice", [](Json& d) { d["nodes"][0]["children"] = Json::array({0}); }, Code::invalid_argument,
          "node 0"},
         {"a matrix beside TRS",
@@ -650,9 +651,8 @@ TEST(MeshImport, MalformedGltfIsRefusedByElement) {
          },
          Code::invalid_argument, "matrix"},
         {"no mesh node", [](Json& d) { d["nodes"][0].erase("mesh"); }, Code::invalid_argument, "no node"},
-        {"a data URI not in base64",
-         [](Json& d) { d["buffers"][0]["uri"] = "data:application/octet-stream,abc"; }, Code::invalid_argument,
-         "base64"},
+        {"a data URI not in base64", [](Json& d) { d["buffers"][0]["uri"] = "data:application/octet-stream,abc"; },
+         Code::invalid_argument, "base64"},
         {"a URI with a scheme", [](Json& d) { d["buffers"][0]["uri"] = "https://example.com/cube.bin"; },
          Code::unavailable, "https"},
         {"an external buffer and no base directory", [](Json& d) { d["buffers"][0]["uri"] = "cube.bin"; },
@@ -701,8 +701,7 @@ TEST(MeshImport, TooManyTrianglesAreRefusedBeforeReading) {
     const auto objects = read_text(d.dump());
     ASSERT_FALSE(objects.has_value());
     EXPECT_EQ(objects.error().code, Code::capacity_exceeded) << objects.error().context;
-    EXPECT_TRUE(contains(objects.error().context, "object 'cube': 2147483649 triangles"))
-        << objects.error().context;
+    EXPECT_TRUE(contains(objects.error().context, "object 'cube': 2147483649 triangles")) << objects.error().context;
 }
 
 // The step never links the readers (L5; the plan's Layering): no engine
