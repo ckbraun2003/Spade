@@ -1,6 +1,6 @@
 # Solids in the airflow grid: P2, P2b and P3 — design
 
-**Owner:** Physics. **Status:** **APPROVED by the lead, 2026-10-13**, with §10's two decisions. It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
+**Owner:** Physics. **Status:** **APPROVED by the lead, 2026-10-13**, with §10's two decisions. **Amended 2026-10-13** for Test/Docs' tolerances and the lead's five findings (§11, in the lead's review; the solver change in §3 reverses spec §1.5's rejection of CG and needs the lead's approval). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
 **Rests on:**
 - the airflow spec §2 (Boundaries) and §1.5 step 6 (the projection with apertures);
 - the demonstration plan (`PHY-10`, the drone-box premise of `cd298d6`);
@@ -21,13 +21,44 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
 ## 3. Walls: face apertures (spec §2, Batty, Bertails and Bridson 2007)
 
 - **The open fraction of a face** at its centre: `θ = clamp(0.5 + φ / dx, 0, 1)`, with φ = `sample_parts(...).distance` when the owner is a wall part.
-- **The projection** solves `∇·(θ∇p) = (ρ/h) ∇·(θ u* + (1 − θ) u_s)`:
-  - each face's weight θ multiplies its neighbour term in the stencil and in the diagonal;
+- **The projection** solves `∇·(w∇p) = (ρ/h) ∇·(w u* + (1 − θ) u_s)`, with each face's weight `w = θ β`: θ its open fraction, β its porous factor (§5; 1 off porous parts):
+  - each face's weight w multiplies its neighbour term in the stencil and in the diagonal;
   - `u_s` is the owner's wall velocity component normal to the face;
-  - after the solve, a face with θ > 0 takes `u* − (h/ρ)∇p`, and a face with θ = 0 takes `u_s`.
-- **Bit identity.** With no solid the stencil is plan A's, bit for bit: `1.0f * p` is `p` and the six weights sum to exactly 6. So both goldens hold, and the solids path is taken only where a θ < 1 exists.
-- **The multigrid.** Each level holds its faces' θ. A coarse face's θ is the mean of the fine faces it covers, which the spec states. A cell whose faces are all closed has diagonal 0: the smoother already skips it (`smooth_one_cell`), and its residual is 0.
-- **A closed domain with solids.** The mean is removed over the cells the fluid reaches (diagonal > 0), not over every cell, so the compatibility condition holds for the fluid region. The drone box has outlets, so this applies only to validation cases.
+  - after the solve, a face with θ > 0 takes `β (u* − (h/ρ)∇p)`, and a face with θ = 0 takes `u_s`.
+- **Bit identity.** With no solid the stencil is plan A's, bit for bit: `1.0f * p` is `p` and the six weights sum to exactly 6. So both goldens hold, and the solids path is taken only where a w < 1 exists.
+- **The solver with solids** (the lead's finding 2, amended 2026-10-13). Plain V-cycles stall on a sheet the coarse levels cannot see:
+  - A coarse face covers only the fine faces on its own plane, every second fine plane. So a sheet on any other plane is invisible to that level and every coarser one, and at some level that is every sheet.
+  - Measured on a port of plan A's cycle (S3's channel, 32 × 8 × 8, all periodic; Physics' ledger, `spade-wt/physics/.superpowers/sdd/airflow-solids/mg_sym_port.py`): with the sheet on fine plane 16, which every level sees, 21 cycles reduce the residual to 6·10⁻⁸ of its start. On planes 17 and 18 they leave 0.3 and 0.06.
+  - Moving an odd plane's closure onto a coarse face, by a min or a series rule, makes the cycle diverge, because the transfers then disagree with the coarse operator.
+  - **The fix:** with any w < 1 in the grid, the projection runs CG preconditioned by one symmetric V(2,2) cycle (MGPCG; McAdams, Sifakis and Teran 2010, "A parallel multigrid Poisson solver for fluids simulation on large grids", SCA):
+    - The cycle is symmetric. The restriction is the transpose of plan A's trilinear prolongation, halved (full weighting). Pre-smoothing is red then black, post-smoothing black then red, the coarsest level takes 16 sweeps each way, and every level's p starts at 0.
+    - With plan A's restriction (the children's sum) the cycle is not symmetric (10⁻¹ measured with a sheet), and CG on it fails even on plane 16.
+    - Coarse weights stay the mean of the fine faces each coarse face covers (spec §1.5).
+    - `n_v` CG iterations, a fixed count from the last step's p; nothing stops on a residual. Each iteration takes one cycle, one operator application and two dot products. The dot products use `reduce.hpp`'s fixed-tile sum, so the CPU and the GPU twin sum in one order.
+    - Each closed region's mean is removed from r and z every iteration (next bullet).
+  - Measured on the same port:
+    - The sheet on planes 16, 17 and 18: 1–2·10⁻³ of the starting residual in 4 iterations, and under 10⁻¹³ in 12.
+    - A 6 × 6 plate on an odd plane: 2·10⁻⁴ in 4.
+    - Two perpendicular plates: 5·10⁻⁶ in 8.
+    - A prolongation that does not interpolate across closed coarse faces was measured too. Under CG it changes nothing, so it is left out.
+  - Without solids, plan A's plain V-cycles stay, bit for bit.
+  - **The spec change:** spec §1.5 rejected multigrid-preconditioned CG for the first cut because of the dot products' order between the CPU and the GPU. `reduce.hpp`'s fixed tiles (spec §4.5 as amended 2026-10-12) now fix that order, as P3's force already relies on. CG's scalars still feed back into every cell, so the GPU twin's band on p (TD-14) is measured on S1 and S3, not assumed. Spec §1.5 is amended on the lead's approval.
+  - **The cost:** one iteration costs about 1.3 V-cycles.
+- **Fluid regions** (the lead's finding 3). A sheet or a solid can cut the fluid into separate regions, and each closed one has its own null space.
+  - **Labelling.** At each rebuild of the apertures, the fluid cells are labelled into connected regions. A fluid cell is one with an open face (w > 0): to another cell, through a periodic seam, or onto a pressure outlet. The labelling is a flood fill across open faces. It starts from each unlabelled cell in array order and visits faces in the stencil's order, so the labels are deterministic.
+  - **Pinned and closed.** A region with a pressure-outlet face is pinned and has no null space. A closed region has its mean removed from b once, and from p after each cycle (from r and z under CG), each by its own masked fixed-tile sum.
+  - **The refusal.** A closed region must take no net prescribed flux. The outward normal velocity of the domain faces it touches, its walls and inflows, summed over their samples, must vanish within 10⁻⁶ of their magnitudes, as `check_domain` does for the whole domain (plan A's I1). Otherwise the build is refused by name: the region (one of its cells) and its faces. So a closed region with an inflow and no outlet is refused, even when the whole domain balances.
+  - **Immersed walls need no check.** A rigid motion's flux through any closed surface of cell faces is exactly 0, since the face-centre rule is exact for a linear field. Only rounding is left, and the mean removal takes it.
+  - **The run line** reports the count, for example "fluid regions: 3 (1 with an outlet, 2 closed)".
+  - Cells with no open face are solid, in no region, and keep p = 0.
+- **The viscous stencil at an immersed wall** (the lead's finding 5). The implicit viscous solve imposes no-slip with the owner's rigid velocity (decision 1) on φ = 0, where the apertures put θ = ½. It uses the symmetric ghost-fluid Dirichlet treatment (Gibou, Fedkiw, Cheng and Kang 2002, "A second-order-accurate symmetric discretization of the Poisson equation on irregular domains", J. Comput. Phys. 176):
+  - **Inside the wall.** A velocity sample with φ < 0 at its own position takes the owner's rigid velocity component there and is not solved. A θ = 0 face so carries the projection's `u_s`.
+  - **A crossing link.** A solved sample (φ ≥ 0) may have a link to a neighbour with φ < 0. That link crosses the wall at the fraction `f = φ_self / (φ_self − φ_nb)` of its length, clamped to at least 0.01. Its term `α (u_nb − u)` becomes `(α/f)(u_w − u)`, with `u_w` the owner's rigid velocity component at the crossing, and the sample's diagonal gains `α/f` in place of `α`.
+  - **Sheets.** A link the sheet crosses (§4's test, applied to the link) takes the same term, with f from the two samples' unsigned distances to the mid-surface. Both sides are solved.
+  - **What it gives.** The tangential and the normal condition sit on the same surface, to second order in the wall's position. Samples with no crossing link keep plan A's stencil, so the no-solid path is bit-identical.
+  - **φ at the samples.** φ at each face centre is what θ needs anyway, so it is kept per face in the support box.
+  - **Free slip.** The free-slip lean mode is inviscid and has no viscous solve.
+  - S2 (circular Couette) tests it.
 - **Inside a solid.** Backtraces that land in a solid read the owner's rigid velocity there. A wall face is a no-slip, moving wall, and the rigid field is exact inside it. The spec's free-slip lean mode extrapolates instead, two layers by fixed sweeps; it stays an option for coarse grids, named in the configuration.
 - **The minimum resolution (D5).** A wall part's `min_feature` must be at least 2 `dx`. Section 4 says what happens below that.
 
@@ -44,7 +75,11 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
 
 ## 5. Porous parts (Darcy–Forchheimer, confirmed 2026-10-12)
 
-- **The sink.** A porous winner gives θ = 1, so the faces stay open, plus the sink `u ← u / (1 + h (ν/K + ½ C₂ |u|))` on the faces it covers. The fraction it covers is `s = clamp(0.5 − φ/dx, 0, 1)`, and the sink is applied as `u ← u / (1 + s h (…))`. It is point-implicit, so it is stable at any `h`. It is applied after advection and before the projection, like the sources.
+- **The sink, implicit with the pressure** (the lead's finding 1, amended 2026-10-13). A porous winner gives θ = 1, so the faces stay open.
+  - **The factor.** Each face it covers takes `β = 1 / (1 + s h c)`, with `c = ν/K + ½ C₂ |u*|` and `s = clamp(0.5 − φ/dx, 0, 1)`, the fraction it covers. `|u*|` is the speed at the face before the projection, its other two components the mean of their four nearest samples.
+  - **The solve.** The projection's face weight is `w = θ β`, and the update is `u = β (u* − (h/ρ)∇p)` (§3). That is the point-implicit solve of `∂u/∂t = −∇p/ρ − s c u` with the pressure, with c lagged only through `|u*|`. It is stable at any `h`.
+  - **Why.** At a steady state `u = β (u − (h/ρ) ∂p)` gives `∂p = −ρ s c u`, the law's drop at any `h`. Split before the projection, as first written, the drop read low by `1/(1 + s h c)`: 17% for Test/Docs' `k` = 1 screen at `h` = 1 ms (S4).
+  - The sink is no longer a step of its own.
 - **The thresholds.** A porous part takes D5's 2-cell rule like a wall, but an under-resolved porous part becomes no sheet: it is refused. A thin mesh screen is better as a porous sheet with a pressure-jump law, which is a later case.
 
 ## 6. Wall pressure and force (P3)
@@ -56,7 +91,7 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
 - **Publish next to solids and sheets** (Rendering, 2026-10-13):
   - Publish's gradient takes **one-sided differences at a closed face** (θ = 0), a wall's or a sheet's, as it already does at a non-periodic domain edge. A central difference across a sheet would mix the two sides' velocities and draw spurious vorticity, Q and λ₂ along a sheet that has none.
   - `PublishInput` gains the face apertures, or a per-face closed flag, beside the solid mask.
-  - Test: a sheet across a uniform shear, with no vortex on either side. The published |ω|, Q and λ₂ next to the sheet match the far field's.
+  - Test (§8 test 8, Test/Docs' S5): a field linear on each side of a sheet, with jumps in u and w across it. The published |ω| and q̂ next to the sheet match the far field's. A continuous shear could not tell the one-sided rule from a central difference.
 
 ## 7. P2b: the drone box's boundaries (demonstration plan, step 5)
 
@@ -69,22 +104,39 @@ With a floor, the box's lower face sits `h` below the hub plane, and the drone s
 
 ## 8. Tests, each red first
 
-1. **A sphere in a uniform stream (free slip).** The projected field puts no net flux through the sphere's faces, and its divergence falls as plan A's does. Against potential flow (`1 − 9/4 sin²ϑ`), the surface `C_p` matches within a band measured at 12 cells per diameter. The net force is near 0 (d'Alembert).
-2. **A rotating cylinder in still air (no slip).** Faces near the surface take the rigid velocity, and the air gains circulation in the rotation's sense.
-3. **A sheet across a channel.** It carries no flux, and the pressure jumps across it. The run line names it a sheet.
-4. **A porous block.** The pressure drop across it matches `L (ν/K u + ½ C₂ u²) ρ` within a band.
+Every band, configuration and reading time comes from Test/Docs' note, `../../test-docs/2026-10-13-solids-tolerances.md` (S1–S5, fixed before the first run). No band is measured. Each record's `tolerance:` line cites the note. Where a check could pass on a wrong solver, a named mutation is run once against it during development and recorded in the ledger: the check must fail under the mutation (the lead's finding 4).
+
+1. **A sphere in a uniform stream (S1)**: free slip, a box of side 8R, the centre on a cell corner, `U h/dx = 0.1`, `n_v = 16`, R/dx 6 (R/dx 12 opt-in).
+   - The added-mass impulse `C_M`, from P3, at step 1.
+   - `C_p` one cell out along the normal against potential flow at the same points, and the drag and side forces, at step 3.
+   - The flux and divergence checks stay.
+   - d'Alembert's zero cannot fail on its own, since the cut cells' area vectors sum to zero. The added mass can. Mutations: a P3 that returns 0 (reads `C_M` = 0) and a P3 with its sign flipped (−0.5). Both must fail.
+2. **Circular Couette flow (S2)**, which replaces the rotating cylinder in still air (confirmed: it has a closed form). The cylinder turns inside a fixed coaxial tube, `R₂ = 2R₁`, `Re` 10, quasi-2D.
+   - `u_θ` against `A r + B/r`, with the order check from R₁/dx 16 to 32.
+   - The design's two checks stay, as exact ones: the closed faces carry the rigid velocity bit for bit, and the air's circulation has the rotation's sign.
+   - It exercises §3's viscous stencil at an immersed wall. Mutation: the rigid velocity at closed faces only (no crossing-link term), which Test/Docs expects to miss by up to a factor of two.
+3. **A sheet across a periodic channel (S3)**, one step from a cold start, run with the sheet on an even and on an odd fine plane.
+   - No flux, `max |u|/U`, the pressure step, P3's force, and the run line naming the sheet.
+   - **The convergence check** (the lead's finding 2): from the cold start, both parities, the solve's residual falls to 10⁻³ of its start within 8 CG iterations. The port reaches 10⁻⁸ in fp64, and fp32 floors near 10⁻⁶. Mutation: plain V-cycles forced on the odd plane, which the port leaves at 0.6.
+4. **A porous block (S4)**, three Forchheimer numbers at `h c ≤ 10⁻³`. With §5's implicit sink, its `h c = 1` case predicts 1.0 rather than 0.5. Test/Docs may make it a check rather than a report. Mutation: the sink split before the projection, which reads 0.5 at `h c = 1`.
 5. **Refusals:**
    - a wire-like part (two extents below 2 `dx`), named with the `dx` it needs;
-   - a floor height that cuts a part.
+   - a floor height that cuts a part;
+   - a closed region with a net prescribed flux. Example: a closed box whose −x and +x walls move inward and outward, cut across x by a sheet. The domain balances; each region does not.
 6. **No solid, no change.** With no parts, both goldens are bit-identical.
-7. **The posed drone**, from a compiled airframe (A4) and from a mesh part (B4) of the same box: the same apertures within the SDF's rounding.
-8. **Publish beside a sheet** (§6): a sheet across a uniform shear publishes the far field's |ω|, Q and λ₂ next to it, with no spurious vortex sheet.
+7. **The posed drone**, from a compiled airframe (A4) and from a mesh part (B4) of the same box: the same apertures within the SDF's rounding (`TD-2`, measured and pinned, as Test/Docs' note says).
+8. **Publish beside a sheet (S5)**: a field linear on each side, with jumps in u and w across the sheet. The published |ω| and q̂ next to the sheet match the far field's. Mutation: a central difference across the sheet (the closed-face flag ignored), which publishes |ω| ≈ 70 S.
+9. **Fluid regions** (the lead's finding 3): a closed box cut by a sheet into two closed regions of unequal size.
+   - Each region's mean p is 0 to fp32 rounding.
+   - The run line reports "2 closed".
+   - The divergence keeps plan A's band in each region.
+   - Mutation: one mean removed over all the fluid, which leaves each region's mean wherever the solve put it.
 
 Test 1's surface `C_p` is the solver's half of Rendering's R2.5. Rendering's half compares the view's sampled `C_p` with P3's at the same surface points.
 
 ## 9. Order and cost
 
-P2 (walls, sheets, the posed drone, tests 1–3, 5–7), then P3 (force and moment, `C_p`), then porous (test 4), then P2b.
+P2 (walls, sheets, the posed drone, the solver with solids, the fluid regions, the viscous wall stencil; tests 1–3, 5–7 and 9), then P3 (force and moment, `C_p`; test 8), then porous (test 4), then P2b. Test 1's added mass and test 3's force read P3, so their checks join P3. Their P2 checks (flux, divergence, the closed faces' velocities, convergence) come first.
 
 CPU cost: about 300 k samples per rebuild at a 42³ support box. Since the parts are rebuilt only when the attitude changes, a held attitude costs nothing per step. The projection's θ path is the general stencil's cost.
 
@@ -92,3 +144,17 @@ CPU cost: about 300 k samples per rebuild at a 42³ support box. Since the parts
 
 1. **Inside a solid, a backtrace reads the owning part's rigid velocity by default.** That is exact for a no-slip moving wall, and it fits Cameron's accuracy bar. Free-slip extrapolation, two layers by fixed sweeps, stays a named option in the configuration. The spec's §2 is amended to match.
 2. **Sheets are binary and staircased in this first version.** That is a **known first-order limitation**: a sheet's surface is resolved only to the cell, and its closed faces are either fully closed or fully open. Exact cut-face sheets, with crossing fractions, come later, when V2's flat plate (drag against `Re`) measures the difference.
+
+## 11. Amendments (2026-10-13): Test/Docs' tolerances and the lead's five findings
+
+Test/Docs fixed the tests' tolerances before any run (`../../test-docs/2026-10-13-solids-tolerances.md`, merged at 5eb7ea7). The lead made its five findings binding. Each is answered in place:
+
+1. **Porous splitting:** the sink moves into the projection as the face factor β (§5). The steady drop is then exact at any `h`, and S4 pins it.
+2. **Sheets the coarse levels cannot see:** with solids, the projection runs CG preconditioned by a symmetric V-cycle (§3), and test 3 gains a convergence check on both parities. Measured on a port of plan A's cycle:
+   - plain cycles stall on odd-plane sheets;
+   - a min or a series coarse rule diverges;
+   - MGPCG converges on both parities.
+   **This reverses spec §1.5's rejection of CG for the first cut, and needs the lead's approval.**
+3. **Separate fluid regions:** regions are labelled deterministically. Each closed region has its own mean removed, and a closed region with a net prescribed flux is refused by name (§3). The run line reports the count. Tests 5 and 9.
+4. **Checks that could not fail:** test 1 reads the added mass, and test 8 has jumps across the sheet (Test/Docs' S1 and S5). Every such check has a named mutation, run once and recorded (§8).
+5. **The viscous stencil at a wall:** a symmetric ghost-fluid Dirichlet condition, with the rigid velocity on φ = 0, the surface the apertures put at θ = ½ (§3). Test 2, now circular Couette flow (S2), exercises it.
