@@ -271,6 +271,51 @@ TEST(AirflowActuator, ADiscWhoseSupportLeavesTheGridIsRefused) {
     ActuatorDisc flat = ok;
     flat.radius = 0.0f;
     EXPECT_TRUE(refused(flat, "radius"));
+    ActuatorDisc wild = ok;
+    wild.torque = std::numeric_limits<float>::infinity();
+    EXPECT_TRUE(refused(wild, "torque"));
+}
+
+// P1 (the demonstration plan; spec §3.1): the swirl. The disc's torque goes to
+// the air as tangential forces about its axis, torque / (48 r) at a point on
+// the ring of radius r (constant circulation: the ideal rotor under the
+// disc's uniform thrust loading), so the points' sum of r |f| is the torque.
+// Peskin's kernel keeps first moments, so the air's angular momentum about
+// the centre gains h * torque along the axis, by the right-hand rule, and its
+// linear momentum only the thrust's impulse.
+TEST(AirflowActuator, ASwirlingDiscAddsItsTorqueAboutItsAxisAndNoSideForce) {
+    const GridShape shape{32, 32, 32, 1.0f / 32.0f};
+    const MacGrid g = *make_grid(shape, DomainBc{});
+    const float rho = 1.225f;
+    const float h = 0.004f;
+    for (const float torque : {0.05f, -0.05f}) {
+        const ActuatorDisc disc{.centre = {0.5f, 0.5f, 0.5f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.2f,
+                                .thrust = 2.0f, .torque = torque};
+        ASSERT_TRUE(check_disc(disc, shape).has_value());
+        std::vector<float> du(g.u.size(), 0.0f), dv(g.v.size(), 0.0f), dw(g.w.size(), 0.0f);
+        spread_actuator(disc, shape, rho, h, du, dv, dw);
+        const double cell = static_cast<double>(shape.dx) * shape.dx * shape.dx;
+        const std::vector<float>* d[3] = {&du, &dv, &dw};
+        glm::dvec3 momentum(0.0);
+        glm::dvec3 angular(0.0);
+        for (uint32_t c = 0; c < 3; ++c) {
+            for_each_sample(shape, c, [&](std::size_t idx, glm::vec3 x) {
+                const double m = static_cast<double>((*d[c])[idx]) * rho * cell;
+                glm::dvec3 f(0.0);
+                f[static_cast<glm::length_t>(c)] = m;
+                momentum += f;
+                angular += glm::cross(glm::dvec3(x) - glm::dvec3(disc.centre), f);
+            });
+        }
+        const double thrust_impulse = static_cast<double>(h) * 2.0;
+        const double torque_impulse = static_cast<double>(h) * torque;
+        EXPECT_NEAR(momentum.y, -thrust_impulse, 1.0e-5 * thrust_impulse) << torque;
+        EXPECT_NEAR(momentum.x, 0.0, 1.0e-6 * thrust_impulse) << "no side force";
+        EXPECT_NEAR(momentum.z, 0.0, 1.0e-6 * thrust_impulse) << "no side force";
+        EXPECT_NEAR(angular.y, -torque_impulse, 1.0e-4 * std::fabs(torque_impulse)) << "about the axis (0, -1, 0)";
+        EXPECT_NEAR(angular.x, 0.0, 1.0e-4 * std::fabs(torque_impulse));
+        EXPECT_NEAR(angular.z, 0.0, 1.0e-4 * std::fabs(torque_impulse));
+    }
 }
 
 }  // namespace
