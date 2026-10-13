@@ -41,13 +41,13 @@ enum class FlightKind : uint32_t { hover = 0, forward = 1, hover_in_wind = 2 };
 
 enum class RotorModel : uint32_t { disc = 0, line = 1, blade_resolved = 2 };
 
-// The model a case is for, as a scene pins its world: by file, and by its
-// identity when the case was saved. A changed model is refused until the case
-// is re-pinned. (The parts' own pin, vehicles::parts_identity(), joins with
-// Core's task after A4.)
+// The model a case is for, as a scene pins its world: by file, and by its two
+// identities when the case was saved. A changed model, or changed parts, is
+// refused until the case is re-pinned.
 struct ModelRef {
     std::string file;       // relative to the case file's folder, so a project can move
     uint64_t identity = 0;  // vehicles::model_identity(): the body, rotors, drag bodies and mounts
+    uint64_t parts = 0;     // vehicles::parts_identity(): the parts' geometry, mounts and surfaces
 };
 
 // The drone-box inputs (Q4), held for the whole run (A4's constant program).
@@ -196,6 +196,7 @@ struct ResolvedCase {
     Source spacing_source = Source::given;
     float finest_spacing = 0.0f;         // spacing / 2^nests, around the drone
     physics::airflow::GridShape base{};  // the base grid
+    physics::airflow::DomainBc domain{};  // the drone box's faces: open, the wind as ambient, the floor a wall
     uint64_t base_bytes = 0;             // physics::airflow::fluid_bytes(base); the nests' come with R1
     std::vector<ResolvedRotor> rotors;
 };

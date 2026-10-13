@@ -5,9 +5,13 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <numbers>
 #include <string>
 #include <utility>
 
+#include <glm/glm.hpp>
+
+#include "core/fp32_math.hpp"
 #include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "vehicles/model_identity.hpp"
@@ -33,6 +37,26 @@ namespace {
         case RotorModel::blade_resolved: return "blade-resolved";
     }
     return "the rotor model";
+}
+
+// The drone box's faces (Physics' plan A conditions). Every face open, the
+// ambient the air's velocity past the drone: forward flight moves the air
+// AND the ground at -v along where the air comes from (the floor a rolling
+// road), hover in a wind moves only the air (the floor still). sin32 and
+// cos32, not libm (TD-3).
+[[nodiscard]] physics::airflow::DomainBc drone_box_domain(const Flight& f) {
+    namespace af = physics::airflow;
+    af::DomainBc bc;
+    if (f.kind != FlightKind::hover) {
+        const float h = f.heading_deg * (std::numbers::pi_v<float> / 180.0f);
+        const glm::vec3 from(math::cos32(h), 0.0f, -math::sin32(h));  // + heading: from the left (-Z)
+        bc.ambient = -f.speed * from;
+    }
+    if (f.floor_height) {
+        bc.face[af::kYMinus] = af::FaceBc::wall;
+        bc.wall_velocity[af::kYMinus] = f.kind == FlightKind::forward ? bc.ambient : glm::vec3(0.0f);
+    }
+    return bc;
 }
 
 // The problems, in field order.
@@ -200,6 +224,11 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
         out.add("model.identity", "the model changed since the case pinned it (case " + hex64(c.model.identity) +
                                       ", model " + hex64(identity) + "); re-pin the case to the model");
     }
+    const uint64_t parts = vehicles::parts_identity(model);
+    if (parts != c.model.parts) {
+        out.add("model.parts", "the model's parts changed since the case pinned them (case " + hex64(c.model.parts) +
+                                   ", model " + hex64(parts) + "); re-pin the case to the model");
+    }
     if (c.rotors.size() != model.rotors.size()) {
         out.add("rotors", "the case sets " + std::to_string(c.rotors.size()) + " rotors; the model has " +
                               std::to_string(model.rotors.size()));
@@ -225,7 +254,8 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
     // The base grid, and whether the solver can hold it.
     const auto cells = static_cast<uint32_t>(std::ceil(box / spacing * (1.0f - 1e-6f)));
     r.base = physics::airflow::GridShape{cells, cells, cells, spacing};
-    r.base_bytes = physics::airflow::fluid_bytes(r.base, physics::airflow::DomainBc{});
+    r.domain = drone_box_domain(r.spec.flight);
+    r.base_bytes = physics::airflow::fluid_bytes(r.base, r.domain);
     if (r.base_bytes > physics::airflow::kGridByteCap) {
         const double scale =
             std::cbrt(static_cast<double>(physics::airflow::kGridByteCap) / static_cast<double>(r.base_bytes));

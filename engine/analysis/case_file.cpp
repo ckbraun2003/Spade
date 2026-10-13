@@ -62,6 +62,7 @@ constexpr std::array<std::string_view, 3> kRotorModelNames = {"disc", "line", "b
     out += "model:\n";
     out += "  file: " + quote_yaml(c.model.file) + "\n";
     out += "  identity: " + quote_yaml(hex64(c.model.identity)) + "\n";
+    out += "  parts: " + quote_yaml(hex64(c.model.parts)) + "\n";
     out += "controls:\n";
     out += "  armed: " + flag(c.controls.armed) + "\n";
     out += "  throttle: " + format_float(c.controls.throttle) + "\n";
@@ -225,11 +226,13 @@ template <std::size_t N>
     }
     AnalysisCase c;
 
-    SPADE_CASE_TRY(model, map_field(root, "model", "case", {"file", "identity"}));
+    SPADE_CASE_TRY(model, map_field(root, "model", "case", {"file", "identity", "parts"}));
     SPADE_CASE_TRY(model_file, string_field(model, "file", "case.model"));
     SPADE_CASE_TRY(identity_node, field(model, "identity", "case.model"));
     SPADE_CASE_TRY(identity, parse_hash(identity_node, "case.model.identity"));
-    c.model = ModelRef{model_file, identity};
+    SPADE_CASE_TRY(parts_node, field(model, "parts", "case.model"));
+    SPADE_CASE_TRY(parts, parse_hash(parts_node, "case.model.parts"));
+    c.model = ModelRef{model_file, identity, parts};
 
     SPADE_CASE_TRY(controls, map_field(root, "controls", "case", {"armed", "throttle", "pitch_deg", "roll_deg", "yaw_deg"}));
     SPADE_CASE_TRY(armed, bool_field(controls, "armed", "case.controls"));
