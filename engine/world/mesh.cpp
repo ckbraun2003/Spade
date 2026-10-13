@@ -26,6 +26,7 @@
 #include "core/detail/math_ops_f64.hpp"
 #include "core/rng.hpp"
 #include "core/validate.hpp"
+#include "world/mesh_mass.hpp"
 
 namespace spade {
 namespace {
@@ -952,6 +953,9 @@ Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input, st
                                  built.triangle_nodes_, built.shell_root_, lo, hi, distance_in_shell)) {
         return refuse(Code::invalid_argument, *d);
     }
+    // Accepted: its mass properties, once, by the one function (mesh.hpp,
+    // THE MASS PROPERTIES). It reads the positions and indices alone.
+    mesh->mass_properties_ = mesh_mass_properties(built);
     return std::shared_ptr<const TriangleMesh>(std::move(mesh));
 }
 

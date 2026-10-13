@@ -4,6 +4,24 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Mass from a mesh part's geometry (2026-10-13)
+
+The mass-from-mesh plan (`docs/design/core/plans/2026-10-13-mass-from-mesh-plan.md`), joint with Physics, which owns the airframe compile and reviewed it.
+
+- **A record can take its mass from its mesh.** `GeometrySource::mesh` (`vehicles/model_part.hpp`), with `PartGeometrySpec::mesh`, `density` (kg/m³, no default) and a declared `min_feature` (the compile cannot measure a mesh's thinnest feature). Before `composite_inertia()` runs, the airframe compile resolves such a record into an explicit `PartShape::tensor` record: mass ρV, its centre of mass at the record's pose applied to the mesh's centroid, and ρ times the inertia about the centroid in the mesh's own axes. One record gives the mass and the solid (`TD-9`), and `composite_inertia()` is unchanged.
+- **The part sits at its placement, its mass at its centroid.** A mesh's origin need not be its centroid, so the record's pose is the mesh's placement. The part is emitted there, carrying the shared mesh and its declared `min_feature`, and only the inertia record sits at the centre of mass (Physics' frame trap).
+- **Every `TriangleMesh` keeps its mass properties.** `make_mesh()` calls `mesh_mass_properties()` once and stores the result, and `TriangleMesh::mass_properties()` gives the volume, centroid and inertia per unit density. The compile reads them, and so will P2's grid (the volume). `MeshMassProperties` moved to `world/mesh.hpp`. Nothing recomputes them, and the content hash is unchanged.
+- **What is refused now**, by the record's index, name and field:
+  - a mesh source without a mesh;
+  - a density that is not finite and > 0;
+  - a `min_feature` that is not finite and > 0;
+  - a hand-entered mass, shape, size or tensor beside a mesh source (`TD-9`);
+  - a volume ≤ 0;
+  - a ρV or ρI that is not finite;
+  - a mesh, density or `min_feature` beside a non-mesh source, which would otherwise be silently dropped;
+  - with no `DragSpec`, an airframe with any mesh part, refused at `drag` and naming the first (Physics' rule: the drag estimate cannot see a mesh's area, so give a `DragSpec`, with zero coefficients for none).
+- **Nothing moved.** The reference quad's `model_identity` (`0x78fdc769a0503ff6`) and `parts_identity` (`0x1f0c49d9fd04ed42`), every content hash and every golden are unchanged.
+
 ### Per-part model geometry and triangle meshes (2026-10-12)
 
 The parts and meshes plan (`docs/design/core/plans/2026-10-12-parts-meshes-plan.md`; `CORE-6`, `CORE-7`): Part A, and Part B's Tasks B1 to B5.

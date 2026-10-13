@@ -2,12 +2,16 @@
 
 #include <array>
 #include <bit>
+#include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -22,6 +26,8 @@
 #include "vehicles/part_pose.hpp"
 #include "vehicles/propeller.hpp"
 #include "vehicles/propulsion_flags.hpp"
+#include "world/mesh.hpp"
+#include "world/mesh_import.hpp"
 #include "world/sdf.hpp"
 
 // ===========================================================================
@@ -1157,5 +1163,785 @@ TEST(AirframeCompile, AMotorMovesAlongItsHubsThrustAxis) {
             motors.push_back(r.hub.position + glm::dvec3(pusher ? -0.009 : 0.009, 0.0, 0.0));
         }
         expect_motors_at(s, motors, true, pusher ? "turned hubs, pushers" : "turned hubs, tractors");
+    }
+}
+
+// ===========================================================================
+// MASS FROM A MESH (the mass-from-mesh plan, 2026-10-13). A record whose
+// geometry source is a mesh takes its mass, centre of mass and inertia from
+// its mesh's properties times its density, and its part from the same mesh
+// (TD-9: one record). Its pose is the mesh's PLACEMENT, mesh local -> design;
+// a mesh's origin is not its centroid. Task M1: the record's fields and its
+// refusals, each by record index, name and field (L6), in the one call that
+// lists everything.
+// ===========================================================================
+
+namespace {
+
+using MeshPtr = std::shared_ptr<const spade::TriangleMesh>;
+
+// A box's twelve triangles, counter-clockwise seen from outside, its corners
+// numbered x + 2y + 4z (tests/test_mesh_mass.cpp's).
+constexpr uint32_t kBoxTriangles[12][3] = {
+    {0, 2, 1}, {1, 2, 3},  // z = lo, normal -z
+    {4, 5, 6}, {5, 7, 6},  // z = hi, normal +z
+    {0, 1, 4}, {1, 5, 4},  // y = lo, normal -y
+    {2, 6, 3}, {3, 6, 7},  // y = hi, normal +y
+    {0, 4, 2}, {2, 4, 6},  // x = lo, normal -x
+    {1, 3, 5}, {3, 7, 5},  // x = hi, normal +x
+};
+
+// The box [lo, lo + size], in metres: corner k is lo + (k & 1, k >> 1 & 1,
+// k >> 2 & 1) * size.
+[[nodiscard]] spade::MeshInput box_input(glm::dvec3 lo, glm::dvec3 size) {
+    spade::MeshInput m;
+    m.unit = spade::MeshUnit::metre;
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::dvec3 bit(static_cast<double>(v & 1u), static_cast<double>((v >> 1) & 1u),
+                             static_cast<double>((v >> 2) & 1u));
+        m.positions.push_back(lo + bit * size);
+    }
+    for (const auto& t : kBoxTriangles) m.indices.insert(m.indices.end(), {t[0], t[1], t[2]});
+    return m;
+}
+
+[[nodiscard]] MeshPtr mesh_of(const spade::MeshInput& in) {
+    auto m = spade::make_mesh(in, "fixture");
+    EXPECT_TRUE(m.has_value()) << (m.has_value() ? std::string() : m.error().context);
+    return m.has_value() ? *m : nullptr;
+}
+
+// The canopy: a 62.5 x 15.625 x 31.25 mm box with its ORIGIN AT A CORNER, so
+// its centroid is half its sides from its origin. Dyadic sides: fp32 holds
+// every corner, and its volume, 2^-15 m^3, is exact.
+const glm::dvec3 kCanopySides(0.0625, 0.015625, 0.03125);
+constexpr double kCanopyDensity = 1250.0;  // kg/m^3, a printed plastic
+
+[[nodiscard]] MeshPtr canopy_mesh() { return mesh_of(box_input(glm::dvec3(0.0), kCanopySides)); }
+
+// A mesh record as an importer writes it: no mass, shape, size or tensor of
+// its own (TD-9), its mesh placed at `position`, turned by `orientation`.
+[[nodiscard]] PartInertia mesh_record(MeshPtr mesh, double density, glm::dvec3 position,
+                                      glm::dquat orientation = glm::dquat(1.0, 0.0, 0.0, 0.0),
+                                      std::string name = "canopy") {
+    PartInertia p;
+    p.position = position;
+    p.orientation = orientation;
+    p.geometry = PartGeometrySpec{.source = GeometrySource::mesh,
+                                  .name = std::move(name),
+                                  .role = "body",
+                                  .mesh = std::move(mesh),
+                                  .density = density,
+                                  .min_feature = 0.004f};
+    return p;
+}
+
+// The spec with one drag element given outright, zero coefficients for none.
+// An airframe with a mesh record needs one: the drag estimate cannot see a
+// mesh's area (Physics' drag rule, below).
+[[nodiscard]] AirframeSpec with_drag(AirframeSpec s) {
+    s.drag.push_back(DragSpec{});
+    return s;
+}
+
+// The reference quad with the canopy on top as record 5: its corner at
+// (-1/32, 1/64, -1/64), so it spans x and z about the frame's centre and sits
+// on the frame's top (y = 0.015). Its drag is given.
+const glm::dvec3 kCanopyPlacement(-0.03125, 0.015625, -0.015625);
+
+[[nodiscard]] AirframeSpec quad_with_canopy() {
+    AirframeSpec s = with_drag(reference_quad());
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, kCanopyPlacement));
+    return s;
+}
+
+[[nodiscard]] bool mentions(const std::string& text, const std::string& what) {
+    return text.find(what) != std::string::npos;
+}
+
+}  // namespace
+
+// Each fault of a mesh record is ONE issue, at the record's index and the
+// field at fault, and its message names the record. A hand-entered mass,
+// shape, size or tensor beside a mesh source is a TD-9 conflict, refused by
+// name, never silently overridden. There is no default density.
+TEST(AirframeCompile, AMeshRecordsFaultIsOneIssueAtItsField) {
+    using D = std::numeric_limits<double>;
+    using F = std::numeric_limits<float>;
+    struct Case {
+        const char* what;
+        void (*fault)(PartInertia&);
+        const char* field;
+        bool td9;
+    };
+    const std::array<Case, 15> cases = {{
+        {"no mesh", [](PartInertia& p) { p.geometry.mesh = nullptr; }, "geometry.mesh", false},
+        {"no density: 0 is not given", [](PartInertia& p) { p.geometry.density = 0.0; }, "geometry.density",
+         false},
+        {"a negative density", [](PartInertia& p) { p.geometry.density = -kCanopyDensity; }, "geometry.density",
+         false},
+        {"a NaN density", [](PartInertia& p) { p.geometry.density = D::quiet_NaN(); }, "geometry.density", false},
+        {"an infinite density", [](PartInertia& p) { p.geometry.density = D::infinity(); }, "geometry.density",
+         false},
+        {"a density whose mass is not finite",
+         [](PartInertia& p) {
+             // A 2 m cube, 8 m^3: the largest double times 8 overflows.
+             p.geometry.mesh = mesh_of(box_input(glm::dvec3(0.0), glm::dvec3(2.0)));
+             p.geometry.density = D::max();
+         },
+         "geometry.density", false},
+        {"no min_feature", [](PartInertia& p) { p.geometry.min_feature = 0.0f; }, "geometry.min_feature", false},
+        {"a negative min_feature", [](PartInertia& p) { p.geometry.min_feature = -0.004f; },
+         "geometry.min_feature", false},
+        {"a NaN min_feature", [](PartInertia& p) { p.geometry.min_feature = F::quiet_NaN(); },
+         "geometry.min_feature", false},
+        {"an infinite min_feature", [](PartInertia& p) { p.geometry.min_feature = F::infinity(); },
+         "geometry.min_feature", false},
+        {"a hand-entered mass", [](PartInertia& p) { p.mass = 0.038; }, "mass", true},
+        {"a hand-entered NaN mass", [](PartInertia& p) { p.mass = D::quiet_NaN(); }, "mass", true},
+        {"a hand-entered shape", [](PartInertia& p) { p.shape = PartShape::box; }, "shape", true},
+        {"a hand-entered size", [](PartInertia& p) { p.size = kCanopySides; }, "size", true},
+        {"a hand-entered tensor", [](PartInertia& p) { p.tensor = glm::dmat3(1e-6); }, "tensor", true},
+    }};
+    for (const Case& c : cases) {
+        AirframeSpec s = quad_with_canopy();
+        c.fault(s.parts[5]);
+        const std::vector<AirframeIssue> issues = check_airframe(s);
+        ASSERT_EQ(issues.size(), 1u) << c.what << ": " << (issues.empty() ? "" : issues[0].field);
+        EXPECT_TRUE(has_issue(issues, "parts", 5, c.field)) << c.what << ": " << issues[0].field;
+        EXPECT_TRUE(mentions(issues[0].message, "'canopy'")) << c.what << ": " << issues[0].message;
+        if (c.td9) {
+            EXPECT_TRUE(mentions(issues[0].message, "TD-9")) << c.what << ": " << issues[0].message;
+        }
+        const auto compiled = compile_airframe(s);
+        ASSERT_FALSE(compiled.has_value()) << c.what;
+        EXPECT_TRUE(mentions(compiled.error().context, std::string("parts[5].") + c.field))
+            << c.what << ": " << compiled.error().context;
+    }
+}
+
+// Every fault at once, in the one call (Kat's question 2).
+TEST(AirframeCompile, EveryFaultOfAMeshRecordIsListedInOneCall) {
+    AirframeSpec s = quad_with_canopy();
+    PartInertia& canopy = s.parts[5];
+    canopy.geometry.mesh = nullptr;
+    canopy.geometry.density = 0.0;
+    canopy.geometry.min_feature = 0.0f;
+    canopy.mass = 0.038;
+    canopy.tensor = glm::dmat3(1e-6);
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 5u);
+    for (const char* field : {"geometry.mesh", "geometry.density", "geometry.min_feature", "mass", "tensor"}) {
+        EXPECT_TRUE(has_issue(issues, "parts", 5, field)) << field;
+    }
+}
+
+// A mesh record whose mass cannot be taken from its mesh stops the composite
+// and the fit: no fit runs on a mass that is not known. (A part's other
+// problems, a name, do not stop the fit: APartProblemIsListedAtItsRecord.)
+TEST(AirframeCompile, AMeshRecordWithoutItsMassStopsTheFit) {
+    AirframeSpec s = quad_with_canopy();
+    s.parts[5].geometry.density = 0.0;
+    s.battery.mass = 20.0;  // the chain cannot lift it, which only a fit would find
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "geometry.density"));
+    EXPECT_FALSE(has_issue(issues, "airframe", 0, "propulsion")) << "no fit ran";
+}
+
+// TD-9 the other way round: a mesh, a density or a min_feature beside a
+// source that is not mesh would be read by nothing, so it is refused at its
+// field rather than silently dropped. The mass is the record's own, so the
+// fit still runs.
+TEST(AirframeCompile, MeshFieldsBesideAnotherSourceAreRefused) {
+    AirframeSpec s = reference_quad();
+    s.parts[0].geometry.mesh = canopy_mesh();  // the frame's box, an inertia shape
+    s.parts[1].geometry.density = kCanopyDensity;
+    s.parts[2].geometry.source = GeometrySource::none;
+    s.parts[2].geometry.min_feature = 0.004f;
+    s.battery.mass = 20.0;
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 4u);
+    EXPECT_TRUE(has_issue(issues, "parts", 0, "geometry.mesh"));
+    EXPECT_TRUE(has_issue(issues, "parts", 1, "geometry.density"));
+    EXPECT_TRUE(has_issue(issues, "parts", 2, "geometry.min_feature"));
+    EXPECT_TRUE(has_issue(issues, "airframe", 0, "propulsion")) << "the fit still runs, and lists its own";
+}
+
+// A volume that is not positive, an inside-out mesh, never reaches the
+// compile: make_mesh() refuses it (world/mesh.hpp), and so B6's reader, which
+// reverses a mirrored node's winding, hands over none. The compile refuses
+// one at geometry.mesh all the same.
+TEST(AirframeCompile, AnInsideOutMeshIsRefusedBeforeTheCompile) {
+    spade::MeshInput in = box_input(glm::dvec3(0.0), kCanopySides);
+    for (std::size_t t = 0; t < in.indices.size(); t += 3) std::swap(in.indices[t + 1], in.indices[t + 2]);
+    const auto m = spade::make_mesh(in, "inside out");
+    ASSERT_FALSE(m.has_value());
+    EXPECT_TRUE(mentions(m.error().context, "inside out")) << m.error().context;
+}
+
+// ===========================================================================
+// MASS FROM A MESH, Task M2. The compile RESOLVES a mesh record, before
+// composite_inertia() runs, into an explicit record: mass rho V; centre of
+// mass the record's pose applied to the mesh's centroid, placement + R c;
+// PartShape::tensor rho I_centroid in the record's local frame; orientation
+// the record's. Its part sits at the record's PLACEMENT, never at its centre
+// of mass (Physics' frame trap), carrying the mesh and the declared
+// min_feature. The expectations are A4's analytic box records of the same
+// mass and sides, and closed forms (TD-4).
+// ===========================================================================
+
+namespace {
+
+const glm::dquat kIdentity(1.0, 0.0, 0.0, 0.0);
+
+// The analytic twin of the box mesh [0, sides] placed at (position,
+// orientation): a box record of mass rho V, centred where that mesh's
+// centroid lands, position + R sides / 2, and turned as the mesh is.
+[[nodiscard]] PartInertia box_twin(glm::dvec3 sides, double density, glm::dvec3 position,
+                                   glm::dquat orientation = glm::dquat(1.0, 0.0, 0.0, 0.0),
+                                   std::string name = "canopy") {
+    const glm::dvec3 centre = position + glm::mat3_cast(glm::normalize(orientation)) * (0.5 * sides);
+    PartInertia p = make_part(PartShape::box, density * (sides.x * sides.y * sides.z), centre, sides, orientation);
+    p.geometry = PartGeometrySpec{.source = GeometrySource::inertia_shape, .name = std::move(name), .role = "body"};
+    return p;
+}
+
+// B3's bound (tests/test_mesh_mass.cpp, kRel): a mesh's tensor is within
+// 1e-15 of its trace of the exact one. Summed into the composite, the
+// difference is within 1e-15 of the composite's trace.
+constexpr double kMeshRel = 1e-15;
+
+// Two compiles' bodies agree. The composite's double tensor (about the centre
+// of mass, design frame) within kMeshRel of its trace; and its float outputs,
+// each rounded once from double, bit for bit when `bit_exact`, else within a
+// few float ulps.
+void expect_same_body(const CompiledAirframe& got, const CompiledAirframe& want, bool bit_exact,
+                      const std::string& what) {
+    const CompositeInertia& a = got.inertia;
+    const CompositeInertia& b = want.inertia;
+    const double trace = b.inertia_design[0][0] + b.inertia_design[1][1] + b.inertia_design[2][2];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            EXPECT_NEAR(a.inertia_design[i][j], b.inertia_design[i][j], kMeshRel * trace)
+                << what << ": inertia [" << i << "][" << j << "]";
+        }
+    }
+    if (bit_exact) {
+        EXPECT_EQ(std::bit_cast<uint32_t>(a.mass), std::bit_cast<uint32_t>(b.mass)) << what;
+        EXPECT_TRUE(same_bits(a.center_of_mass, b.center_of_mass)) << what;
+        EXPECT_TRUE(same_bits(a.principal_moments, b.principal_moments)) << what;
+        EXPECT_TRUE(same_bits(a.design_to_body, b.design_to_body)) << what;
+        EXPECT_TRUE(same_bits(got.model.body.inertia_diag, want.model.body.inertia_diag)) << what;
+        EXPECT_TRUE(same_bits(got.model.com_offset, want.model.com_offset)) << what;
+        return;
+    }
+    EXPECT_NEAR(a.mass, b.mass, 1e-6f * b.mass) << what;
+    for (int k = 0; k < 3; ++k) {
+        EXPECT_NEAR(a.center_of_mass[k], b.center_of_mass[k], 1e-7f) << what << ": centre of mass " << k;
+        EXPECT_NEAR(a.principal_moments[k], b.principal_moments[k], 1e-6f * b.principal_moments[k])
+            << what << ": moment " << k;
+    }
+    // q and -q are one rotation.
+    EXPECT_NEAR(std::abs(glm::dot(a.design_to_body, b.design_to_body)), 1.0f, 1e-6f) << what;
+}
+
+// A design-frame point of a compiled model, in the world, the body posed at b.
+[[nodiscard]] glm::vec3 world_of(const ModelType& m, const spade::BodyState& b, const glm::dvec3& design) {
+    const glm::quat q = m.design_to_principal;
+    const glm::dmat3 r_bd = glm::mat3_cast(glm::dquat(q.w, q.x, q.y, q.z));
+    const glm::dvec3 body = r_bd * (design - glm::dvec3(m.com_offset));
+    return b.pos + b.orient * glm::vec3(body);
+}
+
+// Every issue's place and message, for a failure's note.
+[[nodiscard]] std::string listed(const std::vector<AirframeIssue>& issues) {
+    std::string out;
+    for (const AirframeIssue& i : issues) {
+        out += i.kind + "[" + std::to_string(i.index) + "]." + i.field + ": " + i.message + "; ";
+    }
+    return out;
+}
+
+// Every triangle reversed: as a shell inside another, a cavity.
+[[nodiscard]] spade::MeshInput flipped(spade::MeshInput m) {
+    for (std::size_t t = 0; t < m.indices.size(); t += 3) std::swap(m.indices[t + 1], m.indices[t + 2]);
+    return m;
+}
+
+// `a` then `b` as one input. The fixtures joined here share no position.
+[[nodiscard]] spade::MeshInput joined(const spade::MeshInput& a, const spade::MeshInput& b) {
+    spade::MeshInput m = a;
+    const uint32_t base = static_cast<uint32_t>(a.positions.size());
+    m.positions.insert(m.positions.end(), b.positions.begin(), b.positions.end());
+    for (const uint32_t i : b.indices) m.indices.push_back(base + i);
+    return m;
+}
+
+// The reference quad's own records (the canopy record carries no mass, so
+// it adds nothing): their mass, 0.526 kg, and their moment, sum m p, in the
+// design frame. Its motors are tractors, 0.009 below their hubs.
+constexpr double kQuadMass = 0.526;
+
+[[nodiscard]] glm::dvec3 quad_moment() {
+    const AirframeSpec s = reference_quad();
+    std::vector<glm::dvec3> motors;
+    for (const RotorSpec& r : s.rotors) motors.push_back(r.hub.position - glm::dvec3(0.0, 0.009, 0.0));
+    return kQuadMass * centre_of_mass(s, motors);
+}
+
+// A glTF 2.0 document, as text: the unit cube [0, 1]^3, one mesh, under one
+// node with this translation and scale, its buffer a base64 data: URI. B6
+// bakes the node's transform into the positions: T + S p.
+[[nodiscard]] std::string scaled_cube_gltf(glm::dvec3 translation, glm::dvec3 scale) {
+    std::vector<std::byte> bin;
+    const auto put = [&bin](uint32_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i) bin.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+    };
+    for (uint32_t v = 0; v < 8; ++v) {
+        for (const uint32_t bit : {v & 1u, (v >> 1) & 1u, (v >> 2) & 1u}) {
+            put(std::bit_cast<uint32_t>(static_cast<float>(bit)), 4);
+        }
+    }
+    for (const auto& t : kBoxTriangles) {
+        for (const uint32_t i : t) put(i, 2);
+    }
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string base64;
+    for (std::size_t i = 0; i < bin.size(); i += 3) {
+        uint32_t n = std::to_integer<uint32_t>(bin[i]) << 16;
+        if (i + 1 < bin.size()) n |= std::to_integer<uint32_t>(bin[i + 1]) << 8;
+        if (i + 2 < bin.size()) n |= std::to_integer<uint32_t>(bin[i + 2]);
+        base64 += kAlphabet[(n >> 18) & 63u];
+        base64 += kAlphabet[(n >> 12) & 63u];
+        base64 += i + 1 < bin.size() ? kAlphabet[(n >> 6) & 63u] : '=';
+        base64 += i + 2 < bin.size() ? kAlphabet[n & 63u] : '=';
+    }
+    const auto number = [](double x) {
+        char buf[32];
+        const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), x);
+        return std::string(buf, r.ptr);
+    };
+    const auto triple = [&number](glm::dvec3 v) {
+        return "[" + number(v.x) + "," + number(v.y) + "," + number(v.z) + "]";
+    };
+    return R"({"asset":{"version":"2.0"},)"
+           R"("buffers":[{"byteLength":168,"uri":"data:application/octet-stream;base64,)" +
+           base64 +
+           R"("}],)"
+           R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},)"
+           R"({"buffer":0,"byteOffset":96,"byteLength":72}],)"
+           R"("accessors":[{"bufferView":0,"componentType":5126,"count":8,"type":"VEC3"},)"
+           R"({"bufferView":1,"componentType":5123,"count":36,"type":"SCALAR"}],)"
+           R"("meshes":[{"name":"cube","primitives":[{"attributes":{"POSITION":0},"indices":1}]}],)"
+           R"("nodes":[{"name":"canopy","mesh":0,"translation":)" +
+           triple(translation) + R"(,"scale":)" + triple(scale) +
+           R"(}],)"
+           R"("scenes":[{"nodes":[0]}],"scene":0})";
+}
+
+}  // namespace
+
+// The canopy, 2^-15 m^3 of 1250 kg/m^3, as a mesh record and as the analytic
+// box record of the same mass and sides. Its sides are dyadic, so the mesh's
+// volume and centroid are exact, and so is the twin's mass. Eberly divides
+// the second moments by 60 and the box formula by 12, each rounding once, so
+// the two tensors agree within B3's bound, not bit for bit; the composite's
+// float outputs, each rounded once from double, agree bit for bit.
+TEST(AirframeCompile, AMeshBoxWeighsAsTheAnalyticBox) {
+    const auto mesh = compile_airframe(quad_with_canopy());
+    AirframeSpec twin_spec = with_drag(reference_quad());
+    twin_spec.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
+    const auto twin = compile_airframe(twin_spec);
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    const double v = kCanopySides.x * kCanopySides.y * kCanopySides.z;
+    ASSERT_EQ(v, 0x1p-15);
+    EXPECT_NEAR(mesh->model.body.mass, kQuadMass + kCanopyDensity * v, 1e-6);
+    expect_same_body(*mesh, *twin, true, "the canopy");
+    EXPECT_EQ(mesh->fit.mass_and_inertia, Provenance::from_parts);
+
+    // The part, and on its mesh the volume P2 reads: computed once, exact here.
+    const ModelType& m = mesh->model;
+    EXPECT_TRUE(m.issues().empty());
+    ASSERT_EQ(m.parts.size(), 11u) << "the frame, four arms, the canopy, four motors, the battery";
+    const PartDesc& canopy = m.parts[5];
+    EXPECT_EQ(canopy.name, "canopy");
+    EXPECT_EQ(canopy.role, "body");
+    ASSERT_NE(canopy.mesh, nullptr);
+    EXPECT_EQ(canopy.mesh->mass_properties().volume, v);
+}
+
+// THE FRAME TRAP (Physics). The canopy's origin is a corner, so its centroid
+// is R sides / 2 from its placement. Turned off every axis and moved, the
+// mesh record weighs as its twin centred on that centroid, and its PART sits
+// at the placement, carrying the mesh, so the posed part's surface is the
+// twin's box: sample_parts() agrees at the centre and two millimetres off
+// each face and a corner.
+TEST(AirframeCompile, AMeshPartSitsAtItsPlacementAndWeighsAtItsCentroid) {
+    const glm::dquat turn = glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25));
+    const glm::dvec3 at(-0.02, 0.04, 0.01);
+    AirframeSpec s = with_drag(reference_quad());
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, at, turn));
+    AirframeSpec t = with_drag(reference_quad());
+    t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, at, turn));
+    const auto mesh = compile_airframe(s);
+    const auto twin = compile_airframe(t);
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    expect_same_body(*mesh, *twin, false, "a turned canopy");
+
+    // The part: at the PLACEMENT, turned as the record, never at the centre
+    // of mass, R sides / 2 (about 36 mm) away.
+    const ModelType& m = mesh->model;
+    ASSERT_EQ(m.parts.size(), 11u);
+    const PartDesc& part = m.parts[5];
+    EXPECT_EQ(part.name, "canopy");
+    EXPECT_EQ(part.mesh, s.parts[5].geometry.mesh) << "the record's mesh, shared";
+    EXPECT_TRUE(part.shape.nodes.empty()) << "a mesh part has no SdfProgram";
+    EXPECT_EQ(part.attach, PartAttach::body);
+    EXPECT_EQ(part.surface.kind, PartSurface::Kind::wall);
+    EXPECT_EQ(part.min_feature, 0.004f) << "declared, not measured";
+    expect_near(to_design(m, part.mount_pos), at, 1e-7, "the canopy part's origin");
+    const glm::quat q_bd = m.design_to_principal;
+    const glm::quat want_orient = q_bd * glm::quat(static_cast<float>(turn.w), static_cast<float>(turn.x),
+                                                   static_cast<float>(turn.y), static_cast<float>(turn.z));
+    EXPECT_NEAR(std::abs(glm::dot(part.mount_orient, want_orient)), 1.0f, 1e-6f);
+    const glm::dmat3 r = glm::mat3_cast(turn);
+    const glm::dvec3 half = 0.5 * kCanopySides;
+    const glm::dvec3 centre = at + r * half;
+    EXPECT_GT(glm::length(to_design(m, part.mount_pos) - centre), 0.03) << "the trap: not at the centre of mass";
+
+    // Posed, the mesh part is the twin's box.
+    spade::BodyState b{};
+    b.pos = glm::vec3(0.5f, 1.0f, -0.25f);
+    b.orient = glm::normalize(glm::quat(0.70710678f, 0.0f, 0.70710678f, 0.0f));
+    const auto posed = posed_parts(m, b, {}, {}, PartFilter::all);
+    const auto posed_twin = posed_parts(twin->model, b, {}, {}, PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    ASSERT_TRUE(posed_twin.has_value()) << posed_twin.error().context;
+    const double d = 0.002;
+    const std::array<glm::dvec3, 8> probes = {
+        glm::dvec3(0.0),
+        glm::dvec3(half.x + d, 0.0, 0.0),
+        glm::dvec3(-half.x - d, 0.0, 0.0),
+        glm::dvec3(0.0, half.y + d, 0.0),
+        glm::dvec3(0.0, -half.y - d, 0.0),
+        glm::dvec3(0.0, 0.0, half.z + d),
+        glm::dvec3(0.0, 0.0, -half.z - d),
+        half + glm::dvec3(d),
+    };
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        const glm::vec3 x = world_of(m, b, centre + r * probes[i]);
+        const PartSample got = sample_parts(m, *posed, x);
+        const PartSample want = sample_parts(twin->model, *posed_twin, x);
+        EXPECT_NEAR(got.distance, want.distance, 2e-6f) << "probe " << i;
+        EXPECT_EQ(got.owner, 5u) << "probe " << i << ": the canopy";
+        EXPECT_EQ(want.owner, 5u) << "probe " << i << ": the twin";
+        EXPECT_EQ(got.surface, PartSurface::Kind::wall) << "probe " << i;
+    }
+    EXPECT_NEAR(sample_parts(m, *posed, world_of(m, b, centre)).distance, -half.y, 2e-6)
+        << "the centre, the smallest half side inside";
+    EXPECT_NEAR(sample_parts(m, *posed, world_of(m, b, centre + r * probes[7])).distance, std::sqrt(3.0) * d, 2e-6)
+        << "a corner, 2 mm out along each axis";
+}
+
+// The centre of mass moves with the record's pose, by the closed form: the
+// reference quad's moment plus rho V at placement + R c, c = sides / 2 here,
+// over the total mass. Taking the placement for the centre of mass (the
+// trap) would be off by about 2.4 mm.
+TEST(AirframeCompile, TheCentreOfMassMovesWithTheMeshRecordsPose) {
+    const double h = 0.7071067811865476;  // sqrt(1/2)
+    const double mass = kCanopyDensity * kCanopySides.x * kCanopySides.y * kCanopySides.z;
+    const glm::dvec3 c = 0.5 * kCanopySides;
+    struct Pose {
+        glm::dvec3 at;
+        glm::dquat q;
+        const char* what;
+    };
+    const std::array<Pose, 4> poses = {{
+        {kCanopyPlacement, kIdentity, "on the frame"},
+        {kCanopyPlacement + glm::dvec3(0.01, 0.02, -0.03), kIdentity, "moved"},
+        {kCanopyPlacement, glm::dquat(h, 0.0, h, 0.0), "a quarter turn about +Y"},
+        {glm::dvec3(-0.02, 0.04, 0.01), glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25)), "moved and turned"},
+    }};
+    const glm::dvec3 moment = quad_moment();
+    for (const Pose& p : poses) {
+        AirframeSpec s = with_drag(reference_quad());
+        s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, p.at, p.q));
+        const auto compiled = compile_airframe(s);
+        ASSERT_TRUE(compiled.has_value()) << p.what << ": " << compiled.error().context;
+        const glm::dvec3 com = (moment + mass * (p.at + glm::mat3_cast(glm::normalize(p.q)) * c)) / (kQuadMass + mass);
+        expect_near(glm::dvec3(compiled->model.com_offset), com, 1e-7, p.what);
+        const glm::dvec3 trap = (moment + mass * p.at) / (kQuadMass + mass);
+        EXPECT_GT(glm::length(com - trap), 2e-3) << p.what << ": the test tells the two apart";
+    }
+}
+
+// A cavity subtracts. The canopy with a box cavity off its centre, an inward
+// shell: its mass, centre of mass and inertia are the outer box's less the
+// cavity's, by the closed form about the composite's centre of mass (the
+// reference quad's tensor moved there by the parallel-axis rule, the outer
+// box's added, the cavity's taken off). The closed form sums in another
+// order than the compile, so the tensor agrees within 1e-12 of its trace;
+// the cavity's own share is about 1e-6 kg m^2, so a cavity added rather than
+// taken off fails by far.
+TEST(AirframeCompile, AMeshCavitySubtracts) {
+    const glm::dvec3 cavity_lo(0.03125, 0.00390625, 0.0078125);
+    const glm::dvec3 cavity_sides(0.015625, 0.0078125, 0.015625);
+    const MeshPtr hollow = mesh_of(joined(box_input(glm::dvec3(0.0), kCanopySides),
+                                          flipped(box_input(cavity_lo, cavity_sides))));
+    ASSERT_NE(hollow, nullptr);
+    ASSERT_EQ(hollow->shell_count(), 2u);
+    AirframeSpec s = with_drag(reference_quad());
+    s.parts.push_back(mesh_record(hollow, kCanopyDensity, kCanopyPlacement));
+    const auto compiled = compile_airframe(s);
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    const auto quad = compile_airframe(reference_quad());
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+
+    const auto box_tensor = [](double mass, glm::dvec3 sides) {
+        glm::dmat3 i(0.0);
+        i[0][0] = mass * (sides.y * sides.y + sides.z * sides.z) / 12.0;
+        i[1][1] = mass * (sides.x * sides.x + sides.z * sides.z) / 12.0;
+        i[2][2] = mass * (sides.x * sides.x + sides.y * sides.y) / 12.0;
+        return i;
+    };
+    const auto moved = [](const glm::dmat3& about_own_centre, double mass, glm::dvec3 d) {
+        return about_own_centre + mass * (glm::dot(d, d) * glm::dmat3(1.0) - glm::outerProduct(d, d));
+    };
+    const double m_out = kCanopyDensity * (kCanopySides.x * kCanopySides.y * kCanopySides.z);
+    const double m_in = kCanopyDensity * (cavity_sides.x * cavity_sides.y * cavity_sides.z);
+    const glm::dvec3 c_out = kCanopyPlacement + 0.5 * kCanopySides;
+    const glm::dvec3 c_in = kCanopyPlacement + cavity_lo + 0.5 * cavity_sides;
+    const double total = kQuadMass + m_out - m_in;
+    const glm::dvec3 com = (quad_moment() + m_out * c_out - m_in * c_in) / total;
+    const glm::dvec3 quad_com = quad_moment() / kQuadMass;
+    const glm::dmat3 want = moved(quad->inertia.inertia_design, kQuadMass, quad_com - com) +
+                            moved(box_tensor(m_out, kCanopySides), m_out, c_out - com) -
+                            moved(box_tensor(m_in, cavity_sides), m_in, c_in - com);
+
+    EXPECT_NEAR(compiled->model.body.mass, total, 1e-6);
+    expect_near(glm::dvec3(compiled->model.com_offset), com, 1e-7, "the hollow canopy's centre of mass");
+    const glm::dmat3& got = compiled->inertia.inertia_design;
+    const double trace = want[0][0] + want[1][1] + want[2][2];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            EXPECT_NEAR(got[i][j], want[i][j], 1e-12 * trace) << "[" << i << "][" << j << "]";
+        }
+    }
+    EXPECT_EQ(hollow->mass_properties().volume,
+              kCanopySides.x * kCanopySides.y * kCanopySides.z - cavity_sides.x * cavity_sides.y * cavity_sides.z)
+        << "the volume P2 reads is the solid's, the cavity taken off";
+}
+
+// Two mesh parts add: the canopy and a camera, each against its analytic
+// twin, two parts in record order, each at its own placement.
+TEST(AirframeCompile, TwoMeshPartsAdd) {
+    const glm::dvec3 camera_sides(0.015625, 0.015625, 0.0234375);
+    const glm::dvec3 camera_at(0.0625, -0.0078125, -0.01171875);
+    const double camera_density = 2700.0;
+    AirframeSpec s = quad_with_canopy();
+    s.parts.push_back(mesh_record(mesh_of(box_input(glm::dvec3(0.0), camera_sides)), camera_density, camera_at,
+                                  kIdentity, "camera"));
+    AirframeSpec t = with_drag(reference_quad());
+    t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
+    t.parts.push_back(box_twin(camera_sides, camera_density, camera_at, kIdentity, "camera"));
+    const auto mesh = compile_airframe(s);
+    const auto twin = compile_airframe(t);
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    expect_same_body(*mesh, *twin, true, "the canopy and the camera");
+
+    const ModelType& m = mesh->model;
+    ASSERT_EQ(m.parts.size(), 12u);
+    EXPECT_EQ(m.parts[5].name, "canopy");
+    EXPECT_EQ(m.parts[6].name, "camera");
+    expect_near(to_design(m, m.parts[5].mount_pos), kCanopyPlacement, 1e-7, "the canopy's origin");
+    expect_near(to_design(m, m.parts[6].mount_pos), camera_at, 1e-7, "the camera's origin");
+    EXPECT_EQ(m.parts[6].mesh, s.parts[6].geometry.mesh);
+}
+
+// Scale (B6). The record and the part pose carry none: B6 bakes every node
+// transform, scale included, into the mesh's positions, so a scaled glTF
+// node weighs as its baked solid. The unit cube under a node scaled to the
+// canopy's sides and moved to its placement weighs as the canopy (38 g),
+// not as a unit cube of 1250 kg; its record is placed at the identity, the
+// node's transform being in the mesh.
+TEST(AirframeCompile, AScaledGltfNodeWeighsAsItsBakedGeometry) {
+    const std::string text = scaled_cube_gltf(kCanopyPlacement, kCanopySides);
+    std::vector<std::byte> bytes(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) bytes[i] = static_cast<std::byte>(text[i]);
+    const auto objects = spade::read_gltf_bytes(bytes, {});
+    ASSERT_TRUE(objects.has_value()) << objects.error().context;
+    ASSERT_EQ(objects->size(), 1u);
+    const MeshPtr baked = (*objects)[0].mesh;
+    ASSERT_NE(baked, nullptr);
+    const double v = kCanopySides.x * kCanopySides.y * kCanopySides.z;
+    EXPECT_EQ(baked->mass_properties().volume, v) << "the scaled solid's volume, exact (dyadic)";
+
+    AirframeSpec s = with_drag(reference_quad());
+    s.parts.push_back(mesh_record(baked, kCanopyDensity, glm::dvec3(0.0)));
+    AirframeSpec t = with_drag(reference_quad());
+    t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
+    const auto mesh = compile_airframe(s);
+    const auto twin = compile_airframe(t);
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    EXPECT_NEAR(mesh->model.body.mass, kQuadMass + kCanopyDensity * v, 1e-6);
+    expect_same_body(*mesh, *twin, true, "the baked canopy");
+}
+
+// A mesh record's part takes the model's rules like any part: a name the
+// battery block's part repeats is listed at the record.
+TEST(AirframeCompile, AMeshRecordsPartTakesTheModelsRules) {
+    AirframeSpec s = quad_with_canopy();
+    s.parts[5].geometry.name = "battery";
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "geometry.name"));
+}
+
+// A mesh record's bad pose is one issue, at the record's own field: a zero
+// orientation leaves its centre of mass at its placement (no NaN is made
+// from it), and a non-finite placement is the position's.
+TEST(AirframeCompile, AMeshRecordsBadPoseIsOneIssue) {
+    AirframeSpec s = quad_with_canopy();
+    s.parts[5].orientation = glm::dquat(0.0, 0.0, 0.0, 0.0);
+    std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "orientation"));
+
+    s = quad_with_canopy();
+    s.parts[5].position.x = std::numeric_limits<double>::quiet_NaN();
+    issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "position"));
+}
+
+// ===========================================================================
+// PHYSICS' DRAG RULE (2026-10-13). With no DragSpec the drag is estimated
+// from the records' inertia shapes, and a mesh record has none; yet its
+// solid is real external area, unlike a point or a tensor record. So with no
+// DragSpec, any mesh record among the drag sources refuses the estimate
+// (L6): one issue at drag, naming the first mesh record, "(and N more)" for
+// the rest. A DragSpec clears it.
+// ===========================================================================
+
+// A mixed airframe, the reference quad's analytic frame, arms, motors and
+// battery plus the mesh canopy, with no DragSpec: refused at drag, naming
+// the canopy. The same airframe with a DragSpec compiles.
+TEST(AirframeCompile, AMixedAirframeWithoutADragSpecIsRefusedAtDrag) {
+    AirframeSpec s = quad_with_canopy();
+    s.drag.clear();
+    std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(mentions(issues[0].message, "none given, and part 'canopy' is a mesh, whose area the estimate "
+                                            "cannot see: give a DragSpec (zero coefficients for none)"))
+        << issues[0].message;
+    EXPECT_FALSE(mentions(issues[0].message, "more)")) << "one mesh record";
+    const auto refused = compile_airframe(s);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(mentions(refused.error().context, "drag[0]: none given, and part 'canopy' is a mesh"))
+        << refused.error().context;
+
+    // In the one call that lists everything, beside the record's own fault.
+    s.parts[5].geometry.density = 0.0;
+    issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 2u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "geometry.density"));
+
+    const auto given = compile_airframe(quad_with_canopy());
+    ASSERT_TRUE(given.has_value()) << given.error().context;
+    EXPECT_EQ(given->fit.drag, Provenance::given);
+}
+
+// An all-mesh airframe: three mesh records, the blocks unshaped. The same
+// rule, one issue, naming the first mesh record and counting the rest; with
+// a DragSpec it compiles.
+TEST(AirframeCompile, AnAllMeshAirframeWithoutADragSpecNamesTheFirstMesh) {
+    AirframeSpec s = reference_quad();
+    s.parts.clear();
+    s.motor.shape.reset();
+    s.battery.shape.reset();
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, glm::dvec3(-0.03125, -0.0078125, -0.015625),
+                                  kIdentity, "frame"));
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, glm::dvec3(0.03125, -0.0078125, -0.015625),
+                                  kIdentity, "arm"));
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, kCanopyPlacement, kIdentity, "lid"));
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(mentions(issues[0].message, "none given, and part 'frame' is a mesh (and 2 more), whose area "
+                                            "the estimate cannot see: give a DragSpec (zero coefficients for none)"))
+        << issues[0].message;
+
+    s.drag.push_back(DragSpec{});
+    EXPECT_TRUE(check_airframe(s).empty()) << listed(check_airframe(s));
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->model.parts.size(), 3u) << "three mesh parts; the blocks are unshaped";
+}
+
+// THE TENSOR'S CONVENTION, END TO END (Physics' ask, 2026-10-13). A box's
+// tensor is diagonal in its own axes; a corner tetrahedron's is not. The
+// tetrahedron (0, s e_x, s e_y, s e_z), s = 1/16, has volume s^3 / 6 and
+// centroid s/4 (1, 1, 1), and about the centroid, per unit density, s^5/80
+// on the diagonal and +s^5/480 off it: minus the integral of xy, which is
+// -s^5/480 there (tests/test_mesh_mass.cpp's ACornerTetrahedronIsShiftedTo
+// ItsCentroid works it by hand). As a mesh record it compiles to the body of
+// a hand-entered PartShape::tensor record of the same mass, centre and
+// textbook tensor times rho, so a product of the wrong sign, or a tensor
+// read in the wrong frame, fails the compile here, not only in mesh_mass.
+// Unturned, the composite's float outputs agree bit for bit; turned off
+// every axis, within a few float ulps; the double tensor within B3's bound
+// either way.
+TEST(AirframeCompile, AMeshTensorWithProductsCompilesAsTheTextbookTensor) {
+    const double s = 0.0625;
+    spade::MeshInput in;
+    in.unit = spade::MeshUnit::metre;
+    in.positions = {glm::dvec3(0.0), glm::dvec3(s, 0.0, 0.0), glm::dvec3(0.0, s, 0.0), glm::dvec3(0.0, 0.0, s)};
+    in.indices = {0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3};
+    const MeshPtr tetrahedron = mesh_of(in);
+    ASSERT_NE(tetrahedron, nullptr);
+    const double s5 = s * s * s * s * s;
+    glm::dmat3 textbook(0.0);
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) textbook[i][j] = i == j ? s5 / 80.0 : s5 / 480.0;
+    }
+
+    const glm::dvec3 at(0.03125, 0.015625, -0.03125);
+    struct Case {
+        glm::dquat q;
+        bool bit_exact;
+        const char* what;
+    };
+    const std::array<Case, 2> cases = {{
+        {kIdentity, true, "unturned"},
+        {glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25)), false, "turned off every axis"},
+    }};
+    for (const Case& c : cases) {
+        AirframeSpec mesh_spec = with_drag(reference_quad());
+        mesh_spec.parts.push_back(mesh_record(tetrahedron, kCanopyDensity, at, c.q, "wedge"));
+        PartInertia hand;
+        hand.mass = kCanopyDensity * (s * s * s / 6.0);
+        hand.position = at + glm::mat3_cast(glm::normalize(c.q)) * glm::dvec3(s / 4.0);
+        hand.orientation = c.q;
+        hand.shape = PartShape::tensor;
+        hand.tensor = kCanopyDensity * textbook;
+        hand.geometry = PartGeometrySpec{.source = GeometrySource::none, .name = "wedge", .role = {}};
+        AirframeSpec hand_spec = with_drag(reference_quad());
+        hand_spec.parts.push_back(hand);
+
+        const auto mesh = compile_airframe(mesh_spec);
+        const auto want = compile_airframe(hand_spec);
+        ASSERT_TRUE(mesh.has_value()) << c.what << ": " << mesh.error().context;
+        ASSERT_TRUE(want.has_value()) << c.what << ": " << want.error().context;
+        // The wedge gives the composite products of inertia (the reference
+        // quad alone has none); its own, about 2.5e-6 kg m^2, are far above
+        // the tolerance, so their sign is pinned.
+        ASSERT_GT(std::abs(want->inertia.inertia_design[0][1]), 1e-8) << c.what;
+        expect_same_body(*mesh, *want, c.bit_exact, c.what);
     }
 }

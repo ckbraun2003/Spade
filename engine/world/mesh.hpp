@@ -112,6 +112,13 @@
 // position's x, y, z as IEEE-754 float bits (u32), then every index (u32), all
 // little-endian. It is computed once, at make_mesh(). It is what the YAML
 // names a mesh by, and what vehicles::parts_identity() folds for a mesh part.
+//
+// THE MASS PROPERTIES (the mass-from-mesh plan): make_mesh() calls
+// mesh_mass_properties() (world/mesh_mass.hpp, the one function that computes
+// them, TD-9) once on the mesh it built, and the mesh keeps the result, per
+// unit density. Every reader takes them from mass_properties(), and nothing
+// recomputes them. They are derived from the positions and indices, so the
+// content hash does not fold them: it already covers them.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
@@ -120,6 +127,7 @@
 #include <string_view>
 #include <vector>
 
+#include <glm/mat3x3.hpp>
 #include <glm/vec3.hpp>
 
 #include "core/error.hpp"
@@ -155,6 +163,17 @@ struct MeshInput {
 };
 
 class TriangleMesh;
+
+// A mesh's volume, centroid and inertia PER UNIT DENSITY: what
+// mesh_mass_properties() returns (world/mesh_mass.hpp has the contract and
+// the conventions) and what a TriangleMesh keeps. Defined here, beside the
+// mesh that holds it, so this header needs no include of mesh_mass.hpp (which
+// includes this one).
+struct MeshMassProperties {
+    double volume = 0.0;       // m^3, > 0 for every mesh make_mesh() returns
+    glm::dvec3 centroid{0.0};  // m, the mesh frame
+    glm::dmat3 inertia{0.0};   // m^5: per unit density, about the centroid, mesh frame
+};
 
 // Builds a mesh, or refuses it (the list above). `name` prefixes every
 // message: "<name>: 3 open edges, first (4, 9) (9, 12) ...".
@@ -210,6 +229,8 @@ public:
     [[nodiscard]] uint32_t shell_count() const noexcept { return shell_count_; }
     // FNV-1a 64, spelt as the header comment says.
     [[nodiscard]] uint64_t content_hash() const noexcept { return content_hash_; }
+    // mesh_mass_properties() of this mesh, computed once, at make_mesh().
+    [[nodiscard]] const MeshMassProperties& mass_properties() const noexcept { return mass_properties_; }
 
 private:
     friend Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input,
@@ -228,6 +249,7 @@ private:
     std::vector<uint32_t> triangle_shell_;
     uint32_t shell_count_ = 0;
     uint64_t content_hash_ = 0;
+    MeshMassProperties mass_properties_{};
 
     // Derived at make_mesh() and never stored: unit pseudonormals, rounded
     // to fp32 once, and the two-level BVH.
