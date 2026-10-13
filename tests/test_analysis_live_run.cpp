@@ -19,6 +19,8 @@
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "scene/scene_file.hpp"
+#include "sim/design_frame.hpp"
+#include "state/layout.hpp"
 #include "vehicles/model_identity.hpp"
 
 namespace {
@@ -181,6 +183,28 @@ TEST(AnalysisLiveRun, TheHoldTurnsAtItsRate) {
     const an::Controls all{false, 0.0f, 10.0f, -20.0f, 30.0f};
     for (int i = 0; i < 300; ++i) ASSERT_TRUE(run.step(all).has_value());
     EXPECT_LT(quat_gap(run.state().attitude, attitude(30, 10, -20)), 1e-6f);
+}
+
+// The held body row, as Core's posed_parts() takes it, for drawing the solid
+// drone (Rendering's bind_parts): through the model's design frame it is the
+// hold itself, at the box's centre, at rest but for the turn.
+TEST(AnalysisLiveRun, ExposesTheHeldBody) {
+    const spade::vehicles::ModelType m = rotorless();
+    an::LiveRun run = started(tiny_case(m), m);
+    const auto design = [&] {
+        const spade::BodyState& b = run.body();
+        return spade::to_design_state(spade::FrameState{b.pos, b.orient, b.vel, b.omega_body},
+                                      glm::normalize(m.design_to_principal), m.com_offset);
+    };
+    EXPECT_LT(glm::length(design().pos), 1e-6f);
+    an::Controls turn{};
+    turn.roll_deg = 30.0f;
+    for (int i = 0; i < 10; ++i) ASSERT_TRUE(run.step(turn).has_value());
+    const spade::FrameState held = design();
+    EXPECT_LT(glm::length(held.pos), 1e-6f);
+    EXPECT_LT(glm::length(held.vel), 1e-6f);
+    EXPECT_LT(quat_gap(held.orient, run.state().attitude), 1e-6f);
+    EXPECT_LT(glm::length(held.omega - run.state().omega_body), 1e-4f);
 }
 
 // Wind blows through the box; still air stays still with the rotors stopped.
