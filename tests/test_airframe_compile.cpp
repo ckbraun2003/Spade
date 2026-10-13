@@ -178,6 +178,19 @@ TEST(AirframeCompile, CompilesAReferenceQuad) {
     EXPECT_TRUE(check_airframe(reference_quad()).empty());
 }
 
+// RotorSpec::pusher (the lead's ruling, 2026-10-12): a rotor is a tractor
+// unless it says otherwise, and an airframe of pushers is a valid airframe.
+TEST(AirframeCompile, ARotorIsATractorUnlessItIsAPusher) {
+    EXPECT_FALSE(RotorSpec{}.pusher) << "the usual top-mounted multirotor prop";
+    AirframeSpec s = reference_quad();
+    for (const RotorSpec& r : s.rotors) EXPECT_FALSE(r.pusher);
+    for (RotorSpec& r : s.rotors) r.pusher = true;
+    EXPECT_TRUE(check_airframe(s).empty());
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->model.rotors.size(), 4u);
+}
+
 TEST(AirframeCompile, ASymmetricQuadKeepsItsAxesAndMovesMountsByTheCentreOfMass) {
     const AirframeSpec s = reference_quad();
     const auto c = compile_airframe(s);

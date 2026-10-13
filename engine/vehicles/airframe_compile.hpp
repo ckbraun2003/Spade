@@ -184,10 +184,21 @@ struct BatteryBlock {
 };
 
 // One rotor: its hub, thrust along local +Y, and its spin (+1, -1 or 0, as
-// RotorDesc::spin_dir). Declaration order is rotor order.
+// RotorDesc::spin_dir). Declaration order is rotor order. spin_dir is the
+// yaw torque's direction only, whatever `pusher` says.
 struct RotorSpec {
     MountPose hub;
     double spin_dir = 1.0;
+    // Which side of the propeller its motor sits on, along the thrust axis (the
+    // hub's +Y). false, a tractor: the propeller is on the thrust side and the
+    // motor behind it, toward -thrust (the usual top-mounted multirotor prop).
+    // true, a pusher: the motor is on the thrust side and the propeller behind it
+    // (a motor hung under the arm). It moves the motor's one record, mass and
+    // solid together, by half its extent along the thrust axis (TD-9). The
+    // rotor's thrust, torque, spin and hub (the prop's plane) are unchanged.
+    // Real props add a few mm of adapter and shaft between motor and prop; that
+    // gap is not modelled until the spec has a field for it.
+    bool pusher = false;
 };
 
 // A drag element, as DragBodyDesc but in the design frame. Componentwise
