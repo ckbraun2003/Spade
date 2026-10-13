@@ -61,7 +61,8 @@ inline constexpr std::size_t kMaxIsoSurfaces = 4;
 inline constexpr uint32_t kIsoBisections = 4;
 
 // One level set of one quantity. For the Q-criterion, iso on q_hat at
-// sqrt(Q0): no division, no transcendental.
+// sqrt(Q0): no division, no transcendental. For lambda2, iso on lambda2_hat
+// at -sqrt(L0), below zero: the cores lie on the side below it.
 struct IsoSurface {
     FlowQuantity quantity = FlowQuantity::q_hat;
     float value = 0.0f;              // the level, in the quantity's units

@@ -47,7 +47,10 @@ inline constexpr std::size_t kColourMapEntries = 256;
 [[nodiscard]] glm::vec3 colour_map_at(ColourMapId id, float t);
 
 // What a layer shows. speed is |(u, v, w)|; the rest are a channel each.
-enum class FlowQuantity : uint32_t { speed, u, v, w, dye, pressure, vorticity, q_hat };
+// lambda2_hat is sign(lambda2) sqrt(|lambda2|) (core/lambda2.hpp), below
+// zero in a vortex core. Quantity n > 0 reads FlowChannel n - 1; the GL
+// shaders rely on that order.
+enum class FlowQuantity : uint32_t { speed, u, v, w, dye, pressure, vorticity, q_hat, lambda2_hat };
 
 struct ExtinctionPoint {
     float value = 0.0f;  // in the quantity's units
