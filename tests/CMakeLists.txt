@@ -146,6 +146,7 @@ add_executable(spade_tests
     # spade::analysis: the drone CFD analysis's case, its file and resolving
     # it (INT-5, INT-6; interface/plans/2026-10-12-drone-builder-cfd-design.md).
     test_analysis_case.cpp
+    test_analysis_coefficients.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
