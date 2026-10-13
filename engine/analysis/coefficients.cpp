@@ -58,16 +58,18 @@ Result<std::vector<Coefficient>> rotor_coefficients(Convention convention, const
         out.push_back({"C_P", "C_P = P / (rho A (Omega R)^3), P = Q Omega (rotorcraft; equals C_Q)", cp});
         if (v == 0.0 && ct >= 0.0 && cp > 0.0) {
             out.push_back({"FM", "FM = C_T^(3/2) / (sqrt(2) C_P): ideal over actual power, in hover",
-                           std::pow(ct, 1.5) / (std::sqrt(2.0) * cp)});
+                           ct * std::sqrt(ct) / (std::sqrt(2.0) * cp)});
         }
     } else {
         const double n = omega / (2.0 * kPi);
         const double d = 2.0 * r;
-        const double ct = t / (rho * n * n * std::pow(d, 4));
-        const double cp = power / (rho * n * n * n * std::pow(d, 5));
+        const double d4 = d * d * d * d;  // products, not std::pow: no libm transcendental (TD-3)
+        const double d5 = d4 * d;
+        const double ct = t / (rho * n * n * d4);
+        const double cp = power / (rho * n * n * n * d5);
         const double j = v / (n * d);
         out.push_back({"C_T", "C_T = T / (rho n^2 D^4), n = Omega / (2 pi), D = 2 R (propeller)", ct});
-        out.push_back({"C_Q", "C_Q = Q / (rho n^2 D^5) (propeller)", q / (rho * n * n * std::pow(d, 5))});
+        out.push_back({"C_Q", "C_Q = Q / (rho n^2 D^5) (propeller)", q / (rho * n * n * d5)});
         out.push_back({"C_P", "C_P = P / (rho n^3 D^5), P = Q Omega (propeller; 2 pi C_Q)", cp});
         out.push_back({"J", "J = V / (n D): the advance ratio", j});
         if (v > 0.0 && cp > 0.0) {
