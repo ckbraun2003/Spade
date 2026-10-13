@@ -91,6 +91,7 @@
 #include "physics/integrator.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/rings.hpp"
+#include "set_body_state_support.hpp"
 #include "sim/simulation.hpp"
 #include "vehicles/model_type.hpp"
 #include "vehicles/quadrotor.hpp"
@@ -2264,6 +2265,45 @@ TEST_F(GpuParityTest, StructuralOpsAreCoveredTransitively) {
         << "the SensorSynthesis dispatch did nothing";
 }
 
+TEST_F(GpuParityTest, SetBodyStateForcesReupload) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+
+    const Result<WorldSetDesc> set = dirty_test_world_set(1, 0x5E7B0D1EULL);
+    ASSERT_TRUE(set.has_value()) << set.error().context;
+    Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+
+    BodySpawn body{};
+    body.pos = {0.0f, 10.0f, 0.0f};
+    const Result<spade::BodyRef> ref = sim->spawn(0, body);
+    ASSERT_TRUE(ref.has_value()) << ref.error().context;
+    ASSERT_TRUE(sim->step(1).has_value());
+    const uint64_t after_first = sim->vulkan_upload_count();
+    EXPECT_EQ(after_first, 1u);
+
+    // CONTROL.
+    ASSERT_TRUE(sim->step(1).has_value());
+    ASSERT_EQ(sim->vulkan_upload_count(), after_first);
+
+    // set_body_state() writes the body row straight into the arena, like
+    // apply_wrench(): unmarked, the device would step its own copy and the
+    // readback would erase the set.
+    const Result<void> placed = sim->set_body_state(*ref, glm::vec3(3.0f, 20.0f, -1.0f),
+                                                    glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
+                                                    glm::vec3(0.0f));
+    ASSERT_TRUE(placed.has_value()) << placed.error().context;
+    ASSERT_TRUE(sim->step(1).has_value());
+    EXPECT_EQ(sim->vulkan_upload_count(), after_first + 1)
+        << "set_body_state() between two steps must force exactly one re-upload";
+
+    // AND THE SET REACHED THE DEVICE: one 1 ms step from x = 3 at 1 m/s lands
+    // at x = 3.001. The device's own copy was at x = 0.
+    const Result<const spade::BodyState*> row = sim->body(*ref);
+    ASSERT_TRUE(row.has_value()) << row.error().context;
+    EXPECT_NEAR((*row)->pos.x, 3.001f, 1.0e-4f) << "the readback erased the set";
+    EXPECT_GT((*row)->pos.y, 19.0f) << "the readback erased the set";
+}
+
 // ===========================================================================
 // 8. RESTORE ON THE VULKAN PATH (S6 Task 6 review round 1, finding C1 -- the
 //    substantive half).
@@ -3642,4 +3682,104 @@ TEST_F(GpuBehaviorRefusal, VulkanStepRefusesAnAttachedBehaviorRegistry) {
     const Result<void> stepped = sim->step(1);
     ASSERT_TRUE(stepped.has_value()) << stepped.error().context;
     EXPECT_EQ(sim->tick().value, 1u);
+}
+
+// ===========================================================================
+// 14. set_body_state ON THE VULKAN PATH (docs/design/core/
+// 2026-10-13-set-body-state-design.md, section 6; the dirty-census case is in
+// section 7 above, SetBodyStateForcesReupload).
+// ===========================================================================
+
+// Test 2 on the device (Kat 2a): the Markov replay, exact against a Vulkan
+// original -- same-backend determinism -- with one upload for the set.
+TEST_F(GpuParityTest, SetBodyStateMarkovReplayIsExactOnVulkan) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    spade::test::expect_markov_replay_exact(BackendDesc{.kind = BackendKind::vulkan}, spade::test::MarkovCase{},
+                                            "vulkan, omega = 0");
+}
+
+// Test 10: CPU and GPU agree after a set, within the parity bands.
+//
+// restore_resume's experiment, reached through the setter instead of restore():
+// both legs run restore_resume's scenario with each body stilled at tick 0 (a
+// set to zero velocity and spin), so at tick 300 both are far from the
+// uninterrupted CPU reference; then each leg's bodies are set to the
+// reference's state at 300 and resumed to 700. From the set on, the GPU leg
+// continues from the CPU's exact state, as restore_resume's restored GPU does,
+// so restore_resume's measured bands are the bands. The CPU leg is the
+// reference, bit for bit (the Markov property), and the GPU leg uploads once
+// for the set: unmarked, it would carry on from its own stilled state.
+TEST_F(GpuParityTest, SetBodyStateCpuAndGpuAgreeWithinTheRestoreResumeBands) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    constexpr uint64_t kSetTick = 300;
+    constexpr uint64_t kFinalTick = 700;
+    constexpr uint32_t kWorlds = 2;
+    const Scenario resume = restore_resume_scenario();
+
+    Result<Simulation> reference = spade::testing::start_scenario(resume, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(reference.has_value()) << reference.error().context;
+    ASSERT_TRUE(spade::testing::advance_scenario(resume, *reference, kSetTick).has_value());
+    std::array<spade::BodyState, kWorlds> s{};
+    for (uint32_t w = 0; w < kWorlds; ++w) {
+        const Result<spade::BodyRef> ref = reference->body_ref_at(w, 0);
+        ASSERT_TRUE(ref.has_value()) << ref.error().context;
+        s[w] = spade::test::row_of(*reference, *ref);
+    }
+
+    Result<Simulation> cpu = spade::testing::start_scenario(resume, BackendDesc{.kind = BackendKind::cpu});
+    ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
+    Result<Simulation> gpu = spade::testing::start_scenario(resume, BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    for (Simulation* leg : {&*cpu, &*gpu}) {
+        for (uint32_t w = 0; w < kWorlds; ++w) {
+            const Result<spade::BodyRef> ref = leg->body_ref_at(w, 0);
+            ASSERT_TRUE(ref.has_value()) << ref.error().context;
+            const spade::BodyState row = spade::test::row_of(*leg, *ref);
+            const Result<void> stilled =
+                leg->set_body_state(*ref, row.pos, row.orient, glm::vec3(0.0f), glm::vec3(0.0f));
+            ASSERT_TRUE(stilled.has_value()) << stilled.error().context;
+        }
+        ASSERT_TRUE(spade::testing::advance_scenario(resume, *leg, kSetTick).has_value());
+    }
+    for (uint32_t w = 0; w < kWorlds; ++w) {
+        const spade::BodyState stilled = spade::test::row_of(*gpu, *gpu->body_ref_at(w, 0));
+        ASSERT_GT(std::fabs(stilled.pos.x - s[w].pos.x), 0.01f)
+            << "world " << w << ": the stilled GPU leg must be far from the reference at the set, or a lost set "
+            << "could hide inside the bands";
+    }
+
+    const uint64_t uploads = gpu->vulkan_upload_count();
+    for (Simulation* leg : {&*cpu, &*gpu}) {
+        for (uint32_t w = 0; w < kWorlds; ++w) {
+            const Result<spade::BodyRef> ref = leg->body_ref_at(w, 0);
+            ASSERT_TRUE(ref.has_value()) << ref.error().context;
+            const Result<void> placed = leg->set_body_state(*ref, s[w].pos, s[w].orient, s[w].vel, s[w].omega_body);
+            ASSERT_TRUE(placed.has_value()) << placed.error().context;
+        }
+    }
+    ASSERT_TRUE(spade::testing::advance_scenario(resume, *reference, kFinalTick).has_value());
+    ASSERT_TRUE(spade::testing::advance_scenario(resume, *cpu, kFinalTick).has_value());
+    ASSERT_TRUE(spade::testing::advance_scenario(resume, *gpu, kFinalTick).has_value());
+    EXPECT_EQ(gpu->vulkan_upload_count(), uploads + 1)
+        << "the set forces exactly one re-upload; the resumed run queues nothing";
+    EXPECT_EQ(spade::testing::state_digest(*cpu), spade::testing::state_digest(*reference))
+        << "on the CPU, the leg set to the reference's state at tick 300 IS the uninterrupted run";
+
+    using namespace spade::testing::bands::restore_resume;
+    const std::vector<BandEntry> table =
+        join(body_bands(kPos, kVel, kOrient, kOmega, kSpecificForce), medium_bands());
+    const Result<ParityReport> report = compare_arrays(cpu->arenas(), gpu->arenas(), table);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    report->print("set_body_state (both legs set at tick 300 to the cpu reference's state, resumed to 700)");
+    for (const spade::testing::QuantityReport& q : report->quantities) {
+        EXPECT_TRUE(q.within_band())
+            << "set_body_state: '" << q.quantity << "' is outside restore_resume's pinned band -- measured max |abs| "
+            << q.max_abs << ", max rel " << q.max_rel << ", pinned (" << q.band.abs << ", " << q.band.rel << "); "
+            << q.elements_outside_band << " of " << q.elements_compared << " elements. A GROSS divergence means "
+            << "the device stepped its own stilled state: the set never reached it.";
+        EXPECT_GT(q.elements_compared, std::size_t{0});
+        if (q.kind_is_quaternion) {
+            EXPECT_LT(q.max_unit_norm_error, 1.0e-5f) << "a quaternion drifted off the unit sphere";
+        }
+    }
 }

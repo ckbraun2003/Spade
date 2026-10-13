@@ -1175,6 +1175,64 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> apply_wrench(BodyRef ref, glm::vec3 world_force, glm::vec3 body_torque);
 
+    // ---------------------------------------------------------------------
+    // set_body_state -- re-pose a live body at a step boundary, without
+    // despawning it, so its refs and attached rows survive (a training host's
+    // world reset; docs/design/core/2026-10-13-set-body-state-design.md).
+    //
+    // THE BODY ROW'S OWN FRAME: pos is the centre of mass (world, m), orient is
+    // body -> world (principal axes), vel is world (m/s), omega_body is BODY
+    // frame (rad/s) -- what body() returns and BodySpawn takes. NOT
+    // VehicleSpawn's design frame: for a vehicle, pass `ref.body` and read
+    // body(), not vehicle_state(). The setter matches the getter.
+    //
+    // THE QUATERNION IS STORED AS GIVEN, never normalized (spawn normalizes, and
+    // reusing that step would make body() return something other than what was
+    // set). It must be finite with |q| = sqrt(dot(q, q)), in fp32, within
+    // 1 +/- 2e-6: deliberately looser than Kat's binding double check at
+    // 1 +/- 1e-6, so nothing Kat accepts is refused here. One substep runs on a
+    // q up to 2e-6 off unit length; Integrate renormalizes on the way out.
+    //
+    // WHEN: at any step boundary, which is every call a caller can make
+    // (flush_structural()'s note). An input, like set_rotor_commands(): a
+    // replay applies the same call at the same tick. A mid-run set clears the
+    // body's history (below), so it is not promised to be a no-op.
+    //
+    // WRITES pos, orient, vel and omega_body, and zeroes specific_force, which
+    // reads 0 until the next step, as a spawn's does. It CLEARS THE BODY'S
+    // CONTACT AND SOLVER HISTORY: today that is specific_force alone (there is
+    // no manifold, warm start, sleep counter or CCD state). A later per-body
+    // cache owes a clear here, and joins the census beside mark_vulkan_dirty()'s
+    // below. A developer module's per-body history is that developer's to
+    // clear.
+    //
+    // KEEPS mass, inv_inertia_diag, proxy_radius and flags, and force_acc and
+    // torque_acc: a wrench applied before the set still acts on the next
+    // substep (spawn, by contrast, zeroes both). KEEPS EVERY ATTACHED ROW,
+    // untouched -- IMU and GNSS rows (stream, bias, phase, last_index) and their
+    // rings, drag and rotor rows, any module's rows -- and the generation, the
+    // tick and the queue. It draws nothing, advances no stream, writes no
+    // sample and queues no op. The next snapshot() carries the set state, and
+    // the next step() re-uploads the GPU mirror.
+    //
+    // ALL OR NOTHING: every check runs before the first write. Refusals, in
+    // this order:
+    //   invalid_argument  the Simulation is poisoned (see step()), with
+    //                     step()'s text verbatim -- the first mutator to refuse
+    //                     while poisoned;
+    //   not_found         a null, stale, foreign or despawn-queued ref, with
+    //                     body()'s messages;
+    //   invalid_argument  a non-finite pos, vel or omega_body;
+    //   invalid_argument  orient non-finite, or |q| outside 1 +/- 2e-6;
+    //   not_found         a body spawned but not yet flushed: its queued init
+    //                     would overwrite the set (apply_wrench()'s rule);
+    //   invalid_argument  a pose buried in the world SDF: exactly spawn()'s
+    //                     predicate and threshold (one shared function), at the
+    //                     body's effective proxy radius, with spawn()'s message.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<void> set_body_state(BodyRef ref, glm::vec3 pos, glm::quat orient, glm::vec3 vel,
+                                              glm::vec3 omega_body);
+
     // --- snapshot / restore -----------------------------------------------
 
     // ---------------------------------------------------------------------
@@ -1759,6 +1817,9 @@ private:
     //                               torque_acc straight into the arena with
     //                               no queue involved.
     //   set_rotor_commands()        MARKS (round 1). Same shape.
+    //   set_body_state()            MARKS. Writes the body row's pos, orient,
+    //                               vel, omega_body and specific_force
+    //                               straight into the arena. Same shape.
     //   restore()                   MARKS (round 1 REVIEW, C1). Rewrites
     //                               EVERY registered array.
     //   reseed()                    MARKS (round 1 REVIEW, C1). Rewrites
@@ -1777,6 +1838,35 @@ private:
     // VulkanDirtyTracking suite is the enforcement, one case per row.
     // ---------------------------------------------------------------------
     void mark_vulkan_dirty() noexcept;
+
+    // ---------------------------------------------------------------------
+    // set_body_state()'S HISTORY CENSUS (the lead's Q4 guard). "A body set to
+    // S evolves like a body spawned at S" needs every piece of the body's
+    // history cleared, so every per-body array of the standard set is listed
+    // here with what the setter does to the body's rows in it:
+    //
+    //   bodies            WRITES pos, orient, vel, omega_body; CLEARS
+    //                     specific_force; KEEPS proxy_radius, mass,
+    //                     inv_inertia_diag, flags, force_acc, torque_acc.
+    //   body_generation   KEPT: refs survive.
+    //   drag_bodies       KEPT.
+    //   rotors            KEPT: omega and omega_cmd are not body state.
+    //   imu_sensors       KEPT: stream, bias, phase, last_index.
+    //   imu_ring          KEPT.
+    //   gnss_sensors      KEPT: stream, bias, phase, last_index.
+    //   gnss_ring         KEPT.
+    //   integrate.contact_dv (per-body SCRATCH)  nothing to clear: zero at
+    //                     every boundary by integrate's own invariant.
+    //
+    // There is no contact manifold, warm start, sleep counter or CCD state
+    // (physics/contacts.hpp), so nothing else holds history today. A NEW
+    // per-body array or scratch -- a cache, a module's history -- joins this
+    // list, kept or cleared (a clear goes in set_body_state()); tests/
+    // test_set_body_state.cpp's SetBodyState.CensusClassifiesEveryPerBodyArray-
+    // AndTheSetHonoursIt enumerates them from the registry walk and fails by
+    // name until it does. A developer module's per-body history is that
+    // developer's to classify.
+    // ---------------------------------------------------------------------
 
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
 
