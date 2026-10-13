@@ -1,6 +1,6 @@
 # The live smoke tour, restructured -- storyboard
 
-**Owner:** Interface. **Status:** draft for the lead's review, 2026-10-13. Rendering consulted (the airflow chapter); Test/Docs to sign off the coverage table (§4) before any step is cut.
+**Owner:** Interface. **Status:** **approved by the lead, 2026-10-13**, pending Test/Docs' sign-off on the coverage table (§4) before any step is cut. Rendering consulted on the airflow chapter. The lead's rulings: the analytic heatmap is RETIRED, feature and toggle (it draws a synthetic field that could be read as flow data; the real speed slice replaces it). The builder leaves the tour now, and its MODE leaves the sandbox once the editor covers each builder action (§2, chapter 3: it does).
 **Asked by** Cameron (relayed 2026-10-13 19:59 UTC): "clean up, restructure, and consolidate ensuring you account for the new visualization when available. A lot of the features demoed are hard to actually visualize, and are a bit dated in comparison to where we're at with the system."
 **Base:** master; the inventory is of `sandbox/live_tour.cpp` as last run, `Desktop\spade-smoke\2026-10-13_1e3cc3f107a9` (PASS, 38 steps, 128 check ids, 154 s of video, 12.1 MB).
 
@@ -67,7 +67,20 @@ GL draws ONE flow layer per frame, so the volume and iso views take turns. Strea
 
 *Caption: "The editor: open a scene, place, select, move, edit, undo, run, save."*
 
-All 11 of today's editor steps stay, each a declared step (EDT-011), with its 8 stills (editor_picker … editor_conflict, the editor plan's look-and-feel acceptance). The builder's operations (place, select and drag, duplicate, delete) are the editor's own on real scenes, so the builder chapter goes. Its checks move to `test_sandbox_builder.cpp` (§4). Whether the builder MODE itself is retired from the sandbox is the lead's call; this storyboard only takes it out of the tour.
+All 11 of today's editor steps stay, each a declared step (EDT-011), with its 8 stills (editor_picker … editor_conflict, the editor plan's look-and-feel acceptance).
+
+**The builder leaves the tour now, and its mode leaves the sandbox (the lead's ruling).** Every builder action already has an editor edit that the editor's panels issue:
+
+| Builder action | The editor's own | Reached from |
+|---|---|---|
+| place | the library's place (`AddAsset` / `AddVehicle`) | the Library panel; the tour's `editor.place` |
+| select and drag | pick and the move gizmo | the view; `editor.select`, `editor.move` |
+| recolour | `SetAssetMaterial` (and `AddMaterial` for a new colour) | the inspector (`editor_panels_ui.cpp`) |
+| duplicate | `DuplicateObject` | the inspector; `editor.inspect` |
+| delete | `RemoveObject` | the inspector |
+| camera | the editor's orbit, pan and dolly | the view |
+
+So no action needs porting, and the mode is removed with its code. The builder's checks that stay meaningful move to the editor's tests (§4). Where a §4 row names `test_sandbox_builder.cpp`, the implementation re-homes it to the editor's own test for the same operation (`test_editor_*`), since that file goes with the mode. Each such move shows the editor test's assertion, as Test/Docs asked.
 
 **Closing card** (4 s): the verdict and the run's numbers.
 
@@ -90,9 +103,7 @@ The new headless tests (24 check ids) go in three places:
 - `test_sandbox_scene_sessions.cpp` (new): each scene file composes as a session without a window, with its vehicle count;
 - `test_viewer_scene_properties.cpp` (new): shower, bounce, hover and wind run headless, asserting the same predicates the tour asserted.
 
-Two decisions belong to the lead:
-- the analytic heatmap's toggle check, retired with the heatmap if it goes;
-- the builder mode.
+The lead decided both open points: the heatmap's three checks are dropped because the feature is retired, and the builder rows re-home to the editor's tests when the mode goes.
 
 | Check id | Under the new tour | Where, or why |
 |---|---|---|
@@ -123,9 +134,9 @@ Two decisions belong to the lead:
 | `drone_box.attitude/pitch-follows` | kept | chapter 1, orientations |
 | `drone_box.attitude/roll-follows` | kept | chapter 1, orientations |
 | `drone_box.attitude/yaw-follows` | kept | chapter 1, orientations |
-| `drone_box.heatmap/downwash-shows` | moved | test_sandbox_drone_view.cpp:207 (observed > 1 m/s) and :327 (plume > 5 m/s from every azimuth) on the same field; the session-to-panel wiring goes with view-on |
-| `drone_box.heatmap/view-off` | new test | as view-on |
-| `drone_box.heatmap/view-on` | new test | test_sandbox_drone_view.cpp: the session's V toggle sets and clears panel.view_heatmap, if reachable without a frame; else retired with the analytic heatmap (feature gone, replaced by the airflow chapter): lead's call |
+| `drone_box.heatmap/downwash-shows` | dropped | as view-on: the feature is retired; its field tests (test_sandbox_drone_view.cpp:207, :327) go with it |
+| `drone_box.heatmap/view-off` | dropped | as view-on: the feature is retired |
+| `drone_box.heatmap/view-on` | dropped | the feature is retired (the lead, 2026-10-13): the analytic heatmap draws a synthetic field that could be read as flow data; the real speed slice (chapter 2) replaces it |
 | `drone_box.hud/hidden` | kept | chapter 1 (GL sink; only the tour can see it) |
 | `drone_box.hud/shown` | kept | chapter 1 (GL sink; only the tour can see it) |
 | `drone_box.level/drone-levels` | kept | kept; plus a headless test (test_sandbox_drone.cpp: levelling back from a tilt) so it no longer depends on the attitude step |
@@ -225,7 +236,7 @@ Two decisions belong to the lead:
 | `wind.open/gpu-path` | dropped | duplicates drone_box.open/gpu-path, kept (the same GL renderer) |
 | `wind.open/records` | moved | test_sandbox_builtin_records.cpp:78, :44 |
 
-Totals: dropped 26, kept 53, moved 25, new test 24; 128 check ids.
+Totals: dropped 29, kept 53, moved 24, new test 22; 128 check ids.
 
 ## 5. Order, after the lead's OK and Test/Docs' sign-off
 
