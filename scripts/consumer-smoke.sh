@@ -175,7 +175,7 @@ stage() {
 # installed tools are here too (tools/: spade_analysis_runner).
 lib_targets=(spade_core spade_state spade_world spade_objects spade_physics
              spade_render spade_sim spade_vehicles spade_scene spade_analysis
-             spade_mesh_import spade_analysis_runner)
+             spade_mesh_import spade_render_parts spade_analysis_runner)
 [ "$vulkan" = ON ] && lib_targets+=(spade_compute)
 
 from_build_mode() {
