@@ -60,6 +60,12 @@ A red leg is reported per realm with the failing `file:line`, and each realm fix
 - **By default it is a syntax check** (`-fsyntax-only` with the engine's `-Wall -Wextra -Wpedantic -Werror`). It catches front-end warnings such as `dangling-else` and `missing-field-initializers`. It does not run the optimiser, so it misses warnings only optimisation finds, such as `-Wmaybe-uninitialized` and `-Warray-bounds`.
 - **`--compile` compiles each `.cpp` in full,** with the leg volume's own Release command line (`-O3`, from `ninja -t compdb`) plus `-Wall -Wextra -Wpedantic -Werror`, so those optimiser warnings show up in seconds rather than a leg's minutes. Headers still get the syntax check. A `.cpp` the volume's build never compiled (a new file) fails with that reason, and needs a leg. Use it on every changed `.cpp` before review (Rendering's practice from `flow-iso`, made a script mode on 2026-10-06).
 - **Some files it cannot check honestly.** A file that depends on generated headers newer than the leg volume's (any change under `engine/shaders/`), or on a target's own compile definitions, is named in the message instead, and the lead schedules a leg run before merge.
+- **Window-backend code borrows or adds a line** (the lead, 2026-10-13). The leg's container has no X11, so GLFW builds without a window backend and some code never meets gcc in a leg; `--compile` covers it anyway, and says how in each line:
+  - `tools/flow_movie/*` is never built by a leg (the root `CMakeLists.txt` adds it only with a window backend). Its files compile with the command line of `tests/test_gpu_gl_renderer.cpp`, which the leg does build against the same `render_gl`, glad and GLFW, with the same defines (`TEMPLATES` in `scripts/gcc_check_compile.py`);
+  - `sandbox/editor_panels_ui.cpp` is built with its backend branch off (`SPADE_SANDBOX_HAS_GL=0`), so it compiles a second time with it on, adding imgui's and GLFW's includes from the volume's `_deps` (`BACKEND_ON`);
+  - `sandbox/gl_target_sink.cpp`'s backend branch includes `<GL/gl.h>`, which the leg's image lacks, so only MSVC compiles it, and the check prints a `gcc note:` saying so (`UNCHECKED`).
+
+  A new window-backend target adds its row to `TEMPLATES` in the same commit. Never built by a leg for other reasons, and not covered: v1 (`src/`, `examples/sandbox`, the viewer; frozen, `SPADE_BUILD_V1=OFF`), and `tests/consumer/`, which the leg's consumer step builds in its own trees.
 
 From the worktree root, in Git Bash:
 
