@@ -41,6 +41,7 @@
 #include "analysis/controls.hpp"
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "state/layout.hpp"  // BodyState
 #include "vehicles/model_type.hpp"
 
 namespace spade::analysis {
@@ -87,6 +88,11 @@ class LiveRun {
 
     [[nodiscard]] const LiveState& state() const noexcept;
     [[nodiscard]] double step_s() const noexcept;  // h
+
+    // The held body row (its centre of mass and principal axes), as Core's
+    // posed_parts() takes it: what a host draws the solid drone from. The
+    // blade azimuth psi is Physics' rule (P11); until it lands, pass zeros.
+    [[nodiscard]] const BodyState& body() const noexcept;
 
     // The caption: the rotor model, the grid, dx, R/dx and t, for example
     // "actuator disc · 128³, dx 12.5 mm, R/dx 6 · t = 0.250 s" (UTF-8).

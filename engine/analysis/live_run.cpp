@@ -64,6 +64,12 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
 
 }  // namespace
 
+// BodyState is over-aligned for the GPU mirror, so Impl is padded: the same
+// disable, for the same reason, as sim/world_set.hpp's WorldInstanceDesc.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
 struct LiveRun::Impl {
     ResolvedCase resolved;
     vehicles::ModelType model;
@@ -73,6 +79,8 @@ struct LiveRun::Impl {
     af::PublishInput publish;
     std::unique_ptr<Simulation> sim;
     VehicleRef vehicle;
+    glm::quat q_bd{1.0f, 0.0f, 0.0f, 0.0f};  // the model's design -> principal, normalized
+    BodyState held{};                        // the body row at the hold
     uint64_t h_ns = 0;
     float yaw = 0.0f;  // the held attitude, degrees
     float pitch = 0.0f;
@@ -81,6 +89,9 @@ struct LiveRun::Impl {
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 LiveRun::LiveRun(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 LiveRun::LiveRun(LiveRun&&) noexcept = default;
@@ -138,6 +149,15 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->vehicle = *vehicle;
     if (Result<void> r = impl->sim->flush_structural(); !r) return std::unexpected(r.error());
     impl->state.rotor_omega.assign(model.rotors.size(), 0.0f);
+    impl->q_bd = glm::normalize(model.design_to_principal);
+    const Result<const BodyState*> spawned = impl->sim->body(impl->vehicle.body);
+    if (!spawned) return std::unexpected(spawned.error());
+    impl->held = **spawned;
+    const FrameState at_rest = to_body_state(FrameState{}, impl->q_bd, model.com_offset);
+    impl->held.pos = at_rest.pos;
+    impl->held.orient = at_rest.orient;
+    impl->held.vel = at_rest.vel;
+    impl->held.omega_body = at_rest.omega;
     return LiveRun(std::move(impl));
 }
 
@@ -177,11 +197,20 @@ Result<void> LiveRun::step(const Controls& controls) {
     FrameState design;
     design.orient = attitude;
     design.omega = omega;
-    const FrameState body = to_body_state(design, r.model.design_to_principal, r.model.com_offset);
+    const FrameState body = to_body_state(design, r.q_bd, r.model.com_offset);
     if (Result<void> s = r.sim->set_body_state(r.vehicle.body, body.pos, body.orient, body.vel, body.omega); !s) {
         return std::unexpected(s.error());
     }
     if (Result<void> s = r.sim->step(1); !s) return std::unexpected(s.error());
+    // The body as held, not as one step's gravity left it: what the rotors'
+    // discs and the drawing pose from.
+    const Result<const BodyState*> stepped = r.sim->body(r.vehicle.body);
+    if (!stepped) return std::unexpected(stepped.error());
+    r.held = **stepped;
+    r.held.pos = body.pos;
+    r.held.orient = body.orient;
+    r.held.vel = body.vel;
+    r.held.omega_body = body.omega;
     for (uint32_t i = 0; i < r.state.rotor_omega.size(); ++i) {
         const Result<const vehicles::RotorRow*> row = r.sim->rotor(r.vehicle, i);
         if (!row) return std::unexpected(row.error());
@@ -221,6 +250,8 @@ Result<LiveFrame> LiveRun::advance_frame(const Controls& controls, FlowVolume& o
 const LiveState& LiveRun::state() const noexcept { return impl_->state; }
 
 double LiveRun::step_s() const noexcept { return seconds(impl_->h_ns); }
+
+const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
 std::string LiveRun::run_line() const {
     const Impl& r = *impl_;
