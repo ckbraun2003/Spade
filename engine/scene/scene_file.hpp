@@ -23,7 +23,15 @@
 //      that carries everything in the scene. Version 2 adds a model's parts
 //      (CORE-7), so a scene whose models have none is written as version 1,
 //      byte for byte the text it always was, and an older build reading a
-//      scene with parts says "upgrade" rather than "unknown key".
+//      scene with parts says "upgrade" rather than "unknown key". Version 3
+//      adds a mesh part (CORE-6), so only a scene with one is version 3.
+//
+// MESH PARTS name their geometry; the text never holds it. A part whose
+// geometry is a triangle mesh is written as `shape: {mesh: {file, hash}}`:
+// the .spmesh sidecar (world/mesh_file.hpp) by a path relative to the scene
+// file's directory, and the mesh by its content hash, as the scene names its
+// world (SCN-001). The reader loads and checks each sidecar; the writer
+// writes only the name and the hash, and save_mesh_file() writes the sidecar.
 //
 // What it checks is what the scene alone decides. What needs the world -- the
 // world hash (SCN-001) and a scene material reusing a world material's name
@@ -53,8 +61,10 @@ namespace spade::scene {
 // every version in between, and writes each scene as the oldest version that
 // carries it (property 3):
 //   1  materials, models, assets, vehicles and spare (SCN-001..009);
-//   2  adds `parts` to a model (CORE-7), written only when a model has parts.
-inline constexpr uint32_t kSceneFileVersion = 2;
+//   2  adds `parts` to a model (CORE-7), written only when a model has parts;
+//   3  adds a part's `shape: {mesh: {file, hash}}` (CORE-6), written only
+//      when a part holds a mesh.
+inline constexpr uint32_t kSceneFileVersion = 3;
 inline constexpr uint32_t kSceneFileOldestVersion = 1;
 
 // The world a scene is placed in (SCN-001).
@@ -131,7 +141,9 @@ struct SceneDesc {
 //     model's own message, which names the part and the field), and
 //     design_to_principal a unit quaternion (SCN-009); each part's shape
 //     expressible in the SDF text encoding (check_sdf_representable), with
-//     the model, the part and the node named;
+//     the model, the part and the node named; a part's mesh_file, when set,
+//     relative with forward slashes only, and naming a mesh the part holds
+//     (a mesh part may leave it empty in memory: only the writer needs it);
 //   - assets: a finite pose with scale > 0 and a unit orientation; a collider
 //     that SdfProgram::validate() accepts, with no indices in node_materials
 //     and collider_materials empty or one non-empty name per node, and no
@@ -145,18 +157,31 @@ struct SceneDesc {
 // Text -> SceneDesc. Parses, then runs validate_scene(). Codes:
 // schema_mismatch for a scene_version this build does not read;
 // invalid_argument for everything else, with the offending key's dotted path
-// and its line and column. A model's `parts` is read only in a version-2
-// file: in a version-1 file it is an unknown key, blamed on version 1.
+// and its line and column. A model's `parts` is read from version 2 (in a
+// version-1 file it is an unknown key, blamed on version 1), and a shape's
+// `mesh` from version 3.
+//
+// A mesh part's sidecar is read from base_dir / file (the file's UTF-8 path),
+// by load_mesh_file() against the hash the text names: its refusals -- a
+// missing file (io_error), another version (schema_mismatch), a changed mesh
+// with both hashes, a corrupt or truncated file, every make_mesh() refusal --
+// come back with their own code, after the part's dotted path, and with the
+// line. With an empty base_dir a mesh part is refused: read a scene with
+// mesh parts with load_scene_file(), or give a base directory.
 [[nodiscard]] Result<SceneDesc> scene_from_yaml(std::string_view yaml_text,
                                               const std::filesystem::path& base_dir = {});
 
 // SceneDesc -> canonical text (SCN-002). Runs validate_scene() first, so the
-// writer never emits a document the reader would refuse. Writes version 2
-// only when a model has parts, and version 1 otherwise (property 3).
+// writer never emits a document the reader would refuse. Writes version 3
+// only when a part holds a mesh, version 2 only when a model has parts, and
+// version 1 otherwise (property 3). A mesh part is written as its
+// mesh_file and its mesh's content hash; one with no mesh_file is refused,
+// naming the model and the part. It never writes a sidecar.
 [[nodiscard]] Result<std::string> scene_to_yaml(const SceneDesc& scene);
 
-// Reads `path` and runs scene_from_yaml(). io_error when it cannot be read;
-// a parse diagnostic comes back prefixed with the path.
+// Reads `path` and runs scene_from_yaml() with the file's directory as the
+// base directory ("." for a bare file name). io_error when it cannot be
+// read; a parse diagnostic comes back prefixed with the path.
 [[nodiscard]] Result<SceneDesc> load_scene_file(const std::filesystem::path& path);
 
 // The world hash a scene pins its world by (SCN-001): FNV-1a 64 over

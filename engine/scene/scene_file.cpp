@@ -7,6 +7,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -20,6 +21,8 @@
 #include "core/validate.hpp"
 #include "physics/forces.hpp"  // drag_mode
 #include "world/detail/yaml_text.hpp"
+#include "world/mesh.hpp"
+#include "world/mesh_file.hpp"
 #include "world/world_file.hpp"
 
 namespace spade::scene {
@@ -52,11 +55,13 @@ using yaml_text::vec3_field;
     return Error{Code::invalid_argument, std::move(context)};
 }
 
-// The first scene version that carries a model's parts (CORE-7). Task B5's
-// mesh parts will be version 3.
+// The first scene version that carries a model's parts (CORE-7), and the
+// first that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6).
 constexpr uint32_t kPartsVersion = 2;
-static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion <= kSceneFileVersion,
-              "this build reads the version that carries parts");
+constexpr uint32_t kMeshPartsVersion = 3;
+static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion < kMeshPartsVersion &&
+                  kMeshPartsVersion <= kSceneFileVersion,
+              "this build reads the versions that carry parts and mesh parts");
 
 // The schema a diagnostic blames: the file's OWN declared version wherever
 // the reader has one, because a key set is version-gated (a model's `parts`),
@@ -97,12 +102,25 @@ static_assert(static_cast<uint32_t>(vehicles::PartSurface::Kind::wall) == 0 &&
               "kPartSurfaceNames is indexed by PartSurface::Kind");
 
 // The version a scene is written as: the oldest that carries everything in it
-// (scene_file.hpp, property 3). Task B5 returns 3 for a mesh part.
+// (scene_file.hpp, property 3).
 [[nodiscard]] uint32_t written_version(const SceneDesc& scene) {
+    uint32_t version = kSceneFileOldestVersion;
     for (const vehicles::ModelType& m : scene.models) {
-        if (!m.parts.empty()) return kPartsVersion;
+        for (const vehicles::PartDesc& p : m.parts) {
+            if (p.mesh) return kMeshPartsVersion;
+            version = kPartsVersion;
+        }
     }
-    return kSceneFileOldestVersion;
+    return version;
+}
+
+// What is wrong with `file` as a path relative to the scene file's directory
+// with forward slashes (a world's file, a mesh part's sidecar), or nothing.
+// `file` is not empty.
+[[nodiscard]] std::string_view relative_path_problem(std::string_view file) {
+    if (file.find('\\') != std::string_view::npos) return "must use forward slashes";
+    if (file.front() == '/' || file.find(':') != std::string_view::npos) return "must be relative to the scene file";
+    return {};
 }
 
 // ===========================================================================
@@ -171,8 +189,9 @@ void emit_sdf_lists(std::string& out, const SdfProgram& program, const std::stri
 
 // One part, in PartDesc's field order. The shape is `{sdf: {transforms,
 // nodes}}`, the world file's encoding with no node_materials (render data,
-// which validate_scene() has already refused on a part). Task B5 adds the
-// alternative `{mesh: {file, hash}}`, written as version 3.
+// which validate_scene() has already refused on a part), or, for a mesh part
+// (version 3), `{mesh: {file, hash}}`: the sidecar's path and the mesh's
+// content hash, never the mesh.
 void emit_part(std::string& out, const vehicles::PartDesc& p) {
     out += "      - name: " + quote_yaml(p.name) + "\n";
     out += "        role: " + quote_yaml(p.role) + "\n";
@@ -185,6 +204,11 @@ void emit_part(std::string& out, const vehicles::PartDesc& p) {
            ", inertial_coeff: " + format_float(p.surface.inertial_coeff) + "}\n";
     out += "        min_feature: " + format_float(p.min_feature) + "\n";
     out += "        shape:\n";
+    if (p.mesh) {
+        out += "          mesh: {file: " + quote_yaml(p.mesh_file) +
+               ", hash: " + quote_yaml(hex64(p.mesh->content_hash())) + "}\n";
+        return;
+    }
     out += "          sdf:\n";
     emit_sdf_lists(out, p.shape, "            ");
 }
@@ -323,6 +347,12 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
             "# Parts (scene version 2): a part's mount is in the body frame, or, on a\n"
             "# rotor, in that rotor's hub frame at azimuth 0. Its shape is the world\n"
             "# file's SDF encoding, in the part's own frame.\n";
+    }
+    if (version >= kMeshPartsVersion) {
+        out +=
+            "# A mesh part (scene version 3) names its .spmesh sidecar: a path\n"
+            "# relative to this file, and FNV-1a 64 of the mesh's content. Another\n"
+            "# mesh is refused.\n";
     }
     if (scene.models.empty()) {
         out += "models: []\n";
@@ -553,10 +583,67 @@ template <std::size_t N>
     return out;
 }
 
+// A mesh part's geometry, as its shape names it.
+struct PartMesh {
+    std::shared_ptr<const TriangleMesh> mesh{};
+    std::string file{};
+};
+
+// A mesh part's shape (version 3, CORE-6): `shape.mesh` is {file, hash}, the
+// sidecar's path relative to the scene file and the mesh's content hash
+// (SCN-001's form). The sidecar is read from base_dir / file, against the
+// hash, by load_mesh_file(), whose refusals keep their own code and message,
+// after the dotted path and with the line. Nothing here repairs a mesh.
+[[nodiscard]] Result<PartMesh> parse_part_mesh(const YAML::Node& shape, const std::string& shape_what,
+                                               std::string_view schema, const std::filesystem::path& base_dir) {
+    const std::string what = shape_what + ".mesh";
+    const Result<YAML::Node> node = map_field(shape, "mesh", shape_what, {"file", "hash"}, schema);
+    if (!node) return std::unexpected(node.error());
+    const Result<YAML::Node> file_node = field(*node, "file", what);
+    if (!file_node) return std::unexpected(file_node.error());
+    const Result<std::string> file = scalar(*file_node, what + ".file");
+    if (!file) return std::unexpected(file.error());
+    if (file->empty()) {
+        return std::unexpected(at(*file_node, what + ".file must name the mesh's sidecar"));
+    }
+    if (const std::string_view problem = relative_path_problem(*file); !problem.empty()) {
+        return std::unexpected(at(*file_node, what + ".file '" + *file + "' " + std::string(problem)));
+    }
+    const Result<YAML::Node> hash_node = field(*node, "hash", what);
+    if (!hash_node) return std::unexpected(hash_node.error());
+    const Result<uint64_t> hash = parse_hash(*hash_node, what + ".hash");
+    if (!hash) return std::unexpected(hash.error());
+
+    if (base_dir.empty()) {
+        return std::unexpected(at(*node, what + ": a sidecar's path is relative to the scene file, and this text "
+                                                "came with no directory: read a scene with mesh parts with "
+                                                "load_scene_file, or give a base directory"));
+    }
+    std::filesystem::path sidecar;
+    try {
+        // The file is UTF-8 text; path(std::string) would read it in the
+        // ANSI code page on Windows.
+        std::u8string utf8;
+        utf8.reserve(file->size());
+        for (const char c : *file) utf8.push_back(static_cast<char8_t>(c));
+        sidecar = base_dir / std::filesystem::path(utf8);
+    } catch (const std::exception& e) {
+        return std::unexpected(
+            at(*file_node, what + ".file '" + *file + "' is not a path this platform can open: " + e.what()));
+    }
+    Result<LoadedMesh> loaded = load_mesh_file(sidecar, *hash);
+    if (!loaded) {
+        return std::unexpected(Error{loaded.error().code, what + ": " + loaded.error().context + mark_of(*node)});
+    }
+    return PartMesh{std::move(loaded->mesh), *file};
+}
+
 // One part (version 2, CORE-7). Only the text's shape is checked here; the
 // part's rules are ModelType::issues()'s, which validate_scene() runs (TD-9).
+// `reads_mesh`: the file is version 3 or later, so a shape may be a mesh.
 [[nodiscard]] Result<vehicles::PartDesc> parse_part(const YAML::Node& node, const std::string& what,
-                                                    std::string_view schema) {
+                                                    std::string_view schema, bool reads_mesh,
+                                                    const std::filesystem::path& base_dir) {
     if (Result<void> r = check_map(node, what,
                                    {"name", "role", "attach", "rotor", "mount", "surface", "min_feature", "shape"},
                                    schema);
@@ -596,16 +683,30 @@ template <std::size_t N>
     if (!min_feature) return std::unexpected(min_feature.error());
 
     // shape: {sdf: {transforms, nodes}} -- no node_materials, which is render
-    // data a part never carries, so it is an unknown key here. THE SEAM FOR
-    // MESH PARTS: Task B5 adds `mesh` beside `sdf` (one of the two), read
-    // only in a version-3 file, so this version's key set stays as it is.
+    // data a part never carries, so it is an unknown key here -- or, from
+    // version 3, {mesh: {file, hash}}: exactly one of the two. A version-2
+    // file's key set stays as it was, so `mesh` there is an unknown key.
     const std::string shape_what = what + ".shape";
-    const Result<YAML::Node> shape = map_field(node, "shape", what, {"sdf"}, schema);
+    const Result<YAML::Node> shape = reads_mesh ? map_field(node, "shape", what, {"sdf", "mesh"}, schema)
+                                                : map_field(node, "shape", what, {"sdf"}, schema);
     if (!shape) return std::unexpected(shape.error());
-    const Result<YAML::Node> sdf = map_field(*shape, "sdf", shape_what, {"transforms", "nodes"}, schema);
-    if (!sdf) return std::unexpected(sdf.error());
-    Result<SdfProgram> program = parse_sdf_lists(*sdf, shape_what + ".sdf", schema);
-    if (!program) return std::unexpected(program.error());
+    SdfProgram program{};
+    PartMesh mesh{};
+    if (reads_mesh && has(*shape, "sdf") == has(*shape, "mesh")) {
+        return std::unexpected(at(*shape, shape_what + ": exactly one of sdf and mesh, and " +
+                                              (has(*shape, "sdf") ? "both are given" : "neither is given")));
+    }
+    if (reads_mesh && has(*shape, "mesh")) {
+        Result<PartMesh> m = parse_part_mesh(*shape, shape_what, schema, base_dir);
+        if (!m) return std::unexpected(m.error());
+        mesh = std::move(*m);
+    } else {
+        const Result<YAML::Node> sdf = map_field(*shape, "sdf", shape_what, {"transforms", "nodes"}, schema);
+        if (!sdf) return std::unexpected(sdf.error());
+        Result<SdfProgram> parsed = parse_sdf_lists(*sdf, shape_what + ".sdf", schema);
+        if (!parsed) return std::unexpected(parsed.error());
+        program = std::move(*parsed);
+    }
 
     out.name = *name;
     out.role = *role;
@@ -613,7 +714,9 @@ template <std::size_t N>
     out.rotor = *rotor;
     out.mount_pos = *position;
     out.mount_orient = *orientation;
-    out.shape = std::move(*program);
+    out.shape = std::move(program);
+    out.mesh = std::move(mesh.mesh);
+    out.mesh_file = std::move(mesh.file);
     out.surface.kind = static_cast<vehicles::PartSurface::Kind>(*kind);
     out.surface.inv_permeability = *inv_permeability;
     out.surface.inertial_coeff = *inertial_coeff;
@@ -622,9 +725,10 @@ template <std::size_t N>
 }
 
 // `file_version` is the file's own: a model's key set is version-gated (`parts`
-// from version 2), and every diagnostic blames that version.
+// from version 2, a part's mesh from version 3), and every diagnostic blames
+// that version. `base_dir` resolves a mesh part's sidecar.
 [[nodiscard]] Result<vehicles::ModelType> parse_model(const YAML::Node& node, const std::string& what,
-                                                      uint32_t file_version) {
+                                                      uint32_t file_version, const std::filesystem::path& base_dir) {
     const std::string file_schema = schema(file_version);
     const bool reads_parts = file_version >= kPartsVersion;
     if (reads_parts) {
@@ -708,7 +812,8 @@ template <std::size_t N>
         const Result<YAML::Node> parts = sequence_field(node, "parts", what);
         if (!parts) return std::unexpected(parts.error());
         for (std::size_t i = 0; i < parts->size(); ++i) {
-            Result<vehicles::PartDesc> p = parse_part((*parts)[i], what + ".parts[" + dec(i) + "]", file_schema);
+            Result<vehicles::PartDesc> p = parse_part((*parts)[i], what + ".parts[" + dec(i) + "]", file_schema,
+                                                      file_version >= kMeshPartsVersion, base_dir);
             if (!p) return std::unexpected(p.error());
             out.parts.push_back(std::move(*p));
         }
@@ -828,7 +933,7 @@ template <std::size_t N>
     return out;
 }
 
-[[nodiscard]] Result<SceneDesc> parse_scene(const YAML::Node& root) {
+[[nodiscard]] Result<SceneDesc> parse_scene(const YAML::Node& root, const std::filesystem::path& base_dir) {
     if (!root.IsMap()) {
         return std::unexpected(at(root, "a scene file's top level must be a mapping with a 'scene_version' key"));
     }
@@ -841,10 +946,9 @@ template <std::size_t N>
     const Result<uint32_t> version = parse_uint<uint32_t>(*version_node, "scene.scene_version");
     if (!version) return std::unexpected(version.error());
     if (*version < kSceneFileOldestVersion || *version > kSceneFileVersion) {
-        static_assert(kSceneFileVersion == kSceneFileOldestVersion + 1, "the message below names two versions");
         return std::unexpected(Error{Code::schema_mismatch,
                                      "scene file is schema version " + dec(*version) + ", this build reads versions " +
-                                         dec(kSceneFileOldestVersion) + " and " + dec(kSceneFileVersion) +
+                                         dec(kSceneFileOldestVersion) + " to " + dec(kSceneFileVersion) +
                                          " only" + mark_of(*version_node)});
     }
     // Every diagnostic below blames the file's own version.
@@ -888,7 +992,8 @@ template <std::size_t N>
     const Result<YAML::Node> models = sequence_field(root, "models", "scene");
     if (!models) return std::unexpected(models.error());
     for (std::size_t i = 0; i < models->size(); ++i) {
-        Result<vehicles::ModelType> m = parse_model((*models)[i], "scene.models[" + dec(i) + "]", *version);
+        Result<vehicles::ModelType> m =
+            parse_model((*models)[i], "scene.models[" + dec(i) + "]", *version, base_dir);
         if (!m) return std::unexpected(m.error());
         out.models.push_back(std::move(*m));
     }
@@ -921,10 +1026,10 @@ template <std::size_t N>
 // yaml-cpp reports every syntax failure by throwing; nothing may leave a Spade
 // API that way (world_from_yaml's rule). YAML::Exception::what() carries the
 // mark.
-[[nodiscard]] Result<SceneDesc> parse_text(std::string_view yaml_text) {
+[[nodiscard]] Result<SceneDesc> parse_text(std::string_view yaml_text, const std::filesystem::path& base_dir) {
     try {
         const YAML::Node root = YAML::Load(std::string(yaml_text));
-        return parse_scene(root);
+        return parse_scene(root, base_dir);
     } catch (const YAML::Exception& e) {
         return std::unexpected(Error{Code::invalid_argument, std::string(e.what())});
     } catch (const std::exception& e) {
@@ -948,11 +1053,8 @@ Result<void> validate_scene(const SceneDesc& scene) {
     if (file.empty()) {
         return std::unexpected(invalid("scene world.file must name the world file"));
     }
-    if (file.find('\\') != std::string::npos) {
-        return std::unexpected(invalid("scene world.file '" + file + "' must use forward slashes"));
-    }
-    if (file.front() == '/' || file.find(':') != std::string::npos) {
-        return std::unexpected(invalid("scene world.file '" + file + "' must be relative to the scene file"));
+    if (const std::string_view problem = relative_path_problem(file); !problem.empty()) {
+        return std::unexpected(invalid("scene world.file '" + file + "' " + std::string(problem)));
     }
 
     // --- materials: the world palette's rules (validate_material, the one
@@ -989,6 +1091,18 @@ Result<void> validate_scene(const SceneDesc& scene) {
                     p.shape, "model '" + m.name + "' part '" + p.name + "' shape", schema(kPartsVersion));
                 !r) {
                 return r;
+            }
+            // A mesh part's sidecar name (CORE-6): relative, forward slashes,
+            // and only beside a mesh. Empty is fine in memory; the writer
+            // needs it (scene_to_yaml).
+            if (!p.mesh_file.empty()) {
+                const std::string who = "model '" + m.name + "' part '" + p.name + "': mesh_file '" + p.mesh_file + "' ";
+                if (const std::string_view problem = relative_path_problem(p.mesh_file); !problem.empty()) {
+                    return std::unexpected(invalid(who + std::string(problem)));
+                }
+                if (!p.mesh) {
+                    return std::unexpected(invalid(who + "names a sidecar, but the part holds no mesh"));
+                }
             }
         }
         for (std::size_t j = 0; j < i; ++j) {
@@ -1111,8 +1225,7 @@ Result<void> validate_scene(const SceneDesc& scene) {
 }
 
 Result<SceneDesc> scene_from_yaml(std::string_view yaml_text, const std::filesystem::path& base_dir) {
-    (void)base_dir;
-    Result<SceneDesc> scene = parse_text(yaml_text);
+    Result<SceneDesc> scene = parse_text(yaml_text, base_dir);
     if (!scene) return scene;
     if (Result<void> r = validate_scene(*scene); !r) {
         return std::unexpected(r.error());
@@ -1123,6 +1236,18 @@ Result<SceneDesc> scene_from_yaml(std::string_view yaml_text, const std::filesys
 Result<std::string> scene_to_yaml(const SceneDesc& scene) {
     if (Result<void> r = validate_scene(scene); !r) {
         return std::unexpected(r.error());
+    }
+    // The text names a mesh part's sidecar and never holds the mesh, so a
+    // mesh part needs its name here (CORE-6). save_mesh_file() writes it.
+    for (const vehicles::ModelType& m : scene.models) {
+        for (const vehicles::PartDesc& p : m.parts) {
+            if (p.mesh && p.mesh_file.empty()) {
+                return std::unexpected(invalid(
+                    "model '" + m.name + "' part '" + p.name +
+                    "': a mesh part needs mesh_file, its sidecar's path relative to the scene file; the writer "
+                    "names the sidecar and never writes it (save the mesh with save_mesh_file, then name it)"));
+            }
+        }
     }
     try {
         return emit(scene);
@@ -1147,7 +1272,10 @@ Result<SceneDesc> load_scene_file(const std::filesystem::path& path) {
             Error{Code::io_error, "failed reading scene file '" + path_text(path) + "': " + e.what()});
     }
 
-    Result<SceneDesc> scene = scene_from_yaml(text);
+    // A mesh part's sidecar is relative to the scene file's directory, "."
+    // for a bare file name.
+    const std::filesystem::path base_dir = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    Result<SceneDesc> scene = scene_from_yaml(text, base_dir);
     if (!scene) {
         return std::unexpected(Error{scene.error().code, path_text(path) + ": " + scene.error().context});
     }
