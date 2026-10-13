@@ -510,20 +510,25 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
         "slice", "speed |u| on the plane through rotors +x and -x, 0 to 12 m/s",
         [q, speed_max](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
                        render::Camera& camera) -> spade::Result<void> {
+            // From the box's floor to 13 cm above the hubs: the still air above
+            // says little, and the top of the frame holds the captions.
             const glm::vec3 lo = v.header.origin, size = volume_size(v);
+            const float top = q.discs[0].centre.y + q.origin.y + 0.13f;
             render::FieldLayer plane;
-            plane.center = glm::vec3(lo.x + 0.5f * size.x, lo.y + 0.5f * size.y, 0.0f);
+            plane.center = glm::vec3(lo.x + 0.5f * size.x, 0.5f * (lo.y + top), 0.0f);
             plane.width = size.x;
-            plane.height = size.y;
+            plane.height = top - lo.y;
             plane.cells_u = 2u * v.header.nx;
-            plane.cells_v = 2u * v.header.ny;
+            plane.cells_v = static_cast<uint32_t>(std::lround(plane.height / v.header.cell)) * 2u;
             if (auto ok = add_slice(scene, v, render::FlowQuantity::speed, plane, render::ColourMapId::viridis, 0.0f,
                                     speed_max);
                 !ok) {
                 return ok;
             }
             add_rims(scene, q);
-            camera = orbit(plane.center, 1.55f, 0.0f, 0.0f);
+            // Aimed 11 cm above the plane's centre, so the plane sits between
+            // the caption bands.
+            camera = orbit(plane.center + glm::vec3(0.0f, 0.11f, 0.0f), 1.55f, 0.0f, 0.0f);
             return {};
         }});
     return film;
