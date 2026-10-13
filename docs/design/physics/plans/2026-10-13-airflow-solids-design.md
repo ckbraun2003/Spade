@@ -87,14 +87,19 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
   - **A run** is a stretch of cell centres along a grid line. It starts and ends at centres outside the part (φ > 0), with k ≥ 0 centres inside it (φ ≤ 0) between them.
   - **The k = 0 screen.** A run with no centre inside can cross the part only where `φ₁ + φ₂ ≤ dx`, since φ is 1-Lipschitz. That holds exactly for meshes and primitives (the heightfield's φ is a conservative bound, also ≤ 1), and union, intersect, subtract and Core's smooth union keep it (`world/sdf.cpp`: the smooth union's gradient is a convex blend of its operands'). Candidates are sphere-traced (`t += φ`, a fixed cap of 32 steps, a hit at `φ ≤ 10⁻⁴ dx`) to confirm the crossing.
   - **Entry and exit.** For every run, a sphere trace from each end finds the points where the line enters and leaves the part, and its outward normals there.
-  - **A thin crossing** is one whose normals oppose, `n_in · n_out ≤ −0.5`: a plate, a fin, a blob, or a wedge sharper than 60°. A resolved part's convex 90° edge gives 0 and is not a thin crossing. Without this test, every rotated box would be flagged.
+  - **A thin crossing** is one whose normals oppose, `n_in · n_out ≤ −0.5` (a plate, a fin, or a wedge sharper than 60°), and whose thickness across the entry face, the chord times `|n_in · e|`, is under 2 dx.
+    - A resolved part's convex 90° edge gives `n_in · n_out = 0`.
+    - A line just inside a turned box's vertical edge enters through its bottom face and leaves through its top: the normals oppose, but it is as thick as the box.
+    - Without both tests, every rotated box would be flagged.
   - **A leaking run** is a thin crossing whose k + 1 faces are all open (θ > 0). Its evidence is its location and its open area: its smallest θ times dx².
   - **A part that closes no face** also leaks. The opposing-normals test cannot see a compact blob. A 2 dx sphere centred on a cell corner is crossed only by lines ρ = 0.71 R off its centre, where `n_in · n_out = 2ρ² − 1 = 0`, the same as a box's 90° edge. A blob has no closed face, so it is never "at an edge".
 - **What a leaking part becomes** (L6: never silent):
   - **At an edge: announced.** Every leaking run lies within 4 cells (Chebyshev) of a cell with a face the part closes (θ = 0), where the part is resolved. Their total open area is at most 2% of the part's frontal area (the largest face of its bounds). The run line names the part, its number of leaking runs and their total open area.
     - Why 4 cells: a 30° wedge closes faces from about 2–4 dx from its tip, so its tip leaks lie within that reach.
     - A long thin plate has no closed face, so it is never "at an edge".
-  - **Sheet-like: a sheet, announced.** Any other leaking part whose extents are plate-like (smallest < 2 dx ≤ middle) becomes a sheet with the smallest extent as its thickness. The run line names it, with its declared and measured thickness.
+  - **Sheet-like: a sheet, announced.** A part is sheet-like when it closes no face, has at least one thin crossing, and every crossing's thickness estimate is under 2 dx. That is a plate tilted inside its own frame, whose bounds look thick. It becomes a sheet with its largest thin-crossing thickness. The run line names it, with its declared and measured thickness.
+    - A plate-like part by its extents never gets this far: the classifier has already sheeted it.
+    - A compact blob has no opposing crossing, so it is refused.
   - **Otherwise refused by name,** with the first leaking run's location and "declare min_feature or refine dx".
   - **MUST BE REVISITED BEFORE D3** (the lead, 2026-10-13; backlog). The 2% bound admits a 30° edge only from about 60 cells of chord. Blade-resolved props at Interface's 32 cells per chord have trailing edges sharper than 15°, so as written every resolved blade would be refused. D3 needs either a trailing-edge treatment or an announced sub-cell trailing-edge leak with its magnitude, decided then, with Test/Docs' a-priori bands.
 - **D5's 2 dx minimum is not sufficient for compact parts.** A sphere 2 dx across, centred on a cell corner, has eight centres inside it, and the faces between them have θ ≈ 0.21. It closes no face and is a porous blob. The safeguard catches it.
