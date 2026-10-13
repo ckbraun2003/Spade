@@ -30,6 +30,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +46,9 @@
 #include "vehicles/model_type.hpp"
 
 namespace spade::analysis {
+
+// The save file's version (LiveRun::save()).
+inline constexpr uint32_t kLiveRunSaveVersion = 1;
 
 // How fast the hold turns the drone toward the controls' attitude, per axis.
 inline constexpr float kHoldRateDegPerS = 180.0f;
@@ -101,6 +105,23 @@ class LiveRun {
     // The controls flown so far, a point wherever they changed: the live
     // session as a program, for "queue at higher fidelity".
     [[nodiscard]] const ControlProgram& recorded_controls() const noexcept;
+
+    // SAVE AND RESTORE, so a long run (a D1 film, a queued run) stops and
+    // resumes in foreground chunks: a restored run gives exactly the frames
+    // an unbroken one does. One file, replaced whole (a kill leaves the old
+    // save or the new): the case's and model's identities, the counters,
+    // the hold, the recorded controls, Core's Simulation snapshot and
+    // Physics' grid (u, v, w, p), under one FNV-1a checksum. Solids and the
+    // fluid's scratch are rebuilt, not saved (Physics). A faulted run isn't
+    // saved: its last good save is the one before the fault.
+    [[nodiscard]] Result<void> save(const std::filesystem::path& file) const;
+
+    // Rebuilds the run from the case and model, then its saved state.
+    // Refused by name: a missing file (io_error), a foreign or short one, a
+    // version this build doesn't read (schema_mismatch), a checksum that
+    // doesn't match, and another case, model, parts or propulsion.
+    [[nodiscard]] static Result<LiveRun> restore(const std::filesystem::path& file, const ResolvedCase& resolved,
+                                                 const vehicles::ModelType& model);
 
   private:
     struct Impl;

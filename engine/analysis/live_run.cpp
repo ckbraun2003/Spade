@@ -9,13 +9,24 @@
 #include <string>
 #include <utility>
 
+#include <bit>
+#include <cstring>
+#include <span>
+#include <string_view>
+
+#include "analysis/detail/atomic_file.hpp"
 #include "core/fp32_math.hpp"
+#include "core/path_text.hpp"
+#include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/grid_io.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
 #include "sim/design_frame.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
+#include "state/snapshot.hpp"
+#include "vehicles/model_identity.hpp"
 #include "world/builder.hpp"
 
 namespace spade::analysis {
@@ -49,6 +60,88 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
     return a.armed == b.armed && a.throttle == b.throttle && a.pitch_deg == b.pitch_deg && a.roll_deg == b.roll_deg &&
            a.yaw_deg == b.yaw_deg;
 }
+
+// ---- the save file ----------------------------------------------------------
+// Little-endian, as both toolchains are; one FNV-1a 64 over everything before
+// the checksum's own 8 bytes.
+
+static_assert(std::endian::native == std::endian::little, "LiveRun's save file is little-endian");
+constexpr std::string_view kSaveMagic = "SPADELRS";
+
+struct Writer {
+    std::string out;
+    template <class T>
+    void put(const T& v) {
+        char b[sizeof(T)];
+        std::memcpy(b, &v, sizeof(T));
+        out.append(b, sizeof(T));
+    }
+    void put(const glm::vec3& v) {
+        put(v.x);
+        put(v.y);
+        put(v.z);
+    }
+    void put(const glm::quat& q) {
+        put(q.w);
+        put(q.x);
+        put(q.y);
+        put(q.z);
+    }
+    void bytes(std::string_view s) {
+        put<uint64_t>(s.size());
+        out.append(s);
+    }
+};
+
+struct Reader {
+    std::string_view in;
+    std::size_t at = 0;
+    bool ok = true;
+    template <class T>
+    [[nodiscard]] T get() {
+        T v{};
+        if (!ok || in.size() - at < sizeof(T)) {
+            ok = false;
+            return v;
+        }
+        std::memcpy(&v, in.data() + at, sizeof(T));
+        at += sizeof(T);
+        return v;
+    }
+    [[nodiscard]] glm::vec3 vec() {
+        const float x = get<float>();
+        const float y = get<float>();
+        const float z = get<float>();
+        return glm::vec3(x, y, z);
+    }
+    [[nodiscard]] glm::quat quat() {
+        const float w = get<float>();
+        const float x = get<float>();
+        const float y = get<float>();
+        const float z = get<float>();
+        return glm::quat(w, x, y, z);
+    }
+    [[nodiscard]] std::string_view bytes() {
+        const uint64_t n = get<uint64_t>();
+        if (!ok || n > in.size() - at) {
+            ok = false;
+            return {};
+        }
+        const std::string_view s = in.substr(at, static_cast<std::size_t>(n));
+        at += static_cast<std::size_t>(n);
+        return s;
+    }
+};
+
+[[nodiscard]] std::string_view as_text(std::span<const std::byte> b) {
+    return std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
+}
+
+[[nodiscard]] std::span<const std::byte> as_bytes(std::string_view s) {
+    return std::as_bytes(std::span<const char>(s.data(), s.size()));
+}
+
+[[nodiscard]] std::string hex(uint64_t v) { return std::format("{:016x}", v); }
 
 [[nodiscard]] std::string_view rotor_model_name(RotorModel m) {
     switch (m) {
@@ -271,5 +364,149 @@ std::string LiveRun::run_line() const {
 }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
+
+Result<void> LiveRun::save(const std::filesystem::path& file) const {
+    const Impl& r = *impl_;
+    if (!r.fault.empty()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "a faulted run isn't saved (" + r.fault + "); its last good save is the one before"});
+    }
+    Writer w;
+    w.out.append(kSaveMagic);
+    w.put<uint32_t>(kLiveRunSaveVersion);
+    w.put<uint64_t>(r.resolved.hash);
+    w.put<uint64_t>(vehicles::model_identity(r.model));
+    w.put<uint64_t>(vehicles::parts_identity(r.model));
+    w.put<uint64_t>(0);  // the propulsion chain's identity: 0 until the case pins one
+    w.put<uint64_t>(r.h_ns);
+    w.put<uint64_t>(r.state.steps);
+    w.put<uint64_t>(r.state.frames);
+    w.put(r.yaw);
+    w.put(r.pitch);
+    w.put(r.roll);
+    w.put(r.state.attitude);
+    w.put(r.state.omega_body);
+    w.put<uint8_t>(r.state.armed ? 1 : 0);
+    w.put(r.held.pos);
+    w.put(r.held.orient);
+    w.put(r.held.vel);
+    w.put(r.held.omega_body);
+    std::string controls;
+    if (!r.flown.points.empty()) {
+        Result<std::string> text = program_to_yaml(r.flown);
+        if (!text) return std::unexpected(text.error());
+        controls = std::move(*text);
+    }
+    w.bytes(controls);
+    const Result<SnapshotBlob> snapshot = r.sim->snapshot();
+    if (!snapshot) return std::unexpected(snapshot.error());
+    w.bytes(as_text(snapshot->bytes()));
+    const std::vector<std::byte> grid = af::grid_to_bytes(r.grid);
+    w.bytes(as_text(grid));
+    w.put<uint64_t>(rng::fnv1a64(w.out));
+    return detail::replace_file(file, w.out);
+}
+
+Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const ResolvedCase& resolved,
+                                 const vehicles::ModelType& model) {
+    const Result<std::string> read = detail::read_file_shared(file);
+    if (!read) return std::unexpected(read.error());
+    const std::string_view in(*read);
+    const std::string name = "'" + path_text(file) + "'";
+    const auto refuse = [&](Code code, const std::string& why) {
+        return std::unexpected(Error{code, name + " " + why});
+    };
+    if (in.size() < kSaveMagic.size() + 4 || in.substr(0, kSaveMagic.size()) != kSaveMagic) {
+        return refuse(Code::io_error, "is not a LiveRun save");
+    }
+    uint32_t version = 0;
+    std::memcpy(&version, in.data() + kSaveMagic.size(), sizeof(version));
+    if (version != kLiveRunSaveVersion) {
+        return refuse(Code::schema_mismatch, "is a LiveRun save of version " + std::to_string(version) +
+                                                 "; this build reads version " + std::to_string(kLiveRunSaveVersion));
+    }
+    const std::size_t head = kSaveMagic.size() + 4;
+    if (in.size() < head + 8) return refuse(Code::invalid_argument, "is cut short");
+    uint64_t stored = 0;
+    std::memcpy(&stored, in.data() + in.size() - 8, sizeof(stored));
+    if (stored != rng::fnv1a64(in.substr(0, in.size() - 8))) {
+        return refuse(Code::invalid_argument, "fails its checksum: it is corrupted or cut short");
+    }
+
+    Reader rd{in.substr(head, in.size() - head - 8)};
+    const uint64_t case_hash = rd.get<uint64_t>();
+    const uint64_t model_id = rd.get<uint64_t>();
+    const uint64_t parts_id = rd.get<uint64_t>();
+    const uint64_t propulsion_id = rd.get<uint64_t>();
+    if (!rd.ok) return refuse(Code::invalid_argument, "is cut short");
+    if (case_hash != resolved.hash) {
+        return refuse(Code::invalid_argument,
+                      "is a save of another case (" + hex(case_hash) + "), not this one (" + hex(resolved.hash) + ")");
+    }
+    if (model_id != vehicles::model_identity(model)) {
+        return refuse(Code::invalid_argument, "is a save of another model (" + hex(model_id) + "), not this one (" +
+                                                  hex(vehicles::model_identity(model)) + ")");
+    }
+    if (parts_id != vehicles::parts_identity(model)) {
+        return refuse(Code::invalid_argument, "is a save of another model's parts (" + hex(parts_id) + "), not these (" +
+                                                  hex(vehicles::parts_identity(model)) + ")");
+    }
+    if (propulsion_id != 0) {
+        return refuse(Code::invalid_argument, "pins a propulsion chain (" + hex(propulsion_id) +
+                                                  "), and this build's cases pin none");
+    }
+    const uint64_t h_ns = rd.get<uint64_t>();
+    const uint64_t steps = rd.get<uint64_t>();
+    const uint64_t frames = rd.get<uint64_t>();
+    const float yaw = rd.get<float>();
+    const float pitch = rd.get<float>();
+    const float roll = rd.get<float>();
+    const glm::quat attitude = rd.quat();
+    const glm::vec3 omega_body = rd.vec();
+    const bool armed = rd.get<uint8_t>() != 0;
+    const glm::vec3 held_pos = rd.vec();
+    const glm::quat held_orient = rd.quat();
+    const glm::vec3 held_vel = rd.vec();
+    const glm::vec3 held_omega = rd.vec();
+    const std::string_view controls = rd.bytes();
+    const std::string_view snapshot = rd.bytes();
+    const std::string_view grid = rd.bytes();
+    if (!rd.ok || rd.at != rd.in.size()) return refuse(Code::invalid_argument, "is malformed");
+
+    // The run as the case builds it, then its saved state over it.
+    Result<LiveRun> run = start(resolved, model);
+    if (!run) return std::unexpected(run.error());
+    Impl& r = *run->impl_;
+    if (h_ns != r.h_ns) return refuse(Code::invalid_argument, "steps at another h");
+    if (Result<void> g = af::grid_from_bytes(as_bytes(grid), r.grid); !g) return std::unexpected(g.error());
+    Result<SnapshotBlob> blob =
+        SnapshotBlob::from_bytes(std::vector<std::byte>(as_bytes(snapshot).begin(), as_bytes(snapshot).end()));
+    if (!blob) return std::unexpected(blob.error());
+    if (Result<void> s = r.sim->restore(*blob); !s) return std::unexpected(s.error());
+    if (!controls.empty()) {
+        Result<ControlProgram> program = program_from_yaml(controls);
+        if (!program) return std::unexpected(program.error());
+        r.flown = std::move(*program);
+    }
+    r.yaw = yaw;
+    r.pitch = pitch;
+    r.roll = roll;
+    r.state.steps = steps;
+    r.state.frames = frames;
+    r.state.t_s = seconds(steps * r.h_ns);
+    r.state.attitude = attitude;
+    r.state.omega_body = omega_body;
+    r.state.armed = armed;
+    r.held.pos = held_pos;
+    r.held.orient = held_orient;
+    r.held.vel = held_vel;
+    r.held.omega_body = held_omega;
+    for (uint32_t i = 0; i < r.state.rotor_omega.size(); ++i) {
+        const Result<const vehicles::RotorRow*> row = r.sim->rotor(r.vehicle, i);
+        if (!row) return std::unexpected(row.error());
+        r.state.rotor_omega[i] = (*row)->omega;
+    }
+    return run;
+}
 
 }  // namespace spade::analysis
