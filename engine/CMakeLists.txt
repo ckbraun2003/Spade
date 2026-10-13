@@ -922,6 +922,7 @@ install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp
 add_library(spade_analysis STATIC
     analysis/case.cpp
     analysis/case_file.cpp
+    analysis/coefficients.cpp
 )
 add_library(spade::analysis ALIAS spade_analysis)
 set_target_properties(spade_analysis PROPERTIES EXPORT_NAME analysis)
