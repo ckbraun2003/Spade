@@ -247,8 +247,8 @@ struct ModelType {
 
     // The model's solid geometry, part by part (CORE-7; vehicles/
     // model_part.hpp). Empty by default. Declaration order is the part index
-    // every refusal names. NOT folded into model_identity() until a step reads
-    // the parts (stage 7), and read by no step today.
+    // every refusal names. NEVER folded into model_identity(); their identity
+    // is parts_identity() (vehicles/model_identity.hpp). Read by no step today.
     std::vector<PartDesc> parts;
 
     // How many of this world's declared Capacities::force_elements one

@@ -38,6 +38,11 @@ public:
         for (const char c : s) byte(static_cast<uint8_t>(c));
         byte(0);
     }
+    // parts_identity's strings: the length (u32), then the bytes.
+    void sized_text(std::string_view s) noexcept {
+        count(s.size());
+        for (const char c : s) byte(static_cast<uint8_t>(c));
+    }
     void count(std::size_t n) noexcept { u32(static_cast<uint32_t>(n)); }
     [[nodiscard]] uint64_t value() const noexcept { return h_; }
 
@@ -93,6 +98,50 @@ uint64_t model_registry_identity(std::span<const ModelType> models) noexcept {
     f.count(models.size());
     for (const ModelType& m : models) {
         f.u64(model_identity(m));
+    }
+    return f.value();
+}
+
+uint64_t parts_identity(const ModelType& m) noexcept {
+    if (m.parts.empty()) return kNoPartsIdentity;
+    Fold f;
+    f.byte(0xFF);
+    for (const char c : std::string_view("parts_identity")) f.byte(static_cast<uint8_t>(c));
+    f.count(m.parts.size());
+    for (const PartDesc& p : m.parts) {
+        f.sized_text(p.name);
+        f.sized_text(p.role);
+        f.u32(static_cast<uint32_t>(p.attach));
+        f.u32(p.rotor);
+        f.vec3(p.mount_pos);
+        f.quat(p.mount_orient);
+        if (p.mesh != nullptr) {
+            f.u32(1);
+            f.u64(p.mesh->content_hash());
+        } else {
+            f.u32(0);
+            f.count(p.shape.nodes.size());
+            for (const SdfNode& n : p.shape.nodes) {
+                f.u32(n.kind);
+                f.u32(n.op);
+                f.u32(n.transform);
+                f.f32(n.params.x);
+                f.f32(n.params.y);
+                f.f32(n.params.z);
+                f.f32(n.params.w);
+            }
+            f.count(p.shape.transforms.size());
+            for (const SdfTransform& t : p.shape.transforms) {
+                for (int c = 0; c < 4; ++c) {
+                    for (int r = 0; r < 4; ++r) f.f32(t.world_to_local[c][r]);
+                }
+                f.f32(t.scale);
+            }
+        }
+        f.u32(static_cast<uint32_t>(p.surface.kind));
+        f.f32(p.surface.inv_permeability);
+        f.f32(p.surface.inertial_coeff);
+        f.f32(p.min_feature);
     }
     return f.value();
 }

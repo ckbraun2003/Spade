@@ -111,7 +111,7 @@
 // as model_identity is: the vertex count (u32), the triangle count (u32), each
 // position's x, y, z as IEEE-754 float bits (u32), then every index (u32), all
 // little-endian. It is computed once, at make_mesh(). It is what the YAML
-// names a mesh by, and what stage 7 folds; nothing folds it yet.
+// names a mesh by, and what vehicles::parts_identity() folds for a mesh part.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
