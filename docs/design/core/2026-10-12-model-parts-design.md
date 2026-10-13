@@ -10,7 +10,7 @@
 - **Shape.** `ModelType` gains `parts`. Each part has a name, a role label, an attachment (rigid to the body, or turning with rotor k), a mount pose, its own `SdfProgram`, and a surface (wall, or porous with its coefficients). Parts carry no mass. `BodyTemplate` stays the only mass the step reads.
 - **Exact truth, derived samples.** A part's geometry is exact: an `SdfProgram` now, and a triangle mesh once the CAD choice is made. Sampled distance grids are never authored. The solver builds them at its own resolution, as derived buffers.
 - **Blade azimuth ψ.** Today it is not stored and cannot be derived. For the demo, the host integrates it. In the engine it is a per-rotor array that Physics owns, declared by the module that reads it, so the goldens hold.
-- **Identity.** Parts are folded into `model_identity` only when the list is non-empty, and only once a step reads them (stage 7). Every existing identity and stored blob holds.
+- **Identity** (amended 2026-10-12; accepted by the lead). `model_identity` NEVER folds parts. Parts have their own identity, `vehicles::parts_identity` (one rule, TD-9), which a CFD case pins beside `model_identity`. Stage 7 folds `parts_identity` into the snapshot's model-registry identity, only for a model with parts. Every existing identity and stored blob holds.
 - **CAD.** Recommended: native CSG now (C); triangle meshes as the engine's one imported format (B); STEP through an offline tool (D). OpenCASCADE does not go into the installed library (A).
 - **First step.** About three Core tasks: `ModelType::parts` with its refusals, a CPU posing rule, and the YAML. The demo harness then gets a solid drone (body, arms, motors) from the model. The props stay actuator discs.
 
@@ -119,6 +119,7 @@ Mass is always given. A real motor is not of uniform density, and the tensor ove
 ### 1.6 Identity and blobs
 
 - **Fold only when non-empty.** With no parts, no count is written either, so every existing identity and stored blob holds.
+- **Superseded 2026-10-12:** parts never enter `model_identity`. `parts_identity` is their identity now, and stage 7 folds it into the snapshot's registry identity (stage 7 design §3, "Geometry"). The bullets below describe the fold that `parts_identity` now implements; read "the fold" as `parts_identity`'s.
 - **Fold only once a step reads the parts.** That is stage 7's in-Simulation solver, or a table build (Task 7's rule, `module.hpp:298-308`). Until then, the fold note says parts are not folded, beside `visual_ref` (`model_identity.hpp:27`). A test pins that adding parts leaves the identity alone.
 - **The fold, when it comes:** after the IMU mounts, in declaration order. It folds each part's name, role, attach, rotor, mount, shape and surface. The shape's nodes and transforms are folded as the world file encodes them. `node_materials` is render data and is not folded.
 - **The one-time change.** When the fold begins, part-bearing models change identity once. That includes the compiled reference quad, whose identity is pinned. Bundle it with stage 7's own identity change (`airflow-spec-core-answers.md:163`): one `consumers.md` line.
