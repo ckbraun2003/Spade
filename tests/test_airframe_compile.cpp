@@ -1236,13 +1236,21 @@ constexpr double kCanopyDensity = 1250.0;  // kg/m^3, a printed plastic
     return p;
 }
 
+// The spec with one drag element given outright, zero coefficients for none.
+// An airframe with a mesh record needs one: the drag estimate cannot see a
+// mesh's area (Physics' drag rule, below).
+[[nodiscard]] AirframeSpec with_drag(AirframeSpec s) {
+    s.drag.push_back(DragSpec{});
+    return s;
+}
+
 // The reference quad with the canopy on top as record 5: its corner at
 // (-1/32, 1/64, -1/64), so it spans x and z about the frame's centre and sits
-// on the frame's top (y = 0.015).
+// on the frame's top (y = 0.015). Its drag is given.
 const glm::dvec3 kCanopyPlacement(-0.03125, 0.015625, -0.015625);
 
 [[nodiscard]] AirframeSpec quad_with_canopy() {
-    AirframeSpec s = reference_quad();
+    AirframeSpec s = with_drag(reference_quad());
     s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, kCanopyPlacement));
     return s;
 }
@@ -1541,7 +1549,7 @@ constexpr double kQuadMass = 0.526;
 // float outputs, each rounded once from double, agree bit for bit.
 TEST(AirframeCompile, AMeshBoxWeighsAsTheAnalyticBox) {
     const auto mesh = compile_airframe(quad_with_canopy());
-    AirframeSpec twin_spec = reference_quad();
+    AirframeSpec twin_spec = with_drag(reference_quad());
     twin_spec.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
     const auto twin = compile_airframe(twin_spec);
     ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
@@ -1572,9 +1580,9 @@ TEST(AirframeCompile, AMeshBoxWeighsAsTheAnalyticBox) {
 TEST(AirframeCompile, AMeshPartSitsAtItsPlacementAndWeighsAtItsCentroid) {
     const glm::dquat turn = glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25));
     const glm::dvec3 at(-0.02, 0.04, 0.01);
-    AirframeSpec s = reference_quad();
+    AirframeSpec s = with_drag(reference_quad());
     s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, at, turn));
-    AirframeSpec t = reference_quad();
+    AirframeSpec t = with_drag(reference_quad());
     t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, at, turn));
     const auto mesh = compile_airframe(s);
     const auto twin = compile_airframe(t);
@@ -1658,7 +1666,7 @@ TEST(AirframeCompile, TheCentreOfMassMovesWithTheMeshRecordsPose) {
     }};
     const glm::dvec3 moment = quad_moment();
     for (const Pose& p : poses) {
-        AirframeSpec s = reference_quad();
+        AirframeSpec s = with_drag(reference_quad());
         s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, p.at, p.q));
         const auto compiled = compile_airframe(s);
         ASSERT_TRUE(compiled.has_value()) << p.what << ": " << compiled.error().context;
@@ -1684,7 +1692,7 @@ TEST(AirframeCompile, AMeshCavitySubtracts) {
                                           flipped(box_input(cavity_lo, cavity_sides))));
     ASSERT_NE(hollow, nullptr);
     ASSERT_EQ(hollow->shell_count(), 2u);
-    AirframeSpec s = reference_quad();
+    AirframeSpec s = with_drag(reference_quad());
     s.parts.push_back(mesh_record(hollow, kCanopyDensity, kCanopyPlacement));
     const auto compiled = compile_airframe(s);
     ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
@@ -1735,7 +1743,7 @@ TEST(AirframeCompile, TwoMeshPartsAdd) {
     AirframeSpec s = quad_with_canopy();
     s.parts.push_back(mesh_record(mesh_of(box_input(glm::dvec3(0.0), camera_sides)), camera_density, camera_at,
                                   kIdentity, "camera"));
-    AirframeSpec t = reference_quad();
+    AirframeSpec t = with_drag(reference_quad());
     t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
     t.parts.push_back(box_twin(camera_sides, camera_density, camera_at, kIdentity, "camera"));
     const auto mesh = compile_airframe(s);
@@ -1771,9 +1779,9 @@ TEST(AirframeCompile, AScaledGltfNodeWeighsAsItsBakedGeometry) {
     const double v = kCanopySides.x * kCanopySides.y * kCanopySides.z;
     EXPECT_EQ(baked->mass_properties().volume, v) << "the scaled solid's volume, exact (dyadic)";
 
-    AirframeSpec s = reference_quad();
+    AirframeSpec s = with_drag(reference_quad());
     s.parts.push_back(mesh_record(baked, kCanopyDensity, glm::dvec3(0.0)));
-    AirframeSpec t = reference_quad();
+    AirframeSpec t = with_drag(reference_quad());
     t.parts.push_back(box_twin(kCanopySides, kCanopyDensity, kCanopyPlacement));
     const auto mesh = compile_airframe(s);
     const auto twin = compile_airframe(t);
@@ -1808,4 +1816,70 @@ TEST(AirframeCompile, AMeshRecordsBadPoseIsOneIssue) {
     issues = check_airframe(s);
     ASSERT_EQ(issues.size(), 1u) << listed(issues);
     EXPECT_TRUE(has_issue(issues, "parts", 5, "position"));
+}
+
+// ===========================================================================
+// PHYSICS' DRAG RULE (2026-10-13). With no DragSpec the drag is estimated
+// from the records' inertia shapes, and a mesh record has none; yet its
+// solid is real external area, unlike a point or a tensor record. So with no
+// DragSpec, any mesh record among the drag sources refuses the estimate
+// (L6): one issue at drag, naming the first mesh record, "(and N more)" for
+// the rest. A DragSpec clears it.
+// ===========================================================================
+
+// A mixed airframe, the reference quad's analytic frame, arms, motors and
+// battery plus the mesh canopy, with no DragSpec: refused at drag, naming
+// the canopy. The same airframe with a DragSpec compiles.
+TEST(AirframeCompile, AMixedAirframeWithoutADragSpecIsRefusedAtDrag) {
+    AirframeSpec s = quad_with_canopy();
+    s.drag.clear();
+    std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(mentions(issues[0].message, "none given, and part 'canopy' is a mesh, whose area the estimate "
+                                            "cannot see: give a DragSpec (zero coefficients for none)"))
+        << issues[0].message;
+    EXPECT_FALSE(mentions(issues[0].message, "more)")) << "one mesh record";
+    const auto refused = compile_airframe(s);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(mentions(refused.error().context, "drag[0]: none given, and part 'canopy' is a mesh"))
+        << refused.error().context;
+
+    // In the one call that lists everything, beside the record's own fault.
+    s.parts[5].geometry.density = 0.0;
+    issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 2u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "geometry.density"));
+
+    const auto given = compile_airframe(quad_with_canopy());
+    ASSERT_TRUE(given.has_value()) << given.error().context;
+    EXPECT_EQ(given->fit.drag, Provenance::given);
+}
+
+// An all-mesh airframe: three mesh records, the blocks unshaped. The same
+// rule, one issue, naming the first mesh record and counting the rest; with
+// a DragSpec it compiles.
+TEST(AirframeCompile, AnAllMeshAirframeWithoutADragSpecNamesTheFirstMesh) {
+    AirframeSpec s = reference_quad();
+    s.parts.clear();
+    s.motor.shape.reset();
+    s.battery.shape.reset();
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, glm::dvec3(-0.03125, -0.0078125, -0.015625),
+                                  kIdentity, "frame"));
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, glm::dvec3(0.03125, -0.0078125, -0.015625),
+                                  kIdentity, "arm"));
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, kCanopyPlacement, kIdentity, "lid"));
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, ""));
+    EXPECT_TRUE(mentions(issues[0].message, "none given, and part 'frame' is a mesh (and 2 more), whose area "
+                                            "the estimate cannot see: give a DragSpec (zero coefficients for none)"))
+        << issues[0].message;
+
+    s.drag.push_back(DragSpec{});
+    EXPECT_TRUE(check_airframe(s).empty()) << listed(check_airframe(s));
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->model.parts.size(), 3u) << "three mesh parts; the blocks are unshaped";
 }
