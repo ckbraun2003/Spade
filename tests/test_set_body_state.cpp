@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <glm/geometric.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
@@ -32,6 +33,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "set_body_state_support.hpp"
+#include "sim/design_frame.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -657,6 +659,72 @@ TEST(SetBodyState, RefusesExactlyThePosesSpawnRefuses) {
     EXPECT_GT(bare_accepted, 0);
     EXPECT_GT(vehicle_refused, 0);
     EXPECT_GT(vehicle_accepted, bare_accepted) << "the model's wider radius reaches the setter";
+}
+
+// spawn(vehicle) tests the burial at the CENTRE OF MASS it creates (the lead's
+// follow-up, 2026-10-13): the body row's pos, which contact ejects from, at the
+// model's effective radius -- the point set_body_state() tests. So a vehicle
+// whose centre of mass is offset from its design origin is refused by both or
+// by neither, whichever way it is turned. The floor is solid below y = 0.
+TEST(SetBodyState, AnOffsetComVehicleSpawnsAndSetsByItsCentreOfMass) {
+    spade::vehicles::ModelType low{};
+    low.name = "low";
+    low.body.mass = 1.0f;
+    low.body.inertia_diag = {0.02f, 0.02f, 0.03f};
+    low.proxy_radius = 0.2f;                // the floor's grid cell (0.5) admits up to 0.25
+    low.com_offset = {0.0f, -0.15f, 0.0f};  // the centre of mass 0.15 m below the design origin
+
+    Simulation sim = make_sim(32);
+    Simulation probe = make_sim(32);
+    const Result<spade::ModelTypeId> id = sim.register_model(low);
+    ASSERT_TRUE(id.has_value()) << id.error().context;
+    ASSERT_TRUE(probe.register_model(low).has_value());
+    spade::VehicleSpawn high{};
+    high.pos = {1.0f, 1.0f, 0.0f};
+    const Result<spade::VehicleRef> vehicle = sim.spawn(0, *id, high);
+    ASSERT_TRUE(vehicle.has_value()) << vehicle.error().context;
+    ASSERT_TRUE(sim.flush_structural().has_value());
+
+    // Upright, the centre of mass is 0.15 m below the design origin; turned
+    // half a turn about +Z, 0.15 m above it. Accepted iff the centre of mass
+    // is no deeper than the radius: y +- 0.15 >= -0.2.
+    const glm::quat upright(1.0f, 0.0f, 0.0f, 0.0f);
+    const glm::quat flipped = glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
+    struct Rung {
+        float y;
+        glm::quat orient;
+        bool accepted;
+    };
+    const Rung rungs[] = {
+        {0.0f, upright, true},     // the centre of mass at -0.15
+        {-0.04f, upright, true},   // at -0.19
+        {-0.06f, upright, false},  // at -0.21, though the design origin is only 0.06 deep
+        {-0.1f, upright, false},   // at -0.25
+        {-0.3f, flipped, true},    // at -0.15, though the design origin is 0.3 deep
+        {-0.36f, flipped, false},  // at -0.21
+    };
+    const glm::vec3 still(0.0f);
+    for (const Rung& r : rungs) {
+        spade::VehicleSpawn where{};
+        where.pos = {0.3f, r.y, -0.2f};
+        where.orient = r.orient;
+        const Result<spade::VehicleRef> manufactured = probe.spawn(0, *id, where);
+        EXPECT_EQ(manufactured.has_value(), r.accepted)
+            << "spawn(vehicle), design origin at y = " << r.y << ": " << text_of(manufactured);
+
+        // The setter, at the centre of mass that spawn makes of `where`.
+        const spade::FrameState com = spade::to_body_state(spade::FrameState{where.pos, where.orient, still, still},
+                                                           low.design_to_principal, low.com_offset);
+        const Result<void> moved = sim.set_body_state(vehicle->body, com.pos, com.orient, still, still);
+        EXPECT_EQ(moved.has_value(), manufactured.has_value())
+            << "set_body_state at the centre of mass y = " << com.pos.y << ": " << text_of(moved);
+        if (!manufactured.has_value()) {
+            ASSERT_TRUE(text_of(manufactured).starts_with("spawn(vehicle): ")) << text_of(manufactured);
+            EXPECT_EQ(text_of(moved),
+                      "set_body_state" + text_of(manufactured).substr(std::string_view("spawn(vehicle)").size()))
+                << "y = " << r.y;
+        }
+    }
 }
 
 namespace {
