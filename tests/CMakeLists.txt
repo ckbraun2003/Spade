@@ -60,6 +60,7 @@ add_executable(spade_tests
     test_core_lambda2.cpp
     test_path_text.cpp
     test_unique_temp.cpp
+    test_fatal_report.cpp
     test_sdf.cpp
     test_mesh.cpp
     test_mesh_field.cpp
