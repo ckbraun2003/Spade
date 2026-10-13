@@ -25,6 +25,7 @@
 #include <string>
 
 #include "physics/airflow/actuator.hpp"
+#include "physics/airflow/rotor_discs.hpp"
 
 namespace flow_movie {
 
@@ -53,15 +54,24 @@ spade::Result<AirflowCase> quad_hover_case() {
     c.bc = airflow::DomainBc{};  // every face open, ambient 0: still air
     c.fluid = airflow::FluidConfig{.rho = 1.225f, .nu = 0.0f, .h = 0.0005f, .n_v = 2};
     c.origin = -com;  // the COM at the world origin
-    for (const Rotor& r : rotors) {
-        const airflow::ActuatorDisc d{.centre = com + r.local_pos,
-                                      .axis = glm::vec3(0.0f, -1.0f, 0.0f),
-                                      .radius = kRadius,
-                                      .thrust = kThrust,
-                                      .torque = -static_cast<float>(r.spin) * kTorque};
-        if (spade::Result<void> ok = airflow::check_disc(d, c.shape); !ok) return std::unexpected(ok.error());
-        c.discs.push_back(d);
-        c.spins.push_back(r.spin);
+    // The discs come through the one rule (physics/airflow/rotor_discs.hpp,
+    // P7a): the body level at the world origin, so the grid's corner is at
+    // -com. It gives this case's original hand mapping bit for bit
+    // (AirflowRotorDiscs.TheQuadCasesDiscsAreItsHandMappingBitForBit), so the
+    // films cached before it are its films.
+    std::array<airflow::DiscRotor, 4> discs_in{};
+    for (std::size_t i = 0; i < rotors.size(); ++i) {
+        discs_in[i] = airflow::DiscRotor{.hub_body = rotors[i].local_pos,
+                                         .radius = kRadius,
+                                         .spin_dir = static_cast<float>(rotors[i].spin),
+                                         .thrust = kThrust,
+                                         .torque = kTorque};
+        c.spins.push_back(rotors[i].spin);
+    }
+    c.discs.resize(rotors.size());
+    if (spade::Result<void> ok = airflow::discs_from_rotors(discs_in, airflow::DiscBody{}, c.origin, c.shape, c.discs);
+        !ok) {
+        return std::unexpected(ok.error());
     }
     c.t_end = 0.6f;
     return c;
