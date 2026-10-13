@@ -30,6 +30,12 @@
 //              I3, only discs check_disc accepts: "periodic 12x8x6, disc" became
 //              "periodic 12x8x8, disc" with R = 2 dx, and the floor case's disc
 //              R = 2 dx (R = 3 dx left the y axis, silently dropping momentum)
+//   moved      2026-10-13, all nine, by lambda2 in Publish
+//              (physics/airflow-lambda2): the S texture's fourth channel holds
+//              lambda2-hat (core/lambda2.hpp) where it held 0, and deeper
+//              solid cells are no-data there too. The steps are untouched
+//              (kSolverCoreDigest unchanged); MSVC release, debug to agree, and
+//              the gcc leg on the branch's head to reproduce them
 // A change to any value here is a golden regeneration under TD-1, with its
 // reason in the commit.
 #include <gtest/gtest.h>
@@ -82,27 +88,27 @@ struct Config {
 
 [[nodiscard]] std::vector<Config> configs() {
     std::vector<Config> out;
-    out.push_back({"periodic 16^3", {16, 16, 16, 0.1f}, all(FaceBc::periodic), 0.01f, 0.0f, 0x28b57f5d7ad1d200ull});
+    out.push_back({"periodic 16^3", {16, 16, 16, 0.1f}, all(FaceBc::periodic), 0.01f, 0.0f, 0x576d9af2693b494aull});
     out.push_back(
-        {"periodic 12x8x8, disc", {12, 8, 8, 0.1f}, all(FaceBc::periodic), 0.0f, 2.0f, 0xde265578accd7f72ull});
+        {"periodic 12x8x8, disc", {12, 8, 8, 0.1f}, all(FaceBc::periodic), 0.0f, 2.0f, 0xdbc2c9a6de0dfdc6ull});
     {
         DomainBc bc = all(FaceBc::wall);
         bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.2f);
         bc.wall_velocity[kXMinus] = glm::vec3(0.0f, -0.3f, 0.1f);
-        out.push_back({"walls, two moving, 10x6x8", {10, 6, 8, 0.1f}, bc, 0.02f, 0.0f, 0xdff746e12694c171ull});
+        out.push_back({"walls, two moving, 10x6x8", {10, 6, 8, 0.1f}, bc, 0.02f, 0.0f, 0x35b6adbc84c5ae09ull});
     }
     {
         DomainBc bc;
         bc.face = {FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::wall, FaceBc::periodic, FaceBc::periodic};
         bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
-        out.push_back({"cavity slab 16x16x1", {16, 16, 1, 1.0f / 16.0f}, bc, 0.01f, 0.0f, 0xb5eb25514662a3bdull});
+        out.push_back({"cavity slab 16x16x1", {16, 16, 1, 1.0f / 16.0f}, bc, 0.01f, 0.0f, 0x65010bddcee0e195ull});
     }
-    out.push_back({"open 9x7x5 (odd sizes)", {9, 7, 5, 0.1f}, DomainBc{}, 0.01f, 0.0f, 0xc668e2d327d8af84ull});
-    out.push_back({"open 16x12x16, disc", {16, 12, 16, 0.05f}, DomainBc{}, 0.0f, 3.0f, 0xecc7a987b2fc3d2aull});
+    out.push_back({"open 9x7x5 (odd sizes)", {9, 7, 5, 0.1f}, DomainBc{}, 0.01f, 0.0f, 0xb3b2e6318b608bbaull});
+    out.push_back({"open 16x12x16, disc", {16, 12, 16, 0.05f}, DomainBc{}, 0.0f, 3.0f, 0x77d0cf5b91536b69ull});
     {
         DomainBc bc;  // a wind: inflow where it enters, outlets elsewhere
         bc.ambient = glm::vec3(0.8f, -0.2f, 0.3f);
-        out.push_back({"wind 12x10x8", {12, 10, 8, 0.1f}, bc, 0.01f, 0.0f, 0xc44b75cabaec9cdeull});
+        out.push_back({"wind 12x10x8", {12, 10, 8, 0.1f}, bc, 0.01f, 0.0f, 0xaddf3b286bfb16c3ull});
     }
     {
         DomainBc bc;  // the drone box: a rolling-road floor under a wind, periodic in z
@@ -111,12 +117,12 @@ struct Config {
         bc.wall_velocity[kYMinus] = glm::vec3(1.0f, 0.0f, 0.0f);
         bc.face[kZMinus] = FaceBc::periodic;
         bc.face[kZPlus] = FaceBc::periodic;
-        out.push_back({"floor under wind 12x8x8, disc", {12, 8, 8, 0.1f}, bc, 0.01f, 2.0f, 0x45d8ea22d9759deaull});
+        out.push_back({"floor under wind 12x8x8, disc", {12, 8, 8, 0.1f}, bc, 0.01f, 2.0f, 0x7920c38ea12394a1ull});
     }
     {
         DomainBc bc;
         bc.face = {FaceBc::periodic, FaceBc::periodic, FaceBc::wall, FaceBc::open, FaceBc::wall, FaceBc::wall};
-        out.push_back({"one-cell x 1x8x8", {1, 8, 8, 0.1f}, bc, 0.01f, 0.0f, 0x247bfda845f95023ull});
+        out.push_back({"one-cell x 1x8x8", {1, 8, 8, 0.1f}, bc, 0.01f, 0.0f, 0xb40e6662a0c95d54ull});
     }
     return out;
 }
