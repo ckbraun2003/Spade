@@ -44,7 +44,7 @@ using spade::Code;
 // A case with every section filled, pinned to `m`.
 [[nodiscard]] an::AnalysisCase full_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m)};
+    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
     c.controls = an::Controls{.armed = true, .throttle = 0.55f, .pitch_deg = -5.0f, .roll_deg = 2.5f, .yaw_deg = 0.0f};
     c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 4.0f, .heading_deg = 10.0f, .floor_height = 0.5f};
     c.grid = an::GridSetup{.box = 3.2f, .spacing = 0.025f, .nests = 2};
@@ -94,6 +94,7 @@ TEST(AnalysisCaseFile, RoundTripsByteForByte) {
     ASSERT_TRUE(again.has_value());
     EXPECT_EQ(*again, *text);
     EXPECT_EQ(back->model.identity, c.model.identity);
+    EXPECT_EQ(back->model.parts, c.model.parts);
     EXPECT_EQ(back->blades.at(0).stations.at(1).twist_deg, 12.5f);
     EXPECT_EQ(back->airfoils.at(0).polars.at(0).alpha_deg.at(2), 10.0f);
     EXPECT_EQ(back->flight.kind, an::FlightKind::forward);
@@ -227,7 +228,7 @@ TEST(AnalysisCaseResolve, FillsTheDefaultsAndSaysSo) {
     EXPECT_NEAR(*resolved->spec.grid.spacing, *resolved->spec.grid.box / static_cast<float>(an::kDefaultCellsAcross),
                 1e-7f);
     EXPECT_EQ(resolved->base.nx, an::kDefaultCellsAcross);
-    EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base, spade::physics::airflow::DomainBc{}));
+    EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base, resolved->domain));
     EXPECT_EQ(resolved->finest_spacing, *resolved->spec.grid.spacing);
     // The hash names the run: the resolved case's own text.
     EXPECT_EQ(resolved->hash, spade::rng::fnv1a64(an::case_to_yaml(resolved->spec).value_or("")));
@@ -249,7 +250,11 @@ TEST(AnalysisCaseResolve, AGivenGridIsKeptAndNestsHalveTheCell) {
 TEST(AnalysisCaseResolve, AChangedModelMustBeRepinned) {
     spade::vehicles::ModelType m = quad();
     const an::AnalysisCase c = full_case(m);
-    // A part's change is refused by the parts pin, with Core's parts_identity.
+    m.parts.push_back(ball("guard", 0.02f));  // model_identity does not fold parts; parts_identity does
+    const auto parts_changed = an::resolve(c, m);
+    ASSERT_FALSE(parts_changed.has_value());
+    EXPECT_TRUE(names(parts_changed.error(), "model.parts", "re-pin")) << listed(parts_changed.error());
+    m = quad();
     m.body.mass += 0.1f;
     const auto body_changed = an::resolve(c, m);
     ASSERT_FALSE(body_changed.has_value());
@@ -341,4 +346,44 @@ TEST(ModelReach, IsTheFarthestRotorTipOrTheContactRadius) {
     EXPECT_EQ(spade::vehicles::model_reach(m), std::max(tip, m.proxy_radius));
     m.proxy_radius = 10.0f;
     EXPECT_EQ(spade::vehicles::model_reach(m), 10.0f);
+}
+
+// The drone box's domain (Physics' plan A conditions): forward flight moves
+// the air and the ground past the drone (the floor a rolling road); hover in a
+// wind moves only the air; no face is periodic.
+TEST(AnalysisCaseResolve, TheDomainIsTheDroneBox) {
+    namespace af = spade::physics::airflow;
+    const spade::vehicles::ModelType m = quad();
+    const auto domain_of = [&](an::Flight f) {
+        an::AnalysisCase c = full_case(m);
+        for (an::RotorSetup& r : c.rotors) r.model = an::RotorModel::disc;
+        c.flight = f;
+        const auto r = an::resolve(c, m);
+        EXPECT_TRUE(r.has_value()) << (r ? "" : listed(r.error()));
+        return r ? r->domain : af::DomainBc{};
+    };
+    const float h = 10.0f * 3.14159265f / 180.0f;
+    // Forward at 4 m/s, the air from 10 degrees left of the nose, over a floor.
+    const af::DomainBc fwd = domain_of(an::Flight{.kind = an::FlightKind::forward, .speed = 4.0f,
+                                                  .heading_deg = 10.0f, .floor_height = 0.5f});
+    EXPECT_NEAR(fwd.ambient.x, -4.0f * std::cos(h), 1e-5f);
+    EXPECT_NEAR(fwd.ambient.y, 0.0f, 1e-6f);
+    EXPECT_NEAR(fwd.ambient.z, 4.0f * std::sin(h), 1e-5f);
+    EXPECT_EQ(fwd.face[af::kYMinus], af::FaceBc::wall);
+    EXPECT_EQ(fwd.wall_velocity[af::kYMinus], fwd.ambient);  // the rolling road
+    for (const af::Side s : {af::kXMinus, af::kXPlus, af::kYPlus, af::kZMinus, af::kZPlus}) {
+        EXPECT_EQ(fwd.face[s], af::FaceBc::open) << s;
+    }
+    // Hover in a 3 m/s wind from the left, over a floor that stays still.
+    const af::DomainBc wind = domain_of(an::Flight{.kind = an::FlightKind::hover_in_wind, .speed = 3.0f,
+                                                   .heading_deg = 90.0f, .floor_height = 0.5f});
+    EXPECT_NEAR(wind.ambient.x, 0.0f, 1e-5f);
+    EXPECT_NEAR(wind.ambient.z, 3.0f, 1e-5f);
+    EXPECT_EQ(wind.face[af::kYMinus], af::FaceBc::wall);
+    EXPECT_EQ(wind.wall_velocity[af::kYMinus], glm::vec3(0.0f));
+    // Hover with no floor: still air, every face open.
+    const af::DomainBc still = domain_of(an::Flight{.kind = an::FlightKind::hover, .speed = 0.0f,
+                                                    .heading_deg = 0.0f, .floor_height = std::nullopt});
+    EXPECT_EQ(still.ambient, glm::vec3(0.0f));
+    EXPECT_EQ(still.face[af::kYMinus], af::FaceBc::open);
 }
