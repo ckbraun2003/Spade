@@ -34,8 +34,10 @@
 //              (physics/airflow-lambda2): the S texture's fourth channel holds
 //              lambda2-hat (core/lambda2.hpp) where it held 0, and deeper
 //              solid cells are no-data there too. The steps are untouched
-//              (kSolverCoreDigest unchanged); MSVC release, debug to agree, and
-//              the gcc leg on the branch's head to reproduce them
+//              (kSolverCoreDigest unchanged); MSVC release and debug agree, and
+//              the gcc-13 Docker leg reproduces all nine on a fresh -NoSeed
+//              volume at 8baa559 (build-docker/8baa5596acc8-8baa559-fresh,
+//              2026-10-13): FINAL
 // A change to any value here is a golden regeneration under TD-1, with its
 // reason in the commit.
 #include <gtest/gtest.h>
