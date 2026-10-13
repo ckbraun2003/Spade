@@ -69,8 +69,7 @@ namespace detail {
 }
 
 [[nodiscard]] inline float reach_of(const vehicles::ModelType& model) {
-    float r = model.proxy_radius;
-    for (const vehicles::RotorDesc& rotor : model.rotors) r = std::max(r, glm::length(rotor.local_pos) + rotor.radius);
+    const float r = vehicles::model_reach(model);  // Core's one rule (TD-9)
     return r > 0.0f ? r : kPickDefaultReach;
 }
 

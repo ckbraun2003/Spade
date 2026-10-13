@@ -102,6 +102,7 @@ target_link_libraries(spade_consumer_smoke PRIVATE
     spade::sim
     spade::scene
     spade::vehicles
+    spade::analysis
     glm::glm
 )
 

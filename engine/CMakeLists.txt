@@ -913,6 +913,39 @@ install(TARGETS spade_scene
 )
 install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
 
+# spade::analysis -- the drone CFD analysis: its case (.case.yaml), resolving
+# a case against the model it pins, and later its runs and results (INT-5,
+# INT-6; docs/design/interface/plans/2026-10-12-drone-builder-cfd-design.md).
+# Owned by Interface; display-free; its public headers include only installed
+# engine headers. yaml-cpp stays PRIVATE as in spade_scene: an installed
+# consumer gets it through spade::world (cmake/spadeConfig.cmake.in).
+add_library(spade_analysis STATIC
+    analysis/case.cpp
+    analysis/case_file.cpp
+    analysis/coefficients.cpp
+)
+add_library(spade::analysis ALIAS spade_analysis)
+set_target_properties(spade_analysis PROPERTIES EXPORT_NAME analysis)
+target_include_directories(spade_analysis PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(spade_analysis
+    PUBLIC spade::vehicles spade::physics
+    PRIVATE
+        $<BUILD_INTERFACE:yaml-cpp::yaml-cpp>
+        $<BUILD_LOCAL_INTERFACE:spade_warnings>
+        $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+target_compile_features(spade_analysis PUBLIC cxx_std_23)
+
+install(TARGETS spade_analysis
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY analysis/ DESTINATION include/analysis FILES_MATCHING PATTERN "*.hpp")
+
 # ------------------------------------------------------------------------------
 # spade_compute (S6 Task 1): the v2 Vulkan compute backend scaffold --
 # compute/backend.hpp's BackendKind/BackendDesc descriptors (no Vulkan

@@ -39,6 +39,7 @@
 #include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
 
+#include "analysis/case.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
@@ -169,6 +170,24 @@ int main() {
         return 1;
     }
     std::printf("spade::scene OK: a scene file round-tripped through scene_from_yaml and scene_to_yaml\n");
+
+    // spade::analysis (INT-6): a case through its file, as Kat's builder
+    // reads and writes one. Calling into case_file.cpp is what pulls it from
+    // the archive (the note at the top of this file).
+    spade::analysis::AnalysisCase analysis_case;
+    analysis_case.controls.armed = true;
+    analysis_case.controls.throttle = 0.5f;
+    const spade::Result<std::string> case_text = spade::analysis::case_to_yaml(analysis_case);
+    if (!case_text) {
+        std::fprintf(stderr, "spade::analysis::case_to_yaml failed: %s\n", case_text.error().context.c_str());
+        return 1;
+    }
+    const spade::Result<spade::analysis::AnalysisCase> case_back = spade::analysis::case_from_yaml(*case_text);
+    if (!case_back || spade::analysis::case_to_yaml(*case_back).value_or("") != *case_text) {
+        std::fprintf(stderr, "spade::analysis did not round-trip a case\n");
+        return 1;
+    }
+    std::printf("spade::analysis OK: a case round-tripped through case_to_yaml and case_from_yaml\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).
