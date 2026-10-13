@@ -101,6 +101,17 @@ The 72 refused tests are listed by name in this file's history (`b08d139`).
 - **Under memory pressure on the old box:** host memory fell to about 480 MB free, and the harness stopped the background watcher. The detached container carried on, and `-Follow` collected the result. Host memory, not the container's 3 GB, limited that box, so its legs ran at `-j1`. C: had 12.4 GB free before and after.
 - **Earlier one-off costs on the old box** (slot 5, 2026-10-02): the image build took 228 s (762 MB), and the first configure, including the dependency fetch, took 211 s.
 
+## Silent deaths
+
+Tests whose output stopped after `[ RUN      ]`, recorded under `02-build-and-gate.md`, "A test that dies without failing".
+
+| Reported | Test | Ran for | Exit code | Rerun alone | Box at the time |
+|---|---|---|---|---|---|
+| 2026-10-13, by the lead | `shower_inside` | 2.4 s | not recorded (ctest prints none) | not recorded | not recorded |
+| 2026-10-13, by the lead | `GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands` | 0.55 s | not recorded | not recorded | not recorded |
+
+Both were reported before the triage rule existed. Around them, Windows grew its page file at 17:26 UTC on 2026-10-12 (System event 26, "low on virtual memory"), as it also did on 2026-10-03 and 2026-10-04. At 03:55 UTC on 2026-10-13, at rest, the commit charge was 32.2 GB of a 38.4 GB limit, with 14.2 GB free.
+
 ## Specified vs built
 
 | Ruling | Built | Evidence and gaps |

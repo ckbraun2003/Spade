@@ -120,6 +120,35 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 
 The first build of a fresh checkout fetches dependencies. On the old box, release took 1006 s at `-ParallelLevel 1`. On this machine, the Docker leg's first configure took 77 s with the fetch, and its first full build took 229 s at `-j4` (`07-status.md`).
 
+## A test that dies without failing
+
+A test that fails an assertion prints `[  FAILED  ]` and its message. If its output stops after `[ RUN      ]`, the process ended instead: a crash, an abort or a kill. On this box it has happened under load (the lead, 2026-10-13: `shower_inside` at 2.4 s and `VulkanSnapshot` at 0.55 s).
+
+- **ctest does not say which.** ctest 4.2.0 here prints `***Failed` and `(Failed)` for every non-zero exit, a crash's included, and `LastTest.log` keeps no exit code (checked on 2026-10-13 with scripted exit codes). Windows' event log has no record either: GoogleTest turns off Windows Error Reporting for its process (`SetErrorMode(SEM_NOGPFAULTERRORBOX)`) and clears `abort()`'s report flag (`gtest.cc`, `UnitTest::Run`). The exit code shows only when the test runs again, directly.
+- **Rerun it alone, directly, once,** in PowerShell from the build tree: `& .\bin\spade_tests.exe --gtest_filter=Suite.Name; '{0:X8}' -f $LASTEXITCODE`. Don't use Git Bash, which turns the code into a signal number: `0xC0000005` reads as 139 ("Segmentation fault"), and `0xC0000409` and `0xC000012D` as 127, which also means "command not found".
+- **What the exit code says:**
+
+| Exit code | What ended the test | Points to |
+|---|---|---|
+| `00000000` on the rerun | Nothing: it passed alone | Load. Read the box's state at the time (below) |
+| `00000003` | `abort()` or `std::terminate`, silent under GoogleTest. An exception that escapes a `noexcept` function or a thread ends here, `std::bad_alloc` from a failed allocation included | Memory if the box was short of commit (below), otherwise a bug |
+| `C0000005` | An access violation GoogleTest did not catch. It catches one in the test's own body and prints `SEH exception with code 0xc0000005`, so a silent one came from another thread, such as a driver's or a worker's | A bug, or a driver failing under memory pressure |
+| `C0000017`, `C000012D` | An allocation refused (`STATUS_NO_MEMORY`), or a commit refused at the limit (`STATUS_COMMITMENT_LIMIT`) | Memory: the box's commit limit |
+| `C00000FD`, `C0000374`, `C0000409` | A stack overflow, heap corruption, or a fail-fast (`/GS`, the CRT's invalid-parameter check) | A bug, not load |
+| `FFFFFFFF`, or `00000001` with no `[  FAILED  ]` | A kill from outside: `Stop-Process` leaves −1 and `taskkill /F` leaves 1 (both checked 2026-10-13) | Someone stopped processes by name, against the box rule above |
+| ctest's `***Timeout` | ctest's own kill at the test's time limit (60 s in debug) | Slow, not dead |
+
+- **Short of memory means short of commit, not of free memory.** Windows refuses an allocation when the commit charge reaches the commit limit (RAM plus the page file), however much memory is free. At 03:55 UTC on 2026-10-13 the box had 14.2 GB free, but its commit charge was 32.2 GB of a 38.4 GB limit. Windows manages the page file and grows it on demand, and each time it does it logs "Your system is low on virtual memory" (System log, event 26), as it did at 17:26 UTC on 2026-10-12. An allocation that arrives as the limit is reached fails before the file grows.
+- **Record at once, since the box changes within minutes:**
+  - the test, its binary and preset, the commit, the time in UTC, how long it ran before it died (`LastTest.log`'s `Test time`), and its last line of output;
+  - memory: `Get-CimInstance Win32_OperatingSystem | ForEach-Object { 'free {0:F1} GB; commit {1:F1} of {2:F1} GB' -f ($_.FreePhysicalMemory/1MB), (($_.TotalVirtualMemorySize - $_.FreeVirtualMemory)/1MB), ($_.TotalVirtualMemorySize/1MB) }`;
+  - whether the page file grew around then: `Get-WinEvent -FilterHashtable @{LogName='System'; Id=26; StartTime=(Get-Date).AddHours(-1)} -ErrorAction SilentlyContinue | Where-Object Message -match 'virtual memory'`;
+  - what else was running: builds (`cl`, `link`, `ninja`), suites (`ctest`, `spade_tests`), legs (`docker ps`), GPU users (`nvidia-smi --query-compute-apps=pid,process_name --format=csv,noheader`), and any game;
+  - the rerun's exit code and result.
+
+  Send it to the lead. Test/Docs keeps the list in `07-status.md`.
+- **The rerun rule.** Rerun the test alone, once, and record both results: the run's and the rerun's. A pass alone makes it a flake, and the run's report names it with both results. A death or a failure on the rerun is a failure like any other. A test that dies silently a second time, on any run, goes to the lead as a finding instead of another rerun.
+
 ## Pushing
 
 Nothing is pushed without the user's word. `.git/hooks/pre-push` refuses every push unless `SPADE_PUSH_AUTHORIZED` is set for that push. The tracked copy is `scripts/pre-push-guard.sh`; the hook is per-checkout, so install it in each clone (LF line endings).
