@@ -137,3 +137,8 @@ endif()
 
 enable_testing()
 add_subdirectory(tests)
+
+# The offline airflow recorder (tools/flow_movie): it needs GL and a window.
+if(SPADE_RENDER_GL AND TARGET glfw AND SPADE_GLFW_HAS_BACKEND)
+    add_subdirectory(tools/flow_movie)
+endif()
