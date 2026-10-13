@@ -112,7 +112,8 @@ struct PartGeometrySpec {
 //                 SdfProgram part. Nothing but the scene file reads it.
 //   min_feature   m, the smallest feature the grid must resolve (CORE-8 D5);
 //                 finite and > 0. An authored part declares it; the airframe
-//                 compile will fill it from its primitives' sizes (Task A4).
+//                 compile fills it with its solid's smallest dimension
+//                 (vehicles/airframe_compile.hpp, PARTS).
 struct PartDesc {
     std::string name{};
     std::string role{};

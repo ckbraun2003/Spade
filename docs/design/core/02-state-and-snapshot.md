@@ -32,7 +32,7 @@
   - world count;
   - array count;
   - configuration identity: an FNV-1a fold over the module set, taking each module's name and version in set order, then each compiled pass's name and phase in compiled order (`sim/module.hpp`, `compile_schedule`). State, stream, table and scratch declarations are not folded: the schema hash covers the arrays, and a changed row or tag rides the module's version;
-  - model registry identity: each registered model's identity, in registration order (`vehicles/model_identity.hpp`).
+  - model registry identity: each registered model's identity, in registration order (`vehicles/model_identity.hpp`). A model's identity never folds its parts (`CORE-7`). Their identity is `parts_identity`, which stage 7 folds into this one for a model with parts. Until then, every stored v3 blob restores after its models gain parts.
 
   One section per array follows, keyed by name. Blobs are untrusted input and are validated before anything is written. A blob of an older version is refused with the version message.
 - **Snapshot refuses a non-empty structural queue** rather than dropping it.

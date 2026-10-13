@@ -1,8 +1,8 @@
 # Per-part model geometry, and CAD input options
 
 **Owner:** Core. Physics reviews the ModelType and airframe-compile changes, because `vehicles/` is Physics' code (`02-realms.md:8`).
-**Status:** design-note draft for the lead. Docs only. Nothing edited, built or committed.
-**Base:** master `80d564b`.
+**Status:** approved by the lead, 2026-10-12 (`72177c7`; `CORE-7`). The user chose the CAD path, meshes plus a STEP converter (`CORE-6`, `44561b8`), then amended it to **import only** (`4426c05`): no UI authors parts natively, so §2's option C is dropped; `PartDesc` keeps an `SdfProgram` as its internal shape, and the compile's inertia-shape parts stay. §1.6 is amended (`030851c`): parts never enter `model_identity`, and `parts_identity` is their identity. **The first step (§3) is built**, as Part A of `plans/2026-10-12-parts-meshes-plan.md`: A1 `6302fcb`, A2 `0503350`, A3 `4a39929`, A4 `0870cf0`, and `parts_identity` `57772c8`. Triangle meshes (option B) are built through the sidecar (B1 to B5); the readers and the STEP tool are next. What is built today is in `07-status.md`.
+**Base:** master `80d564b` (the note as drafted).
 **The ask:** Cameron, 2026-10-12 (`backlog.md:66`): "The drone builder is going to be a mini drone cfd analysis system on top of the builder with cad design inputs and proper geometry for each part." The drone is a solid wall, with porous as an option. The engine is headed for F1-grade accuracy. The lead asked for a public per-part geometry on `ModelType` and an outline of the CAD input options.
 
 ## Summary
@@ -162,6 +162,8 @@ Mass is always given. A real motor is not of uniform density, and the tensor ove
 - **Settled in the CAD spec after the choice:** how a mesh is stored. Core leans to a binary sidecar named in the YAML by path and content hash, as a scene names its world (`SCN-001`).
 
 ## 3. The smallest first step
+
+**Done** (2026-10-12): Part A of the parts and meshes plan, with the commits under Status. As built, `posed_parts()` returns the posed frames and `posed_program()` gives the one world-frame `SdfProgram` (step 2). Core wrote the compile's part (A4), and Physics reviewed it. The section below is the plan as drafted.
 
 **Core builds (about three tasks; Core's estimate, effort not dates):**
 1. **`ModelType::parts`**, holding `SdfProgram` only, with the §1.7 refusals and `issues()` entries. Not folded. Physics reviews.

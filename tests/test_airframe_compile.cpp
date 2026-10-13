@@ -891,7 +891,7 @@ TEST(AirframeCompile, PartsMoveOnlyThePartsIdentity) {
     EXPECT_EQ(model_identity(m), kPinned) << std::hex << model_identity(m);
 
     // The compiled quad's parts_identity: PINNED (msvc-ninja-release on
-    // core/parts-identity, 2026-10-12; the gcc leg must reproduce it). It is
+    // core/parts-identity, 2026-10-12; the gcc leg reproduces it). It is
     // the compile's own output read back, a regression pin; the independent
     // check is PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
     // The coming motor-offset task moves the motors' mounts, so it moves this

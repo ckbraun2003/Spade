@@ -121,9 +121,10 @@ TEST(ModelSnapshot, AVisualRefDoesNotEnterTheIdentity) {
         << "visual_ref is render data (L5); it never reaches the step";
 }
 
-// CORE-7: parts are not folded until a step reads them (stage 7), so a v3 blob
-// taken before a model gained parts restores into a registry where it has
-// them. Green at red: a pin of "every stored v3 blob restores".
+// CORE-7: parts never enter model_identity, and the registry identity does
+// not fold them until stage 7 (through parts_identity), so a v3 blob taken
+// before a model gained parts restores into a registry where it has them.
+// Green at red: a pin of "every stored v3 blob restores".
 TEST(ModelSnapshot, ABlobRestoresAfterTheModelsGainParts) {
     auto source = with_models({quad("a")});
     ASSERT_TRUE(source.step(3).has_value());
@@ -165,9 +166,10 @@ TEST(ModelSnapshot, ABlobRestoresAfterTheModelsGainParts) {
     EXPECT_TRUE(restored.has_value()) << (restored ? "" : restored.error().context);
 }
 
-// CORE-6, CORE-7: a mesh part folds nothing either (stage 7 will fold its
-// content_hash()), so a v3 blob taken before a model gained one restores into
-// a registry where it has it.
+// CORE-6, CORE-7: a mesh part is no different (parts_identity folds its
+// content_hash(), and stage 7 folds that into the registry identity), so a
+// v3 blob taken before a model gained one restores into a registry where it
+// has it.
 TEST(ModelSnapshot, ABlobRestoresAfterAModelGainsAMeshPart) {
     auto source = with_models({quad("a")});
     ASSERT_TRUE(source.step(3).has_value());

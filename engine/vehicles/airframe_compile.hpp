@@ -71,9 +71,9 @@
 // mass only, and the rotor is an actuator disc. Every part is rigid, a
 // motor's too, whose solid is centred on its hub, as its mass is. Geometry is
 // imported (CORE-6, amended 2026-10-12), so the compile authors no shape of
-// its own. No mass or drag rule reads a record's geometry, and parts are not
-// folded into model_identity() (stage 7), so the mass, drag, fit and identity
-// are what they were without parts.
+// its own. No mass or drag rule reads a record's geometry, and parts never
+// enter model_identity() (CORE-7; their identity is parts_identity()), so the
+// mass, drag, fit and identity are what they were without parts.
 //
 // DETERMINISM. Double arithmetic in a fixed order, sqrt the only
 // non-arithmetic call (IEEE 754 rounds it correctly), fixed iteration counts,
