@@ -923,6 +923,9 @@ add_library(spade_analysis STATIC
     analysis/case.cpp
     analysis/case_file.cpp
     analysis/coefficients.cpp
+    analysis/run.cpp
+    analysis/runner.cpp
+    analysis/detail/atomic_file.cpp
 )
 add_library(spade::analysis ALIAS spade_analysis)
 set_target_properties(spade_analysis PROPERTIES EXPORT_NAME analysis)
@@ -944,7 +947,8 @@ install(TARGETS spade_analysis
     ARCHIVE DESTINATION lib
     INCLUDES DESTINATION include
 )
-install(DIRECTORY analysis/ DESTINATION include/analysis FILES_MATCHING PATTERN "*.hpp")
+install(DIRECTORY analysis/ DESTINATION include/analysis FILES_MATCHING PATTERN "*.hpp"
+    PATTERN "detail" EXCLUDE)
 
 # ------------------------------------------------------------------------------
 # spade_compute (S6 Task 1): the v2 Vulkan compute backend scaffold --
