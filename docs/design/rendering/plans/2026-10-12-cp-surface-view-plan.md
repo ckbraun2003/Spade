@@ -52,6 +52,26 @@ The airflow visualization plan's step 5 and step 7 (merged):
 - **Q2: a scene flag, off by default.**
 - **Q3: yes.** R2.1, R2.3 and R2.4's synthetic work start now.
 
+## Outcome so far (2026-10-13, branch `rendering/cp-view`)
+
+R2.1 to R2.4 are built, red then green, on the CPU and GL.
+- **R2.3's flag** covers meshes and CSG subtrees (CSG has its own CPU and GL tests, since the drone's parts may be CSG).
+- **R2.4 measured** (worst |ΔC_p| on the potential-flow sphere, pixels at least 0.3 face-on, MSVC release):
+
+  | R/dx | δ = 0 | δ = 0.5 | δ = 1 | δ = 1.5 | δ = 1, extrapolated |
+  |---|---|---|---|---|---|
+  | 4 | 1.05, 708 px no-data | 0.55, 8 no-data | 0.70 | 0.85 | 0.45 |
+  | 8 | 1.04, 772 no-data | 0.33, 52 no-data | 0.43 | 0.57 | 0.20 |
+  | 16 | 1.05, 888 no-data | 0.19, 40 no-data | 0.25 | 0.35 | 0.079 |
+
+- **At the wall (δ = 0)** a stencil reaches the deeper solid cells, and about 40% of the sphere goes uncoloured. Half a cell out, some pixels still do.
+- **One cell out** colours every pixel. But a single read carries the curved wall's first-order bias, about 4.5(δ·dx/a)·sin²θ, since ∂p/∂n = ρu_t²/R.
+- **Added: `FlowSurfaceColouring::extrapolate`.** It reads at δ and 2δ and takes 2v(δ) − v(2δ), the value extrapolated linearly to the wall. That removes the first-order bias, and the error then falls about as (dx/a)². GL's own frame matches the CPU's: 0.202 at 8 per radius, one level apart.
+- **The C_p view's setting:** δ = 1 cell, extrapolated.
+- **Open for R2.5.** Extrapolation amplifies a read's noise up to threefold, and cut-cell pressure near a wall can be noisy. So R2.5 checks it against P3 on solver data before the view relies on it. If the noise wins, the fallback is the single read at δ = 1.
+- **The "under-resolved" threshold:** 8 cells per radius of curvature. There the extrapolated worst is 0.20, about 9% of the sphere's C_p range. The view's report of the smallest feature under colour is not built yet. It waits on knowing the parts' curvature from the posed drone (D1).
+- **The ground:** neither path colours the analytic ground today, since it writes no depth. So Q2's flag, off by default, is today's behaviour, and turning it on is new work.
+
 ## Questions for the lead (as asked)
 
 - **Q1. Hover's q_ref.** With wind, q_ref = ½ρV². In hover there is no freestream:
