@@ -61,6 +61,11 @@ CMakeFiles/
 # <kernel>.spv.gen.hpp) and the .spv artifacts live under build-ninja/, already
 # excluded by build/ above, and are deliberately never committed.
 !cmake/SpadeSlang.cmake
+# Same exception, same reason: tools/flow_movie/stamp_identity.cmake is an
+# authored script that the flow_movie_identity target runs at build time.
+# Hidden by *.cmake, it never reached git, and every other checkout failed to
+# configure the tool's build ("Not a file"; Physics found it, 2026-10-13).
+!tools/flow_movie/stamp_identity.cmake
 Makefile
 
 # IDEs
