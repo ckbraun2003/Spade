@@ -79,7 +79,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
     echo "gcc-check: volume $volume has no configured build (/leg/build/_deps)"; exit 2
   fi
   echo "gcc-check: volume $volume, commit $(cat /leg/commit 2>/dev/null || echo unrecorded); $(g++-13 --version | head -n 1)"
-  mkdir -p /tmp/s && for d in engine sandbox tests include src examples; do
+  mkdir -p /tmp/s && for d in engine sandbox tests tools include src examples; do
     if [ -d /src/$d ]; then cp -r /src/$d /tmp/s; fi
   done; cd /tmp/s
   D=/leg/build/_deps; rc=0; compile=()
