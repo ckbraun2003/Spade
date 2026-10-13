@@ -42,6 +42,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "world/aabb.hpp"
 
 namespace spade {
 
@@ -262,5 +263,57 @@ inline constexpr uint32_t kNoSdfLeaf = std::numeric_limits<uint32_t>::max();
 //
 // Returns kNoSdfLeaf for an empty program.
 [[nodiscard]] uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept;
+
+// ---------------------------------------------------------------------------
+// Bounds (the lead's ask of 2026-10-13, on D1's path: Physics' P2 sizes its
+// grid around each part's box). Host calls, outside the inner loop.
+// ---------------------------------------------------------------------------
+
+// Whether the program's solid (the points where eval() <= 0) is bounded, by
+// its structure alone: a plane and a heightfield fill half of space, and every
+// other primitive is bounded; union and smooth_union are bounded when both
+// operands are, intersect when either is, and subtract ("a minus b") when `a`
+// is. It reads no parameter and no transform. sdf_bounds() below walks the
+// same rule (one rule, TD-9), and ModelType::validate() refuses an unbounded
+// part shape through this call. False for an empty program.
+//
+// PRECONDITION: program.validate() passed.
+[[nodiscard]] bool sdf_bounded(const SdfProgram& program) noexcept;
+
+// A box holding the program's solid: every p with eval(program, p) <= 0 lies
+// inside it, so every surface point does. CONSERVATIVE, by the same postfix
+// walk as sdf_bounded(), in double:
+//   * a primitive: its own box in node-local space (a sphere's r; a box's
+//     half extents; a cylinder's r and half height; a capsule's r and half
+//     height + r; a torus's R + r across the ring and r along its axis),
+//     mapped back through its transform: the AABB of the turned box;
+//   * union: the union of the operands' boxes; intersect: their
+//     intersection; subtract ("a minus b"): `a`'s box;
+//   * smooth_union: the union, grown by k/4 times the operands' growth rate
+//     (below). k/4 is the bound smooth_union's form guarantees:
+//     min(a,b) - k/4 <= d <= min(a,b) (the combine notes in sdf.cpp).
+// So a union or an intersect of boxes axis-aligned in the program's frame,
+// and a subtract's left operand, come out tight, to the padding.
+//
+// GROWTH RATE. A field value t maps to a distance in program coordinates
+// through each primitive's transform: along axis i, at most t * |row i of
+// A| / scale, A the transform's local-to-program 3x3. That rate is 1 for the
+// rigid + uniform-scale transforms the builder makes (an SdfTransform's
+// contract), and the walk carries it (the largest of the operands') so a
+// hand-built transform outside that contract still gets a box that holds.
+//
+// PADDING. The box holds what eval() computes in fp32, not only the exact
+// solid. Each primitive's box is grown by 2^-16 of its largest coordinate,
+// times its transform's condition number (1 for the builder's), and each
+// smooth_union's by 2^-15 of the union's largest coordinate plus 2^-16 of k:
+// eval()'s fp32 rounding there is a few ulps of those magnitudes, 2^-23
+// each. The double box is then rounded outward to fp32.
+//
+// Codes: invalid_argument -- what program.validate() refuses (passed
+// through, as is its capacity_exceeded); an empty program; an unbounded solid
+// (sdf_bounded() false); a primitive whose transform is singular, so its
+// solid has no finite box; a solid proved empty (an intersect whose operands'
+// boxes do not overlap); a box beyond fp32's range.
+[[nodiscard]] Result<Aabb> sdf_bounds(const SdfProgram& program);
 
 }  // namespace spade

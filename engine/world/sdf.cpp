@@ -562,3 +562,16 @@ Result<uint32_t> SdfProgram::validate() const {
 }
 
 }  // namespace spade
+
+namespace spade {
+
+// RED (part_bounds): declared, not yet walked.
+bool sdf_bounded(const SdfProgram& /*program*/) noexcept {
+    return false;
+}
+
+Result<Aabb> sdf_bounds(const SdfProgram& /*program*/) {
+    return std::unexpected(Error{Code::internal, "sdf_bounds: not implemented yet"});
+}
+
+}  // namespace spade

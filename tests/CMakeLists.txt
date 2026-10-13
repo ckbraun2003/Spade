@@ -102,6 +102,7 @@ add_executable(spade_tests
     test_model_registry.cpp
     test_model_parts.cpp
     test_part_pose.cpp
+    test_part_bounds.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
     test_render_target.cpp

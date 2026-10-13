@@ -24,3 +24,12 @@ SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept {
 }
 
 }  // namespace spade::vehicles
+
+namespace spade::vehicles {
+
+// RED (part_bounds): declared, not yet implemented.
+Result<Aabb> part_bounds(const PartDesc& /*part*/) {
+    return std::unexpected(Error{Code::internal, "part_bounds: not implemented yet"});
+}
+
+}  // namespace spade::vehicles
