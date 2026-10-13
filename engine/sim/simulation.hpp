@@ -1175,6 +1175,64 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> apply_wrench(BodyRef ref, glm::vec3 world_force, glm::vec3 body_torque);
 
+    // ---------------------------------------------------------------------
+    // set_body_state -- re-pose a live body at a step boundary, without
+    // despawning it, so its refs and attached rows survive (a training host's
+    // world reset; docs/design/core/2026-10-13-set-body-state-design.md).
+    //
+    // THE BODY ROW'S OWN FRAME: pos is the centre of mass (world, m), orient is
+    // body -> world (principal axes), vel is world (m/s), omega_body is BODY
+    // frame (rad/s) -- what body() returns and BodySpawn takes. NOT
+    // VehicleSpawn's design frame: for a vehicle, pass `ref.body` and read
+    // body(), not vehicle_state(). The setter matches the getter.
+    //
+    // THE QUATERNION IS STORED AS GIVEN, never normalized (spawn normalizes, and
+    // reusing that step would make body() return something other than what was
+    // set). It must be finite with |q| = sqrt(dot(q, q)), in fp32, within
+    // 1 +/- 2e-6: deliberately looser than Kat's binding double check at
+    // 1 +/- 1e-6, so nothing Kat accepts is refused here. One substep runs on a
+    // q up to 2e-6 off unit length; Integrate renormalizes on the way out.
+    //
+    // WHEN: at any step boundary, which is every call a caller can make
+    // (flush_structural()'s note). An input, like set_rotor_commands(): a
+    // replay applies the same call at the same tick. A mid-run set clears the
+    // body's history (below), so it is not promised to be a no-op.
+    //
+    // WRITES pos, orient, vel and omega_body, and zeroes specific_force, which
+    // reads 0 until the next step, as a spawn's does. It CLEARS THE BODY'S
+    // CONTACT AND SOLVER HISTORY: today that is specific_force alone (there is
+    // no manifold, warm start, sleep counter or CCD state). A later per-body
+    // cache owes a clear here, and joins the census beside mark_vulkan_dirty()'s
+    // below. A developer module's per-body history is that developer's to
+    // clear.
+    //
+    // KEEPS mass, inv_inertia_diag, proxy_radius and flags, and force_acc and
+    // torque_acc: a wrench applied before the set still acts on the next
+    // substep (spawn, by contrast, zeroes both). KEEPS EVERY ATTACHED ROW,
+    // untouched -- IMU and GNSS rows (stream, bias, phase, last_index) and their
+    // rings, drag and rotor rows, any module's rows -- and the generation, the
+    // tick and the queue. It draws nothing, advances no stream, writes no
+    // sample and queues no op. The next snapshot() carries the set state, and
+    // the next step() re-uploads the GPU mirror.
+    //
+    // ALL OR NOTHING: every check runs before the first write. Refusals, in
+    // this order:
+    //   invalid_argument  the Simulation is poisoned (see step()), with
+    //                     step()'s text verbatim -- the first mutator to refuse
+    //                     while poisoned;
+    //   not_found         a null, stale, foreign or despawn-queued ref, with
+    //                     body()'s messages;
+    //   invalid_argument  a non-finite pos, vel or omega_body;
+    //   invalid_argument  orient non-finite, or |q| outside 1 +/- 2e-6;
+    //   not_found         a body spawned but not yet flushed: its queued init
+    //                     would overwrite the set (apply_wrench()'s rule);
+    //   invalid_argument  a pose buried in the world SDF: exactly spawn()'s
+    //                     predicate and threshold (one shared function), at the
+    //                     body's effective proxy radius, with spawn()'s message.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<void> set_body_state(BodyRef ref, glm::vec3 pos, glm::quat orient, glm::vec3 vel,
+                                              glm::vec3 omega_body);
+
     // --- snapshot / restore -----------------------------------------------
 
     // ---------------------------------------------------------------------

@@ -2456,6 +2456,11 @@ Result<void> Simulation::apply_wrench(BodyRef ref, glm::vec3 world_force, glm::v
     return {};
 }
 
+// RED: the declaration only, so the tests compile and fail on behaviour.
+Result<void> Simulation::set_body_state(BodyRef, glm::vec3, glm::quat, glm::vec3, glm::vec3) {
+    return std::unexpected(internal("set_body_state: not implemented"));
+}
+
 // ---------------------------------------------------------------------------
 // snapshot / restore
 // ---------------------------------------------------------------------------
