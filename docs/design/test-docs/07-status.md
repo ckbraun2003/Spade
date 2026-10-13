@@ -105,12 +105,12 @@ The 72 refused tests are listed by name in this file's history (`b08d139`).
 
 Tests whose output stopped after `[ RUN      ]`, recorded under `02-build-and-gate.md`, "A test that dies without failing".
 
-| Reported | Test | Ran for | Exit code | Rerun alone | Box at the time |
-|---|---|---|---|---|---|
-| 2026-10-13, by the lead | `shower_inside` | 2.4 s | not recorded (ctest prints none) | not recorded | not recorded |
-| 2026-10-13, by the lead | `GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands` | 0.55 s | not recorded | not recorded | not recorded |
+| When (UTC) | Test | Run | Ran for | Exit code | Rerun | Box at the time |
+|---|---|---|---|---|---|---|
+| 2026-10-13, about 00:12 | `Active/AgreementMatrix.RasterAgreesWithTheRayMarchWithinItsPinnedBand/shower_inside` | Physics, airflow-core's final gate, debug, `4622f84` | 2.42 s (about 13 s when it passes) | not recorded | passed at 00:14, in a run of 18 that all passed (13.28 s) | at least 6 GB free when the chunk started; commit not read |
+| 2026-10-13, about 01:18:40 | `GpuInvarianceTest.VulkanSnapshotRestoresIntoCpuAndContinuesWithinBands` | Physics, contact-dv-all-rows, debug, `dcf1bb6` | 0.55 s (about 1.1 s when it passes) | not recorded | passed 3 of 3 alone, at 01:19 | as above |
 
-Both were reported before the triage rule existed. Around them, Windows grew its page file at 17:26 UTC on 2026-10-12 (System event 26, "low on virtual memory"), as it also did on 2026-10-03 and 2026-10-04. At 03:55 UTC on 2026-10-13, at rest, the commit charge was 32.2 GB of a 38.4 GB limit, with 14.2 GB free.
+Both were reported by the lead on 2026-10-13, with details from Physics, before the triage rule existed. Neither left output after its `[ RUN      ]` line: `shower_inside`'s chunk ran without `--output-on-failure`. Both reruns ran in Git Bash, so neither exit code was recorded. Neither death was near the page file's growth at 17:26 UTC on 2026-10-12 (System event 26, "low on virtual memory"), which also happened on 2026-10-03 and 2026-10-04. At 03:55 UTC on 2026-10-13, at rest, the commit charge was 32.2 GB of a 38.4 GB limit, with 14.2 GB free.
 
 ## Specified vs built
 
