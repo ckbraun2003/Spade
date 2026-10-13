@@ -4,12 +4,10 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <system_error>
-#include <thread>
 
 #include "core/path_text.hpp"
 
@@ -32,9 +30,12 @@ namespace {
 namespace fs = std::filesystem;
 
 // How long a writer or reader waits out the other on Windows: 100 tries
-// 10 ms apart. Host-side file I/O, not stepped code.
+// 10 ms apart (Sleep, not a clock: nothing here reads the time, M1B).
+// POSIX needs no retry: rename(2) replaces a file a reader holds open.
+#ifdef _WIN32
 constexpr int kTries = 100;
-constexpr std::chrono::milliseconds kPause{10};
+constexpr DWORD kPauseMs = 10;
+#endif
 
 [[nodiscard]] unsigned long process_id() {
 #ifdef _WIN32
@@ -80,7 +81,7 @@ Result<void> replace_file(const fs::path& file, std::string_view text) {
         }
         last = GetLastError();
         if (last != ERROR_ACCESS_DENIED && last != ERROR_SHARING_VIOLATION) break;
-        std::this_thread::sleep_for(kPause);  // a reader holds it open
+        Sleep(kPauseMs);  // a reader holds it open
     }
     std::error_code ec;
     fs::remove(tmp, ec);
@@ -108,7 +109,7 @@ Result<std::string> read_file_shared(const fs::path& file) {
         last = GetLastError();
         if (last == ERROR_FILE_NOT_FOUND || last == ERROR_PATH_NOT_FOUND) return std::unexpected(io("no file", file));
         if (last != ERROR_ACCESS_DENIED && last != ERROR_SHARING_VIOLATION) break;
-        std::this_thread::sleep_for(kPause);  // a replace is in flight
+        Sleep(kPauseMs);  // a replace is in flight
     }
     if (h == INVALID_HANDLE_VALUE) {
         return std::unexpected(io("cannot open (Windows error " + std::to_string(last) + ")", file));
