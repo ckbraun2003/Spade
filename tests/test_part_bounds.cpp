@@ -153,6 +153,22 @@ TEST(SdfBounds, ATurnedLeafGetsTheBoxOfItsTurnedBox) {
     const glm::dvec3 laid{double(0.2f) + double(0.1f), double(0.1f), double(0.1f)};
     expect_tight(bounds_of(Csg{}.leaf(SdfPrim::capsule, {0.1f, 0.2f, 0, 0}, at({0, 0, 0}, quarter_z)).program),
                  -laid, laid, laid.x, "a capsule laid along +X");
+
+    // Round shapes keep their boxes where they turn into themselves: a sphere
+    // turned any way, and a cylinder or a torus turned about its own axis.
+    // The AABB of their turned local box would grow by up to sqrt(2) or
+    // sqrt(3) here; their supports do not.
+    const glm::quat any_turn = glm::normalize(glm::quat(0.7f, -0.3f, 0.5f, 0.4f));
+    const glm::quat about_y = glm::angleAxis(glm::radians(37.0f), glm::vec3(0, 1, 0));
+    const double r = 0.25f;
+    expect_tight(bounds_of(Csg{}.leaf(SdfPrim::sphere, {0.25f, 0, 0, 0}, at({0, 0, 0}, any_turn)).program),
+                 glm::dvec3(-r), glm::dvec3(r), r, "a turned sphere");
+    const glm::dvec3 cyl{double(0.15f), double(0.25f), double(0.15f)};
+    expect_tight(bounds_of(Csg{}.leaf(SdfPrim::cylinder, {0.15f, 0.25f, 0, 0}, at({0, 0, 0}, about_y)).program),
+                 -cyl, cyl, cyl.y, "a cylinder turned about its axis");
+    const glm::dvec3 tor{double(0.4f) + double(0.05f), double(0.05f), double(0.4f) + double(0.05f)};
+    expect_tight(bounds_of(Csg{}.leaf(SdfPrim::torus, {0.4f, 0.05f, 0, 0}, at({0, 0, 0}, about_y)).program), -tor,
+                 tor, tor.x, "a torus turned about its axis");
 }
 
 // --- the operators -----------------------------------------------------------
@@ -197,7 +213,9 @@ TEST(SdfBounds, ASmoothUnionGrowsByAQuarterOfItsBlendRadius) {
     };
     const glm::dvec3 union_lo(-1.5, -1.0, -1.0), union_hi(1.5, 1.0, 1.0);
     const Aabb grown = bounds_of(blended(2.0f));
-    expect_tight(grown, union_lo - 0.5, union_hi + 0.5, 2.0, "k = 2");
+    // Its padding: the spheres' (2^-16 of 1.5) and the blend's own (2^-15 of
+    // the union's 1.5, plus 2^-16 of k), 6.5 * 2^-16 in all: inside 2 * kPad * 4.
+    expect_tight(grown, union_lo - 0.5, union_hi + 0.5, 4.0, "k = 2");
 
     // The growth is real: the blend fills the waist past the spheres' own
     // y extent. (0, 1.4, 0) is in the solid, outside the plain union's box.
@@ -329,77 +347,162 @@ struct RandomCsg {
     }
 };
 
+// What one containment check saw: whether the program was bounded or proved
+// empty, and the points the solid holds that sampling found.
+struct Containment {
+    bool bounded = false;
+    bool empty = false;
+    Aabb box{};
+    std::vector<glm::vec3> found;
+};
+
+// Every point eval() puts in the solid lies in sdf_bounds()'s box: 1000
+// points in the box grown by a quarter of its size each way, 1000 anywhere in
+// +-2.5 m, and up to 40 surface points, each bisected from a found inside
+// point toward a random point past the grown box (keeping the inside end). A
+// program refused as empty must hold no sampled point at all.
+[[nodiscard]] Containment check_containment(const SdfProgram& p, RandomCsg& gen, const std::string& what) {
+    Containment seen;
+    EXPECT_TRUE(p.validate().has_value()) << what;
+    EXPECT_TRUE(spade::sdf_bounded(p)) << what;
+    const spade::Result<Aabb> b = spade::sdf_bounds(p);
+    const auto anywhere = [&] {
+        return glm::vec3(gen.uniform(-2.5f, 2.5f), gen.uniform(-2.5f, 2.5f), gen.uniform(-2.5f, 2.5f));
+    };
+
+    if (!b) {
+        // The only refusal a program of bounded leaves can earn: proved empty.
+        EXPECT_NE(b.error().context.find("empty"), std::string::npos) << what << ": " << b.error().context;
+        seen.empty = true;
+        for (int i = 0; i < 2000; ++i) {
+            const glm::vec3 q = anywhere();
+            if (spade::eval(p, q) <= 0.0f) {
+                ADD_FAILURE() << what << " was refused as empty, but holds (" << q.x << ", " << q.y << ", " << q.z
+                              << ")";
+                break;
+            }
+        }
+        return seen;
+    }
+    seen.bounded = true;
+    seen.box = *b;
+    const Aabb& box = seen.box;
+    EXPECT_TRUE(box.min.x <= box.max.x && box.min.y <= box.max.y && box.min.z <= box.max.z) << what << show(box);
+
+    const glm::vec3 margin = 0.25f * (box.max - box.min) + 0.01f;
+    for (int i = 0; i < 2000; ++i) {
+        const glm::vec3 q = i < 1000 ? glm::vec3(gen.uniform(box.min.x - margin.x, box.max.x + margin.x),
+                                                 gen.uniform(box.min.y - margin.y, box.max.y + margin.y),
+                                                 gen.uniform(box.min.z - margin.z, box.max.z + margin.z))
+                                     : anywhere();
+        if (spade::eval(p, q) <= 0.0f) {
+            if (!inside(box, q)) {
+                ADD_FAILURE() << what << ": point (" << q.x << ", " << q.y << ", " << q.z
+                              << ") is in the solid, outside " << show(box);
+                return seen;
+            }
+            seen.found.push_back(q);
+        }
+    }
+
+    const float reach = 2.0f * glm::length(box.max - box.min) + 1.0f;
+    for (size_t i = 0; i < seen.found.size() && i < 40; ++i) {
+        const glm::vec3 dir = glm::normalize(glm::vec3(gen.uniform(-1, 1), gen.uniform(-1, 1), gen.uniform(-1, 1)) +
+                                             glm::vec3(1e-3f, 0.0f, 0.0f));
+        glm::vec3 in = seen.found[i];
+        glm::vec3 out = in + reach * dir;
+        if (spade::eval(p, out) <= 0.0f) continue;
+        for (int step = 0; step < 40; ++step) {
+            const glm::vec3 mid = 0.5f * (in + out);
+            (spade::eval(p, mid) <= 0.0f ? in : out) = mid;
+        }
+        if (!inside(box, in)) {
+            ADD_FAILURE() << what << ": surface point (" << in.x << ", " << in.y << ", " << in.z << ") outside "
+                          << show(box);
+            return seen;
+        }
+    }
+    return seen;
+}
+
 TEST(SdfBounds, EveryPointInsideRandomCsgLiesInItsBox) {
     RandomCsg gen;
     int bounded = 0;
     int with_points = 0;
     int empty = 0;
-    for (int program_index = 0; program_index < 60; ++program_index) {
+    for (int i = 0; i < 60; ++i) {
         Csg c;
         gen.tree(c, 3);
-        const SdfProgram& p = c.program;
-        ASSERT_TRUE(p.validate().has_value()) << "program " << program_index;
-        ASSERT_TRUE(spade::sdf_bounded(p)) << "program " << program_index;
-        const spade::Result<Aabb> b = spade::sdf_bounds(p);
-
-        // Every leaf is within 0.8 m of the origin and at most about 1.1 m
-        // across, so +-2.5 m holds every solid.
-        const auto anywhere = [&] { return glm::vec3(gen.uniform(-2.5f, 2.5f), gen.uniform(-2.5f, 2.5f), gen.uniform(-2.5f, 2.5f)); };
-
-        if (!b) {
-            // The only refusal a random program of bounded leaves can earn:
-            // proved empty. Then nothing may evaluate inside.
-            ASSERT_NE(b.error().context.find("empty"), std::string::npos) << b.error().context;
-            ++empty;
-            for (int i = 0; i < 2000; ++i) {
-                const glm::vec3 q = anywhere();
-                ASSERT_GT(spade::eval(p, q), 0.0f) << "program " << program_index << " was refused as empty";
-            }
-            continue;
-        }
-        ++bounded;
-        const Aabb box = *b;
-        ASSERT_TRUE(box.min.x <= box.max.x && box.min.y <= box.max.y && box.min.z <= box.max.z) << show(box);
-
-        // Points in the box grown by a quarter of its size each way, then
-        // points anywhere: each one the solid holds lies in the box.
-        const glm::vec3 margin = 0.25f * (box.max - box.min) + 0.01f;
-        std::vector<glm::vec3> found;
-        for (int i = 0; i < 2000; ++i) {
-            const glm::vec3 q =
-                i < 1000 ? glm::vec3(gen.uniform(box.min.x - margin.x, box.max.x + margin.x),
-                                     gen.uniform(box.min.y - margin.y, box.max.y + margin.y),
-                                     gen.uniform(box.min.z - margin.z, box.max.z + margin.z))
-                         : anywhere();
-            if (spade::eval(p, q) <= 0.0f) {
-                ASSERT_TRUE(inside(box, q)) << "program " << program_index << ", point (" << q.x << ", " << q.y
-                                            << ", " << q.z << ") is in the solid, outside " << show(box);
-                found.push_back(q);
-            }
-        }
-        if (!found.empty()) ++with_points;
-
-        // The surface: from up to 40 inside points, walk out along a random
-        // direction to a point past the grown box, and bisect to the surface,
-        // keeping the inside end.
-        const float reach = 2.0f * glm::length(box.max - box.min) + 1.0f;
-        for (size_t i = 0; i < found.size() && i < 40; ++i) {
-            const glm::vec3 dir = glm::normalize(glm::vec3(gen.uniform(-1, 1), gen.uniform(-1, 1), gen.uniform(-1, 1)) +
-                                                 glm::vec3(1e-3f, 0.0f, 0.0f));
-            glm::vec3 in = found[i];
-            glm::vec3 out = in + reach * dir;
-            if (spade::eval(p, out) <= 0.0f) continue;
-            for (int step = 0; step < 40; ++step) {
-                const glm::vec3 mid = 0.5f * (in + out);
-                (spade::eval(p, mid) <= 0.0f ? in : out) = mid;
-            }
-            ASSERT_TRUE(inside(box, in)) << "program " << program_index << ", surface point (" << in.x << ", "
-                                         << in.y << ", " << in.z << ") outside " << show(box);
-        }
+        const Containment seen = check_containment(c.program, gen, "program " + std::to_string(i));
+        if (::testing::Test::HasFailure()) return;
+        bounded += seen.bounded ? 1 : 0;
+        empty += seen.empty ? 1 : 0;
+        with_points += seen.found.empty() ? 0 : 1;
     }
     // Not vacuous: most programs have a solid, and sampling finds it.
     EXPECT_GE(bounded, 40) << "empty: " << empty;
     EXPECT_GE(with_points, 30);
+}
+
+// Two equal spheres side by side along a coordinate axis, blended: the blend
+// fills the waist between them and bulges past the plain union's box there,
+// in the other two axes, so this is where the k/4 growth is needed and where
+// the random programs above seldom look. With separation 2o and radius r the
+// waist reaches sqrt((r + k/4)^2 - o^2), past r when o^2 < k r / 2 + k^2/16,
+// so o and k are drawn to make it: o in [0.2, 0.6] r, k in [0.6, 1.2] r.
+// Beside check_containment()'s points, 2000 more sample the waist itself; the
+// count of pairs with a point past the plain union's box shows the check
+// meets the growth.
+TEST(SdfBounds, EveryPointInsideABlendedPairLiesInItsBox) {
+    RandomCsg gen;
+    gen.s.state = 0x5eed0b1e9d5ULL;
+    int past_the_union = 0;
+    for (int i = 0; i < 40; ++i) {
+        const float r = gen.uniform(0.2f, 0.5f);
+        const int along = static_cast<int>(gen.s.next_u64() % 3);
+        glm::vec3 offset(0.0f);
+        offset[along] = gen.uniform(0.2f, 0.6f) * r;
+        const glm::vec3 centre(gen.uniform(-0.5f, 0.5f), gen.uniform(-0.5f, 0.5f), gen.uniform(-0.5f, 0.5f));
+        const glm::quat turn(gen.uniform(-1, 1), gen.uniform(-1, 1), gen.uniform(-1, 1), gen.uniform(-1, 1));
+        const float k = gen.uniform(0.6f, 1.2f) * r;
+        const auto pair = [&](SdfOp which, float blend) {
+            return Csg{}
+                .leaf(SdfPrim::sphere, {r, 0, 0, 0}, at(centre - offset, turn))
+                .leaf(SdfPrim::sphere, {r, 0, 0, 0}, at(centre + offset, turn))
+                .op(which, blend)
+                .program;
+        };
+        const std::string what = "pair " + std::to_string(i);
+        const SdfProgram blended = pair(SdfOp::smooth_union, k);
+        Containment seen = check_containment(blended, gen, what);
+        if (::testing::Test::HasFailure()) return;
+        ASSERT_TRUE(seen.bounded) << what;
+
+        // The waist: a thin slab across the separation axis, as wide as the
+        // blend can reach.
+        const float reach = 1.2f * (r + 0.25f * k);
+        for (int j = 0; j < 2000; ++j) {
+            glm::vec3 q(gen.uniform(-reach, reach), gen.uniform(-reach, reach), gen.uniform(-reach, reach));
+            q[along] *= 0.2f;
+            q += centre;
+            if (spade::eval(blended, q) <= 0.0f) {
+                ASSERT_TRUE(inside(seen.box, q)) << what << ": waist point (" << q.x << ", " << q.y << ", " << q.z
+                                                 << ") is in the solid, outside " << show(seen.box);
+                seen.found.push_back(q);
+            }
+        }
+
+        const spade::Result<Aabb> plain = spade::sdf_bounds(pair(SdfOp::union_, 0.0f));
+        ASSERT_TRUE(plain.has_value());
+        for (const glm::vec3& q : seen.found) {
+            if (!inside(*plain, q)) {
+                ++past_the_union;
+                break;
+            }
+        }
+    }
+    // All 40 do on MSVC; 35 leaves room for another compiler's rounding.
+    EXPECT_GE(past_the_union, 35) << "of 40 blends, these reach past the plain union's box";
 }
 
 // --- parts ---------------------------------------------------------------------

@@ -283,17 +283,20 @@ inline constexpr uint32_t kNoSdfLeaf = std::numeric_limits<uint32_t>::max();
 // A box holding the program's solid: every p with eval(program, p) <= 0 lies
 // inside it, so every surface point does. CONSERVATIVE, by the same postfix
 // walk as sdf_bounded(), in double:
-//   * a primitive: its own box in node-local space (a sphere's r; a box's
-//     half extents; a cylinder's r and half height; a capsule's r and half
-//     height + r; a torus's R + r across the ring and r along its axis),
-//     mapped back through its transform: the AABB of the turned box;
+//   * a primitive: the AABB of its solid mapped back through its transform,
+//     exactly -- each axis's half extent is the solid's support along that
+//     axis (a sphere a ball; a box its corners; a cylinder a disc plus its
+//     axis; a capsule its axis plus a ball; a torus its ring plus a ball;
+//     sdf.cpp, primitive_support). So a turned box gets the box of its
+//     turned corners, and a turned sphere keeps its own box;
 //   * union: the union of the operands' boxes; intersect: their
 //     intersection; subtract ("a minus b"): `a`'s box;
 //   * smooth_union: the union, grown by k/4 times the operands' growth rate
 //     (below). k/4 is the bound smooth_union's form guarantees:
 //     min(a,b) - k/4 <= d <= min(a,b) (the combine notes in sdf.cpp).
-// So a union or an intersect of boxes axis-aligned in the program's frame,
-// and a subtract's left operand, come out tight, to the padding.
+// So every primitive, a union of primitives, an intersect of boxes
+// axis-aligned in the program's frame, and a subtract's left operand come out
+// tight, to the padding.
 //
 // GROWTH RATE. A field value t maps to a distance in program coordinates
 // through each primitive's transform: along axis i, at most t * |row i of

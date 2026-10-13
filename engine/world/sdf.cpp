@@ -1,7 +1,9 @@
 #include "world/sdf.hpp"
 
+#include <bit>
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -561,17 +563,236 @@ Result<uint32_t> SdfProgram::validate() const {
     return peak;
 }
 
-}  // namespace spade
+// ---------------------------------------------------------------------------
+// Bounds: sdf_bounded() and sdf_bounds() (sdf.hpp says what each promises).
+// One postfix walk beside eval()'s stack machine serves both, in double.
+// ---------------------------------------------------------------------------
 
-namespace spade {
+namespace {
 
-// RED (part_bounds): declared, not yet walked.
-bool sdf_bounded(const SdfProgram& /*program*/) noexcept {
-    return false;
+// One value on the bounds walk's stack: a box in program coordinates, which
+// may be infinite (an unbounded operand) or inverted (lo > hi on an axis: an
+// intersect whose operands do not overlap there), and the growth rate a field
+// value maps to program coordinates by (sdf.hpp, GROWTH RATE).
+//
+// Inverted boxes stay in the arithmetic on purpose: what the walk keeps is
+// "the points where the field is <= t lie in [lo - rate*t, hi + rate*t]" for
+// every t >= 0, which union, intersect, subtract and the smooth union's growth
+// all preserve, inverted or not. Only the final box, at t = 0, must not be.
+struct WalkBox {
+    glm::dvec3 lo{0.0};
+    glm::dvec3 hi{0.0};
+    double rate = 1.0;
+};
+
+constexpr double kInfinity = std::numeric_limits<double>::infinity();
+
+// The padding (sdf.hpp, PADDING): eval()'s fp32 rounding is a few ulps (2^-23
+// each) of the magnitudes in play, so 2^-16 is a 2^7 margin.
+constexpr double kPrimitivePad = 0x1p-16;
+constexpr double kBlendPad = 0x1p-15;
+
+constexpr size_t kNoNode = std::numeric_limits<size_t>::max();
+
+[[nodiscard]] double largest_coordinate(const WalkBox& b) noexcept {
+    const glm::dvec3 m = glm::max(glm::abs(b.lo), glm::abs(b.hi));
+    return glm::max(m.x, glm::max(m.y, m.z));
 }
 
-Result<Aabb> sdf_bounds(const SdfProgram& /*program*/) {
-    return std::unexpected(Error{Code::internal, "sdf_bounds: not implemented yet"});
+// How far a bounded primitive's solid reaches along a direction, through its
+// transform: the support h(row) = max over the local solid of dot(row, x), row
+// being row i of A (below), which is the box's half extent on axis i. Each
+// solid is a Minkowski sum of a few pieces whose supports add:
+//   a ball of radius r:            r * |row|
+//   a disc of radius r (local XZ): r * |(row.x, row.z)|
+//   a segment +-h along local Y:   h * |row.y|
+//   a box of half extents h:       sum_j h_j * |row_j|
+// so a sphere is a ball, a box its corners, a cylinder a disc plus a segment,
+// a capsule a segment plus a ball, and a torus its ring (a circle of radius R,
+// whose support is the disc's) plus a ball. Exact for any invertible A: a
+// turned sphere, or a cylinder turned about its own axis, keeps its box.
+[[nodiscard]] double primitive_support(SdfPrim kind, const glm::vec4& prm, const glm::dvec3& row) noexcept {
+    const glm::dvec4 q(prm);
+    const double ball = std::sqrt(row.x * row.x + row.y * row.y + row.z * row.z);
+    const double disc = std::sqrt(row.x * row.x + row.z * row.z);
+    switch (kind) {
+        case SdfPrim::sphere:
+            return q.x * ball;
+        case SdfPrim::box:
+            return q.x * glm::abs(row.x) + q.y * glm::abs(row.y) + q.z * glm::abs(row.z);
+        case SdfPrim::cylinder:
+            return q.x * disc + q.y * glm::abs(row.y);
+        case SdfPrim::capsule:
+            return q.y * glm::abs(row.y) + q.x * ball;
+        case SdfPrim::torus:
+            return q.x * disc + q.y * ball;
+        case SdfPrim::plane:
+        case SdfPrim::heightfield:
+            break;
+    }
+    return 0.0;
+}
+
+// A bounded primitive's box in program coordinates, or false for a singular
+// transform. The node evaluates its primitive at local = W p + m (W the
+// top-left 3x3 of world_to_local, m its translation), so its solid is the
+// local one mapped by A = W^-1 and moved to c = -A m: the box about c whose
+// half extent on axis i is the solid's support along row i of A. The growth
+// rate is the largest |row i of A| / scale, and the padding scales with
+// |A| |W| / 3, the condition number's stand-in: both are 1 for a rigid +
+// uniform-scale transform, whose A is scale times a rotation.
+[[nodiscard]] bool primitive_box(const SdfNode& node, const SdfTransform& t, WalkBox& out) noexcept {
+    const glm::dmat4 m(t.world_to_local);
+    const glm::dmat3 w(m);
+    const double det = glm::determinant(w);
+    if (!(det != 0.0) || !std::isfinite(det)) return false;
+    const glm::dmat3 a = glm::inverse(w);
+    const glm::dvec3 centre = -(a * glm::dvec3(m[3]));
+    const auto kind = static_cast<SdfPrim>(node.kind);
+
+    glm::dvec3 half(0.0);
+    double rate = 0.0;
+    double a_norm2 = 0.0;
+    double w_norm2 = 0.0;
+    for (int i = 0; i < 3; ++i) {  // glm is column-major: a[j][i] is row i, column j
+        const glm::dvec3 row(a[0][i], a[1][i], a[2][i]);
+        half[i] = primitive_support(kind, node.params, row);
+        const double row2 = glm::dot(row, row);
+        a_norm2 += row2;
+        w_norm2 += w[0][i] * w[0][i] + w[1][i] * w[1][i] + w[2][i] * w[2][i];
+        rate = glm::max(rate, std::sqrt(row2));
+    }
+    rate /= static_cast<double>(t.scale);
+    const double condition = std::sqrt(a_norm2 * w_norm2) / 3.0;
+
+    out.lo = centre - half;
+    out.hi = centre + half;
+    const double pad = kPrimitivePad * glm::max(condition, 1.0) * largest_coordinate(out);
+    out.lo -= pad;
+    out.hi += pad;
+    out.rate = rate;
+    return std::isfinite(out.lo.x + out.lo.y + out.lo.z + out.hi.x + out.hi.y + out.hi.z);
+}
+
+struct BoundsWalk {
+    WalkBox box{};
+    bool bounded = false;          // a finite box: the structural rule (sdf.hpp, sdf_bounded)
+    size_t singular = kNoNode;     // the first primitive whose transform has no inverse
+};
+
+// The walk. `boxes` false is sdf_bounded(): a bounded primitive pushes a
+// finite placeholder and no number is read, so `bounded` is the structural
+// rule alone. A plane or a heightfield pushes all of space either way.
+// PRECONDITION: program.validate() passed.
+[[nodiscard]] BoundsWalk walk_bounds(const SdfProgram& program, bool boxes) noexcept {
+    WalkBox stack[kMaxSdfDepth];
+    uint32_t sp = 0;
+    BoundsWalk result;
+
+    for (size_t i = 0; i < program.nodes.size(); ++i) {
+        const SdfNode& node = program.nodes[i];
+        if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+            assert(sp < kMaxSdfDepth && "SdfProgram exceeds kMaxSdfDepth -- unvalidated program");
+            const auto kind = static_cast<SdfPrim>(node.kind);
+            WalkBox& b = stack[sp++];
+            b = WalkBox{};
+            if (kind == SdfPrim::plane || kind == SdfPrim::heightfield) {
+                b.lo = glm::dvec3(-kInfinity);
+                b.hi = glm::dvec3(kInfinity);
+            } else if (boxes && !primitive_box(node, program.transforms[node.transform], b)) {
+                b = WalkBox{};
+                if (result.singular == kNoNode) result.singular = i;
+            }
+            continue;
+        }
+
+        assert(sp >= 2 && "SDF operator without two operands -- unvalidated program");
+        const WalkBox b = stack[--sp];
+        const WalkBox a = stack[--sp];
+        WalkBox& out = stack[sp++];
+        out.rate = glm::max(a.rate, b.rate);
+        switch (static_cast<SdfOp>(node.op)) {
+            case SdfOp::intersect:
+                out.lo = glm::max(a.lo, b.lo);
+                out.hi = glm::min(a.hi, b.hi);
+                break;
+            case SdfOp::subtract:  // "a minus b" lies inside a
+                out = a;
+                break;
+            case SdfOp::union_:
+            case SdfOp::smooth_union:
+            case SdfOp::none:
+                out.lo = glm::min(a.lo, b.lo);
+                out.hi = glm::max(a.hi, b.hi);
+                break;
+        }
+        const double k = node.params.x;
+        if (boxes && node.op == static_cast<uint32_t>(SdfOp::smooth_union) && k > 0.0) {
+            // min(a,b) - k/4 <= d: the blend reaches at most k/4 (in field
+            // units) past the union, plus eval()'s rounding of its arithmetic.
+            const double grow = 0.25 * k * out.rate + kBlendPad * largest_coordinate(out) + kPrimitivePad * k;
+            out.lo -= grow;
+            out.hi += grow;
+        }
+    }
+
+    if (sp == 1) {
+        result.box = stack[0];
+        const glm::dvec3 lo = result.box.lo, hi = result.box.hi;
+        result.bounded = std::isfinite(lo.x) && std::isfinite(lo.y) && std::isfinite(lo.z) &&
+                         std::isfinite(hi.x) && std::isfinite(hi.y) && std::isfinite(hi.z);
+    }
+    return result;
+}
+
+// The fp32 at or below x (at or above, for round_up), for |x| <= FLT_MAX.
+[[nodiscard]] float round_down(double x) noexcept {
+    float f = static_cast<float>(x);
+    if (static_cast<double>(f) > x) {
+        const uint32_t bits = std::bit_cast<uint32_t>(f);
+        f = f == 0.0f ? -std::numeric_limits<float>::denorm_min()
+                      : std::bit_cast<float>(f > 0.0f ? bits - 1u : bits + 1u);
+    }
+    return f;
+}
+
+[[nodiscard]] float round_up(double x) noexcept {
+    return -round_down(-x);
+}
+
+}  // namespace
+
+bool sdf_bounded(const SdfProgram& program) noexcept {
+    return walk_bounds(program, false).bounded;
+}
+
+Result<Aabb> sdf_bounds(const SdfProgram& program) {
+    if (const Result<uint32_t> valid = program.validate(); !valid) {
+        return std::unexpected(valid.error());
+    }
+    if (program.nodes.empty()) {
+        return std::unexpected(invalid("the SDF program is empty, so its solid is empty"));
+    }
+    const BoundsWalk walk = walk_bounds(program, true);
+    if (!walk.bounded) {
+        return std::unexpected(invalid("the solid is unbounded: a plane or a heightfield fills half of space, so "
+                                       "bound it inside an intersect or cut it from a bounded shape"));
+    }
+    if (walk.singular != kNoNode) {
+        return std::unexpected(invalid("SDF transform is singular, so its primitive's solid has no finite bounds" +
+                                       at_node(walk.singular)));
+    }
+    const glm::dvec3 lo = walk.box.lo, hi = walk.box.hi;
+    if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) {
+        return std::unexpected(invalid("the solid is empty: an intersect's operands have bounds that do not overlap"));
+    }
+    constexpr double kFloatMax = std::numeric_limits<float>::max();
+    if (glm::max(glm::abs(lo.x), glm::max(glm::abs(lo.y), glm::abs(lo.z))) > kFloatMax ||
+        glm::max(glm::abs(hi.x), glm::max(glm::abs(hi.y), glm::abs(hi.z))) > kFloatMax) {
+        return std::unexpected(invalid("the solid's bounds exceed fp32's range"));
+    }
+    return Aabb{glm::vec3(round_down(lo.x), round_down(lo.y), round_down(lo.z)),
+                glm::vec3(round_up(hi.x), round_up(hi.y), round_up(hi.z))};
 }
 
 }  // namespace spade
