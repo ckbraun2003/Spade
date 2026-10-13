@@ -924,6 +924,7 @@ add_library(spade_analysis STATIC
     analysis/case_file.cpp
     analysis/coefficients.cpp
     analysis/run.cpp
+    analysis/runner.cpp
     analysis/detail/atomic_file.cpp
 )
 add_library(spade::analysis ALIAS spade_analysis)
