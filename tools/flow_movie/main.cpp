@@ -44,6 +44,7 @@
 #include "views.hpp"
 
 #include "physics/airflow/publish.hpp"
+#include "core/fp16.hpp"
 #include "render/raster_cpu.hpp"
 
 #ifdef FLOW_MOVIE_HAS_ANALYSIS
@@ -151,7 +152,8 @@ struct Film {
     const AirflowCase& c = film.airflow;
     return film.stem + ": " + std::to_string(film.frames) + " frames over " + std::to_string(total_steps(c)) +
            " steps of h " + fixed(c.fluid.h, 6) + " on " + std::to_string(c.shape.nx) + "x" +
-           std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) + " at dx " + fixed(c.shape.dx, 6);
+           std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) + " at dx " + fixed(c.shape.dx, 6) +
+           ", n_v " + std::to_string(c.fluid.n_v) + ", nu " + fixed(c.fluid.nu, 8) + ", rho " + fixed(c.fluid.rho, 4);
 }
 
 constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
@@ -323,14 +325,16 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 
 [[nodiscard]] spade::Result<void> render_stills(const Film& film, const fs::path& cache, GlStage& stage,
                                                 const Encoder& encoder, const fs::path& dir, uint32_t stills,
-                                                bool cpu, const std::string& only_view) {
+                                                bool cpu, const std::string& only_view, uint32_t fixed_frame = ~0u) {
     spade::FlowVolume volume;
     FrameLog log;
     std::vector<uint8_t> rgba;
     std::error_code ec;
     fs::create_directories(dir, ec);
     for (uint32_t s = 0; s < stills; ++s) {
-        const uint32_t k = stills <= 1u ? film.frames - 1u : s * (film.frames - 1u) / (stills - 1u);
+        const uint32_t k = fixed_frame != ~0u ? fixed_frame
+                           : stills <= 1u    ? film.frames - 1u
+                                             : s * (film.frames - 1u) / (stills - 1u);
         if (auto read = read_frame(cache, k, volume, log); !read) return read;
         for (const View& view : film.views) {
             if (!only_view.empty() && view.name != only_view) continue;
@@ -346,6 +350,49 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                 dir / (film.stem + "-" + view.name + "-" + std::to_string(k) + (cpu ? "-cpu" : "") + ".png");
             if (auto saved = save_png(encoder, rgba, png); !saved) return saved;
             std::printf("still: %s (t %s)\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str());
+        }
+    }
+    return {};
+}
+
+// Physics' swirl check: the vertical vorticity w_y = du/dz - dw/dx, central
+// differences on the published cell-centred velocity, averaged over the 3x3
+// cells round each disc's axis, 0.5 R and 2 R below its centre.
+[[nodiscard]] spade::Result<void> probe_swirl(const Film& film, const fs::path& cache, uint32_t frame) {
+    spade::FlowVolume volume;
+    FrameLog log;
+    if (auto read = read_frame(cache, frame, volume, log); !read) return read;
+    const spade::FlowVolumeHeader& h = volume.header;
+    const auto vel = [&](int i, int j, int k, uint32_t c) {
+        return spade::fp16::to_f32(volume.v[spade::flow_cell_index(h, static_cast<uint32_t>(i), static_cast<uint32_t>(j),
+                                                                    static_cast<uint32_t>(k)) *
+                                                spade::kFlowHalvesPerCell + c]);
+    };
+    std::printf("frame %u, t %s s: w_y (1/s), the mean over 3x3 cells on each disc's axis\n", frame,
+                fixed(log.time, 3).c_str());
+    for (std::size_t d = 0; d < film.airflow.discs.size(); ++d) {
+        const airflow::ActuatorDisc& disc = film.airflow.discs[d];
+        const glm::vec3 hub = disc.centre + film.airflow.origin;  // world
+        for (const float below : {0.5f, 2.0f}) {
+            const glm::vec3 at = hub - glm::vec3(0.0f, below * disc.radius, 0.0f);
+            const glm::vec3 g = (at - h.origin) / h.cell;
+            const int ci = static_cast<int>(std::floor(g.x)), cj = static_cast<int>(std::floor(g.y)),
+                      ck = static_cast<int>(std::floor(g.z));
+            double sum = 0.0;
+            int n = 0;
+            for (int dk = -1; dk <= 1; ++dk) {
+                for (int di = -1; di <= 1; ++di) {
+                    const int i = ci + di, k = ck + dk;
+                    if (i < 1 || k < 1 || i + 1 >= static_cast<int>(h.nx) || k + 1 >= static_cast<int>(h.nz)) continue;
+                    const double du_dz = (vel(i, cj, k + 1, 0) - vel(i, cj, k - 1, 0)) / (2.0 * h.cell);
+                    const double dw_dx = (vel(i + 1, cj, k, 2) - vel(i - 1, cj, k, 2)) / (2.0 * h.cell);
+                    sum += du_dz - dw_dx;
+                    ++n;
+                }
+            }
+            const int spin = d < film.airflow.spins.size() ? film.airflow.spins[d] : 0;
+            std::printf("  disc %zu (spin %+d) at (%+.3f, %.3f, %+.3f), %.1f R below: w_y %+.2f\n", d, spin, hub.x,
+                        hub.y, hub.z, static_cast<double>(below), n > 0 ? sum / n : 0.0);
         }
     }
     return {};
@@ -385,7 +432,8 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     film.time_unit = " s";
     film.captions = [](const FrameLog&) {
         return CaptionText{{"actuator discs: uniform thrust, constant-circulation swirl; no drone body yet "
-                            "(D1 adds the solid drone)"},
+                            "(D1 adds the solid drone)",
+                            "inviscid: the shear layers break down to the grid's 1 cm scale"},
                            {}};
     };
     const AirflowCase& q = film.airflow;
@@ -638,6 +686,9 @@ struct Options {
     bool simulate_only = false;
     bool cpu = false;  // stills on the CPU renderer instead of GL
     std::string view;  // stills of this view only
+    int still_frame = -1;  // stills of this frame only (cached; no simulation past it)
+    int probe_swirl = -1;  // print each disc's vertical vorticity at this cached frame
+    uint32_t n_v = 0;      // 0: the case's own; else its V-cycles (Physics' noise test)
     double budget_seconds = 0.0;  // 0: none
     uint32_t frame_budget = 0;    // 0: none
 };
@@ -677,6 +728,20 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
                                                 "\". --resimulate starts it again"});
     };
     if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
+    if (opt.probe_swirl >= 0) {
+        if (auto probed = probe_swirl(film, cache, static_cast<uint32_t>(opt.probe_swirl)); !probed) {
+            return std::unexpected(probed.error());
+        }
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
+    if (opt.still_frame >= 0 && started && cached_frames(cache) > static_cast<uint32_t>(opt.still_frame)) {
+        if (auto drew = render_stills(film, cache, stage, encoder, opt.out / "stills", 1u, opt.cpu, opt.view,
+                                      static_cast<uint32_t>(opt.still_frame));
+            !drew) {
+            return std::unexpected(drew.error());
+        }
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
     if (started && !finished && theirs.build != mine.build) {
         return refuse_cache("build's unfinished simulation", theirs.build, mine.build);
     }
@@ -727,6 +792,7 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     if (film.stem == "quad-wake") {
         top.push_back("actuator discs: uniform thrust, constant-circulation swirl; no drone body yet (D1 adds the "
                       "solid drone)");
+        top.push_back("inviscid: the shear layers break down to the grid's 1 cm scale");
     }
     (void)extra;
     std::vector<std::string> bottom = film.record;
@@ -791,6 +857,12 @@ int main(int argc, char** argv) {
             opt.cpu = true;
         } else if (arg == "--view") {
             opt.view = value();
+        } else if (arg == "--still-frame") {
+            opt.still_frame = std::atoi(value().c_str());
+        } else if (arg == "--probe-swirl") {
+            opt.probe_swirl = std::atoi(value().c_str());
+        } else if (arg == "--nv") {
+            opt.n_v = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--simulate-only") {
             opt.simulate_only = true;
         } else if (arg == "--budget-seconds") {
@@ -827,6 +899,7 @@ int main(int argc, char** argv) {
     } else if (opt.video == "quad") {
         auto film = quad_film(frames_for(opt, 14.0, encoder));
         if (!film) return fail(film.error());
+        if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {
         films.push_back(cavity_film(frames_for(opt, 12.0, encoder)));
@@ -872,13 +945,13 @@ int main(int argc, char** argv) {
             auto clips = run_film(*item.film, opt, **stage, encoder);
             if (!clips) return fail(clips.error());
             if (!*clips) return kExitIncomplete;
-            if (opt.stills > 0u || opt.simulate_only) continue;
+            if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) continue;
             auto card = film_card(encoder, opt.out / "clips", *item.film, 5.0, builds);
             if (!card) return fail(card.error());
             parts.push_back(*card);
             parts.insert(parts.end(), (*clips)->begin(), (*clips)->end());
         }
-        if (opt.stills > 0u || opt.simulate_only) return 0;
+        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) return 0;
         const fs::path out = opt.out / "validation-reel.mp4";
         if (auto joined = concatenate(encoder, parts, out); !joined) return fail(joined.error());
         std::printf("validation-reel: wrote %s\n", out.string().c_str());
@@ -897,7 +970,7 @@ int main(int argc, char** argv) {
         auto clips = run_film(film, opt, **stage, encoder);
         if (!clips) return fail(clips.error());
         if (!*clips) return kExitIncomplete;
-        if (opt.stills > 0u || opt.simulate_only) continue;
+        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) continue;
         auto card = film_card(encoder, opt.out / "clips", film, opt.video == "smoke" ? 0.2 : 4.0, builds);
         if (!card) return fail(card.error());
         std::vector<fs::path> parts{*card};
