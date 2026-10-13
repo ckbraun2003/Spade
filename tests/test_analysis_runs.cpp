@@ -33,7 +33,7 @@ namespace fs = std::filesystem;
 [[nodiscard]] an::ResolvedCase resolved() {
     const spade::vehicles::ModelType m = quad();
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m)};
+    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
     c.controls.armed = true;
     c.controls.throttle = 0.5f;
     c.rotors.assign(m.rotors.size(), an::RotorSetup{});
