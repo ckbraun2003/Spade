@@ -1,6 +1,6 @@
 # set_body_state: re-pose a live body
 
-**Owner:** Core. **Status:** draft for the lead's review; Kat's lead sees it. Slotted after mass-from-mesh; not urgent this week.
+**Owner:** Core. **Status:** APPROVED by the lead 2026-10-13 (Q3 and Q4 settled below); Kat's lead has it, and Q1-Q2 are for Kat's Runtime. Implementation follows mass-from-mesh, unless Kat asks sooner.
 **Base:** master `c3c1537`.
 **Why:** Kat's training host re-poses bodies after a world reset without despawning them, so sensor bindings and refs survive (relayed by the lead, 2026-10-13). Runtime's contract is C5 1.2, `kathost_body_set_state`. **Decided** (the lead, 2026-10-13): the call takes the body row's native state, stores the quaternion as given, keeps every attached row and leaves rotors alone.
 
@@ -81,6 +81,7 @@ The call ends with `mark_vulkan_dirty()`, like `apply_wrench()` (`simulation.cpp
 8. **Bad arguments (Kat 6).** Every refusal in §2: NaN and Inf in each field; \|q\| just outside each bound, and 0; a null, stale, foreign or despawn-queued ref; a buried pose; poisoned (with `step()`'s text). After each, `state_digest` is unchanged.
 9. **Restore after a set (Kat 7: the return to spawn is Kat-side only).** Our half: snapshot, set, step, restore, and the state equals the snapshot's. Also: a snapshot taken after a set restores the set state.
 10. **CPU and GPU agree after a set**, within the parity bands (`engine/testing/parity.hpp`).
+11. **Census (the lead's Q4 guard).** Every per-body array of the standard set is listed and classified "kept" or "cleared". An unlisted per-body array fails the test by name.
 
 ## 7. Open questions
 
@@ -88,5 +89,5 @@ The call ends with `mark_vulkan_dirty()`, like `apply_wrench()` (`simulation.cpp
 |---|---|---|---|
 | 1 | Kat's Runtime | Refuse a pose that is buried in the world SDF, as spawn does? | Yes: the uncapped Baumgarte correction would eject it (`simulation.cpp:1696-1705`) |
 | 2 | Kat's Runtime | The \|q\| bound is computed in fp32 here. Does Runtime's check use the same expression, so the two never disagree at the edge? | Kat computes it as in §1, or keeps a margin inside ours |
-| 3 | Lead | Sensor reset (fresh bias walks), dropped for now (YAGNI)? | Yes. If needed, it zeroes bias and phase and keeps `last_index`, because TA5 forbids rewinding an index (`rings.hpp:15-17`) |
-| 4 | Lead | A module that keeps per-body history: a per-array clear hook now, or a review line until one exists? | A review line, as `module.hpp:154-155` defers a module `free` |
+| 3 | Lead | Sensor reset (fresh bias walks), dropped for now (YAGNI)? | **Settled (the lead): dropped.** If ever needed, it zeroes bias and phase and keeps `last_index`, because TA5 forbids rewinding an index (`rings.hpp:15-17`) |
+| 4 | Lead | A module that keeps per-body history: a per-array clear hook now, or a review line until one exists? | **Settled (the lead): a review line, plus a CENSUS TEST.** It lists every per-body array of the standard set, each classified "kept by set_body_state" or "cleared", so a new per-body array fails it until someone classifies it, like the dirty-tracking census. A developer module's per-body history is documented as the developer's responsibility. |
