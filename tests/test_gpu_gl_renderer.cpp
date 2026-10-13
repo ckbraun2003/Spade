@@ -1442,6 +1442,89 @@ TEST_F(GpuGlRenderer, FlowLambda2IsoDrawsTheQIsoOfAStraightCore) {
     EXPECT_EQ(count_differing(got, want), 0u) << "lambda2's iso must draw exactly as Q's on a plane flow";
 }
 
+// FlowSurfaceWallsAndOffsetMatchTheCpu's band. RED: a priori, the step 5
+// surface band's (861 differ, none over two); pinned at green.
+constexpr size_t kWallsOverTwo = 0;
+constexpr size_t kWallsDiffering = 861;
+
+// RND-8 on GL: walls_only and the offset off the wall, against the CPU.
+// Two quads at z = 0 (the left a flow wall), in a pressure field that jumps
+// across z = 0 like a sheet's, seen from z = 3: with walls_only and a
+// one-cell offset, the wall reads the seen side's +1 and the other quad keeps
+// its shading. GL's face normal comes from derivatives, raster_cpu's from the
+// triangle; on these flat quads they agree.
+TEST_F(GpuGlRenderer, FlowSurfaceWallsAndOffsetMatchTheCpu) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(
+        glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+            spade::test::FlowChannels c{};
+            c[spade::kFlowPressure] = p.z > 0.0f ? 1.0f : -1.0f;
+            return c;
+        });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-0.8f, -0.8f, 0.0f), glm::vec3(0.8f, -0.8f, 0.0f), glm::vec3(0.8f, 0.8f, 0.0f),
+                      glm::vec3(-0.8f, 0.8f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    RenderScene scene;
+    scene.meshes.push_back(quad);
+    scene.materials = {spade::render::Material{}};
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    for (const float x : {-1.0f, 1.0f}) {
+        spade::render::DrawItem item{.mesh_index = 0,
+                                     .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(x, 0.0f, 0.0f)),
+                                     .material_override = spade::render::kNoMaterial};
+        item.flow_wall = x < 0.0f;
+        scene.statics.push_back(item);
+    }
+    spade::render::FlowSurfaceColouring colouring{&volume, colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    scene.flow_surface_colouring = colouring;
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    RenderScene bare = scene;
+    bare.flow_surface_colouring.reset();
+    const std::vector<uint8_t> gl_bare = draw_and_read(bare, comparable_options(), camera);
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    ASSERT_EQ(gl_bare.size(), kPixels * 4u);
+    const size_t coloured = count_differing(cpu, cpu_bare);
+    ASSERT_GT(coloured, kPixels / 20u) << "the wall must take the colour";
+
+    // GL on its own: the right half (the other quad) keeps its shading, and
+    // the wall's pixels on the middle row read the seen side's +1.
+    size_t right_coloured = 0, wall_px = 0;
+    const glm::vec3 plus_one = 255.0f * spade::render::colour_map_at(spade::render::ColourMapId::cool_warm, 1.0f);
+    for (size_t y = 0; y < static_cast<size_t>(kHeight); ++y) {
+        for (size_t x = 0; x < static_cast<size_t>(kWidth); ++x) {
+            const size_t p = y * kWidth + x;
+            if (same_pixel(gl, gl_bare, p)) continue;
+            if (x >= static_cast<size_t>(kWidth) / 2u) {
+                ++right_coloured;
+            } else if (y == static_cast<size_t>(kHeight) / 2u) {
+                const glm::vec3 got(gl[p * 4u], gl[p * 4u + 1u], gl[p * 4u + 2u]);
+                const glm::vec3 diff = glm::abs(got - plus_one);
+                EXPECT_LE(std::max({diff.x, diff.y, diff.z}), 2.0f) << "column " << x << ": the seen side's +1";
+                ++wall_px;
+            }
+        }
+    }
+    EXPECT_EQ(right_coloured, 0u) << "only the flow wall takes the colour";
+    EXPECT_GE(wall_px, 10u);
+    const ChannelDiff d = channel_diff(cpu, gl);
+    std::printf("[ flow walls ] %zu px coloured; worst %d levels, %zu over two; %zu pixels differ\n", coloured,
+                d.worst, d.over_two, d.differing);
+    EXPECT_LE(d.over_two, kWallsOverTwo);
+    EXPECT_LE(d.differing, kWallsDiffering);
+}
+
 // Plan step 7g: a renderer asked to compile its flow programs in the
 // background says when they are ready. Until then it refuses a flow layer
 // as compiling (L6); once ready, within two minutes even on a cold driver

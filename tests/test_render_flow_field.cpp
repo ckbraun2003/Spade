@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include "flow_synthetic.hpp"
 #include "render/flow_field.hpp"
@@ -233,6 +234,106 @@ TEST(RenderFlowField, CpColoursRefuseABadReference) {
         EXPECT_NE(made.error().context.find("C_p colours"), std::string::npos) << made.error().context;
         EXPECT_NE(made.error().context.find(c.why), std::string::npos) << made.error().context;
     }
+}
+
+// A surface colouring's offset is finite, never negative, and at most
+// kMaxSurfaceOffsetCells cells.
+TEST(RenderFlowField, AColouringsOffsetIsRefusedOutsideItsRange) {
+    const spade::FlowVolume volume = pressure_volume(glm::vec3(-1.0f), 8, 8, 8);
+    TransferFunction colours;
+    colours.quantity = FlowQuantity::pressure;
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), -0.5f, 4.5f,
+                            std::numeric_limits<float>::infinity()}) {
+        FlowSurfaceColouring c{&volume, colours};
+        c.offset_cells = bad;
+        const auto valid = spade::render::validate_flow_surface_colouring(c);
+        ASSERT_FALSE(valid.has_value()) << bad;
+        EXPECT_NE(valid.error().context.find("offset"), std::string::npos) << valid.error().context;
+    }
+    FlowSurfaceColouring fine{&volume, colours};
+    fine.offset_cells = spade::render::kMaxSurfaceOffsetCells;
+    EXPECT_TRUE(spade::render::validate_flow_surface_colouring(fine).has_value());
+}
+
+// Two quads in the box, side by side: the left one a wall in the flow, the
+// right one not (an actuator rotor's disc, say). Without walls_only both take
+// the colour, as before; with it, only the wall does (RND-8).
+TEST(RenderFlowField, OnlyFlowWallsTakeTheColourWhenAsked) {
+    const spade::FlowVolume volume = pressure_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 16, 16, 8);
+    TransferFunction colours;
+    colours.quantity = FlowQuantity::pressure;
+    colours.colours = ColourMapId::cool_warm;
+    colours.range_min = -6.0f;
+    colours.range_max = 6.0f;
+    RenderScene scene;
+    scene.meshes.push_back(quad(0.8f));
+    scene.materials = {spade::render::Material{}};
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    for (const float x : {-1.0f, 1.0f}) {
+        spade::render::DrawItem item{.mesh_index = 0,
+                                     .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(x, 0.0f, 0.0f)),
+                                     .material_override = spade::render::kNoMaterial};
+        item.flow_wall = x < 0.0f;
+        scene.statics.push_back(item);
+    }
+    const std::vector<uint8_t> plain = draw(scene);
+    scene.flow_surface_colouring = FlowSurfaceColouring{&volume, colours};
+    const std::vector<uint8_t> every = draw(scene);
+    scene.flow_surface_colouring->walls_only = true;
+    const std::vector<uint8_t> walls = draw(scene);
+
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    const auto grid = spade::render::ray_grid(camera, kSide, kSide);
+    uint32_t wall_px = 0, other_px = 0;
+    for (uint32_t x = 0; x < kSide; ++x) {
+        const glm::vec3 d = spade::render::camera_ray(grid, x, 16).dir_world;
+        const float on_plane = (camera.position + d * (5.0f / -d.z)).x;
+        if (on_plane > -1.6f && on_plane < -0.4f) {  // the wall
+            EXPECT_NE(rgb(every, x, 16), rgb(plain, x, 16)) << "column " << x;
+            EXPECT_EQ(rgb(walls, x, 16), rgb(every, x, 16)) << "column " << x << ": the wall keeps its colour";
+            ++wall_px;
+        } else if (on_plane > 0.4f && on_plane < 1.6f) {  // not a wall
+            EXPECT_NE(rgb(every, x, 16), rgb(plain, x, 16)) << "column " << x;
+            EXPECT_EQ(rgb(walls, x, 16), rgb(plain, x, 16)) << "column " << x << ": no wall, no colour";
+            ++other_px;
+        }
+    }
+    EXPECT_GE(wall_px, 4u);
+    EXPECT_GE(other_px, 4u);
+}
+
+// A sheet, Physics' zero-thickness wall: the pressure jumps between the cell
+// centres either side of it (z = -0.125 and 0.125 m here). Read at the wall,
+// the sample averages the two sides; read one cell off it along the normal
+// (RND-8), it takes the seen side alone.
+TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
+    TransferFunction colours;
+    colours.quantity = FlowQuantity::pressure;
+    colours.colours = ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    const auto centre_colour = [&](float above, float offset) {
+        const spade::FlowVolume volume = spade::test::make_flow_volume(
+            glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [above](glm::vec3 p) {
+                spade::test::FlowChannels c{};
+                c[spade::kFlowPressure] = p.z > 0.0f ? above : -above;
+                return c;
+            });
+        RenderScene scene = quad_scene();  // at z = 0, seen from z = 5
+        FlowSurfaceColouring colouring{&volume, colours};
+        colouring.offset_cells = offset;
+        scene.flow_surface_colouring = colouring;
+        return rgb(draw(scene), 16, 16);
+    };
+    const auto expect_near = [](glm::vec3 got, float t, const char* what) {
+        const glm::vec3 want = 255.0f * spade::render::colour_map_at(ColourMapId::cool_warm, t);
+        const glm::vec3 diff = glm::abs(got - want);
+        EXPECT_LE(std::max({diff.x, diff.y, diff.z}), 1.0f) << what;
+    };
+    expect_near(centre_colour(1.0f, 0.0f), 0.5f, "at the wall: the two sides' mean, 0");
+    expect_near(centre_colour(1.0f, 1.0f), 1.0f, "one cell off: the seen side's +1");
+    expect_near(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
 }
 
 TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {

@@ -40,10 +40,22 @@ namespace spade::render {
 struct FlowSurfaceColouring {
     const FlowVolume* volume = nullptr;  // the caller's, outliving every render() that reads it
     TransferFunction colours;            // its quantity, colours and range; extinction unused
+    // RND-8, the C_p view. walls_only colours only draw items flagged
+    // flow_wall; otherwise every surface in the box takes the colour. The
+    // analytic ground takes it on neither path.
+    bool walls_only = false;
+    // Where the value is read: offset_cells volume cells off the surface,
+    // along its normal turned toward the eye, so a wall's pressure comes from
+    // the fluid on the seen side, not from cells across it (a thin part, or
+    // a sheet, keeps each side's own). 0 reads at the surface. A face normal
+    // on meshes, the distance gradient on CSG.
+    float offset_cells = 0.0f;
 };
+inline constexpr float kMaxSurfaceOffsetCells = 4.0f;
 
 // invalid_argument, by name: no volume, a volume that fails
-// validate_flow_volume(), or colours that fail validate_transfer_function().
+// validate_flow_volume(), colours that fail validate_transfer_function(), or
+// an offset that is not finite in [0, kMaxSurfaceOffsetCells].
 [[nodiscard]] Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouring);
 
 // The C_p view's colours (RND-8): a fixed-range pressure transfer function

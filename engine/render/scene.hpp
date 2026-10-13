@@ -528,6 +528,11 @@ struct DrawItem {
     // which is exactly right: a static does not move. Every other draw mode
     // ignores it, so adding it moves no existing golden.
     float speed_mps = 0.0f;
+
+    // A wall in the flow (RND-8): a FlowSurfaceColouring with walls_only
+    // colours this item, and no item without it. A rotor drawn under an
+    // actuator model is no wall: the solver never saw its surface.
+    bool flow_wall = false;
 };
 
 // A CSG subtree the raster ray-marches instead of drawing its mesh.
