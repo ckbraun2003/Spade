@@ -5,6 +5,7 @@
 #include <string>
 
 #include "core/fp16.hpp"
+#include "core/lambda2.hpp"
 
 namespace spade::physics::airflow {
 
@@ -71,7 +72,8 @@ struct Context {
     return G;
 }
 
-// The fluid cell's channels: u, v, w, dye, p, |omega|, q-hat, reserved.
+// The fluid cell's channels: u, v, w, dye, p, |omega|, q-hat, lambda2-hat
+// (core/lambda2.hpp, from the same gradient).
 [[nodiscard]] SPADE_AIRFLOW_HOT Channels fluid_channels(const Context& x, uint32_t i, uint32_t j, uint32_t k) noexcept {
     const auto G = gradient(x, i, j, k);
     const float wx = G[2][1] - G[1][2];
@@ -88,7 +90,7 @@ struct Context {
     const float Q = 0.25f * w2 - 0.5f * s2;
     const float q_hat = Q >= 0.0f ? std::sqrt(Q) : -std::sqrt(-Q);
     return {centred(x, 0, i, j, k), centred(x, 1, i, j, k), centred(x, 2, i, j, k), 0.0f,
-            x.g.p[cell_index(x.g.shape, i, j, k)], std::sqrt(w2), q_hat, 0.0f};
+            x.g.p[cell_index(x.g.shape, i, j, k)], std::sqrt(w2), q_hat, lambda2_hat(G)};
 }
 
 }  // namespace
@@ -173,10 +175,6 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                     }
                     if (fluid == 0u) {  // deeper than the first layer: no data
                         for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
-                            if (c == kFlowReserved) {
-                                write(cell, c, 0.0f);
-                                continue;
-                            }
                             (c < kFlowHalvesPerCell ? out.v : out.s)[cell * kFlowHalvesPerCell +
                                                                      (c % kFlowHalvesPerCell)] = fp16::kNoDataBits;
                             ++h.no_data;
@@ -185,7 +183,6 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                     }
                     const float inv = 1.0f / static_cast<float>(fluid);
                     for (uint32_t c = 0; c < kFlowChannelCount; ++c) ch[c] = sum[c] * inv;
-                    ch[kFlowReserved] = 0.0f;
                     ++counts.extrapolated;
                 }
                 for (uint32_t c = 0; c < kFlowChannelCount; ++c) write(cell, c, ch[c]);

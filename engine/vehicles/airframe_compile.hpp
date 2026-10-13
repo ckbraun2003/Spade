@@ -43,8 +43,9 @@
 //   r_b = R_bd (p_d - c)          q_b = q_bd * q_d
 //
 // So an IMU authored with the identity orientation reads in design axes. A
-// part's mount is its record's pose (the record's centre of mass and its
-// orientation), converted the same way.
+// part's mount is its record's pose, converted the same way: for an analytic
+// solid, the record's centre of mass and its orientation; for a mesh record,
+// the mesh's PLACEMENT (MASS FROM A MESH, below).
 //
 // PARTS (CORE-7; docs/design/core/2026-10-12-model-parts-design.md section
 // 1.5). One record gives both the inertia and the model part (TD-9). Each
@@ -60,20 +61,55 @@
 //   point, tensor   none
 //
 // A cylinder or tube of length 0, which the mass accepts, is a disc with no
-// volume and gives no part either.
+// volume and gives no part either. A record whose geometry source is mesh
+// becomes a body-frame WALL part too: its mesh (shared, not copied) at the
+// mesh's placement, with the min_feature the record declares.
 //
 // Both kinds run along local +Y, so a cylinder needs no turn. The parts come
 // in gather order, after the IMU mounts: the spec's records (named by
 // PartInertia::geometry, "parts[k]" when it gives no name, or opted out with
-// source none), then a shaped motor at each hub ("motor[k]", role "motor"),
-// a shaped ESC ("esc") and a shaped battery ("battery"). A block of zero mass
-// gathers no record and gives no part. A propeller never does: its disc is
-// mass only, and the rotor is an actuator disc. Every part is rigid, a
-// motor's too, whose solid is centred on its hub, as its mass is. Geometry is
-// imported (CORE-6, amended 2026-10-12), so the compile authors no shape of
-// its own. No mass or drag rule reads a record's geometry, and parts never
+// source none), then a shaped motor beside each hub ("motor[k]", role
+// "motor"), a shaped ESC ("esc") and a shaped battery ("battery"). A block of
+// zero mass gathers no record and gives no part. A propeller never does: its
+// disc is mass only, and the rotor is an actuator disc. Every part is rigid, a
+// motor's too, whose solid sits where its mass does. Geometry is imported
+// (CORE-6, amended 2026-10-12), so the compile authors no shape of its own.
+// No mass or drag rule reads an analytic record's geometry, and parts never
 // enter model_identity() (CORE-7; their identity is parts_identity()), so the
 // mass, drag, fit and identity are what they were without parts.
+//
+// MASS FROM A MESH (the mass-from-mesh plan, 2026-10-13). A record whose
+// geometry source is mesh takes its mass, centre of mass and inertia from its
+// mesh: TriangleMesh::mass_properties() (computed once, at make_mesh(), by
+// mesh_mass_properties()) times the record's density. It is one record with
+// one source (TD-9): it carries no mass, shape, size or tensor of its own,
+// and there is no default density. Its pose is the mesh's PLACEMENT, mesh
+// local -> design, and a mesh's origin is not its centroid. Before
+// composite_inertia() runs, the compile resolves it into a PartShape::tensor
+// record of mass rho V, at the placement applied to the centroid (p + R c),
+// turned as the record, with rho I_centroid in the mesh's axes; the part
+// stays at the placement, never at the centre of mass. Nothing is rounded to
+// float but the outputs, as for every record. The volume P2 reads is the
+// part's mesh's (mass_properties().volume), not folded into parts_identity()
+// (the content hash covers it). Scale: none is left to drop, since B6 bakes
+// every node transform into the mesh's positions and a record's pose is
+// rigid.
+//
+// DRAG AND MESHES (Physics' rule, 2026-10-13). The best-effort drag estimate
+// reads the records' inertia shapes, and a mesh record has none; yet its
+// solid is real external area, unlike a point or a tensor record. So with no
+// DragSpec, an airframe with ANY mesh record, mixed or all-mesh, is refused
+// with one issue at drag, naming the first mesh record ("and N more" for the
+// rest): give a DragSpec (zero coefficients for none). The estimate never
+// silently leaves a mesh out.
+//
+// THE MOTOR'S PLACE (the lead's ruling, 2026-10-12). A motor sits beside its
+// propeller, not across the rotor plane: its one record, mass and solid
+// together, is its hub moved half its extent along the thrust axis (the hub's
+// +Y), behind the propeller for a tractor and ahead of it for a pusher
+// (RotorSpec::pusher). Half its extent is a cylinder's or a tube's length / 2,
+// a box's y extent / 2, a sphere's radius; a point or a tensor stays on the
+// hub. The propeller's mass and the rotor stay on the hub.
 //
 // DETERMINISM. Double arithmetic in a fixed order, sqrt the only
 // non-arithmetic call (IEEE 754 rounds it correctly), fixed iteration counts,
@@ -90,11 +126,19 @@
 // (ModelType::issues(), TD-9), run over the model as the spec writes it,
 // before anything is fitted or normalized, so a zero mount orientation is
 // refused rather than normalized to the identity. A part's problem is listed
-// at its record, as parts[k].geometry.<field>: an unknown source (the
-// compile's own rule), or a name the model's rules refuse. A block's part has
-// a fixed name, so a record whose name it repeats is the one listed. A part
-// problem does not stop the fit. A propulsion problem the fit finds is listed
-// too whenever the blocks and parts let the fit run.
+// at its record, as parts[k].geometry.<field>: an unknown source, a mesh, a
+// density or a min_feature beside a source that never reads it (the
+// compile's own rules), or a name the model's rules refuse. A block's part
+// has a fixed name, so a record whose name it repeats is the one listed. A
+// part problem does not stop the fit. A mesh record's own problems do, since
+// its mesh and density are its mass, each listed at the record, naming it:
+// no mesh, a volume or density not finite and > 0 (no default), a density
+// whose mass or inertia overflows, a min_feature not finite and > 0
+// (geometry.<field>), and a hand-entered mass, shape, size or tensor beside
+// it (TD-9; at that field). No DragSpec beside a mesh record is one issue at
+// drag (DRAG AND MESHES), listed whether or not the fit runs, and it does
+// not stop the fit. A propulsion problem the fit finds is listed too
+// whenever the blocks and parts let the fit run.
 // compile_airframe() runs the same checks and, on any problem, returns them
 // joined in its error.
 // ===========================================================================
@@ -124,8 +168,9 @@ struct BlockShape {
 };
 
 // The spec's section 14.2 blocks. SI units, except `kv` in the datasheet's
-// rpm/V. Each has its mass; the motor and propeller sit at every rotor's hub,
-// the ESC and battery at their own mounts.
+// rpm/V. Each has its mass; the propeller sits on every rotor's hub and the
+// motor beside it (THE MOTOR'S PLACE, above), the ESC and battery at their own
+// mounts.
 struct MotorBlock {
     double kv = 0.0;               // rpm/V
     double resistance = 0.0;       // ohm, line to line
@@ -184,10 +229,21 @@ struct BatteryBlock {
 };
 
 // One rotor: its hub, thrust along local +Y, and its spin (+1, -1 or 0, as
-// RotorDesc::spin_dir). Declaration order is rotor order.
+// RotorDesc::spin_dir). Declaration order is rotor order. spin_dir is the
+// yaw torque's direction only, whatever `pusher` says.
 struct RotorSpec {
     MountPose hub;
     double spin_dir = 1.0;
+    // Which side of the propeller its motor sits on, along the thrust axis (the
+    // hub's +Y). false, a tractor: the propeller is on the thrust side and the
+    // motor behind it, toward -thrust (the usual top-mounted multirotor prop).
+    // true, a pusher: the motor is on the thrust side and the propeller behind it
+    // (a motor hung under the arm). It moves the motor's one record, mass and
+    // solid together, by half its extent along the thrust axis (TD-9). The
+    // rotor's thrust, torque, spin and hub (the prop's plane) are unchanged.
+    // Real props add a few mm of adapter and shaft between motor and prop; that
+    // gap is not modelled until the spec has a field for it.
+    bool pusher = false;
 };
 
 // A drag element, as DragBodyDesc but in the design frame. Componentwise
@@ -220,12 +276,12 @@ struct AirframeSpec {
     uint32_t version = 1;           // >= 1
 
     std::vector<PartInertia> parts; // frame, arms, avionics: every mass not in a block below
-    MotorBlock motor;               // one motor type, at every hub
+    MotorBlock motor;               // one motor type, beside every hub
     PropBlock prop;                 // one propeller type, at every hub
     EscBlock esc;
     BatteryBlock battery;
     std::vector<RotorSpec> rotors;  // at least one
-    std::vector<DragSpec> drag;     // empty: estimated from the parts (best-effort)
+    std::vector<DragSpec> drag;     // empty: estimated from the parts (best-effort); refused beside a mesh record
     std::vector<ImuSpec> imus;
     double proxy_radius = 0.0;      // m, >= 0
 

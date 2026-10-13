@@ -33,7 +33,9 @@ it; -Stop if you must leave.
 
 Output: build-docker\<short-sha>\, or build-docker\<short-sha>-<run>\ for a named
 run (leg.log, build.log, build-errors.txt, ctest.log, ctest-junit.xml, tests.txt,
-agreement.txt, summary.txt). Exit code: the leg's (0 pass, 1 fail).
+agreement.txt, summary.txt). Exit code: 0 only when every docker call answered,
+the leg's container exited 0 and summary.txt opens "docker leg: PASS"; otherwise
+non-zero, with the reason on the last line ("docker-leg: exit N, FAIL: ...").
 #>
 param(
     [string] $Commit = 'HEAD',
@@ -53,9 +55,23 @@ $ErrorActionPreference = 'Stop'
 $Prefix = 'spade-docker-leg'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
+# Any error ends the run as a failure that names its reason, never as a pass.
+trap { Write-Host ("docker-leg: exit 1, FAIL: {0}" -f $_.Exception.Message); exit 1 }
+
 # Native commands report failure through $LASTEXITCODE, never by throwing.
 function Invoke-Checked([string] $What) {
     if ($LASTEXITCODE -ne 0) { throw "$What failed (exit $LASTEXITCODE)" }
+}
+
+# A docker call that must succeed. With the daemon gone, docker prints nothing
+# and exits non-zero, and that empty output must never be read as an answer
+# ("no leg is running", or a container's exit code of 0).
+function Invoke-Docker {
+    $out = & docker @args
+    if ($LASTEXITCODE -ne 0) {
+        throw ("docker {0} failed (exit {1}); is Docker Desktop running?" -f ($args[0..1] -join ' '), $LASTEXITCODE)
+    }
+    $out
 }
 
 function Get-FreeGB {
@@ -66,11 +82,11 @@ function Get-FreeGB {
 
 # State of a leg's container: '' if there is none, else 'running', 'exited', ...
 function Get-LegState([string] $Name) {
-    (& docker ps -a --filter "name=^$Name`$" --format '{{.State}}') -join ''
+    (Invoke-Docker ps -a --filter "name=^$Name`$" --format '{{.State}}') -join ''
 }
 
 function Get-LegLabels([string] $Name) {
-    $raw = (& docker ps -a --filter "name=^$Name`$" --format '{{.Labels}}') -join ''
+    $raw = (Invoke-Docker ps -a --filter "name=^$Name`$" --format '{{.Labels}}') -join ''
     $labels = @{}
     foreach ($pair in ($raw -split ',')) {
         $kv = $pair -split '=', 2
@@ -80,7 +96,7 @@ function Get-LegLabels([string] $Name) {
 }
 
 function Test-VolumeExists([string] $Volume) {
-    @(& docker volume ls -q --filter "name=$Volume") -contains $Volume
+    @(Invoke-Docker volume ls -q --filter "name=$Volume") -contains $Volume
 }
 
 # Every leg volume, newest first. Only the driver's (label spade.leg): mounting
@@ -99,6 +115,8 @@ function Get-LegVolumes {
 # before configuring leaves none). One throwaway container per call.
 function Test-VolumeConfigured([string] $Volume, [string] $Image) {
     & docker run --rm -v "${Volume}:/seed:ro" $Image test -f /seed/build/CMakeCache.txt
+    # test exits 0 or 1; docker's own failures are 125 and up.
+    if ($LASTEXITCODE -ge 125) { throw "docker run (is $Volume configured?) failed (exit $LASTEXITCODE)" }
     $LASTEXITCODE -eq 0
 }
 
@@ -106,23 +124,31 @@ function Test-VolumeConfigured([string] $Volume, [string] $Image) {
 function Test-VolumeInUse([string] $Volume, [switch] $AnyState) {
     $psArgs = @('ps', '-q', '--filter', "volume=$Volume")
     if ($AnyState) { $psArgs += '-a' }
-    [bool]((& docker @psArgs) -join '')
+    [bool]((Invoke-Docker @psArgs) -join '')
 }
 
-# Streams the running leg's log, waits for it, removes it, prints the summary.
+# Streams the running leg's log, waits for it, removes it, prints the summary,
+# and returns the driver's exit: 0 only when docker answered every call, the
+# container exited 0 and summary.txt opens "docker leg: PASS". With the daemon
+# gone, docker wait prints nothing, which [int] once read as 0: a pass
+# (Physics' leg, 2026-10-13).
 function Watch-Leg([string] $Name) {
     $labels = Get-LegLabels $Name
     Write-Host ("docker-leg: following {0} on {1}, step {2}" -f $Name, $labels['spade.commit'], $labels['spade.step'])
     # The last 100 lines, then live: a re-attach does not replay a whole build
     # (leg.log has everything). Out-Host keeps the log out of the return value.
     & docker logs --follow --tail 100 $Name | Out-Host
-    $code = [int]((& docker wait $Name) -join '')
+    $logsCode = $LASTEXITCODE
+    $waited = ((& docker wait $Name) -join '').Trim()
+    $waitCode = $LASTEXITCODE
     # Two watchers both get here; whichever is second finds the removal under
-    # way. Windows PowerShell turns redirected native stderr into errors under
-    # 'Stop', hence the local 'Continue'.
+    # way, which is no failure. Windows PowerShell turns redirected native
+    # stderr into errors under 'Stop', hence the local 'Continue'.
     $ErrorActionPreference = 'Continue'
-    & docker rm $Name 2>$null | Out-Null
+    $removal = (& docker rm $Name 2>&1 | ForEach-Object { "$_" }) -join ' '
+    $rmCode = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
+    $why = @()
     $out = $labels['spade.out']
     $free = Get-FreeGB
     $summary = if ($out) { Join-Path $out 'summary.txt' } else { $null }
@@ -138,13 +164,36 @@ function Watch-Leg([string] $Name) {
             $line = "volume      {0}: began {1}; held {2} before this run" -f $vol, $info[0], $info[1]
             Add-Content -Path $summary -Value $line
             Write-Host $line
+        } elseif ($LASTEXITCODE -ne 0) {
+            $why += "docker run (the volume's history) failed (exit $LASTEXITCODE)"
         }
     }
     if ($summary -and (Test-Path $summary) -and -not (Select-String -Path $summary -Pattern '^host ' -Quiet)) {
         Add-Content -Path $summary `
             -Value ("host        {0} GB free on {1} after the run" -f $free, $env:LOCALAPPDATA.Substring(0, 2))
     }
-    Write-Host ("docker-leg: exit {0}; {1} GB free on the host; output in {2}" -f $code, $free, $out)
+    if ($waitCode -ne 0 -or $waited -notmatch '^\d+$') {
+        $code = 1
+        $why += "docker wait failed (exit $waitCode), so the leg's result is unknown; is Docker Desktop running?"
+    } else {
+        $code = [int]$waited
+        if ($code -ne 0) { $why += "the leg's container exited $code" }
+    }
+    if ($logsCode -ne 0) { $why += "docker logs failed (exit $logsCode)" }
+    if ($rmCode -ne 0 -and $removal -notmatch 'No such container|already in progress') {
+        $why += "docker rm failed (exit $rmCode): $removal"
+    }
+    if (-not $summary) {
+        $why += 'the container names no output folder (label spade.out)'
+    } elseif (-not (Test-Path $summary)) {
+        $why += "no summary.txt in ${out}: the leg did not finish"
+    } else {
+        $first = @(Get-Content -Path $summary -TotalCount 1)[0]
+        if ($first -ne 'docker leg: PASS') { $why += "summary.txt says '$first'" }
+    }
+    if ($why.Count -gt 0 -and $code -eq 0) { $code = 1 }
+    $verdict = if ($why.Count -eq 0) { 'PASS' } else { 'FAIL: ' + ($why -join '; ') }
+    Write-Host ("docker-leg: exit {0}, {1}; {2} GB free on the host; output in {3}" -f $code, $verdict, $free, $out)
     return $code
 }
 
@@ -173,7 +222,7 @@ if ($Run) {
     $id = $Run
 } elseif (($Follow -or $Stop) -and -not $PSBoundParameters.ContainsKey('Commit')) {
     # No run named: the only leg there is.
-    $legs = @(& docker ps -a --filter 'label=spade.leg' --format '{{.Names}}')
+    $legs = @(Invoke-Docker ps -a --filter 'label=spade.leg' --format '{{.Names}}')
     if ($legs.Count -eq 0) { Write-Host 'docker-leg: no leg is running'; exit 0 }
     if ($legs.Count -gt 1) {
         Write-Host ("docker-leg: {0} legs exist ({1}); name one with -Run" -f $legs.Count, ($legs -join ', '))
@@ -191,8 +240,8 @@ $Volume = "$Prefix-$id"
 $state = Get-LegState $Name
 if ($Stop) {
     if ($state -eq '') { Write-Host "docker-leg: no leg to stop for run $id"; exit 0 }
-    & docker stop $Name | Out-Null
-    & docker rm $Name | Out-Null
+    Invoke-Docker stop $Name | Out-Null
+    Invoke-Docker rm $Name | Out-Null
     Write-Host "docker-leg: stopped $Name"
     exit 0
 }
@@ -265,7 +314,7 @@ $dockerfile = Join-Path $ctx 'scripts\docker-leg.Dockerfile'
 # ---- image: tagged by the Dockerfile's content -------------------------------------
 $hash = (Get-FileHash -Algorithm SHA256 $dockerfile).Hash.ToLower().Substring(0, 12)
 $image = "spade-docker-leg:$hash"
-if (-not ((& docker images -q $image) -join '')) {
+if (-not ((Invoke-Docker images -q $image) -join '')) {
     Write-Host "docker-leg: building image $image"
     & docker build -t $image -f $dockerfile (Join-Path $ctx 'scripts')
     Invoke-Checked 'docker build'
@@ -308,6 +357,10 @@ $mounts = @('-v', "${Volume}:/leg", '-v', "${out}:/out")
 Invoke-Checked 'sync'
 if ($Step -eq 'sync') { exit 0 }
 
+# A summary from an earlier run of this commit must not stand for this one: the
+# verdict comes from the file this run writes, or the run fails.
+$staleSummary = Join-Path $out 'summary.txt'
+if (Test-Path $staleSummary) { Remove-Item -Force $staleSummary }
 Write-Host "docker-leg: starting $Name, step $Step on $sha (memory $Memory, jobs $Jobs)"
 & docker run --detach --name $Name --memory $Memory --memory-swap $Memory `
     --label spade.leg=1 --label "spade.run=$id" `

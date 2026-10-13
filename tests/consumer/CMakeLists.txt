@@ -108,6 +108,12 @@ target_link_libraries(spade_consumer_smoke PRIVATE
     glm::glm
 )
 
+# The installed analysis runner (INT-7), by the path its imported target
+# names: main.cpp checks the file is there and hands it to launch_run().
+target_compile_definitions(spade_consumer_smoke PRIVATE
+    SPADE_ANALYSIS_RUNNER="$<TARGET_FILE:spade::analysis_runner>"
+)
+
 # ------------------------------------------------------------------------------
 # spade::render_gl -- OPTIONAL: present when the prefix was built with
 # SPADE_RENDER_GL on (engine/CMakeLists.txt). When it is, gl_check.cpp links it

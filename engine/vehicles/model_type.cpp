@@ -29,33 +29,6 @@ namespace {
     return "rotor " + std::to_string(index) + ": ";
 }
 
-// Whether a part's shape is bounded (CORE-7; the lead's answer of 2026-10-12:
-// an unbounded part is refused, since it would fill half of space). A postfix
-// walk beside SdfProgram's own stack machine: a plane and a heightfield are
-// unbounded, every other primitive is bounded; union and smooth_union are
-// bounded when both operands are, intersect when either is, and subtract
-// ("a minus b") when its left operand `a` is.
-//
-// PRECONDITION: shape.validate() passed, so the program is non-empty, every
-// operator has two operands, and the stack never holds more than kMaxSdfDepth
-// values, as eval()'s does.
-[[nodiscard]] bool bounded(const SdfProgram& shape) noexcept {
-    bool stack[kMaxSdfDepth] = {};
-    uint32_t sp = 0;
-    for (const SdfNode& node : shape.nodes) {
-        if (node.op == static_cast<uint32_t>(SdfOp::none)) {
-            const auto kind = static_cast<SdfPrim>(node.kind);
-            stack[sp++] = kind != SdfPrim::plane && kind != SdfPrim::heightfield;
-            continue;
-        }
-        const bool b = stack[--sp];
-        const bool a = stack[--sp];
-        const auto which = static_cast<SdfOp>(node.op);
-        stack[sp++] = which == SdfOp::intersect ? (a || b) : which == SdfOp::subtract ? a : (a && b);
-    }
-    return sp == 1 && stack[0];
-}
-
 }  // namespace
 
 Result<void> ModelType::validate() const {
@@ -270,7 +243,10 @@ std::vector<ModelIssue> ModelType::issues() const {
                     refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid "
                                     "sees is the part's surface");
                 }
-                if (!bounded(part.shape)) {
+                // Bounded (CORE-7; the lead's answer of 2026-10-12: an
+                // unbounded part would fill half of space): sdf_bounded(),
+                // the one walk sdf_bounds() also takes (TD-9).
+                if (!sdf_bounded(part.shape)) {
                     refuse("shape", "shape is unbounded: a plane or a heightfield fills half of space, so bound it "
                                     "inside an intersect or cut it from a bounded shape");
                 }

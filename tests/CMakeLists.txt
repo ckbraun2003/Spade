@@ -96,12 +96,14 @@ add_executable(spade_tests
     test_world_file.cpp
     test_scene_file.cpp
     test_determinism.cpp
+    test_set_body_state.cpp
     test_sim_medium.cpp
     test_module_schedule.cpp
     test_design_frame.cpp
     test_model_registry.cpp
     test_model_parts.cpp
     test_part_pose.cpp
+    test_part_bounds.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
     test_render_target.cpp
@@ -151,6 +153,9 @@ add_executable(spade_tests
     test_analysis_coefficients.cpp
     test_analysis_runs.cpp
     test_analysis_runner.cpp
+    test_analysis_launch.cpp
+    test_analysis_validation.cpp
+    test_analysis_queue.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -473,6 +478,18 @@ endif()
 cmake_path(SET SPADE_ENGINE_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../engine")
 # The same normalization, for the content test_viewer_successors.cpp reads.
 cmake_path(SET SPADE_ASSETS_DIR_NORMALIZED NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../assets")
+
+# The analysis's queued runs, end to end (W2c; INT-7): test_analysis_launch.cpp
+# launches the real runner tool (tools/analysis_runner/) and a stand-in host
+# that launches it and exits at once (analysis_host_probe.cpp), each by the
+# explicit path its build put it at.
+add_executable(spade_analysis_host_probe analysis_host_probe.cpp)
+target_link_libraries(spade_analysis_host_probe PRIVATE spade::analysis spade_warnings)
+add_dependencies(spade_tests spade_analysis_runner spade_analysis_host_probe)
+target_compile_definitions(spade_tests PRIVATE
+    SPADE_ANALYSIS_RUNNER="$<TARGET_FILE:spade_analysis_runner>"
+    SPADE_ANALYSIS_HOST_PROBE="$<TARGET_FILE:spade_analysis_host_probe>"
+)
 
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"

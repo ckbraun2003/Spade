@@ -7,12 +7,15 @@
 //
 // PER UNIT DENSITY. Neither the mesh nor this result holds a density. A
 // caller that gives one, a uniform rho, gets the mass rho * volume and the
-// inertia rho * inertia, about the centroid, at the centroid. Nothing in the
-// engine calls this yet: the compile does not take a part's mass from its
-// mesh (the plan's mass_from_geometry is not built).
+// inertia rho * inertia, about the centroid, at the centroid. make_mesh()
+// calls this once on every mesh it accepts, and the mesh keeps the result
+// (TriangleMesh::mass_properties(), world/mesh.hpp): read it there rather
+// than computing it again. The airframe compile does, for a mesh record,
+// times the record's density (vehicles/airframe_compile.hpp, MASS FROM A
+// MESH).
 //
 // THE CONVENTIONS are PartInertia::tensor's (vehicles/composite_inertia.hpp),
-// so the compile can hand the result straight to composite_inertia():
+// so the compile hands the result, times rho, straight to composite_inertia():
 //   * metres, in the mesh's own frame (the part frame), as
 //     TriangleMesh::positions() gives them;
 //   * the inertia is about the CENTROID, not the frame's origin;
@@ -58,11 +61,8 @@
 
 namespace spade {
 
-struct MeshMassProperties {
-    double volume = 0.0;       // m^3, > 0 for every mesh make_mesh() returns
-    glm::dvec3 centroid{0.0};  // m, the mesh frame
-    glm::dmat3 inertia{0.0};   // m^5: per unit density, about the centroid, mesh frame
-};
+// MeshMassProperties (volume, centroid, inertia) is defined in world/mesh.hpp,
+// beside the TriangleMesh that keeps one.
 
 // Eberly's polyhedral integrals, double, triangle order, about the bounds'
 // centre, then shifted to the centroid (above).

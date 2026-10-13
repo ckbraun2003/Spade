@@ -171,10 +171,11 @@ stage() {
 # The targets `cmake --install` copies. The OFF list is every installed module
 # (engine/CMakeLists.txt's install(TARGETS ...) rules); ON adds spade_compute.
 # A module added to the install rules but not here makes the install stage fail
-# on the missing archive, so this list cannot drift into a silent pass.
+# on the missing archive, so this list cannot drift into a silent pass. The
+# installed tools are here too (tools/: spade_analysis_runner).
 lib_targets=(spade_core spade_state spade_world spade_objects spade_physics
              spade_render spade_sim spade_vehicles spade_scene spade_analysis
-             spade_mesh_import)
+             spade_mesh_import spade_analysis_runner)
 [ "$vulkan" = ON ] && lib_targets+=(spade_compute)
 
 from_build_mode() {
@@ -204,6 +205,18 @@ fi
 
 rm -rf "$prefix" "$consumer" "$sandbox_build" "$probe" || { echo "consumer-smoke: FAIL clean (vulkan=$vulkan): cannot remove an old tree under $work. Check its permissions, then run again."; exit 1; }
 stage install cmake --install "$install_from" --prefix "$prefix"
+
+# No empty directory under include/. install(DIRECTORY ... FILES_MATCHING)
+# makes every directory it walks, matched or not, so a source-only
+# subdirectory of an installed one arrives empty (B6's world/mesh_import/,
+# fixed by its own PATTERN ... EXCLUDE). Each one needs that line.
+empty_dirs="$(find "$prefix/include" -type d -empty)"
+if [ -n "$empty_dirs" ]; then
+    echo "consumer-smoke: FAIL install (vulkan=$vulkan): empty directories under $prefix/include; exclude each from its install(DIRECTORY) rule:"
+    echo "$empty_dirs"
+    exit 1
+fi
+echo "consumer-smoke: install vulkan=$vulkan has no empty include directory"
 
 stage consumer-configure cmake -S "$src/tests/consumer" -B "$consumer" -G Ninja --no-warn-unused-cli \
     -DCMAKE_BUILD_TYPE=Release \

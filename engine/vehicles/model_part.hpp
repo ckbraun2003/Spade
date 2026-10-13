@@ -69,17 +69,35 @@ inline constexpr uint32_t kNoPart = std::numeric_limits<uint32_t>::max();
 // meshes plan, Task A4): PartInertia::geometry (vehicles/composite_inertia.
 // hpp). One record gives both the inertia and the part (TD-9). Geometry is
 // imported (CORE-6, amended 2026-10-12), so the compile authors no shape: it
-// turns the inertia shape it already has into the matching solid, and that
-// is all (vehicles/airframe_compile.hpp, PARTS).
+// turns the inertia shape it already has into the matching solid, or takes
+// an imported mesh's, and that is all (vehicles/airframe_compile.hpp, PARTS).
 enum class GeometrySource : uint8_t {
     inertia_shape = 0,  // sphere, box, cylinder and tube give their solid; point and tensor give none
     none = 1,           // mass only: the record gives no part
+    mesh = 2,           // the mesh gives the solid AND the mass, centre of mass and inertia (x density)
 };
 
+// The mesh fields are read for a mesh source only, and are refused, by name,
+// beside any other source (TD-9). Every member has a default, so a designated
+// initializer that leaves one out still compiles under gcc's
+// missing-field-initializers.
+//
+//   mesh          the solid, in metres, in the record's LOCAL frame: the
+//                 record's pose is the mesh's PLACEMENT (mesh local ->
+//                 design), and the mesh's origin need not be its centroid.
+//                 Shared and immutable (make_mesh()). Required.
+//   density       kg/m^3, uniform. NO DEFAULT: 0 means "not given", and a
+//                 mesh source refuses anything but a finite density > 0.
+//   min_feature   m, the part's smallest feature (CORE-8 D5), DECLARED:
+//                 the compile cannot measure a mesh's thinnest feature
+//                 cheaply. Finite and > 0.
 struct PartGeometrySpec {
     GeometrySource source = GeometrySource::inertia_shape;
     std::string name{};  // the model part's name; empty: "parts[k]", k the record's index
     std::string role{};  // a free label; the engine never reads it (L7)
+    std::shared_ptr<const TriangleMesh> mesh{};
+    double density = 0.0;
+    float min_feature = 0.0f;
 };
 
 // One part. Every member has a default, so gcc's missing-field-initializers
@@ -103,6 +121,8 @@ struct PartGeometrySpec {
 //                 shares it. Every TriangleMesh came from make_mesh(), so a
 //                 non-null mesh is valid. Null on an SdfProgram part. Exactly
 //                 one of shape and mesh is set (refused at field `shape`).
+//                 Its volume, centroid and inertia per unit density are
+//                 mesh->mass_properties(), computed once (world/mesh.hpp).
 //   mesh_file     the .spmesh sidecar a scene file names `mesh` by: a path
 //                 relative to the scene file's directory, forward slashes,
 //                 UTF-8 (world/mesh_file.hpp; Task B5). The scene reader
@@ -112,8 +132,9 @@ struct PartGeometrySpec {
 //                 SdfProgram part. Nothing but the scene file reads it.
 //   min_feature   m, the smallest feature the grid must resolve (CORE-8 D5);
 //                 finite and > 0. An authored part declares it; the airframe
-//                 compile fills it with its solid's smallest dimension
-//                 (vehicles/airframe_compile.hpp, PARTS).
+//                 compile fills it with its solid's smallest dimension, or a
+//                 mesh record's declared one (vehicles/airframe_compile.hpp,
+//                 PARTS).
 struct PartDesc {
     std::string name{};
     std::string role{};
@@ -140,5 +161,17 @@ struct PartDesc {
 // shared pointer without copying it. PRECONDITION: `part` passed
 // ModelType::validate() (exactly one form set).
 [[nodiscard]] SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept;
+
+// One part's box in its PART frame (the lead's ask of 2026-10-13: Physics'
+// P2 sizes its grid around it). A mesh part: the fp32 min and max of its
+// vertices, exact, so its solid and every vertex lie inside and touch each
+// face. An SdfProgram part: sdf_bounds(shape), conservative (world/sdf.hpp
+// says how). Posing the box is the caller's, as for part_sample().
+//
+// A host call. Refused by name ("part 'arm': ..."): a part with both forms or
+// neither, and whatever sdf_bounds() refuses (an invalid, unbounded or empty
+// shape, a singular transform). A part that passed ModelType::validate() can
+// still be refused for a shape proved empty, which validate() does not test.
+[[nodiscard]] Result<Aabb> part_bounds(const PartDesc& part);
 
 }  // namespace spade::vehicles

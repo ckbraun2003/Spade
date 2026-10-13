@@ -49,15 +49,16 @@ TEST(AirflowPublish, AUniformFlowPublishesItsVelocityAndNoVorticity) {
                 EXPECT_EQ(channel(vol, i, j, k, spade::kFlowPressure), 3.0f);
                 EXPECT_EQ(channel(vol, i, j, k, spade::kFlowVorticity), 0.0f);
                 EXPECT_EQ(channel(vol, i, j, k, spade::kFlowQHat), 0.0f);
-                EXPECT_EQ(channel(vol, i, j, k, spade::kFlowReserved), 0.0f);
+                EXPECT_EQ(channel(vol, i, j, k, spade::kFlowLambda2Hat), 0.0f);
             }
         }
     }
 }
 
 // Solid-body rotation u = -W (y - c), v = W (x - c): omega_z = 2W everywhere,
-// no strain, so Q = |omega|^2 / 4 = W^2 and q-hat = W. The fields are linear,
-// so the differences are exact at the edges too.
+// no strain, so Q = |omega|^2 / 4 = W^2 and q-hat = W; S^2 + Omega^2 =
+// diag(-W^2, -W^2, 0), so lambda2 = -W^2 and its hat -W (a vortex core). The
+// fields are linear, so the differences are exact at the edges too.
 TEST(AirflowPublish, ASolidBodyRotationHasVorticityTwiceItsRateAndQHatItsRate) {
     const float W = 3.0f;
     MacGrid g = *make_grid({6, 6, 2, 0.5f}, DomainBc{});
@@ -69,11 +70,13 @@ TEST(AirflowPublish, ASolidBodyRotationHasVorticityTwiceItsRateAndQHatItsRate) {
         for (uint32_t i = 0; i < 6; ++i) {
             EXPECT_NEAR(channel(vol, i, j, 1, spade::kFlowVorticity), 2.0f * W, 2.0e-3f * W) << i << "," << j;
             EXPECT_NEAR(channel(vol, i, j, 1, spade::kFlowQHat), W, 2.0e-3f * W) << i << "," << j;
+            EXPECT_NEAR(channel(vol, i, j, 1, spade::kFlowLambda2Hat), -W, 2.0e-3f * W) << i << "," << j;
         }
     }
 }
 
-// Pure strain u = a x, v = -a y: no vorticity, Q = -a^2, q-hat = -a.
+// Pure strain u = a x, v = -a y: no vorticity, Q = -a^2, q-hat = -a; S^2 =
+// diag(a^2, a^2, 0), so lambda2 = a^2 and its hat a (no vortex).
 TEST(AirflowPublish, APureStrainHasNoVorticityAndANegativeQHat) {
     const float a = 2.0f;
     MacGrid g = *make_grid({4, 4, 2, 0.5f}, DomainBc{});
@@ -83,6 +86,7 @@ TEST(AirflowPublish, APureStrainHasNoVorticityAndANegativeQHat) {
     ASSERT_TRUE(publish_render_volume(g, {}, vol).has_value());
     EXPECT_EQ(channel(vol, 2, 2, 1, spade::kFlowVorticity), 0.0f);
     EXPECT_NEAR(channel(vol, 2, 2, 1, spade::kFlowQHat), -a, 2.0e-3f * a);
+    EXPECT_NEAR(channel(vol, 2, 2, 1, spade::kFlowLambda2Hat), a, 2.0e-3f * a);
 }
 
 // A non-finite sample, and a finite one past f16's range (|x| >= 65520), are
@@ -132,6 +136,9 @@ TEST(AirflowPublish, TheFirstSolidLayerTakesTheFluidSideAndDeeperCellsAreNoData)
             EXPECT_EQ(channel(vol, 3, j, k, spade::kFlowPressure), 3.0f) << "the fluid side's pressure, cell i = 2";
             EXPECT_EQ(spade::flow_half(vol, spade::flow_cell_index(vol.header, 4, j, k), spade::kFlowPressure),
                       spade::fp16::kNoDataBits);
+            EXPECT_EQ(spade::flow_half(vol, spade::flow_cell_index(vol.header, 4, j, k), spade::kFlowLambda2Hat),
+                      spade::fp16::kNoDataBits)
+                << "lambda2 is data now: a deeper solid cell has none";
         }
     }
     EXPECT_EQ(vol.header.channel_max[spade::kFlowPressure], 3.0f) << "the deeper cells' pressure (5) is not data";
@@ -195,6 +202,37 @@ TEST(AirflowPublish, APeriodicAxisWrapsTheSolidLayersFluidNeighbours) {
     EXPECT_EQ(counts->extrapolated, 4u);
     for (uint32_t k = 0; k < 2; ++k) {
         for (uint32_t j = 0; j < 2; ++j) EXPECT_EQ(channel(vol, 0, j, k, spade::kFlowPressure), 2.0f) << j << "," << k;
+    }
+}
+
+
+// A strained vortex, where lambda2 and -Q differ (Rendering, 2026-10-13: the
+// cases above have lambda2 = -Q, so they could not tell this channel from
+// -q-hat). Rotation W about z plus axisymmetric strain alpha:
+// u = -W y - (alpha/2) x, v = W x - (alpha/2) y, w = alpha z. Linear, so the
+// differences are exact. S^2 + Omega^2 = diag(alpha^2/4 - W^2 (twice),
+// alpha^2): lambda2 = alpha^2/4 - W^2 = -8 (hat -sqrt 8), while
+// Q = W^2 - 3 alpha^2/4 = 6 (so -q-hat = -sqrt 6).
+TEST(AirflowPublish, AStrainedVortexsLambda2IsNotMinusQ) {
+    const float W = 3.0f;
+    const float alpha = 2.0f;
+    MacGrid g = *make_grid({6, 6, 6, 0.5f}, DomainBc{});
+    const float c = 1.5f;
+    for_each_sample(g.shape, 0, [&](std::size_t idx, glm::vec3 x) { g.u[idx] = -W * (x.y - c) - 0.5f * alpha * (x.x - c); });
+    for_each_sample(g.shape, 1, [&](std::size_t idx, glm::vec3 x) { g.v[idx] = W * (x.x - c) - 0.5f * alpha * (x.y - c); });
+    for_each_sample(g.shape, 2, [&](std::size_t idx, glm::vec3 x) { g.w[idx] = alpha * (x.z - c); });
+    FlowVolume vol;
+    ASSERT_TRUE(publish_render_volume(g, {}, vol).has_value());
+    const float lambda2_hat = -std::sqrt(8.0f);
+    const float q_hat = std::sqrt(6.0f);
+    for (uint32_t k = 0; k < 6; ++k) {
+        for (uint32_t j = 0; j < 6; ++j) {
+            for (uint32_t i = 0; i < 6; ++i) {
+                EXPECT_NEAR(channel(vol, i, j, k, spade::kFlowLambda2Hat), lambda2_hat, 2.0e-3f * 3.0f)
+                    << i << "," << j << "," << k;
+                EXPECT_NEAR(channel(vol, i, j, k, spade::kFlowQHat), q_hat, 2.0e-3f * 3.0f) << i << "," << j << "," << k;
+            }
+        }
     }
 }
 
