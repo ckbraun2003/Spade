@@ -46,7 +46,13 @@ The airflow visualization plan's step 5 and step 7 (merged):
 - **GL against the CPU** for the offset, as the step 5 band.
 - **The feed test (R2.5)**, after P2 and P3.
 
-## Questions for the lead
+## Rulings (the lead, 2026-10-13; `RND-8`)
+
+- **Q1: A, with one rule.** In hover the reference is the tip's ½ρ(ΩR)², labelled "C_p (tip)". Render does not choose it. `cp_colours` takes `q_ref` and `p_ref` as inputs, and the host passes Interface's `spade::analysis` `reference_speed()` (tip for rotorcraft, freestream for a propeller; Cameron's Q6). The legend names which (`TD-9`).
+- **Q2: a scene flag, off by default.**
+- **Q3: yes.** R2.1, R2.3 and R2.4's synthetic work start now.
+
+## Questions for the lead (as asked)
 
 - **Q1. Hover's q_ref.** With wind, q_ref = ½ρV². In hover there is no freestream:
   - (A) tip speed, ½ρ(ΩR)², the rotor convention, labelled "C_p (tip)";
