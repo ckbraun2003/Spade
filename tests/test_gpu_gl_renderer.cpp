@@ -1601,12 +1601,15 @@ TEST_F(GpuGlRenderer, FlowSurfaceOnCsgWallsMatchesTheCpu) {
     EXPECT_LE(w.band.differing, kCsgWallsDiffering);
 }
 
-// CpOffASphereMatchesTheCpu's bands. RED: GL's C_p a priori as the CPU
-// test's extrapolated choice; the band placeholders pinned at green.
+// CpOffASphereMatchesTheCpu's bands. Measured 2026-10-13, 160x120, on an
+// NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), the same in
+// three runs: GL's worst |dC_p| 0.202 over 1672 pixels, none uncoloured, as
+// the CPU's (0.202); 952 pixels differ from the CPU's frame, each by one
+// level.
 constexpr double kSphereGlWorstCp = 0.21;
-constexpr int kSphereWorst = 0;
+constexpr int kSphereWorst = 1;
 constexpr size_t kSphereOverTwo = 0;
-constexpr size_t kSphereDiffering = 0;
+constexpr size_t kSphereDiffering = 952;
 
 // RND-8's C_p view on GL: the potential-flow sphere at 8 cells per radius,
 // read one cell off the wall and extrapolated to it. GL's frame is judged on

@@ -403,10 +403,18 @@ constexpr uint32_t kChosenCellsPerRadius = 8;
 constexpr float kChosenOffsetCells = 1.0f;
 constexpr double kChosenWorstCp = 0.44;  // measured 0.432
 
-// Extrapolated, 2 v(delta) - v(2 delta), at the same offset and resolution.
-// RED: a priori, from a model of the same grid and sampler (0.202); pinned at
-// green.
-constexpr double kChosenExtrapolatedWorstCp = 0.21;
+// Extrapolated, 2 v(delta) - v(2 delta), the same day:
+//
+//   R/dx   offset 0.5         1
+//    4     0.42, 8 no-data    0.45
+//    8     0.27, 52 no-data   0.20
+//   16     0.14, 40 no-data   0.079
+//
+// The single read's first-order bias goes, and the error falls about as
+// (dx / a)^2 from 8 to 16 cells per radius; a model of the same grid and
+// sampler predicted 0.46, 0.20 and 0.076. Pinned at one cell and 8 per
+// radius.
+constexpr double kChosenExtrapolatedWorstCp = 0.21;  // measured 0.203
 
 // R2.4's measurement. Each pixel on the sphere (tests/cp_sphere.hpp), its
 // colour turned back into C_p through the map, against 1 - 9/4 sin^2(theta) at

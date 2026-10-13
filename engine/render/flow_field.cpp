@@ -66,6 +66,9 @@ Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouri
         return refuse("its offset of " + std::to_string(colouring.offset_cells) + " cells is not finite in [0, " +
                       std::to_string(kMaxSurfaceOffsetCells) + "]");
     }
+    if (colouring.extrapolate && !(colouring.offset_cells > 0.0f)) {
+        return refuse("it extrapolates with no offset to extrapolate from");
+    }
     return {};
 }
 

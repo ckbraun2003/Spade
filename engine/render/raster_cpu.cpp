@@ -1193,11 +1193,15 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
             if (colouring.walls_only && (surface == nullptr || !surface->flow_wall)) {
                 continue;
             }
-            glm::vec3 at = p;
+            glm::vec3 step(0.0f);
             if (colouring.offset_cells > 0.0f && surface != nullptr) {
-                at = p + surface->normal * (colouring.offset_cells * h.cell);
+                step = surface->normal * (colouring.offset_cells * h.cell);
             }
-            const FlowValue v = sample_quantity(sampler, colouring.colours.quantity, at);
+            FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p + step);
+            if (colouring.extrapolate && !v.no_data) {  // 2 v(delta) - v(2 delta), linearly to the wall
+                const FlowValue far = sample_quantity(sampler, colouring.colours.quantity, p + 2.0f * step);
+                v = far.no_data ? far : FlowValue{2.0f * v.value - far.value, false};
+            }
             if (v.no_data) {
                 if (report != nullptr) ++report->surface_pixels_no_data;
                 continue;
