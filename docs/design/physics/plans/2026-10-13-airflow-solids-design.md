@@ -42,7 +42,11 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
     - Two perpendicular plates: 5·10⁻⁶ in 8.
     - A prolongation that does not interpolate across closed coarse faces was measured too. Under CG it changes nothing, so it is left out.
   - Without solids, plan A's plain V-cycles stay, bit for bit.
-  - **The spec change:** spec §1.5 rejected multigrid-preconditioned CG for the first cut because of the dot products' order between the CPU and the GPU. `reduce.hpp`'s fixed tiles (spec §4.5 as amended 2026-10-12) now fix that order, as P3's force already relies on. CG's scalars still feed back into every cell, so the GPU twin's band on p (TD-14) is measured on S1 and S3, not assumed. Spec §1.5 is amended on the lead's approval.
+  - **The spec change** (**APPROVED by the lead, 2026-10-13**; spec §1.5 amended): spec §1.5 rejected multigrid-preconditioned CG for the first cut because of the dot products' order between the CPU and the GPU. `reduce.hpp`'s fixed tiles (spec §4.5 as amended 2026-10-12) now fix that order, as P3's force already relies on. CG's scalars still feed back into every cell, so the GPU twin's band on p (TD-14) is measured on S1 and S3, not assumed.
+  - **The lead's conditions:**
+    - **The iteration count** is fixed, as plan A's cycle count is. It is chosen from S1, S3 and a dense-parts case (the reference quad's parts at the D1 nest), and the choice and its measurements go in this section.
+    - **The residual.** Each projection's final relative residual, `max |r| / max |b|`, goes on the run line and into history. A max is order-free, so both backends give the same value. Above the stated threshold, first 10⁻³ and revised with the count, it is announced (`L6`), never silent.
+    - **Symmetry.** A test checks the preconditioner's symmetry, `⟨Mx, y⟩ = ⟨x, My⟩` to rounding on random vectors (§8, test 10).
   - **The cost:** one iteration costs about 1.3 V-cycles.
 - **Fluid regions** (the lead's finding 3). A sheet or a solid can cut the fluid into separate regions, and each closed one has its own null space.
   - **Labelling.** At each rebuild of the apertures, the fluid cells are labelled into connected regions. A fluid cell is one with an open face (w > 0): to another cell, through a periodic seam, or onto a pressure outlet. The labelling is a flood fill across open faces. It starts from each unlabelled cell in array order and visits faces in the stencil's order, so the labels are deterministic.
@@ -110,6 +114,7 @@ Every band, configuration and reading time comes from Test/Docs' note, `../../te
    - The added-mass impulse `C_M`, from P3, at step 1.
    - `C_p` one cell out along the normal against potential flow at the same points, and the drag and side forces, at step 3.
    - The flux and divergence checks stay.
+   - Each step's solve must reach a final residual of at most 10⁻⁴ of its starting one, and the record prints it (Test/Docs). An unconverged solve then shows as a miss rather than quietly biasing `C_M`.
    - d'Alembert's zero cannot fail on its own, since the cut cells' area vectors sum to zero. The added mass can. Mutations: a P3 that returns 0 (reads `C_M` = 0) and a P3 with its sign flipped (−0.5). Both must fail.
 2. **Circular Couette flow (S2)**, which replaces the rotating cylinder in still air (confirmed: it has a closed form). The cylinder turns inside a fixed coaxial tube, `R₂ = 2R₁`, `Re` 10, quasi-2D.
    - `u_θ` against `A r + B/r`, with the order check from R₁/dx 16 to 32.
@@ -117,8 +122,9 @@ Every band, configuration and reading time comes from Test/Docs' note, `../../te
    - It exercises §3's viscous stencil at an immersed wall. Mutation: the rigid velocity at closed faces only (no crossing-link term), which Test/Docs expects to miss by up to a factor of two.
 3. **A sheet across a periodic channel (S3)**, one step from a cold start, run with the sheet on an even and on an odd fine plane.
    - No flux, `max |u|/U`, the pressure step, P3's force, and the run line naming the sheet.
-   - **The convergence check** (the lead's finding 2): from the cold start, both parities, the solve's residual falls to 10⁻³ of its start within 8 CG iterations. The port reaches 10⁻⁸ in fp64, and fp32 floors near 10⁻⁶. Mutation: plain V-cycles forced on the odd plane, which the port leaves at 0.6.
-4. **A porous block (S4)**, three Forchheimer numbers at `h c ≤ 10⁻³`. With §5's implicit sink, its `h c = 1` case predicts 1.0 rather than 0.5. Test/Docs may make it a check rather than a report. Mutation: the sink split before the projection, which reads 0.5 at `h c = 1`.
+   - `n_v` = 32 counts CG iterations.
+   - **The convergence check** (the lead's finding 2): from the cold start, both parities, the solve's residual falls to 10⁻³ of its start within 8 CG iterations. This is an implementation band under `TD-2`, not one of Test/Docs' tolerances: the port measured it at 4 iterations, and it is pinned at 8. The port reaches 10⁻⁸ in fp64, and fp32 floors near 10⁻⁶. Mutation: plain V-cycles forced on the odd plane, which the port leaves at 0.6.
+4. **A porous block (S4)**, three Forchheimer numbers at `h c ≤ 10⁻³`, and the `h c = 1` case, which Test/Docs now checks at 1 ± 0.005: with §5's implicit sink the steady drop is exact at any `h`. Mutation: the sink split before the projection, which reads 0.5 at `h c = 1`.
 5. **Refusals:**
    - a wire-like part (two extents below 2 `dx`), named with the `dx` it needs;
    - a floor height that cuts a part;
@@ -131,6 +137,8 @@ Every band, configuration and reading time comes from Test/Docs' note, `../../te
    - The run line reports "2 closed".
    - The divergence keeps plan A's band in each region.
    - Mutation: one mean removed over all the fluid, which leaves each region's mean wherever the solve put it.
+10. **The preconditioner is symmetric** (the lead's condition): `⟨Mx, y⟩ = ⟨x, My⟩` to rounding for random mean-free vectors on S3's grid with its sheet, since CG needs it. Mutation: plan A's restriction (the children's sum) in place of full weighting. The port measured 10⁻¹ of asymmetry with it.
+11. **The crossing fraction's floor** (the lead's condition): a wall a hair from a velocity sample, `φ_self` = 10⁻⁶ `dx`. The link takes f = 0.01, so the sample's diagonal is at most `1 + (5 + 100) α`, and the solve stays finite and within the wall's velocity bounds. Mutation: no clamp, which gives `f ≈ 10⁻⁶` and a diagonal near `10⁶ α`.
 
 Test 1's surface `C_p` is the solver's half of Rendering's R2.5. Rendering's half compares the view's sampled `C_p` with P3's at the same surface points.
 
