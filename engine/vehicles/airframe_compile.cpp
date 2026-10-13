@@ -1,6 +1,7 @@
 #include "vehicles/airframe_compile.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <span>
 #include <string>
@@ -21,6 +22,13 @@ constexpr double kDragCoefficient = 1.0;  // best-effort bluff-body C_d for the 
 [[nodiscard]] bool is_finite(double x) noexcept { return std::isfinite(x); }
 [[nodiscard]] bool positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
 [[nodiscard]] bool non_negative(double x) noexcept { return std::isfinite(x) && x >= 0.0; }
+
+// A number in a message: the shortest form that reads back to it.
+[[nodiscard]] std::string shortest(double x) {
+    char buf[32];
+    const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), x);
+    return std::string(buf, r.ptr);
+}
 
 // The collector every check writes into. add_once() keeps one issue per
 // (kind, index, field), for a fault several parts would each report.
@@ -198,6 +206,110 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     return pose;
 }
 
+// MASS FROM A MESH (the mass-from-mesh plan, 2026-10-13). A record whose
+// geometry source is a mesh takes its mass, centre of mass and inertia from
+// its mesh: the mesh's properties per unit density (TriangleMesh::
+// mass_properties(), computed once, by mesh_mass_properties()) times the
+// record's density. It is one record with one source (TD-9), so it carries
+// no mass, shape, size or tensor of its own, and there is no default density.
+
+// A record's name, as its part carries it: its own, else "parts[k]".
+[[nodiscard]] std::string record_name(const PartInertia& p, std::size_t k) {
+    return "part '" + (p.geometry.name.empty() ? "parts[" + std::to_string(k) + "]" : p.geometry.name) + "'";
+}
+
+// rho V, and rho I about the centroid, in double, in the mesh's own frame;
+// nothing when the record cannot give them: no mesh, a density or a volume
+// that is not finite and > 0, or a product that is not finite (a mass not
+// > 0). check_mesh_records() lists which.
+struct MeshMass {
+    double mass = 0.0;         // kg
+    glm::dvec3 centroid{0.0};  // m, mesh local
+    glm::dmat3 inertia{0.0};   // kg m^2, about the centroid, mesh local
+};
+
+[[nodiscard]] std::optional<MeshMass> mesh_mass(const PartGeometrySpec& g) noexcept {
+    if (!g.mesh || !positive(g.density)) return std::nullopt;
+    const MeshMassProperties& mp = g.mesh->mass_properties();
+    if (!positive(mp.volume)) return std::nullopt;
+    MeshMass out;
+    out.mass = g.density * mp.volume;
+    out.centroid = mp.centroid;
+    out.inertia = g.density * mp.inertia;
+    if (!positive(out.mass)) return std::nullopt;
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) {
+            if (!is_finite(out.inertia[c][r])) return std::nullopt;
+        }
+    return out;
+}
+
+// Every problem with the spec's mesh records, at parts[k].<field>, each
+// message naming the record. These stop the composite and the fit, like a
+// part's mass: the mass is not known. A mesh source's other rules are the
+// model's (a unique name: add_model_issues) and the composite's (a finite
+// pose: composite_inertia_issues, on the record gather_parts makes).
+void check_mesh_records(const AirframeSpec& s, Issues& out) {
+    for (std::size_t k = 0; k < s.parts.size(); ++k) {
+        const PartInertia& p = s.parts[k];
+        const PartGeometrySpec& g = p.geometry;
+        if (g.source != GeometrySource::mesh) continue;
+        const std::string who = record_name(p, k);
+        const std::size_t before = out.list.size();
+        // TD-9: the mesh and its density are this record's one source of
+        // mass, solid and inertia. A second, hand-entered, is refused, never
+        // silently overridden.
+        const auto conflict = [&](const char* field, const std::string& what, const char* leave) {
+            out.add("parts", k, field,
+                    who + ": " + what + " is hand-entered beside a mesh source, a TD-9 conflict: the mesh and its "
+                                        "density give it; leave it " + leave);
+        };
+        if (p.mass != 0.0) conflict("mass", "a mass (" + shortest(p.mass) + " kg)", "0");
+        if (p.shape != PartShape::point) conflict("shape", "a shape", "point");
+        if (p.size != glm::dvec3(0.0)) conflict("size", "a size", "0");
+        if (p.tensor != glm::dmat3(0.0)) conflict("tensor", "a tensor", "0");
+
+        const double volume = g.mesh ? g.mesh->mass_properties().volume : 0.0;
+        if (!g.mesh) {
+            out.add("parts", k, "geometry.mesh", who + ": a mesh source without a mesh");
+        } else if (!positive(volume)) {
+            out.add("parts", k, "geometry.mesh",
+                    who + ": the mesh's volume is " + shortest(volume) + " m^3, not finite and > 0 (inside out?)");
+        }
+        if (!positive(g.density)) {
+            out.add("parts", k, "geometry.density",
+                    who + ": a mesh source needs a density, finite and > 0 kg/m^3 (there is no default), found " +
+                        shortest(g.density));
+        } else if (g.mesh && positive(volume) && !mesh_mass(g)) {
+            out.add("parts", k, "geometry.density",
+                    who + ": density " + shortest(g.density) + " kg/m^3 times the mesh's volume (" + shortest(volume) +
+                        " m^3) and inertia is not a finite mass > 0 and a finite inertia");
+        }
+        if (!(std::isfinite(g.min_feature) && g.min_feature > 0.0f)) {
+            out.add("parts", k, "geometry.min_feature",
+                    who + ": a mesh source declares its smallest feature, finite and > 0 m, found " +
+                        shortest(static_cast<double>(g.min_feature)));
+        }
+        // Until Task M2 resolves it, a mesh record gives no mass.
+        if (out.list.size() == before) {
+            out.add("parts", k, "geometry.source",
+                    who + ": a mesh source's mass is not taken from its mesh yet (the mass-from-mesh plan, M2)");
+        }
+    }
+}
+
+// A mesh record as the composite's checks read it. A unit point mass at its
+// placement, so composite_inertia_issues() lists only its pose; every mesh
+// record is refused (check_mesh_records), so no composite or fit runs on it.
+[[nodiscard]] PartInertia mesh_stand_in(const PartInertia& p) {
+    PartInertia r;
+    r.mass = 1.0;
+    r.position = p.position;
+    r.orientation = p.orientation;
+    r.geometry = p.geometry;
+    return r;
+}
+
 // Every mass: the spec's parts, then at each rotor a motor beside its hub
 // (motor_pose) and a propeller on it, then the ESC and the battery. `origin`
 // records, for each, its kind and index, so a part issue can name what the
@@ -221,6 +333,7 @@ struct PartList {
     for (std::size_t k = 0; k < s.parts.size(); ++k) {
         PartInertia p = s.parts[k];
         if (p.geometry.name.empty()) p.geometry.name = "parts[" + std::to_string(k) + "]";
+        if (p.geometry.source == GeometrySource::mesh) p = mesh_stand_in(p);
         push(std::move(p), "parts", k, true);
     }
     const auto block = [](std::string name, std::string role) {
@@ -322,15 +435,29 @@ struct Solid {
 // Every derived part is a wall (Physics' answer, 2026-10-12).
 constexpr PartSurface kWall{.kind = PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f};
 
-// The geometry rule only the compile owns (CORE-7): a known source. A part's
-// own rules, a unique name among them, are ModelType's, listed by
-// add_model_issues (TD-9).
+// The geometry rules only the compile owns (CORE-7) that leave the mass
+// alone: a known source, and no mesh field beside a source that never reads
+// it (TD-9: it would be silently dropped). A mesh record's own rules are
+// check_mesh_records'. A part's own rules, a unique name among them, are
+// ModelType's, listed by add_model_issues (TD-9).
 void check_geometry(const AirframeSpec& s, Issues& out) {
     for (std::size_t k = 0; k < s.parts.size(); ++k) {
-        const GeometrySource g = s.parts[k].geometry.source;
-        if (g != GeometrySource::inertia_shape && g != GeometrySource::none) {
+        const PartGeometrySpec& g = s.parts[k].geometry;
+        if (g.source == GeometrySource::mesh) continue;
+        if (g.source != GeometrySource::inertia_shape && g.source != GeometrySource::none) {
             out.add("parts", k, "geometry.source",
-                    "must be inertia_shape (0) or none (1), found " + std::to_string(static_cast<uint32_t>(g)));
+                    "must be inertia_shape (0), none (1) or mesh (2), found " +
+                        std::to_string(static_cast<uint32_t>(g.source)));
+            continue;
+        }
+        const std::string beside = std::string(" beside source ") +
+                                   (g.source == GeometrySource::none ? "none" : "inertia_shape") +
+                                   ", which never reads it: set source mesh, or leave it ";
+        const std::string who = record_name(s.parts[k], k);
+        if (g.mesh) out.add("parts", k, "geometry.mesh", who + ": a mesh is given" + beside + "null");
+        if (g.density != 0.0) out.add("parts", k, "geometry.density", who + ": a density is given" + beside + "0");
+        if (g.min_feature != 0.0f) {
+            out.add("parts", k, "geometry.min_feature", who + ": a min_feature is given" + beside + "0");
         }
     }
 }
@@ -583,6 +710,7 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
 [[nodiscard]] Built build(const AirframeSpec& s) {
     Built out;
     check_blocks(s, out.issues);
+    check_mesh_records(s, out.issues);
 
     const PartList parts = gather_parts(s);
     for (const PartIssue& pi : composite_inertia_issues(parts.parts)) {
@@ -604,7 +732,8 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     // stops the composite and the fit; a model-rule problem stops only the
     // final model, so the fit still runs and its own problems are listed too.
     // A part's geometry is read by no mass or drag rule, so its problems stop
-    // only the final model, like a model rule's.
+    // only the final model, like a model rule's -- but for a mesh record's,
+    // whose mesh and density ARE its mass (check_mesh_records, above).
     const bool fit_possible = out.issues.list.empty();
     check_geometry(s, out.issues);
     add_model_issues(s, parts, out.issues);

@@ -7,9 +7,10 @@
 //
 // PER UNIT DENSITY. Neither the mesh nor this result holds a density. A
 // caller that gives one, a uniform rho, gets the mass rho * volume and the
-// inertia rho * inertia, about the centroid, at the centroid. Nothing in the
-// engine calls this yet: the compile does not take a part's mass from its
-// mesh (the plan's mass_from_geometry is not built).
+// inertia rho * inertia, about the centroid, at the centroid. make_mesh()
+// calls this once on every mesh it accepts, and the mesh keeps the result
+// (TriangleMesh::mass_properties(), world/mesh.hpp): read it there rather
+// than computing it again.
 //
 // THE CONVENTIONS are PartInertia::tensor's (vehicles/composite_inertia.hpp),
 // so the compile can hand the result straight to composite_inertia():
