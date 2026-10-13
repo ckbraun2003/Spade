@@ -42,9 +42,12 @@
 
 #include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "analysis/case.hpp"
 #include "analysis/launch.hpp"
+#include "render/scene.hpp"
+#include "render_parts/render_parts.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
@@ -194,6 +197,35 @@ int main() {
         return 1;
     }
     std::printf("spade::analysis OK: a case round-tripped through case_to_yaml and case_from_yaml\n");
+
+    // spade::render_parts (RND-9): a model's part posed and bound into a render
+    // scene, as Kat's host draws a drone. Calling prepare_parts() and
+    // bind_parts() pulls them from the installed archive.
+    {
+        spade::vehicles::ModelType model;
+        model.name = "consumer_parts";
+        spade::vehicles::PartDesc hull;
+        hull.name = "hull";
+        hull.shape.transforms.push_back(spade::SdfTransform{});
+        spade::SdfNode box{};
+        box.kind = static_cast<uint32_t>(spade::SdfPrim::box);
+        box.params = glm::vec4(0.05f, 0.02f, 0.05f, 0.0f);
+        hull.shape.nodes.push_back(box);
+        hull.min_feature = 0.001f;
+        model.parts.push_back(hull);
+        spade::BodyState body{};
+        body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        const auto posed = spade::vehicles::posed_parts(model, body, {}, {}, spade::vehicles::PartFilter::all);
+        const auto prepared = spade::render_parts::prepare_parts(model);
+        spade::render::RenderScene drawn;
+        drawn.materials.push_back(spade::render::Material{});
+        if (!posed || !prepared || !spade::render_parts::bind_parts(*prepared, *posed, {}, drawn) ||
+            drawn.statics.size() != 1u) {
+            std::fprintf(stderr, "spade::render_parts did not bind a posed part\n");
+            return 1;
+        }
+    }
+    std::printf("spade::render_parts OK: a posed part bound into a render scene\n");
 
     // spade::mesh_import, installed. Reading a glTF pulls the reader's objects
     // out of the installed spade_mesh_import archive (linking alone pulls

@@ -113,6 +113,7 @@ add_executable(spade_tests
     test_render_raster.cpp
     test_render_shading.cpp
     test_render_gltf.cpp
+    test_render_parts.cpp
     test_render_csg.cpp
     test_render_csg_raster.cpp
     test_render_transfer_function.cpp
@@ -428,6 +429,8 @@ target_link_libraries(spade_tests PRIVATE
     spade_viewer_scenes
     spade::scene
     spade::analysis
+    # A model's parts drawn (RND-9): test_render_parts.cpp.
+    spade::render_parts
     # The CAD mesh readers (CORE-6, Task B6): test_mesh_import.cpp.
     spade::mesh_import
 )
