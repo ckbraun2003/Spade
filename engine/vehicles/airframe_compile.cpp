@@ -158,10 +158,45 @@ void check_blocks(const AirframeSpec& s, Issues& out) {
     return p;
 }
 
-// Every mass: the spec's parts, then a motor and a propeller at each hub, then
-// the ESC and the battery. `origin` records, for each, its kind and index, so
-// a part issue can name what the caller wrote. A block of zero mass adds no
-// part. Each record carries its geometry (CORE-7, TD-9: one record per part):
+// THE MOTOR'S PLACE (the lead's ruling, 2026-10-12). A motor sits beside its
+// propeller, not across the rotor plane: its one record, mass and solid
+// together (TD-9), is posed at its hub moved half its extent along the thrust
+// axis (the hub's +Y), toward -thrust for a tractor and +thrust for a pusher
+// (RotorSpec::pusher). Half its extent is a cylinder's or a tube's length / 2,
+// a box's y extent / 2, a sphere's radius. A point or a tensor has none and
+// stays on the hub, and so does any shape whose half extent is not a positive
+// number: a disc of length 0, or a size the block's own check lists once, as
+// motor[0].shape, so that it never shows up as a bad hub as well. The
+// propeller stays on the hub, the rotor's plane, and the rotor is untouched.
+[[nodiscard]] double half_extent_along_y(const BlockShape& s) noexcept {
+    switch (s.shape) {
+        case PartShape::sphere:
+            return s.size.x;
+        case PartShape::box:
+        case PartShape::cylinder:
+        case PartShape::tube:
+            return 0.5 * s.size.y;
+        case PartShape::point:
+        case PartShape::tensor:
+            return 0.0;
+    }
+    return 0.0;  // not a PartShape: composite_inertia_issues lists it
+}
+
+[[nodiscard]] MountPose motor_pose(const RotorSpec& r, const std::optional<BlockShape>& shape) {
+    MountPose pose = r.hub;
+    const double half = shape ? half_extent_along_y(*shape) : 0.0;
+    if (!positive(half)) return pose;
+    const glm::dvec3 thrust = glm::normalize(r.hub.orientation) * glm::dvec3(0.0, 1.0, 0.0);
+    pose.position += (r.pusher ? half : -half) * thrust;
+    return pose;
+}
+
+// Every mass: the spec's parts, then at each rotor a motor beside its hub
+// (motor_pose) and a propeller on it, then the ESC and the battery. `origin`
+// records, for each, its kind and index, so a part issue can name what the
+// caller wrote. A block of zero mass adds no part. Each record carries its
+// geometry (CORE-7, TD-9: one record per part):
 // a spec record's own, named "parts[k]" when it gives no name; a block's,
 // named for the block; a propeller's, none.
 struct PartList {
@@ -199,7 +234,7 @@ struct PartList {
     }
     for (std::size_t k = 0; k < s.rotors.size(); ++k) {
         if (s.motor.mass > 0.0) {
-            push(block_part(s.motor.mass, s.rotors[k].hub, s.motor.shape, point,
+            push(block_part(s.motor.mass, motor_pose(s.rotors[k], s.motor.shape), s.motor.shape, point,
                             block("motor[" + std::to_string(k) + "]", "motor")),
                  "motor", k, true);
         }
@@ -551,7 +586,8 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
             continue;
         }
         // A block's part: its shape and mass were checked once, as the
-        // block's. Only its pose is its own, and that is the hub's or the
+        // block's. Only its pose is its own, and that is the hub's (a
+        // motor's moved off it by a finite amount, motor_pose) or the
         // mount's, reported once however many parts sit there.
         if (pi.field != "position" && pi.field != "orientation") continue;
         const bool at_hub = kind == "motor" || kind == "prop";

@@ -65,15 +65,23 @@
 // Both kinds run along local +Y, so a cylinder needs no turn. The parts come
 // in gather order, after the IMU mounts: the spec's records (named by
 // PartInertia::geometry, "parts[k]" when it gives no name, or opted out with
-// source none), then a shaped motor at each hub ("motor[k]", role "motor"),
-// a shaped ESC ("esc") and a shaped battery ("battery"). A block of zero mass
-// gathers no record and gives no part. A propeller never does: its disc is
-// mass only, and the rotor is an actuator disc. Every part is rigid, a
-// motor's too, whose solid is centred on its hub, as its mass is. Geometry is
-// imported (CORE-6, amended 2026-10-12), so the compile authors no shape of
-// its own. No mass or drag rule reads a record's geometry, and parts never
-// enter model_identity() (CORE-7; their identity is parts_identity()), so the
-// mass, drag, fit and identity are what they were without parts.
+// source none), then a shaped motor beside each hub ("motor[k]", role
+// "motor"), a shaped ESC ("esc") and a shaped battery ("battery"). A block of
+// zero mass gathers no record and gives no part. A propeller never does: its
+// disc is mass only, and the rotor is an actuator disc. Every part is rigid, a
+// motor's too, whose solid sits where its mass does. Geometry is imported
+// (CORE-6, amended 2026-10-12), so the compile authors no shape of its own.
+// No mass or drag rule reads a record's geometry, and parts never enter
+// model_identity() (CORE-7; their identity is parts_identity()), so the mass,
+// drag, fit and identity are what they were without parts.
+//
+// THE MOTOR'S PLACE (the lead's ruling, 2026-10-12). A motor sits beside its
+// propeller, not across the rotor plane: its one record, mass and solid
+// together, is its hub moved half its extent along the thrust axis (the hub's
+// +Y), behind the propeller for a tractor and ahead of it for a pusher
+// (RotorSpec::pusher). Half its extent is a cylinder's or a tube's length / 2,
+// a box's y extent / 2, a sphere's radius; a point or a tensor stays on the
+// hub. The propeller's mass and the rotor stay on the hub.
 //
 // DETERMINISM. Double arithmetic in a fixed order, sqrt the only
 // non-arithmetic call (IEEE 754 rounds it correctly), fixed iteration counts,
@@ -124,8 +132,9 @@ struct BlockShape {
 };
 
 // The spec's section 14.2 blocks. SI units, except `kv` in the datasheet's
-// rpm/V. Each has its mass; the motor and propeller sit at every rotor's hub,
-// the ESC and battery at their own mounts.
+// rpm/V. Each has its mass; the propeller sits on every rotor's hub and the
+// motor beside it (THE MOTOR'S PLACE, above), the ESC and battery at their own
+// mounts.
 struct MotorBlock {
     double kv = 0.0;               // rpm/V
     double resistance = 0.0;       // ohm, line to line
@@ -231,7 +240,7 @@ struct AirframeSpec {
     uint32_t version = 1;           // >= 1
 
     std::vector<PartInertia> parts; // frame, arms, avionics: every mass not in a block below
-    MotorBlock motor;               // one motor type, at every hub
+    MotorBlock motor;               // one motor type, beside every hub
     PropBlock prop;                 // one propeller type, at every hub
     EscBlock esc;
     BatteryBlock battery;
