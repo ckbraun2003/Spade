@@ -18,6 +18,7 @@
 #include "render/raster_cpu.hpp"
 #include "render/raymarch.hpp"
 #include "render/scene.hpp"
+#include "world/builder.hpp"
 
 namespace {
 
@@ -304,36 +305,74 @@ TEST(RenderFlowField, OnlyFlowWallsTakeTheColourWhenAsked) {
 }
 
 // A sheet, Physics' zero-thickness wall: the pressure jumps between the cell
-// centres either side of it (z = -0.125 and 0.125 m here). Read at the wall,
-// the sample averages the two sides; read one cell off it along the normal
-// (RND-8), it takes the seen side alone.
-TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
+// centres either side of it (z = -0.125 and 0.125 m here), from -above to
+// +above, in x and y within [-2, 2] m.
+[[nodiscard]] spade::FlowVolume sheet_volume(float above) {
+    return spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [above](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = p.z > 0.0f ? above : -above;
+        return c;
+    });
+}
+
+// Cool-warm over [-1, 1], the sheet's two sides at its ends.
+[[nodiscard]] TransferFunction sheet_colours() {
     TransferFunction colours;
     colours.quantity = FlowQuantity::pressure;
     colours.colours = ColourMapId::cool_warm;
     colours.range_min = -1.0f;
     colours.range_max = 1.0f;
+    return colours;
+}
+
+void expect_map_colour(glm::vec3 got, float t, const char* what) {
+    const glm::vec3 want = 255.0f * spade::render::colour_map_at(ColourMapId::cool_warm, t);
+    const glm::vec3 diff = glm::abs(got - want);
+    EXPECT_LE(std::max({diff.x, diff.y, diff.z}), 1.0f) << what;
+}
+
+// Read at the wall, the sample averages the sheet's two sides; read one cell
+// off it along the normal (RND-8), it takes the seen side alone.
+TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
     const auto centre_colour = [&](float above, float offset) {
-        const spade::FlowVolume volume = spade::test::make_flow_volume(
-            glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [above](glm::vec3 p) {
-                spade::test::FlowChannels c{};
-                c[spade::kFlowPressure] = p.z > 0.0f ? above : -above;
-                return c;
-            });
+        const spade::FlowVolume volume = sheet_volume(above);
         RenderScene scene = quad_scene();  // at z = 0, seen from z = 5
-        FlowSurfaceColouring colouring{&volume, colours};
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
         colouring.offset_cells = offset;
         scene.flow_surface_colouring = colouring;
         return rgb(draw(scene), 16, 16);
     };
-    const auto expect_near = [](glm::vec3 got, float t, const char* what) {
-        const glm::vec3 want = 255.0f * spade::render::colour_map_at(ColourMapId::cool_warm, t);
-        const glm::vec3 diff = glm::abs(got - want);
-        EXPECT_LE(std::max({diff.x, diff.y, diff.z}), 1.0f) << what;
-    };
-    expect_near(centre_colour(1.0f, 0.0f), 0.5f, "at the wall: the two sides' mean, 0");
-    expect_near(centre_colour(1.0f, 1.0f), 1.0f, "one cell off: the seen side's +1");
-    expect_near(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
+    expect_map_colour(centre_colour(1.0f, 0.0f), 0.5f, "at the wall: the two sides' mean, 0");
+    expect_map_colour(centre_colour(1.0f, 1.0f), 1.0f, "one cell off: the seen side's +1");
+    expect_map_colour(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
+}
+
+// The CSG path (RND-8): a 2 cm slab with a hole, ray-marched rather than
+// meshed, across the sheet. It takes the colour only as a flow wall, and one
+// cell off it, along the distance gradient, it reads the seen side.
+TEST(RenderFlowField, ACsgWallTakesTheColourOffItsSeenSide) {
+    spade::WorldBuilder b;
+    b.name("render-flow-field-csg")
+        .capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    b.box(glm::vec3(1.0f, 1.0f, 0.01f));
+    b.sphere(0.2f, spade::SdfPose{.position = glm::vec3(0.6f, 0.6f, 0.0f)});
+    b.subtract();
+    const spade::Result<spade::WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    spade::Result<RenderScene> made = spade::render::scene_from_world(*world, {});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    RenderScene scene = std::move(*made);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    const glm::vec3 shaded = rgb(draw(scene), 16, 16);
+
+    const spade::FlowVolume volume = sheet_volume(1.0f);
+    FlowSurfaceColouring colouring{&volume, sheet_colours()};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    scene.flow_surface_colouring = colouring;
+    EXPECT_EQ(rgb(draw(scene), 16, 16), shaded) << "not a flow wall: no colour";
+    scene.statics[scene.csg_subtrees[0].draw_item].flow_wall = true;
+    expect_map_colour(rgb(draw(scene), 16, 16), 1.0f, "a flow wall, one cell off: the seen side's +1");
 }
 
 TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {

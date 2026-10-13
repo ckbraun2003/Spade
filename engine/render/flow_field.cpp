@@ -61,6 +61,11 @@ Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouri
     if (Result<void> valid = validate_transfer_function(colouring.colours); !valid) {
         return refuse(valid.error().context);
     }
+    if (!(std::isfinite(colouring.offset_cells) && colouring.offset_cells >= 0.0f &&
+          colouring.offset_cells <= kMaxSurfaceOffsetCells)) {
+        return refuse("its offset of " + std::to_string(colouring.offset_cells) + " cells is not finite in [0, " +
+                      std::to_string(kMaxSurfaceOffsetCells) + "]");
+    }
     return {};
 }
 
