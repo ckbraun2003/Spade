@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -40,13 +41,17 @@
 
 #include "cache.hpp"
 #include "cases.hpp"
+#include "live_case.hpp"
 #include "recorder.hpp"
 #include "views.hpp"
 
 #include "physics/airflow/publish.hpp"
 #include "core/fp16.hpp"
 #include "render/raster_cpu.hpp"
+#include "render_parts/render_parts.hpp"
+#include "vehicles/part_pose.hpp"
 
+#include "analysis/live_run.hpp"
 #include "analysis/validation.hpp"
 
 namespace {
@@ -136,6 +141,12 @@ struct Film {
     // sidebar on the left; 0 centres both.
     float picture_x = 0.0f;
     std::vector<View> views;
+    // A film flown through LiveRun (--case): its case, the run line each
+    // frame's caption reads (filled from the cache once simulated), and what
+    // every view draws over its own shot -- the held drone's parts.
+    std::shared_ptr<const LiveCase> run;
+    std::shared_ptr<std::vector<std::string>> run_lines;
+    std::function<spade::Result<void>(const FrameLog&, render::RenderScene&)> decorate;
 };
 
 [[nodiscard]] std::string fixed(double x, int decimals) {
@@ -154,6 +165,7 @@ struct Film {
 // With the build (build_identity()), what a snapshot must match to be
 // continued (Physics' and the lead's rule: never into another case or commit).
 [[nodiscard]] std::string film_identity(const Film& film) {
+    if (film.run) return film.stem + ": " + std::to_string(film.frames) + " frames of LiveRun; " + film.run->identity;
     const AirflowCase& c = film.airflow;
     return film.stem + ": " + std::to_string(film.frames) + " frames over " + std::to_string(total_steps(c)) +
            " steps of h " + fixed(c.fluid.h, 6) + " on " + std::to_string(c.shape.nx) + "x" +
@@ -246,6 +258,52 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     return true;
 }
 
+// Flies a --case film through LiveRun, one frame per advance_frame(): the
+// controls at the run's own time, then the frame published. Each frame's log
+// keeps the held body (pos, then orient w x y z) and the rotors' speeds, so
+// a view can pose the drone's parts where the run held them; run.txt keeps
+// each frame's run line. No budget and no resume: LiveRun can't save its
+// state yet, so the film runs in one go (run_film refuses a budget).
+[[nodiscard]] spade::Result<bool> simulate_live(const Film& film, const fs::path& cache, const CacheMark& mark) {
+    namespace an = spade::analysis;
+    const LiveCase& lc = *film.run;
+    auto resolved = an::resolve(lc.c, lc.run_model);
+    if (!resolved) {
+        std::string issues;
+        for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, film.stem + ": the case does not resolve: " + issues});
+    }
+    auto run = an::LiveRun::start(*resolved, lc.run_model);
+    if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
+    std::error_code ec;
+    fs::create_directories(cache, ec);
+    mark_cache(cache, mark);
+    std::ofstream lines(cache / "run.txt", std::ios::binary);
+    spade::FlowVolume volume;
+    const auto start = std::chrono::steady_clock::now();
+    for (uint32_t k = 0; k < film.frames; ++k) {
+        const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
+        auto frame = run->advance_frame(controls, volume);
+        if (!frame) return std::unexpected(spade::Error{frame.error().code, film.stem + ": " + frame.error().context});
+        const spade::BodyState& b = run->body();
+        std::vector<double> live{b.pos.x, b.pos.y, b.pos.z, b.orient.w, b.orient.x, b.orient.y, b.orient.z};
+        for (const float w : run->state().rotor_omega) live.push_back(w);
+        const FrameLog log{frame->steps, frame->t_s, std::move(live)};
+        if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
+        lines << run->run_line() << '\n';
+        if (k % 10u == 0u || k + 1u == film.frames) {
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            std::printf("[ %s ] frame %u/%u, t %s s; held at (%.3f, %.3f, %.3f) in a box from (%.3f, %.3f, %.3f); "
+                        "%.0f s\n",
+                        film.stem.c_str(), k + 1u, film.frames, fixed(frame->t_s, 3).c_str(), b.pos.x, b.pos.y,
+                        b.pos.z, volume.header.origin.x, volume.header.origin.y, volume.header.origin.z, elapsed);
+            std::fflush(stdout);
+        }
+    }
+    if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
+    return true;
+}
+
 // --- render many times -----------------------------------------------------------------
 
 [[nodiscard]] std::vector<Caption> standard_captions(const Film& film, const View& view, const FrameLog& log) {
@@ -301,6 +359,9 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             render::Camera camera;
             if (auto shot = film.views[v].shot(volume, k, film.frames, scene, camera); !shot) {
                 return std::unexpected(shot.error());
+            }
+            if (film.decorate) {
+                if (auto drawn = film.decorate(log, scene); !drawn) return std::unexpected(drawn.error());
             }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (auto drew = stage.draw(scene, camera, rgba); !drew) return std::unexpected(drew.error());
@@ -364,6 +425,9 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             render::RenderScene scene = dark_scene(volume);
             render::Camera camera;
             if (auto shot = view.shot(volume, k, film.frames, scene, camera); !shot) return shot;
+            if (film.decorate) {
+                if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
+            }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (cpu) {
                 if (auto drew = draw_cpu(scene, camera, encoder, rgba); !drew) return drew;
@@ -703,6 +767,113 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 
 // --- running a film --------------------------------------------------------------------
 
+// Below this lambda2-hat (1/s) a frame has a vortex worth a surface; above
+// it, as in a box of uniform wind, the deepest value is the grid's noise.
+constexpr float kVortexFloor = -5.0f;
+
+// A film flown through LiveRun (D1, --case): the flow from two views, with
+// the held drone's parts drawn in each where the run held it (render_parts,
+// RND-9), and the controls and run line in its captions.
+[[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem) {
+    namespace an = spade::analysis;
+    auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
+    if (!prepared) return std::unexpected(prepared.error());
+    const auto parts = std::make_shared<const spade::render_parts::PreparedParts>(std::move(*prepared));
+    const auto run = std::make_shared<const LiveCase>(std::move(lc));
+    Film film;
+    film.stem = std::move(stem);
+    film.run = run;
+    film.frames = frames;
+    film.time_unit = " s";
+    film.airflow.name = run->name;
+    film.airflow.t_end = static_cast<float>(run->seconds);
+    film.airflow.fluid.h = run->c.time.step.value_or(1.0e-3f);
+    const char* kinds[] = {"hover", "forward flight", "hover in wind"};
+    film.airflow.settings = std::string("LiveRun, the drone held at the box's centre: ") +
+                            kinds[static_cast<uint32_t>(run->c.flight.kind) % 3u] + " at " +
+                            fixed(run->c.flight.speed, 1) + " m/s, flying " + run->program_name + " for " +
+                            fixed(run->seconds, 2) + " s";
+    film.run_lines = std::make_shared<std::vector<std::string>>();
+    const auto lines = film.run_lines;
+    film.captions = [run, lines](const FrameLog& log) {
+        CaptionText t;
+        if (!lines->empty()) {
+            // The run line's fixed part: the rotor model, the grid, dx and R/dx.
+            const std::string& first = lines->front();
+            t.top.push_back(first.substr(0, first.find(" \xC2\xB7 t =")));
+        }
+        if (!run->notes.empty()) t.top.push_back(run->notes);
+        const an::Controls c = an::controls_at(run->program, static_cast<float>(log.time));
+        t.bottom.push_back(std::string("controls: ") + (c.armed ? "armed" : "disarmed") + ", throttle " +
+                           fixed(c.throttle, 2) + ", pitch " + fixed(c.pitch_deg, 0) + " deg, roll " +
+                           fixed(c.roll_deg, 0) + " deg, yaw " + fixed(c.yaw_deg, 0) + " deg");
+        return t;
+    };
+    film.decorate = [run, parts](const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+        if (parts->parts.empty()) return {};
+        if (log.live.size() < 7u) {
+            return std::unexpected(spade::Error{spade::Code::internal, "a LiveRun frame's log holds no held body"});
+        }
+        spade::BodyState b{};
+        b.pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]),
+                          static_cast<float>(log.live[2]));
+        b.orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                             static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+        const std::size_t rotors = run->draw_model.rotors.size();
+        std::vector<float> omega(rotors, 0.0f), psi(rotors, 0.0f);  // psi: Physics' rule (P11) is to come
+        for (std::size_t i = 0; i < rotors && 7u + i < log.live.size(); ++i) omega[i] = static_cast<float>(log.live[7u + i]);
+        auto posed = spade::vehicles::posed_parts(run->draw_model, b, omega, psi, spade::vehicles::PartFilter::all);
+        if (!posed) return std::unexpected(posed.error());
+        const auto base = static_cast<uint32_t>(scene.materials.size());
+        scene.materials.push_back(render::Material{.base_color = glm::vec4(0.80f, 0.80f, 0.84f, 1.0f)});
+        scene.materials.push_back(render::Material{.base_color = glm::vec4(0.30f, 0.32f, 0.36f, 1.0f)});
+        scene.materials.push_back(render::Material{.base_color = glm::vec4(0.55f, 0.62f, 0.72f, 1.0f)});
+        return spade::render_parts::bind_parts(
+            *parts, *posed, spade::render_parts::PartsLook{.body = base, .rotor = base + 1u, .porous = base + 2u},
+            scene);
+    };
+    const render::TransferFunction speed_colours =
+        colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f,
+                     std::max(1.0f, 2.0f * run->c.flight.speed));
+    film.views.push_back(View{
+        "flow", "lambda2 vortex surfaces at a third of the frame's deepest core, coloured by speed |u|",
+        [speed_colours](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                        render::Camera& camera) -> spade::Result<void> {
+            const float deepest = v.header.channel_min[spade::kFlowLambda2Hat];
+            if (deepest < kVortexFloor) {
+                render::IsoSurface iso;
+                iso.quantity = render::FlowQuantity::lambda2_hat;
+                iso.value = deepest / 3.0f;
+                iso.colour_by = speed_colours;
+                scene.flow_layers.push_back(render::FlowLayer{&v, {}, {iso}});
+            }
+            const glm::vec3 size = volume_size(v);
+            camera = orbit(volume_centre(v), 1.3f * std::max({size.x, size.y, size.z}),
+                           sweep_azimuth(30.0f, 60.0f, k, n), 20.0f);
+            return {};
+        }});
+    film.views.push_back(View{
+        "slice", "speed |u| on the vertical plane through the drone",
+        [speed_colours](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
+                        render::Camera& camera) -> spade::Result<void> {
+            const glm::vec3 size = volume_size(v), centre = volume_centre(v);
+            render::FieldLayer plane;
+            plane.center = centre;
+            plane.width = size.x;
+            plane.height = size.y;
+            plane.cells_u = 2u * v.header.nx;
+            plane.cells_v = 2u * v.header.ny;
+            if (auto ok = add_slice(scene, v, render::FlowQuantity::speed, plane, render::ColourMapId::viridis, 0.0f,
+                                    speed_colours.range_max);
+                !ok) {
+                return ok;
+            }
+            camera = orbit(centre, 1.7f * std::max(size.x, size.y), 0.0f, 0.0f);
+            return {};
+        }});
+    return film;
+}
+
 struct Options {
     std::string video;
     fs::path out;
@@ -719,6 +890,8 @@ struct Options {
     uint32_t n_v = 0;      // 0: the case's own; else its V-cycles (Physics' noise test)
     double budget_seconds = 0.0;  // 0: none
     uint32_t frame_budget = 0;    // 0: none
+    fs::path case_file;           // --case: a .case.yaml flown through LiveRun
+    fs::path controls_file;       // --controls: its control program (empty: the showcase)
 };
 
 constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continue
@@ -770,15 +943,36 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
         }
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     }
-    if (started && !finished && theirs.build != mine.build) {
+    if (film.run) {
+        // LiveRun can't save and restore yet (Interface's save/restore is on
+        // its way): a --case film runs in one go, and an unfinished one starts
+        // over.
+        if (!finished && (opt.budget_seconds > 0.0 || opt.frame_budget > 0u)) {
+            return std::unexpected(spade::Error{
+                spade::Code::unavailable,
+                film.stem + ": a --case film can't stop and resume until LiveRun's save/restore lands; run it "
+                            "without --budget-seconds or --frame-budget, short enough for one go"});
+        }
+        if (started && !finished) {
+            std::printf("[ %s ] an unfinished LiveRun cache can't be continued; starting it again\n",
+                        film.stem.c_str());
+            fs::remove_all(cache, ec);
+        }
+    } else if (started && !finished && theirs.build != mine.build) {
         return refuse_cache("build's unfinished simulation", theirs.build, mine.build);
     }
     if (!finished) {
-        auto done = simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
+        auto done = film.run ? simulate_live(film, cache, mine)
+                             : simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
         if (!done) return std::unexpected(done.error());
         if (!*done) return std::optional<std::vector<fs::path>>{};
     } else {
         std::printf("[ %s ] using the %u cached frames in %s\n", film.stem.c_str(), film.frames, cache.string().c_str());
+    }
+    if (film.run_lines) {
+        film.run_lines->clear();
+        std::ifstream lines(cache / "run.txt", std::ios::binary);
+        for (std::string line; std::getline(lines, line);) film.run_lines->push_back(line);
     }
     if (opt.simulate_only) return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     if (opt.stills > 0u) {
@@ -883,6 +1077,11 @@ int main(int argc, char** argv) {
             opt.cpu = true;
         } else if (arg == "--view") {
             opt.view = value();
+        } else if (arg == "--case") {
+            opt.case_file = value();
+            if (opt.video.empty()) opt.video = "case";
+        } else if (arg == "--controls") {
+            opt.controls_file = value();
         } else if (arg == "--still-frame") {
             opt.still_frame = std::atoi(value().c_str());
         } else if (arg == "--probe-swirl") {
@@ -901,14 +1100,15 @@ int main(int argc, char** argv) {
         }
     }
     if (opt.video.empty()) {
-        std::fprintf(stderr, "usage: flow_movie --video quad|validation|smoke|cavity|taylor-green|disc [--out DIR] "
-                             "[--ffmpeg EXE] [--seconds S] [--stills N] [--resimulate] [--keep-cache]\n");
+        std::fprintf(stderr, "usage: flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-smoke "
+                             "[--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N] [--resimulate] [--keep-cache]\n"
+                             "       flow_movie --case FILE.case.yaml [--controls FILE] [--out DIR] [--seconds S]\n");
         return 2;
     }
     if (opt.out.empty()) opt.out = default_out();
     Encoder encoder;
     encoder.ffmpeg = opt.ffmpeg;
-    if (opt.video == "smoke") {
+    if (opt.video == "smoke" || opt.video == "case-smoke") {
         encoder.width = 640;
         encoder.height = 360;
     }
@@ -927,6 +1127,20 @@ int main(int argc, char** argv) {
         auto film = quad_film(frames_for(opt, 14.0, encoder));
         if (!film) return fail(film.error());
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
+        films.push_back(std::move(*film));
+    } else if (opt.video == "case" || opt.video == "case-smoke") {
+        const bool smoke = opt.video == "case-smoke";
+        if (!smoke && opt.case_file.empty()) {
+            std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
+            return 2;
+        }
+        auto lc = smoke ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
+                        : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
+        if (!lc) return fail(lc.error());
+        const auto frames = std::max<uint32_t>(
+            2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
+        auto film = case_film(std::move(*lc), frames, smoke ? "case-smoke" : "case-" + opt.case_file.stem().string());
+        if (!film) return fail(film.error());
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {
         films.push_back(cavity_film(frames_for(opt, 12.0, encoder)));
@@ -995,7 +1209,8 @@ int main(int argc, char** argv) {
         if (!clips) return fail(clips.error());
         if (!*clips) return kExitIncomplete;
         if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) continue;
-        auto card = film_card(encoder, opt.out / "clips", film, opt.video == "smoke" ? 0.2 : 4.0, builds);
+        const bool smoke = opt.video == "smoke" || opt.video == "case-smoke";
+        auto card = film_card(encoder, opt.out / "clips", film, smoke ? 0.2 : 4.0, builds);
         if (!card) return fail(card.error());
         std::vector<fs::path> parts{*card};
         for (const fs::path& clip : **clips) parts.push_back(clip);

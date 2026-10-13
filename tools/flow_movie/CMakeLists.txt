@@ -13,17 +13,21 @@ add_executable(flow_movie
     recorder.hpp
     recorder.cpp
     views.hpp
-    views.cpp)
+    views.cpp
+    live_case.hpp
+    live_case.cpp)
 target_compile_features(flow_movie PRIVATE cxx_std_23)
 # spade::analysis: the validation reel reads the V1 records through
 # Interface's one reader (TD-9).
 target_link_libraries(flow_movie PRIVATE
-    spade::core spade::physics spade::render spade::render_gl spade::analysis glfw glad)
+    spade::core spade::physics spade::render spade::render_gl spade::analysis spade::scene spade::render_parts
+    glfw glad)
 # GLFW_INCLUDE_NONE: glad declares GL, and glfw3.h must not pull in <GL/gl.h>.
 # SPADE_TESTS_DIR, the tests' name, which the gcc check defines too: the V1
 # records sit under tests/.
 target_compile_definitions(flow_movie PRIVATE GLFW_INCLUDE_NONE
-    SPADE_TESTS_DIR="${CMAKE_SOURCE_DIR}/tests")
+    SPADE_TESTS_DIR="${CMAKE_SOURCE_DIR}/tests"
+    SPADE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 
 # The build stamp every card names: the commit the binary is built from, and
 # whether the tree had uncommitted changes, taken at build time (never asked
@@ -49,4 +53,14 @@ set_tests_properties(GpuFlowMovie.SmokeRendersTwoFrames PROPERTIES
     LABELS "spade;gpu"
     SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "smoke: wrote"
+    TIMEOUT 120)
+
+# The --case smoke: two frames of Interface's tiny LiveRun case through the
+# recorder (D1's path), at 640x360. Skips as the smoke above does.
+add_test(NAME GpuFlowMovie.CaseSmokeRendersTwoFrames
+    COMMAND flow_movie --video case-smoke --out "${CMAKE_CURRENT_BINARY_DIR}/case-smoke")
+set_tests_properties(GpuFlowMovie.CaseSmokeRendersTwoFrames PROPERTIES
+    LABELS "spade;gpu"
+    SKIP_RETURN_CODE 77
+    PASS_REGULAR_EXPRESSION "case-smoke: wrote"
     TIMEOUT 120)
