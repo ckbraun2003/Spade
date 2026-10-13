@@ -206,6 +206,18 @@ fi
 rm -rf "$prefix" "$consumer" "$sandbox_build" "$probe" || { echo "consumer-smoke: FAIL clean (vulkan=$vulkan): cannot remove an old tree under $work. Check its permissions, then run again."; exit 1; }
 stage install cmake --install "$install_from" --prefix "$prefix"
 
+# No empty directory under include/. install(DIRECTORY ... FILES_MATCHING)
+# makes every directory it walks, matched or not, so a source-only
+# subdirectory of an installed one arrives empty (B6's world/mesh_import/,
+# fixed by its own PATTERN ... EXCLUDE). Each one needs that line.
+empty_dirs="$(find "$prefix/include" -type d -empty)"
+if [ -n "$empty_dirs" ]; then
+    echo "consumer-smoke: FAIL install (vulkan=$vulkan): empty directories under $prefix/include; exclude each from its install(DIRECTORY) rule:"
+    echo "$empty_dirs"
+    exit 1
+fi
+echo "consumer-smoke: install vulkan=$vulkan has no empty include directory"
+
 stage consumer-configure cmake -S "$src/tests/consumer" -B "$consumer" -G Ninja --no-warn-unused-cli \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$prefix" \
