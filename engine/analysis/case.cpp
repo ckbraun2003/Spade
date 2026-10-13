@@ -225,7 +225,7 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
     // The base grid, and whether the solver can hold it.
     const auto cells = static_cast<uint32_t>(std::ceil(box / spacing * (1.0f - 1e-6f)));
     r.base = physics::airflow::GridShape{cells, cells, cells, spacing};
-    r.base_bytes = physics::airflow::fluid_bytes(r.base);
+    r.base_bytes = physics::airflow::fluid_bytes(r.base, physics::airflow::DomainBc{});
     if (r.base_bytes > physics::airflow::kGridByteCap) {
         const double scale =
             std::cbrt(static_cast<double>(physics::airflow::kGridByteCap) / static_cast<double>(r.base_bytes));

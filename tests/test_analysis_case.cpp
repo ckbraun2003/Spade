@@ -227,7 +227,7 @@ TEST(AnalysisCaseResolve, FillsTheDefaultsAndSaysSo) {
     EXPECT_NEAR(*resolved->spec.grid.spacing, *resolved->spec.grid.box / static_cast<float>(an::kDefaultCellsAcross),
                 1e-7f);
     EXPECT_EQ(resolved->base.nx, an::kDefaultCellsAcross);
-    EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base));
+    EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base, spade::physics::airflow::DomainBc{}));
     EXPECT_EQ(resolved->finest_spacing, *resolved->spec.grid.spacing);
     // The hash names the run: the resolved case's own text.
     EXPECT_EQ(resolved->hash, spade::rng::fnv1a64(an::case_to_yaml(resolved->spec).value_or("")));
