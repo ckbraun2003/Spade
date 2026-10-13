@@ -1,6 +1,6 @@
 # Solids in the airflow grid: P2, P2b and P3 — design
 
-**Owner:** Physics. **Status:** DRAFT for the lead (2026-10-13). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
+**Owner:** Physics. **Status:** **APPROVED by the lead, 2026-10-13**, with §10's two decisions. It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
 **Rests on:**
 - the airflow spec §2 (Boundaries) and §1.5 step 6 (the projection with apertures);
 - the demonstration plan (`PHY-10`, the drone-box premise of `cd298d6`);
@@ -80,7 +80,7 @@ P2 (walls, sheets, the posed drone, tests 1–3, 5–7), then P3 (force and mome
 
 CPU cost: about 300 k samples per rebuild at a 42³ support box. Since the parts are rebuilt only when the attitude changes, a held attitude costs nothing per step. The projection's θ path is the general stencil's cost.
 
-## 10. Open for the lead
+## 10. Decisions (the lead, 2026-10-13)
 
-1. **Inside a solid:** the rigid velocity as the default (it matches a no-slip wall), with free-slip extrapolation as the named lean option, against the spec's extrapolation-only. I recommend the rigid default, because Cameron's accuracy bar favours no-slip walls.
-2. **Sheets** as in §4: the binary, staircase first version. A cut-face sheet (exact crossing fractions) comes later if V2's plate needs it.
+1. **Inside a solid, a backtrace reads the owning part's rigid velocity by default.** That is exact for a no-slip moving wall, and it fits Cameron's accuracy bar. Free-slip extrapolation, two layers by fixed sweeps, stays a named option in the configuration. The spec's §2 is amended to match.
+2. **Sheets are binary and staircased in this first version.** That is a **known first-order limitation**: a sheet's surface is resolved only to the cell, and its closed faces are either fully closed or fully open. Exact cut-face sheets, with crossing fractions, come later, when V2's flat plate (drag against `Re`) measures the difference.

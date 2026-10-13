@@ -202,7 +202,7 @@ What each module-API stage provides, and what is missing (Core's answers, `core/
 
 **Slip.** The real-time tier's lean mode constrains only the normal velocity (free slip): a 2.5 cm cell cannot resolve a boundary layer. The viscous configuration imposes no-slip, resolved in nests or through the wall model (§11.3). The LBM tier's bounce-back gives no-slip.
 
-**Advection near solids.** Velocity is extrapolated two layers into solid cells by a fixed number of sweeps before advection, so a backtrace that lands in a solid reads a plausible value. Dye is clamped to zero inside solids.
+**Advection near solids** (**amended by the lead, 2026-10-13**, with the solids design `2026-10-13-airflow-solids-design.md`). By default, a backtrace that lands in a solid reads the owning part's rigid velocity (`sample_parts()`'s wall velocity). That is exact for a no-slip moving wall, and it fits Cameron's accuracy bar. Extrapolating the velocity two layers into the solid by a fixed number of sweeps, which the free-slip lean mode wants, stays a named option in the configuration. Dye is clamped to zero inside solids.
 
 **Domain faces.**
 
