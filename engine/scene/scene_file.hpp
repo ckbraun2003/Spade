@@ -147,7 +147,8 @@ struct SceneDesc {
 // invalid_argument for everything else, with the offending key's dotted path
 // and its line and column. A model's `parts` is read only in a version-2
 // file: in a version-1 file it is an unknown key, blamed on version 1.
-[[nodiscard]] Result<SceneDesc> scene_from_yaml(std::string_view yaml_text);
+[[nodiscard]] Result<SceneDesc> scene_from_yaml(std::string_view yaml_text,
+                                              const std::filesystem::path& base_dir = {});
 
 // SceneDesc -> canonical text (SCN-002). Runs validate_scene() first, so the
 // writer never emits a document the reader would refuse. Writes version 2

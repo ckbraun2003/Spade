@@ -1110,7 +1110,8 @@ Result<void> validate_scene(const SceneDesc& scene) {
     return {};
 }
 
-Result<SceneDesc> scene_from_yaml(std::string_view yaml_text) {
+Result<SceneDesc> scene_from_yaml(std::string_view yaml_text, const std::filesystem::path& base_dir) {
+    (void)base_dir;
     Result<SceneDesc> scene = parse_text(yaml_text);
     if (!scene) return scene;
     if (Result<void> r = validate_scene(*scene); !r) {

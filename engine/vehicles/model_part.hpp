@@ -85,6 +85,13 @@ inline constexpr uint32_t kNoPart = std::numeric_limits<uint32_t>::max();
 //                 shares it. Every TriangleMesh came from make_mesh(), so a
 //                 non-null mesh is valid. Null on an SdfProgram part. Exactly
 //                 one of shape and mesh is set (refused at field `shape`).
+//   mesh_file     the .spmesh sidecar a scene file names `mesh` by: a path
+//                 relative to the scene file's directory, forward slashes,
+//                 UTF-8 (world/mesh_file.hpp; Task B5). The scene reader
+//                 sets it; whoever saves the mesh beside a scene sets it
+//                 before writing the scene, which refuses a mesh part
+//                 without one. Empty in memory is fine; empty on an
+//                 SdfProgram part. Nothing but the scene file reads it.
 //   min_feature   m, the smallest feature the grid must resolve (CORE-8 D5);
 //                 finite and > 0. An authored part declares it; the airframe
 //                 compile will fill it from its primitives' sizes (Task A4).
@@ -97,6 +104,7 @@ struct PartDesc {
     glm::quat mount_orient{1.0f, 0.0f, 0.0f, 0.0f};
     SdfProgram shape{};
     std::shared_ptr<const TriangleMesh> mesh{};
+    std::string mesh_file{};
     PartSurface surface{};
     float min_feature = 0.0f;
 };
