@@ -43,7 +43,7 @@ struct RunProgress {
     uint64_t steps = 0;
     double elapsed_s = 0.0;     // wall time since the run started, measured outside stepped code
     double ms_per_step = 0.0;   // measured; 0 before the first step
-    uint64_t memory_bytes = 0;  // what the run holds
+    uint64_t memory_bytes = 0;  // what the run holds; while queued, what it will need
     std::string message;        // a refusal, a fault, or why a run waits
 };
 

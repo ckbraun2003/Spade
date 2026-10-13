@@ -31,4 +31,9 @@ namespace spade::analysis::detail {
 
 [[nodiscard]] bool process_running(uint64_t pid);
 
+// The memory a new run could have now: on Windows the smaller of free
+// physical memory and free commit (the box rule watches both); on Linux
+// MemAvailable; elsewhere the free pages.
+[[nodiscard]] uint64_t free_memory_bytes();
+
 }  // namespace spade::analysis::detail

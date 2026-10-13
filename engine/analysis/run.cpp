@@ -197,6 +197,7 @@ Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view ca
     if (Result<void> r = detail::replace_file(folder / "case.yaml", *text); !r) return std::unexpected(r.error());
     RunProgress queued;
     queued.target_s = static_cast<double>(resolved.spec.time.duration);
+    queued.memory_bytes = resolved.base_bytes;  // its need, which the queue waits for
     if (Result<void> r = write_progress(folder, queued); !r) return std::unexpected(r.error());
     return folder;
 }

@@ -2,6 +2,7 @@
 
 #include "analysis/detail/process.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -135,6 +136,13 @@ bool process_running(uint64_t pid) {
     return wait == WAIT_TIMEOUT;
 }
 
+uint64_t free_memory_bytes() {
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) return 0;
+    return std::min<uint64_t>(status.ullAvailPhys, status.ullAvailPageFile);
+}
+
 #else
 
 Result<uint64_t> launch_detached(const ProcessSpec& spec) {
@@ -194,6 +202,21 @@ bool process_running(uint64_t pid) {
     }
 #endif
     return true;
+}
+
+uint64_t free_memory_bytes() {
+#ifdef __linux__
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    uint64_t kib = 0;
+    std::string unit;
+    while (meminfo >> key >> kib >> unit) {
+        if (key == "MemAvailable:") return kib * 1024;
+    }
+#endif
+    const long pages = sysconf(_SC_AVPHYS_PAGES);
+    const long size = sysconf(_SC_PAGESIZE);
+    return pages > 0 && size > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(size) : 0;
 }
 
 #endif
