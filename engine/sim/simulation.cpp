@@ -131,6 +131,30 @@ constexpr const char* kWorldParamsArray = "world_params";
 constexpr const char* kBodiesArray = "bodies";
 constexpr const char* kBodyGenerationArray = "body_generation";
 
+// ---------------------------------------------------------------------------
+// NOT BURIED IN THE WORLD -- the one predicate both spawn() overloads apply to
+// a new body's position (TD-9: one function, never a copy). The Baumgarte
+// correction is a fraction of the excess penetration per substep and is
+// UNCAPPED, so a body placed deep inside geometry is ejected proportionally to
+// its depth -- a teleport, and possibly a tunnel through the far side. So the
+// body origin may sit no deeper than one proxy radius inside the solid:
+// phi = eval(sdf, pos) >= -radius, where `radius` is the body's EFFECTIVE
+// proxy radius (physics::effective_proxy_radius: the world's, unless a model
+// overrides it). Spelled `!(phi >= -r)` so a NaN field value rejects rather
+// than comparing false on both sides. `what` names the caller, as the
+// refusal's prefix.
+// ---------------------------------------------------------------------------
+[[nodiscard]] Result<void> check_not_buried(const SdfProgram& sdf, glm::vec3 pos, float radius,
+                                            std::string_view what) {
+    const float phi = eval(sdf, pos);
+    if (!(phi >= -radius)) {
+        return std::unexpected(invalid(std::string(what) +
+                                       ": position is deeper than one proxy radius inside the world SDF "
+                                       "(uncapped positional correction would eject it)"));
+    }
+    return {};
+}
+
 
 // ---------------------------------------------------------------------------
 // THE SENSOR-FAMILY TEMPLATES -- one implementation per operation, instantiated
@@ -1693,15 +1717,11 @@ Result<BodyRef> Simulation::spawn(uint32_t world_index, const BodySpawn& body) {
         return std::unexpected(invalid("spawn: orientation must have non-zero length"));
     }
 
-    // NOT BURIED IN THE WORLD. The Baumgarte correction is a fraction of the
-    // excess penetration per substep and is UNCAPPED, so a body spawned deep
-    // inside geometry is ejected proportionally to its depth -- a teleport, and
-    // possibly a tunnel through the far side. Spelled `!(phi >= -r)` so a NaN
-    // field value rejects rather than comparing false on both sides.
-    const float phi = eval(config.sdf, body.pos);
-    if (!(phi >= -config.contacts.proxy_radius)) {
-        return std::unexpected(invalid("spawn: position is deeper than one proxy radius inside the "
-                                       "world SDF (uncapped positional correction would eject it)"));
+    // NOT BURIED IN THE WORLD (check_not_buried), at the world's radius: a
+    // bare body has no per-body override.
+    if (Result<void> placed = check_not_buried(config.sdf, body.pos, config.contacts.proxy_radius, "spawn");
+        !placed) {
+        return std::unexpected(placed.error());
     }
 
     // The world's OWN declared capacity, not the arena partition's -- see
@@ -2093,15 +2113,12 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                        "boundaries)"));
     }
 
-    // NOT BURIED IN THE WORLD -- the same check, for the same uncapped-
-    // Baumgarte reason, that spawn(world, BodySpawn) applies. Spelled
-    // `!(phi >= -r)` so a NaN field value rejects. `r` is `effective_radius`
-    // above, not unconditionally the world default -- see the D-S6-2 note.
-    const float phi = eval(config.sdf, where.pos);
-    if (!(phi >= -effective_radius)) {
-        return std::unexpected(invalid("spawn(vehicle): position is deeper than one proxy radius "
-                                       "inside the world SDF (uncapped positional correction would "
-                                       "eject it)"));
+    // NOT BURIED IN THE WORLD -- the same predicate spawn(world, BodySpawn)
+    // applies (check_not_buried), at `effective_radius` above rather than
+    // unconditionally the world default -- see the D-S6-2 note.
+    if (Result<void> placed = check_not_buried(config.sdf, where.pos, effective_radius, "spawn(vehicle)");
+        !placed) {
+        return std::unexpected(placed.error());
     }
 
     // --- capacity, also before anything is reserved -------------------------
