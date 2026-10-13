@@ -53,8 +53,6 @@ enum FlowChannel : uint32_t {
     kFlowVorticity = 5,
     kFlowQHat = 6,
     kFlowLambda2Hat = 7,
-    // The channel's old name, until Publish fills it (Physics); then it goes.
-    kFlowReserved = kFlowLambda2Hat,
 };
 inline constexpr uint32_t kFlowChannelCount = 8;
 inline constexpr uint32_t kFlowHalvesPerCell = 4;  // per texture
@@ -79,7 +77,7 @@ struct FlowVolumeHeader {
 struct FlowVolume {
     FlowVolumeHeader header;
     std::vector<uint16_t> v;  // nx ny nz x 4 halves: u, v, w, dye
-    std::vector<uint16_t> s;  // nx ny nz x 4 halves: pressure, |w|, q-hat, reserved
+    std::vector<uint16_t> s;  // nx ny nz x 4 halves: pressure, |w|, q-hat, lambda2-hat
 };
 
 [[nodiscard]] inline std::size_t flow_cell_index(const FlowVolumeHeader& h, uint32_t i, uint32_t j,

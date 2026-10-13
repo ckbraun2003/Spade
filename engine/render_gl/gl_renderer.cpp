@@ -297,7 +297,7 @@ void main() {
 // stops, a row per ColourMapId, interpolated as colour_map_at() does.
 constexpr const char* kFlowSampleSrc = R"GLSL(
 layout(binding = 1) uniform usampler3D uFlowV;  // u, v, w, dye
-layout(binding = 2) uniform usampler3D uFlowS;  // p, |omega|, q-hat, reserved
+layout(binding = 2) uniform usampler3D uFlowS;  // p, |omega|, q-hat, lambda2-hat
 layout(binding = 3) uniform sampler2D uFlowColourTable;  // 256 x 3, a row per ColourMapId
 uniform vec3 uFlowOrigin;
 uniform float uFlowInvCell;  // 1 / cell, as the CPU's FlowSampler holds it
