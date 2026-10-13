@@ -129,6 +129,11 @@ endif()
 # v2 engine tree.
 add_subdirectory(engine)
 
+# The installed tools: the analysis runner, the process a queued analysis run
+# runs in (W2c; INT-7). AFTER engine/, whose spade:: targets it links; outside
+# engine/, so it may read the clock (M1B).
+add_subdirectory(tools/analysis_runner)
+
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.
 if(SPADE_BUILD_SANDBOX)

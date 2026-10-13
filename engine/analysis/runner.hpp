@@ -42,6 +42,7 @@ using StepFn = std::function<Result<StepSample>(uint64_t step)>;
 using Clock = std::function<double()>;
 
 struct RunnerSetup {
+    RunKind kind = RunKind::cfd;       // a dry run marks its progress, its log and its history's first line
     std::vector<std::string> columns;  // history.csv's columns after time_s, each with its unit ("thrust_N")
     double history_every_s = 0.0;      // simulated s between history rows; 0 for every step
     double progress_every_s = 0.5;     // clock s between progress writes; the last is always written

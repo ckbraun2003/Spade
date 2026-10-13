@@ -18,6 +18,8 @@ namespace {
 
 namespace fs = std::filesystem;
 
+constexpr const char* kDryRunNote = "a stand-in step with no airflow and zero loads; not a CFD result";
+
 // The shortest text that reads back to the same double.
 [[nodiscard]] std::string number(double v) { return std::format("{}", v); }
 
@@ -42,17 +44,24 @@ Result<RunProgress> run_case(const fs::path& folder, const RunnerSetup& setup, c
     if (!c) return std::unexpected(c.error());
 
     RunProgress p;
+    p.kind = setup.kind;
     p.state = RunState::running;
     p.target_s = static_cast<double>(c->time.duration);
     p.memory_bytes = setup.memory_bytes;
 
+    // A dry run's history opens with what it is, before the header: a reader
+    // that skips '#' lines reads its columns, and one that doesn't refuses
+    // it rather than taking it for a CFD result.
+    const bool dry = setup.kind == RunKind::dry_run;
     std::ofstream history(folder / "history.csv", std::ios::binary | std::ios::trunc);
     if (!history) return std::unexpected(io("cannot write", folder / "history.csv"));
+    if (dry) history << "# kind: dry-run -- " << kDryRunNote << '\n';
     history << "time_s";
     for (const std::string& column : setup.columns) history << ',' << column;
     history << '\n';
 
-    if (Result<void> r = log_line(folder, "started: " + number(p.target_s) + " s to simulate"); !r) {
+    const std::string started = dry ? "started: dry-run (" + std::string(kDryRunNote) + "), " : "started: ";
+    if (Result<void> r = log_line(folder, started + number(p.target_s) + " s to simulate"); !r) {
         return std::unexpected(r.error());
     }
     if (Result<void> r = write_progress(folder, p); !r) return std::unexpected(r.error());
