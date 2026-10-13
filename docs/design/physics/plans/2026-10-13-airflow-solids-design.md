@@ -64,6 +64,12 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
   - **Free slip.** The free-slip lean mode is inviscid and has no viscous solve.
   - S2 (circular Couette) tests it.
 - **Inside a solid.** Backtraces that land in a solid read the owner's rigid velocity there. A wall face is a no-slip, moving wall, and the rigid field is exact inside it. The spec's free-slip lean mode extrapolates instead, two layers by fixed sweeps; it stays an option for coarse grids, named in the configuration.
+  - **How** (approved by the lead, 2026-10-13). Every closed sample (θ = 0) is written with the owner's rigid velocity at each boundary application, and the backtrace interpolates as usual. Deep in a solid that is exact, since trilinear interpolation reproduces the linear rigid field. Within a cell of the surface it blends with the fluid side, as the wall's own first-order placement does. No per-backtrace geometry query is needed.
+  - **The free-slip option.** It instead fills two layers of closed samples by fixed Jacobi passes, each from its open (then first-layer) neighbours. Deeper samples keep the rigid velocity. It is inviscid, so it is refused with ν > 0.
+- **The layering** (2026-10-13). `spade_vehicles` links `spade_physics`, so the airflow core cannot include `vehicles/`. It takes its solids as data:
+  - a sampler callback: a grid-frame point to distance, gradient, part and rigid velocity, for the nearest part (`sample_parts()`'s rule) and for one part alone;
+  - per part, its name, surface kind, declared `min_feature`, part-frame bounds extent and posed bounding box.
+  The callers adapt `vehicles::sample_parts()` and `part_bounds()` to it: the tests, the D1 demo and plan C's module. The airflow core holds no bounds code (TD-9).
 - **The minimum resolution (D5).** A wall part's `min_feature` must be at least 2 `dx`. Section 4 says what happens below that.
 
 ## 4. Thin walls: labelled sheets (the lead, 2026-10-12)
@@ -75,7 +81,22 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
 - **How it is labelled.** The run line and the records name each sheet part and its true thickness, for example "frame_top: sheet (2.0 mm < 2 dx = 12 mm)". Its pressure is integrated on both sides (§6).
 - **What is refused by name.** A part below 2 `dx` in more than one extent, such as a wire or a small fastener, is refused with the `dx` it needs. It is never porous and never dropped. Interface's panel shows the refusal and the grid that would resolve the part.
 - These thresholds are first values. Validation revises them: a flat plate normal to the flow, compared with the published drag against `Re`, is V2's case.
-- **A measured safeguard.** An imported mesh part's `min_feature` is declared, not measured (Core's mass-from-mesh plan). So at grid build each part's cell centres found inside it are compared with its volume / dx³. A part the grid does not resolve, whatever its declaration, becomes a sheet or is refused with that evidence, and never leaks silently.
+- **The classifier** (amended 2026-10-13, the lead's ruling). A part is thin when `min(declared min_feature, its smallest part-frame bounds extent) < 2 dx`, with the bounds from Core's `part_bounds()`. The extent is the cheap catch for an axis-aligned plate declared thick. One function, `classify_part()`, applies the rule. Interface's `resolve()` calls it instead of keeping its own two-cell rule (TD-9).
+- **The measured safeguard** (amended 2026-10-13; this replaces "interior cell centres against volume / dx³"). That comparison detects nothing: the count of cell centres inside any shape is an unbiased estimate of its volume / dx³, thin or not.
+  What actually leaks is a wall part that some grid line crosses without meeting a closed face. So at each grid build, per wall part, along each axis:
+  - **A run** is a stretch of cell centres along a grid line. It starts and ends at centres outside the part (φ > 0), with k ≥ 0 centres inside it (φ ≤ 0) between them.
+  - **The k = 0 screen.** A run with no centre inside can cross the part only where `φ₁ + φ₂ ≤ dx`, since φ is 1-Lipschitz. That holds exactly for meshes and primitives (the heightfield's φ is a conservative bound, also ≤ 1), and union, intersect, subtract and Core's smooth union keep it (`world/sdf.cpp`: the smooth union's gradient is a convex blend of its operands'). Candidates are sphere-traced (`t += φ`, a fixed cap of 32 steps, a hit at `φ ≤ 10⁻⁴ dx`) to confirm the crossing.
+  - **Entry and exit.** For every run, a sphere trace from each end finds the points where the line enters and leaves the part, and its outward normals there.
+  - **A thin crossing** is one whose normals oppose, `n_in · n_out ≤ −0.5`: a plate, a fin, a blob, or a wedge sharper than 60°. A resolved part's convex 90° edge gives 0 and is not a thin crossing. Without this test, every rotated box would be flagged.
+  - **A leaking run** is a thin crossing whose k + 1 faces are all open (θ > 0). Its evidence is its location and its open area: its smallest θ times dx².
+- **What a leaking part becomes** (L6: never silent):
+  - **At an edge: announced.** Every leaking run lies within 4 cells (Chebyshev) of a cell with a face the part closes (θ = 0), where the part is resolved. Their total open area is at most 2% of the part's frontal area (the largest face of its bounds). The run line names the part, its number of leaking runs and their total open area.
+    - Why 4 cells: a 30° wedge closes faces from about 2–4 dx from its tip, so its tip leaks lie within that reach.
+    - A long thin plate has no closed face, so it is never "at an edge".
+  - **Sheet-like: a sheet, announced.** Any other leaking part whose extents are plate-like (smallest < 2 dx ≤ middle) becomes a sheet with the smallest extent as its thickness. The run line names it, with its declared and measured thickness.
+  - **Otherwise refused by name,** with the first leaking run's location and "declare min_feature or refine dx".
+- **D5's 2 dx minimum is not sufficient for compact parts.** A sphere 2 dx across, centred on a cell corner, has eight centres inside it, and the faces between them have θ ≈ 0.21. It closes no face and is a porous blob. The safeguard catches it.
+- **Tests** (P2's Task 2): a hub with a thin fin (the hub closes faces, the fin's leak is found and the part refused); a 1.5 dx fin with centres inside it (found); a 2 dx sphere at its worst alignment (refused); a 4 dx box turned 45° (NOT flagged); a 30° wedge whose tip leaks (announced, with its area); a long plate 0.5 dx thick declared thick (sheeted, never "at an edge"); and the screen mutation `φ₁ + φ₂ < dx/2`, which must miss a crossing the test then catches.
 
 ## 5. Porous parts (Darcy–Forchheimer, confirmed 2026-10-12)
 
@@ -166,3 +187,5 @@ Test/Docs fixed the tests' tolerances before any run (`../../test-docs/2026-10-1
 3. **Separate fluid regions:** regions are labelled deterministically. Each closed region has its own mean removed, and a closed region with a net prescribed flux is refused by name (§3). The run line reports the count. Tests 5 and 9.
 4. **Checks that could not fail:** test 1 reads the added mass, and test 8 has jumps across the sheet (Test/Docs' S1 and S5). Every such check has a named mutation, run once and recorded (§8).
 5. **The viscous stencil at a wall:** a symmetric ghost-fluid Dirichlet condition, with the rigid velocity on φ = 0, the surface the apertures put at θ = ½ (§3). Test 2, now circular Couette flow (S2), exercises it.
+6. **The measured safeguard** (the lead's ruling, 2026-10-13, after Physics found the volume comparison unbiased and so blind): thin by `min(min_feature, smallest bounds extent) < 2 dx` through one `classify_part()`; leaking runs found by a Lipschitz screen, sphere-traced entry and exit, and opposing normals; edge leaks announced within 4 cells of the part's closed faces and 2% of its frontal area; sheet-like leakers become announced sheets; the rest are refused (§4).
+7. **Inside a solid and the layering** (approved by the lead, 2026-10-13): closed samples carry the rigid velocity, and the free-slip option fills two Jacobi layers; the airflow core takes its solids through a sampler callback and per-part data, never including `vehicles/` (§3). The floor-height refusal belongs to P2b (§7).

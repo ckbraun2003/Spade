@@ -32,7 +32,9 @@ The scene shows:
 
 Every number in this table is an **estimate, to be replaced by measurement**: plan B's spike for the GPU, and each model's first run for the CPU.
 
-Assumptions: the sandbox quad (`QuadrotorParams`: 1 kg, 0.15 m arms, rotor radius `R` = 0.12 m), hovering. That gives about 2.45 N per rotor, `v_h` ≈ 4.7 m/s, about 4,700 rpm, and a tip speed of about 59 m/s.
+Assumptions (**corrected 2026-10-13**, the lead): the **compiled reference quad**, `compile_airframe(reference_quad())` of `tests/test_airframe_compile.cpp`. It is 0.526 kg, plus layout, with hubs 0.11 m from the centre of mass and rotor radius `R` = 0.0762 m, hovering. Its hover fit gives 1.290 N and 0.0131 N m per rotor at 801 rad/s (7,650 rpm), `v_h` ≈ 5.4 m/s, and a tip speed of about 61 m/s. Adjacent hubs are 0.156 m apart against 2`R` = 0.152 m, so the props clear by 3 mm.
+- **What changed:** this line first assumed `QuadrotorParams`' defaults (1 kg, 0.15 m arms, `R` = 0.12 m). Those defaults overlap: in the plus layout, adjacent hubs are 0.212 m apart against 2`R` = 0.24 m. The backlog has a row for fixing them.
+- **The table below:** its grid and step figures were estimated for `R` = 0.12 m. With `R` = 0.0762 m, each "`R` ≈ n cells" needs a cell about 0.64 times as large.
 
 | Rotor model | It shows | It cannot show | Grid near the rotors | Time step | Run time per simulated second |
 |---|---|---|---|---|---|
