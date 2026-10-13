@@ -98,6 +98,17 @@ TEST(AnalysisValidation, OnlyTextFencesHoldRecords) {
     EXPECT_EQ(r->at(0).identity, "C1 cavity, Re 100, 32x32");
 }
 
+// Only a bare ``` closes a fence (CommonMark): a "```text" line inside
+// another fence is that fence's content, not a record.
+TEST(AnalysisValidation, OnlyABareFenceClosesOne) {
+    const std::string text = "```cpp\n```text\n=== validation record: C9 not a record ===\ncommit: zzz\n```\n" +
+                             block("C1 cavity, Re 100, 32x32", "aaa1111", within("max |u| = 0.0064"));
+    const spade::Result<std::vector<an::ValidationRecord>> r = an::validation_records(text, "c.md");
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    ASSERT_EQ(r->size(), 1u);
+    EXPECT_EQ(r->at(0).identity, "C1 cavity, Re 100, 32x32");
+}
+
 // ---- each measure -------------------------------------------------------------
 
 // Split at the LAST " = ": the quantity keeps its own "=" and its notes,
