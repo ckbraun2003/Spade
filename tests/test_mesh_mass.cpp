@@ -424,6 +424,47 @@ TEST(MeshMass, PropertiesArePerUnitDensityInMetres) {
     expect_tensor_near(inertia, moment * glm::dmat3(1.0), kRel * 3.0 * moment, "inertia");
 }
 
+// The mass-from-mesh plan: make_mesh() computes the properties once, by the
+// one function (TD-9), and the mesh keeps them, so a reader (the airframe
+// compile; P2's grid build) takes them from mass_properties() and never
+// recomputes them. The kept values are the function's, bit for bit; the
+// unit cube's are its exact closed form (AUnitCubeIsExact). The content hash
+// folds positions and indices only, so it does not move
+// (Mesh.TheContentHashIsSpeltByteByByte pins it).
+TEST(MeshMass, MakeMeshKeepsItsPropertiesOnce) {
+    const MeshPtr cube = build(box_mesh({1.0, 1.0, 1.0}, {0.5, 0.5, 0.5}), "cube");
+    ASSERT_NE(cube, nullptr);
+    const MeshMassProperties& kept = cube->mass_properties();
+    EXPECT_EQ(kept.volume, 1.0);
+    EXPECT_EQ(kept.centroid, glm::dvec3(0.5));
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            EXPECT_EQ(kept.inertia[i][j], i == j ? 1.0 / 6.0 : 0.0) << "[" << i << "][" << j << "]";
+        }
+    }
+
+    // A turned box and a hollow cube: rounding in every sum, and a cavity.
+    const MeshPtr turned = build(box_mesh({0.3, 0.1, 0.2}, {5.0, -2.0, 1.0},
+                                          glm::mat3_cast(glm::normalize(glm::dquat(0.9, 0.3, -0.2, 0.25)))),
+                                 "turned");
+    const MeshPtr hollow = build(joined(box_mesh({2.0, 2.0, 2.0}, {1.0, 1.0, 1.0}),
+                                        flipped(box_mesh({0.5, 0.5, 0.5}, {0.75, 0.75, 0.75}))),
+                                 "hollow");
+    for (const MeshPtr& m : {turned, hollow}) {
+        ASSERT_NE(m, nullptr);
+        const MeshMassProperties fresh = spade::mesh_mass_properties(*m);
+        const MeshMassProperties& stored = m->mass_properties();
+        EXPECT_TRUE(same_bits(stored.volume, fresh.volume)) << stored.volume << " vs " << fresh.volume;
+        for (int k = 0; k < 3; ++k) EXPECT_TRUE(same_bits(stored.centroid[k], fresh.centroid[k])) << k;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                EXPECT_TRUE(same_bits(stored.inertia[i][j], fresh.inertia[i][j])) << "[" << i << "][" << j << "]";
+            }
+        }
+        EXPECT_GT(stored.volume, 0.0);
+    }
+}
+
 TEST(MeshMass, OneInputGivesOneResultBitForBit) {
     // An irregular hexahedron, about 0.1 m across, every coordinate rounded
     // by fp32 and every face a bent quad: rounding at every step.

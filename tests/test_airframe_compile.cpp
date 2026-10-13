@@ -5,9 +5,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -22,6 +24,7 @@
 #include "vehicles/part_pose.hpp"
 #include "vehicles/propeller.hpp"
 #include "vehicles/propulsion_flags.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 // ===========================================================================
@@ -1158,4 +1161,209 @@ TEST(AirframeCompile, AMotorMovesAlongItsHubsThrustAxis) {
         }
         expect_motors_at(s, motors, true, pusher ? "turned hubs, pushers" : "turned hubs, tractors");
     }
+}
+
+// ===========================================================================
+// MASS FROM A MESH (the mass-from-mesh plan, 2026-10-13). A record whose
+// geometry source is a mesh takes its mass, centre of mass and inertia from
+// its mesh's properties times its density, and its part from the same mesh
+// (TD-9: one record). Its pose is the mesh's PLACEMENT, mesh local -> design;
+// a mesh's origin is not its centroid. Task M1: the record's fields and its
+// refusals, each by record index, name and field (L6), in the one call that
+// lists everything.
+// ===========================================================================
+
+namespace {
+
+using MeshPtr = std::shared_ptr<const spade::TriangleMesh>;
+
+// A box's twelve triangles, counter-clockwise seen from outside, its corners
+// numbered x + 2y + 4z (tests/test_mesh_mass.cpp's).
+constexpr uint32_t kBoxTriangles[12][3] = {
+    {0, 2, 1}, {1, 2, 3},  // z = lo, normal -z
+    {4, 5, 6}, {5, 7, 6},  // z = hi, normal +z
+    {0, 1, 4}, {1, 5, 4},  // y = lo, normal -y
+    {2, 6, 3}, {3, 6, 7},  // y = hi, normal +y
+    {0, 4, 2}, {2, 4, 6},  // x = lo, normal -x
+    {1, 3, 5}, {3, 7, 5},  // x = hi, normal +x
+};
+
+// The box [lo, lo + size], in metres: corner k is lo + (k & 1, k >> 1 & 1,
+// k >> 2 & 1) * size.
+[[nodiscard]] spade::MeshInput box_input(glm::dvec3 lo, glm::dvec3 size) {
+    spade::MeshInput m;
+    m.unit = spade::MeshUnit::metre;
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::dvec3 bit(static_cast<double>(v & 1u), static_cast<double>((v >> 1) & 1u),
+                             static_cast<double>((v >> 2) & 1u));
+        m.positions.push_back(lo + bit * size);
+    }
+    for (const auto& t : kBoxTriangles) m.indices.insert(m.indices.end(), {t[0], t[1], t[2]});
+    return m;
+}
+
+[[nodiscard]] MeshPtr mesh_of(const spade::MeshInput& in) {
+    auto m = spade::make_mesh(in, "fixture");
+    EXPECT_TRUE(m.has_value()) << (m.has_value() ? std::string() : m.error().context);
+    return m.has_value() ? *m : nullptr;
+}
+
+// The canopy: a 62.5 x 15.625 x 31.25 mm box with its ORIGIN AT A CORNER, so
+// its centroid is half its sides from its origin. Dyadic sides: fp32 holds
+// every corner, and its volume, 2^-15 m^3, is exact.
+const glm::dvec3 kCanopySides(0.0625, 0.015625, 0.03125);
+constexpr double kCanopyDensity = 1250.0;  // kg/m^3, a printed plastic
+
+[[nodiscard]] MeshPtr canopy_mesh() { return mesh_of(box_input(glm::dvec3(0.0), kCanopySides)); }
+
+// A mesh record as an importer writes it: no mass, shape, size or tensor of
+// its own (TD-9), its mesh placed at `position`, turned by `orientation`.
+[[nodiscard]] PartInertia mesh_record(MeshPtr mesh, double density, glm::dvec3 position,
+                                      glm::dquat orientation = glm::dquat(1.0, 0.0, 0.0, 0.0),
+                                      std::string name = "canopy") {
+    PartInertia p;
+    p.position = position;
+    p.orientation = orientation;
+    p.geometry = PartGeometrySpec{.source = GeometrySource::mesh,
+                                  .name = std::move(name),
+                                  .role = "body",
+                                  .mesh = std::move(mesh),
+                                  .density = density,
+                                  .min_feature = 0.004f};
+    return p;
+}
+
+// The reference quad with the canopy on top as record 5: its corner at
+// (-1/32, 1/64, -1/64), so it spans x and z about the frame's centre and sits
+// on the frame's top (y = 0.015).
+const glm::dvec3 kCanopyPlacement(-0.03125, 0.015625, -0.015625);
+
+[[nodiscard]] AirframeSpec quad_with_canopy() {
+    AirframeSpec s = reference_quad();
+    s.parts.push_back(mesh_record(canopy_mesh(), kCanopyDensity, kCanopyPlacement));
+    return s;
+}
+
+[[nodiscard]] bool mentions(const std::string& text, const std::string& what) {
+    return text.find(what) != std::string::npos;
+}
+
+}  // namespace
+
+// Each fault of a mesh record is ONE issue, at the record's index and the
+// field at fault, and its message names the record. A hand-entered mass,
+// shape, size or tensor beside a mesh source is a TD-9 conflict, refused by
+// name, never silently overridden. There is no default density.
+TEST(AirframeCompile, AMeshRecordsFaultIsOneIssueAtItsField) {
+    using D = std::numeric_limits<double>;
+    using F = std::numeric_limits<float>;
+    struct Case {
+        const char* what;
+        void (*fault)(PartInertia&);
+        const char* field;
+        bool td9;
+    };
+    const std::array<Case, 15> cases = {{
+        {"no mesh", [](PartInertia& p) { p.geometry.mesh = nullptr; }, "geometry.mesh", false},
+        {"no density: 0 is not given", [](PartInertia& p) { p.geometry.density = 0.0; }, "geometry.density",
+         false},
+        {"a negative density", [](PartInertia& p) { p.geometry.density = -kCanopyDensity; }, "geometry.density",
+         false},
+        {"a NaN density", [](PartInertia& p) { p.geometry.density = D::quiet_NaN(); }, "geometry.density", false},
+        {"an infinite density", [](PartInertia& p) { p.geometry.density = D::infinity(); }, "geometry.density",
+         false},
+        {"a density whose mass is not finite",
+         [](PartInertia& p) {
+             // A 2 m cube, 8 m^3: the largest double times 8 overflows.
+             p.geometry.mesh = mesh_of(box_input(glm::dvec3(0.0), glm::dvec3(2.0)));
+             p.geometry.density = D::max();
+         },
+         "geometry.density", false},
+        {"no min_feature", [](PartInertia& p) { p.geometry.min_feature = 0.0f; }, "geometry.min_feature", false},
+        {"a negative min_feature", [](PartInertia& p) { p.geometry.min_feature = -0.004f; },
+         "geometry.min_feature", false},
+        {"a NaN min_feature", [](PartInertia& p) { p.geometry.min_feature = F::quiet_NaN(); },
+         "geometry.min_feature", false},
+        {"an infinite min_feature", [](PartInertia& p) { p.geometry.min_feature = F::infinity(); },
+         "geometry.min_feature", false},
+        {"a hand-entered mass", [](PartInertia& p) { p.mass = 0.038; }, "mass", true},
+        {"a hand-entered NaN mass", [](PartInertia& p) { p.mass = D::quiet_NaN(); }, "mass", true},
+        {"a hand-entered shape", [](PartInertia& p) { p.shape = PartShape::box; }, "shape", true},
+        {"a hand-entered size", [](PartInertia& p) { p.size = kCanopySides; }, "size", true},
+        {"a hand-entered tensor", [](PartInertia& p) { p.tensor = glm::dmat3(1e-6); }, "tensor", true},
+    }};
+    for (const Case& c : cases) {
+        AirframeSpec s = quad_with_canopy();
+        c.fault(s.parts[5]);
+        const std::vector<AirframeIssue> issues = check_airframe(s);
+        ASSERT_EQ(issues.size(), 1u) << c.what << ": " << (issues.empty() ? "" : issues[0].field);
+        EXPECT_TRUE(has_issue(issues, "parts", 5, c.field)) << c.what << ": " << issues[0].field;
+        EXPECT_TRUE(mentions(issues[0].message, "'canopy'")) << c.what << ": " << issues[0].message;
+        if (c.td9) {
+            EXPECT_TRUE(mentions(issues[0].message, "TD-9")) << c.what << ": " << issues[0].message;
+        }
+        const auto compiled = compile_airframe(s);
+        ASSERT_FALSE(compiled.has_value()) << c.what;
+        EXPECT_TRUE(mentions(compiled.error().context, std::string("parts[5].") + c.field))
+            << c.what << ": " << compiled.error().context;
+    }
+}
+
+// Every fault at once, in the one call (Kat's question 2).
+TEST(AirframeCompile, EveryFaultOfAMeshRecordIsListedInOneCall) {
+    AirframeSpec s = quad_with_canopy();
+    PartInertia& canopy = s.parts[5];
+    canopy.geometry.mesh = nullptr;
+    canopy.geometry.density = 0.0;
+    canopy.geometry.min_feature = 0.0f;
+    canopy.mass = 0.038;
+    canopy.tensor = glm::dmat3(1e-6);
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 5u);
+    for (const char* field : {"geometry.mesh", "geometry.density", "geometry.min_feature", "mass", "tensor"}) {
+        EXPECT_TRUE(has_issue(issues, "parts", 5, field)) << field;
+    }
+}
+
+// A mesh record whose mass cannot be taken from its mesh stops the composite
+// and the fit: no fit runs on a mass that is not known. (A part's other
+// problems, a name, do not stop the fit: APartProblemIsListedAtItsRecord.)
+TEST(AirframeCompile, AMeshRecordWithoutItsMassStopsTheFit) {
+    AirframeSpec s = quad_with_canopy();
+    s.parts[5].geometry.density = 0.0;
+    s.battery.mass = 20.0;  // the chain cannot lift it, which only a fit would find
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_TRUE(has_issue(issues, "parts", 5, "geometry.density"));
+    EXPECT_FALSE(has_issue(issues, "airframe", 0, "propulsion")) << "no fit ran";
+}
+
+// TD-9 the other way round: a mesh, a density or a min_feature beside a
+// source that is not mesh would be read by nothing, so it is refused at its
+// field rather than silently dropped. The mass is the record's own, so the
+// fit still runs.
+TEST(AirframeCompile, MeshFieldsBesideAnotherSourceAreRefused) {
+    AirframeSpec s = reference_quad();
+    s.parts[0].geometry.mesh = canopy_mesh();  // the frame's box, an inertia shape
+    s.parts[1].geometry.density = kCanopyDensity;
+    s.parts[2].geometry.source = GeometrySource::none;
+    s.parts[2].geometry.min_feature = 0.004f;
+    s.battery.mass = 20.0;
+    const std::vector<AirframeIssue> issues = check_airframe(s);
+    EXPECT_EQ(issues.size(), 4u);
+    EXPECT_TRUE(has_issue(issues, "parts", 0, "geometry.mesh"));
+    EXPECT_TRUE(has_issue(issues, "parts", 1, "geometry.density"));
+    EXPECT_TRUE(has_issue(issues, "parts", 2, "geometry.min_feature"));
+    EXPECT_TRUE(has_issue(issues, "airframe", 0, "propulsion")) << "the fit still runs, and lists its own";
+}
+
+// A volume that is not positive, an inside-out mesh, never reaches the
+// compile: make_mesh() refuses it (world/mesh.hpp), and so B6's reader, which
+// reverses a mirrored node's winding, hands over none. The compile refuses
+// one at geometry.mesh all the same.
+TEST(AirframeCompile, AnInsideOutMeshIsRefusedBeforeTheCompile) {
+    spade::MeshInput in = box_input(glm::dvec3(0.0), kCanopySides);
+    for (std::size_t t = 0; t < in.indices.size(); t += 3) std::swap(in.indices[t + 1], in.indices[t + 2]);
+    const auto m = spade::make_mesh(in, "inside out");
+    ASSERT_FALSE(m.has_value());
+    EXPECT_TRUE(mentions(m.error().context, "inside out")) << m.error().context;
 }

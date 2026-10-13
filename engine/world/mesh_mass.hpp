@@ -58,11 +58,8 @@
 
 namespace spade {
 
-struct MeshMassProperties {
-    double volume = 0.0;       // m^3, > 0 for every mesh make_mesh() returns
-    glm::dvec3 centroid{0.0};  // m, the mesh frame
-    glm::dmat3 inertia{0.0};   // m^5: per unit density, about the centroid, mesh frame
-};
+// MeshMassProperties (volume, centroid, inertia) is defined in world/mesh.hpp,
+// beside the TriangleMesh that keeps one.
 
 // Eberly's polyhedral integrals, double, triangle order, about the bounds'
 // centre, then shifted to the centroid (above).
