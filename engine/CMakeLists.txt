@@ -701,6 +701,7 @@ add_library(spade_physics STATIC
     physics/airflow/fluid_step.cpp
     physics/airflow/publish.cpp
     physics/airflow/actuator.cpp
+    physics/airflow/rotor_discs.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
 set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)
@@ -877,6 +878,7 @@ install(DIRECTORY sensors/ DESTINATION include/sensors FILES_MATCHING PATTERN "*
 add_library(spade_vehicles STATIC
     vehicles/rotor.cpp
     vehicles/rotor_wake.cpp
+    vehicles/rotor_discs.cpp
     vehicles/model_type.cpp
     vehicles/model_part.cpp
     vehicles/model_identity.cpp
