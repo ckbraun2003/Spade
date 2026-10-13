@@ -17,7 +17,7 @@
 
 - **Frame.** BodySpawn's convention (`simulation.hpp:359-371`), and the layout's (`layout.hpp:112-134`, `layouts.slang:145-161`). The setter matches the getter. For a vehicle, the caller passes `ref.body` and reads `body()`, not `vehicle_state()`. Spawn converts VehicleSpawn's design origin through `design_to_principal` and `com_offset` (`simulation.hpp:335-347`, `simulation.cpp:2248-2249`). The setter does not.
 - **`set_vehicle_state` (the design frame) waits until someone needs it.** It would convert through spawn's `to_body_state` (`design_frame.cpp:13-26`), so the two cannot disagree (TD-9).
-- **The quaternion is stored as given.** Spawn normalizes (`simulation.cpp:1432`). The setter must not reuse that step, or `body()` would not return what was set. The tolerance is Kat's: refused unless `1 - 1e-6 <= |q| <= 1 + 1e-6`, with |q| = `std::sqrt(dot(q, q))` in fp32. `sqrt` is IEEE-exact and allowed (TD-3; `gnss.hpp:3-10`). Spelled so a NaN refuses. One substep runs on a q up to 2e-6 off unit length. Integrate renormalizes on the way out (`integrator.cpp:161-166`).
+- **The quaternion is stored as given.** Spawn normalizes (`simulation.cpp:1432`). The setter must not reuse that step, or `body()` would not return what was set. Refused unless `1 - 2e-6 <= |q| <= 1 + 2e-6`, with |q| = `std::sqrt(dot(q, q))` in fp32: deliberately LOOSER than Kat's binding double check at 1 ± 1e-6 (§7 Q2), so nothing Kat accepts is refused here. `sqrt` is IEEE-exact and allowed (TD-3; `gnss.hpp:3-10`). Spelled so a NaN refuses. One substep runs on a q up to 2e-6 off unit length. Integrate renormalizes on the way out (`integrator.cpp:161-166`).
 
 ## 2. Contract
 
@@ -37,9 +37,9 @@
 | Poisoned | `invalid_argument` | `poisoned_` verbatim, "step: state invalid since tick N: ...", as `snapshot()` returns it (`simulation.cpp:2449-2451`) |
 | Null, stale, foreign or despawn-queued ref | `not_found` | `validate_ref()`'s own messages (`simulation.cpp:1634-1669`) |
 | A non-finite `pos`, `vel` or `omega_body` | `invalid_argument` | "set_body_state: pos/vel/omega_body must all be finite" |
-| Orientation non-finite, or \|q\| outside 1 ± 1e-6 | `invalid_argument` | "set_body_state: orientation must be finite with \|q\| within 1 ± 1e-6 (got \|q\| = X)" |
+| Orientation non-finite, or \|q\| outside 1 ± 2e-6 | `invalid_argument` | "set_body_state: orientation must be finite with \|q\| within 1 ± 2e-6 (got \|q\| = X)" |
 | Body spawned but not yet flushed | `not_found` | "set_body_state: body is spawned but not yet flushed (call step() or flush_structural() first)". This is `apply_wrench()`'s rule: the queued init would overwrite the set (`simulation.cpp:2406-2412`) |
-| Buried: `eval(sdf, pos)` < -r, r the body's effective proxy radius | `invalid_argument` | Spawn's message, prefixed "set_body_state: " (`simulation.cpp:1696-1705, 2076-2077`). Open question 1 |
+| Buried: exactly spawn's predicate (one shared function) | `invalid_argument` | Spawn's message, prefixed "set_body_state: " (`simulation.cpp:1696-1705, 2076-2077`). Confirmed, §7 Q1 |
 
 **The poison check is new to mutators.** Today only `step()` and `snapshot()` refuse while poisoned (`simulation.cpp:1165-1167, 2449-2451`). `spawn`, `despawn`, `apply_wrench`, `set_rotor_commands` and `reseed` do not. This call is the first mutator to refuse, as the lead asked.
 
@@ -81,14 +81,14 @@ The call ends with `mark_vulkan_dirty()`, like `apply_wrench()` (`simulation.cpp
 8. **Bad arguments (Kat 6).** Every refusal in §2: NaN and Inf in each field; \|q\| just outside each bound, and 0; a null, stale, foreign or despawn-queued ref; a buried pose; poisoned (with `step()`'s text). After each, `state_digest` is unchanged.
 9. **Restore after a set (Kat 7: the return to spawn is Kat-side only).** Our half: snapshot, set, step, restore, and the state equals the snapshot's. Also: a snapshot taken after a set restores the set state.
 10. **CPU and GPU agree after a set**, within the parity bands (`engine/testing/parity.hpp`).
-12. **The |q| edge (the lead, once Runtime confirms 1 ± 2e-6).** A quaternion Kat accepts, built in double at |q| = 1 + 0.99e-6 and converted to fp32 as kat_host_spade does, is accepted here; one at 1 ± 2.5e-6 is refused.
+12. **The |q| edge (the lead; 1 ± 2e-6 confirmed by Runtime).** A quaternion Kat accepts, built in double at |q| = 1 + 0.99e-6 and converted to fp32 as kat_host_spade does, is accepted here; one at 1 ± 2.5e-6 is refused.
 11. **Census (the lead's Q4 guard).** Every per-body array of the standard set is listed and classified "kept" or "cleared". An unlisted per-body array fails the test by name.
 
 ## 7. Open questions
 
 | # | For | Question | Recommendation |
 |---|---|---|---|
-| 1 | Kat's Runtime | Refuse a pose that is buried in the world SDF, as spawn does? | Yes: the uncapped Baumgarte correction would eject it (`simulation.cpp:1696-1705`). **Kat's host agrees (Runtime to confirm):** kat_host_spade maps it to E_INVALID with nothing changed, as its spawn already does. |
-| 2 | Kat's Runtime | The \|q\| bound is computed in fp32 here. Does Runtime's check use the same expression, so the two never disagree at the edge? | **Kat's host proposes (2026-10-13; Runtime to confirm):** Kat's double check at 1 ± 1e-6 is the binding one, and Spade's fp32 bound sits OUTSIDE it with a margin, 1 ± 2e-6, so no quaternion Kat accepts is refused here. Core agrees: the double-to-fp32 conversion moves \|q\| by far less than 1e-6. Adopt it when Runtime confirms. |
+| 1 | Kat's Runtime | Refuse a pose that is buried in the world SDF, as spawn does? | Yes: the uncapped Baumgarte correction would eject it (`simulation.cpp:1696-1705`). **CONFIRMED by Kat's Runtime (2026-10-13), tied to spawn:** set refuses exactly the poses at which spawn refuses, so set can reach no state spawn forbids. So the setter calls the SAME predicate and threshold as spawn, ONE shared function extracted from `simulation.cpp:1696-1705` (TD-9), never a copy. kat_host_spade maps it to E_INVALID, with nothing changed. |
+| 2 | Kat's Runtime | The \|q\| bound is computed in fp32 here. Does Runtime's check use the same expression, so the two never disagree at the edge? | **CONFIRMED by Kat's Runtime (2026-10-13), and the lead agrees:** the binding C5 check is \|q\| = sqrt(w²+x²+y²+z²) in DOUBLE on the values as passed, accepting iff \| \|q\| − 1 \| ≤ 1e-6, inclusive, before any conversion. Spade's fp32 bound is LOOSER: **1 ± 2e-6**, so no quaternion Kat accepts is refused here. The double-to-fp32 conversion moves \|q\| by far less than 1e-6. |
 | 3 | Lead | Sensor reset (fresh bias walks), dropped for now (YAGNI)? | **Settled (the lead): dropped.** If ever needed, it zeroes bias and phase and keeps `last_index`, because TA5 forbids rewinding an index (`rings.hpp:15-17`) |
 | 4 | Lead | A module that keeps per-body history: a per-array clear hook now, or a review line until one exists? | **Settled (the lead): a review line, plus a CENSUS TEST.** It lists every per-body array of the standard set, each classified "kept by set_body_state" or "cleared", so a new per-body array fails it until someone classifies it, like the dirty-tracking census. A developer module's per-body history is documented as the developer's responsibility. |
