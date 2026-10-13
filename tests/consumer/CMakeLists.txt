@@ -103,6 +103,8 @@ target_link_libraries(spade_consumer_smoke PRIVATE
     spade::scene
     spade::vehicles
     spade::analysis
+    # The CAD mesh readers (CORE-6, Task B6); main.cpp reads a glTF through it.
+    spade::mesh_import
     glm::glm
 )
 

@@ -1,11 +1,11 @@
-// world/mesh_import/weld.cpp -- see weld.hpp.
+// world/mesh_import/weld.cpp -- see world/detail/weld.hpp.
 //
 // Vertices are sorted by (x, y, z, index) under a total order on each
 // coordinate's bits, -0 first made +0, so equal positions are adjacent and
 // each run's first entry is its lowest index. A run merges only entries that
 // compare equal by value, so a NaN stays alone. Survivors are then numbered
 // as the index stream first names them. No unordered container, no tolerance.
-#include "world/mesh_import/weld.hpp"
+#include "world/detail/weld.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include <numeric>
 #include <vector>
 
-namespace spade::mesh_import {
+namespace spade::detail {
 namespace {
 
 // A coordinate's bits, ordered as the values are: negative values flipped,
@@ -72,4 +72,4 @@ MeshInput weld_exact(std::span<const glm::dvec3> positions, std::span<const uint
     return out;
 }
 
-}  // namespace spade::mesh_import
+}  // namespace spade::detail

@@ -29,7 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/path_text.hpp"
-#include "world/mesh_import/weld.hpp"
+#include "world/detail/weld.hpp"
 
 namespace spade {
 namespace {
@@ -665,7 +665,7 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
         for (std::size_t t = 0; t + 2 < indices.size(); t += 3) std::swap(indices[t + 1], indices[t + 2]);
     }
 
-    const MeshInput input = mesh_import::weld_exact(positions, indices, MeshUnit::metre);
+    const MeshInput input = detail::weld_exact(positions, indices, MeshUnit::metre);
     auto built = make_mesh(input, file_ + ": " + prefix);
     if (!built) return std::unexpected(built.error());
     return MeshObject{std::move(name), std::move(*built)};

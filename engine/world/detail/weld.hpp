@@ -1,7 +1,8 @@
 #pragma once
 
-// world/mesh_import/weld.hpp -- the exact weld and the compaction every
-// reader shares (TD-9). Internal to spade::mesh_import and not installed.
+// world/detail/weld.hpp -- the exact weld and the compaction every reader
+// shares (TD-9). Internal to spade::mesh_import, whose sources are in
+// world/mesh_import/; world/detail/ is never installed.
 //
 // Two vertices merge when their positions are equal by value, component by
 // component (so -0 equals +0, and a NaN merges with nothing). No tolerance.
@@ -21,9 +22,9 @@
 
 #include "world/mesh.hpp"
 
-namespace spade::mesh_import {
+namespace spade::detail {
 
 [[nodiscard]] MeshInput weld_exact(std::span<const glm::dvec3> positions, std::span<const uint32_t> indices,
                                    MeshUnit unit);
 
-}  // namespace spade::mesh_import
+}  // namespace spade::detail

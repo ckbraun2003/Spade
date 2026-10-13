@@ -304,12 +304,11 @@ install(TARGETS spade_world
 )
 
 # world/detail/ is internal: yaml_text.hpp names yaml-cpp types, which no installed
-# header may expose (the yaml-cpp note above). world/mesh_import/ is internal
-# too: spade_mesh_import's shared weld (below). Its public header,
-# world/mesh_import.hpp, installs with the rest of world/.
+# header may expose (the yaml-cpp note above), and weld.hpp is spade_mesh_import's
+# own (below). world/mesh_import.hpp, that target's public header, installs with
+# the rest of world/; world/mesh_import/ holds its sources and no header.
 install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp"
-    PATTERN "detail" EXCLUDE
-    PATTERN "mesh_import" EXCLUDE)
+    PATTERN "detail" EXCLUDE)
 
 # ------------------------------------------------------------------------------
 # spade_mesh_import: the CAD mesh readers (CORE-6; the parts and meshes plan,
