@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -29,8 +30,10 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -38,7 +41,11 @@
 #include "core/error.hpp"
 #include "core/rng.hpp"
 #include "scene/scene_file.hpp"
+#include "unique_temp.hpp"
+#include "vehicles/model_part.hpp"
 #include "world/builder.hpp"
+#include "world/mesh.hpp"
+#include "world/mesh_file.hpp"
 #include "world/sdf.hpp"
 #include "world/world_file.hpp"
 
@@ -486,16 +493,17 @@ TEST(SceneFile, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
 }
 
 TEST(SceneFile, AnotherSceneVersionIsASchemaMismatch) {
-    // This build reads versions 1 and 2 (2 carries parts, CORE-7). Above and
-    // below that range is "upgrade", never "fix your file".
-    for (const std::string version : {"3", "0"}) {
+    // This build reads versions 1 to 3 (2 carries parts, CORE-7; 3 a mesh
+    // part, CORE-6). Above and below that range is "upgrade", never "fix your
+    // file".
+    for (const std::string version : {"4", "0"}) {
         SCOPED_TRACE(version);
         const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
             with(kMinimalScene, "scene_version: 1\n", "scene_version: " + version + "\n"));
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
         EXPECT_TRUE(contains(r.error().context, "scene file is schema version " + version)) << r.error().context;
-        EXPECT_TRUE(contains(r.error().context, "reads versions 1 and 2")) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 3")) << r.error().context;
     }
 }
 
@@ -1083,6 +1091,260 @@ TEST(SceneFile, PartsTextMatchesTheGolden) {
     EXPECT_EQ(parts[3].rotor, 1u);
     EXPECT_EQ(parts[3].shape.transforms.at(0).scale, 0.5f);
     EXPECT_EQ(parts[3].min_feature, 0.00390625f);
+}
+
+// ===========================================================================
+// CORE-6: a mesh part, and scene version 3 (the parts and meshes plan, Task
+// B5). A mesh part's shape names its .spmesh sidecar by a path relative to
+// the scene file and by the mesh's content hash, as the scene names its
+// world (SCN-001). Version 3 is written ONLY when a part holds a mesh, so
+// every older text -- gate_run, parts, every committed scene -- is unchanged
+// (AScenesTextRoundTripsByteForByte, PartsTextMatchesTheGolden and
+// EditorFiles.EveryCommittedSceneSavesBackByteForByte, unedited, pin that).
+// ===========================================================================
+
+using MeshPtr = std::shared_ptr<const spade::TriangleMesh>;
+
+// A tetrahedron with three legs of `leg` metres, counter-clockwise from outside.
+[[nodiscard]] MeshPtr tetra_mesh(double leg) {
+    spade::MeshInput m;
+    m.unit = spade::MeshUnit::metre;
+    m.positions = {{0.0, 0.0, 0.0}, {leg, 0.0, 0.0}, {0.0, leg, 0.0}, {0.0, 0.0, leg}};
+    m.indices = {0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3};
+    const auto r = spade::make_mesh(m, "tetra");
+    EXPECT_TRUE(r.has_value()) << r.error().context;
+    return r ? *r : nullptr;
+}
+
+// A wall part on the body whose geometry is `mesh`, named by `file`.
+[[nodiscard]] PartDesc mesh_part(MeshPtr mesh, std::string file) {
+    PartDesc p{};
+    p.name = "hull";
+    p.role = "body";
+    p.mount_pos = {0.0f, 0.05f, 0.0f};
+    p.mesh = std::move(mesh);
+    p.mesh_file = std::move(file);
+    p.min_feature = 0.004f;
+    return p;
+}
+
+// A path from UTF-8 text, on every platform (path(std::string) is the ANSI
+// code page on Windows).
+[[nodiscard]] std::filesystem::path utf8_path(std::string_view text) {
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
+}
+
+[[nodiscard]] std::string hex64(uint64_t v) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out = "0x";
+    for (int shift = 60; shift >= 0; shift -= 4) out += kHex[(v >> shift) & 0xfu];
+    return out;
+}
+
+void write_text(const std::filesystem::path& path, const std::string& text) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+// "meshes/t(e-acute)tra.spmesh" in UTF-8: a sidecar in a subdirectory, named
+// with a non-ASCII letter, so every message is checked for the path in UTF-8.
+const std::string kSidecar = "meshes/t\xc3\xa9tra.spmesh";
+
+// minimal_parts_scene() with its one part's shape a mesh, as a version-3 file.
+[[nodiscard]] std::string mesh_parts_scene(const std::string& file, uint64_t hash) {
+    return with(with(minimal_parts_scene(), "scene_version: 2\n", "scene_version: 3\n"), kPartShape,
+                "{mesh: {file: \"" + file + "\", hash: \"" + hex64(hash) + "\"}}");
+}
+
+TEST(SceneFile, ASceneWithAMeshPartIsVersion3) {
+    const MeshPtr tetra = tetra_mesh(0.25);
+    ASSERT_NE(tetra, nullptr);
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    s.models[0].parts = {arm_part(), mesh_part(tetra, "meshes/tetra.spmesh")};
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 3\n")) << *text;
+    EXPECT_TRUE(contains(*text, "# Spade scene file -- schema version 3.\n")) << *text;
+    EXPECT_TRUE(contains(*text, "      - name: \"hull\"\n")) << *text;
+    EXPECT_TRUE(contains(*text, "        shape:\n          mesh: {file: \"meshes/tetra.spmesh\", hash: \"" +
+                                    hex64(tetra->content_hash()) + "\"}\n"))
+        << *text;
+    EXPECT_TRUE(contains(*text, "        shape:\n          sdf:\n")) << "the SDF part beside it, as before: " << *text;
+
+    // The version is a function of the content: without the mesh part, 2.
+    SceneDesc sdf_only = s;
+    sdf_only.models[0].parts.pop_back();
+    const spade::Result<std::string> v2 = spade::scene::scene_to_yaml(sdf_only);
+    ASSERT_OK(v2);
+    EXPECT_TRUE(contains(*v2, "\nscene_version: 2\n")) << *v2;
+
+    // `mesh` is a version-3 key: the same text labelled version 2 is refused
+    // as an unknown key, blamed on version 2, at its line.
+    const spade::Result<SceneDesc> relabelled = spade::scene::scene_from_yaml(
+        with(*text, "\nscene_version: 3\n", "\nscene_version: 2\n"), std::filesystem::path("."));
+    ASSERT_FALSE(relabelled);
+    EXPECT_TRUE(contains(why(relabelled), "unknown key 'mesh' in scene.models[0].parts[1].shape -- scene schema v2 "
+                                          "does not define it (line "))
+        << why(relabelled);
+
+    // A reader of versions 1 and 2 refuses a version-3 file as schema_mismatch,
+    // "upgrade", as this build refuses version 4.
+    const spade::Result<SceneDesc> newer = spade::scene::scene_from_yaml(
+        with(*text, "\nscene_version: 3\n", "\nscene_version: 4\n"), std::filesystem::path("."));
+    ASSERT_FALSE(newer);
+    EXPECT_EQ(newer.error().code, spade::Code::schema_mismatch);
+    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 3")) << why(newer);
+}
+
+TEST(SceneFile, AMeshPartLoadsFromItsSidecar) {
+    const spade::test::TempDir dir("scene-mesh-sidecar");
+    const MeshPtr tetra = tetra_mesh(0.25);
+    ASSERT_NE(tetra, nullptr);
+    std::filesystem::create_directories(dir.path() / "meshes");
+    ASSERT_OK(spade::save_mesh_file(dir.path() / utf8_path(kSidecar), *tetra));
+
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    s.models[0].parts = {mesh_part(tetra, kSidecar), arm_part()};
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(text);
+    const std::filesystem::path scene_path = dir.path() / "drone.scene.yaml";
+    write_text(scene_path, *text);
+
+    const spade::Result<SceneDesc> loaded = spade::scene::load_scene_file(scene_path);
+    ASSERT_OK(loaded);
+    ASSERT_EQ(loaded->models[0].parts.size(), 2u);
+    const PartDesc& hull = loaded->models[0].parts[0];
+    EXPECT_EQ(hull.mesh_file, kSidecar);
+    ASSERT_NE(hull.mesh, nullptr);
+    EXPECT_TRUE(hull.shape.nodes.empty());
+    EXPECT_TRUE(hull.shape.transforms.empty());
+    EXPECT_EQ(hull.mesh->content_hash(), tetra->content_hash());
+    ASSERT_EQ(hull.mesh->positions().size(), tetra->positions().size());
+    EXPECT_EQ(std::memcmp(hull.mesh->positions().data(), tetra->positions().data(),
+                          tetra->positions().size() * sizeof(glm::vec3)),
+              0)
+        << "every position bit for bit";
+    EXPECT_TRUE(std::equal(hull.mesh->indices().begin(), hull.mesh->indices().end(), tetra->indices().begin(),
+                           tetra->indices().end()));
+    EXPECT_TRUE(loaded->models[0].parts[1].mesh_file.empty()) << "an SDF part names no sidecar";
+
+    // It samples as the mesh it was saved from.
+    const glm::vec3 probe{0.05f, 0.04f, 0.03f};
+    EXPECT_EQ(spade::vehicles::part_sample(hull, probe).distance, spade::mesh_eval(*tetra, probe));
+
+    // Write what was read: the same bytes (SCN-002).
+    const spade::Result<std::string> again = spade::scene::scene_to_yaml(*loaded);
+    ASSERT_OK(again);
+    EXPECT_TRUE(*again == *text) << first_difference(*text, *again);
+
+    // The text and its base directory read the same scene.
+    const spade::Result<SceneDesc> via_text = spade::scene::scene_from_yaml(*text, dir.path());
+    ASSERT_OK(via_text);
+    const spade::Result<std::string> third = spade::scene::scene_to_yaml(*via_text);
+    ASSERT_OK(third);
+    EXPECT_TRUE(*third == *text) << first_difference(*text, *third);
+}
+
+TEST(SceneFile, AMeshPartNeedsABaseDirectoryAFileAndItsHash) {
+    const spade::test::TempDir dir("scene-mesh-refusals");
+    const MeshPtr tetra = tetra_mesh(0.25);
+    ASSERT_NE(tetra, nullptr);
+    std::filesystem::create_directories(dir.path() / "meshes");
+    const std::filesystem::path sidecar = dir.path() / utf8_path(kSidecar);
+    ASSERT_OK(spade::save_mesh_file(sidecar, *tetra));
+    const std::string text = mesh_parts_scene(kSidecar, tetra->content_hash());
+
+    // With its base directory, the hand-written text reads.
+    const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(text, dir.path());
+    ASSERT_OK(read);
+    ASSERT_NE(read->models[0].parts.at(0).mesh, nullptr);
+
+    // Text alone cannot resolve a sidecar.
+    const spade::Result<SceneDesc> text_only = spade::scene::scene_from_yaml(text);
+    ASSERT_FALSE(text_only);
+    EXPECT_EQ(text_only.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(why(text_only), "scene.models[0].parts[0].shape.mesh")) << why(text_only);
+    EXPECT_TRUE(contains(why(text_only), "read a scene with mesh parts with load_scene_file, or give a base directory"))
+        << why(text_only);
+
+    // The writer names the sidecar and never writes it, so it needs its name.
+    SceneDesc unnamed = *read;
+    unnamed.models[0].parts[0].mesh_file.clear();
+    ASSERT_OK(spade::scene::validate_scene(unnamed)) << "in memory, a mesh part needs no file";
+    const spade::Result<std::string> written = spade::scene::scene_to_yaml(unnamed);
+    ASSERT_FALSE(written);
+    EXPECT_EQ(written.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(why(written), "model 'q' part 'arm': a mesh part needs mesh_file")) << why(written);
+
+    // mesh_file is relative, with forward slashes, and names a mesh the part holds.
+    const std::pair<std::string, std::string> paths[] = {
+        {"meshes\\tetra.spmesh", "must use forward slashes"},
+        {"/meshes/tetra.spmesh", "must be relative to the scene file"},
+        {"C:/meshes/tetra.spmesh", "must be relative to the scene file"},
+    };
+    for (const auto& [bad, needle] : paths) {
+        SCOPED_TRACE(bad);
+        SceneDesc s = *read;
+        s.models[0].parts[0].mesh_file = bad;
+        const spade::Result<void> r = spade::scene::validate_scene(s);
+        EXPECT_TRUE(contains(why(r), "model 'q' part 'arm': mesh_file '" + bad + "' " + needle)) << why(r);
+    }
+    SceneDesc stray = *read;
+    stray.models[0].parts[0].mesh = nullptr;
+    stray.models[0].parts[0].shape = solid(SdfPrim::sphere, {0.1f, 0.0f, 0.0f, 0.0f});
+    const spade::Result<void> no_mesh = spade::scene::validate_scene(stray);
+    EXPECT_TRUE(contains(why(no_mesh), "model 'q' part 'arm': mesh_file '" + kSidecar +
+                                           "' names a sidecar, but the part holds no mesh"))
+        << why(no_mesh);
+
+    // The shape is exactly one of sdf and mesh; mesh is exactly file and hash.
+    const std::string mesh_shape =
+        "{mesh: {file: \"" + kSidecar + "\", hash: \"" + hex64(tetra->content_hash()) + "\"}}";
+    const auto refused = [&](const std::string& from, const std::string& to, const std::string& needle) {
+        const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(with(text, from, to), dir.path());
+        EXPECT_FALSE(r) << "accepted: " << to;
+        EXPECT_TRUE(contains(why(r), needle)) << why(r);
+        EXPECT_TRUE(contains(why(r), "(line ")) << why(r);
+    };
+    refused("{mesh: {", "{sdf: {transforms: [], nodes: []}, mesh: {",
+            "scene.models[0].parts[0].shape: exactly one of sdf and mesh");
+    refused(mesh_shape, "{}", "scene.models[0].parts[0].shape: exactly one of sdf and mesh");
+    refused("{mesh: {file:", "{mesh: {bogus: 1, file:",
+            "unknown key 'bogus' in scene.models[0].parts[0].shape.mesh -- scene schema v3 does not define it");
+    refused(", hash: \"" + hex64(tetra->content_hash()) + "\"", "",
+            "missing required key 'hash' in scene.models[0].parts[0].shape.mesh");
+    refused(hex64(tetra->content_hash()), "0x12",
+            "scene.models[0].parts[0].shape.mesh.hash: '0x12' must be \"0x\" followed by 16 hex digits");
+
+    // A changed sidecar is refused with both hashes and its path, in UTF-8
+    // (SCN-001's form), through the text and through the scene file.
+    const MeshPtr other = tetra_mesh(0.5);
+    ASSERT_NE(other, nullptr);
+    ASSERT_OK(spade::save_mesh_file(sidecar, *other));
+    const spade::Result<SceneDesc> changed = spade::scene::scene_from_yaml(text, dir.path());
+    ASSERT_FALSE(changed);
+    EXPECT_EQ(changed.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(why(changed), "scene.models[0].parts[0].shape.mesh")) << why(changed);
+    EXPECT_TRUE(contains(why(changed), hex64(tetra->content_hash()))) << why(changed);
+    EXPECT_TRUE(contains(why(changed), hex64(other->content_hash()))) << why(changed);
+    EXPECT_TRUE(contains(why(changed), "t\xc3\xa9tra.spmesh")) << why(changed);
+    const std::filesystem::path scene_path = dir.path() / "drone.scene.yaml";
+    write_text(scene_path, text);
+    const spade::Result<SceneDesc> through_file = spade::scene::load_scene_file(scene_path);
+    ASSERT_FALSE(through_file);
+    EXPECT_TRUE(contains(why(through_file), "drone.scene.yaml: ")) << why(through_file);
+    EXPECT_TRUE(contains(why(through_file), hex64(other->content_hash()))) << why(through_file);
+
+    // A missing sidecar is io_error, naming it.
+    std::filesystem::remove(sidecar);
+    const spade::Result<SceneDesc> missing = spade::scene::scene_from_yaml(text, dir.path());
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().code, spade::Code::io_error);
+    EXPECT_TRUE(contains(why(missing), "t\xc3\xa9tra.spmesh")) << why(missing);
 }
 
 // ===========================================================================
