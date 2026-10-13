@@ -957,6 +957,35 @@ install(TARGETS spade_scene
 )
 install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
 
+# spade::render_parts -- a model's parts as render-scene items (RND-9; docs/
+# design/rendering/plans/2026-10-13-render-parts-plan.md). Owned by
+# Rendering. It sits above spade::render and spade::vehicles, and neither
+# includes it, so dependencies still point strictly downward; flow_movie (D1),
+# the sandbox (D2) and Kat's host draw a drone through it.
+add_library(spade_render_parts STATIC
+    render_parts/render_parts.cpp
+)
+add_library(spade::render_parts ALIAS spade_render_parts)
+set_target_properties(spade_render_parts PROPERTIES EXPORT_NAME render_parts)
+target_include_directories(spade_render_parts PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(spade_render_parts
+    PUBLIC spade::render spade::vehicles
+    PRIVATE
+        $<BUILD_LOCAL_INTERFACE:spade_warnings>
+        $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+target_compile_features(spade_render_parts PUBLIC cxx_std_23)
+
+install(TARGETS spade_render_parts
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
+install(DIRECTORY render_parts/ DESTINATION include/render_parts FILES_MATCHING PATTERN "*.hpp")
+
 # spade::analysis -- the drone CFD analysis: its case (.case.yaml), resolving
 # a case against the model it pins, and later its runs and results (INT-5,
 # INT-6; docs/design/interface/plans/2026-10-12-drone-builder-cfd-design.md).
