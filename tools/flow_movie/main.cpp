@@ -40,7 +40,6 @@
 
 #include "cache.hpp"
 #include "cases.hpp"
-#include "lambda2_fill.hpp"
 #include "recorder.hpp"
 #include "views.hpp"
 
@@ -127,7 +126,6 @@ struct Film {
     std::string stem;
     AirflowCase airflow;
     uint32_t frames = 300;
-    bool lambda2 = false;       // fill lambda2 from the published velocity while Publish leaves it 0
     std::string time_unit;      // " s", or "" for a case in its own units
     int time_decimals = 3;
     std::function<std::vector<double>(const airflow::MacGrid&)> live;  // the case's measures per frame
@@ -218,9 +216,6 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
             return std::unexpected(published.error());
         }
         const spade::FlowVolumeHeader& h = volume.header;
-        const bool publish_has_lambda2 =
-            h.channel_min[spade::kFlowLambda2Hat] != 0.0f || h.channel_max[spade::kFlowLambda2Hat] != 0.0f;
-        if (film.lambda2 && !publish_has_lambda2) fill_lambda2(volume);
         FrameLog log{step, static_cast<double>(step) * c.fluid.h, film.live ? film.live(g) : std::vector<double>{}};
         if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -457,7 +452,6 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     film.stem = "quad-wake";
     film.airflow = std::move(*c);
     film.frames = frames;
-    film.lambda2 = true;
     film.time_unit = " s";
     film.captions = [](const FrameLog&) {
         return CaptionText{{"actuator discs: uniform thrust, constant-circulation swirl; no drone body yet "
@@ -473,7 +467,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
         return orbit(target, 1.4f, sweep_azimuth(25.0f, 90.0f, k, n), 18.0f);
     };
     film.views.push_back(View{
-        "lambda2", "lambda2 vortex surfaces (lambda2 from the published velocity), coloured by speed |u|, 0 to 12 m/s",
+        "lambda2", "lambda2 vortex surfaces, coloured by speed |u|, 0 to 12 m/s",
         [q, speed_colours, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                      render::Camera& camera) -> spade::Result<void> {
             render::IsoSurface iso;
