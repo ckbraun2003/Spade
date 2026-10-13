@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -176,6 +177,19 @@ TEST(AirframeCompile, CompilesAReferenceQuad) {
     EXPECT_EQ(c->fit.rotor_inertia_source, Provenance::estimated) << "the propeller's inertia came from its mass";
     EXPECT_EQ(c->fit.drag, Provenance::estimated);
     EXPECT_TRUE(check_airframe(reference_quad()).empty());
+}
+
+// RotorSpec::pusher (the lead's ruling, 2026-10-12): a rotor is a tractor
+// unless it says otherwise, and an airframe of pushers is a valid airframe.
+TEST(AirframeCompile, ARotorIsATractorUnlessItIsAPusher) {
+    EXPECT_FALSE(RotorSpec{}.pusher) << "the usual top-mounted multirotor prop";
+    AirframeSpec s = reference_quad();
+    for (const RotorSpec& r : s.rotors) EXPECT_FALSE(r.pusher);
+    for (RotorSpec& r : s.rotors) r.pusher = true;
+    EXPECT_TRUE(check_airframe(s).empty());
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->model.rotors.size(), 4u);
 }
 
 TEST(AirframeCompile, ASymmetricQuadKeepsItsAxesAndMovesMountsByTheCentreOfMass) {
@@ -404,6 +418,28 @@ TEST(AirframeCompile, ABadHubIsReportedOnce) {
     EXPECT_TRUE(has_issue(issues, "rotors", 2, "hub"));
 }
 
+// A zero or non-finite hub orientation is the hub's one issue, whichever side
+// its motor is on. The motor, moved off its hub along the hub's +Y (THE
+// MOTOR'S PLACE, below), stays on a hub with no usable orientation, so it
+// lists nothing of its own and makes no NaN position (Physics' guard,
+// 2026-10-12). It passed before the motor moved too, when the motor sat on
+// its hub; it pins the guard against a regression.
+TEST(AirframeCompile, ABadHubOrientationIsReportedOnceWithItsMotor) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::array<glm::dquat, 2> orientations = {glm::dquat(0.0, 0.0, 0.0, 0.0), glm::dquat(nan, 0.0, 0.0, 1.0)};
+    for (const glm::dquat& q : orientations) {
+        for (const bool pusher : {false, true}) {
+            AirframeSpec s = reference_quad();
+            s.rotors[2].hub.orientation = q;
+            s.rotors[2].pusher = pusher;
+            const std::vector<AirframeIssue> issues = check_airframe(s);
+            ASSERT_EQ(issues.size(), 1u) << (pusher ? "a pusher" : "a tractor");
+            EXPECT_TRUE(has_issue(issues, "rotors", 2, "hub"));
+            for (const AirframeIssue& i : issues) EXPECT_NE(i.kind, "motor") << i.field << ": " << i.message;
+        }
+    }
+}
+
 // A block's shape is the block's: one issue, index 0, field "shape", however
 // many hubs carry it, and checked even when the block has no mass.
 TEST(AirframeCompile, ABadBlockShapeIsOneIssueOnTheBlock) {
@@ -586,15 +622,25 @@ TEST(AirframeCompile, AnAirframeThatReachesTheEscTotalWithBrakingCompiles) {
 }
 
 // DETERMINISM (Kat's question 1). The reference quad's compiled model has one
-// identity, here and on every platform. FINAL under TD-12's discipline: the
-// Docker gcc leg reproduced the MSVC value at 3e4b589.
+// identity, here and on every platform. FINAL under TD-12's discipline: a
+// fresh (unseeded) Docker gcc leg reproduced the regenerated value below at
+// 397248a.
 TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
     const auto a = compile_airframe(reference_quad());
     const auto b = compile_airframe(reference_quad());
     ASSERT_TRUE(a.has_value() && b.has_value());
     EXPECT_EQ(model_identity(a->model), model_identity(b->model)) << "the same spec, compiled twice";
-    // msvc-ninja-release at 1b61a41; gcc-13 leg at 3e4b589 (2026-10-04).
-    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;
+    // REGENERATED 2026-10-13 (TD-1). Cause: the motor record offset half its
+    // extent off the rotor plane, 2026-10-12, the lead's ruling
+    // (RotorSpec::pusher). The reference quad's motors are tractors, so each
+    // motor's mass and solid moved 0.009 m below its hub; the centre of mass,
+    // the inertia and every body-frame mount moved with them. Its drag is the
+    // estimate: one element at the centre of mass, so it follows the moved
+    // centre; its coefficients (projected areas) do not change. Was
+    // 0x9be262bdf825ba41 (msvc-ninja-release at 1b61a41; gcc-13 leg at
+    // 3e4b589, 2026-10-04). Now msvc-ninja-release at 68720be; gcc-13 fresh
+    // leg at 397248a (2026-10-13).
+    constexpr uint64_t kPinned = 0x78fdc769a0503ff6ull;
     EXPECT_EQ(model_identity(a->model), kPinned) << std::hex << model_identity(a->model);
 }
 
@@ -609,7 +655,7 @@ TEST(AirframeCompile, TheReferenceQuadHasAPinnedIdentity) {
 // ===========================================================================
 
 TEST(AirframeCompile, ShapedPartsBecomeWallPartsInTheBodyFrame) {
-    // The reference quad: a box frame, four tube arms, a cylinder motor at
+    // The reference quad: a box frame, four tube arms, a cylinder motor under
     // each hub, a box battery, and an ESC with no shape.
     const AirframeSpec s = reference_quad();
     const auto c = compile_airframe(s);
@@ -660,9 +706,10 @@ TEST(AirframeCompile, ShapedPartsBecomeWallPartsInTheBodyFrame) {
     };
     for (std::size_t k = 0; k < 5; ++k) expect_at(m.parts[k], s.parts[k].position);
     for (std::size_t k = 0; k < 4; ++k) {
-        expect_at(m.parts[5 + k], s.rotors[k].hub.position);
-        // A motor sits at its rotor's hub, posed as the rotor is.
-        EXPECT_TRUE(m.parts[5 + k].mount_pos == m.rotors[k].local_pos) << "motor " << k;
+        // A motor sits under its propeller, half its length (0.009) below its
+        // rotor's hub (a tractor, RotorSpec::pusher false), posed as the rotor
+        // is. THE MOTOR'S PLACE, below, works the rule through.
+        expect_at(m.parts[5 + k], s.rotors[k].hub.position - glm::dvec3(0.0, 0.5 * s.motor.shape->size.y, 0.0));
         EXPECT_TRUE(m.parts[5 + k].mount_orient == m.rotors[k].local_orient) << "motor " << k;
     }
     expect_at(m.parts[9], s.battery.mount.position);
@@ -859,8 +906,8 @@ TEST(AirframeCompile, ThePosedReferenceQuadIsSolidWhereItsPartsAre) {
     const std::array<Probe, 5> probes = {{
         {.design = glm::vec3(0.0f), .distance = -0.015f, .owner = 0u,
          .where = "the frame's centre: 0.015 m inside its top and bottom"},
-        {.design = glm::vec3(0.11f, 0.02f, 0.0f), .distance = -0.009f, .owner = 5u,
-         .where = "motor 0's centre: 0.009 m inside its caps"},
+        {.design = glm::vec3(0.11f, 0.011f, 0.0f), .distance = -0.009f, .owner = 5u,
+         .where = "motor 0's centre, 0.009 m under its hub: 0.009 m inside its caps"},
         {.design = glm::vec3(0.0f, -0.03f, 0.0f), .distance = -0.0175f, .owner = 9u,
          .where = "the battery's centre: 0.0175 m inside four faces"},
         {.design = glm::vec3(0.0f, 0.2f, 0.0f), .distance = 0.185f, .owner = 0u,
@@ -887,16 +934,20 @@ TEST(AirframeCompile, PartsMoveOnlyThePartsIdentity) {
     ASSERT_TRUE(c.has_value()) << c.error().context;
     const ModelType& m = c->model;
     ASSERT_EQ(m.parts.size(), 10u) << "the compile emits parts (A4)";
-    constexpr uint64_t kPinned = 0x9be262bdf825ba41ull;  // the pin above
+    constexpr uint64_t kPinned = 0x78fdc769a0503ff6ull;  // the pin above
     EXPECT_EQ(model_identity(m), kPinned) << std::hex << model_identity(m);
 
-    // The compiled quad's parts_identity: PINNED (msvc-ninja-release on
-    // core/parts-identity, 2026-10-12; the gcc leg reproduces it). It is
-    // the compile's own output read back, a regression pin; the independent
-    // check is PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
-    // The coming motor-offset task moves the motors' mounts, so it moves this
-    // value: a named regeneration, never a silent one.
-    constexpr uint64_t kPartsPinned = 0x2578117f1aa83070ull;
+    // The compiled quad's parts_identity: PINNED. It is the compile's own
+    // output read back, a regression pin; the independent check is
+    // PartsIdentity.AFixedModelHasAPinnedValue (test_model_parts.cpp).
+    // REGENERATED 2026-10-13 (TD-1). Cause: the motor record offset half its
+    // extent off the rotor plane, 2026-10-12, the lead's ruling
+    // (RotorSpec::pusher): the motors' mounts moved, and so did the centre of
+    // mass every mount is measured from. Was 0x2578117f1aa83070
+    // (msvc-ninja-release on core/parts-identity, 2026-10-12; the gcc leg
+    // reproduced it). Now msvc-ninja-release at 68720be; gcc-13 fresh leg at
+    // 397248a (2026-10-13), final under TD-12.
+    constexpr uint64_t kPartsPinned = 0x1f0c49d9fd04ed42ull;
     EXPECT_EQ(parts_identity(m), kPartsPinned) << std::hex << parts_identity(m);
     EXPECT_EQ(parts_identity(m), parts_identity(compile_airframe(reference_quad())->model)) << "compiled twice";
 
@@ -930,5 +981,181 @@ TEST(AirframeCompile, PartsMoveOnlyThePartsIdentity) {
         EXPECT_EQ(model_identity(*changed), kPinned) << "parts never enter model_identity";
         EXPECT_NE(parts_identity(*changed), kPartsPinned);
         EXPECT_NE(parts_identity(*changed), kNoPartsIdentity);
+    }
+}
+
+// ===========================================================================
+// THE MOTOR'S PLACE (the lead's ruling, 2026-10-12; RotorSpec::pusher). A
+// motor's one record, its mass and its solid together (TD-9), sits beside its
+// propeller rather than across the rotor plane: half its extent along the
+// thrust axis (the hub's +Y) behind the hub for a tractor, ahead of it for a
+// pusher. Half its extent is a cylinder's or a tube's length / 2, a box's y
+// extent / 2, a sphere's radius; a point or a tensor stays on the hub. The
+// propeller, the rotor and the fit stay as they were. Expectations are worked
+// by hand from the spec's numbers (TD-4): the composite's centre of mass is
+// sum(m p) / sum(m) over every record, and a motor's solid is read back in
+// the design frame, p_d = R_bd^T r_b + c.
+// ===========================================================================
+
+namespace {
+
+// The design-frame centre of mass of every record the compile gathers: the
+// spec's parts, a motor at motors[k] and a propeller on the hub of each rotor,
+// the ESC and the battery.
+[[nodiscard]] glm::dvec3 centre_of_mass(const AirframeSpec& s, const std::vector<glm::dvec3>& motors) {
+    double mass = 0.0;
+    glm::dvec3 moment(0.0);
+    const auto add = [&](double m, const glm::dvec3& p) {
+        mass += m;
+        moment += m * p;
+    };
+    for (const PartInertia& p : s.parts) add(p.mass, p.position);
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        add(s.motor.mass, motors[k]);
+        add(s.prop.mass, s.rotors[k].hub.position);
+    }
+    add(s.esc.mass, s.esc.mount.position);
+    add(s.battery.mass, s.battery.mount.position);
+    return moment / mass;
+}
+
+// A body-frame point of a compiled model, back in its design frame.
+[[nodiscard]] glm::dvec3 to_design(const ModelType& m, const glm::vec3& body) {
+    const glm::quat q = m.design_to_principal;
+    const glm::dmat3 r_bd = glm::mat3_cast(glm::dquat(q.w, q.x, q.y, q.z));
+    return glm::transpose(r_bd) * glm::dvec3(body) + glm::dvec3(m.com_offset);
+}
+
+void expect_near(const glm::dvec3& got, const glm::dvec3& want, double tolerance, const std::string& what) {
+    EXPECT_NEAR(got.x, want.x, tolerance) << what;
+    EXPECT_NEAR(got.y, want.y, tolerance) << what;
+    EXPECT_NEAR(got.z, want.z, tolerance) << what;
+}
+
+// Compiles `s`, whose motors the caller expects at `motors` (design frame),
+// and checks the motors' mass through the composite's centre of mass, their
+// solids (one per rotor when `solid`, else none), and that every rotor, the
+// propeller's plane, still sits on its hub.
+void expect_motors_at(const AirframeSpec& s, const std::vector<glm::dvec3>& motors, bool solid,
+                      const std::string& what) {
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << what << ": " << c.error().context;
+    const ModelType& m = c->model;
+    // The mass. The compile rounds the centre of mass to float once.
+    expect_near(glm::dvec3(m.com_offset), centre_of_mass(s, motors), 1e-7, what + ": the centre of mass");
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        const std::string rotor = what + ", rotor " + std::to_string(k);
+        expect_near(to_design(m, m.rotors[k].local_pos), s.rotors[k].hub.position, 1e-6, rotor + ": its hub");
+        // The solid: where the mass is, posed as the rotor is.
+        const std::string name = "motor[" + std::to_string(k) + "]";
+        int found = 0;
+        for (const PartDesc& p : m.parts) {
+            if (p.name != name) continue;
+            ++found;
+            expect_near(to_design(m, p.mount_pos), motors[k], 1e-6, rotor + ": the motor's solid");
+            EXPECT_TRUE(p.mount_orient == m.rotors[k].local_orient) << rotor;
+        }
+        EXPECT_EQ(found, solid ? 1 : 0) << rotor << ": the motor's part";
+    }
+}
+
+}  // namespace
+
+// The reference quad's motor is a cylinder 0.018 long, on hubs 0.02 above the
+// frame with thrust along +Y. A tractor's motor hangs under its propeller,
+// centred 0.009 below the hub (y 0.002 to 0.020); a pusher's stands over it,
+// centred 0.009 above (y 0.020 to 0.038). Each rotor says which it is. The
+// rotor and the fit are the same either way: the propeller does not move, and
+// neither does the mass.
+TEST(AirframeCompile, AMotorSitsHalfItsLengthBehindItsPropeller) {
+    const double half = 0.009;
+    const std::array<std::array<bool, 4>, 3> layouts = {{
+        {{false, false, false, false}},
+        {{true, true, true, true}},
+        {{false, true, false, true}},
+    }};
+    const std::array<const char*, 3> names = {"every rotor a tractor", "every rotor a pusher",
+                                              "rotors 1 and 3 pushers"};
+    for (std::size_t i = 0; i < layouts.size(); ++i) {
+        AirframeSpec s = reference_quad();
+        std::vector<glm::dvec3> motors;
+        for (std::size_t k = 0; k < 4; ++k) {
+            s.rotors[k].pusher = layouts[i][k];
+            motors.push_back(s.rotors[k].hub.position + glm::dvec3(0.0, layouts[i][k] ? half : -half, 0.0));
+        }
+        expect_motors_at(s, motors, true, names[i]);
+    }
+
+    AirframeSpec pushers = reference_quad();
+    for (RotorSpec& r : pushers.rotors) r.pusher = true;
+    const auto a = compile_airframe(reference_quad());
+    const auto b = compile_airframe(pushers);
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    ASSERT_TRUE(b.has_value()) << b.error().context;
+    EXPECT_EQ(a->model.body.mass, b->model.body.mass);
+    EXPECT_EQ(a->fit.hover_duty, b->fit.hover_duty);
+    EXPECT_EQ(a->fit.hover_omega, b->fit.hover_omega);
+    EXPECT_EQ(a->fit.thrust_coeff, b->fit.thrust_coeff);
+    EXPECT_EQ(a->fit.torque_coeff, b->fit.torque_coeff);
+    EXPECT_EQ(a->fit.tau, b->fit.tau);
+    for (std::size_t k = 0; k < 4; ++k) {
+        const RotorDesc& ra = a->model.rotors[k];
+        const RotorDesc& rb = b->model.rotors[k];
+        EXPECT_EQ(ra.spin_dir, rb.spin_dir) << "rotor " << k << ": spin is the torque's, not the motor's side";
+        EXPECT_EQ(ra.radius, rb.radius) << "rotor " << k;
+        EXPECT_EQ(ra.thrust_coeff, rb.thrust_coeff) << "rotor " << k;
+        EXPECT_EQ(ra.torque_coeff, rb.torque_coeff) << "rotor " << k;
+        EXPECT_EQ(ra.tau, rb.tau) << "rotor " << k;
+    }
+}
+
+// Half its extent along the thrust axis, local +Y, for each inertia shape: a
+// cylinder's or a tube's length / 2, a box's y extent / 2, a sphere's radius.
+// A point mass (a motor with no shape) or a tensor has no extent, so it stays
+// on the hub and gives no part.
+TEST(AirframeCompile, AMotorMovesHalfItsExtentAlongTheThrustAxis) {
+    struct Case {
+        std::optional<BlockShape> shape;
+        double half;
+        bool solid;
+        const char* what;
+    };
+    const std::array<Case, 6> cases = {{
+        {BlockShape{PartShape::cylinder, glm::dvec3(0.014, 0.018, 0.0), glm::dmat3(0.0)}, 0.009, true, "a cylinder"},
+        {BlockShape{PartShape::tube, glm::dvec3(0.014, 0.022, 0.0), glm::dmat3(0.0)}, 0.011, true, "a tube"},
+        {BlockShape{PartShape::box, glm::dvec3(0.028, 0.016, 0.026), glm::dmat3(0.0)}, 0.008, true, "a box"},
+        {BlockShape{PartShape::sphere, glm::dvec3(0.012, 0.0, 0.0), glm::dmat3(0.0)}, 0.012, true, "a sphere"},
+        {std::nullopt, 0.0, false, "no shape, a point mass"},
+        {BlockShape{PartShape::tensor, glm::dvec3(0.0), glm::dmat3(2e-6)}, 0.0, false, "a tensor"},
+    }};
+    for (const Case& c : cases) {
+        for (const bool pusher : {false, true}) {
+            AirframeSpec s = reference_quad();
+            s.motor.shape = c.shape;
+            std::vector<glm::dvec3> motors;
+            for (RotorSpec& r : s.rotors) {
+                r.pusher = pusher;
+                motors.push_back(r.hub.position + glm::dvec3(0.0, pusher ? c.half : -c.half, 0.0));
+            }
+            expect_motors_at(s, motors, c.solid, std::string(c.what) + (pusher ? ", a pusher" : ", a tractor"));
+        }
+    }
+}
+
+// The thrust axis is the hub's +Y, wherever the hub points. Every hub turned
+// a quarter about +Z, as an exact literal: its +Y onto design -X. A tractor's
+// motor then sits 0.009 toward +X of its hub, behind the propeller, and a
+// pusher's 0.009 toward -X.
+TEST(AirframeCompile, AMotorMovesAlongItsHubsThrustAxis) {
+    const double h = 0.7071067811865476;  // sqrt(1/2)
+    for (const bool pusher : {false, true}) {
+        AirframeSpec s = reference_quad();
+        std::vector<glm::dvec3> motors;
+        for (RotorSpec& r : s.rotors) {
+            r.hub.orientation = glm::dquat(h, 0.0, 0.0, h);
+            r.pusher = pusher;
+            motors.push_back(r.hub.position + glm::dvec3(pusher ? -0.009 : 0.009, 0.0, 0.0));
+        }
+        expect_motors_at(s, motors, true, pusher ? "turned hubs, pushers" : "turned hubs, tractors");
     }
 }
