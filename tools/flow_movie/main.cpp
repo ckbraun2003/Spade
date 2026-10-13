@@ -701,7 +701,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
             iso.value = 0.5f;
             iso.colour_by = colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, 1.0f);
             scene.flow_layers.push_back(render::FlowLayer{&v, {}, {iso}});
-            camera = orbit(volume_centre(v), 12.5f, sweep_azimuth(30.0f, 80.0f, k, n), 24.0f);
+            camera = orbit(volume_centre(v), 14.5f, sweep_azimuth(30.0f, 80.0f, k, n), 24.0f);
             return {};
         }});
     return film;
