@@ -32,9 +32,13 @@
 // Returns 0 on success, non-zero (with a message on stderr) on any failure --
 // that exit code is the thing CI actually checks.
 
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include <glm/vec4.hpp>
 #include <glm/vec3.hpp>
@@ -46,6 +50,7 @@
 #include "sim/world_set.hpp"
 #include "world/builder.hpp"
 #include "world/medium.hpp"
+#include "world/mesh_import.hpp"
 #include "world/world_file.hpp"
 #include "../unique_temp.hpp"  // the repo's per-process temp names; std-only
 
@@ -188,6 +193,31 @@ int main() {
         return 1;
     }
     std::printf("spade::analysis OK: a case round-tripped through case_to_yaml and case_from_yaml\n");
+
+    // spade::mesh_import, installed. Reading a glTF pulls the reader's objects
+    // out of the installed spade_mesh_import archive (linking alone pulls
+    // none): a closed tetrahedron, its buffer a base64 data: URI holding four
+    // VEC3 FLOAT positions (48 bytes) and twelve UNSIGNED_SHORT indices.
+    constexpr std::string_view kTetrahedron = R"({"asset": {"version": "2.0"}, "scene": 0,
+        "scenes": [{"nodes": [0]}], "nodes": [{"name": "tetra", "mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": 4, "type": "VEC3"},
+                      {"bufferView": 1, "componentType": 5123, "count": 12, "type": "SCALAR"}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                        {"buffer": 0, "byteOffset": 48, "byteLength": 24}],
+        "buffers": [{"byteLength": 72, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAACAAEAAAABAAMAAAADAAIAAQACAAMA"}]})";
+    const spade::Result<std::vector<spade::MeshObject>> objects =
+        spade::read_gltf_bytes(std::as_bytes(std::span(kTetrahedron.data(), kTetrahedron.size())), {});
+    if (!objects) {
+        std::fprintf(stderr, "spade::read_gltf_bytes failed: %s\n", objects.error().context.c_str());
+        return 1;
+    }
+    if (objects->size() != 1 || (*objects)[0].mesh->triangle_count() != 4) {
+        std::fprintf(stderr, "spade::read_gltf_bytes read %zu objects, not one tetrahedron of 4 triangles\n",
+                     objects->size());
+        return 1;
+    }
+    std::printf("spade::mesh_import OK: a glTF tetrahedron read as one closed mesh of 4 triangles\n");
 
 #if SPADE_CONSUMER_HAS_RENDER_GL
     // The optional spade::render_gl, when this prefix installed it (gl_check.cpp).

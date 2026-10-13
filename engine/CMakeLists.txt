@@ -304,9 +304,53 @@ install(TARGETS spade_world
 )
 
 # world/detail/ is internal: yaml_text.hpp names yaml-cpp types, which no installed
-# header may expose (the yaml-cpp note above).
+# header may expose (the yaml-cpp note above), and weld.hpp is spade_mesh_import's
+# own (below). world/mesh_import.hpp, that target's public header, installs with
+# the rest of world/; world/mesh_import/ holds its sources and no header, and is
+# excluded by name, since FILES_MATCHING still installs a directory it finds no
+# match in, empty. A PATTERN matches whole names, so mesh_import.hpp still installs.
 install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp"
-    PATTERN "detail" EXCLUDE)
+    PATTERN "detail" EXCLUDE
+    PATTERN "mesh_import" EXCLUDE)
+
+# ------------------------------------------------------------------------------
+# spade_mesh_import: the CAD mesh readers (CORE-6; the parts and meshes plan,
+# Task B6) -- glTF today. Import only: each reader ends in make_mesh(). A
+# target of its own so the library the step links gains no parser: spade_sim
+# and everything under it never link it (MeshImport.TheStepNeverLinksTheReaders
+# pins that). Installed and exported, because Kat hosts the builder and links
+# only installed targets (SL2b). Its header is world/mesh_import.hpp, installed
+# by spade_world's DIRECTORY rule above.
+#
+# PUBLIC spade::world: the API returns TriangleMesh. nlohmann_json is the glTF
+# parser's, PRIVATE and $<BUILD_LOCAL_INTERFACE:...>, as spade_render links it
+# (the nlohmann note there): no nlohmann type crosses mesh_import.hpp, and it
+# is header-only, so no consumer needs it on a link line.
+# ------------------------------------------------------------------------------
+add_library(spade_mesh_import STATIC
+    world/mesh_import/gltf.cpp
+    world/mesh_import/weld.cpp
+)
+add_library(spade::mesh_import ALIAS spade_mesh_import)
+set_target_properties(spade_mesh_import PROPERTIES EXPORT_NAME mesh_import)
+target_include_directories(spade_mesh_import PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(spade_mesh_import
+    PUBLIC spade::world
+    PRIVATE
+        $<BUILD_LOCAL_INTERFACE:nlohmann_json::nlohmann_json>
+        $<BUILD_LOCAL_INTERFACE:spade_warnings>
+        $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
+)
+target_compile_features(spade_mesh_import PUBLIC cxx_std_23)
+
+install(TARGETS spade_mesh_import
+    EXPORT spadeTargets
+    ARCHIVE DESTINATION lib
+    INCLUDES DESTINATION include
+)
 
 # ------------------------------------------------------------------------------
 # spade_state: the state backbone (Task 6) -- layout.hpp's shared PODs with
