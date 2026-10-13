@@ -1817,6 +1817,9 @@ private:
     //                               torque_acc straight into the arena with
     //                               no queue involved.
     //   set_rotor_commands()        MARKS (round 1). Same shape.
+    //   set_body_state()            MARKS. Writes the body row's pos, orient,
+    //                               vel, omega_body and specific_force
+    //                               straight into the arena. Same shape.
     //   restore()                   MARKS (round 1 REVIEW, C1). Rewrites
     //                               EVERY registered array.
     //   reseed()                    MARKS (round 1 REVIEW, C1). Rewrites
@@ -1835,6 +1838,35 @@ private:
     // VulkanDirtyTracking suite is the enforcement, one case per row.
     // ---------------------------------------------------------------------
     void mark_vulkan_dirty() noexcept;
+
+    // ---------------------------------------------------------------------
+    // set_body_state()'S HISTORY CENSUS (the lead's Q4 guard). "A body set to
+    // S evolves like a body spawned at S" needs every piece of the body's
+    // history cleared, so every per-body array of the standard set is listed
+    // here with what the setter does to the body's rows in it:
+    //
+    //   bodies            WRITES pos, orient, vel, omega_body; CLEARS
+    //                     specific_force; KEEPS proxy_radius, mass,
+    //                     inv_inertia_diag, flags, force_acc, torque_acc.
+    //   body_generation   KEPT: refs survive.
+    //   drag_bodies       KEPT.
+    //   rotors            KEPT: omega and omega_cmd are not body state.
+    //   imu_sensors       KEPT: stream, bias, phase, last_index.
+    //   imu_ring          KEPT.
+    //   gnss_sensors      KEPT: stream, bias, phase, last_index.
+    //   gnss_ring         KEPT.
+    //   integrate.contact_dv (per-body SCRATCH)  nothing to clear: zero at
+    //                     every boundary by integrate's own invariant.
+    //
+    // There is no contact manifold, warm start, sleep counter or CCD state
+    // (physics/contacts.hpp), so nothing else holds history today. A NEW
+    // per-body array or scratch -- a cache, a module's history -- joins this
+    // list, kept or cleared (a clear goes in set_body_state()); tests/
+    // test_set_body_state.cpp's SetBodyState.CensusClassifiesEveryPerBodyArray-
+    // AndTheSetHonoursIt enumerates them from the registry walk and fails by
+    // name until it does. A developer module's per-body history is that
+    // developer's to classify.
+    // ---------------------------------------------------------------------
 
     [[nodiscard]] Result<void> apply_op(const StructuralOp& op);
 

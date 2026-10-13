@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -2456,9 +2457,74 @@ Result<void> Simulation::apply_wrench(BodyRef ref, glm::vec3 world_force, glm::v
     return {};
 }
 
-// RED: the declaration only, so the tests compile and fail on behaviour.
-Result<void> Simulation::set_body_state(BodyRef, glm::vec3, glm::quat, glm::vec3, glm::vec3) {
-    return std::unexpected(internal("set_body_state: not implemented"));
+namespace {
+// set_body_state's |q| bound (design note section 1): 1 +/- 2e-6 in fp32,
+// deliberately looser than Kat's binding double check at 1 +/- 1e-6.
+constexpr float kSetOrientNormTolerance = 2.0e-6f;
+}  // namespace
+
+Result<void> Simulation::set_body_state(BodyRef ref, glm::vec3 pos, glm::quat orient, glm::vec3 vel,
+                                        glm::vec3 omega_body) {
+    // EVERY CHECK BEFORE THE FIRST WRITE, in the design note's order (section
+    // 2), so a refusal leaves the state exactly as it was.
+    //
+    // POISONED FIRST: the state is invalid since the faulting step, so no
+    // input may land in it. step()'s text verbatim, as snapshot() returns it.
+    if (!poisoned_.empty()) {
+        return std::unexpected(invalid(poisoned_));
+    }
+    if (Result<void> valid = validate_ref(ref); !valid) {
+        return valid;
+    }
+    if (!finite(pos) || !finite(vel) || !finite(omega_body)) {
+        return std::unexpected(invalid("set_body_state: pos/vel/omega_body must all be finite"));
+    }
+    // |q| in fp32, as the note fixes it: sqrt is IEEE-exact (TD-3 allows it).
+    // Spelled `!(n >= lo && n <= hi)` so a NaN refuses. The quaternion is NOT
+    // normalized here or anywhere below: body() returns what was set.
+    const float norm = std::sqrt(glm::dot(orient, orient));
+    if (!finite(orient) ||
+        !(norm >= 1.0f - kSetOrientNormTolerance && norm <= 1.0f + kSetOrientNormTolerance)) {
+        char text[32];
+        const std::to_chars_result shown = std::to_chars(text, text + sizeof(text), norm);
+        return std::unexpected(invalid("set_body_state: orientation must be finite with |q| within 1 \xC2\xB1 2e-6 "
+                                       "(got |q| = " +
+                                       std::string(text, shown.ptr) + ")"));
+    }
+
+    Result<std::span<BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    BodyState& b = (*bodies)[ref.slot];
+    if ((b.flags & physics::body_flags::active) == 0u) {
+        // apply_wrench()'s rule: the queued init would overwrite the set.
+        return std::unexpected(missing("set_body_state: body is spawned but not yet flushed "
+                                       "(call step() or flush_structural() first)"));
+    }
+    // spawn()'s predicate and threshold, the one shared function (TD-9), at
+    // this body's EFFECTIVE radius: the world's for a bare body, the model's
+    // own for a vehicle that overrides it -- what spawn tested it against.
+    const WorldConfig& config = configs_[ref.world_index];
+    const float radius = physics::effective_proxy_radius(b.proxy_radius, config.contacts.proxy_radius);
+    if (Result<void> placed = check_not_buried(config.sdf, pos, radius, "set_body_state"); !placed) {
+        return placed;
+    }
+
+    // THE WRITES, field-wise, so the row's pads stay as they are. Kept:
+    // proxy_radius, mass, inv_inertia_diag, flags, and force_acc/torque_acc (a
+    // wrench applied before the set still acts on the next substep). Cleared:
+    // the body's contact and solver history, which today is specific_force
+    // alone -- the census beside mark_vulkan_dirty()'s (simulation.hpp) says
+    // what a later per-body cache owes here.
+    b.pos = pos;
+    b.orient = orient;
+    b.vel = vel;
+    b.omega_body = omega_body;
+    b.specific_force = glm::vec3(0.0f);
+
+    // A between-steps arena write no queue knows about, like apply_wrench():
+    // the device mirror is stale until the next step() uploads it.
+    mark_vulkan_dirty();
+    return {};
 }
 
 // ---------------------------------------------------------------------------

@@ -340,6 +340,7 @@ TEST(SetBodyState, ASetBodyAndASpawnedTwinEvolveBitIdentically) {
     EXPECT_EQ(spade::testing::state_digest(set), spade::testing::state_digest(twin))
         << "at the set, before any step";
     bool landed = false;
+    float vy = s.vel.y;
     for (uint64_t i = 0; i < kSteps; ++i) {
         ASSERT_TRUE(set.step(1).has_value());
         ASSERT_TRUE(twin.step(1).has_value());
@@ -347,9 +348,12 @@ TEST(SetBodyState, ASetBodyAndASpawnedTwinEvolveBitIdentically) {
         const BodyState b = row_of(twin, *spawned);
         ASSERT_TRUE(same_bytes(a, b)) << "tick " << set.tick().value << "\n  set   " << row_text(a)
                                       << "\n  twin  " << row_text(b);
-        landed = landed || a.specific_force.y > 1.0f;
+        // Gravity alone only lowers vel.y; the floor's impulse raises it.
+        landed = landed || a.vel.y > vy;
+        vy = a.vel.y;
     }
-    EXPECT_TRUE(landed) << "S should reach the floor within the run, so contact after the set is compared";
+    EXPECT_TRUE(landed) << "S should reach the floor within the run, so contact after the set is compared; at the "
+                        << "end: " << row_text(row_of(set, *resting));
     EXPECT_EQ(spade::testing::state_digest(set), spade::testing::state_digest(twin));
 }
 
