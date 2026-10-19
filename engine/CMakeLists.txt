@@ -553,6 +553,7 @@ add_library(spade_render STATIC
     render/flow_render.cpp
     render/flow_lines.cpp
     render/flow_look.cpp
+    render/view_mode.cpp
     render/flow_field.cpp
 )
 add_library(spade::render ALIAS spade_render)

@@ -1,0 +1,125 @@
+// ---------------------------------------------------------------------------
+// render/view_mode.hpp -- what a view shows (spade::render).
+//
+// A view is a base mode plus flow layers over it: the editor's per-view
+// "rendering schema" (Cameron's goal, 2026-10-19; the lead approved the
+// selector the same day). supports() says, before a draw, whether a backend
+// can draw a spec and, if not, why, in the very phrase the draw path refuses
+// with. apply_view() builds a spec into a RenderScene and RenderOptions
+// through flow_look and returns a legend per layer, its range resolved by the
+// function both renderers draw with. A test draws every base and layer on
+// both backends and fails if supports() and the draw ever disagree.
+//
+// Not yet (no backend draws them, so a selector shows them as unavailable):
+// depth, normals, segmentation, and per-camera field channels (the backlog's
+// "field channels for cameras", with RND-4's Vulkan technique).
+// ---------------------------------------------------------------------------
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <glm/vec3.hpp>
+
+#include "core/error.hpp"
+#include "core/flow_volume.hpp"
+#include "render/field_layer.hpp"
+#include "render/flow_lines.hpp"
+#include "render/flow_render.hpp"
+#include "render/scene.hpp"
+#include "render/target.hpp"
+#include "render/transfer_function.hpp"
+
+namespace spade::render {
+
+// The base: how the scene itself draws (RenderOptions::mode).
+enum class ViewBase : uint32_t {
+    shaded = 0,     // lit meshes, CSG marched per pixel (RS3), shadows, overlays
+    wireframe = 1,  // unlit edges
+    velocity = 2,   // each item by its speed (SL9c)
+    exact_sdf = 3,  // the exact sphere-trace of the world's SDF: the CPU only, and no flow layers
+};
+inline constexpr uint32_t kViewBaseCount = 4;
+
+// A flow layer over the base, from a published FlowVolume.
+enum class FlowView : uint32_t {
+    volume = 0,       // an absorbing volume of one quantity
+    vortex_iso = 1,   // an iso-surface (lambda2-hat, Q-hat, |w|...) coloured by speed
+    streamlines = 2,  // lines from seeds, coloured by speed
+    slice = 3,        // a coloured plane of one quantity
+    surface_cp = 4,   // C_p on the flow walls (RND-8)
+};
+inline constexpr uint32_t kFlowViewCount = 5;
+
+// Stable names, for a menu and a saved view: "shaded", "vortex_iso".
+[[nodiscard]] std::string_view view_base_name(ViewBase base) noexcept;
+[[nodiscard]] std::string_view flow_view_name(FlowView view) noexcept;
+[[nodiscard]] std::optional<ViewBase> view_base_from_name(std::string_view name) noexcept;
+[[nodiscard]] std::optional<FlowView> flow_view_from_name(std::string_view name) noexcept;
+
+// One flow layer and its parameters; each kind reads only its own.
+struct FlowViewSpec {
+    FlowView kind = FlowView::volume;
+    FlowQuantity quantity = FlowQuantity::speed;  // volume and slice: what shows; vortex_iso: the iso's field
+    ColourMapId colours = ColourMapId::viridis;
+    float range_min = 0.0f;  // the map's range; for vortex_iso and streamlines, of speed; for surface_cp, of C_p
+    float range_max = 1.0f;
+    float iso_value = 0.0f;         // vortex_iso: the level, in the quantity's units
+    float onset = 0.25f;            // volume: absorbing from this fraction of the range...
+    float sigma = 10.0f;            // ...up to this, per metre, at its top
+    FieldLayer plane{};             // slice: its geometry
+    std::vector<glm::vec3> seeds;   // streamlines
+    StreamlineOptions lines{};      // streamlines
+    float q_ref = 0.0f;             // surface_cp: C_p = (p - p_ref) / q_ref
+    float p_ref = 0.0f;
+};
+
+struct ViewSpec {
+    ViewBase base = ViewBase::shaded;
+    std::vector<FlowViewSpec> layers;
+};
+
+enum class ViewBackend : uint32_t { cpu = 0, gl = 1 };
+
+// What the scene and the backend have that a view may need.
+struct ViewInputs {
+    bool has_volume = false;     // a published FlowVolume: every flow layer needs one
+    bool has_walls = false;      // a draw item with flow_wall: surface_cp needs one
+    bool has_sdf = false;        // scene.sdf: exact_sdf needs it
+    bool gl_flow_ready = true;   // GlRenderer::flow_ready(): GL's flow programs are compiled
+};
+
+struct ViewSupport {
+    bool drawable = false;
+    // Empty when drawable; else a fixed phrase that the refusal from
+    // apply_view() or the backend's draw contains verbatim, fit to show.
+    std::string why_not;
+};
+
+// Whether `backend` can draw `spec` given `inputs`, and if not, why: the
+// first refusal the draw path would give, in its own words.
+[[nodiscard]] ViewSupport supports(const ViewSpec& spec, ViewBackend backend, const ViewInputs& inputs);
+
+// One layer's colour scale, for a legend.
+struct ViewLegend {
+    FlowView layer = FlowView::volume;
+    std::string quantity;  // "speed |u|", "lambda2-hat", "C_p"
+    std::string unit;      // "m/s", "1/s", "Pa", or "" for none
+    ColourMapId colours = ColourMapId::viridis;
+    ResolvedRange range;   // as both renderers resolve it (resolve_range())
+};
+
+// Builds `spec` into `scene` and `options`: the base's mode, and the layers
+// over `volume` (volume and vortex_iso merged into one FlowLayer; streamlines,
+// slices and C_p through flow_look and cp_colours). Returns a legend per
+// layer, in spec order. Refused by name, with nothing changed, for what
+// supports() names as apply_view's: a missing input, layers on exact_sdf, a
+// second surface_cp, streamlines without seeds. The budget (4 transfers, 4
+// isos) and GL's own refusals come from the draw.
+[[nodiscard]] Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume,
+                                                         RenderScene& scene, RenderOptions& options);
+
+}  // namespace spade::render

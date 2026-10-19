@@ -57,6 +57,7 @@
 
 #include "cp_sphere.hpp"
 #include "flow_synthetic.hpp"
+#include "view_mode_cases.hpp"
 
 namespace {
 
@@ -2482,6 +2483,46 @@ TEST(GlRendererOptions, UnhonouredNamesWhatGlDoesNotDraw) {
     RenderOptions raymarch;
     raymarch.mode = DrawMode::raymarch;
     EXPECT_EQ(GlRenderer::unhonoured(raymarch), (Names{"mode"})) << "raymarch is refused, and named";
+}
+
+// render/view_mode.hpp, the lead's condition: for every case, supports() says
+// drawable exactly when apply_view() and GlRenderer::draw() draw it, and names
+// the reason they refuse with (the CPU's twin is in test_render_view_mode.cpp).
+// The renderer here waited at create(), so its flow programs are ready.
+TEST_F(GpuGlRenderer, EveryViewDrawsOnGlExactlyWhenSupportsSaysSo) {
+    ASSERT_TRUE(renderer_->flow_ready());
+    spade::test::expect_view_parity(spade::render::ViewBackend::gl,
+                                    [&](const RenderScene& scene, const RenderOptions& options) -> spade::Result<void> {
+                                        if (auto up = renderer_->upload_scene(scene); !up) return up;
+                                        bind_cleared_target();
+                                        return renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+                                    });
+}
+
+// And while the flow programs compile, supports() names GL's refusal of a
+// flow layer. A driver that finishes at once leaves nothing to check.
+TEST_F(GpuGlRenderer, AViewWaitsForTheFlowProgramsAsGlDoes) {
+    auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                   GlRenderer::CreateOptions{.flow_programs_in_background = true});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    GlRenderer& background = **made;
+    const spade::FlowVolume volume = spade::test::view_mode_volume();
+    const spade::render::ViewSpec spec{spade::render::ViewBase::shaded,
+                                       {spade::test::layer(spade::render::FlowView::vortex_iso)}};
+    spade::render::ViewInputs inputs{.has_volume = true, .has_walls = true, .has_sdf = false, .gl_flow_ready = false};
+    RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+    RenderOptions options;
+    ASSERT_TRUE(spade::render::apply_view(spec, &volume, scene, options).has_value());
+    ASSERT_TRUE(background.upload_scene(scene).has_value());
+    if (background.flow_ready()) GTEST_SKIP() << "the driver compiled the flow programs at once";
+    bind_cleared_target();
+    const spade::Result<void> drew = background.draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+    if (drew) GTEST_SKIP() << "the driver finished compiling before the draw";
+    const spade::render::ViewSupport said = spade::render::supports(spec, spade::render::ViewBackend::gl, inputs);
+    EXPECT_FALSE(said.drawable);
+    EXPECT_NE(drew.error().context.find(said.why_not), std::string::npos)
+        << "supports() named \"" << said.why_not << "\"; GL refused: " << drew.error().context;
+    while (!background.flow_ready()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 
 }  // namespace
