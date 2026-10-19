@@ -29,7 +29,10 @@
 
 .PARAMETER ParallelLevel
     Compile jobs, 1..64, default 8. All-cores (0) is not expressible here: on
-    the old, memory-bound box its failure mode was a silent OOM kill.
+    the old, memory-bound box its failure mode was a silent OOM kill. When the
+    box's job queue (jobrun) sets JOBRUN_PARALLEL -- 4 while the owner's game
+    runs -- the build takes the SMALLER of the two, and the first line it
+    prints says which.
 
 .PARAMETER Clean
     Delete the preset's build directory before configuring, forcing a fresh
@@ -77,6 +80,39 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# THE JOB COUNT: -ParallelLevel, capped by the box queue's JOBRUN_PARALLEL
+# when that is set (Kat's jobrun, approved by the owner 2026-10-19). A cap
+# that is not a whole number of at least 1 refuses: a queue that meant to
+# throttle this build must not be ignored by a typo.
+$Jobs = $ParallelLevel
+$JobsWhy = "-ParallelLevel $ParallelLevel; JOBRUN_PARALLEL unset"
+if ($null -ne $env:JOBRUN_PARALLEL -and $env:JOBRUN_PARALLEL -ne '') {
+    $cap = 0
+    if (-not [int]::TryParse($env:JOBRUN_PARALLEL, [ref] $cap) -or $cap -lt 1) {
+        throw "JOBRUN_PARALLEL='$($env:JOBRUN_PARALLEL)' is not a whole number of at least 1"
+    }
+    if ($cap -lt $ParallelLevel) {
+        $Jobs = $cap
+        $JobsWhy = "JOBRUN_PARALLEL=$cap, under -ParallelLevel $ParallelLevel"
+    } else {
+        $JobsWhy = "-ParallelLevel $ParallelLevel; JOBRUN_PARALLEL=$cap is no lower"
+    }
+}
+Write-Host "Jobs   : $Jobs ($JobsWhy)"
+
+# NATIVE TOOLS ARE JUDGED BY THEIR EXIT CODE, NEVER BY STDERR. Under Windows
+# PowerShell 5.1, with this script's 'Stop', a caller that redirects the
+# script's streams (`*>`, `2>&1`) turns every line a native tool writes to
+# stderr -- vcvars' "'vswhere.exe' is not recognized", cmake's deprecation
+# warnings -- into a terminating NativeCommandError, so a clean build stopped
+# as a failure (Interface and Test/Docs both hit it, 2026-10-19). Each native
+# call runs here under 'Continue' (this function's own scope), and the
+# caller judges $LASTEXITCODE alone.
+function Invoke-Native([scriptblock] $Command) {
+    $ErrorActionPreference = 'Continue'
+    & $Command
+}
+
 # scripts/ is the child of the repo root; the repo root is the CMake source
 # dir (where CMakePresets.json lives).
 $SpadeDir   = Split-Path -Parent $PSScriptRoot
@@ -95,7 +131,6 @@ Write-Host "Spade  : $SpadeDir"
 Write-Host "Preset : $PresetName"
 Write-Host "Build  : $BuildDir"
 if ($Target) { Write-Host "Target : $Target" } else { Write-Host "Target : <all>" }
-Write-Host "Jobs   : $ParallelLevel"
 
 if ($Clean -and (Test-Path $BuildDir)) {
     Write-Host "Removing $BuildDir (-Clean)"
@@ -142,9 +177,10 @@ if (-not $env:VSCMD_ARG_TGT_ARCH) {
         throw "vswhere.exe not found. Is Visual Studio installed?"
     }
 
-    $vsRoot = & $vswhere -latest -products * `
-        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-        -property installationPath
+    $vsRoot = Invoke-Native {
+        & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+    }
     if (-not $vsRoot) { throw "No VS install with the MSVC x64 toolchain was found." }
 
     $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
@@ -155,7 +191,7 @@ if (-not $env:VSCMD_ARG_TGT_ARCH) {
     # Build the command line as a plain string so no backtick-escaped quotes are
     # needed inside a PowerShell string literal.
     $vcvarsCmd = '"' + $vcvars + '" && set'
-    cmd /c $vcvarsCmd | ForEach-Object {
+    Invoke-Native { cmd /c $vcvarsCmd } | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
             Set-Item -Path "env:$($matches[1])" -Value $matches[2] -ErrorAction SilentlyContinue
         }
@@ -187,7 +223,7 @@ if (-not (Test-Path $cacheFile)) {
     }
     Write-Host ""
     Write-Host "=== Configuring ($PresetName) ===" -ForegroundColor Cyan
-    & cmake -S $SpadeDir --preset $PresetName
+    Invoke-Native { & cmake -S $SpadeDir --preset $PresetName }
     if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "Already configured. Skipping configure (pass -Clean to force a fresh one)."
@@ -199,9 +235,10 @@ if (-not (Test-Path $cacheFile)) {
 Write-Host ""
 Write-Host "=== Building ($PresetName) ===" -ForegroundColor Cyan
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$buildArgs = @('--build', $BuildDir, '--parallel', "$ParallelLevel")
+$buildArgs = @('--build', $BuildDir, '--parallel', "$Jobs")
 if ($Target) { $buildArgs += @('--target', $Target) }
-& cmake @buildArgs
+Write-Host "Command: cmake $($buildArgs -join ' ')"
+Invoke-Native { & cmake @buildArgs }
 if ($LASTEXITCODE -ne 0) { throw "Build failed (exit $LASTEXITCODE)" }
 $sw.Stop()
 Write-Host ("Build completed in {0:N1}s" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
