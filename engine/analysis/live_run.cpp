@@ -9,13 +9,26 @@
 #include <string>
 #include <utility>
 
+#include <bit>
+#include <cstring>
+#include <span>
+#include <string_view>
+
+#include "analysis/detail/atomic_file.hpp"
 #include "core/fp32_math.hpp"
+#include "core/path_text.hpp"
+#include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/grid_io.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
 #include "sim/design_frame.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
+#include "state/snapshot.hpp"
+#include "vehicles/model_identity.hpp"
+#include "vehicles/propulsion_flags.hpp"
+#include "vehicles/rotor_discs.hpp"
 #include "world/builder.hpp"
 
 namespace spade::analysis {
@@ -50,6 +63,118 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
            a.yaw_deg == b.yaw_deg;
 }
 
+// ---- the save file ----------------------------------------------------------
+// Little-endian, as both toolchains are; one FNV-1a 64 over everything before
+// the checksum's own 8 bytes.
+
+static_assert(std::endian::native == std::endian::little, "LiveRun's save file is little-endian");
+constexpr std::string_view kSaveMagic = "SPADELRS";
+
+struct Writer {
+    std::string out;
+    template <class T>
+    void put(const T& v) {
+        char b[sizeof(T)];
+        std::memcpy(b, &v, sizeof(T));
+        out.append(b, sizeof(T));
+    }
+    void put(const glm::vec3& v) {
+        put(v.x);
+        put(v.y);
+        put(v.z);
+    }
+    void put(const glm::quat& q) {
+        put(q.w);
+        put(q.x);
+        put(q.y);
+        put(q.z);
+    }
+    void bytes(std::string_view s) {
+        put<uint64_t>(s.size());
+        out.append(s);
+    }
+};
+
+struct Reader {
+    std::string_view in;
+    std::size_t at = 0;
+    bool ok = true;
+    template <class T>
+    [[nodiscard]] T get() {
+        T v{};
+        if (!ok || in.size() - at < sizeof(T)) {
+            ok = false;
+            return v;
+        }
+        std::memcpy(&v, in.data() + at, sizeof(T));
+        at += sizeof(T);
+        return v;
+    }
+    [[nodiscard]] glm::vec3 vec() {
+        const float x = get<float>();
+        const float y = get<float>();
+        const float z = get<float>();
+        return glm::vec3(x, y, z);
+    }
+    [[nodiscard]] glm::quat quat() {
+        const float w = get<float>();
+        const float x = get<float>();
+        const float y = get<float>();
+        const float z = get<float>();
+        return glm::quat(w, x, y, z);
+    }
+    [[nodiscard]] std::string_view bytes() {
+        const uint64_t n = get<uint64_t>();
+        if (!ok || n > in.size() - at) {
+            ok = false;
+            return {};
+        }
+        const std::string_view s = in.substr(at, static_cast<std::size_t>(n));
+        at += static_cast<std::size_t>(n);
+        return s;
+    }
+};
+
+[[nodiscard]] std::string_view as_text(std::span<const std::byte> b) {
+    return std::string_view(reinterpret_cast<const char*>(b.data()), b.size());
+}
+
+[[nodiscard]] std::span<const std::byte> as_bytes(std::string_view s) {
+    return std::as_bytes(std::span<const char>(s.data(), s.size()));
+}
+
+[[nodiscard]] std::string hex(uint64_t v) { return std::format("{:016x}", v); }
+
+// The limits the propulsion is at, as the run's label announces them, in
+// propulsion_flags' order; empty for none. The two refusals (no_bracket,
+// unreachable) never reach here: the command is refused instead.
+[[nodiscard]] std::string announced_limits(uint32_t flags) {
+    namespace pf = vehicles::propulsion_flags;
+    constexpr std::pair<uint32_t, std::string_view> kSaid[] = {
+        {pf::duty_clamped, "duty clamped"},
+        {pf::current_limited, "motors at their current limit"},
+        {pf::speed_clamped, "shaft speed held at 0"},
+        {pf::out_of_table, "propeller beyond its table"},
+        {pf::battery_current_limited, "pack at its current limit"},
+        {pf::battery_cutoff, "pack at its cutoff voltage"},
+        {pf::battery_empty, "pack empty"},
+        {pf::esc_total_limited, "ESC at its total current limit"},
+    };
+    std::string out;
+    uint32_t said = 0;
+    for (const auto& [bit, words] : kSaid) {
+        if ((flags & bit) == 0) continue;
+        if (!out.empty()) out += ", ";
+        out += words;
+        said |= bit;
+    }
+    if (const uint32_t rest = flags & ~said; rest != 0) {
+        if (!out.empty()) out += ", ";
+        out += std::format("propulsion flags {:#x}", rest);
+    }
+    return out;
+}
+
 [[nodiscard]] std::string_view rotor_model_name(RotorModel m) {
     switch (m) {
         case RotorModel::disc:
@@ -79,6 +204,12 @@ struct LiveRun::Impl {
     af::PublishInput publish;
     std::unique_ptr<Simulation> sim;
     VehicleRef vehicle;
+    std::optional<LivePropulsion> propulsion;  // set for a model with rotors
+    double density = 0.0;                      // the case's, for the throttle map
+    glm::vec3 grid_origin{0.0f};               // the grid's minimum corner, world frame
+    std::vector<float> omega_cmd;              // this step's command, one per rotor
+    std::vector<vehicles::RotorRow> rows;      // the rotors after the drone's step
+    std::vector<af::ActuatorDisc> discs;       // their discs, in the grid's frame
     glm::quat q_bd{1.0f, 0.0f, 0.0f, 0.0f};  // the model's design -> principal, normalized
     BodyState held{};                        // the body row at the hold
     uint64_t h_ns = 0;
@@ -98,16 +229,38 @@ LiveRun::LiveRun(LiveRun&&) noexcept = default;
 LiveRun& LiveRun::operator=(LiveRun&&) noexcept = default;
 LiveRun::~LiveRun() = default;
 
-Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model) {
+Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
+                               const std::optional<LivePropulsion>& propulsion) {
     const AnalysisCase& c = resolved.spec;
     if (!c.time.step || !(*c.time.step > 0.0f)) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "a live run needs the case's time.step: the solver's own step rule is "
                                      "Physics' to write, and doesn't exist yet"});
     }
+    // L6: no path records still air under a drone that should be thrusting.
+    if (!model.rotors.empty() && !propulsion) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "the model '" + model.name + "' has " + std::to_string(model.rotors.size()) +
+                                         " rotors, and a live run needs their propulsion (the chain, idle and "
+                                         "state of charge) to turn a throttle into rotor speed"});
+    }
+    if (propulsion) {
+        // The throttle map's own checks, at rest, so a bad input is refused
+        // here and not on the first step.
+        if (Result<double> d = vehicles::armed_duty(false, 0.0, propulsion->idle); !d) {
+            return std::unexpected(Error{d.error().code, "the propulsion's idle: " + d.error().context});
+        }
+        if (Result<vehicles::DutyCommand> at_rest =
+                vehicles::rotor_omega_for_duty(propulsion->chain, 0.0, c.fluid.density, propulsion->soc);
+            !at_rest) {
+            return std::unexpected(Error{at_rest.error().code, "the propulsion: " + at_rest.error().context});
+        }
+    }
     auto impl = std::make_unique<Impl>();
     impl->resolved = resolved;
     impl->model = model;
+    if (!model.rotors.empty()) impl->propulsion = propulsion;
+    impl->density = c.fluid.density;
     impl->h_ns = static_cast<uint64_t>(static_cast<double>(*c.time.step) * static_cast<double>(kNsPerSecond) + 0.5);
 
     // The fluid: the resolved base grid, with the drone box's faces.
@@ -123,6 +276,7 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     // The world's origin is the box's centre, where the drone is held.
     const af::GridShape& g = resolved.base;
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
+    impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
 
     // The drone: one body of the model in a world of its own, without
@@ -149,6 +303,9 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->vehicle = *vehicle;
     if (Result<void> r = impl->sim->flush_structural(); !r) return std::unexpected(r.error());
     impl->state.rotor_omega.assign(model.rotors.size(), 0.0f);
+    impl->omega_cmd.assign(model.rotors.size(), 0.0f);
+    impl->rows.resize(model.rotors.size());
+    impl->discs.resize(model.rotors.size());
     impl->q_bd = glm::normalize(model.design_to_principal);
     const Result<const BodyState*> spawned = impl->sim->body(impl->vehicle.body);
     if (!spawned) return std::unexpected(spawned.error());
@@ -164,14 +321,18 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
 Result<void> LiveRun::step(const Controls& controls) {
     Impl& r = *impl_;
     if (!r.fault.empty()) return std::unexpected(Error{Code::internal, r.fault});
-    // L6, the lead's condition: until the rotors are coupled, a model with
-    // rotors doesn't step, so no path records still air under a drone that
-    // should be thrusting.
-    if (!r.model.rotors.empty()) {
-        return std::unexpected(Error{Code::unavailable,
-                                     "rotors not coupled yet (P7a, Core's command): the model '" + r.model.name +
-                                         "' has " + std::to_string(r.model.rotors.size()) +
-                                         " rotors, and a live run doesn't step them yet"});
+
+    // The rotors' command, before anything steps: the throttle through the
+    // arm rule and the chain, the same speed for every rotor.
+    uint32_t flags = 0;
+    if (r.propulsion) {
+        const Result<double> duty = vehicles::armed_duty(controls.armed, controls.throttle, r.propulsion->idle);
+        if (!duty) return std::unexpected(duty.error());
+        const Result<vehicles::DutyCommand> cmd =
+            vehicles::rotor_omega_for_duty(r.propulsion->chain, *duty, r.density, r.propulsion->soc);
+        if (!cmd) return std::unexpected(cmd.error());
+        std::fill(r.omega_cmd.begin(), r.omega_cmd.end(), cmd->omega_cmd);
+        flags = cmd->flags;
     }
     const uint64_t now_ns = r.state.steps * r.h_ns;
 
@@ -201,6 +362,9 @@ Result<void> LiveRun::step(const Controls& controls) {
     if (Result<void> s = r.sim->set_body_state(r.vehicle.body, body.pos, body.orient, body.vel, body.omega); !s) {
         return std::unexpected(s.error());
     }
+    if (!r.omega_cmd.empty()) {
+        if (Result<void> s = r.sim->set_rotor_commands(r.vehicle, r.omega_cmd); !s) return std::unexpected(s.error());
+    }
     if (Result<void> s = r.sim->step(1); !s) return std::unexpected(s.error());
     // The body as held, not as one step's gravity left it: what the rotors'
     // discs and the drawing pose from.
@@ -214,7 +378,18 @@ Result<void> LiveRun::step(const Controls& controls) {
     for (uint32_t i = 0; i < r.state.rotor_omega.size(); ++i) {
         const Result<const vehicles::RotorRow*> row = r.sim->rotor(r.vehicle, i);
         if (!row) return std::unexpected(row.error());
+        r.rows[i] = **row;
         r.state.rotor_omega[i] = (*row)->omega;
+    }
+
+    // The rotors' discs at the held body, into the fluid's step.
+    if (!r.rows.empty()) {
+        if (Result<void> d = vehicles::rotor_discs(r.rows, r.held, r.grid_origin, r.resolved.base, r.discs); !d) {
+            return std::unexpected(d.error());
+        }
+        for (const af::ActuatorDisc& d : r.discs) {
+            af::spread_actuator(d, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch.du, r.scratch.dv, r.scratch.dw);
+        }
     }
 
     // The fluid.
@@ -230,6 +405,7 @@ Result<void> LiveRun::step(const Controls& controls) {
     r.state.attitude = attitude;
     r.state.omega_body = omega;
     r.state.armed = controls.armed;
+    r.state.propulsion_flags = flags;
     return {};
 }
 
@@ -253,7 +429,7 @@ double LiveRun::step_s() const noexcept { return seconds(impl_->h_ns); }
 
 const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
-std::string LiveRun::run_line() const {
+std::string LiveRun::run_label() const {
     const Impl& r = *impl_;
     const af::GridShape& g = r.resolved.base;
     std::string out;
@@ -266,10 +442,184 @@ std::string LiveRun::run_line() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
-    out += std::format(" \xc2\xb7 t = {:.3f} s", r.state.t_s);
+    if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
+        out += " \xc2\xb7 " + limits;
+    }
     return out;
 }
 
+std::string LiveRun::run_line() const {
+    return run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+}
+
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
+
+Result<void> LiveRun::save(const std::filesystem::path& file) const {
+    const Impl& r = *impl_;
+    if (!r.fault.empty()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "a faulted run isn't saved (" + r.fault + "); its last good save is the one before"});
+    }
+    Writer w;
+    w.out.append(kSaveMagic);
+    w.put<uint32_t>(kLiveRunSaveVersion);
+    w.put<uint64_t>(r.resolved.hash);
+    w.put<uint64_t>(vehicles::model_identity(r.model));
+    w.put<uint64_t>(vehicles::parts_identity(r.model));
+    w.put<uint8_t>(r.propulsion ? 1 : 0);
+    w.put<uint64_t>(r.propulsion ? vehicles::propulsion_identity(r.propulsion->chain) : 0);
+    w.put<double>(r.propulsion ? r.propulsion->idle : 0.0);
+    w.put<double>(r.propulsion ? r.propulsion->soc : 0.0);
+    w.put<uint64_t>(r.h_ns);
+    w.put<uint64_t>(r.state.steps);
+    w.put<uint64_t>(r.state.frames);
+    w.put(r.yaw);
+    w.put(r.pitch);
+    w.put(r.roll);
+    w.put(r.state.attitude);
+    w.put(r.state.omega_body);
+    w.put<uint8_t>(r.state.armed ? 1 : 0);
+    w.put<uint32_t>(r.state.propulsion_flags);
+    w.put(r.held.pos);
+    w.put(r.held.orient);
+    w.put(r.held.vel);
+    w.put(r.held.omega_body);
+    std::string controls;
+    if (!r.flown.points.empty()) {
+        Result<std::string> text = program_to_yaml(r.flown);
+        if (!text) return std::unexpected(text.error());
+        controls = std::move(*text);
+    }
+    w.bytes(controls);
+    const Result<SnapshotBlob> snapshot = r.sim->snapshot();
+    if (!snapshot) return std::unexpected(snapshot.error());
+    w.bytes(as_text(snapshot->bytes()));
+    const std::vector<std::byte> grid = af::grid_to_bytes(r.grid);
+    w.bytes(as_text(grid));
+    w.put<uint64_t>(rng::fnv1a64(w.out));
+    return detail::replace_file(file, w.out);
+}
+
+Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const ResolvedCase& resolved,
+                                 const vehicles::ModelType& model, const std::optional<LivePropulsion>& propulsion) {
+    const Result<std::string> read = detail::read_file_shared(file);
+    if (!read) return std::unexpected(read.error());
+    const std::string_view in(*read);
+    const std::string name = "'" + path_text(file) + "'";
+    const auto refuse = [&](Code code, const std::string& why) {
+        return std::unexpected(Error{code, name + " " + why});
+    };
+    if (in.size() < kSaveMagic.size() + 4 || in.substr(0, kSaveMagic.size()) != kSaveMagic) {
+        return refuse(Code::io_error, "is not a LiveRun save");
+    }
+    uint32_t version = 0;
+    std::memcpy(&version, in.data() + kSaveMagic.size(), sizeof(version));
+    if (version != kLiveRunSaveVersion) {
+        return refuse(Code::schema_mismatch, "is a LiveRun save of version " + std::to_string(version) +
+                                                 "; this build reads version " + std::to_string(kLiveRunSaveVersion));
+    }
+    const std::size_t head = kSaveMagic.size() + 4;
+    if (in.size() < head + 8) return refuse(Code::invalid_argument, "is cut short");
+    uint64_t stored = 0;
+    std::memcpy(&stored, in.data() + in.size() - 8, sizeof(stored));
+    if (stored != rng::fnv1a64(in.substr(0, in.size() - 8))) {
+        return refuse(Code::invalid_argument, "fails its checksum: it is corrupted or cut short");
+    }
+
+    Reader rd{in.substr(head, in.size() - head - 8)};
+    const uint64_t case_hash = rd.get<uint64_t>();
+    const uint64_t model_id = rd.get<uint64_t>();
+    const uint64_t parts_id = rd.get<uint64_t>();
+    const bool powered = rd.get<uint8_t>() != 0;
+    const uint64_t propulsion_id = rd.get<uint64_t>();
+    const double idle = rd.get<double>();
+    const double soc = rd.get<double>();
+    if (!rd.ok) return refuse(Code::invalid_argument, "is cut short");
+    if (case_hash != resolved.hash) {
+        return refuse(Code::invalid_argument,
+                      "is a save of another case (" + hex(case_hash) + "), not this one (" + hex(resolved.hash) + ")");
+    }
+    if (model_id != vehicles::model_identity(model)) {
+        return refuse(Code::invalid_argument, "is a save of another model (" + hex(model_id) + "), not this one (" +
+                                                  hex(vehicles::model_identity(model)) + ")");
+    }
+    if (parts_id != vehicles::parts_identity(model)) {
+        return refuse(Code::invalid_argument, "is a save of another model's parts (" + hex(parts_id) + "), not these (" +
+                                                  hex(vehicles::parts_identity(model)) + ")");
+    }
+    if (powered != propulsion.has_value()) {
+        return refuse(Code::invalid_argument, powered ? "is a save of a run with its propulsion chain (" +
+                                                            hex(propulsion_id) + "); restore it with that propulsion"
+                                                      : "is a save of a run without a propulsion chain");
+    }
+    if (propulsion) {
+        const uint64_t mine = vehicles::propulsion_identity(propulsion->chain);
+        if (propulsion_id != mine) {
+            return refuse(Code::invalid_argument, "is a save of another propulsion chain (" + hex(propulsion_id) +
+                                                      "), not this one (" + hex(mine) + ")");
+        }
+        if (std::bit_cast<uint64_t>(idle) != std::bit_cast<uint64_t>(propulsion->idle)) {
+            return refuse(Code::invalid_argument, std::format("flew at an idle of {}, not {}", idle, propulsion->idle));
+        }
+        if (std::bit_cast<uint64_t>(soc) != std::bit_cast<uint64_t>(propulsion->soc)) {
+            return refuse(Code::invalid_argument,
+                          std::format("flew at a state of charge of {}, not {}", soc, propulsion->soc));
+        }
+    }
+    const uint64_t h_ns = rd.get<uint64_t>();
+    const uint64_t steps = rd.get<uint64_t>();
+    const uint64_t frames = rd.get<uint64_t>();
+    const float yaw = rd.get<float>();
+    const float pitch = rd.get<float>();
+    const float roll = rd.get<float>();
+    const glm::quat attitude = rd.quat();
+    const glm::vec3 omega_body = rd.vec();
+    const bool armed = rd.get<uint8_t>() != 0;
+    const uint32_t propulsion_flags = rd.get<uint32_t>();
+    const glm::vec3 held_pos = rd.vec();
+    const glm::quat held_orient = rd.quat();
+    const glm::vec3 held_vel = rd.vec();
+    const glm::vec3 held_omega = rd.vec();
+    const std::string_view controls = rd.bytes();
+    const std::string_view snapshot = rd.bytes();
+    const std::string_view grid = rd.bytes();
+    if (!rd.ok || rd.at != rd.in.size()) return refuse(Code::invalid_argument, "is malformed");
+
+    // The run as the case builds it, then its saved state over it.
+    Result<LiveRun> run = start(resolved, model, propulsion);
+    if (!run) return std::unexpected(run.error());
+    Impl& r = *run->impl_;
+    if (h_ns != r.h_ns) return refuse(Code::invalid_argument, "steps at another h");
+    if (Result<void> g = af::grid_from_bytes(as_bytes(grid), r.grid); !g) return std::unexpected(g.error());
+    Result<SnapshotBlob> blob =
+        SnapshotBlob::from_bytes(std::vector<std::byte>(as_bytes(snapshot).begin(), as_bytes(snapshot).end()));
+    if (!blob) return std::unexpected(blob.error());
+    if (Result<void> s = r.sim->restore(*blob); !s) return std::unexpected(s.error());
+    if (!controls.empty()) {
+        Result<ControlProgram> program = program_from_yaml(controls);
+        if (!program) return std::unexpected(program.error());
+        r.flown = std::move(*program);
+    }
+    r.yaw = yaw;
+    r.pitch = pitch;
+    r.roll = roll;
+    r.state.steps = steps;
+    r.state.frames = frames;
+    r.state.t_s = seconds(steps * r.h_ns);
+    r.state.attitude = attitude;
+    r.state.omega_body = omega_body;
+    r.state.armed = armed;
+    r.state.propulsion_flags = propulsion_flags;
+    r.held.pos = held_pos;
+    r.held.orient = held_orient;
+    r.held.vel = held_vel;
+    r.held.omega_body = held_omega;
+    for (uint32_t i = 0; i < r.state.rotor_omega.size(); ++i) {
+        const Result<const vehicles::RotorRow*> row = r.sim->rotor(r.vehicle, i);
+        if (!row) return std::unexpected(row.error());
+        r.state.rotor_omega[i] = (*row)->omega;
+    }
+    return run;
+}
 
 }  // namespace spade::analysis
