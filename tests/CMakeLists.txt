@@ -99,6 +99,7 @@ add_executable(spade_tests
     test_world_file.cpp
     test_scene_file.cpp
     test_model_file.cpp
+    test_object_file.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp

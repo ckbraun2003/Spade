@@ -51,6 +51,7 @@
 #include "render_parts/render_parts.hpp"
 #include "scene/compose.hpp"
 #include "scene/model_file.hpp"
+#include "scene/object_file.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -233,6 +234,35 @@ int main() {
         return 1;
     }
     std::printf("spade::scene OK: a model file round-tripped through model_to_yaml and model_from_yaml\n");
+
+    // The object file, installed: one placeable object and the material it
+    // brings, as the editor's library holds one, round-tripped and placed in
+    // the scene above with add_object(). It shares the scene's asset block
+    // through scene/detail/, which is not installed, so this is what proves
+    // the installed header needs nothing from there.
+    spade::scene::ObjectFile object_file;
+    object_file.object.name = "consumer_ball";
+    object_file.object.visual = {"props/ball", "consumer_red"};
+    object_file.materials.push_back(
+        spade::MaterialDesc{"consumer_red", glm::vec4(0.8f, 0.1f, 0.1f, 1.0f), spade::MaterialShading::lambert});
+    const spade::Result<std::string> object_text = spade::scene::object_to_yaml(object_file);
+    if (!object_text) {
+        std::fprintf(stderr, "spade::scene::object_to_yaml failed: %s\n", object_text.error().context.c_str());
+        return 1;
+    }
+    const spade::Result<spade::scene::ObjectFile> object_back = spade::scene::object_from_yaml(*object_text);
+    if (!object_back || spade::scene::object_to_yaml(*object_back).value_or("") != *object_text) {
+        std::fprintf(stderr, "spade::scene::object_from_yaml did not round-trip the object file\n");
+        return 1;
+    }
+    spade::scene::SceneDesc placed = *scene;
+    const spade::Result<void> added = spade::scene::add_object(placed, *object_back, "consumer_ball_1", spade::SdfPose{});
+    if (!added || placed.assets.size() != scene->assets.size() + 1 || placed.materials.size() != 1) {
+        std::fprintf(stderr, "spade::scene::add_object did not place the object: %s\n",
+                     added ? "wrong counts" : added.error().context.c_str());
+        return 1;
+    }
+    std::printf("spade::scene OK: an object file round-tripped and was placed with add_object\n");
 
     // spade::analysis (INT-6): a case through its file, as Kat's builder
     // reads and writes one. Calling into case_file.cpp is what pulls it from

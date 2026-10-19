@@ -971,10 +971,16 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # propulsion chain): the scene's per-model block, shared through
 # scene/detail/model_block.hpp, so it lives beside the scene file, with the
 # same links. tests/consumer round-trips one too.
+#
+# scene/object_file.cpp is the object file (one placeable object and the
+# materials it brings) and add_object(), the one way to place one: the scene's
+# per-asset block, shared through scene/detail/asset_block.hpp, beside the
+# model file for the same reasons. tests/consumer round-trips and places one.
 # ------------------------------------------------------------------------------
 add_library(spade_scene STATIC
     scene/compose.cpp
     scene/model_file.cpp
+    scene/object_file.cpp
     scene/scene_file.cpp
 )
 add_library(spade::scene ALIAS spade_scene)
@@ -997,9 +1003,9 @@ install(TARGETS spade_scene
     ARCHIVE DESTINATION lib
     INCLUDES DESTINATION include
 )
-# scene/detail/ is internal, as world/detail/ is: model_block.hpp (one model's
-# text block, which the scene file shares) names yaml-cpp types, and no
-# installed header includes it.
+# scene/detail/ is internal, as world/detail/ is: model_block.hpp and
+# asset_block.hpp (one model's and one asset's text blocks, which the scene
+# file shares) name yaml-cpp types, and no installed header includes them.
 install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp"
     PATTERN "detail" EXCLUDE)
 

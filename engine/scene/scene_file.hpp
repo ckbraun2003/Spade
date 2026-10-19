@@ -136,7 +136,8 @@ struct SceneDesc {
 //     and across assets and vehicles together (SCN-004);
 //   - world.file: non-empty, relative, forward slashes only;
 //   - materials: the world palette's rules (non-empty name, finite colour,
-//     known shading);
+//     known shading), and unique names, as an object file's list
+//     (scene/object_file.hpp);
 //   - models: ModelType::validate(), its parts' rules included (CORE-7: the
 //     model's own message, which names the part and the field), and
 //     design_to_principal a unit quaternion (SCN-009); each part's shape
@@ -150,7 +151,8 @@ struct SceneDesc {
 //     that SdfProgram::validate() accepts, with no indices in node_materials
 //     and collider_materials empty or one non-empty name per node, and no
 //     transforms without nodes; a visual with both names or neither; and at
-//     least one of the two halves;
+//     least one of the two halves. These per-asset rules are the object
+//     file's too, one function for both (scene/object_file.hpp, TD-9);
 //   - vehicles: a model the scene declares, and a start with a finite state,
 //     a unit orientation and rotor_omega >= 0.
 // capacity_exceeded passes through from a collider deeper than kMaxSdfDepth.
