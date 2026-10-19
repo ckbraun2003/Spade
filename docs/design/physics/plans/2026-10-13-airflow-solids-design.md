@@ -97,7 +97,11 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
   - **At an edge: announced.** Every leaking run lies within 4 cells (Chebyshev) of a cell with a face the part closes (θ = 0), where the part is resolved. Their total open area is at most 2% of the part's frontal area (the largest face of its bounds). The run line names the part, its number of leaking runs and their total open area.
     - Why 4 cells: a 30° wedge closes faces from about 2–4 dx from its tip, so its tip leaks lie within that reach.
     - A long thin plate has no closed face, so it is never "at an edge".
-  - **Sheet-like: a sheet, announced.** A part is sheet-like when it closes no face, has at least one thin crossing, and every crossing's thickness estimate is under 2 dx. That is a plate tilted inside its own frame, whose bounds look thick. It becomes a sheet with its largest thin-crossing thickness. The run line names it, with its declared and measured thickness.
+  - **Sheet-like: a sheet, announced.** A part is sheet-like when it closes no face, has at least one thin crossing, and every thin crossing is *wide*: at its mid-point, a probe 2 dx along each tangent of its entry normal, one way or the other, lands within dx/2 of the part (the lead's ruling, 2026-10-19). That is a plate tilted inside its own frame, or a curved shell such as a canopy, whose bounds look thick. A shell of radius R leaves its tangent plane by (2 dx)²/2R, inside its half-thickness for R ≳ 8 dx at 0.5 dx thick. It becomes a sheet with its largest thin-crossing thickness. The run line names it, with its declared and measured thickness.
+  - **Not a sheet: a wire or a bead.** A blob with a thin crossing that is *narrow* along a tangent is refused: "thin in more than one direction (a wire or a bead, not a sheet)".
+    - Supersedes the first rule, "every crossing's thickness estimate is under 2 dx", which refused its own case: lines along a plate enter through its rim at τ = its width. That rule also sheeted a tilted wire (P2 Task 2 measured it).
+    - Also supersedes the interim one-direction rule, which refused curved shells.
+    - Pinned by the plate, canopy, rod and bead tests, with a mutation for each.
     - A plate-like part by its extents never gets this far: the classifier has already sheeted it.
     - A compact blob has no opposing crossing, so it is refused.
   - **Otherwise refused by name,** with the first leaking run's location and "declare min_feature or refine dx".
