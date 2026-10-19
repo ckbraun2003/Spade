@@ -2,14 +2,16 @@
 // docs/design/interface/plans/2026-10-13-i1-harness-design.md): the one
 // stepping core behind D1's recording, D2's panel, the queued runner and
 // Kat's host. This first slice: the grid, the held drone, time in whole
-// nanoseconds, frames at k/30 s, determinism and the refusals. The rotors
-// join with Core's throttle command and Physics' P7a; the solids with P2.
+// nanoseconds, frames at k/30 s, determinism and the refusals; then the
+// rotors, through Core's throttle map (armed_duty, rotor_omega_for_duty) and
+// Physics' P7a discs. The solids join with P2.
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -21,7 +23,9 @@
 #include "scene/scene_file.hpp"
 #include "sim/design_frame.hpp"
 #include "state/layout.hpp"
+#include "analysis_powered_quad.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/propulsion_flags.hpp"
 
 namespace {
 
@@ -38,9 +42,14 @@ namespace fs = std::filesystem;
     return m;
 }
 
-// The quad without its rotors either: until the rotors are coupled (P7a and
-// Core's throttle command) LiveRun refuses to step a model that has them, so
-// the stepping tests fly a body alone.
+using Powered = an::test::PoweredQuad;
+[[nodiscard]] Powered powered() { return an::test::powered_quad(); }
+[[nodiscard]] float commanded(const Powered& p, float throttle, double density) {
+    return an::test::commanded_omega(p, throttle, density);
+}
+
+// The quad without its rotors: a body alone, for the tests of the hold, the
+// time and the frames.
 [[nodiscard]] spade::vehicles::ModelType rotorless() {
     spade::vehicles::ModelType m = quad();
     m.rotors.clear();
@@ -72,6 +81,12 @@ namespace fs = std::filesystem;
     return std::move(*run);
 }
 
+[[nodiscard]] an::LiveRun started(const an::AnalysisCase& c, const Powered& p) {
+    spade::Result<an::LiveRun> run = an::LiveRun::start(resolved(c, p.model), p.model, p.propulsion);
+    EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+    return std::move(*run);
+}
+
 // The design frame's attitude for yaw, then pitch, then roll (degrees), as
 // the case's Controls state it: yaw about +Y, pitch about +Z, roll about +X.
 [[nodiscard]] glm::quat attitude(float yaw, float pitch, float roll) {
@@ -88,8 +103,9 @@ namespace fs = std::filesystem;
 }  // namespace
 
 TEST(AnalysisLiveRun, StartsHeldAtRestAtTimeZero) {
-    const spade::vehicles::ModelType m = quad();
-    const an::LiveRun run = started(tiny_case(m), m);
+    const Powered p = powered();
+    const spade::vehicles::ModelType& m = p.model;
+    const an::LiveRun run = started(tiny_case(m), p);
     EXPECT_EQ(run.state().t_s, 0.0);
     EXPECT_EQ(run.state().steps, 0u);
     EXPECT_EQ(run.state().frames, 0u);
@@ -124,19 +140,100 @@ TEST(AnalysisLiveRun, CountsTimeInWholeSteps) {
     EXPECT_EQ(run.state().t_s, 1.0);
 }
 
-// No path records still air under a drone that should be thrusting (L6;
-// the lead's condition): a model with rotors starts, but doesn't step, until
-// its rotors are coupled. The commit that couples them removes this test.
-TEST(AnalysisLiveRun, RefusesToStepRotorsBeforeTheyAreCoupled) {
+// A model with rotors needs its propulsion chain: without it, no throttle
+// turns a rotor, and a run would record still air under a drone that should
+// be thrusting (L6).
+TEST(AnalysisLiveRun, ARotorModelNeedsItsPropulsion) {
     const spade::vehicles::ModelType m = quad();
-    an::LiveRun run = started(tiny_case(m), m);
-    const spade::Result<void> step = run.step(an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f});
-    ASSERT_FALSE(step.has_value());
-    EXPECT_EQ(step.error().code, spade::Code::unavailable);
-    EXPECT_NE(step.error().context.find("rotors not coupled yet (P7a, Core's command)"), std::string::npos)
-        << step.error().context;
+    const spade::Result<an::LiveRun> run = an::LiveRun::start(resolved(tiny_case(m), m), m);
+    ASSERT_FALSE(run.has_value());
+    EXPECT_EQ(run.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(run.error().context.find("propulsion"), std::string::npos) << run.error().context;
+}
+
+// The chain's inputs are checked when the run starts, not on its first step.
+TEST(AnalysisLiveRun, RefusesABadIdleOrStateOfCharge) {
+    for (const auto& [idle, soc, field] : {std::tuple{1.0, 0.8, "idle"}, std::tuple{-0.1, 0.8, "idle"},
+                                           std::tuple{0.05, 1.5, "soc"}}) {
+        Powered p = powered();
+        p.propulsion.idle = idle;
+        p.propulsion.soc = soc;
+        const spade::Result<an::LiveRun> run =
+            an::LiveRun::start(resolved(tiny_case(p.model), p.model), p.model, p.propulsion);
+        ASSERT_FALSE(run.has_value()) << field;
+        EXPECT_NE(run.error().context.find(field), std::string::npos) << run.error().context;
+    }
+}
+
+// Disarmed, the rotors stay still. Armed, each spins up to the speed the
+// chain commands for the throttle (idle + (1 - idle) throttle, through the
+// chain at the case's density), lagging on its fitted tau. Disarmed again,
+// each spins down: disarm is a command of 0, never a disabled rotor.
+TEST(AnalysisLiveRun, ArmedRotorsSpinToTheChainsCommandAndDisarmedSpinDown) {
+    const Powered p = powered();
+    const an::AnalysisCase c = tiny_case(p.model);
+    an::LiveRun run = started(c, p);
+    for (int i = 0; i < 25; ++i) ASSERT_TRUE(run.step(an::Controls{false, 0.5f, 0, 0, 0}).has_value());
+    for (const float w : run.state().rotor_omega) EXPECT_EQ(w, 0.0f) << "a disarmed rotor turned";
+    EXPECT_FALSE(run.state().armed);
+
+    const float want = commanded(p, 0.5f, c.fluid.density);
+    ASSERT_GT(want, 100.0f);
+    for (int i = 0; i < 250; ++i) ASSERT_TRUE(run.step(an::Controls{true, 0.5f, 0, 0, 0}).has_value());  // 1 s
+    EXPECT_TRUE(run.state().armed);
+    for (const float w : run.state().rotor_omega) EXPECT_NEAR(w, want, 0.005f * want);
+
+    for (int i = 0; i < 250; ++i) ASSERT_TRUE(run.step(an::Controls{false, 0.5f, 0, 0, 0}).has_value());
+    for (const float w : run.state().rotor_omega) EXPECT_LT(w, 0.01f * want) << "a disarmed rotor kept turning";
+}
+
+// The discs push the air down, through the box, from the held drone's rotors;
+// a disarmed drone leaves it still.
+TEST(AnalysisLiveRun, ArmedRotorsPushTheAirDown) {
+    const Powered p = powered();
+    const an::AnalysisCase c = tiny_case(p.model);
+    an::LiveRun run = started(c, p);
     spade::FlowVolume volume;
-    EXPECT_FALSE(run.advance_frame(an::Controls{}, volume).has_value());
+    for (int f = 0; f < 6; ++f) ASSERT_TRUE(run.advance_frame(an::Controls{true, 0.5f, 0, 0, 0}, volume).has_value());
+    EXPECT_LT(volume.header.channel_min[spade::kFlowV], -0.05f) << "no downwash after 0.2 s at half throttle";
+    an::LiveRun still = started(c, p);
+    for (int f = 0; f < 6; ++f) {
+        ASSERT_TRUE(still.advance_frame(an::Controls{false, 0.5f, 0, 0, 0}, volume).has_value());
+    }
+    EXPECT_EQ(volume.header.channel_min[spade::kFlowV], 0.0f);
+    EXPECT_EQ(volume.header.channel_max[spade::kFlowV], 0.0f);
+}
+
+// A limit is an operating point the chain really settles at: the step goes
+// on, and the limit is announced in the state and on the run's label.
+TEST(AnalysisLiveRun, ALimitIsAnnouncedNotRefused) {
+    Powered p = powered();
+    p.propulsion.chain.current_max = 4.0;  // a motor that can't take full throttle
+    an::LiveRun run = started(tiny_case(p.model), p);
+    EXPECT_EQ(run.run_label().find("current limit"), std::string::npos) << run.run_label();
+    for (int i = 0; i < 25; ++i) ASSERT_TRUE(run.step(an::Controls{true, 1.0f, 0, 0, 0}).has_value());
+    EXPECT_NE(run.state().propulsion_flags & spade::vehicles::propulsion_flags::current_limited, 0u);
+    EXPECT_NE(run.run_label().find("motors at their current limit"), std::string::npos) << run.run_label();
+    EXPECT_NE(run.run_line().find("motors at their current limit"), std::string::npos) << run.run_line();
+}
+
+// The run line is the label, then the time.
+TEST(AnalysisLiveRun, TheRunLineIsItsLabelThenTheTime) {
+    const Powered p = powered();
+    an::LiveRun run = started(tiny_case(p.model), p);
+    const std::string dot = "\xc2\xb7";  // a middle dot
+    EXPECT_EQ(run.run_line(), run.run_label() + " " + dot + " t = 0.000 s");
+    for (int i = 0; i < 25; ++i) ASSERT_TRUE(run.step(an::Controls{true, 0.5f, 0, 0, 0}).has_value());
+    EXPECT_EQ(run.run_line(), run.run_label() + " " + dot + " t = 0.100 s");
+}
+
+// A throttle the case can't hold is refused by name, and the run stays put.
+TEST(AnalysisLiveRun, RefusesAThrottleOutOfRange) {
+    const Powered p = powered();
+    an::LiveRun run = started(tiny_case(p.model), p);
+    const spade::Result<void> step = run.step(an::Controls{true, 1.5f, 0, 0, 0});
+    ASSERT_FALSE(step.has_value());
+    EXPECT_NE(step.error().context.find("throttle"), std::string::npos) << step.error().context;
     EXPECT_EQ(run.state().steps, 0u);
 }
 

@@ -3,7 +3,7 @@
 // restored run gives exactly the frames an unbroken one does. The file holds
 // Physics' grid (u, v, w, p), Core's Simulation snapshot, the hold, the
 // counters and the recorded controls, under one checksum. It refuses another
-// case, model or version, and a corrupted file, by name.
+// case, model, propulsion or version, and a corrupted file, by name.
 
 #include <gtest/gtest.h>
 
@@ -11,12 +11,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
+#include "analysis_powered_quad.hpp"
 #include "core/flow_volume.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
@@ -48,6 +51,7 @@ namespace fs = std::filesystem;
     c.flight.kind = an::FlightKind::forward;
     c.flight.speed = speed;
     c.flight.heading_deg = 20.0f;
+    c.rotors.assign(m.rotors.size(), an::RotorSetup{});
     const auto r = an::resolve(c, m);
     EXPECT_TRUE(r.has_value());
     return r ? *r : an::ResolvedCase{};
@@ -60,19 +64,29 @@ namespace fs = std::filesystem;
                                {0.12f, an::Controls{false, 0.0f, 20.0f, -15.0f, 10.0f}}}};
 }
 
-[[nodiscard]] an::LiveRun started(const an::ResolvedCase& r, const spade::vehicles::ModelType& m) {
-    spade::Result<an::LiveRun> run = an::LiveRun::start(r, m);
+// Armed and turning at half throttle, so the rotors' speeds and the air they
+// push are state too.
+[[nodiscard]] an::ControlProgram powered_turn() {
+    return an::ControlProgram{{{0.0f, an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f}},
+                               {0.05f, an::Controls{true, 0.6f, 20.0f, 0.0f, 0.0f}},
+                               {0.12f, an::Controls{true, 0.4f, 20.0f, -15.0f, 10.0f}}}};
+}
+
+[[nodiscard]] an::LiveRun started(const an::ResolvedCase& r, const spade::vehicles::ModelType& m,
+                                  const std::optional<an::LivePropulsion>& propulsion = std::nullopt) {
+    spade::Result<an::LiveRun> run = an::LiveRun::start(r, m, propulsion);
     EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
     return std::move(*run);
 }
 
-// Flies `frames` frames of the turning program, returning each frame's volume.
-[[nodiscard]] std::vector<spade::FlowVolume> fly(an::LiveRun& run, int frames) {
+// Flies `frames` frames of `program`, returning each frame's volume.
+[[nodiscard]] std::vector<spade::FlowVolume> fly(an::LiveRun& run, int frames,
+                                                 const an::ControlProgram& program = turning()) {
     std::vector<spade::FlowVolume> out;
     for (int i = 0; i < frames; ++i) {
         spade::FlowVolume v;
         const spade::Result<an::LiveFrame> f =
-            run.advance_frame(an::controls_at(turning(), static_cast<float>(run.state().t_s)), v);
+            run.advance_frame(an::controls_at(program, static_cast<float>(run.state().t_s)), v);
         EXPECT_TRUE(f.has_value()) << (f ? "" : f.error().context);
         out.push_back(std::move(v));
     }
@@ -199,4 +213,52 @@ TEST(AnalysisLiveRunSave, RefusesACorruptedFileByName) {
     const spade::Result<an::LiveRun> missing = an::LiveRun::restore(dir.path() / "none.livesave", r, m);
     ASSERT_FALSE(missing.has_value());
     EXPECT_EQ(missing.error().code, spade::Code::io_error);
+}
+
+// The A/B with the rotors turning: the restored run's rotors, and the air they
+// push, go on exactly as the unbroken run's.
+TEST(AnalysisLiveRunSave, ARestoredPoweredRunMatchesAnUnbrokenOne) {
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    an::LiveRun unbroken = started(r, p.model, p.propulsion);
+    std::vector<spade::FlowVolume> all = fly(unbroken, 6, powered_turn());
+    const std::vector<spade::FlowVolume> last(all.begin() + 3, all.end());
+
+    const spade::test::TempDir dir("live_save");
+    const fs::path file = dir.path() / "powered.livesave";
+    an::LiveRun first = started(r, p.model, p.propulsion);
+    (void)fly(first, 3, powered_turn());
+    ASSERT_TRUE(first.save(file).has_value());
+    spade::Result<an::LiveRun> resumed = an::LiveRun::restore(file, r, p.model, p.propulsion);
+    ASSERT_TRUE(resumed.has_value()) << resumed.error().context;
+    EXPECT_EQ(resumed->state().rotor_omega, first.state().rotor_omega);
+    expect_same_frames(fly(*resumed, 3, powered_turn()), last);
+    EXPECT_EQ(resumed->state().rotor_omega, unbroken.state().rotor_omega);
+    EXPECT_EQ(resumed->state().propulsion_flags, unbroken.state().propulsion_flags);
+}
+
+// A save pins the propulsion it flew: another chain, idle or state of charge
+// is refused by name, and so is none.
+TEST(AnalysisLiveRunSave, RefusesAnotherPropulsion) {
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    const spade::test::TempDir dir("live_save");
+    const fs::path file = dir.path() / "powered.livesave";
+    an::LiveRun run = started(r, p.model, p.propulsion);
+    (void)fly(run, 1, powered_turn());
+    ASSERT_TRUE(run.save(file).has_value());
+
+    an::LivePropulsion chain = p.propulsion;
+    chain.chain.current_max *= 0.5;
+    an::LivePropulsion idle = p.propulsion;
+    idle.idle = 0.08;
+    an::LivePropulsion soc = p.propulsion;
+    soc.soc = 0.5;
+    for (const auto& [other, word] : {std::pair{chain, "propulsion chain"}, std::pair{idle, "idle"},
+                                      std::pair{soc, "state of charge"}}) {
+        const spade::Result<an::LiveRun> refused = an::LiveRun::restore(file, r, p.model, other);
+        ASSERT_FALSE(refused.has_value()) << word;
+        EXPECT_NE(refused.error().context.find(word), std::string::npos) << refused.error().context;
+    }
+    EXPECT_FALSE(an::LiveRun::restore(file, r, p.model).has_value()) << "restored without its propulsion";
 }
