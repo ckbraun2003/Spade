@@ -10,7 +10,9 @@ sources copied to /tmp/s. For each file it takes the command ninja records for
 that translation unit (`ninja -t compdb`), points its sources at /tmp/s, drops
 the depfile flags (the volume is read-only), writes the object to /tmp, and
 adds -Wall -Wextra -Wpedantic -Werror. A file the volume's build never
-compiled fails with the reason: run a leg first.
+compiled fails with the reason: run a leg first -- except a new spade_tests
+file (NEW_TESTS below), which borrows a sibling's command line, and the output
+says whose.
 
 Window-backend code. The leg's container has no X11, so GLFW builds without a
 window backend (SPADE_GLFW_HAS_BACKEND=0) and some code never meets gcc there:
@@ -50,6 +52,29 @@ UNCHECKED = {
     "sandbox/gl_target_sink.cpp":
         "its SPADE_SANDBOX_HAS_GL=1 branch includes <GL/gl.h>, which the leg's image lacks, so only MSVC compiles it",
 }
+
+# A new spade_tests file. Every tests/test_*.cpp is a spade_tests translation
+# unit, and CMake gives each one the target's single command line (no file in
+# tests/CMakeLists.txt sets flags of its own), so one the volume's build never
+# compiled borrows a sibling's: the first spade_tests file, in path order, that
+# the build does compile (the lead, 2026-10-19: a new test file was the one
+# file --compile could not check without a leg).
+NEW_TESTS = "tests/test_"
+
+
+def is_new_test(f):
+    return f.startswith(NEW_TESTS) and f.endswith(".cpp") and "/" not in f[len("tests/"):]
+
+
+def spade_tests_sibling(entries):
+    """(file, entry) of the first spade_tests translation unit the build compiles, or (None, None)."""
+    for name in sorted(entries):
+        entry = entries[name]
+        line = entry.get("command", " ".join(entry.get("arguments", [])))
+        if name.startswith("/leg/src/" + NEW_TESTS) and "/spade_tests.dir/" in entry.get("output", line):
+            return name[len("/leg/src/"):], entry
+    return None, None
+
 
 DROP_ONE = {"-MD", "-MMD"}
 DROP_TWO = {"-MF", "-MT", "-MQ", "-o"}
@@ -110,6 +135,16 @@ for f in files:
             rc = 1
             continue
         rc |= verdict(compile_with(model_entry, source=f), f, f"compiled with {model}'s command line: {why}")
+        continue
+    if is_new_test(f):
+        model, model_entry = spade_tests_sibling(by_file)
+        if model_entry is None:
+            print(f"gcc FAIL: {f}: a new spade_tests file, and volume {volume}'s build compiles no spade_tests file "
+                  "to borrow from; run a leg, then check again")
+            rc = 1
+            continue
+        rc |= verdict(compile_with(model_entry, source=f), f,
+                      f"compiled with {model}'s command line: a new spade_tests file the leg has not built")
         continue
     print(f"gcc FAIL: {f}: volume {volume}'s build does not compile it (a new file?); "
           "run a leg (scripts\\docker-leg.ps1), then check again")
