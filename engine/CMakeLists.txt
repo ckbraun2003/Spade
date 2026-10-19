@@ -729,6 +729,7 @@ add_library(spade_physics STATIC
     physics/airflow/pressure.cpp
     physics/airflow/multigrid.cpp
     physics/airflow/pcg.cpp
+    physics/airflow/regions.cpp
     physics/airflow/projection.cpp
     physics/airflow/advect.cpp
     physics/airflow/reduce.cpp

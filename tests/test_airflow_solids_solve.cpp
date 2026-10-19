@@ -13,10 +13,13 @@
 #include <vector>
 
 #include "airflow_solid_shapes.hpp"
+#include "physics/airflow/boundaries.hpp"
+#include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pcg.hpp"
 #include "physics/airflow/pressure.hpp"
 #include "physics/airflow/reduce.hpp"
+#include "physics/airflow/regions.hpp"
 #include "physics/airflow/solids.hpp"
 
 namespace {
@@ -235,6 +238,97 @@ TEST(AirflowSolidsSolve, TheFixedTileDotIsTheTileSumOfProducts) {
     const float d = fixed_tile_dot(a, b, 9, 7, 5);
     const float s = fixed_tile_sum(ab, 9, 7, 5);
     EXPECT_EQ(std::memcmp(&d, &s, sizeof d), 0) << d << " vs " << s;
+}
+
+// --- Fluid regions (P2 Task 5; design tests 5 and 9) -------------------------
+
+// A 16 x 8 x 8 box, a sheet 0.25 dx thick across it on face plane x = 5: two
+// regions, 5 x 64 and 11 x 64 cells.
+[[nodiscard]] SolidField cut_box(const GridShape& shape) {
+    airflow_test::Scene scene;
+    scene.shapes.push_back(airflow_test::Shape{.name = "divider", .kind = airflow_test::Kind::box,
+                                               .centre = {5.0f, 4.0f, 4.0f}, .half = {0.125f, 20.0f, 20.0f},
+                                               .min_feature = 0.25f});
+    SolidField f = *make_solid_field(shape);
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(0.25f, 8.0f, 8.0f);
+    EXPECT_TRUE(build_solids(f, shape, {}, parts, scene.sampler()).has_value());
+    return f;
+}
+
+[[nodiscard]] DomainBc walls() {
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    return bc;
+}
+
+TEST(AirflowRegions, ASheetCutsAClosedBoxIntoTwoRegions) {
+    const GridShape shape{16, 8, 8, 1.0f};
+    const SolidField f = cut_box(shape);
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    ASSERT_EQ(r.count, 2u);
+    EXPECT_EQ(r.cells[0], 5u * 64u);
+    EXPECT_EQ(r.cells[1], 11u * 64u);
+    EXPECT_EQ(r.first[0], 0u);
+    EXPECT_EQ(r.first[1], 5u);
+    EXPECT_EQ(r.label[cell_index(shape, 4, 3, 3)], 0u);
+    EXPECT_EQ(r.label[cell_index(shape, 5, 3, 3)], 1u);
+    const RegionFault fault = check_regions(r, shape, walls(), f);
+    EXPECT_EQ(fault.region, kNoRegion);
+    EXPECT_EQ(describe_regions(r), "fluid regions: 2 (0 with an outlet, 2 closed)");
+}
+
+// Design test 9's gauge: each closed region loses its own mean. Mutation: one
+// mean over all the fluid (reduce.hpp's remove_mean), which leaves each
+// region's mean wherever the values put it.
+TEST(AirflowRegions, EachClosedRegionLosesItsOwnMean) {
+    const GridShape shape{16, 8, 8, 1.0f};
+    const SolidField f = cut_box(shape);
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    ASSERT_EQ(check_regions(r, shape, walls(), f).region, kNoRegion);
+    std::vector<float> x(cell_index(shape, 15, 7, 7) + 1u);
+    Lcg rng;
+    for (std::size_t c = 0; c < x.size(); ++c) x[c] = rng.next() + (r.label[c] == 0u ? 3.0f : -1.0f);
+    remove_region_means(x, r, shape);
+    double mean[2] = {0.0, 0.0};
+    for (std::size_t c = 0; c < x.size(); ++c) mean[r.label[c]] += static_cast<double>(x[c]);
+    // fp32 rounding of a few hundred values of order 4: about 3e-7.
+    EXPECT_NEAR(mean[0] / r.cells[0], 0.0, 1.0e-5);
+    EXPECT_NEAR(mean[1] / r.cells[1], 0.0, 1.0e-5);
+}
+
+// Design test 5's region refusal: the -x wall moves in at 1 m/s and the +x
+// wall out at 1 m/s, so the whole domain balances (check_domain() passes),
+// but the sheet leaves the left region taking the inflow alone. Refused,
+// naming the region's first cell and its face.
+TEST(AirflowRegions, AClosedRegionWithANetPrescribedFluxIsRefused) {
+    const GridShape shape{16, 8, 8, 1.0f};
+    const SolidField f = cut_box(shape);
+    DomainBc bc = walls();
+    bc.wall_velocity[kXMinus] = glm::vec3(1.0f, 0.0f, 0.0f);
+    bc.wall_velocity[kXPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
+    ASSERT_TRUE(check_domain(bc, shape).has_value()) << "the domain as a whole balances";
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    const RegionFault fault = check_regions(r, shape, bc, f);
+    EXPECT_EQ(fault.region, 0u);
+    EXPECT_EQ(fault.cell, 0u);
+    EXPECT_EQ(fault.faces, 1u << kXMinus);
+}
+
+// An outlet pins its region: open faces in still air are outlets, so neither
+// side of the sheet is closed.
+TEST(AirflowRegions, AnOutletPinsItsRegion) {
+    const GridShape shape{16, 8, 8, 1.0f};
+    const SolidField f = cut_box(shape);
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    ASSERT_EQ(check_regions(r, shape, DomainBc{}, f).region, kNoRegion);
+    EXPECT_EQ(r.closed[0], 0u);
+    EXPECT_EQ(r.closed[1], 0u);
+    EXPECT_EQ(describe_regions(r), "fluid regions: 2 (2 with an outlet, 0 closed)");
 }
 
 }  // namespace
