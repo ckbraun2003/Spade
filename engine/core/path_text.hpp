@@ -14,15 +14,19 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace spade {
+
+// RED: the text as it was.
+inline constexpr std::string_view kUnprintablePath = "<unprintable path>";
 
 [[nodiscard]] inline std::string path_text(const std::filesystem::path& path) noexcept {
     try {
         const std::u8string text = path.u8string();
         return std::string(text.begin(), text.end());
     } catch (...) {
-        return "<unprintable path>";
+        return std::string(kUnprintablePath);
     }
 }
 
