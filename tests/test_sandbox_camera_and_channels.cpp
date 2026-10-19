@@ -240,6 +240,17 @@ TEST(SandboxOrbitCamera, TheDollyIsBoundedAtBothEndsAndNeverReachesZero) {
            "drawing nothing";
 }
 
+// The live smoke's builder.camera/dollies: a scroll toward the target brings
+// the camera nearer, the tour's fifth of a notch a frame for a second.
+TEST(SandboxOrbitCamera, AScrollTowardTheTargetDolliesNearer) {
+    OrbitCamera cam;
+    const float d0 = cam.distance;
+    FrameInput in;
+    in.dolly = 0.2f;
+    for (int frame = 0; frame < 60; ++frame) cam.apply(in, 1.0f / 60.0f);
+    EXPECT_LT(cam.distance, d0) << "distance " << d0 << " -> " << cam.distance;
+}
+
 TEST(SandboxOrbitCamera, TheCameraActuallyLooksAtItsTarget) {
     // ABOUTNESS for the whole rig: the orientation must carry local -Z onto the
     // direction from the eye to the target. This is the engine's stated

@@ -118,6 +118,8 @@ using spade::Result;
         ed::MoveObject{"panel", 0},
         ed::SetAssetPose{"box_1", pose_of(glm::vec3(-0.0f, 0.1f, 1e-5f), 2.5f, 0.75f)},
         ed::SetAssetMaterial{"panel", "blue paint"},
+        ed::SetColliderMaterial{"box_1", "blue paint"},
+        ed::SetColliderMaterial{"box_1", ""},
         ed::SetVehicleStart{"hover_quad_0", start},
         ed::AddMaterial{blue},
         ed::RepointWorld{"../worlds/other world.world.yaml", 0x0123456789abcdefULL},

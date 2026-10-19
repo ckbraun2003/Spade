@@ -369,6 +369,27 @@ TEST(SandboxDronePanel, ADraggedSliderDoesNotRebuildUntilReleased) {
     EXPECT_TRUE(panel.status.empty());
 }
 
+// The live smoke's drone_box.turbulence/applied and /calm-again, headless:
+// the panel's turbulence reaches the running stand, and putting every option
+// back to its default calms the air again.
+TEST(SandboxDronePanel, TurbulenceAppliesAndTheDefaultsCalmTheAirAgain) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    ASSERT_TRUE(drone->step_fixed(20).has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    panel.edited.turbulence = spade::TurbulenceLevel::moderate;
+    EXPECT_TRUE(apply_panel_edits(*drone, panel)) << "a turbulence edit did not rebuild the stand";
+    EXPECT_EQ(drone->options().turbulence, spade::TurbulenceLevel::moderate);
+    EXPECT_TRUE(panel.status.empty()) << panel.status;
+
+    panel.edited = DronePhysicsOptions{};
+    EXPECT_TRUE(apply_panel_edits(*drone, panel));
+    EXPECT_TRUE(drone->options() == DronePhysicsOptions{}) << "turbulence "
+                                                           << static_cast<int>(drone->options().turbulence)
+                                                           << ", wind " << drone->options().wind_speed_mps << " m/s";
+}
+
 TEST(SandboxDronePanel, SelectingVulkanIsRefusedVisiblyAndTheStandStaysOnCpu) {
     auto drone = DroneSim::create(DronePhysicsOptions{});
     ASSERT_TRUE(drone.has_value());

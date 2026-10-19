@@ -344,6 +344,10 @@ if(SPADE_BUILD_SANDBOX)
         # What the live smoke's scene main functions measure: bounce's
         # rebounds, gate's ring crossings.
         test_sandbox_scene_checks.cpp
+        # The scene files the live smoke used to open (shower, bounce, hover,
+        # wind), headless: each composes, places its bodies and does what it
+        # is for (the tour storyboard's §4).
+        test_sandbox_scene_files.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
