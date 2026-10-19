@@ -58,4 +58,21 @@ void prolong_add(const PoissonLevel& coarse, PoissonLevel& fine) noexcept;
 // One V(2,2) cycle on levels[0]: its p is the initial guess, its b is set.
 void v_cycle(Multigrid& mg) noexcept;
 
+// The coarsest level's sweeps each way in the symmetric cycle.
+inline constexpr uint32_t kCoarsestSymSweeps = 16;
+
+// coarse.b = (4 / children) * P^T fine.r, with P prolong_add()'s trilinear
+// interpolation: the restriction is the interpolation's transpose (full
+// weighting), so the cycle below is symmetric. Gathered per coarse cell from
+// the fine cells within one of its children, in (k, j, i) order.
+void restrict_full_weighting(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;
+
+// The symmetric V(2,2) cycle, CG's preconditioner (spec 1.5 as amended
+// 2026-10-13): from p = 0 on every level, red then black twice, restrict by
+// full weighting, recurse, prolong, black then red twice; the coarsest level
+// kCoarsestSymSweeps sweeps red-first and as many black-first. levels[0].b is
+// the input, levels[0].p the output, and every level's p, b and r are
+// scratch. A symmetric operator (design test 10).
+void precondition(Multigrid& mg) noexcept;
+
 }  // namespace spade::physics::airflow

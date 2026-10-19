@@ -115,6 +115,98 @@ void restrict_residual(const PoissonLevel& f, PoissonLevel& c) noexcept {
     }
 }
 
+namespace {
+
+// Along one axis, the fine indices whose interpolation reads coarse index I,
+// with the weight they read it by: taps()'s transpose. A coarsened axis:
+// 2I - 1 .. 2I + 2, wrapped on a periodic axis, dropped past an edge, a weight
+// 0 dropped too; an axis not coarsened: I alone, weight 1.
+struct Reach {
+    uint32_t n = 0;
+    uint32_t idx[4] = {};
+    float w[4] = {};
+};
+
+[[nodiscard]] Reach reach(uint32_t I, uint32_t nf, uint32_t nc, bool periodic) noexcept {
+    Reach r;
+    if (nf == nc) {
+        r.n = 1;
+        r.idx[0] = I;
+        r.w[0] = 1.0f;
+        return r;
+    }
+    for (int d = -1; d <= 2; ++d) {
+        int64_t i = 2 * int64_t{I} + d;
+        if (i < 0 || i >= int64_t{nf}) {
+            if (!periodic) continue;
+            i = (i + int64_t{nf}) % int64_t{nf};
+        }
+        const Taps t = taps(static_cast<uint32_t>(i), nf, nc, periodic);
+        float w = 0.0f;
+        if (t.i0 == I) w += t.w0;
+        if (t.i1 == I) w += t.w1;
+        if (w == 0.0f) continue;
+        r.idx[r.n] = static_cast<uint32_t>(i);
+        r.w[r.n] = w;
+        ++r.n;
+    }
+    return r;
+}
+
+void cycle_sym(Multigrid& mg, std::size_t l) noexcept {
+    PoissonLevel& f = mg.levels[l];
+    if (l + 1u == mg.levels.size()) {
+        smooth_red_black(f, kCoarsestSymSweeps, false);
+        smooth_red_black(f, kCoarsestSymSweeps, true);
+        return;
+    }
+    smooth_red_black(f, kPreSweeps, false);
+    residual(f);
+    PoissonLevel& c = mg.levels[l + 1u];
+    restrict_full_weighting(f, c);
+    std::fill(c.p.begin(), c.p.end(), 0.0f);
+    cycle_sym(mg, l + 1u);
+    prolong_add(c, f);
+    smooth_red_black(f, kPostSweeps, true);
+}
+
+}  // namespace
+
+void restrict_full_weighting(const PoissonLevel& f, PoissonLevel& c) noexcept {
+    const bool px = f.kind[kXMinus] == FaceKind::periodic;
+    const bool py = f.kind[kYMinus] == FaceKind::periodic;
+    const bool pz = f.kind[kZMinus] == FaceKind::periodic;
+    const uint32_t sx = f.nx == c.nx ? 1u : 2u;
+    const uint32_t sy = f.ny == c.ny ? 1u : 2u;
+    const uint32_t sz = f.nz == c.nz ? 1u : 2u;
+    const float scale = 4.0f / static_cast<float>(sx * sy * sz);
+    for (uint32_t K = 0; K < c.nz; ++K) {
+        const Reach rz = reach(K, f.nz, c.nz, pz);
+        for (uint32_t J = 0; J < c.ny; ++J) {
+            const Reach ry = reach(J, f.ny, c.ny, py);
+            for (uint32_t I = 0; I < c.nx; ++I) {
+                const Reach rx = reach(I, f.nx, c.nx, px);
+                float sum = 0.0f;
+                for (uint32_t a = 0; a < rz.n; ++a) {
+                    for (uint32_t b = 0; b < ry.n; ++b) {
+                        const float wzy = rz.w[a] * ry.w[b];
+                        for (uint32_t d = 0; d < rx.n; ++d) {
+                            sum += (wzy * rx.w[d]) * f.r[at(f, rx.idx[d], ry.idx[b], rz.idx[a])];
+                        }
+                    }
+                }
+                c.b[at(c, I, J, K)] = sum * scale;
+            }
+        }
+    }
+}
+
+void precondition(Multigrid& mg) noexcept {
+    if (mg.levels.empty()) return;
+    std::fill(mg.levels[0].p.begin(), mg.levels[0].p.end(), 0.0f);
+    cycle_sym(mg, 0);
+}
+
 void prolong_add(const PoissonLevel& c, PoissonLevel& f) noexcept {
     const bool px = f.kind[kXMinus] == FaceKind::periodic;
     const bool py = f.kind[kYMinus] == FaceKind::periodic;

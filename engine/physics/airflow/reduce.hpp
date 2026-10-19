@@ -20,6 +20,11 @@ inline constexpr uint32_t kReduceTile = 4;
 // The sum of an nx x ny x nz cell array (i innermost), in the order above.
 [[nodiscard]] float fixed_tile_sum(std::span<const float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept;
 
+// The sum of a[i] * b[i] in fixed_tile_sum()'s order, each product rounded to
+// fp32 first: CG's dot products (pcg.hpp), so the GPU twin sums them alike.
+[[nodiscard]] float fixed_tile_dot(std::span<const float> a, std::span<const float> b, uint32_t nx, uint32_t ny,
+                                   uint32_t nz) noexcept;
+
 // x -= the fixed-tile sum times the host's reciprocal of the cell count,
 // subtracted in array order: a closed domain's pressure gauge (Task 5).
 void remove_mean(std::span<float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept;
