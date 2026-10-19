@@ -55,6 +55,18 @@ set_tests_properties(GpuFlowMovie.SmokeRendersTwoFrames PROPERTIES
     PASS_REGULAR_EXPRESSION "smoke: wrote"
     TIMEOUT 120)
 
+# The solver state's proof (TD-9): the smoke film stopped by its frame budget
+# and continued caches the same frames, byte for byte, as one unbroken run;
+# its state is grid_io's blob. Skips as the smoke above does.
+add_test(NAME GpuFlowMovie.ResumedRunMatchesUnbroken
+    COMMAND "${CMAKE_COMMAND}" "-DFLOW_MOVIE=$<TARGET_FILE:flow_movie>" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/resume"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/resume_check.cmake")
+set_tests_properties(GpuFlowMovie.ResumedRunMatchesUnbroken PROPERTIES
+    LABELS "spade;gpu"
+    SKIP_REGULAR_EXPRESSION "\\[ resume \\] skipped"
+    PASS_REGULAR_EXPRESSION "\\[ resume \\] 6 frames"
+    TIMEOUT 120)
+
 # The --case smoke: two frames of Interface's tiny LiveRun case through the
 # recorder (D1's path), at 640x360. Skips as the smoke above does.
 add_test(NAME GpuFlowMovie.CaseSmokeRendersTwoFrames
