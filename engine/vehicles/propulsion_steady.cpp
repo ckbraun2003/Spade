@@ -5,7 +5,9 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "vehicles/battery.hpp"
 #include "vehicles/motor.hpp"
@@ -16,12 +18,48 @@ namespace {
 
 [[nodiscard]] bool is_finite(double x) noexcept { return std::isfinite(x); }
 
-[[nodiscard]] bool chain_valid(const PropulsionChain& c) noexcept {
-    return is_finite(c.kv) && c.kv > 0.0 && is_finite(c.resistance) && c.resistance > 0.0 &&
-           is_finite(c.diameter) && c.diameter > 0.0 && c.table.ct.size() >= 2 &&
-           c.table.cq.size() == c.table.ct.size() && c.cells_series > 0 && c.cells_parallel > 0 &&
-           !c.ocv_table.empty() && c.motors_on_bus >= 1 && c.motors_on_bus <= kMaxBusMotors;
+[[nodiscard]] bool all_finite(const std::vector<float>& values) noexcept {
+    for (const float v : values) {
+        if (!std::isfinite(v)) return false;
+    }
+    return true;
 }
+
+// THE ONE RULE (validate_propulsion_chain(), TD-9): the first rule the chain
+// breaks, as a static description naming its field, or empty. In declaration
+// order. The solvers' guard and the validator both read it.
+static_assert(kMaxBusMotors == 64, "the motors_on_bus description spells kMaxBusMotors");
+[[nodiscard]] std::string_view chain_problem(const PropulsionChain& c) noexcept {
+    if (!(is_finite(c.kv) && c.kv > 0.0)) return "kv must be finite and > 0";
+    if (!(is_finite(c.resistance) && c.resistance > 0.0)) return "resistance must be finite and > 0";
+    if (!is_finite(c.no_load_current)) return "no_load_current must be finite";
+    if (!is_finite(c.current_min)) return "current_min must be finite";
+    if (!is_finite(c.current_max)) return "current_max must be finite";
+    if (!is_finite(c.esc_current_total_max)) return "esc_current_total_max must be finite";
+    if (!is_finite(c.pole_pairs)) return "pole_pairs must be finite";
+    if (!is_finite(c.inductance)) return "inductance must be finite";
+    if (!(is_finite(c.diameter) && c.diameter > 0.0)) return "diameter must be finite and > 0";
+    if (!std::isfinite(c.table.j_min)) return "table.j_min must be finite";
+    if (!std::isfinite(c.table.j_max)) return "table.j_max must be finite";
+    if (c.table.ct.size() < 2) return "table.ct must hold at least 2 values";
+    if (c.table.cq.size() != c.table.ct.size()) return "table.cq must hold as many values as table.ct";
+    if (!all_finite(c.table.ct)) return "table.ct values must be finite";
+    if (!all_finite(c.table.cq)) return "table.cq values must be finite";
+    if (c.cells_series == 0) return "cells_series must be > 0";
+    if (c.cells_parallel == 0) return "cells_parallel must be > 0";
+    if (!is_finite(c.cell_resistance)) return "cell_resistance must be finite";
+    if (!is_finite(c.cell_cutoff_voltage)) return "cell_cutoff_voltage must be finite";
+    if (!is_finite(c.pack_polarization_resistance)) return "pack_polarization_resistance must be finite";
+    if (!is_finite(c.pack_current_max)) return "pack_current_max must be finite";
+    if (c.ocv_table.empty()) return "ocv_table must hold at least 1 value";
+    if (!all_finite(c.ocv_table)) return "ocv_table values must be finite";
+    if (c.motors_on_bus < 1 || c.motors_on_bus > kMaxBusMotors) {
+        return "motors_on_bus must be in 1 to 64 (kMaxBusMotors)";
+    }
+    return {};
+}
+
+[[nodiscard]] bool chain_valid(const PropulsionChain& c) noexcept { return chain_problem(c).empty(); }
 
 // Everything the chain does at one shaft speed, with its own flags.
 struct Eval {
@@ -96,6 +134,12 @@ struct Eval {
 }
 
 }  // namespace
+
+Result<void> validate_propulsion_chain(const PropulsionChain& chain) {
+    const std::string_view problem = chain_problem(chain);
+    if (problem.empty()) return {};
+    return std::unexpected(Error{Code::invalid_argument, "propulsion chain: " + std::string(problem)});
+}
 
 SteadyPoint steady_state_at_duty(const PropulsionChain& chain, double duty, double density, double v_axial,
                                  double soc) noexcept {

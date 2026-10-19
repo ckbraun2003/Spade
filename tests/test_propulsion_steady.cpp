@@ -609,3 +609,174 @@ TEST(PropulsionIdentity, ChainsEqualFieldForFieldAreEqual) {
     // Non-vacuity: a chain that differs does not compare equal.
     EXPECT_NE(propulsion_identity(make_chain()), propulsion_identity(a));
 }
+
+// ===========================================================================
+// validate_propulsion_chain(): the one rule for a valid chain (TD-9). The
+// solvers' noexcept guard is the same rule, so a chain the validator refuses
+// is a zero point with no_bracket, never a NaN one.
+// ===========================================================================
+
+namespace {
+
+// One way to break each rule, and the field the refusal names.
+struct ChainBreak {
+    const char* what;
+    std::function<void(PropulsionChain&)> edit;
+    const char* field;
+};
+
+[[nodiscard]] std::vector<ChainBreak> chain_breaks() {
+    constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    constexpr float kNaNf = std::numeric_limits<float>::quiet_NaN();
+    constexpr float kInff = std::numeric_limits<float>::infinity();
+    return {
+        {"kv 0", [](PropulsionChain& c) { c.kv = 0.0; }, "kv"},
+        {"kv negative", [](PropulsionChain& c) { c.kv = -1.0; }, "kv"},
+        {"kv NaN", [](PropulsionChain& c) { c.kv = kNaN; }, "kv"},
+        {"resistance 0", [](PropulsionChain& c) { c.resistance = 0.0; }, "resistance"},
+        {"resistance infinite", [](PropulsionChain& c) { c.resistance = kInf; }, "resistance"},
+        {"no_load_current NaN", [](PropulsionChain& c) { c.no_load_current = kNaN; }, "no_load_current"},
+        {"current_min -inf", [](PropulsionChain& c) { c.current_min = -kInf; }, "current_min"},
+        {"current_max NaN", [](PropulsionChain& c) { c.current_max = kNaN; }, "current_max"},
+        {"esc_current_total_max inf", [](PropulsionChain& c) { c.esc_current_total_max = kInf; },
+         "esc_current_total_max"},
+        {"pole_pairs NaN", [](PropulsionChain& c) { c.pole_pairs = kNaN; }, "pole_pairs"},
+        {"inductance inf", [](PropulsionChain& c) { c.inductance = kInf; }, "inductance"},
+        {"diameter 0", [](PropulsionChain& c) { c.diameter = 0.0; }, "diameter"},
+        {"diameter NaN", [](PropulsionChain& c) { c.diameter = kNaN; }, "diameter"},
+        {"table.j_min NaN", [](PropulsionChain& c) { c.table.j_min = kNaNf; }, "table.j_min"},
+        {"table.j_max inf", [](PropulsionChain& c) { c.table.j_max = kInff; }, "table.j_max"},
+        {"table.ct one value",
+         [](PropulsionChain& c) {
+             c.table.ct.resize(1);
+             c.table.cq.resize(1);
+         },
+         "table.ct"},
+        {"table.ct empty",
+         [](PropulsionChain& c) {
+             c.table.ct.clear();
+             c.table.cq.clear();
+         },
+         "table.ct"},
+        {"table.cq one short", [](PropulsionChain& c) { c.table.cq.pop_back(); }, "table.cq"},
+        {"table.cq one long", [](PropulsionChain& c) { c.table.cq.push_back(0.001f); }, "table.cq"},
+        {"a ct value NaN", [](PropulsionChain& c) { c.table.ct[1] = kNaNf; }, "table.ct"},
+        {"a cq value inf", [](PropulsionChain& c) { c.table.cq[0] = kInff; }, "table.cq"},
+        {"cells_series 0", [](PropulsionChain& c) { c.cells_series = 0; }, "cells_series"},
+        {"cells_parallel 0", [](PropulsionChain& c) { c.cells_parallel = 0; }, "cells_parallel"},
+        {"cell_resistance NaN", [](PropulsionChain& c) { c.cell_resistance = kNaN; }, "cell_resistance"},
+        {"cell_cutoff_voltage inf", [](PropulsionChain& c) { c.cell_cutoff_voltage = kInf; },
+         "cell_cutoff_voltage"},
+        {"pack_polarization_resistance NaN", [](PropulsionChain& c) { c.pack_polarization_resistance = kNaN; },
+         "pack_polarization_resistance"},
+        {"pack_current_max inf", [](PropulsionChain& c) { c.pack_current_max = kInf; }, "pack_current_max"},
+        {"ocv_table empty", [](PropulsionChain& c) { c.ocv_table.clear(); }, "ocv_table"},
+        {"an ocv value NaN", [](PropulsionChain& c) { c.ocv_table[2] = kNaNf; }, "ocv_table"},
+        {"motors_on_bus 0", [](PropulsionChain& c) { c.motors_on_bus = 0; }, "motors_on_bus"},
+        {"motors_on_bus kMaxBusMotors + 1",
+         [](PropulsionChain& c) { c.motors_on_bus = static_cast<uint32_t>(kMaxBusMotors) + 1; }, "motors_on_bus"},
+    };
+}
+
+}  // namespace
+
+TEST(ChainRule, AValidChainPasses) {
+    EXPECT_TRUE(validate_propulsion_chain(make_chain()).has_value());
+    EXPECT_TRUE(validate_propulsion_chain(fixed_chain()).has_value());
+    // The "none" spellings (<= 0 for no ESC total, no cutoff, no pack limit;
+    // 0 for no inductance term or no R1) and motors_on_bus at both ends.
+    PropulsionChain c = fixed_chain();
+    c.esc_current_total_max = 0.0;
+    c.cell_cutoff_voltage = -1.0;
+    c.pack_current_max = 0.0;
+    c.pack_polarization_resistance = 0.0;
+    c.inductance = 0.0;
+    c.pole_pairs = 0.0;
+    c.motors_on_bus = 1;
+    EXPECT_TRUE(validate_propulsion_chain(c).has_value());
+    c.motors_on_bus = static_cast<uint32_t>(kMaxBusMotors);
+    EXPECT_TRUE(validate_propulsion_chain(c).has_value());
+}
+
+TEST(ChainRule, EachRuleIsRefusedNamingItsField) {
+    for (const ChainBreak& b : chain_breaks()) {
+        SCOPED_TRACE(b.what);
+        PropulsionChain c = fixed_chain();
+        b.edit(c);
+        const auto r = validate_propulsion_chain(c);
+        ASSERT_FALSE(r.has_value());
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(r.error().context.starts_with(std::string("propulsion chain: ") + b.field + " "))
+            << r.error().context;
+    }
+}
+
+TEST(ChainRule, TheSolversRefuseExactlyTheChainsItRefuses) {
+    // One rule: every chain the validator refuses, the solvers flag
+    // no_bracket at a zero point, and the throttle map refuses.
+    for (const ChainBreak& b : chain_breaks()) {
+        SCOPED_TRACE(b.what);
+        PropulsionChain c = make_chain();
+        b.edit(c);
+        ASSERT_FALSE(validate_propulsion_chain(c).has_value());
+        const SteadyPoint p = steady_state_at_duty(c, 0.6, kRho, 0.0, kSoc);
+        EXPECT_NE(p.flags & pf::no_bracket, 0u);
+        EXPECT_EQ(p.omega, 0.0);
+        EXPECT_EQ(p.thrust, 0.0);
+        EXPECT_EQ(p.power_shaft, 0.0) << "a zero point, not a NaN one";
+        const SteadyPoint q = steady_state_for_thrust(c, 1.0, kRho, 0.0, kSoc);
+        EXPECT_NE(q.flags & pf::no_bracket, 0u);
+        EXPECT_EQ(steady_state_time_constant(c, 0.6, kRho, 0.0, kSoc, 1.2e-5), 0.0);
+        const auto r = rotor_omega_for_duty(c, 0.6, kRho, kSoc);
+        ASSERT_FALSE(r.has_value());
+        EXPECT_TRUE(names(r.error(), "no_bracket")) << r.error().context;
+    }
+}
+
+TEST(ChainRule, ANaNNoLoadCurrentIsNoBracketNotANaNPoint) {
+    // Finiteness joined the solvers' guard: before, a NaN no_load_current
+    // passed it and came back as a point with a NaN shaft power and no flag.
+    PropulsionChain c = make_chain();
+    c.no_load_current = std::numeric_limits<double>::quiet_NaN();
+    const SteadyPoint p = steady_state_at_duty(c, 0.6, kRho, 0.0, kSoc);
+    EXPECT_NE(p.flags & pf::no_bracket, 0u);
+    EXPECT_EQ(p.omega, 0.0);
+    EXPECT_EQ(p.current, 0.0);
+    EXPECT_EQ(p.power_shaft, 0.0);
+    EXPECT_EQ(p.efficiency, 0.0);
+    const auto r = validate_propulsion_chain(c);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_TRUE(names(r.error(), "propulsion chain: no_load_current must be finite")) << r.error().context;
+}
+
+TEST(ChainRule, TheFirstBrokenRuleIsNamedInDeclarationOrder) {
+    const auto empty = validate_propulsion_chain(PropulsionChain{});
+    ASSERT_FALSE(empty.has_value());
+    EXPECT_TRUE(names(empty.error(), "propulsion chain: kv ")) << empty.error().context;
+
+    PropulsionChain c = fixed_chain();
+    c.motors_on_bus = 0;
+    c.diameter = 0.0;
+    c.no_load_current = std::numeric_limits<double>::quiet_NaN();
+    const auto r = validate_propulsion_chain(c);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_TRUE(names(r.error(), "propulsion chain: no_load_current ")) << r.error().context;
+}
+
+TEST(ChainRule, SetsNoRangeBeyondTheSolversOwnAndFiniteness) {
+    // Ranges are the drone-builder spec's (Physics'), not this rule's: finite
+    // values outside any sensible range pass.
+    PropulsionChain c = fixed_chain();
+    c.no_load_current = -1.0;
+    c.current_min = 5.0;
+    c.current_max = -5.0;
+    c.pole_pairs = -7.0;
+    c.inductance = -1e-6;
+    c.table.j_min = 1.0f;
+    c.table.j_max = -1.0f;
+    c.table.ct[0] = -0.5f;
+    c.cell_resistance = -0.1;
+    c.ocv_table[0] = -3.0f;
+    EXPECT_TRUE(validate_propulsion_chain(c).has_value());
+}

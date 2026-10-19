@@ -143,7 +143,9 @@ struct SceneDesc {
 //     expressible in the SDF text encoding (check_sdf_representable), with
 //     the model, the part and the node named; a part's mesh_file, when set,
 //     relative with forward slashes only, and naming a mesh the part holds
-//     (a mesh part may leave it empty in memory: only the writer needs it);
+//     (a mesh part may leave it empty in memory: only the writer needs it).
+//     These per-model rules are the model file's too, one function for both
+//     (scene/model_file.hpp, TD-9);
 //   - assets: a finite pose with scale > 0 and a unit orientation; a collider
 //     that SdfProgram::validate() accepts, with no indices in node_materials
 //     and collider_materials empty or one non-empty name per node, and no

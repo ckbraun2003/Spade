@@ -49,6 +49,7 @@
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
 #include "scene/compose.hpp"
+#include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -179,6 +180,38 @@ int main() {
         return 1;
     }
     std::printf("spade::scene OK: a scene file round-tripped through scene_from_yaml and scene_to_yaml\n");
+
+    // The model file, installed: one model and its propulsion chain, as Kat's
+    // builder writes one. It shares the scene's model block through
+    // scene/detail/, which is not installed, so this is what proves the
+    // installed header needs nothing from there.
+    spade::scene::ModelFile model_file;
+    model_file.model.name = "consumer_quad";
+    model_file.model.body.mass = 1.0f;
+    model_file.model.body.inertia_diag = glm::vec3(0.01f);
+    spade::vehicles::PropulsionChain chain;
+    chain.kv = 256.56340004316644;
+    chain.resistance = 0.075;
+    chain.diameter = 0.1524;
+    chain.table.j_max = 0.8f;
+    chain.table.ct = {0.12f, 0.04f};
+    chain.table.cq = {0.008f, 0.004f};
+    chain.cells_series = 4;
+    chain.cells_parallel = 1;
+    chain.ocv_table = {3.3f, 4.2f};
+    model_file.propulsion = chain;
+    const spade::Result<std::string> model_text = spade::scene::model_to_yaml(model_file);
+    if (!model_text) {
+        std::fprintf(stderr, "spade::scene::model_to_yaml failed: %s\n", model_text.error().context.c_str());
+        return 1;
+    }
+    const spade::Result<spade::scene::ModelFile> model_back = spade::scene::model_from_yaml(*model_text);
+    if (!model_back || !model_back->propulsion ||
+        spade::scene::model_to_yaml(*model_back).value_or("") != *model_text) {
+        std::fprintf(stderr, "spade::scene::model_from_yaml did not round-trip the model file\n");
+        return 1;
+    }
+    std::printf("spade::scene OK: a model file round-tripped through model_to_yaml and model_from_yaml\n");
 
     // spade::analysis (INT-6): a case through its file, as Kat's builder
     // reads and writes one. Calling into case_file.cpp is what pulls it from

@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 // world/detail/yaml_text.hpp -- the YAML text every Spade text format shares:
 // the world file (world/world_file.cpp), the scene file (scene/scene_file.cpp)
-// and the test-support scenario reader (testing/scenario_file.hpp).
+// and the model file (scene/model_file.cpp), the analysis case file, and the
+// test-support scenario reader (testing/scenario_file.hpp).
 //
 // Two layers:
 //   - the primitives: locale-free numbers, quoted strings, mappings with every
@@ -66,6 +67,7 @@
 #include <array>
 #include <cassert>
 #include <charconv>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -104,16 +106,9 @@ template <std::integral T>
     return std::string(buf, r.ptr);
 }
 
-[[nodiscard]] inline std::string format_float(float value) {
-    char buf[40];
-    const std::to_chars_result r =
-        std::to_chars(buf, buf + sizeof(buf), value, std::chars_format::general, 9);
-    // The longest general/9 form of a binary32 is "-1.23456789e-45" (15
-    // bytes), so overflowing 40 is impossible; this is an invariant, not a
-    // case to handle.
-    assert(r.ec == std::errc{} && "40 bytes holds any %.9g of a binary32");
-
-    const std::string_view text(buf, static_cast<std::size_t>(r.ptr - buf));
+// A to_chars `general` spelling with its exponent, if it has one, signed and
+// at least two digits long: printf's %e form (the SPELLING note above).
+[[nodiscard]] inline std::string normalize_exponent(std::string_view text) {
     const std::size_t e = text.find('e');
     if (e == std::string_view::npos) {
         return std::string(text);
@@ -136,6 +131,35 @@ template <std::integral T>
     }
     out.append(exponent);
     return out;
+}
+
+[[nodiscard]] inline std::string format_float(float value) {
+    char buf[40];
+    const std::to_chars_result r =
+        std::to_chars(buf, buf + sizeof(buf), value, std::chars_format::general, 9);
+    // The longest general/9 form of a binary32 is "-1.23456789e-45" (15
+    // bytes), so overflowing 40 is impossible; this is an invariant, not a
+    // case to handle.
+    assert(r.ec == std::errc{} && "40 bytes holds any %.9g of a binary32");
+    return normalize_exponent(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf)));
+}
+
+// A binary64 as the FEWEST significant digits that read back to the same
+// double: to_chars `general` with no precision, which [charconv] defines as
+// the shortest round-trip form placed as printf's %g places it (fixed for a
+// decimal exponent in [-4, 6), scientific otherwise), with format_float()'s
+// exponent spelling. So 0.1 is "0.1", 1.0 / 3.0 "0.3333333333333333", 1.5e-5
+// "1.5e-05", 1e6 "1e+06" and -0.0 "-0". A double needs no fixed digit count
+// as a float does (%.9g): its shortest form already reads back bit for bit,
+// and is what a person would have typed. Locale-free, as both conversions
+// here are (the note above).
+[[nodiscard]] inline std::string format_double(double value) {
+    char buf[64];
+    const std::to_chars_result r = std::to_chars(buf, buf + sizeof(buf), value, std::chars_format::general);
+    // The longest shortest form of a binary64 is "-2.2250738585072014e-308"
+    // (24 bytes), so overflowing 64 is impossible.
+    assert(r.ec == std::errc{} && "64 bytes holds any shortest general form of a binary64");
+    return normalize_exponent(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf)));
 }
 
 // A YAML double-quoted scalar. Double-quoted (rather than plain or single-
@@ -302,6 +326,40 @@ using ::spade::path_text;
     return value;
 }
 
+// parse_float()'s rules for a binary64: node.Scalar() then from_chars (the
+// locale note at the top of this file), a leading '+' accepted, and refused
+// by name when the text is not a decimal number, is outside the range of a
+// double, or is an infinity or a NaN.
+[[nodiscard]] inline Result<double> parse_double(const YAML::Node& node, std::string_view what) {
+    const Result<std::string> text = scalar(node, what);
+    if (!text) {
+        return std::unexpected(text.error());
+    }
+    std::string_view body(*text);
+    if (!body.empty() && body.front() == '+') {
+        body.remove_prefix(1);
+    }
+
+    double value = 0.0;
+    const std::from_chars_result r = std::from_chars(body.data(), body.data() + body.size(), value);
+    if (r.ec == std::errc::result_out_of_range) {
+        return std::unexpected(at(node, std::string(what) + ": '" + *text +
+                                            "' is outside the range of a 64-bit float"));
+    }
+    if (r.ec != std::errc{} || r.ptr != body.data() + body.size()) {
+        return std::unexpected(
+            at(node, std::string(what) + ": '" + *text + "' is not a decimal number"));
+    }
+    // std::isfinite, not core/validate.hpp's finite(), which takes a float:
+    // a large double would narrow to an infinity there.
+    if (!std::isfinite(value)) {
+        return std::unexpected(at(node, std::string(what) + ": '" + *text +
+                                            "' is not finite; an infinity or a NaN in a file is "
+                                            "always an authoring error"));
+    }
+    return value;
+}
+
 // Decimal always; also `0x`/`0X` hex when `allow_hex`. The prefix decides the
 // base, so nothing is ambiguous.
 //
@@ -375,6 +433,15 @@ template <std::size_t N>
         return std::unexpected(node.error());
     }
     return parse_float(*node, std::string(what) + "." + key);
+}
+
+[[nodiscard]] inline Result<double> double_field(const YAML::Node& map, const char* key,
+                                                 std::string_view what) {
+    const Result<YAML::Node> node = field(map, key, what);
+    if (!node) {
+        return std::unexpected(node.error());
+    }
+    return parse_double(*node, std::string(what) + "." + key);
 }
 
 template <std::unsigned_integral T>

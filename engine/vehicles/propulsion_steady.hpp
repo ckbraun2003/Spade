@@ -83,9 +83,31 @@ struct SteadyPoint {
     uint32_t flags = 0;              // propulsion_flags
 };
 
-// An invalid chain (Kv, resistance or diameter not positive, an empty table,
-// no cells, motors_on_bus outside 1..kMaxBusMotors) or non-finite inputs
-// return a zero point with propulsion_flags::no_bracket.
+// THE ONE RULE FOR A VALID CHAIN (TD-9). invalid_argument whose context is
+// "propulsion chain: " and the first rule the chain breaks, naming its field,
+// checked in declaration order:
+//   kv, resistance, diameter       finite and > 0;
+//   every other double             finite: no_load_current, current_min,
+//                                  current_max, esc_current_total_max,
+//                                  pole_pairs, inductance, cell_resistance,
+//                                  cell_cutoff_voltage,
+//                                  pack_polarization_resistance,
+//                                  pack_current_max;
+//   table.j_min, table.j_max       finite;
+//   table.ct                       at least 2 values, every one finite;
+//   table.cq                       as many values as table.ct, every one finite;
+//   cells_series, cells_parallel   > 0;
+//   ocv_table                      at least 1 value, every one finite;
+//   motors_on_bus                  1 to kMaxBusMotors.
+// The solvers below refuse exactly these chains (no_bracket): they and this
+// function share one noexcept definition. No range is set beyond these: what
+// no_load_current, the current limits or the pack's figures may be is the
+// drone-builder spec's (Physics'), so a range rule needs Physics. A file that
+// carries a chain (scene/model_file.hpp) validates it here.
+[[nodiscard]] Result<void> validate_propulsion_chain(const PropulsionChain& chain);
+
+// An invalid chain (validate_propulsion_chain() refuses it) or non-finite
+// inputs return a zero point with propulsion_flags::no_bracket.
 [[nodiscard]] SteadyPoint steady_state_at_duty(const PropulsionChain& chain, double duty, double density,
                                                double v_axial, double soc) noexcept;
 

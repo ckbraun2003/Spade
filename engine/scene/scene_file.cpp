@@ -20,6 +20,7 @@
 #include "core/rng.hpp"
 #include "core/validate.hpp"
 #include "physics/forces.hpp"  // drag_mode
+#include "scene/detail/model_block.hpp"
 #include "world/detail/yaml_text.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
@@ -35,13 +36,16 @@ using yaml_text::append_sdf_nodes;
 using yaml_text::append_sdf_transforms;
 using yaml_text::at;
 using yaml_text::dec;
+using yaml_text::double_field;
 using yaml_text::field;
 using yaml_text::float_field;
 using yaml_text::float_list;
+using yaml_text::format_double;
 using yaml_text::format_float;
 using yaml_text::has;
 using yaml_text::mark_of;
 using yaml_text::material_flow;
+using yaml_text::parse_float;
 using yaml_text::parse_uint;
 using yaml_text::path_text;
 using yaml_text::quat_field;
@@ -114,14 +118,20 @@ static_assert(static_cast<uint32_t>(vehicles::PartSurface::Kind::wall) == 0 &&
     return version;
 }
 
-// What is wrong with `file` as a path relative to the scene file's directory
-// with forward slashes (a world's file, a mesh part's sidecar), or nothing.
-// `file` is not empty.
-[[nodiscard]] std::string_view relative_path_problem(std::string_view file) {
+}  // namespace
+
+// The model block's helpers and the block itself (detail/model_block.hpp) are
+// defined in this file, outside the anonymous namespace, where they sit:
+// shared with the model file (scene/model_file.cpp).
+std::string detail::relative_path_problem(std::string_view file, std::string_view kind) {
     if (file.find('\\') != std::string_view::npos) return "must use forward slashes";
-    if (file.front() == '/' || file.find(':') != std::string_view::npos) return "must be relative to the scene file";
+    if (file.front() == '/' || file.find(':') != std::string_view::npos) {
+        return "must be relative to the " + std::string(kind) + " file";
+    }
     return {};
 }
+
+namespace {
 
 // ===========================================================================
 // Emission
@@ -192,44 +202,51 @@ void emit_sdf_lists(std::string& out, const SdfProgram& program, const std::stri
 // which validate_scene() has already refused on a part), or, for a mesh part
 // (version 3), `{mesh: {file, hash}}`: the sidecar's path and the mesh's
 // content hash, never the mesh.
-void emit_part(std::string& out, const vehicles::PartDesc& p) {
-    out += "      - name: " + quote_yaml(p.name) + "\n";
-    out += "        role: " + quote_yaml(p.role) + "\n";
-    out += "        attach: " + quote_yaml(kPartAttachNames[static_cast<uint32_t>(p.attach)]) + "\n";
-    out += "        rotor: " + dec(p.rotor) + "\n";
-    out += "        mount: {position: " + vec3_list(p.mount_pos) + ", orientation: " + quat_list(p.mount_orient) +
-           "}\n";
-    out += "        surface: {kind: " + quote_yaml(kPartSurfaceNames[static_cast<uint32_t>(p.surface.kind)]) +
+// `indent` is the model's (emit_model), so the part's list item sits two
+// spaces deeper and its keys four.
+void emit_part(std::string& out, const vehicles::PartDesc& p, const std::string& indent) {
+    out += indent + "  - name: " + quote_yaml(p.name) + "\n";
+    out += indent + "    role: " + quote_yaml(p.role) + "\n";
+    out += indent + "    attach: " + quote_yaml(kPartAttachNames[static_cast<uint32_t>(p.attach)]) + "\n";
+    out += indent + "    rotor: " + dec(p.rotor) + "\n";
+    out += indent + "    mount: {position: " + vec3_list(p.mount_pos) + ", orientation: " +
+           quat_list(p.mount_orient) + "}\n";
+    out += indent + "    surface: {kind: " +
+           quote_yaml(kPartSurfaceNames[static_cast<uint32_t>(p.surface.kind)]) +
            ", inv_permeability: " + format_float(p.surface.inv_permeability) +
            ", inertial_coeff: " + format_float(p.surface.inertial_coeff) + "}\n";
-    out += "        min_feature: " + format_float(p.min_feature) + "\n";
-    out += "        shape:\n";
+    out += indent + "    min_feature: " + format_float(p.min_feature) + "\n";
+    out += indent + "    shape:\n";
     if (p.mesh) {
-        out += "          mesh: {file: " + quote_yaml(p.mesh_file) +
+        out += indent + "      mesh: {file: " + quote_yaml(p.mesh_file) +
                ", hash: " + quote_yaml(hex64(p.mesh->content_hash())) + "}\n";
         return;
     }
-    out += "          sdf:\n";
-    emit_sdf_lists(out, p.shape, "            ");
+    out += indent + "      sdf:\n";
+    emit_sdf_lists(out, p.shape, indent + "        ");
 }
 
-void emit_model(std::string& out, const vehicles::ModelType& m) {
-    out += "  - name: " + quote_yaml(m.name) + "\n";
-    out += "    version: " + dec(m.version) + "\n";
-    out += "    param_schema_id: " + dec(m.param_schema_id) + "\n";
-    out += "    visual_ref: " + quote_yaml(m.visual_ref) + "\n";
-    out += "    design_to_principal: " + quat_list(m.design_to_principal) + "\n";
-    out += "    com_offset: " + vec3_list(m.com_offset) + "\n";
-    out += "    body: {mass: " + format_float(m.body.mass) +
+}  // namespace
+
+void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::string_view lead,
+                        std::string_view indent) {
+    const std::string in(indent);
+    out += std::string(lead) + "name: " + quote_yaml(m.name) + "\n";
+    out += in + "version: " + dec(m.version) + "\n";
+    out += in + "param_schema_id: " + dec(m.param_schema_id) + "\n";
+    out += in + "visual_ref: " + quote_yaml(m.visual_ref) + "\n";
+    out += in + "design_to_principal: " + quat_list(m.design_to_principal) + "\n";
+    out += in + "com_offset: " + vec3_list(m.com_offset) + "\n";
+    out += in + "body: {mass: " + format_float(m.body.mass) +
            ", inertia_diag: " + vec3_list(m.body.inertia_diag) + "}\n";
-    out += "    proxy_radius: " + format_float(m.proxy_radius) + "\n";
+    out += in + "proxy_radius: " + format_float(m.proxy_radius) + "\n";
 
     if (m.rotors.empty()) {
-        out += "    rotors: []\n";
+        out += in + "rotors: []\n";
     } else {
-        out += "    rotors:\n";
+        out += in + "rotors:\n";
         for (const vehicles::RotorDesc& r : m.rotors) {
-            out += "      - {local_pos: " + vec3_list(r.local_pos) +
+            out += in + "  - {local_pos: " + vec3_list(r.local_pos) +
                    ", local_orient: " + quat_list(r.local_orient) +
                    ", spin_dir: " + format_float(r.spin_dir) + ", tau: " + format_float(r.tau) +
                    ", radius: " + format_float(r.radius) +
@@ -239,11 +256,11 @@ void emit_model(std::string& out, const vehicles::ModelType& m) {
     }
 
     if (m.drag_bodies.empty()) {
-        out += "    drag_bodies: []\n";
+        out += in + "drag_bodies: []\n";
     } else {
-        out += "    drag_bodies:\n";
+        out += in + "drag_bodies:\n";
         for (const vehicles::DragBodyDesc& d : m.drag_bodies) {
-            out += "      - {mode: " + quote_yaml(kDragModeNames[d.mode]) +
+            out += in + "  - {mode: " + quote_yaml(kDragModeNames[d.mode]) +
                    ", area: " + format_float(d.area) + ", coeffs: " + vec3_list(d.coeffs) +
                    ", local_pos: " + vec3_list(d.local_pos) +
                    ", local_orient: " + quat_list(d.local_orient) + "}\n";
@@ -251,11 +268,11 @@ void emit_model(std::string& out, const vehicles::ModelType& m) {
     }
 
     if (m.imu_mounts.empty()) {
-        out += "    imu_mounts: []\n";
+        out += in + "imu_mounts: []\n";
     } else {
-        out += "    imu_mounts:\n";
+        out += in + "imu_mounts:\n";
         for (const vehicles::ImuMountDesc& i : m.imu_mounts) {
-            out += "      - {mount_pos: " + vec3_list(i.mount_pos) +
+            out += in + "  - {mount_pos: " + vec3_list(i.mount_pos) +
                    ", mount_orient: " + quat_list(i.mount_orient) +
                    ", rate_divider: " + dec(i.rate_divider) + ", sigma_a: " + format_float(i.sigma_a) +
                    ", sigma_g: " + format_float(i.sigma_g) + ", sigma_ba: " + format_float(i.sigma_ba) +
@@ -266,12 +283,47 @@ void emit_model(std::string& out, const vehicles::ModelType& m) {
     // Parts (version 2, CORE-7): written only when there are any, so a model
     // without them is the text it always was. No `parts: []`.
     if (!m.parts.empty()) {
-        out += "    parts:\n";
+        out += in + "parts:\n";
         for (const vehicles::PartDesc& p : m.parts) {
-            emit_part(out, p);
+            emit_part(out, p, in);
         }
     }
 }
+
+void detail::emit_propulsion(std::string& out, const vehicles::PropulsionChain& c, std::string_view indent) {
+    const std::string in(indent);
+    const auto number = [&](const char* key, double value) { out += in + key + ": " + format_double(value) + "\n"; };
+    const auto count = [&](const char* key, uint32_t value) { out += in + key + ": " + dec(value) + "\n"; };
+    // Motor and ESC.
+    number("kv", c.kv);
+    number("resistance", c.resistance);
+    number("no_load_current", c.no_load_current);
+    number("current_min", c.current_min);
+    number("current_max", c.current_max);
+    number("esc_current_total_max", c.esc_current_total_max);
+    number("pole_pairs", c.pole_pairs);
+    number("inductance", c.inductance);
+    // Propeller.
+    number("diameter", c.diameter);
+    const std::string table = in + "  ";
+    out += in + "table:\n";
+    out += table + "j_min: " + format_float(c.table.j_min) + "\n";
+    out += table + "j_max: " + format_float(c.table.j_max) + "\n";
+    out += table + "ct: " + float_list(c.table.ct) + "\n";
+    out += table + "cq: " + float_list(c.table.cq) + "\n";
+    // Battery.
+    count("cells_series", c.cells_series);
+    count("cells_parallel", c.cells_parallel);
+    number("cell_resistance", c.cell_resistance);
+    number("cell_cutoff_voltage", c.cell_cutoff_voltage);
+    number("pack_polarization_resistance", c.pack_polarization_resistance);
+    number("pack_current_max", c.pack_current_max);
+    out += in + "ocv_table: " + float_list(c.ocv_table) + "\n";
+    // The bus.
+    count("motors_on_bus", c.motors_on_bus);
+}
+
+namespace {
 
 void emit_asset(std::string& out, const SceneAsset& a) {
     out += "  - name: " + quote_yaml(a.name) + "\n";
@@ -359,7 +411,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     } else {
         out += "models:\n";
         for (const vehicles::ModelType& m : scene.models) {
-            emit_model(out, m);
+            detail::emit_model(out, m, "  - ", "    ");
         }
     }
 
@@ -590,12 +642,13 @@ struct PartMesh {
 };
 
 // A mesh part's shape (version 3, CORE-6): `shape.mesh` is {file, hash}, the
-// sidecar's path relative to the scene file and the mesh's content hash
+// sidecar's path relative to the <kind> file and the mesh's content hash
 // (SCN-001's form). The sidecar is read from base_dir / file, against the
 // hash, by load_mesh_file(), whose refusals keep their own code and message,
 // after the dotted path and with the line. Nothing here repairs a mesh.
 [[nodiscard]] Result<PartMesh> parse_part_mesh(const YAML::Node& shape, const std::string& shape_what,
-                                               std::string_view schema, const std::filesystem::path& base_dir) {
+                                               std::string_view schema, std::string_view kind,
+                                               const std::filesystem::path& base_dir) {
     const std::string what = shape_what + ".mesh";
     const Result<YAML::Node> node = map_field(shape, "mesh", shape_what, {"file", "hash"}, schema);
     if (!node) return std::unexpected(node.error());
@@ -606,8 +659,8 @@ struct PartMesh {
     if (file->empty()) {
         return std::unexpected(at(*file_node, what + ".file must name the mesh's sidecar"));
     }
-    if (const std::string_view problem = relative_path_problem(*file); !problem.empty()) {
-        return std::unexpected(at(*file_node, what + ".file '" + *file + "' " + std::string(problem)));
+    if (const std::string problem = detail::relative_path_problem(*file, kind); !problem.empty()) {
+        return std::unexpected(at(*file_node, what + ".file '" + *file + "' " + problem));
     }
     const Result<YAML::Node> hash_node = field(*node, "hash", what);
     if (!hash_node) return std::unexpected(hash_node.error());
@@ -615,9 +668,11 @@ struct PartMesh {
     if (!hash) return std::unexpected(hash.error());
 
     if (base_dir.empty()) {
-        return std::unexpected(at(*node, what + ": a sidecar's path is relative to the scene file, and this text "
-                                                "came with no directory: read a scene with mesh parts with "
-                                                "load_scene_file, or give a base directory"));
+        const std::string k(kind);
+        return std::unexpected(at(*node, what + ": a sidecar's path is relative to the " + k +
+                                             " file, and this text came with no directory: read a " + k +
+                                             " with mesh parts with load_" + k +
+                                             "_file, or give a base directory"));
     }
     std::filesystem::path sidecar;
     try {
@@ -640,9 +695,10 @@ struct PartMesh {
 
 // One part (version 2, CORE-7). Only the text's shape is checked here; the
 // part's rules are ModelType::issues()'s, which validate_scene() runs (TD-9).
-// `reads_mesh`: the file is version 3 or later, so a shape may be a mesh.
+// `reads_mesh`: the key set is version 3 or later, so a shape may be a mesh.
 [[nodiscard]] Result<vehicles::PartDesc> parse_part(const YAML::Node& node, const std::string& what,
                                                     std::string_view schema, bool reads_mesh,
+                                                    std::string_view file_kind,
                                                     const std::filesystem::path& base_dir) {
     if (Result<void> r = check_map(node, what,
                                    {"name", "role", "attach", "rotor", "mount", "surface", "min_feature", "shape"},
@@ -697,7 +753,7 @@ struct PartMesh {
                                               (has(*shape, "sdf") ? "both are given" : "neither is given")));
     }
     if (reads_mesh && has(*shape, "mesh")) {
-        Result<PartMesh> m = parse_part_mesh(*shape, shape_what, schema, base_dir);
+        Result<PartMesh> m = parse_part_mesh(*shape, shape_what, schema, file_kind, base_dir);
         if (!m) return std::unexpected(m.error());
         mesh = std::move(*m);
     } else {
@@ -724,13 +780,32 @@ struct PartMesh {
     return out;
 }
 
-// `file_version` is the file's own: a model's key set is version-gated (`parts`
-// from version 2, a part's mesh from version 3), and every diagnostic blames
-// that version. `base_dir` resolves a mesh part's sidecar.
-[[nodiscard]] Result<vehicles::ModelType> parse_model(const YAML::Node& node, const std::string& what,
-                                                      uint32_t file_version, const std::filesystem::path& base_dir) {
-    const std::string file_schema = schema(file_version);
-    const bool reads_parts = file_version >= kPartsVersion;
+// A list of floats of any length, at `map[key]`: a propulsion chain's tables.
+[[nodiscard]] Result<std::vector<float>> float_sequence(const YAML::Node& map, const char* key,
+                                                        const std::string& what) {
+    const Result<YAML::Node> node = sequence_field(map, key, what);
+    if (!node) return std::unexpected(node.error());
+    const std::string where = what + "." + key;
+    std::vector<float> out;
+    out.reserve(node->size());
+    for (std::size_t i = 0; i < node->size(); ++i) {
+        const Result<float> value = parse_float((*node)[i], where + "[" + dec(i) + "]");
+        if (!value) return std::unexpected(value.error());
+        out.push_back(*value);
+    }
+    return out;
+}
+
+}  // namespace
+
+// `format.key_version` gates the key set (`parts` from scene version 2, a
+// part's mesh from version 3), and every diagnostic blames `format.schema`,
+// the file's own. `base_dir` resolves a mesh part's sidecar.
+Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const std::string& what,
+                                                const ModelBlockFormat& format,
+                                                const std::filesystem::path& base_dir) {
+    const std::string file_schema(format.schema);
+    const bool reads_parts = format.key_version >= kPartsVersion;
     if (reads_parts) {
         if (Result<void> r = check_map(node, what,
                                        {"name", "version", "param_schema_id", "visual_ref", "design_to_principal",
@@ -813,13 +888,91 @@ struct PartMesh {
         if (!parts) return std::unexpected(parts.error());
         for (std::size_t i = 0; i < parts->size(); ++i) {
             Result<vehicles::PartDesc> p = parse_part((*parts)[i], what + ".parts[" + dec(i) + "]", file_schema,
-                                                      file_version >= kMeshPartsVersion, base_dir);
+                                                      format.key_version >= kMeshPartsVersion, format.kind, base_dir);
             if (!p) return std::unexpected(p.error());
             out.parts.push_back(std::move(*p));
         }
     }
     return out;
 }
+
+// Every key is required, and read in declaration order, so the first missing
+// one named is the first the struct declares.
+Result<vehicles::PropulsionChain> detail::parse_propulsion(const YAML::Node& node, const std::string& what,
+                                                           std::string_view schema) {
+    if (Result<void> r = check_map(node, what,
+                                   {"kv", "resistance", "no_load_current", "current_min", "current_max",
+                                    "esc_current_total_max", "pole_pairs", "inductance", "diameter", "table",
+                                    "cells_series", "cells_parallel", "cell_resistance", "cell_cutoff_voltage",
+                                    "pack_polarization_resistance", "pack_current_max", "ocv_table",
+                                    "motors_on_bus"},
+                                   schema);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    vehicles::PropulsionChain out{};
+    const auto doubles = [&](std::initializer_list<std::pair<const char*, double*>> fields) -> Result<void> {
+        for (const auto& [key, slot] : fields) {
+            const Result<double> value = double_field(node, key, what);
+            if (!value) return std::unexpected(value.error());
+            *slot = *value;
+        }
+        return {};
+    };
+    const auto count = [&](const char* key, uint32_t& slot) -> Result<void> {
+        const Result<uint32_t> value = uint_field<uint32_t>(node, key, what);
+        if (!value) return std::unexpected(value.error());
+        slot = *value;
+        return {};
+    };
+
+    // Motor and ESC, then the propeller.
+    if (Result<void> r = doubles({{"kv", &out.kv},
+                                  {"resistance", &out.resistance},
+                                  {"no_load_current", &out.no_load_current},
+                                  {"current_min", &out.current_min},
+                                  {"current_max", &out.current_max},
+                                  {"esc_current_total_max", &out.esc_current_total_max},
+                                  {"pole_pairs", &out.pole_pairs},
+                                  {"inductance", &out.inductance},
+                                  {"diameter", &out.diameter}});
+        !r) {
+        return std::unexpected(r.error());
+    }
+    const std::string table_what = what + ".table";
+    const Result<YAML::Node> table = map_field(node, "table", what, {"j_min", "j_max", "ct", "cq"}, schema);
+    if (!table) return std::unexpected(table.error());
+    const Result<float> j_min = float_field(*table, "j_min", table_what);
+    if (!j_min) return std::unexpected(j_min.error());
+    const Result<float> j_max = float_field(*table, "j_max", table_what);
+    if (!j_max) return std::unexpected(j_max.error());
+    Result<std::vector<float>> ct = float_sequence(*table, "ct", table_what);
+    if (!ct) return std::unexpected(ct.error());
+    Result<std::vector<float>> cq = float_sequence(*table, "cq", table_what);
+    if (!cq) return std::unexpected(cq.error());
+    out.table.j_min = *j_min;
+    out.table.j_max = *j_max;
+    out.table.ct = std::move(*ct);
+    out.table.cq = std::move(*cq);
+
+    // The battery, then the bus.
+    if (Result<void> r = count("cells_series", out.cells_series); !r) return std::unexpected(r.error());
+    if (Result<void> r = count("cells_parallel", out.cells_parallel); !r) return std::unexpected(r.error());
+    if (Result<void> r = doubles({{"cell_resistance", &out.cell_resistance},
+                                  {"cell_cutoff_voltage", &out.cell_cutoff_voltage},
+                                  {"pack_polarization_resistance", &out.pack_polarization_resistance},
+                                  {"pack_current_max", &out.pack_current_max}});
+        !r) {
+        return std::unexpected(r.error());
+    }
+    Result<std::vector<float>> ocv = float_sequence(node, "ocv_table", what);
+    if (!ocv) return std::unexpected(ocv.error());
+    out.ocv_table = std::move(*ocv);
+    if (Result<void> r = count("motors_on_bus", out.motors_on_bus); !r) return std::unexpected(r.error());
+    return out;
+}
+
+namespace {
 
 [[nodiscard]] Result<SceneAsset> parse_asset(const YAML::Node& node, const std::string& what,
                                              std::string_view schema) {
@@ -992,8 +1145,9 @@ struct PartMesh {
     const Result<YAML::Node> models = sequence_field(root, "models", "scene");
     if (!models) return std::unexpected(models.error());
     for (std::size_t i = 0; i < models->size(); ++i) {
-        Result<vehicles::ModelType> m =
-            parse_model((*models)[i], "scene.models[" + dec(i) + "]", *version, base_dir);
+        Result<vehicles::ModelType> m = detail::parse_model(
+            (*models)[i], "scene.models[" + dec(i) + "]", detail::ModelBlockFormat{*version, file_schema, "scene"},
+            base_dir);
         if (!m) return std::unexpected(m.error());
         out.models.push_back(std::move(*m));
     }
@@ -1040,6 +1194,57 @@ struct PartMesh {
 }  // namespace
 
 // ===========================================================================
+// The model block's rules (detail/model_block.hpp)
+// ===========================================================================
+
+Result<void> detail::validate_model(const vehicles::ModelType& m, std::string_view schema, std::string_view kind) {
+    if (Result<void> r = m.validate(); !r) {
+        return r;
+    }
+    // ModelType accepts any orientable rotation, because registration
+    // normalizes it. A FILE carries a unit quaternion (SCN-009), as it does
+    // every other orientation.
+    if (!unit(m.design_to_principal)) {
+        return std::unexpected(invalid("model '" + m.name + "': design_to_principal must be a unit quaternion"));
+    }
+    // A part's shape must be expressible as its file (SCN-002), as an
+    // asset's collider must. Every other part rule is the model's, above.
+    for (const vehicles::PartDesc& p : m.parts) {
+        if (Result<void> r = yaml_text::check_sdf_representable(
+                p.shape, "model '" + m.name + "' part '" + p.name + "' shape", schema);
+            !r) {
+            return r;
+        }
+        // A mesh part's sidecar name (CORE-6): relative, forward slashes,
+        // and only beside a mesh. Empty is fine in memory; the writer
+        // needs it (check_model_writable).
+        if (!p.mesh_file.empty()) {
+            const std::string who = "model '" + m.name + "' part '" + p.name + "': mesh_file '" + p.mesh_file + "' ";
+            if (const std::string problem = relative_path_problem(p.mesh_file, kind); !problem.empty()) {
+                return std::unexpected(invalid(who + problem));
+            }
+            if (!p.mesh) {
+                return std::unexpected(invalid(who + "names a sidecar, but the part holds no mesh"));
+            }
+        }
+    }
+    return {};
+}
+
+Result<void> detail::check_model_writable(const vehicles::ModelType& m, std::string_view kind) {
+    for (const vehicles::PartDesc& p : m.parts) {
+        if (p.mesh && p.mesh_file.empty()) {
+            return std::unexpected(invalid("model '" + m.name + "' part '" + p.name +
+                                           "': a mesh part needs mesh_file, its sidecar's path relative to the " +
+                                           std::string(kind) +
+                                           " file; the writer names the sidecar and never writes it (save the "
+                                           "mesh with save_mesh_file, then name it)"));
+        }
+    }
+    return {};
+}
+
+// ===========================================================================
 // Public API
 // ===========================================================================
 
@@ -1053,8 +1258,8 @@ Result<void> validate_scene(const SceneDesc& scene) {
     if (file.empty()) {
         return std::unexpected(invalid("scene world.file must name the world file"));
     }
-    if (const std::string_view problem = relative_path_problem(file); !problem.empty()) {
-        return std::unexpected(invalid("scene world.file '" + file + "' " + std::string(problem)));
+    if (const std::string problem = detail::relative_path_problem(file, "scene"); !problem.empty()) {
+        return std::unexpected(invalid("scene world.file '" + file + "' " + problem));
     }
 
     // --- materials: the world palette's rules (validate_material, the one
@@ -1071,39 +1276,12 @@ Result<void> validate_scene(const SceneDesc& scene) {
         }
     }
 
-    // --- models (SCN-009) ---------------------------------------------------
+    // --- models (SCN-009): the model block's rules, shared with the model
+    // file, then unique names -------------------------------------------------
     for (std::size_t i = 0; i < scene.models.size(); ++i) {
         const vehicles::ModelType& m = scene.models[i];
-        if (Result<void> r = m.validate(); !r) {
+        if (Result<void> r = detail::validate_model(m, schema(kPartsVersion), "scene"); !r) {
             return r;
-        }
-        // ModelType accepts any orientable rotation, because registration
-        // normalizes it. A FILE carries a unit quaternion (SCN-009), as it does
-        // every other orientation.
-        if (!unit(m.design_to_principal)) {
-            return std::unexpected(
-                invalid("model '" + m.name + "': design_to_principal must be a unit quaternion"));
-        }
-        // A part's shape must be expressible as its file (SCN-002), as an
-        // asset's collider must. Every other part rule is the model's, above.
-        for (const vehicles::PartDesc& p : m.parts) {
-            if (Result<void> r = yaml_text::check_sdf_representable(
-                    p.shape, "model '" + m.name + "' part '" + p.name + "' shape", schema(kPartsVersion));
-                !r) {
-                return r;
-            }
-            // A mesh part's sidecar name (CORE-6): relative, forward slashes,
-            // and only beside a mesh. Empty is fine in memory; the writer
-            // needs it (scene_to_yaml).
-            if (!p.mesh_file.empty()) {
-                const std::string who = "model '" + m.name + "' part '" + p.name + "': mesh_file '" + p.mesh_file + "' ";
-                if (const std::string_view problem = relative_path_problem(p.mesh_file); !problem.empty()) {
-                    return std::unexpected(invalid(who + std::string(problem)));
-                }
-                if (!p.mesh) {
-                    return std::unexpected(invalid(who + "names a sidecar, but the part holds no mesh"));
-                }
-            }
         }
         for (std::size_t j = 0; j < i; ++j) {
             if (scene.models[j].name == m.name) {
@@ -1240,13 +1418,8 @@ Result<std::string> scene_to_yaml(const SceneDesc& scene) {
     // The text names a mesh part's sidecar and never holds the mesh, so a
     // mesh part needs its name here (CORE-6). save_mesh_file() writes it.
     for (const vehicles::ModelType& m : scene.models) {
-        for (const vehicles::PartDesc& p : m.parts) {
-            if (p.mesh && p.mesh_file.empty()) {
-                return std::unexpected(invalid(
-                    "model '" + m.name + "' part '" + p.name +
-                    "': a mesh part needs mesh_file, its sidecar's path relative to the scene file; the writer "
-                    "names the sidecar and never writes it (save the mesh with save_mesh_file, then name it)"));
-            }
+        if (Result<void> r = detail::check_model_writable(m, "scene"); !r) {
+            return std::unexpected(r.error());
         }
     }
     try {

@@ -935,9 +935,15 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # $<BUILD_INTERFACE:...>-wrapped, for spade_world's reasons (the yaml-cpp note
 # above). An installed consumer gets yaml-cpp through spade::world, which
 # spadeConfig.cmake gives it; tests/consumer parses a scene to prove that link.
+#
+# scene/model_file.cpp is the model file (one model and, optionally, its
+# propulsion chain): the scene's per-model block, shared through
+# scene/detail/model_block.hpp, so it lives beside the scene file, with the
+# same links. tests/consumer round-trips one too.
 # ------------------------------------------------------------------------------
 add_library(spade_scene STATIC
     scene/compose.cpp
+    scene/model_file.cpp
     scene/scene_file.cpp
 )
 add_library(spade::scene ALIAS spade_scene)
@@ -960,7 +966,11 @@ install(TARGETS spade_scene
     ARCHIVE DESTINATION lib
     INCLUDES DESTINATION include
 )
-install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
+# scene/detail/ is internal, as world/detail/ is: model_block.hpp (one model's
+# text block, which the scene file shares) names yaml-cpp types, and no
+# installed header includes it.
+install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp"
+    PATTERN "detail" EXCLUDE)
 
 # spade::render_parts -- a model's parts as render-scene items (RND-9; docs/
 # design/rendering/plans/2026-10-13-render-parts-plan.md). Owned by
