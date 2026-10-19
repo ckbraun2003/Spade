@@ -152,7 +152,8 @@ The capabilities are each tested headlessly first: the library index, placing, t
 | N2 | The object file, `object_version 1` | Core | N1's emitter style | proposed, accepted by the lead |
 | N3 | `library.yaml` and its reader; the test that loads every entry and pins its identities | Core (format, reader); Interface (categories) | N1, N2 | proposed |
 | N4 | The reference quad's committed model file, generator and golden | Core | N1 | proposed |
-| N5 | Scene version bump: the `airflow:` block (§4) and a per-model `propulsion:` block | Core | N1; Physics' semantics (in) | proposed |
+| N5a | Scene v4: a per-model `propulsion:` block, plus `scene::add_model()` (M1: a placed drone keeps its chain) | Core | N1 | accepted (the lead, 2026-10-19: N5 split) |
+| N5b | Scene v5: the `airflow:` block (§4), with Physics reviewing its encoding (M2) | Core | N1; Physics' semantics (in) | accepted (the lead, 2026-10-19: N5 split) |
 | N6 | `build_identity()` | Core | | in progress (`core/build-identity`) |
 | N7 | P2's solids (`set_solids()`) | Physics | | Tasks 3-10 |
 | N8 | P2b: `resolve(region, wind, drone state)` to the faces; the leaving and floor-clearance refusals | Physics | N7 | after P2 |
@@ -165,16 +166,16 @@ The capabilities are each tested headlessly first: the library index, placing, t
 | N15 | Import (glTF now): read, write the `.spmesh` sidecar, add as an object or a drone's part | Interface | N2, N11 | to build |
 | N16 | The props and terrain UI, and New world | Interface | | to build |
 | N17 | A flight controller for any model's rotor layout, with throttle, attitude and arm, commanding through the chain; pilot keys in Run mode | Interface | N1 (for the chain) | to build |
-| N18 | The airflow component's UI, and LiveRun's driven mode (the host supplies the body and rows) | Interface | N5; N8 for a moving drone | to build |
+| N18 | The airflow component's UI, and LiveRun's driven mode (the host supplies the body and rows) | Interface | N5b; N8 for a moving drone | to build |
 | N19 | Per-view state and the layout; the mode menu through `supports()`; legends | Interface | | to build (the selector is merged) |
 | N20 | The end-goal chapter's checks and predicates | Test/Docs (predicates); Interface (steps) | the above | Test/Docs offered the object-added predicate |
 | N21 | The library installed for Kat's builder | Core (install); Spade Host (Kat's side) | N3 | later |
 
 ## 8. The scene format (Core)
 
-- **One scene version bump** adds, both optional:
-  - `airflow:`, the regions of §4, so a scene without one is unchanged;
-  - a per-model `propulsion:` block, in the model file's own encoding (one emit and parse).
+- **Two scene version bumps**, each block optional (the lead, 2026-10-19, splitting the one bump planned here: M1's `editor.add_drone` needs a placed drone to keep its chain, and a scene is written as the oldest version that carries it, so two bumps cost nothing):
+  - **v4 (N5a, M1):** a per-model `propulsion:` block, in the model file's own encoding (one emit and parse), which `scene::add_model()` fills;
+  - **v5 (N5b, M2):** `airflow:`, the regions of §4, so a scene without one is unchanged.
 - **Not scene data:** a view's mode, camera, legend and layout (editor workspace state).
 - **Later scene data:** placed cameras and sensors.
 - **Imports** need nothing new for drones: mesh parts with sidecars exist in scene v3. A mesh object (an obstacle) needs the object file (N2), and its contact waits for N9.
@@ -182,12 +183,12 @@ The capabilities are each tested headlessly first: the library index, placing, t
 ## 9. Order
 
 - **M1, library and flying:**
-  - N1-N4, N14;
+  - N1-N4, N5a, N14;
   - the reference quad placed and flown (N17);
   - one view with the mode menu, raster modes only (N19).
   - Smoke: `editor.library`, `editor.add_drone`, `editor.fly`, `editor.views` (raster).
 - **M2, airflow in the editor:**
-  - N5, N18 with the drone held (the drone box live in the editor), then moving once N8 lands;
+  - N5b, N18 with the drone held (the drone box live in the editor), then moving once N8 lands;
   - the flow views and Split.
   - Smoke: `editor.airflow`, `editor.views` (flow), `editor.save_reopen`.
 - **M3, objects and imports:** N11, N15, N16; fixed regions with several drones (N7).
