@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -20,6 +21,7 @@
 #include "core/rng.hpp"
 #include "core/validate.hpp"
 #include "physics/forces.hpp"  // drag_mode
+#include "scene/detail/asset_block.hpp"
 #include "scene/detail/model_block.hpp"
 #include "world/detail/yaml_text.hpp"
 #include "world/mesh.hpp"
@@ -323,28 +325,31 @@ void detail::emit_propulsion(std::string& out, const vehicles::PropulsionChain& 
     count("motors_on_bus", c.motors_on_bus);
 }
 
-namespace {
-
-void emit_asset(std::string& out, const SceneAsset& a) {
-    out += "  - name: " + quote_yaml(a.name) + "\n";
-    out += "    pose: {position: " + vec3_list(a.pose.position) +
+// The asset block (detail/asset_block.hpp), shared with the object file
+// (scene/object_file.cpp).
+void detail::emit_asset(std::string& out, const SceneAsset& a, std::string_view lead, std::string_view indent) {
+    const std::string in(indent);
+    out += std::string(lead) + "name: " + quote_yaml(a.name) + "\n";
+    out += in + "pose: {position: " + vec3_list(a.pose.position) +
            ", orientation: " + quat_list(a.pose.rotation) +
            ", scale: " + format_float(a.pose.scale) + "}\n";
 
     // The world file's SDF encoding, nested; its node_materials by name.
-    out += "    collider:\n";
-    out += "      sdf:\n";
-    emit_sdf_lists(out, a.collider, "        ");
-    out += "        node_materials: [";
+    out += in + "collider:\n";
+    out += in + "  sdf:\n";
+    emit_sdf_lists(out, a.collider, in + "    ");
+    out += in + "    node_materials: [";
     for (std::size_t i = 0; i < a.collider_materials.size(); ++i) {
         if (i != 0) out += ", ";
         out += quote_yaml(a.collider_materials[i]);
     }
     out += "]\n";
 
-    out += "    visual: {mesh_ref: " + quote_yaml(a.visual.mesh_ref) +
+    out += in + "visual: {mesh_ref: " + quote_yaml(a.visual.mesh_ref) +
            ", material: " + quote_yaml(a.visual.material) + "}\n";
 }
+
+namespace {
 
 void emit_vehicle(std::string& out, const SceneVehicle& v) {
     out += "  - name: " + quote_yaml(v.name) + "\n";
@@ -425,7 +430,7 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
     } else {
         out += "assets:\n";
         for (const SceneAsset& a : scene.assets) {
-            emit_asset(out, a);
+            detail::emit_asset(out, a, "  - ", "    ");
         }
     }
 
@@ -972,10 +977,8 @@ Result<vehicles::PropulsionChain> detail::parse_propulsion(const YAML::Node& nod
     return out;
 }
 
-namespace {
-
-[[nodiscard]] Result<SceneAsset> parse_asset(const YAML::Node& node, const std::string& what,
-                                             std::string_view schema) {
+// Every diagnostic blames `schema`, the file's own.
+Result<SceneAsset> detail::parse_asset(const YAML::Node& node, const std::string& what, std::string_view schema) {
     if (Result<void> r = check_map(node, what, {"name", "pose", "collider", "visual"}, schema); !r) {
         return std::unexpected(r.error());
     }
@@ -1029,6 +1032,8 @@ namespace {
     out.visual.material = *material;
     return out;
 }
+
+namespace {
 
 [[nodiscard]] Result<SceneVehicle> parse_vehicle(const YAML::Node& node, const std::string& what,
                                                  std::string_view schema) {
@@ -1155,7 +1160,7 @@ namespace {
     const Result<YAML::Node> assets = sequence_field(root, "assets", "scene");
     if (!assets) return std::unexpected(assets.error());
     for (std::size_t i = 0; i < assets->size(); ++i) {
-        const Result<SceneAsset> a = parse_asset((*assets)[i], "scene.assets[" + dec(i) + "]", file_schema);
+        const Result<SceneAsset> a = detail::parse_asset((*assets)[i], "scene.assets[" + dec(i) + "]", file_schema);
         if (!a) return std::unexpected(a.error());
         out.assets.push_back(*a);
     }
@@ -1245,6 +1250,80 @@ Result<void> detail::check_model_writable(const vehicles::ModelType& m, std::str
 }
 
 // ===========================================================================
+// The asset block's rules and a material list's (detail/asset_block.hpp)
+// ===========================================================================
+
+Result<void> detail::validate_asset(const SceneAsset& a, std::string_view unnamed, std::string_view schema) {
+    if (a.name.empty()) {
+        return std::unexpected(invalid(std::string(unnamed) + " has no name"));
+    }
+    const std::string where = "asset '" + a.name + "': ";
+
+    if (!finite(a.pose.position) || !finite(a.pose.rotation) || !finite(a.pose.scale)) {
+        return std::unexpected(invalid(where + "pose must be finite"));
+    }
+    if (!(a.pose.scale > 0.0f)) {
+        return std::unexpected(invalid(where + "pose scale must be > 0 (uniform scale only)"));
+    }
+    if (!unit(a.pose.rotation)) {
+        return std::unexpected(invalid(where + "pose orientation must be a unit quaternion"));
+    }
+
+    const SdfProgram& collider = a.collider;
+    if (!collider.node_materials.empty()) {
+        return std::unexpected(invalid(where +
+                                       "collider node materials are given by name, in "
+                                       "collider_materials, never by index"));
+    }
+    if (collider.nodes.empty() && !collider.transforms.empty()) {
+        return std::unexpected(invalid(where + "a collider with no nodes must have no transforms"));
+    }
+    if (const Result<uint32_t> depth = collider.validate(); !depth) {
+        return std::unexpected(Error{depth.error().code, where + "collider: " + depth.error().context});
+    }
+    // A file must be expressible as itself (SCN-002), or a save and reload
+    // composes to another config_hash.
+    if (Result<void> r = yaml_text::check_sdf_representable(collider, where + "collider SDF", schema); !r) {
+        return r;
+    }
+    if (!a.collider_materials.empty() && a.collider_materials.size() != collider.nodes.size()) {
+        return std::unexpected(invalid(where + "collider_materials must be empty or name one material per "
+                                               "collider node (" +
+                                       dec(collider.nodes.size()) + " nodes, " +
+                                       dec(a.collider_materials.size()) + " names)"));
+    }
+    for (std::size_t k = 0; k < a.collider_materials.size(); ++k) {
+        if (a.collider_materials[k].empty()) {
+            return std::unexpected(invalid(where + "node material " + dec(k) + " is an empty name"));
+        }
+    }
+
+    const bool has_mesh = !a.visual.mesh_ref.empty();
+    if (has_mesh != !a.visual.material.empty()) {
+        return std::unexpected(invalid(where + "a visual needs both a mesh_ref and a material name, or neither"));
+    }
+    if (collider.nodes.empty() && !has_mesh) {
+        return std::unexpected(invalid(where + "has neither a collider nor a visual"));
+    }
+    return {};
+}
+
+Result<void> detail::validate_materials(std::span<const MaterialDesc> materials, std::string_view label) {
+    for (std::size_t i = 0; i < materials.size(); ++i) {
+        const MaterialDesc& m = materials[i];
+        if (Result<void> r = validate_material(m, std::string(label) + " " + dec(i)); !r) {
+            return r;
+        }
+        for (std::size_t j = 0; j < i; ++j) {
+            if (materials[j].name == m.name) {
+                return std::unexpected(invalid("duplicate material name '" + m.name + "'"));
+            }
+        }
+    }
+    return {};
+}
+
+// ===========================================================================
 // Public API
 // ===========================================================================
 
@@ -1263,17 +1342,9 @@ Result<void> validate_scene(const SceneDesc& scene) {
     }
 
     // --- materials: the world palette's rules (validate_material, the one
-    // definition), plus unique names (SCN-004) -------------------------------
-    for (std::size_t i = 0; i < scene.materials.size(); ++i) {
-        const MaterialDesc& m = scene.materials[i];
-        if (Result<void> r = validate_material(m, "scene material " + dec(i)); !r) {
-            return r;
-        }
-        for (std::size_t j = 0; j < i; ++j) {
-            if (scene.materials[j].name == m.name) {
-                return std::unexpected(invalid("duplicate material name '" + m.name + "'"));
-            }
-        }
+    // definition), plus unique names (SCN-004), shared with the object file --
+    if (Result<void> r = detail::validate_materials(scene.materials, "scene material"); !r) {
+        return r;
     }
 
     // --- models (SCN-009): the model block's rules, shared with the model
@@ -1306,65 +1377,18 @@ Result<void> validate_scene(const SceneDesc& scene) {
         return {};
     };
 
-    // --- assets ------------------------------------------------------------
+    // --- assets: the asset block's rules, shared with the object file. A
+    // name is claimed before them, so a scene names a reused name first, as
+    // it always has; an empty one is validate_asset()'s to refuse. -----------
     for (std::size_t i = 0; i < scene.assets.size(); ++i) {
         const SceneAsset& a = scene.assets[i];
-        if (a.name.empty()) {
-            return std::unexpected(invalid("scene asset " + dec(i) + " has no name"));
-        }
-        if (Result<void> r = claim(a.name); !r) {
-            return r;
-        }
-        const std::string where = "asset '" + a.name + "': ";
-
-        if (!finite(a.pose.position) || !finite(a.pose.rotation) || !finite(a.pose.scale)) {
-            return std::unexpected(invalid(where + "pose must be finite"));
-        }
-        if (!(a.pose.scale > 0.0f)) {
-            return std::unexpected(invalid(where + "pose scale must be > 0 (uniform scale only)"));
-        }
-        if (!unit(a.pose.rotation)) {
-            return std::unexpected(invalid(where + "pose orientation must be a unit quaternion"));
-        }
-
-        const SdfProgram& collider = a.collider;
-        if (!collider.node_materials.empty()) {
-            return std::unexpected(invalid(where +
-                                           "collider node materials are given by name, in "
-                                           "collider_materials, never by index"));
-        }
-        if (collider.nodes.empty() && !collider.transforms.empty()) {
-            return std::unexpected(invalid(where + "a collider with no nodes must have no transforms"));
-        }
-        if (const Result<uint32_t> depth = collider.validate(); !depth) {
-            return std::unexpected(Error{depth.error().code, where + "collider: " + depth.error().context});
-        }
-        // A scene must be expressible as its own file (SCN-002), or a save and
-        // reload composes to another config_hash.
-        if (Result<void> r = yaml_text::check_sdf_representable(collider, where + "collider SDF",
-                                                                schema(kSceneFileOldestVersion));
-            !r) {
-            return r;
-        }
-        if (!a.collider_materials.empty() && a.collider_materials.size() != collider.nodes.size()) {
-            return std::unexpected(invalid(where + "collider_materials must be empty or name one material per "
-                                                   "collider node (" +
-                                           dec(collider.nodes.size()) + " nodes, " +
-                                           dec(a.collider_materials.size()) + " names)"));
-        }
-        for (std::size_t k = 0; k < a.collider_materials.size(); ++k) {
-            if (a.collider_materials[k].empty()) {
-                return std::unexpected(invalid(where + "node material " + dec(k) + " is an empty name"));
+        if (!a.name.empty()) {
+            if (Result<void> r = claim(a.name); !r) {
+                return r;
             }
         }
-
-        const bool has_mesh = !a.visual.mesh_ref.empty();
-        if (has_mesh != !a.visual.material.empty()) {
-            return std::unexpected(
-                invalid(where + "a visual needs both a mesh_ref and a material name, or neither"));
-        }
-        if (collider.nodes.empty() && !has_mesh) {
-            return std::unexpected(invalid(where + "has neither a collider nor a visual"));
+        if (Result<void> r = detail::validate_asset(a, "scene asset " + dec(i), schema(kSceneFileOldestVersion)); !r) {
+            return r;
         }
     }
 
