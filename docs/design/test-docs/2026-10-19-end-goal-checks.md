@@ -77,7 +77,8 @@ LiveRun, drone held (design decision 1), until P2b.
 - **publishes:** every frame of the step publishes a new generation, `validate_flow_volume()` is Ok, and `no_data` is 0.
 - **downwash** (headless, 64³) is the physical check. For each rotor i:
   - **Where:** p_i = hub_i − 2R_i n_i. The hub and thrust axis come from the model's rotor rows posed by the held body (the rule `rotor_discs()` uses), taken from the model, not from LiveRun's disc rows. So a disc the coupling misplaces is sampled where the rotor really is.
-  - **What:** u_i = −n_i · (the published velocity at p_i, trilinear between cell samples), the axial velocity downward.
+  - **What:** u_i is the area-averaged downward axial velocity over a disc of radius 0.5 R_i, centred on p_i, normal to n_i. It's the mean of −n_i · v over every point of a square lattice of pitch 0.05 R_i inside that disc, each point sampled by render's `flow_sample` rule (cell-centred trilinear). A point with no data fails the check.
+    - **Why an area, not the axis point** (Physics, 2026-10-19, before any run): on the exact axis the probe sits inside each rotor's hub vortex, where the constant-circulation swirl concentrates and the wake is least resolved and least like momentum theory. Rendering measured ω_y ≈ 230 to 330 1/s 0.5R below. The 0.5R disc averages that core out. It's still inside the contracted slipstream (radius about 0.75R at 2R), where the vortex-cylinder model's axial velocity is close to its axis value. It also tolerates the jets' inward lean as they merge (perhaps 0.2 to 0.3R at 2R). That's about 3 cells across at R/dx 6 and 5 at R/dx 10.
   - **Reference:** C8's momentum theory (`tests/data/airflow/README.md`).
     - v_ref,i = v_h,i (1 + 2/√5) = 1.894 v_h,i, where v_h,i = √(T_i / (2ρπR_i²)).
     - T_i = k_T ω_i², from LiveState's `rotor_omega`. That is the rigid-body path's thrust, independent of the disc conversion. ρ is the case's.
@@ -99,7 +100,7 @@ LiveRun, drone held (design decision 1), until P2b.
     - a thrust off by ×2 or more, where the true bias is 10% or less.
   - **C8's band where it holds, as C8q (approved by the lead, 2026-10-19: an opt-in validation record, run in a quiet window):**
     - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
-    - The band: each rotor within C8's 10%, and the four within 5% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity.
+    - The band: each rotor within C8's 10%, and the four within 10% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the mutual band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run).
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`.
     - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release. It's saved and restored across 10-minute chunks.
     - Falling outside 10% is a finding for Physics, not a change to the band.
