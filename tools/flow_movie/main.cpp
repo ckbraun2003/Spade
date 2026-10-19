@@ -5,7 +5,8 @@
 // is drawn on GL at 1920x1080 at full flow quality and piped to ffmpeg,
 // with captions burned in. The video's clock is simulated time only.
 //
-//   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc
+//   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-quad|case-smoke
+//   flow_movie --video case --case FILE.case.yaml [--controls FILE]
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
 //              [--resimulate] [--keep-cache] [--simulate-only]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
@@ -22,6 +23,7 @@
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -30,6 +32,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -141,11 +144,12 @@ struct Film {
     // sidebar on the left; 0 centres both.
     float picture_x = 0.0f;
     std::vector<View> views;
-    // A film flown through LiveRun (--case): its case, the run line each
-    // frame's caption reads (filled from the cache once simulated), and what
-    // every view draws over its own shot -- the held drone's parts.
+    // A film flown through LiveRun (--case): its case, each frame's
+    // run_label() by the frame's step (the caption's; filled from the cache's
+    // run.txt once simulated), and what every view draws over its own shot --
+    // the held drone's parts.
     std::shared_ptr<const LiveCase> run;
-    std::shared_ptr<std::vector<std::string>> run_lines;
+    std::shared_ptr<std::map<uint64_t, std::string>> run_labels;
     std::function<spade::Result<void>(const FrameLog&, render::RenderScene&)> decorate;
 };
 
@@ -262,9 +266,12 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 // controls at the run's own time, then the frame published. Each frame's log
 // keeps the held body (pos, then orient w x y z) and the rotors' speeds, so
 // a view can pose the drone's parts where the run held them; run.txt keeps
-// each frame's run line. No budget and no resume: LiveRun can't save its
-// state yet, so the film runs in one go (run_film refuses a budget).
-[[nodiscard]] spade::Result<bool> simulate_live(const Film& film, const fs::path& cache, const CacheMark& mark) {
+// each frame's step and run_label(). LiveRun's save (live.save) is kept every
+// kStateEvery frames and when a budget stops the run, and the next run
+// restores it: a restored run gives exactly the frames an unbroken one does
+// (LiveRun's save/restore). A finished film drops it.
+[[nodiscard]] spade::Result<bool> simulate_live(const Film& film, const fs::path& cache, const CacheMark& mark,
+                                                double budget_s, uint32_t frame_budget) {
     namespace an = spade::analysis;
     const LiveCase& lc = *film.run;
     auto resolved = an::resolve(lc.c, lc.run_model);
@@ -273,15 +280,34 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
         return std::unexpected(spade::Error{spade::Code::invalid_argument, film.stem + ": the case does not resolve: " + issues});
     }
-    auto run = an::LiveRun::start(*resolved, lc.run_model);
-    if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
     std::error_code ec;
     fs::create_directories(cache, ec);
-    mark_cache(cache, mark);
-    std::ofstream lines(cache / "run.txt", std::ios::binary);
+    const fs::path save = cache / "live.save";
+    const bool resuming = fs::exists(save, ec);
+    auto run = resuming ? an::LiveRun::restore(save, *resolved, lc.run_model, lc.propulsion)
+                        : an::LiveRun::start(*resolved, lc.run_model, lc.propulsion);
+    if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
+    const auto first = static_cast<uint32_t>(run->state().frames);
+    // run.txt: the saved frames' lines as they were (a kill after the save
+    // may have left more), then this run's.
+    std::vector<std::string> kept;
+    if (resuming) {
+        std::ifstream old(cache / "run.txt", std::ios::binary);
+        for (std::string line; kept.size() < first && std::getline(old, line);) kept.push_back(line);
+        if (kept.size() < first) {
+            return std::unexpected(spade::Error{spade::Code::io_error, film.stem + ": " + (cache / "run.txt").string() +
+                                                                           " holds fewer frames than its save"});
+        }
+        std::printf("[ %s ] continuing after frame %u (step %llu) from %s\n", film.stem.c_str(), first,
+                    static_cast<unsigned long long>(run->state().steps), save.string().c_str());
+    } else {
+        mark_cache(cache, mark);
+    }
+    std::ofstream lines(cache / "run.txt", std::ios::binary | std::ios::trunc);
+    for (const std::string& line : kept) lines << line << '\n';
     spade::FlowVolume volume;
     const auto start = std::chrono::steady_clock::now();
-    for (uint32_t k = 0; k < film.frames; ++k) {
+    for (uint32_t k = first; k < film.frames; ++k) {
         const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
         auto frame = run->advance_frame(controls, volume);
         if (!frame) return std::unexpected(spade::Error{frame.error().code, film.stem + ": " + frame.error().context});
@@ -290,7 +316,21 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         for (const float w : run->state().rotor_omega) live.push_back(w);
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
-        lines << run->run_line() << '\n';
+        lines << frame->steps << '\t' << run->run_label() << '\n';
+        const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
+                                 (frame_budget > 0u && k + 1u - first >= frame_budget);
+        if ((k + 1u) % kStateEvery == 0u || (over_budget && k + 1u < film.frames)) {
+            lines.flush();  // the save's frames are all in run.txt first
+            if (auto kept_run = run->save(save); !kept_run) {
+                return std::unexpected(spade::Error{kept_run.error().code, film.stem + ": " + kept_run.error().context});
+            }
+        }
+        if (over_budget && k + 1u < film.frames) {
+            std::printf("[ %s ] stopped by the budget after frame %u/%u (step %llu); run again to continue\n",
+                        film.stem.c_str(), k + 1u, film.frames, static_cast<unsigned long long>(frame->steps));
+            return false;
+        }
         if (k % 10u == 0u || k + 1u == film.frames) {
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
             std::printf("[ %s ] frame %u/%u, t %s s; held at (%.3f, %.3f, %.3f) in a box from (%.3f, %.3f, %.3f); "
@@ -301,6 +341,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         }
     }
     if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
+    fs::remove(save, ec);
     return true;
 }
 
@@ -793,15 +834,15 @@ constexpr float kVortexFloor = -5.0f;
                             kinds[static_cast<uint32_t>(run->c.flight.kind) % 3u] + " at " +
                             fixed(run->c.flight.speed, 1) + " m/s, flying " + run->program_name + " for " +
                             fixed(run->seconds, 2) + " s";
-    film.run_lines = std::make_shared<std::vector<std::string>>();
-    const auto lines = film.run_lines;
-    film.captions = [run, lines](const FrameLog& log) {
+    film.run_labels = std::make_shared<std::map<uint64_t, std::string>>();
+    const auto labels = film.run_labels;
+    film.captions = [run, labels](const FrameLog& log) {
         CaptionText t;
-        if (!lines->empty()) {
-            // The run line's fixed part: the rotor model, the grid, dx and R/dx.
-            const std::string& first = lines->front();
-            t.top.push_back(first.substr(0, first.find(" \xC2\xB7 t =")));
-        }
+        // The frame's run_label(): the rotor model, the grid, dx and R/dx,
+        // and any limit the propulsion was at.
+        const auto label = labels->find(log.step);
+        t.top.push_back(label != labels->end() ? label->second
+                                               : "(no run label cached for step " + std::to_string(log.step) + ")");
         if (!run->notes.empty()) t.top.push_back(run->notes);
         const an::Controls c = an::controls_at(run->program, static_cast<float>(log.time));
         t.bottom.push_back(std::string("controls: ") + (c.armed ? "armed" : "disarmed") + ", throttle " +
@@ -920,7 +961,8 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     std::error_code ec;
     if (opt.resimulate) fs::remove_all(cache, ec);
     const bool started = fs::exists(cache, ec) && !fs::is_empty(cache, ec);
-    const bool finished = started && cached_frames(cache) == film.frames && !fs::exists(cache / "state.bin", ec);
+    const bool finished = started && cached_frames(cache) == film.frames && !fs::exists(cache / "state.bin", ec) &&
+                          !fs::exists(cache / "live.save", ec);
     const CacheMark theirs = read_mark(cache);
     const auto refuse_cache = [&](const std::string& what, const std::string& found, const std::string& wanted) {
         return std::unexpected(spade::Error{spade::Code::invalid_argument,
@@ -943,36 +985,34 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
         }
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     }
-    if (film.run) {
-        // LiveRun can't save and restore yet (Interface's save/restore is on
-        // its way): a --case film runs in one go, and an unfinished one starts
-        // over.
-        if (!finished && (opt.budget_seconds > 0.0 || opt.frame_budget > 0u)) {
-            return std::unexpected(spade::Error{
-                spade::Code::unavailable,
-                film.stem + ": a --case film can't stop and resume until LiveRun's save/restore lands; run it "
-                            "without --budget-seconds or --frame-budget, short enough for one go"});
-        }
-        if (started && !finished) {
-            std::printf("[ %s ] an unfinished LiveRun cache can't be continued; starting it again\n",
-                        film.stem.c_str());
-            fs::remove_all(cache, ec);
-        }
+    if (film.run && started && !finished && !fs::exists(cache / "live.save", ec)) {
+        // Stopped before its first save: nothing to continue from.
+        std::printf("[ %s ] an unfinished LiveRun cache with no save; starting it again\n", film.stem.c_str());
+        fs::remove_all(cache, ec);
     } else if (started && !finished && theirs.build != mine.build) {
         return refuse_cache("build's unfinished simulation", theirs.build, mine.build);
     }
     if (!finished) {
-        auto done = film.run ? simulate_live(film, cache, mine)
+        auto done = film.run ? simulate_live(film, cache, mine, opt.budget_seconds, opt.frame_budget)
                              : simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
         if (!done) return std::unexpected(done.error());
         if (!*done) return std::optional<std::vector<fs::path>>{};
     } else {
         std::printf("[ %s ] using the %u cached frames in %s\n", film.stem.c_str(), film.frames, cache.string().c_str());
     }
-    if (film.run_lines) {
-        film.run_lines->clear();
+    if (film.run_labels) {
+        film.run_labels->clear();
         std::ifstream lines(cache / "run.txt", std::ios::binary);
-        for (std::string line; std::getline(lines, line);) film.run_lines->push_back(line);
+        for (std::string line; std::getline(lines, line);) {
+            const std::size_t tab = line.find('\t');
+            uint64_t step = 0;
+            const char* end = line.data() + (tab == std::string::npos ? 0u : tab);
+            if (tab == std::string::npos || std::from_chars(line.data(), end, step).ptr != end) {
+                return std::unexpected(spade::Error{spade::Code::io_error, (cache / "run.txt").string() +
+                                                                               ": a line is not a step and a label"});
+            }
+            (*film.run_labels)[step] = line.substr(tab + 1u);
+        }
     }
     if (opt.simulate_only) return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     if (opt.stills > 0u) {
@@ -1128,18 +1168,20 @@ int main(int argc, char** argv) {
         if (!film) return fail(film.error());
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
-    } else if (opt.video == "case" || opt.video == "case-smoke") {
-        const bool smoke = opt.video == "case-smoke";
-        if (!smoke && opt.case_file.empty()) {
+    } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad") {
+        const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad";
+        if (!smoke && !quad && opt.case_file.empty()) {
             std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
             return 2;
         }
-        auto lc = smoke ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
-                        : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
+        auto lc = smoke  ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
+                  : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
+                         : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
-        auto film = case_film(std::move(*lc), frames, smoke ? "case-smoke" : "case-" + opt.case_file.stem().string());
+        auto film = case_film(std::move(*lc), frames,
+                              smoke ? "case-smoke" : quad ? "case-quad" : "case-" + opt.case_file.stem().string());
         if (!film) return fail(film.error());
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {

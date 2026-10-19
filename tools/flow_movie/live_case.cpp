@@ -9,9 +9,14 @@
 
 #include "analysis/live_run.hpp"  // showcase_trim()
 #include "scene/scene_file.hpp"
+#include "vehicles/airframe_compile.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/model_identity.hpp"
-#include "world/sdf.hpp"
+
+// The reference quad's airframe: the airframe compile's one fixture (TD-9),
+// header-only and test-framework free, until Core's model file holds it.
+// By path from here, as the tests reach it from their own directory.
+#include "../../tests/reference_airframe.hpp"
 
 namespace flow_movie {
 namespace an = spade::analysis;
@@ -44,9 +49,14 @@ namespace {
     if (!case_text) return std::unexpected(case_text.error());
     const auto program_text = an::program_to_yaml(lc.program);
     if (!program_text) return std::unexpected(program_text.error());
+    const std::string propulsion =
+        lc.propulsion ? "propulsion " + hex(spade::vehicles::propulsion_identity(lc.propulsion->chain)) + " idle " +
+                            std::to_string(lc.propulsion->idle) + " soc " + std::to_string(lc.propulsion->soc)
+                      : std::string("unpowered");
     return "case " + hex(fnv(*case_text)) + ", controls " + hex(fnv(*program_text)) + ", model " +
            hex(spade::vehicles::model_identity(lc.run_model)) + ", parts " +
-           hex(spade::vehicles::parts_identity(lc.draw_model)) + ", " + std::to_string(lc.seconds) + " s";
+           hex(spade::vehicles::parts_identity(lc.draw_model)) + ", " + propulsion + ", " +
+           std::to_string(lc.seconds) + " s";
 }
 
 }  // namespace
@@ -100,52 +110,55 @@ spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs
     return lc;
 }
 
-spade::Result<LiveCase> smoke_live_case(double seconds) {
-    const fs::path scene = fs::path(SPADE_ASSETS_DIR) / "scenes" / "hover.scene.yaml";
-    auto loaded = spade::scene::load_scene_file(scene);
-    if (!loaded) return std::unexpected(loaded.error());
-    if (loaded->models.empty()) return std::unexpected(invalid("smoke case: " + scene.string() + " has no model"));
+namespace {
+
+[[nodiscard]] spade::Result<LiveCase> powered_quad(double seconds, float box, float spacing, float step,
+                                                   std::string name, std::string notes) {
+    const spade::vehicles::AirframeSpec spec = spade::vehicles::fixtures::reference_quad();
+    auto compiled = spade::vehicles::compile_airframe(spec);
+    if (!compiled) return std::unexpected(invalid("the reference quad does not compile: " + compiled.error().context));
+    auto chain = spade::vehicles::airframe_propulsion_chain(spec);
+    if (!chain) return std::unexpected(invalid("the reference quad has no propulsion chain: " + chain.error().context));
     LiveCase lc;
-    lc.draw_model = loaded->models.front();
+    lc.draw_model = compiled->model;
     lc.run_model = lc.draw_model;
     lc.run_model.parts.clear();
-    lc.run_model.rotors.clear();
-    // The hover quad has no parts; the smoke draws a plain hull box on it, so
-    // the per-frame drone (render_parts) runs end to end. The fluid never
-    // sees it (the run model has no parts).
-    if (lc.draw_model.parts.empty()) {
-        spade::vehicles::PartDesc hull;
-        hull.name = "smoke hull";
-        hull.role = "body";
-        hull.shape.transforms.push_back(spade::SdfTransform{});
-        spade::SdfNode box{};
-        box.kind = static_cast<uint32_t>(spade::SdfPrim::box);
-        box.params = glm::vec4(0.12f, 0.03f, 0.12f, 0.0f);
-        hull.shape.nodes.push_back(box);
-        hull.min_feature = 0.06f;
-        lc.draw_model.parts.push_back(std::move(hull));
-    }
-    lc.c.model = an::ModelRef{"hover.scene.yaml", spade::vehicles::model_identity(lc.run_model),
+    lc.propulsion = an::LivePropulsion{std::move(*chain), 0.05, spec.state_of_charge};
+    lc.c.model = an::ModelRef{"the reference quad (tests/reference_airframe.hpp)",
+                              spade::vehicles::model_identity(lc.run_model),
                               spade::vehicles::parts_identity(lc.run_model)};
     lc.c.rotors.assign(lc.run_model.rotors.size(), an::RotorSetup{});
-    lc.c.grid.box = 0.8f;
-    lc.c.grid.spacing = 0.1f;
+    lc.c.grid.box = box;
+    lc.c.grid.spacing = spacing;
     lc.c.time.duration = static_cast<float>(seconds);
-    lc.c.time.step = 0.004f;
-    lc.c.flight.kind = an::FlightKind::forward;
+    lc.c.time.step = step;
+    lc.c.flight.kind = an::FlightKind::hover_in_wind;
     lc.c.flight.speed = 3.0f;
     auto trim = an::showcase_trim(lc.c, lc.run_model, std::nullopt);  // no rotors: a zero trim
     if (!trim) return std::unexpected(trim.error());
     lc.program = an::showcase_program(*trim);
     lc.program_name = "the showcase program";
     lc.seconds = seconds;
-    lc.name = "case smoke";
-    lc.notes = "the hover quad without its rotors (until they couple), drawn as a plain hull the fluid does not see "
-               "(until P2): wind past a held body";
+    lc.name = std::move(name);
+    lc.notes = std::move(notes);
     auto id = identity_of(lc);
     if (!id) return std::unexpected(id.error());
     lc.identity = std::move(*id);
     return lc;
+}
+
+}  // namespace
+
+spade::Result<LiveCase> quad_live_case(double seconds) {
+    return powered_quad(seconds, 0.8f, 0.0125f, 0.0005f, "the powered quad in a wind",
+                        "actuator discs (uniform thrust and swirl), not blades; the airframe is drawn, but the flow "
+                        "does not meet it until P2; idle 5 % and the battery's charge are the film's own until the "
+                        "chain pin");
+}
+
+spade::Result<LiveCase> smoke_live_case(double seconds) {
+    return powered_quad(seconds, 0.8f, 0.1f, 0.004f, "case smoke",
+                        "the powered reference quad on an 8^3 grid: the --case path end to end, not a flow to read");
 }
 
 }  // namespace flow_movie
