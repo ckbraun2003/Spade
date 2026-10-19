@@ -138,6 +138,12 @@ template <std::integral T>
     return out;
 }
 
+// RED stub.
+[[nodiscard]] inline std::string format_double(double value) {
+    static_cast<void>(value);
+    return "0";
+}
+
 // A YAML double-quoted scalar. Double-quoted (rather than plain or single-
 // quoted) unconditionally, because it is the only style that can carry every
 // string a name might hold -- including one that starts with '*', looks like a
@@ -300,6 +306,11 @@ using ::spade::path_text;
                                             "always an authoring error"));
     }
     return value;
+}
+
+// RED stub.
+[[nodiscard]] inline Result<double> parse_double(const YAML::Node& node, std::string_view what) {
+    return std::unexpected(at(node, std::string(what) + ": parse_double is not implemented"));
 }
 
 // Decimal always; also `0x`/`0X` hex when `allow_hex`. The prefix decides the
