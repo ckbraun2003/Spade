@@ -1,6 +1,6 @@
 # The end-goal smoke's checks and bands (N20)
 
-**Owner:** Test/Docs. **Status:** approved and merged by the lead, 2026-10-19 (fc1fbac). The lead decided the downwash band (§5): ±25% on screen, with C8q approved.
+**Owner:** Test/Docs. **Status:** approved and merged by the lead, 2026-10-19 (fc1fbac). The lead decided the downwash band (§5): ±25%, with C8q approved. Amended the same day (the lead, with Interface): the band runs headless at 64³ through the editor's own run path, and the live 32³ chapter carries `downwash-present`.
 **For:** the editor end-goal design's §6 steps (`docs/design/interface/plans/2026-10-19-editor-end-goal-design.md`, INT-10).
 **Fixed a priori, 2026-10-19,** before any run of these steps. A band changes only by a recorded lead decision (`01-verification.md`).
 
@@ -33,7 +33,7 @@
   - Placing a library object adds exactly one asset, under a name no other asset has.
   - Its x and z equal the pick point's, to 1 mm.
   - It **rests on the picked surface,** whether that is the ground or another object. Measured with the scene's SDF without the object, the gap from its lowest collider point to the surface beneath lies within [−2, +5] mm.
-  - It is **drawn**: the render scene gains exactly the drawables the object's definition declares (one for an SDF object, one per mesh for an import). Each sits at the asset's pose to 1e-5 m, with the asset's material.
+  - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. A gate (a torus and two posts) is three. The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
   - After 1.0 s of Run it has moved no more than 10 mm and tilted no more than 2°.
   - *Catches:* the tour's dropped builder checks `on-ground` and `rendered`; a buried, floating or doubled object; an object placed but not drawn.
 - **import-named:** the imported object's name is the glTF mesh's name, or the file's stem when the mesh has none, and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
@@ -66,11 +66,16 @@
 
 LiveRun, drone held (design decision 1), until P2b.
 
+**Two regions, one path** (the lead, 2026-10-19, with Interface). A developed wake at 64³ costs 4 to 5 minutes (Interface measured 261 ms per CPU step and 54 ms per publish), too long inside a tour step. So:
+- **The chapter shows 32³ live** and checks `downwash-present` on screen.
+- **`downwash`, the band, runs headless at 64³ through the editor's own run path:** the same EditorRun and region wiring the window uses, without the window, not bare LiveRun. That way a wiring bug in the editor can't hide behind a headless run of other code. The step names the headless check.
+- **The headless check's tier:** release only, opt-in under `SPADE_AIRFLOW_VALIDATION=1` like C8. It runs per batch, and on any branch that touches the editor's airflow path.
+
 - **region-resolved:** the grid (nx, ny, nz), dx and R/dx shown equal LiveRun's resolve for the same case, compared as numbers, not text.
-  - The chapter's region resolves at **R/dx ≥ 4**, the readable-flow rule, so the downwash check means something. Below 4, the step fails as `airflow/under-resolved`.
-  - Recommended region: 64³ in a 0.8 m box, which gives dx 12.5 mm and R/dx 6.1 for the reference quad (R 76.2 mm).
+  - Each check states the R/dx it needs: `downwash` needs **R/dx ≥ 4**, the readable-flow rule; `downwash-present` needs **R/dx ≥ 2**. Below that, the check fails as `airflow/under-resolved`.
+  - The regions, both a 0.8 m box around the reference quad (R 76.2 mm): headless at 64³ (dx 12.5 mm, R/dx 6.1); live at 32³ (dx 25 mm, R/dx 3.05).
 - **publishes:** every frame of the step publishes a new generation, `validate_flow_volume()` is Ok, and `no_data` is 0.
-- **downwash** is the physical check. For each rotor i:
+- **downwash** (headless, 64³) is the physical check. For each rotor i:
   - **Where:** p_i = hub_i − 2R_i n_i. The hub and thrust axis come from the model's rotor rows posed by the held body (the rule `rotor_discs()` uses), taken from the model, not from LiveRun's disc rows. So a disc the coupling misplaces is sampled where the rotor really is.
   - **What:** u_i = −n_i · (the published velocity at p_i, trilinear between cell samples), the axial velocity downward.
   - **Reference:** C8's momentum theory (`tests/data/airflow/README.md`).
@@ -78,12 +83,12 @@ LiveRun, drone held (design decision 1), until P2b.
     - T_i = k_T ω_i², from LiveState's `rotor_omega`. That is the rigid-body path's thrust, independent of the disc conversion. ρ is the case's.
     - For the reference quad at hover thrust (0.526 kg, so T = 1.29 N per rotor), v_ref = 10.2 m/s.
   - **Premise:**
-    - The controls are constant from arming through the window, and the attitude is level.
+    - The controls are constant from arming through the window, and the attitude is level: tilted no more than 1°.
     - Σ T_i ≥ 0.5 m g. The rotors are loaded, so a near-zero reference can't let still air pass.
   - **Developed:** from t_dev = max(0.30 s, 4L / min_i v_ref,i) after arming, where L is the height of the hub plane above the box's bottom face.
-    - In the recommended region, L = 0.38 m, so t_dev = 0.30 s.
+    - In the 0.8 m box, L = 0.38 m, so t_dev = 0.30 s.
     - Reason: C8 (disc 0.96 m above its bottom face, v_ref 7.58 m/s) averaged from 0.32 s, which is 2.5 wake transits. Four transits, plus the 0.30 s floor, cover the rotors' spin-up and the starting vortex leaving the box.
-  - **Window:** [t_dev, t_dev + 0.20 s]. On screen, the mean over every published frame in it (6 or more at 30 fps); headless, over every step.
+  - **Window:** [t_dev, t_dev + 0.20 s], the mean over every published frame in it: 6 or more at 30 fps. Fewer fails, as an absence (TD-5).
   - **Band:** each rotor's mean within ±25% of its own v_ref: 0.75 ≤ ū_i / v̄_ref,i ≤ 1.25 (the lead's decision, 2026-10-19).
   - **This band is a coupling check, not a validation claim.** A pass shows the airflow is coupled to the rotors: air moves the right way, from the right places, at roughly the right speed. It does not show the solver's accuracy at this resolution. Only C8 and C8q make accuracy claims.
   - **Why not C8's 10% here:** C8's 10% was set for one isolated disc at R/dx 10, where it measured −2.2%. The chapter's region is at R/dx 4 to 6, with four rotors whose centres are 2.04R apart. Neither effect is measured yet, and a band set without evidence, then widened after a run, is what the a-priori rule forbids. ±25% still fails:
@@ -98,6 +103,17 @@ LiveRun, drone held (design decision 1), until P2b.
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`.
     - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release. It's saved and restored across 10-minute chunks.
     - Falling outside 10% is a finding for Physics, not a change to the band.
+- **downwash-present** (on screen, 32³), the cheap a-priori check on the live view. For each rotor i:
+  - The point, measure, reference, premise, development and window are `downwash`'s, at the live region's R/dx, which must be 2 or more.
+  - **Check:** each rotor's window mean ū_i ≥ 0.25 v̄_ref,i, from 6 or more published frames. It's a floor, not a band: it proves direction and presence. The magnitude is the headless `downwash`'s to judge.
+  - **Fails:**
+    - still air: about 0, where the floor is about 2.5 m/s at hover thrust;
+    - a reversed rotor, whose air goes up (ū_i < 0);
+    - a stopped rotor, which has only its neighbours' entrainment on its axis.
+  - **Why 0.25 holds at R/dx 2 to 3:**
+    - The slipstream's momentum flux is fixed by the thrust, so its speed falls as one over the square root of its area.
+    - At R/dx 2, the disc's 2dx smearing widens the slipstream at 2R from 0.73R to about 1.7R. That's 5.4 times the area, so the speed falls to about 0.43 v_ref, still above 0.25.
+    - Reaching 0.25 would take 16 times the area: a radius of 2.9R, wider than the 2.04R between rotor centres.
 - **run-line-shown:** the line shown equals `LiveRun::run_line()` for the frame shown, exactly.
 - Known-open entries: `follow-needs-p2b` and `cp-needs-p2`.
 
@@ -129,7 +145,8 @@ These go on a Test/Docs branch, against stubs, before each feature lands. Each l
 
 | Predicate | Red stubs | Green stub |
 |---|---|---|
-| downwash | still air; reversed flow; the field shifted by R; one rotor's jet missing; Σ T below 0.5 m g (named) | a top-hat jet of radius 0.73R at v_ref on each axis, from 2R above to the box's floor |
+| downwash | still air; reversed flow; the field shifted by R; one rotor's jet missing; Σ T below 0.5 m g (named); R/dx below 4 (named); fewer than 6 frames in the window (named) | a top-hat jet of radius 0.73R at v_ref on each axis, from 2R above to the box's floor |
+| downwash-present | still air; one rotor reversed; one rotor stopped; R/dx below 2 (named) | the same jets at 0.43 v_ref and radius 1.7R, the R/dx 2 estimate |
 | climbs | a pinned history (Δh = 0); gravity missing; the premise unmet (named) | drag-free kinematics of the reported thrust; the same with 20% drag |
 | follows-attitude | a tilt with no acceleration; a reversed acceleration; 5° of roll cross-coupled | a tilt reached in 0.4 s, with the forward speed rising |
 | object-added | buried 1 cm; floating 1 cm; two drawables for one SDF object; a drawable off the pose | resting at 0 gap, one drawable at the pose |
