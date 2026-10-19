@@ -153,6 +153,20 @@ ViewSupport supports(const ViewSpec& spec, ViewBackend backend, const ViewInputs
     return ViewSupport{true, {}};
 }
 
+// RED: stubs until the green step.
+Result<std::span<const Streamline>> ViewCache::streamlines(const FlowVolume& volume, std::span<const glm::vec3> seeds,
+                                                           const StreamlineOptions& options) {
+    auto lines = trace_streamlines(volume, seeds, options);
+    if (!lines) return std::unexpected(lines.error());
+    unnamed_ = std::move(*lines);
+    return std::span<const Streamline>(unnamed_);
+}
+
+Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume, RenderScene& scene,
+                                           RenderOptions& options, ViewCache&) {
+    return apply_view(spec, volume, scene, options);
+}
+
 Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume, RenderScene& scene,
                                            RenderOptions& options) {
     const bool has_sdf = scene.sdf != nullptr && !scene.sdf->empty();

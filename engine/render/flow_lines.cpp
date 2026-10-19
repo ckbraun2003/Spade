@@ -66,6 +66,9 @@ struct Direction {
 
 }  // namespace
 
+// RED: a stub until the green step.
+StreamlineOptions StreamlineOptions::live() noexcept { return {}; }
+
 Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std::span<const glm::vec3> seeds,
                                                   const StreamlineOptions& options) {
     const auto refuse = [](const std::string& why) {

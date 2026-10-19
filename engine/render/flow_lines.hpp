@@ -38,6 +38,17 @@ struct StreamlineOptions {
     float stagnation_speed = 1.0e-4f;  // m/s, >= 0
     bool forward = true;
     bool backward = true;
+    // A cap on each direction's length, in the volume's box diagonals (finite,
+    // >= 0; 0 is no cap). Whichever of it and max_steps is fewer steps ends
+    // the line, as step_budget. The default has none: the films and goldens.
+    float max_length_diagonals = 0.0f;
+
+    // For a live view (the editor, the tour): one box diagonal each way, so a
+    // line on a closed orbit costs one crossing of the box, not its whole step
+    // budget (the lead, 2026-10-19); the rest as the default.
+    [[nodiscard]] static StreamlineOptions live() noexcept;
+
+    [[nodiscard]] bool operator==(const StreamlineOptions&) const = default;
 };
 
 struct Streamline {

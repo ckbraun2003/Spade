@@ -157,4 +157,62 @@ TEST(ViewMode, ARefusedViewChangesNothing) {
     EXPECT_FALSE(scene.flow_surface_colouring.has_value());
 }
 
+// The lead's (a), 2026-10-19: N views of one generation trace their lines
+// once through a ViewCache, and draw what an uncached apply_view() draws.
+// Another colouring reuses the lines; new seeds, new options or a new
+// generation trace again; generation 0 traces every time.
+TEST(ViewMode, NViewsOfOneGenerationTraceTheirLinesOnce) {
+    spade::FlowVolume volume = spade::test::view_mode_volume();
+    volume.generation = spade::next_flow_generation();
+    const ViewSpec spec{ViewBase::shaded, {layer(FlowView::streamlines)}};
+    RenderOptions options;
+    RenderScene uncached = spade::test::view_mode_scene(true, nullptr);
+    ASSERT_TRUE(spade::render::apply_view(spec, &volume, uncached, options).has_value());
+    ASSERT_FALSE(uncached.flow_polylines.empty());
+
+    spade::render::ViewCache cache;
+    const auto apply = [&](const ViewSpec& view) {
+        RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+        auto applied = spade::render::apply_view(view, &volume, scene, options, cache);
+        EXPECT_TRUE(applied.has_value()) << applied.error().context;
+        return scene;
+    };
+    for (int view = 0; view < 4; ++view) {
+        const RenderScene scene = apply(spec);
+        ASSERT_EQ(scene.flow_polylines.size(), uncached.flow_polylines.size());
+        for (std::size_t i = 0; i < scene.flow_polylines.size(); ++i) {
+            EXPECT_EQ(scene.flow_polylines[i].points, uncached.flow_polylines[i].points) << "view " << view;
+            EXPECT_EQ(scene.flow_polylines[i].colours, uncached.flow_polylines[i].colours) << "view " << view;
+        }
+    }
+    EXPECT_EQ(cache.traces(), 1u) << "four views of one generation trace once";
+
+    ViewSpec recoloured = spec;
+    recoloured.layers[0].colours = spade::render::ColourMapId::inferno;
+    const RenderScene other = apply(recoloured);
+    EXPECT_EQ(cache.traces(), 1u) << "another colouring reuses the lines";
+    ASSERT_FALSE(other.flow_polylines.empty());
+    EXPECT_NE(other.flow_polylines[0].colours, uncached.flow_polylines[0].colours);
+
+    ViewSpec reseeded = spec;
+    reseeded.layers[0].seeds.push_back(glm::vec3(-0.8f, -0.3f, 0.0f));
+    (void)apply(reseeded);
+    EXPECT_EQ(cache.traces(), 2u) << "new seeds trace";
+    ViewSpec shorter = spec;
+    shorter.layers[0].lines.max_steps = 100;
+    (void)apply(shorter);
+    EXPECT_EQ(cache.traces(), 3u) << "new options trace";
+    (void)apply(spec);
+    EXPECT_EQ(cache.traces(), 3u) << "the first seeds and options are still held";
+
+    volume.generation = spade::next_flow_generation();
+    (void)apply(spec);
+    (void)apply(spec);
+    EXPECT_EQ(cache.traces(), 4u) << "a new generation traces once";
+    volume.generation = 0;
+    (void)apply(spec);
+    (void)apply(spec);
+    EXPECT_EQ(cache.traces(), 6u) << "generation 0 traces every time";
+}
+
 }  // namespace

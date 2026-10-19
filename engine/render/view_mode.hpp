@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,6 +113,34 @@ struct ViewSupport {
 // past the device's 3D texture size.
 [[nodiscard]] ViewSupport supports(const ViewSpec& spec, ViewBackend backend, const ViewInputs& inputs);
 
+// Streamlines traced once per generation and reused (the lead, 2026-10-19).
+// Keep one across a frame's views, and from frame to frame, and pass it to
+// apply_view(): views of one FlowVolume::generation with the same seeds and
+// options trace once, whatever their colours. A new generation drops what it
+// holds; generation 0 (unnamed) is traced every time and never kept.
+class ViewCache {
+  public:
+    // The lines from `seeds` under `options` through `volume`, traced or
+    // reused; valid until the next call. Whatever trace_streamlines()
+    // refuses, it refuses.
+    [[nodiscard]] Result<std::span<const Streamline>> streamlines(const FlowVolume& volume,
+                                                                  std::span<const glm::vec3> seeds,
+                                                                  const StreamlineOptions& options);
+    // How many times streamlines() has traced: for tests and profiling.
+    [[nodiscard]] uint64_t traces() const noexcept { return traces_; }
+
+  private:
+    struct Entry {
+        std::vector<glm::vec3> seeds;
+        StreamlineOptions options;
+        std::vector<Streamline> lines;
+    };
+    uint64_t generation_ = 0;
+    std::vector<Entry> entries_;
+    std::vector<Streamline> unnamed_;
+    uint64_t traces_ = 0;
+};
+
 // One layer's colour scale, for a legend.
 struct ViewLegend {
     FlowView layer = FlowView::volume;
@@ -132,5 +161,8 @@ struct ViewLegend {
 // colours. The budget and GL's own refusals come from the draw.
 [[nodiscard]] Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume,
                                                          RenderScene& scene, RenderOptions& options);
+// The same, its streamlines through `cache`.
+[[nodiscard]] Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume,
+                                                         RenderScene& scene, RenderOptions& options, ViewCache& cache);
 
 }  // namespace spade::render

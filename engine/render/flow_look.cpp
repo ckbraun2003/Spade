@@ -34,14 +34,19 @@ Result<void> add_streamlines(RenderScene& scene, const FlowVolume& volume, std::
                              const glm::vec3* constant) {
     auto lines = trace_streamlines(volume, seeds, options);
     if (!lines) return std::unexpected(lines.error());
-    const PreparedTransfer prepared = prepare_transfer(by_speed, volume.header);
-    for (const Streamline& line : *lines) {
+    add_traced_streamlines(scene, volume.header, *lines, by_speed, constant);
+    return {};
+}
+
+void add_traced_streamlines(RenderScene& scene, const FlowVolumeHeader& header, std::span<const Streamline> lines,
+                            const TransferFunction& by_speed, const glm::vec3* constant) {
+    const PreparedTransfer prepared = prepare_transfer(by_speed, header);
+    for (const Streamline& line : lines) {
         if (line.points.size() < 2u) continue;
         FlowPolyline poly = colour_streamline(line, prepared);
         if (constant != nullptr) poly.colours.assign(poly.points.size(), *constant);
         scene.flow_polylines.push_back(std::move(poly));
     }
-    return {};
 }
 
 Result<void> add_slice(RenderScene& scene, const FlowVolume& volume, FlowQuantity quantity, FieldLayer geometry,
