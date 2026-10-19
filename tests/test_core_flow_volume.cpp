@@ -136,4 +136,14 @@ TEST(CoreFlowVolume, AMalformedVolumeIsRefused) {
     }
 }
 
+// A generation names one content in the process (for a reader's cache): never
+// 0, never repeated. A volume no writer has named is 0, which nothing caches.
+TEST(CoreFlowVolume, EachGenerationIsNewAndNeverZero) {
+    const uint64_t a = spade::next_flow_generation();
+    const uint64_t b = spade::next_flow_generation();
+    EXPECT_NE(a, 0u);
+    EXPECT_GT(b, a);
+    EXPECT_EQ(FlowVolume{}.generation, 0u);
+}
+
 }  // namespace

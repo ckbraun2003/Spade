@@ -3245,6 +3245,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     return {};
 }
 
+// RED: a stub until the green step.
+uint64_t GlRenderer::flow_volume_uploads() const noexcept { return 0; }
+
 std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions& options) {
     // draw() refuses raymarch; no other option applies to a raymarch frame.
     if (options.mode == render::DrawMode::raymarch) {

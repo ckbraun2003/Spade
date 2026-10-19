@@ -236,4 +236,22 @@ TEST(AirflowPublish, AStrainedVortexsLambda2IsNotMinusQ) {
     }
 }
 
+// Each publish names its content anew (core/flow_volume.hpp), so a reader's
+// cache never draws an older frame's halves; a refused publish leaves 0, as
+// it may have written part of the volume.
+TEST(AirflowPublish, EachPublishNamesItsContentAnew) {
+    MacGrid g = *make_grid({4, 4, 4, 0.25f}, DomainBc{});
+    FlowVolume vol;
+    ASSERT_TRUE(publish_render_volume(g, {}, vol).has_value());
+    const uint64_t first = vol.generation;
+    EXPECT_NE(first, 0u);
+    for (float& x : g.u) x = 1.0f;
+    ASSERT_TRUE(publish_render_volume(g, {}, vol).has_value());
+    EXPECT_NE(vol.generation, 0u);
+    EXPECT_NE(vol.generation, first);
+    const std::vector<uint8_t> solid(7, 0);
+    ASSERT_FALSE(publish_render_volume(g, {.solid = solid}, vol).has_value());
+    EXPECT_EQ(vol.generation, 0u);
+}
+
 }  // namespace

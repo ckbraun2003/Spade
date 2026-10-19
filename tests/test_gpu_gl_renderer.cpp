@@ -219,7 +219,9 @@ class GpuGlRenderer : public ::testing::Test {
             GTEST_SKIP() << "glad could not load GL entry points for the test's own calls";
         }
 
-        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress));
+        // Every reuse of the flow textures checked, as a debug build does.
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{.verify_cached_volumes = true});
         if (!made) {
             // unavailable is the driver saying no (the version check); any
             // other code is GlRenderer itself failing, which is a real failure.
@@ -2523,6 +2525,67 @@ TEST_F(GpuGlRenderer, AViewWaitsForTheFlowProgramsAsGlDoes) {
     EXPECT_NE(drew.error().context.find(said.why_not), std::string::npos)
         << "supports() named \"" << said.why_not << "\"; GL refused: " << drew.error().context;
     while (!background.flow_ready()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// The editor's views of one frame (the lead, 2026-10-19): a named volume is
+// uploaded once and reused by every draw of its generation, and the reuse
+// draws what an upload draws. Generation 0 is uploaded by each reader, here
+// the C_p colouring and the march; a new generation is uploaded again.
+TEST_F(GpuGlRenderer, ViewsOfOneVolumeUploadItOnce) {
+    spade::FlowVolume volume = spade::test::view_mode_volume();
+    const spade::render::ViewSpec spec{spade::render::ViewBase::shaded,
+                                       {spade::test::layer(spade::render::FlowView::vortex_iso),
+                                        spade::test::layer(spade::render::FlowView::surface_cp)}};
+    RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+    RenderOptions options = comparable_options();
+    ASSERT_TRUE(spade::render::apply_view(spec, &volume, scene, options).has_value());
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+
+    const uint64_t at_start = renderer_->flow_volume_uploads();
+    const std::vector<uint8_t> unnamed = draw_and_read(scene, options);
+    ASSERT_FALSE(unnamed.empty());
+    EXPECT_EQ(renderer_->flow_volume_uploads() - at_start, 2u) << "generation 0: each reader uploads it";
+
+    volume.generation = spade::next_flow_generation();
+    const uint64_t named_at = renderer_->flow_volume_uploads();
+    for (int view = 0; view < 4; ++view) {
+        EXPECT_EQ(draw_and_read(scene, options), unnamed) << "view " << view << ": a reuse draws what an upload draws";
+    }
+    EXPECT_EQ(renderer_->flow_volume_uploads() - named_at, 1u) << "four views of one generation upload it once";
+
+    volume.generation = spade::next_flow_generation();
+    EXPECT_EQ(draw_and_read(scene, options), unnamed);
+    EXPECT_EQ(renderer_->flow_volume_uploads() - named_at, 2u) << "a new generation is uploaded again";
+}
+
+// The L6 guard (the lead's): a copy edited in place that keeps its generation
+// would draw the old halves, silently. With verify_cached_volumes, on in debug
+// builds and in this fixture, the reuse is refused, naming the generation;
+// named anew, the copy draws.
+TEST_F(GpuGlRenderer, AnEditThatKeepsItsGenerationIsRefused) {
+    spade::FlowVolume original = spade::test::view_mode_volume();
+    original.generation = spade::next_flow_generation();
+    const spade::render::ViewSpec spec{spade::render::ViewBase::shaded,
+                                       {spade::test::layer(spade::render::FlowView::vortex_iso)}};
+    RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+    RenderOptions options = comparable_options();
+    ASSERT_TRUE(spade::render::apply_view(spec, &original, scene, options).has_value());
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    ASSERT_FALSE(draw_and_read(scene, options).empty());
+
+    spade::FlowVolume copy = original;
+    copy.s[1] ^= 0x0001u;  // edited in place; the generation kept
+    ASSERT_TRUE(spade::render::apply_view(spec, &copy, scene, options).has_value());
+    bind_cleared_target();
+    const spade::Result<void> stale = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+    ASSERT_FALSE(stale.has_value()) << "a stale reuse is refused, not drawn";
+    EXPECT_NE(stale.error().context.find("generation " + std::to_string(original.generation)), std::string::npos)
+        << stale.error().context;
+
+    copy.generation = spade::next_flow_generation();
+    bind_cleared_target();
+    const spade::Result<void> named = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+    EXPECT_TRUE(named.has_value()) << named.error().context;
 }
 
 }  // namespace

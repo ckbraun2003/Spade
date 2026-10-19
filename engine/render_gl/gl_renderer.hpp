@@ -90,6 +90,17 @@ class GlRenderer {
     // waits for them as it does when not asked.
     struct CreateOptions {
         bool flow_programs_in_background = false;
+        // Check every reuse of the flow textures (see flow_volume_uploads())
+        // against the volume, and refuse the draw on a mismatch, naming the
+        // generation: an in-place write that kept FlowVolume::generation
+        // (core/flow_volume.hpp). It keeps a copy of the halves uploaded and
+        // compares them on each reuse, so it is on in debug builds only, and
+        // in the GL tests.
+#if defined(NDEBUG)
+        bool verify_cached_volumes = false;
+#else
+        bool verify_cached_volumes = true;
+#endif
     };
     // Two overloads, not a defaulted argument: a nested class's member
     // initializers are not usable in its enclosing class's default arguments
@@ -205,6 +216,13 @@ class GlRenderer {
     // again (L6). Never waits; always true unless create() was asked to
     // compile them in the background.
     [[nodiscard]] bool flow_ready();
+
+    // How many times draw() has uploaded a flow volume's halves since
+    // create(). A volume with a non-zero FlowVolume::generation is uploaded
+    // once and reused by every later draw of that generation (the editor's
+    // views of one frame); generation 0 is uploaded by every draw that reads
+    // it. For tests and profiling.
+    [[nodiscard]] uint64_t flow_volume_uploads() const noexcept;
 
     // What the driver says it is. Reported rather than assumed, because the
     // difference between a real driver and a software implementation changes

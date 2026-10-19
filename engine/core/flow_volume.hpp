@@ -78,7 +78,21 @@ struct FlowVolume {
     FlowVolumeHeader header;
     std::vector<uint16_t> v;  // nx ny nz x 4 halves: u, v, w, dye
     std::vector<uint16_t> s;  // nx ny nz x 4 halves: pressure, |w|, q-hat, lambda2-hat
+    // Names this content, so a reader may cache what it made of it (GL keeps
+    // the halves it uploaded): a value from next_flow_generation(), unique in
+    // the process, or 0 for unknown, which nothing caches. A copy keeps it,
+    // and with it the content it names. ANY write to v, s or the header --
+    // a publish, an edit in place, an edit of a copy -- sets it again, to
+    // next_flow_generation() or to 0. A write that keeps it leaves a cache
+    // drawing the old halves: silent stale pixels (L6), which only a debug
+    // build's check catches (GlRenderer::CreateOptions::verify_cached_volumes).
+    // Not part of the content: not published, cached, digested or walked.
+    uint64_t generation = 0;
 };
+
+// A generation no volume in this process has had: never 0, increasing.
+// RED: a stub until the green step.
+[[nodiscard]] inline uint64_t next_flow_generation() noexcept { return 0; }
 
 [[nodiscard]] inline std::size_t flow_cell_index(const FlowVolumeHeader& h, uint32_t i, uint32_t j,
                                                  uint32_t k) noexcept {
