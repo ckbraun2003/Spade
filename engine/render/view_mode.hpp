@@ -65,7 +65,10 @@ struct FlowViewSpec {
     FlowView kind = FlowView::volume;
     FlowQuantity quantity = FlowQuantity::speed;  // volume and slice: what shows; vortex_iso: the iso's field
     ColourMapId colours = ColourMapId::viridis;
-    float range_min = 0.0f;  // the map's range; for vortex_iso and streamlines, of speed; for surface_cp, of C_p
+    // The map's range: of the quantity; of speed for vortex_iso and
+    // streamlines; of C_p for surface_cp. A volume absorbs from 0
+    // (volume_transfer()), so it reads only range_max.
+    float range_min = 0.0f;
     float range_max = 1.0f;
     float iso_value = 0.0f;         // vortex_iso: the level, in the quantity's units
     float onset = 0.25f;            // volume: absorbing from this fraction of the range...
@@ -100,7 +103,13 @@ struct ViewSupport {
 };
 
 // Whether `backend` can draw `spec` given `inputs`, and if not, why: the
-// first refusal the draw path would give, in its own words.
+// first refusal the draw path would give, in its own words. It answers for
+// the inputs, the composition, each layer's colours and iso value, GL's march
+// and compile wait, and the budget (kMaxFlowTransfers volume layers and
+// kMaxIsoSurfaces vortex_iso layers, one FlowLayer between them). Left to the
+// draw path, which refuses them by name: a slice's plane and the streamline
+// options, which apply_view() checks against the volume, and on GL a volume
+// past the device's 3D texture size.
 [[nodiscard]] ViewSupport supports(const ViewSpec& spec, ViewBackend backend, const ViewInputs& inputs);
 
 // One layer's colour scale, for a legend.
@@ -114,11 +123,13 @@ struct ViewLegend {
 
 // Builds `spec` into `scene` and `options`: the base's mode, and the layers
 // over `volume` (volume and vortex_iso merged into one FlowLayer; streamlines,
-// slices and C_p through flow_look and cp_colours). Returns a legend per
-// layer, in spec order. Refused by name, with nothing changed, for what
-// supports() names as apply_view's: a missing input, layers on exact_sdf, a
-// second surface_cp, streamlines without seeds. The budget (4 transfers, 4
-// isos) and GL's own refusals come from the draw.
+// slices and C_p, on walls only, through flow_look and cp_colours). The
+// view's flow content REPLACES the scene's (flow and field layers, lines,
+// points, surface colouring), so views over one world each apply their own.
+// Returns a legend per layer, in spec order. Refused by name, with nothing
+// changed, for what supports() names as apply_view's: a missing input, layers
+// on exact_sdf, a second surface_cp, streamlines without seeds, a layer's
+// colours. The budget and GL's own refusals come from the draw.
 [[nodiscard]] Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume,
                                                          RenderScene& scene, RenderOptions& options);
 

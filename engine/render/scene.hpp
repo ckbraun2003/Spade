@@ -598,13 +598,14 @@ struct RenderScene {
     // Published flow volumes and their transfer functions
     // (render/flow_render.hpp). The raster modes composite them after the
     // field layers and before the overlays; the ray-march mode does not, as
-    // with field layers; GL refuses them until its pass lands (airflow
-    // visualization plan step 7). Empty unless a caller adds one.
+    // with field layers. GL marches one per frame and refuses a second, and
+    // refuses one while its flow programs compile (flow_ready()). Empty
+    // unless a caller adds one.
     std::vector<FlowLayer> flow_layers;
     // Streamlines and tracers, coloured by the caller (render/flow_lines.hpp).
     // The raster modes draw them after the flow layers, depth-tested and
-    // unlit; the ray-march mode does not; GL refuses them until its pass
-    // lands. Empty unless a caller adds them.
+    // unlit, and GL in its pass; the ray-march mode does not. Empty unless a
+    // caller adds them.
     std::vector<FlowPolyline> flow_polylines;
     FlowPoints flow_points;
     // Surface colouring by a flow quantity (render/flow_field.hpp): the
