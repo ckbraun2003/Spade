@@ -770,17 +770,35 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 // intersect or smooth_union is one, whatever it holds. 0 for a program that
 // is not well formed (an operator short of operands, or not one root).
 [[nodiscard]] inline std::size_t declared_drawables(const SdfProgram& collider) {
-    (void)collider;
-    return 0;
+    std::vector<std::size_t> stack;
+    for (const SdfNode& node : collider.nodes) {
+        const auto op = static_cast<SdfOp>(node.op);
+        if (op == SdfOp::none) {
+            stack.push_back(1);
+            continue;
+        }
+        if (stack.size() < 2) return 0;
+        const std::size_t b = stack.back();
+        stack.pop_back();
+        const std::size_t a = stack.back();
+        stack.pop_back();
+        stack.push_back(op == SdfOp::union_ ? a + b : 1);
+    }
+    return stack.size() == 1 ? stack.back() : 0;
 }
 
 // Every vertex of the given draw items, in world space: the points a placed
 // object's rest is judged from.
 [[nodiscard]] inline std::vector<glm::vec3> posed_vertices(const render::RenderScene& scene,
                                                            std::span<const render::DrawItem> items) {
-    (void)scene;
-    (void)items;
-    return {};
+    std::vector<glm::vec3> points;
+    for (const render::DrawItem& item : items) {
+        if (item.mesh_index >= scene.meshes.size()) continue;
+        for (const glm::vec3& v : scene.meshes[item.mesh_index].positions) {
+            points.push_back(glm::vec3(item.local_to_world * glm::vec4(v, 1.0f)));
+        }
+    }
+    return points;
 }
 
 // The gap from a placed object to what it rests on: the least distance, by
@@ -788,9 +806,12 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 // Negative: buried that deep. NaN for no points. Precondition: the program
 // validated.
 [[nodiscard]] inline float rest_gap(const SdfProgram& world_without_object, std::span<const glm::vec3> points) {
-    (void)world_without_object;
-    (void)points;
-    return 0.0f;
+    float least = std::numeric_limits<float>::quiet_NaN();
+    for (const glm::vec3& p : points) {
+        const float d = eval(world_without_object, p);
+        if (std::isnan(least) || d < least) least = d;
+    }
+    return least;
 }
 
 // ---------------------------------------------------------------------------
@@ -858,16 +879,18 @@ template <class Pixel>
 
 // The fraction of pixels of `a` that differ from `b`'s, over the size both share.
 [[nodiscard]] inline double differ_fraction(const PixelsView& a, const PixelsView& b) {
-    (void)a;
-    (void)b;
-    return 0.0;
+    if (!well_formed(a) || !well_formed(b)) return 0.0;
+    const auto at_b = [&](uint32_t x, uint32_t y) {
+        const uint8_t* pb = b.rgba.data() + std::size_t{y} * b.stride + std::size_t{x} * 4u;
+        return Rgb{pb[0], pb[1], pb[2]};
+    };
+    return detail::fraction_off(a, std::min(a.width, b.width), std::min(a.height, b.height), at_b);
 }
 
 // The fraction of pixels of `a` that differ from one colour.
 [[nodiscard]] inline double differ_fraction(const PixelsView& a, Rgb colour) {
-    (void)a;
-    (void)colour;
-    return 0.0;
+    if (!well_formed(a)) return 0.0;
+    return detail::fraction_off(a, a.width, a.height, [&](uint32_t, uint32_t) { return colour; });
 }
 
 [[nodiscard]] inline bool differs(double fraction) { return fraction >= kDiffersFraction; }
@@ -887,16 +910,45 @@ inline constexpr std::size_t kLibraryMinEntries = 9;
 
 // The panel lists exactly the index's entries, in the index's order.
 [[nodiscard]] inline Verdict lists_index(std::span<const LibraryEntry> index, std::span<const LibraryEntry> panel) {
-    (void)index;
-    (void)panel;
-    return {true, "lists_index: not yet judged"};
+    const std::string name = "lists-index: ";
+    if (index.size() < kLibraryMinEntries) {
+        return {false, name + "the index holds " + std::to_string(index.size()) + " entries, fewer than " +
+                           std::to_string(kLibraryMinEntries)};
+    }
+    if (panel.size() != index.size()) {
+        return {false, name + "the panel lists " + std::to_string(panel.size()) + " entries for the index's " +
+                           std::to_string(index.size())};
+    }
+    for (std::size_t i = 0; i < index.size(); ++i) {
+        const LibraryEntry& p = panel[i];
+        const LibraryEntry& x = index[i];
+        if (p.name != x.name || p.category != x.category || p.file != x.file) {
+            return {false, name + "entry " + std::to_string(i) + " is '" + p.name + "' (" + p.category + ", " + p.file +
+                               "); the index's is '" + x.name + "' (" + x.category + ", " + x.file + ")"};
+        }
+    }
+    return {true, name + std::to_string(index.size()) + " entries, in the index's order"};
 }
 
 // One thumbnail per entry, each decoded and not one colour.
 [[nodiscard]] inline Verdict thumbnails(std::span<const PixelsView> images, std::size_t entries) {
-    (void)images;
-    (void)entries;
-    return {true, "thumbnails: not yet judged"};
+    const std::string name = "thumbnails: ";
+    if (images.size() != entries) {
+        return {false, name + std::to_string(images.size()) + " thumbnails for " + std::to_string(entries) +
+                           " entries"};
+    }
+    if (entries == 0) return {false, name + "absent: no entries"};
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        const PixelsView& img = images[i];
+        if (!well_formed(img)) return {false, name + "thumbnail " + std::to_string(i) + " is empty or malformed"};
+        const Rgb first{img.rgba[0], img.rgba[1], img.rgba[2]};
+        const double f = differ_fraction(img, first);
+        if (!differs(f)) {
+            return {false, name + "thumbnail " + std::to_string(i) + " is one colour (" + detail::percent(f) +
+                               " of it differs from its first pixel): a blank or a placeholder"};
+        }
+    }
+    return {true, name + std::to_string(entries) + " thumbnails, each decoded and not one colour"};
 }
 
 // ---------------------------------------------------------------------------
@@ -922,9 +974,18 @@ namespace detail {
 // Every identity the copy carries is the source's. An expected 0 is unset:
 // nothing to compare, so absent.
 [[nodiscard]] inline Verdict identities_kept(std::string_view check, std::span<const Identity> ids) {
-    (void)check;
-    (void)ids;
-    return {true, "identities_kept: not yet judged"};
+    const std::string name = std::string(check) + ": ";
+    if (ids.empty()) return {false, name + "absent: no identities to compare"};
+    std::string kept;
+    for (const Identity& id : ids) {
+        if (id.expected == 0) return {false, name + "absent: the source's " + id.what + " identity is unset (0)"};
+        if (id.got != id.expected) {
+            return {false, name + "the " + id.what + " identity is " + detail::hex(id.got) + ", not the source's " +
+                               detail::hex(id.expected)};
+        }
+        kept += (kept.empty() ? "" : ", ") + id.what;
+    }
+    return {true, name + kept + " kept"};
 }
 
 // ---------------------------------------------------------------------------
@@ -944,8 +1005,20 @@ struct ImportShown {
 };
 
 [[nodiscard]] inline Verdict import_named(const ImportShown& m) {
-    (void)m;
-    return {true, "import_named: not yet judged"};
+    const std::string name = "import-named: ";
+    const std::string expected = m.mesh_name.empty() ? std::filesystem::path(m.file).stem().string() : m.mesh_name;
+    if (m.shown_name != expected) return {false, name + "named '" + m.shown_name + "', not '" + expected + "'"};
+    if (m.shown_source != m.file) {
+        return {false, name + "its source shows '" + m.shown_source + "', not '" + m.file + "'"};
+    }
+    if (!m.sidecar_loaded) return {false, name + "its .spmesh sidecar does not load back"};
+    if (m.gltf_triangles == 0 || m.sidecar_vertices != m.gltf_vertices || m.sidecar_triangles != m.gltf_triangles) {
+        return {false, name + "the sidecar holds " + std::to_string(m.sidecar_vertices) + " vertices and " +
+                           std::to_string(m.sidecar_triangles) + " triangles; read_gltf read " +
+                           std::to_string(m.gltf_vertices) + " and " + std::to_string(m.gltf_triangles)};
+    }
+    return {true, name + "'" + expected + "' from " + m.file + "; the sidecar holds its " +
+                      std::to_string(m.gltf_triangles) + " triangles"};
 }
 
 // ---------------------------------------------------------------------------
@@ -960,9 +1033,18 @@ struct GridNumbers {
 
 // What the inspector shows is LiveRun's resolve, number for number.
 [[nodiscard]] inline Verdict region_resolved(const GridNumbers& shown, const GridNumbers& resolved) {
-    (void)shown;
-    (void)resolved;
-    return {true, "region_resolved: not yet judged"};
+    const std::string name = "region-resolved: ";
+    const auto text = [](const GridNumbers& g) {
+        return std::to_string(g.nx) + "x" + std::to_string(g.ny) + "x" + std::to_string(g.nz) + ", dx " +
+               detail::num(g.dx) + " m, R/dx " + detail::num(g.r_over_dx);
+    };
+    if (resolved.nx == 0 || resolved.ny == 0 || resolved.nz == 0 || !(resolved.dx > 0.0f)) {
+        return {false, name + "absent: the resolve gave no grid"};
+    }
+    const bool same = shown.nx == resolved.nx && shown.ny == resolved.ny && shown.nz == resolved.nz &&
+                      shown.dx == resolved.dx && shown.r_over_dx == resolved.r_over_dx;
+    if (!same) return {false, name + "shows " + text(shown) + "; the resolve is " + text(resolved)};
+    return {true, name + text(shown)};
 }
 
 struct Published {
@@ -977,14 +1059,28 @@ struct Published {
 
 // Every frame a new, valid volume with no no-data sample.
 [[nodiscard]] inline Verdict publishes(std::span<const Published> frames) {
-    (void)frames;
-    return {true, "publishes: not yet judged"};
+    const std::string name = "publishes: ";
+    if (frames.empty()) return {false, name + "absent: no frames were published"};
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const Published& f = frames[i];
+        const std::string at = "frame " + std::to_string(i);
+        if (!f.valid) return {false, name + at + "'s volume fails validate_flow_volume()"};
+        if (f.no_data != 0) return {false, name + at + " holds " + std::to_string(f.no_data) + " no-data samples"};
+        if (f.generation == 0) return {false, name + at + "'s generation is 0 (unknown)"};
+        if (i > 0 && f.generation == frames[i - 1].generation) {
+            return {false, name + at + " repeats the previous frame's generation: not a new publish"};
+        }
+    }
+    return {true, name + std::to_string(frames.size()) + " frames, each a new, valid volume"};
 }
 
 [[nodiscard]] inline Verdict run_line_shown(std::string_view shown, std::string_view expected) {
-    (void)shown;
-    (void)expected;
-    return {true, "run_line_shown: not yet judged"};
+    const std::string name = "run-line-shown: ";
+    if (expected.empty()) return {false, name + "absent: LiveRun gave no run line"};
+    if (shown != expected) {
+        return {false, name + "shows '" + std::string(shown) + "', not '" + std::string(expected) + "'"};
+    }
+    return {true, name + std::string(shown)};
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,8 +1109,29 @@ struct ModeShown {
 };
 
 [[nodiscard]] inline Verdict mode_drawn(const ModeShown& m) {
-    (void)m;
-    return {true, "mode_drawn: not yet judged"};
+    const std::string name = "each-mode-drawn (" + m.kind + "): ";
+    if (!m.supported) {
+        if (m.why_not.empty()) return {false, name + "mis-staged: refused with no why_not"};
+        if (m.shown_text != m.why_not) {
+            return {false, name + "shows '" + m.shown_text + "' for supports()'s why_not '" + m.why_not + "'"};
+        }
+        return {true, name + "refused, showing its why_not verbatim"};
+    }
+    if (!m.applied) return {false, name + "apply_view() refused"};
+    if (!m.drawn) return {false, name + "draw() failed"};
+    if (!m.unhonoured.empty()) return {false, name + "unhonoured: " + m.unhonoured};
+    if (!well_formed(m.frame)) return {false, name + "absent: no frame"};
+    const double lit = differ_fraction(m.frame, m.clear);
+    if (!differs(lit)) {
+        return {false, name + "blank: " + detail::percent(lit) + " of the view differs from the clear colour"};
+    }
+    if (m.first) return {true, name + "drawn; " + detail::percent(lit) + " of the view off the clear colour"};
+    if (!well_formed(m.previous)) return {false, name + "absent: no previous frame to differ from"};
+    const double changed = differ_fraction(m.frame, m.previous);
+    if (!differs(changed)) {
+        return {false, name + "unchanged from the previous mode: " + detail::percent(changed) + " of the view differs"};
+    }
+    return {true, name + "drawn; " + detail::percent(changed) + " of the view changed from the previous mode"};
 }
 
 struct LegendCheck {
@@ -1026,19 +1143,49 @@ struct LegendCheck {
 inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max while the region runs
 
 [[nodiscard]] inline Verdict legend_shown(const LegendCheck& c) {
-    (void)c;
-    return {true, "legend_shown: not yet judged"};
+    const std::string name = "legend-shown: ";
+    if (c.shown.size() != c.returned.size()) {
+        return {false, name + std::to_string(c.shown.size()) + " legends shown for " +
+                           std::to_string(c.returned.size()) + " layers"};
+    }
+    for (std::size_t i = 0; i < c.shown.size(); ++i) {
+        const render::ViewLegend& s = c.shown[i];
+        const render::ViewLegend& r = c.returned[i];
+        const std::string at = "legend " + std::to_string(i) + " (" + r.quantity + ")";
+        if (s.layer != r.layer || s.quantity != r.quantity || s.unit != r.unit || s.colours != r.colours ||
+            s.range.min != r.range.min || s.range.max != r.range.max) {
+            return {false, name + at + " is not the one apply_view() returned"};
+        }
+        if (c.region_running) {
+            if (!(r.range.min < r.range.max)) {
+                return {false, name + at + "'s range [" + detail::num(r.range.min) + ", " + detail::num(r.range.max) +
+                                   "] is flat: a still field"};
+            }
+            if (r.quantity.rfind("speed", 0) == 0 && !(r.range.max >= kSpeedLegendMin)) {
+                return {false, name + at + " tops out at " + detail::num(r.range.max) + " m/s, under " +
+                                   detail::num(kSpeedLegendMin) + ": still air"};
+            }
+        }
+    }
+    return {true, name + std::to_string(c.shown.size()) + " legends, each apply_view()'s"};
 }
 
 // After Split: two views with different specs, each drawn, and different.
 [[nodiscard]] inline Verdict two_views(std::string_view left_spec, std::string_view right_spec,
                                        const PixelsView& left, const PixelsView& right, Rgb clear) {
-    (void)left_spec;
-    (void)right_spec;
-    (void)left;
-    (void)right;
-    (void)clear;
-    return {true, "two_views: not yet judged"};
+    const std::string name = "two-views: ";
+    if (left_spec == right_spec) return {false, name + "both views are " + std::string(left_spec)};
+    if (!well_formed(left) || !well_formed(right)) return {false, name + "absent: a view has no pixels"};
+    const double l = differ_fraction(left, clear);
+    const double r = differ_fraction(right, clear);
+    if (!differs(l) || !differs(r)) {
+        return {false, name + "a view is blank: " + detail::percent(l) + " and " + detail::percent(r) +
+                           " off the clear colour"};
+    }
+    const double apart = differ_fraction(left, right);
+    if (!differs(apart)) return {false, name + "the two views match: " + detail::percent(apart) + " differs"};
+    return {true, name + std::string(left_spec) + " | " + std::string(right_spec) + "; " + detail::percent(apart) +
+                      " of them differs"};
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,8 +1223,33 @@ template <class V>
 }  // namespace detail
 
 [[nodiscard]] inline Verdict round_trip(const RoundTrip& t) {
-    (void)t;
-    return {true, "round_trip: not yet judged"};
+    const std::string name = "round-trip: ";
+    if (t.saved.empty()) return {false, name + "absent: nothing was saved"};
+    if (t.reemitted != t.saved) {
+        std::size_t at = 0;
+        while (at < t.saved.size() && at < t.reemitted.size() && t.saved[at] == t.reemitted[at]) ++at;
+        return {false, name + "the reopened scene emits differently from byte " + std::to_string(at) + " (" +
+                           std::to_string(t.saved.size()) + " bytes saved, " + std::to_string(t.reemitted.size()) +
+                           " emitted)"};
+    }
+    if (const Verdict ids = identities_kept("round-trip", t.identities); !ids.ok) return ids;
+    if (t.steps_before != kRoundTripSteps || t.steps_after != kRoundTripSteps) {
+        return {false, name + "mis-staged: ran " + std::to_string(t.steps_before) + " and " +
+                           std::to_string(t.steps_after) + " steps, not " + std::to_string(kRoundTripSteps)};
+    }
+    if (t.bodies_before.empty() || t.bodies_after.size() != t.bodies_before.size()) {
+        return {false, name + "absent: " + std::to_string(t.bodies_before.size()) + " bodies before and " +
+                           std::to_string(t.bodies_after.size()) + " after"};
+    }
+    for (std::size_t i = 0; i < t.bodies_before.size(); ++i) {
+        if (!detail::same_state(t.bodies_before[i], t.bodies_after[i])) {
+            return {false, name + "body " + std::to_string(i) + " differs after " + std::to_string(kRoundTripSteps) +
+                               " steps from the reopened scene"};
+        }
+    }
+    return {true, name + std::to_string(t.saved.size()) + " bytes re-emitted exactly; identities kept; " +
+                      std::to_string(t.bodies_before.size()) + " bodies bit-identical after " +
+                      std::to_string(kRoundTripSteps) + " steps"};
 }
 
 }  // namespace spade::sandbox::end_goal
