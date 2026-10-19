@@ -58,6 +58,7 @@ add_executable(spade_tests
     test_core_fp16.cpp
     test_core_flow_volume.cpp
     test_core_lambda2.cpp
+    test_core_build_identity.cpp
     test_path_text.cpp
     test_unique_temp.cpp
     test_fatal_report.cpp
@@ -524,6 +525,18 @@ if(SPADE_BUILD_SANDBOX)
         PASS_REGULAR_EXPRESSION "done: applied 3 edits, ran 25 steps"
         TIMEOUT 120)
 endif()
+
+# The build stamp's fallbacks (core/build_identity.hpp), which a build inside a
+# git checkout never reaches: cmake/stamp_identity.cmake run on fixtures that
+# stamp_identity_test.cmake writes in this build tree. LABELS spade, as above.
+cmake_path(SET SPADE_STAMP_SCRIPT NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/stamp_identity.cmake")
+add_test(NAME StampIdentity.ArchiveFallback
+    COMMAND "${CMAKE_COMMAND}" "-DSTAMP_SCRIPT=${SPADE_STAMP_SCRIPT}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/stamp-identity"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/stamp_identity_test.cmake")
+set_tests_properties(StampIdentity.ArchiveFallback PROPERTIES
+    LABELS spade
+    TIMEOUT 60)
 
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a

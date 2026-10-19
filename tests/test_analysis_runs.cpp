@@ -10,10 +10,12 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "analysis/case.hpp"
 #include "analysis/run.hpp"
+#include "core/build_identity.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_identity.hpp"
@@ -149,4 +151,19 @@ TEST(AnalysisRunFolder, StartsQueuedWithTheCaseItRuns) {
     const spade::Result<fs::path> again = an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5");
     ASSERT_FALSE(again.has_value());
     EXPECT_NE(again.error().context.find("exists"), std::string::npos) << again.error().context;
+}
+
+// Without a commit, a run is named by the one this engine was built from
+// (core/build_identity.hpp), so a host needs no git.
+TEST(AnalysisRunFolder, WithoutACommitIsNamedByTheBuildsCommit) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const std::string_view commit = spade::build_identity().commit;
+    ASSERT_FALSE(commit.empty());
+    const spade::Result<fs::path> folder = an::create_run_folder(runs.path(), "hover", r, "2026-10-13");
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const std::string name = folder->filename().string();
+    EXPECT_TRUE(name.ends_with("_" + std::string(commit.substr(0, 12)))) << name << ", commit " << commit;
+    EXPECT_EQ(*folder, an::run_folder(runs.path(), "hover", r, "2026-10-13", commit));
+    EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
 }

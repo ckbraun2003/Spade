@@ -83,4 +83,13 @@ struct RunRecord {
                                                               std::string_view case_name, const ResolvedCase& resolved,
                                                               std::string_view date, std::string_view commit);
 
+// The same, at the commit this engine was built from (spade::build_identity(),
+// core/build_identity.hpp): how a host names its runs without git. An engine
+// that cannot say its commit names them <date>_<hash16>_unknown, and a build
+// with uncommitted changes is not marked in the name. The form above, with an
+// explicit commit, is for tests, whose paths must not move with every commit.
+[[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
+                                                              std::string_view case_name, const ResolvedCase& resolved,
+                                                              std::string_view date);
+
 }  // namespace spade::analysis

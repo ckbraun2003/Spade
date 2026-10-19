@@ -202,4 +202,13 @@ Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view ca
     return folder;
 }
 
+Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
+                                   std::string_view date) {
+    (void)runs_dir;
+    (void)case_name;
+    (void)resolved;
+    (void)date;
+    return std::unexpected(Error{Code::unavailable, "RED: create_run_folder at the build's commit is a stub"});
+}
+
 }  // namespace spade::analysis
