@@ -49,13 +49,16 @@
   - At idle the drone stays down: its height changes by no more than 5 mm over 1.0 s.
   - *Catches:* an arm that's ignored; idle above hover.
 - **climbs:**
-  - **Window:** W = 1.0 s, starting at t0, the first frame after throttle-up where the rotors' vertical thrust F_y = Σ k_T ω_i² (n_i·ŷ) reaches 1.10 m g or more.
+  - **Window:** W = 1.0 s, starting at t0, the first frame after throttle-up where the rotors' vertical thrust F_y = Σ k_T ω_i² (n_i·ŷ) reaches 1.10 m g or more AND the centre of mass has risen 2R above its height at the throttle-up.
+    - The rotor model does apply ground effect (Cheeseman–Bennett, `rotor_ground_factor`, up to 1.25 and outside k_T ω²). After rising 2R, the reference quad's rotors are about 2.9R above the ground, where the factor is 1.008.
   - **Premise:** F_y ≥ 1.10 m g at every frame in W. Otherwise the step is mis-staged, and it fails with that reason, never passes.
   - **Prediction:** the drag-free double integral of the reported thrust, Δh_pred = v_y(t0)·W + Σ_k (F_y,k/m − g)(t0 + W − t_k) Δt_k. Under the premise, Δh_pred ≥ 0.49 m, so noise can't pass the check.
   - **Check:** 0.5 Δh_pred ≤ Δh ≤ 1.10 Δh_pred, and v_y > 0 at the window's end.
-  - *Lower bound 0.5:* drag on this airframe at 3 m/s or less, spin-up inside the window and frame-rate integration together take under half. A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
-  - *Upper bound 1.10:* nothing in the simulation lifts beyond the rotors' thrust. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
-  - If the simulation models ground effect outside k_T ω², the window starts once the drone is 2R up.
+  - *Lower bound 0.5:* the prediction uses the static thrust, but the rotor model lowers thrust in climb. Its inflow closure λ(V_c / v_h), with λ(x + λ) = 1, gives λ ≈ 0.84 at 2 m/s.
+    - Simulated for the reference quad (point mass, λ, ground effect and C_D A = 0.01 m²), the ratio Δh / Δh_pred from 2R up is 0.70 to 0.71 at F_y = 1.1, 1.2 and 1.4 m g. Drag at these speeds changes it by under 0.01.
+    - So 0.5 leaves 0.2 for frame-rate integration and anything the point mass leaves out.
+    - A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
+  - *Upper bound 1.10:* out of ground effect, nothing in the simulation lifts beyond the rotors' static thrust, and inflow only lowers it. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
 - **follows-attitude:**
   - After a pitch command θ_cmd (the step uses 15°, nose down), within 1.0 s the body's pitch is within 3° of θ_cmd, and it stays there for the next 0.5 s.
   - Roll stays within 3° of 0.
@@ -78,7 +81,7 @@ LiveRun, drone held (design decision 1), until P2b.
 - **downwash** (headless, 64³) is the physical check. For each rotor i:
   - **Where:** p_i = hub_i − 2R_i n_i. The hub and thrust axis come from the model's rotor rows posed by the held body (the rule `rotor_discs()` uses), taken from the model, not from LiveRun's disc rows. So a disc the coupling misplaces is sampled where the rotor really is.
   - **What:** u_i is the area-averaged downward axial velocity over a disc of radius 0.5 R_i, centred on p_i, normal to n_i. It's the mean of −n_i · v over every point of a square lattice of pitch 0.05 R_i inside that disc, each point sampled by render's `flow_sample` rule (cell-centred trilinear). A point with no data fails the check.
-    - **Why an area, not the axis point** (Physics, 2026-10-19, before any run): on the exact axis the probe sits inside each rotor's hub vortex, where the constant-circulation swirl concentrates and the wake is least resolved and least like momentum theory. Rendering measured ω_y ≈ 230 to 330 1/s 0.5R below. The 0.5R disc averages that core out. It's still inside the contracted slipstream (radius about 0.75R at 2R), where the vortex-cylinder model's axial velocity is close to its axis value. It also tolerates the jets' inward lean as they merge (perhaps 0.2 to 0.3R at 2R). That's about 3 cells across at R/dx 6 and 5 at R/dx 10.
+    - **Why an area, not the axis point** (Physics, 2026-10-19, before any run): on the exact axis the probe sits inside each rotor's hub vortex, where the constant-circulation swirl concentrates and the wake is least resolved and least like momentum theory. Rendering measured ω_y ≈ 230 to 330 1/s 0.5R below. The 0.5R disc averages that core out. It's still inside the contracted slipstream (radius about 0.75R at 2R), where the vortex-cylinder model's axial velocity is close to its axis value. It also tolerates the jets' inward lean as they merge (perhaps 0.2 to 0.3R at 2R). Physics checked the reference by a Biot–Savart sum over the semi-infinite uniform vortex cylinder: at 2R the axial velocity rises from the axis value to 1.0034 times it at 0.5R, so the 0.5R average is 1.0017 times the axis value. The reference stays v_h(1 + 2/√5). That's about 3 cells across at R/dx 6 and 5 at R/dx 10.
   - **Reference:** C8's momentum theory (`tests/data/airflow/README.md`).
     - v_ref,i = v_h,i (1 + 2/√5) = 1.894 v_h,i, where v_h,i = √(T_i / (2ρπR_i²)).
     - T_i = k_T ω_i², from LiveState's `rotor_omega`. That is the rigid-body path's thrust, independent of the disc conversion. ρ is the case's.
@@ -148,7 +151,7 @@ These go on a Test/Docs branch, against stubs, before each feature lands. Each l
 |---|---|---|
 | downwash | still air; reversed flow; the field shifted by R; one rotor's jet missing; Σ T below 0.5 m g (named); R/dx below 4 (named); fewer than 6 frames in the window (named) | a top-hat jet of radius 0.73R at v_ref on each axis, from 2R above to the box's floor |
 | downwash-present | still air; one rotor reversed; one rotor stopped; R/dx below 2 (named) | the same jets at 0.43 v_ref and radius 1.7R, the R/dx 2 estimate |
-| climbs | a pinned history (Δh = 0); gravity missing; the premise unmet (named) | drag-free kinematics of the reported thrust; the same with 20% drag |
+| climbs | a pinned history (Δh = 0); gravity missing; thrust applied twice; the premise unmet (named); the frames ending inside the window (named) | drag-free kinematics of the reported thrust; the same at 0.7 of it, the inflow closure's loss |
 | follows-attitude | a tilt with no acceleration; a reversed acceleration; 5° of roll cross-coupled | a tilt reached in 0.4 s, with the forward speed rising |
 | object-added | buried 1 cm; floating 1 cm; two drawables for one SDF object; a drawable off the pose | resting at 0 gap, one drawable at the pose |
 | round-trip | an emitter that drops the region; a reader that ignores the propulsion block | an exact copy |
