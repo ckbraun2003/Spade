@@ -35,22 +35,24 @@ SdfSample part_sample(const PartDesc& part, glm::vec3 p_part) noexcept {
 }
 
 Result<Aabb> part_bounds(const PartDesc& part) {
-    const std::string who = "part '" + part.name + "': ";
+    // The refusals' prefix, built only on a refusal: the success path never
+    // allocates, so model_reach() (noexcept) can call this.
+    const auto who = [&part] { return "part '" + part.name + "': "; };
     const bool has_shape = !part.shape.empty();
     const bool has_mesh = part.mesh != nullptr;
     if (has_shape && has_mesh) {
         return std::unexpected(
-            Error{Code::invalid_argument, who + "both shape and mesh are set: a part's geometry is exactly one of them"});
+            Error{Code::invalid_argument, who() + "both shape and mesh are set: a part's geometry is exactly one of them"});
     }
     if (!has_shape && !has_mesh) {
         return std::unexpected(
-            Error{Code::invalid_argument, who + "neither shape nor mesh is set, so it has no solid to bound"});
+            Error{Code::invalid_argument, who() + "neither shape nor mesh is set, so it has no solid to bound"});
     }
 
     if (has_mesh) {
         const std::span<const glm::vec3> vertices = part.mesh->positions();
         if (vertices.empty()) {
-            return std::unexpected(Error{Code::invalid_argument, who + "its mesh has no vertices"});
+            return std::unexpected(Error{Code::invalid_argument, who() + "its mesh has no vertices"});
         }
         Aabb box{vertices.front(), vertices.front()};
         for (const glm::vec3& v : vertices) {
@@ -62,7 +64,7 @@ Result<Aabb> part_bounds(const PartDesc& part) {
 
     Result<Aabb> box = sdf_bounds(part.shape);
     if (!box) {
-        return std::unexpected(Error{box.error().code, who + box.error().context});
+        return std::unexpected(Error{box.error().code, who() + box.error().context});
     }
     return box;
 }

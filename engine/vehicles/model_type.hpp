@@ -299,11 +299,13 @@ struct ModelType {
 // wrote.
 [[nodiscard]] glm::quat canonical_design_rotation(const glm::quat& q) noexcept;
 
-// How far the model reaches from its centre of mass, m: the larger of its
-// contact radius and its farthest rotor tip (the hub's distance plus the
-// disc's radius). One rule for every caller: the editor's pick and framing,
-// and the analysis's default box (TD-9). Parts join it when the compile emits
-// them (CORE-7 A4).
+// How far the model reaches from its centre of mass, m: the largest of its
+// contact radius, its farthest rotor tip (the hub's distance plus the disc's
+// radius) and each part's farthest point -- the farthest corner of its box
+// (part_bounds()) through its mount, and for a rotor part, which turns about
+// its hub, the hub's distance plus that. Never short: a box holds its solid.
+// One rule for every caller: the editor's pick and framing, and the analysis's
+// default box (TD-9).
 [[nodiscard]] float model_reach(const ModelType& model) noexcept;
 
 }  // namespace spade::vehicles

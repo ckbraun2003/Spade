@@ -293,9 +293,38 @@ glm::quat canonical_design_rotation(const glm::quat& q) noexcept {
     return n;
 }
 
+namespace {
+
+// How far a part reaches from the origin of the frame it is mounted in: the
+// farthest of its box's eight corners (part_bounds(), in the part frame)
+// through its mount. The box holds the solid, so this is never short. A part
+// part_bounds() refuses (no solid to bound) reaches nowhere; a part that
+// passed validate() is refused only for a shape proved empty.
+[[nodiscard]] float part_reach(const PartDesc& part) noexcept {
+    const Result<Aabb> box = part_bounds(part);
+    if (!box) return 0.0f;
+    const glm::quat turn = glm::normalize(part.mount_orient);
+    float reach = 0.0f;
+    for (uint32_t c = 0; c < 8; ++c) {
+        const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
+                               (c & 4u) != 0 ? box->max.z : box->min.z);
+        reach = std::max(reach, glm::length(part.mount_pos + turn * corner));
+    }
+    return reach;
+}
+
+}  // namespace
+
 float model_reach(const ModelType& model) noexcept {
     float reach = model.proxy_radius;
     for (const RotorDesc& r : model.rotors) reach = std::max(reach, glm::length(r.local_pos) + r.radius);
+    for (const PartDesc& p : model.parts) {
+        // A rotor part is mounted in its hub's frame and turns about the hub,
+        // so it reaches at most the hub's distance plus its own reach there.
+        const bool on_rotor = p.attach == PartAttach::rotor && p.rotor < model.rotors.size();
+        const float hub = on_rotor ? glm::length(model.rotors[p.rotor].local_pos) : 0.0f;
+        reach = std::max(reach, hub + part_reach(p));
+    }
     return reach;
 }
 

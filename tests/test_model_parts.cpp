@@ -738,3 +738,90 @@ TEST(PartsIdentity, AMeshIsFoldedByItsContentHash) {
         EXPECT_NE(parts_identity(moved), parts_identity(m));
     }
 }
+
+// --- model_reach(): parts join it (CORE-7; agreed with Interface) ------------
+//
+// The reach from the centre of mass is the largest of the contact radius, the
+// farthest rotor tip and the farthest point of each part's box (part_bounds())
+// through its mount; a rotor part's from its hub, whose distance it adds to,
+// since it turns about the hub. quad_with()'s farthest rotor tip is about
+// 0.311 m, so each part below reaches past it.
+
+using spade::vehicles::model_reach;
+
+// The farthest of a box's eight corners from the origin, in double.
+[[nodiscard]] double farthest_corner(glm::dvec3 centre, glm::dvec3 half) {
+    double best = 0.0;
+    for (uint32_t c = 0; c < 8; ++c) {
+        const glm::dvec3 corner = centre + glm::dvec3((c & 1u) != 0 ? half.x : -half.x,
+                                                      (c & 2u) != 0 ? half.y : -half.y,
+                                                      (c & 4u) != 0 ? half.z : -half.z);
+        best = std::max(best, glm::length(corner));
+    }
+    return best;
+}
+
+[[nodiscard]] spade::SdfProgram box_shape(glm::vec3 half) {
+    return program({leaf(spade::SdfPrim::box, glm::vec4(half, 0.0f))});
+}
+
+// part_bounds() pads an SDF part's box by 2^-16 of its largest coordinate, so
+// the reach may exceed the exact corner by about that, never fall short.
+void expect_reach(float reach, double exact, const char* what) {
+    EXPECT_GE(static_cast<double>(reach), exact * (1.0 - 1e-7)) << what;
+    EXPECT_LE(static_cast<double>(reach), exact * (1.0 + 1e-4)) << what;
+}
+
+TEST(ModelReach, PartsLeaveItAloneInsideTheRotorsReach) {
+    const ModelType bare = quad_with({});
+    float tip = 0.0f;
+    for (const spade::vehicles::RotorDesc& r : bare.rotors) tip = std::max(tip, glm::length(r.local_pos) + r.radius);
+    EXPECT_EQ(model_reach(bare), std::max(tip, bare.proxy_radius));
+    EXPECT_EQ(model_reach(quad_with({part("hub")})), model_reach(bare)) << "a 1 cm sphere at the centre of mass";
+}
+
+TEST(ModelReach, ABodyPartReachesByItsFarthestCorner) {
+    PartDesc boom = part("boom");
+    boom.shape = box_shape(glm::vec3(0.05f));
+    boom.mount_pos = glm::vec3(0.5f, 0.0f, 0.0f);
+    const ModelType m = quad_with({boom});
+    expect_reach(model_reach(m), farthest_corner(glm::dvec3(0.5, 0.0, 0.0), glm::dvec3(double(0.05f))), "a boom");
+}
+
+TEST(ModelReach, ATurnedPartReachesByItsTurnedBox) {
+    // A 0.4 m bar along its own x, 0.3 m out along the body's x. Turned a
+    // quarter about +Z it lies across the body's y instead: a shorter reach.
+    PartDesc bar = part("bar");
+    bar.shape = box_shape(glm::vec3(0.2f, 0.01f, 0.01f));
+    bar.mount_pos = glm::vec3(0.3f, 0.0f, 0.0f);
+    const glm::dvec3 half(double(0.2f), double(0.01f), double(0.01f));
+    expect_reach(model_reach(quad_with({bar})), farthest_corner(glm::dvec3(0.3, 0.0, 0.0), half), "along x");
+
+    bar.mount_orient = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    const glm::dvec3 turned(half.y, half.x, half.z);
+    expect_reach(model_reach(quad_with({bar})), farthest_corner(glm::dvec3(0.3, 0.0, 0.0), turned), "across y");
+}
+
+TEST(ModelReach, ARotorPartReachesFromItsHub) {
+    // A 0.1 m box 0.1 m above rotor 0's hub, in the hub frame: it turns with
+    // the blades, so its reach is the hub's distance plus its own.
+    PartDesc guard = part("guard");
+    guard.attach = PartAttach::rotor;
+    guard.rotor = 0;
+    guard.shape = box_shape(glm::vec3(0.05f));
+    guard.mount_pos = glm::vec3(0.0f, 0.1f, 0.0f);
+    const ModelType m = quad_with({guard});
+    const double hub = glm::length(glm::dvec3(m.rotors[0].local_pos));
+    expect_reach(model_reach(m), hub + farthest_corner(glm::dvec3(0.0, 0.1, 0.0), glm::dvec3(double(0.05f))),
+                 "a rotor guard");
+}
+
+TEST(ModelReach, AMeshPartReachesByItsVertices) {
+    // The 0.3 x 0.1 x 0.2 m hull, 0.3 m out along x. A mesh part's box is its
+    // vertices' extremes exactly, so the reach is the farthest vertex, in float.
+    PartDesc hull = mesh_part("hull", hull_mesh());
+    hull.mount_pos = glm::vec3(0.3f, 0.0f, 0.0f);
+    float want = 0.0f;
+    for (const glm::vec3& v : hull.mesh->positions()) want = std::max(want, glm::length(hull.mount_pos + v));
+    EXPECT_EQ(model_reach(quad_with({hull})), want);
+}
