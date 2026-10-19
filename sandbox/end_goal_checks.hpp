@@ -29,14 +29,18 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <numbers>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -44,8 +48,11 @@
 
 #include "core/flow_volume.hpp"
 #include "render/flow_sample.hpp"
+#include "render/scene.hpp"
+#include "render/view_mode.hpp"
 #include "state/layout.hpp"
 #include "vehicles/rotor.hpp"
+#include "world/sdf.hpp"
 
 namespace spade::sandbox::end_goal {
 
@@ -749,6 +756,328 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
     const Verdict at = placed_at(p);
     const Verdict drawn = drawn_as_declared(p);
     return {at.ok && drawn.ok, name + at.detail + "; " + drawn.detail};
+}
+
+// ---------------------------------------------------------------------------
+// MEASURING A PLACED OBJECT (§2, §3): the numbers a Placement holds, measured
+// here from raw inputs, not by the step (Interface's review: a step that
+// measures leans on the code it checks).
+// ---------------------------------------------------------------------------
+
+// The drawables scene_from_world() makes from a collider, counted from the
+// postfix program itself, not through the renderer's split_program() (TD-4):
+// a primitive under nothing but union is one; a subtree rooted at subtract,
+// intersect or smooth_union is one, whatever it holds. 0 for a program that
+// is not well formed (an operator short of operands, or not one root).
+[[nodiscard]] inline std::size_t declared_drawables(const SdfProgram& collider) {
+    (void)collider;
+    return 0;
+}
+
+// Every vertex of the given draw items, in world space: the points a placed
+// object's rest is judged from.
+[[nodiscard]] inline std::vector<glm::vec3> posed_vertices(const render::RenderScene& scene,
+                                                           std::span<const render::DrawItem> items) {
+    (void)scene;
+    (void)items;
+    return {};
+}
+
+// The gap from a placed object to what it rests on: the least distance, by
+// the world's SDF WITHOUT the object, over the object's posed points.
+// Negative: buried that deep. NaN for no points. Precondition: the program
+// validated.
+[[nodiscard]] inline float rest_gap(const SdfProgram& world_without_object, std::span<const glm::vec3> points) {
+    (void)world_without_object;
+    (void)points;
+    return 0.0f;
+}
+
+// ---------------------------------------------------------------------------
+// IMAGES (§1 thumbnails, §6 views). "Differs" is the doc's: at least 1% of
+// the pixels differ by more than 8/255 in red, green or blue.
+// ---------------------------------------------------------------------------
+
+// An RGBA8 image, row-major, `stride` bytes from one row to the next (a view
+// may be a region of a larger frame).
+struct PixelsView {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::size_t stride = 0;
+    std::span<const uint8_t> rgba;
+};
+
+using Rgb = std::array<uint8_t, 3>;
+
+[[nodiscard]] inline PixelsView pixels(uint32_t width, uint32_t height, std::span<const uint8_t> rgba) {
+    return {width, height, std::size_t{width} * 4u, rgba};
+}
+
+// The region [x, x + w) x [y, y + h) of `frame`, clipped to it.
+[[nodiscard]] inline PixelsView region_of(const PixelsView& frame, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (x >= frame.width || y >= frame.height) return {};
+    w = std::min(w, frame.width - x);
+    h = std::min(h, frame.height - y);
+    const std::size_t offset = std::size_t{y} * frame.stride + std::size_t{x} * 4u;
+    if (offset >= frame.rgba.size()) return {};
+    return {w, h, frame.stride, frame.rgba.subspan(offset)};
+}
+
+[[nodiscard]] inline bool well_formed(const PixelsView& p) {
+    if (p.width == 0 || p.height == 0 || p.stride < std::size_t{p.width} * 4u) return false;
+    return p.rgba.size() >= (std::size_t{p.height} - 1u) * p.stride + std::size_t{p.width} * 4u;
+}
+
+inline constexpr int kDiffersLevel = 8;
+inline constexpr double kDiffersFraction = 0.01;
+
+namespace detail {
+
+template <class Pixel>
+[[nodiscard]] double fraction_off(const PixelsView& a, uint32_t w, uint32_t h, Pixel other) {
+    if (w == 0 || h == 0) return 0.0;
+    std::size_t off = 0;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            const uint8_t* pa = a.rgba.data() + std::size_t{y} * a.stride + std::size_t{x} * 4u;
+            const Rgb pb = other(x, y);
+            for (int c = 0; c < 3; ++c) {
+                if (std::abs(int{pa[c]} - int{pb[static_cast<std::size_t>(c)]}) > kDiffersLevel) {
+                    ++off;
+                    break;
+                }
+            }
+        }
+    }
+    return static_cast<double>(off) / (static_cast<double>(w) * h);
+}
+
+[[nodiscard]] inline std::string percent(double fraction) { return num(100.0 * fraction) + "%"; }
+
+}  // namespace detail
+
+// The fraction of pixels of `a` that differ from `b`'s, over the size both share.
+[[nodiscard]] inline double differ_fraction(const PixelsView& a, const PixelsView& b) {
+    (void)a;
+    (void)b;
+    return 0.0;
+}
+
+// The fraction of pixels of `a` that differ from one colour.
+[[nodiscard]] inline double differ_fraction(const PixelsView& a, Rgb colour) {
+    (void)a;
+    (void)colour;
+    return 0.0;
+}
+
+[[nodiscard]] inline bool differs(double fraction) { return fraction >= kDiffersFraction; }
+
+// ---------------------------------------------------------------------------
+// THE LIBRARY (§1).
+// ---------------------------------------------------------------------------
+
+struct LibraryEntry {
+    std::string name;
+    std::string category;
+    std::string file;
+};
+
+// §3's first entries: the quad, four primitives, a gate, a floor tile, a pole and a wall.
+inline constexpr std::size_t kLibraryMinEntries = 9;
+
+// The panel lists exactly the index's entries, in the index's order.
+[[nodiscard]] inline Verdict lists_index(std::span<const LibraryEntry> index, std::span<const LibraryEntry> panel) {
+    (void)index;
+    (void)panel;
+    return {true, "lists_index: not yet judged"};
+}
+
+// One thumbnail per entry, each decoded and not one colour.
+[[nodiscard]] inline Verdict thumbnails(std::span<const PixelsView> images, std::size_t entries) {
+    (void)images;
+    (void)entries;
+    return {true, "thumbnails: not yet judged"};
+}
+
+// ---------------------------------------------------------------------------
+// IDENTITIES (§2 propulsion-kept, §7 round-trip).
+// ---------------------------------------------------------------------------
+
+struct Identity {
+    std::string what;       // "model", "parts", "propulsion", "scene", "region"
+    uint64_t expected = 0;  // the source's: the library file's, or the scene's before saving
+    uint64_t got = 0;       // the copy's: the placed model's, or the reopened scene's
+};
+
+namespace detail {
+
+[[nodiscard]] inline std::string hex(uint64_t v) {
+    char buf[24];
+    std::snprintf(buf, sizeof buf, "0x%016llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+}  // namespace detail
+
+// Every identity the copy carries is the source's. An expected 0 is unset:
+// nothing to compare, so absent.
+[[nodiscard]] inline Verdict identities_kept(std::string_view check, std::span<const Identity> ids) {
+    (void)check;
+    (void)ids;
+    return {true, "identities_kept: not yet judged"};
+}
+
+// ---------------------------------------------------------------------------
+// IMPORT (§3).
+// ---------------------------------------------------------------------------
+
+struct ImportShown {
+    std::string shown_name;    // what the editor names the imported object
+    std::string mesh_name;     // the glTF mesh's own name; empty when it has none
+    std::string file;          // the path imported
+    std::string shown_source;  // what the editor shows as its source
+    bool sidecar_loaded = false;  // the .spmesh it wrote loads back
+    std::size_t gltf_vertices = 0;
+    std::size_t gltf_triangles = 0;
+    std::size_t sidecar_vertices = 0;
+    std::size_t sidecar_triangles = 0;
+};
+
+[[nodiscard]] inline Verdict import_named(const ImportShown& m) {
+    (void)m;
+    return {true, "import_named: not yet judged"};
+}
+
+// ---------------------------------------------------------------------------
+// THE REGION (§5): resolved, published, captioned.
+// ---------------------------------------------------------------------------
+
+struct GridNumbers {
+    uint32_t nx = 0, ny = 0, nz = 0;
+    float dx = 0.0f;
+    float r_over_dx = 0.0f;
+};
+
+// What the inspector shows is LiveRun's resolve, number for number.
+[[nodiscard]] inline Verdict region_resolved(const GridNumbers& shown, const GridNumbers& resolved) {
+    (void)shown;
+    (void)resolved;
+    return {true, "region_resolved: not yet judged"};
+}
+
+struct Published {
+    uint64_t generation = 0;
+    bool valid = false;
+    uint32_t no_data = 0;
+};
+
+[[nodiscard]] inline Published published(const FlowVolume& v) {
+    return {v.generation, validate_flow_volume(v).has_value(), v.header.no_data};
+}
+
+// Every frame a new, valid volume with no no-data sample.
+[[nodiscard]] inline Verdict publishes(std::span<const Published> frames) {
+    (void)frames;
+    return {true, "publishes: not yet judged"};
+}
+
+[[nodiscard]] inline Verdict run_line_shown(std::string_view shown, std::string_view expected) {
+    (void)shown;
+    (void)expected;
+    return {true, "run_line_shown: not yet judged"};
+}
+
+// ---------------------------------------------------------------------------
+// VIEWS (§6).
+// ---------------------------------------------------------------------------
+
+// "shaded", or "wireframe+vortex_iso+streamlines": the base and each layer's kind.
+[[nodiscard]] inline std::string spec_name(const render::ViewSpec& spec) {
+    std::string s(render::view_base_name(spec.base));
+    for (const render::FlowViewSpec& layer : spec.layers) s += "+" + std::string(render::flow_view_name(layer.kind));
+    return s;
+}
+
+struct ModeShown {
+    std::string kind;           // the menu item
+    bool supported = false;     // supports()'s answer for this view
+    std::string why_not;        // supports()'s reason, when it refuses
+    std::string shown_text;     // what the view shows instead, when refused
+    bool applied = false;       // apply_view() was Ok
+    bool drawn = false;         // draw() was Ok
+    std::string unhonoured;     // unhonoured()'s text; empty when all was honoured
+    bool first = false;         // the first mode drawn: no previous frame to differ from
+    PixelsView frame;           // this mode's view
+    PixelsView previous;        // the previous mode's view
+    Rgb clear{0, 0, 0};         // the clear colour
+};
+
+[[nodiscard]] inline Verdict mode_drawn(const ModeShown& m) {
+    (void)m;
+    return {true, "mode_drawn: not yet judged"};
+}
+
+struct LegendCheck {
+    std::vector<render::ViewLegend> returned;  // apply_view()'s
+    std::vector<render::ViewLegend> shown;     // the editor's
+    bool region_running = false;
+};
+
+inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max while the region runs
+
+[[nodiscard]] inline Verdict legend_shown(const LegendCheck& c) {
+    (void)c;
+    return {true, "legend_shown: not yet judged"};
+}
+
+// After Split: two views with different specs, each drawn, and different.
+[[nodiscard]] inline Verdict two_views(std::string_view left_spec, std::string_view right_spec,
+                                       const PixelsView& left, const PixelsView& right, Rgb clear) {
+    (void)left_spec;
+    (void)right_spec;
+    (void)left;
+    (void)right;
+    (void)clear;
+    return {true, "two_views: not yet judged"};
+}
+
+// ---------------------------------------------------------------------------
+// SAVE AND REOPEN (§7).
+// ---------------------------------------------------------------------------
+
+inline constexpr uint32_t kRoundTripSteps = 60;
+
+struct RoundTrip {
+    std::string saved;       // the file's bytes
+    std::string reemitted;   // the reopened scene, emitted again
+    std::vector<Identity> identities;  // scene, region, and each drone's model, parts, propulsion
+    uint32_t steps_before = 0;         // Run steps from the scene before saving
+    uint32_t steps_after = 0;          // and from the reopened one
+    std::vector<BodyState> bodies_before;  // every body after those steps
+    std::vector<BodyState> bodies_after;
+};
+
+namespace detail {
+
+template <class V>
+[[nodiscard]] bool same_bits(const V& a, const V& b, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (std::bit_cast<uint32_t>(a[i]) != std::bit_cast<uint32_t>(b[i])) return false;
+    }
+    return true;
+}
+
+// The state a step integrates: position, orientation, velocity, body rates.
+[[nodiscard]] inline bool same_state(const BodyState& a, const BodyState& b) {
+    return same_bits(a.pos, b.pos, 3) && same_bits(a.orient, b.orient, 4) && same_bits(a.vel, b.vel, 3) &&
+           same_bits(a.omega_body, b.omega_body, 3);
+}
+
+}  // namespace detail
+
+[[nodiscard]] inline Verdict round_trip(const RoundTrip& t) {
+    (void)t;
+    return {true, "round_trip: not yet judged"};
 }
 
 }  // namespace spade::sandbox::end_goal

@@ -348,6 +348,9 @@ if(SPADE_BUILD_SANDBOX)
         # catches -- still air, a pinned drone, a buried object -- and passes on
         # a stub of the right state.
         test_sandbox_end_goal_checks.cpp
+        # Batch 2: the library, identities, imports, the region's bookkeeping, the
+        # views, save and reopen, and the measuring helpers for a placed object.
+        test_sandbox_end_goal_scene_checks.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
