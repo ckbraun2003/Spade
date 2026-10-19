@@ -57,6 +57,13 @@ Result<RunRecord> launch_run(const fs::path& runner, const fs::path& folder, con
     if (progress->state != RunState::queued) {
         return std::unexpected(refuse(Code::invalid_argument, "the run '" + path_text(dir) + "' is not queued"));
     }
+    // A folder runs as what it was made as: its name and its need say so.
+    if (progress->kind != options.kind) {
+        return std::unexpected(refuse(Code::invalid_argument, "the run '" + path_text(dir) + "' was made as a " +
+                                                                  std::string(run_kind_name(progress->kind)) +
+                                                                  " run, not a " +
+                                                                  std::string(run_kind_name(options.kind)) + " run"));
+    }
     // The progress says what the run is before its process exists.
     progress->kind = options.kind;
     if (Result<void> r = write_progress(dir, *progress); !r) return std::unexpected(r.error());
@@ -80,8 +87,16 @@ Result<RunRecord> launch_run(const fs::path& runner, const fs::path& folder, con
 
 Result<void> cancel_run(const fs::path& folder) {
     std::error_code ec;
-    if (!fs::is_directory(folder, ec)) {
-        return std::unexpected(refuse(Code::io_error, "'" + path_text(folder) + "' is not a run folder"));
+    if (!fs::is_regular_file(folder / "progress.yaml", ec)) {
+        return std::unexpected(
+            refuse(Code::io_error, "'" + path_text(folder) + "' is not a run folder: it has no progress.yaml"));
+    }
+    const Result<RunProgress> progress = read_progress(folder);
+    if (!progress) return std::unexpected(progress.error());
+    const RunState s = progress->state;
+    if (s == RunState::done || s == RunState::refused || s == RunState::faulted || s == RunState::cancelled) {
+        return std::unexpected(refuse(Code::invalid_argument, "the run '" + path_text(folder) +
+                                                                  "' has finished: there is nothing to cancel"));
     }
     std::ofstream flag(folder / kCancelFile, std::ios::binary | std::ios::trunc);
     flag << "cancel\n";

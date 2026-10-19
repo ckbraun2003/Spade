@@ -13,6 +13,7 @@
 
 #include "analysis/detail/atomic_file.hpp"
 #include "core/build_identity.hpp"
+#include "core/path_text.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::analysis {
@@ -29,6 +30,90 @@ constexpr std::array<std::string_view, 7> kStateNames = {"queued", "calibrating"
 constexpr std::array<std::string_view, 2> kKindNames = {"cfd", "dry-run"};
 constexpr const char* kProgressFile = "progress.yaml";
 constexpr const char* kRecordFile = "run.yaml";
+
+// Re-runs of one case on one day, at most: past this, a host is looping.
+constexpr int kMaxRunsPerDay = 1000;
+
+// Whether `s` is well-formed UTF-8: no overlong forms, no surrogates, nothing
+// past U+10FFFF.
+[[nodiscard]] bool utf8(std::string_view s) {
+    for (std::size_t i = 0; i < s.size();) {
+        const auto b = static_cast<unsigned char>(s[i]);
+        std::size_t n = 0;
+        uint32_t cp = 0;
+        if (b < 0x80) {
+            ++i;
+            continue;
+        }
+        if ((b & 0xE0) == 0xC0) {
+            n = 1;
+            cp = b & 0x1Fu;
+        } else if ((b & 0xF0) == 0xE0) {
+            n = 2;
+            cp = b & 0x0Fu;
+        } else if ((b & 0xF8) == 0xF0) {
+            n = 3;
+            cp = b & 0x07u;
+        } else {
+            return false;
+        }
+        if (i + n >= s.size()) return false;  // cut short
+        for (std::size_t k = 1; k <= n; ++k) {
+            const auto c = static_cast<unsigned char>(s[i + k]);
+            if ((c & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (c & 0x3Fu);
+        }
+        constexpr uint32_t kLeast[] = {0, 0x80, 0x800, 0x10000};
+        if (cp < kLeast[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+        i += n + 1;
+    }
+    return true;
+}
+
+// Why `name` can't be one folder's name on every platform Spade runs on, or
+// empty when it can.
+[[nodiscard]] std::string not_a_folder_name(std::string_view name) {
+    if (name.empty()) return "it is empty";
+    if (name == "." || name == "..") return "it is '" + std::string(name) + "'";
+    if (!utf8(name)) return "it isn't UTF-8";
+    for (const char c : name) {
+        if (c == '/' || c == '\\') return "it holds a path separator";
+        if (static_cast<unsigned char>(c) < 0x20) return "it holds a control character";
+        if (std::string_view("<>:\"|?*").find(c) != std::string_view::npos) {
+            return std::string("it holds '") + c + "', which Windows forbids in a name";
+        }
+    }
+    if (name.back() == '.' || name.back() == ' ') return "it ends with a dot or a space, which Windows drops";
+    // A device name, with or without an extension (CON, NUL.txt), any case.
+    std::string stem(name.substr(0, name.find('.')));
+    for (char& c : stem) c = static_cast<char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c);
+    const auto device = [&] {
+        if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL") return true;
+        return stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem[3] >= '0' &&
+               stem[3] <= '9';
+    };
+    if (device()) return "'" + std::string(name) + "' is a device name on Windows";
+    return {};
+}
+
+[[nodiscard]] bool is_date(std::string_view d) {
+    if (d.size() != 10 || d[4] != '-' || d[7] != '-') return false;
+    for (std::size_t i = 0; i < d.size(); ++i) {
+        if (i != 4 && i != 7 && (d[i] < '0' || d[i] > '9')) return false;
+    }
+    return true;
+}
+
+[[nodiscard]] bool is_commit(std::string_view c) {
+    return !c.empty() &&
+           std::all_of(c.begin(), c.end(), [](char x) { return (x >= '0' && x <= '9') || (x >= 'a' && x <= 'f'); });
+}
+
+// A UTF-8 name as a path, on every platform: a narrow string is read in the
+// system's code page on Windows.
+[[nodiscard]] fs::path utf8_path(std::string_view name) {
+    return fs::path(std::u8string(reinterpret_cast<const char8_t*>(name.data()), name.size()));
+}
 
 // Doubles as the shortest text that reads back to the same value.
 [[nodiscard]] std::string number(double v) { return std::format("{}", v); }
@@ -175,57 +260,114 @@ Result<RunProgress> read_progress(const fs::path& folder) {
     return progress_from_yaml(*text);
 }
 
+namespace {
+
+// <date>_<hash16>_<commit12>[-dirty][_dry]: git describe's mark stays on the
+// commit, and the kind ends the name.
+[[nodiscard]] std::string folder_name(const ResolvedCase& resolved, std::string_view date, std::string_view commit,
+                                      bool dirty, RunKind kind) {
+    return std::string(date) + "_" + std::format("{:016x}", resolved.hash) + "_" +
+           std::string(commit.substr(0, std::min<std::size_t>(commit.size(), 12))) + (dirty ? "-dirty" : "") +
+           (kind == RunKind::dry_run ? "_dry" : "");
+}
+
+}  // namespace
+
 fs::path run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
-                    std::string_view date, std::string_view commit) {
-    const std::string name = std::string(date) + "_" + std::format("{:016x}", resolved.hash) + "_" +
-                             std::string(commit.substr(0, std::min<std::size_t>(commit.size(), 12)));
-    return runs_dir / fs::path(std::string(case_name)) / name;
+                    std::string_view date, std::string_view commit, RunKind kind) {
+    return runs_dir / utf8_path(case_name) / utf8_path(folder_name(resolved, date, commit, false, kind));
 }
 
 namespace {
 
-// Makes `folder` with its case.yaml and a queued progress; refused if it exists.
-[[nodiscard]] Result<fs::path> make_run_folder(const fs::path& folder, const ResolvedCase& resolved) {
-    std::error_code ec;
-    fs::create_directories(folder.parent_path(), ec);
-    if (ec) return std::unexpected(Error{Code::io_error, "cannot make '" + path_text(folder.parent_path()) + "': " + ec.message()});
-    if (!fs::create_directory(folder, ec)) {
-        if (ec) return std::unexpected(Error{Code::io_error, "cannot make '" + path_text(folder) + "': " + ec.message()});
-        return std::unexpected(Error{Code::invalid_argument,
-                                     "the run '" + path_text(folder) + "' exists already: a run is never overwritten"});
+// The run's folder, its case.yaml and its queued progress: what every form of
+// create_run_folder() makes. All or nothing.
+[[nodiscard]] Result<fs::path> make_run_folder(const fs::path& runs_dir, std::string_view case_name,
+                                               const ResolvedCase& resolved, std::string_view date,
+                                               std::string_view commit, bool dirty, RunKind kind) {
+    if (const std::string why = not_a_folder_name(case_name); !why.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "the case name can't name a run's folder: " + why});
+    }
+    if (!is_date(date)) {
+        return std::unexpected(Error{Code::invalid_argument, "the date '" + std::string(date) +
+                                                                 "' isn't YYYY-MM-DD (the host's UTC day)"});
+    }
+    if (!is_commit(commit)) {
+        return std::unexpected(
+            Error{Code::invalid_argument, "the commit '" + std::string(commit) + "' isn't a commit id (lowercase hex)"});
     }
     const Result<std::string> text = case_to_yaml(resolved.spec);
     if (!text) return std::unexpected(text.error());
-    if (Result<void> r = detail::replace_file(folder / "case.yaml", *text); !r) return std::unexpected(r.error());
+
+    const fs::path first =
+        runs_dir / utf8_path(case_name) / utf8_path(folder_name(resolved, date, commit, dirty, kind));
+    const fs::path parent = first.parent_path();
+    std::error_code ec;
+    const bool had_parent = fs::exists(parent, ec);
+    fs::create_directories(parent, ec);
+    if (ec) return std::unexpected(Error{Code::io_error, "cannot make '" + path_text(parent) + "': " + ec.message()});
+    // Undoes what this call made, so a refusal leaves nothing behind.
+    const auto undo = [&](const fs::path& folder) {
+        std::error_code ignored;
+        if (!folder.empty()) fs::remove_all(folder, ignored);
+        if (!had_parent && fs::is_empty(parent, ignored)) fs::remove(parent, ignored);
+    };
+    // The first free name, each made exclusively: an existing folder is
+    // another run's, so the next suffix is tried.
+    fs::path folder;
+    for (int n = 1; n <= kMaxRunsPerDay && folder.empty(); ++n) {
+        const fs::path candidate =
+            n == 1 ? first : parent / utf8_path(path_text(first.filename()) + "_" + std::to_string(n));
+        if (fs::create_directory(candidate, ec)) {
+            folder = candidate;
+        } else if (ec) {
+            undo({});
+            return std::unexpected(Error{Code::io_error, "cannot make '" + path_text(candidate) + "': " + ec.message()});
+        }
+    }
+    if (folder.empty()) {
+        undo({});
+        return std::unexpected(Error{Code::invalid_argument, "the case '" + std::string(case_name) + "' has " +
+                                                                 std::to_string(kMaxRunsPerDay) +
+                                                                 " runs today at this commit already"});
+    }
+    if (Result<void> r = detail::replace_file(folder / "case.yaml", *text); !r) {
+        undo(folder);
+        return std::unexpected(r.error());
+    }
     RunProgress queued;
+    queued.kind = kind;
     queued.target_s = static_cast<double>(resolved.spec.time.duration);
-    queued.memory_bytes = resolved.base_bytes;  // its need, which the queue waits for
-    if (Result<void> r = write_progress(folder, queued); !r) return std::unexpected(r.error());
+    // A real run's need, which the queue waits for; a dry run holds no grid.
+    queued.memory_bytes = kind == RunKind::dry_run ? 0 : resolved.base_bytes;
+    if (kind == RunKind::dry_run) queued.message = std::string(kDryRunNoMemoryGate);
+    if (Result<void> r = write_progress(folder, queued); !r) {
+        undo(folder);
+        return std::unexpected(r.error());
+    }
     return folder;
 }
 
 }  // namespace
 
 Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
-                                   std::string_view date, std::string_view commit) {
-    return make_run_folder(run_folder(runs_dir, case_name, resolved, date, commit), resolved);
+                                   std::string_view date, std::string_view commit, RunKind kind) {
+    return make_run_folder(runs_dir, case_name, resolved, date, commit, false, kind);
 }
 
 Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
-                                   std::string_view date, const BuildIdentity& built) {
+                                   std::string_view date, const BuildIdentity& built, RunKind kind) {
     if (built.commit == "unknown") {
         return std::unexpected(Error{Code::unavailable,
                                      "this engine can't name its commit (built outside a git checkout and not from a "
                                      "git archive), so its runs can't be traced: pass the commit"});
     }
-    fs::path folder = run_folder(runs_dir, case_name, resolved, date, built.commit);
-    if (built.dirty) folder += "-dirty";  // git describe's mark, after the commit's 12
-    return make_run_folder(folder, resolved);
+    return make_run_folder(runs_dir, case_name, resolved, date, built.commit, built.dirty, kind);
 }
 
 Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
-                                   std::string_view date) {
-    return create_run_folder(runs_dir, case_name, resolved, date, spade::build_identity());
+                                   std::string_view date, RunKind kind) {
+    return create_run_folder(runs_dir, case_name, resolved, date, spade::build_identity(), kind);
 }
 
 }  // namespace spade::analysis

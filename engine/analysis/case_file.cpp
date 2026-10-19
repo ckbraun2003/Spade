@@ -14,6 +14,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "analysis/case.hpp"
+#include "analysis/detail/atomic_file.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::analysis {
@@ -387,14 +388,10 @@ Result<AnalysisCase> load_case(const std::filesystem::path& file) {
 Result<void> save_case(const AnalysisCase& c, const std::filesystem::path& file) {
     const Result<std::string> text = case_to_yaml(c);
     if (!text) return std::unexpected(text.error());
-    try {
-        std::ofstream out(file, std::ios::binary | std::ios::trunc);
-        if (!out) return std::unexpected(Error{Code::io_error, "cannot write case file '" + path_text(file) + "'"});
-        out << *text;
-        out.flush();
-        if (!out) return std::unexpected(Error{Code::io_error, "failed writing case file '" + path_text(file) + "'"});
-    } catch (const std::exception& e) {
-        return std::unexpected(Error{Code::io_error, "failed writing case file '" + path_text(file) + "': " + e.what()});
+    // Replaced whole, through a temporary file beside it: a reader sees the
+    // old case or the new, never part of one.
+    if (Result<void> r = detail::replace_file(file, *text); !r) {
+        return std::unexpected(Error{r.error().code, "cannot save the case file: " + r.error().context});
     }
     return {};
 }
