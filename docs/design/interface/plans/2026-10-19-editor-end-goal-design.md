@@ -1,6 +1,6 @@
 # The editor's end goal: drones, objects, airflow and views, live
 
-**Owner:** Interface. **Status:** draft, for the lead's review.
+**Owner:** Interface. **Status:** **approved by the lead, 2026-10-19** (INT-10), with the rulings in §10 and a physical predicate added to `editor.airflow` (§6).
 **Asked by:** Cameron (relayed 2026-10-19): "The end goal of this session is a live smoke of the Spade editor / sandbox with the ability to add drones, add other objects, add airflow, add different rendering schemas, etc. ... like unity but for high fidelity sims rather than games." Also Cameron, the same day: "there will be a default library of objects/content in spade ... There is no part authoring ... spade is not a CAD dupe."
 **Inputs:** Core (the library, object and scene formats), Physics (the airflow region's semantics, quoted in §4), Rendering (the render-mode selector and its measured costs, §5), the lead's distinctions (view modes versus scene cameras; mesh obstacles are Physics' call), and a read-only inventory of the editor on master.
 **Builds on:** the editor design (2026-10-05, EDT-001..021), the I1 harness design (LiveRun), and the live tour storyboard (INT-9).
@@ -133,7 +133,7 @@ The tour's chapter 3, the editor, grows these steps. Each is a declared step wit
 | `editor.add_drone` | The reference quad placed from the library | placed-at (where asked, resting on the picked surface), drawn (its parts, one drawable per part), propulsion-kept (its chain's identity survives the copy) |
 | `editor.add_objects` | A gate and a wall placed; a glTF prop imported | object-added (Test/Docs' predicate: placed where asked, on the ground or the picked surface, and drawn, one drawable per object), import-named (the mesh's name and source shown) |
 | `editor.fly` | Run: arm, throttle up, pitch | armed, climbs (height rises at throttle above hover), follows-attitude |
-| `editor.airflow` | A region added around the quad; the run line in the band | region-resolved (grid, dx, R/dx shown, as LiveRun resolves them), publishes, run-line-shown |
+| `editor.airflow` | A region added around the quad; the run line in the band | region-resolved (grid, dx, R/dx shown, as LiveRun resolves them), publishes, run-line-shown, and a PHYSICAL predicate (the lead's addition): once the wake has developed, the mean axial velocity on each rotor's axis 2R below its disc lies within the C8 band of momentum theory, a band Test/Docs fixes in advance. Publishing alone would pass a broken coupling that publishes still air. |
 | `editor.views` | Shaded, then wireframe, then vortices with streamlines, then slice + C_p; then Split | each-mode-drawn (`draw()` succeeded and nothing `unhonoured`, or the `why_not` shown for a refused kind), legend-shown, two-views |
 | `editor.save_reopen` | Save the scene, reopen it | round-trip (the reopened scene's text equals the saved one; the region and the drone's propulsion survive) |
 
@@ -196,9 +196,10 @@ The capabilities are each tested headlessly first: the library index, placing, t
 
 Each milestone is red, then green, with its headless tests before its smoke steps.
 
-## 10. Decisions for the lead
+## 10. The lead's rulings (2026-10-19)
 
-1. **In M2, the editor's airflow runs with the drone HELD until P2b** (the drone box, live in the editor), then flying. The alternative, waiting for P2b before any airflow in the editor, leaves (c) dark for longer. I recommend held first.
-2. **The flight controller (N17) is Interface's**, generalising the drone box's controller and mixer from `QuadrotorParams` to any model's rotor layout. It stays in the sandbox until a second consumer needs it, then moves to an engine module. I recommend this over a new Core module now.
-3. **N11, the mesh resolver**, is assigned to Rendering, since it is `scene_from_world`'s missing input.
-4. **The default layout is one view**, with Split for two. Cost doesn't decide it (§5); one view is simpler to read.
+1. **Held first:** M2's editor airflow runs with the drone held (the drone box, live in the editor), then flying once P2b lands.
+2. **The flight controller (N17) is Interface's**, in the sandbox, until a second consumer needs it. One condition: the MIXER (the rotor layout to an allocation) is physics math. It is written as a pure function with tests and reviewed by Physics, since vehicles/ is theirs, and it moves there when it leaves the sandbox.
+3. **N11, the mesh resolver, is Rendering's;** the lead assigns it.
+4. **One view by default,** with Split for a second.
+5. **Order after the Kat slice-1 items: M1 first.** N12 (render_parts in the editor) and N19 (per-view state and the mode menu) need nothing from others, so they start first. N14 and N17 follow as Core's N1-N4 land.
