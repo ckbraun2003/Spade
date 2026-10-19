@@ -409,6 +409,20 @@ TEST(LiveSmokeCards, TheOpeningCardSaysWhatTheVideoShows) {
               "spade sandbox -- live smoke\nebcc548a1b2c 2026-10-05\nverdict at the end");
 }
 
+// A card's text is drawn a line at a time, centred, so a long line runs off
+// both edges (the airflow card's refusal did, 2026-10-19). wrap_card_line()
+// breaks at spaces, each line at most `width` characters; a word longer than
+// the width stands alone rather than being cut.
+TEST(LiveSmokeCards, ALongCardLineWrapsAtSpacesWithinItsWidth) {
+    using spade::sandbox::live::wrap_card_line;
+    EXPECT_EQ(wrap_card_line("the model 'sandbox_quad' has 4 rotors, and a live run needs their propulsion", 30),
+              "the model 'sandbox_quad' has 4\nrotors, and a live run needs\ntheir propulsion");
+    EXPECT_EQ(wrap_card_line("short", 30), "short");
+    EXPECT_EQ(wrap_card_line("", 30), "");
+    EXPECT_EQ(wrap_card_line("a supercalifragilisticexpialidocious word", 10),
+              "a\nsupercalifragilisticexpialidocious\nword");
+}
+
 TEST(LiveSmokeCards, TheClosingCardCarriesTheVerdictAndItsCounts) {
     using spade::sandbox::live::closing_card;
     Verdict pass;
