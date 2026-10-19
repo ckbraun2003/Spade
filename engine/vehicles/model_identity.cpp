@@ -146,4 +146,7 @@ uint64_t parts_identity(const ModelType& m) noexcept {
     return f.value();
 }
 
+// RED: a stub, so the tests compile and fail on behaviour.
+uint64_t propulsion_identity(const PropulsionChain&) noexcept { return 0; }
+
 }  // namespace spade::vehicles

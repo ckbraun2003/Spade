@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "core/error.hpp"
 #include "vehicles/propeller.hpp"
 
 // ===========================================================================
@@ -101,5 +102,66 @@ struct SteadyPoint {
 // rotor_inertia is not positive, or the slope is not negative.
 [[nodiscard]] double steady_state_time_constant(const PropulsionChain& chain, double duty, double density,
                                                 double v_axial, double soc, double rotor_inertia) noexcept;
+
+// ---------------------------------------------------------------------------
+// THE THROTTLE MAP: a duty to a rotor's commanded speed, for a live run that
+// drives the momentum-variant rotor row (vehicles/rotor.hpp) from a throttle.
+//
+//   omega_cmd = steady_state_at_duty(chain, duty, density, v_axial = 0, soc).omega
+//
+// rounded to float once. v_axial = 0 is exact for a held drone in still air,
+// and it is the operating point the airframe compile fits the rotor at (hover
+// in still air), so at the fit's hover duty the map gives the fit's hover
+// speed. The row then lags omega toward omega_cmd on its fitted tau.
+// ---------------------------------------------------------------------------
+
+// One duty's command.
+struct DutyCommand {
+    float omega_cmd = 0.0f;  // rad/s: the equilibrium's speed, rounded once from double
+    uint32_t flags = 0;      // propulsion_flags of the equilibrium
+};
+
+// The throttle map above. REFUSED by name (invalid_argument), checked in this
+// order before any solve: a duty that is not finite and in [0, 1] (it is not
+// clamped: an out-of-range duty is the caller's bug, not the ESC's), a density
+// that is not finite and positive, a soc that is not finite and in [0, 1].
+// Then refused when the equilibrium sets propulsion_flags::no_bracket (an
+// invalid chain, as steady_state_at_duty() lists it, or a torque balance with
+// no sign change) or propulsion_flags::unreachable.
+//
+// AT REST IS NOT AN ERROR. Duty 0, and a duty below the motor's breakaway
+// (the drive current at rest cannot beat the no-load current, so the balance
+// at omega = 0 is not positive), give omega_cmd 0 without no_bracket.
+//
+// THE OTHER FLAGS ARE OPERATING POINTS, NOT ERRORS. current_limited (a motor
+// held at its current rating) and battery_current_limited (the pack held at
+// its rating), like battery_cutoff, esc_total_limited and out_of_table, come
+// back in `flags` with a valid omega_cmd: the chain really settles there. The
+// caller ANNOUNCES them (a live run tells the pilot the motors or the pack
+// are at their limit); it does not refuse them.
+[[nodiscard]] Result<DutyCommand> rotor_omega_for_duty(const PropulsionChain& chain, double duty, double density,
+                                                       double soc);
+
+// THE ARM RULE: the duty a flight controller commands for a throttle.
+//
+//   disarmed   0
+//   armed      idle + (1 - idle) throttle
+//
+// `idle` is the case's spin-when-armed duty, the flight controller's own
+// setting (like ArduPilot's MOT_SPIN_ARM): explicit, with no default here.
+// Zero throttle is exactly `idle` and full throttle exactly duty 1, for every
+// idle in [0, 1), and rounding is monotonic, so the result never leaves
+// [idle, 1] and always passes rotor_omega_for_duty()'s duty check.
+//
+// DISARM IS omega_cmd 0. A disarmed rotor is commanded duty 0, so
+// rotor_omega_for_duty() gives omega_cmd 0 and omega spins down on the rotor
+// row's fitted tau, as a real rotor coasts down. A rotor's `enabled`
+// (RotorRow) is NEVER used to disarm: a disabled row is inert, and would drop
+// its thrust and reaction torque in one substep.
+//
+// REFUSED by name (invalid_argument), whatever `armed` is, so a bad input is
+// caught while disarmed too: a throttle that is not finite and in [0, 1],
+// then an idle that is not finite with 0 <= idle < 1.
+[[nodiscard]] Result<double> armed_duty(bool armed, double throttle, double idle);
 
 }  // namespace spade::vehicles

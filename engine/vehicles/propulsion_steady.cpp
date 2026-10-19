@@ -163,4 +163,13 @@ double steady_state_time_constant(const PropulsionChain& chain, double duty, dou
     return rotor_inertia / -slope;
 }
 
+// RED: stubs, so the tests compile and fail on behaviour.
+Result<DutyCommand> rotor_omega_for_duty(const PropulsionChain&, double, double, double) {
+    return std::unexpected(Error{Code::internal, "rotor_omega_for_duty: not implemented"});
+}
+
+Result<double> armed_duty(bool, double, double) {
+    return std::unexpected(Error{Code::internal, "armed_duty: not implemented"});
+}
+
 }  // namespace spade::vehicles
