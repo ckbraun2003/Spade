@@ -23,6 +23,8 @@ public:
         for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
     }
     void f32(float v) noexcept { u32(std::bit_cast<uint32_t>(v)); }
+    // propulsion_identity's doubles: the 64-bit pattern, little-endian.
+    void f64(double v) noexcept { u64(std::bit_cast<uint64_t>(v)); }
     void vec3(const glm::vec3& v) noexcept {
         f32(v.x);
         f32(v.y);
@@ -143,6 +145,37 @@ uint64_t parts_identity(const ModelType& m) noexcept {
         f.f32(p.surface.inertial_coeff);
         f.f32(p.min_feature);
     }
+    return f.value();
+}
+
+uint64_t propulsion_identity(const PropulsionChain& c) noexcept {
+    Fold f;
+    f.byte(0xFF);
+    for (const char ch : std::string_view("propulsion_identity")) f.byte(static_cast<uint8_t>(ch));
+    f.f64(c.kv);
+    f.f64(c.resistance);
+    f.f64(c.no_load_current);
+    f.f64(c.current_min);
+    f.f64(c.current_max);
+    f.f64(c.esc_current_total_max);
+    f.f64(c.pole_pairs);
+    f.f64(c.inductance);
+    f.f64(c.diameter);
+    f.f32(c.table.j_min);
+    f.f32(c.table.j_max);
+    f.count(c.table.ct.size());
+    for (const float v : c.table.ct) f.f32(v);
+    f.count(c.table.cq.size());
+    for (const float v : c.table.cq) f.f32(v);
+    f.u32(c.cells_series);
+    f.u32(c.cells_parallel);
+    f.f64(c.cell_resistance);
+    f.f64(c.cell_cutoff_voltage);
+    f.f64(c.pack_polarization_resistance);
+    f.f64(c.pack_current_max);
+    f.count(c.ocv_table.size());
+    for (const float v : c.ocv_table) f.f32(v);
+    f.u32(c.motors_on_bus);
     return f.value();
 }
 

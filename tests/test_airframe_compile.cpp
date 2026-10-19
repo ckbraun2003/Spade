@@ -191,6 +191,25 @@ TEST(AirframeCompile, TheFittedRotorMatchesTheTableAndHoversTheWeight) {
     EXPECT_NEAR(c->fit.thrust_coeff * c->fit.hover_omega * c->fit.hover_omega, weight, 1e-6 * weight);
 }
 
+// The throttle map (rotor_omega_for_duty) at the fit's hover duty is the
+// fit's hover speed: both are the chain at zero inflow. So a live run that
+// commands the hover duty holds the weight on the fitted rotor.
+TEST(AirframeCompile, TheThrottleMapAtTheHoverDutyHoversTheFittedRotor) {
+    const AirframeSpec s = reference_quad();
+    const auto c = compile_airframe(s);
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    const auto chain = airframe_propulsion_chain(s);
+    ASSERT_TRUE(chain.has_value()) << chain.error().context;
+    const auto r = rotor_omega_for_duty(*chain, c->fit.hover_duty, s.air_density, s.state_of_charge);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(r->omega_cmd, static_cast<float>(c->fit.hover_omega));
+    EXPECT_EQ(r->flags, c->fit.solver_flags);
+    // The fitted rotor's static thrust at omega_cmd (float: 1.2e-7 relative
+    // in omega^2) is the weight per rotor.
+    const double w = static_cast<double>(r->omega_cmd);
+    EXPECT_NEAR(c->fit.thrust_coeff * w * w, c->fit.hover_thrust, 1e-6 * c->fit.hover_thrust);
+}
+
 // The fitted tau, against a measurement: step the duty 1% from hover through
 // the float step functions and time the 63% rise. Small-signal, so the
 // response is a first-order lag with the slope's time constant.

@@ -68,12 +68,37 @@
 // Every float by its bit pattern, so -0 and +0 differ, as in model_identity.
 // It does not validate: hash a model that passed validate() (exactly one of
 // shape and mesh).
+//
+// propulsion_identity(c) is the identity of one PropulsionChain
+// (vehicles/propulsion_steady.hpp): the one rule for a chain's identity
+// (TD-9). A consumer that maps a throttle through a chain (Interface's live
+// run, rotor_omega_for_duty) pins it beside parts_identity, so a changed
+// motor, propeller, ESC or battery is noticed. It folds, in this order:
+//   the DOMAIN TAG: the byte 0xFF, then the 19 ASCII bytes
+//     "propulsion_identity" (no length, no terminator), so its stream
+//     differs from model_identity's from the first byte, and from
+//     parts_identity's from the third;
+//   then EVERY field of PropulsionChain, in DECLARATION order:
+//     kv, resistance, no_load_current, current_min, current_max,
+//     esc_current_total_max, pole_pairs, inductance, diameter: each a double,
+//       by its 64-bit IEEE-754 pattern, little-endian;
+//     the table: j_min, j_max (floats); the ct count (u32), then each ct
+//       value; the cq count (u32), then each cq value;
+//     cells_series, cells_parallel (u32);
+//     cell_resistance, cell_cutoff_voltage, pack_polarization_resistance,
+//       pack_current_max (doubles);
+//     the ocv_table count (u32), then each value (floats);
+//     motors_on_bus (u32).
+// Every float and double by its bit pattern, so -0 and +0 differ. It does not
+// validate: an invalid chain has an identity too. A field added to
+// PropulsionChain must join this list, in the order it is declared.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
 #include <span>
 
 #include "vehicles/model_type.hpp"
+#include "vehicles/propulsion_steady.hpp"
 
 namespace spade::vehicles {
 
@@ -87,5 +112,7 @@ namespace spade::vehicles {
 inline constexpr uint64_t kNoPartsIdentity = 0x1bffc7475bebbf17ull;
 
 [[nodiscard]] uint64_t parts_identity(const ModelType& model) noexcept;
+
+[[nodiscard]] uint64_t propulsion_identity(const PropulsionChain& chain) noexcept;
 
 }  // namespace spade::vehicles
