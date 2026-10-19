@@ -286,10 +286,9 @@ inline constexpr const char* kDot = "  \xC2\xB7  ";
 
 // ---- the docked layout ----
 
-enum class Layout { none, builder, drone, editor };
+enum class Layout { none, drone, editor };
 
-// The default layout for the scene on screen: the hierarchy on the left and
-// the inspector on the right (the builder), or the drone's panel on the right.
+// The default layout for the scene on screen: the drone's panel on the right.
 // The editor's is §13's: the toolbar along the top, the hierarchy and the
 // inspector full height at the sides, and the library under the viewport.
 // The centre is the viewport, which lets the scene show and take input through.
@@ -303,12 +302,7 @@ inline void build_layout(ImGuiID dockspace, Layout layout) {
     ImGui::DockBuilderAddNode(dockspace, flags);
     ImGui::DockBuilderSetNodeSize(dockspace, viewport->WorkSize);
     ImGuiID centre = dockspace;
-    if (layout == Layout::builder) {
-        const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.20f, nullptr, &centre);
-        const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
-        ImGui::DockBuilderDockWindow(kHierarchy, left);
-        ImGui::DockBuilderDockWindow(kInspector, right);
-    } else if (layout == Layout::drone) {
+    if (layout == Layout::drone) {
         const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
         ImGui::DockBuilderDockWindow(kDrone, right);
     } else if (layout == Layout::editor) {

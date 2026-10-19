@@ -1,14 +1,14 @@
-// The sandbox's two scenes as sessions: everything a scene needs to draw a
-// frame into the window, and the one function that draws it.
+// The drone sim box as a session: everything it needs to draw a frame into the
+// window, and the one function that draws it.
 //
-// ⭐ ONE FRAME, ONE STATEMENT. The interactive loops, the builder's --smoke and
-// the live smoke (live_tour.hpp) all drive a scene through its session's
-// frame(), so a smoke exercises the path a user does. A smoke with a private
+// ⭐ ONE FRAME, ONE STATEMENT. The interactive loop and the live smoke
+// (live_tour.hpp) both drive the scene through its session's frame(), so a
+// smoke exercises the path a user does. A smoke with a private
 // frame loop proves only that the smoke works; this file is where main.cpp's
 // frame bodies moved so that a second caller could share them.
 //
-// Display-free logic stays in builder_scene.hpp, drone_sim.hpp and
-// drone_view.hpp (SL15b); a session is wiring.
+// Display-free logic stays in drone_sim.hpp and drone_view.hpp (SL15b); a
+// session is wiring.
 
 #pragma once
 
@@ -28,8 +28,7 @@
 #include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
 #endif
 
-#include "builder_scene.hpp"   // the builder's object model and its whole interaction
-#include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
+#include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
@@ -76,13 +75,9 @@ class GpuRenderer {
 };
 #endif
 
-// C0's built-in scene, the builder's ground: a ground plane and nothing else.
-// The world is an out-parameter because the scene borrows its SDF: the
-// returned scene must not outlive `world_out`.
-[[nodiscard]] bool build_builtin_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out);
-
 // The drone sim box's empty world (no ground): the drone hangs in air. The
-// world is an out-parameter for the same reason.
+// world is an out-parameter because the scene borrows its SDF: the returned
+// scene must not outlive `world_out`.
 [[nodiscard]] bool build_drone_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out);
 
 // Renders on the CPU and hands the target to a TargetSink (C1).
@@ -93,9 +88,7 @@ class GpuRenderer {
 // The drone frame's draw list and options, shared by the window and headless.
 [[nodiscard]] spade::render::RenderOptions drone_frame(spade::render::RenderScene& scene,
                                                        const DroneDrawBinding& binding, const DroneSim& drone,
-                                                       const glm::quat& orientation,
-                                                       const spade::render::Camera& camera, bool heatmap,
-                                                       float heatmap_max, float blur, float* observed_max);
+                                                       const glm::quat& orientation, float blur);
 
 // GPU first, CPU fallback: the GPU renderer when it can be created and take
 // the scene, otherwise nullptr, with the reason printed.
@@ -150,50 +143,6 @@ class DroneSession {
     OrbitCamera camera_;
     std::vector<uint8_t> pixels_;
     uint32_t rebuilds_ = 0;
-};
-
-// ---------------------------------------------------------------------------
-// The builder in a window.
-// ---------------------------------------------------------------------------
-class BuilderSession {
-  public:
-    // Builds the ground scene and the builder's meshes and palette. Needs no
-    // window, so a build that fails refuses before one opens.
-    [[nodiscard]] static spade::Result<std::unique_ptr<BuilderSession>> create(bool grid, float blur);
-
-    // Starts the GPU renderer in `sink`'s context, or announces the CPU
-    // fallback, and attaches the builder panel. `sink` must outlive this.
-    // Call once, before the first frame.
-    void attach(GlTargetSink& sink);
-
-    ~BuilderSession();
-    BuilderSession(const BuilderSession&) = delete;
-    BuilderSession& operator=(const BuilderSession&) = delete;
-
-    // One frame: the camera, everything the mouse means to the builder, the
-    // uploads a changed set needs, then a frame drawn and presented.
-    [[nodiscard]] spade::Result<void> frame(const FrameInput& in);
-
-    [[nodiscard]] BuilderScene& builder() noexcept { return builder_; }
-    [[nodiscard]] spade::render::RenderScene& scene() noexcept { return scene_; }
-    [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
-    [[nodiscard]] GpuRenderer* gpu() noexcept { return gpu_.get(); }
-    // Where the builder's meshes and materials start in scene(): object i
-    // draws with material binding().material_base + i.
-    [[nodiscard]] const BuilderBinding& binding() const noexcept { return bind_; }
-
-  private:
-    BuilderSession() = default;
-
-    GlTargetSink* sink_ = nullptr;
-    spade::WorldDesc world_;  // before the scene: the scene borrows its SDF
-    spade::render::RenderScene scene_;
-    spade::render::RenderOptions options_;
-    BuilderScene builder_;
-    BuilderBinding bind_{};
-    std::unique_ptr<GpuRenderer> gpu_;
-    OrbitCamera camera_;
-    std::vector<uint8_t> pixels_;
 };
 
 }  // namespace spade::sandbox

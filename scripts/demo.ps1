@@ -34,7 +34,7 @@
     Which demo scene to launch: drop, bounce, shower, gate, hover, wind,
     flight, swarm (spade_viewer, v2 physics); v1-fluid, v1-spheres,
     v1-cubes (Sandbox, v1 regression references); or sandbox (the drone sim
-    box) and sandbox-builder (spade_sandbox, the reference application).
+    box of spade_sandbox, the reference application).
     Required.
 
 .PARAMETER Preset
@@ -97,7 +97,6 @@ $V1SceneMap = @{
 # --scene flag. 'sandbox' opens its default scene, the drone sim box.
 $SandboxSceneMap = @{
     'sandbox'         = 'drone'
-    'sandbox-builder' = 'builder'
 }
 
 $IsV1Scene = $V1SceneMap.ContainsKey($Scene)

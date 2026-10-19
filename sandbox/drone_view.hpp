@@ -1,19 +1,13 @@
-// The drone sim box's view: the air around the drone as a field, the field as
-// a heatmap slice, and the drone itself as parts.
-//
-// THE FIELD IS ANALYTIC AND READ ONLY FOR DRAWING; STEPPING NEVER READS IT.
-//     v(p) = medium(p) + sum over rotors of wake_i(p)
-// medium(p) is the engine's own sample (Simulation::sample_medium: wind plus
-// the current Dryden gust), and wake_i is the actuator-disc slipstream in
-// vehicles/rotor_wake.hpp, fed from each rotor's live row. There is no
-// obstruction by the frame -- honest for what the engine models.
+// The drone sim box's view: the drone as parts, and the panel and keys that fly
+// it. (The analytic air-speed heatmap that was drawn here is retired, INT-9:
+// it drew a synthetic field that could be read as flow data; the real airflow
+// is LiveRun's, drawn through Rendering's flow views.)
 //
 // WHY THE DRONE'S PARTS ARE MESHES AT THEIR REAL SIZE. Placed with rotation
 // and translation only, every lit part has a conformal frame. Since 1cac77a,
 // transform_normal() (render/scene.hpp) and the GL vertex shader use the
 // cofactor for a non-conformal frame, so a scaled lit part would also shade
-// correctly; conformal frames keep the arithmetic the frame goldens pin. Only
-// the heatmap cells, which are unlit, are scaled.
+// correctly; conformal frames keep the arithmetic the frame goldens pin.
 //
 // Display-free like drone_sim.hpp, so tests/test_sandbox_drone_view.cpp
 // asserts it with no window (SL15b).
@@ -32,82 +26,16 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
-#include "render/field_layer.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
 #include "vehicles/quadrotor.hpp"
 #include "vehicles/rotor.hpp"
-#include "vehicles/rotor_wake.hpp"
-#include "world/medium.hpp"
 
-#include "builder_scene.hpp"  // make_box_mesh / make_cylinder_mesh
+#include "unit_meshes.hpp"  // make_box_mesh / make_cylinder_mesh
 #include "drone_sim.hpp"
 #include "orbit_camera.hpp"   // FrameInput
 
 namespace spade::sandbox {
-
-// ---------------------------------------------------------------------------
-// The air field
-// ---------------------------------------------------------------------------
-
-struct AirField {
-    MediumSample medium{};  // position-independent today (Dryden is a point model)
-    std::array<vehicles::RotorWakeInput, vehicles::kQuadrotorRotorCount> rotors{};
-
-    [[nodiscard]] glm::vec3 velocity(glm::vec3 p) const noexcept {
-        glm::vec3 v = medium.wind;
-        for (const auto& r : rotors) v += vehicles::rotor_wake_velocity(r, p);
-        return v;
-    }
-};
-
-[[nodiscard]] inline Result<AirField> air_field_from(const DroneSim& drone) {
-    const Simulation& sim = drone.sim();
-    auto body = sim.body(drone.vehicle().body);
-    if (!body) return std::unexpected(body.error());
-    const glm::vec3 pos = (*body)->pos;
-    const glm::quat orient = (*body)->orient;
-
-    AirField f;
-    auto medium = sim.sample_medium(0, pos);
-    if (!medium) return std::unexpected(medium.error());
-    f.medium = *medium;
-
-    for (uint32_t i = 0; i < vehicles::kQuadrotorRotorCount; ++i) {
-        auto row = sim.rotor(drone.vehicle(), i);
-        if (!row) return std::unexpected(row.error());
-        vehicles::RotorWakeInput& in = f.rotors[i];
-        in.hub_world = pos + orient * (*row)->local_pos;
-        in.thrust_axis_world = orient * ((*row)->local_orient * vehicles::kRotorLocalThrustAxis);
-        in.radius = (*row)->radius;
-        in.thrust_coeff = (*row)->thrust_coeff;
-        in.omega = (*row)->omega;
-        in.density = f.medium.density;
-        in.freestream = f.medium.wind;
-    }
-    return f;
-}
-
-// ---------------------------------------------------------------------------
-// The colour scale
-// ---------------------------------------------------------------------------
-
-// The palette and the binning live in render/field_layer.hpp now (the field
-// channel, Rendering's plan step 1). They moved from here with their
-// arithmetic unchanged. This scene only chooses the map: viridis in 32 bins
-// from 0 m/s, topped by the manual range or, when there is none, by this
-// frame's fastest cell.
-inline constexpr uint32_t kHeatmapBins = 32;
-inline constexpr uint32_t kSliceCells = 64;
-
-[[nodiscard]] inline render::FieldColourMap heatmap_colour_map(float manual_max) {
-    render::FieldColourMap map;
-    map.palette = render::viridis_palette();
-    map.bins = kHeatmapBins;
-    map.range_min = 0.0f;
-    map.range_max = manual_max > 0.0f ? manual_max : 0.0f;  // 0: the layer's own maximum
-    return map;
-}
 
 // ---------------------------------------------------------------------------
 // Binding into a RenderScene
@@ -139,7 +67,7 @@ namespace detail {
 }  // namespace detail
 
 // Appends the drone's meshes (at `params`' real dimensions) and materials.
-// Call ONCE per scene. The heatmap needs neither: it is a field layer.
+// Call ONCE per scene.
 [[nodiscard]] inline DroneDrawBinding bind_drone_scene(render::RenderScene& scene,
                                                        const vehicles::QuadrotorParams& params) {
     DroneDrawBinding b;
@@ -202,93 +130,14 @@ inline void append_drone_items(const DroneDrawBinding& b, const vehicles::Quadro
 }
 
 // ---------------------------------------------------------------------------
-// The heatmap slice
-// ---------------------------------------------------------------------------
-
-// A plane through the drone ALIGNED WITH THE BODY: it holds the thrust axis
-// and one arm axis, so a rotor pair and both their plumes lie in it at any
-// attitude and from any camera azimuth. (A vertical camera-facing plane
-// contains the hubs only near an arm's axis: at 45 degrees it misses them by
-// 1.06 R while the far wake contracts to 0.71 R, and the downwash vanished
-// every 90 degrees of orbit -- Physics' review; the lead's ruling.) Of the two
-// pairs, the one whose plane faces the camera more squarely is shown. 2 m
-// across and 2.5 m along the thrust axis, reaching 0.75 m above the drone and
-// 1.75 m below it, because the downwash is what there is to see.
-//
-// THE ONE VIEW IT CANNOT SERVE: looking straight down the thrust axis, every
-// plane that contains it is edge-on, so the slice thins to a line. That is
-// inherent to showing the plumes in-plane, not a defect; orbit off the axis.
-struct SliceSpec {
-    glm::vec3 center{0.0f};
-    glm::vec3 right{1.0f, 0.0f, 0.0f};  // an arm axis
-    glm::vec3 up{0.0f, 1.0f, 0.0f};     // the thrust axis
-    float width = 2.0f;
-    float height = 2.5f;
-};
-
-[[nodiscard]] inline SliceSpec camera_facing_slice(const render::Camera& camera, const glm::vec3& drone_pos,
-                                                   const glm::quat& drone_orient) {
-    SliceSpec s;
-    const glm::vec3 thrust = drone_orient * glm::vec3(0.0f, 1.0f, 0.0f);
-    const glm::vec3 arm_x = drone_orient * glm::vec3(1.0f, 0.0f, 0.0f);  // rotors 0 and 2
-    const glm::vec3 arm_z = drone_orient * glm::vec3(0.0f, 0.0f, 1.0f);  // rotors 1 and 3
-    glm::vec3 to_cam = camera.position - drone_pos;
-    to_cam = glm::length(to_cam) > 1e-6f ? glm::normalize(to_cam) : thrust;
-    // The 0/2 plane's normal is thrust x arm_x = -arm_z, and the 1/3 plane's
-    // is arm_x, so "faces the camera more squarely" compares these two.
-    s.right = std::fabs(glm::dot(arm_z, to_cam)) >= std::fabs(glm::dot(arm_x, to_cam)) ? arm_x : arm_z;
-    s.up = thrust;
-    // Seen from the camera's side, not the mirror image: the drawn normal
-    // cross(right, up) points at the camera.
-    if (glm::dot(glm::cross(s.right, s.up), to_cam) < 0.0f) s.right = -s.right;
-    s.center = drone_pos + s.up * -0.5f;
-    return s;
-}
-
-// The slice as a field layer of kSliceCells^2 air speeds, each sampled at
-// render::field_cell_center(), so a cell's value is the air where the
-// renderer draws that cell. The engine draws it (RenderScene::field_layers):
-// unlit, double-sided and depth-tested. The samples are still this scene's
-// own sum, because the slipstream is not a registered field (option (b) of
-// Rendering's plan). `manual_max > 0` fixes the range; otherwise it is this
-// frame's fastest cell. `observed` receives that fastest speed, the legend's
-// top in auto mode.
-[[nodiscard]] inline render::FieldLayer slice_layer(const SliceSpec& s, const AirField& field, float manual_max,
-                                                    float* observed = nullptr) {
-    render::FieldLayer layer;
-    layer.center = s.center;
-    layer.right = s.right;
-    layer.up = s.up;
-    layer.width = s.width;
-    layer.height = s.height;
-    layer.cells_u = kSliceCells;
-    layer.cells_v = kSliceCells;
-    layer.colour_map = heatmap_colour_map(manual_max);
-    layer.values.resize(static_cast<std::size_t>(kSliceCells) * kSliceCells);
-    float fastest = 0.0f;
-    for (uint32_t j = 0; j < kSliceCells; ++j) {
-        for (uint32_t i = 0; i < kSliceCells; ++i) {
-            const float v = glm::length(field.velocity(render::field_cell_center(layer, i, j)));
-            layer.values[static_cast<std::size_t>(j) * kSliceCells + i] = v;
-            if (v > fastest) fastest = v;
-        }
-    }
-    if (observed != nullptr) *observed = fastest;
-    return layer;
-}
-
-// ---------------------------------------------------------------------------
 // The panel and the keys -- the logic the window would otherwise own
 // ---------------------------------------------------------------------------
 
 // What the physics panel shows and edits. The window draws it and writes
-// `edited`, `view_heatmap`, `heatmap_max` and `ui_item_active`; everything that
-// decides what those edits DO is in the functions below.
+// `edited` and `ui_item_active`; everything that decides what those edits DO
+// is in the functions below.
 struct DronePanelModel {
     DronePhysicsOptions edited{};  // the widgets' values; the simulation's are drone.options()
-    bool view_heatmap = false;
-    float heatmap_max = 0.0f;   // m/s; 0 = auto
-    float observed_max = 0.0f;  // the last slice's maximum, for the legend
     DroneReadouts readouts{};
     AttitudeTarget target{};     // what the keys asked for, beside what the drone did
     std::string status;          // shown in a warning colour when non-empty

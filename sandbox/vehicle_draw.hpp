@@ -23,7 +23,7 @@
 
 namespace spade::sandbox {
 
-// The unit meshes (builder_scene.hpp's box, sphere and cylinder) and the
+// The unit meshes (unit_meshes.hpp's box, sphere and cylinder) and the
 // materials a vehicle draws with, as indices into the render scene.
 struct VehicleLook {
     uint32_t box_mesh = 0;

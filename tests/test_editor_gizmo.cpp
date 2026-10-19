@@ -10,7 +10,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "../sandbox/builder_scene.hpp"  // ray_from_screen()
+#include "../sandbox/screen_ray.hpp"  // ray_from_screen()
 #include "../sandbox/editor_gizmo.hpp"
 #include "../sandbox/orbit_camera.hpp"
 
