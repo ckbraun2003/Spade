@@ -1,0 +1,141 @@
+# The end-goal smoke's checks and bands (N20)
+
+**Owner:** Test/Docs. **Status:** for the lead's review.
+**For:** the editor end-goal design's §6 steps (`docs/design/interface/plans/2026-10-19-editor-end-goal-design.md`, INT-10).
+**Fixed a priori, 2026-10-19,** before any run of these steps. A band changes only by a recorded lead decision (`01-verification.md`).
+
+## 0. Rules for every check
+
+- **A predicate on state the step produced,** never "the step ran". Each check below says which failure it catches.
+- **One implementation.** Each predicate is a display-free function. The tour step and a headless test both call it (TD-9). Proposed home: `sandbox/end_goal_checks.{hpp,cpp}`, written by Test/Docs on its branch and reviewed by Interface.
+- **Red first.** Each predicate's test fails on a stub of the fault it exists to catch, then passes on a stub of the right state (§8). When the feature lands, the same predicate judges the real state.
+- **Units:** SI. "Pick point" is where the click's ray met the surface. Times are simulated time.
+
+## 1. `editor.library`
+
+- **lists-index:** the panel's entries are the index's entries, in the index's order. For every entry, the name, category and file are equal. The counts are equal, and at least 9 (§3's first entries). *Catches:* a folder walk, a dropped entry, a reorder.
+- **thumbnails:** every entry shows the image decoded from its own thumbnail file. Width and height are above 0, and the image is not one colour, so a blank or a placeholder fails. *Catches:* missing or unread thumbnails shown as a placeholder.
+
+## 2. `editor.add_drone`
+
+- **placed-at:**
+  - The drone's x and z equal the pick point's, to 1 mm.
+  - It **rests**: measured with the scene's SDF without the drone, the gap from its lowest posed-part point to the surface beneath lies within [−2, +5] mm. The pick march stops within 1e-3·t of the surface, and the smoke clicks from 5 m or closer.
+  - After 1.0 s of Run, disarmed, it has moved no more than 10 mm and tilted no more than 2°.
+  - *Catches:* a buried or floating drone, and a drone launched by interpenetration.
+  - *Expected red:* `rest_height()` returns the built-in drone's 25 mm (`kDroneBodyHalf.y`) for every model. The reference quad's battery hangs lower, so this stays red until placing uses the model's own lowest point.
+- **drawn:** one drawable per part of the model (`render_parts`), each at its posed part's transform (`posed_parts()`) to 1e-5 m and 1e-5 rad. The hull, arms and discs from `append_vehicle_items` don't count. *Catches:* the placeholder drawn instead of the parts; parts drawn at the design frame rather than the placed pose.
+- **propulsion-kept:** the placed model's model, parts and propulsion identities equal the library file's. *Catches:* a copy that drops the chain (§2a).
+
+## 3. `editor.add_objects`
+
+- **object-added:**
+  - Placing a library object adds exactly one asset, under a name no other asset has.
+  - Its x and z equal the pick point's, to 1 mm.
+  - It **rests on the picked surface,** whether that is the ground or another object. Measured with the scene's SDF without the object, the gap from its lowest collider point to the surface beneath lies within [−2, +5] mm.
+  - It is **drawn**: the render scene gains exactly the drawables the object's definition declares (one for an SDF object, one per mesh for an import). Each sits at the asset's pose to 1e-5 m, with the asset's material.
+  - After 1.0 s of Run it has moved no more than 10 mm and tilted no more than 2°.
+  - *Catches:* the tour's dropped builder checks `on-ground` and `rendered`; a buried, floating or doubled object; an object placed but not drawn.
+- **import-named:** the imported object's name is the glTF mesh's name, or the file's stem when the mesh has none, and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
+- Known-open entry: `mesh-contact-open` (§6 of the design).
+
+## 4. `editor.fly`
+
+**What each frame records:** t; the height y and vertical velocity v_y of the centre of mass; the attitude; each rotor's ω and its static thrust k_T ω² along its axis n_i, as `drone_sim` reports `rotor_thrust`. m is the model's mass, g the scene's gravity.
+
+- **armed:**
+  - Before arming, every rotor's ω is 0.
+  - Within 0.5 s of arming, every rotor turns at no less than 90% of its idle command, and above 0.
+  - At idle the drone stays down: its height changes by no more than 5 mm over 1.0 s.
+  - *Catches:* an arm that's ignored; idle above hover.
+- **climbs:**
+  - **Window:** W = 1.0 s, starting at t0, the first frame after throttle-up where the rotors' vertical thrust F_y = Σ k_T ω_i² (n_i·ŷ) reaches 1.10 m g or more.
+  - **Premise:** F_y ≥ 1.10 m g at every frame in W. Otherwise the step is mis-staged, and it fails with that reason, never passes.
+  - **Prediction:** the drag-free double integral of the reported thrust, Δh_pred = v_y(t0)·W + Σ_k (F_y,k/m − g)(t0 + W − t_k) Δt_k. Under the premise, Δh_pred ≥ 0.49 m, so noise can't pass the check.
+  - **Check:** 0.5 Δh_pred ≤ Δh ≤ 1.10 Δh_pred, and v_y > 0 at the window's end.
+  - *Lower bound 0.5:* drag on this airframe at 3 m/s or less, spin-up inside the window and frame-rate integration together take under half. A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
+  - *Upper bound 1.10:* nothing in the simulation lifts beyond the rotors' thrust. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
+  - If the simulation models ground effect outside k_T ω², the window starts once the drone is 2R up.
+- **follows-attitude:**
+  - After a pitch command θ_cmd (the step uses 15°, nose down), within 1.0 s the body's pitch is within 3° of θ_cmd, and it stays there for the next 0.5 s.
+  - Roll stays within 3° of 0.
+  - By the end of those 1.5 s, the horizontal velocity along the nose's heading exceeds +0.5 m/s. At a 15° tilt, F_y ≈ m g gives g·tan 15° ≈ 2.6 m/s² forward, so 0.5 m/s is under a quarter of the drag-free value.
+  - *Catches:* an attitude that's drawn but doesn't tilt the thrust; a sign error (nose down, flying backward); cross-coupling.
+
+## 5. `editor.airflow`
+
+LiveRun, drone held (design decision 1), until P2b.
+
+- **region-resolved:** the grid (nx, ny, nz), dx and R/dx shown equal LiveRun's resolve for the same case, compared as numbers, not text.
+  - The chapter's region resolves at **R/dx ≥ 4**, the readable-flow rule, so the downwash check means something. Below 4, the step fails as `airflow/under-resolved`.
+  - Recommended region: 64³ in a 0.8 m box, which gives dx 12.5 mm and R/dx 6.1 for the reference quad (R 76.2 mm).
+- **publishes:** every frame of the step publishes a new generation, `validate_flow_volume()` is Ok, and `no_data` is 0.
+- **downwash** is the physical check. For each rotor i:
+  - **Where:** p_i = hub_i − 2R_i n_i. The hub and thrust axis come from the model's rotor rows posed by the held body (the rule `rotor_discs()` uses), taken from the model, not from LiveRun's disc rows. So a disc the coupling misplaces is sampled where the rotor really is.
+  - **What:** u_i = −n_i · (the published velocity at p_i, trilinear between cell samples), the axial velocity downward.
+  - **Reference:** C8's momentum theory (`tests/data/airflow/README.md`).
+    - v_ref,i = v_h,i (1 + 2/√5) = 1.894 v_h,i, where v_h,i = √(T_i / (2ρπR_i²)).
+    - T_i = k_T ω_i², from LiveState's `rotor_omega`. That is the rigid-body path's thrust, independent of the disc conversion. ρ is the case's.
+    - For the reference quad at hover thrust (0.526 kg, so T = 1.29 N per rotor), v_ref = 10.2 m/s.
+  - **Premise:**
+    - The controls are constant from arming through the window, and the attitude is level.
+    - Σ T_i ≥ 0.5 m g. The rotors are loaded, so a near-zero reference can't let still air pass.
+  - **Developed:** from t_dev = max(0.30 s, 4L / min_i v_ref,i) after arming, where L is the height of the hub plane above the box's bottom face.
+    - In the recommended region, L = 0.38 m, so t_dev = 0.30 s.
+    - Reason: C8 (disc 0.96 m above its bottom face, v_ref 7.58 m/s) averaged from 0.32 s, which is 2.5 wake transits. Four transits, plus the 0.30 s floor, cover the rotors' spin-up and the starting vortex leaving the box.
+  - **Window:** [t_dev, t_dev + 0.20 s]. On screen, the mean over every published frame in it (6 or more at 30 fps); headless, over every step.
+  - **Band:** each rotor's mean within ±25% of its own v_ref: 0.75 ≤ ū_i / v̄_ref,i ≤ 1.25.
+  - **Why not C8's 10% here:** C8's 10% was set for one isolated disc at R/dx 10, where it measured −2.2%. The chapter's region is at R/dx 4 to 6, with four rotors whose centres are 2.04R apart. Neither effect is measured yet, and a band set without evidence, then widened after a run, is what the a-priori rule forbids. ±25% still fails:
+    - still air;
+    - reversed flow;
+    - a stopped or missing rotor;
+    - a disc misplaced by more than its slipstream's radius (about 0.73R at 2R below);
+    - a thrust off by ×2 or more, where the true bias is 10% or less.
+  - **C8's band where it holds, as C8q (proposed: opt-in, per session):**
+    - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
+    - The band: each rotor within C8's 10%, and the four within 5% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity.
+    - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`.
+    - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release. It's saved and restored across 10-minute chunks.
+    - Falling outside 10% is a finding for Physics, not a change to the band.
+- **run-line-shown:** the line shown equals `LiveRun::run_line()` for the frame shown, exactly.
+- Known-open entries: `follow-needs-p2b` and `cp-needs-p2`.
+
+## 6. `editor.views`
+
+"Differs" means at least 1% of the view's pixels differ by more than 8/255 in some channel.
+
+- **each-mode-drawn:**
+  - **A kind `supports()` accepts:** `apply_view` and `draw()` are Ok, and `unhonoured()` is empty. The view differs from the clear colour, so it isn't blank. It also differs from the previous mode's frame, so the switch took effect.
+  - **A kind `supports()` refuses:** the text shown is its `why_not`, verbatim.
+  - *Catches:* a blank view; a switch that changed nothing; a refusal drawn as an empty view.
+- **legend-shown:** each layer's legend shown equals the one `apply_view` returned: quantity, unit, colour map and range. While the region runs, a flow layer's range has min < max, and a speed legend's max is at least 1 m/s, so still air fails here as well.
+- **two-views:** after Split, there are two views with different `ViewSpec`s. Each half differs from the clear colour, and the two halves differ from each other.
+
+## 7. `editor.save_reopen`
+
+- **round-trip:**
+  - The reopened scene, emitted again, is byte-equal to the saved file.
+  - The scene identity, the region component and the drone's model, parts and propulsion identities are all equal.
+  - Behaviourally: 60 steps of Run from the reopened scene give bit-identical body states to 60 steps from the scene before saving.
+  - *Catches:* a field written but not read back, and one read back but not applied.
+
+## 8. Headless tests, red first
+
+These go on a Test/Docs branch, against stubs, before each feature lands. Each later runs on the real feature's state, by milestone:
+- **M1:** library, add_drone, fly, raster views.
+- **M2:** airflow, save_reopen.
+- **M3:** add_objects.
+
+| Predicate | Red stubs | Green stub |
+|---|---|---|
+| downwash | still air; reversed flow; the field shifted by R; one rotor's jet missing; Σ T below 0.5 m g (named) | a top-hat jet of radius 0.73R at v_ref on each axis, from 2R above to the box's floor |
+| climbs | a pinned history (Δh = 0); gravity missing; the premise unmet (named) | drag-free kinematics of the reported thrust; the same with 20% drag |
+| follows-attitude | a tilt with no acceleration; a reversed acceleration; 5° of roll cross-coupled | a tilt reached in 0.4 s, with the forward speed rising |
+| object-added | buried 1 cm; floating 1 cm; two drawables for one SDF object; a drawable off the pose | resting at 0 gap, one drawable at the pose |
+| round-trip | an emitter that drops the region; a reader that ignores the propulsion block | an exact copy |
+
+## 9. Asked of others
+
+- **Interface:** agree on the predicates' home. Each end-goal step exposes the per-frame observables above (body state, rotor ω and thrust, the pick point and the posed parts) to the predicate.
+- **Physics:** confirm that k_T ω² is the right T for momentum theory here (P7a's static value, exact in hover), and review the downwash reasoning in §5.
+- **The lead:** decide between ±25% on screen with C8q at C8's 10% (recommended) and C8's 10% on screen.
