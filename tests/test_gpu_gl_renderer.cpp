@@ -2678,4 +2678,152 @@ TEST_F(GpuGlRenderer, FlowViewsCostCachedAndUncached) {
     glDeleteRenderbuffers(1, &depth);
 }
 
+// The editor's cost table (the lead, 2026-10-19), for Interface to pick a
+// layout against: a frame of every view in a layout, each view one mix built
+// by apply_view() from a new generation of the volume, as a live run
+// publishes one. Layouts: the whole 1920x1080 window (1 view; 2 at
+// 960x1080; 4 at 960x540) and the editor's central region between its docked
+// panels (Interface's sizes: 1 at 1280x960, 2 at 640x960, 4 at 640x480).
+// Mixes (Interface's four): vortices (the lambda2-hat iso by speed, and 16
+// streamlines), an absorbing |w| volume, a pressure slice with C_p on the
+// wall, and streamlines alone. Lines are the editor's: the live preset (one
+// box diagonal each way) through one ViewCache kept across views and frames,
+// so each frame traces once. Volumes:
+// the tour's 32^3, and 64^3 for headroom. Per frame, the median of 8 after 2
+// warm-ups: the whole frame (apply_view() and draw() for every view, to
+// glFinish()), and apply_view()'s CPU share of it. A measurement, so opt-in
+// (SPADE_GL_LAYOUT_COST=1).
+// Measured 2026-10-19 on the RTX 3060 Ti (572.83), other realms working, a
+// frame over the six layouts: at 32^3, vortices 13 to 18 ms, |w| volume 5 to
+// 11, slice + C_p 2 to 9, lines 8 to 13; at 64^3, 23 to 32, 8 to 17, 3 to 10
+// and 14 to 26. The lines' trace is about 7 ms a frame at 32^3 (13 at 64^3),
+// once however many views. Before the cache and the live preset (default
+// options, each view tracing), the line mixes took 130 to 665 ms.
+TEST_F(GpuGlRenderer, EditorLayoutsCost) {
+    if (!env_gate_is_set("SPADE_GL_LAYOUT_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_LAYOUT_COST=1 to run it";
+    }
+    auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                   GlRenderer::CreateOptions{.verify_cached_volumes = false});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    GlRenderer& r = **made;
+    constexpr int kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const std::string device = r.renderer_name() + " (" + r.version_string() + ")";
+
+    struct Layout {
+        const char* name;
+        int views, width, height;
+    };
+    const Layout layouts[] = {{"1 x 1920x1080", 1, 1920, 1080}, {"2 x 960x1080", 2, 960, 1080},
+                              {"4 x 960x540", 4, 960, 540},     {"1 x 1280x960", 1, 1280, 960},
+                              {"2 x 640x960", 2, 640, 960},     {"4 x 640x480", 4, 640, 480}};
+    using spade::render::FlowView;
+    using spade::render::FlowViewSpec;
+
+    for (const uint32_t n : {32u, 64u}) {
+        spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / static_cast<float>(n), n, n,
+                                                                 n, spade::test::vortex_ring_with_dye());
+        const float q_max = volume.header.channel_max[spade::kFlowQHat];
+        FlowViewSpec iso;
+        iso.kind = FlowView::vortex_iso;
+        iso.quantity = spade::render::FlowQuantity::lambda2_hat;
+        iso.iso_value = -0.5477226f * q_max;  // the ring's lambda2-hat is -Q-hat
+        iso.range_max = 0.9f;
+        FlowViewSpec lines;
+        lines.kind = FlowView::streamlines;
+        lines.range_max = 0.9f;
+        lines.lines = spade::render::StreamlineOptions::live();  // the editor's: one box diagonal each way
+        for (int i = 0; i < 16; ++i) {
+            const float a = 6.2831853f * static_cast<float>(i) / 16.0f;
+            lines.seeds.push_back(glm::vec3(0.45f * std::cos(a), 0.45f * std::sin(a), -0.6f));
+        }
+        FlowViewSpec vorticity;
+        vorticity.kind = FlowView::volume;
+        vorticity.quantity = spade::render::FlowQuantity::vorticity;
+        vorticity.colours = spade::render::ColourMapId::inferno;
+        vorticity.range_max = 22.0f;
+        vorticity.onset = 2.0f / 22.0f;
+        vorticity.sigma = 12.0f;
+        FlowViewSpec slice;
+        slice.kind = FlowView::slice;
+        slice.quantity = spade::render::FlowQuantity::pressure;
+        slice.plane.width = 2.0f;
+        slice.plane.height = 2.0f;
+        slice.plane.cells_u = 128;
+        slice.plane.cells_v = 128;
+        slice.range_min = volume.header.channel_min[spade::kFlowPressure];
+        slice.range_max = volume.header.channel_max[spade::kFlowPressure] + 1e-3f;
+        FlowViewSpec cp;
+        cp.kind = FlowView::surface_cp;
+        cp.q_ref = 0.5f;
+        cp.range_min = -1.0f;
+        cp.range_max = 1.0f;
+        struct Mix {
+            const char* name;
+            spade::render::ViewSpec spec;
+        };
+        const Mix mixes[] = {{"vortices", {spade::render::ViewBase::shaded, {iso, lines}}},
+                             {"|w| volume", {spade::render::ViewBase::shaded, {vorticity}}},
+                             {"slice + C_p", {spade::render::ViewBase::shaded, {slice, cp}}},
+                             {"lines", {spade::render::ViewBase::shaded, {lines}}}};
+
+        RenderScene scene = ring_cut_scene();
+        scene.statics[0].flow_wall = true;
+        ASSERT_TRUE(r.upload_scene(scene).has_value());
+        for (const Mix& mix : mixes) {
+            for (const Layout& layout : layouts) {
+                std::vector<double> frame_ms, apply_ms;
+                spade::render::ViewCache cache;  // the editor's: one across its views, frame to frame
+                for (int i = 0; i < 10; ++i) {
+                    volume.generation = spade::next_flow_generation();
+                    glFinish();
+                    const auto t0 = std::chrono::steady_clock::now();
+                    double applying = 0.0;
+                    for (int v = 0; v < layout.views; ++v) {
+                        RenderOptions options = comparable_options();
+                        const auto a0 = std::chrono::steady_clock::now();
+                        const auto applied = spade::render::apply_view(mix.spec, &volume, scene, options, cache);
+                        applying += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0)
+                                        .count();
+                        ASSERT_TRUE(applied.has_value()) << mix.name << ": " << applied.error().context;
+                        const spade::Result<void> drew = r.draw(scene, camera_on_ring(), options,
+                                                                static_cast<uint32_t>(layout.width),
+                                                                static_cast<uint32_t>(layout.height));
+                        ASSERT_TRUE(drew.has_value()) << mix.name << ": " << drew.error().context;
+                    }
+                    glFinish();
+                    const auto t1 = std::chrono::steady_clock::now();
+                    if (i >= 2) {
+                        frame_ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+                        apply_ms.push_back(applying);
+                    }
+                }
+                std::sort(frame_ms.begin(), frame_ms.end());
+                std::sort(apply_ms.begin(), apply_ms.end());
+                const double frame = 0.5 * (frame_ms[3] + frame_ms[4]);
+                const double apply = 0.5 * (apply_ms[3] + apply_ms[4]);
+                std::printf("[ layout cost ] %u^3 | %-11s | %-13s | frame %7.2f ms | apply_view %6.2f ms\n", n,
+                            mix.name, layout.name, frame, apply);
+            }
+        }
+    }
+    std::printf("[ layout cost ] on %s\n", device.c_str());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
 }  // namespace
