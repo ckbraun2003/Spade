@@ -97,6 +97,12 @@ struct Eval {
 
 }  // namespace
 
+// RED stub: accepts every chain.
+Result<void> validate_propulsion_chain(const PropulsionChain& chain) {
+    static_cast<void>(chain);
+    return {};
+}
+
 SteadyPoint steady_state_at_duty(const PropulsionChain& chain, double duty, double density, double v_axial,
                                  double soc) noexcept {
     if (!chain_valid(chain) || !is_finite(density) || !is_finite(v_axial) || !is_finite(soc)) {
