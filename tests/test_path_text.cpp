@@ -55,6 +55,27 @@ TEST(PathText, IsUtf8AndNeverThrows) {
     EXPECT_NE(text.find(kDirUtf8), std::string::npos) << text;
 }
 
+// path_text() is noexcept, so its fallback must not allocate: an allocation
+// failing there would call std::terminate. A std::string that fits its
+// small-string buffer never allocates, and a default-constructed one's
+// capacity is that buffer (15 on MSVC and libstdc++, 22 on libc++).
+TEST(PathText, TheFallbackFitsTheSmallStringBuffer) {
+    EXPECT_LE(spade::kUnprintablePath.size(), std::string().capacity())
+        << "\"" << spade::kUnprintablePath << "\" would allocate on path_text()'s noexcept fallback";
+}
+
+// A lone UTF-16 surrogate has no UTF-8 form, so u8string() throws and
+// path_text() prints the fallback. Only a Windows path is UTF-16: a POSIX path
+// is bytes, which u8string() hands back unconverted, so none fails there.
+TEST(PathText, APathThatCannotConvertPrintsTheFallback) {
+#ifdef _WIN32
+    const std::filesystem::path lone_surrogate(std::wstring(1, static_cast<wchar_t>(0xD800)));
+    EXPECT_EQ(spade::path_text(lone_surrogate), spade::kUnprintablePath);
+#else
+    GTEST_SKIP() << "a POSIX path is bytes, which u8string() returns unconverted: no path fails to convert here";
+#endif
+}
+
 // Each loader, given a missing file under that directory, refuses with
 // io_error and names the path in UTF-8. A throw fails the test.
 TEST(PathText, EveryFileLoaderNamesAMissingFileInUtf8) {

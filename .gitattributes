@@ -2,3 +2,8 @@
 # pre-push-guard.sh is installed by copying it to .git/hooks/pre-push, so it
 # must check out LF even where core.autocrlf=true.
 *.sh text eol=lf
+
+# `git archive` writes the commit it archives into this file ($Format:%H$), so
+# a build from an archive, which has no git (the Docker leg, a source tarball),
+# still names its commit (cmake/stamp_identity.cmake, core/build_identity.hpp).
+cmake/archive_commit.txt export-subst

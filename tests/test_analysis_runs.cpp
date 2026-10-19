@@ -10,10 +10,12 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include "analysis/case.hpp"
 #include "analysis/run.hpp"
+#include "core/build_identity.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_identity.hpp"
@@ -149,4 +151,63 @@ TEST(AnalysisRunFolder, StartsQueuedWithTheCaseItRuns) {
     const spade::Result<fs::path> again = an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5");
     ASSERT_FALSE(again.has_value());
     EXPECT_NE(again.error().context.find("exists"), std::string::npos) << again.error().context;
+}
+
+constexpr std::string_view kBuiltCommit = "0123456789abcdef0123456789abcdef01234567";
+
+// A build's identity names the run: the folder at its commit's first 12.
+TEST(AnalysisRunFolder, ABuildsIdentityNamesTheRun) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, false});
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    EXPECT_EQ(*folder, an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit));
+    EXPECT_TRUE(folder->filename().string().ends_with("_0123456789ab")) << folder->filename().string();
+    EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
+}
+
+// A build with uncommitted changes is marked as git describe marks it, so its
+// runs are never taken for the clean commit's.
+TEST(AnalysisRunFolder, ADirtyBuildsRunIsMarkedDirty) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, true});
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const fs::path clean = an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit);
+    EXPECT_EQ(folder->parent_path(), clean.parent_path());
+    EXPECT_EQ(folder->filename().string(), clean.filename().string() + "-dirty");
+    EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
+    EXPECT_FALSE(fs::exists(clean));
+}
+
+// A build that cannot name its commit is refused: its runs could not be traced.
+TEST(AnalysisRunFolder, AnUnknownCommitIsRefused) {
+    const spade::test::TempDir runs("runs");
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", resolved(), "2026-10-13", spade::BuildIdentity{"unknown", false});
+    ASSERT_FALSE(folder.has_value());
+    EXPECT_EQ(folder.error().code, spade::Code::unavailable);
+    EXPECT_NE(folder.error().context.find("can't name its commit"), std::string::npos) << folder.error().context;
+    EXPECT_NE(folder.error().context.find("pass the commit"), std::string::npos) << folder.error().context;
+    EXPECT_FALSE(fs::exists(runs.path() / "hover"));
+}
+
+// Without a commit, a run is named by the build this engine is
+// (core/build_identity.hpp), so a host needs no git.
+TEST(AnalysisRunFolder, WithoutACommitIsNamedByTheBuildsCommit) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::BuildIdentity built = spade::build_identity();
+    const spade::Result<fs::path> folder = an::create_run_folder(runs.path(), "hover", r, "2026-10-13");
+    if (built.commit == "unknown") {
+        ASSERT_FALSE(folder.has_value());
+        EXPECT_EQ(folder.error().code, spade::Code::unavailable);
+        return;
+    }
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const std::string clean = an::run_folder(runs.path(), "hover", r, "2026-10-13", built.commit).filename().string();
+    EXPECT_EQ(folder->filename().string(), built.dirty ? clean + "-dirty" : clean) << "commit " << built.commit;
+    EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
 }

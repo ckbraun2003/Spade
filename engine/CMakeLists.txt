@@ -104,12 +104,16 @@ target_compile_options(spade_fp_strict INTERFACE
 # core/lambda2.cpp is the same choice for the flow volume's vortex criterion.
 # Publish writes it into a channel that Physics' airflow golden folds, so its
 # Jacobi solve is built once, under spade_fp_strict.
+#
+# core/build_identity.cpp is the engine's build stamp: the commit it was built
+# from (its stamp target is below the install rules).
 # ------------------------------------------------------------------------------
 add_library(spade_core STATIC
     core/math_ops.cpp
     core/fp32_math.cpp
     core/detail/math_ops_f64.cpp
     core/lambda2.cpp
+    core/build_identity.cpp
 )
 add_library(spade::core ALIAS spade_core)
 
@@ -180,6 +184,33 @@ install(TARGETS spade_core
 # it (math_ops_f64.hpp: world/mesh.cpp's kernels), so it is not installed.
 install(DIRECTORY core/ DESTINATION include/core FILES_MATCHING PATTERN "*.hpp"
     PATTERN "detail" EXCLUDE)
+
+# The build stamp core/build_identity.cpp compiles in: the commit Spade's
+# sources are at, and whether tracked files have uncommitted changes, written
+# by cmake/stamp_identity.cmake before every build of spade_core (at build
+# time, so a commit made after configuring is still the one named). The script
+# rewrites the header only when its text changes, so an unchanged tree
+# recompiles nothing; a new commit recompiles build_identity.cpp alone and
+# relinks what links spade_core. The header lives in this build tree and is a
+# PRIVATE include, read by build_identity.cpp alone: never installed, and no
+# installed header reaches it. SOURCE_DIR is Spade's own root, not
+# CMAKE_SOURCE_DIR, which is a consumer's when Spade is add_subdirectory'd.
+#
+# The same run writes spadeBuildStamp.cmake beside spadeConfig.cmake (installed
+# with it, below; included by it): spade_GIT_COMMIT and spade_GIT_DIRTY for
+# find_package(spade), so the package and the library name one build.
+cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH SPADE_SOURCE_ROOT)
+set(SPADE_BUILD_STAMP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp/spade_build_stamp.hpp")
+set(SPADE_BUILD_STAMP_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/spadeBuildStamp.cmake")
+add_custom_target(spade_build_stamp
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${SPADE_SOURCE_ROOT}" "-DOUT=${SPADE_BUILD_STAMP}"
+            "-DCONFIG_OUT=${SPADE_BUILD_STAMP_CONFIG}"
+            -P "${SPADE_SOURCE_ROOT}/cmake/stamp_identity.cmake"
+    BYPRODUCTS "${SPADE_BUILD_STAMP}" "${SPADE_BUILD_STAMP_CONFIG}"
+    COMMENT "spade_core: stamping the build's commit"
+    VERBATIM)
+add_dependencies(spade_core spade_build_stamp)
+target_include_directories(spade_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp")
 
 # ------------------------------------------------------------------------------
 # spade_world: the analytic SDF scene program (world/sdf.*) plus the
@@ -1546,9 +1577,13 @@ write_basic_package_version_file(
     COMPATIBILITY SameMajorVersion
 )
 
+# spadeBuildStamp.cmake is the stamp run's (spade_build_stamp, at spade_core
+# above): it exists once spade_core has been built, as every installed archive
+# must have been.
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/spadeConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/spadeConfigVersion.cmake
+    ${SPADE_BUILD_STAMP_CONFIG}
     DESTINATION lib/cmake/spade
 )
 

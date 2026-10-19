@@ -29,18 +29,6 @@ target_compile_definitions(flow_movie PRIVATE GLFW_INCLUDE_NONE
     SPADE_TESTS_DIR="${CMAKE_SOURCE_DIR}/tests"
     SPADE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 
-# The build stamp every card names: the commit the binary is built from, and
-# whether the tree had uncommitted changes, taken at build time (never asked
-# of git when the binary runs, which could name a later commit).
-set(FLOW_MOVIE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/generated/flow_movie_identity.hpp")
-add_custom_target(flow_movie_identity
-    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" "-DOUT=${FLOW_MOVIE_STAMP}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/stamp_identity.cmake"
-    BYPRODUCTS "${FLOW_MOVIE_STAMP}"
-    COMMENT "flow_movie: stamping the build's commit"
-    VERBATIM)
-add_dependencies(flow_movie flow_movie_identity)
-target_include_directories(flow_movie PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 if(WIN32)
     target_compile_definitions(flow_movie PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()

@@ -12,15 +12,8 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "core/build_identity.hpp"
 #include "render_gl/gl_renderer.hpp"
-
-#if __has_include("flow_movie_identity.hpp")
-#include "flow_movie_identity.hpp"  // stamp_identity.cmake, at build time
-#else
-// Compiled outside the tool's build (the gcc check): no stamp.
-#define FLOW_MOVIE_COMMIT "unstamped"
-#define FLOW_MOVIE_DIRTY 0
-#endif
 
 namespace flow_movie {
 namespace {
@@ -371,8 +364,9 @@ spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rg
 }
 
 std::string build_identity() {
-    std::string id = "commit " FLOW_MOVIE_COMMIT;
-    if (FLOW_MOVIE_DIRTY != 0) id += " with uncommitted changes";
+    const spade::BuildIdentity built = spade::build_identity();
+    std::string id = "commit " + std::string(built.commit.substr(0, 12));  // the run folders' short form
+    if (built.dirty) id += " with uncommitted changes";
 #if defined(_MSC_VER)
     id += ", MSVC " + std::to_string(_MSC_VER);
 #elif defined(__clang__)

@@ -12,6 +12,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "analysis/detail/atomic_file.hpp"
+#include "core/build_identity.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::analysis {
@@ -181,9 +182,10 @@ fs::path run_folder(const fs::path& runs_dir, std::string_view case_name, const 
     return runs_dir / fs::path(std::string(case_name)) / name;
 }
 
-Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
-                                   std::string_view date, std::string_view commit) {
-    const fs::path folder = run_folder(runs_dir, case_name, resolved, date, commit);
+namespace {
+
+// Makes `folder` with its case.yaml and a queued progress; refused if it exists.
+[[nodiscard]] Result<fs::path> make_run_folder(const fs::path& folder, const ResolvedCase& resolved) {
     std::error_code ec;
     fs::create_directories(folder.parent_path(), ec);
     if (ec) return std::unexpected(Error{Code::io_error, "cannot make '" + path_text(folder.parent_path()) + "': " + ec.message()});
@@ -200,6 +202,30 @@ Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view ca
     queued.memory_bytes = resolved.base_bytes;  // its need, which the queue waits for
     if (Result<void> r = write_progress(folder, queued); !r) return std::unexpected(r.error());
     return folder;
+}
+
+}  // namespace
+
+Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
+                                   std::string_view date, std::string_view commit) {
+    return make_run_folder(run_folder(runs_dir, case_name, resolved, date, commit), resolved);
+}
+
+Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
+                                   std::string_view date, const BuildIdentity& built) {
+    if (built.commit == "unknown") {
+        return std::unexpected(Error{Code::unavailable,
+                                     "this engine can't name its commit (built outside a git checkout and not from a "
+                                     "git archive), so its runs can't be traced: pass the commit"});
+    }
+    fs::path folder = run_folder(runs_dir, case_name, resolved, date, built.commit);
+    if (built.dirty) folder += "-dirty";  // git describe's mark, after the commit's 12
+    return make_run_folder(folder, resolved);
+}
+
+Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
+                                   std::string_view date) {
+    return create_run_folder(runs_dir, case_name, resolved, date, spade::build_identity());
 }
 
 }  // namespace spade::analysis
