@@ -1612,10 +1612,61 @@ struct GlRenderer::Impl {
     GLuint shadow_fbo = 0;
 
     // Surface colouring's volume (V and S, raw halves) on units 1 and 2, and
-    // its colour table on unit 3. Uploaded by each draw() that colours.
+    // its colour table on unit 3. The march reads the same two textures.
     GLuint flow_v_tex = 0;
     GLuint flow_s_tex = 0;
     GLuint flow_colour_tex = 0;
+    // What flow_v_tex and flow_s_tex hold: the generation and size uploaded
+    // last (generation 0, unnamed, is never reused), and when verifying, a
+    // copy of the halves each reuse is checked against.
+    uint64_t flow_tex_generation = 0;
+    uint32_t flow_tex_nx = 0, flow_tex_ny = 0, flow_tex_nz = 0;
+    bool verify_cached_volumes = false;
+    std::vector<uint16_t> flow_tex_v_copy, flow_tex_s_copy;
+    uint64_t flow_volume_uploads = 0;
+
+    // Whether the flow textures hold `volume` already: its generation, named
+    // and uploaded last, at its size.
+    [[nodiscard]] bool flow_textures_hold(const FlowVolume& volume) const {
+        const FlowVolumeHeader& h = volume.header;
+        return volume.generation != 0u && volume.generation == flow_tex_generation && h.nx == flow_tex_nx &&
+               h.ny == flow_tex_ny && h.nz == flow_tex_nz;
+    }
+    // Binds `volume`'s halves on units 1 (V) and 2 (S), uploading them unless
+    // the textures hold them already. Leaves unit 2 active.
+    void bind_flow_volume(const FlowVolume& volume) {
+        const FlowVolumeHeader& h = volume.header;
+        if (flow_textures_hold(volume)) {
+            gl.ActiveTexture(GL_TEXTURE1);
+            gl.BindTexture(GL_TEXTURE_3D, flow_v_tex);
+            gl.ActiveTexture(GL_TEXTURE2);
+            gl.BindTexture(GL_TEXTURE_3D, flow_s_tex);
+            return;
+        }
+        const auto upload_halves = [this, &h](GLuint tex, const std::vector<uint16_t>& halves) {
+            gl.BindTexture(GL_TEXTURE_3D, tex);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16UI, static_cast<GLsizei>(h.nx), static_cast<GLsizei>(h.ny),
+                          static_cast<GLsizei>(h.nz), 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, halves.data());
+        };
+        gl.ActiveTexture(GL_TEXTURE1);
+        upload_halves(flow_v_tex, volume.v);
+        gl.ActiveTexture(GL_TEXTURE2);
+        upload_halves(flow_s_tex, volume.s);
+        flow_tex_generation = volume.generation;
+        flow_tex_nx = h.nx;
+        flow_tex_ny = h.ny;
+        flow_tex_nz = h.nz;
+        ++flow_volume_uploads;
+        if (verify_cached_volumes && volume.generation != 0u) {
+            flow_tex_v_copy = volume.v;
+            flow_tex_s_copy = volume.s;
+        } else {
+            flow_tex_v_copy.clear();
+            flow_tex_s_copy.clear();
+        }
+    }
 
     // A flow layer's march (step 7c), and the frame's opaque depth it stops
     // at: a depth-only copy of the opaque passes, sized to the frame.
@@ -1901,6 +1952,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     // The flow programs (7g): in the background when asked and the driver
     // compiles in parallel, so flow_ready() reports them; otherwise finished
     // here, as every other program is.
+    impl->verify_cached_volumes = options.verify_cached_volumes;
     bool parallel = false;
     if (options.flow_programs_in_background) {
         GLint extensions = 0;
@@ -2401,6 +2453,25 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         const FlowVolumeHeader& h = scene.flow_layers[0].volume->header;
         if (!fits_3d(h)) return too_big("the flow layer's volume", h);
     }
+    // A reuse of the flow textures, checked against the volume when asked
+    // (CreateOptions::verify_cached_volumes, on in debug builds): a write
+    // that kept its generation would draw the old halves, silently (L6).
+    if (s.verify_cached_volumes) {
+        const FlowVolume* readers[] = {
+            scene.flow_surface_colouring ? scene.flow_surface_colouring->volume : nullptr,
+            scene.flow_layers.empty() ? nullptr : scene.flow_layers[0].volume};
+        for (const FlowVolume* volume : readers) {
+            if (volume == nullptr || !s.flow_textures_hold(*volume)) continue;
+            if (volume->v != s.flow_tex_v_copy || volume->s != s.flow_tex_s_copy) {
+                return std::unexpected(Error{
+                    Code::invalid_argument,
+                    "GlRenderer::draw: the flow volume of generation " + std::to_string(volume->generation) +
+                        " is not the one uploaded under it: a write to its halves kept its generation; set "
+                        "FlowVolume::generation to next_flow_generation() or 0 after any write "
+                        "(core/flow_volume.hpp)"});
+            }
+        }
+    }
     if (s.meshes.size() != scene.meshes.size()) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "GlRenderer::draw: this scene has " +
@@ -2592,17 +2663,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     if (scene.flow_surface_colouring) {
         const render::FlowSurfaceColouring& fc = *scene.flow_surface_colouring;
         const FlowVolumeHeader& h = fc.volume->header;
-        const auto upload_halves = [&gl, &h](GLuint tex, const std::vector<uint16_t>& halves) {
-            gl.BindTexture(GL_TEXTURE_3D, tex);
-            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16UI, static_cast<GLsizei>(h.nx), static_cast<GLsizei>(h.ny),
-                          static_cast<GLsizei>(h.nz), 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, halves.data());
-        };
-        gl.ActiveTexture(GL_TEXTURE1);
-        upload_halves(s.flow_v_tex, fc.volume->v);
-        gl.ActiveTexture(GL_TEXTURE2);
-        upload_halves(s.flow_s_tex, fc.volume->s);
+        s.bind_flow_volume(*fc.volume);
         gl.ActiveTexture(GL_TEXTURE3);
         gl.BindTexture(GL_TEXTURE_2D, s.flow_colour_tex);
         gl.ActiveTexture(GL_TEXTURE0);
@@ -2900,17 +2961,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         const render::FlowLayer& layer = scene.flow_layers[0];
         const render::PreparedFlowLayer prepared = render::prepare_flow_layer(layer, &scene.lighting);
         const FlowVolumeHeader& h = layer.volume->header;
-        const auto upload_halves = [&gl, &h](GLuint tex, const std::vector<uint16_t>& halves) {
-            gl.BindTexture(GL_TEXTURE_3D, tex);
-            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            gl.TexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            gl.TexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16UI, static_cast<GLsizei>(h.nx), static_cast<GLsizei>(h.ny),
-                          static_cast<GLsizei>(h.nz), 0, GL_RGBA_INTEGER, GL_UNSIGNED_SHORT, halves.data());
-        };
-        gl.ActiveTexture(GL_TEXTURE1);
-        upload_halves(s.flow_v_tex, layer.volume->v);
-        gl.ActiveTexture(GL_TEXTURE2);
-        upload_halves(s.flow_s_tex, layer.volume->s);
+        s.bind_flow_volume(*layer.volume);
         gl.ActiveTexture(GL_TEXTURE3);
         gl.BindTexture(GL_TEXTURE_2D, s.flow_colour_tex);
         gl.ActiveTexture(GL_TEXTURE4);
@@ -3244,6 +3295,8 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     s.last_instances = total_instances;
     return {};
 }
+
+uint64_t GlRenderer::flow_volume_uploads() const noexcept { return impl_->flow_volume_uploads; }
 
 std::vector<std::string_view> GlRenderer::unhonoured(const render::RenderOptions& options) {
     // draw() refuses raymarch; no other option applies to a raymarch frame.

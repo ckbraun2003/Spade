@@ -219,7 +219,9 @@ class GpuGlRenderer : public ::testing::Test {
             GTEST_SKIP() << "glad could not load GL entry points for the test's own calls";
         }
 
-        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress));
+        // Every reuse of the flow textures checked, as a debug build does.
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{.verify_cached_volumes = true});
         if (!made) {
             // unavailable is the driver saying no (the version check); any
             // other code is GlRenderer itself failing, which is a real failure.
@@ -2523,6 +2525,157 @@ TEST_F(GpuGlRenderer, AViewWaitsForTheFlowProgramsAsGlDoes) {
     EXPECT_NE(drew.error().context.find(said.why_not), std::string::npos)
         << "supports() named \"" << said.why_not << "\"; GL refused: " << drew.error().context;
     while (!background.flow_ready()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+}
+
+// The editor's views of one frame (the lead, 2026-10-19): a named volume is
+// uploaded once and reused by every draw of its generation, and the reuse
+// draws what an upload draws. Generation 0 is uploaded by each reader, here
+// the C_p colouring and the march; a new generation is uploaded again.
+TEST_F(GpuGlRenderer, ViewsOfOneVolumeUploadItOnce) {
+    spade::FlowVolume volume = spade::test::view_mode_volume();
+    const spade::render::ViewSpec spec{spade::render::ViewBase::shaded,
+                                       {spade::test::layer(spade::render::FlowView::vortex_iso),
+                                        spade::test::layer(spade::render::FlowView::surface_cp)}};
+    RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+    RenderOptions options = comparable_options();
+    ASSERT_TRUE(spade::render::apply_view(spec, &volume, scene, options).has_value());
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+
+    const uint64_t at_start = renderer_->flow_volume_uploads();
+    const std::vector<uint8_t> unnamed = draw_and_read(scene, options);
+    ASSERT_FALSE(unnamed.empty());
+    EXPECT_EQ(renderer_->flow_volume_uploads() - at_start, 2u) << "generation 0: each reader uploads it";
+
+    volume.generation = spade::next_flow_generation();
+    const uint64_t named_at = renderer_->flow_volume_uploads();
+    for (int view = 0; view < 4; ++view) {
+        EXPECT_EQ(draw_and_read(scene, options), unnamed) << "view " << view << ": a reuse draws what an upload draws";
+    }
+    EXPECT_EQ(renderer_->flow_volume_uploads() - named_at, 1u) << "four views of one generation upload it once";
+
+    volume.generation = spade::next_flow_generation();
+    EXPECT_EQ(draw_and_read(scene, options), unnamed);
+    EXPECT_EQ(renderer_->flow_volume_uploads() - named_at, 2u) << "a new generation is uploaded again";
+}
+
+// The L6 guard (the lead's): a copy edited in place that keeps its generation
+// would draw the old halves, silently. With verify_cached_volumes, on in debug
+// builds and in this fixture, the reuse is refused, naming the generation;
+// named anew, the copy draws.
+TEST_F(GpuGlRenderer, AnEditThatKeepsItsGenerationIsRefused) {
+    spade::FlowVolume original = spade::test::view_mode_volume();
+    original.generation = spade::next_flow_generation();
+    const spade::render::ViewSpec spec{spade::render::ViewBase::shaded,
+                                       {spade::test::layer(spade::render::FlowView::vortex_iso)}};
+    RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+    RenderOptions options = comparable_options();
+    ASSERT_TRUE(spade::render::apply_view(spec, &original, scene, options).has_value());
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    ASSERT_FALSE(draw_and_read(scene, options).empty());
+
+    spade::FlowVolume copy = original;
+    copy.s[1] ^= 0x0001u;  // edited in place; the generation kept
+    ASSERT_TRUE(spade::render::apply_view(spec, &copy, scene, options).has_value());
+    bind_cleared_target();
+    const spade::Result<void> stale = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+    ASSERT_FALSE(stale.has_value()) << "a stale reuse is refused, not drawn";
+    EXPECT_NE(stale.error().context.find("generation " + std::to_string(original.generation)), std::string::npos)
+        << stale.error().context;
+
+    copy.generation = spade::next_flow_generation();
+    bind_cleared_target();
+    const spade::Result<void> named = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+    EXPECT_TRUE(named.has_value()) << named.error().context;
+}
+
+// The lead's before-and-after (2026-10-19): a frame of 1 or 4 flow views of
+// one volume, at the tour's 32^3 and at 128^3, uncached (generation 0: every
+// view uploads, as every draw did before) and cached (each frame a new
+// generation, as a live run publishes: its first view uploads, the rest
+// reuse). Each view is a 960x540 draw (four tile a 1080p editor) of the ring's
+// Q-hat iso coloured by speed; a frame is draw() to glFinish() over its views,
+// the median of 8 after 2 warm-ups, on a renderer that does not verify (a
+// release build's). A measurement, so opt-in (SPADE_GL_VIEW_COST=1).
+// Measured 2026-10-19 on the RTX 3060 Ti (572.83), three runs, other realms
+// working: at 128^3, 4 views 42 to 55 ms uncached, 26 to 36 ms cached (1 view
+// 15 to 24 ms), so each upload skipped saves about 5 to 8 ms; at 32^3 the
+// upload is 0.5 MB and the load's noise (1 view 3 to 11 ms, 4 views 9 to 17
+// ms either way) hides it. Only the 128^3 saving is asserted.
+TEST_F(GpuGlRenderer, FlowViewsCostCachedAndUncached) {
+    if (!env_gate_is_set("SPADE_GL_VIEW_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_VIEW_COST=1 to run it";
+    }
+    auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                   GlRenderer::CreateOptions{.verify_cached_volumes = false});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    GlRenderer& r = **made;
+    constexpr int kW = 960, kH = 540;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kW, kH);
+    const std::string device = r.renderer_name() + " (" + r.version_string() + ")";
+
+    for (const uint32_t n : {32u, 128u}) {
+        spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / static_cast<float>(n), n, n,
+                                                                 n, spade::test::vortex_ring_with_dye());
+        spade::render::TransferFunction speed;
+        speed.range_min = 0.0f;
+        speed.range_max = 0.9f;
+        spade::render::IsoSurface q_iso;
+        q_iso.quantity = spade::render::FlowQuantity::q_hat;
+        q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+        q_iso.colour_by = speed;
+        RenderScene scene = ring_cut_scene();
+        scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+        ASSERT_TRUE(r.upload_scene(scene).has_value());
+        // ms per frame of `views` views; `cached` names each frame anew.
+        const auto frame_ms = [&](int views, bool cached) {
+            std::vector<double> ms;
+            const uint64_t uploads_at = r.flow_volume_uploads();
+            for (int i = 0; i < 10; ++i) {
+                volume.generation = cached ? spade::next_flow_generation() : 0u;
+                glFinish();
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int v = 0; v < views; ++v) {
+                    EXPECT_TRUE(r.draw(scene, camera_on_ring(), comparable_options(), kW, kH).has_value());
+                }
+                glFinish();
+                const auto t1 = std::chrono::steady_clock::now();
+                if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            EXPECT_EQ(r.flow_volume_uploads() - uploads_at, cached ? 10u : 10u * static_cast<uint64_t>(views))
+                << "uploads per frame: one cached, one per view uncached";
+            std::sort(ms.begin(), ms.end());
+            return 0.5 * (ms[3] + ms[4]);
+        };
+        const double one = frame_ms(1, false);
+        const double four_uncached = frame_ms(4, false);
+        const double four_cached = frame_ms(4, true);
+        const std::string tag = std::to_string(n);
+        RecordProperty("one_view_ms_x100_" + tag, static_cast<int>(one * 100.0));
+        RecordProperty("four_views_uncached_ms_x100_" + tag, static_cast<int>(four_uncached * 100.0));
+        RecordProperty("four_views_cached_ms_x100_" + tag, static_cast<int>(four_cached * 100.0));
+        std::printf("[ view cost ] %u^3, 960x540 views: 1 view %.2f ms; 4 views %.2f ms uncached, %.2f ms cached; "
+                    "on %s\n",
+                    n, one, four_uncached, four_cached, device.c_str());
+        if (n == 128u) {
+            EXPECT_LT(four_cached, four_uncached) << device;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 }  // namespace
