@@ -47,11 +47,13 @@ Headers install at `include/analysis/` (`#include "analysis/case.hpp"`), target 
 | # | Change | Owner | Status |
 |---|---|---|---|
 | S1 | A dry run is EXEMPT from the memory gate: its need is recorded as 0, it starts at once, and its progress says "dry run: no memory gate". Real runs keep need plus margin. Kat measured 5.6 to 8.1 GiB free commit on the box while sessions work, so with the gate a dry run (0.2 GiB + 6 GiB) sometimes waited. | Interface | the lead's ruling, 2026-10-19; to build, with a test |
-| S2 | `create_run_folder()` takes the kind, and a dry run's folder ends `_dry`. An existing folder is not refused: the lowest free `_2`, `_3`… is taken, so a cancelled or faulted run's folder is kept beside its re-run. It returns the path it made; a host never builds the name. | Interface | agreed; to build, with a test |
+| S2 | `create_run_folder()` takes the kind, and a dry run's folder ends `_dry`. An existing folder is not refused: the lowest free `_2`, `_3`… is taken, so a cancelled or faulted run's folder is kept beside its re-run. It returns the path it made; a host never builds the name, and treats the returned path as the only truth. ALL OR NOTHING: a failure at any point leaves no folder behind. RACE-FREE: each candidate is made with an exclusive create, and an existing one moves to the next suffix, so two calls never share a folder. | Interface | agreed; to build, with a test |
 | S3 | `save_case()` is atomic: a temporary file, then a replace, as `progress.yaml` is written. | Interface | agreed; to build, with a test |
-| S4 | `spade::build_identity()`, installed: the commit plus a dirty flag, stamped at build time through one shared `stamp_identity.cmake`, plus a `spadeConfig` variable. Until it exists, Kat's host refuses to make a run folder rather than invent a commit. | Core | assigned by the lead |
+| S4 | `spade::build_identity()`, installed: the commit plus a dirty flag, stamped at build time through one shared `stamp_identity.cmake`, plus a `spadeConfig` variable. Until it exists, Kat's host refuses to make a run folder rather than invent a commit (bf93683 defines no commit, so slice 1's create_run is refused in every build until then). | Core | assigned by the lead |
+| S5 | `case_name` is UTF-8. Today `run_folder()` turns it into a path from a narrow string (run.cpp), which Windows decodes as ANSI, so a non-ASCII name breaks. It becomes a path through `std::u8string`. A name that can't be one folder is refused by name: empty, `.` or `..`, a path separator, a character Windows forbids in a name, a trailing dot or space, or a device name (CON, NUL, COM1…). Until then, Kat's facade refuses non-ASCII names, separators and device names itself (Spade Host's review). | Interface | to build, with a test |
+| S6 | `cancel_run()` checks its folder: a run folder (it holds `progress.yaml`), and a run that isn't final. It refuses others by name instead of writing a cancel file into any folder it is given. It has no `runs_dir`, so a host still checks that the folder is under its own. | Interface | to build, with a test |
 
-S1 to S3 land after bf93683, so Kat needs a further prefix bump for them. Kat's lead schedules it.
+S1 to S3, S5 and S6 land after bf93683, so Kat needs a further prefix bump for them. Kat's lead schedules it.
 
 ## 5. Before a real run (after slice 1)
 
