@@ -14,7 +14,7 @@
 ## 1. `editor.library`
 
 - **lists-index:** the panel's entries are the index's entries, in the index's order. For every entry, the name, category and file are equal. The counts are equal, and at least 9 (§3's first entries). *Catches:* a folder walk, a dropped entry, a reorder.
-- **thumbnails:** every entry shows the image decoded from its own thumbnail file. Width and height are above 0, and the image is not one colour, so a blank or a placeholder fails. *Catches:* missing or unread thumbnails shown as a placeholder.
+- **thumbnails:** every entry shows the image decoded from its own thumbnail file. The step decodes each file; the shown image must be the same size and differ from it nowhere ("differs" as in §6). The file's image must not be one colour: at least 1% of it differs from its dominant colour. *Catches:* missing or unread thumbnails shown as a placeholder, a framed placeholder, and another entry's image.
 
 ## 2. `editor.add_drone`
 
@@ -131,7 +131,7 @@ LiveRun, drone held (design decision 1), until P2b.
   - **A kind `supports()` accepts:** `apply_view` and `draw()` are Ok, and `unhonoured()` is empty. The view differs from the clear colour, so it isn't blank. It also differs from the previous mode's frame, so the switch took effect.
   - **A kind `supports()` refuses:** the text shown is its `why_not`, verbatim.
   - *Catches:* a blank view; a switch that changed nothing; a refusal drawn as an empty view.
-- **legend-shown:** each layer's legend shown equals the one `apply_view` returned: quantity, unit, colour map and range. While the region runs, a flow layer's range has min < max, and a speed legend's max is at least 1 m/s, so still air fails here as well.
+- **legend-shown:** `apply_view` returns one legend per layer of the view's spec, and fewer is `absent:`. Each legend shown equals the one returned: quantity, unit, colour map, range and whether the range came from the frame. While the region runs, every flow layer's range must come from the frame, since a fixed range reads the same over still air; a fixed one is `mis-staged:`. Its min must also be below its max, and a speed legend's max at least 1 m/s, so still air fails here as well.
 - **two-views:** after Split, there are two views with different `ViewSpec`s. Each half differs from the clear colour, and the two halves differ from each other.
 
 ## 7. `editor.save_reopen`
@@ -139,14 +139,20 @@ LiveRun, drone held (design decision 1), until P2b.
 - **round-trip:**
   - The reopened scene, emitted again, is byte-equal to the saved file.
   - The scene identity, the region component and the drone's model, parts and propulsion identities are all equal.
-  - Behaviourally: 60 steps of Run from the reopened scene give bit-identical body states to 60 steps from the scene before saving.
+  - Behaviourally: 60 steps of Run from the reopened scene give bit-identical body states to 60 steps from the scene before saving. "Body state" means every named field of each body, only the padding left out, so a reader that drops a mass or an inertia fails even at rest. A different body count is a judged fail.
+  - The identities are required by name: the scene, the region, and each drone's model, parts and propulsion. One left out is `absent:`.
   - *Catches:* a field written but not read back, and one read back but not applied.
 
 ## 7a. Measuring a placed object
 
 Test/Docs owns these, at Interface's request, so a step never measures what its own check judges (TD-4). The step hands over raw inputs: the collider, the world's SDF without the object, and the posed drawables.
 - **The drawables declared** (`declared_drawables`): counted from the collider's postfix program itself, not through the renderer's `split_program()`. A primitive under nothing but union is one drawable. A subtree rooted at subtract, intersect or smooth_union is one, whatever it holds. A malformed program declares 0, which fails.
-- **The rest gap** (`rest_gap`): the least distance, by the world's SDF without the object, over every vertex of the object's posed drawables. For the drone, those are its parts. Negative means buried that deep. With no points it's NaN, which fails. This is how §2's and §3's "lowest point to the surface beneath" is measured.
+- **The rest gap** (`rest_gap`): the least distance, by the world's SDF without the object, over every vertex of the object's posed drawables. For the drone, those are its parts. Negative means buried that deep. It's NaN, which fails, with no points, with a non-finite point or distance, or when a draw item names a mesh the scene lacks. This is how §2's and §3's "lowest point to the surface beneath" is measured.
+  - **Its bias, and so its preconditions** (Interface's review). Vertices lie on the surface, so the gap reads high, never low, by however far the true lowest point lies between vertices.
+    - It's exact for the shipped primitives posed upright (yawed only): a sphere's pole, a box's or cylinder's bottom face and rim, and a torus's underside are all vertices.
+    - So the end-goal step places objects upright, with nothing else within 5 mm sideways. A least distance is not "beneath": a wall that close would read as the rest.
+    - It doesn't measure a tilted primitive: a 0.5 m sphere tilted 15° reads up to about 8 mm high, past the +5 mm band.
+    - It doesn't measure a CSG object either: its surface-nets mesh sits up to half a mesh cell inside the surface.
 
 ## 8. Headless tests, red first
 
