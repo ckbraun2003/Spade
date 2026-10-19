@@ -45,9 +45,11 @@ void mark_cache(const std::filesystem::path& dir, const CacheMark& mark);
 // The mark, or empty strings for a cache without one.
 [[nodiscard]] CacheMark read_mark(const std::filesystem::path& dir);
 
-// The solver's state after `frame` was written: the grid's u, v, w, p and the
-// step. One per cache, replaced atomically. read_state() fills a grid made
-// to the same shape and returns the frame.
+// The solver's state after `frame` was written: the frame and step, then the
+// grid as grid_io saves it (physics/airflow/grid_io.hpp, the one serializer,
+// TD-9). One per cache, replaced atomically. read_state() fills a grid made
+// to the same shape and returns the frame; a state from before grid_io is
+// refused, naming --resimulate.
 [[nodiscard]] spade::Result<void> write_state(const std::filesystem::path& dir, uint32_t frame, uint64_t step,
                                               const spade::physics::airflow::MacGrid& g);
 [[nodiscard]] spade::Result<uint32_t> read_state(const std::filesystem::path& dir, uint64_t& step,

@@ -1,9 +1,15 @@
 #include "cache.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
+#include <span>
 #include <type_traits>
+#include <vector>
+
+#include "physics/airflow/grid_io.hpp"
 
 namespace flow_movie {
 namespace {
@@ -11,6 +17,9 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kMagic[8] = {'S', 'P', 'F', 'R', 'A', 'M', 'E', '1'};
+// The solver state: this, the frame (u32) and the step (u64), then
+// grid_io's blob. The state before grid_io began with kMagic.
+constexpr char kStateMagic[8] = {'S', 'P', 'S', 'T', 'A', 'T', 'E', '2'};
 static_assert(std::is_trivially_copyable_v<spade::FlowVolumeHeader>);
 
 [[nodiscard]] fs::path frame_path(const fs::path& dir, uint32_t frame) {
@@ -107,17 +116,15 @@ CacheMark read_mark(const fs::path& dir) {
 
 spade::Result<void> write_state(const fs::path& dir, uint32_t frame, uint64_t step,
                                 const spade::physics::airflow::MacGrid& g) {
+    const std::vector<std::byte> blob = spade::physics::airflow::grid_to_bytes(g);
     const fs::path tmp = dir / "state.tmp";
     {
         std::ofstream out(tmp, std::ios::binary);
         if (!out) return refuse("cannot write " + tmp.string());
-        out.write(kMagic, sizeof kMagic);
+        out.write(kStateMagic, sizeof kStateMagic);
         put(out, frame);
         put(out, step);
-        for (const std::vector<float>* f : {&g.u, &g.v, &g.w, &g.p}) {
-            put(out, static_cast<uint64_t>(f->size()));
-            out.write(reinterpret_cast<const char*>(f->data()), static_cast<std::streamsize>(f->size() * 4u));
-        }
+        out.write(reinterpret_cast<const char*>(blob.data()), static_cast<std::streamsize>(blob.size()));
         if (!out) return refuse("writing " + tmp.string() + " failed");
     }
     std::error_code ec;
@@ -129,18 +136,20 @@ spade::Result<void> write_state(const fs::path& dir, uint32_t frame, uint64_t st
 spade::Result<uint32_t> read_state(const fs::path& dir, uint64_t& step, spade::physics::airflow::MacGrid& g) {
     const fs::path path = dir / "state.bin";
     std::ifstream in(path, std::ios::binary);
-    char magic[sizeof kMagic] = {};
+    char magic[sizeof kStateMagic] = {};
+    if (in && in.read(magic, sizeof magic) && std::equal(magic, magic + sizeof magic, kMagic)) {
+        return refuse(path.string() + " is a solver state from before grid_io (2026-10-19), which this build "
+                                      "cannot continue; --resimulate starts the film again");
+    }
     uint32_t frame = 0;
-    if (!in || !in.read(magic, sizeof magic) || !std::equal(magic, magic + sizeof magic, kMagic) || !get(in, frame) ||
-        !get(in, step)) {
+    if (!in || !std::equal(magic, magic + sizeof magic, kStateMagic) || !get(in, frame) || !get(in, step)) {
         return refuse(path.string() + " is not a solver state");
     }
-    for (std::vector<float>* f : {&g.u, &g.v, &g.w, &g.p}) {
-        uint64_t n = 0;
-        if (!get(in, n) || n != f->size()) return refuse(path.string() + ": a field's size is not this grid's");
-        if (!in.read(reinterpret_cast<char*>(f->data()), static_cast<std::streamsize>(n * 4u))) {
-            return refuse(path.string() + ": short");
-        }
+    std::vector<char> rest{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const auto* first = reinterpret_cast<const std::byte*>(rest.data());
+    if (auto restored = spade::physics::airflow::grid_from_bytes(std::span<const std::byte>(first, rest.size()), g);
+        !restored) {
+        return refuse(path.string() + ": " + restored.error().context);
     }
     return frame;
 }
