@@ -959,7 +959,11 @@ install(TARGETS spade_scene
     ARCHIVE DESTINATION lib
     INCLUDES DESTINATION include
 )
-install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp")
+# scene/detail/ is internal, as world/detail/ is: model_block.hpp (one model's
+# text block, which the scene file shares) names yaml-cpp types, and no
+# installed header includes it.
+install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp"
+    PATTERN "detail" EXCLUDE)
 
 # spade::render_parts -- a model's parts as render-scene items (RND-9; docs/
 # design/rendering/plans/2026-10-13-render-parts-plan.md). Owned by
