@@ -12,10 +12,17 @@
 // recorded lead decision, in the doc first.
 //
 // A verdict that can't be reached says why, by its first word:
-//   "absent:"         the frames don't cover what the check needs (TD-5);
+//   "absent:"         the frames don't cover what the check needs (TD-5),
+//                     or hold a time that is not finite and increasing, or a
+//                     state that is not finite;
 //   "mis-staged:"     the step didn't set up what the check presumes;
 //   "under-resolved:" the region is too coarse for the check to mean anything.
 // None of these passes.
+//
+// ONE FRAME: the rotors, the body and the published volume must be in the
+// same world frame. LiveRun publishes in its own, centred on its box with the
+// held body at the origin, so a step passes the body LiveRun holds, not the
+// body's pose in the scene. A probe outside the volume is absent, never read.
 //
 // Owned by Test/Docs; reviewed by Interface.
 
@@ -24,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <numbers>
@@ -54,6 +62,30 @@ inline constexpr double kTimeEps = 1e-9;  // frame times are whole steps; this o
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.4g", v);
     return buf;
+}
+
+[[nodiscard]] inline bool finite(const glm::vec3& v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+[[nodiscard]] inline bool finite(const glm::quat& q) {
+    return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w);
+}
+
+[[nodiscard]] inline bool positive(float x) { return std::isfinite(x) && x > 0.0f; }
+
+// Empty when every frame's t_s is finite and later than the one before;
+// otherwise which isn't.
+template <class Frame>
+[[nodiscard]] std::string time_fault(std::span<const Frame> frames) {
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (!std::isfinite(frames[i].t_s)) return "frame " + std::to_string(i) + "'s time is not finite";
+        if (i > 0 && !(frames[i].t_s > frames[i - 1].t_s)) {
+            return "frame " + std::to_string(i) + "'s time, " + num(frames[i].t_s) + " s, does not follow frame " +
+                   std::to_string(i - 1) + "'s, " + num(frames[i - 1].t_s) + " s";
+        }
+    }
+    return {};
 }
 
 }  // namespace detail
@@ -114,9 +146,25 @@ inline constexpr float kProbeDepthR = 2.0f;
 inline constexpr int kProbeLatticeHalf = 10;  // lattice index j in [-10, 10]: j * 0.05R
 inline constexpr float kProbePitchR = 0.05f;  // kProbeLatticeHalf * kProbePitchR = the disc's 0.5R
 
-// The downward axial velocity averaged over the probe disc, m/s; NaN when any
-// lattice point has no data. Precondition: the sampler's volume validated.
-[[nodiscard]] inline float probe_downwash(const render::FlowSampler& sampler, const RotorProbe& r) {
+enum class ProbeStatus : uint8_t {
+    ok = 0,
+    no_data = 1,  // a lattice point read no-data
+    outside = 2,  // a lattice point is outside the volume's box, where the sampler holds the edge values
+};
+
+struct ProbeReading {
+    float u = 0.0f;  // the downward axial velocity averaged over the probe disc, m/s; 0 unless ok
+    ProbeStatus status = ProbeStatus::ok;
+};
+
+// Reads one rotor's probe. Precondition: `volume` validated, and `sampler`
+// made from it.
+[[nodiscard]] inline ProbeReading probe_downwash(const FlowVolume& volume, const render::FlowSampler& sampler,
+                                                 const RotorProbe& r) {
+    const FlowVolumeHeader& h = volume.header;
+    const glm::vec3 box_lo = h.origin;
+    const glm::vec3 box_hi = h.origin + h.cell * glm::vec3(static_cast<float>(h.nx), static_cast<float>(h.ny),
+                                                           static_cast<float>(h.nz));
     const glm::vec3 n = r.axis;
     const glm::vec3 helper = std::abs(n.x) < 0.9f ? glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
     const glm::vec3 e1 = glm::normalize(glm::cross(n, helper));
@@ -129,21 +177,26 @@ inline constexpr float kProbePitchR = 0.05f;  // kProbeLatticeHalf * kProbePitch
         for (int k = -kProbeLatticeHalf; k <= kProbeLatticeHalf; ++k) {
             if (j * j + k * k > kProbeLatticeHalf * kProbeLatticeHalf) continue;
             const glm::vec3 p = centre + (static_cast<float>(j) * pitch) * e1 + (static_cast<float>(k) * pitch) * e2;
+            if (glm::any(glm::lessThan(p, box_lo)) || glm::any(glm::greaterThan(p, box_hi))) {
+                return {0.0f, ProbeStatus::outside};
+            }
             const render::FlowVelocity v = render::sample_velocity(sampler, p);
-            if (v.no_data) return std::numeric_limits<float>::quiet_NaN();
+            if (v.no_data) return {0.0f, ProbeStatus::no_data};
             sum += -static_cast<double>(glm::dot(n, v.u));
             ++count;
         }
     }
-    return static_cast<float>(sum / count);
+    return {static_cast<float>(sum / count), ProbeStatus::ok};
 }
 
 // One published frame, as the downwash checks read it.
 struct DownwashFrame {
     double t_s = 0.0;                // simulated time since arming
     float cell = 0.0f;               // the published volume's dx, m
-    std::vector<RotorProbe> rotors;  // posed this frame
-    std::vector<float> u_down;       // per rotor: probe_downwash(), NaN for no data
+    float floor_y = 0.0f;            // the published volume's bottom face, world y, m
+    std::vector<RotorProbe> rotors;  // posed this frame, in the volume's frame
+    std::vector<float> u_down;       // per rotor: the probe's reading, NaN unless ok
+    std::vector<ProbeStatus> probe;  // per rotor
     float tilt_rad = 0.0f;           // tilt_of() the body
     bool controls_constant = true;   // the controls are still the ones set at arming
 };
@@ -154,22 +207,30 @@ struct DownwashFrame {
     DownwashFrame f;
     f.t_s = t_s;
     f.cell = volume.header.cell;
+    f.floor_y = volume.header.origin.y;
     f.tilt_rad = tilt_rad;
     f.controls_constant = controls_constant;
     f.u_down.assign(rotors.size(), std::numeric_limits<float>::quiet_NaN());
+    f.probe.assign(rotors.size(), ProbeStatus::no_data);
     if (validate_flow_volume(volume).has_value()) {
         const render::FlowSampler sampler = render::make_flow_sampler(volume);
-        for (std::size_t i = 0; i < rotors.size(); ++i) f.u_down[i] = probe_downwash(sampler, rotors[i]);
+        for (std::size_t i = 0; i < rotors.size(); ++i) {
+            const ProbeReading reading = probe_downwash(volume, sampler, rotors[i]);
+            f.probe[i] = reading.status;
+            if (reading.status == ProbeStatus::ok) f.u_down[i] = reading.u;
+        }
     }
     f.rotors = std::move(rotors);
     return f;
 }
 
+// The case. L, the hub plane's height above the box's bottom face, is not
+// declared here: the check takes it from the frames (the hubs and the
+// published volume's floor).
 struct DownwashCase {
-    float density = 1.225f;      // kg/m^3, the case's
-    float mass = 0.0f;           // kg, the model's
-    float gravity = 9.80665f;    // m/s^2
-    float hub_above_floor = 0.0f;  // L: the hub plane above the box's bottom face, m
+    float density = 1.225f;    // kg/m^3, the case's
+    float mass = 0.0f;         // kg, the model's
+    float gravity = 9.80665f;  // m/s^2
 };
 
 // What a downwash check demands: lo <= mean u / mean v_ref <= hi, at R/dx >= min.
@@ -200,12 +261,29 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
                                       const DownwashRule& rule) {
     using detail::num;
     const std::string name = std::string(rule.name) + ": ";
+    if (!(detail::positive(c.density) && detail::positive(c.mass) && detail::positive(c.gravity))) {
+        return {false, name + "mis-staged: the case's density " + num(c.density) + ", mass " + num(c.mass) +
+                           " and gravity " + num(c.gravity) + " must all be positive"};
+    }
     if (frames.empty()) return {false, name + "absent: no frames were recorded"};
+    if (const std::string fault = detail::time_fault(frames); !fault.empty()) return {false, name + "absent: " + fault};
     const std::size_t n = frames.back().rotors.size();
     if (n == 0) return {false, name + "absent: the model has no rotors"};
     for (const DownwashFrame& f : frames) {
-        if (f.rotors.size() != n || f.u_down.size() != n) {
+        if (f.rotors.size() != n || f.u_down.size() != n || f.probe.size() != n) {
             return {false, name + "absent: the frame at t = " + num(f.t_s) + " s lacks a rotor"};
+        }
+        bool finite = std::isfinite(f.cell) && std::isfinite(f.floor_y) && std::isfinite(f.tilt_rad);
+        for (const RotorProbe& r : f.rotors) {
+            finite = finite && detail::finite(r.hub) && detail::finite(r.axis) && std::isfinite(r.radius) &&
+                     std::isfinite(r.thrust);
+        }
+        if (!finite) return {false, name + "absent: the frame at t = " + num(f.t_s) + " s holds a non-finite state"};
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!(f.rotors[i].radius > 0.0f)) {
+                return {false, name + "mis-staged: rotor " + std::to_string(i) + "'s radius is " +
+                                   num(f.rotors[i].radius)};
+            }
         }
     }
 
@@ -219,13 +297,27 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
     }
 
     // Developed, from the last frame's thrust: the controls are constant, so
-    // the rotors are at their command by then.
+    // the rotors are at their command by then, and one that makes no thrust
+    // is a fault, not a staging. L from the same frame: the highest hub above
+    // the published volume's floor.
     float v_min = std::numeric_limits<float>::infinity();
-    for (const RotorProbe& r : frames.back().rotors) {
-        v_min = std::min(v_min, momentum_theory_2r(r.thrust, r.radius, c.density));
+    float hub_top = -std::numeric_limits<float>::infinity();
+    for (std::size_t i = 0; i < n; ++i) {
+        const RotorProbe& r = frames.back().rotors[i];
+        const float v = momentum_theory_2r(r.thrust, r.radius, c.density);
+        if (!(v > 0.0f)) {
+            return {false, name + "rotor " + std::to_string(i) + " makes no thrust at the last frame, t = " +
+                               num(frames.back().t_s) + " s"};
+        }
+        v_min = std::min(v_min, v);
+        hub_top = std::max(hub_top, r.hub.y);
     }
-    if (!(v_min > 0.0f)) return {false, name + "mis-staged: a rotor makes no thrust at the last frame"};
-    const double t_dev = std::max(kDevelopFloorS, kDevelopTransits * c.hub_above_floor / v_min);
+    const float hub_above_floor = hub_top - frames.back().floor_y;
+    if (!(hub_above_floor > 0.0f)) {
+        return {false, name + "mis-staged: the hubs are " + num(hub_above_floor) +
+                           " m above the published volume's floor"};
+    }
+    const double t_dev = std::max(kDevelopFloorS, kDevelopTransits * hub_above_floor / v_min);
     const double t_end = t_dev + kDownwashWindowS;
     const std::string window = "[" + num(t_dev) + ", " + num(t_end) + "] s";
     if (frames.back().t_s + detail::kTimeEps < t_end) {
@@ -254,8 +346,13 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
                                " s, under half the weight, " + num(weight) + " N"};
         }
         for (std::size_t i = 0; i < n; ++i) {
-            if (!std::isfinite(f.u_down[i])) {
-                return {false, name + "no data at rotor " + std::to_string(i) + "'s probe at t = " + num(f.t_s) + " s"};
+            if (f.probe[i] == ProbeStatus::outside) {
+                return {false, name + "absent: rotor " + std::to_string(i) + "'s probe is outside the published " +
+                                   "volume at t = " + num(f.t_s) + " s"};
+            }
+            if (f.probe[i] != ProbeStatus::ok || !std::isfinite(f.u_down[i])) {
+                return {false, name + "absent: no data at rotor " + std::to_string(i) + "'s probe at t = " +
+                                   num(f.t_s) + " s"};
             }
             u_sum[i] += f.u_down[i];
             v_sum[i] += momentum_theory_2r(f.rotors[i].thrust, f.rotors[i].radius, c.density);
@@ -295,6 +392,21 @@ struct FlightFrame {
     std::vector<float> rotor_omega;                 // rad/s, in the model's rotor order
 };
 
+namespace detail {
+
+// Empty when the frames are in time and every state is finite; otherwise why not.
+[[nodiscard]] inline std::string flight_fault(std::span<const FlightFrame> frames) {
+    if (std::string fault = time_fault(frames); !fault.empty()) return fault;
+    for (const FlightFrame& f : frames) {
+        bool ok = std::isfinite(f.height) && finite(f.velocity) && finite(f.attitude) && std::isfinite(f.thrust_up);
+        for (const float w : f.rotor_omega) ok = ok && std::isfinite(w);
+        if (!ok) return "the frame at t = " + num(f.t_s) + " s holds a non-finite state";
+    }
+    return {};
+}
+
+}  // namespace detail
+
 // + nose up.
 [[nodiscard]] inline float pitch_of(const glm::quat& body_to_world) {
     const glm::vec3 nose = body_to_world * glm::vec3(1.0f, 0.0f, 0.0f);
@@ -312,9 +424,10 @@ inline constexpr float kArmSpinFraction = 0.9f;
 inline constexpr double kArmStillS = 1.0;     // and the drone still down over this long
 inline constexpr float kArmStillM = 0.005f;
 
-// Before arming every rotor is stopped; 0.5 s after it every rotor turns at
-// 90% of its idle command or more; over 1.0 s from arming the height changes
-// by 5 mm or less. `idle_command` is each rotor's commanded idle speed.
+// Before arming every rotor is stopped; by 0.5 s after it (the last frame at
+// or before then) every rotor turns at 90% of its idle command or more; over
+// 1.0 s from arming the height changes by 5 mm or less. `idle_command` is
+// each rotor's commanded idle speed.
 [[nodiscard]] inline Verdict armed(std::span<const FlightFrame> frames, double arm_s,
                                    std::span<const float> idle_command) {
     using detail::num;
@@ -323,7 +436,10 @@ inline constexpr float kArmStillM = 0.005f;
     const std::size_t n = idle_command.size();
     if (n == 0) return {false, name + "mis-staged: no idle command was given"};
     for (const float w : idle_command) {
-        if (!(w > 0.0f)) return {false, name + "mis-staged: an idle command of " + num(w) + " rad/s"};
+        if (!detail::positive(w)) return {false, name + "mis-staged: an idle command of " + num(w) + " rad/s"};
+    }
+    if (const std::string fault = detail::flight_fault(frames); !fault.empty()) {
+        return {false, name + "absent: " + fault};
     }
     for (const FlightFrame& f : frames) {
         if (f.rotor_omega.size() != n) {
@@ -349,13 +465,18 @@ inline constexpr float kArmStillM = 0.005f;
         while (i < frames.size() && frames[i].t_s + eps < t) ++i;
         return i;
     };
-    const std::size_t is = first_at(arm_s + kArmSpinS);
-    if (is == frames.size()) return {false, name + "absent: no frame 0.5 s after arming"};
+    // The last frame at or before 0.5 s after arming, and not before arming.
+    std::size_t is = frames.size();
+    for (std::size_t i = 0; i < frames.size() && frames[i].t_s <= arm_s + kArmSpinS + eps; ++i) {
+        if (frames[i].t_s + eps >= arm_s) is = i;
+    }
+    if (is == frames.size()) return {false, name + "absent: no frame in the 0.5 s after arming"};
     for (std::size_t i = 0; i < n; ++i) {
         const float w = frames[is].rotor_omega[i];
         if (!(w > 0.0f && w >= kArmSpinFraction * idle_command[i])) {
             return {false, name + "rotor " + std::to_string(i) + " turns at " + num(w) +
-                               " rad/s 0.5 s after arming, under 90% of its idle " + num(idle_command[i])};
+                               " rad/s at t = " + num(frames[is].t_s) + " s, under 90% of its idle " +
+                               num(idle_command[i])};
         }
     }
 
@@ -368,7 +489,7 @@ inline constexpr float kArmStillM = 0.005f;
     for (std::size_t k = ia; k < frames.size() && frames[k].t_s <= t_still + eps; ++k) {
         moved = std::max(moved, std::abs(frames[k].height - frames[ia].height));
     }
-    const bool ok = moved <= kArmStillM;
+    const bool ok = !(moved > kArmStillM);
     return {ok, name + "stopped in " + std::to_string(before) + " frames before arming; every rotor at 90% of " +
                     "idle by " + num(kArmSpinS) + " s; height moved " + num(moved * 1000.0f) +
                     " mm at idle (5 at most)"};
@@ -387,6 +508,13 @@ inline constexpr double kClimbHi = 1.10;
     using detail::num;
     constexpr double eps = detail::kTimeEps;
     const std::string name = "climbs: ";
+    if (!(detail::positive(mass) && detail::positive(gravity) && detail::positive(radius))) {
+        return {false, name + "mis-staged: the mass " + num(mass) + ", gravity " + num(gravity) + " and radius " +
+                           num(radius) + " must all be positive"};
+    }
+    if (const std::string fault = detail::flight_fault(frames); !fault.empty()) {
+        return {false, name + "absent: " + fault};
+    }
     const double need = static_cast<double>(kClimbPremise) * mass * gravity;
     const double clear = static_cast<double>(kClimbClearR) * radius;
 
@@ -434,8 +562,7 @@ inline constexpr double kClimbHi = 1.10;
         }
     }
 
-    // The drag-free double integral of the reported thrust: the midpoint rule,
-    // exact for a thrust linear between frames.
+    // The drag-free double integral of the reported thrust, by the midpoint rule.
     const double t_end = frames[i1].t_s;
     double predicted = static_cast<double>(frames[i0].velocity.y) * (t_end - t0);
     for (std::size_t k = i0; k < i1; ++k) {
@@ -451,7 +578,7 @@ inline constexpr double kClimbHi = 1.10;
     const double rise = static_cast<double>(frames[i1].height) - frames[i0].height;
     const double ratio = rise / predicted;
     const float v_end = frames[i1].velocity.y;
-    const bool ok = ratio >= kClimbLo && ratio <= kClimbHi && v_end > 0.0f;
+    const bool ok = !(ratio < kClimbLo) && !(ratio > kClimbHi) && std::isfinite(ratio) && v_end > 0.0f;
     return {ok, name + "rose " + num(rise) + " m in " + num(t_end - t0) + " s from t = " + num(t0) + " s, against " +
                     num(predicted) + " m predicted: " + num(ratio) + " (band [" + num(kClimbLo) + ", " +
                     num(kClimbHi) + "]); v_y " + num(v_end) + " m/s at the end"};
@@ -464,15 +591,19 @@ inline constexpr float kAttitudeTolRad = 0.05235987755982988f;  // 3 degrees
 inline constexpr float kAttitudeSpeedGain = 0.5f;               // m/s along the heading, in the tilt's direction
 
 // After a pitch command at command_s, the pitch reaches the command to 3
-// degrees within 1.0 s and holds 0.5 s; roll stays within 3 degrees; and by
-// 1.5 s the horizontal speed along the heading has gained 0.5 m/s the way the
-// tilt points (nose down: forward).
+// degrees within 1.0 s and holds it for 0.5 s and through 1.5 s after the
+// command; roll stays within 3 degrees; and by 1.5 s the horizontal velocity
+// along the heading has gained more than 0.5 m/s since the command, the way
+// the tilt points (nose down: forward).
 [[nodiscard]] inline Verdict follows_attitude(std::span<const FlightFrame> frames, double command_s,
                                               float pitch_command_rad) {
     using detail::num;
     constexpr double eps = detail::kTimeEps;
     constexpr float kDeg = 57.29577951308232f;
     const std::string name = "follows-attitude: ";
+    if (const std::string fault = detail::flight_fault(frames); !fault.empty()) {
+        return {false, name + "absent: " + fault};
+    }
     if (!(std::abs(pitch_command_rad) > kAttitudeTolRad)) {
         return {false, name + "mis-staged: a pitch command of " + num(pitch_command_rad * kDeg) +
                            " degrees is within 3 of level"};
@@ -495,7 +626,7 @@ inline constexpr float kAttitudeSpeedGain = 0.5f;               // m/s along the
     for (std::size_t i = ic; i < frames.size() && frames[i].t_s <= command_s + kAttitudeReachS + eps; ++i) {
         const float off = std::abs(pitch_of(frames[i].attitude) - pitch_command_rad);
         closest = std::min(closest, off);
-        if (off <= kAttitudeTolRad) {
+        if (off <= kAttitudeTolRad) {  // NaN never reaches
             ir = i;
             break;
         }
@@ -504,9 +635,9 @@ inline constexpr float kAttitudeSpeedGain = 0.5f;               // m/s along the
         return {false, name + "the pitch came no nearer than " + num(closest * kDeg) + " degrees to the command of " +
                            num(pitch_command_rad * kDeg) + " within 1.0 s"};
     }
-    const double t_hold_end = frames[ir].t_s + kAttitudeHoldS;
     const double t_speed = command_s + kAttitudeSpeedAtS;
-    const double t_need = std::max(t_hold_end, t_speed);
+    const double t_hold_end = std::max(frames[ir].t_s + kAttitudeHoldS, t_speed);
+    const double t_need = t_hold_end;
     if (frames.back().t_s + eps < t_need) {
         return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) + " s, before " +
                            num(t_need) + " s"};
@@ -515,12 +646,12 @@ inline constexpr float kAttitudeSpeedGain = 0.5f;               // m/s along the
     for (std::size_t k = ic; k < frames.size() && frames[k].t_s <= t_need + eps; ++k) {
         const float roll = std::abs(roll_of(frames[k].attitude));
         worst_roll = std::max(worst_roll, roll);
-        if (roll > kAttitudeTolRad) {
+        if (!(roll <= kAttitudeTolRad)) {
             return {false, name + "rolled " + num(roll * kDeg) + " degrees at t = " + num(frames[k].t_s) +
                                " s, past 3"};
         }
         const float off = std::abs(pitch_of(frames[k].attitude) - pitch_command_rad);
-        if (k >= ir && frames[k].t_s <= t_hold_end + eps && off > kAttitudeTolRad) {
+        if (k >= ir && frames[k].t_s <= t_hold_end + eps && !(off <= kAttitudeTolRad)) {
             return {false, name + "the pitch left the command by " + num(off * kDeg) + " degrees at t = " +
                                num(frames[k].t_s) + " s"};
         }
@@ -569,8 +700,13 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 [[nodiscard]] inline Verdict placed_at(const Placement& p) {
     using detail::num;
     const std::string name = "placed-at: ";
-    const float off = std::max(std::abs(p.position.x - p.pick.x), std::abs(p.position.z - p.pick.z));
-    if (!(off <= kPlaceXZ)) return {false, name + num(off * 1000.0f) + " mm from the pick in x or z, past 1"};
+    const float dx = std::abs(p.position.x - p.pick.x);
+    const float dz = std::abs(p.position.z - p.pick.z);
+    if (!(dx <= kPlaceXZ && dz <= kPlaceXZ)) {
+        return {false, name + num(dx * 1000.0f) + " mm in x and " + num(dz * 1000.0f) +
+                           " mm in z from the pick (1 at most)"};
+    }
+    const float off = std::max(dx, dz);
     if (!(p.rest_gap >= kRestLo && p.rest_gap <= kRestHi)) {
         return {false, name + (p.rest_gap < 0.0f ? "buried " : "floating ") + num(std::abs(p.rest_gap) * 1000.0f) +
                            " mm (a rest within [-2, +5] mm)"};
