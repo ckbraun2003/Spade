@@ -116,6 +116,20 @@ target_compile_definitions(spade_consumer_smoke PRIVATE
     SPADE_ANALYSIS_RUNNER="$<TARGET_FILE:spade::analysis_runner>"
 )
 
+# The commit the package says it was built from (spadeConfig.cmake's
+# spade_GIT_COMMIT and spade_GIT_DIRTY, which a host such as Kat's builder
+# names its runs by): main.cpp checks the installed library's
+# spade::build_identity() says the same. One stamp run writes both.
+if(NOT DEFINED spade_GIT_COMMIT OR NOT DEFINED spade_GIT_DIRTY)
+    message(FATAL_ERROR "spade_consumer_smoke: find_package(spade) defined no spade_GIT_COMMIT and spade_GIT_DIRTY "
+                        "(cmake/spadeConfig.cmake.in includes them from the installed spadeBuildStamp.cmake)")
+endif()
+message(STATUS "spade_consumer_smoke: the package says commit ${spade_GIT_COMMIT}, dirty ${spade_GIT_DIRTY}")
+target_compile_definitions(spade_consumer_smoke PRIVATE
+    SPADE_CONFIG_GIT_COMMIT="${spade_GIT_COMMIT}"
+    SPADE_CONFIG_GIT_DIRTY=${spade_GIT_DIRTY}
+)
+
 # ------------------------------------------------------------------------------
 # spade::render_gl -- OPTIONAL: present when the prefix was built with
 # SPADE_RENDER_GL on (engine/CMakeLists.txt). When it is, gl_check.cpp links it

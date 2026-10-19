@@ -527,11 +527,13 @@ if(SPADE_BUILD_SANDBOX)
 endif()
 
 # The build stamp's fallbacks (core/build_identity.hpp), which a build inside a
-# git checkout never reaches: cmake/stamp_identity.cmake run on fixtures that
-# stamp_identity_test.cmake writes in this build tree. LABELS spade, as above.
+# git checkout never reaches, and its header and package fragment agreeing:
+# cmake/stamp_identity.cmake run on fixtures that stamp_identity_test.cmake
+# writes in this build tree, and on the source tree. LABELS spade, as above.
 cmake_path(SET SPADE_STAMP_SCRIPT NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/stamp_identity.cmake")
+cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH SPADE_STAMP_SOURCE)
 add_test(NAME StampIdentity.ArchiveFallback
-    COMMAND "${CMAKE_COMMAND}" "-DSTAMP_SCRIPT=${SPADE_STAMP_SCRIPT}"
+    COMMAND "${CMAKE_COMMAND}" "-DSTAMP_SCRIPT=${SPADE_STAMP_SCRIPT}" "-DSPADE_SOURCE=${SPADE_STAMP_SOURCE}"
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/stamp-identity"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/stamp_identity_test.cmake")
 set_tests_properties(StampIdentity.ArchiveFallback PROPERTIES

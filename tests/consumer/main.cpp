@@ -46,6 +46,7 @@
 
 #include "analysis/case.hpp"
 #include "analysis/launch.hpp"
+#include "core/build_identity.hpp"
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
 #include "scene/compose.hpp"
@@ -63,6 +64,26 @@ int check_render_gl();  // gl_check.cpp
 #endif
 
 int main() {
+    // The package and the library name one build: spadeConfig.cmake's
+    // spade_GIT_COMMIT and spade_GIT_DIRTY (CMakeLists.txt passes them in) and
+    // the installed spade::build_identity() come from one stamp run, so a host
+    // may name its runs by either. A mismatch is an install of two builds.
+    {
+        const spade::BuildIdentity built = spade::build_identity();
+        const std::string_view package_commit = SPADE_CONFIG_GIT_COMMIT;
+        const bool package_dirty = SPADE_CONFIG_GIT_DIRTY != 0;
+        if (built.commit != package_commit || built.dirty != package_dirty) {
+            std::fprintf(stderr,
+                         "spade build identity MISMATCH: spadeConfig.cmake says commit %.*s, dirty %d, but the installed "
+                         "spade::build_identity() says commit %.*s, dirty %d; the prefix holds two builds\n",
+                         static_cast<int>(package_commit.size()), package_commit.data(), package_dirty ? 1 : 0,
+                         static_cast<int>(built.commit.size()), built.commit.data(), built.dirty ? 1 : 0);
+            return 1;
+        }
+        std::printf("spade build identity OK: commit %.*s, dirty %d, in the package and the library\n",
+                    static_cast<int>(built.commit.size()), built.commit.data(), built.dirty ? 1 : 0);
+    }
+
     // One world: a ground plane, nothing else -- enough for a body to exist
     // and step under gravity.
     const spade::Result<spade::WorldDesc> authored = spade::WorldBuilder()
