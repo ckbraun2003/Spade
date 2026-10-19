@@ -193,11 +193,93 @@ inline constexpr std::size_t kDownwashMinFrames = 6;
 inline constexpr float kLevelRad = 0.017453292519943295f;  // 1 degree
 inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m g
 
+// Each rotor's mean probe_downwash() over the window, against its mean
+// momentum-theory reference, judged by `rule`. The frames are in time order,
+// from arming.
 [[nodiscard]] inline Verdict downwash(std::span<const DownwashFrame> frames, const DownwashCase& c,
                                       const DownwashRule& rule) {
-    (void)frames;
-    (void)c;
-    return {true, std::string(rule.name) + ": not yet judged"};
+    using detail::num;
+    const std::string name = std::string(rule.name) + ": ";
+    if (frames.empty()) return {false, name + "absent: no frames were recorded"};
+    const std::size_t n = frames.back().rotors.size();
+    if (n == 0) return {false, name + "absent: the model has no rotors"};
+    for (const DownwashFrame& f : frames) {
+        if (f.rotors.size() != n || f.u_down.size() != n) {
+            return {false, name + "absent: the frame at t = " + num(f.t_s) + " s lacks a rotor"};
+        }
+    }
+
+    // The resolution, from the published volume's own cell.
+    float r_min = std::numeric_limits<float>::infinity();
+    for (const RotorProbe& r : frames.back().rotors) r_min = std::min(r_min, r.radius);
+    const float cell = frames.back().cell;
+    const float r_over_dx = cell > 0.0f ? r_min / cell : 0.0f;
+    if (!(r_over_dx >= rule.min_r_over_dx)) {
+        return {false, name + "under-resolved: R/dx " + num(r_over_dx) + " is below " + num(rule.min_r_over_dx)};
+    }
+
+    // Developed, from the last frame's thrust: the controls are constant, so
+    // the rotors are at their command by then.
+    float v_min = std::numeric_limits<float>::infinity();
+    for (const RotorProbe& r : frames.back().rotors) {
+        v_min = std::min(v_min, momentum_theory_2r(r.thrust, r.radius, c.density));
+    }
+    if (!(v_min > 0.0f)) return {false, name + "mis-staged: a rotor makes no thrust at the last frame"};
+    const double t_dev = std::max(kDevelopFloorS, kDevelopTransits * c.hub_above_floor / v_min);
+    const double t_end = t_dev + kDownwashWindowS;
+    const std::string window = "[" + num(t_dev) + ", " + num(t_end) + "] s";
+    if (frames.back().t_s + detail::kTimeEps < t_end) {
+        return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) + " s, before the window " +
+                           window + " closes"};
+    }
+
+    const float weight = c.mass * c.gravity;
+    std::vector<double> u_sum(n, 0.0);
+    std::vector<double> v_sum(n, 0.0);
+    std::size_t count = 0;
+    for (const DownwashFrame& f : frames) {
+        if (f.t_s > t_end + detail::kTimeEps) break;
+        if (!f.controls_constant) {
+            return {false, name + "mis-staged: the controls changed at t = " + num(f.t_s) + " s"};
+        }
+        if (!(f.tilt_rad <= kLevelRad)) {
+            return {false, name + "mis-staged: tilted " + num(f.tilt_rad / kLevelRad) + " degrees at t = " +
+                               num(f.t_s) + " s, past 1"};
+        }
+        if (f.t_s + detail::kTimeEps < t_dev) continue;
+        float total = 0.0f;
+        for (const RotorProbe& r : f.rotors) total += r.thrust;
+        if (!(total >= kLoadedFraction * weight)) {
+            return {false, name + "mis-staged: the rotors carry " + num(total) + " N at t = " + num(f.t_s) +
+                               " s, under half the weight, " + num(weight) + " N"};
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!std::isfinite(f.u_down[i])) {
+                return {false, name + "no data at rotor " + std::to_string(i) + "'s probe at t = " + num(f.t_s) + " s"};
+            }
+            u_sum[i] += f.u_down[i];
+            v_sum[i] += momentum_theory_2r(f.rotors[i].thrust, f.rotors[i].radius, c.density);
+        }
+        ++count;
+    }
+    if (count < kDownwashMinFrames) {
+        return {false, name + "absent: " + std::to_string(count) + " frames in the window " + window + ", fewer than " +
+                           std::to_string(kDownwashMinFrames)};
+    }
+
+    bool ok = true;
+    std::string measured;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double u = u_sum[i] / static_cast<double>(count);
+        const double v = v_sum[i] / static_cast<double>(count);
+        const double ratio = v > 0.0 ? u / v : std::numeric_limits<double>::quiet_NaN();
+        const bool in = ratio >= rule.lo && ratio <= rule.hi;
+        ok = ok && in;
+        measured += "rotor " + std::to_string(i) + " " + num(u) + " / " + num(v) + " m/s = " + num(ratio) +
+                    (in ? "" : " (OUT)") + "; ";
+    }
+    return {ok, name + measured + "band [" + num(rule.lo) + ", " + num(rule.hi) + "], " + std::to_string(count) +
+                    " frames in " + window + ", R/dx " + num(r_over_dx)};
 }
 
 // ---------------------------------------------------------------------------
@@ -235,10 +317,61 @@ inline constexpr float kArmStillM = 0.005f;
 // by 5 mm or less. `idle_command` is each rotor's commanded idle speed.
 [[nodiscard]] inline Verdict armed(std::span<const FlightFrame> frames, double arm_s,
                                    std::span<const float> idle_command) {
-    (void)frames;
-    (void)arm_s;
-    (void)idle_command;
-    return {true, "armed: not yet judged"};
+    using detail::num;
+    constexpr double eps = detail::kTimeEps;
+    const std::string name = "armed: ";
+    const std::size_t n = idle_command.size();
+    if (n == 0) return {false, name + "mis-staged: no idle command was given"};
+    for (const float w : idle_command) {
+        if (!(w > 0.0f)) return {false, name + "mis-staged: an idle command of " + num(w) + " rad/s"};
+    }
+    for (const FlightFrame& f : frames) {
+        if (f.rotor_omega.size() != n) {
+            return {false, name + "absent: the frame at t = " + num(f.t_s) + " s lacks a rotor"};
+        }
+    }
+
+    std::size_t before = 0;
+    for (const FlightFrame& f : frames) {
+        if (!(f.t_s + eps < arm_s)) break;
+        ++before;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (f.rotor_omega[i] != 0.0f) {
+                return {false, name + "rotor " + std::to_string(i) + " turned at " + num(f.rotor_omega[i]) +
+                                   " rad/s before arming, at t = " + num(f.t_s) + " s"};
+            }
+        }
+    }
+    if (before == 0) return {false, name + "absent: no frame before arming at t = " + num(arm_s) + " s"};
+
+    const auto first_at = [&](double t) {
+        std::size_t i = 0;
+        while (i < frames.size() && frames[i].t_s + eps < t) ++i;
+        return i;
+    };
+    const std::size_t is = first_at(arm_s + kArmSpinS);
+    if (is == frames.size()) return {false, name + "absent: no frame 0.5 s after arming"};
+    for (std::size_t i = 0; i < n; ++i) {
+        const float w = frames[is].rotor_omega[i];
+        if (!(w > 0.0f && w >= kArmSpinFraction * idle_command[i])) {
+            return {false, name + "rotor " + std::to_string(i) + " turns at " + num(w) +
+                               " rad/s 0.5 s after arming, under 90% of its idle " + num(idle_command[i])};
+        }
+    }
+
+    const std::size_t ia = first_at(arm_s);
+    const double t_still = arm_s + kArmStillS;
+    if (frames.back().t_s + eps < t_still) {
+        return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) + " s, before " + num(t_still)};
+    }
+    float moved = 0.0f;
+    for (std::size_t k = ia; k < frames.size() && frames[k].t_s <= t_still + eps; ++k) {
+        moved = std::max(moved, std::abs(frames[k].height - frames[ia].height));
+    }
+    const bool ok = moved <= kArmStillM;
+    return {ok, name + "stopped in " + std::to_string(before) + " frames before arming; every rotor at 90% of " +
+                    "idle by " + num(kArmSpinS) + " s; height moved " + num(moved * 1000.0f) +
+                    " mm at idle (5 at most)"};
 }
 
 inline constexpr double kClimbWindowS = 1.0;
@@ -251,12 +384,77 @@ inline constexpr double kClimbHi = 1.10;
 // reported thrust. `radius` is the rotors' R (the ground-effect clearance).
 [[nodiscard]] inline Verdict climbs(std::span<const FlightFrame> frames, double throttle_up_s, float mass,
                                     float gravity, float radius) {
-    (void)frames;
-    (void)throttle_up_s;
-    (void)mass;
-    (void)gravity;
-    (void)radius;
-    return {true, "climbs: not yet judged"};
+    using detail::num;
+    constexpr double eps = detail::kTimeEps;
+    const std::string name = "climbs: ";
+    const double need = static_cast<double>(kClimbPremise) * mass * gravity;
+    const double clear = static_cast<double>(kClimbClearR) * radius;
+
+    std::size_t iu = 0;
+    while (iu < frames.size() && frames[iu].t_s + eps < throttle_up_s) ++iu;
+    if (iu == frames.size()) {
+        return {false, name + "absent: no frame at or after the throttle-up at t = " + num(throttle_up_s) + " s"};
+    }
+
+    // The window opens at the first frame with the thrust premise met and the
+    // drone 2R up: out of the ground effect the static thrust leaves out.
+    bool premise_seen = false;
+    double highest = 0.0;
+    std::size_t i0 = frames.size();
+    for (std::size_t i = iu; i < frames.size(); ++i) {
+        const double rise = frames[i].height - frames[iu].height;
+        highest = std::max(highest, rise);
+        if (frames[i].thrust_up >= need) {
+            premise_seen = true;
+            if (rise >= clear) {
+                i0 = i;
+                break;
+            }
+        }
+    }
+    if (!premise_seen) {
+        return {false, name + "mis-staged: the vertical thrust never reached 1.10 m g (" + num(need) +
+                           " N) after the throttle-up"};
+    }
+    if (i0 == frames.size()) {
+        return {false, name + "did not climb: never rose 2R (" + num(clear) +
+                           " m) above its height at the throttle-up; its highest was +" + num(highest) + " m"};
+    }
+    const double t0 = frames[i0].t_s;
+    std::size_t i1 = i0;
+    while (i1 < frames.size() && frames[i1].t_s + eps < t0 + kClimbWindowS) ++i1;
+    if (i1 == frames.size()) {
+        return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) +
+                           " s, inside the window from " + num(t0) + " s"};
+    }
+    for (std::size_t k = i0; k <= i1; ++k) {
+        if (frames[k].thrust_up < need) {
+            return {false, name + "mis-staged: the vertical thrust fell to " + num(frames[k].thrust_up) +
+                               " N at t = " + num(frames[k].t_s) + " s, under 1.10 m g"};
+        }
+    }
+
+    // The drag-free double integral of the reported thrust: the midpoint rule,
+    // exact for a thrust linear between frames.
+    const double t_end = frames[i1].t_s;
+    double predicted = static_cast<double>(frames[i0].velocity.y) * (t_end - t0);
+    for (std::size_t k = i0; k < i1; ++k) {
+        const double dt = frames[k + 1].t_s - frames[k].t_s;
+        const double f = 0.5 * (static_cast<double>(frames[k].thrust_up) + frames[k + 1].thrust_up);
+        const double a = f / mass - gravity;
+        const double t_mid = 0.5 * (frames[k].t_s + frames[k + 1].t_s);
+        predicted += a * dt * (t_end - t_mid);
+    }
+    if (!(predicted > 0.0)) {
+        return {false, name + "mis-staged: the reported thrust predicts " + num(predicted) + " m, not a rise"};
+    }
+    const double rise = static_cast<double>(frames[i1].height) - frames[i0].height;
+    const double ratio = rise / predicted;
+    const float v_end = frames[i1].velocity.y;
+    const bool ok = ratio >= kClimbLo && ratio <= kClimbHi && v_end > 0.0f;
+    return {ok, name + "rose " + num(rise) + " m in " + num(t_end - t0) + " s from t = " + num(t0) + " s, against " +
+                    num(predicted) + " m predicted: " + num(ratio) + " (band [" + num(kClimbLo) + ", " +
+                    num(kClimbHi) + "]); v_y " + num(v_end) + " m/s at the end"};
 }
 
 inline constexpr double kAttitudeReachS = 1.0;
@@ -271,10 +469,72 @@ inline constexpr float kAttitudeSpeedGain = 0.5f;               // m/s along the
 // tilt points (nose down: forward).
 [[nodiscard]] inline Verdict follows_attitude(std::span<const FlightFrame> frames, double command_s,
                                               float pitch_command_rad) {
-    (void)frames;
-    (void)command_s;
-    (void)pitch_command_rad;
-    return {true, "follows-attitude: not yet judged"};
+    using detail::num;
+    constexpr double eps = detail::kTimeEps;
+    constexpr float kDeg = 57.29577951308232f;
+    const std::string name = "follows-attitude: ";
+    if (!(std::abs(pitch_command_rad) > kAttitudeTolRad)) {
+        return {false, name + "mis-staged: a pitch command of " + num(pitch_command_rad * kDeg) +
+                           " degrees is within 3 of level"};
+    }
+    std::size_t ic = 0;
+    while (ic < frames.size() && frames[ic].t_s + eps < command_s) ++ic;
+    if (ic == frames.size()) {
+        return {false, name + "absent: no frame at or after the command at t = " + num(command_s) + " s"};
+    }
+
+    const glm::vec3 nose = frames[ic].attitude * glm::vec3(1.0f, 0.0f, 0.0f);
+    glm::vec3 heading(nose.x, 0.0f, nose.z);
+    if (!(glm::length(heading) > 1e-3f)) {
+        return {false, name + "mis-staged: the nose points straight up or down at the command"};
+    }
+    heading = glm::normalize(heading);
+
+    std::size_t ir = frames.size();
+    float closest = std::numeric_limits<float>::infinity();
+    for (std::size_t i = ic; i < frames.size() && frames[i].t_s <= command_s + kAttitudeReachS + eps; ++i) {
+        const float off = std::abs(pitch_of(frames[i].attitude) - pitch_command_rad);
+        closest = std::min(closest, off);
+        if (off <= kAttitudeTolRad) {
+            ir = i;
+            break;
+        }
+    }
+    if (ir == frames.size()) {
+        return {false, name + "the pitch came no nearer than " + num(closest * kDeg) + " degrees to the command of " +
+                           num(pitch_command_rad * kDeg) + " within 1.0 s"};
+    }
+    const double t_hold_end = frames[ir].t_s + kAttitudeHoldS;
+    const double t_speed = command_s + kAttitudeSpeedAtS;
+    const double t_need = std::max(t_hold_end, t_speed);
+    if (frames.back().t_s + eps < t_need) {
+        return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) + " s, before " +
+                           num(t_need) + " s"};
+    }
+    float worst_roll = 0.0f;
+    for (std::size_t k = ic; k < frames.size() && frames[k].t_s <= t_need + eps; ++k) {
+        const float roll = std::abs(roll_of(frames[k].attitude));
+        worst_roll = std::max(worst_roll, roll);
+        if (roll > kAttitudeTolRad) {
+            return {false, name + "rolled " + num(roll * kDeg) + " degrees at t = " + num(frames[k].t_s) +
+                               " s, past 3"};
+        }
+        const float off = std::abs(pitch_of(frames[k].attitude) - pitch_command_rad);
+        if (k >= ir && frames[k].t_s <= t_hold_end + eps && off > kAttitudeTolRad) {
+            return {false, name + "the pitch left the command by " + num(off * kDeg) + " degrees at t = " +
+                               num(frames[k].t_s) + " s"};
+        }
+    }
+    std::size_t is = ic;
+    while (is < frames.size() && frames[is].t_s + eps < t_speed) ++is;
+    const glm::vec3 dv = frames[is].velocity - frames[ic].velocity;
+    const float along = glm::dot(glm::vec3(dv.x, 0.0f, dv.z), heading);
+    const float gained = pitch_command_rad < 0.0f ? along : -along;  // nose down flies forward
+    const bool ok = gained > kAttitudeSpeedGain;
+    return {ok, name + "within 3 degrees of " + num(pitch_command_rad * kDeg) + " by t = " + num(frames[ir].t_s) +
+                    " s and held; roll at most " + num(worst_roll * kDeg) + " degrees; gained " + num(gained) +
+                    " m/s the way the tilt points by t = " + num(frames[is].t_s) + " s (more than " +
+                    num(kAttitudeSpeedGain) + " needed)"};
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +548,7 @@ struct Placement {
     glm::vec3 pick{0.0f};               // where the click's ray met the surface
     glm::vec3 position{0.0f};           // the placed object's origin
     float rest_gap = 0.0f;              // m: its lowest point to the surface beneath, by the SDF without it
-    std::size_t drawables_declared = 0; // from its definition (collider primitives + CSG roots, parts, or meshes)
+    std::size_t drawables_declared = 0;  // from its definition: collider primitives + CSG roots, parts, or meshes
     std::size_t drawables_added = 0;    // what the render scene gained
     float drawable_offset = 0.0f;       // m: the largest gap between a drawable and its pose
     float drawable_turn = 0.0f;         // rad: the largest turn between a drawable and its pose
@@ -307,20 +567,52 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 
 // Placed where asked, resting, and still after 1.0 s of Run.
 [[nodiscard]] inline Verdict placed_at(const Placement& p) {
-    (void)p;
-    return {true, "placed-at: not yet judged"};
+    using detail::num;
+    const std::string name = "placed-at: ";
+    const float off = std::max(std::abs(p.position.x - p.pick.x), std::abs(p.position.z - p.pick.z));
+    if (!(off <= kPlaceXZ)) return {false, name + num(off * 1000.0f) + " mm from the pick in x or z, past 1"};
+    if (!(p.rest_gap >= kRestLo && p.rest_gap <= kRestHi)) {
+        return {false, name + (p.rest_gap < 0.0f ? "buried " : "floating ") + num(std::abs(p.rest_gap) * 1000.0f) +
+                           " mm (a rest within [-2, +5] mm)"};
+    }
+    if (!(p.moved_after_run <= kStillMove && p.tilted_after_run <= kStillTilt)) {
+        return {false, name + "moved " + num(p.moved_after_run * 1000.0f) + " mm and tilted " +
+                           num(p.tilted_after_run * 57.29577951308232f) +
+                           " degrees in 1.0 s of Run (10 mm and 2 at most)"};
+    }
+    return {true, name + num(off * 1000.0f) + " mm from the pick; resting " + num(p.rest_gap * 1000.0f) +
+                      " mm above the surface; still in Run"};
 }
 
 // Exactly the drawables its definition declares, each at its pose.
 [[nodiscard]] inline Verdict drawn_as_declared(const Placement& p) {
-    (void)p;
-    return {true, "drawn: not yet judged"};
+    using detail::num;
+    const std::string name = "drawn: ";
+    if (p.drawables_declared == 0) return {false, name + "mis-staged: its definition declares no drawables"};
+    if (p.drawables_added != p.drawables_declared) {
+        return {false, name + std::to_string(p.drawables_added) + " drawables added for " +
+                           std::to_string(p.drawables_declared) + " declared"};
+    }
+    if (!(p.drawable_offset <= kDrawOffset && p.drawable_turn <= kDrawTurn)) {
+        return {false, name + "a drawable is " + num(p.drawable_offset) + " m and " + num(p.drawable_turn) +
+                           " rad off its pose (1e-5 at most)"};
+    }
+    return {true, name + std::to_string(p.drawables_added) + " drawables, each at its pose"};
 }
 
-// One new asset under a unique name, placed_at() and drawn_as_declared().
+// One new asset under a unique name, with its material, placed_at() and
+// drawn_as_declared().
 [[nodiscard]] inline Verdict object_added(const Placement& p) {
-    (void)p;
-    return {true, "object-added: not yet judged"};
+    const std::string name = "object-added: ";
+    if (p.assets_after != p.assets_before + 1) {
+        const long long added = static_cast<long long>(p.assets_after) - static_cast<long long>(p.assets_before);
+        return {false, name + std::to_string(added) + " assets added for one place"};
+    }
+    if (!p.name_unique) return {false, name + "its name is another asset's"};
+    if (!p.materials_match) return {false, name + "a drawable lacks the asset's material"};
+    const Verdict at = placed_at(p);
+    const Verdict drawn = drawn_as_declared(p);
+    return {at.ok && drawn.ok, name + at.detail + "; " + drawn.detail};
 }
 
 }  // namespace spade::sandbox::end_goal
