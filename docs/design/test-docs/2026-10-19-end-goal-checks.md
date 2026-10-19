@@ -101,7 +101,7 @@ LiveRun, drone held (design decision 1), until P2b.
   - **C8's band where it holds, as C8q (approved by the lead, 2026-10-19: an opt-in validation record, run in a quiet window):**
     - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
     - The band: each rotor within C8's 10%, and the four within 10% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the mutual band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run).
-    - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`.
+    - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`. The record also reports the observed mutual spread, (max − min) / mean of the four rotors' means, as a number. Any later tightening is then set in advance from evidence: for example, a run at a 0.5 s window with its band fixed before it runs (the lead, 2026-10-19).
     - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release. It's saved and restored across 10-minute chunks.
     - Falling outside 10% is a finding for Physics, not a change to the band.
 - **downwash-present** (on screen, 32³), the cheap a-priori check on the live view. For each rotor i:
