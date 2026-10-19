@@ -16,30 +16,10 @@
 
 #include "render/scene.hpp"
 #include "render/target.hpp"
-#include "world/builder.hpp"
 
 #include "../sandbox/drone_view.hpp"
 
 using namespace spade::sandbox;
-
-namespace {
-
-// An empty world's scene with the drone bound into it -- what the sandbox's
-// drone scene starts from. `world` is an out-parameter because the scene's
-// sdf pointer borrows it. Void, so a failed setup ASSERTs (stops the test)
-// instead of dereferencing an empty Result; callers ASSERT_NO_FATAL_FAILURE.
-void drone_scene(spade::WorldDesc& world, DroneDrawBinding& binding, spade::render::RenderScene& out) {
-    auto built = spade::WorldBuilder().name("drone_view").environment(spade::Environment{})
-                     .capacities(spade::Capacities{1, 5, 1, 1}).build();
-    ASSERT_TRUE(built.has_value());
-    world = *built;
-    auto scene = spade::render::scene_from_world(world, {});
-    ASSERT_TRUE(scene.has_value());
-    out = std::move(*scene);
-    binding = bind_drone_scene(out, drone_stand_params());
-}
-
-}  // namespace
 
 TEST(SandboxDroneView, TheDronesPartsAreWhereTheAirframeSaysAndUnscaled) {
     const auto params = drone_stand_params();

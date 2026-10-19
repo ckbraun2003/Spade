@@ -115,12 +115,6 @@ const std::vector<KnownOpen> kKnownOpen = {
     return text;
 }
 
-// The angle between two orientations, radians.
-[[nodiscard]] float angle_between(const glm::quat& a, const glm::quat& b) {
-    const float d = std::min(1.0f, std::abs(glm::dot(a, b)));
-    return 2.0f * std::acos(d);
-}
-
 [[nodiscard]] float mean_rotor_omega(const DroneReadouts& r) {
     float sum = 0.0f;
     for (const float w : r.rotor_omega) {
