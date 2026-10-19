@@ -45,7 +45,7 @@
 
 - **armed:**
   - Before arming, every rotor's ω is 0.
-  - Within 0.5 s of arming, every rotor turns at no less than 90% of its idle command, and above 0.
+  - Within 0.5 s of arming, every rotor turns at no less than 90% of its idle command, and above 0. It's judged at the last frame at or before 0.5 s after arming.
   - At idle the drone stays down: its height changes by no more than 5 mm over 1.0 s.
   - *Catches:* an arm that's ignored; idle above hover.
 - **climbs:**
@@ -60,9 +60,9 @@
     - A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
   - *Upper bound 1.10:* out of ground effect, nothing in the simulation lifts beyond the rotors' static thrust, and inflow only lowers it. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
 - **follows-attitude:**
-  - After a pitch command θ_cmd (the step uses 15°, nose down), within 1.0 s the body's pitch is within 3° of θ_cmd, and it stays there for the next 0.5 s.
+  - After a pitch command θ_cmd (the step uses 15°, nose down), within 1.0 s the body's pitch is within 3° of θ_cmd, and it stays there for at least 0.5 s and through 1.5 s after the command (Interface's review: a drone that reaches the pitch and levels off fails).
   - Roll stays within 3° of 0.
-  - By the end of those 1.5 s, the horizontal velocity along the nose's heading exceeds +0.5 m/s. At a 15° tilt, F_y ≈ m g gives g·tan 15° ≈ 2.6 m/s² forward, so 0.5 m/s is under a quarter of the drag-free value.
+  - By the end of those 1.5 s, the horizontal velocity along the nose's heading has gained more than 0.5 m/s since the command. It's a gain, not a speed, so a drone already moving can't pass on its old speed. At a 15° tilt, F_y ≈ m g gives g·tan 15° ≈ 2.6 m/s² forward, so 0.5 m/s is under a quarter of the drag-free value.
   - *Catches:* an attitude that's drawn but doesn't tilt the thrust; a sign error (nose down, flying backward); cross-coupling.
 
 ## 5. `editor.airflow`
@@ -79,6 +79,8 @@ LiveRun, drone held (design decision 1), until P2b.
   - The regions, both a 0.8 m box around the reference quad (R 76.2 mm): headless at 64³ (dx 12.5 mm, R/dx 6.1); live at 32³ (dx 25 mm, R/dx 3.05).
 - **publishes:** every frame of the step publishes a new generation, `validate_flow_volume()` is Ok, and `no_data` is 0.
 - **downwash** (headless, 64³) is the physical check. For each rotor i:
+  - **One frame:** the rotors, the body and the published volume share the volume's world frame. LiveRun publishes centred on its box, with the held body at the origin. A probe point outside the volume's box is `absent:`, never read: the sampler holds the edge values past the box.
+  - **Bad input:** a time that isn't finite and strictly increasing, or a state that isn't finite, is `absent:`. A case whose density, mass or gravity isn't positive is `mis-staged:`. A rotor making no thrust at the last frame is a judged fail.
   - **Where:** p_i = hub_i − 2R_i n_i. The hub and thrust axis come from the model's rotor rows posed by the held body (the rule `rotor_discs()` uses), taken from the model, not from LiveRun's disc rows. So a disc the coupling misplaces is sampled where the rotor really is.
   - **What:** u_i is the area-averaged downward axial velocity over a disc of radius 0.5 R_i, centred on p_i, normal to n_i. It's the mean of −n_i · v over every point of a square lattice of pitch 0.05 R_i inside that disc, each point sampled by render's `flow_sample` rule (cell-centred trilinear). A point with no data fails the check.
     - **Why an area, not the axis point** (Physics, 2026-10-19, before any run): on the exact axis the probe sits inside each rotor's hub vortex, where the constant-circulation swirl concentrates and the wake is least resolved and least like momentum theory. Rendering measured ω_y ≈ 230 to 330 1/s 0.5R below. The 0.5R disc averages that core out. It's still inside the contracted slipstream (radius about 0.75R at 2R), where the vortex-cylinder model's axial velocity is close to its axis value. It also tolerates the jets' inward lean as they merge (perhaps 0.2 to 0.3R at 2R). Physics checked the reference by a Biot–Savart sum over the semi-infinite uniform vortex cylinder: at 2R the axial velocity rises from the axis value to 1.0034 times it at 0.5R, so the 0.5R average is 1.0017 times the axis value. The reference stays v_h(1 + 2/√5). That's about 3 cells across at R/dx 6 and 5 at R/dx 10.
@@ -89,7 +91,7 @@ LiveRun, drone held (design decision 1), until P2b.
   - **Premise:**
     - The controls are constant from arming through the window, and the attitude is level: tilted no more than 1°.
     - Σ T_i ≥ 0.5 m g. The rotors are loaded, so a near-zero reference can't let still air pass.
-  - **Developed:** from t_dev = max(0.30 s, 4L / min_i v_ref,i) after arming, where L is the height of the hub plane above the box's bottom face.
+  - **Developed:** from t_dev = max(0.30 s, 4L / min_i v_ref,i) after arming, where L is the height of the hub plane above the box's bottom face. The check takes L from the frames: the highest hub above the published volume's floor, not a declared number.
     - In the 0.8 m box, L = 0.38 m, so t_dev = 0.30 s.
     - Reason: C8 (disc 0.96 m above its bottom face, v_ref 7.58 m/s) averaged from 0.32 s, which is 2.5 wake transits. Four transits, plus the 0.30 s floor, cover the rotors' spin-up and the starting vortex leaving the box.
   - **Window:** [t_dev, t_dev + 0.20 s], the mean over every published frame in it: 6 or more at 30 fps. Fewer fails, as an absence (TD-5).
@@ -142,7 +144,7 @@ LiveRun, drone held (design decision 1), until P2b.
 
 ## 8. Headless tests, red first
 
-These go on a Test/Docs branch, against stubs, before each feature lands. Each later runs on the real feature's state, by milestone:
+These go on a Test/Docs branch, against stubs, before each feature lands. Batch 1 (`test-docs/end-goal-checks`) holds downwash, climbs, follows-attitude, armed, placed-at, drawn and object-added. Batch 2 holds the views, library, import, region bookkeeping and round-trip; round-trip is judged on real state only at M2. Each later runs on the real feature's state, by milestone:
 - **M1:** library, add_drone, fly, raster views.
 - **M2:** airflow, save_reopen.
 - **M3:** add_objects.
