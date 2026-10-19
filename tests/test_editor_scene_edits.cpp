@@ -7,10 +7,18 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <optional>
 #include <string>
+#include <vector>
 
+#include <glm/glm.hpp>
+
+#include "../sandbox/editor_files.hpp"
+#include "../sandbox/editor_library.hpp"
 #include "../sandbox/editor_scene_edits.hpp"
 #include "editor_test_support.hpp"
+#include "render/scene.hpp"
 
 namespace {
 
@@ -25,6 +33,26 @@ using spade::Result;
         if (v.name == name) return &v;
     }
     return nullptr;
+}
+
+// The colour the scene's draw gives the static item standing at `where`: the
+// scene and world composed as the editor composes them, then turned into the
+// render scene the editor's view draws (EditorSession::rebuild_scene()).
+[[nodiscard]] std::optional<glm::vec4> drawn_colour_at(const spade::scene::SceneDesc& s, const spade::WorldDesc& w,
+                                                       glm::vec3 where) {
+    const Result<spade::scene::ComposedScene> composed = ed::compose_together(s, w);
+    EXPECT_TRUE(composed.has_value()) << (composed ? "" : composed.error().context);
+    if (!composed) return std::nullopt;
+    const Result<spade::render::RenderScene> drawn = spade::render::scene_from_world(composed->world, {});
+    EXPECT_TRUE(drawn.has_value()) << (drawn ? "" : drawn.error().context);
+    if (!drawn) return std::nullopt;
+    for (const spade::render::DrawItem& item : drawn->statics) {
+        if (glm::length(glm::vec3(item.local_to_world[3]) - where) > 1e-4f) continue;
+        const uint32_t m = item.material_override == spade::render::kNoMaterial ? 0u : item.material_override;
+        if (m >= drawn->materials.size()) return std::nullopt;
+        return drawn->materials[m].base_color;
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -107,6 +135,8 @@ TEST(EditorSceneEdits, RemovingAVehicleRemovesItsOwnModelButNotASharedOne) {
     auto d = doc_of(support::sample_scene());
     ASSERT_TRUE(ed::apply(d, ed::DuplicateObject{"hover_quad_0"}).has_value());  // two vehicles, two models
     ASSERT_TRUE(ed::apply(d, ed::RemoveObject{"hover_quad_0_2"}).has_value());
+    EXPECT_EQ(d.desc().vehicles.size(), 1u);  // the live smoke's builder.delete/removes-one, for a vehicle
+    EXPECT_EQ(vehicle(d.desc(), "hover_quad_0_2"), nullptr);
     EXPECT_EQ(d.desc().models.size(), 1u);
     // Two vehicles sharing one model (as a Kat scene may): removing one keeps it.
     spade::scene::SceneDesc shared = support::sample_scene();
@@ -115,8 +145,17 @@ TEST(EditorSceneEdits, RemovingAVehicleRemovesItsOwnModelButNotASharedOne) {
     shared.vehicles.push_back(twin);
     auto s = doc_of(shared);
     ASSERT_TRUE(ed::apply(s, ed::RemoveObject{"twin"}).has_value());
+    EXPECT_EQ(s.desc().vehicles.size(), 1u);
     EXPECT_EQ(s.desc().models.size(), 1u);
     EXPECT_NE(vehicle(s.desc(), "hover_quad_0"), nullptr);
+}
+
+// builder.delete/removes-one, for a placed box: one object fewer, the named one.
+TEST(EditorSceneEdits, RemovingAnAssetLeavesTheOthers) {
+    auto d = doc_of(support::with_asset(support::with_asset(support::sample_scene(), "box_1"), "box_2"));
+    ASSERT_TRUE(ed::apply(d, ed::RemoveObject{"box_1"}).has_value());
+    ASSERT_EQ(d.desc().assets.size(), 1u);
+    EXPECT_EQ(d.desc().assets[0].name, "box_2");
 }
 
 TEST(EditorSceneEdits, ReorderingIsAnEditAndIsUndone) {
@@ -165,4 +204,46 @@ TEST(EditorSceneEdits, AMaterialGoesOnlyOnAnAssetWithAVisual) {
     const Result<void> r = ed::apply(d, ed::SetAssetMaterial{"box_1", "red"});
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().context.find("visual"), std::string::npos) << r.error().context;
+}
+
+// The live smoke's builder.recolour/reaches-material, on the editor's own
+// library box: a box placed from the library has no visual, so it draws as its
+// collider, and a collider material is what colours it. Undo puts the old
+// colour back, read the same way.
+TEST(EditorSceneEdits, AColliderMaterialColoursALibraryBoxAndUndoes) {
+    auto d = doc_of(support::sample_scene());
+    const spade::WorldDesc world = support::sample_world();
+    const std::vector<ed::LibraryItem> library = ed::builtin_library();
+    const auto box = std::find_if(library.begin(), library.end(), [](const auto& i) { return i.name == "box"; });
+    ASSERT_NE(box, library.end());
+    spade::SdfPose at;
+    at.position = glm::vec3(3.0f, 0.5f, -2.0f);
+    const Result<std::string> name = ed::place(d, *box, at);
+    ASSERT_TRUE(name.has_value()) << name.error().context;
+    spade::MaterialDesc red;
+    red.name = "red";
+    red.base_color = glm::vec4(1.0f, 0.1f, 0.05f, 1.0f);
+    ASSERT_TRUE(ed::apply(d, ed::AddMaterial{red}).has_value());
+
+    const std::optional<glm::vec4> before = drawn_colour_at(d.desc(), world, at.position);
+    ASSERT_TRUE(before.has_value()) << "no item draws the placed box at its position";
+    ASSERT_NE(*before, red.base_color);
+
+    ASSERT_TRUE(ed::apply(d, ed::SetColliderMaterial{*name, "red"}).has_value());
+    EXPECT_EQ(drawn_colour_at(d.desc(), world, at.position), std::optional<glm::vec4>(red.base_color))
+        << "the box does not draw in the material it was given";
+
+    ASSERT_TRUE(d.undo());
+    EXPECT_EQ(drawn_colour_at(d.desc(), world, at.position), before) << "undo did not restore the box's colour";
+}
+
+TEST(EditorSceneEdits, AColliderMaterialNeedsACollider) {
+    spade::scene::SceneDesc s = support::sample_scene();
+    spade::scene::SceneAsset ghost;
+    ghost.name = "ghost";  // no nodes: it neither collides nor draws
+    s.assets.push_back(ghost);
+    auto d = doc_of(s);
+    const Result<void> r = ed::apply(d, ed::SetColliderMaterial{"ghost", "red"});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("no collider"), std::string::npos) << r.error().context;
 }

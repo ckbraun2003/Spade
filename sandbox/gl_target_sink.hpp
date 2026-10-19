@@ -37,10 +37,8 @@
 namespace spade::sandbox {
 
 // Forward-declared rather than included: this header does not touch a single
-// member of it, so including builder_scene.hpp here would pull the whole
-// object model (and glm's matrix headers) into every translation unit that
-// merely wants to open a window.
-struct BuilderScene;
+// member of it, so including drone_view.hpp here would pull the drone's model
+// into every translation unit that merely wants to open a window.
 struct DronePanelModel;
 namespace editor {
 struct EditorPanels;
@@ -198,28 +196,20 @@ class GlTargetSink final : public TargetSink {
     // view and under every panel. Held until replaced; empty draws none.
     void set_view_lines(std::vector<editor::GizmoLine> lines);
 
-    // Attach the builder's model, or nullptr to detach. While attached, the
-    // hierarchy and inspector are drawn by WHICHEVER path presents the frame
-    // and written back into.
+    // Attach the drone sim box's physics panel, or nullptr to detach. While
+    // attached, the panel is drawn by WHICHEVER path presents the frame and
+    // written back into.
     //
     // ⭐ ATTACHED ONCE RATHER THAN PASSED PER PRESENT, SO BOTH PATHS GET IT.
     // The GPU path presents through present_overlay() and the CPU fallback
-    // through accept(); a parameter on one of them gives the builder to one
-    // path and silently withholds it from the other. That is the same defect
-    // as two copies of the HUD -- which this file already refused once -- with
-    // the copies replaced by an absence, which is harder to notice.
+    // through accept(); a parameter on one of them gives the panel to one
+    // path and silently withholds it from the other.
     //
     // WHY THE MODEL COMES HERE INSTEAD OF THE PANEL LIVING IN THE APPLICATION:
-    // ImGui is this file's dependency and nobody else's. Letting main.cpp draw
-    // its own widgets would put imgui.h in the application, which SL2b forbids
-    // and which would spread the one dependency that has to stay contained.
-    // BuilderScene is a pure struct with no UI in it, so it crosses this
-    // header freely -- the model travels, the toolkit does not.
-    void attach_builder(BuilderScene* model) noexcept;
-
-    // The drone sim box's physics panel, attached the same way and for the
-    // same reasons as the builder. The panel only writes the model; what an
-    // edit DOES is decided by drone_view.hpp's apply_panel_edits.
+    // ImGui is this file's dependency and nobody else's (SL2b). The model is a
+    // pure struct with no UI in it, so it crosses this header freely -- the
+    // model travels, the toolkit does not. The panel only writes the model;
+    // what an edit DOES is decided by drone_view.hpp's apply_panel_edits.
     void attach_drone(DronePanelModel* model) noexcept;
 
     // The editor's panels (editor_panels_ui.hpp): toolbar, hierarchy,
@@ -287,12 +277,6 @@ class GlTargetSink final : public TargetSink {
     // and two copies of a panel is the same defect as two copies of a channel
     // reorder, which this file already refused once.
     void draw_overlay();
-
-    // The builder's hierarchy + inspector. Separate from draw_overlay()
-    // because the HUD must appear whether or not a builder model exists --
-    // the headless and CPU-fallback paths have no builder and still need
-    // their numbers.
-    void draw_builder_panel(BuilderScene& model);
 
     void draw_drone_panel(DronePanelModel& model);
 

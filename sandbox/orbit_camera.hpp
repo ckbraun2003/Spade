@@ -95,7 +95,6 @@ struct FrameInput {
     float attitude_roll = 0.0f;   // Right = +1, Left = -1
     float attitude_yaw = 0.0f;    // Z = +1, X = -1
     bool level_pressed = false;        // R, edge -- pitch and roll back to 0
-    bool toggle_view_pressed = false;  // V, edge -- standard <-> heatmap
 };
 
 // An orbit rig: a target point, a direction to it, and a distance.

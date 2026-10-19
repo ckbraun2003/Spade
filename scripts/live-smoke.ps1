@@ -8,9 +8,10 @@
     `spade_sandbox --live-smoke`, and prints the video path and the verdict.
 
     The run writes to <OutRoot>\<UTC date>_<commit sha12>\:
-      tour.mp4      the tour, 30 fps, with a title card at each end
-      NN_<main>.png one still per main function (drone_box, builder, and the
-                    built-in scenes shower, bounce, gate, hover, wind)
+      tour.mp4      the tour, 30 fps, with a title card at each end and one
+                    opening each chapter
+      NN_<main>.png one still per chapter: 01_drone_box, 02_airflow, 03_editor
+      editor_*.png  the editor's review stills
       journal.txt   every step, check and anomaly, as it happened, ending
                     with "END verdict=PASS|FAIL"
     The sandbox deletes only those names (and its fallback stills) from the

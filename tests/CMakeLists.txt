@@ -319,19 +319,14 @@ if(SPADE_BUILD_SANDBOX)
         # expectations are hand-written literals rather than a second
         # expression of the mapping under test.
         test_sandbox_camera_and_channels.cpp
-        # The builder: placement, picking, dragging, delete/duplicate, the
-        # UI-capture gate and the upload contract. All of it decided by pure
-        # functions in sandbox/builder_scene.hpp, so all of it runs with no
-        # display -- which is the entire reason those functions are not in the
-        # window loop.
-        test_sandbox_builder.cpp
+        # A click's screen ray and the unit meshes every view scales
+        # (sandbox/screen_ray.hpp, unit_meshes.hpp), with no display.
+        test_sandbox_unit_meshes.cpp
         # The drone sim box: the test stand's pin, the attitude controller and
         # mixer (checked against the engine, not only against their own
         # formulas), the accumulator cap and the rebuild carry.
         test_sandbox_drone.cpp
-        # The drone's view: the air field (medium + rotor wakes), the heatmap
-        # palette and slice, and the drone's real-size parts -- including one
-        # exact-pixel check through the CPU rasterizer.
+        # The drone's view: its real-size parts, the panel and the keys.
         test_sandbox_drone_view.cpp
         # The live smoke's verdict machinery (journal, declared-step ledger,
         # expiring known-open entries, inject hooks), its artefact names, the
@@ -348,6 +343,10 @@ if(SPADE_BUILD_SANDBOX)
         # catches -- still air, a pinned drone, a buried object -- and passes on
         # a stub of the right state.
         test_sandbox_end_goal_checks.cpp
+        # The scene files the live smoke used to open (shower, bounce, hover,
+        # wind), headless: each composes, places its bodies and does what it
+        # is for (the tour storyboard's §4).
+        test_sandbox_scene_files.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp

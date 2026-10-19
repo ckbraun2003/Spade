@@ -11,6 +11,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "../sandbox/drone_sim.hpp"
+#include "../sandbox/drone_view.hpp"  // nudge_attitude: the R key
 
 using namespace spade::sandbox;
 
@@ -166,6 +167,26 @@ TEST(SandboxDrone, TheControllerReachesEachTarget) {
         EXPECT_LT(angle_between(drone->readouts().orientation, attitude_quat(t)), 0.035f)  // within 2 degrees
             << "target yaw " << t.yaw << " pitch " << t.pitch << " roll " << t.roll;
     }
+}
+
+// The live smoke's drone_box.level/drone-levels, headless: R levels the
+// target, and the drone comes back within 5 degrees of level in the tour's
+// 150 frames (2.5 s), from a tilt it was holding.
+TEST(SandboxDrone, LevellingBringsATiltedDroneBackLevel) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    drone->target = AttitudeTarget{0.3f, 0.5f, -0.4f};
+    ASSERT_TRUE(drone->step_fixed(1500).has_value());  // 3 s: holding the tilt
+    const AttitudeTarget tilted = attitude_from_quat(drone->readouts().orientation);
+    ASSERT_GT(std::max(std::fabs(tilted.pitch), std::fabs(tilted.roll)), 0.3f) << "the drone never tilted";
+
+    FrameInput r;
+    r.level_pressed = true;
+    nudge_attitude(drone->target, r, 1.0f / 60.0f);
+    ASSERT_TRUE(drone->step_fixed(1250).has_value());  // 2.5 s
+    const AttitudeTarget a = attitude_from_quat(drone->readouts().orientation);
+    EXPECT_LT(std::fabs(a.pitch), 0.087f) << "pitch " << a.pitch << " rad after levelling";
+    EXPECT_LT(std::fabs(a.roll), 0.087f) << "roll " << a.roll << " rad after levelling";
 }
 
 TEST(SandboxDrone, TiltBeyondTheLimitIsClamped) {

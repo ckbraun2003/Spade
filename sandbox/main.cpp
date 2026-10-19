@@ -50,8 +50,7 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
-#include "builder_scene.hpp"   // the builder's object model and its whole interaction
-#include "drone_view.hpp"      // the drone sim box: stand, controller, air field, heatmap (+ drone_sim.hpp)
+#include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "editor_cli.hpp"      // --edit: the editor's command line, no window
 #include "editor_session.hpp"  // --editor: the editor's window
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
@@ -62,7 +61,6 @@
 
 namespace {
 
-using spade::sandbox::build_builtin_scene;
 using spade::sandbox::build_drone_scene;
 using spade::sandbox::drone_frame;
 using spade::sandbox::GpuRenderer;
@@ -76,20 +74,17 @@ void print_usage() {
     std::puts("  (no mode flag)        open a window on the default scene -- THE DEFAULT");
     std::puts("  --window              the same, stated explicitly");
     std::puts("  --headless            render one frame with no window and exit (the CI surface)");
-    std::puts("  --scene <name>        drone (default): the drone sim box; builder: the scene builder");
-    std::puts("  --view <name>         headless drone only: standard (default) or heatmap");
+    std::puts("  --scene drone         the drone sim box, the only scene (the default)");
     std::puts("  --out <path>          write the frame as a binary PPM (default: no file, render only)");
     std::puts("  --width/--height <n>  frame size (headless 320x180, window 1280x720)");
     std::puts("  --no-vsync            do not wait for the display refresh");
-    std::puts("  --smoke               drive the builder from a SCRIPT, assert, and exit");
-    std::puts("                        non-zero if any check fails -- the re-runnable demo");
-    std::puts("  --live-smoke          tour both scenes in the window, record tour.mp4, a PNG per");
-    std::puts("                        scene and journal.txt into --out <dir>; exit 0 PASS, 1 FAIL,");
-    std::puts("                        2 no verdict (scripts/live-smoke.ps1 runs it)");
+    std::puts("  --live-smoke          tour the drone box, the airflow and the editor in the window,");
+    std::puts("                        record tour.mp4, a PNG per chapter and journal.txt into");
+    std::puts("                        --out <dir>; exit 0 PASS, 1 FAIL, 2 no verdict");
+    std::puts("                        (scripts/live-smoke.ps1 runs it)");
     std::puts("  --label <text>        live smoke: the commit and date for the title cards");
-    std::puts("  --assets <dir>        live smoke: the repository's assets/, for the built-in scene files");
+    std::puts("  --assets <dir>        live smoke: the repository's assets/, for the editor's scene files");
     std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
-    std::puts("  --no-grid             disable the infinite analytic ground grid (builder)");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --edit <scene.yaml>   FIRST ARGUMENT ONLY: the editor's command line, no window:");
     std::puts("                        [--apply <edits.txt>] [--save <scene.yaml>] [--save-world <world.yaml>]");
@@ -99,15 +94,11 @@ void print_usage() {
     std::puts("  --help                this text\n");
     std::puts("In the window -- THE DRONE SIM BOX (default):");
     std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
-    std::puts("  R              level      V standard <-> air-speed heatmap");
+    std::puts("  R              level");
     std::puts("  A/D around     E/Q over/under     W/S nearer/further (0.5-6 m)     drag orbit");
     std::puts("  the panel      wind, turbulence, density, gravity, throttle, backend; readouts");
-    std::puts("In the window -- THE BUILDER (--scene builder):");
-    std::puts("  LEFT click     place the selected primitive on the ground, or select an object");
-    std::puts("  LEFT drag      move the selected object in the ground plane");
-    std::puts("  RIGHT drag     orbit    scroll dolly    WASD pan    Q/E lower/raise");
-    std::puts("  Del            delete the selection      Ctrl+D duplicate it");
-    std::puts("  the panel      shape palette, hierarchy, per-object transform/colour/physics");
+    std::puts("The scene builder is retired: the editor (--editor) places, moves, recolours,");
+    std::puts("duplicates and deletes objects in a scene file.");
     std::puts("  F1 hides the HUD, Esc quits.");
     std::puts("Run with --headless in CI; SPADE_BUILD_SANDBOX=OFF omits this target entirely.");
 }
@@ -118,262 +109,6 @@ void print_usage() {
 // BGRX->RGB are ONE statement. A second copy of the conversion is exactly the
 // "two expressions that happen to agree" shape SR-17 clause 4 exists to
 // forbid, and SL10's test asserts against ONE of them.
-
-}  // namespace
-
-// ---------------------------------------------------------------------------
-// --smoke -- THE BUILDER, DRIVEN BY A SCRIPT INSTEAD OF BY A HAND.
-//
-// ⭐⭐⭐ WHY THIS EXISTS AT ALL. The evidence owed for the builder is "place a
-// box, select it, drag it, recolour it, delete it" -- and the agent that built
-// it cannot hold a mouse. The answer is NOT to ask a human: a human clicking
-// produces "it looked right when I dragged it", which is not a claim anyone
-// can re-run, and that is the exact sentence this builder's architecture was
-// designed around. Feeding synthesised FrameInputs through the REAL window,
-// the REAL GPU renderer and the REAL builder gives the same evidence and gives
-// it every time anyone asks.
-//
-// ⚠⚠ AND IT MUST BE ABLE TO FAIL, OR IT IS A SCREENSHOT TOOL WITH OPINIONS.
-// Every scripted action carries an assertion about what the model or the
-// renderer should now report, each one prints its ACTUAL value beside its
-// expectation, and the process exits non-zero if any of them did not hold.
-// A smoke that always exits 0 measures that the smoke ran.
-// ---------------------------------------------------------------------------
-namespace {
-
-struct SmokeTally {
-    int checks = 0;
-    int failed = 0;
-
-    void check(bool ok, const char* what, const std::string& detail) {
-        ++checks;
-        if (!ok) {
-            ++failed;
-        }
-        std::printf("  [%s] %-46s %s\n", ok ? "PASS" : "FAIL", what, detail.c_str());
-    }
-};
-
-[[nodiscard]] std::string num(long long v) { return std::to_string(v); }
-
-template <typename RenderOne>
-[[nodiscard]] int run_smoke(spade::sandbox::GlTargetSink& sink,
-                            spade::sandbox::BuilderScene& builder,
-                            spade::render::RenderScene& scene,
-                            GpuRenderer* gpu, RenderOne&& render_one) {
-    using spade::sandbox::FrameInput;
-    SmokeTally t;
-
-    // Pump N frames with a given input. The poll() is what keeps the window
-    // responsive to the OS -- its INPUT is discarded, because the whole point
-    // is that the script drives, not the mouse.
-    const auto frames = [&](const FrameInput& in, int n) -> bool {
-        for (int i = 0; i < n; ++i) {
-            const FrameInput real = sink.poll();
-            if (real.want_close) {
-                return false;
-            }
-            if (!render_one(in)) {
-                return false;
-            }
-        }
-        return true;
-    };
-    const auto draws = [&]() -> uint32_t { return gpu != nullptr ? gpu->last_draw_calls() : 0u; };
-
-    // Settle: let the window map and the first real frame happen before any
-    // measurement. A first frame includes one-time GL work and is not
-    // representative of anything.
-    if (!frames(FrameInput{}, 4)) {
-        std::fprintf(stderr, "spade_sandbox: smoke aborted -- window closed during settle\n");
-        return 2;
-    }
-
-    const uint32_t fw = sink.viewport().width;
-    const uint32_t fh = sink.viewport().height;
-    std::printf("\nspade_sandbox: SMOKE -- scripted builder session at %ux%u\n", fw, fh);
-    std::printf("  GPU renderer: %s\n", gpu != nullptr ? "ACTIVE" : "ABSENT (CPU fallback)");
-
-    const uint32_t draws_empty = draws();
-
-    // Three ground points, chosen in the lower half where the ground is.
-    const float x1 = static_cast<float>(fw) * 0.50f, y1 = static_cast<float>(fh) * 0.72f;
-    const float x2 = static_cast<float>(fw) * 0.38f, y2 = static_cast<float>(fh) * 0.66f;
-    const float x3 = static_cast<float>(fw) * 0.62f, y3 = static_cast<float>(fh) * 0.66f;
-
-    const auto click = [](float x, float y) {
-        FrameInput in;
-        in.mouse_x = x;
-        in.mouse_y = y;
-        in.left_click = true;
-        in.left_down = true;
-        return in;
-    };
-
-    // ----- PLACE ---------------------------------------------------------
-    builder.placing = true;
-    builder.pending_shape = spade::sandbox::Shape::box;
-    if (!frames(click(x1, y1), 1)) return 2;
-    t.check(builder.objects.size() == 1u, "click on empty ground places a box",
-            "objects=" + num(static_cast<long long>(builder.objects.size())) + " expected 1");
-    t.check(builder.selected == 0, "the new object is selected",
-            "selected=" + num(builder.selected) + " expected 0");
-
-    builder.pending_shape = spade::sandbox::Shape::sphere;
-    if (!frames(click(x2, y2), 1)) return 2;
-    builder.pending_shape = spade::sandbox::Shape::cylinder;
-    if (!frames(click(x3, y3), 1)) return 2;
-    t.check(builder.objects.size() == 3u, "a sphere and a cylinder place too",
-            "objects=" + num(static_cast<long long>(builder.objects.size())) + " expected 3");
-    t.check(scene.dynamics.size() == builder.objects.size(),
-            "every object reached the render scene",
-            "dynamics=" + num(static_cast<long long>(scene.dynamics.size())) + " objects=" +
-                num(static_cast<long long>(builder.objects.size())));
-
-    // ⚠ THE OBJECTS MUST REST ON THE GROUND, NOT IN IT. Asserted here against
-    // the renderer's own ground_y rather than against 0, so a scene whose
-    // ground moves does not silently make this vacuous.
-    bool all_on_ground = true;
-    for (const spade::sandbox::BuilderObject& o : builder.objects) {
-        if (std::fabs(o.position.y - (scene.ground_y + o.scale.y * 0.5f)) > 1e-3f) {
-            all_on_ground = false;
-        }
-    }
-    t.check(all_on_ground, "placed objects rest ON the ground plane",
-            "ground_y=" + std::to_string(scene.ground_y));
-
-    const uint32_t draws_three = draws();
-
-    // ⚠⚠ STOP HERE IF PLACEMENT DID NOT HAPPEN, AND STOP BY REPORTING RATHER
-    // THAN BY CRASHING. Every step below indexes objects[0] and objects[2];
-    // if a scripted click missed the ground, those are out-of-bounds reads on
-    // an empty vector and this process dies with no output at all.
-    // ⭐ A SMOKE THAT CRASHES INSTEAD OF REPORTING IS WORSE THAN USELESS: the
-    // failure it was built to describe is exactly the failure that silences
-    // it. Found by re-reading, not by running -- nothing has run yet.
-    if (builder.objects.size() < 3u) {
-        std::printf("\nspade_sandbox: SMOKE ABORTED -- placement produced %zu of 3 objects, so "
-                    "the steps below have nothing to act on.\n",
-                    builder.objects.size());
-        std::printf("spade_sandbox: SMOKE FAILED -- %d checks, %d failed\n", t.checks, t.failed);
-        return 1;
-    }
-
-    // ----- SELECT --------------------------------------------------------
-    // Placement mode OFF, and a click on the FIRST object's own screen point.
-    // That point is where its base was placed, so the ray that reached the
-    // ground through it must pass through the object on the way.
-    builder.placing = false;
-    if (!frames(click(x1, y1), 1)) return 2;
-    t.check(builder.selected == 0, "clicking an object selects it rather than placing",
-            "selected=" + num(builder.selected) + " expected 0, objects=" +
-                num(static_cast<long long>(builder.objects.size())) + " expected 3");
-    t.check(builder.objects.size() == 3u, "selecting did NOT add an object",
-            "objects=" + num(static_cast<long long>(builder.objects.size())));
-
-    // ----- DRAG ----------------------------------------------------------
-    const glm::vec3 before = builder.objects[0].position;
-    FrameInput drag;
-    drag.mouse_x = x1 + static_cast<float>(fw) * 0.12f;
-    drag.mouse_y = y1;
-    drag.left_down = true;
-    if (!frames(drag, 2)) return 2;
-    const glm::vec3 after = builder.objects[0].position;
-    t.check(std::fabs(after.x - before.x) > 0.05f, "dragging moves the selection in X",
-            "x " + std::to_string(before.x) + " -> " + std::to_string(after.x));
-    t.check(std::fabs(after.y - before.y) < 1e-4f, "dragging leaves HEIGHT untouched",
-            "y " + std::to_string(before.y) + " -> " + std::to_string(after.y));
-
-    // ----- RECOLOUR ------------------------------------------------------
-    builder.objects[0].color = glm::vec4(1.0f, 0.1f, 0.05f, 1.0f);
-    builder.materials_dirty = true;
-    if (!frames(FrameInput{}, 2)) return 2;
-    t.check(scene.materials.size() >= builder.objects.size(),
-            "a colour edit reaches the scene palette",
-            "materials=" + num(static_cast<long long>(scene.materials.size())) + " objects=" +
-                num(static_cast<long long>(builder.objects.size())));
-
-    // ----- DELETE --------------------------------------------------------
-    builder.selected = 2;
-    builder.delete_request = true;
-    if (!frames(FrameInput{}, 1)) return 2;
-    t.check(builder.objects.size() == 2u, "delete removes the selection",
-            "objects=" + num(static_cast<long long>(builder.objects.size())) + " expected 2");
-    t.check(builder.selected == 1, "the selection clamps rather than clearing",
-            "selected=" + num(builder.selected) + " expected 1");
-
-    // ----- THE INSTANCING CLAIM, WHICH IS THE WHOLE ARGUMENT FOR THE GPU
-    // PATH. One draw call per distinct mesh, NOT per object. Measured by
-    // putting ten boxes in the scene and comparing against one.
-    builder.objects.clear();
-    builder.selected = -1;
-    builder.objects.push_back(spade::sandbox::make_object_at(
-        spade::sandbox::Shape::box, glm::vec3(0.0f, scene.ground_y, 0.0f), 0));
-    builder.materials_dirty = true;
-    if (!frames(FrameInput{}, 2)) return 2;
-    const uint32_t draws_1box = draws();
-
-    for (int i = 1; i < 10; ++i) {
-        builder.objects.push_back(spade::sandbox::make_object_at(
-            spade::sandbox::Shape::box,
-            glm::vec3(static_cast<float>(i) * 1.5f - 7.0f, scene.ground_y, -2.0f), i));
-    }
-    builder.materials_dirty = true;
-    if (!frames(FrameInput{}, 2)) return 2;
-    const uint32_t draws_10box = draws();
-    const uint32_t inst_10 = gpu != nullptr ? gpu->last_instances() : 0u;
-
-    if (gpu != nullptr) {
-        t.check(draws_10box == draws_1box,
-                "10 BOXES COST THE SAME DRAW CALLS AS 1 BOX",
-                "1 box=" + num(draws_1box) + "  10 boxes=" + num(draws_10box));
-        t.check(inst_10 >= 10u, "and the renderer did issue 10 instances",
-                "instances=" + num(inst_10));
-        t.check(draws_three > draws_1box,
-                "three DISTINCT shapes cost more draw calls than one shape",
-                "1 shape=" + num(draws_1box) + "  3 shapes=" + num(draws_three));
-    } else {
-        std::printf("  [SKIP] draw-call checks -- no GPU renderer on this machine\n");
-    }
-
-    // ----- REPORT --------------------------------------------------------
-    const spade::sandbox::GlTargetSink::Timings life = sink.lifetime_timings();
-    const uint64_t tris = [&]() {
-        uint64_t n = 0;
-        for (const spade::render::DrawItem& d : scene.dynamics) {
-            if (d.mesh_index < scene.meshes.size()) {
-                n += scene.meshes[d.mesh_index].indices.size() / 3u;
-            }
-        }
-        for (const spade::render::DrawItem& d : scene.statics) {
-            if (d.mesh_index < scene.meshes.size()) {
-                n += scene.meshes[d.mesh_index].indices.size() / 3u;
-            }
-        }
-        return n;
-    }();
-
-    std::printf("\nspade_sandbox: SMOKE NUMBERS -- every figure with its population beside it\n");
-    std::printf("  resolution        %ux%u\n", fw, fh);
-    std::printf("  objects on screen %zu  (+ %zu static)\n", scene.dynamics.size(),
-                scene.statics.size());
-    std::printf("  triangles drawn   %llu\n", static_cast<unsigned long long>(tris));
-    std::printf("  draw calls        empty=%u  1 box=%u  10 boxes=%u  3 shapes=%u\n", draws_empty,
-                draws_1box, draws_10box, draws_three);
-    std::printf("  frames presented  %llu\n", static_cast<unsigned long long>(sink.presented()));
-    std::printf("  mean frame        %.3f ms  (%.1f fps)\n", life.total_ms,
-                life.total_ms > 0.0f ? 1000.0f / life.total_ms : 0.0f);
-    std::printf("    render %.3f  ui %.3f  swap %.3f ms\n", life.render_ms, life.ui_ms,
-                life.swap_ms);
-    std::printf("  scene composition %zu meshes  %zu materials  %zu ground_planes\n",
-                scene.meshes.size(), scene.materials.size(), scene.ground_planes.size());
-    std::printf("\nspade_sandbox: SMOKE %s -- %d checks, %d failed\n",
-                t.failed == 0 ? "PASSED" : "FAILED", t.checks, t.failed);
-    // ⚠ THE FPS ABOVE IS NOT COMPARABLE TO V1's. It is 10 boxes at this
-    // resolution with vsync possibly on -- say the population or the number is
-    // not a measurement.
-    return t.failed == 0 ? 0 : 1;
-}
 
 }  // namespace
 
@@ -408,65 +143,10 @@ void print_exit_summary(const spade::sandbox::GlTargetSink& sink, uint32_t width
                     (1024.0 * 1024.0));
 }
 
-// The builder in a window, or scripted by --smoke. Both drive the scene
-// through BuilderSession::frame() (scene_sessions.hpp).
-int run_windowed(uint32_t width, uint32_t height, bool grid, float blur, bool vsync, bool smoke) {
-    // Declared first, so it is destroyed last: the session detaches from it.
-    // Opened second, so a scene that will not build refuses with no window.
-    std::unique_ptr<spade::sandbox::GlTargetSink> sink;
-    spade::Result<std::unique_ptr<spade::sandbox::BuilderSession>> made =
-        spade::sandbox::BuilderSession::create(grid, blur);
-    if (!made) {
-        std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
-        return 1;
-    }
-    sink = spade::sandbox::open_window(width, height, vsync);
-    if (!sink) {
-        return 3;
-    }
-    spade::sandbox::BuilderSession& session = **made;
-    session.attach(*sink);
-
-    // ⭐⭐⭐ ONE FRAME, ONE STATEMENT, CALLED BY BOTH THE INTERACTIVE LOOP AND
-    // THE SMOKE. Extracted rather than copied, for the reason this file has
-    // already refused twice: two copies of a render path are two things that
-    // can disagree, and the smoke's whole value is that it exercises THE SAME
-    // path a user does. A smoke with its own private frame loop proves that
-    // the smoke works. The frame itself is BuilderSession::frame(), which the
-    // live smoke drives too.
-    const auto render_one = [&](const spade::sandbox::FrameInput& in) -> bool {
-        if (const spade::Result<void> drew = session.frame(in); !drew) {
-            std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
-            return false;
-        }
-        return true;
-    };
-
-    if (smoke) {
-        const int rc_smoke = run_smoke(*sink, session.builder(), session.scene(), session.gpu(), render_one);
-        if (rc_smoke != 0) {
-            return rc_smoke;
-        }
-    } else {
-        while (!sink->should_close()) {
-            const spade::sandbox::FrameInput in = sink->poll();
-            if (in.want_close) {
-                break;
-            }
-            if (!render_one(in)) {
-                return 1;
-            }
-        }
-    }
-
-    print_exit_summary(*sink, width, height, vsync);
-    return 0;
-}
-
 // ---------------------------------------------------------------------------
 // THE DRONE SIM BOX -- the default scene. A quadrotor on a test stand, flown
-// in attitude through the engine's rotor model, with the air around it as an
-// optional heatmap. Every decision is in drone_sim.hpp / drone_view.hpp and is
+// in attitude through the engine's rotor model. Every decision is in
+// drone_sim.hpp / drone_view.hpp and is
 // asserted with no display; the wiring is DroneSession (scene_sessions.hpp).
 // ---------------------------------------------------------------------------
 
@@ -540,7 +220,7 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
 
 // --headless --scene drone: deterministic -- 250 fixed steps (0.5 s) with the
 // controller holding level, one CPU frame from a fixed camera.
-int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap, const char* out_path) {
+int run_headless_drone(uint32_t width, uint32_t height, float blur, const char* out_path) {
     spade::Result<spade::sandbox::DroneSim> drone = spade::sandbox::DroneSim::create(spade::sandbox::DronePhysicsOptions{});
     if (!drone) {
         std::fprintf(stderr, "spade_sandbox: the drone stand would not build: %s\n", drone.error().context.c_str());
@@ -560,9 +240,8 @@ int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap
     spade::render::Camera camera;
     camera.position = glm::vec3(1.2f, 0.6f, 1.6f);
     camera.orientation = glm::quatLookAt(glm::normalize(-camera.position), glm::vec3(0.0f, 1.0f, 0.0f));
-    float observed = 0.0f;
     const spade::render::RenderOptions options =
-        drone_frame(scene, binding, *drone, drone->readouts().orientation, camera, heatmap, 0.0f, blur, &observed);
+        drone_frame(scene, binding, *drone, drone->readouts().orientation, blur);
 
     spade::sandbox::HeadlessTargetSink sink{out_path != nullptr ? std::string(out_path) : std::string{}};
     std::vector<uint8_t> pixels;
@@ -574,12 +253,9 @@ int run_headless_drone(uint32_t width, uint32_t height, float blur, bool heatmap
         return 1;
     }
     const spade::sandbox::DroneReadouts r = drone->readouts();
-    std::printf("spade_sandbox: drone %s view, %ux%u after %llu steps%s%s\n", heatmap ? "heatmap" : "standard",
-                width, height, static_cast<unsigned long long>(r.tick), out_path != nullptr ? " -> " : "",
+    std::printf("spade_sandbox: drone view, %ux%u after %llu steps%s%s\n", width, height,
+                static_cast<unsigned long long>(r.tick), out_path != nullptr ? " -> " : "",
                 out_path != nullptr ? out_path : "");
-    if (heatmap) {
-        std::printf("spade_sandbox:   air speed 0 .. %.2f m/s across the slice\n", static_cast<double>(observed));
-    }
     return 0;
 }
 
@@ -622,16 +298,9 @@ int main(int argc, char** argv) {
     const char* out_path = nullptr;
     bool width_set = false, height_set = false;
     uint32_t width = 0, height = 0;
-    // THE SANDBOX'S DEFAULT WORLD HAS THE GRID ON. The engine's RenderOptions
-    // default is OFF (see target.hpp for the three tests that decided it); the
-    // "default render world" the user asked for is THIS application's scene,
-    // and it opts in here where the choice is visible.
-    bool grid = true;
     bool vsync = true;
-    bool smoke = false;
     float blur = 0.0f;
-    const char* scene_name = nullptr;  // "drone" (the default) or "builder"
-    const char* view_name = nullptr;   // drone only: "standard" (default) or "heatmap"
+    const char* scene_name = nullptr;  // "drone", the only scene (the default)
     bool live_smoke = false;
     spade::sandbox::live::TourOptions tour;
 
@@ -642,23 +311,22 @@ int main(int argc, char** argv) {
             return 0;
         } else if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
             scene_name = argv[++i];
-        } else if (std::strcmp(a, "--view") == 0 && i + 1 < argc) {
-            view_name = argv[++i];
+        } else if (std::strcmp(a, "--smoke") == 0) {
+            // Named, not just unrecognised: an old command line says what replaced it.
+            std::fprintf(stderr, "spade_sandbox: --smoke scripted the scene builder, which is retired (INT-9); "
+                                 "--live-smoke tours the editor, which does what the builder did\n");
+            return 2;
         } else if (std::strcmp(a, "--headless") == 0) {
             headless = true;
         } else if (std::strcmp(a, "--window") == 0) {
             windowed = true;
         } else if (std::strcmp(a, "--no-vsync") == 0) {
             vsync = false;
-        } else if (std::strcmp(a, "--smoke") == 0) {
-            smoke = true;
         } else if (std::strcmp(a, "--out") == 0 && i + 1 < argc) {
             out_path = argv[++i];
         } else if (std::strcmp(a, "--width") == 0 && i + 1 < argc) {
             width = static_cast<uint32_t>(std::atoi(argv[++i]));
             width_set = true;
-        } else if (std::strcmp(a, "--no-grid") == 0) {
-            grid = false;
         } else if (std::strcmp(a, "--horizon-blur") == 0 && i + 1 < argc) {
             blur = static_cast<float>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--height") == 0 && i + 1 < argc) {
@@ -684,22 +352,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    // REFUSES rather than guessing. Two modes named at once is not a
-    // preference the tool can resolve, and picking one would make the other
-    // flag silently inert.
-    // REFUSES rather than silently ignoring. --smoke drives a window, a GPU
-    // renderer and a builder; there is nothing for it to do headless, and a
-    // flag that quietly does nothing is worse than one that says no.
-    if (smoke && headless) {
-        std::fprintf(stderr, "spade_sandbox: --smoke drives the window; it cannot run headless\n");
-        return 2;
-    }
-    // --live-smoke tours both scenes in one window and records it; it picks its
-    // own scenes and views, and it writes a folder, so it needs --out.
+    // --live-smoke tours the drone box, the airflow and the editor in one
+    // window and records it; it picks its own scenes, and it writes a folder,
+    // so it needs --out.
     if (live_smoke) {
-        if (headless || smoke || scene_name != nullptr || view_name != nullptr) {
-            std::fprintf(stderr, "spade_sandbox: --live-smoke tours both scenes in a window; it takes no "
-                                 "--headless, --smoke, --scene or --view\n");
+        if (headless || scene_name != nullptr) {
+            std::fprintf(stderr, "spade_sandbox: --live-smoke tours its chapters in a window; it takes no "
+                                 "--headless or --scene\n");
             return 2;
         }
         if (out_path == nullptr) {
@@ -717,38 +376,21 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "spade_sandbox: --label, --inject and --assets apply to --live-smoke only\n");
         return 2;
     }
+    // REFUSES rather than guessing. Two modes named at once is not a
+    // preference the tool can resolve, and picking one would make the other
+    // flag silently inert.
     if (headless && windowed) {
         std::fprintf(stderr, "spade_sandbox: --headless and --window are mutually exclusive\n");
         return 2;
     }
-    // THE DRONE SIM BOX IS THE DEFAULT SCENE; the builder stays one flag away,
-    // and --smoke scripts the builder, so it takes the builder whatever the
-    // default is -- but refuses an explicit request for anything else.
-    if (scene_name != nullptr && std::strcmp(scene_name, "drone") != 0 && std::strcmp(scene_name, "builder") != 0) {
-        std::fprintf(stderr, "spade_sandbox: --scene takes drone or builder, not '%s'\n", scene_name);
+    // The drone sim box is the only scene: the scene builder is retired (INT-9).
+    if (scene_name != nullptr && std::strcmp(scene_name, "drone") != 0) {
+        std::fprintf(stderr, "spade_sandbox: --scene takes drone, the only scene, not '%s'%s\n", scene_name,
+                     std::strcmp(scene_name, "builder") == 0
+                         ? ": the scene builder is retired (INT-9), and the editor (--editor) does what it did"
+                         : "");
         return 2;
     }
-    if (smoke && scene_name != nullptr && std::strcmp(scene_name, "builder") != 0) {
-        std::fprintf(stderr, "spade_sandbox: --smoke scripts the builder scene; it cannot run --scene %s\n",
-                     scene_name);
-        return 2;
-    }
-    const bool drone_scene = !smoke && (scene_name == nullptr || std::strcmp(scene_name, "drone") == 0);
-    if (view_name != nullptr && std::strcmp(view_name, "standard") != 0 && std::strcmp(view_name, "heatmap") != 0) {
-        std::fprintf(stderr, "spade_sandbox: --view takes standard or heatmap, not '%s'\n", view_name);
-        return 2;
-    }
-    if (view_name != nullptr && !drone_scene) {
-        std::fprintf(stderr, "spade_sandbox: --view applies to the drone scene only\n");
-        return 2;
-    }
-    if (view_name != nullptr && !headless) {
-        // In the window V toggles the view; a flag that only sets the first
-        // frame would read as broken the moment it was pressed.
-        std::fprintf(stderr, "spade_sandbox: --view applies to --headless; in the window press V\n");
-        return 2;
-    }
-    const bool heatmap = view_name != nullptr && std::strcmp(view_name, "heatmap") == 0;
     if (!headless) {
         windowed = true;
     }
@@ -774,65 +416,10 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    if (drone_scene) {
-        if (windowed) {
-            std::printf("spade_sandbox: opening a %ux%u window on the drone sim box "
-                        "(--scene builder for the builder, --headless for the CI surface)\n",
-                        width, height);
-            return run_windowed_drone(width, height, blur, vsync);
-        }
-        return run_headless_drone(width, height, blur, heatmap, out_path);
-    }
-
     if (windowed) {
-        std::printf("spade_sandbox: opening a %ux%u window (--headless for the CI surface)\n",
+        std::printf("spade_sandbox: opening a %ux%u window on the drone sim box (--headless for the CI surface)\n",
                     width, height);
-        return run_windowed(width, height, grid, blur, vsync, smoke);
+        return run_windowed_drone(width, height, blur, vsync);
     }
-
-    // Declared HERE, before the scene, so it is destroyed AFTER it -- the
-    // scene holds a non-owning pointer into this world (see
-    // build_builtin_scene in scene_sessions.cpp), and reverse-declaration
-    // order is what makes that safe for the whole of main().
-    spade::WorldDesc world;
-    spade::render::RenderScene scene;
-    if (!build_builtin_scene(scene, world)) {
-        return 1;
-    }
-
-    // C1: the sink is chosen HERE, by the application, and handed down. An
-    // empty path means render-and-discard -- the conversion still runs, so
-    // --out changes only where the bytes go, never whether the work happens.
-    spade::sandbox::HeadlessTargetSink sink{out_path != nullptr ? std::string(out_path)
-                                                                : std::string{}};
-    std::vector<uint8_t> pixels;
-    spade::render::Camera camera;
-    camera.position = glm::vec3(0.0f, 2.0f, 8.0f);
-    spade::render::RenderOptions options;
-    options.ground_grid = grid;
-    options.horizon_blend_strength = blur;
-    if (!render_frame(scene, camera, width, height, options, pixels, sink)) {
-        return 1;
-    }
-    if (sink.failed()) {
-        std::fprintf(stderr, "spade_sandbox: could not write %s\n",
-                     out_path != nullptr ? out_path : "(no path)");
-        return 1;
-    }
-
-    std::printf("spade_sandbox: rendered %ux%u (%zu bytes)%s%s\n", width, height, pixels.size(),
-                out_path != nullptr ? " -> " : "", out_path != nullptr ? out_path : "");
-    // ⭐ THE SCENE'S COMPOSITION, PRINTED RATHER THAN INFERRED. Added after an
-    // evening of reasoning about what this scene CONTAINS from what the
-    // builders ought to produce -- which is the same mistake as reading an
-    // implementation instead of a behaviour, one layer up. `ground_planes` is
-    // the analytic background candidate list and `statics` is real drawn
-    // geometry; whether a plane yields one, the other or both decides what
-    // ledger row L300 is even about, and until now nothing reported it.
-    std::printf("spade_sandbox:   scene: %zu meshes  %zu statics  %zu dynamics  "
-                "%zu materials  %zu ground_planes  has_ground=%d ground_y=%.2f\n",
-                scene.meshes.size(), scene.statics.size(), scene.dynamics.size(),
-                scene.materials.size(), scene.ground_planes.size(),
-                scene.has_ground ? 1 : 0, static_cast<double>(scene.ground_y));
-    return 0;
+    return run_headless_drone(width, height, blur, out_path);
 }

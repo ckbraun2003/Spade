@@ -33,7 +33,6 @@
 
 #include "gl_target_sink.hpp"
 
-#include "builder_scene.hpp"  // the builder's model -- pure, no UI in it
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
 #include "editor_panels_ui.hpp"  // the editor's panels, drawn; the workspace decides
 
@@ -309,8 +308,8 @@ struct GlTargetSink::Impl {
     GLuint view_depth = 0;
     uint32_t view_fbo_width = 0;
     uint32_t view_fbo_height = 0;
-    // Builder edges. Every one of these exists because glfwGetKey and
-    // glfwGetMouseButton report a STATE and the builder needs an EVENT.
+    // Edges. Every one of these exists because glfwGetKey and
+    // glfwGetMouseButton report a STATE and a scene needs an EVENT.
     bool last_left_down = false;
     bool del_was_down = false;
     bool dup_was_down = false;
@@ -318,10 +317,8 @@ struct GlTargetSink::Impl {
     bool w_was_down = false;      // W, the gizmo's move tool
     bool e_was_down = false;      // E, its rotate tool
     bool level_was_down = false;  // R
-    bool view_was_down = false;   // V
     // Non-owning. The application owns the model and outlives the sink;
     // the sink only reads and writes it while drawing a panel.
-    BuilderScene* builder = nullptr;
     DronePanelModel* drone = nullptr;
     editor::EditorPanels* editor = nullptr;
 
@@ -673,9 +670,6 @@ FrameInput GlTargetSink::poll() {
         const bool level = glfwGetKey(impl_->window, GLFW_KEY_R) == GLFW_PRESS;
         in.level_pressed = level && !impl_->level_was_down;
         impl_->level_was_down = level;
-        const bool view = glfwGetKey(impl_->window, GLFW_KEY_V) == GLFW_PRESS;
-        in.toggle_view_pressed = view && !impl_->view_was_down;
-        impl_->view_was_down = view;
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.
@@ -807,10 +801,9 @@ void GlTargetSink::draw_overlay() {
     // camera's input. The default layout is rebuilt whenever the scene on
     // screen changes panels; nothing is saved (no imgui.ini), so a restart
     // restores it.
-    const ui::Layout layout = impl_->editor != nullptr    ? ui::Layout::editor
-                              : impl_->builder != nullptr ? ui::Layout::builder
-                              : impl_->drone != nullptr   ? ui::Layout::drone
-                                                          : ui::Layout::none;
+    const ui::Layout layout = impl_->editor != nullptr  ? ui::Layout::editor
+                              : impl_->drone != nullptr ? ui::Layout::drone
+                                                        : ui::Layout::none;
     const ImGuiID dockspace = ImGui::GetID("spade dockspace");
     if (!impl_->layout_ever_built || layout != impl_->layout_built) {
         ui::build_layout(dockspace, layout);
@@ -882,15 +875,9 @@ void GlTargetSink::draw_overlay() {
                     ui::value_row("attitude", "%s", ui::joined({"arrows pitch/roll", "Z/X yaw", "R level"}).c_str());
                     ui::value_row("camera", "%s",
                                   ui::joined({"A/D around", "E/Q over/under", "W/S nearer", "drag orbit"}).c_str());
-                    ui::value_row("view", "V air speed");
                 } else {
                     ui::value_row("camera", "%s",
                                   ui::joined({"right-drag orbit", "scroll dolly", "WASD pan", "Q/E down/up"}).c_str());
-                    // Only the builder and the editor edit; the scene-file scenes are watched.
-                    if (impl_->builder != nullptr) {
-                        ui::value_row("edit", "%s",
-                                      ui::joined({"click place/select", "drag moves", "Del removes"}).c_str());
-                    }
                     if (impl_->editor != nullptr) {
                         ui::value_row("edit", "%s",
                                       ui::joined({"click select", "library item, click places", "F frames", "Del removes",
@@ -909,9 +896,6 @@ void GlTargetSink::draw_overlay() {
     }
     // THE ONE PLACE EACH SCENE'S PANEL IS DRAWN, reached by both present
     // paths because both of them call draw_overlay().
-    if (impl_->builder != nullptr) {
-        draw_builder_panel(*impl_->builder);
-    }
     if (impl_->drone != nullptr) {
         draw_drone_panel(*impl_->drone);
     }
@@ -1109,127 +1093,6 @@ void GlTargetSink::reset_layout() noexcept {
 #endif
 }
 
-void GlTargetSink::draw_builder_panel(BuilderScene& model) {
-#if SPADE_SANDBOX_HAS_GL
-    // THE HIERARCHY (§13): the place tools, then the scene and its objects as
-    // plain rows in the panel itself. "Scene" is the row selected when no
-    // object is, and the inspector then shows the scene's settings.
-    if (ImGui::Begin(ui::kHierarchy, nullptr, ui::kPanelFlags)) {
-        int shape = static_cast<int>(model.pending_shape);
-        ImGui::RadioButton("Box", &shape, 0);
-        ImGui::SameLine();
-        ImGui::RadioButton("Sphere", &shape, 1);
-        ImGui::SameLine();
-        ImGui::RadioButton("Cylinder", &shape, 2);
-        model.pending_shape = static_cast<Shape>(shape);
-        ImGui::Checkbox("Place on click", &model.placing);
-        ImGui::SetItemTooltip("Off: a click selects, and a drag moves the selection");
-        ui::gap();
-        if (ui::list_row("Scene", model.selected < 0)) {
-            model.selected = -1;
-        }
-        ImGui::Indent();
-        for (size_t i = 0; i < model.objects.size(); ++i) {
-            ImGui::PushID(static_cast<int>(i));
-            if (ui::list_row(model.objects[i].name.c_str(), model.selected == static_cast<int>(i))) {
-                model.selected = static_cast<int>(i);
-            }
-            ImGui::PopID();
-        }
-        ImGui::Unindent();
-    }
-    ImGui::End();
-
-    // THE INSPECTOR: the selected object's properties, or the scene's.
-    if (ImGui::Begin(ui::kInspector, nullptr, ui::kPanelFlags)) {
-        if (BuilderObject* o = model.selected_object()) {
-            ui::title(o->name.c_str());
-            if (ui::section("Transform", true) && ui::begin_properties("transform")) {
-                // DRAGS, NOT SLIDERS, for position and scale: a slider needs a
-                // range, and any range picked here is a limit the user meets.
-                ui::property_row("Position");
-                ImGui::DragFloat3("##position", &o->position.x, 0.02f, 0.0f, 0.0f, "%.3f");
-                ui::property_row("Scale");
-                ImGui::DragFloat3("##scale", &o->scale.x, 0.02f, 0.01f, 1000.0f, "%.3f");
-                ui::property_row("Yaw");
-                ImGui::SliderAngle("##yaw", &o->yaw, -180.0f, 180.0f, "%.0f\xC2\xB0");
-                ui::property_row("Colour");
-                if (ImGui::ColorEdit3("##colour", &o->color.x)) {
-                    // A COLOUR EDIT CHANGES THE MATERIAL SET, which the
-                    // renderer uploads once rather than per frame -- so it must
-                    // say so, or the picker moves and nothing on screen does.
-                    model.materials_dirty = true;
-                }
-                ui::end_properties();
-            }
-            if (ui::section("Physics", true) && ui::begin_properties("physics")) {
-                ui::property_row("Dynamic");
-                ImGui::Checkbox("##dynamic", &o->dynamic);
-                ui::property_row("Mass");
-                ImGui::DragFloat("##mass", &o->mass, 0.05f, 0.001f, 10000.0f, "%.3f kg");
-                ui::property_row("Restitution");
-                ImGui::SliderFloat("##restitution", &o->restitution, 0.0f, 1.0f, "%.2f");
-                ui::property_row("Friction");
-                ImGui::SliderFloat("##friction", &o->friction, 0.0f, 2.0f, "%.2f");
-                ui::end_properties();
-            }
-            ui::gap();
-            if (ImGui::Button("Duplicate")) {
-                model.duplicate_request = true;
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Delete")) {
-                model.delete_request = true;
-            }
-        } else {
-            ui::title("Scene");
-            if (ui::section("Lighting", true) && ui::begin_properties("lighting")) {
-                ui::property_row("Sun");
-                ImGui::SliderFloat("##sun", &model.sun_intensity, 0.0f, 3.0f, "%.2f");
-                // The application re-normalises this before it reaches the
-                // shader, so dragging a component to zero cannot black the
-                // scene out.
-                ui::property_row("Sun direction");
-                ImGui::DragFloat3("##sun direction", &model.sun_direction.x, 0.01f, -1.0f, 1.0f, "%.2f");
-                ui::end_properties();
-            }
-            if (ui::section("Display", true) && ui::begin_properties("display")) {
-                ui::property_row("Ground grid");
-                ImGui::Checkbox("##grid", &model.grid);
-                ui::end_properties();
-            }
-            if (ui::section("Physics", true)) {
-                if (ui::begin_properties("scene physics")) {
-                    ui::property_row("Gravity");
-                    ImGui::DragFloat("##gravity", &model.gravity, 0.05f, -40.0f, 40.0f, "%.2f m/s\xC2\xB2");
-                    ui::property_row("Running");
-                    ImGui::Checkbox("##running", &model.physics_running);
-                    ui::end_properties();
-                }
-                // SAID OUT LOUD RATHER THAN IMPLIED BY A DEAD TOGGLE. A switch
-                // that looks live and does nothing is worse than no switch,
-                // because the user concludes the physics is broken rather than
-                // absent.
-                if (model.physics_running) {
-                    ui::status_text("No solver is wired yet, so poses are static.");
-                }
-            }
-        }
-    }
-    ImGui::End();
-#else
-    (void)model;
-#endif
-}
-
-void GlTargetSink::attach_builder(BuilderScene* model) noexcept {
-#if SPADE_SANDBOX_HAS_GL
-    impl_->builder = model;
-#else
-    (void)model;
-#endif
-}
-
 void GlTargetSink::set_view_lines(std::vector<editor::GizmoLine> lines) {
 #if SPADE_SANDBOX_HAS_GL
     impl_->view_lines = std::move(lines);
@@ -1295,47 +1158,6 @@ void GlTargetSink::draw_drone_panel(DronePanelModel& model) {
             if (!model.status.empty()) {
                 ui::status_text(model.status);
             }
-        }
-
-        if (ui::section("View", true)) {
-            if (ui::begin_properties("view")) {
-                ui::property_row("Show");
-                int view = model.view_heatmap ? 1 : 0;
-                ImGui::RadioButton("Standard", &view, 0);
-                ImGui::SameLine();
-                ImGui::RadioButton("Air speed", &view, 1);
-                ImGui::SetItemTooltip("V toggles");
-                model.view_heatmap = view == 1;
-                ui::property_row("Auto range");
-                bool auto_range = !(model.heatmap_max > 0.0f);
-                if (ImGui::Checkbox("##auto range", &auto_range)) {
-                    model.heatmap_max = auto_range ? 0.0f : std::max(model.observed_max, 1.0f);
-                }
-                if (!auto_range) {
-                    ui::property_row("Range");
-                    ImGui::SliderFloat("##range", &model.heatmap_max, 0.5f, 40.0f, "%.1f m/s");
-                }
-                ui::end_properties();
-            }
-        }
-        if (model.view_heatmap) {
-            // The legend: the palette's bins left to right, 0 to the range top.
-            const float top = model.heatmap_max > 0.0f ? model.heatmap_max : model.observed_max;
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float w = ImGui::GetContentRegionAvail().x, h = 14.0f;
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const render::FieldColourMap map = heatmap_colour_map(0.0f);
-            for (uint32_t b = 0; b < kHeatmapBins; ++b) {
-                const glm::vec3 c = render::field_bin_colour(map, b);
-                const float x0 = p.x + w * static_cast<float>(b) / static_cast<float>(kHeatmapBins);
-                const float x1 = p.x + w * static_cast<float>(b + 1) / static_cast<float>(kHeatmapBins);
-                dl->AddRectFilled(ImVec2(x0, p.y), ImVec2(x1, p.y + h),
-                                  ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)));
-            }
-            ImGui::Dummy(ImVec2(w, h));
-            ImGui::TextDisabled("0 m/s");
-            ImGui::SameLine(w - 60.0f);
-            ImGui::TextDisabled("%.1f m/s", static_cast<double>(top));
         }
 
         if (ui::section("Readouts", true) && ui::begin_properties("readouts")) {

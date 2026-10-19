@@ -15,60 +15,14 @@
 
 namespace spade::sandbox {
 
-// C0's built-in scene: a ground plane and nothing else. Deliberately built in
-// code rather than loaded from a file, so this task depends on NO content path
-// at all -- the scene picker (C3) is what introduces file loading, behind its
-// own task. Thirty agreement tests were red for days because a content path
-// moved; C0 did not acquire one before it needed one.
+// An empty world (no ground): the drone hangs in air.
 //
-// C2: SPLIT FROM THE RENDER. The world is built ONCE and rendered many times,
-// which the single-frame version did not have to distinguish. Rebuilding the
-// scene per frame would have worked and been a defect of the quiet kind: the
-// window would run at a fraction of its frame rate for a reason no profile
-// line would name.
 // ⚠⚠ THE WORLD IS AN OUT-PARAMETER AND THAT IS A BUG FIX, NOT A STYLE CHOICE.
-// scene_from_world() ends with `scene.sdf = &world.sdf` (scene.cpp:415) and
-// its own header states the contract in one line: "the returned RenderScene
-// must not outlive `world`." This function used to build the WorldDesc as a
-// FUNCTION LOCAL and return the scene, so `out.sdf` DANGLED the moment it
-// returned -- a use-after-free with a documented contract sitting above it.
-//
-// ⭐ IT WAS LATENT RATHER THAN HARMLESS, AND THE DIFFERENCE MATTERS: `sdf` is
-// dereferenced only by the raymarch and agreement paths, and the sandbox
-// renders shaded, so nothing touches it TODAY. The first person to add a
-// --mode raymarch flag would have inherited a crash with no plausible
-// connection to their change. ***A DEFECT THAT IS UNREACHABLE IS NOT A DEFECT
-// THAT IS FIXED; IT IS ONE WHOSE BILL GOES TO SOMEBODY ELSE.***
-//
-// Found by reading this file while waiting for a build slot, not by a test --
-// no test could have caught it, because nothing exercises the path.
-bool build_builtin_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out) {
-    spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
-                                                .name("sandbox_c0")
-                                                .environment(spade::Environment{})
-                                                .capacities(spade::Capacities{4, 4, 1, 1})
-                                                .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
-                                                .build();
-    if (!world) {
-        std::fprintf(stderr, "spade_sandbox: WorldBuilder::build failed: %s\n", world.error().context.c_str());
-        return false;
-    }
-    // Moved into the CALLER's storage FIRST, so the scene below is built
-    // against the object that will outlive this function -- not against a
-    // temporary whose address the scene would then keep.
-    world_out = std::move(*world);
-    const spade::Result<spade::render::RenderScene> scene = spade::render::scene_from_world(world_out, {});
-    if (!scene) {
-        std::fprintf(stderr, "spade_sandbox: scene_from_world failed: %s\n", scene.error().context.c_str());
-        return false;
-    }
-    out = *scene;
-    return true;
-}
-
-// An empty world (no ground): the drone hangs in air. The WorldDesc is an
-// out-parameter for the same reason build_builtin_scene's is -- the scene
-// borrows its sdf.
+// scene_from_world() ends with `scene.sdf = &world.sdf` and its own header
+// states the contract: "the returned RenderScene must not outlive `world`."
+// The sandbox's first built-in scene once built its WorldDesc as a function
+// local and returned the scene, so `out.sdf` dangled the moment it returned:
+// a latent use-after-free, reachable the day anything ray-marched it.
 bool build_drone_scene(spade::render::RenderScene& out, spade::WorldDesc& world_out) {
     spade::Result<spade::WorldDesc> world = spade::WorldBuilder()
                                                 .name("drone_sim_box")
@@ -131,31 +85,13 @@ bool render_frame(const spade::render::RenderScene& scene, const spade::render::
 
 // The drone frame's draw list and options, shared by the window and headless.
 spade::render::RenderOptions drone_frame(spade::render::RenderScene& scene, const DroneDrawBinding& binding,
-                                         const DroneSim& drone, const glm::quat& orientation,
-                                         const spade::render::Camera& camera, bool heatmap, float heatmap_max,
-                                         float blur, float* observed_max) {
+                                         const DroneSim& drone, const glm::quat& orientation, float blur) {
     scene.dynamics.clear();
-    scene.field_layers.clear();
     append_drone_items(binding, drone.params(), glm::vec3(0.0f), orientation, scene.dynamics);
-    if (heatmap) {
-        if (const auto field = air_field_from(drone)) {
-            scene.field_layers.push_back(slice_layer(camera_facing_slice(camera, glm::vec3(0.0f), orientation),
-                                                     *field, heatmap_max, observed_max));
-        }
-    }
     spade::render::RenderOptions o;
     o.overlays = false;     // no ground, no bounds worth drawing
     o.ground_grid = false;  // and no ground for the grid to sit on
-    // The design's "shadows off in the heatmap view". A no-op in this scene
-    // either way: the shadow map is baked from statics at world load, the
-    // empty world has none, the drone's parts neither cast nor receive, and a
-    // field layer takes no shadow.
-    o.shadows = !heatmap;
-    // The layer itself never takes the atmospheric term (field_layer.hpp,
-    // SR-17a). The drone's parts drop it in the heatmap view too, so the
-    // whole frame reads against a clean sky, as it did before the move to
-    // field layers.
-    o.horizon_blend_strength = heatmap ? 0.0f : blur;
+    o.horizon_blend_strength = blur;
     return o;
 }
 
@@ -230,9 +166,9 @@ namespace {
 
 // ---------------------------------------------------------------------------
 // THE DRONE SIM BOX -- the default scene. A quadrotor on a test stand, flown
-// in attitude through the engine's rotor model, with the air around it as an
-// optional heatmap. Every decision is in drone_sim.hpp / drone_view.hpp and is
-// asserted with no display; this is the wiring.
+// in attitude through the engine's rotor model. Every decision is in
+// drone_sim.hpp / drone_view.hpp and is asserted with no display; this is the
+// wiring.
 // ---------------------------------------------------------------------------
 spade::Result<std::unique_ptr<DroneSession>> DroneSession::create(float blur) {
     std::unique_ptr<DroneSession> s(new DroneSession());
@@ -275,9 +211,6 @@ DroneSession::~DroneSession() {
 spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
     apply_drone_orbit(camera_, in, dt);
     nudge_attitude(drone_->target, in, dt);
-    if (in.toggle_view_pressed && !in.ui_captured_keyboard) {
-        panel_.view_heatmap = !panel_.view_heatmap;
-    }
     // Debounced inside: nothing happens while a slider is held.
     if (apply_panel_edits(*drone_, panel_)) {
         ++rebuilds_;
@@ -299,8 +232,7 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
     }
     const spade::render::Camera rc = camera_.to_render_camera();
     const spade::render::RenderOptions options =
-        drone_frame(scene_, binding_, *drone_, panel_.readouts.orientation, rc, panel_.view_heatmap,
-                    panel_.heatmap_max, blur_, &panel_.observed_max);
+        drone_frame(scene_, binding_, *drone_, panel_.readouts.orientation, blur_);
 
     // SL10: the HUD names what the active path does not draw.
     sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
@@ -314,125 +246,6 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
     } else {
         sink_->note_physics_ms(physics_ms);
         const bool ok = render_frame(scene_, rc, fw, fh, options, pixels_, *sink_);
-        sink_->note_render_ms(ms_since(r0));
-        if (!ok) {
-            return std::unexpected(spade::Error{spade::Code::internal, "the CPU render failed (see above)"});
-        }
-    }
-    return {};
-}
-
-// ---------------------------------------------------------------------------
-// THE BUILDER. The model is the application's; every decision it makes lives
-// in builder_scene.hpp and is exercised by tests/ with no display. What
-// remains here is the wiring, and it is deliberately dull.
-// ---------------------------------------------------------------------------
-spade::Result<std::unique_ptr<BuilderSession>> BuilderSession::create(bool grid, float blur) {
-    std::unique_ptr<BuilderSession> s(new BuilderSession());
-    if (!build_builtin_scene(s->scene_, s->world_)) {
-        return std::unexpected(spade::Error{spade::Code::internal, "the builder scene would not build (see above)"});
-    }
-    s->options_.ground_grid = grid;
-    s->options_.horizon_blend_strength = blur;
-
-    s->builder_.grid = grid;
-    s->bind_ = bind_builder_meshes(s->scene_);
-    sync_builder_materials(s->builder_, s->bind_, s->scene_);
-    // Cleared because the upload below IS the sync the flag was asking for.
-    // Left set, the first frame would ask for a second identical upload --
-    // harmless, and exactly the kind of "harmless" that gets copied.
-    s->builder_.materials_dirty = false;
-    // The model starts from whatever the scene's own lighting is, so the
-    // slider's initial position matches the picture rather than snapping it
-    // the first time it is touched.
-    s->builder_.sun_intensity = s->scene_.lighting.sun_intensity;
-    s->builder_.sun_direction = s->scene_.lighting.sun_direction;
-    return s;
-}
-
-void BuilderSession::attach(GlTargetSink& sink) {
-    sink_ = &sink;
-    // ⚠ THE BUILDER'S GEOMETRY MUST REACH THE GPU BEFORE THE FIRST DRAW. It
-    // does here because create() bound the three meshes before this upload;
-    // started any earlier, the first placed object would draw from a mesh id
-    // the GPU has never seen.
-    gpu_ = start_gpu(scene_);
-    // Attached once, so BOTH present paths draw the panel -- the GPU path
-    // through present_overlay() and the CPU fallback through accept().
-    sink.attach_builder(&builder_);
-}
-
-BuilderSession::~BuilderSession() {
-    if (sink_ != nullptr) {
-        sink_->attach_builder(nullptr);
-        sink_->set_gap_line({});
-    }
-}
-
-spade::Result<void> BuilderSession::frame(const FrameInput& in) {
-    camera_.apply(in, sink_->delta_seconds());
-
-    // The VIEW's size in framebuffer pixels (between the panels, §13), never
-    // the window size: on a HiDPI display they
-    // differ, and rendering at window size then letting GL stretch it is
-    // precisely the blocky-viewport defect this estate has already diagnosed
-    // once in the editor.
-    const uint32_t fw = sink_->viewport().width;
-    const uint32_t fh = sink_->viewport().height;
-    if (fw == 0u || fh == 0u) {
-        return {};  // minimised; there is nothing to render into
-    }
-
-    // ----- THE BUILDER, ONE CALL ------------------------------------
-    // Everything the mouse means happens inside this function, against the
-    // camera THIS frame is about to render from. Using the previous frame's
-    // camera here would make picking lag the view by one frame, which is
-    // invisible while the camera is still and wrong while it is moving -- the
-    // hardest kind of bug to see in a viewport.
-    const spade::render::Camera rc = camera_.to_render_camera();
-    const BuilderFrameResult bf = apply_builder_input(builder_, in, rc, fw, fh, scene_.ground_y);
-    if (bf.needs_upload) {
-        // ONLY WHEN THE SET CHANGED. A per-frame upload would work and would
-        // silently throw away the entire reason the GPU path is fast -- the
-        // defect would show up as a frame rate, never as a wrong picture.
-        sync_builder_materials(builder_, bind_, scene_);
-        if (gpu_) {
-            if (const spade::Result<void> re = gpu_->upload_scene(scene_); !re) {
-                return std::unexpected(spade::Error{re.error().code, "re-upload failed: " + re.error().context});
-            }
-        }
-    }
-    rebuild_builder_dynamics(builder_, bind_, scene_);
-
-    // Scene settings the inspector owns, applied to what actually renders.
-    options_.ground_grid = builder_.grid;
-    scene_.lighting.sun_intensity = builder_.sun_intensity;
-    // NORMALISED HERE RATHER THAN IN THE WIDGET. Both paths shade with
-    // dot(n, sun_direction) and assume a unit vector; a dragged direction is
-    // whatever the user left it at, and a non-unit one scales the whole
-    // diffuse term -- which reads as the brightness slider being broken.
-    if (glm::length(builder_.sun_direction) > 1e-4f) {
-        scene_.lighting.sun_direction = glm::normalize(builder_.sun_direction);
-    }
-    // The application owns the render call, so it times its own cost. Both
-    // paths are timed the SAME WAY and feed the SAME HUD, which is what makes
-    // the two comparable at all.
-    // SL10: the HUD names what the active path does not draw, every frame,
-    // because the options and the path can both change.
-    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
-    const auto r0 = std::chrono::steady_clock::now();
-    if (gpu_) {
-        sink_->begin_gpu_frame();
-        if (const spade::Result<void> drew = gpu_->draw(scene_, rc, options_, fw, fh); !drew) {
-            return std::unexpected(spade::Error{drew.error().code, "GPU draw failed: " + drew.error().context});
-        }
-        // physics_ms is 0 here and that is an ABSENCE, not an omission: this
-        // scene is a static ground plane, so there is no physics step in the
-        // frame to time. The entry exists so that when bodies arrive the split
-        // can attribute them.
-        sink_->present_overlay(ms_since(r0), 0.0f);
-    } else {
-        const bool ok = render_frame(scene_, rc, fw, fh, options_, pixels_, *sink_);
         sink_->note_render_ms(ms_since(r0));
         if (!ok) {
             return std::unexpected(spade::Error{spade::Code::internal, "the CPU render failed (see above)"});

@@ -25,12 +25,9 @@
 add_executable(spade_sandbox
     main.cpp
     gl_target_sink.cpp
-    # Each scene's setup and its one frame function, shared by the window,
-    # the builder's --smoke and the live smoke.
+    # The drone sim box's setup and its one frame function, shared by the
+    # window and the live smoke.
     scene_sessions.cpp
-    # The built-in scene files (assets/scenes/) run in the window: the live
-    # smoke's scene main functions.
-    scene_file_session.cpp
     # --live-smoke: the recorded tour (scripts/live-smoke.ps1). Its verdict
     # machinery is display-free in live_smoke.hpp and tested in spade_tests.
     live_tour.cpp
@@ -47,9 +44,10 @@ target_link_libraries(spade_sandbox PRIVATE
     # The drone sim box steps a Simulation (drone_sim.hpp) -- the first scene
     # in the sandbox that does.
     spade::sim
-    # The built-in scene files run through compose_file() and instantiate()
-    # (scene_file_session.cpp).
+    # The editor composes and runs scene files (compose_file(), instantiate()).
     spade::scene
+    # The live smoke's airflow chapter asks LiveRun for the drone-box run.
+    spade::analysis
 )
 
 if(SPADE_RENDER_GL)

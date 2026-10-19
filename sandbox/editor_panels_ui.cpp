@@ -370,17 +370,33 @@ void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
         ui::end_properties();
     }
     if (ui::section("Material", true) && ui::begin_properties("material")) {
-        ui::property_row("Visual");
-        const char* shown = a.visual.material.empty() ? "default" : a.visual.material.c_str();
-        if (ImGui::BeginCombo("##material", shown)) {
+        // The world's palette, then the scene's; choosing another queues `edit`.
+        const auto combo = [&](const char* label, const char* id, const std::string& current, const char* shown,
+                               const auto& edit) {
+            ui::property_row(label);
+            if (!ImGui::BeginCombo(id, shown)) return;
             const auto option = [&](const std::string& name) {
-                if (ImGui::Selectable(name.c_str(), name == a.visual.material) && name != a.visual.material) {
-                    p.pending.push_back(ed::SetAssetMaterial{a.name, name});
+                if (ImGui::Selectable(name.c_str(), name == current) && name != current) {
+                    p.pending.push_back(edit(name));
                 }
             };
             for (const MaterialDesc& m : p.world->materials) option(m.name);
             for (const MaterialDesc& m : p.scene->materials) option(m.name);
             ImGui::EndCombo();
+        };
+        if (!a.visual.mesh_ref.empty()) {
+            combo("Visual", "##material", a.visual.material,
+                  a.visual.material.empty() ? "default" : a.visual.material.c_str(),
+                  [&](const std::string& name) { return ed::SceneEdit{ed::SetAssetMaterial{a.name, name}}; });
+        }
+        if (!a.collider.nodes.empty()) {
+            // An asset without a visual draws as its collider, in these materials.
+            const std::string first = a.collider_materials.empty() ? std::string() : a.collider_materials.front();
+            const bool mixed = std::any_of(a.collider_materials.begin(), a.collider_materials.end(),
+                                           [&](const std::string& m) { return m != first; });
+            combo("Collider", "##collider_material", mixed ? std::string() : first,
+                  mixed ? "mixed" : (first.empty() ? "default" : first.c_str()),
+                  [&](const std::string& name) { return ed::SceneEdit{ed::SetColliderMaterial{a.name, name}}; });
         }
         ui::end_properties();
     }

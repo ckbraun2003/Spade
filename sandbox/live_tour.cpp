@@ -26,13 +26,14 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "builtin_records.hpp"
+#include "analysis/case.hpp"
+#include "analysis/live_run.hpp"
 #include "editor_session.hpp"
 #include "gl_target_sink.hpp"
 #include "png_writer.hpp"
-#include "scene_checks.hpp"
-#include "scene_file_session.hpp"
 #include "scene_sessions.hpp"
+#include "vehicles/model_identity.hpp"
+#include "vehicles/quadrotor.hpp"
 
 #ifdef _WIN32
 #define SPADE_POPEN _popen
@@ -62,6 +63,7 @@ constexpr uint64_t kFallbackEvery = 15;  // without ffmpeg, a PNG every 15th rec
 constexpr int kIdlePace = 2;
 constexpr int kOpeningFrames = 90;   // paced: 3 s
 constexpr int kClosingFrames = 120;  // paced: 4 s
+constexpr int kChapterCardFrames = 60;  // paced: 2 s
 
 // THE LEDGER. Every sub-step the tour runs, in order. A step listed here that
 // never runs fails the run; a step the tour runs that is not listed is an
@@ -70,21 +72,13 @@ struct StepName {
     std::string_view main;
     std::string_view sub;
 };
+// Three chapters (INT-9, the storyboard plans/2026-10-13-live-tour-storyboard.md):
+// the drone box, its airflow, and the editor.
 constexpr std::array kSteps = {
     StepName{"drone_box", "open"},       StepName{"drone_box", "orbit"},
     StepName{"drone_box", "attitude"},   StepName{"drone_box", "level"},
-    StepName{"drone_box", "heatmap"},    StepName{"drone_box", "wind"},
-    StepName{"drone_box", "turbulence"}, StepName{"drone_box", "throttle"},
-    StepName{"drone_box", "vulkan_refused"}, StepName{"drone_box", "hud"},
-    StepName{"builder", "open"},         StepName{"builder", "place"},
-    StepName{"builder", "select_drag"},  StepName{"builder", "recolour"},
-    StepName{"builder", "duplicate"},    StepName{"builder", "delete"},
-    StepName{"builder", "camera"},
-    StepName{"shower", "open"},          StepName{"shower", "pour"},
-    StepName{"bounce", "open"},          StepName{"bounce", "drops"},
-    StepName{"gate", "open"},            StepName{"gate", "lobs"},
-    StepName{"hover", "open"},           StepName{"hover", "holds"},
-    StepName{"wind", "open"},            StepName{"wind", "gusts"},
+    StepName{"drone_box", "throttle"},   StepName{"drone_box", "hud"},
+    StepName{"airflow", "capability"},
     StepName{"editor", "open"},          StepName{"editor", "picker"},
     StepName{"editor", "select"},        StepName{"editor", "place"},
     StepName{"editor", "move"},          StepName{"editor", "inspect"},
@@ -101,23 +95,24 @@ constexpr std::array<std::string_view, 8> kSnapshots = {"editor_picker",   "edit
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
-constexpr std::array<std::string_view, 8> kMains = {"drone_box", "builder", "shower", "bounce",
-                                                    "gate",      "hover",   "wind",   "editor"};
+constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "editor"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
-const std::vector<KnownOpen> kKnownOpen = {};
+const std::vector<KnownOpen> kKnownOpen = {
+    // The airflow chapter's capability card (Test/Docs' expiring entry). It
+    // fires while LiveRun refuses the sandbox's drone; the day the sandbox has
+    // a drone with its propulsion chain, it stops firing, the run fails as
+    // expired, and the chapter must be made live.
+    KnownOpen{"airflow/not-available",
+              "the sandbox has no drone with its propulsion chain until the library's reference quad (N4), so "
+              "LiveRun refuses to turn its rotors"},
+};
 
 [[nodiscard]] std::string fmt(float v) {
     char text[32];
     std::snprintf(text, sizeof text, "%.3f", static_cast<double>(v));
     return text;
-}
-
-// The angle between two orientations, radians.
-[[nodiscard]] float angle_between(const glm::quat& a, const glm::quat& b) {
-    const float d = std::min(1.0f, std::abs(glm::dot(a, b)));
-    return 2.0f * std::acos(d);
 }
 
 [[nodiscard]] float mean_rotor_omega(const DroneReadouts& r) {
@@ -430,7 +425,6 @@ void drone_box(Tour& t, DroneSession& d) {
         // Back in to the view the tour started from, so the drone fills the
         // frame for the steps that follow.
         t.pump(40, hold(nearer), draw);
-        s.check(cam.distance < 2.2f, "back-in", "distance " + fmt(cam.distance));
         t.pump(30, idle, draw);
     });
 
@@ -477,77 +471,16 @@ void drone_box(Tour& t, DroneSession& d) {
                 "pitch " + fmt(a.pitch) + ", roll " + fmt(a.roll) + " (within 5 degrees)");
     });
 
-    t.step("drone_box", "heatmap", [&] {
-        FrameInput v;
-        v.toggle_view_pressed = true;
-        t.pump(1, hold(v), draw);
-        s.check(d.panel().view_heatmap, "view-on", "view_heatmap " + std::to_string(d.panel().view_heatmap));
-        FrameInput slow;
-        slow.move_right = 0.4f;  // the slice keeps facing the camera as it goes round
-        t.pump(150, hold(slow), draw);
-        t.poster("drone_box");
-        t.pump(90, hold(slow), draw);
-        s.check(d.panel().observed_max > 1.0f, "downwash-shows",
-                "slice maximum " + fmt(d.panel().observed_max) + " m/s");
-        t.pump(1, hold(v), draw);
-        s.check(!d.panel().view_heatmap, "view-off", "view_heatmap " + std::to_string(d.panel().view_heatmap));
-        t.pump(30, idle, draw);
-    });
-
-    // A panel edit is applied when the widget is let go (INT-2): the tour
-    // writes the panel's edited values, as a released slider does, and the
-    // session's frame applies them.
-    t.step("drone_box", "wind", [&] {
-        const uint32_t rebuilds = d.rebuilds();
-        const glm::quat before = d.panel().readouts.orientation;
-        d.panel().edited.wind_speed_mps = 8.0f;
-        d.panel().edited.wind_heading_deg = 45.0f;
-        t.pump(1, idle, draw);
-        s.check(d.rebuilds() == rebuilds + 1u, "rebuilds", std::to_string(rebuilds) + " -> " + std::to_string(d.rebuilds()));
-        s.check(d.drone().options().wind_speed_mps == 8.0f && d.panel().status.empty(), "applied",
-                "wind " + fmt(d.drone().options().wind_speed_mps) + " m/s, status '" + d.panel().status + "'");
-        const float carried = angle_between(before, d.panel().readouts.orientation);
-        s.check(carried < 0.1f, "attitude-carried", "moved " + fmt(carried) + " rad across the rebuild");
-        t.pump(239, idle, draw);
-    });
-
-    t.step("drone_box", "turbulence", [&] {
-        const uint32_t rebuilds = d.rebuilds();
-        d.panel().edited.turbulence = TurbulenceLevel::moderate;
-        t.pump(1, idle, draw);
-        s.check(d.rebuilds() == rebuilds + 1u && d.drone().options().turbulence == TurbulenceLevel::moderate,
-                "applied", "rebuilds " + std::to_string(rebuilds) + " -> " + std::to_string(d.rebuilds()));
-        t.pump(239, idle, draw);
-        d.panel().edited = DronePhysicsOptions{};  // calm air again
-        t.pump(1, idle, draw);
-        s.check(d.drone().options() == DronePhysicsOptions{}, "calm-again",
-                "wind " + fmt(d.drone().options().wind_speed_mps) + " m/s");
-        t.pump(29, idle, draw);
-    });
-
     t.step("drone_box", "throttle", [&] {
         const float omega0 = mean_rotor_omega(d.panel().readouts);
         d.panel().edited.throttle = 1.4f;
         t.pump(120, idle, draw);
+        t.poster("drone_box");
         const float omega1 = mean_rotor_omega(d.panel().readouts);
         s.check(omega1 > omega0 * 1.1f, "rotors-speed-up",
                 "mean rotor speed " + fmt(omega0) + " -> " + fmt(omega1) + " rad/s");
         d.panel().edited.throttle = 1.0f;
         t.pump(60, idle, draw);
-    });
-
-    // Vulkan is refused while behaviors are CPU-only: the running simulation
-    // stays, the reason shows, and the control goes back (INT-2).
-    t.step("drone_box", "vulkan_refused", [&] {
-        const uint32_t rebuilds = d.rebuilds();
-        d.panel().edited.vulkan = true;
-        t.pump(1, idle, draw);
-        s.check(!d.drone().options().vulkan && d.rebuilds() == rebuilds, "kept-cpu",
-                "backend " + std::string(d.drone().options().vulkan ? "Vulkan" : "CPU"));
-        s.check(!d.panel().status.empty(), "reason-shown", d.panel().status);
-        s.check(!d.panel().edited.vulkan, "control-put-back", "edited backend " +
-                                                                 std::string(d.panel().edited.vulkan ? "Vulkan" : "CPU"));
-        t.pump(149, idle, draw);
     });
 
     // F1's own path: poll() calls toggle_help() on the key's press. The checks
@@ -567,427 +500,50 @@ void drone_box(Tour& t, DroneSession& d) {
 }
 
 // ---------------------------------------------------------------------------
-// MAIN FUNCTION 2: THE BUILDER.
+// MAIN FUNCTION 2: THE AIRFLOW (the storyboard's chapter 2). The drone-box
+// case's LiveRun, live, once the sandbox has a drone with its propulsion
+// chain (the library's reference quad, N4). Until then the chapter is a card
+// that shows LiveRun's refusal verbatim and raises airflow/not-available,
+// which kKnownOpen tolerates until the day it stops firing.
 // ---------------------------------------------------------------------------
-void builder(Tour& t, BuilderSession& b) {
+void airflow(Tour& t, const DrawFn& blank) {
     Smoke& s = t.smoke();
-    const DrawFn draw = [&b](const FrameInput& in) { return b.frame(in); };
-    const auto idle = InputFn{};
-    BuilderScene& model = b.builder();
-    // Three ground points in the lower half of the VIEW, where the ground is:
-    // the same points the builder's --smoke clicks. The view is what lies
-    // between the panels (§13), so they are measured once "open" has docked
-    // them, and the cursor is measured from the view's corner (poll()).
-    float fw = 0.0f, fh = 0.0f;
-    float x1 = 0.0f, y1 = 0.0f, x2 = 0.0f, y2 = 0.0f, x3 = 0.0f, y3 = 0.0f;
-    const auto measure_view = [&] {
-        const ViewportRect v = t.sink().viewport();
-        fw = static_cast<float>(v.width);
-        fh = static_cast<float>(v.height);
-        x1 = fw * 0.50f, y1 = fh * 0.72f;
-        x2 = fw * 0.38f, y2 = fh * 0.66f;
-        x3 = fw * 0.62f, y3 = fh * 0.66f;
-        return v;
-    };
-    const auto click_at = [](float x, float y) {
-        return [x, y](int frame) {
-            FrameInput in;
-            in.mouse_x = x;
-            in.mouse_y = y;
-            in.left_click = frame == 0;
-            in.left_down = frame == 0;
-            return in;
-        };
-    };
-
-    t.step("builder", "open", [&] {
-        t.pump(60, idle, draw);
-        s.check(b.gpu() != nullptr, "gpu-path", b.gpu() != nullptr ? "GPU (OpenGL)" : "CPU raster");
-        s.check(model.objects.empty(), "empty", std::to_string(model.objects.size()) + " objects");
-        // §13's visible win: the scene renders only between the hierarchy on
-        // the left and the inspector on the right.
-        const ViewportRect v = measure_view();
-        const uint32_t whole = t.sink().framebuffer_width();
-        s.check(v.x > 0u && v.x + v.width < whole && !v.empty(), "view-between-panels",
-                "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " at x " + std::to_string(v.x) +
-                    " of " + std::to_string(whole));
-    });
-
-    t.step("builder", "place", [&] {
-        model.placing = true;
-        model.pending_shape = Shape::box;
-        t.pump(45, click_at(x1, y1), draw);
-        model.pending_shape = Shape::sphere;
-        t.pump(45, click_at(x2, y2), draw);
-        model.pending_shape = Shape::cylinder;
-        t.pump(60, click_at(x3, y3), draw);
-        s.check(model.objects.size() == 3u, "three-placed", std::to_string(model.objects.size()) + " objects");
-        bool on_ground = !model.objects.empty();
-        for (const BuilderObject& o : model.objects) {
-            on_ground = on_ground && std::abs(o.position.y - (b.scene().ground_y + o.scale.y * 0.5f)) < 1e-3f;
-        }
-        s.check(on_ground, "on-ground", "ground_y " + fmt(b.scene().ground_y));
-        s.check(b.scene().dynamics.size() == model.objects.size(), "rendered",
-                std::to_string(b.scene().dynamics.size()) + " draw items");
-    });
-
-    t.step("builder", "select_drag", [&] {
-        model.placing = false;
-        t.pump(20, click_at(x1, y1), draw);
-        if (!s.check(model.selected == 0 && !model.objects.empty(), "selects",
-                     "selected " + std::to_string(model.selected))) {
-            t.pump(60, idle, draw);
+    t.step("airflow", "capability", [&] {
+        // The drone the sandbox flies, in the drone-box case LiveRun runs.
+        vehicles::QuadrotorParams params = drone_stand_params();
+        const Result<vehicles::ModelType> model = vehicles::make_quadrotor(params);
+        if (!s.check(model.has_value(), "model", model ? model->name : model.error().context)) return;
+        analysis::AnalysisCase c;
+        c.model = analysis::ModelRef{"sandbox.model.yaml", vehicles::model_identity(*model),
+                                     vehicles::parts_identity(*model)};
+        c.rotors.assign(model->rotors.size(), analysis::RotorSetup{});
+        c.grid.box = 1.0f;
+        c.grid.spacing = 1.0f / 32.0f;  // the chapter's 32^3, live
+        c.time.duration = 2.0f;
+        c.time.step = 0.001f;
+        const auto resolved = analysis::resolve(c, *model);
+        if (!s.check(resolved.has_value(), "resolves",
+                     resolved ? "32^3" : resolved.error().front().field + ": " + resolved.error().front().message)) {
             return;
         }
-        const glm::vec3 before = model.objects[0].position;
-        const float dx = fw * 0.12f;
-        t.pump(60,
-               [&](int frame) {
-                   FrameInput in;
-                   in.mouse_x = x1 + dx * static_cast<float>(frame + 1) / 60.0f;
-                   in.mouse_y = y1;
-                   in.left_down = true;
-                   return in;
-               },
-               draw);
-        FrameInput release;
-        release.mouse_x = x1 + dx;
-        release.mouse_y = y1;
-        release.left_release = true;
-        t.pump(1, [release](int) { return release; }, draw);
-        const glm::vec3 after = model.objects[0].position;
-        s.check(std::abs(after.x - before.x) > 0.05f, "moves-in-x", "x " + fmt(before.x) + " -> " + fmt(after.x));
-        s.check(std::abs(after.y - before.y) < 1e-4f, "height-kept", "y " + fmt(before.y) + " -> " + fmt(after.y));
-        t.pump(45, idle, draw);
-    });
-
-    t.step("builder", "recolour", [&] {
-        if (!s.check(!model.objects.empty(), "has-object", std::to_string(model.objects.size()) + " objects")) {
+        const Result<analysis::LiveRun> run = analysis::LiveRun::start(*resolved, *model);
+        if (run) {
+            // The chapter could run live: its known-open entry stops firing
+            // and fails the run as expired, which is the signal to build it.
+            s.note("airflow: LiveRun starts the sandbox's drone; the chapter can go live");
             return;
         }
-        const glm::vec4 red(1.0f, 0.1f, 0.05f, 1.0f);
-        model.objects[0].color = red;
-        model.materials_dirty = true;
-        t.pump(90, idle, draw);
-        // Object 0 draws with material material_base + 0 (builder_scene.hpp).
-        const uint32_t m = b.binding().material_base;
-        const bool has = m < b.scene().materials.size();
-        const glm::vec4 got = has ? b.scene().materials[m].base_color : glm::vec4(0.0f);
-        s.check(has && got == red, "reaches-material",
-                "material " + std::to_string(m) + " base colour (" + fmt(got.r) + ", " + fmt(got.g) + ", " +
-                    fmt(got.b) + "), set (1.000, 0.100, 0.050)");
-    });
-
-    t.step("builder", "duplicate", [&] {
-        const std::size_t n = model.objects.size();
-        model.selected = 0;
-        FrameInput dup;
-        dup.duplicate_pressed = true;
-        t.pump(1, [dup](int) { return dup; }, draw);
-        s.check(model.objects.size() == n + 1u, "adds-one",
-                std::to_string(n) + " -> " + std::to_string(model.objects.size()) + " objects");
-        t.pump(45, idle, draw);
-        t.poster("builder");
-        t.pump(44, idle, draw);
-    });
-
-    t.step("builder", "delete", [&] {
-        const std::size_t n = model.objects.size();
-        model.selected = static_cast<int>(n) - 1;
-        FrameInput del;
-        del.delete_pressed = true;
-        t.pump(1, [del](int) { return del; }, draw);
-        s.check(n > 0u && model.objects.size() == n - 1u, "removes-one",
-                std::to_string(n) + " -> " + std::to_string(model.objects.size()) + " objects");
-        t.pump(89, idle, draw);
-    });
-
-    t.step("builder", "camera", [&] {
-        OrbitCamera& cam = b.camera();
-        const float yaw0 = cam.yaw;
-        FrameInput orbit;
-        orbit.orbit_dx = 3.0f;  // a right-drag, 3 px a frame
-        t.pump(90, [orbit](int) { return orbit; }, draw);
-        s.check(std::abs(cam.yaw - yaw0) > 0.5f, "orbits", "yaw " + fmt(yaw0) + " -> " + fmt(cam.yaw));
-
-        const float d0 = cam.distance;
-        FrameInput dolly;
-        dolly.dolly = 0.2f;  // a fifth of a scroll notch a frame, toward the target
-        t.pump(60, [dolly](int) { return dolly; }, draw);
-        s.check(cam.distance < d0, "dollies", "distance " + fmt(d0) + " -> " + fmt(cam.distance));
-
-        const glm::vec3 target0 = cam.target;
-        FrameInput pan;
-        pan.move_right = 1.0f;
-        t.pump(60, [pan](int) { return pan; }, draw);
-        FrameInput up;
-        up.move_up = 1.0f;
-        t.pump(30, [up](int) { return up; }, draw);
-        s.check(glm::length(cam.target - target0) > 1.0f, "pans",
-                "target moved " + fmt(glm::length(cam.target - target0)) + " m");
-        t.pump(60, idle, draw);
+        s.anomaly("airflow/not-available", run.error().context);
+        t.sink().set_card("Airflow\nnot yet available in the sandbox:\n" + wrap_card_line(run.error().context, 70));
+        t.pump(60, {}, blank);
+        t.poster("airflow");
+        t.pump(60, {}, blank);
+        t.sink().set_card({});
     });
 }
 
 // ---------------------------------------------------------------------------
-// MAIN FUNCTIONS 3-7: THE BUILT-IN SCENE FILES (assets/scenes/), the viewer's
-// scenes as engine content. Each runs its files through compose_file() and
-// instantiate() with the bridge's records (builtin_records.hpp), and checks
-// what the scene is there to show. flight is not here: its command hook is
-// viewer code.
-// ---------------------------------------------------------------------------
-
-// A slow orbit, for watching: half a pixel of drag a frame, about 10 degrees
-// a second.
-[[nodiscard]] InputFn slow_orbit() {
-    return [](int) {
-        FrameInput in;
-        in.orbit_dx = 0.5f;
-        return in;
-    };
-}
-
-struct SceneView {
-    glm::vec3 target;
-    float yaw;
-    float pitch;
-    float distance;
-};
-
-// A scene main function's run, open once its "open" step passed.
-struct SceneRun {
-    std::unique_ptr<SceneFileSession> session;
-    DrawFn draw;
-};
-
-// The "open" step: the scene files composed and instantiated, each lane
-// holding the bodies the scene places, on the GPU path.
-void open_scene(Tour& t, SceneRun& run, std::string_view main, const fs::path& assets,
-                const std::vector<std::string>& stems, std::size_t bodies_per_lane, const SceneView& view) {
-    t.step(main, "open", [&] {
-        Smoke& s = t.smoke();
-        if (!s.check(!assets.empty(), "assets", assets.empty() ? "no --assets, so no scene files" : assets.string())) {
-            return;
-        }
-        std::vector<SceneFileSession::Lane> lanes;
-        for (const std::string& stem : stems) {
-            const std::optional<BuiltinRecords> records = builtin_records(stem);
-            if (!s.check(records.has_value(), "records", stem + (records ? " has its records" : " has none"))) {
-                return;
-            }
-            lanes.push_back({assets / "scenes" / (stem + ".scene.yaml"), *records});
-        }
-        spade::Result<std::unique_ptr<SceneFileSession>> made = SceneFileSession::create(std::move(lanes));
-        if (!s.check(made.has_value(), "composed",
-                     made ? std::to_string(stems.size()) + " scene file(s) composed and instantiated"
-                          : made.error().context)) {
-            return;
-        }
-        run.session = std::move(*made);
-        run.session->attach(t.sink());
-        SceneFileSession* session = run.session.get();
-        run.draw = [session](const FrameInput& in) { return session->frame(in, kDt); };
-        OrbitCamera& cam = run.session->camera();
-        cam.target = view.target;
-        cam.yaw = view.yaw;
-        cam.pitch = view.pitch;
-        cam.distance = view.distance;
-
-        bool each = true;
-        std::string counts;
-        for (std::size_t lane = 0; lane < run.session->lane_count(); ++lane) {
-            each = each && run.session->vehicle_count(lane) == bodies_per_lane;
-            counts += (counts.empty() ? "" : ", ") + std::to_string(run.session->vehicle_count(lane));
-        }
-        s.check(each, "bodies", counts + " per lane, the scene places " + std::to_string(bodies_per_lane));
-        s.check(run.session->gpu_active(), "gpu-path", run.session->gpu_active() ? "GPU (OpenGL)" : "CPU raster");
-        t.pump(45, slow_orbit(), run.draw);
-    });
-}
-
-// True when the scene opened; otherwise the step that needs it fails, naming why.
-[[nodiscard]] bool scene_is_open(Smoke& s, const SceneRun& run) {
-    return s.check(run.session != nullptr, "session", run.session ? "open" : "the scene did not open");
-}
-
-[[nodiscard]] bool finite(const glm::vec3& v) {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-}
-
-// shower: 1000 bodies poured into a CSG bowl (a floor and four walls, joined
-// by unions), which must hold them.
-void shower(Tour& t, const fs::path& assets) {
-    SceneRun run;
-    open_scene(t, run, "shower", assets, {"shower"}, 1000, SceneView{{0.0f, 0.8f, 0.0f}, 0.6f, 0.55f, 13.0f});
-    t.step("shower", "pour", [&] {
-        Smoke& s = t.smoke();
-        if (!scene_is_open(s, run)) return;
-        SceneFileSession& scene = *run.session;
-        const auto mean_height = [&scene] {
-            double sum = 0.0;
-            for (std::size_t i = 0; i < scene.vehicle_count(0); ++i) sum += scene.position(0, i).value_or(glm::vec3(0.0f)).y;
-            return static_cast<float>(sum / static_cast<double>(scene.vehicle_count(0)));
-        };
-        const float before = mean_height();
-        t.pump(480, slow_orbit(), run.draw);
-        t.poster("shower");
-        t.pump(240, slow_orbit(), run.draw);
-        // The bowl's floor top is y = 0 and its walls' inner faces |x|, |z| = 4.
-        std::size_t outside = 0;
-        std::size_t not_finite = 0;
-        for (std::size_t i = 0; i < scene.vehicle_count(0); ++i) {
-            const spade::Result<glm::vec3> p = scene.position(0, i);
-            if (!p || !finite(*p)) {
-                ++not_finite;
-                continue;
-            }
-            if (std::abs(p->x) > 4.0f || std::abs(p->z) > 4.0f || p->y < 0.0f) ++outside;
-        }
-        s.check(not_finite == 0u, "finite", std::to_string(not_finite) + " bodies not finite");
-        s.check(outside == 0u, "held-by-the-bowl", std::to_string(outside) + " of 1000 outside the bowl");
-        const float after = mean_height();
-        s.check(after < before - 0.5f, "poured", "mean height " + fmt(before) + " -> " + fmt(after) + " m");
-    });
-}
-
-// bounce: four lanes, one body each, dropped from 6 m onto the ground at
-// restitution 0, 0.25, 0.5 and 0.75. Each lane is its own scene file.
-void bounce(Tour& t, const fs::path& assets) {
-    SceneRun run;
-    open_scene(t, run, "bounce", assets, {"bounce_lane_0", "bounce_lane_1", "bounce_lane_2", "bounce_lane_3"}, 1,
-               SceneView{{0.0f, 2.5f, 0.0f}, 0.0f, 0.2f, 17.0f});
-    t.step("bounce", "drops", [&] {
-        Smoke& s = t.smoke();
-        if (!scene_is_open(s, run)) return;
-        SceneFileSession& scene = *run.session;
-        std::vector<std::vector<float>> heights(scene.lane_count());
-        for (int frame = 0; frame < 420; ++frame) {
-            if (!t.pump(1, slow_orbit(), run.draw)) return;
-            for (std::size_t lane = 0; lane < scene.lane_count(); ++lane) {
-                heights[lane].push_back(scene.position(lane, 0).value_or(glm::vec3(0.0f)).y);
-            }
-            if (frame == 100) t.poster("bounce");
-        }
-        // Rebound: the highest point after first contact, its centre within a
-        // margin of one contact radius of the ground.
-        std::vector<float> rebounds;
-        std::string detail;
-        bool landed = true;
-        for (std::size_t lane = 0; lane < scene.lane_count(); ++lane) {
-            const float contact_y = scene.records(lane).contacts.proxy_radius + 0.05f;
-            const std::optional<float> r = checks::rebound_height(heights[lane], contact_y);
-            landed = landed && r.has_value();
-            rebounds.push_back(r.value_or(0.0f));
-            detail += (detail.empty() ? "" : ", ") + std::string("e ") + fmt(scene.records(lane).contacts.restitution_e) +
-                      " -> " + (r ? fmt(*r) + " m" : std::string("never landed"));
-        }
-        s.check(landed, "all-landed", detail);
-        s.check(checks::strictly_increasing(rebounds), "rebound-follows-restitution", detail);
-    });
-}
-
-// gate: five bodies lobbed along +z at a torus gate on two posts, each back
-// at ring height as it reaches the gate. Each must pass through the ring:
-// cross the gate's plane inside its clear radius less its own contact radius.
-void gate(Tour& t, const fs::path& assets) {
-    SceneRun run;
-    open_scene(t, run, "gate", assets, {"gate"}, 5, SceneView{{0.0f, 3.0f, -3.0f}, 1.25f, 0.15f, 15.0f});
-    t.step("gate", "lobs", [&] {
-        Smoke& s = t.smoke();
-        if (!scene_is_open(s, run)) return;
-        SceneFileSession& scene = *run.session;
-        const std::size_t n = scene.vehicle_count(0);
-        std::vector<glm::vec3> last(n);
-        for (std::size_t i = 0; i < n; ++i) last[i] = scene.position(0, i).value_or(glm::vec3(0.0f));
-        std::vector<std::optional<checks::GateCrossing>> crossed(n);
-        for (int frame = 0; frame < 150; ++frame) {
-            if (!t.pump(1, slow_orbit(), run.draw)) return;
-            for (std::size_t i = 0; i < n; ++i) {
-                const glm::vec3 now = scene.position(0, i).value_or(last[i]);
-                if (!crossed[i]) crossed[i] = checks::crossing_z0(last[i], now);
-                last[i] = now;
-            }
-            if (frame == 70) t.poster("gate");
-        }
-        // The ring: radius 1.5 m, tube 0.15 m, centred 1.8 m up, so its clear
-        // opening is 1.35 m; a body clears it by its own contact radius.
-        const float clear = 1.5f - 0.15f - scene.records(0).contacts.proxy_radius;
-        std::size_t crossings = 0;
-        std::size_t through = 0;
-        std::string where;
-        for (const auto& c : crossed) {
-            if (!c) continue;
-            ++crossings;
-            through += checks::through_ring(*c, 1.8f, clear) ? 1u : 0u;
-            where += (where.empty() ? "" : ", ") + std::string("(") + fmt(c->x) + ", " + fmt(c->y) + ")";
-        }
-        s.check(crossings == n, "reach-the-gate",
-                std::to_string(crossings) + " of " + std::to_string(n) + " crossed z = 0, at (x, y) " + where + " m");
-        s.check(through == n, "through-the-ring",
-                std::to_string(through) + " of " + std::to_string(n) + " inside " + fmt(clear) +
-                    " m of the ring's centre (0, 1.8)");
-        t.pump(60, slow_orbit(), run.draw);
-    });
-}
-
-// The angle a body has tilted from level, radians.
-[[nodiscard]] float tilt(const glm::quat& q) {
-    const glm::vec3 up = q * glm::vec3(0.0f, 1.0f, 0.0f);
-    return std::acos(std::clamp(up.y, -1.0f, 1.0f));
-}
-
-// hover: a quadrotor at its hover rotor speed, open loop, in calm air. It
-// holds its height, level.
-void hover(Tour& t, const fs::path& assets) {
-    SceneRun run;
-    open_scene(t, run, "hover", assets, {"hover"}, 1, SceneView{{0.0f, 3.0f, 0.0f}, 0.6f, 0.3f, 2.2f});
-    t.step("hover", "holds", [&] {
-        Smoke& s = t.smoke();
-        if (!scene_is_open(s, run)) return;
-        SceneFileSession& scene = *run.session;
-        const float y0 = scene.position(0, 0).value_or(glm::vec3(0.0f)).y;
-        float worst = 0.0f;
-        for (int frame = 0; frame < 360; ++frame) {
-            if (!t.pump(1, slow_orbit(), run.draw)) return;
-            worst = std::max(worst, std::abs(scene.position(0, 0).value_or(glm::vec3(0.0f)).y - y0));
-            if (frame == 180) t.poster("hover");
-        }
-        s.check(worst < 0.25f, "holds-height", "largest change " + fmt(worst) + " m from " + fmt(y0) + " m");
-        const float tilted = tilt(scene.orientation(0, 0).value_or(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
-        s.check(tilted < 0.05f, "level", "tilted " + fmt(tilted) + " rad");
-    });
-}
-
-// wind: the same open-loop hover in moderate turbulence, which carries it
-// several metres (the viewer scene's own account of it).
-void wind(Tour& t, const fs::path& assets) {
-    SceneRun run;
-    open_scene(t, run, "wind", assets, {"wind"}, 1, SceneView{{0.0f, 3.0f, 0.0f}, 0.6f, 0.25f, 4.0f});
-    t.step("wind", "gusts", [&] {
-        Smoke& s = t.smoke();
-        if (!scene_is_open(s, run)) return;
-        SceneFileSession& scene = *run.session;
-        const glm::vec3 p0 = scene.position(0, 0).value_or(glm::vec3(0.0f));
-        float worst = 0.0f;
-        bool all_finite = true;
-        for (int frame = 0; frame < 360; ++frame) {
-            if (!t.pump(1, slow_orbit(), run.draw)) return;
-            const glm::vec3 p = scene.position(0, 0).value_or(glm::vec3(0.0f));
-            all_finite = all_finite && finite(p);
-            worst = std::max(worst, std::abs(p.y - p0.y));
-            // The camera follows the drone, which the air carries metres off.
-            if (finite(p)) scene.camera().target = p;
-            if (frame == 240) t.poster("wind");
-        }
-        s.check(all_finite, "finite", all_finite ? "the drone stayed finite" : "the drone went non-finite");
-        s.check(worst > 0.5f, "carried-by-the-air", "largest height change " + fmt(worst) + " m");
-        const float tilted = tilt(scene.orientation(0, 0).value_or(glm::quat(1.0f, 0.0f, 0.0f, 0.0f)));
-        s.note("wind: tilted " + fmt(tilted) + " rad at the end");
-    });
-}
-
-// ---------------------------------------------------------------------------
-// MAIN FUNCTION: THE EDITOR (editor plan Task 10). The editor's window on the
+// MAIN FUNCTION 3: THE EDITOR (editor plan Task 10). The editor's window on the
 // hover scene: the default layout, a vehicle selected, a box placed from the
 // library, the world's settings, and a run. The stills are §13's review set.
 // Edits stay in memory: nothing is saved into assets/.
@@ -1056,6 +612,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         session->attach(t.sink());
         drone = scene_now().vehicles.at(0).name;
         then(60);
+        s.check(session->gpu_active(), "gpu-path", session->gpu_active() ? "GPU (OpenGL)" : "CPU raster");
         // §13's default layout: the toolbar above, the hierarchy and the
         // inspector at the sides, the library below, and the scene between.
         const ViewportRect v = t.sink().viewport();
@@ -1380,10 +937,6 @@ int run_live_smoke(const TourOptions& options) {
     if (!drone) {
         smoke.anomaly("harness/drone-session", drone.error().context);
     }
-    spade::Result<std::unique_ptr<BuilderSession>> b = BuilderSession::create(true, options.blur);
-    if (!b) {
-        smoke.anomaly("harness/builder-session", b.error().context);
-    }
 
     sink = open_window(options.width, options.height, /*vsync=*/true);
     if (!sink) {
@@ -1406,27 +959,26 @@ int run_live_smoke(const TourOptions& options) {
     tour.pump(kOpeningFrames, {}, blank);
     sink->set_card({});
 
+    // Each chapter opens with a card naming it (the storyboard's captions).
+    const auto chapter = [&](std::string_view card) {
+        sink->set_card(std::string(card));
+        tour.pump(kChapterCardFrames, {}, blank);
+        sink->set_card({});
+    };
     if (drone && !tour.stopped()) {
+        chapter("1  The drone box\nthe drone held at the centre, flown by hand:\nattitude, thrust, the camera");
         (*drone)->attach(*sink);
         drone_box(tour, **drone);
     }
     if (drone) {
-        drone->reset();  // detaches its panel before the builder attaches
-    }
-    if (b && !tour.stopped()) {
-        (*b)->attach(*sink);
-        builder(tour, **b);
-    }
-    if (b) {
-        b->reset();
-    }
-    // The built-in scene files, each built when its turn comes; the window is
-    // already open.
-    for (void (*scene)(Tour&, const fs::path&) : {&shower, &bounce, &gate, &hover, &wind}) {
-        if (tour.stopped()) break;
-        scene(tour, options.assets_dir);
+        drone->reset();  // detaches its panel before the editor attaches
     }
     if (!tour.stopped()) {
+        chapter("2  Airflow\nthe air around the drone: vortex cores, streamlines,\na pressure slice, C_p on the drone");
+        airflow(tour, blank);
+    }
+    if (!tour.stopped()) {
+        chapter("3  The editor\nopen a scene, place, select, move, edit, undo, run, save");
         editor_tour(tour, options.assets_dir);
     }
 

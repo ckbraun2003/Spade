@@ -10,7 +10,8 @@
 
 #include <glm/glm.hpp>
 
-#include "builder_scene.hpp"  // the unit meshes, ray_from_screen()
+#include "screen_ray.hpp"   // ray_from_screen()
+#include "unit_meshes.hpp"  // the unit meshes
 #include "drone_view.hpp"     // detail::lambert()
 #include "editor_pick.hpp"
 #include "gl_target_sink.hpp"
