@@ -1,6 +1,6 @@
 # The end-goal smoke's checks and bands (N20)
 
-**Owner:** Test/Docs. **Status:** for the lead's review.
+**Owner:** Test/Docs. **Status:** approved and merged by the lead, 2026-10-19 (fc1fbac). The lead decided the downwash band (§5): ±25% on screen, with C8q approved.
 **For:** the editor end-goal design's §6 steps (`docs/design/interface/plans/2026-10-19-editor-end-goal-design.md`, INT-10).
 **Fixed a priori, 2026-10-19,** before any run of these steps. A band changes only by a recorded lead decision (`01-verification.md`).
 
@@ -23,7 +23,7 @@
   - It **rests**: measured with the scene's SDF without the drone, the gap from its lowest posed-part point to the surface beneath lies within [−2, +5] mm. The pick march stops within 1e-3·t of the surface, and the smoke clicks from 5 m or closer.
   - After 1.0 s of Run, disarmed, it has moved no more than 10 mm and tilted no more than 2°.
   - *Catches:* a buried or floating drone, and a drone launched by interpenetration.
-  - *Expected red:* `rest_height()` returns the built-in drone's 25 mm (`kDroneBodyHalf.y`) for every model. The reference quad's battery hangs lower, so this stays red until placing uses the model's own lowest point.
+  - *Expected red:* `rest_height()` returns the built-in drone's 25 mm (`kDroneBodyHalf.y`) for every model. The reference quad's battery hangs lower, so this stays red until placing uses the model's own lowest point. The lead gave the fix to Interface (2026-10-19).
 - **drawn:** one drawable per part of the model (`render_parts`), each at its posed part's transform (`posed_parts()`) to 1e-5 m and 1e-5 rad. The hull, arms and discs from `append_vehicle_items` don't count. *Catches:* the placeholder drawn instead of the parts; parts drawn at the design frame rather than the placed pose.
 - **propulsion-kept:** the placed model's model, parts and propulsion identities equal the library file's. *Catches:* a copy that drops the chain (§2a).
 
@@ -84,14 +84,15 @@ LiveRun, drone held (design decision 1), until P2b.
     - In the recommended region, L = 0.38 m, so t_dev = 0.30 s.
     - Reason: C8 (disc 0.96 m above its bottom face, v_ref 7.58 m/s) averaged from 0.32 s, which is 2.5 wake transits. Four transits, plus the 0.30 s floor, cover the rotors' spin-up and the starting vortex leaving the box.
   - **Window:** [t_dev, t_dev + 0.20 s]. On screen, the mean over every published frame in it (6 or more at 30 fps); headless, over every step.
-  - **Band:** each rotor's mean within ±25% of its own v_ref: 0.75 ≤ ū_i / v̄_ref,i ≤ 1.25.
+  - **Band:** each rotor's mean within ±25% of its own v_ref: 0.75 ≤ ū_i / v̄_ref,i ≤ 1.25 (the lead's decision, 2026-10-19).
+  - **This band is a coupling check, not a validation claim.** A pass shows the airflow is coupled to the rotors: air moves the right way, from the right places, at roughly the right speed. It does not show the solver's accuracy at this resolution. Only C8 and C8q make accuracy claims.
   - **Why not C8's 10% here:** C8's 10% was set for one isolated disc at R/dx 10, where it measured −2.2%. The chapter's region is at R/dx 4 to 6, with four rotors whose centres are 2.04R apart. Neither effect is measured yet, and a band set without evidence, then widened after a run, is what the a-priori rule forbids. ±25% still fails:
     - still air;
     - reversed flow;
     - a stopped or missing rotor;
     - a disc misplaced by more than its slipstream's radius (about 0.73R at 2R below);
     - a thrust off by ×2 or more, where the true bias is 10% or less.
-  - **C8's band where it holds, as C8q (proposed: opt-in, per session):**
+  - **C8's band where it holds, as C8q (approved by the lead, 2026-10-19: an opt-in validation record, run in a quiet window):**
     - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
     - The band: each rotor within C8's 10%, and the four within 5% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity.
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`.
@@ -138,4 +139,4 @@ These go on a Test/Docs branch, against stubs, before each feature lands. Each l
 
 - **Interface:** agree on the predicates' home. Each end-goal step exposes the per-frame observables above (body state, rotor ω and thrust, the pick point and the posed parts) to the predicate.
 - **Physics:** confirm that k_T ω² is the right T for momentum theory here (P7a's static value, exact in hover), and review the downwash reasoning in §5.
-- **The lead:** decide between ±25% on screen with C8q at C8's 10% (recommended) and C8's 10% on screen.
+- **The lead:** decided, 2026-10-19: ±25% on screen, as a coupling check; C8q at C8's 10% for validation.
