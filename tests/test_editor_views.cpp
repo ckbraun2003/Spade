@@ -9,10 +9,15 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 
+#include <glm/vec3.hpp>
+
+#include "core/flow_volume.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
 #include "render/view_mode.hpp"
+#include "world/builder.hpp"
 
 #include "../sandbox/editor_views.hpp"
 
@@ -29,6 +34,22 @@ ViewInputs inputs(bool has_sdf) {
     ViewInputs in;
     in.has_sdf = has_sdf;
     return in;
+}
+
+// A ground plane's world and its scene, which borrows the world's SDF. Void,
+// so a failed setup stops the test; callers ASSERT_NO_FATAL_FAILURE.
+void ground_scene(spade::WorldDesc& world, spade::render::RenderScene& out) {
+    auto built = spade::WorldBuilder()
+                     .name("editor_views")
+                     .environment(spade::Environment{})
+                     .capacities(spade::Capacities{1, 1, 1, 1})
+                     .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
+                     .build();
+    ASSERT_TRUE(built.has_value()) << built.error().context;
+    world = std::move(*built);
+    auto scene = spade::render::scene_from_world(world, {});
+    ASSERT_TRUE(scene.has_value()) << scene.error().context;
+    out = std::move(*scene);
 }
 
 }  // namespace
@@ -147,7 +168,9 @@ TEST(EditorViews, ApplyingAViewSetsTheRenderModeAndItsLegends) {
 TEST(EditorViews, AModeThatStopsBeingDrawableDrawsShadedWithTheReason) {
     ViewState v;
     ASSERT_TRUE(choose_mode(v, ViewBase::exact_sdf, ViewBackend::cpu, inputs(true)).has_value());
+    spade::WorldDesc world;
     spade::render::RenderScene scene;
+    ASSERT_NO_FATAL_FAILURE(ground_scene(world, scene));
     spade::render::RenderOptions options;
     spade::render::ViewCache cache;
 
@@ -159,7 +182,39 @@ TEST(EditorViews, AModeThatStopsBeingDrawableDrawsShadedWithTheReason) {
     const std::string why = spade::render::supports(want, ViewBackend::gl, inputs(true)).why_not;
     EXPECT_NE(v.refusal.find(why), std::string::npos) << v.refusal;
 
-    ASSERT_TRUE(apply_to(v, nullptr, ViewBackend::cpu, inputs(true), scene, options, cache).has_value());
+    const spade::Result<void> back = apply_to(v, nullptr, ViewBackend::cpu, inputs(true), scene, options, cache);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
     EXPECT_EQ(options.mode, spade::render::DrawMode::raymarch);
     EXPECT_TRUE(v.refusal.empty());
+}
+
+// The inputs a view is judged with come from the scene the way apply_view()
+// reads them, so the menu and the draw cannot disagree: an SDF only when the
+// scene has a non-empty one, walls when any item is a flow wall, a volume when
+// one is published.
+TEST(EditorViews, TheInputsComeFromTheSceneAsApplyViewReadsThem) {
+    spade::render::RenderScene bare;
+    const ViewInputs none = inputs_of(bare, nullptr, true);
+    EXPECT_FALSE(none.has_sdf);
+    EXPECT_FALSE(none.has_walls);
+    EXPECT_FALSE(none.has_volume);
+    EXPECT_TRUE(none.gl_flow_ready);
+
+    const spade::SdfProgram empty;
+    bare.sdf = &empty;
+    EXPECT_FALSE(inputs_of(bare, nullptr, false).has_sdf);  // apply_view refuses an empty program
+    EXPECT_FALSE(inputs_of(bare, nullptr, false).gl_flow_ready);
+
+    spade::WorldDesc world;
+    spade::render::RenderScene ground;
+    ASSERT_NO_FATAL_FAILURE(ground_scene(world, ground));
+    EXPECT_TRUE(inputs_of(ground, nullptr, true).has_sdf);
+
+    spade::render::DrawItem wall;
+    wall.flow_wall = true;
+    ground.dynamics.push_back(wall);
+    EXPECT_TRUE(inputs_of(ground, nullptr, true).has_walls);
+
+    const spade::FlowVolume volume;
+    EXPECT_TRUE(inputs_of(ground, &volume, true).has_volume);
 }
