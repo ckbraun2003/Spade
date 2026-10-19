@@ -44,8 +44,8 @@ Arm/disarm and the floor are Cameron's premise. The sandbox's DroneSim has neith
 
 *Caption: "The air around the drone: vortex cores, streamlines, a pressure slice, C_p on the drone. 32³ live on the CPU, in slow motion."*
 
-**The capability check, not a silent drop.** The chapter opens a LiveRun of the drone-box case and steps it once:
-- **When LiveRun refuses:** today it refuses because the rotors aren't coupled, before Core's command lands. The chapter shows a card, "Airflow not yet available: <LiveRun's reason, verbatim>", and its one step checks that the reason was shown (`airflow.capability/announced`). It's a real check, so a refusal can't pass silently.
+**The capability check, as an EXPIRING known-open entry, not a check that passes on any refusal** (Test/Docs' condition, the lead agreeing). The chapter opens a LiveRun of the drone-box case and steps it once:
+- **When LiveRun refuses:** today it refuses because the rotors aren't coupled, before Core's command lands. The chapter shows a card, "Airflow not yet available: <LiveRun's reason, verbatim>", and raises the anomaly `airflow/not-available`. `kKnownOpen` tolerates exactly that anomaly with the entry "airflow-not-available: LiveRun refuses until the rotors are coupled". When LiveRun steps rotors, the entry stops firing and the run FAILS as expired, so someone must remove the entry and make the chapter live. A later LiveRun regression that refused for another reason would show a card and fail, since only this refusal is known-open.
 - **When LiveRun steps:** the chapter runs, as follows.
 
 | Step | On screen | Checks |
@@ -61,7 +61,7 @@ The live policy is Rendering's advice. 64³ was measured at about 261 ms per ste
 
 GL draws ONE flow layer per frame, so the volume and iso views take turns. Streamlines, slices, tracers and one surface colouring can share a frame. 128³ live, with λ2 and C_p together, waits for the GPU path (D2).
 
-**One look.** Rendering's `render/flow_look.hpp` (in review, `rendering/flow-look`) gives the tour flow_movie's palette and helpers, so the tour and the films are one system. The steps are gated on what exists: `airflow.surface` needs P2's solids, and until then the step announces "C_p needs the solid drone (P2)" and checks that announcement.
+**One look.** Rendering's `render/flow_look.hpp` (in review, `rendering/flow-look`) gives the tour flow_movie's palette and helpers, so the tour and the films are one system. The steps are gated on what exists: `airflow.surface` needs P2's solids. Until then the step shows "C_p needs the solid drone (P2)" and raises `airflow/cp-needs-p2`, tolerated by the expiring known-open entry "cp-needs-p2", which fails the run as expired once P2 lands.
 
 ### Chapter 3: The editor (about 25 s)
 
@@ -86,7 +86,9 @@ So no action needs porting, and the mode is removed with its code. The builder's
 
 ## 3. What stays the same
 
-- **Kat's journal mechanisms:** the declared-step ledger, anomalies, known-open entries (none today) and the END line.
+- **Kat's journal mechanisms:** the declared-step ledger, anomalies, known-open entries (two, expiring, in chapter 2) and the END line.
+- **Every harness and recording anomaly stays** (they fire only on failure, so they aren't in §4): recording/{ffmpeg-missing, ffmpeg-start, poster, size-changed, ffmpeg-write, still, ffmpeg-exit}, harness/{window-closed, frame-failed, poster-undeclared, snapshot-undeclared, drone-session, no-window}, and inj.target. Only harness/builder-session goes, with the builder mode.
+- **One added check:** `editor.open/gpu-path` (Test/Docs' suggestion), so the editor's own session checks its renderer, now that the builder's and the scenes' gpu-path checks drop as duplicates.
 - **The run-level checks:** frames-recorded, ui-font, mp4-written, mp4-sendable (under 30 MB; about 85 s at today's CRF should come to about 7 MB), and the posters, now `01_drone_box`, `02_airflow` and `03_editor`.
 - **The editor's 8 stills.** Snapshots of removed mains don't exist today.
 - **Stale descriptions,** fixed in the same branch: `07-status.md:25`, `live_tour.hpp:9`, `main.cpp:86`, and `live-smoke.ps1`'s synopsis.
@@ -116,21 +118,21 @@ The lead decided both open points: the heatmap's three checks are dropped becaus
 | `bounce.open/gpu-path` | dropped | duplicates drone_box.open/gpu-path, kept (the same GL renderer) |
 | `bounce.open/records` | moved | test_sandbox_builtin_records.cpp:78, :44 |
 | `builder.camera/dollies` | new test | test_sandbox_camera_and_channels.cpp: a scroll dolly brings the camera nearer (red: dolly away); :227 tests only the bounds |
-| `builder.camera/orbits` | moved | test_sandbox_camera_and_channels.cpp:263 |
-| `builder.camera/pans` | moved | test_sandbox_camera_and_channels.cpp:284 |
-| `builder.delete/removes-one` | moved | test_sandbox_builder.cpp:324, :339 |
-| `builder.duplicate/adds-one` | moved | test_sandbox_builder.cpp:351 |
+| `builder.camera/orbits` | moved | test_sandbox_camera_and_channels.cpp:263 (OrbitCamera stays) |
+| `builder.camera/pans` | moved | test_sandbox_camera_and_channels.cpp:284, the Q/E target-moves assertion (the tour's move_up) |
+| `builder.delete/removes-one` | new test | the builder mode leaves the sandbox; counterpart: test_editor_scene_edits.cpp:106 RemovingAVehicleRemovesItsOwnModelButNotASharedOne (the removal at :109), plus a new assertion there that the scene holds one vehicle fewer (red: a removal that removes nothing) |
+| `builder.duplicate/adds-one` | dropped | the builder mode leaves the sandbox; counterpart: editor.inspect/duplicated (kept) |
 | `builder.open/empty` | dropped | a precondition of the builder's own steps, which leave the tour |
 | `builder.open/gpu-path` | dropped | duplicates drone_box.open/gpu-path, kept (the same GL renderer) |
 | `builder.open/view-between-panels` | dropped | duplicates editor.open/view-between-panels, kept (the editor replaces the builder in the tour) |
-| `builder.place/on-ground` | moved | test_sandbox_builder.cpp:222 |
-| `builder.place/rendered` | moved | test_sandbox_builder.cpp:489 |
-| `builder.place/three-placed` | moved | test_sandbox_builder.cpp:229 |
-| `builder.recolour/has-object` | dropped | a precondition of reaches-material |
-| `builder.recolour/reaches-material` | new test | test_sandbox_builder.cpp: recolouring object 0 sets materials[material_base].base_color to the chosen colour (red: recolour writes the wrong slot) |
-| `builder.select_drag/height-kept` | moved | test_sandbox_builder.cpp:278 |
-| `builder.select_drag/moves-in-x` | moved | test_sandbox_builder.cpp:278 |
-| `builder.select_drag/selects` | moved | test_sandbox_builder.cpp:247 |
+| `builder.place/on-ground` | dropped | the builder mode leaves the sandbox; counterpart: none found: the editor's library place has no on-the-ground assertion (Test/Docs to judge) |
+| `builder.place/rendered` | dropped | the builder mode leaves the sandbox; counterpart: none found: no editor test asserts one drawable per object (Test/Docs to judge) |
+| `builder.place/three-placed` | dropped | the builder mode leaves the sandbox; counterpart: editor.place/unique-names (kept): two library boxes placed, with distinct names |
+| `builder.recolour/has-object` | dropped | a precondition of reaches-material; the builder mode leaves the sandbox |
+| `builder.recolour/reaches-material` | new test | the builder mode leaves the sandbox; counterpart: a new test in test_editor_scene_edits.cpp: SetAssetMaterial puts the named material on the asset (red: it sets another asset's); today only the refusal (:163) is tested |
+| `builder.select_drag/height-kept` | dropped | the builder mode leaves the sandbox; counterpart: editor.move/drags-along-x (kept): it also asserts dy = dz = 0 |
+| `builder.select_drag/moves-in-x` | dropped | the builder mode leaves the sandbox; counterpart: editor.move/drags-along-x (kept): dx = 1 +/- 0.05 |
+| `builder.select_drag/selects` | dropped | the builder mode leaves the sandbox; counterpart: editor.select/selects-vehicle (kept) |
 | `drone_box.attitude/pitch-follows` | kept | chapter 1, orientations |
 | `drone_box.attitude/roll-follows` | kept | chapter 1, orientations |
 | `drone_box.attitude/yaw-follows` | kept | chapter 1, orientations |
@@ -151,8 +153,8 @@ The lead decided both open points: the heatmap's three checks are dropped becaus
 | `drone_box.orbit/nearer-clamps` | kept | chapter 1, the camera (shortened) |
 | `drone_box.orbit/over` | kept | chapter 1, the camera (shortened) |
 | `drone_box.throttle/rotors-speed-up` | kept | chapter 1, thrust states (tour-only today) |
-| `drone_box.turbulence/applied` | moved | test_sandbox_drone_view.cpp:351 (the rebuild path) and test_sandbox_drone.cpp:141 (severe turbulence) |
-| `drone_box.turbulence/calm-again` | new test | test_sandbox_drone_view.cpp: resetting every option returns DronePhysicsOptions{} (red: a reset that keeps the turbulence) |
+| `drone_box.turbulence/applied` | new test | in the new calm-again test: set moderate, apply, options().turbulence == moderate (red: an apply that drops the turbulence); neither :351 nor drone:141 asserts it |
+| `drone_box.turbulence/calm-again` | new test | test_sandbox_drone_view.cpp (new): set moderate and check it applied (the row above), then reset every option: DronePhysicsOptions{} (red: a reset that keeps the turbulence) |
 | `drone_box.vulkan_refused/control-put-back` | moved | test_sandbox_drone_view.cpp:372; test_sandbox_drone.cpp:180, :191 |
 | `drone_box.vulkan_refused/kept-cpu` | moved | test_sandbox_drone_view.cpp:372 SelectingVulkanIsRefusedVisiblyAndTheStandStaysOnCpu |
 | `drone_box.vulkan_refused/reason-shown` | moved | test_sandbox_drone_view.cpp:372 |
@@ -236,7 +238,7 @@ The lead decided both open points: the heatmap's three checks are dropped becaus
 | `wind.open/gpu-path` | dropped | duplicates drone_box.open/gpu-path, kept (the same GL renderer) |
 | `wind.open/records` | moved | test_sandbox_builtin_records.cpp:78, :44 |
 
-Totals: dropped 29, kept 53, moved 24, new test 22; 128 check ids.
+Totals: dropped 36, kept 53, moved 15, new test 24; 128 check ids.
 
 ## 5. Order, after the lead's OK and Test/Docs' sign-off
 
