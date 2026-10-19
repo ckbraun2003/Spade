@@ -21,7 +21,7 @@ using spade::physics::airflow::SolidPart;
 using spade::physics::airflow::SolidQuery;
 using spade::physics::airflow::SolidSampler;
 
-enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y, two_boxes, hemi_shell };
+enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y, two_boxes, hemi_shell, box_shell };
 
 // One shape in the grid's frame. `to_local` turns a point's offset from the
 // centre into the shape's own axes (a pure rotation; identity by default).
@@ -32,7 +32,8 @@ struct Shape {
     glm::vec3 half{0.0f};          // box: half extents; wedge: (tip-to-back length, half height in y, 0)
     glm::vec3 centre2{0.0f};       // two_boxes: the second box, axis-aligned
     glm::vec3 half2{0.0f};
-    float radius = 0.0f;           // sphere, cylinder: radius; wedge: half-angle, radians; hemi_shell: mid-surface radius
+    float radius = 0.0f;           // sphere, cylinder: radius; wedge: half-angle, radians; hemi_shell: mid-surface radius;
+                                   // box_shell: wall thickness
     glm::mat3 to_local{1.0f};      // local = to_local * (x - centre)
     glm::vec3 omega{0.0f};         // rigid rotation about `centre`, rad/s
     float min_feature = 0.0f;      // declared, m
@@ -94,6 +95,12 @@ struct Field {
             f = cap.d > shell.d ? cap : shell;
             break;
         }
+        case Kind::box_shell: {  // the outer box minus the inner: max(outer, -inner)
+            const Field outer = box_field(p, s.half);
+            const Field inner = box_field(p, s.half - glm::vec3(s.radius));
+            f = outer.d >= -inner.d ? outer : Field{-inner.d, -inner.g};
+            break;
+        }
         case Kind::two_boxes: {  // the union of two axis-aligned boxes: the smaller distance wins
             const Field a = box_field(p, s.half);
             const Field b = box_field(x - s.centre2, s.half2);
@@ -134,7 +141,8 @@ struct Field {
     glm::vec3 local_half(0.0f);
     switch (s.kind) {
         case Kind::sphere: local_half = glm::vec3(s.radius); break;
-        case Kind::box: local_half = s.half; break;
+        case Kind::box:
+        case Kind::box_shell: local_half = s.half; break;
         case Kind::cylinder_y: local_half = glm::vec3(s.radius, 1.0e3f, s.radius); break;
         case Kind::outside_cylinder_y: local_half = glm::vec3(1.0e3f); break;
         case Kind::wedge_y: local_half = glm::vec3(s.half.x, s.half.y, s.half.x * std::tan(s.radius)); break;

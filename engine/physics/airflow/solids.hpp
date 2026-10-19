@@ -150,4 +150,14 @@ struct SolidField {
 [[nodiscard]] Result<void> build_solids(SolidField& field, const GridShape& shape, std::array<bool, 3> periodic,
                                         std::span<const SolidPart> parts, const SolidSampler& sample);
 
+// What a closed sample (theta = 0) holds between projections (the solids
+// design, section 3, as approved 2026-10-13): `rigid`, the owner's rigid
+// velocity, so a backtrace into a solid reads the rigid field (exact deep in
+// it: trilinear interpolation reproduces a linear field); `extrapolate`, the
+// free-slip lean mode, two layers filled from the open side (Task 7).
+enum class SolidInterior : uint8_t { rigid, extrapolate };
+
+// Writes the closed samples per `mode`. Allocation-free.
+void apply_solid_velocities(MacGrid& g, const SolidField& f, SolidInterior mode) noexcept;
+
 }  // namespace spade::physics::airflow

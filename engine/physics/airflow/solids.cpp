@@ -601,4 +601,23 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
     return {};
 }
 
+void apply_solid_velocities(MacGrid& g, const SolidField& f, SolidInterior mode) noexcept {
+    if (!f.any) return;
+    std::vector<float>* vel[3] = {&g.u, &g.v, &g.w};
+    for (uint32_t c = 0; c < 3; ++c) {
+        if (f.range[c].empty) continue;
+        const std::array<uint32_t, 3> dims = sample_dims(g.shape, c);
+        const SolidRange& rg = f.range[c];
+        for (uint32_t k = rg.lo[2]; k <= rg.hi[2]; ++k) {
+            for (uint32_t j = rg.lo[1]; j <= rg.hi[1]; ++j) {
+                for (uint32_t i = rg.lo[0]; i <= rg.hi[0]; ++i) {
+                    const std::size_t idx = i + std::size_t{dims[0]} * (j + std::size_t{dims[1]} * k);
+                    if (closed(f.theta[c][idx])) (*vel[c])[idx] = f.wall[c][idx];
+                }
+            }
+        }
+    }
+    (void)mode;  // extrapolate: Task 7
+}
+
 }  // namespace spade::physics::airflow

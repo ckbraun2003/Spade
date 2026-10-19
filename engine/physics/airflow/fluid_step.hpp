@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,8 @@
 #include "physics/airflow/advect.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/projection.hpp"
+#include "physics/airflow/regions.hpp"
+#include "physics/airflow/solids.hpp"
 #include "physics/airflow/viscous.hpp"
 
 // ---------------------------------------------------------------------------
@@ -29,20 +32,30 @@ struct FluidConfig {
     float h = 0.0f;            // the fluid step, s
     uint32_t n_v = 2;          // V-cycles per projection
     uint32_t visc_sweeps = 8;  // red-black sweeps per viscous solve
+    SolidInterior interior = SolidInterior::rigid;  // what closed samples hold (solids.hpp)
 };
 
 enum class FluidFault : uint8_t {
     none,
     non_finite,        // a NaN or infinity in u, v, w or p after the step
     ill_posed_domain,  // a closed domain whose prescribed wall fluxes do not balance
+    ill_posed_region,  // a closed fluid region whose prescribed domain fluxes do not balance (regions.hpp)
 };
 
 struct FluidHealth {
     FluidFault fault = FluidFault::none;
     uint8_t quantity = 0;   // non_finite: 0 u, 1 v, 2 w, 3 p
     uint8_t faces = 0;      // ill_posed_domain: bit s for each wall face with a normal velocity
-    std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order)
+    std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order);
+                            // ill_posed_region: the region's first cell (faces: its faces)
+    float pressure_residual = 0.0f;  // with solids: this step's max|r| / max|b| (pcg.hpp)
+    bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
 };
+
+// A pressure solve leaving more than this relative residual is announced (the
+// lead's condition, spec 1.5 as amended): a first value, revised with the
+// iteration count chosen from S1, S3 and the dense-parts case.
+inline constexpr float kResidualAnnounce = 1.0e-3f;
 
 // What a fault means, naming the quantity and its sample (i, j, k), or the
 // faces. Allocates: call it outside the step.
@@ -55,6 +68,8 @@ struct FluidScratch {
     std::vector<float> rhs;         // the viscous solve's right side
     std::vector<float> du, dv, dw;  // velocity increments a source wrote this step; cleared when added
     FluidHealth health;             // sticky: once faulted, every later step refuses
+    SolidField solids;              // set_solids(); empty: plan A's paths
+    FluidRegions regions;
 };
 
 // The bytes of a grid and of the scratch its step needs, in 64 bits (the
@@ -78,5 +93,12 @@ struct FluidScratch {
 // One step. Returns the scratch's health: FluidFault::none, or the fault
 // that stopped this step or an earlier one (the grid then is unchanged).
 FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, FluidScratch& s) noexcept;
+
+// Sets the scratch's solids from `parts` (a host call: on first use it
+// allocates the solid field, and every call relabels the regions and resets
+// the multigrid's weights and CG's vectors to their sizes). No parts: plan A's
+// paths, bit for bit. Refused as build_solids() refuses, leaving no solid.
+[[nodiscard]] Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc,
+                                      std::span<const SolidPart> parts, const SolidSampler& sample);
 
 }  // namespace spade::physics::airflow
