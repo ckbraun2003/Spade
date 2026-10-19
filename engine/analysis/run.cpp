@@ -203,6 +203,11 @@ Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view ca
     return folder;
 }
 
+Result<fs::path> create_run_folder(const fs::path&, std::string_view, const ResolvedCase&, std::string_view,
+                                   const BuildIdentity&) {
+    return std::unexpected(Error{Code::internal, "create_run_folder(..., BuildIdentity): not yet (RED)"});
+}
+
 Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
                                    std::string_view date) {
     return create_run_folder(runs_dir, case_name, resolved, date, spade::build_identity().commit);

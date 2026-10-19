@@ -20,6 +20,7 @@
 #include <string_view>
 
 #include "analysis/case.hpp"
+#include "core/build_identity.hpp"
 #include "core/error.hpp"
 
 namespace spade::analysis {
@@ -83,11 +84,18 @@ struct RunRecord {
                                                               std::string_view case_name, const ResolvedCase& resolved,
                                                               std::string_view date, std::string_view commit);
 
-// The same, at the commit this engine was built from (spade::build_identity(),
-// core/build_identity.hpp): how a host names its runs without git. An engine
-// that cannot say its commit names them <date>_<hash16>_unknown, and a build
-// with uncommitted changes is not marked in the name. The form above, with an
-// explicit commit, is for tests, whose paths must not move with every commit.
+// The same, named by a build's identity (core/build_identity.hpp): the folder
+// above at built.commit, or <date>_<hash16>_<commit12>-dirty when built.dirty,
+// git describe's mark for a build with uncommitted changes. REFUSED
+// (unavailable) when built.commit is "unknown": such a run could not be traced
+// to the code that made it.
+[[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
+                                                              std::string_view case_name, const ResolvedCase& resolved,
+                                                              std::string_view date, const BuildIdentity& built);
+
+// The same, at the build this engine is (spade::build_identity()): how a host
+// names its runs without git. The form with an explicit commit is for tests,
+// whose paths must not move with every commit.
 [[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
                                                               std::string_view case_name, const ResolvedCase& resolved,
                                                               std::string_view date);
