@@ -60,6 +60,7 @@ spade::Result<void> write_frame(const fs::path& dir, uint32_t frame, const spade
 }
 
 spade::Result<void> read_frame(const fs::path& dir, uint32_t frame, spade::FlowVolume& volume, FrameLog& log) {
+    volume.generation = 0;  // unnamed until it is whole (core/flow_volume.hpp)
     const fs::path path = frame_path(dir, frame);
     std::ifstream in(path, std::ios::binary);
     char magic[sizeof kMagic] = {};
@@ -81,6 +82,7 @@ spade::Result<void> read_frame(const fs::path& dir, uint32_t frame, spade::FlowV
     in.read(reinterpret_cast<char*>(volume.s.data()), static_cast<std::streamsize>(halves * 2u));
     if (!in) return refuse(path.string() + ": short");
     if (auto valid = spade::validate_flow_volume(volume); !valid) return valid;
+    volume.generation = spade::next_flow_generation();  // so a frame's views upload it once
     return {};
 }
 

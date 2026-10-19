@@ -2588,4 +2588,94 @@ TEST_F(GpuGlRenderer, AnEditThatKeepsItsGenerationIsRefused) {
     EXPECT_TRUE(named.has_value()) << named.error().context;
 }
 
+// The lead's before-and-after (2026-10-19): a frame of 1 or 4 flow views of
+// one volume, at the tour's 32^3 and at 128^3, uncached (generation 0: every
+// view uploads, as every draw did before) and cached (each frame a new
+// generation, as a live run publishes: its first view uploads, the rest
+// reuse). Each view is a 960x540 draw (four tile a 1080p editor) of the ring's
+// Q-hat iso coloured by speed; a frame is draw() to glFinish() over its views,
+// the median of 8 after 2 warm-ups, on a renderer that does not verify (a
+// release build's). A measurement, so opt-in (SPADE_GL_VIEW_COST=1).
+// Measured 2026-10-19 on the RTX 3060 Ti (572.83), three runs, other realms
+// working: at 128^3, 4 views 42 to 55 ms uncached, 26 to 36 ms cached (1 view
+// 15 to 24 ms), so each upload skipped saves about 5 to 8 ms; at 32^3 the
+// upload is 0.5 MB and the load's noise (1 view 3 to 11 ms, 4 views 9 to 17
+// ms either way) hides it. Only the 128^3 saving is asserted.
+TEST_F(GpuGlRenderer, FlowViewsCostCachedAndUncached) {
+    if (!env_gate_is_set("SPADE_GL_VIEW_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_VIEW_COST=1 to run it";
+    }
+    auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                   GlRenderer::CreateOptions{.verify_cached_volumes = false});
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    GlRenderer& r = **made;
+    constexpr int kW = 960, kH = 540;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glViewport(0, 0, kW, kH);
+    const std::string device = r.renderer_name() + " (" + r.version_string() + ")";
+
+    for (const uint32_t n : {32u, 128u}) {
+        spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / static_cast<float>(n), n, n,
+                                                                 n, spade::test::vortex_ring_with_dye());
+        spade::render::TransferFunction speed;
+        speed.range_min = 0.0f;
+        speed.range_max = 0.9f;
+        spade::render::IsoSurface q_iso;
+        q_iso.quantity = spade::render::FlowQuantity::q_hat;
+        q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+        q_iso.colour_by = speed;
+        RenderScene scene = ring_cut_scene();
+        scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+        ASSERT_TRUE(r.upload_scene(scene).has_value());
+        // ms per frame of `views` views; `cached` names each frame anew.
+        const auto frame_ms = [&](int views, bool cached) {
+            std::vector<double> ms;
+            const uint64_t uploads_at = r.flow_volume_uploads();
+            for (int i = 0; i < 10; ++i) {
+                volume.generation = cached ? spade::next_flow_generation() : 0u;
+                glFinish();
+                const auto t0 = std::chrono::steady_clock::now();
+                for (int v = 0; v < views; ++v) {
+                    EXPECT_TRUE(r.draw(scene, camera_on_ring(), comparable_options(), kW, kH).has_value());
+                }
+                glFinish();
+                const auto t1 = std::chrono::steady_clock::now();
+                if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            EXPECT_EQ(r.flow_volume_uploads() - uploads_at, cached ? 10u : 10u * static_cast<uint64_t>(views))
+                << "uploads per frame: one cached, one per view uncached";
+            std::sort(ms.begin(), ms.end());
+            return 0.5 * (ms[3] + ms[4]);
+        };
+        const double one = frame_ms(1, false);
+        const double four_uncached = frame_ms(4, false);
+        const double four_cached = frame_ms(4, true);
+        const std::string tag = std::to_string(n);
+        RecordProperty("one_view_ms_x100_" + tag, static_cast<int>(one * 100.0));
+        RecordProperty("four_views_uncached_ms_x100_" + tag, static_cast<int>(four_uncached * 100.0));
+        RecordProperty("four_views_cached_ms_x100_" + tag, static_cast<int>(four_cached * 100.0));
+        std::printf("[ view cost ] %u^3, 960x540 views: 1 view %.2f ms; 4 views %.2f ms uncached, %.2f ms cached; "
+                    "on %s\n",
+                    n, one, four_uncached, four_cached, device.c_str());
+        if (n == 128u) {
+            EXPECT_LT(four_cached, four_uncached) << device;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
 }  // namespace

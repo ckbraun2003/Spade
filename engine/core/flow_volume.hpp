@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -91,8 +92,10 @@ struct FlowVolume {
 };
 
 // A generation no volume in this process has had: never 0, increasing.
-// RED: a stub until the green step.
-[[nodiscard]] inline uint64_t next_flow_generation() noexcept { return 0; }
+[[nodiscard]] inline uint64_t next_flow_generation() noexcept {
+    static std::atomic<uint64_t> last{0};
+    return last.fetch_add(1u, std::memory_order_relaxed) + 1u;
+}
 
 [[nodiscard]] inline std::size_t flow_cell_index(const FlowVolumeHeader& h, uint32_t i, uint32_t j,
                                                  uint32_t k) noexcept {

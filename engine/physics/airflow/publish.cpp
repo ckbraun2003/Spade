@@ -96,6 +96,7 @@ struct Context {
 }  // namespace
 
 Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
+    out.generation = 0;  // unnamed until it is whole: a refusal may leave it part-written
     const GridShape& s = g.shape;
     const std::size_t cells = std::size_t{s.nx} * s.ny * s.nz;
     if (g.p.size() != cells || g.u.size() != std::size_t{s.nx + 1u} * s.ny * s.nz ||
@@ -190,6 +191,7 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
         }
     }
     h.extrapolated_cells = counts.extrapolated;
+    out.generation = next_flow_generation();  // a new content, for a reader's cache
     return counts;
 }
 
