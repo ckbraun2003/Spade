@@ -229,6 +229,64 @@ LiveRun::LiveRun(LiveRun&&) noexcept = default;
 LiveRun& LiveRun::operator=(LiveRun&&) noexcept = default;
 LiveRun::~LiveRun() = default;
 
+namespace {
+
+// The weight in LiveRun's world, which is y-up under Environment{}'s gravity.
+[[nodiscard]] double world_weight(const vehicles::ModelType& model) {
+    return static_cast<double>(model.body.mass) * static_cast<double>(-Environment{}.gravity.y);
+}
+
+[[nodiscard]] std::string air_text(double density, double soc) {
+    return std::format("density {:.4g} kg/m3, state of charge {:.3g}", density, soc);
+}
+
+}  // namespace
+
+Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model,
+                                   const std::optional<LivePropulsion>& propulsion) {
+    if (model.rotors.empty()) return ShowcaseTrim{};
+    if (!propulsion) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "the model '" + model.name + "' has " + std::to_string(model.rotors.size()) +
+                                         " rotors, and the showcase trim needs their propulsion (the chain, idle "
+                                         "and state of charge) to find their hover"});
+    }
+    const LivePropulsion& p = *propulsion;
+    if (Result<double> d = vehicles::armed_duty(false, 0.0, p.idle); !d) {
+        return std::unexpected(Error{d.error().code, "the propulsion's idle: " + d.error().context});
+    }
+    if (Result<void> ok = vehicles::validate_propulsion_chain(p.chain); !ok) {
+        return std::unexpected(Error{ok.error().code, "the propulsion: " + ok.error().context});
+    }
+    const double density = static_cast<double>(c.fluid.density);
+    const double per_rotor = world_weight(model) / static_cast<double>(model.rotors.size());
+    const auto bad = [](const vehicles::SteadyPoint& s) {
+        return (s.flags & (vehicles::propulsion_flags::unreachable | vehicles::propulsion_flags::no_bracket)) != 0u;
+    };
+    const vehicles::SteadyPoint hover = vehicles::steady_state_for_thrust(p.chain, per_rotor, density, 0.0, p.soc);
+    if (bad(hover)) {
+        return std::unexpected(Error{Code::invalid_argument, "the chain cannot hover the model '" + model.name +
+                                                                 "' at " + air_text(density, p.soc)});
+    }
+    if (!(p.idle < hover.duty)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     std::format("idle duty {:.3g} is at or above the hover duty {:.3g}: armed at zero "
+                                                 "throttle the drone would climb",
+                                                 p.idle, hover.duty)});
+    }
+    const vehicles::SteadyPoint climb =
+        vehicles::steady_state_for_thrust(p.chain, kShowcaseClimbThrust * per_rotor, density, 0.0, p.soc);
+    if (bad(climb)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     std::format("the showcase's climb ({:.2g} times the weight) is out of the chain's "
+                                                 "reach for '{}' at {}",
+                                                 kShowcaseClimbThrust, model.name, air_text(density, p.soc))});
+    }
+    // The inverse of the arm rule: duty = idle + (1 - idle) throttle.
+    const auto throttle = [&p](double duty) { return static_cast<float>((duty - p.idle) / (1.0 - p.idle)); };
+    return ShowcaseTrim{throttle(hover.duty), throttle(climb.duty)};
+}
+
 Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
                                const std::optional<LivePropulsion>& propulsion) {
     const AnalysisCase& c = resolved.spec;

@@ -7,6 +7,7 @@
 
 #include <glm/glm.hpp>
 
+#include "analysis/live_run.hpp"  // showcase_trim()
 #include "scene/scene_file.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/model_identity.hpp"
@@ -77,7 +78,12 @@ spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs
     lc.run_model = *model;
     lc.draw_model = std::move(*model);
     if (controls_file.empty()) {
-        lc.program = an::showcase_program();
+        // Flown around the drone's own hover. Until the case pins its chain
+        // (INT-11) there is no propulsion here, so a model with rotors is
+        // refused as LiveRun::start() would refuse it.
+        auto trim = an::showcase_trim(lc.c, lc.run_model, std::nullopt);
+        if (!trim) return std::unexpected(trim.error());
+        lc.program = an::showcase_program(*trim);
         lc.program_name = "the showcase program";
         lc.seconds = seconds > 0.0 ? seconds : an::showcase_seconds();
     } else {
@@ -128,7 +134,9 @@ spade::Result<LiveCase> smoke_live_case(double seconds) {
     lc.c.time.step = 0.004f;
     lc.c.flight.kind = an::FlightKind::forward;
     lc.c.flight.speed = 3.0f;
-    lc.program = an::showcase_program();
+    auto trim = an::showcase_trim(lc.c, lc.run_model, std::nullopt);  // no rotors: a zero trim
+    if (!trim) return std::unexpected(trim.error());
+    lc.program = an::showcase_program(*trim);
     lc.program_name = "the showcase program";
     lc.seconds = seconds;
     lc.name = "case smoke";

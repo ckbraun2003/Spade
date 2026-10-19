@@ -2,7 +2,8 @@
 // spec §5 "the control program"). It is held piecewise constant, a step at
 // each point. One format, read and written only here (TD-9): a run folder
 // holds it, LiveRun records it, and flow_movie and Kat's host fly it.
-// showcase_program() is the one built-in program every front end flies.
+// showcase_program() is the one built-in program every front end flies, around
+// the drone's own trim (showcase_trim()).
 
 #include <gtest/gtest.h>
 

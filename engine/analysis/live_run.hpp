@@ -88,6 +88,21 @@ struct LiveFrame {
     uint64_t steps = 0;
 };
 
+// The showcase program's trim (controls.hpp) for `model` in the case's air:
+// - a model without rotors has no hover, and both throttles are 0;
+// - rotors without propulsion are refused, as LiveRun::start() refuses them;
+// - else each throttle is the one whose duty, through armed_duty()'s idle,
+//   gives the target thrust per rotor: the weight over the rotor count
+//   (Physics' rule, steady_state_for_thrust() in still air at the case's
+//   density and the propulsion's state of charge; the airframe fit's
+//   hover_duty when those match the compile's), then kShowcaseClimbThrust
+//   times it. The weight is in LiveRun's world, Environment{}'s gravity.
+// Refused by name: the throttle map's own refusals; a chain that cannot hover
+// the model; a climb out of reach; an idle at or above the hover duty (armed
+// at zero throttle the drone would climb).
+[[nodiscard]] Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model,
+                                                 const std::optional<LivePropulsion>& propulsion);
+
 class LiveRun {
   public:
     // Builds the grid (the resolved base and drone-box faces), the fluid and
