@@ -1,9 +1,9 @@
 // The end-goal smoke's checks, batch 2 (N20, docs/design/test-docs/
-// 2026-10-19-end-goal-checks.md §1, §2, §3, §5, §6, §7, §8): the library, the
-// identities a copy keeps, an import's name, the region's bookkeeping, the
-// views, save and reopen, and the measuring helpers for a placed object.
-// Each check fails on a stub of the fault it exists to catch and passes on a
-// stub of the right state.
+// 2026-10-19-end-goal-checks.md §1, §2, §3, §5, §6, §7, §7a, §8): the
+// library, the identities a copy keeps, an import's name, the region's
+// bookkeeping, the views, save and reopen, and the measuring helpers for a
+// placed object. Each check fails on a stub of the fault it exists to catch
+// and passes on a stub of the right state.
 
 #include <gtest/gtest.h>
 
@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,7 @@
 
 #include "../sandbox/end_goal_checks.hpp"
 #include "core/flow_volume.hpp"
+#include "render/csg_mesh.hpp"
 #include "render/scene.hpp"
 #include "render/view_mode.hpp"
 #include "world/sdf.hpp"
@@ -40,25 +42,27 @@ namespace {
 
 constexpr eg::Rgb kClear{20, 24, 30};
 
-// An RGBA8 image of `w` x `h` in `fill`, with the rectangle [x0, x1) x [y0, y1) in `ink`.
 struct Image {
     uint32_t w = 0, h = 0;
     std::vector<uint8_t> rgba;
     [[nodiscard]] eg::PixelsView view() const { return eg::pixels(w, h, rgba); }
+    void set(uint32_t x, uint32_t y, eg::Rgb c) {
+        uint8_t* p = rgba.data() + (std::size_t{y} * w + x) * 4u;
+        p[0] = c[0];
+        p[1] = c[1];
+        p[2] = c[2];
+        p[3] = 255;
+    }
 };
 
+// `w` x `h` in `fill`, with the rectangle [x0, x1) x [y0, y1) in `ink`.
 [[nodiscard]] Image image(uint32_t w, uint32_t h, eg::Rgb fill, eg::Rgb ink = {}, uint32_t x0 = 0, uint32_t y0 = 0,
                           uint32_t x1 = 0, uint32_t y1 = 0) {
     Image img{w, h, std::vector<uint8_t>(std::size_t{w} * h * 4u)};
     for (uint32_t y = 0; y < h; ++y) {
         for (uint32_t x = 0; x < w; ++x) {
             const bool in = x >= x0 && x < x1 && y >= y0 && y < y1;
-            const eg::Rgb c = in ? ink : fill;
-            uint8_t* p = img.rgba.data() + (std::size_t{y} * w + x) * 4u;
-            p[0] = c[0];
-            p[1] = c[1];
-            p[2] = c[2];
-            p[3] = 255;
+            img.set(x, y, in ? ink : fill);
         }
     }
     return img;
@@ -66,6 +70,53 @@ struct Image {
 
 // 64 x 48 on the clear colour, with a 16 x 19 drawn rectangle: 304 pixels, 9.9%.
 [[nodiscard]] Image drawn(eg::Rgb ink, uint32_t x0 = 10) { return image(64, 48, kClear, ink, x0, 10, x0 + 16, 29); }
+
+// A thumbnail: a gradient, so no colour dominates.
+[[nodiscard]] Image gradient(uint8_t tint) {
+    Image img = image(64, 48, {0, 0, 0});
+    for (uint32_t y = 0; y < 48; ++y) {
+        for (uint32_t x = 0; x < 64; ++x) {
+            img.set(x, y, {static_cast<uint8_t>(4 * x), static_cast<uint8_t>(5 * y), tint});
+        }
+    }
+    return img;
+}
+
+// A grey placeholder framed by a one-pixel border.
+[[nodiscard]] Image framed_placeholder() {
+    Image img = image(64, 48, {128, 128, 128});
+    for (uint32_t x = 0; x < 64; ++x) {
+        img.set(x, 0, {255, 255, 255});
+        img.set(x, 47, {255, 255, 255});
+    }
+    for (uint32_t y = 0; y < 48; ++y) {
+        img.set(0, y, {255, 255, 255});
+        img.set(63, y, {255, 255, 255});
+    }
+    return img;
+}
+
+[[nodiscard]] std::vector<eg::PixelsView> views_of(const std::vector<Image>& images) {
+    std::vector<eg::PixelsView> v;
+    for (const Image& img : images) v.push_back(img.view());
+    return v;
+}
+
+[[nodiscard]] std::vector<Image> nine_thumbnails() {
+    std::vector<Image> images;
+    for (int i = 0; i < 9; ++i) images.push_back(gradient(static_cast<uint8_t>(25 * i)));
+    return images;
+}
+
+// A mode switched to: supported, applied, drawn, honoured, with `frame`.
+[[nodiscard]] eg::ModeShown mode(const char* kind, const Image& frame) {
+    eg::ModeShown m;
+    m.kind = kind;
+    m.supported = m.applied = m.drawn = true;
+    m.frame = frame.view();
+    m.clear = kClear;
+    return m;
+}
 
 // ---------------------------------------------------------------------------
 // Library, identities, import, region
@@ -83,6 +134,10 @@ struct Image {
             {"wall", "obstacles", "objects/wall.object.yaml"}};
 }
 
+[[nodiscard]] std::vector<eg::Identity> drone_ids() {
+    return {{"model", 0xA1u, 0xA1u}, {"parts", 0xB2u, 0xB2u}, {"propulsion", 0xC3u, 0xC3u}};
+}
+
 [[nodiscard]] eg::ImportShown good_import() {
     eg::ImportShown m;
     m.shown_name = "bench";
@@ -95,25 +150,47 @@ struct Image {
     return m;
 }
 
-[[nodiscard]] spade::render::ViewLegend speed_legend(float max) {
+[[nodiscard]] spade::render::ViewLegend speed_legend(float max, bool from_header = true) {
     spade::render::ViewLegend l;
     l.layer = spade::render::FlowView::streamlines;
     l.quantity = "speed |u|";
     l.unit = "m/s";
     l.range.min = 0.0f;
     l.range.max = max;
+    l.range.from_header = from_header;
     return l;
+}
+
+[[nodiscard]] eg::LegendCheck legends(std::vector<spade::render::ViewLegend> returned, bool running = true) {
+    eg::LegendCheck c;
+    c.layers = returned.size();
+    c.returned = returned;
+    c.shown = std::move(returned);
+    c.region_running = running;
+    return c;
 }
 
 // ---------------------------------------------------------------------------
 // SDF programs, postfix
 // ---------------------------------------------------------------------------
 
-[[nodiscard]] spade::SdfNode leaf(spade::SdfPrim kind, glm::vec4 params = glm::vec4(0.5f, 0.5f, 0.5f, 0.0f)) {
+[[nodiscard]] glm::vec4 params_of(spade::SdfPrim kind) {
+    switch (kind) {
+        case spade::SdfPrim::plane: return {0.0f, 1.0f, 0.0f, 0.0f};
+        case spade::SdfPrim::sphere: return {0.5f, 0.0f, 0.0f, 0.0f};
+        case spade::SdfPrim::box: return {0.5f, 0.4f, 0.3f, 0.0f};
+        case spade::SdfPrim::cylinder: return {0.2f, 0.5f, 0.0f, 0.0f};
+        case spade::SdfPrim::capsule: return {0.2f, 0.4f, 0.0f, 0.0f};
+        case spade::SdfPrim::torus: return {0.6f, 0.1f, 0.0f, 0.0f};
+        default: return {};
+    }
+}
+
+[[nodiscard]] spade::SdfNode leaf(spade::SdfPrim kind) {
     spade::SdfNode n;
     n.kind = static_cast<uint32_t>(kind);
     n.op = static_cast<uint32_t>(spade::SdfOp::none);
-    n.params = params;
+    n.params = params_of(kind);
     return n;
 }
 
@@ -132,9 +209,7 @@ struct Image {
 }
 
 // The ground: the plane y = 0, solid below.
-[[nodiscard]] spade::SdfProgram ground() {
-    return program({leaf(spade::SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f))});
-}
+[[nodiscard]] spade::SdfProgram ground() { return program({leaf(spade::SdfPrim::plane)}); }
 
 // A 1 m box drawable whose bottom face sits at `bottom_y`.
 [[nodiscard]] spade::render::RenderScene box_scene(float bottom_y) {
@@ -157,12 +232,19 @@ struct Image {
     eg::RoundTrip t;
     t.saved = "scene_version: 4\nairflow:\n  - kind: follow\n";
     t.reemitted = t.saved;
-    t.identities = {{"scene", 0x1111u, 0x1111u}, {"region", 0x2222u, 0x2222u}, {"propulsion", 0x3333u, 0x3333u}};
+    t.drones = 1;
+    t.identities = {{"scene", 0x1111u, 0x1111u},
+                    {"region", 0x2222u, 0x2222u},
+                    {"drone 0 model", 0x3333u, 0x3333u},
+                    {"drone 0 parts", 0x4444u, 0x4444u},
+                    {"drone 0 propulsion", 0x5555u, 0x5555u}};
     t.steps_before = t.steps_after = eg::kRoundTripSteps;
     spade::BodyState b{};
     b.pos = glm::vec3(0.1f, 1.25f, -0.3f);
     b.vel = glm::vec3(0.0f, 0.42f, 0.0f);
     b.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    b.mass = 0.526f;
+    b.inv_inertia_diag = glm::vec3(250.0f, 180.0f, 250.0f);
     t.bodies_before = {b, b};
     t.bodies_after = t.bodies_before;
     return t;
@@ -171,7 +253,7 @@ struct Image {
 }  // namespace
 
 // ===========================================================================
-// Measuring helpers
+// Measuring helpers (§7a)
 // ===========================================================================
 
 TEST(SandboxEndGoalMeasure, CountsTheDrawablesAColliderDeclares) {
@@ -191,6 +273,11 @@ TEST(SandboxEndGoalMeasure, CountsTheDrawablesAColliderDeclares) {
     EXPECT_EQ(eg::declared_drawables(program({leaf(SdfPrim::sphere), leaf(SdfPrim::box), leaf(SdfPrim::sphere),
                                               op(SdfOp::smooth_union), op(SdfOp::union_)})),
               2u);
+    // Two CSG roots under a union: two.
+    EXPECT_EQ(eg::declared_drawables(program({leaf(SdfPrim::box), leaf(SdfPrim::sphere), op(SdfOp::subtract),
+                                              leaf(SdfPrim::cylinder), leaf(SdfPrim::capsule),
+                                              op(SdfOp::intersect), op(SdfOp::union_)})),
+              2u);
 }
 
 TEST(SandboxEndGoalMeasure, AMalformedColliderDeclaresNothing) {
@@ -199,6 +286,33 @@ TEST(SandboxEndGoalMeasure, AMalformedColliderDeclaresNothing) {
     EXPECT_EQ(eg::declared_drawables(program({op(SdfOp::union_)})), 0u);
     EXPECT_EQ(eg::declared_drawables(program({leaf(SdfPrim::box), leaf(SdfPrim::box)})), 0u);
     EXPECT_EQ(eg::declared_drawables(program({})), 0u);
+}
+
+// A test-only agreement check: the predicate counts on its own (TD-4), and
+// here it agrees with the renderer's split_program() over the library's
+// shapes and their compositions.
+TEST(SandboxEndGoalMeasure, AgreesWithTheRenderersSplitOverTheLibrarysShapes) {
+    using spade::SdfOp;
+    using spade::SdfPrim;
+    const std::vector<std::vector<spade::SdfNode>> colliders = {
+        {leaf(SdfPrim::box)},
+        {leaf(SdfPrim::sphere)},
+        {leaf(SdfPrim::cylinder)},
+        {leaf(SdfPrim::capsule)},
+        {leaf(SdfPrim::torus), leaf(SdfPrim::cylinder), op(SdfOp::union_), leaf(SdfPrim::cylinder), op(SdfOp::union_)},
+        {leaf(SdfPrim::box), leaf(SdfPrim::sphere), op(SdfOp::subtract)},
+        {leaf(SdfPrim::sphere), leaf(SdfPrim::box), leaf(SdfPrim::sphere), op(SdfOp::smooth_union), op(SdfOp::union_)},
+        {leaf(SdfPrim::box), leaf(SdfPrim::sphere), op(SdfOp::subtract), leaf(SdfPrim::cylinder),
+         leaf(SdfPrim::capsule), op(SdfOp::intersect), op(SdfOp::union_)},
+    };
+    for (std::size_t i = 0; i < colliders.size(); ++i) {
+        const spade::SdfProgram p = program(colliders[i]);
+        ASSERT_TRUE(p.validate().has_value()) << "collider " << i << ": " << p.validate().error().context;
+        const auto split = spade::render::split_program(p);
+        ASSERT_TRUE(split.has_value()) << "collider " << i;
+        EXPECT_EQ(eg::declared_drawables(p), split->union_primitive_nodes.size() + split->csg_roots.size())
+            << "collider " << i;
+    }
 }
 
 TEST(SandboxEndGoalMeasure, PosesEveryVertexOfTheDrawItems) {
@@ -211,6 +325,14 @@ TEST(SandboxEndGoalMeasure, PosesEveryVertexOfTheDrawItems) {
     EXPECT_FLOAT_EQ(points.back().y, 1.0f);
 }
 
+TEST(SandboxEndGoalMeasure, AnItemWithoutItsMeshPosesNothing) {
+    spade::render::RenderScene scene = box_scene(0.0f);
+    spade::render::DrawItem missing = scene.statics.front();
+    missing.mesh_index = 7;
+    scene.statics.push_back(missing);
+    EXPECT_TRUE(eg::posed_vertices(scene, scene.statics).empty());
+}
+
 TEST(SandboxEndGoalMeasure, TheRestGapIsTheLeastDistanceToTheWorldWithoutTheObject) {
     const spade::SdfProgram world = ground();
     for (const float bottom : {0.0f, 0.004f, -0.01f}) {
@@ -219,6 +341,14 @@ TEST(SandboxEndGoalMeasure, TheRestGapIsTheLeastDistanceToTheWorldWithoutTheObje
         EXPECT_NEAR(eg::rest_gap(world, points), bottom, 1e-6f) << bottom;
     }
     EXPECT_TRUE(std::isnan(eg::rest_gap(world, {})));
+}
+
+TEST(SandboxEndGoalMeasure, ANonFinitePointMakesTheRestGapNaN) {
+    const spade::SdfProgram world = ground();
+    const spade::render::RenderScene scene = box_scene(0.0f);
+    std::vector<glm::vec3> points = eg::posed_vertices(scene, scene.statics);
+    points[3].y = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(std::isnan(eg::rest_gap(world, points)));
 }
 
 // ===========================================================================
@@ -235,13 +365,32 @@ TEST(SandboxEndGoalImages, DiffersCountsPixelsPastEightLevels) {
     EXPECT_NEAR(eg::differ_fraction(one.view(), kClear), 304.0 / (64.0 * 48.0), 1e-12);
 }
 
+TEST(SandboxEndGoalImages, DiffersAtExactlyOnePercent) {
+    // 100 of 10,000 pixels differ: 1%, differs. 99: does not.
+    const Image hundred = image(100, 100, {50, 50, 50}, {200, 50, 50}, 0, 0, 100, 1);
+    const Image ninety_nine = image(100, 100, {50, 50, 50}, {200, 50, 50}, 0, 0, 99, 1);
+    EXPECT_TRUE(eg::differs(eg::differ_fraction(hundred.view(), eg::Rgb{50, 50, 50})));
+    EXPECT_FALSE(eg::differs(eg::differ_fraction(ninety_nine.view(), eg::Rgb{50, 50, 50})));
+}
+
 TEST(SandboxEndGoalImages, ARegionOfAFrameIsItsHalf) {
-    // Left half clear, right half drawn.
     const Image frame = image(64, 48, kClear, {200, 30, 30}, 32, 0, 64, 48);
     const eg::PixelsView left = eg::region_of(frame.view(), 0, 0, 32, 48);
     const eg::PixelsView right = eg::region_of(frame.view(), 32, 0, 32, 48);
     EXPECT_EQ(eg::differ_fraction(left, kClear), 0.0);
     EXPECT_EQ(eg::differ_fraction(right, kClear), 1.0);
+}
+
+TEST(SandboxEndGoalImages, ARegionOffsetDownAndClippedToTheFrame) {
+    // The bottom 8 rows drawn; a region from row 40, asking for 20 rows, gets 8.
+    const Image frame = image(64, 48, kClear, {200, 30, 30}, 0, 40, 64, 48);
+    const eg::PixelsView bottom = eg::region_of(frame.view(), 16, 40, 100, 20);
+    EXPECT_EQ(bottom.width, 48u);
+    EXPECT_EQ(bottom.height, 8u);
+    EXPECT_EQ(eg::differ_fraction(bottom, kClear), 1.0);
+    const eg::PixelsView above = eg::region_of(frame.view(), 0, 20, 64, 20);
+    EXPECT_EQ(eg::differ_fraction(above, kClear), 0.0);
+    EXPECT_FALSE(eg::well_formed(eg::region_of(frame.view(), 64, 0, 4, 4)));
 }
 
 TEST(SandboxEndGoalImages, NamesASpecByItsBaseAndLayers) {
@@ -284,28 +433,51 @@ TEST(SandboxEndGoalLibrary, FailsAnIndexShortOfTheFirstEntries) {
     EXPECT_TRUE(judged_fail(v)) << v.detail;
 }
 
-TEST(SandboxEndGoalLibrary, PassesThumbnailsThatAreDrawn) {
-    std::vector<Image> images;
-    for (int i = 0; i < 9; ++i) images.push_back(drawn({200, static_cast<uint8_t>(20 * i), 40}));
-    std::vector<eg::PixelsView> views;
-    for (const Image& img : images) views.push_back(img.view());
-    const eg::Verdict v = eg::thumbnails(views, 9);
+TEST(SandboxEndGoalLibrary, PassesEachThumbnailShowingItsOwnFile) {
+    const std::vector<Image> files = nine_thumbnails();
+    const std::vector<Image> shown = files;
+    const eg::Verdict v = eg::thumbnails(views_of(shown), views_of(files));
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
-TEST(SandboxEndGoalLibrary, FailsABlankOrMissingThumbnail) {
-    std::vector<Image> images;
-    for (int i = 0; i < 9; ++i) images.push_back(drawn({200, 120, 40}));
-    images[4] = image(64, 48, {128, 128, 128});  // a placeholder: one colour
-    std::vector<eg::PixelsView> views;
-    for (const Image& img : images) views.push_back(img.view());
-    const eg::Verdict blank = eg::thumbnails(views, 9);
-    EXPECT_TRUE(judged_fail(blank)) << blank.detail;
-    views[4] = eg::PixelsView{};
-    const eg::Verdict missing = eg::thumbnails(views, 9);
+TEST(SandboxEndGoalLibrary, FailsAPlaceholderOrAnotherEntrysImageShown) {
+    const std::vector<Image> files = nine_thumbnails();
+    std::vector<Image> framed = files;
+    framed[4] = framed_placeholder();  // grey, with a one-pixel border: not one colour by its first pixel
+    std::vector<Image> swapped = files;
+    swapped[4] = files[5];  // another entry's image
+    std::vector<Image> blank = files;
+    blank[4] = image(64, 48, {128, 128, 128});
+    for (const std::vector<Image>* shown : {&framed, &swapped, &blank}) {
+        const eg::Verdict v = eg::thumbnails(views_of(*shown), views_of(files));
+        EXPECT_TRUE(judged_fail(v)) << v.detail;
+    }
+}
+
+TEST(SandboxEndGoalLibrary, FailsAFileThatIsItselfOneColour) {
+    std::vector<Image> files = nine_thumbnails();
+    files[2] = image(64, 48, {128, 128, 128}, {255, 255, 255}, 0, 0, 64, 1);  // 64 of 3,072 pixels off: 2.1%
+    files[3] = image(64, 48, {128, 128, 128}, {255, 255, 255}, 0, 0, 30, 1);  // 30 of 3,072: 0.98%, one colour
+    const std::vector<Image> shown = files;
+    const eg::Verdict v = eg::thumbnails(views_of(shown), views_of(files));
+    EXPECT_TRUE(judged_fail(v)) << v.detail;
+    EXPECT_TRUE(has(v.detail, "thumbnail 3")) << v.detail;
+}
+
+TEST(SandboxEndGoalLibrary, FailsAMissingOrMissizedThumbnail) {
+    const std::vector<Image> files = nine_thumbnails();
+    std::vector<eg::PixelsView> shown = views_of(files);
+    shown[4] = eg::PixelsView{};
+    const eg::Verdict missing = eg::thumbnails(shown, views_of(files));
     EXPECT_TRUE(judged_fail(missing)) << missing.detail;
-    views.pop_back();
-    const eg::Verdict short_by_one = eg::thumbnails(views, 9);
+    const Image small = image(32, 24, {10, 200, 10});
+    shown = views_of(files);
+    shown[4] = small.view();
+    const eg::Verdict missized = eg::thumbnails(shown, views_of(files));
+    EXPECT_TRUE(judged_fail(missized)) << missized.detail;
+    shown = views_of(files);
+    shown.pop_back();
+    const eg::Verdict short_by_one = eg::thumbnails(shown, views_of(files));
     EXPECT_TRUE(judged_fail(short_by_one)) << short_by_one.detail;
 }
 
@@ -313,26 +485,28 @@ TEST(SandboxEndGoalLibrary, FailsABlankOrMissingThumbnail) {
 // propulsion-kept (and every identity a copy keeps)
 // ===========================================================================
 
-TEST(SandboxEndGoalIdentities, PassesEveryIdentityKept) {
-    const std::vector<eg::Identity> ids = {
-        {"model", 0xA1u, 0xA1u}, {"parts", 0xB2u, 0xB2u}, {"propulsion", 0xC3u, 0xC3u}};
-    const eg::Verdict v = eg::identities_kept("propulsion-kept", ids);
+TEST(SandboxEndGoalIdentities, PassesEveryRequiredIdentityKept) {
+    const eg::Verdict v = eg::identities_kept("propulsion-kept", drone_ids(), eg::kDroneIdentities);
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
 TEST(SandboxEndGoalIdentities, FailsAChainLostInTheCopyAndNamesIt) {
-    const std::vector<eg::Identity> ids = {{"model", 0xA1u, 0xA1u}, {"parts", 0xB2u, 0xB2u}, {"propulsion", 0xC3u, 0u}};
-    const eg::Verdict v = eg::identities_kept("propulsion-kept", ids);
+    auto ids = drone_ids();
+    ids[2].got = 0u;
+    const eg::Verdict v = eg::identities_kept("propulsion-kept", ids, eg::kDroneIdentities);
     EXPECT_TRUE(judged_fail(v)) << v.detail;
     EXPECT_TRUE(has(v.detail, "propulsion")) << v.detail;
 }
 
-TEST(SandboxEndGoalIdentities, IsAbsentWithAnUnsetOrNoIdentity) {
-    const std::vector<eg::Identity> unset = {{"model", 0u, 0u}};
-    const eg::Verdict a = eg::identities_kept("propulsion-kept", unset);
+TEST(SandboxEndGoalIdentities, IsAbsentWhenARequiredIdentityIsLeftOutOrUnset) {
+    auto left_out = drone_ids();
+    left_out.pop_back();  // no propulsion given
+    const eg::Verdict a = eg::identities_kept("propulsion-kept", left_out, eg::kDroneIdentities);
     EXPECT_FALSE(a.ok) << a.detail;
-    EXPECT_TRUE(has(a.detail, "absent:")) << a.detail;
-    const eg::Verdict b = eg::identities_kept("propulsion-kept", {});
+    EXPECT_TRUE(has(a.detail, "absent:") && has(a.detail, "propulsion")) << a.detail;
+    auto unset = drone_ids();
+    unset[0].expected = unset[0].got = 0u;
+    const eg::Verdict b = eg::identities_kept("propulsion-kept", unset, eg::kDroneIdentities);
     EXPECT_FALSE(b.ok) << b.detail;
     EXPECT_TRUE(has(b.detail, "absent:")) << b.detail;
 }
@@ -366,6 +540,21 @@ TEST(SandboxEndGoalImport, FailsAWrongNameOrSourceOrSidecar) {
     for (const eg::ImportShown* m : {&wrong_name, &wrong_source, &no_sidecar, &short_sidecar}) {
         const eg::Verdict v = eg::import_named(*m);
         EXPECT_TRUE(judged_fail(v)) << v.detail;
+    }
+}
+
+TEST(SandboxEndGoalImport, IsAbsentWithNoNameToExpectOrNoTriangles) {
+    eg::ImportShown nameless = good_import();
+    nameless.mesh_name.clear();
+    nameless.file.clear();
+    nameless.shown_source.clear();
+    nameless.shown_name.clear();
+    eg::ImportShown empty = good_import();
+    empty.gltf_triangles = empty.sidecar_triangles = 0;
+    for (const eg::ImportShown* m : {&nameless, &empty}) {
+        const eg::Verdict v = eg::import_named(*m);
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_TRUE(has(v.detail, "absent:")) << v.detail;
     }
 }
 
@@ -411,8 +600,9 @@ TEST(SandboxEndGoalRegion, PassesANewValidVolumeEveryFrame) {
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
-TEST(SandboxEndGoalRegion, FailsARepeatedOrInvalidOrHoledVolume) {
+TEST(SandboxEndGoalRegion, FailsARepeatedOrOlderOrInvalidOrHoledVolume) {
     const std::vector<std::vector<eg::Published>> bad = {{{11, true, 0}, {11, true, 0}},
+                                                         {{11, true, 0}, {12, true, 0}, {11, true, 0}},
                                                          {{11, true, 0}, {12, false, 0}},
                                                          {{11, true, 0}, {12, true, 3}},
                                                          {{0, true, 0}}};
@@ -438,95 +628,105 @@ TEST(SandboxEndGoalRegion, TheRunLineShownIsLiveRunsExactly) {
 // editor.views
 // ===========================================================================
 
-TEST(SandboxEndGoalViews, PassesAModeDrawnAndChangedFromTheLast) {
+TEST(SandboxEndGoalViews, PassesEachModeDrawnAndChangedFromTheLast) {
     const Image shaded = drawn({200, 180, 40});
     const Image wire = drawn({240, 240, 240}, 30);
-    eg::ModeShown m;
-    m.kind = "wireframe";
-    m.supported = m.applied = m.drawn = true;
-    m.frame = wire.view();
-    m.previous = shaded.view();
-    m.clear = kClear;
-    const eg::Verdict v = eg::mode_drawn(m);
+    const Image vortices = drawn({10, 200, 90}, 44);
+    eg::ModeShown refused;
+    refused.kind = "exact SDF";
+    refused.why_not = "the exact SDF is drawn on the CPU only";
+    refused.shown_text = refused.why_not;
+    const std::vector<eg::ModeShown> modes = {mode("shaded", shaded), mode("wireframe", wire), refused,
+                                              mode("vortices", vortices)};
+    const eg::Verdict v = eg::modes_drawn(modes);
     EXPECT_TRUE(v.ok) << v.detail;
-    m.first = true;
-    m.previous = {};
-    const eg::Verdict first = eg::mode_drawn(m);
-    EXPECT_TRUE(first.ok) << first.detail;
 }
 
-TEST(SandboxEndGoalViews, FailsABlankOrUnchangedOrUnhonouredMode) {
+TEST(SandboxEndGoalViews, FailsAModeUnchangedFromTheLastWhicheverTheStepCallsFirst) {
+    // The check, not the step, decides which mode is first: the second mode
+    // repeats the first's frame and fails.
+    const Image shaded = drawn({200, 180, 40});
+    const std::vector<eg::ModeShown> modes = {mode("shaded", shaded), mode("wireframe", shaded)};
+    const eg::Verdict v = eg::modes_drawn(modes);
+    EXPECT_TRUE(judged_fail(v)) << v.detail;
+}
+
+TEST(SandboxEndGoalViews, FailsABlankOrUnhonouredOrUnappliedMode) {
     const Image shaded = drawn({200, 180, 40});
     const Image blank = image(64, 48, kClear);
-    eg::ModeShown base;
-    base.kind = "vortices";
-    base.supported = base.applied = base.drawn = true;
-    base.clear = kClear;
-    base.previous = shaded.view();
-
-    eg::ModeShown is_blank = base;
-    is_blank.frame = blank.view();
-    eg::ModeShown unchanged = base;
-    unchanged.frame = shaded.view();
     const Image other = drawn({10, 200, 90}, 30);
-    eg::ModeShown unhonoured = base;
-    unhonoured.frame = other.view();
+    eg::ModeShown unhonoured = mode("vortices", other);
     unhonoured.unhonoured = "mode";
-    eg::ModeShown refused_apply = base;
-    refused_apply.frame = other.view();
-    refused_apply.applied = false;
-    for (const eg::ModeShown* m : {&is_blank, &unchanged, &unhonoured, &refused_apply}) {
-        const eg::Verdict v = eg::mode_drawn(*m);
+    eg::ModeShown unapplied = mode("vortices", other);
+    unapplied.applied = false;
+    const std::vector<std::vector<eg::ModeShown>> cases = {
+        {mode("shaded", shaded), mode("wireframe", blank)},
+        {mode("shaded", shaded), unhonoured},
+        {mode("shaded", shaded), unapplied},
+    };
+    for (const auto& modes : cases) {
+        const eg::Verdict v = eg::modes_drawn(modes);
         EXPECT_TRUE(judged_fail(v)) << v.detail;
     }
 }
 
 TEST(SandboxEndGoalViews, ARefusedKindShowsItsWhyNotVerbatim) {
-    eg::ModeShown m;
-    m.kind = "exact SDF";
-    m.supported = false;
-    m.why_not = "the exact SDF is drawn on the CPU only";
-    m.shown_text = m.why_not;
-    const eg::Verdict v = eg::mode_drawn(m);
-    EXPECT_TRUE(v.ok) << v.detail;
-    m.shown_text.clear();
-    const eg::Verdict blank = eg::mode_drawn(m);
+    eg::ModeShown refused;
+    refused.kind = "exact SDF";
+    refused.why_not = "the exact SDF is drawn on the CPU only";
+    refused.shown_text = "";
+    const eg::Verdict blank = eg::modes_drawn(std::vector<eg::ModeShown>{refused});
     EXPECT_TRUE(judged_fail(blank)) << blank.detail;
-    m.why_not.clear();
-    const eg::Verdict none = eg::mode_drawn(m);
+    refused.why_not.clear();
+    const eg::Verdict none = eg::modes_drawn(std::vector<eg::ModeShown>{refused});
     EXPECT_FALSE(none.ok) << none.detail;
     EXPECT_TRUE(has(none.detail, "mis-staged:")) << none.detail;
 }
 
+TEST(SandboxEndGoalViews, ModesOfTwoSizesAreMisStaged) {
+    const Image a = drawn({200, 180, 40});
+    const Image b = image(32, 24, kClear, {240, 240, 240}, 2, 2, 20, 20);
+    const eg::Verdict v = eg::modes_drawn(std::vector<eg::ModeShown>{mode("shaded", a), mode("wireframe", b)});
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
+}
+
 TEST(SandboxEndGoalViews, PassesTheLegendsApplyViewReturned) {
-    eg::LegendCheck c;
-    c.returned = {speed_legend(12.0f)};
-    c.shown = c.returned;
-    c.region_running = true;
-    const eg::Verdict v = eg::legend_shown(c);
+    const eg::Verdict v = eg::legend_shown(legends({speed_legend(12.0f)}));
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
 TEST(SandboxEndGoalViews, FailsAnotherLegendOrAStillField) {
-    eg::LegendCheck other;
-    other.returned = {speed_legend(12.0f)};
-    other.shown = other.returned;
+    eg::LegendCheck other = legends({speed_legend(12.0f)});
     other.shown[0].unit = "km/h";
-    eg::LegendCheck still;
-    still.returned = {speed_legend(0.3f)};
-    still.shown = still.returned;
-    still.region_running = true;
-    eg::LegendCheck flat;
-    flat.returned = {speed_legend(0.0f)};
-    flat.shown = flat.returned;
-    flat.region_running = true;
-    eg::LegendCheck missing;
-    missing.returned = {speed_legend(12.0f), speed_legend(12.0f)};
-    missing.shown = {speed_legend(12.0f)};
-    for (const eg::LegendCheck* c : {&other, &still, &flat, &missing}) {
+    eg::LegendCheck header = legends({speed_legend(12.0f)});
+    header.shown[0].range.from_header = false;
+    eg::LegendCheck still = legends({speed_legend(0.3f)});
+    eg::LegendCheck just_under = legends({speed_legend(0.99f)});
+    eg::LegendCheck flat = legends({speed_legend(0.0f)});
+    eg::LegendCheck missing = legends({speed_legend(12.0f), speed_legend(12.0f)});
+    missing.shown.pop_back();
+    for (const eg::LegendCheck* c : {&other, &header, &still, &just_under, &flat, &missing}) {
         const eg::Verdict v = eg::legend_shown(*c);
         EXPECT_TRUE(judged_fail(v)) << v.detail;
     }
+    EXPECT_TRUE(eg::legend_shown(legends({speed_legend(1.0f)})).ok);
+}
+
+TEST(SandboxEndGoalViews, ADroppedLayersLegendIsAbsent) {
+    eg::LegendCheck dropped = legends({});
+    dropped.layers = 1;  // the spec has a layer; apply_view returned nothing
+    const eg::Verdict v = eg::legend_shown(dropped);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "absent:")) << v.detail;
+}
+
+TEST(SandboxEndGoalViews, AFixedRangeWhileTheRegionRunsIsMisStaged) {
+    // 0 to 12 m/s, fixed: still air would read the same.
+    const eg::Verdict v = eg::legend_shown(legends({speed_legend(12.0f, false)}));
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
+    EXPECT_TRUE(eg::legend_shown(legends({speed_legend(12.0f, false)}, false)).ok);
 }
 
 TEST(SandboxEndGoalViews, PassesTwoDifferentViewsSideBySide) {
@@ -544,6 +744,14 @@ TEST(SandboxEndGoalViews, FailsOneSpecTwiceOrABlankOrAMatchingPair) {
     const eg::Verdict one_blank = eg::two_views("shaded", "wireframe", a.view(), blank.view(), kClear);
     const eg::Verdict matching = eg::two_views("shaded", "wireframe", a.view(), a.view(), kClear);
     for (const eg::Verdict* v : {&same_spec, &one_blank, &matching}) EXPECT_TRUE(judged_fail(*v)) << v->detail;
+}
+
+TEST(SandboxEndGoalViews, TwoViewsOfTwoSizesAreMisStaged) {
+    const Image a = drawn({200, 180, 40});
+    const Image b = image(32, 24, kClear, {240, 240, 240}, 2, 2, 20, 20);
+    const eg::Verdict v = eg::two_views("shaded", "wireframe", a.view(), b.view(), kClear);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
 }
 
 // ===========================================================================
@@ -565,10 +773,28 @@ TEST(SandboxEndGoalRoundTrip, FailsAByteOrAnIdentityOrABodyThatDiffers) {
     eg::RoundTrip zero = good_round_trip();
     zero.bodies_before[0].vel.x = 0.0f;
     zero.bodies_after[0].vel.x = -0.0f;  // equal by ==, not bit for bit
-    for (const eg::RoundTrip* t : {&byte, &identity, &ulp, &zero}) {
+    eg::RoundTrip mass = good_round_trip();
+    mass.bodies_after[0].mass = 0.5f;  // a reader that drops the mass matches at rest
+    eg::RoundTrip inertia = good_round_trip();
+    inertia.bodies_after[1].inv_inertia_diag.y = 0.0f;
+    eg::RoundTrip proxy = good_round_trip();
+    proxy.bodies_after[0].proxy_radius = 0.2f;
+    eg::RoundTrip flags = good_round_trip();
+    flags.bodies_after[0].flags = 1u;
+    eg::RoundTrip count = good_round_trip();
+    count.bodies_after.pop_back();
+    for (const eg::RoundTrip* t : {&byte, &identity, &ulp, &zero, &mass, &inertia, &proxy, &flags, &count}) {
         const eg::Verdict v = eg::round_trip(*t);
         EXPECT_TRUE(judged_fail(v)) << v.detail;
     }
+}
+
+TEST(SandboxEndGoalRoundTrip, IsAbsentWhenADronesIdentityIsLeftOut) {
+    eg::RoundTrip t = good_round_trip();
+    t.identities.pop_back();  // no "drone 0 propulsion"
+    const eg::Verdict v = eg::round_trip(t);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "absent:") && has(v.detail, "drone 0 propulsion")) << v.detail;
 }
 
 TEST(SandboxEndGoalRoundTrip, IsMisStagedOrAbsentWhenTheRunsDoNotMatch) {
@@ -583,4 +809,9 @@ TEST(SandboxEndGoalRoundTrip, IsMisStagedOrAbsentWhenTheRunsDoNotMatch) {
     const eg::Verdict b = eg::round_trip(no_bodies);
     EXPECT_FALSE(b.ok) << b.detail;
     EXPECT_TRUE(has(b.detail, "absent:")) << b.detail;
+    eg::RoundTrip no_drone = good_round_trip();
+    no_drone.drones = 0;
+    const eg::Verdict c = eg::round_trip(no_drone);
+    EXPECT_FALSE(c.ok) << c.detail;
+    EXPECT_TRUE(has(c.detail, "mis-staged:")) << c.detail;
 }

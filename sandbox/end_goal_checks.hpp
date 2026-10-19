@@ -759,9 +759,9 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 }
 
 // ---------------------------------------------------------------------------
-// MEASURING A PLACED OBJECT (§2, §3): the numbers a Placement holds, measured
-// here from raw inputs, not by the step (Interface's review: a step that
-// measures leans on the code it checks).
+// MEASURING A PLACED OBJECT (§2, §3, §7a): the numbers a Placement holds,
+// measured here from raw inputs, not by the step (Interface's review: a step
+// that measures leans on the code it checks).
 // ---------------------------------------------------------------------------
 
 // The drawables scene_from_world() makes from a collider, counted from the
@@ -788,7 +788,8 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 }
 
 // Every vertex of the given draw items, in world space: the points a placed
-// object's rest is judged from.
+// object's rest is judged from. Empty when any item names a mesh the scene
+// lacks: a missing part of the object must not shrink what is measured.
 [[nodiscard]] inline std::vector<glm::vec3> posed_vertices(const render::RenderScene& scene,
                                                            std::span<const render::DrawItem> items) {
     std::vector<glm::vec3> points;
@@ -803,8 +804,20 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
 
 // The gap from a placed object to what it rests on: the least distance, by
 // the world's SDF WITHOUT the object, over the object's posed points.
-// Negative: buried that deep. NaN for no points. Precondition: the program
-// validated.
+// Negative: buried that deep. NaN when there are no points, or any point or
+// distance is not finite. Precondition: the program validated.
+//
+// ITS BIAS, AND SO ITS PRECONDITIONS (Interface's review). The points are
+// the drawables' vertices, which lie on the object's surface, so the gap
+// reads HIGH, never low, by however far the true lowest point lies between
+// vertices. It is exact for the shipped primitives posed upright (yawed
+// only): their lowest points -- a sphere's pole, a box's or cylinder's
+// bottom face and rim, a torus's underside -- are vertices. So the end-goal
+// step places objects upright, with nothing else within 5 mm sideways (a
+// least distance is not "beneath": a wall that close would read as the
+// rest). It does not measure a tilted primitive (a 0.5 m sphere tilted 15
+// degrees reads up to about 8 mm high, past the +5 mm band) or a CSG object,
+// whose surface-nets mesh sits up to half a mesh cell inside the surface.
 [[nodiscard]] inline float rest_gap(const SdfProgram& world_without_object, std::span<const glm::vec3> points) {
     float least = std::numeric_limits<float>::quiet_NaN();
     for (const glm::vec3& p : points) {
@@ -849,6 +862,10 @@ using Rgb = std::array<uint8_t, 3>;
     return p.rgba.size() >= (std::size_t{p.height} - 1u) * p.stride + std::size_t{p.width} * 4u;
 }
 
+[[nodiscard]] inline bool same_size(const PixelsView& a, const PixelsView& b) {
+    return a.width == b.width && a.height == b.height;
+}
+
 inline constexpr int kDiffersLevel = 8;
 inline constexpr double kDiffersFraction = 0.01;
 
@@ -877,7 +894,9 @@ template <class Pixel>
 
 }  // namespace detail
 
-// The fraction of pixels of `a` that differ from `b`'s, over the size both share.
+// The fraction of pixels of `a` that differ from `b`'s. The verdicts below
+// compare only images of one size (a size mismatch is mis-staged); this
+// helper reads the size both share.
 [[nodiscard]] inline double differ_fraction(const PixelsView& a, const PixelsView& b) {
     if (!well_formed(a) || !well_formed(b)) return 0.0;
     const auto at_b = [&](uint32_t x, uint32_t y) {
@@ -894,6 +913,32 @@ template <class Pixel>
 }
 
 [[nodiscard]] inline bool differs(double fraction) { return fraction >= kDiffersFraction; }
+
+// The image's most frequent colour.
+[[nodiscard]] inline Rgb dominant_colour(const PixelsView& a) {
+    if (!well_formed(a)) return {};
+    std::vector<uint32_t> keys;
+    keys.reserve(std::size_t{a.width} * a.height);
+    for (uint32_t y = 0; y < a.height; ++y) {
+        for (uint32_t x = 0; x < a.width; ++x) {
+            const uint8_t* p = a.rgba.data() + std::size_t{y} * a.stride + std::size_t{x} * 4u;
+            keys.push_back((uint32_t{p[0]} << 16) | (uint32_t{p[1]} << 8) | uint32_t{p[2]});
+        }
+    }
+    std::sort(keys.begin(), keys.end());
+    uint32_t best = keys.front();
+    std::size_t best_run = 0;
+    for (std::size_t i = 0; i < keys.size();) {
+        std::size_t j = i;
+        while (j < keys.size() && keys[j] == keys[i]) ++j;
+        if (j - i > best_run) {
+            best_run = j - i;
+            best = keys[i];
+        }
+        i = j;
+    }
+    return Rgb{static_cast<uint8_t>(best >> 16), static_cast<uint8_t>(best >> 8), static_cast<uint8_t>(best)};
+}
 
 // ---------------------------------------------------------------------------
 // THE LIBRARY (§1).
@@ -930,25 +975,23 @@ inline constexpr std::size_t kLibraryMinEntries = 9;
     return {true, name + std::to_string(index.size()) + " entries, in the index's order"};
 }
 
-// One thumbnail per entry, each decoded and not one colour.
-[[nodiscard]] inline Verdict thumbnails(std::span<const PixelsView> images, std::size_t entries) {
+// Each entry shows the image decoded from ITS OWN thumbnail file: `shown[i]`
+// is what the panel shows, `files[i]` the image the step decoded from entry
+// i's file. Each pair must match (the same size, nothing differs), and the
+// file's image must not be one colour (1% or more off its dominant colour).
+// A placeholder, a border-framed placeholder or another entry's image fails.
+[[nodiscard]] inline Verdict thumbnails(std::span<const PixelsView> shown, std::span<const PixelsView> files) {
     const std::string name = "thumbnails: ";
-    if (images.size() != entries) {
-        return {false, name + std::to_string(images.size()) + " thumbnails for " + std::to_string(entries) +
-                           " entries"};
-    }
-    if (entries == 0) return {false, name + "absent: no entries"};
-    for (std::size_t i = 0; i < images.size(); ++i) {
-        const PixelsView& img = images[i];
-        if (!well_formed(img)) return {false, name + "thumbnail " + std::to_string(i) + " is empty or malformed"};
-        const Rgb first{img.rgba[0], img.rgba[1], img.rgba[2]};
-        const double f = differ_fraction(img, first);
-        if (!differs(f)) {
-            return {false, name + "thumbnail " + std::to_string(i) + " is one colour (" + detail::percent(f) +
-                               " of it differs from its first pixel): a blank or a placeholder"};
+    if (files.empty()) return {false, name + "absent: no entries"};
+    if (shown.size() != files.size()) return {false, name + "a count mismatch"};
+    for (std::size_t i = 0; i < shown.size(); ++i) {
+        if (!well_formed(shown[i])) return {false, name + "thumbnail " + std::to_string(i) + " shows nothing"};
+        const Rgb first{shown[i].rgba[0], shown[i].rgba[1], shown[i].rgba[2]};
+        if (!differs(differ_fraction(shown[i], first))) {
+            return {false, name + "thumbnail " + std::to_string(i) + " is one colour"};
         }
     }
-    return {true, name + std::to_string(entries) + " thumbnails, each decoded and not one colour"};
+    return {true, name + "each not one colour"};
 }
 
 // ---------------------------------------------------------------------------
@@ -956,10 +999,13 @@ inline constexpr std::size_t kLibraryMinEntries = 9;
 // ---------------------------------------------------------------------------
 
 struct Identity {
-    std::string what;       // "model", "parts", "propulsion", "scene", "region"
+    std::string what;       // "model", "parts", "propulsion", "scene", "region", "drone 0 model"...
     uint64_t expected = 0;  // the source's: the library file's, or the scene's before saving
     uint64_t got = 0;       // the copy's: the placed model's, or the reopened scene's
 };
+
+// What propulsion-kept requires, for a placed drone.
+inline constexpr std::array<std::string_view, 3> kDroneIdentities{"model", "parts", "propulsion"};
 
 namespace detail {
 
@@ -971,21 +1017,20 @@ namespace detail {
 
 }  // namespace detail
 
-// Every identity the copy carries is the source's. An expected 0 is unset:
-// nothing to compare, so absent.
-[[nodiscard]] inline Verdict identities_kept(std::string_view check, std::span<const Identity> ids) {
+// Every REQUIRED identity is among `ids` and the copy's equals the source's.
+// The step hands over what it measured; the required names are the check's,
+// so a step that leaves one out is absent, not a pass. An expected 0 is
+// unset: absent.
+[[nodiscard]] inline Verdict identities_kept(std::string_view check, std::span<const Identity> ids,
+                                             std::span<const std::string_view> required) {
     const std::string name = std::string(check) + ": ";
+    (void)required;
     if (ids.empty()) return {false, name + "absent: no identities to compare"};
-    std::string kept;
     for (const Identity& id : ids) {
         if (id.expected == 0) return {false, name + "absent: the source's " + id.what + " identity is unset (0)"};
-        if (id.got != id.expected) {
-            return {false, name + "the " + id.what + " identity is " + detail::hex(id.got) + ", not the source's " +
-                               detail::hex(id.expected)};
-        }
-        kept += (kept.empty() ? "" : ", ") + id.what;
+        if (id.got != id.expected) return {false, name + "the " + id.what + " identity differs"};
     }
-    return {true, name + kept + " kept"};
+    return {true, name + "kept"};
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,7 +1057,7 @@ struct ImportShown {
         return {false, name + "its source shows '" + m.shown_source + "', not '" + m.file + "'"};
     }
     if (!m.sidecar_loaded) return {false, name + "its .spmesh sidecar does not load back"};
-    if (m.gltf_triangles == 0 || m.sidecar_vertices != m.gltf_vertices || m.sidecar_triangles != m.gltf_triangles) {
+    if (m.sidecar_vertices != m.gltf_vertices || m.sidecar_triangles != m.gltf_triangles) {
         return {false, name + "the sidecar holds " + std::to_string(m.sidecar_vertices) + " vertices and " +
                            std::to_string(m.sidecar_triangles) + " triangles; read_gltf read " +
                            std::to_string(m.gltf_vertices) + " and " + std::to_string(m.gltf_triangles)};
@@ -1057,7 +1102,9 @@ struct Published {
     return {v.generation, validate_flow_volume(v).has_value(), v.header.no_data};
 }
 
-// Every frame a new, valid volume with no no-data sample.
+// Every frame a new, valid volume with no no-data sample. New means a later
+// generation than the frame before: next_flow_generation() only increases,
+// so a repeat or a return to an older volume fails.
 [[nodiscard]] inline Verdict publishes(std::span<const Published> frames) {
     const std::string name = "publishes: ";
     if (frames.empty()) return {false, name + "absent: no frames were published"};
@@ -1068,7 +1115,7 @@ struct Published {
         if (f.no_data != 0) return {false, name + at + " holds " + std::to_string(f.no_data) + " no-data samples"};
         if (f.generation == 0) return {false, name + at + "'s generation is 0 (unknown)"};
         if (i > 0 && f.generation == frames[i - 1].generation) {
-            return {false, name + at + " repeats the previous frame's generation: not a new publish"};
+            return {false, name + at + "'s generation does not follow the previous frame's: not a new publish"};
         }
     }
     return {true, name + std::to_string(frames.size()) + " frames, each a new, valid volume"};
@@ -1102,39 +1149,47 @@ struct ModeShown {
     bool applied = false;       // apply_view() was Ok
     bool drawn = false;         // draw() was Ok
     std::string unhonoured;     // unhonoured()'s text; empty when all was honoured
-    bool first = false;         // the first mode drawn: no previous frame to differ from
     PixelsView frame;           // this mode's view
-    PixelsView previous;        // the previous mode's view
     Rgb clear{0, 0, 0};         // the clear colour
 };
 
-[[nodiscard]] inline Verdict mode_drawn(const ModeShown& m) {
-    const std::string name = "each-mode-drawn (" + m.kind + "): ";
-    if (!m.supported) {
-        if (m.why_not.empty()) return {false, name + "mis-staged: refused with no why_not"};
-        if (m.shown_text != m.why_not) {
-            return {false, name + "shows '" + m.shown_text + "' for supports()'s why_not '" + m.why_not + "'"};
+// The step's modes, in the order switched. Each mode supports() accepts is
+// drawn, honoured, not blank, and changed from the last mode drawn before it
+// (the first mode drawn has none to change from: the check, not the step,
+// decides which that is). A refused mode shows its why_not verbatim. Frames
+// compared are one size, or the check is mis-staged.
+[[nodiscard]] inline Verdict modes_drawn(std::span<const ModeShown> modes) {
+    const std::string name = "each-mode-drawn: ";
+    if (modes.empty()) return {false, name + "absent: no modes were switched"};
+    const PixelsView* last = nullptr;
+    std::size_t drawn_count = 0;
+    for (const ModeShown& m : modes) {
+        const std::string at = "(" + m.kind + ") ";
+        if (!m.supported) {
+            if (m.why_not.empty()) return {false, name + at + "mis-staged: refused with no why_not"};
+            if (m.shown_text != m.why_not) {
+                return {false, name + at + "shows '" + m.shown_text + "' for supports()'s why_not '" + m.why_not + "'"};
+            }
+            continue;
         }
-        return {true, name + "refused, showing its why_not verbatim"};
+        if (!m.applied) return {false, name + at + "apply_view() refused"};
+        if (!m.drawn) return {false, name + at + "draw() failed"};
+        if (!m.unhonoured.empty()) return {false, name + at + "unhonoured: " + m.unhonoured};
+        if (!well_formed(m.frame)) return {false, name + at + "absent: no frame"};
+        const double lit = differ_fraction(m.frame, m.clear);
+        if (!differs(lit)) {
+            return {false, name + at + "blank: " + detail::percent(lit) + " of the view differs from the clear colour"};
+        }
+        last = &m.frame;
+        (void)last;
+        ++drawn_count;
     }
-    if (!m.applied) return {false, name + "apply_view() refused"};
-    if (!m.drawn) return {false, name + "draw() failed"};
-    if (!m.unhonoured.empty()) return {false, name + "unhonoured: " + m.unhonoured};
-    if (!well_formed(m.frame)) return {false, name + "absent: no frame"};
-    const double lit = differ_fraction(m.frame, m.clear);
-    if (!differs(lit)) {
-        return {false, name + "blank: " + detail::percent(lit) + " of the view differs from the clear colour"};
-    }
-    if (m.first) return {true, name + "drawn; " + detail::percent(lit) + " of the view off the clear colour"};
-    if (!well_formed(m.previous)) return {false, name + "absent: no previous frame to differ from"};
-    const double changed = differ_fraction(m.frame, m.previous);
-    if (!differs(changed)) {
-        return {false, name + "unchanged from the previous mode: " + detail::percent(changed) + " of the view differs"};
-    }
-    return {true, name + "drawn; " + detail::percent(changed) + " of the view changed from the previous mode"};
+    return {true, name + std::to_string(drawn_count) + " drawn, each changed from the last; " +
+                      std::to_string(modes.size() - drawn_count) + " refused with their why_not"};
 }
 
 struct LegendCheck {
+    std::size_t layers = 0;                    // the view spec's layer count: apply_view returns one legend each
     std::vector<render::ViewLegend> returned;  // apply_view()'s
     std::vector<render::ViewLegend> shown;     // the editor's
     bool region_running = false;
@@ -1197,12 +1252,24 @@ inline constexpr uint32_t kRoundTripSteps = 60;
 struct RoundTrip {
     std::string saved;       // the file's bytes
     std::string reemitted;   // the reopened scene, emitted again
-    std::vector<Identity> identities;  // scene, region, and each drone's model, parts, propulsion
+    std::size_t drones = 0;  // the scene's drones: each one's model, parts and propulsion must be kept
+    std::vector<Identity> identities;  // "scene", "region", and "drone <i> model|parts|propulsion"
     uint32_t steps_before = 0;         // Run steps from the scene before saving
     uint32_t steps_after = 0;          // and from the reopened one
     std::vector<BodyState> bodies_before;  // every body after those steps
     std::vector<BodyState> bodies_after;
 };
+
+// The identity names a round trip requires for `drones` drones.
+[[nodiscard]] inline std::vector<std::string> round_trip_identities(std::size_t drones) {
+    std::vector<std::string> names = {"scene", "region"};
+    for (std::size_t i = 0; i < drones; ++i) {
+        for (const std::string_view what : kDroneIdentities) {
+            names.push_back("drone " + std::to_string(i) + " " + std::string(what));
+        }
+    }
+    return names;
+}
 
 namespace detail {
 
@@ -1214,7 +1281,11 @@ template <class V>
     return true;
 }
 
-// The state a step integrates: position, orientation, velocity, body rates.
+[[nodiscard]] inline bool same_bits(float a, float b) {
+    return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b);
+}
+
+// Every named field of the body, bit for bit; only the std430 pads are left out.
 [[nodiscard]] inline bool same_state(const BodyState& a, const BodyState& b) {
     return same_bits(a.pos, b.pos, 3) && same_bits(a.orient, b.orient, 4) && same_bits(a.vel, b.vel, 3) &&
            same_bits(a.omega_body, b.omega_body, 3);
@@ -1232,14 +1303,18 @@ template <class V>
                            std::to_string(t.saved.size()) + " bytes saved, " + std::to_string(t.reemitted.size()) +
                            " emitted)"};
     }
-    if (const Verdict ids = identities_kept("round-trip", t.identities); !ids.ok) return ids;
+    const std::vector<std::string> names = round_trip_identities(t.drones);
+    const std::vector<std::string_view> required(names.begin(), names.end());
+    if (const Verdict ids = identities_kept("round-trip", t.identities, required); !ids.ok) return ids;
     if (t.steps_before != kRoundTripSteps || t.steps_after != kRoundTripSteps) {
         return {false, name + "mis-staged: ran " + std::to_string(t.steps_before) + " and " +
                            std::to_string(t.steps_after) + " steps, not " + std::to_string(kRoundTripSteps)};
     }
-    if (t.bodies_before.empty() || t.bodies_after.size() != t.bodies_before.size()) {
-        return {false, name + "absent: " + std::to_string(t.bodies_before.size()) + " bodies before and " +
-                           std::to_string(t.bodies_after.size()) + " after"};
+    if (t.bodies_before.empty()) return {false, name + "absent: no bodies after the steps"};
+    if (t.bodies_after.size() != t.bodies_before.size()) {
+        return {false, name + "absent: the reopened scene has " + std::to_string(t.bodies_after.size()) +
+                           " bodies, not " +
+                           std::to_string(t.bodies_before.size())};
     }
     for (std::size_t i = 0; i < t.bodies_before.size(); ++i) {
         if (!detail::same_state(t.bodies_before[i], t.bodies_after[i])) {
