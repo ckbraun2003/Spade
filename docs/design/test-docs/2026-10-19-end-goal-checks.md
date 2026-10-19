@@ -142,6 +142,12 @@ LiveRun, drone held (design decision 1), until P2b.
   - Behaviourally: 60 steps of Run from the reopened scene give bit-identical body states to 60 steps from the scene before saving.
   - *Catches:* a field written but not read back, and one read back but not applied.
 
+## 7a. Measuring a placed object
+
+Test/Docs owns these, at Interface's request, so a step never measures what its own check judges (TD-4). The step hands over raw inputs: the collider, the world's SDF without the object, and the posed drawables.
+- **The drawables declared** (`declared_drawables`): counted from the collider's postfix program itself, not through the renderer's `split_program()`. A primitive under nothing but union is one drawable. A subtree rooted at subtract, intersect or smooth_union is one, whatever it holds. A malformed program declares 0, which fails.
+- **The rest gap** (`rest_gap`): the least distance, by the world's SDF without the object, over every vertex of the object's posed drawables. For the drone, those are its parts. Negative means buried that deep. With no points it's NaN, which fails. This is how §2's and §3's "lowest point to the surface beneath" is measured.
+
 ## 8. Headless tests, red first
 
 These go on a Test/Docs branch, against stubs, before each feature lands. Batch 1 (`test-docs/end-goal-checks`) holds downwash, climbs, follows-attitude, armed, placed-at, drawn and object-added. Batch 2 holds the views, library, import, region bookkeeping and round-trip; round-trip is judged on real state only at M2. Each later runs on the real feature's state, by milestone:
