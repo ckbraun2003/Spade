@@ -36,13 +36,16 @@ using yaml_text::append_sdf_nodes;
 using yaml_text::append_sdf_transforms;
 using yaml_text::at;
 using yaml_text::dec;
+using yaml_text::double_field;
 using yaml_text::field;
 using yaml_text::float_field;
 using yaml_text::float_list;
+using yaml_text::format_double;
 using yaml_text::format_float;
 using yaml_text::has;
 using yaml_text::mark_of;
 using yaml_text::material_flow;
+using yaml_text::parse_float;
 using yaml_text::parse_uint;
 using yaml_text::path_text;
 using yaml_text::quat_field;
@@ -285,6 +288,39 @@ void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::str
             emit_part(out, p, in);
         }
     }
+}
+
+void detail::emit_propulsion(std::string& out, const vehicles::PropulsionChain& c, std::string_view indent) {
+    const std::string in(indent);
+    const auto number = [&](const char* key, double value) { out += in + key + ": " + format_double(value) + "\n"; };
+    const auto count = [&](const char* key, uint32_t value) { out += in + key + ": " + dec(value) + "\n"; };
+    // Motor and ESC.
+    number("kv", c.kv);
+    number("resistance", c.resistance);
+    number("no_load_current", c.no_load_current);
+    number("current_min", c.current_min);
+    number("current_max", c.current_max);
+    number("esc_current_total_max", c.esc_current_total_max);
+    number("pole_pairs", c.pole_pairs);
+    number("inductance", c.inductance);
+    // Propeller.
+    number("diameter", c.diameter);
+    const std::string table = in + "  ";
+    out += in + "table:\n";
+    out += table + "j_min: " + format_float(c.table.j_min) + "\n";
+    out += table + "j_max: " + format_float(c.table.j_max) + "\n";
+    out += table + "ct: " + float_list(c.table.ct) + "\n";
+    out += table + "cq: " + float_list(c.table.cq) + "\n";
+    // Battery.
+    count("cells_series", c.cells_series);
+    count("cells_parallel", c.cells_parallel);
+    number("cell_resistance", c.cell_resistance);
+    number("cell_cutoff_voltage", c.cell_cutoff_voltage);
+    number("pack_polarization_resistance", c.pack_polarization_resistance);
+    number("pack_current_max", c.pack_current_max);
+    out += in + "ocv_table: " + float_list(c.ocv_table) + "\n";
+    // The bus.
+    count("motors_on_bus", c.motors_on_bus);
 }
 
 namespace {
@@ -744,6 +780,22 @@ struct PartMesh {
     return out;
 }
 
+// A list of floats of any length, at `map[key]`: a propulsion chain's tables.
+[[nodiscard]] Result<std::vector<float>> float_sequence(const YAML::Node& map, const char* key,
+                                                        const std::string& what) {
+    const Result<YAML::Node> node = sequence_field(map, key, what);
+    if (!node) return std::unexpected(node.error());
+    const std::string where = what + "." + key;
+    std::vector<float> out;
+    out.reserve(node->size());
+    for (std::size_t i = 0; i < node->size(); ++i) {
+        const Result<float> value = parse_float((*node)[i], where + "[" + dec(i) + "]");
+        if (!value) return std::unexpected(value.error());
+        out.push_back(*value);
+    }
+    return out;
+}
+
 }  // namespace
 
 // `format.key_version` gates the key set (`parts` from scene version 2, a
@@ -841,6 +893,82 @@ Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const st
             out.parts.push_back(std::move(*p));
         }
     }
+    return out;
+}
+
+// Every key is required, and read in declaration order, so the first missing
+// one named is the first the struct declares.
+Result<vehicles::PropulsionChain> detail::parse_propulsion(const YAML::Node& node, const std::string& what,
+                                                           std::string_view schema) {
+    if (Result<void> r = check_map(node, what,
+                                   {"kv", "resistance", "no_load_current", "current_min", "current_max",
+                                    "esc_current_total_max", "pole_pairs", "inductance", "diameter", "table",
+                                    "cells_series", "cells_parallel", "cell_resistance", "cell_cutoff_voltage",
+                                    "pack_polarization_resistance", "pack_current_max", "ocv_table",
+                                    "motors_on_bus"},
+                                   schema);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    vehicles::PropulsionChain out{};
+    const auto doubles = [&](std::initializer_list<std::pair<const char*, double*>> fields) -> Result<void> {
+        for (const auto& [key, slot] : fields) {
+            const Result<double> value = double_field(node, key, what);
+            if (!value) return std::unexpected(value.error());
+            *slot = *value;
+        }
+        return {};
+    };
+    const auto count = [&](const char* key, uint32_t& slot) -> Result<void> {
+        const Result<uint32_t> value = uint_field<uint32_t>(node, key, what);
+        if (!value) return std::unexpected(value.error());
+        slot = *value;
+        return {};
+    };
+
+    // Motor and ESC, then the propeller.
+    if (Result<void> r = doubles({{"kv", &out.kv},
+                                  {"resistance", &out.resistance},
+                                  {"no_load_current", &out.no_load_current},
+                                  {"current_min", &out.current_min},
+                                  {"current_max", &out.current_max},
+                                  {"esc_current_total_max", &out.esc_current_total_max},
+                                  {"pole_pairs", &out.pole_pairs},
+                                  {"inductance", &out.inductance},
+                                  {"diameter", &out.diameter}});
+        !r) {
+        return std::unexpected(r.error());
+    }
+    const std::string table_what = what + ".table";
+    const Result<YAML::Node> table = map_field(node, "table", what, {"j_min", "j_max", "ct", "cq"}, schema);
+    if (!table) return std::unexpected(table.error());
+    const Result<float> j_min = float_field(*table, "j_min", table_what);
+    if (!j_min) return std::unexpected(j_min.error());
+    const Result<float> j_max = float_field(*table, "j_max", table_what);
+    if (!j_max) return std::unexpected(j_max.error());
+    Result<std::vector<float>> ct = float_sequence(*table, "ct", table_what);
+    if (!ct) return std::unexpected(ct.error());
+    Result<std::vector<float>> cq = float_sequence(*table, "cq", table_what);
+    if (!cq) return std::unexpected(cq.error());
+    out.table.j_min = *j_min;
+    out.table.j_max = *j_max;
+    out.table.ct = std::move(*ct);
+    out.table.cq = std::move(*cq);
+
+    // The battery, then the bus.
+    if (Result<void> r = count("cells_series", out.cells_series); !r) return std::unexpected(r.error());
+    if (Result<void> r = count("cells_parallel", out.cells_parallel); !r) return std::unexpected(r.error());
+    if (Result<void> r = doubles({{"cell_resistance", &out.cell_resistance},
+                                  {"cell_cutoff_voltage", &out.cell_cutoff_voltage},
+                                  {"pack_polarization_resistance", &out.pack_polarization_resistance},
+                                  {"pack_current_max", &out.pack_current_max}});
+        !r) {
+        return std::unexpected(r.error());
+    }
+    Result<std::vector<float>> ocv = float_sequence(node, "ocv_table", what);
+    if (!ocv) return std::unexpected(ocv.error());
+    out.ocv_table = std::move(*ocv);
+    if (Result<void> r = count("motors_on_bus", out.motors_on_bus); !r) return std::unexpected(r.error());
     return out;
 }
 
