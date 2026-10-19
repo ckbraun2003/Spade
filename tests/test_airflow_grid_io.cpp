@@ -15,6 +15,7 @@
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/grid_io.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "unique_temp.hpp"
 
 namespace {
 
@@ -110,9 +111,8 @@ TEST(AirflowGridIo, ARefusalNamesWhatDiffersAndWritesNothing) {
 }
 
 TEST(AirflowGridIo, AFileSavesAndLoadsWithItsStep) {
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "spade_airflow_grid_io_test";
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directories(dir);
+    const spade::test::TempDir temp("airflow_grid_io");
+    const std::filesystem::path& dir = temp.path();
     const std::filesystem::path path = dir / "state.grid";
     const GridShape shape{6, 5, 4, 0.1f};
     const MacGrid a = filled(shape, 7u);
@@ -137,7 +137,6 @@ TEST(AirflowGridIo, AFileSavesAndLoadsWithItsStep) {
     const Result<uint64_t> junk = load_grid(dir / "junk.grid", b);
     ASSERT_FALSE(junk.has_value());
     EXPECT_NE(junk.error().context.find("junk.grid"), std::string::npos) << junk.error().context;
-    std::filesystem::remove_all(dir);
 }
 
 }  // namespace
