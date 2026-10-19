@@ -46,13 +46,14 @@
 // A part that is not a blob, whose every leaking run lies within 4 cells
 // (Chebyshev) of a cell with a closed face and whose leaks total at most 2%
 // of its bounds' largest face, leaks at an edge: announced on the run line. A
-// blob thin in ONE direction is sheet-like (the ruling of 2026-10-13): it has
-// a thin crossing, every thin crossing enters within 60 degrees of the first
-// one's normal or its opposite, and every crossing with tau >= 2 dx enters
-// through a rim, across that direction. It is sheeted at its largest thin
-// tau, announced, and sampled again. Any other leak -- a blob thin in two
-// directions (a wire, a bead) included -- is refused by name: declare
-// min_feature or refine dx.
+// blob is sheet-like when it has a thin crossing and every thin crossing is
+// WIDE (the lead, 2026-10-13: the criterion is local): along each tangent of
+// its entry normal, a probe 2 dx from its mid-point, one way or the other,
+// lands within dx/2 of the part. A sheet, flat or curved, is wide; a wire is
+// narrow across itself and a bead every way. It is sheeted at its largest
+// thin tau, announced, and sampled again. Any other leak -- a blob thin in
+// more than one direction (a wire, a bead) included -- is refused by name:
+// declare min_feature or refine dx.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 

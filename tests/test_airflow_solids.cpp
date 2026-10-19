@@ -351,9 +351,11 @@ TEST(AirflowSolidsSafeguard, ATiltedThinPlateDeclaredThickIsSheeted) {
 // its own frame, so its bounds look thick (about 7.4 dx each way) and the
 // classifier calls it a wall. It closes no face. Lines along x and y cross it
 // thin through its faces normal to a = (1, -1, 0)/sqrt(2); lines along z
-// through those normal to b = (1, 1, -2)/sqrt(6): thin in two directions, a
-// wire and not a sheet. Refused (the 2026-10-13 ruling: a sheet is thin in one
-// direction). Mutation: drop the one-direction clause, and it is sheeted.
+// through those normal to b = (1, 1, -2)/sqrt(6). At each, 2 dx across the rod
+// along a tangent lands about 1.6 dx outside it either way: narrow, a wire and
+// not a sheet. Refused (the lead, 2026-10-13: a sheet is wide along both
+// tangents at every thin crossing). Mutation: no width check, and it is
+// sheeted.
 TEST(AirflowSolidsSafeguard, ATiltedThinRodDeclaredThickIsRefused) {
     const GridShape shape{32, 32, 32, 1.0f};
     const glm::vec3 d = glm::normalize(glm::vec3(1.0f, 1.0f, 1.0f));
@@ -369,6 +371,45 @@ TEST(AirflowSolidsSafeguard, ATiltedThinRodDeclaredThickIsRefused) {
     const Result<void> r = build_scene(f, shape, parts, scene);
     ASSERT_FALSE(r.has_value()) << f.run_line;
     EXPECT_NE(r.error().context.find("rod"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("thin in more than one direction"), std::string::npos) << r.error().context;
+}
+
+// A hemispherical canopy shell, its mid-surface 10 dx in radius and 0.5 dx
+// thick, declared thick (an imported CAD fairing): its bounds (20.5 x 10.25 x
+// 20.5 dx) look thick and it closes no face. Its thin crossings' normals span
+// the hemisphere, yet it is a sheet everywhere: wide along both tangents at
+// every crossing (2 dx along a tangent leaves the shell by 4/20 = 0.2 dx, inside
+// its 0.25 dx half-thickness). Sheeted (the lead, 2026-10-13: the criterion is
+// local). Mutation: the global first-normal clause, which refuses it.
+TEST(AirflowSolidsSafeguard, ACurvedThinShellDeclaredThickIsSheeted) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "canopy", .kind = Kind::hemi_shell, .centre = {16.0f, 10.0f, 16.0f},
+                                 .half = {0.25f, 0.0f, 0.0f}, .radius = 10.0f, .min_feature = 4.0f});
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_scene(f, shape, scene.parts(), scene);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(f.classes[0].role, SolidRole::sheet);
+    EXPECT_LT(f.classes[0].thickness, 2.0f);
+    EXPECT_NE(f.run_line.find("canopy: sheet (measured"), std::string::npos) << f.run_line;
+}
+
+// A bead 1.8 dx across centred on a cell centre: its face centres lie 0.4 dx
+// inside (theta 0.1), so it closes no face, and lines through its middle
+// cross it thin (tau 1.8 dx) on every axis. Its bounds are conservative, as an
+// SDF part's sdf_bounds() may be (4 dx each way), so the classifier calls it a
+// wall. Narrow along every tangent: refused, never sheeted. Mutation: no width
+// check, and it is sheeted.
+TEST(AirflowSolidsSafeguard, ABeadIsRefusedNotSheeted) {
+    const GridShape shape{16, 16, 16, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "bead", .kind = Kind::sphere, .centre = {8.5f, 8.5f, 8.5f}, .radius = 0.9f,
+                                 .min_feature = 4.0f});
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(4.0f);  // conservative bounds
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_scene(f, shape, parts, scene);
+    ASSERT_FALSE(r.has_value()) << f.run_line;
     EXPECT_NE(r.error().context.find("thin in more than one direction"), std::string::npos) << r.error().context;
 }
 

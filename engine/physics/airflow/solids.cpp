@@ -139,6 +139,33 @@ constexpr int kEdgeReachCells = 4;
 constexpr float kEdgeAreaFraction = 0.02f;
 constexpr int kTraceSteps = 32;
 constexpr float kTraceHit = 1.0e-4f;  // times dx
+constexpr float kSheetWidthCells = 2.0f;
+
+// Whether a thin crossing's material is a sheet's there (the lead, 2026-10-13:
+// the criterion is local): along each tangent of its normal n, a probe
+// kSheetWidthCells dx from its mid-point, one way or the other, lands within
+// dx/2 of the part. A sheet, flat or curved, is wide (a shell of radius R
+// leaves its tangent plane by w^2 / 2R); a wire is narrow across itself, a
+// bead every way.
+[[nodiscard]] bool wide(const SolidSampler& sample, uint32_t p, glm::vec3 mid, glm::vec3 n, float dx) noexcept {
+    const float ax = std::fabs(n.x);
+    const float ay = std::fabs(n.y);
+    const float az = std::fabs(n.z);
+    const glm::vec3 pick = ax <= ay && ax <= az ? glm::vec3(1.0f, 0.0f, 0.0f)
+                           : ay <= az           ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                                : glm::vec3(0.0f, 0.0f, 1.0f);
+    glm::vec3 t1 = glm::cross(n, pick);
+    t1 /= std::sqrt(glm::dot(t1, t1));
+    const glm::vec3 t2 = glm::cross(n, t1);
+    const float w = kSheetWidthCells * dx;
+    const float near = 0.5f * dx;
+    for (const glm::vec3& t : {t1, t2}) {
+        const float ahead = sample.part(sample.ctx, p, mid + w * t).distance;
+        const float behind = sample.part(sample.ctx, p, mid - w * t).distance;
+        if (!(ahead <= near) && !(behind <= near)) return false;
+    }
+    return true;
+}
 
 struct Trace {
     float t = 0.0f;           // from the start, m
@@ -183,13 +210,7 @@ struct Leaks {
     glm::vec3 first{0.0f};      // the first one's entry point
     uint32_t thin = 0;          // thin crossings
     float thin_tau_max = 0.0f;  // the largest thin crossing's, m
-    // A sheet is thin in ONE direction (the 2026-10-13 ruling): every thin
-    // crossing enters within 60 degrees of the first one's normal, or of its
-    // opposite, and every thick crossing (tau >= 2 dx) enters through a rim,
-    // across that direction.
-    glm::vec3 thin_normal{0.0f};    // the first thin crossing's entry normal
-    bool one_direction = true;
-    std::vector<glm::vec3> thick;   // the thick crossings' entry normals
+    bool narrow = false;        // a thin crossing narrower than kSheetWidthCells along a tangent
 };
 
 // Cells with a closed face, grown by kEdgeReachCells (Chebyshev).
@@ -319,13 +340,9 @@ struct CellBox {
                                 const float chord = std::max(length - in.t - out_t.t, 0.0f);
                                 const float tau = chord * std::fabs(in.normal[static_cast<glm::length_t>(a)]);
                                 const bool thin = glm::dot(in.normal, out_t.normal) <= -0.5f && tau < 2.0f * dx;
-                                if (!thin && tau >= 2.0f * dx) out.thick.push_back(in.normal);
                                 if (thin) {
-                                    if (out.thin == 0u) {
-                                        out.thin_normal = in.normal;
-                                    } else if (std::fabs(glm::dot(in.normal, out.thin_normal)) < 0.5f) {
-                                        out.one_direction = false;
-                                    }
+                                    const glm::vec3 mid = 0.5f * ((x1 + in.t * e) + (x2 - out_t.t * e));
+                                    if (!wide(sample, p, mid, in.normal, dx)) out.narrow = true;
                                     ++out.thin;
                                     out.thin_tau_max = std::max(out.thin_tau_max, tau);
                                     float smallest = 1.0f;
@@ -527,11 +544,7 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
                          fmt("%.2f", 100.0 * static_cast<double>(lk.area / largest_face)) + "% of its largest face)";
                 continue;
             }
-            bool thick_across = false;  // a thick crossing that enters across the thin direction
-            for (const glm::vec3& n : lk.thick) {
-                if (std::fabs(glm::dot(n, lk.thin_normal)) >= 0.5f) thick_across = true;
-            }
-            if (blob && lk.thin > 0u && lk.one_direction && !thick_across) {
+            if (blob && lk.thin > 0u && !lk.narrow) {
                 classes[p] = SolidClass{SolidRole::sheet, lk.thin_tau_max};
                 resheeted = true;
                 measured[p] = 1u;
@@ -540,11 +553,9 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
                          mm(parts[p].min_feature) + ")";
                 continue;
             }
-            const std::string not_sheet = lk.thin == 0u       ? ""
-                                          : !lk.one_direction ? " and is thin in more than one direction (a wire "
-                                                                "or a bead, not a sheet)"
-                                                              : " and a grid line crosses it thick across its thin "
-                                                                "direction";
+            const std::string not_sheet = lk.thin > 0u && lk.narrow ? " and is thin in more than one direction "
+                                                                      "(a wire or a bead, not a sheet)"
+                                                                    : "";
             const std::string where = blob ? "it closes no face at dx = " + mm(s.dx) +
                                                  " (no face centre lies dx/2 inside it)" + not_sheet
                                            : "a grid line crosses it at (" + fmt("%.4f", lk.first.x) + ", " +

@@ -21,7 +21,7 @@ using spade::physics::airflow::SolidPart;
 using spade::physics::airflow::SolidQuery;
 using spade::physics::airflow::SolidSampler;
 
-enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y, two_boxes };
+enum class Kind { sphere, box, cylinder_y, outside_cylinder_y, wedge_y, two_boxes, hemi_shell };
 
 // One shape in the grid's frame. `to_local` turns a point's offset from the
 // centre into the shape's own axes (a pure rotation; identity by default).
@@ -32,7 +32,7 @@ struct Shape {
     glm::vec3 half{0.0f};          // box: half extents; wedge: (tip-to-back length, half height in y, 0)
     glm::vec3 centre2{0.0f};       // two_boxes: the second box, axis-aligned
     glm::vec3 half2{0.0f};
-    float radius = 0.0f;           // sphere, cylinder: radius; wedge: half-angle, radians
+    float radius = 0.0f;           // sphere, cylinder: radius; wedge: half-angle, radians; hemi_shell: mid-surface radius
     glm::mat3 to_local{1.0f};      // local = to_local * (x - centre)
     glm::vec3 omega{0.0f};         // rigid rotation about `centre`, rad/s
     float min_feature = 0.0f;      // declared, m
@@ -85,6 +85,15 @@ struct Field {
             f = {s.radius - r, r > 0.0f ? glm::vec3(-p.x / r, 0.0f, -p.z / r) : glm::vec3(1.0f, 0.0f, 0.0f)};
             break;
         }
+        case Kind::hemi_shell: {  // a spherical shell, half.x thick each side of `radius`, cut to local y >= 0
+            const float r = std::sqrt(glm::dot(p, p));
+            const glm::vec3 radial = r > 0.0f ? p / r : glm::vec3(0.0f, 1.0f, 0.0f);
+            const Field shell = r >= s.radius ? Field{r - s.radius - s.half.x, radial}
+                                              : Field{s.radius - r - s.half.x, -radial};
+            const Field cap{-p.y, glm::vec3(0.0f, -1.0f, 0.0f)};  // the max: a 1-Lipschitz bound, like the wedge's
+            f = cap.d > shell.d ? cap : shell;
+            break;
+        }
         case Kind::two_boxes: {  // the union of two axis-aligned boxes: the smaller distance wins
             const Field a = box_field(p, s.half);
             const Field b = box_field(x - s.centre2, s.half2);
@@ -130,6 +139,7 @@ struct Field {
         case Kind::outside_cylinder_y: local_half = glm::vec3(1.0e3f); break;
         case Kind::wedge_y: local_half = glm::vec3(s.half.x, s.half.y, s.half.x * std::tan(s.radius)); break;
         case Kind::two_boxes: break;  // its box is the union, below
+        case Kind::hemi_shell: local_half = glm::vec3(s.radius + s.half.x); break;  // the cap's half below
     }
     SolidPart p;
     p.name = s.name;
@@ -144,9 +154,11 @@ struct Field {
     }
     // The rotated box's eight corners (the wedge's box from its tip).
     const glm::mat3 to_grid = glm::transpose(s.to_local);
-    const glm::vec3 lo_local = s.kind == Kind::wedge_y ? glm::vec3(0.0f, -local_half.y, -local_half.z) : -local_half;
+    const glm::vec3 lo_local = s.kind == Kind::wedge_y      ? glm::vec3(0.0f, -local_half.y, -local_half.z)
+                               : s.kind == Kind::hemi_shell ? glm::vec3(-local_half.x, 0.0f, -local_half.z)
+                                                            : -local_half;
     const glm::vec3 hi_local = s.kind == Kind::wedge_y ? glm::vec3(s.half.x, local_half.y, local_half.z) : local_half;
-    if (s.kind == Kind::wedge_y) p.extent = hi_local - lo_local;
+    if (s.kind == Kind::wedge_y || s.kind == Kind::hemi_shell) p.extent = hi_local - lo_local;
     glm::vec3 lo(std::numeric_limits<float>::max());
     glm::vec3 hi(-std::numeric_limits<float>::max());
     for (int c = 0; c < 8; ++c) {
