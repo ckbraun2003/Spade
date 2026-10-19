@@ -2,10 +2,15 @@
 # SOURCE_DIR's sources are at and whether their tracked files have uncommitted
 # changes, as they are when the engine is built. The spade_build_stamp target
 # (engine/CMakeLists.txt) runs it before every build of spade_core, and every
-# tool reads the engine's stamp rather than taking its own (TD-9). OUT is
-# rewritten only when its text changes, so an unchanged tree recompiles nothing.
+# tool reads the engine's stamp rather than taking its own (TD-9).
 #
-#   cmake -DSOURCE_DIR=<Spade's source root> -DOUT=<header>
+# CONFIG_OUT, when given, gets the same commit and flag from the same run as
+# the installed package's fragment (spade_GIT_COMMIT, spade_GIT_DIRTY), which
+# spadeConfig.cmake includes; so what find_package(spade) says and what
+# spade::build_identity() returns cannot disagree. Each file is rewritten only
+# when its text changes, so an unchanged tree recompiles nothing.
+#
+#   cmake -DSOURCE_DIR=<Spade's source root> -DOUT=<header> [-DCONFIG_OUT=<fragment>]
 #         [-DARCHIVE_FILE=<file>] [-DSTAMP_SKIP_GIT=ON] -P stamp_identity.cmake
 #
 # The commit, first match wins; a commit is 40 lowercase hex:
@@ -74,15 +79,27 @@ if(NOT found)
     endif()
 endif()
 
-set(text "// Generated at build time by cmake/stamp_identity.cmake; do not edit.
+# Writes `text` to `path` only when it differs from what is there.
+function(stamp_write path text)
+    set(old "")
+    if(EXISTS "${path}")
+        file(READ "${path}" old)
+    endif()
+    if(NOT old STREQUAL text)
+        file(WRITE "${path}" "${text}")
+    endif()
+endfunction()
+
+stamp_write("${OUT}" "// Generated at build time by cmake/stamp_identity.cmake; do not edit.
 #pragma once
 #define SPADE_BUILD_COMMIT \"${commit}\"
 #define SPADE_BUILD_DIRTY ${dirty}
 ")
-set(old "")
-if(EXISTS "${OUT}")
-    file(READ "${OUT}" old)
-endif()
-if(NOT old STREQUAL text)
-    file(WRITE "${OUT}" "${text}")
+if(DEFINED CONFIG_OUT)
+    stamp_write("${CONFIG_OUT}" "# Generated at build time by cmake/stamp_identity.cmake; do not edit.
+# The build spadeConfig.cmake names, from the stamp run that wrote the header
+# spade::build_identity() returns (core/build_identity.hpp).
+set(spade_GIT_COMMIT \"${commit}\")
+set(spade_GIT_DIRTY ${dirty})
+")
 endif()

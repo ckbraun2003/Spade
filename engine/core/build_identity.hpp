@@ -6,7 +6,9 @@
 // (cmake/stamp_identity.cmake, run before every build of spade_core). Nothing
 // asks git when the binary runs, so a host needs no git to name what it runs,
 // and a later checkout never changes what a built binary says. Analysis runs
-// are named by it (analysis/run.hpp), and so are flow_movie's cards.
+// are named by it (analysis/run.hpp), and so are flow_movie's cards. The
+// installed package names the same build from the same stamp run:
+// find_package(spade) sets spade_GIT_COMMIT and spade_GIT_DIRTY.
 //
 // Where the commit comes from, first match wins:
 //   - git, when the sources are the top level of a git work tree;

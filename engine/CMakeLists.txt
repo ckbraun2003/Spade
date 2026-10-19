@@ -195,12 +195,18 @@ install(DIRECTORY core/ DESTINATION include/core FILES_MATCHING PATTERN "*.hpp"
 # PRIVATE include, read by build_identity.cpp alone: never installed, and no
 # installed header reaches it. SOURCE_DIR is Spade's own root, not
 # CMAKE_SOURCE_DIR, which is a consumer's when Spade is add_subdirectory'd.
+#
+# The same run writes spadeBuildStamp.cmake beside spadeConfig.cmake (installed
+# with it, below; included by it): spade_GIT_COMMIT and spade_GIT_DIRTY for
+# find_package(spade), so the package and the library name one build.
 cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH SPADE_SOURCE_ROOT)
 set(SPADE_BUILD_STAMP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp/spade_build_stamp.hpp")
+set(SPADE_BUILD_STAMP_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/spadeBuildStamp.cmake")
 add_custom_target(spade_build_stamp
     COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${SPADE_SOURCE_ROOT}" "-DOUT=${SPADE_BUILD_STAMP}"
+            "-DCONFIG_OUT=${SPADE_BUILD_STAMP_CONFIG}"
             -P "${SPADE_SOURCE_ROOT}/cmake/stamp_identity.cmake"
-    BYPRODUCTS "${SPADE_BUILD_STAMP}"
+    BYPRODUCTS "${SPADE_BUILD_STAMP}" "${SPADE_BUILD_STAMP_CONFIG}"
     COMMENT "spade_core: stamping the build's commit"
     VERBATIM)
 add_dependencies(spade_core spade_build_stamp)
@@ -1560,9 +1566,13 @@ write_basic_package_version_file(
     COMPATIBILITY SameMajorVersion
 )
 
+# spadeBuildStamp.cmake is the stamp run's (spade_build_stamp, at spade_core
+# above): it exists once spade_core has been built, as every installed archive
+# must have been.
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/spadeConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/spadeConfigVersion.cmake
+    ${SPADE_BUILD_STAMP_CONFIG}
     DESTINATION lib/cmake/spade
 )
 
