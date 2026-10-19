@@ -164,7 +164,9 @@ TEST(AirflowSolidsStep, NoPartsIsPlanABitForBit) {
         }
         FluidScratch s = *make_fluid_scratch(g, bc, cfg);
         Scene scene;
-        if (how >= 1) EXPECT_TRUE(set_solids(s, g, bc, {}, scene.sampler()).has_value());
+        if (how >= 1) {
+            EXPECT_TRUE(set_solids(s, g, bc, {}, scene.sampler()).has_value());
+        }
         if (how == 2) {
             scene.shapes.push_back(Shape{.name = "ball", .kind = Kind::sphere, .centre = {0.6f, 0.5f, 0.4f},
                                          .radius = 0.2f, .min_feature = 0.4f});
