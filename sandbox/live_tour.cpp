@@ -540,7 +540,7 @@ void airflow(Tour& t, const DrawFn& blank) {
             return;
         }
         s.anomaly("airflow/not-available", run.error().context);
-        t.sink().set_card("Airflow\nnot yet available in the sandbox:\n" + run.error().context);
+        t.sink().set_card("Airflow\nnot yet available in the sandbox:\n" + wrap_card_line(run.error().context, 70));
         t.pump(60, {}, blank);
         t.poster("airflow");
         t.pump(60, {}, blank);

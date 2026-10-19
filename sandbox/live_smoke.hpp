@@ -373,6 +373,33 @@ inline constexpr uint32_t kMaxStills = 600;
 // The largest tour.mp4 that can be sent to the user; the run checks it.
 inline constexpr std::uintmax_t kSendableBytes = 30'000'000;
 
+// One line of a card's text, broken at spaces into lines of at most `width`
+// characters: a card draws each line centred, so a long one runs off both
+// edges. A word longer than the width stands alone rather than being cut.
+[[nodiscard]] inline std::string wrap_card_line(std::string_view text, std::size_t width) {
+    std::string out;
+    std::size_t line = 0;  // the current line's length
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t space = text.find(' ', at);
+        const std::size_t end = space == std::string_view::npos ? text.size() : space;
+        const std::string_view word = text.substr(at, end - at);
+        if (!word.empty()) {
+            if (line > 0 && line + 1 + word.size() > width) {
+                out += '\n';
+                line = 0;
+            } else if (line > 0) {
+                out += ' ';
+                ++line;
+            }
+            out += word;
+            line += word.size();
+        }
+        at = end + 1;
+    }
+    return out;
+}
+
 // The first seconds of the video, so a forwarded MP4 says what it shows.
 // `label` is the commit and the date, from scripts/live-smoke.ps1.
 [[nodiscard]] inline std::string opening_card(std::string_view label) {
