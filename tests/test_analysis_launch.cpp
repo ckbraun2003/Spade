@@ -35,7 +35,7 @@ namespace an = spade::analysis;
 namespace fs = std::filesystem;
 
 // A queued run of a 0.1 s hover case: the dry run's 100 steps of 1 ms.
-[[nodiscard]] fs::path queued_run(const fs::path& runs) {
+[[nodiscard]] fs::path queued_run(const fs::path& runs, an::RunKind kind = an::RunKind::dry_run) {
     const auto s = spade::scene::load_scene_file(fs::path(SPADE_ASSETS_DIR) / "scenes" / "hover.scene.yaml");
     EXPECT_TRUE(s.has_value());
     const spade::vehicles::ModelType m = s ? s->models.at(0) : spade::vehicles::ModelType{};
@@ -48,7 +48,7 @@ namespace fs = std::filesystem;
         ADD_FAILURE() << "the case did not resolve";
         return {};
     }
-    const spade::Result<fs::path> folder = an::create_run_folder(runs, "hover", *r, "2026-10-13", "abc");
+    const spade::Result<fs::path> folder = an::create_run_folder(runs, "hover", *r, "2026-10-13", "abc", kind);
     EXPECT_TRUE(folder.has_value()) << (folder ? "" : folder.error().context);
     return folder.value_or(fs::path());
 }
@@ -198,6 +198,44 @@ TEST(AnalysisLaunch, ARealRunIsRefusedUntilTheSolverExists) {
     EXPECT_EQ(r.error().code, spade::Code::unavailable);
     EXPECT_NE(r.error().context.find("no airflow solver yet (W1)"), std::string::npos) << r.error().context;
     EXPECT_FALSE(asked);
+}
+
+// A folder runs as the kind it was made as: a real run's folder isn't
+// launched as a dry run (its name and need are a real run's).
+TEST(AnalysisLaunch, ARunLaunchesAsTheKindItWasMadeAs) {
+    const spade::test::TempDir runs("launch");
+    const fs::path real = queued_run(runs.path(), an::RunKind::cfd);
+    bool asked = false;
+    const spade::Result<an::RunRecord> r = an::launch_run(fake_runner(runs.path()), real, dry_run(),
+                                                          [&](const an::ProcessSpec&) -> spade::Result<uint64_t> {
+                                                              asked = true;
+                                                              return 1u;
+                                                          });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(r.error().context.find("made as a cfd run"), std::string::npos) << r.error().context;
+    EXPECT_FALSE(asked);
+}
+
+// cancel_run() writes its flag only into an unfinished run's folder.
+TEST(AnalysisLaunch, CancelRefusesWhatIsntAnUnfinishedRun) {
+    const spade::test::TempDir runs("launch");
+    const spade::Result<void> not_a_run = an::cancel_run(runs.path());
+    ASSERT_FALSE(not_a_run.has_value());
+    EXPECT_NE(not_a_run.error().context.find("not a run folder"), std::string::npos) << not_a_run.error().context;
+    EXPECT_FALSE(fs::exists(runs.path() / "cancel"));
+
+    const fs::path run = queued_run(runs.path());
+    an::RunProgress done = an::read_progress(run).value_or(an::RunProgress{});
+    done.state = an::RunState::done;
+    ASSERT_TRUE(an::write_progress(run, done).has_value());
+    const spade::Result<void> finished = an::cancel_run(run);
+    ASSERT_FALSE(finished.has_value());
+    EXPECT_NE(finished.error().context.find("finished"), std::string::npos) << finished.error().context;
+    EXPECT_FALSE(fs::exists(run / "cancel"));
+
+    const fs::path queued = queued_run(runs.path());
+    EXPECT_TRUE(an::cancel_run(queued).has_value());
 }
 
 TEST(AnalysisLaunch, AFolderWithoutItsCaseIsRefused) {

@@ -6,6 +6,8 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #include "analysis/case.hpp"
@@ -131,6 +133,25 @@ TEST(AnalysisCaseFile, SavesAndLoads) {
     std::filesystem::remove(file);
     ASSERT_TRUE(back.has_value()) << back.error().context;
     EXPECT_EQ(an::case_to_yaml(*back).value_or(""), an::case_to_yaml(c).value_or("-"));
+}
+
+// A save replaces the file whole, through a temporary file beside it that
+// doesn't outlive the save (Kat's ask): a reader sees the old case or the new.
+TEST(AnalysisCaseFile, ASaveReplacesTheFileWhole) {
+    const spade::test::TempDir dir("case_save");
+    const std::filesystem::path file = dir.path() / "quad.case.yaml";
+    std::ofstream(file, std::ios::binary) << std::string(100000, '#');  // an older, longer file
+    const an::AnalysisCase c = full_case(quad());
+    ASSERT_TRUE(an::save_case(c, file).has_value());
+    std::ifstream in(file, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, an::case_to_yaml(c).value_or("-"));
+    std::size_t files = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir.path())) {
+        (void)e;
+        ++files;
+    }
+    EXPECT_EQ(files, 1u) << "the save left a file beside the case";
 }
 
 TEST(AnalysisCaseFile, AnUnknownKeyIsRefusedWithItsLine) {
