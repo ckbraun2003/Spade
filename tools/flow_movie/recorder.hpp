@@ -103,10 +103,10 @@ class Clip {
 [[nodiscard]] spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rgba,
                                          const std::filesystem::path& path);
 
-// The code that makes the frames, for every card: "commit <sha>[ with
+// The code that makes the frames, for every card: "commit <sha12>[ with
 // uncommitted changes], <toolchain>, <preset>", the commit and changes as they
-// were when this binary was BUILT (stamp_identity.cmake). The records name
-// theirs.
+// were when this binary was BUILT (the engine's stamp, core/build_identity.hpp).
+// The records name theirs.
 [[nodiscard]] std::string build_identity();
 
 // Whether ffmpeg runs, with libx264 and libass.

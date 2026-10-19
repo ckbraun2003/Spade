@@ -12,6 +12,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "analysis/detail/atomic_file.hpp"
+#include "core/build_identity.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::analysis {
@@ -204,11 +205,7 @@ Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view ca
 
 Result<fs::path> create_run_folder(const fs::path& runs_dir, std::string_view case_name, const ResolvedCase& resolved,
                                    std::string_view date) {
-    (void)runs_dir;
-    (void)case_name;
-    (void)resolved;
-    (void)date;
-    return std::unexpected(Error{Code::unavailable, "RED: create_run_folder at the build's commit is a stub"});
+    return create_run_folder(runs_dir, case_name, resolved, date, spade::build_identity().commit);
 }
 
 }  // namespace spade::analysis

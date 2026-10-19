@@ -185,6 +185,27 @@ install(TARGETS spade_core
 install(DIRECTORY core/ DESTINATION include/core FILES_MATCHING PATTERN "*.hpp"
     PATTERN "detail" EXCLUDE)
 
+# The build stamp core/build_identity.cpp compiles in: the commit Spade's
+# sources are at, and whether tracked files have uncommitted changes, written
+# by cmake/stamp_identity.cmake before every build of spade_core (at build
+# time, so a commit made after configuring is still the one named). The script
+# rewrites the header only when its text changes, so an unchanged tree
+# recompiles nothing; a new commit recompiles build_identity.cpp alone and
+# relinks what links spade_core. The header lives in this build tree and is a
+# PRIVATE include, read by build_identity.cpp alone: never installed, and no
+# installed header reaches it. SOURCE_DIR is Spade's own root, not
+# CMAKE_SOURCE_DIR, which is a consumer's when Spade is add_subdirectory'd.
+cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH SPADE_SOURCE_ROOT)
+set(SPADE_BUILD_STAMP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp/spade_build_stamp.hpp")
+add_custom_target(spade_build_stamp
+    COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${SPADE_SOURCE_ROOT}" "-DOUT=${SPADE_BUILD_STAMP}"
+            -P "${SPADE_SOURCE_ROOT}/cmake/stamp_identity.cmake"
+    BYPRODUCTS "${SPADE_BUILD_STAMP}"
+    COMMENT "spade_core: stamping the build's commit"
+    VERBATIM)
+add_dependencies(spade_core spade_build_stamp)
+target_include_directories(spade_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp")
+
 # ------------------------------------------------------------------------------
 # spade_world: the analytic SDF scene program (world/sdf.*) plus the
 # WorldBuilder and its WorldDesc product (world/builder.*), and a part's
