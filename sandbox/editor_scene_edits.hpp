@@ -55,6 +55,13 @@ struct SetAssetMaterial {
     std::string asset;
     std::string material;  // the visual's material, by name
 };
+// The collider's material: what an asset without a visual draws with (the
+// composed CSG shades each node by its material). Every node takes it; an
+// empty name puts them back on the palette's default.
+struct SetColliderMaterial {
+    std::string asset;
+    std::string material;  // by name, or empty for the default
+};
 struct SetVehicleStart {
     std::string vehicle;
     VehicleSpawn start;  // in the model's design frame (DBE-013)
@@ -79,8 +86,8 @@ struct SetModelParam {
 };
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
-                               SetAssetPose, SetAssetMaterial, SetVehicleStart, AddMaterial, RepointWorld,
-                               SetModelParam>;
+                               SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
+                               RepointWorld, SetModelParam>;
 
 namespace detail {
 
@@ -232,6 +239,21 @@ inline Result<bool> change(scene::SceneDesc& s, const SetAssetMaterial& e) {
                                                                  "visual; give it a mesh first"});
     }
     a->visual.material = e.material;
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const SetColliderMaterial& e) {
+    scene::SceneAsset* a = find_named(s.assets, e.asset);
+    if (a == nullptr) return std::unexpected(no_object("set the collider material", e.asset));
+    if (a->collider.nodes.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "set the collider material of '" + e.asset +
+                                                                 "': it has no collider to colour"});
+    }
+    if (e.material.empty()) {
+        a->collider_materials.clear();
+    } else {
+        a->collider_materials.assign(a->collider.nodes.size(), e.material);
+    }
     return true;
 }
 

@@ -708,6 +708,10 @@ inline Result<void> put_edit(Writer& w, const SetAssetMaterial& e) {
     w.kw("set-asset-material").word(e.asset).word(e.material);
     return {};
 }
+inline Result<void> put_edit(Writer& w, const SetColliderMaterial& e) {
+    w.kw("set-collider-material").word(e.asset).word(e.material);
+    return {};
+}
 inline Result<void> put_edit(Writer& w, const SetVehicleStart& e) {
     w.kw("set-vehicle-start").word(e.vehicle);
     put(w, e.start);
@@ -854,7 +858,7 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 
 inline constexpr std::string_view kSceneVerbs =
     "a scene edit (add-asset, add-vehicle, remove, rename, duplicate, move, set-asset-pose, set-asset-material, "
-    "set-vehicle-start, add-material, repoint-world or set-model-param)";
+    "set-collider-material, set-vehicle-start, add-material, repoint-world or set-model-param)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -892,6 +896,11 @@ inline constexpr std::string_view kWorldVerbs =
         out = e;
     } else if (verb == "set-asset-material") {
         SetAssetMaterial e;
+        e.asset = r.word("an asset name");
+        e.material = r.word("a material name");
+        out = e;
+    } else if (verb == "set-collider-material") {
+        SetColliderMaterial e;
         e.asset = r.word("an asset name");
         e.material = r.word("a material name");
         out = e;
