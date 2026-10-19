@@ -127,6 +127,7 @@ struct SolidField {
     std::vector<WallLinks> links;
     std::array<std::vector<uint32_t>, 3> fill1;  // the free-slip fill's first layer (Task 7)
     std::array<std::vector<uint32_t>, 3> fill2;  // and its second
+    std::array<std::vector<uint8_t>, 3> layer;  // per sample: 0, or the free-slip layer 1 or 2
     std::array<SolidRange, 3> range;             // per component, the sampled box
     std::vector<SolidClass> classes;             // per part
     std::string run_line;

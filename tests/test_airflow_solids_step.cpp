@@ -263,4 +263,91 @@ TEST(AirflowSolidsStep, ASealedPocketKeepsItsGaugeOverManySteps) {
     EXPECT_EQ(describe_regions(s.regions), "fluid regions: 2 (1 with an outlet, 1 closed)");
 }
 
+// The free-slip interior is the inviscid lean mode: with nu > 0 it is refused.
+TEST(AirflowSolidsStep, TheFreeSlipInteriorIsRefusedWithViscosity) {
+    const GridShape shape{8, 8, 8, 0.1f};
+    const MacGrid g = *make_grid(shape, DomainBc{});
+    const FluidConfig cfg{.rho = 1.225f, .nu = 1.0e-5f, .h = 0.001f, .n_v = 2, .interior = SolidInterior::extrapolate};
+    const auto s = make_fluid_scratch(g, DomainBc{}, cfg);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_NE(s.error().context.find("free-slip"), std::string::npos) << s.error().context;
+}
+
+// Design test 1, its P2 checks (S1's configuration, Test/Docs): a sphere
+// R = 6 dx in a uniform stream, free slip, inviscid, a box of side 8R with the
+// sphere centred on a cell corner, inflow on -x and the other faces open,
+// U h / dx = 0.1, n_v = 16. After step 1 (from a cold start):
+//   - every closed face carries the wall velocity, 0, exactly;
+//   - the solve's final relative residual is at most 1e-4 (Test/Docs: an
+//     unconverged solve must show as a miss, not bias C_M; printed);
+//   - the aperture divergence left is at most 2e-4 of the right side's, the
+//     residual's own measure carried through the velocity update.
+// C_p at step 3 and the added mass at step 1 read P3 and join it.
+TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
+    const float dx = 0.01f;
+    const GridShape shape{48, 48, 48, dx};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const float U = 1.0f;
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx / U, .n_v = 16,
+                          .interior = SolidInterior::extrapolate};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), U);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = {0.24f, 0.24f, 0.24f},
+                                 .radius = 6.0f * dx, .min_feature = 12.0f * dx});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value());
+    const FluidHealth health = fluid_step(g, bc, cfg, s);
+    ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+
+    bool walls_hold = true;
+    const std::vector<float>* vel[3] = {&g.u, &g.v, &g.w};
+    for (uint32_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < vel[c]->size(); ++i) {
+            if (s.solids.theta[c][i] == 0.0f) walls_hold = walls_hold && (*vel[c])[i] == 0.0f;
+        }
+    }
+    const float b_coef = cfg.rho * dx * dx / cfg.h;
+    float div_max = 0.0f;
+    float b_max = 0.0f;
+    const auto flux = [&](uint32_t c, std::size_t idx) {
+        const float t = s.solids.theta[c][idx];
+        return t * (*vel[c])[idx] + (1.0f - t) * s.solids.wall[c][idx];
+    };
+    for (uint32_t k = 0; k < 48; ++k) {
+        for (uint32_t j = 0; j < 48; ++j) {
+            for (uint32_t i = 0; i < 48; ++i) {
+                const std::size_t c = cell_index(shape, i, j, k);
+                if (s.regions.label[c] == kNoRegion) continue;
+                const float div = ((flux(0, u_index(shape, i + 1u, j, k)) - flux(0, u_index(shape, i, j, k))) +
+                                   (flux(1, v_index(shape, i, j + 1u, k)) - flux(1, v_index(shape, i, j, k))) +
+                                   (flux(2, w_index(shape, i, j, k + 1u)) - flux(2, w_index(shape, i, j, k)))) /
+                                  dx;
+                div_max = std::max(div_max, std::fabs(div));
+                b_max = std::max(b_max, std::fabs(s.projection.pcg.b[c]));
+            }
+        }
+    }
+    const float div_ratio = div_max * b_coef / b_max;
+    std::printf("=== validation record: S1 sphere in a uniform stream, R/dx 6, P2 checks ===\n"
+                "config: 48^3 at dx 1 cm, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on "
+                "-x, other faces open, U h/dx 0.1, n_v 16 CG iterations, step 1 from a cold start\n"
+                "measure: every closed face carries the wall velocity = %s\n"
+                "measure: the solve's final relative residual = %.3e\n"
+                "reference: a converged solve\n"
+                "tolerance: <= 1e-4 (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n"
+                "measure: the aperture divergence left, over the right side's = %.3e\n"
+                "tolerance: <= 2e-4 (twice the residual's band: the update's rounding)\n"
+                "verdict: %s\n"
+                "%s\n",
+                walls_hold ? "yes" : "NO", static_cast<double>(health.pressure_residual),
+                health.pressure_residual <= 1.0e-4f ? "within" : "OUTSIDE", static_cast<double>(div_ratio),
+                div_ratio <= 2.0e-4f ? "within" : "OUTSIDE", s.solids.run_line.c_str());
+    EXPECT_TRUE(walls_hold);
+    EXPECT_LE(health.pressure_residual, 1.0e-4f);
+    EXPECT_LE(div_ratio, 2.0e-4f);
+}
+
 }  // namespace

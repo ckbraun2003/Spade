@@ -145,6 +145,9 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (!(cfg.nu >= 0.0f) || !std::isfinite(cfg.nu)) return refuse("nu must be non-negative and finite");
     if (cfg.n_v == 0u) return refuse("n_v must be at least 1");
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) return refuse("visc_sweeps must be at least 1 when nu > 0");
+    if (cfg.interior == SolidInterior::extrapolate && cfg.nu > 0.0f) {
+        return refuse("the free-slip interior (SolidInterior::extrapolate) is the inviscid lean mode: nu must be 0");
+    }
     if (Result<void> ok = check_domain(bc, g.shape); !ok) return std::unexpected(ok.error());
     if (const uint64_t bytes = fluid_bytes(g.shape, bc); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) +

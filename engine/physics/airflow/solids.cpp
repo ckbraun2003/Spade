@@ -30,6 +30,7 @@ void open_everything(SolidField& f) {
         std::fill(f.link[c].begin(), f.link[c].end(), kNoWallLinks);
         f.fill1[c].clear();
         f.fill2[c].clear();
+        std::fill(f.layer[c].begin(), f.layer[c].end(), uint8_t{0});
         f.range[c] = SolidRange{};
     }
     f.links.clear();
@@ -439,6 +440,7 @@ Result<SolidField> make_solid_field(const GridShape& s) {
         f.wall[c].assign(n, 0.0f);
         f.phi[c].assign(n, std::numeric_limits<float>::max());
         f.link[c].assign(n, kNoWallLinks);
+        f.layer[c].assign(n, uint8_t{0});
     }
     f.run_line = "solids: none";
     return f;
@@ -579,7 +581,41 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
         }
     }
 
-    // 6. The free-slip layers (Task 7) and the wall links (Task 8) follow here.
+    // 6. The free-slip layers (Task 7).
+    // The free-slip layers (Task 7): closed samples with an open neighbour of
+    // their own component, then closed samples with a first-layer neighbour.
+    for (uint32_t c = 0; c < 3; ++c) {
+        if (range[c].empty) continue;
+        const std::array<uint32_t, 3> dims = sample_dims(s, c);
+        const std::size_t stride[3] = {1u, dims[0], std::size_t{dims[0]} * dims[1]};
+        for (uint32_t layer = 1; layer <= 2; ++layer) {
+            for (uint32_t k = range[c].lo[2]; k <= range[c].hi[2]; ++k) {
+                for (uint32_t j = range[c].lo[1]; j <= range[c].hi[1]; ++j) {
+                    for (uint32_t i = range[c].lo[0]; i <= range[c].hi[0]; ++i) {
+                        const std::size_t idx = i + std::size_t{dims[0]} * (j + std::size_t{dims[1]} * k);
+                        if (!closed(f.theta[c][idx]) || f.layer[c][idx] != 0u) continue;
+                        const uint32_t q[3] = {i, j, k};
+                        bool next_to = false;
+                        for (uint32_t a = 0; a < 3 && !next_to; ++a) {
+                            for (int d = -1; d <= 1; d += 2) {
+                                if ((d < 0 && q[a] == 0u) || (d > 0 && q[a] + 1u == dims[a])) continue;
+                                const std::size_t nb = d < 0 ? idx - stride[a] : idx + stride[a];
+                                if (layer == 1u ? !closed(f.theta[c][nb]) : f.layer[c][nb] == 1u) {
+                                    next_to = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!next_to) continue;
+                        (layer == 1u ? f.fill1[c] : f.fill2[c]).push_back(static_cast<uint32_t>(idx));
+                    }
+                }
+            }
+            for (const uint32_t idx : (layer == 1u ? f.fill1[c] : f.fill2[c])) f.layer[c][idx] = static_cast<uint8_t>(layer);
+        }
+    }
+
+    // The wall links (Task 8) follow here.
 
     // 7. The run line.
     uint32_t walls = 0;
@@ -617,7 +653,32 @@ void apply_solid_velocities(MacGrid& g, const SolidField& f, SolidInterior mode)
             }
         }
     }
-    (void)mode;  // extrapolate: Task 7
+    if (mode != SolidInterior::extrapolate) return;
+    for (uint32_t c = 0; c < 3; ++c) {
+        const std::array<uint32_t, 3> dims = sample_dims(g.shape, c);
+        const std::size_t stride[3] = {1u, dims[0], std::size_t{dims[0]} * dims[1]};
+        std::vector<float>& v = *vel[c];
+        for (uint32_t layer = 1; layer <= 2; ++layer) {
+            for (const uint32_t idx : (layer == 1u ? f.fill1[c] : f.fill2[c])) {
+                const uint32_t q[3] = {static_cast<uint32_t>(idx % dims[0]),
+                                       static_cast<uint32_t>((idx / dims[0]) % dims[1]),
+                                       static_cast<uint32_t>(idx / (std::size_t{dims[0]} * dims[1]))};
+                float sum = 0.0f;
+                uint32_t count = 0;
+                for (uint32_t a = 0; a < 3; ++a) {
+                    for (int d = -1; d <= 1; d += 2) {
+                        if ((d < 0 && q[a] == 0u) || (d > 0 && q[a] + 1u == dims[a])) continue;
+                        const std::size_t nb = d < 0 ? idx - stride[a] : idx + stride[a];
+                        const bool source = layer == 1u ? !closed(f.theta[c][nb]) : f.layer[c][nb] == 1u;
+                        if (!source) continue;
+                        sum += v[nb];
+                        ++count;
+                    }
+                }
+                v[idx] = sum / static_cast<float>(count);  // a deliberate per-sample division: count is 1 to 6
+            }
+        }
+    }
 }
 
 }  // namespace spade::physics::airflow

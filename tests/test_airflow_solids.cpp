@@ -413,4 +413,34 @@ TEST(AirflowSolidsSafeguard, ABeadIsRefusedNotSheeted) {
     EXPECT_NE(r.error().context.find("thin in more than one direction"), std::string::npos) << r.error().context;
 }
 
+// The free-slip interior (design section 3, approved 2026-10-13): a closed
+// sample next to an open one of its component takes their mean; a closed
+// sample next to that first layer takes the mean of its first-layer
+// neighbours; deeper ones keep the rigid velocity. A wall filling x >= 8.
+TEST(AirflowSolids, TheFreeSlipFillCopiesTheOpenSideIntoTwoLayers) {
+    const GridShape shape{16, 8, 8, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "wall", .kind = Kind::box, .centre = {16.0f, 4.0f, 4.0f},
+                                 .half = {8.0f, 20.0f, 20.0f}, .min_feature = 16.0f});
+    const SolidField f = built(shape, scene);
+    MacGrid g = *make_grid(shape, DomainBc{});
+    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) { g.u[idx] = 1.0f + 0.1f * x.y; });
+    for_each_sample(shape, 1, [&](std::size_t idx, glm::vec3 x) { g.v[idx] = 0.3f + 0.1f * x.z; });
+    apply_solid_velocities(g, f, SolidInterior::extrapolate);
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 8; ++j) {
+            // u: x = 8 is open (theta 0.5), x = 9 the first layer, x = 10 the second.
+            EXPECT_EQ(g.u[u_index(shape, 9, j, k)], g.u[u_index(shape, 8, j, k)]) << j << "," << k;
+            EXPECT_EQ(g.u[u_index(shape, 10, j, k)], g.u[u_index(shape, 9, j, k)]);
+            EXPECT_EQ(g.u[u_index(shape, 11, j, k)], 0.0f) << "deeper: the rigid (still) wall";
+        }
+        for (uint32_t j = 0; j <= 8; ++j) {
+            // v: x = 7.5 is open, x = 8.5 the first layer, x = 9.5 the second.
+            EXPECT_EQ(g.v[v_index(shape, 8, j, k)], g.v[v_index(shape, 7, j, k)]);
+            EXPECT_EQ(g.v[v_index(shape, 9, j, k)], g.v[v_index(shape, 8, j, k)]);
+            EXPECT_EQ(g.v[v_index(shape, 10, j, k)], 0.0f);
+        }
+    }
+}
+
 }  // namespace
