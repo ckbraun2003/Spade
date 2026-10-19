@@ -2,7 +2,10 @@
 
 #include <array>
 #include <cmath>
+#include <expected>
 #include <span>
+#include <string>
+#include <utility>
 
 #include "vehicles/battery.hpp"
 #include "vehicles/motor.hpp"
@@ -163,13 +166,46 @@ double steady_state_time_constant(const PropulsionChain& chain, double duty, dou
     return rotor_inertia / -slope;
 }
 
-// RED: stubs, so the tests compile and fail on behaviour.
-Result<DutyCommand> rotor_omega_for_duty(const PropulsionChain&, double, double, double) {
-    return std::unexpected(Error{Code::internal, "rotor_omega_for_duty: not implemented"});
+Result<DutyCommand> rotor_omega_for_duty(const PropulsionChain& chain, double duty, double density, double soc) {
+    const auto refuse = [](std::string why) {
+        return std::unexpected(Error{Code::invalid_argument, "rotor_omega_for_duty: " + std::move(why)});
+    };
+    if (!(is_finite(duty) && duty >= 0.0 && duty <= 1.0)) {
+        return refuse("duty must be finite and in [0, 1] (it is not clamped), got " + std::to_string(duty));
+    }
+    if (!(is_finite(density) && density > 0.0)) {
+        return refuse("density must be finite and positive, got " + std::to_string(density));
+    }
+    if (!(is_finite(soc) && soc >= 0.0 && soc <= 1.0)) {
+        return refuse("soc must be finite and in [0, 1], got " + std::to_string(soc));
+    }
+    // v_axial = 0: a held drone in still air, the hover fit's operating point.
+    const SteadyPoint p = steady_state_at_duty(chain, duty, density, 0.0, soc);
+    if ((p.flags & propulsion_flags::no_bracket) != 0u) {
+        return refuse("the chain has no torque balance at duty " + std::to_string(duty) +
+                      " (propulsion_flags::no_bracket): an invalid chain, or a load that does not rise with speed");
+    }
+    // The forward solve does not set unreachable today (the inverse one
+    // does); it is refused here should it ever.
+    if ((p.flags & propulsion_flags::unreachable) != 0u) {
+        return refuse("the equilibrium at duty " + std::to_string(duty) +
+                      " is unreachable (propulsion_flags::unreachable)");
+    }
+    return DutyCommand{static_cast<float>(p.omega), p.flags};
 }
 
-Result<double> armed_duty(bool, double, double) {
-    return std::unexpected(Error{Code::internal, "armed_duty: not implemented"});
+Result<double> armed_duty(bool armed, double throttle, double idle) {
+    const auto refuse = [](std::string why) {
+        return std::unexpected(Error{Code::invalid_argument, "armed_duty: " + std::move(why)});
+    };
+    if (!(is_finite(throttle) && throttle >= 0.0 && throttle <= 1.0)) {
+        return refuse("throttle must be finite and in [0, 1], got " + std::to_string(throttle));
+    }
+    if (!(is_finite(idle) && idle >= 0.0 && idle < 1.0)) {
+        return refuse("idle must be finite with 0 <= idle < 1, got " + std::to_string(idle));
+    }
+    if (!armed) return 0.0;
+    return idle + (1.0 - idle) * throttle;
 }
 
 }  // namespace spade::vehicles
