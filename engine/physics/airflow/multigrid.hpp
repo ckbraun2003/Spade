@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "physics/airflow/pressure.hpp"
@@ -37,6 +38,17 @@ struct Multigrid {
 [[nodiscard]] uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz,
                                        std::array<bool, 3> periodic = {}) noexcept;
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
+
+// The face weights of every level (the solids design, section 3; a host call:
+// it allocates). Level 0 copies `fine`, the MAC grid's u, v and w apertures.
+// Each coarser face is the mean of the faces of the level above on its own
+// plane that it covers (2 x 2, or 2 or 1 across an axis that is not
+// coarsened), summed with the second transverse axis outer. A coarse face
+// covers only every second fine plane: a sheet on another plane is invisible
+// to it (finding 2), which is why the solids path solves by CG (pcg.hpp).
+void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine);
+// Every level back to plan A's stencil.
+void clear_weights(Multigrid& mg) noexcept;
 
 // coarse.b = (sum of the children's residuals) * (4 / children).
 void restrict_residual(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;

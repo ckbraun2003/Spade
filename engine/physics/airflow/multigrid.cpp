@@ -140,4 +140,47 @@ void v_cycle(Multigrid& mg) noexcept {
     if (!mg.levels.empty()) cycle(mg, 0);
 }
 
+void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine) {
+    for (uint32_t a = 0; a < 3; ++a) mg.levels[0].w[a].assign(fine[a].begin(), fine[a].end());
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        const PoissonLevel& f = mg.levels[l - 1];
+        PoissonLevel& c = mg.levels[l];
+        const uint32_t nf[3] = {f.nx, f.ny, f.nz};
+        const uint32_t nc[3] = {c.nx, c.ny, c.nz};
+        for (uint32_t a = 0; a < 3; ++a) {
+            const uint32_t t1 = a == 0 ? 1u : 0u;  // the transverse axes, t1 < t2
+            const uint32_t t2 = a == 2 ? 1u : 2u;
+            const uint32_t r[3] = {nf[0] == nc[0] ? 1u : 2u, nf[1] == nc[1] ? 1u : 2u, nf[2] == nc[2] ? 1u : 2u};
+            const uint32_t fdim[3] = {a == 0 ? nf[0] + 1u : nf[0], a == 1 ? nf[1] + 1u : nf[1], a == 2 ? nf[2] + 1u : nf[2]};
+            const uint32_t cdim[3] = {a == 0 ? nc[0] + 1u : nc[0], a == 1 ? nc[1] + 1u : nc[1], a == 2 ? nc[2] + 1u : nc[2]};
+            const float inv = 1.0f / static_cast<float>(r[t1] * r[t2]);
+            c.w[a].assign(std::size_t{cdim[0]} * cdim[1] * cdim[2], 0.0f);
+            for (uint32_t K = 0; K < cdim[2]; ++K) {
+                for (uint32_t J = 0; J < cdim[1]; ++J) {
+                    for (uint32_t I = 0; I < cdim[0]; ++I) {
+                        const uint32_t C[3] = {I, J, K};
+                        float sum = 0.0f;
+                        for (uint32_t d2 = 0; d2 < r[t2]; ++d2) {
+                            for (uint32_t d1 = 0; d1 < r[t1]; ++d1) {
+                                uint32_t F[3];
+                                F[a] = C[a] * r[a];
+                                F[t1] = C[t1] * r[t1] + d1;
+                                F[t2] = C[t2] * r[t2] + d2;
+                                sum += f.w[a][F[0] + std::size_t{fdim[0]} * (F[1] + std::size_t{fdim[1]} * F[2])];
+                            }
+                        }
+                        c.w[a][I + std::size_t{cdim[0]} * (J + std::size_t{cdim[1]} * K)] = sum * inv;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void clear_weights(Multigrid& mg) noexcept {
+    for (PoissonLevel& L : mg.levels) {
+        for (std::vector<float>& w : L.w) w.clear();
+    }
+}
+
 }  // namespace spade::physics::airflow

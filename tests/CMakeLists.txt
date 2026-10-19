@@ -84,6 +84,7 @@ add_executable(spade_tests
     test_rotor_discs.cpp
     test_airflow_grid_io.cpp
     test_airflow_solids.cpp
+    test_airflow_solids_solve.cpp
     test_airflow_validation.cpp
     test_dryden.cpp
     test_rotor.cpp
