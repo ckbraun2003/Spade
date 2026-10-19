@@ -128,6 +128,43 @@ TEST(RenderFlowLines, SolidBodyRotationGivesCircles) {
     EXPECT_LT(glm::length(line.points.back() - line.points.front()), 0.25f) << "a revolution comes back round";
 }
 
+// A live view's cap (the lead, 2026-10-19): each direction stops after its
+// length in box diagonals, so a closed orbit costs one crossing of the box,
+// not its whole step budget. The box's diagonal is 8 sqrt(3) m, 55 steps of
+// 0.25 m. The default has no cap, so the films and goldens are unchanged.
+TEST(RenderFlowLines, ALengthCapStopsEachDirectionAfterItsDiagonals) {
+    const spade::FlowVolume volume =
+        linear_volume(Linear{glm::dmat3(glm::dvec3(0.0, 1.0, 0.0), glm::dvec3(-1.0, 0.0, 0.0), glm::dvec3(0.0)),
+                             glm::dvec3(0.0)});
+    const glm::vec3 seed(2.0f, 0.0f, 0.5f);
+    const Streamline uncapped = one_line(volume, seed, StreamlineOptions{});
+    ASSERT_EQ(uncapped.points.size(), 2u * 4096u + 1u) << "a circle runs its whole budget";
+    StreamlineOptions capped;
+    capped.max_length_diagonals = 1.0f;
+    const Streamline line = one_line(volume, seed, capped);
+    ASSERT_EQ(line.points.size(), 2u * 55u + 1u);
+    EXPECT_EQ(line.seed_point, 55u);
+    EXPECT_EQ(line.backward_end, LineEnd::step_budget);
+    EXPECT_EQ(line.forward_end, LineEnd::step_budget);
+    for (std::size_t i = 0; i < line.points.size(); ++i) {
+        EXPECT_EQ(line.points[i], uncapped.points[4096u - 55u + i]) << "the same line, cut short, at " << i;
+    }
+    capped.max_length_diagonals = 0.5f;
+    EXPECT_EQ(one_line(volume, seed, capped).points.size(), 2u * 27u + 1u);
+    capped.max_length_diagonals = 1.0f;
+    capped.max_steps = 10;
+    EXPECT_EQ(one_line(volume, seed, capped).points.size(), 21u) << "a budget under the cap still ends it";
+}
+
+TEST(RenderFlowLines, TheLivePresetCapsAtOneDiagonalAndKeepsTheRest) {
+    const StreamlineOptions live = StreamlineOptions::live();
+    EXPECT_EQ(live.max_length_diagonals, 1.0f);
+    StreamlineOptions rest = live;
+    rest.max_length_diagonals = 0.0f;
+    EXPECT_EQ(rest, StreamlineOptions{});
+    EXPECT_EQ(StreamlineOptions{}.max_length_diagonals, 0.0f) << "the default has no cap";
+}
+
 // L6: each way a line ends is recorded.
 TEST(RenderFlowLines, EveryEndIsRecorded) {
     // Flow toward +x on the left half, still on the right: the line stalls.
@@ -186,6 +223,11 @@ TEST(RenderFlowLines, BadInputIsRefused) {
     o = {};
     o.forward = o.backward = false;
     refused(std::span<const glm::vec3>(&seed, 1), o, "neither direction");
+    o = {};
+    o.max_length_diagonals = -1.0f;
+    refused(std::span<const glm::vec3>(&seed, 1), o, "a negative length cap");
+    o.max_length_diagonals = std::numeric_limits<float>::quiet_NaN();
+    refused(std::span<const glm::vec3>(&seed, 1), o, "a NaN length cap");
     spade::FlowVolume bad = volume;
     bad.header.cell = 0.0f;
     const auto r = trace_streamlines(bad, std::span<const glm::vec3>(&seed, 1), {});

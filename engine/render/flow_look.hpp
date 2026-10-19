@@ -43,6 +43,11 @@ namespace spade::render {
                                            std::span<const glm::vec3> seeds, const StreamlineOptions& options,
                                            const TransferFunction& by_speed, const glm::vec3* constant = nullptr);
 
+// The same, from lines already traced in a volume of `header` (a ViewCache's,
+// render/view_mode.hpp): add_streamlines() is trace_streamlines() then this.
+void add_traced_streamlines(RenderScene& scene, const FlowVolumeHeader& header, std::span<const Streamline> lines,
+                            const TransferFunction& by_speed, const glm::vec3* constant = nullptr);
+
 // A slice of `quantity` over `geometry` (slice_flow_volume()), coloured in
 // `map` over [range_min, range_max] in 128 bins, appended to
 // scene.field_layers. Whatever slice_flow_volume() refuses, it refuses.

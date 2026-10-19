@@ -38,11 +38,11 @@ struct Direction {
 // One direction from the seed, in steps of h (negative: backward). Appends
 // the points after the seed and their speeds; returns why it ended.
 [[nodiscard]] LineEnd trace_one(const FlowSampler& sampler, const Box& box, glm::vec3 seed, float h,
-                                const StreamlineOptions& options, std::vector<glm::vec3>& points,
+                                uint32_t steps, const StreamlineOptions& options, std::vector<glm::vec3>& points,
                                 std::vector<float>& speeds) {
     glm::vec3 x = seed;
     const float floor = options.stagnation_speed;
-    for (uint32_t i = 0; i < options.max_steps; ++i) {
+    for (uint32_t i = 0; i < steps; ++i) {
         const Direction k1 = direction_at(sampler, x, floor);
         if (k1.end) return *k1.end;
         const Direction k2 = direction_at(sampler, x + (0.5f * h) * k1.d, floor);
@@ -66,6 +66,12 @@ struct Direction {
 
 }  // namespace
 
+StreamlineOptions StreamlineOptions::live() noexcept {
+    StreamlineOptions options;
+    options.max_length_diagonals = 1.0f;
+    return options;
+}
+
 Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std::span<const glm::vec3> seeds,
                                                   const StreamlineOptions& options) {
     const auto refuse = [](const std::string& why) {
@@ -86,6 +92,9 @@ Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std:
     if (!options.forward && !options.backward) {
         return refuse("neither direction is asked for");
     }
+    if (!(options.max_length_diagonals >= 0.0f && std::isfinite(options.max_length_diagonals))) {
+        return refuse("the length cap is not finite and >= 0 box diagonals");
+    }
     for (std::size_t i = 0; i < seeds.size(); ++i) {
         if (!finite(seeds[i])) return refuse("seed " + std::to_string(i) + " is not finite");
     }
@@ -96,6 +105,14 @@ Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std:
                                                  static_cast<float>(h.nz)) *
                                            h.cell};
     const float step = options.step_cells * h.cell;
+    // Each direction's steps: the budget, or the length cap's, whichever is fewer.
+    uint32_t steps = options.max_steps;
+    if (options.max_length_diagonals > 0.0f) {
+        const float nx = static_cast<float>(h.nx), ny = static_cast<float>(h.ny), nz = static_cast<float>(h.nz);
+        const float diagonal = h.cell * std::sqrt(nx * nx + ny * ny + nz * nz);
+        const float capped = std::floor(options.max_length_diagonals * diagonal / step);
+        if (capped < static_cast<float>(steps)) steps = std::max(1u, static_cast<uint32_t>(capped));
+    }
     std::vector<Streamline> lines;
     lines.reserve(seeds.size());
     for (const glm::vec3& seed : seeds) {
@@ -109,10 +126,11 @@ Result<std::vector<Streamline>> trace_streamlines(const FlowVolume& volume, std:
             const FlowVelocity v = sample_velocity(sampler, seed);
             seed_speed = v.no_data ? 0.0f : length_of(v.u);
             line.backward_end = options.backward
-                                    ? trace_one(sampler, box, seed, -step, options, back_points, back_speeds)
+                                    ? trace_one(sampler, box, seed, -step, steps, options, back_points, back_speeds)
                                     : LineEnd::step_budget;
-            line.forward_end = options.forward ? trace_one(sampler, box, seed, step, options, fore_points, fore_speeds)
-                                               : LineEnd::step_budget;
+            line.forward_end = options.forward
+                                   ? trace_one(sampler, box, seed, step, steps, options, fore_points, fore_speeds)
+                                   : LineEnd::step_budget;
         }
         line.points.assign(back_points.rbegin(), back_points.rend());
         line.speeds.assign(back_speeds.rbegin(), back_speeds.rend());

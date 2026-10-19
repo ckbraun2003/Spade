@@ -153,8 +153,34 @@ ViewSupport supports(const ViewSpec& spec, ViewBackend backend, const ViewInputs
     return ViewSupport{true, {}};
 }
 
-Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume, RenderScene& scene,
-                                           RenderOptions& options) {
+Result<std::span<const Streamline>> ViewCache::streamlines(const FlowVolume& volume, std::span<const glm::vec3> seeds,
+                                                           const StreamlineOptions& options) {
+    if (volume.generation != generation_) {
+        entries_.clear();
+        generation_ = volume.generation;
+    }
+    if (volume.generation != 0u) {
+        for (const Entry& entry : entries_) {
+            if (entry.options == options && std::ranges::equal(entry.seeds, seeds)) {
+                return std::span<const Streamline>(entry.lines);
+            }
+        }
+    }
+    auto lines = trace_streamlines(volume, seeds, options);
+    if (!lines) return std::unexpected(lines.error());
+    ++traces_;
+    if (volume.generation == 0u) {
+        unnamed_ = std::move(*lines);
+        return std::span<const Streamline>(unnamed_);
+    }
+    entries_.push_back(Entry{std::vector<glm::vec3>(seeds.begin(), seeds.end()), options, std::move(*lines)});
+    return std::span<const Streamline>(entries_.back().lines);
+}
+
+namespace {
+
+[[nodiscard]] Result<std::vector<ViewLegend>> apply(const ViewSpec& spec, const FlowVolume* volume,
+                                                    RenderScene& scene, RenderOptions& options, ViewCache* cache) {
     const bool has_sdf = scene.sdf != nullptr && !scene.sdf->empty();
     if (std::string why = spec_refusal(spec, volume != nullptr, scene_has_walls(scene), has_sdf); !why.empty()) {
         return std::unexpected(Error{Code::invalid_argument, "apply_view: " + why});
@@ -189,7 +215,14 @@ Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolum
                 break;
             }
             case FlowView::streamlines:
-                added = add_streamlines(built, *volume, std::span<const glm::vec3>(s.seeds), s.lines, tf);
+                if (cache == nullptr) {
+                    added = add_streamlines(built, *volume, std::span<const glm::vec3>(s.seeds), s.lines, tf);
+                } else if (auto lines = cache->streamlines(*volume, std::span<const glm::vec3>(s.seeds), s.lines);
+                           lines) {
+                    add_traced_streamlines(built, volume->header, *lines, tf);
+                } else {
+                    added = std::unexpected(lines.error());
+                }
                 break;
             case FlowView::slice:
                 added = add_slice(built, *volume, s.quantity, s.plane, s.colours, s.range_min, s.range_max);
@@ -223,6 +256,18 @@ Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolum
         case ViewBase::exact_sdf: options.mode = DrawMode::raymarch; break;
     }
     return legends;
+}
+
+}  // namespace
+
+Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume, RenderScene& scene,
+                                           RenderOptions& options) {
+    return apply(spec, volume, scene, options, nullptr);
+}
+
+Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolume* volume, RenderScene& scene,
+                                           RenderOptions& options, ViewCache& cache) {
+    return apply(spec, volume, scene, options, &cache);
 }
 
 }  // namespace spade::render
