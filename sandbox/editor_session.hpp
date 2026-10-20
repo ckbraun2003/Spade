@@ -57,10 +57,15 @@ class EditorSession {
     // drawn by the path that presents, and what that path left unhonoured.
     struct ViewDrawn {
         bool applied = false;
+        render::ViewBase base = render::ViewBase::shaded;  // what the frame drew: the chosen base, or shaded in its stead
         bool drawn = false;
         std::string unhonoured;  // GpuRenderer::unhonoured()'s names, ", "-joined; empty when all is honoured
     };
     [[nodiscard]] const ViewDrawn& last_view() const noexcept { return last_view_; }
+    // While on, each frame draws the view's background alone: its item lists
+    // are emptied after binding (the meshes stay, so nothing re-uploads). The
+    // tour's editor.views judges "not blank" against this frame.
+    void set_background_only(bool on) noexcept { background_only_ = on; }
 
   private:
     EditorSession() = default;
@@ -92,6 +97,7 @@ class EditorSession {
     uint32_t selected_material_ = 0;
     uint64_t drawn_composition_ = 0;
     ViewDrawn last_view_;
+    bool background_only_ = false;
     std::unique_ptr<GpuRenderer> gpu_;
     OrbitCamera camera_;
     std::optional<editor::GizmoDrag> drag_;  // the gizmo's drag, from press to release

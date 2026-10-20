@@ -314,6 +314,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         return shown;
     }
     last_view_.applied = true;
+    last_view_.base = view_.refusal.empty() ? view_.spec.base : render::ViewBase::shaded;
+    if (background_only_) {
+        scene_.statics.clear();
+        scene_.dynamics.clear();
+        scene_.csg_subtrees.clear();
+        scene_.bounds = render::Aabb{};
+    }
     w.panels().modes = editor::mode_menu(view_, view_backend(), view_inputs());
     w.panels().legends = view_.legends;
     w.panels().view_note = view_.refusal;

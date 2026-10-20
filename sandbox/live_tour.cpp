@@ -171,7 +171,11 @@ class Recorder {
     void want_video_frame() noexcept { video_pending_ = true; }
     void want_poster(fs::path path) { poster_ = std::move(path); }
     // The next captured frame, kept for a step to judge (rows bottom-up).
-    void want_grab() noexcept { grab_pending_ = true; }
+    void want_grab() noexcept {
+        grab_pending_ = true;
+        grab_.clear();  // a frame that is not captured leaves nothing, never the last one
+        grab_w_ = grab_h_ = 0;
+    }
     [[nodiscard]] const std::vector<uint8_t>& grabbed() const noexcept { return grab_; }
     [[nodiscard]] uint32_t grabbed_width() const noexcept { return grab_w_; }
     [[nodiscard]] uint32_t grabbed_height() const noexcept { return grab_h_; }
@@ -846,41 +850,71 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // view can't draw shows supports()' why_not, which the menu draws beside it.
     t.step("editor", "views", [&] {
         if (!open()) return;
-        const std::vector<editor::ModeEntry> menu = w().panels().modes;
+        const std::vector<editor::ModeEntry> menu = w().panels().modes;  // one snapshot: supported and why_not
         if (!s.check(!menu.empty(), "menu", std::to_string(menu.size()) + " modes in the View menu")) return;
         const glm::vec3 sky = render::Lighting{}.sky_horizon;  // the view's background is a sky gradient
         const end_goal::Rgb clear{static_cast<uint8_t>(sky.r * 255.0f + 0.5f), static_cast<uint8_t>(sky.g * 255.0f + 0.5f),
                                   static_cast<uint8_t>(sky.b * 255.0f + 0.5f)};
+        // The HUD's stats box sits inside the view and changes every frame:
+        // hidden for the step, so the grabbed view holds only the scene.
+        const bool hud = t.sink().help_drawn();
+        if (hud) t.sink().toggle_help();
+        then(5);
         std::vector<std::vector<uint8_t>> frames;  // each mode's whole frame; the views below point into them
         frames.reserve(menu.size());
         std::vector<end_goal::ModeShown> shown;
-        for (std::size_t i = 0; i < menu.size(); ++i) {
+        bool framed = true;
+        const std::string refused_prefix = "this view can't draw ";
+        for (std::size_t i = 0; i < menu.size() && framed; ++i) {
+            w().panels().status.clear();
             w().panels().mode_request = menu[i].base;
             then(15);
+            end_goal::ModeShown m;
+            m.kind = menu[i].name;
+            m.supported = menu[i].drawable;
+            m.why_not = menu[i].why_not;
+            if (!menu[i].drawable) {
+                // The request's refusal, as the status shows it, without its
+                // "this view can't draw <kind>: " lead: choose_mode()'s path,
+                // judged against the menu's supports().
+                const std::string& line = w().panels().status;
+                const std::string lead = refused_prefix + menu[i].name + ": ";
+                m.shown_text = line.rfind(lead, 0) == 0 ? line.substr(lead.size()) : line;
+            }
+            m.applied = session->last_view().applied && session->last_view().base == menu[i].base;
+            m.drawn = session->last_view().drawn;
+            m.unhonoured = session->last_view().unhonoured;
             t.recorder().want_grab();
             then(1);
             frames.push_back(t.recorder().grabbed());
             const uint32_t fw = t.recorder().grabbed_width();
             const uint32_t fh = t.recorder().grabbed_height();
             const ViewportRect v = t.sink().viewport();
-            end_goal::ModeShown m;
-            m.kind = menu[i].name;
-            m.supported = menu[i].drawable;
-            m.why_not = menu[i].why_not;
-            // What the menu draws beside a kind it refuses (editor_panels_ui.cpp).
-            if (!w().panels().modes.at(i).drawable) m.shown_text = w().panels().modes.at(i).why_not;
-            m.applied = session->last_view().applied;
-            m.drawn = session->last_view().drawn;
-            m.unhonoured = session->last_view().unhonoured;
+            if (frames.back().empty()) {
+                s.check(false, "grabbed", "absent: no frame captured for " + menu[i].name);
+                framed = false;
+                break;
+            }
+            if (v.x + v.width > fw || v.y + v.height > fh) {
+                s.check(false, "view-in-frame", "the view " + std::to_string(v.width) + "x" + std::to_string(v.height) +
+                                                    " at (" + std::to_string(v.x) + ", " + std::to_string(v.y) +
+                                                    ") is not inside the " + std::to_string(fw) + "x" + std::to_string(fh) +
+                                                    " frame");
+                framed = false;
+                break;
+            }
             // The frame's rows run bottom-up; the viewport's y runs down from the top.
-            const uint32_t y0 = fh >= v.y + v.height ? fh - v.y - v.height : 0u;
-            m.frame = end_goal::region_of(end_goal::pixels(fw, fh, frames.back()), v.x, y0, v.width, v.height);
+            m.frame = end_goal::region_of(end_goal::pixels(fw, fh, frames.back()), v.x, fh - v.y - v.height, v.width,
+                                          v.height);
             m.clear = clear;
             shown.push_back(std::move(m));
         }
-        const end_goal::Verdict verdict = end_goal::modes_drawn(shown);
-        s.check(verdict.ok, "each-mode-drawn", verdict.detail);
+        if (framed) {
+            const end_goal::Verdict verdict = end_goal::modes_drawn(shown);
+            s.check(verdict.ok, "each-mode-drawn", verdict.detail);
+        }
         w().panels().mode_request = render::ViewBase::shaded;
+        if (hud) t.sink().toggle_help();
         then(20);
     });
 
