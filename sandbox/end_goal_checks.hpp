@@ -41,6 +41,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -931,7 +932,10 @@ template <class Pixel>
 
 [[nodiscard]] inline bool differs(double fraction) { return fraction >= kDiffersFraction; }
 
-// The image's most frequent colour.
+// The colour most of the image's pixels sit within 8 levels of (in red,
+// green and blue), taken from among its own colours; ties go to the lowest
+// value. Not the most common EXACT value: in a noisy flat placeholder a
+// speck can be that. O(distinct colours squared), fine at thumbnail size.
 [[nodiscard]] inline Rgb dominant_colour(const PixelsView& a) {
     if (!well_formed(a)) return {};
     std::vector<uint32_t> keys;
@@ -943,16 +947,30 @@ template <class Pixel>
         }
     }
     std::sort(keys.begin(), keys.end());
-    uint32_t best = keys.front();
-    std::size_t best_run = 0;
+    std::vector<std::pair<uint32_t, std::size_t>> runs;  // each distinct colour, and how many pixels have it
     for (std::size_t i = 0; i < keys.size();) {
         std::size_t j = i;
         while (j < keys.size() && keys[j] == keys[i]) ++j;
-        if (j - i > best_run) {
-            best_run = j - i;
-            best = keys[i];
-        }
+        runs.emplace_back(keys[i], j - i);
         i = j;
+    }
+    const auto channel = [](uint32_t key, int shift) { return static_cast<int>((key >> shift) & 0xFFu); };
+    uint32_t best = runs.front().first;
+    std::size_t best_near = 0;
+    for (const auto& run : runs) {
+        const uint32_t c = run.first;
+        std::size_t near = 0;
+        for (const auto& [d, count] : runs) {
+            if (std::abs(channel(c, 16) - channel(d, 16)) <= kDiffersLevel &&
+                std::abs(channel(c, 8) - channel(d, 8)) <= kDiffersLevel &&
+                std::abs(channel(c, 0) - channel(d, 0)) <= kDiffersLevel) {
+                near += count;
+            }
+        }
+        if (near > best_near) {
+            best_near = near;
+            best = c;
+        }
     }
     return Rgb{static_cast<uint8_t>(best >> 16), static_cast<uint8_t>(best >> 8), static_cast<uint8_t>(best)};
 }
@@ -994,7 +1012,9 @@ inline constexpr std::size_t kLibraryMinEntries = 9;
 
 // Each entry shows the image decoded from ITS OWN thumbnail file: `shown[i]`
 // is what the panel shows, `files[i]` the image the step decoded from entry
-// i's file. Each pair must match (the same size, nothing differs), and the
+// i's file. Each pair must match: the same size, and no pixel more than
+// 8/255 off its file's (not the views' 1% "differs": a shown thumbnail IS
+// its file). And the
 // file's image must not be one colour (1% or more off its dominant colour).
 // A placeholder, a border-framed placeholder or another entry's image fails.
 [[nodiscard]] inline Verdict thumbnails(std::span<const PixelsView> shown, std::span<const PixelsView> files) {
@@ -1016,8 +1036,9 @@ inline constexpr std::size_t kLibraryMinEntries = 9;
                                std::to_string(files[i].height)};
         }
         const double apart = differ_fraction(shown[i], files[i]);
-        if (differs(apart)) {
-            return {false, name + at + " is not its own file's image: " + detail::percent(apart) + " of it differs"};
+        if (apart > 0.0) {
+            return {false, name + at + " is not its own file's image: " + detail::percent(apart) +
+                               " of its pixels are more than 8/255 off"};
         }
         const double varied = differ_fraction(files[i], dominant_colour(files[i]));
         if (!differs(varied)) {
@@ -1061,7 +1082,11 @@ namespace detail {
     if (required.empty()) return {false, name + "mis-staged: no identity is required"};
     std::string kept;
     for (const std::string_view want : required) {
-        const auto it = std::find_if(ids.begin(), ids.end(), [&](const Identity& id) { return id.what == want; });
+        const auto named = [&](const Identity& id) { return id.what == want; };
+        if (std::count_if(ids.begin(), ids.end(), named) > 1) {
+            return {false, name + "mis-staged: the " + std::string(want) + " identity is given twice"};
+        }
+        const auto it = std::find_if(ids.begin(), ids.end(), named);
         if (it == ids.end()) return {false, name + "absent: no " + std::string(want) + " identity was given"};
         if (it->expected == 0) {
             return {false, name + "absent: the source's " + std::string(want) + " identity is unset (0)"};
@@ -1237,6 +1262,9 @@ struct ModeShown {
         last = &m.frame;
         ++drawn_count;
     }
+    if (drawn_count < 2) {
+        return {false, name + "absent: " + std::to_string(drawn_count) + " modes drawn, so no switch was judged"};
+    }
     return {true, name + std::to_string(drawn_count) + " drawn, each changed from the last; " +
                       std::to_string(modes.size() - drawn_count) + " refused with their why_not"};
 }
@@ -1252,7 +1280,12 @@ inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max whi
 
 [[nodiscard]] inline Verdict legend_shown(const LegendCheck& c) {
     const std::string name = "legend-shown: ";
-    if (c.returned.size() != c.layers) {
+    if (c.layers == 0) return {false, name + "mis-staged: the view's spec has no layers, so no legend to judge"};
+    if (c.returned.size() > c.layers) {
+        return {false, name + "apply_view() returned " + std::to_string(c.returned.size()) +
+                           " legends for the spec's " + std::to_string(c.layers) + " layers"};
+    }
+    if (c.returned.size() < c.layers) {
         return {false, name + "absent: apply_view() returned " + std::to_string(c.returned.size()) +
                            " legends for the spec's " + std::to_string(c.layers) + " layers"};
     }
