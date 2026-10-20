@@ -100,6 +100,7 @@ add_executable(spade_tests
     test_scene_file.cpp
     test_model_file.cpp
     test_object_file.cpp
+    test_library_quad.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
