@@ -1,6 +1,6 @@
 # Sensor views: depth, normals, segmentation (N13, part 1) — design
 
-Status: **proposed** (Rendering, 2026-10-20), for the lead's review. Branch `rendering/sensor-views`.
+Status: **approved** by the lead, 2026-10-20, with the four decisions below as recommended: colour by name hash with clashes reported; sensor bases refused on a multisampled GL target; the analytic ground draws in sensor modes, labelled "ground" in segmentation; depth defaults 0.1-20 m in viridis, the editor setting the range from the scene's size. Delivered in two branches: depth and normals (`rendering/sensor-views`), then segmentation with the identity plumbing.
 
 Three new `ViewBase` kinds in `render/view_mode`, so a view can show what a depth camera, a normal estimator or a segmenter would see. Cameron's "add different rendering schemas". Per-camera field channels, exported values and placed scene cameras are later (see "Not in this part").
 
