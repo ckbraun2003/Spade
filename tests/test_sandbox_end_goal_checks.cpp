@@ -967,7 +967,7 @@ TEST(SandboxEndGoalObjectAdded, IsAbsentWithANonFiniteMeasurement) {
 // Interface's re-review (2026-10-19): event times and a NaN probe point.
 
 TEST(SandboxEndGoalFlight, ANonFiniteEventTimeIsMisStaged) {
-    const float nan_f = std::numeric_limits<float>::quiet_NaN();
+    const float inf_f = std::numeric_limits<float>::infinity();  // b053a1c judged it; NaN was already mis-staged
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const float idle[4] = {400.0f, 400.0f, 400.0f, 400.0f};
     const float f = 1.2f * kMass * kG;
@@ -975,7 +975,7 @@ TEST(SandboxEndGoalFlight, ANonFiniteEventTimeIsMisStaged) {
     const eg::Verdict climbs =
         eg::climbs(climb(f, [](float thrust, float) { return thrust / kMass - kG; }), nan, kMass, kG, kR);
     const eg::Verdict follows = eg::follows_attitude(pitch_history(-15.0f * kDeg, 0.13f, 1.0f), nan, -15.0f * kDeg);
-    const eg::Verdict command = eg::follows_attitude(pitch_history(-15.0f * kDeg, 0.13f, 1.0f), 0.5, nan_f);
+    const eg::Verdict command = eg::follows_attitude(pitch_history(-15.0f * kDeg, 0.13f, 1.0f), 0.5, -inf_f);
     for (const eg::Verdict* v : {&armed, &climbs, &follows, &command}) {
         EXPECT_FALSE(v->ok) << v->detail;
         EXPECT_TRUE(has(v->detail, "mis-staged:")) << v->detail;

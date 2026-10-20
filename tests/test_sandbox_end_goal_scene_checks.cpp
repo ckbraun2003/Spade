@@ -815,3 +815,74 @@ TEST(SandboxEndGoalRoundTrip, IsMisStagedOrAbsentWhenTheRunsDoNotMatch) {
     EXPECT_FALSE(c.ok) << c.detail;
     EXPECT_TRUE(has(c.detail, "mis-staged:")) << c.detail;
 }
+
+// Interface's re-review of 399390e.
+
+TEST(SandboxEndGoalLibrary, FailsAThumbnailWithOneWrongPixel) {
+    const std::vector<Image> files = nine_thumbnails();
+    std::vector<Image> shown = files;
+    shown[6].set(40, 20, {255, 0, 255});
+    const eg::Verdict v = eg::thumbnails(views_of(shown), views_of(files));
+    EXPECT_TRUE(judged_fail(v)) << v.detail;
+    std::vector<Image> patched = files;
+    for (uint32_t x = 0; x < 6; ++x) {
+        for (uint32_t y = 0; y < 5; ++y) patched[6].set(30 + x, 20 + y, {255, 0, 255});  // 30 pixels: 0.98%
+    }
+    const eg::Verdict p = eg::thumbnails(views_of(patched), views_of(files));
+    EXPECT_TRUE(judged_fail(p)) << p.detail;
+}
+
+TEST(SandboxEndGoalLibrary, ANoisyFlatPlaceholderIsOneColour) {
+    // Grey with +-4 levels of noise in each channel (729 values over 3,072
+    // pixels, about 4 each), plus a 30-pixel speck: the speck is the most
+    // common EXACT value, so judging by it reads the grey as varied. The
+    // colour most pixels sit within 8 levels of is a grey, and only the
+    // speck, 0.98%, is off it: one colour.
+    std::vector<Image> files = nine_thumbnails();
+    Image noisy = image(64, 48, {128, 128, 128});
+    for (uint32_t y = 0; y < 48; ++y) {
+        for (uint32_t x = 0; x < 64; ++x) {
+            const uint32_t h = (x * 73856093u) ^ (y * 19349663u) ^ ((x + 64u * y) * 83492791u);
+            noisy.set(x, y, {static_cast<uint8_t>(124 + h % 9), static_cast<uint8_t>(124 + (h / 9) % 9),
+                             static_cast<uint8_t>(124 + (h / 81) % 9)});
+        }
+    }
+    for (uint32_t x = 0; x < 30; ++x) noisy.set(x, 0, {10, 200, 10});
+    files[1] = noisy;
+    const eg::Verdict v = eg::thumbnails(views_of(files), views_of(files));
+    EXPECT_TRUE(judged_fail(v)) << v.detail;
+    EXPECT_TRUE(has(v.detail, "thumbnail 1")) << v.detail;
+}
+
+TEST(SandboxEndGoalIdentities, ADuplicateNameIsMisStaged) {
+    auto ids = drone_ids();
+    ids.push_back({"propulsion", 0xC3u, 0xDEADu});  // the same name again, another value
+    const eg::Verdict v = eg::identities_kept("propulsion-kept", ids, eg::kDroneIdentities);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
+}
+
+TEST(SandboxEndGoalViews, FewerThanTwoModesDrawnIsAbsent) {
+    eg::ModeShown refused;
+    refused.kind = "exact SDF";
+    refused.why_not = "the exact SDF is drawn on the CPU only";
+    refused.shown_text = refused.why_not;
+    const Image shaded = drawn({200, 180, 40});
+    for (const std::vector<eg::ModeShown>& modes :
+         {std::vector<eg::ModeShown>{refused, refused}, std::vector<eg::ModeShown>{mode("shaded", shaded), refused}}) {
+        const eg::Verdict v = eg::modes_drawn(modes);
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_TRUE(has(v.detail, "absent:")) << v.detail;
+    }
+}
+
+TEST(SandboxEndGoalViews, NoLayersIsMisStagedAndExtraLegendsAJudgedFail) {
+    eg::LegendCheck none = legends({});
+    const eg::Verdict a = eg::legend_shown(none);
+    EXPECT_FALSE(a.ok) << a.detail;
+    EXPECT_TRUE(has(a.detail, "mis-staged:")) << a.detail;
+    eg::LegendCheck extra = legends({speed_legend(12.0f), speed_legend(12.0f)});
+    extra.layers = 1;
+    const eg::Verdict b = eg::legend_shown(extra);
+    EXPECT_TRUE(judged_fail(b)) << b.detail;
+}
