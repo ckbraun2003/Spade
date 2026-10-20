@@ -38,6 +38,8 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <iterator>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -46,6 +48,7 @@
 
 #include "editor_document.hpp"
 #include "editor_scene_edits.hpp"
+#include "render/mesh_resolver.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "world/world_file.hpp"
@@ -148,10 +151,53 @@ struct OpenedScene {
     return save_world_as(world, world.path);
 }
 
-// Writes the scene to `target`, after its world (see the file comment); on
+// Copies each mesh the resolver found past the scene's own folder (N11:
+// render::resolve_meshes()'s from_fallback) to <scene_dir>/<ref>.spmesh, so
+// the scene resolves from its own folder (EDT-012). A copy already there is
+// kept: it is what the resolver finds first. ALL OR NOTHING: every source is
+// read before anything is written, and a failed write undoes the copies made.
+[[nodiscard]] inline Result<void> copy_fallback_meshes(const std::filesystem::path& scene_dir,
+                                                       std::span<const render::FallbackMesh> meshes) {
+    namespace fs = std::filesystem;
+    struct Copy {
+        fs::path to;
+        std::string bytes;
+    };
+    std::vector<Copy> copies;
+    for (const render::FallbackMesh& m : meshes) {
+        const fs::path to = scene_dir / fs::path(m.ref + ".spmesh");
+        std::error_code ec;
+        if (fs::exists(to, ec)) continue;
+        std::ifstream in(m.file, std::ios::binary);
+        if (!in) {
+            return std::unexpected(Error{Code::io_error, "the mesh '" + m.ref + "' could not be copied beside the scene: "
+                                                         "cannot read " + m.file.string() + "; the scene was not saved"});
+        }
+        copies.push_back(Copy{to, std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>())});
+    }
+    std::vector<fs::path> made;
+    for (const Copy& c : copies) {
+        std::error_code ec;
+        fs::create_directories(c.to.parent_path(), ec);
+        const Result<void> written = ec ? Result<void>(std::unexpected(Error{Code::io_error, ec.message()}))
+                                        : write_atomically(c.to, c.bytes);
+        if (!written) {
+            for (const fs::path& f : made) fs::remove(f, ec);
+            return std::unexpected(Error{written.error().code, "the mesh " + c.to.string() +
+                                                                   " could not be written beside the scene: " +
+                                                                   written.error().context + "; the scene was not saved"});
+        }
+        made.push_back(c.to);
+    }
+    return {};
+}
+
+// Writes the scene to `target`, after its world (see the file comment) and
+// the meshes it resolves from the library (copy_fallback_meshes()); on
 // success that is the scene document's path and both documents are clean.
 [[nodiscard]] inline Result<void> save_scene_as(SceneDocument& scene, WorldDocument& world,
-                                                const std::filesystem::path& target) {
+                                                const std::filesystem::path& target,
+                                                std::span<const render::FallbackMesh> fallback_meshes = {}) {
     if (world.path.empty()) {
         return std::unexpected(Error{Code::invalid_argument, "save " + target.string() + ": its world '" +
                                                                  world.desc().name +
@@ -181,6 +227,7 @@ struct OpenedScene {
     }
     const Result<std::string> text = scene::scene_to_yaml(next);
     if (!text) return std::unexpected(text.error());
+    if (Result<void> copied = copy_fallback_meshes(target.parent_path(), fallback_meshes); !copied) return copied;
     if (Result<void> written = write_atomically(target, *text); !written) return written;
     if (repin || moved) {
         // validate_scene() already accepted `next` inside scene_to_yaml().
@@ -191,12 +238,13 @@ struct OpenedScene {
     return {};
 }
 
-[[nodiscard]] inline Result<void> save_scene(SceneDocument& scene, WorldDocument& world) {
+[[nodiscard]] inline Result<void> save_scene(SceneDocument& scene, WorldDocument& world,
+                                             std::span<const render::FallbackMesh> fallback_meshes = {}) {
     if (scene.path.empty()) {
         return std::unexpected(Error{Code::invalid_argument, "save the scene '" + scene.desc().name +
                                                                  "': it has no file yet; use Save As to choose one"});
     }
-    return save_scene_as(scene, world, scene.path);
+    return save_scene_as(scene, world, scene.path, fallback_meshes);
 }
 
 // What saving a world did to the scenes that name it.

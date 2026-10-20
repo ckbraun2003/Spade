@@ -15,6 +15,7 @@
 #include "drone_view.hpp"     // detail::lambert()
 #include "editor_pick.hpp"
 #include "gl_target_sink.hpp"
+#include "render/mesh_resolver.hpp"
 #include "render_gap.hpp"
 #include "viewport_rect.hpp"
 
@@ -117,7 +118,20 @@ render::ViewInputs EditorSession::view_inputs() {
 // The composed world as a render scene, plus the meshes and materials the
 // vehicles and the selection draw with. Only when the composition changed.
 Result<void> EditorSession::rebuild_scene() {
-    Result<render::RenderScene> built = render::scene_from_world(workspace_->composed().world, {});
+    // N11: the world's meshes, from the scene's folder first, then the
+    // library's. A ref that resolves nowhere draws as the resolver's magenta
+    // stand-in and is named in the status; Save copies the library's beside
+    // the scene.
+    std::vector<std::filesystem::path> roots{workspace_->documents().scene.path.parent_path()};
+    if (!workspace_->assets_dir().empty()) roots.push_back(workspace_->assets_dir() / "library" / "meshes");
+    const render::ResolvedMeshes meshes = render::resolve_meshes(workspace_->composed().world, roots);
+    workspace_->set_fallback_meshes(meshes.from_fallback);
+    if (!meshes.unresolved.empty()) {
+        std::string line = "meshes drawn as stand-ins:";
+        for (const render::UnresolvedMesh& u : meshes.unresolved) line += " '" + u.ref + "' (" + u.why + ");";
+        workspace_->panels().status = line;
+    }
+    Result<render::RenderScene> built = render::scene_from_world(workspace_->composed().world, meshes.meshes);
     if (!built) {
         return std::unexpected(Error{built.error().code, "the scene would not draw: " + built.error().context});
     }

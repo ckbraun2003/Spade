@@ -103,6 +103,12 @@ class EditorWorkspace {
         return w;
     }
 
+    // N11: the meshes the scene's world resolved past the scene's own folder
+    // (the library's), which Save copies beside the scene; the session sets
+    // them whenever it resolves. And the assets folder, when a built-in scene
+    // told where it is (assets/library/meshes is the library's mesh root).
+    void set_fallback_meshes(std::vector<render::FallbackMesh> meshes) { fallback_meshes_ = std::move(meshes); }
+    [[nodiscard]] const std::filesystem::path& assets_dir() const noexcept { return assets_; }
     [[nodiscard]] EditorPanels& panels() noexcept { return panels_; }
     [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
@@ -383,12 +389,12 @@ class EditorWorkspace {
             case Command::redo: history(redo_, undo_, false); return;
             case Command::save: {
                 const Serials before = serials();
-                save_into(before, save_scene(docs_.scene, docs_.world));
+                save_into(before, save_scene(docs_.scene, docs_.world, fallback_meshes_));
                 return;
             }
             case Command::save_as: {
                 const Serials before = serials();
-                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path));
+                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, fallback_meshes_));
                 list_sources();
                 return;
             }
@@ -452,6 +458,7 @@ class EditorWorkspace {
     OpenedScene docs_;
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
+    std::vector<render::FallbackMesh> fallback_meshes_;  // N11: what Save copies beside the scene
     scene::ComposedScene composed_;
     uint64_t composition_ = 0;
     std::optional<EditorRun> run_;
