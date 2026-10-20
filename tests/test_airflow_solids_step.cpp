@@ -437,7 +437,21 @@ struct CouetteResult {
 // faces carry the rigid velocity bit for bit, and the air turns with the
 // cylinder. Mutation: the rigid velocity at closed faces only (the links'
 // terms ignored), which Test/Docs expects to miss by up to a factor of two.
+// Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
+[[nodiscard]] bool debug_build() {
+#if defined(NDEBUG)
+    return false;
+#else
+    return true;
+#endif
+}
+
 TEST(AirflowSolidsStep, S2CircularCouetteFlow) {
+    if (debug_build()) {
+        GTEST_SKIP() << "debug build: S2 takes 100 s in debug (measured 2026-10-20; ctest's limit is 60 s); runs in "
+                        "the release gate (15 s) and every leg (TD-5; the planar Couette check covers the wall "
+                        "links in debug)";
+    }
     const CouetteResult r = couette(16, 4);
     std::printf("=== validation record: S2 circular Couette flow, R1/dx 16 ===\n"
                 "config: a 68x1x68 slab (y periodic), dx 1 mm, R1 16 mm turning at Omega R1 = 0.1 m/s inside a "
@@ -499,33 +513,50 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
     const float y0 = 3.25f * dx;
     const float y1 = 12.75f * dx;
     const FluidConfig cfg{.rho = 1.0f, .nu = 1.0e-3f, .h = 1.0e-3f, .n_v = 4, .visc_sweeps = 8};
-    MacGrid g = *make_grid(shape, bc);
-    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
-        g.u[idx] = std::min(std::max(U * (x.y - y0) / (y1 - y0), 0.0f), U);
-    });
-    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
-    Scene scene;
-    scene.shapes.push_back(Shape{.name = "floor", .kind = Kind::box, .centre = {2.0f * dx, y0 - 2.625f * dx, 0.5f * dx},
-                                 .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .min_feature = 5.25f * dx});
-    scene.shapes.push_back(Shape{.name = "belt", .kind = Kind::box, .centre = {2.0f * dx, y1 + 2.625f * dx, 0.5f * dx},
-                                 .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .velocity = {U, 0.0f, 0.0f},
-                                 .min_feature = 5.25f * dx});
-    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
-    // Half a diffusion time, (y1 - y0)^2 / nu / 2 = 45 steps.
-    for (int k = 0; k < 45; ++k) {
-        const FluidHealth health = fluid_step(g, bc, cfg, s);
-        ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
-    }
-    double err = 0.0;
-    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
-        if (x.y <= y0 || x.y >= y1) return;
-        const double exact = static_cast<double>(U) * (x.y - y0) / (y1 - y0);
-        err = std::max(err, std::fabs(static_cast<double>(g.u[idx]) - exact) / U);
-    });
-    std::printf("=== planar Couette, plates a quarter cell off the faces ===\n"
-                "measure: max |u - u_exact| / U over the fluid after 45 steps = %.3e\n",
-                err);
-    EXPECT_LE(err, 1.0e-4);
+    // links: false is the negative control, the rigid velocity at closed and
+    // inside samples only (every link index cleared after set_solids()).
+    const auto run = [&](bool links) {
+        MacGrid g = *make_grid(shape, bc);
+        for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
+            g.u[idx] = std::min(std::max(U * (x.y - y0) / (y1 - y0), 0.0f), U);
+        });
+        FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+        Scene scene;
+        scene.shapes.push_back(Shape{.name = "floor", .kind = Kind::box, .centre = {2.0f * dx, y0 - 2.625f * dx, 0.5f * dx},
+                                     .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .min_feature = 5.25f * dx});
+        scene.shapes.push_back(Shape{.name = "belt", .kind = Kind::box, .centre = {2.0f * dx, y1 + 2.625f * dx, 0.5f * dx},
+                                     .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .velocity = {U, 0.0f, 0.0f},
+                                     .min_feature = 5.25f * dx});
+        EXPECT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+        if (!links) {
+            for (std::vector<uint32_t>& l : s.solids.link) std::fill(l.begin(), l.end(), kNoWallLinks);
+        }
+        // Half a diffusion time, (y1 - y0)^2 / nu / 2 = 45 steps.
+        for (int k = 0; k < 45; ++k) {
+            const FluidHealth health = fluid_step(g, bc, cfg, s);
+            EXPECT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+        }
+        double err = 0.0;
+        for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
+            if (x.y <= y0 || x.y >= y1) return;
+            const double exact = static_cast<double>(U) * (x.y - y0) / (y1 - y0);
+            err = std::max(err, std::fabs(static_cast<double>(g.u[idx]) - exact) / U);
+        });
+        return err;
+    };
+    const double with_links = run(true);
+    const double closed_only = run(false);
+    std::printf("=== validation record: planar Couette, plates a quarter cell off the faces ===\n"
+                "config: 4x16x1 (x, z periodic), dx 1 mm, plates at y = 3.25 dx (still) and 12.75 dx (U 0.1 m/s), "
+                "nu 1e-3, h 1 ms, 45 steps (half a diffusion time) from the exact profile\n"
+                "measure: max |u - u_exact| / U, with the wall links = %.3e\n"
+                "negative control: the same, closed faces only (links cleared) = %.3e\n"
+                "tolerance: <= 1e-5 with the links (TD-2: measured %.1e, rounding); the control must exceed it\n"
+                "verdict: %s; control %s\n",
+                with_links, closed_only, with_links, with_links <= 1.0e-5 ? "within" : "OUTSIDE",
+                closed_only > 1.0e-5 ? "fails, as it must" : "PASSES: the check does not discriminate");
+    EXPECT_LE(with_links, 1.0e-5);
+    EXPECT_GT(closed_only, 1.0e-5) << "the negative control must fail the band";
 }
 
 }  // namespace
