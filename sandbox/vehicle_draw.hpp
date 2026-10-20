@@ -1,10 +1,13 @@
 // How a vehicle of a composed scene draws: the scene files' sessions and the
 // editor draw it the same way. Display-free.
 //
-// A vehicle with rotors draws as a drone: a hull, an arm out to each hub, and
-// a disc at each hub, from its model's rotor layout (drone_view.hpp's part
-// sizes). The front arm and rotor take the nose colour. A vehicle without
-// rotors is a ball of the given diameter, the contact proxy it collides as.
+// A vehicle whose model has parts draws them (append_vehicle_parts(), N12):
+// render_parts posed where the vehicle is, so the drone on screen is the
+// drone that flies. Otherwise a vehicle with rotors draws as a drone: a hull,
+// an arm out to each hub, and a disc at each hub, from its model's rotor
+// layout (drone_view.hpp's part sizes). The front arm and rotor take the nose
+// colour. A vehicle without rotors is a ball of the given diameter, the
+// contact proxy it collides as.
 
 #pragma once
 
@@ -18,8 +21,12 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "drone_view.hpp"
+#include "core/error.hpp"
 #include "render/scene.hpp"
+#include "render_parts/render_parts.hpp"
+#include "state/layout.hpp"
 #include "vehicles/model_type.hpp"
+#include "vehicles/part_pose.hpp"
 
 namespace spade::sandbox {
 
@@ -75,6 +82,37 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
         disc.material_override = k == 0 ? look.nose_material : look.rotor_material;
         out.push_back(disc);
     }
+}
+
+// Appends `model`'s parts, prepared once by render_parts::prepare_parts(),
+// posed at (pos, orient) and still: the rotor spans are zero, so a rotor part
+// shows no spin. bind_parts() writes statics (a CsgSubtree indexes them), so
+// a caller binds each frame into a copy of its base scene. All or nothing:
+// whatever posed_parts() or bind_parts() refuse, nothing is appended.
+[[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
+                                                       const render_parts::PreparedParts& prepared,
+                                                       const vehicles::ModelType& model, glm::vec3 pos,
+                                                       glm::quat orient, const render_parts::PartsLook& look) {
+    BodyState body{};
+    body.pos = pos;
+    body.orient = orient;
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    const Result<vehicles::PosedParts> posed =
+        vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
+    if (!posed) return std::unexpected(posed.error());
+    return render_parts::bind_parts(prepared, *posed, look, scene);
+}
+
+// Whether any piece is a CSG root. Such a piece marches at the pose it was
+// uploaded with (Rendering, 2026-10-19), so a GPU caller uploads a scene that
+// holds one every frame, until renderers move CSG subtrees.
+[[nodiscard]] inline bool has_csg_pieces(const render_parts::PreparedParts& prepared) {
+    for (const render_parts::PreparedPart& part : prepared.parts) {
+        for (const render_parts::PartPiece& piece : part.pieces) {
+            if (piece.is_csg) return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace spade::sandbox
