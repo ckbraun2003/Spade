@@ -1,3 +1,4 @@
+#include "render/mesh_resolver.hpp"
 #include "render_parts/render_parts.hpp"
 
 #include <array>
@@ -21,29 +22,6 @@ namespace spade::render_parts {
 namespace {
 
 [[nodiscard]] Error prefixed(const std::string& label, const Error& e) { return Error{e.code, label + ": " + e.context}; }
-
-// A mesh part's triangles, flat shaded: each triangle's own three vertices and
-// its face normal, as MeshData's flat meshes duplicate vertices.
-[[nodiscard]] render::MeshData flat_mesh(const TriangleMesh& mesh) {
-    render::MeshData out;
-    const std::span<const glm::vec3> p = mesh.positions();
-    const std::span<const uint32_t> idx = mesh.indices();
-    out.positions.reserve(idx.size());
-    out.normals.reserve(idx.size());
-    out.indices.reserve(idx.size());
-    for (std::size_t t = 0; t + 2 < idx.size(); t += 3) {
-        const glm::vec3 a = p[idx[t]], b = p[idx[t + 1]], c = p[idx[t + 2]];
-        const glm::vec3 n = glm::cross(b - a, c - a);
-        const float len = glm::length(n);
-        const glm::vec3 unit = len > 0.0f ? n / len : glm::vec3(0.0f, 1.0f, 0.0f);
-        for (const glm::vec3& v : {a, b, c}) {
-            out.indices.push_back(static_cast<uint32_t>(out.positions.size()));
-            out.positions.push_back(v);
-            out.normals.push_back(unit);
-        }
-    }
-    return out;
-}
 
 // A shape part's pieces, in its part frame, split as scene_from_world() splits
 // a world: each union-primitive leaf tessellated at its own transform, each
@@ -131,7 +109,7 @@ Result<PreparedParts> prepare_parts(const vehicles::ModelType& model) {
         prepared.porous = part.surface.kind == vehicles::PartSurface::Kind::porous;
         if (part.mesh != nullptr) {
             PartPiece piece;
-            piece.mesh = flat_mesh(*part.mesh);
+            piece.mesh = render::flat_mesh(*part.mesh);  // one conversion with the mesh resolver's (TD-9)
             prepared.pieces.push_back(std::move(piece));
         } else if (!part.shape.empty()) {
             Result<std::vector<PartPiece>> pieces = shape_pieces(part, label);
