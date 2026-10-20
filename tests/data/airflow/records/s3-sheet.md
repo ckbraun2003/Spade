@@ -1,0 +1,41 @@
+# S3, a sheet across a channel -- validation records
+
+One block per run, appended, never edited (Test/Docs' format, `docs/design/test-docs/01-verification.md`; bands in `docs/design/test-docs/2026-10-13-solids-tolerances.md`). A sheet a quarter cell thick, on an even and an odd face plane. One projection from a cold start: exact in 1D.
+
+```text
+=== validation record: S3 sheet across a channel, plane 16 (even) ===
+commit: 85364c3 (physics/airflow-solids)
+date: 2026-10-20
+path: CPU reference, MSVC 1943, release
+config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho 1.225, U 1.0, h 0.0010, one projection, n_v 32 CG iterations from a cold start
+measure: every closed face carries the wall velocity = yes
+measure: max |u| / U after the projection = 7.987e-06
+reference: 0 (exact in 1D)
+tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+measure: the pressure step dp h / (rho U (L - dx)) = 1.000002
+reference: 1 (exact: the stencil is exact for a linear field)
+tolerance: 1 +/- 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+solve: relative residual 2.551e-05
+solids: 1 parts, 0 walls, 1 sheets; sheet: sheet (7.8 mm < 2 dx = 62.5 mm)
+```
+
+```text
+=== validation record: S3 sheet across a channel, plane 17 (odd) ===
+commit: 85364c3 (physics/airflow-solids)
+date: 2026-10-20
+path: CPU reference, MSVC 1943, release
+config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho 1.225, U 1.0, h 0.0010, one projection, n_v 32 CG iterations from a cold start
+measure: every closed face carries the wall velocity = yes
+measure: max |u| / U after the projection = 4.783e-06
+reference: 0 (exact in 1D)
+tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+measure: the pressure step dp h / (rho U (L - dx)) = 1.000001
+reference: 1 (exact: the stencil is exact for a linear field)
+tolerance: 1 +/- 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+solve: relative residual 1.913e-05
+solids: 1 parts, 0 walls, 1 sheets; sheet: sheet (7.8 mm < 2 dx = 62.5 mm)
+```
