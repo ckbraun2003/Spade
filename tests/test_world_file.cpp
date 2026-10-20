@@ -228,9 +228,12 @@ template <class T>
                    glm::normalize(glm::quat(0.5f, 0.5f, -0.5f, 0.5f)))
             .spawn("finish", glm::vec3(4.0f, 0.75f, 7.25f),
                    glm::normalize(glm::quat(0.600000024f, 0.0f, 0.800000012f, 0.0f)))
-            .visual("mesh:track/gate_ring")
-            .visual("material:track/asphalt")
-            .visual("mesh:props/banner")
+            // Mesh refs (world/mesh_ref.hpp). Until N3 they read
+            // "mesh:track/gate_ring", "material:track/asphalt" and
+            // "mesh:props/banner": a prefix holds a ':', which the rule refuses.
+            .visual("track/gate_ring")
+            .visual("track/asphalt")
+            .visual("props/banner")
             .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
             .sphere(2.5f, pose(glm::vec3(1.25f, -0.5f, 2.0f),
                                glm::normalize(glm::quat(0.600000024f, 0.800000012f, 0.0f, 0.0f)),
@@ -255,12 +258,12 @@ template <class T>
                          pose(glm::vec3(0.0f, -4.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                               3.0f))
             .union_()
-            .prop("mesh:props/tower",
+            .prop("props/tower",
                   pose(glm::vec3(-5.0f, 0.0f, -5.0f),
                        glm::normalize(glm::quat(0.899999976f, 0.0f, 0.400000006f, 0.0f)), 1.20000005f),
                   1)
-            .prop("mesh:props/flag", pose(glm::vec3(5.0f, 0.5f, -5.0f),
-                                          glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.800000012f),
+            .prop("props/flag", pose(glm::vec3(5.0f, 0.5f, -5.0f),
+                                     glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.800000012f),
                   2)
             .union_()
             .build();
@@ -1353,7 +1356,7 @@ TEST(WorldFileRejects, ZeroSunDirectionViaYamlIsInvalid) {
 TEST(WorldFileRejects, UnknownKeyInsideAPropsEntry) {
     const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
         kMinimalWorldV2, "props: []",
-        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "props:\n  - {mesh_ref: \"props/a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
         "scale: 1, material: 0, cast_shadow: true}"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "unknown key 'cast_shadow'")) << why(world);
@@ -1372,7 +1375,7 @@ TEST(WorldFileRejects, PropWithEmptyMeshRefIsInvalid) {
 TEST(WorldFileRejects, PropMaterialIndexOutOfRangeViaYamlIsInvalid) {
     const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
         kMinimalWorldV2, "props: []",
-        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "props:\n  - {mesh_ref: \"props/a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
         "scale: 1, material: 9}"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "material index out of range")) << why(world);
@@ -1552,13 +1555,13 @@ TEST(WorldFile, VisualRefsAreRenderOnlyAndValidatedNonEmpty) {
                                             .name("v")
                                             .environment(Environment{})
                                             .capacities(Capacities{1, 1, 1, 1})
-                                            .visual("mesh:a")
-                                            .visual("mesh:b")
+                                            .visual("props/a")
+                                            .visual("props/b")
                                             .build();
     ASSERT_OK(ok);
     ASSERT_EQ(ok->visual_refs.size(), 2u);
-    EXPECT_EQ(ok->visual_refs[0], "mesh:a");
-    EXPECT_EQ(ok->visual_refs[1], "mesh:b");
+    EXPECT_EQ(ok->visual_refs[0], "props/a");
+    EXPECT_EQ(ok->visual_refs[1], "props/b");
 }
 
 // ===========================================================================

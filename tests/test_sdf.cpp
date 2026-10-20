@@ -1387,11 +1387,11 @@ TEST(WorldProps, PropIsKeptWithItsPoseAndMaterial) {
     WorldBuilder b = base_builder();
     SdfPose pose;
     pose.position = glm::vec3(1.0f, 2.0f, 3.0f);
-    b.sphere(1.0f).prop("mesh:cone", pose, 0);
+    b.sphere(1.0f).prop("props/cone", pose, 0);
     const spade::Result<WorldDesc> world = b.build();
     ASSERT_TRUE(world.has_value()) << world.error().context;
     ASSERT_EQ(world->props.size(), 1u);
-    EXPECT_EQ(world->props[0].mesh_ref, "mesh:cone");
+    EXPECT_EQ(world->props[0].mesh_ref, "props/cone");
     EXPECT_EQ(world->props[0].pose.position, glm::vec3(1.0f, 2.0f, 3.0f));
     EXPECT_EQ(world->props[0].material, 0u);
 }
@@ -1406,7 +1406,7 @@ TEST(WorldProps, EmptyMeshRefIsInvalid) {
 
 TEST(WorldProps, NonPositivePoseScaleIsInvalid) {
     WorldBuilder b = base_builder();
-    b.sphere(1.0f).prop("mesh:cone", SdfPose{.position = glm::vec3(0.0f),
+    b.sphere(1.0f).prop("props/cone", SdfPose{.position = glm::vec3(0.0f),
                                              .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                                              .scale = 0.0f});
     const spade::Result<WorldDesc> world = b.build();
@@ -1416,7 +1416,7 @@ TEST(WorldProps, NonPositivePoseScaleIsInvalid) {
 
 TEST(WorldProps, MaterialIndexOutOfRangeIsInvalid) {
     WorldBuilder b = base_builder();
-    b.sphere(1.0f).prop("mesh:cone", SdfPose{}, 7);  // only material 0 exists
+    b.sphere(1.0f).prop("props/cone", SdfPose{}, 7);  // only material 0 exists
     const spade::Result<WorldDesc> world = b.build();
     ASSERT_FALSE(world.has_value());
     EXPECT_EQ(world.error().code, Code::invalid_argument);

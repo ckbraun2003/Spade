@@ -227,6 +227,19 @@ Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view
         return r;
     }
 
+    // NO MESH PARTS (N3, the lead's ruling): a mesh part's mesh_file names its
+    // sidecar relative to the MODEL file, and a scene reads it relative to the
+    // SCENE file, so placing one would need its sidecars copied beside the
+    // scene, which nothing does yet.
+    for (const vehicles::PartDesc& p : file.model.parts) {
+        if (p.mesh) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "add_model: model '" + file.model.name +
+                                             "' has mesh parts; their sidecars would need copying beside the "
+                                             "scene, which is not yet supported"});
+        }
+    }
+
     // The name, by name: a model's name is unique within the scene's models
     // (SCN-004), its own namespace. Never renamed: the editor makes names
     // unique.

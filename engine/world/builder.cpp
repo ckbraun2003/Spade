@@ -1,11 +1,13 @@
 #include "world/builder.hpp"
 
+#include <string_view>
 #include <utility>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/validate.hpp"
+#include "world/mesh_ref.hpp"
 
 namespace spade {
 namespace {
@@ -394,12 +396,19 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
         return std::unexpected(invalid("environment has non-finite values"));
     }
 
-    // Render-only, and the engine's only claim about one is that it names
-    // something. An empty string names nothing and is always a mistake.
+    // Render-only. Each names a mesh: an empty string names nothing and is
+    // always a mistake, and anything else follows world/mesh_ref.hpp's rule
+    // (N3; one rule for every reader of a ref, TD-9), the one the renderer's
+    // resolver looks a ref up by.
     for (size_t i = 0; i < desc.visual_refs.size(); ++i) {
-        if (desc.visual_refs[i].empty()) {
+        const std::string& ref = desc.visual_refs[i];
+        if (ref.empty()) {
             return std::unexpected(
                 invalid("visual reference " + std::to_string(i) + " is empty"));
+        }
+        if (const std::string_view problem = mesh_ref_problem(ref); !problem.empty()) {
+            return std::unexpected(invalid("visual reference " + std::to_string(i) + " '" + ref +
+                                           "' is not a valid mesh_ref: " + std::string(problem)));
         }
     }
 
@@ -443,6 +452,11 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
         const PropDesc& p = desc.props[i];
         if (p.mesh_ref.empty()) {
             return std::unexpected(invalid("prop " + std::to_string(i) + " has an empty mesh_ref"));
+        }
+        // A visual reference's rule (above): world/mesh_ref.hpp's.
+        if (const std::string_view problem = mesh_ref_problem(p.mesh_ref); !problem.empty()) {
+            return std::unexpected(invalid("prop " + std::to_string(i) + " mesh_ref '" + p.mesh_ref +
+                                           "' is not a valid mesh_ref: " + std::string(problem)));
         }
         const float qlen = glm::length(p.pose.rotation);
         if (!finite(p.pose.position) || !finite(p.pose.scale) || !finite(qlen)) {

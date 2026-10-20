@@ -35,7 +35,7 @@ using spade::Result;
 [[nodiscard]] spade::scene::SceneDesc base_scene() {
     spade::scene::SceneDesc s = support::with_asset(support::sample_scene(), "box_1");
     spade::scene::SceneAsset panel = support::asset_named("panel");
-    panel.visual.mesh_ref = "panel.glb";
+    panel.visual.mesh_ref = "props/panel";
     panel.visual.material = "red";
     s.assets.push_back(panel);
     return s;
@@ -50,7 +50,7 @@ using spade::Result;
     pad.position = glm::vec3(1.0f, 0.0f, 1.0f);
     w.spawns.push_back(pad);
     spade::PropDesc crate;
-    crate.mesh_ref = "crate.glb";
+    crate.mesh_ref = "props/crate";
     w.props.push_back(crate);
     spade::SdfPose box_at;
     box_at.position = glm::vec3(3.0f, 0.5f, 0.0f);
@@ -86,7 +86,7 @@ using spade::Result;
     join.op = static_cast<uint32_t>(spade::SdfOp::union_);
     a.collider.nodes = {box, ball, join};
     a.collider_materials = {"steel", "steel", "steel"};
-    a.visual.mesh_ref = "gantry mesh.glb";
+    a.visual.mesh_ref = "props/gantry_mesh";
     a.visual.material = "steel";
     return a;
 }
@@ -154,7 +154,7 @@ using spade::Result;
     spade::SpawnPoint helipad = roof;
     helipad.name = "helipad";
     spade::PropDesc barrel;
-    barrel.mesh_ref = "barrel.glb";
+    barrel.mesh_ref = "props/barrel";
     barrel.pose = pose_of(glm::vec3(2.0f, 0.0f, 2.0f), 0.3f, 1.5f);
     return {
         ed::RenameWorld{"windy field"},

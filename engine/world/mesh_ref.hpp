@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // world/mesh_ref.hpp -- what a visual mesh_ref may be (N11; the lead and Core,
 // 2026-10-20). One rule for every reader of one (TD-9): the renderer's mesh
-// resolver (render/mesh_resolver.hpp) and, as Core applies it, the scene's,
-// the object file's and the library index's validators. It lives here, in the
-// lowest library all of them link.
+// resolver (render/mesh_resolver.hpp) and, as Core applies it (N3), the
+// world's validator (validate_world_desc: its visual references and props'
+// mesh_refs) and the scene's and the object file's (their shared asset rules,
+// a non-empty visual mesh_ref). It lives here, in the lowest library all of
+// them link.
 //
 // A mesh_ref names a mesh by a RELATIVE PATH under a root, without its
 // extension: "props/ball" is <root>/props/ball.spmesh. Segments are joined by

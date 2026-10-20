@@ -145,9 +145,9 @@ sdf:
 # Render-only references (mesh/material ids the presentation layer resolves).
 # Physics never reads these; the only rule is that each one names something.
 visuals:
-  - "mesh:track/gate_ring"
-  - "material:track/asphalt"
-  - "mesh:props/banner"
+  - "track/gate_ring"
+  - "track/asphalt"
+  - "props/banner"
 
 # The material palette. Index 0 is the default every SDF node/prop falls
 # back to when it names no material of its own. RENDER-ONLY -- physics never
@@ -171,5 +171,5 @@ lighting:
 # Render-only mesh placements -- not part of the collision SDF. `orientation`
 # is a unit quaternion, [w, x, y, z]; `material` indexes the palette above.
 props:
-  - {mesh_ref: "mesh:props/tower", position: [-5, 0, -5], orientation: [0.913811564, 0, 0.40613851, 0], scale: 1.20000005, material: 1}
-  - {mesh_ref: "mesh:props/flag", position: [5, 0.5, -5], orientation: [1, 0, 0, 0], scale: 0.800000012, material: 2}
+  - {mesh_ref: "props/tower", position: [-5, 0, -5], orientation: [0.913811564, 0, 0.40613851, 0], scale: 1.20000005, material: 1}
+  - {mesh_ref: "props/flag", position: [5, 0.5, -5], orientation: [1, 0, 0, 0], scale: 0.800000012, material: 2}

@@ -44,8 +44,9 @@
 // entries.
 //
 // NO SIDECARS. An asset's visual names its mesh by mesh_ref, a name the
-// renderer resolves, and its collider is an SDF program held in the text, so
-// an object file has no file beside it and its reader takes no base
+// renderer resolves under its roots (world/mesh_ref.hpp's rule, which the
+// per-asset rules apply, N3), and its collider is an SDF program held in the
+// text, so an object file has no file beside it and its reader takes no base
 // directory. A mesh obstacle (a collider from a .spmesh) would be a later
 // object_version.
 // ---------------------------------------------------------------------------
