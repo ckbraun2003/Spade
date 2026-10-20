@@ -1219,14 +1219,24 @@ struct ModeShown {
     bool drawn = false;         // draw() was Ok
     std::string unhonoured;     // unhonoured()'s text; empty when all was honoured
     PixelsView frame;           // this mode's view
-    Rgb clear{0, 0, 0};         // the clear colour
+    PixelsView background;      // the same view and mode with the scene's items hidden
+    PixelsView again;           // this mode's view grabbed again, with no request between
 };
+
+// A view may change this much between two grabs of one mode, a quarter of
+// the 1% "differs": past it, a switch that changed nothing could pass on the
+// view's own motion (a HUD's text, a turning rotor), so none is judged.
+inline constexpr double kStillFraction = kDiffersFraction / 4.0;
 
 // The step's modes, in the order switched. Each mode supports() accepts is
 // drawn, honoured, not blank, and changed from the last mode drawn before it
 // (the first mode drawn has none to change from: the check, not the step,
-// decides which that is). A refused mode shows its why_not verbatim. Frames
-// compared are one size, or the check is mis-staged.
+// decides which that is). Not blank means it differs from its own
+// background, the same view with the items hidden: a view's background can
+// be a sky and a grid, which differ from any one colour. A view that changes
+// more than kStillFraction between two grabs of one mode is mis-staged. A
+// refused mode shows its why_not verbatim. Frames compared are one size, or
+// the check is mis-staged.
 [[nodiscard]] inline Verdict modes_drawn(std::span<const ModeShown> modes) {
     const std::string name = "each-mode-drawn: ";
     if (modes.empty()) return {false, name + "absent: no modes were switched"};
@@ -1245,9 +1255,12 @@ struct ModeShown {
         if (!m.drawn) return {false, name + at + "draw() failed"};
         if (!m.unhonoured.empty()) return {false, name + at + "unhonoured: " + m.unhonoured};
         if (!well_formed(m.frame)) return {false, name + at + "absent: no frame"};
-        const double lit = differ_fraction(m.frame, m.clear);
+        const Rgb clear = well_formed(m.background)
+                              ? Rgb{m.background.rgba[0], m.background.rgba[1], m.background.rgba[2]}
+                              : Rgb{0, 0, 0};
+        const double lit = differ_fraction(m.frame, clear);
         if (!differs(lit)) {
-            return {false, name + at + "blank: " + detail::percent(lit) + " of the view differs from the clear colour"};
+            return {false, name + at + "blank: " + detail::percent(lit) + " of the view differs from its background"};
         }
         if (last != nullptr) {
             if (!same_size(m.frame, *last)) {
@@ -1320,18 +1333,24 @@ inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max whi
     return {true, name + std::to_string(c.shown.size()) + " legends, each apply_view()'s"};
 }
 
-// After Split: two views with different specs, each drawn, and different.
+// After Split: two views with different specs, each drawn (it differs from
+// its own background, that view with the items hidden), and different.
 [[nodiscard]] inline Verdict two_views(std::string_view left_spec, std::string_view right_spec,
-                                       const PixelsView& left, const PixelsView& right, Rgb clear) {
+                                       const PixelsView& left, const PixelsView& right,
+                                       const PixelsView& left_background, const PixelsView& right_background) {
     const std::string name = "two-views: ";
     if (left_spec == right_spec) return {false, name + "both views are " + std::string(left_spec)};
     if (!well_formed(left) || !well_formed(right)) return {false, name + "absent: a view has no pixels"};
     if (!same_size(left, right)) return {false, name + "mis-staged: the two views are not one size"};
+    (void)right_background;
+    const Rgb clear = well_formed(left_background)
+                          ? Rgb{left_background.rgba[0], left_background.rgba[1], left_background.rgba[2]}
+                          : Rgb{0, 0, 0};
     const double l = differ_fraction(left, clear);
     const double r = differ_fraction(right, clear);
     if (!differs(l) || !differs(r)) {
         return {false, name + "a view is blank: " + detail::percent(l) + " and " + detail::percent(r) +
-                           " off the clear colour"};
+                           " off their backgrounds"};
     }
     const double apart = differ_fraction(left, right);
     if (!differs(apart)) return {false, name + "the two views match: " + detail::percent(apart) + " differs"};

@@ -10,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -108,14 +109,35 @@ struct Image {
     return images;
 }
 
-// A mode switched to: supported, applied, drawn, honoured, with `frame`.
+// A `w` x `h` view's background with the items hidden: the clear colour.
+// Kept, since the views point into it.
+[[nodiscard]] const Image& clear_background(uint32_t w, uint32_t h) {
+    static std::deque<Image> kept;
+    for (const Image& img : kept) {
+        if (img.w == w && img.h == h) return img;
+    }
+    return kept.emplace_back(image(w, h, kClear));
+}
+
+// A mode switched to: supported, applied, drawn, honoured, with `frame`,
+// over the clear background, and still (grabbed again unchanged).
 [[nodiscard]] eg::ModeShown mode(const char* kind, const Image& frame) {
     eg::ModeShown m;
     m.kind = kind;
     m.supported = m.applied = m.drawn = true;
     m.frame = frame.view();
-    m.clear = kClear;
+    m.background = clear_background(frame.w, frame.h).view();
+    m.again = frame.view();
     return m;
+}
+
+// A sky: a vertical gradient, no one colour, as the editor's view draws.
+[[nodiscard]] Image sky(uint32_t w = 64, uint32_t h = 48) {
+    Image img = image(w, h, {0, 0, 0});
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) img.set(x, y, {static_cast<uint8_t>(90 + 3 * y), 150, 230});
+    }
+    return img;
 }
 
 // ---------------------------------------------------------------------------
@@ -730,26 +752,29 @@ TEST(SandboxEndGoalViews, AFixedRangeWhileTheRegionRunsIsMisStaged) {
 }
 
 TEST(SandboxEndGoalViews, PassesTwoDifferentViewsSideBySide) {
+    const eg::PixelsView bg = clear_background(64, 48).view();
     const Image left = drawn({200, 180, 40});
     const Image right = drawn({240, 240, 240}, 30);
-    const eg::Verdict v = eg::two_views("shaded", "wireframe+vortex_iso", left.view(), right.view(), kClear);
+    const eg::Verdict v = eg::two_views("shaded", "wireframe+vortex_iso", left.view(), right.view(), bg, bg);
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
 TEST(SandboxEndGoalViews, FailsOneSpecTwiceOrABlankOrAMatchingPair) {
+    const eg::PixelsView bg = clear_background(64, 48).view();
     const Image a = drawn({200, 180, 40});
     const Image b = drawn({240, 240, 240}, 30);
     const Image blank = image(64, 48, kClear);
-    const eg::Verdict same_spec = eg::two_views("shaded", "shaded", a.view(), b.view(), kClear);
-    const eg::Verdict one_blank = eg::two_views("shaded", "wireframe", a.view(), blank.view(), kClear);
-    const eg::Verdict matching = eg::two_views("shaded", "wireframe", a.view(), a.view(), kClear);
+    const eg::Verdict same_spec = eg::two_views("shaded", "shaded", a.view(), b.view(), bg, bg);
+    const eg::Verdict one_blank = eg::two_views("shaded", "wireframe", a.view(), blank.view(), bg, bg);
+    const eg::Verdict matching = eg::two_views("shaded", "wireframe", a.view(), a.view(), bg, bg);
     for (const eg::Verdict* v : {&same_spec, &one_blank, &matching}) EXPECT_TRUE(judged_fail(*v)) << v->detail;
 }
 
 TEST(SandboxEndGoalViews, TwoViewsOfTwoSizesAreMisStaged) {
+    const eg::PixelsView bg = clear_background(64, 48).view();
     const Image a = drawn({200, 180, 40});
     const Image b = image(32, 24, kClear, {240, 240, 240}, 2, 2, 20, 20);
-    const eg::Verdict v = eg::two_views("shaded", "wireframe", a.view(), b.view(), kClear);
+    const eg::Verdict v = eg::two_views("shaded", "wireframe", a.view(), b.view(), bg, bg);
     EXPECT_FALSE(v.ok) << v.detail;
     EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
 }
@@ -885,4 +910,72 @@ TEST(SandboxEndGoalViews, NoLayersIsMisStagedAndExtraLegendsAJudgedFail) {
     extra.layers = 1;
     const eg::Verdict b = eg::legend_shown(extra);
     EXPECT_TRUE(judged_fail(b)) << b.detail;
+}
+
+// The views' observables (Interface's editor.views): a mode's background
+// frame, and the same mode grabbed again.
+
+TEST(SandboxEndGoalViews, AViewOfItsBackgroundAloneIsBlank) {
+    const Image background = sky();
+    Image with_items = sky();
+    for (uint32_t x = 10; x < 26; ++x) {
+        for (uint32_t y = 10; y < 29; ++y) with_items.set(x, y, {200, 180, 40});
+    }
+    eg::ModeShown bare = mode("wireframe", background);
+    bare.background = background.view();
+    eg::ModeShown drawn_over = mode("shaded", with_items);
+    drawn_over.background = background.view();
+    const eg::Verdict v = eg::modes_drawn(std::vector<eg::ModeShown>{drawn_over, bare});
+    EXPECT_TRUE(judged_fail(v)) << v.detail;
+    EXPECT_TRUE(has(v.detail, "(wireframe) blank")) << v.detail;
+}
+
+TEST(SandboxEndGoalViews, AViewThatMovesWithNoModeChangeIsMisStaged) {
+    // 100 x 100: 25 pixels moved is 0.25%, the most a still view may change.
+    const Image shaded = image(100, 100, kClear, {200, 180, 40}, 10, 10, 40, 40);
+    const Image wire = image(100, 100, kClear, {240, 240, 240}, 50, 50, 90, 90);
+    for (const uint32_t moved : {25u, 26u}) {
+        Image later = shaded;
+        for (uint32_t x = 0; x < moved; ++x) later.set(x % 50 + 45, x / 50 + 2, {255, 255, 255});
+        eg::ModeShown first = mode("shaded", shaded);
+        first.again = later.view();
+        const eg::Verdict v = eg::modes_drawn(std::vector<eg::ModeShown>{first, mode("wireframe", wire)});
+        if (moved == 25u) {
+            EXPECT_TRUE(v.ok) << v.detail;
+        } else {
+            EXPECT_FALSE(v.ok) << v.detail;
+            EXPECT_TRUE(has(v.detail, "mis-staged: the view changes 0.26%")) << v.detail;
+        }
+    }
+}
+
+TEST(SandboxEndGoalViews, AMissingOrMisSizedBackgroundOrSecondGrabIsMisStaged) {
+    const Image shaded = drawn({200, 180, 40});
+    const Image wire = drawn({240, 240, 240}, 30);
+    const Image small = image(32, 24, kClear);
+    eg::ModeShown no_background = mode("wireframe", wire);
+    no_background.background = {};
+    eg::ModeShown small_background = mode("wireframe", wire);
+    small_background.background = small.view();
+    eg::ModeShown no_again = mode("wireframe", wire);
+    no_again.again = {};
+    eg::ModeShown small_again = mode("wireframe", wire);
+    small_again.again = small.view();
+    for (const eg::ModeShown& second : {no_background, small_background, no_again, small_again}) {
+        const eg::Verdict v = eg::modes_drawn(std::vector<eg::ModeShown>{mode("shaded", shaded), second});
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_TRUE(has(v.detail, "mis-staged:")) << v.detail;
+    }
+}
+
+TEST(SandboxEndGoalViews, AHalfOfItsBackgroundAloneIsBlankAndNoBackgroundMisStaged) {
+    const Image left_bg = sky();
+    const Image right = drawn({240, 240, 240}, 30);
+    const eg::Verdict bare = eg::two_views("shaded", "wireframe", left_bg.view(), right.view(), left_bg.view(),
+                                           clear_background(64, 48).view());
+    EXPECT_TRUE(judged_fail(bare)) << bare.detail;
+    const eg::Verdict none =
+        eg::two_views("shaded", "wireframe", left_bg.view(), right.view(), {}, clear_background(64, 48).view());
+    EXPECT_FALSE(none.ok) << none.detail;
+    EXPECT_TRUE(has(none.detail, "mis-staged:")) << none.detail;
 }
