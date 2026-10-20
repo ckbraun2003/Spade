@@ -229,13 +229,13 @@ TEST(AnalysisRunFolder, RefusesANameDateOrCommitThatCantNameAFolder) {
         EXPECT_EQ(f.error().code, spade::Code::invalid_argument) << bad;
         EXPECT_NE(f.error().context.find("case name"), std::string::npos) << f.error().context;
     }
-    for (const std::string& date : {"2026/10/13", "20261013", "2026-10-1", "../10-13", ""}) {
+    for (const std::string_view date : {"2026/10/13", "20261013", "2026-10-1", "../10-13", ""}) {
         const spade::Result<fs::path> f =
             an::create_run_folder(runs.path(), "hover", r, date, "36f8ca5", an::RunKind::cfd);
         ASSERT_FALSE(f.has_value()) << date;
         EXPECT_NE(f.error().context.find("date"), std::string::npos) << f.error().context;
     }
-    for (const std::string& commit : {"", "../x", "36F8CA5", "36f8ca5 ", "unknown"}) {
+    for (const std::string_view commit : {"", "../x", "36F8CA5", "36f8ca5 ", "unknown"}) {
         const spade::Result<fs::path> f =
             an::create_run_folder(runs.path(), "hover", r, "2026-10-13", commit, an::RunKind::cfd);
         ASSERT_FALSE(f.has_value()) << commit;
