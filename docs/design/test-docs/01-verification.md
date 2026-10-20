@@ -117,6 +117,17 @@ A record is never edited. A re-run adds a new dated record beside the old one, a
 - **Show it fail.** Every guard is demonstrated against the mutation it exists to catch (`SL18`). Then check what the mutation actually falsified, not just that something went red.
 - **Expectations come from elsewhere** (`TD-4`).
 - **Absence fails** (`TD-5`).
+  - **"Debug: runs in release"** is a narrow skip `TD-5` allows besides an environmental absence. It's the lead's amendment of 2026-10-20, a verification rule refined, not an L-law, and the owner was told so he can object. All five conditions hold:
+    1. The test runs on the release preset of every gate and in every leg.
+    2. In debug it is reported by name (`TD-8`), with its release time.
+    3. A check that runs in debug covers the same code.
+    4. It's allowed only where the measured debug time exceeds ctest's 60 s limit, and the measurement is in the skip's text. Never for convenience.
+    5. Every test using it is listed below, so the set stays visible and reviewable.
+  - **The tests using it:**
+
+    | Test | Debug time measured | Release time | Covered in debug by | Since |
+    |---|---|---|---|---|
+    | Solids S2, circular Couette at `R₁/dx` 16 (Physics, P2) | about 100 s (to be confirmed by Physics' timing) | about 15 s | P2's planar Couette, plates a quarter cell off | P2's branch, pending |
 - **Two transcriptions of one authority** need a test that compares them, or they fork silently. Prefer deriving one from the other.
 
 ## Consumer smoke
