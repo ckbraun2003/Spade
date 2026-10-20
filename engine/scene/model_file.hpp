@@ -51,22 +51,23 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
 
 #include "core/error.hpp"
-#include "vehicles/model_type.hpp"         // ModelType
-#include "vehicles/propulsion_steady.hpp"  // PropulsionChain
+#include "scene/scene_file.hpp"     // SceneDesc
+#include "vehicles/model_type.hpp"  // ModelType, its PropulsionChain
 
 namespace spade::scene {
 
 // The model-file schema this build reads and writes (the only one so far).
 inline constexpr uint32_t kModelFileVersion = 1;
 
+// One model, its propulsion chain included (model.propulsion): the chain is
+// part of the model (N5a, the lead's ruling), so every copy of the model
+// carries it.
 struct ModelFile {
     vehicles::ModelType model{};
-    std::optional<vehicles::PropulsionChain> propulsion{};
 };
 
 // The one validator (property 2). invalid_argument naming the first
@@ -98,5 +99,13 @@ struct ModelFile {
 // base directory ("." for a bare file name). io_error when it cannot be
 // read; a parse diagnostic comes back prefixed with the path.
 [[nodiscard]] Result<ModelFile> load_model_file(const std::filesystem::path& path);
+
+// Registers file.model in `scene` as `model_name` (the editor's per-vehicle
+// copy, EDT-019), its chain with it: the chain is part of the model. ALL OR
+// NOTHING: a copy, validate_scene() on it, assigned only on success.
+// Refused by name: a model_name the scene's models already use (it never
+// renames; the editor makes names unique), and anything validate_model_file()
+// or validate_scene() refuses.
+[[nodiscard]] Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name);
 
 }  // namespace spade::scene

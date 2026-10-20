@@ -100,10 +100,10 @@ constexpr std::string_view kPropulsionComment = R"YAML(
     detail::emit_model(out, file.model, "  ", "  ");
 
     // Written only when set: a model without a chain is the text it is.
-    if (file.propulsion) {
+    if (file.model.propulsion) {
         out += kPropulsionComment;
         out += "propulsion:\n";
-        detail::emit_propulsion(out, *file.propulsion, "  ");
+        detail::emit_propulsion(out, *file.model.propulsion, "  ");
     }
     return out;
 }
@@ -145,7 +145,7 @@ constexpr std::string_view kPropulsionComment = R"YAML(
     if (has(root, "propulsion")) {
         Result<vehicles::PropulsionChain> chain = detail::parse_propulsion(root["propulsion"], "propulsion", kSchema);
         if (!chain) return std::unexpected(chain.error());
-        out.propulsion = std::move(*chain);
+        out.model.propulsion = std::move(*chain);
     }
     return out;
 }
@@ -173,11 +173,6 @@ Result<void> validate_model_file(const ModelFile& file) {
     // The scene's per-model rules, the same function (TD-9).
     if (Result<void> r = detail::validate_model(file.model, kSchema, kKind); !r) {
         return r;
-    }
-    if (file.propulsion) {
-        if (Result<void> r = vehicles::validate_propulsion_chain(*file.propulsion); !r) {
-            return r;
-        }
     }
     return {};
 }
@@ -229,6 +224,11 @@ Result<ModelFile> load_model_file(const std::filesystem::path& path) {
         return std::unexpected(Error{file.error().code, path_text(path) + ": " + file.error().context});
     }
     return file;
+}
+
+// RED stub: refuses every call.
+Result<void> add_model(SceneDesc&, const ModelFile&, std::string_view) {
+    return std::unexpected(Error{Code::internal, "add_model: not implemented"});
 }
 
 }  // namespace spade::scene
