@@ -9,6 +9,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -1444,10 +1445,54 @@ static_assert(sizeof(SdfNode) == 32, "kSdfSrc's GpuSdfNode is 32 bytes");
 static_assert(sizeof(SdfTransform) == 80, "kSdfSrc's GpuSdfTransform is 80 bytes");
 static_assert(kMaxSdfDepth == 32, "kSdfSrc's kMaxSdfDepth must match world/sdf.hpp's");
 
-// One CSG subtree's place in the shared node and transform buffers.
+// One CSG subtree's place in the shared node and transform buffers, and the
+// box it was uploaded with.
 struct GpuCsgSubtree {
-    uint32_t node_base = 0, node_count = 0, transform_base = 0;
+    uint32_t node_base = 0, node_count = 0, transform_base = 0, transform_count = 0;
+    render::Aabb bounds{};
 };
+
+// Appends `sub`'s nodes, and the transforms its leaves use, to the shared
+// buffers, those renumbered from its own transform base: a subtree's program
+// carries the whole world's table (csg_subtree_program()), and copying it per
+// subtree would grow the buffer as subtrees x transforms. upload_scene()
+// packs with it, and draw() packs the scene's subtree again to compare it with
+// what was uploaded, so it reads nothing out of range: a leaf naming a
+// transform past the table returns nullopt (upload_scene() validated the
+// program first; draw() has not). `renumbered` is scratch.
+[[nodiscard]] std::optional<GpuCsgSubtree> pack_csg_subtree(const render::CsgSubtree& sub, std::vector<SdfNode>& nodes,
+                                                            std::vector<SdfTransform>& transforms,
+                                                            std::vector<uint32_t>& renumbered) {
+    GpuCsgSubtree g{.node_base = static_cast<uint32_t>(nodes.size()),
+                    .node_count = static_cast<uint32_t>(sub.program.nodes.size()),
+                    .transform_base = static_cast<uint32_t>(transforms.size()),
+                    .bounds = sub.bounds};
+    constexpr uint32_t kUnused = std::numeric_limits<uint32_t>::max();
+    renumbered.assign(sub.program.transforms.size(), kUnused);
+    for (SdfNode node : sub.program.nodes) {
+        if (node.op == static_cast<uint32_t>(SdfOp::none)) {
+            if (node.transform >= renumbered.size()) return std::nullopt;
+            uint32_t& local = renumbered[node.transform];
+            if (local == kUnused) {
+                local = static_cast<uint32_t>(transforms.size()) - g.transform_base;
+                transforms.push_back(sub.program.transforms[node.transform]);
+            }
+            node.transform = local;
+        }
+        nodes.push_back(node);
+    }
+    g.transform_count = static_cast<uint32_t>(transforms.size()) - g.transform_base;
+    return g;
+}
+
+// Whether `now` is, byte for byte, `uploaded` from `base` on. SdfNode and
+// SdfTransform are padding-free PODs (their own static_asserts), the bytes
+// the buffers hold.
+template <class T>
+[[nodiscard]] bool same_as_uploaded(const std::vector<T>& now, const std::vector<T>& uploaded, uint32_t base) {
+    return base <= uploaded.size() && now.size() <= uploaded.size() - base &&
+           (now.empty() || std::memcmp(now.data(), uploaded.data() + base, now.size() * sizeof(T)) == 0);
+}
 
 struct GpuMesh {
     GLuint vao = 0, vbo_pos = 0, vbo_nrm = 0, ebo = 0;
@@ -1706,10 +1751,17 @@ struct GlRenderer::Impl {
     GLuint ssbo_csg_nodes = 0;
     GLuint ssbo_csg_transforms = 0;
     std::vector<GpuCsgSubtree> csg_subtrees;  // parallel to RenderScene::csg_subtrees
+    // What the two buffers hold, kept so draw() can refuse a subtree moved or
+    // edited since its upload (L6).
+    std::vector<SdfNode> csg_nodes_uploaded;
+    std::vector<SdfTransform> csg_transforms_uploaded;
     size_t max_storage_block_bytes = 0;       // GL_MAX_SHADER_STORAGE_BLOCK_SIZE
 
     // Scratch, reused every frame so a frame allocates nothing steady-state.
     std::vector<glm::mat4> instance_transforms;
+    std::vector<SdfNode> csg_nodes_now;  // draw()'s repack of each subtree
+    std::vector<SdfTransform> csg_transforms_now;
+    std::vector<uint32_t> csg_renumbered;
     std::vector<uint32_t> instance_overrides;
     std::vector<float> instance_speeds;
     std::vector<uint32_t> instance_walls;  // DrawItem::flow_wall, 1 or 0 (RND-8)
@@ -2217,13 +2269,12 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
         }
     }
 
-    // CSG subtrees' SDF programs, every one end to end. Each keeps only the
-    // transforms its leaves use, renumbered from its own transform base: a
-    // subtree's program carries the whole world's table (csg_subtree_program()),
-    // and copying it per subtree would grow the buffer as subtrees x transforms.
+    // CSG subtrees' SDF programs, every one end to end, each with only the
+    // transforms its leaves use (pack_csg_subtree()).
     std::vector<SdfNode> nodes;
     std::vector<SdfTransform> transforms;
     std::vector<GpuCsgSubtree> subtrees;
+    std::vector<uint32_t> renumbered;
     subtrees.reserve(scene.csg_subtrees.size());
     for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
         const render::CsgSubtree& sub = scene.csg_subtrees[i];
@@ -2248,23 +2299,11 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
                                              " nodes; GL marches at most " + std::to_string(kMaxCsgSubtreeNodes) +
                                              " (GlRenderer::kMaxCsgSubtreeNodes); draw it with render::render()"});
         }
-        const GpuCsgSubtree g{.node_base = static_cast<uint32_t>(nodes.size()),
-                              .node_count = static_cast<uint32_t>(sub.program.nodes.size()),
-                              .transform_base = static_cast<uint32_t>(transforms.size())};
-        constexpr uint32_t kUnused = std::numeric_limits<uint32_t>::max();
-        std::vector<uint32_t> renumbered(sub.program.transforms.size(), kUnused);
-        for (SdfNode node : sub.program.nodes) {
-            if (node.op == static_cast<uint32_t>(SdfOp::none)) {
-                uint32_t& local = renumbered[node.transform];  // in range: validate() checked it
-                if (local == kUnused) {
-                    local = static_cast<uint32_t>(transforms.size()) - g.transform_base;
-                    transforms.push_back(sub.program.transforms[node.transform]);
-                }
-                node.transform = local;
-            }
-            nodes.push_back(node);
+        const std::optional<GpuCsgSubtree> g = pack_csg_subtree(sub, nodes, transforms, renumbered);
+        if (!g) {  // validate() checked every leaf's transform, so this is not reached
+            return std::unexpected(Error{Code::invalid_argument, which + " names a transform past its table"});
         }
-        subtrees.push_back(g);
+        subtrees.push_back(*g);
     }
     if (nodes.empty()) nodes.emplace_back();  // a bound buffer always has storage
     if (transforms.empty()) transforms.emplace_back();
@@ -2357,6 +2396,8 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     s.materials_capacity = s.gpu_materials.size();
 
     s.csg_subtrees = std::move(subtrees);
+    s.csg_nodes_uploaded = nodes;
+    s.csg_transforms_uploaded = transforms;
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_nodes);
     gl.BufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(node_bytes), nodes.data(), GL_STATIC_DRAW);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_transforms);
@@ -2485,14 +2526,35 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                          " CSG subtrees but " + std::to_string(s.csg_subtrees.size()) +
                                          " are uploaded -- call upload_scene() first"});
     }
-    // A subtree that is not the one uploaded would vanish or march another
-    // program, so it is refused, as upload_scene() refuses one (L6).
+    // GL marches a subtree from what upload_scene() copied, but takes its box
+    // from this scene. One moved or edited since -- render_parts poses a part
+    // into its program -- would march at its old pose inside its new box:
+    // clipped, or gone. So each is packed again and compared with the upload,
+    // byte for byte: its nodes, the transforms its leaves use, and its box
+    // (L6). A frame pays a subtree's nodes, at most kMaxCsgSubtreeNodes.
     for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
         const render::CsgSubtree& sub = scene.csg_subtrees[i];
-        if (sub.draw_item >= scene.statics.size() || sub.program.nodes.size() != s.csg_subtrees[i].node_count) {
+        const GpuCsgSubtree& up = s.csg_subtrees[i];
+        s.csg_nodes_now.clear();
+        s.csg_transforms_now.clear();
+        const std::optional<GpuCsgSubtree> now =
+            sub.draw_item < scene.statics.size()
+                ? pack_csg_subtree(sub, s.csg_nodes_now, s.csg_transforms_now, s.csg_renumbered)
+                : std::nullopt;
+        const bool same_program = now && now->node_count == up.node_count &&
+                                  now->transform_count == up.transform_count &&
+                                  same_as_uploaded(s.csg_nodes_now, s.csg_nodes_uploaded, up.node_base) &&
+                                  same_as_uploaded(s.csg_transforms_now, s.csg_transforms_uploaded, up.transform_base);
+        const bool same_box = std::memcmp(&sub.bounds.min, &up.bounds.min, sizeof(glm::vec3)) == 0 &&
+                              std::memcmp(&sub.bounds.max, &up.bounds.max, sizeof(glm::vec3)) == 0;
+        if (!same_program || !same_box) {
+            const std::string what = !now            ? " is not the one uploaded"
+                                     : !same_program ? "'s program (its nodes, or the transforms it marches) is not "
+                                                       "the one uploaded"
+                                                     : "'s box is not the one uploaded";
             return std::unexpected(Error{Code::invalid_argument,
-                                         "GlRenderer::draw: CSG subtree " + std::to_string(i) +
-                                             " is not the one uploaded -- call upload_scene() with this scene"});
+                                         "GlRenderer::draw: CSG subtree " + std::to_string(i) + what +
+                                             ": moved or edited since upload_scene() -- upload this scene again"});
         }
     }
     if (width == 0u || height == 0u) {
