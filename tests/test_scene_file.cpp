@@ -42,7 +42,9 @@
 #include "core/rng.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
+#include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
+#include "vehicles/propulsion_steady.hpp"
 #include "world/builder.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
@@ -493,17 +495,17 @@ TEST(SceneFile, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
 }
 
 TEST(SceneFile, AnotherSceneVersionIsASchemaMismatch) {
-    // This build reads versions 1 to 3 (2 carries parts, CORE-7; 3 a mesh
-    // part, CORE-6). Above and below that range is "upgrade", never "fix your
-    // file".
-    for (const std::string version : {"4", "0"}) {
+    // This build reads versions 1 to 4 (2 carries parts, CORE-7; 3 a mesh
+    // part, CORE-6; 4 a model's propulsion chain, N5a). Above and below that
+    // range is "upgrade", never "fix your file".
+    for (const std::string version : {"5", "0"}) {
         SCOPED_TRACE(version);
         const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
             with(kMinimalScene, "scene_version: 1\n", "scene_version: " + version + "\n"));
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
         EXPECT_TRUE(contains(r.error().context, "scene file is schema version " + version)) << r.error().context;
-        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 3")) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 4")) << r.error().context;
     }
 }
 
@@ -1190,12 +1192,12 @@ TEST(SceneFile, ASceneWithAMeshPartIsVersion3) {
         << why(relabelled);
 
     // A reader of versions 1 and 2 refuses a version-3 file as schema_mismatch,
-    // "upgrade", as this build refuses version 4.
+    // "upgrade", as this build refuses version 5.
     const spade::Result<SceneDesc> newer = spade::scene::scene_from_yaml(
-        with(*text, "\nscene_version: 3\n", "\nscene_version: 4\n"), std::filesystem::path("."));
+        with(*text, "\nscene_version: 3\n", "\nscene_version: 5\n"), std::filesystem::path("."));
     ASSERT_FALSE(newer);
     EXPECT_EQ(newer.error().code, spade::Code::schema_mismatch);
-    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 3")) << why(newer);
+    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 4")) << why(newer);
 }
 
 TEST(SceneFile, AMeshPartLoadsFromItsSidecar) {
@@ -1345,6 +1347,240 @@ TEST(SceneFile, AMeshPartNeedsABaseDirectoryAFileAndItsHash) {
     ASSERT_FALSE(missing);
     EXPECT_EQ(missing.error().code, spade::Code::io_error);
     EXPECT_TRUE(contains(why(missing), "t\xc3\xa9tra.spmesh")) << why(missing);
+}
+
+// ===========================================================================
+// N5a: a model's propulsion chain, and scene version 4 (the editor end-goal
+// design, section 8). The chain is the model's (ModelType::propulsion), so a
+// model item carries it as its last key, `propulsion:`, in the model file's
+// encoding (emit_propulsion and parse_propulsion, one for both files).
+// Version 4 is written ONLY when a model has a chain, so every older text --
+// gate_run, parts, every committed scene -- is unchanged
+// (AScenesTextRoundTripsByteForByte, PartsTextMatchesTheGolden and
+// EditorFiles.EveryCommittedSceneSavesBackByteForByte, unedited, pin that).
+// ===========================================================================
+
+using spade::vehicles::PropulsionChain;
+
+[[nodiscard]] uint64_t bits_of(double v) {
+    uint64_t b = 0;
+    std::memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+// A valid chain, every value a literal (TD-3), the model file's pinned one:
+// a fixed and an exponent spelling, and current_min -0.
+[[nodiscard]] PropulsionChain literal_chain() {
+    PropulsionChain c;
+    c.kv = 256.56340004316644;
+    c.resistance = 0.075;
+    c.no_load_current = 1.2;
+    c.current_min = -0.0;
+    c.current_max = 50.0;
+    c.esc_current_total_max = 160.0;
+    c.pole_pairs = 7.0;
+    c.inductance = 1.5e-5;
+    c.diameter = 0.1524;
+    c.table.j_min = 0.0f;
+    c.table.j_max = 0.8f;
+    c.table.ct = {0.12f, 0.04f};
+    c.table.cq = {0.008f, 0.004f};
+    c.cells_series = 4;
+    c.cells_parallel = 1;
+    c.cell_resistance = 0.005;
+    c.cell_cutoff_voltage = 3.0;
+    c.pack_polarization_resistance = 0.002;
+    c.pack_current_max = 1.2e6;
+    c.ocv_table = {3.3f, 4.2f};
+    c.motors_on_bus = 1;
+    return c;
+}
+
+// literal_chain() as hand-written text, kMinimalScene's model's last key.
+// Every key a test mutates has a key/value pair that occurs nowhere else.
+[[nodiscard]] std::string chain_block() {
+    return "    propulsion:\n"
+           "      kv: 256.56340004316644\n"
+           "      resistance: 0.075\n"
+           "      no_load_current: 1.2\n"
+           "      current_min: -0\n"
+           "      current_max: 50\n"
+           "      esc_current_total_max: 160\n"
+           "      pole_pairs: 7\n"
+           "      inductance: 1.5e-05\n"
+           "      diameter: 0.1524\n"
+           "      table: {j_min: 0, j_max: 0.8, ct: [0.12, 0.04], cq: [0.008, 0.004]}\n"
+           "      cells_series: 4\n"
+           "      cells_parallel: 1\n"
+           "      cell_resistance: 0.005\n"
+           "      cell_cutoff_voltage: 3\n"
+           "      pack_polarization_resistance: 0.002\n"
+           "      pack_current_max: 1.2e+06\n"
+           "      ocv_table: [3.3, 4.2]\n"
+           "      motors_on_bus: 1\n";
+}
+
+// kMinimalScene with its model's chain, as a version-4 file.
+[[nodiscard]] std::string minimal_chain_scene() {
+    return with(with(kMinimalScene, "scene_version: 1\n", "scene_version: 4\n"), kImuLine,
+                std::string(kImuLine) + chain_block());
+}
+
+TEST(SceneFile, AModelWithAChainIsVersion4AndRoundTripsBitForBit) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    const spade::Result<std::string> plain_text = spade::scene::scene_to_yaml(*plain);
+    ASSERT_OK(plain_text);
+
+    SceneDesc s = *plain;
+    s.models[0].propulsion = literal_chain();
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 4\n")) << *text;
+    EXPECT_TRUE(contains(*text, "# Spade scene file -- schema version 4.\n")) << *text;
+    // The model item's last key, after its IMU mounts, in the model file's
+    // encoding two spaces deeper (the table's keys two deeper again).
+    EXPECT_TRUE(contains(*text, "sigma_bg: 0}\n    propulsion:\n      kv: 256.56340004316644\n")) << *text;
+    EXPECT_TRUE(contains(*text, "\n      current_min: -0\n")) << *text;
+    EXPECT_TRUE(contains(*text, "\n      table:\n        j_min: 0\n        j_max: 0.800000012\n")) << *text;
+    EXPECT_TRUE(contains(*text, "\n      motors_on_bus: 1\n\n# Static scenery"))
+        << "the chain ends the item: " << *text;
+
+    // Read back: the chain bit for bit, the other identities with it.
+    const spade::Result<SceneDesc> back = spade::scene::scene_from_yaml(*text);
+    ASSERT_OK(back);
+    ASSERT_TRUE(back->models.at(0).propulsion.has_value());
+    EXPECT_EQ(spade::vehicles::propulsion_identity(*back->models[0].propulsion),
+              spade::vehicles::propulsion_identity(literal_chain()));
+    EXPECT_EQ(bits_of(back->models[0].propulsion->current_min), bits_of(-0.0)) << "-0 stays -0";
+    EXPECT_EQ(spade::vehicles::model_identity(back->models[0]), spade::vehicles::model_identity(s.models[0]));
+    EXPECT_EQ(spade::vehicles::parts_identity(back->models[0]), spade::vehicles::parts_identity(s.models[0]));
+    const spade::Result<std::string> again = spade::scene::scene_to_yaml(*back);
+    ASSERT_OK(again);
+    EXPECT_TRUE(*again == *text) << "byte for byte (SCN-002): " << first_difference(*text, *again);
+
+    // The version is a function of the content: without the chain, the text
+    // it always was; with parts or a mesh part as well, still version 4, the
+    // oldest that carries everything.
+    SceneDesc bare = s;
+    bare.models[0].propulsion.reset();
+    const spade::Result<std::string> bare_text = spade::scene::scene_to_yaml(bare);
+    ASSERT_OK(bare_text);
+    EXPECT_TRUE(*bare_text == *plain_text) << first_difference(*plain_text, *bare_text);
+    const MeshPtr tetra = tetra_mesh(0.25);
+    ASSERT_NE(tetra, nullptr);
+    for (const std::vector<PartDesc>& parts :
+         {std::vector<PartDesc>{arm_part()}, std::vector<PartDesc>{arm_part(), mesh_part(tetra, kSidecar)}}) {
+        SceneDesc dressed = s;
+        dressed.models[0].parts = parts;
+        const spade::Result<std::string> dressed_text = spade::scene::scene_to_yaml(dressed);
+        ASSERT_OK(dressed_text);
+        EXPECT_TRUE(contains(*dressed_text, "\nscene_version: 4\n")) << *dressed_text;
+    }
+}
+
+TEST(SceneFile, AHandWrittenChainReadsAsTheModelFileSpellsIt) {
+    const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(minimal_chain_scene());
+    ASSERT_OK(read);
+    ASSERT_TRUE(read->models.at(0).propulsion.has_value());
+    EXPECT_EQ(spade::vehicles::propulsion_identity(*read->models[0].propulsion),
+              spade::vehicles::propulsion_identity(literal_chain()));
+
+    // A second model with no chain beside it: only the first has one.
+    const spade::Result<SceneDesc> two = spade::scene::scene_from_yaml(
+        with(minimal_chain_scene(), "\nassets:\n",
+             "\n  - name: \"q2\"\n    version: 1\n    param_schema_id: 0\n    visual_ref: \"\"\n"
+             "    design_to_principal: [1, 0, 0, 0]\n    com_offset: [0, 0, 0]\n"
+             "    body: {mass: 2, inertia_diag: [1, 1, 1]}\n    proxy_radius: 0.1\n    rotors: []\n"
+             "    drag_bodies: []\n    imu_mounts: []\nassets:\n"));
+    ASSERT_OK(two);
+    ASSERT_EQ(two->models.size(), 2u);
+    EXPECT_TRUE(two->models[0].propulsion.has_value());
+    EXPECT_FALSE(two->models[1].propulsion.has_value());
+}
+
+TEST(SceneFile, AnOlderVersionMayNotCarryAChain) {
+    // `propulsion` in a version-1, -2 or -3 file: an unknown key, blamed on
+    // that version, at its line (as `parts` is in version 1).
+    for (const std::string version : {"1", "2", "3"}) {
+        SCOPED_TRACE(version);
+        const spade::Result<SceneDesc> refused = spade::scene::scene_from_yaml(
+            with(minimal_chain_scene(), "scene_version: 4\n", "scene_version: " + version + "\n"));
+        ASSERT_FALSE(refused);
+        EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(contains(why(refused), "unknown key 'propulsion' in scene.models[0] -- scene schema v" + version +
+                                               " does not define it"))
+            << why(refused);
+        EXPECT_TRUE(contains(why(refused), "(line 17, column 5)")) << why(refused);
+    }
+
+    // A version-4 file with no chain reads, and is written back as version 1.
+    const spade::Result<SceneDesc> bare =
+        spade::scene::scene_from_yaml(with(kMinimalScene, "scene_version: 1\n", "scene_version: 4\n"));
+    ASSERT_OK(bare);
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(*bare);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 1\n")) << *text;
+}
+
+TEST(SceneFile, AChainsKeysAreRefusedAtEveryLevel) {
+    const std::string v4 = minimal_chain_scene();
+    ASSERT_OK(spade::scene::scene_from_yaml(v4));
+    struct Case {
+        std::string what;
+        std::string from;
+        std::string to;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {"an unknown key", "\n      motors_on_bus: 1\n", "\n      motors_on_bus: 1\n      bogus: 1\n",
+         "unknown key 'bogus' in scene.models[0].propulsion -- scene schema v4 does not define it (line "},
+        {"a missing key", "\n      kv: 256.56340004316644\n", "\n",
+         "missing required key 'kv' in scene.models[0].propulsion (line "},
+        {"a duplicate key", "\n      pole_pairs: 7\n", "\n      pole_pairs: 7\n      pole_pairs: 7\n",
+         "duplicate key 'pole_pairs' in scene.models[0].propulsion"},
+        {"an unknown key in the table", "{j_min: 0, ", "{bogus: 1, j_min: 0, ",
+         "unknown key 'bogus' in scene.models[0].propulsion.table -- scene schema v4 does not define it (line "},
+        {"a double that is not a number", "\n      resistance: 0.075\n", "\n      resistance: low\n",
+         "scene.models[0].propulsion.resistance: 'low' is not a decimal number (line "},
+        {"a table value that is not a number", "ct: [0.12, 0.04]", "ct: [0.12, x]",
+         "scene.models[0].propulsion.table.ct[1]: 'x' is not a decimal number (line "},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(with(v4, c.from, c.to));
+        ASSERT_FALSE(r) << "accepted";
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(contains(r.error().context, c.needle)) << r.error().context;
+    }
+
+    // A chain that is not a mapping.
+    const spade::Result<SceneDesc> scalar = spade::scene::scene_from_yaml(
+        with(with(kMinimalScene, "scene_version: 1\n", "scene_version: 4\n"), kImuLine,
+             std::string(kImuLine) + "    propulsion: 3\n"));
+    EXPECT_TRUE(contains(why(scalar), "scene.models[0].propulsion must be a mapping (line ")) << why(scalar);
+}
+
+TEST(SceneFile, ABadChainIsRefusedWithTheModelsOwnMessage) {
+    // The chain's one rule is the model's (ModelType::validate), so the scene
+    // refuses it in the model's words: in memory, by the writer, and by the
+    // reader.
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    PropulsionChain bad = literal_chain();
+    bad.kv = 0.0;
+    s.models[0].propulsion = bad;
+    const std::string expected = "model type 'q': propulsion chain: kv must be finite and > 0";
+    EXPECT_EQ(why(s.models[0].validate()), expected);
+    const spade::Result<void> validated = spade::scene::validate_scene(s);
+    ASSERT_FALSE(validated);
+    EXPECT_EQ(validated.error().code, spade::Code::invalid_argument);
+    EXPECT_EQ(validated.error().context, expected);
+    EXPECT_EQ(why(spade::scene::scene_to_yaml(s)), expected);
+    const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(
+        with(minimal_chain_scene(), "\n      kv: 256.56340004316644\n", "\n      kv: 0\n"));
+    EXPECT_EQ(why(read), expected);
 }
 
 // ===========================================================================

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "core/error.hpp"
 #include "physics/forces.hpp"  // drag_mode:: -- the element mode a DragBodyDesc names
 #include "vehicles/model_part.hpp"  // PartDesc -- a model's solid geometry, part by part (CORE-7)
+#include "vehicles/propulsion_steady.hpp"  // PropulsionChain -- a model's host-side propulsion (N5a)
 
 // ===========================================================================
 // ModelType -- the MODEL-TYPE LAYER (engine design spec S6 "Vehicles -- the
@@ -25,7 +27,10 @@
 //     . param schema id
 //
 // and, since CORE-7, the model's solid geometry, part by part (`parts`,
-// vehicles/model_part.hpp): description only, read by no step yet.
+// vehicles/model_part.hpp): description only, read by no step yet. Since
+// N5a, the model's propulsion chain (`propulsion`, vehicles/
+// propulsion_steady.hpp): host-side, read by no step, so a copy of a model
+// carries its chain.
 //
 // ---------------------------------------------------------------------------
 // WHAT A ModelType IS NOT, STATED FIRST BECAUSE IT IS THE WHOLE DESIGN
@@ -200,9 +205,10 @@ struct ImuMountDesc {
 // One problem ModelType::issues() finds: the element at fault (the model
 // itself, or one rotor, drag body, IMU mount or part, with its index), the
 // field, named as its struct names it ("spin_dir", "local_orient",
-// "body.mass", and for the three element counts "rotors", "drag_bodies",
-// "imu_mounts"), the message validate() returns for it, word for word, and
-// the code validate() returns with it.
+// "body.mass", for the three element counts "rotors", "drag_bodies",
+// "imu_mounts", and for a bad chain the model's "propulsion"), the message
+// validate() returns for it, word for word, and the code validate() returns
+// with it.
 //
 // AN EXHAUSTIVE SWITCH OVER Element needs a case for each value; `part` was
 // added after imu_mount (CORE-7).
@@ -251,6 +257,22 @@ struct ModelType {
     // is parts_identity() (vehicles/model_identity.hpp). Read by no step today.
     std::vector<PartDesc> parts;
 
+    // The model's HOST-SIDE PROPULSION (N5a; vehicles/propulsion_steady.hpp):
+    // its motor, ESC, battery and propeller chain, the input of
+    // rotor_omega_for_duty(), which maps a throttle to its rotors' commanded
+    // speed. Unset by default. Being part of the model, it goes with every
+    // copy, rename, duplicate and removal of the model.
+    //
+    // THE SIMULATION REGISTRY IGNORES IT, as it ignores the parts' meshes:
+    // register_model() stores it with the rest of the description and no step
+    // reads it. It is NOT in model_identity() or parts_identity(); its identity
+    // is propulsion_identity() (vehicles/model_identity.hpp). validate()
+    // checks a set chain by validate_propulsion_chain(), the one rule (TD-9).
+    //
+    // The LAST data member, and defaulted, so a designated initializer that
+    // does not name it still compiles.
+    std::optional<PropulsionChain> propulsion{};
+
     // How many of this world's declared Capacities::force_elements one
     // instance consumes. Rotors and drag bodies live in SEPARATE arena arrays
     // but share ONE declared budget, because spec S3 calls them both force
@@ -280,6 +302,12 @@ struct ModelType {
     // more than kMaxSdfDepth evaluation slots keeps SdfProgram::validate()'s
     // capacity_exceeded, as validate_scene() does. validate() returns the
     // first issue's own code.
+    //
+    // A set `propulsion` is checked LAST, as it is declared, by
+    // validate_propulsion_chain() (the one rule): one issue, the model's, at
+    // field "propulsion", whose message is the chain's prefixed by the
+    // model's name ("model type 'quad': propulsion chain: kv must be finite
+    // and > 0").
     // -----------------------------------------------------------------------
     [[nodiscard]] Result<void> validate() const;
 

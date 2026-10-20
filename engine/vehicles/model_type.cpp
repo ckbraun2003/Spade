@@ -277,6 +277,15 @@ std::vector<ModelIssue> ModelType::issues() const {
                                   "must resolve (CORE-8 D5)");
         }
     }
+
+    // --- the propulsion chain (N5a), last, as it is declared -----------------
+    // The one rule (TD-9), validate_propulsion_chain(): its message, which
+    // names the chain's field, after the model's name.
+    if (propulsion) {
+        if (const Result<void> chain = validate_propulsion_chain(*propulsion); !chain) {
+            add(E::model, 0, "propulsion", at + chain.error().context, chain.error().code);
+        }
+    }
     return out;
 }
 

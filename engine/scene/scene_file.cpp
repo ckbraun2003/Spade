@@ -61,13 +61,15 @@ using yaml_text::vec3_field;
     return Error{Code::invalid_argument, std::move(context)};
 }
 
-// The first scene version that carries a model's parts (CORE-7), and the
-// first that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6).
+// The first scene version that carries a model's parts (CORE-7), the first
+// that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6), and the
+// first that carries a model's `propulsion` chain (N5a).
 constexpr uint32_t kPartsVersion = 2;
 constexpr uint32_t kMeshPartsVersion = 3;
+constexpr uint32_t kPropulsionVersion = 4;
 static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion < kMeshPartsVersion &&
-                  kMeshPartsVersion <= kSceneFileVersion,
-              "this build reads the versions that carry parts and mesh parts");
+                  kMeshPartsVersion < kPropulsionVersion && kPropulsionVersion <= kSceneFileVersion,
+              "this build reads the versions that carry parts, mesh parts and chains");
 
 // The schema a diagnostic blames: the file's OWN declared version wherever
 // the reader has one, because a key set is version-gated (a model's `parts`),
@@ -108,13 +110,14 @@ static_assert(static_cast<uint32_t>(vehicles::PartSurface::Kind::wall) == 0 &&
               "kPartSurfaceNames is indexed by PartSurface::Kind");
 
 // The version a scene is written as: the oldest that carries everything in it
-// (scene_file.hpp, property 3).
+// (scene_file.hpp, property 3). Every model is looked at: a chain on the last
+// model makes the scene version 4 however early a mesh part appears.
 [[nodiscard]] uint32_t written_version(const SceneDesc& scene) {
     uint32_t version = kSceneFileOldestVersion;
     for (const vehicles::ModelType& m : scene.models) {
+        if (m.propulsion) return kPropulsionVersion;
         for (const vehicles::PartDesc& p : m.parts) {
-            if (p.mesh) return kMeshPartsVersion;
-            version = kPartsVersion;
+            version = std::max(version, p.mesh ? kMeshPartsVersion : kPartsVersion);
         }
     }
     return version;
@@ -290,6 +293,14 @@ void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::str
             emit_part(out, p, in);
         }
     }
+
+    // The propulsion chain (version 4, N5a), the model's last key, as it is
+    // ModelType's last member: written only when set, so a model without one
+    // is the text it always was. Its keys sit two spaces deeper.
+    if (m.propulsion) {
+        out += in + "propulsion:\n";
+        detail::emit_propulsion(out, *m.propulsion, in + "  ");
+    }
 }
 
 void detail::emit_propulsion(std::string& out, const vehicles::PropulsionChain& c, std::string_view indent) {
@@ -410,6 +421,12 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
             "# A mesh part (scene version 3) names its .spmesh sidecar: a path\n"
             "# relative to this file, and FNV-1a 64 of the mesh's content. Another\n"
             "# mesh is refused.\n";
+    }
+    if (version >= kPropulsionVersion) {
+        out +=
+            "# A model's last key, `propulsion` (scene version 4), is its propulsion\n"
+            "# chain, as a model file writes it: every field of\n"
+            "# vehicles::PropulsionChain by its own name, kv in rad/(s V).\n";
     }
     if (scene.models.empty()) {
         out += "models: []\n";
@@ -804,30 +821,31 @@ struct PartMesh {
 }  // namespace
 
 // `format.key_version` gates the key set (`parts` from scene version 2, a
-// part's mesh from version 3), and every diagnostic blames `format.schema`,
-// the file's own. `base_dir` resolves a mesh part's sidecar.
+// part's mesh from version 3, `propulsion` from version 4), and every
+// diagnostic blames `format.schema`, the file's own. `base_dir` resolves a
+// mesh part's sidecar.
 Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const std::string& what,
                                                 const ModelBlockFormat& format,
                                                 const std::filesystem::path& base_dir) {
     const std::string file_schema(format.schema);
     const bool reads_parts = format.key_version >= kPartsVersion;
-    if (reads_parts) {
-        if (Result<void> r = check_map(node, what,
-                                       {"name", "version", "param_schema_id", "visual_ref", "design_to_principal",
-                                        "com_offset", "body", "proxy_radius", "rotors", "drag_bodies",
-                                        "imu_mounts", "parts"},
-                                       file_schema);
-            !r) {
-            return std::unexpected(r.error());
-        }
-    } else if (Result<void> r = check_map(node, what,
-                                          {"name", "version", "param_schema_id", "visual_ref",
-                                           "design_to_principal", "com_offset", "body", "proxy_radius",
-                                           "rotors", "drag_bodies", "imu_mounts"},
-                                          file_schema);
-               !r) {
-        return std::unexpected(r.error());
-    }
+    const bool reads_propulsion = format.key_version >= kPropulsionVersion;
+    const Result<void> keys =
+        reads_propulsion
+            ? check_map(node, what,
+                        {"name", "version", "param_schema_id", "visual_ref", "design_to_principal", "com_offset",
+                         "body", "proxy_radius", "rotors", "drag_bodies", "imu_mounts", "parts", "propulsion"},
+                        file_schema)
+        : reads_parts
+            ? check_map(node, what,
+                        {"name", "version", "param_schema_id", "visual_ref", "design_to_principal", "com_offset",
+                         "body", "proxy_radius", "rotors", "drag_bodies", "imu_mounts", "parts"},
+                        file_schema)
+            : check_map(node, what,
+                        {"name", "version", "param_schema_id", "visual_ref", "design_to_principal", "com_offset",
+                         "body", "proxy_radius", "rotors", "drag_bodies", "imu_mounts"},
+                        file_schema);
+    if (!keys) return std::unexpected(keys.error());
     vehicles::ModelType out{};
     const Result<std::string> name = string_field(node, "name", what);
     if (!name) return std::unexpected(name.error());
@@ -897,6 +915,15 @@ Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const st
             if (!p) return std::unexpected(p.error());
             out.parts.push_back(std::move(*p));
         }
+    }
+
+    // propulsion: optional, as the writer omits it for a model without one;
+    // the model file's encoding (parse_propulsion), its rules the model's.
+    if (reads_propulsion && has(node, "propulsion")) {
+        Result<vehicles::PropulsionChain> chain =
+            detail::parse_propulsion(node["propulsion"], what + ".propulsion", file_schema);
+        if (!chain) return std::unexpected(chain.error());
+        out.propulsion = std::move(*chain);
     }
     return out;
 }

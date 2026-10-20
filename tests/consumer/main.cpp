@@ -204,10 +204,11 @@ int main() {
     }
     std::printf("spade::scene OK: a scene file round-tripped through scene_from_yaml and scene_to_yaml\n");
 
-    // The model file, installed: one model and its propulsion chain, as Kat's
-    // builder writes one. It shares the scene's model block through
-    // scene/detail/, which is not installed, so this is what proves the
-    // installed header needs nothing from there.
+    // The model file, installed: one model and its propulsion chain (the
+    // model's own, model.propulsion), as Kat's builder writes one,
+    // round-tripped and added to the scene above with add_model(). It shares
+    // the scene's model block through scene/detail/, which is not installed,
+    // so this is what proves the installed header needs nothing from there.
     spade::scene::ModelFile model_file;
     model_file.model.name = "consumer_quad";
     model_file.model.body.mass = 1.0f;
@@ -222,19 +223,27 @@ int main() {
     chain.cells_series = 4;
     chain.cells_parallel = 1;
     chain.ocv_table = {3.3f, 4.2f};
-    model_file.propulsion = chain;
+    model_file.model.propulsion = chain;
     const spade::Result<std::string> model_text = spade::scene::model_to_yaml(model_file);
     if (!model_text) {
         std::fprintf(stderr, "spade::scene::model_to_yaml failed: %s\n", model_text.error().context.c_str());
         return 1;
     }
     const spade::Result<spade::scene::ModelFile> model_back = spade::scene::model_from_yaml(*model_text);
-    if (!model_back || !model_back->propulsion ||
+    if (!model_back || !model_back->model.propulsion ||
         spade::scene::model_to_yaml(*model_back).value_or("") != *model_text) {
         std::fprintf(stderr, "spade::scene::model_from_yaml did not round-trip the model file\n");
         return 1;
     }
-    std::printf("spade::scene OK: a model file round-tripped through model_to_yaml and model_from_yaml\n");
+    spade::scene::SceneDesc with_model = *scene;
+    const spade::Result<void> model_added = spade::scene::add_model(with_model, *model_back, "consumer_quad_1");
+    if (!model_added || with_model.models.size() != scene->models.size() + 1 ||
+        !with_model.models.back().propulsion) {
+        std::fprintf(stderr, "spade::scene::add_model did not add the model with its chain: %s\n",
+                     model_added ? "wrong model" : model_added.error().context.c_str());
+        return 1;
+    }
+    std::printf("spade::scene OK: a model file round-tripped and was added with add_model, its chain kept\n");
 
     // The object file, installed: one placeable object and the material it
     // brings, as the editor's library holds one, round-tripped and placed in
