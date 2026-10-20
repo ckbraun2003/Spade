@@ -1255,10 +1255,18 @@ inline constexpr double kStillFraction = kDiffersFraction / 4.0;
         if (!m.drawn) return {false, name + at + "draw() failed"};
         if (!m.unhonoured.empty()) return {false, name + at + "unhonoured: " + m.unhonoured};
         if (!well_formed(m.frame)) return {false, name + at + "absent: no frame"};
-        const Rgb clear = well_formed(m.background)
-                              ? Rgb{m.background.rgba[0], m.background.rgba[1], m.background.rgba[2]}
-                              : Rgb{0, 0, 0};
-        const double lit = differ_fraction(m.frame, clear);
+        if (!(well_formed(m.background) && same_size(m.frame, m.background))) {
+            return {false, name + at + "mis-staged: no background frame of the view's size"};
+        }
+        if (!(well_formed(m.again) && same_size(m.frame, m.again))) {
+            return {false, name + at + "mis-staged: no second grab of the view's size"};
+        }
+        if (const double moved = differ_fraction(m.frame, m.again); !(moved <= kStillFraction)) {
+            return {false, name + at + "mis-staged: the view changes " + detail::percent(moved) +
+                               " with no mode change, past " + detail::percent(kStillFraction) +
+                               ", so a switch can't be judged against it"};
+        }
+        const double lit = differ_fraction(m.frame, m.background);
         if (!differs(lit)) {
             return {false, name + at + "blank: " + detail::percent(lit) + " of the view differs from its background"};
         }
@@ -1342,12 +1350,12 @@ inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max whi
     if (left_spec == right_spec) return {false, name + "both views are " + std::string(left_spec)};
     if (!well_formed(left) || !well_formed(right)) return {false, name + "absent: a view has no pixels"};
     if (!same_size(left, right)) return {false, name + "mis-staged: the two views are not one size"};
-    (void)right_background;
-    const Rgb clear = well_formed(left_background)
-                          ? Rgb{left_background.rgba[0], left_background.rgba[1], left_background.rgba[2]}
-                          : Rgb{0, 0, 0};
-    const double l = differ_fraction(left, clear);
-    const double r = differ_fraction(right, clear);
+    if (!(well_formed(left_background) && same_size(left, left_background) && well_formed(right_background) &&
+          same_size(right, right_background))) {
+        return {false, name + "mis-staged: a view has no background frame of its size"};
+    }
+    const double l = differ_fraction(left, left_background);
+    const double r = differ_fraction(right, right_background);
     if (!differs(l) || !differs(r)) {
         return {false, name + "a view is blank: " + detail::percent(l) + " and " + detail::percent(r) +
                            " off their backgrounds"};
