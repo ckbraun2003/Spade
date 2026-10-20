@@ -44,8 +44,19 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
   - Without solids, plan A's plain V-cycles stay, bit for bit.
   - **The spec change** (**APPROVED by the lead, 2026-10-13**; spec §1.5 amended): spec §1.5 rejected multigrid-preconditioned CG for the first cut because of the dot products' order between the CPU and the GPU. `reduce.hpp`'s fixed tiles (spec §4.5 as amended 2026-10-12) now fix that order, as P3's force already relies on. CG's scalars still feed back into every cell, so the GPU twin's band on p (TD-14) is measured on S1 and S3, not assumed.
   - **The lead's conditions:**
-    - **The iteration count** is fixed, as plan A's cycle count is. It is chosen from S1, S3 and a dense-parts case (the reference quad's parts at the D1 nest), and the choice and its measurements go in this section.
-    - **The residual.** Each projection's final relative residual, `max |r| / max |b|`, goes on the run line and into history. A max is order-free, so both backends give the same value. Above the stated threshold, first 10⁻³ and revised with the count, it is announced (`L6`), never silent.
+    - **The iteration count** is fixed, as plan A's cycle count is: **8**, `kSolidsCgIterations` (`fluid_step.hpp`), which a run with solids sets as `n_v`. It was chosen (P2 Task 9, 2026-10-20) as the smallest n whose cold solves reach 10⁻³ and whose warm solves reach 10⁻⁴, on S1, S3 and a dense-parts case. The dense-parts case is the compiled reference quad's ten rigid parts through `vehicles::sample_parts()` and `part_bounds()`, at the D1 nest's dx = 6 mm on 64 × 48 × 64, in a 5 m/s downwash. Below, the relative residual after n iterations (MSVC 14.43, release; a warm row is preceded by steps at 16 iterations):
+
+      | case | n = 2 | 4 | 8 | 12 | 16 |
+      |---|---|---|---|---|---|
+      | S1, step 1 (cold) | 7.3·10⁻² | 4.0·10⁻⁴ | 3.5·10⁻⁶ | 3.5·10⁻⁶ | 3.5·10⁻⁶ |
+      | S1, step 3 (warm) | 2.6·10⁻⁴ | 3.5·10⁻⁶ | 1.2·10⁻⁶ | 1.2·10⁻⁶ | 1.2·10⁻⁶ |
+      | S3, plane 16 (cold) | 8.4·10⁻¹ | 1.1·10⁻³ | 2.6·10⁻⁵ | 2.6·10⁻⁵ | 2.6·10⁻⁵ |
+      | S3, plane 17 (cold) | 6.4·10⁻¹ | 1.8·10⁻³ | 2.1·10⁻⁵ | 2.6·10⁻⁵ | 2.6·10⁻⁵ |
+      | reference quad, step 1 (cold) | 1.2·10⁻¹ | 1.0·10⁻³ | 1.5·10⁻⁵ | 1.5·10⁻⁵ | 1.5·10⁻⁵ |
+      | reference quad, step 10 (warm) | 4.0·10⁻⁴ | 1.1·10⁻⁵ | 8.0·10⁻⁷ | 8.0·10⁻⁷ | 8.0·10⁻⁷ |
+
+      At n = 4, S3 and the quad's cold solves sit at 1–2·10⁻³. From n = 8, every case sits at fp32's floor. `FluidConfig`'s default `n_v` stays plan A's 2 V-cycles. A run with solids left at that default is announced (its residual is 7·10⁻² on S1), never silent. `TheChosenIterationCountConvergesTheSheetFromCold` pins the choice on the worst case.
+    - **The residual.** Each projection's final relative residual, `max |r| / max |b|`, goes on the run line and into history. A max is order-free, so both backends give the same value. Above the threshold, 10⁻⁴ (`kResidualAnnounce`), it is announced (`L6`), never silent. The threshold is ten times the warm residual the chosen count leaves (1.2·10⁻⁶), held at the floor of 10⁻⁴ (first 10⁻³, revised with the count).
     - **Symmetry.** A test checks the preconditioner's symmetry, `⟨Mx, y⟩ = ⟨x, My⟩` to rounding on random vectors (§8, test 10).
   - **The cost:** one iteration costs about 1.3 V-cycles.
 - **Fluid regions** (the lead's finding 3). A sheet or a solid can cut the fluid into separate regions, and each closed one has its own null space.
