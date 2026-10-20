@@ -495,6 +495,10 @@ struct MeshData {
 struct NamedMesh {
     std::string ref;
     MeshData mesh;
+    // resolve_meshes()' stand-in for a ref that did not resolve
+    // (render/mesh_resolver.hpp): drawn in its own material, never in the
+    // prop's, so it can't pass for the mesh it stands in for.
+    bool stand_in = false;
 };
 
 // Aabb, kNoMaterial and kNoMesh come from target.hpp (Task 0) -- do not redeclare.
