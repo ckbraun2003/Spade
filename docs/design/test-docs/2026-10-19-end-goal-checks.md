@@ -128,11 +128,12 @@ LiveRun, drone held (design decision 1), until P2b.
 "Differs" means at least 1% of the view's pixels differ by more than 8/255 in some channel.
 
 - **each-mode-drawn:**
-  - **A kind `supports()` accepts:** `apply_view` and `draw()` are Ok, and `unhonoured()` is empty. The view differs from the clear colour, so it isn't blank. It also differs from the previous mode's frame, so the switch took effect.
+  - **A kind `supports()` accepts:** `apply_view` applied this kind and `draw()` is Ok, and `unhonoured()` is empty. The view differs from its own background, the same view and mode with the scene's items hidden, so it isn't blank. One colour wouldn't do: the editor's background is a sky gradient and a grid. It also differs from the previous mode's frame, so the switch took effect.
+  - **The premise, a still view:** the mode grabbed a second time, with no request between, changes by at most 0.25% of the view's pixels, a quarter of "differs". Past it, a switch that changed nothing could pass on the view's own motion, so the check is `mis-staged:`. On the first wiring, a dropped request still differed by 0.3126%: the HUD's stats box was inside the view.
   - **A kind `supports()` refuses:** the text shown is its `why_not`, verbatim.
   - *Catches:* a blank view; a switch that changed nothing; a refusal drawn as an empty view.
 - **legend-shown:** `apply_view` returns one legend per layer of the view's spec, and fewer is `absent:`. Each legend shown equals the one returned: quantity, unit, colour map, range and whether the range came from the frame. While the region runs, every flow layer's range must come from the frame, since a fixed range reads the same over still air; a fixed one is `mis-staged:`. Its min must also be below its max, and a speed legend's max at least 1 m/s, so still air fails here as well.
-- **two-views:** after Split, there are two views with different `ViewSpec`s. Each half differs from the clear colour, and the two halves differ from each other.
+- **two-views:** after Split, there are two views with different `ViewSpec`s. Each half differs from its own background (that view with the items hidden), and the two halves differ from each other.
 
 ## 7. `editor.save_reopen`
 
