@@ -437,6 +437,20 @@ struct CouetteResult {
 // faces carry the rigid velocity bit for bit, and the air turns with the
 // cylinder. Mutation: the rigid velocity at closed faces only (the links'
 // terms ignored), which Test/Docs expects to miss by up to a factor of two.
+// The compiler and the build a record was measured on (V1's form).
+[[nodiscard]] std::string build_line() {
+#if defined(NDEBUG)
+    const char* preset = "release";
+#else
+    const char* preset = "debug";
+#endif
+#if defined(_MSC_VER)
+    return "MSVC " + std::to_string(_MSC_VER) + ", " + preset;
+#else
+    return std::string(__VERSION__) + ", " + preset;
+#endif
+}
+
 // Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
 [[nodiscard]] bool debug_build() {
 #if defined(NDEBUG)
@@ -500,6 +514,8 @@ TEST(AirflowSolidsStep, S2CircularCouetteFlowAt32CellsAndItsOrder) {
 // at the closed sample, 0.75 dx too far, and the profile drifts toward the
 // wrong line. Started on the exact profile, run half a diffusion time. Band
 // measured and pinned (TD-2). Mutation: closed faces only (the links unread).
+// Measured 2026-10-20 on MSVC 14.43 (_MSC_VER 1943), release: 5.624e-8 with
+// the links, 6.459e-2 closed faces only; a gcc leg prints its own build line.
 TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
     const float dx = 1.0e-3f;
     const GridShape shape{4, 16, 1, dx};
@@ -552,9 +568,11 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
                 "measure: max |u - u_exact| / U, with the wall links = %.3e\n"
                 "negative control: the same, closed faces only (links cleared) = %.3e\n"
                 "tolerance: <= 1e-5 with the links (TD-2: measured %.1e, rounding); the control must exceed it\n"
-                "verdict: %s; control %s\n",
+                "verdict: %s; control %s\n"
+                "build: %s\n",
                 with_links, closed_only, with_links, with_links <= 1.0e-5 ? "within" : "OUTSIDE",
-                closed_only > 1.0e-5 ? "fails, as it must" : "PASSES: the check does not discriminate");
+                closed_only > 1.0e-5 ? "fails, as it must" : "PASSES: the check does not discriminate",
+                build_line().c_str());
     EXPECT_LE(with_links, 1.0e-5);
     EXPECT_GT(closed_only, 1.0e-5) << "the negative control must fail the band";
 }
