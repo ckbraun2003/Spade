@@ -631,6 +631,8 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
 // formula, part_wall_velocity()), phi 2.2e-11 m, 4336 closed faces in each.
 // Pinned at theta two ulps of 1 (1.2e-7) and phi 1e-10 m, so another compiler's
 // last-bit rounding stays inside; the walls and the closed faces equal.
+// Mutations: B4's box 1 um wider, or built from part_bounds()' padded box
+// (0.9 um wider), fail it (phi 1.0e-6 and 1.6e-6 m).
 TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
     const float dx = 0.006f;
     const GridShape shape{48, 48, 48, dx};
