@@ -7,7 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include "render/raster_cpu.hpp"
@@ -31,6 +34,8 @@ TEST(ViewMode, NamesAreStableAndReadBack) {
     EXPECT_EQ(spade::render::view_base_name(ViewBase::wireframe), "wireframe");
     EXPECT_EQ(spade::render::view_base_name(ViewBase::velocity), "velocity");
     EXPECT_EQ(spade::render::view_base_name(ViewBase::exact_sdf), "exact_sdf");
+    EXPECT_EQ(spade::render::view_base_name(ViewBase::depth), "depth");
+    EXPECT_EQ(spade::render::view_base_name(ViewBase::normals), "normals");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::volume), "volume");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::vortex_iso), "vortex_iso");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::streamlines), "streamlines");
@@ -68,7 +73,9 @@ TEST(ViewMode, TheBaseSetsTheDrawMode) {
     const std::pair<ViewBase, DrawMode> pairs[] = {{ViewBase::shaded, DrawMode::shaded},
                                                    {ViewBase::wireframe, DrawMode::wireframe},
                                                    {ViewBase::velocity, DrawMode::velocity},
-                                                   {ViewBase::exact_sdf, DrawMode::raymarch}};
+                                                   {ViewBase::exact_sdf, DrawMode::raymarch},
+                                                   {ViewBase::depth, DrawMode::depth},
+                                                   {ViewBase::normals, DrawMode::normals}};
     for (const auto& [base, mode] : pairs) {
         RenderScene scene = spade::test::view_mode_scene(true, &sdf);
         RenderOptions options;
@@ -76,6 +83,96 @@ TEST(ViewMode, TheBaseSetsTheDrawMode) {
         ASSERT_TRUE(spade::render::apply_view(ViewSpec{base, {}}, &volume, scene, options).has_value());
         EXPECT_EQ(options.mode, mode) << spade::render::view_base_name(base);
     }
+}
+
+// The depth base carries its range to the draw.
+TEST(ViewMode, TheDepthBaseCarriesItsRange) {
+    RenderScene scene = spade::test::view_mode_scene(false, nullptr);
+    RenderOptions options;
+    ViewSpec spec{ViewBase::depth, {}};
+    spec.depth = spade::render::DepthRange{.near_m = 0.5f, .far_m = 7.0f, .colours = spade::render::ColourMapId::inferno};
+    ASSERT_TRUE(spade::render::apply_view(spec, nullptr, scene, options).has_value());
+    EXPECT_EQ(options.depth.near_m, 0.5f);
+    EXPECT_EQ(options.depth.far_m, 7.0f);
+    EXPECT_EQ(options.depth.colours, spade::render::ColourMapId::inferno);
+}
+
+// A sensor base draws geometry as data: a flow layer over it is refused by
+// name, by supports() on both backends and by apply_view(), as exact_sdf
+// refuses one.
+TEST(ViewMode, ASensorBaseRefusesFlowLayersByName) {
+    const spade::FlowVolume volume = spade::test::view_mode_volume();
+    const spade::render::ViewInputs all{.has_volume = true, .has_walls = true, .has_sdf = true};
+    for (const ViewBase base : {ViewBase::depth, ViewBase::normals}) {
+        SCOPED_TRACE(std::string(spade::render::view_base_name(base)));
+        const ViewSpec spec{base, {layer(FlowView::slice)}};
+        for (const ViewBackend backend : {ViewBackend::cpu, ViewBackend::gl}) {
+            const spade::render::ViewSupport said = spade::render::supports(spec, backend, all);
+            EXPECT_FALSE(said.drawable);
+            EXPECT_NE(said.why_not.find("flow layers"), std::string::npos) << said.why_not;
+        }
+        RenderScene scene = spade::test::view_mode_scene(true, nullptr);
+        RenderOptions options;
+        auto applied = spade::render::apply_view(spec, &volume, scene, options);
+        ASSERT_FALSE(applied.has_value());
+        EXPECT_NE(applied.error().context.find(spade::render::supports(spec, ViewBackend::cpu, all).why_not),
+                  std::string::npos)
+            << applied.error().context;
+    }
+}
+
+// A depth range that is not finite, starts below 0, or is empty is refused
+// by name, by supports() and apply_view() alike.
+TEST(ViewMode, ABadDepthRangeIsRefusedByName) {
+    const float inf = std::numeric_limits<float>::infinity();
+    const spade::render::DepthRange bad[] = {{.near_m = -0.1f, .far_m = 5.0f},
+                                             {.near_m = 2.0f, .far_m = 2.0f},
+                                             {.near_m = 3.0f, .far_m = 1.0f},
+                                             {.near_m = 0.1f, .far_m = inf},
+                                             {.near_m = std::nanf(""), .far_m = 5.0f}};
+    for (const spade::render::DepthRange& range : bad) {
+        SCOPED_TRACE(std::to_string(range.near_m) + " to " + std::to_string(range.far_m));
+        ViewSpec spec{ViewBase::depth, {}};
+        spec.depth = range;
+        const spade::render::ViewSupport said = spade::render::supports(spec, ViewBackend::cpu, {});
+        ASSERT_FALSE(said.drawable);
+        EXPECT_NE(said.why_not.find("depth range"), std::string::npos) << said.why_not;
+        RenderScene scene = spade::test::view_mode_scene(false, nullptr);
+        RenderOptions options;
+        auto applied = spade::render::apply_view(spec, nullptr, scene, options);
+        ASSERT_FALSE(applied.has_value());
+        EXPECT_NE(applied.error().context.find(said.why_not), std::string::npos) << applied.error().context;
+    }
+    // The other bases never read it.
+    ViewSpec shaded{ViewBase::shaded, {}};
+    shaded.depth = bad[0];
+    EXPECT_TRUE(spade::render::supports(shaded, ViewBackend::cpu, {}).drawable);
+}
+
+// The base legend states what a sensor view's colours mean.
+TEST(ViewMode, TheBaseLegendStatesDepthAndNormals) {
+    const RenderScene scene = spade::test::view_mode_scene(false, nullptr);
+    ViewSpec depth{ViewBase::depth, {}};
+    depth.depth = spade::render::DepthRange{.near_m = 0.25f, .far_m = 12.0f, .colours = spade::render::ColourMapId::cool_warm};
+    const spade::render::BaseLegend d = spade::render::base_legend(depth, scene);
+    EXPECT_EQ(d.base, ViewBase::depth);
+    EXPECT_EQ(d.quantity, "depth (view z)");
+    EXPECT_EQ(d.unit, "m");
+    EXPECT_EQ(d.colours, spade::render::ColourMapId::cool_warm);
+    EXPECT_EQ(d.range.min, 0.25f);
+    EXPECT_EQ(d.range.max, 12.0f);
+    EXPECT_TRUE(d.black_is_no_surface);
+
+    const spade::render::BaseLegend n = spade::render::base_legend(ViewSpec{ViewBase::normals, {}}, scene);
+    EXPECT_EQ(n.quantity, "surface normal");
+    EXPECT_EQ(n.unit, "");
+    EXPECT_NE(n.key.find("+X red"), std::string::npos) << n.key;
+    EXPECT_NE(n.key.find("world"), std::string::npos) << n.key;
+    EXPECT_TRUE(n.black_is_no_surface);
+
+    const spade::render::BaseLegend s = spade::render::base_legend(ViewSpec{ViewBase::shaded, {}}, scene);
+    EXPECT_TRUE(s.quantity.empty());
+    EXPECT_FALSE(s.black_is_no_surface);
 }
 
 // Volume and iso layers over one volume march as ONE FlowLayer, so GL's one

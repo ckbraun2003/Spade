@@ -129,6 +129,7 @@ add_executable(spade_tests
     test_render_flow_look.cpp
     test_render_view_mode.cpp
     test_render_mesh_resolver.cpp
+    test_render_sensor_views.cpp
     test_render_flow_tracers.cpp
     test_render_flow_draw.cpp
     test_render_flow_feed.cpp

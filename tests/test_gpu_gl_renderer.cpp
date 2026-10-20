@@ -2549,6 +2549,84 @@ TEST_F(GpuGlRenderer, EveryViewDrawsOnGlExactlyWhenSupportsSaysSo) {
                                     });
 }
 
+// The sensor modes (N13; plans/2026-10-20-sensor-views-design.md) on GL as
+// on the CPU: a CSG slab marched, a tilted mesh wall and the analytic ground,
+// seen over the horizon. Both draw the same planar depth through the same
+// colour table, and the same world normals; they may differ only where the
+// two rasterisers' edge rules do.
+TEST_F(GpuGlRenderer, SensorFramesMatchTheCpu) {
+    RenderScene scene = slab_scene();
+    scene.ground_planes.push_back(spade::render::GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = -1.0f});
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-0.5f, -0.5f, 0.0f), glm::vec3(0.5f, -0.5f, 0.0f), glm::vec3(0.5f, 0.5f, 0.0f),
+                      glm::vec3(-0.5f, 0.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    spade::render::DrawItem wall;
+    wall.mesh_index = static_cast<uint32_t>(scene.meshes.size());
+    wall.local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(1.4f, -0.3f, 0.5f)) *
+                          glm::rotate(glm::mat4(1.0f), -0.6f, glm::vec3(0.0f, 1.0f, 0.0f));
+    scene.meshes.push_back(quad);
+    scene.statics.push_back(wall);
+    const Camera camera = camera_over_ground();
+
+    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals}) {
+        SCOPED_TRACE(mode == DrawMode::depth ? "depth" : "normals");
+        RenderOptions options = comparable_options();
+        options.mode = mode;
+        options.depth = spade::render::DepthRange{.near_m = 0.5f, .far_m = 12.0f};
+        const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, options);
+        const std::vector<uint8_t> gl = draw_and_read(scene, options, camera);
+        ASSERT_EQ(cpu.size(), gl.size());
+        size_t covered = 0, differ = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            covered += is_black(cpu, p) ? 0u : 1u;
+            int worst = 0;
+            for (size_t k = 0; k < 3; ++k) worst = std::max(worst, std::abs(int(cpu[p * 4 + k]) - int(gl[p * 4 + k])));
+            differ += worst > 6 ? 1u : 0u;
+        }
+        EXPECT_GT(covered, kPixels / 3u) << "the frame must show the slab, the wall and the ground";
+        EXPECT_LE(differ, kPixels / 40u) << differ << " of " << kPixels << " pixels differ by more than 6";
+    }
+}
+
+// A multisampled target would blend a sensor frame's values at every edge
+// into values no surface has, so GL refuses a sensor mode there, by name.
+// Shaded draws into the same target.
+TEST_F(GpuGlRenderer, RefusesASensorModeOnAMultisampledTarget) {
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+
+    const RenderScene scene = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals}) {
+        RenderOptions options = comparable_options();
+        options.mode = mode;
+        const spade::Result<void> drew = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);
+        ASSERT_FALSE(drew.has_value()) << "a sensor mode on a multisampled target must be refused";
+        EXPECT_EQ(drew.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(drew.error().context.find("multisampled"), std::string::npos) << drew.error().context;
+    }
+    const spade::Result<void> shaded = renderer_->draw(scene, camera_on_plus_z(), comparable_options(), kWidth, kHeight);
+    EXPECT_TRUE(shaded.has_value()) << shaded.error().context;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
 // And while the flow programs compile, supports() names GL's refusal of a
 // flow layer. A driver that finishes at once leaves nothing to check.
 TEST_F(GpuGlRenderer, AViewWaitsForTheFlowProgramsAsGlDoes) {

@@ -301,6 +301,10 @@ struct FrameBuffers {
     uint32_t height;
     std::vector<SurfaceInfo>* surfaces = nullptr;  // per pixel, when a colouring reads them
     SurfaceInfo surface_now{};                     // what the pass drawing now records
+    // DrawMode::normals: each pixel's world normal, recorded with its depth
+    // by whatever wins it, and coloured last (colour_sensor_frame()).
+    std::vector<glm::vec3>* normals = nullptr;
+    glm::vec3 normal_now{0.0f};
 };
 
 // Sets what the pixels drawn in a scope record, and clears it after.
@@ -330,6 +334,7 @@ void setPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, uint8_t r
     px[2] = r;
     px[3] = kBgrxOpaqueByte;
     if (fb.surfaces != nullptr) (*fb.surfaces)[idx] = fb.surface_now;
+    if (fb.normals != nullptr) (*fb.normals)[idx] = fb.normal_now;
 }
 
 // Simple parametric line walk (screen-space DDA) with linear invDepth
@@ -829,6 +834,69 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
     }
 }
 
+// A sensor mode's triangle (DrawMode::depth, normals): its depth, and its
+// world normal interpolated PERSPECTIVE-CORRECTLY -- n * invDepth affinely in
+// screen space, divided by the pixel's own invDepth, as SR-24 recovers a world
+// position -- so a large slanted triangle's normal is the surface's, not a
+// screen-space blend. No colour here: colour_sensor_frame() colours the
+// frame last, from the depth and normal each pixel kept.
+void rasterizeTriangleSensor(FrameBuffers& fb, const ScreenPoint& v0, const ScreenPoint& v1, const ScreenPoint& v2,
+                             const glm::vec3& n0, const glm::vec3& n1, const glm::vec3& n2) {
+    const double area = edgeFn(v0, v1, v2);
+    if (std::fabs(area) < 1e-9) {
+        return;  // degenerate
+    }
+    const int x0 = std::max(0, static_cast<int>(std::floor(std::min({v0.x, v1.x, v2.x}))));
+    const int x1 =
+        std::min(static_cast<int>(fb.width) - 1, static_cast<int>(std::ceil(std::max({v0.x, v1.x, v2.x}))));
+    const int y0 = std::max(0, static_cast<int>(std::floor(std::min({v0.y, v1.y, v2.y}))));
+    const int y1 =
+        std::min(static_cast<int>(fb.height) - 1, static_cast<int>(std::ceil(std::max({v0.y, v1.y, v2.y}))));
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const ScreenPoint p{x + 0.5, y + 0.5, 0.0};
+            const double w0 = edgeFn(v1, v2, p);
+            const double w1 = edgeFn(v2, v0, p);
+            const double w2 = edgeFn(v0, v1, p);
+            const bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            if (!inside) {
+                continue;
+            }
+            const double b0 = w0 / area, b1 = w1 / area, b2 = w2 / area;
+            const double invD = b0 * v0.invDepth + b1 * v1.invDepth + b2 * v2.invDepth;
+            if (fb.normals != nullptr) {
+                fb.normal_now = (n0 * static_cast<float>(b0 * v0.invDepth) + n1 * static_cast<float>(b1 * v1.invDepth) +
+                                 n2 * static_cast<float>(b2 * v2.invDepth)) /
+                                static_cast<float>(invD);
+            }
+            setPixelIfCloser(fb, x, y, invD, 0u, 0u, 0u);
+        }
+    }
+}
+
+// A mesh triangle in a sensor mode: clipped and culled as shaded, with the
+// world normals at the clipped polygon's vertices.
+void draw_mesh_triangle_sensor(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
+                               const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc) {
+    const ClipVertex ac{worldToCameraSpace(vc, a), na, vec3f(a)};
+    const ClipVertex bc{worldToCameraSpace(vc, b), nb, vec3f(b)};
+    const ClipVertex cc{worldToCameraSpace(vc, c), nc, vec3f(c)};
+    ClipPoly poly;
+    const size_t count = clipTriangleNearFar(vc, ac, bc, cc, poly);
+    if (count < 3) {
+        return;
+    }
+    const ScreenPoint sa = projectCameraSpace(vc, poly[0].pos);
+    for (size_t i = 1; i + 1 < count; ++i) {
+        const ScreenPoint sb = projectCameraSpace(vc, poly[i].pos);
+        const ScreenPoint sc = projectCameraSpace(vc, poly[i + 1].pos);
+        if (edgeFn(sa, sb, sc) > 0.0) {
+            continue;  // SR-13: back face, culled as in shaded mode.
+        }
+        rasterizeTriangleSensor(fb, sa, sb, sc, poly[0].normal, poly[i].normal, poly[i + 1].normal);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // draw_mesh_item -- NEW. Draws one DrawItem's MeshData, submesh by submesh
 // (SR-11 contract: an empty submesh triple means exactly one implicit
@@ -977,8 +1045,12 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 const glm::vec3 na = transform_normal(item.local_to_world, mesh.normals[ia]);
                 const glm::vec3 nb = transform_normal(item.local_to_world, mesh.normals[ib]);
                 const glm::vec3 nc = transform_normal(item.local_to_world, mesh.normals[ic]);
-                draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
-                                           scene.lighting, shadow, atmo);
+                if (is_sensor_mode(mode)) {
+                    draw_mesh_triangle_sensor(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc);
+                } else {
+                    draw_mesh_triangle_shaded(fb, vc, vec3d(wa), vec3d(wb), vec3d(wc), na, nb, nc, material,
+                                               scene.lighting, shadow, atmo);
+                }
             }
         }
     }
@@ -1132,6 +1204,11 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                 const glm::vec3 raw_normal = spade::gradient(sub.program, march.p);
                 const float normal_len = glm::length(raw_normal);
                 const glm::vec3 normal = normal_len > 0.0f ? raw_normal / normal_len : glm::vec3(0.0f, 1.0f, 0.0f);
+                if (is_sensor_mode(mode)) {
+                    fb.normal_now = normal;
+                    setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), 0u, 0u, 0u);
+                    continue;
+                }
                 const ShadedColor shaded = shade_vertex_color(material, scene.lighting, normal);
                 glm::vec3 color = shaded.combined;
                 if (shadow != nullptr) {
@@ -1580,6 +1657,104 @@ struct BackgroundRayBasis {
     };
 }
 
+// The camera's ray through each pixel centre, as the background pass and the
+// sensor modes' ground cast it: a per-column plus a per-row vector plus the
+// per-frame forward term. Its z in camera space is -1, so a hit's t along it
+// is the hit's view depth.
+struct PixelRays {
+    Vec3 cam;
+    Vec3 forward;
+    std::vector<Vec3> col, row;
+    [[nodiscard]] Vec3 dir(uint32_t x, uint32_t y) const { return (col[x] + row[y]) + forward; }
+};
+
+[[nodiscard]] PixelRays pixel_rays(const ViewContext& vc, uint32_t width, uint32_t height) {
+    PixelRays rays;
+    rays.cam = Vec3{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
+    double camQ[4];
+    // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
+    // to recover the camera-to-world rotation a background ray needs --
+    // quatConjugate is its own inverse, so this is exact, not an
+    // approximation.
+    quatConjugate(vc.camOrientationConj, camQ);
+    const double f = 1.0 / tan32(vc.fovY * 0.5);
+    const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
+
+    // S7a Task VQ-B: the three per-frame rotated basis vectors, and the
+    // per-column/per-row vectors built from them -- see
+    // background_ray_basis()'s own comment above for the linearity
+    // argument this hoist relies on and its byte-exactness verification.
+    const BackgroundRayBasis basis = background_ray_basis(camQ);
+    rays.forward = basis.forward_world;
+    rays.col.resize(width);
+    for (uint32_t x = 0; x < width; ++x) {
+        const double x_ndc = 2.0 * (static_cast<double>(x) + 0.5) / static_cast<double>(vc.width) - 1.0;
+        rays.col[x] = basis.right_world * (x_ndc * aspect / f);
+    }
+    rays.row.resize(height);
+    for (uint32_t y = 0; y < height; ++y) {
+        const double y_ndc = 1.0 - 2.0 * (static_cast<double>(y) + 0.5) / static_cast<double>(vc.height);
+        rays.row[y] = basis.up_world * (y_ndc / f);
+    }
+    return rays;
+}
+
+// Which ground planes the camera is in front of. SR-13 parity, precomputed
+// ONCE PER PLANE (a per-frame fact about the camera and that plane, not a
+// per-pixel one): "shade only when the ray meets the plane's FRONT side"
+// means the camera itself must be strictly on the side the normal points to
+// -- dot(camPos, normal) > offset -- exactly the outward-normal convention
+// SR-13's mesh back-face cull already uses (world/sdf.hpp's own "dot(p,n) <=
+// offset is solid"). A plane the camera is at or below never contributes a
+// hit, the same way the tessellated ground disappears when viewed from below.
+//
+// uint8_t, not vector<bool> (review MINOR 9): this file already removed one
+// hidden-cost STL specialization (R5b's own per-triangle heap allocation
+// finding); vector<bool>'s bit-packed proxy-reference specialization is the
+// same species of surprise, avoided here even though this vector is at most
+// `scene.ground_planes.size()` long.
+[[nodiscard]] std::vector<uint8_t> ground_fronts(const RenderScene& scene, const Vec3& camPos) {
+    std::vector<uint8_t> front(scene.ground_planes.size(), 0);
+    for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
+        const GroundPlane& gp = scene.ground_planes[i];
+        const double n_dot_cam = static_cast<double>(gp.normal.x) * camPos.x +
+                                  static_cast<double>(gp.normal.y) * camPos.y +
+                                  static_cast<double>(gp.normal.z) * camPos.z;
+        front[i] = (n_dot_cam > static_cast<double>(gp.offset)) ? 1u : 0u;
+    }
+    return front;
+}
+
+// The nearest ground plane `dirWorld` meets from the front, its index, and t
+// along `dirWorld` in `best_t`; -1 when it meets none.
+[[nodiscard]] int64_t nearest_ground(const RenderScene& scene, const std::vector<uint8_t>& front, const Vec3& camPos,
+                                     const Vec3& dirWorld, double& best_t) {
+    int64_t best_plane = -1;
+    for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
+        if (!front[i]) {
+            continue;  // camera at or below this plane -- SR-13 parity, never a hit.
+        }
+        const GroundPlane& gp = scene.ground_planes[i];
+        const double nx = static_cast<double>(gp.normal.x), ny = static_cast<double>(gp.normal.y),
+                     nz = static_cast<double>(gp.normal.z);
+        const double denom = nx * dirWorld.x + ny * dirWorld.y + nz * dirWorld.z;
+        if (denom >= 0.0) {
+            continue;  // ray moving away from (or parallel to) the plane's front -- no hit.
+        }
+        const double n_dot_cam = nx * camPos.x + ny * camPos.y + nz * camPos.z;
+        const double t = (static_cast<double>(gp.offset) - n_dot_cam) / denom;
+        // front[i] (n_dot_cam > offset) and denom < 0 together guarantee
+        // t > 0 algebraically -- a negative-over-negative division -- so this
+        // is a defensive restatement, not a live branch for any front-facing
+        // plane.
+        if (t > 0.0 && (best_plane < 0 || t < best_t)) {
+            best_t = t;
+            best_plane = static_cast<int64_t>(i);
+        }
+    }
+    return best_plane;
+}
+
 // `draw_analytic_ground` gates the INFINITE analytic ground to
 // DrawMode::shaded only (ruling SR-22, review IMPORTANT 4) -- the sky
 // gradient still fills every draw mode's background. An analytic ground is
@@ -1636,57 +1811,11 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
     // this cost a different way, below: not by skipping ray reconstruction,
     // but by no longer doing it PER PIXEL (see background_ray_basis()'s own
     // comment above for the measured recovery and its byte-exactness proof).
-    const Vec3 camPos{vc.camPos[0], vc.camPos[1], vc.camPos[2]};
-    double camQ[4];
-    // Undoes ViewContext's own stored conjugate (world-to-camera rotation)
-    // to recover the camera-to-world rotation a background ray needs --
-    // quatConjugate is its own inverse, so this is exact, not an
-    // approximation.
-    quatConjugate(vc.camOrientationConj, camQ);
-    const double f = 1.0 / tan32(vc.fovY * 0.5);
-    const double aspect = static_cast<double>(vc.width) / static_cast<double>(vc.height);
-
-    // S7a Task VQ-B: the three per-frame rotated basis vectors, and the
-    // per-column/per-row vectors built from them -- see
-    // background_ray_basis()'s own comment above for the linearity
-    // argument this hoist relies on and its byte-exactness verification.
-    const BackgroundRayBasis basis = background_ray_basis(camQ);
-    std::vector<Vec3> col_ray(fb.width);
-    for (uint32_t x = 0; x < fb.width; ++x) {
-        const double x_ndc = 2.0 * (static_cast<double>(x) + 0.5) / static_cast<double>(vc.width) - 1.0;
-        col_ray[x] = basis.right_world * (x_ndc * aspect / f);
-    }
-    std::vector<Vec3> row_ray(fb.height);
-    for (uint32_t y = 0; y < fb.height; ++y) {
-        const double y_ndc = 1.0 - 2.0 * (static_cast<double>(y) + 0.5) / static_cast<double>(vc.height);
-        row_ray[y] = basis.up_world * (y_ndc / f);
-    }
-
-    // uint8_t, not vector<bool> (review MINOR 9): this file already removed
-    // one hidden-cost STL specialization (R5b's own per-triangle heap
-    // allocation finding); vector<bool>'s bit-packed proxy-reference
-    // specialization is the same species of surprise, avoided here even
-    // though this vector is at most `scene.ground_planes.size()` long.
+    const PixelRays rays = pixel_rays(vc, fb.width, fb.height);
+    const Vec3& camPos = rays.cam;
     std::vector<uint8_t> front;
-
     if (ground_possible) {
-        // SR-13 parity, precomputed ONCE PER PLANE (a per-frame fact about
-        // the camera and that plane, not a per-pixel one): "shade only when
-        // the ray meets the plane's FRONT side" means the camera itself
-        // must be strictly on the side the normal points to --
-        // dot(camPos, normal) > offset -- exactly the outward-normal
-        // convention SR-13's mesh back-face cull already uses (world/sdf.hpp's
-        // own "dot(p,n) <= offset is solid"). A plane the camera is at or
-        // below never contributes a hit, the same way the tessellated
-        // ground disappears when viewed from below.
-        front.assign(scene.ground_planes.size(), 0);
-        for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
-            const GroundPlane& gp = scene.ground_planes[i];
-            const double n_dot_cam = static_cast<double>(gp.normal.x) * camPos.x +
-                                      static_cast<double>(gp.normal.y) * camPos.y +
-                                      static_cast<double>(gp.normal.z) * camPos.z;
-            front[i] = (n_dot_cam > static_cast<double>(gp.offset)) ? 1u : 0u;
-        }
+        front = ground_fronts(scene, camPos);
     }
 
     for (uint32_t y = 0; y < fb.height; ++y) {
@@ -1699,7 +1828,7 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
             // here -- replaces what used to be a fresh rotateByQuat(camQ,
             // dirCam) call at every pixel. See background_ray_basis()'s own
             // comment for why this is bit-exact, not merely fast.
-            const Vec3 dirWorld = (col_ray[x] + row_ray[y]) + basis.forward_world;
+            const Vec3 dirWorld = rays.dir(x, y);
 
             // Elevation-based sky gradient (ruling SR-23, Task VQ-A;
             // sky_gradient_color() lives in render/scene.hpp, shared
@@ -1717,30 +1846,7 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
 
             if (ground_possible) {
                 double best_t = 0.0;
-                int64_t best_plane = -1;
-                for (size_t i = 0; i < scene.ground_planes.size(); ++i) {
-                    if (!front[i]) {
-                        continue;  // camera at or below this plane -- SR-13 parity, never a hit.
-                    }
-                    const GroundPlane& gp = scene.ground_planes[i];
-                    const double nx = static_cast<double>(gp.normal.x), ny = static_cast<double>(gp.normal.y),
-                                 nz = static_cast<double>(gp.normal.z);
-                    const double denom = nx * dirWorld.x + ny * dirWorld.y + nz * dirWorld.z;
-                    if (denom >= 0.0) {
-                        continue;  // ray moving away from (or parallel to) the plane's front -- no hit.
-                    }
-                    const double n_dot_cam = nx * camPos.x + ny * camPos.y + nz * camPos.z;
-                    const double t = (static_cast<double>(gp.offset) - n_dot_cam) / denom;
-                    // front[i] (n_dot_cam > offset) and denom < 0 together
-                    // guarantee t > 0 algebraically -- a negative-over-
-                    // negative division -- so this is a defensive restatement,
-                    // not a live branch for any front-facing plane.
-                    if (t > 0.0 && (best_plane < 0 || t < best_t)) {
-                        best_t = t;
-                        best_plane = static_cast<int64_t>(i);
-                    }
-                }
-
+                const int64_t best_plane = nearest_ground(scene, front, camPos, dirWorld, best_t);
                 if (best_plane >= 0) {
                     const GroundPlane& gp = scene.ground_planes[static_cast<size_t>(best_plane)];
                     const uint32_t material_index = gp.material < scene.materials.size() ? gp.material : 0u;
@@ -1797,6 +1903,57 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
 // atmospheric term touches it (SR-17a), and draw_world_triangle() culls
 // nothing, so both sides draw. Corners come from the shared lattice, so
 // neighbouring cells meet without cracks.
+// A sensor mode's analytic ground (the lead, 2026-10-20: it is the world's
+// surface, so the floor doesn't end at the ground mesh's edge): each pixel's
+// nearest front-facing plane, the background pass's own ray and test, at its
+// view depth and with its normal. Drawn first, it takes depth like any
+// surface, so a nearer mesh or march wins over it.
+void draw_sensor_ground(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    if (scene.ground_planes.empty()) {
+        return;
+    }
+    const PixelRays rays = pixel_rays(vc, fb.width, fb.height);
+    const std::vector<uint8_t> front = ground_fronts(scene, rays.cam);
+    for (uint32_t y = 0; y < fb.height; ++y) {
+        for (uint32_t x = 0; x < fb.width; ++x) {
+            double best_t = 0.0;
+            const int64_t best = nearest_ground(scene, front, rays.cam, rays.dir(x, y), best_t);
+            if (best < 0) {
+                continue;
+            }
+            fb.normal_now = scene.ground_planes[static_cast<size_t>(best)].normal;
+            setPixelIfCloser(fb, static_cast<int>(x), static_cast<int>(y), 1.0 / best_t, 0u, 0u, 0u);
+        }
+    }
+}
+
+// A sensor frame's colours, every pixel, from the depth and normal it kept:
+// depth's view z through options.depth's map, clamped to its range; a normal n
+// as (n + 1) / 2; black where no surface is (no unit normal's colour is black,
+// and the depth colours are the map's).
+void colour_sensor_frame(FrameBuffers& fb, const RenderOptions& options) {
+    const DepthRange& range = options.depth;
+    const float span = range.far_m - range.near_m;
+    for (size_t idx = 0; idx < fb.depth.size(); ++idx) {
+        glm::vec3 colour(0.0f);
+        if (fb.depth[idx] > 0.0) {
+            if (options.mode == DrawMode::depth) {
+                const float z = static_cast<float>(1.0 / fb.depth[idx]);
+                colour = colour_map_at(range.colours, std::clamp((z - range.near_m) / span, 0.0f, 1.0f));
+            } else if (fb.normals != nullptr) {
+                const glm::vec3 n = (*fb.normals)[idx];
+                const float len = glm::length(n);
+                colour = len > 0.0f ? 0.5f * (n / len + 1.0f) : glm::vec3(0.0f);
+            }
+        }
+        uint8_t* px = &fb.pixels[idx * 4];
+        px[0] = to_byte(colour.b);
+        px[1] = to_byte(colour.g);
+        px[2] = to_byte(colour.r);
+        px[3] = kBgrxOpaqueByte;
+    }
+}
+
 void draw_field_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
     for (const FieldLayer& layer : scene.field_layers) {
         const float top = resolved_range_max(layer);
@@ -1836,10 +1993,46 @@ OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& 
     return out;
 }
 
+namespace {
+
+// Which statics a CSG subtree marches, so their meshes are not drawn as well.
+[[nodiscard]] std::vector<bool> csg_marched_items(const RenderScene& scene) {
+    std::vector<bool> marched(scene.statics.size(), false);
+    for (const CsgSubtree& sub : scene.csg_subtrees) {
+        if (sub.draw_item < marched.size()) {
+            marched[sub.draw_item] = true;
+        }
+    }
+    return marched;
+}
+
+}  // namespace
+
+Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& options) {
+    const std::string mode = options.mode == DrawMode::depth ? "depth" : "normals";
+    if (!scene.flow_layers.empty() || !scene.field_layers.empty() || !scene.flow_polylines.empty() ||
+        !scene.flow_points.positions.empty() || scene.flow_surface_colouring.has_value()) {
+        return std::unexpected(Error{Code::invalid_argument, mode + " draws the geometry as data, so it takes no flow "
+                                                                   "or field layers, lines, points or surface colouring"});
+    }
+    if (options.mode == DrawMode::depth) {
+        return validate_depth_range(options.depth);
+    }
+    return {};
+}
+
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
                      RenderTarget& target, std::vector<float>* shadow_scratch, FlowFrameReport* flow_report) {
     if (Result<void> valid = validate_target(target); !valid) {
         return valid;
+    }
+    // A sensor mode draws the geometry as data (N13), so it takes no flow or
+    // field content to draw over it, and depth needs a range it can colour.
+    // Refused by name, before any pixel is written (L6).
+    if (is_sensor_mode(options.mode)) {
+        if (Result<void> valid = sensor_mode_refusal(scene, options); !valid) {
+            return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+        }
     }
     // A malformed field layer is refused before any pixel is written (L6).
     for (const FieldLayer& layer : scene.field_layers) {
@@ -1919,6 +2112,30 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     }
     const ViewContext vc = build_view_context(camera, width, height);
 
+    // The sensor modes (N13): the ground, the meshes and the CSG marches,
+    // each keeping its depth and normal; no light, shadow, sky or overlay;
+    // then the frame's colours from what each pixel kept.
+    if (is_sensor_mode(options.mode)) {
+        std::vector<glm::vec3> normals;
+        if (options.mode == DrawMode::normals) {
+            normals.assign(pixel_count, glm::vec3(0.0f));
+            fb.normals = &normals;
+        }
+        draw_sensor_ground(fb, vc, scene);
+        const std::vector<bool> marched = csg_marched_items(scene);
+        for (size_t i = 0; i < scene.statics.size(); ++i) {
+            if (!marched[i]) {
+                draw_mesh_item(fb, vc, scene, scene.statics[i], options, nullptr);
+            }
+        }
+        for (const DrawItem& item : scene.dynamics) {
+            draw_mesh_item(fb, vc, scene, item, options, nullptr);
+        }
+        draw_csg_subtrees(fb, vc, scene, camera, options, nullptr);
+        colour_sensor_frame(fb, options);
+        return {};
+    }
+
     // S7a Task R7 (Step 3): the STATIC half of the shadow map is built once,
     // at scene-build time, and cached on `scene` -- render() never rebuilds
     // it. Only `scene.dynamics` is re-rasterised, once per render() call,
@@ -1997,12 +2214,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         (options.mode == DrawMode::shaded || options.mode == DrawMode::velocity) && !scene.csg_subtrees.empty();
     std::vector<bool> marched;
     if (march_csg) {
-        marched.assign(scene.statics.size(), false);
-        for (const CsgSubtree& sub : scene.csg_subtrees) {
-            if (sub.draw_item < marched.size()) {
-                marched[sub.draw_item] = true;
-            }
-        }
+        marched = csg_marched_items(scene);
     }
     for (size_t i = 0; i < scene.statics.size(); ++i) {
         if (!march_csg || !marched[i]) {

@@ -16,6 +16,7 @@
 // digest and never feed anything downstream of a frame.
 // ---------------------------------------------------------------------------
 
+#include <cmath>
 #include <cstdint>
 #include <span>
 
@@ -23,6 +24,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/error.hpp"
+#include "render/transfer_function.hpp"  // ColourMapId, for DepthRange
 
 namespace spade::render {
 
@@ -45,7 +47,42 @@ struct Camera {
 // Velocity.frag row of the transfer register. APPENDED, never renumbered: the
 // three existing values are what every render golden and every saved
 // RenderOptions already means by 0/1/2.
-enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3 };
+//
+// `depth` and `normals` are SENSOR modes (N13; docs/design/rendering/plans/
+// 2026-10-20-sensor-views-design.md), appended the same way. They draw the
+// scene's geometry as DATA -- no lighting, shadow, atmosphere, sky, grid or
+// overlay -- and a pixel no surface covers is black. depth: each surface's
+// view-space depth in metres (the planar depth an RGB-D camera reports)
+// through RenderOptions::depth. normals: its unit world-space outward normal
+// n as RGB (n + 1) / 2.
+enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3, depth = 4, normals = 5 };
+
+// DrawMode::depth's colours: view-space depth over [near_m, far_m] through a
+// colour map, clamped to the range's ends. Not the camera's clip planes.
+struct DepthRange {
+    float near_m = 0.1f;
+    float far_m = 20.0f;
+    ColourMapId colours = ColourMapId::viridis;
+};
+
+// Whether `mode` draws the geometry as data (depth, normals).
+[[nodiscard]] constexpr bool is_sensor_mode(DrawMode mode) noexcept {
+    return mode == DrawMode::depth || mode == DrawMode::normals;
+}
+
+// Whether `range` can colour depth: finite, from 0 m, and not empty. The one
+// rule (TD-9): both backends and apply_view() refuse in its words.
+[[nodiscard]] inline Result<void> validate_depth_range(const DepthRange& range) {
+    if (!(std::isfinite(range.near_m) && std::isfinite(range.far_m) && range.near_m >= 0.0f &&
+          range.far_m > range.near_m)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "the depth range must be finite, start at 0 m or more, and end past its start"});
+    }
+    if (static_cast<uint32_t>(range.colours) >= kColourMapCount) {
+        return std::unexpected(Error{Code::invalid_argument, "the depth range's colours are not a ColourMapId"});
+    }
+    return {};
+}
 
 // Parameters for the INFINITE ANALYTIC ground grid (Phase C). The functions
 // that consume these live in scene.hpp, beside sky_gradient_color, because
@@ -131,6 +168,8 @@ struct RenderOptions {
     // never registered state, and changing it cannot move a digest -- the
     // renderer reads simulation output, never the reverse.
     float velocity_scale_mps = 20.0f;
+
+    DepthRange depth{};  // DrawMode::depth only
 };
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp
