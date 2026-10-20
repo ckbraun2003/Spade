@@ -101,6 +101,27 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - Why: a fresh (`-NoSeed`) leg at the defaults peaked at 4.29–4.50 GB, and a seeded leg with nothing to rebuild at about 0.9 GB.
   - Two fresh legs plus the VM's own overhead come near the cap, and the VM's out-of-memory killer acts before either leg's own `--memory` limit would.
 - **Settings:** the scripts' defaults suit this machine (`scripts\build.ps1 -ParallelLevel 8`; the Docker leg `-Memory 8g -Jobs 8`, within the rule above). Run builds in the foreground, in chunks of at most 10 minutes, resuming each.
+- **Every heavy command goes through the box-wide job queue** (live 2026-10-20; Kat installed it on Cameron's word, and the lead made it Spade's box rule). It replaces the hand-run memory checks below.
+  - **The hook:** while memory is under the floor or Cameron's game runs, it blocks heavy commands run outside the queue. In the shared checkouts it also blocks `git add -A`, `git add -u`, `git add .` and `git stash`.
+  - **The call:** run python directly, not inside PowerShell:
+
+    ```text
+    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--wait-max-s <S>] --log <FILE> -- <command>
+    ```
+
+  - **The classes:**
+
+    | Job | Class and options | Command after `--` |
+    |---|---|---|
+    | An MSVC build | `--heavy-class build` | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 ...` (it takes the queue's `JOBRUN_PARALLEL` as its job cap, and says so on its first line) |
+    | A CPU ctest chunk | `--heavy-class test` | `ctest ...` |
+    | `ctest -L gpu` | `--heavy-class gpu` (one at a time) | `ctest -L gpu ...` |
+    | A Docker leg | `--heavy-class test --floor-gb 8` | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\docker-leg.ps1 -Commit <sha> ...` |
+
+  - **Its limits:** `--limit-s` counts from the job's start. Exit 125 means the job gave up waiting for its turn (`--wait-max-s`, by default 3600 s). `--queue-status` shows who holds the queue and who waits.
+  - **From a session's tool call:** run a short job in the foreground with `--wait-max-s 300`. Run a leg or a long suite in the background, with a `--log`. If the reaper kills a background call, run it again; never detach it.
+  - **Exempt:** `scripts/gcc-check.sh --compile`, reads, `git merge` and `git commit`, and `git add` with explicit paths.
+  - **A wrong block** goes to the lead, with the exact command.
 - **The owner's machine: throttle while a game runs** (the user, 2026-10-06: "Throttle while I play"). Before every heavy run, check for one: `Get-Process r5apex_dx12 -ErrorAction SilentlyContinue` in PowerShell (Apex Legends), or any other full-screen game. While one runs:
   - no Docker legs, no GPU tests and no GPU bench. A full `scripts\test.ps1` includes the GPU tests, so run `ctest -L spade -LE gpu` instead;
   - builds run at `-ParallelLevel 4`;
@@ -108,7 +129,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
 
   Full speed resumes when the game closes. A bench window needs no game running, as well as both trees quiet.
 - **Stop only processes you started, by PID or task id, never by name or pattern** (Kat's rule, adopted for Spade by the lead on 2026-10-12). The box is shared, so `Stop-Process -Name`, `pkill`, `taskkill /IM` or `docker stop $(docker ps -q)` can kill another session's build, suite or leg. Record the id when you start a background job or a leg, and stop that id: `Stop-Process -Id`, `taskkill /PID`, or `docker stop <container>` for a container you started. If you can't prove a process is yours, leave it and tell the lead.
-- **Check free memory and free commit before each heavy run** (a build, a full or chunked suite, a leg; the lead: free memory 2026-10-12, free commit 2026-10-13). Both must be at least 6 GB: `Get-CimInstance Win32_OperatingSystem | ForEach-Object { 'free {0:F1} GB, free commit {1:F1} GB' -f ($_.FreePhysicalMemory/1MB), ($_.FreeVirtualMemory/1MB) }`. If either is under 6 GB, wait a few minutes and check again rather than start. Run suites serially (no `ctest -j`), in foreground chunks of under 10 minutes each.
+- **Replaced by the queue on 2026-10-20 (above): the hand-run memory check.** It's kept here for its reasons. Before each heavy run (a build, a full or chunked suite, a leg), free memory and free commit both had to be at least 6 GB (the lead: free memory 2026-10-12, free commit 2026-10-13), checked by `Get-CimInstance Win32_OperatingSystem | ForEach-Object { 'free {0:F1} GB, free commit {1:F1} GB' -f ($_.FreePhysicalMemory/1MB), ($_.FreeVirtualMemory/1MB) }`, which still reads the box. Suites still run serially (no `ctest -j`), in chunks of under 10 minutes each.
   - Why free memory: Rendering's debug run was killed at 3.9 GB free with no game running, while Kat's builds and several Spade realms' `-j8` builds and suites ran at once.
   - Why free commit: Windows refuses an allocation once the commit charge reaches the commit limit, however much memory is free ("A test that dies without failing", below). On 2026-10-13 the box had 14.2 GB free but only 6.2 GB of commit left, at rest.
 - **The page file is fixed at 32 GB** (Cameron's decision, 2026-10-13). He applies it himself, since it needs admin rights, and it takes effect at his next reboot. Until then Windows manages the page file (6.4 GB on 2026-10-13), so the commit limit is about 38 GB, only about 6 GB above the charge at rest, and the free-commit check will often say wait.
