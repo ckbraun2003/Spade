@@ -324,6 +324,7 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     w.panels().modes = editor::mode_menu(view_, view_backend(), view_inputs());
     w.panels().legends = view_.legends;
     w.panels().view_note = view_.refusal;
+    w.panels().base_legend = view_.base_legend;
 
     if (view.empty()) return {};  // minimised: the run keeps stepping
     const render::Camera rc = camera_.to_render_camera();

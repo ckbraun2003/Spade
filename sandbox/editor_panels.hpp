@@ -64,6 +64,7 @@ struct EditorPanels {
     std::vector<ModeEntry> modes;             // the View menu: every base, supports()' answer for each
     std::vector<render::ViewLegend> legends;  // the view's last draw, one per layer
     std::string view_note;                    // why the view isn't drawing its chosen mode; empty when it is
+    render::BaseLegend base_legend;           // the base's legend: depth's range, the normals key
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;

@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include <limits>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -24,6 +25,7 @@
 
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include <glm/geometric.hpp>
 #include "render/scene.hpp"
 #include "render/target.hpp"
 #include "render/view_mode.hpp"
@@ -34,7 +36,33 @@ struct ViewState {
     render::ViewSpec spec{};                   // what was chosen; shaded with no layers by default
     std::vector<render::ViewLegend> legends;   // the last draw's, one per layer
     std::string refusal;                       // why the view is not drawing `spec`; empty when it is
+    render::BaseLegend base_legend{};          // the last draw's base legend (depth's range, the normals key)
 };
+
+// A depth view's range (Rendering's sensor bases, ee79a68): near 0.1 m; far
+// twice the diagonal of the box around the origins of what the scene draws,
+// never under 1 m, so the whole scene sits inside the colour ramp from any
+// orbit. Set by apply_to() each frame, as the scene changes.
+inline constexpr float kDepthNearM = 0.1f;
+inline constexpr float kDepthFarMinM = 1.0f;
+
+[[nodiscard]] inline render::DepthRange depth_range_for(const render::RenderScene& scene) {
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(std::numeric_limits<float>::lowest());
+    bool any = false;
+    for (const auto* items : {&scene.statics, &scene.dynamics}) {
+        for (const render::DrawItem& item : *items) {
+            const glm::vec3 at(item.local_to_world[3]);
+            lo = glm::min(lo, at);
+            hi = glm::max(hi, at);
+            any = true;
+        }
+    }
+    render::DepthRange r;
+    r.near_m = kDepthNearM;
+    r.far_m = std::max(kDepthFarMinM, any ? 2.0f * glm::length(hi - lo) : 0.0f);
+    return r;
+}
 
 // One entry of a view's mode menu.
 struct ModeEntry {
@@ -108,6 +136,7 @@ namespace detail {
 [[nodiscard]] inline Result<void> apply_to(ViewState& view, const FlowVolume* volume, render::ViewBackend backend,
                                            const render::ViewInputs& inputs, render::RenderScene& scene,
                                            render::RenderOptions& options, render::ViewCache& cache) {
+    view.spec.depth = depth_range_for(scene);
     const render::ViewSupport s = render::supports(view.spec, backend, inputs);
     if (!s.drawable) {
         view.refusal = "drawing shaded: this view can't draw " + std::string(render::view_base_name(view.spec.base)) +
@@ -116,6 +145,7 @@ namespace detail {
             render::apply_view(render::ViewSpec{}, volume, scene, options, cache);
         if (!shaded) return std::unexpected(shaded.error());
         view.legends.clear();
+        view.base_legend = render::base_legend(render::ViewSpec{}, scene);
         return {};
     }
     Result<std::vector<render::ViewLegend>> legends = render::apply_view(view.spec, volume, scene, options, cache);
@@ -124,6 +154,7 @@ namespace detail {
         return std::unexpected(legends.error());
     }
     view.legends = std::move(*legends);
+    view.base_legend = render::base_legend(view.spec, scene);
     view.refusal.clear();
     return {};
 }

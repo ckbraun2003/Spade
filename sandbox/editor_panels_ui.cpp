@@ -205,6 +205,16 @@ void toolbar(ed::EditorPanels& p) {
             ImGui::TextDisabled("%s", p.view_note.c_str());
             ImGui::SameLine();
         }
+        // The base's legend: a depth view's range, the normals' key.
+        const render::BaseLegend& legend = p.base_legend;
+        if (legend.base == render::ViewBase::depth) {
+            ImGui::TextDisabled("%s %.1f to %.1f %s", legend.quantity.c_str(), static_cast<double>(legend.range.min),
+                                static_cast<double>(legend.range.max), legend.unit.c_str());
+            ImGui::SameLine();
+        } else if (!legend.key.empty()) {
+            ImGui::TextDisabled("%s: %s", legend.quantity.c_str(), legend.key.c_str());
+            ImGui::SameLine();
+        }
     }
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);
