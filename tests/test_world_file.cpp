@@ -1378,6 +1378,57 @@ TEST(WorldFileRejects, PropMaterialIndexOutOfRangeViaYamlIsInvalid) {
     EXPECT_TRUE(contains(why(world), "material index out of range")) << why(world);
 }
 
+// THE MESH_REF RULE (N3; the lead's ruling, TD-9: one rule, world/mesh_ref.hpp).
+// A world's visual references and its props' mesh_refs are mesh_refs, as
+// Rendering's resolver reads every one of them (render/mesh_resolver.hpp) and
+// as a scene's visuals are. validate_world_desc() refuses another, so build()
+// and the loader both do, naming the entry, the ref and mesh_ref_problem()'s
+// words. An empty one keeps its own message.
+TEST(WorldFileRejects, AVisualReferenceOrAPropMeshRefFollowsTheMeshRefRule) {
+    const auto builder = [] {
+        return WorldBuilder().name("v").environment(Environment{}).capacities(Capacities{1, 1, 1, 1});
+    };
+    const spade::Result<WorldDesc> visual = builder().visual("props/a").visual("mesh:props/b").build();
+    EXPECT_EQ(code_of(visual), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(visual),
+              "visual reference 1 'mesh:props/b' is not a valid mesh_ref: it holds a ':', as a drive or a scheme "
+              "would");
+
+    const spade::Result<WorldDesc> prop =
+        builder().prop("props/a", SdfPose{}, 0).prop("props/b.glb", SdfPose{}, 0).build();
+    EXPECT_EQ(code_of(prop), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(prop),
+              "prop 1 mesh_ref 'props/b.glb' is not a valid mesh_ref: it holds a '.': a mesh_ref names no extension "
+              "(.spmesh is added)");
+
+    // The loader runs the same validation.
+    const spade::Result<WorldDesc> prop_text = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "props: []",
+        "props:\n  - {mesh_ref: \"../a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1, "
+        "material: 0}"));
+    EXPECT_EQ(code_of(prop_text), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(prop_text), "prop 0 mesh_ref '../a' is not a valid mesh_ref: it has a '.' or '..' segment");
+    const spade::Result<WorldDesc> visual_text =
+        spade::world_from_yaml(replace_first(kMinimalWorldV2, "visuals: []", "visuals:\n  - \"track/CON\""));
+    EXPECT_EQ(code_of(visual_text), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(visual_text),
+              "visual reference 0 'track/CON' is not a valid mesh_ref: it has a segment Windows reserves for a "
+              "device (CON, PRN, AUX, NUL, COM1-9, LPT1-9)");
+
+    // What the rule accepts loads, and an empty one keeps its own message.
+    ASSERT_OK(builder().visual("track/gate_ring").prop("props/tower", SdfPose{}, 0).build());
+    ASSERT_OK(spade::world_from_yaml(replace_first(
+        replace_first(kMinimalWorldV2, "visuals: []", "visuals:\n  - \"track/gate_ring\""), "props: []",
+        "props:\n  - {mesh_ref: \"props/tower\", position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1, "
+        "material: 0}")));
+    EXPECT_EQ(why(builder().visual("").build()), "visual reference must not be empty");
+    EXPECT_TRUE(contains(why(spade::world_from_yaml(replace_first(
+                             kMinimalWorldV2, "props: []",
+                             "props:\n  - {mesh_ref: \"\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+                             "scale: 1, material: 0}"))),
+                         "prop 0 has an empty mesh_ref"));
+}
+
 TEST(WorldFileRejects, ErrorsFromLoadCarryTheFilePath) {
     const std::filesystem::path path =
         temp_root() / "spade_test_broken.world.yaml";
