@@ -187,6 +187,31 @@ TEST(AnalysisLiveRun, ArmedRotorsSpinToTheChainsCommandAndDisarmedSpinDown) {
     for (const float w : run.state().rotor_omega) EXPECT_LT(w, 0.01f * want) << "a disarmed rotor kept turning";
 }
 
+// The rotors' rows after a step, for a host's probes (Test/Docs'
+// probe_rotor(), the tour's on-screen downwash check): one per model rotor,
+// in order, each turning as the state says, its hub inside the published box.
+// The body is held at the box's centre, the published volume's frame, so a
+// probe at body() + row agrees with the volume.
+TEST(AnalysisLiveRun, ItsRotorRowsAreTheRotorsAfterTheStep) {
+    const Powered p = powered();
+    const an::AnalysisCase c = tiny_case(p.model);
+    an::LiveRun run = started(c, p);
+    EXPECT_EQ(run.rotor_rows().size(), p.model.rotors.size());
+    for (int i = 0; i < 50; ++i) ASSERT_TRUE(run.step(an::Controls{true, 0.5f, 0, 0, 0}).has_value());
+    const auto rows = run.rotor_rows();
+    ASSERT_EQ(rows.size(), run.state().rotor_omega.size());
+    const float half = 0.5f * *c.grid.box;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        EXPECT_EQ(rows[i].omega, run.state().rotor_omega[i]) << "rotor " << i;
+        EXPECT_GT(rows[i].omega, 0.0f) << "rotor " << i;
+        EXPECT_GT(rows[i].radius, 0.0f) << "rotor " << i;
+        const glm::vec3 hub = run.body().pos + run.body().orient * rows[i].local_pos;
+        for (int k = 0; k < 3; ++k) {
+            EXPECT_LT(std::abs(hub[k]), half) << "rotor " << i << "'s hub is outside the published box";
+        }
+    }
+}
+
 // The discs push the air down, through the box, from the held drone's rotors;
 // a disarmed drone leaves it still.
 TEST(AnalysisLiveRun, ArmedRotorsPushTheAirDown) {
