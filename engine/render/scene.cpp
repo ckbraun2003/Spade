@@ -144,9 +144,44 @@ constexpr double kMinBoundsSize = 2.0;
 
 }  // namespace
 
-Result<RenderScene> scene_from_world(const WorldDesc& world,
-                                      std::span<const NamedMesh> resolved_meshes) {
+Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes,
+                                     const SceneLabels& labels) {
+    // The caller's names (N13), checked before anything is built: a span
+    // that does not line up with the world, or an empty name, is refused.
+    if (!labels.nodes.empty() && labels.nodes.size() != world.sdf.nodes.size()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "scene_from_world: the node labels hold " + std::to_string(labels.nodes.size()) +
+                                         " names for the world's " + std::to_string(world.sdf.nodes.size()) +
+                                         " SDF nodes"});
+    }
+    if (!labels.props.empty() && labels.props.size() != world.props.size()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "scene_from_world: the prop labels hold " + std::to_string(labels.props.size()) +
+                                         " names for the world's " + std::to_string(world.props.size()) + " props"});
+    }
+    for (size_t i = 0; i < labels.nodes.size(); ++i) {
+        if (labels.nodes[i].empty()) {
+            return std::unexpected(
+                Error{Code::invalid_argument, "scene_from_world: node " + std::to_string(i) + "'s label is empty"});
+        }
+    }
+    for (size_t i = 0; i < labels.props.size(); ++i) {
+        if (labels.props[i].empty()) {
+            return std::unexpected(
+                Error{Code::invalid_argument, "scene_from_world: prop " + std::to_string(i) + "'s label is empty"});
+        }
+    }
+
     RenderScene scene;
+    // Segmentation's object for a node's item: the caller's name for the node,
+    // else "ground" for a plane and "sdf node <i>" for the rest.
+    const auto node_label = [&](uint32_t node_index) -> uint32_t {
+        if (!labels.nodes.empty()) return intern_label(scene, labels.nodes[node_index]);
+        const SdfNode& node = world.sdf.nodes[node_index];
+        const bool plane = node.op == static_cast<uint32_t>(SdfOp::none) &&
+                           static_cast<SdfPrim>(node.kind) == SdfPrim::plane;
+        return intern_label(scene, plane ? std::string("ground") : "sdf node " + std::to_string(node_index));
+    };
 
     // Mesh index space (scene.hpp's own note): resolved_meshes copies in FIRST,
     // verbatim and in span order, so a caller's own index into that vector is
@@ -278,10 +313,12 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             scene.meshes.push_back(std::move(*mesh));
             const glm::mat4 local_to_world = local_to_world_for(node);
             const uint32_t material_override = node_material_override(node_index);
+            const uint32_t label = node_label(node_index);
             scene.statics.push_back(DrawItem{
                 .mesh_index = mesh_index,
                 .local_to_world = local_to_world,
                 .material_override = material_override,
+                .object_label = label,
             });
 
             // SR-17 (S7a Task R6): a standalone plane primitive -- this
@@ -319,6 +356,7 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
                     // arrays (SR-11), so its one implicit submesh is always
                     // material 0 unless overridden.
                     .material = material_override != kNoMaterial ? material_override : 0u,
+                    .label = label,  // its mesh item's: one name for one floor
                 });
             }
         } else {
@@ -387,6 +425,7 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
                 // single implicit submesh (SR-11: a CSG mesh is always
                 // single-material) should use.
                 .material_override = node_material_override(root_node),
+                .object_label = node_label(root_node),  // a CSG root's item: its root node's name
             });
             // Shaded and velocity modes ray-march the subtree within the box
             // its mesh was sampled over (RS3); the mesh above stays for
@@ -449,6 +488,9 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             // material" fallback to defer to -- it always names one. A
             // stand-in keeps its own.
             .material_override = stand_in ? kNoMaterial : prop.material,
+            .object_label = labels.props.empty()
+                                ? intern_label(scene, "prop " + std::to_string(p) + ": " + prop.mesh_ref)
+                                : intern_label(scene, labels.props[p]),
         });
     }
 
@@ -488,13 +530,13 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     return scene;
 }
 
-// RED: stubs until the green step.
-Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes,
-                                     const SceneLabels&) {
-    return scene_from_world(world, resolved_meshes);
+Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes) {
+    return scene_from_world(world, resolved_meshes, SceneLabels{});
 }
 
 uint32_t intern_label(RenderScene& scene, std::string_view name) {
+    const auto found = std::find(scene.labels.begin(), scene.labels.end(), name);
+    if (found != scene.labels.end()) return static_cast<uint32_t>(found - scene.labels.begin());
     scene.labels.emplace_back(name);
     return static_cast<uint32_t>(scene.labels.size() - 1u);
 }
@@ -505,7 +547,8 @@ void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
     // own note). `statics`/`meshes`/everything else in `scene` is untouched.
     scene.dynamics.clear();
     scene.dynamics.reserve(bodies.size());
-    for (const BodyPose& body : bodies) {
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        const BodyPose& body = bodies[i];
         // Rigid pose, no scale: local_to_world's rotation part is R (the
         // orientation quaternion's matrix), and its translation column is the
         // body position -- same T*R construction WorldBuilder::add_transform()
@@ -526,6 +569,8 @@ void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
             .local_to_world = local_to_world,
             .material_override = kNoMaterial,
             .speed_mps = speed,
+            .object_label = body.object_label != kNoLabel ? body.object_label
+                                                          : intern_label(scene, "body " + std::to_string(i)),
         });
     }
 }

@@ -99,12 +99,14 @@ namespace {
 
 Result<PreparedParts> prepare_parts(const vehicles::ModelType& model) {
     PreparedParts out;
+    out.model_name = model.name;
     out.parts.reserve(model.parts.size());
     for (std::size_t i = 0; i < model.parts.size(); ++i) {
         const vehicles::PartDesc& part = model.parts[i];
         const std::string label =
             "prepare_parts: model '" + model.name + "': part " + std::to_string(i) + " '" + part.name + "'";
         PreparedPart prepared;
+        prepared.name = part.name.empty() ? "parts[" + std::to_string(i) + "]" : part.name;
         prepared.on_rotor = part.attach == vehicles::PartAttach::rotor;
         prepared.porous = part.surface.kind == vehicles::PartSurface::Kind::porous;
         if (part.mesh != nullptr) {
@@ -146,8 +148,12 @@ Result<void> bind_parts(const PreparedParts& prepared, const vehicles::PosedPart
         }
     }
 
+    // Segmentation's identity (N13): the object, and each part under it.
+    const std::string object = look.object_name.empty() ? prepared.model_name : look.object_name;
+    const uint32_t object_label = render::intern_label(scene, object);
     for (const vehicles::PosedPart& p : posed.parts) {
         const PreparedPart& part = prepared.parts[p.part];
+        const uint32_t part_label = render::intern_label(scene, object + "/" + part.name);
         const glm::mat4 world_from_part = glm::translate(glm::mat4(1.0f), p.origin) * glm::mat4_cast(p.orient);
         const uint32_t material = part.porous ? look.porous : part.on_rotor ? look.rotor : look.body;
         const bool wall = !part.porous && (!part.on_rotor || look.rotor_parts_are_walls);
@@ -157,6 +163,8 @@ Result<void> bind_parts(const PreparedParts& prepared, const vehicles::PosedPart
             item.local_to_world = world_from_part * piece.part_from_piece;
             item.material_override = material;
             item.flow_wall = wall;
+            item.object_label = object_label;
+            item.part_label = part_label;
             scene.meshes.push_back(piece.mesh);
             scene.statics.push_back(item);
             if (piece.is_csg) {

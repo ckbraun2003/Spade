@@ -71,6 +71,7 @@ typedef void(APIENTRYP SpadePfnGlMaxShaderCompilerThreads)(GLuint count);
 
 #include "core/error.hpp"
 #include "render/raster_cpu.hpp"  // overlay_geometry(), kOverlayDepthBias
+#include "render/segmentation.hpp"  // segment_colour(), item_segment_colour()
 #include "render/raymarch.hpp"    // kRaymarchMaxSteps, kRaymarchSurfaceEpsilon
 #include "render/shadow.hpp"      // kNoOccluder, kShadowDepthBias
 #include "world/sdf.hpp"          // SdfNode, SdfTransform, kMaxSdfDepth
@@ -895,7 +896,8 @@ uniform float uDepthNear;
 uniform float uDepthFar;
 uniform uint uDepthMap;
 
-vec3 sensor_colour(vec3 world, vec3 n) {
+vec3 sensor_colour(vec3 world, vec3 n, vec3 flat_colour) {
+    if (uSensorMode == 6u) return flat_colour;  // segmentation: the label's colour, as the host packed it
     if (uSensorMode == 4u) {
         float z = dot(world - uSensorEye, uSensorForward);
         return flow_colour_map(clamp((z - uDepthNear) / (uDepthFar - uDepthNear), 0.0, 1.0), uDepthMap);
@@ -912,6 +914,7 @@ flat in uint vInstance;
 layout(std430, binding = 1) readonly buffer Overrides  { uint uOverride[]; };
 layout(std430, binding = 4) readonly buffer Speeds { float uSpeed[]; };
 layout(std430, binding = 5) readonly buffer FlowWalls { uint uFlowWall[]; };  // DrawItem::flow_wall
+layout(std430, binding = 8) readonly buffer Segments { uint uSegment[]; };    // segmentation's colour, RGBA8
 
 uniform uint uSubmeshMaterial;
 uniform uint uNoMaterial;
@@ -920,7 +923,7 @@ out vec4 fragColor;
 
 void main() {
     if (uSensorMode != 0u) {  // geometry as data: no material, light or flow colouring
-        fragColor = vec4(sensor_colour(vWorld, vNormal), 1.0);
+        fragColor = vec4(sensor_colour(vWorld, vNormal, unpackUnorm4x8(uSegment[vInstance]).rgb), 1.0);
         return;
     }
     // DrawItem::material_override wins when set, else the submesh's own
@@ -1034,7 +1037,7 @@ void main() {
             vec3 hit = uCamPos + ray * best_t;
             vec4 clip = uSensorViewProj * vec4(hit, 1.0);
             gl_FragDepth = min((clip.z / clip.w) * 0.5 + 0.5, 1.0);
-            fragColor = vec4(sensor_colour(hit, uPlanes[best].normal), 1.0);
+            fragColor = vec4(sensor_colour(hit, uPlanes[best].normal, uPlanes[best].color), 1.0);
         } else {
             gl_FragDepth = 1.0;
             fragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -1390,6 +1393,7 @@ uniform float uMarchEpsilon;     // kRaymarchSurfaceEpsilon (SR-28)
 uniform uint uSubtreeMaterial;   // the draw item's material
 uniform uint uSubtreeFlowWall;   // its DrawItem::flow_wall (RND-8)
 uniform float uSubtreeSpeed;     // the draw item's speed, for velocity mode
+uniform uint uSubtreeSegment;    // the draw item's segmentation colour, RGBA8
 
 out vec4 fragColor;
 
@@ -1456,7 +1460,7 @@ void main() {
     float g_len = length(g);
     vec3 n = g_len > 0.0 ? g / g_len : vec3(0.0, 1.0, 0.0);
     if (uSensorMode != 0u) {  // the hit's depth and outward gradient, as data
-        fragColor = vec4(sensor_colour(p, n), 1.0);
+        fragColor = vec4(sensor_colour(p, n, unpackUnorm4x8(uSubtreeSegment).rgb), 1.0);
         return;
     }
     vec3 n_eye = dot(n, uCamPos - p) < 0.0 ? -n : n;
@@ -1492,6 +1496,13 @@ static_assert(sizeof(GpuGroundPlane) == 80, "std430 layout must match the shader
 static_assert(sizeof(SdfNode) == 32, "kSdfSrc's GpuSdfNode is 32 bytes");
 static_assert(sizeof(SdfTransform) == 80, "kSdfSrc's GpuSdfTransform is 80 bytes");
 static_assert(kMaxSdfDepth == 32, "kSdfSrc's kMaxSdfDepth must match world/sdf.hpp's");
+
+// A segmentation colour as the shaders unpack it (unpackUnorm4x8): r, g, b,
+// then an opaque alpha, a byte each, so GL writes the very bytes the CPU does.
+[[nodiscard]] uint32_t pack_rgb8(const render::Rgb8& c) noexcept {
+    return static_cast<uint32_t>(c[0]) | (static_cast<uint32_t>(c[1]) << 8u) | (static_cast<uint32_t>(c[2]) << 16u) |
+           (0xFFu << 24u);
+}
 
 // One CSG subtree's place in the shared node and transform buffers, and the
 // box it was uploaded with.
@@ -1670,12 +1681,14 @@ struct GlRenderer::Impl {
     GLuint ssbo_materials = 0;
     GLuint ssbo_speeds = 0;
     GLuint ssbo_walls = 0;
+    GLuint ssbo_segments = 0;
     GLuint ssbo_planes = 0;
     size_t transforms_capacity = 0;  // in instances, so growth is in place after the first
     size_t overrides_capacity = 0;
     size_t materials_capacity = 0;
     size_t speeds_capacity = 0;
     size_t walls_capacity = 0;
+    size_t segments_capacity = 0;
     size_t planes_capacity = 0;
 
     // The background program draws one triangle from gl_VertexID. A core
@@ -1813,6 +1826,7 @@ struct GlRenderer::Impl {
     std::vector<uint32_t> instance_overrides;
     std::vector<float> instance_speeds;
     std::vector<uint32_t> instance_walls;  // DrawItem::flow_wall, 1 or 0 (RND-8)
+    std::vector<uint32_t> instance_segments;  // segmentation's colour per instance, RGBA8 (N13)
     std::vector<uint32_t> batch_base;    // per mesh: where its instances start
     std::vector<uint32_t> batch_count;   // per mesh: how many
     std::vector<uint32_t> batch_static;  // per mesh: how many of those are statics, which come first
@@ -1857,6 +1871,7 @@ struct GlRenderer::Impl {
         GLint view_proj = -1, box_min = -1, box_max = -1, node_base = -1, node_count = -1, transform_base = -1;
         GLint gradient_step = -1, right = -1, up = -1, forward = -1, inv_tan_half_fov = -1, aspect = -1;
         GLint viewport = -1, near_plane = -1, far_plane = -1, march_max_steps = -1, march_epsilon = -1;
+        GLint segment = -1;
         GLint material = -1, speed = -1, sun_dir = -1, sun_color = -1, ambient = -1, sun_intensity = -1;
         GLint mode = -1, velocity_scale = -1, cam_pos = -1, flow_wall = -1;
         GLint sky_zenith = -1, sky_horizon = -1, horizon_strength = -1, horizon_onset = -1;
@@ -1976,6 +1991,7 @@ struct GlRenderer::Impl {
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
+        if (ssbo_segments != 0) gl.DeleteBuffers(1, &ssbo_segments);
         if (ssbo_walls != 0) gl.DeleteBuffers(1, &ssbo_walls);
         if (ssbo_materials != 0) gl.DeleteBuffers(1, &ssbo_materials);
         if (ssbo_overrides != 0) gl.DeleteBuffers(1, &ssbo_overrides);
@@ -2132,6 +2148,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     gl.GenBuffers(1, &impl->ssbo_overrides);
     gl.GenBuffers(1, &impl->ssbo_materials);
     gl.GenBuffers(1, &impl->ssbo_speeds);
+    gl.GenBuffers(1, &impl->ssbo_segments);
     gl.GenBuffers(1, &impl->ssbo_walls);
     gl.GenBuffers(1, &impl->ssbo_planes);
     gl.GenVertexArrays(1, &impl->empty_vao);
@@ -2279,6 +2296,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     cu.march_epsilon = gl.GetUniformLocation(c, "uMarchEpsilon");
     cu.material = gl.GetUniformLocation(c, "uSubtreeMaterial");
     cu.speed = gl.GetUniformLocation(c, "uSubtreeSpeed");
+    cu.segment = gl.GetUniformLocation(c, "uSubtreeSegment");
     cu.flow_wall = gl.GetUniformLocation(c, "uSubtreeFlowWall");
     cu.sun_dir = gl.GetUniformLocation(c, "uSunDir");
     cu.sun_color = gl.GetUniformLocation(c, "uSunColor");
@@ -2688,6 +2706,8 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     s.instance_overrides.assign(total_instances, render::kNoMaterial);
     s.instance_speeds.assign(total_instances, 0.0f);
     s.instance_walls.assign(total_instances, 0u);
+    s.instance_segments.assign(total_instances, 0u);
+    const bool sensor_segments = options.mode == render::DrawMode::segmentation;
     std::vector<uint32_t> cursor(s.batch_base.begin(), s.batch_base.end());
     const auto place = [&](const render::DrawItem& d) {
         if (d.mesh_index >= mesh_count) return;
@@ -2696,6 +2716,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         s.instance_overrides[at] = d.material_override;
         s.instance_speeds[at] = d.speed_mps;
         s.instance_walls[at] = d.flow_wall ? 1u : 0u;
+        if (sensor_segments) {
+            s.instance_segments[at] = pack_rgb8(render::item_segment_colour(scene, d, options.segment_by));
+        }
     };
     for (size_t i = 0; i < scene.statics.size(); ++i) {
         if (s.static_marched[i] == 0u) place(scene.statics[i]);
@@ -2721,6 +2744,12 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                      static_cast<double>(gp.normal.z) * camera.position.z;
             g.is_front = n_dot_cam > static_cast<double>(gp.offset) ? 1u : 0u;
             render::ground_plane_basis(gp.normal, g.grid_u, g.grid_v);
+            if (options.mode == render::DrawMode::segmentation) {  // the sensor branch reads color as the label's
+                const render::Rgb8 c = gp.label < scene.labels.size()
+                                           ? render::segment_colour(scene.labels[gp.label])
+                                           : render::kUnlabelledColour;
+                g.color = glm::vec3(c[0], c[1], c[2]) / 255.0f;
+            }
             s.gpu_planes.push_back(g);
         }
     }
@@ -2733,6 +2762,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     upload_in_place(gl, s.ssbo_transforms, s.transforms_capacity, s.instance_transforms);
     upload_in_place(gl, s.ssbo_overrides, s.overrides_capacity, s.instance_overrides);
     upload_in_place(gl, s.ssbo_speeds, s.speeds_capacity, s.instance_speeds);
+    upload_in_place(gl, s.ssbo_segments, s.segments_capacity, s.instance_segments);
     upload_in_place(gl, s.ssbo_walls, s.walls_capacity, s.instance_walls);
     upload_in_place(gl, s.ssbo_planes, s.planes_capacity, s.gpu_planes);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -2742,6 +2772,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, s.ssbo_materials);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, s.ssbo_planes);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, s.ssbo_speeds);
+    gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 8, s.ssbo_segments);
     gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, s.ssbo_walls);
 
     // --- camera ------------------------------------------------------------
@@ -3052,6 +3083,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                 gl.Uniform1ui(cu.transform_base, g.transform_base);
                 gl.Uniform1ui(cu.material, material);
                 gl.Uniform1f(cu.speed, item.speed_mps);
+                gl.Uniform1ui(cu.segment, sensor_segments ? pack_rgb8(render::item_segment_colour(
+                                                                scene, item, options.segment_by))
+                                                          : 0u);
                 gl.Uniform1ui(cu.flow_wall, item.flow_wall ? 1u : 0u);
                 gl.DrawArrays(GL_TRIANGLES, 0, 36);
                 ++draw_calls;

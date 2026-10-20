@@ -1,4 +1,5 @@
 #include "render/raster_cpu.hpp"
+#include "render/segmentation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -305,6 +306,8 @@ struct FrameBuffers {
     // by whatever wins it, and coloured last (colour_sensor_frame()).
     std::vector<glm::vec3>* normals = nullptr;
     glm::vec3 normal_now{0.0f};
+    // DrawMode::segmentation: the colour the pass drawing now fills with.
+    Rgb8 flat_now{0, 0, 0};
 };
 
 // Sets what the pixels drawn in a scope record, and clears it after.
@@ -869,7 +872,7 @@ void rasterizeTriangleSensor(FrameBuffers& fb, const ScreenPoint& v0, const Scre
                                  n2 * static_cast<float>(b2 * v2.invDepth)) /
                                 static_cast<float>(invD);
             }
-            setPixelIfCloser(fb, x, y, invD, 0u, 0u, 0u);
+            setPixelIfCloser(fb, x, y, invD, fb.flat_now[0], fb.flat_now[1], fb.flat_now[2]);
         }
     }
 }
@@ -945,6 +948,9 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
     // RND-8: this item's pixels record whether it is a wall in the flow;
     // draw_mesh_triangle_shaded() adds each triangle's normal.
     const SurfaceScope surface_scope(fb, SurfaceInfo{glm::vec3(0.0f), item.flow_wall});
+    if (mode == DrawMode::segmentation) {
+        fb.flat_now = item_segment_colour(scene, item, options.segment_by);
+    }
     // SR-17a, distilled ONCE per item rather than per triangle or per pixel.
     // SHADED-ONLY, the same gate ruling SR-22 puts on the analytic ground and
     // the infinite grid: hazing a wireframe's edges would be a mode-contract
@@ -1169,6 +1175,8 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
             velocity_tinted.base_color = glm::vec4(velocity_ramp(item.speed_mps, options.velocity_scale_mps), 1.0f);
         }
         const Material& material = (mode == DrawMode::velocity) ? velocity_tinted : resolved;
+        const Rgb8 flat =
+            mode == DrawMode::segmentation ? item_segment_colour(scene, item, options.segment_by) : Rgb8{0, 0, 0};
 
         PixelRect rect;
         if (!box_pixel_rect(vc, sub.bounds, rect)) {
@@ -1206,7 +1214,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                 const glm::vec3 normal = normal_len > 0.0f ? raw_normal / normal_len : glm::vec3(0.0f, 1.0f, 0.0f);
                 if (is_sensor_mode(mode)) {
                     fb.normal_now = normal;
-                    setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), 0u, 0u, 0u);
+                    setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), flat[0], flat[1], flat[2]);
                     continue;
                 }
                 const ShadedColor shaded = shade_vertex_color(material, scene.lighting, normal);
@@ -1908,7 +1916,8 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
 // nearest front-facing plane, the background pass's own ray and test, at its
 // view depth and with its normal. Drawn first, it takes depth like any
 // surface, so a nearer mesh or march wins over it.
-void draw_sensor_ground(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+void draw_sensor_ground(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
+                        const RenderOptions& options) {
     if (scene.ground_planes.empty()) {
         return;
     }
@@ -1921,8 +1930,13 @@ void draw_sensor_ground(FrameBuffers& fb, const ViewContext& vc, const RenderSce
             if (best < 0) {
                 continue;
             }
-            fb.normal_now = scene.ground_planes[static_cast<size_t>(best)].normal;
-            setPixelIfCloser(fb, static_cast<int>(x), static_cast<int>(y), 1.0 / best_t, 0u, 0u, 0u);
+            const GroundPlane& plane = scene.ground_planes[static_cast<size_t>(best)];
+            fb.normal_now = plane.normal;
+            Rgb8 flat{0, 0, 0};
+            if (options.mode == DrawMode::segmentation) {
+                flat = plane.label < scene.labels.size() ? segment_colour(scene.labels[plane.label]) : kUnlabelledColour;
+            }
+            setPixelIfCloser(fb, static_cast<int>(x), static_cast<int>(y), 1.0 / best_t, flat[0], flat[1], flat[2]);
         }
     }
 }
@@ -1935,6 +1949,9 @@ void colour_sensor_frame(FrameBuffers& fb, const RenderOptions& options) {
     const DepthRange& range = options.depth;
     const float span = range.far_m - range.near_m;
     for (size_t idx = 0; idx < fb.depth.size(); ++idx) {
+        if (options.mode == DrawMode::segmentation && fb.depth[idx] > 0.0) {
+            continue;  // its surface's flat colour, written when it won the pixel
+        }
         glm::vec3 colour(0.0f);
         if (fb.depth[idx] > 0.0) {
             if (options.mode == DrawMode::depth) {
@@ -2009,7 +2026,9 @@ namespace {
 }  // namespace
 
 Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& options) {
-    const std::string mode = options.mode == DrawMode::depth ? "depth" : "normals";
+    const std::string mode = options.mode == DrawMode::depth     ? "depth"
+                             : options.mode == DrawMode::normals ? "normals"
+                                                                 : "segmentation";
     if (!scene.flow_layers.empty() || !scene.field_layers.empty() || !scene.flow_polylines.empty() ||
         !scene.flow_points.positions.empty() || scene.flow_surface_colouring.has_value()) {
         return std::unexpected(Error{Code::invalid_argument, mode + " draws the geometry as data, so it takes no flow "
@@ -2017,6 +2036,9 @@ Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& 
     }
     if (options.mode == DrawMode::depth) {
         return validate_depth_range(options.depth);
+    }
+    if (options.mode == DrawMode::segmentation) {
+        return validate_labels(scene);
     }
     return {};
 }
@@ -2121,7 +2143,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
             normals.assign(pixel_count, glm::vec3(0.0f));
             fb.normals = &normals;
         }
-        draw_sensor_ground(fb, vc, scene);
+        draw_sensor_ground(fb, vc, scene, options);
         const std::vector<bool> marched = csg_marched_items(scene);
         for (size_t i = 0; i < scene.statics.size(); ++i) {
             if (!marched[i]) {
