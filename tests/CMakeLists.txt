@@ -101,6 +101,7 @@ add_executable(spade_tests
     test_model_file.cpp
     test_object_file.cpp
     test_library_quad.cpp
+    test_library.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
@@ -376,6 +377,9 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_workspace.cpp
         test_editor_display.cpp
         test_editor_gizmo.cpp
+        # The default library's primitives (N3) against the editor's built-in
+        # ones (builtin_library()); the rest of the library is test_library.cpp.
+        test_library_builtin.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
