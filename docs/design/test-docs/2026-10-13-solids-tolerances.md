@@ -56,8 +56,14 @@ The design's case, a cylinder spinning in still air, has no closed form before i
 
 **Measured: S2 does not tell the two treatments apart** (Physics, P2, 2026-10-20). At `R₁/dx` 16, S2 passes with the viscous wall links at 0.0052, and also with them switched off (the rigid velocity at closed faces only) at 0.0602. Both are inside 0.11, though the links are 12 times better. So S2 stays as it is, a check of the solution, and the treatment gets a check of its own:
 - **The discriminating check is P2's planar Couette**, with both plates a quarter cell off the face planes. With the links, the exact linear profile is the discrete fixed point, held to rounding. With closed faces alone, each wall sits 0.75 dx too far and the profile drifts.
-- **Its band** is measured and pinned (`TD-2`), and the record carries both treatments' numbers, so the band visibly fails the links-off run.
-- **Where S2 runs:** about 15 s in release, about 100 s under debug ctest (whose limit is 60 s). It runs in the release gate and every leg. A skip in debug, by name, with the planar check covering debug, waits on the lead's ruling under `TD-5`.
+- **Its band, measured** (Physics, 2026-10-20; `AirflowSolidsStep.PlanarCouetteFlowHoldsItsLinearProfile`):
+  - The setup: a 4 × 16 × 1 grid, periodic in x and z, dx 1 mm. The plates are at y = 3.25 dx (still) and 12.75 dx (U = 0.1 m/s), with ν = 10⁻³ and h = 1 ms, run 45 steps from the exact profile.
+  - With the wall links, max |u − u_exact| / U = 5.624 × 10⁻⁸, which is rounding.
+  - The negative control, closed faces only (links cleared), gives 6.459 × 10⁻², and the test asserts that it EXCEEDS the band. Both numbers are printed in the test's own record.
+  - **The band is ≤ 10⁻⁵** (`TD-2`): about 180 times the links-on run, and about 6,500 times under the control.
+  - Production mutation: a viscous solve that ignores the links makes the links-on run 6.459 × 10⁻² as well, and the test fails.
+  - It takes 0.16 s in debug.
+- **Where S2 runs:** about 15 s in release, about 100 s under debug ctest (whose limit is 60 s). It runs in the release gate and every leg. In debug it skips under `TD-5`'s "debug: runs in release" amendment (the lead, 2026-10-20; `01-verification.md`, Guards). It measured 99.7 s in debug and 14.7 s in release, and the planar check covers the wall links in debug.
 
 ## S3. A sheet across a channel (design test 3)
 
