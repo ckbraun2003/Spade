@@ -144,12 +144,31 @@ template <class T>
     return file;
 }
 
-// THE PINS. Read off the fixture's compile and chain: regression pins, so a
-// fixture change shows here even when the file is regenerated with it.
-// PLACEHOLDERS until GREEN measures them.
-constexpr uint64_t kPinnedModelIdentity = 0x0ull;
-constexpr uint64_t kPinnedPartsIdentity = 0x0ull;
-constexpr uint64_t kPinnedPropulsionIdentity = 0x0ull;
+// THE PINS. Read off the fixture's compile and chain: regression pins (a
+// change detector, TD-4), so a fixture change shows here even when the file
+// is regenerated with it. Measured on msvc-ninja-release, core/library-quad
+// at 5cbe2f3. A moved pin moves with the file, under the same cause.
+//
+// THE FILE, regenerated 2026-10-20 (TD-1): N5a nested the chain in the model
+// block (core/scene-propulsion, 811225c), so its bytes moved -- layout only,
+// every value line the same. No pin moved: N5a keeps the chain out of
+// model_identity and parts_identity.
+
+// GENERATED 2026-10-19 (TD-1). Source: compile_airframe(reference_quad()) +
+// airframe_propulsion_chain(), N4 of the editor end-goal design. The same
+// value as AirframeCompile.TheReferenceQuadHasAPinnedIdentity's, final under
+// TD-12 there (gcc-13 fresh leg at 397248a).
+constexpr uint64_t kPinnedModelIdentity = 0x78fdc769a0503ff6ull;
+// GENERATED 2026-10-19 (TD-1). Source: compile_airframe(reference_quad()) +
+// airframe_propulsion_chain(), N4 of the editor end-goal design. The same
+// value as AirframeCompile.PartsMoveOnlyThePartsIdentity's, final under TD-12
+// there (gcc-13 fresh leg at 397248a).
+constexpr uint64_t kPinnedPartsIdentity = 0x1f0c49d9fd04ed42ull;
+// GENERATED 2026-10-19 (TD-1). Source: compile_airframe(reference_quad()) +
+// airframe_propulsion_chain(), N4 of the editor end-goal design. Pinned
+// nowhere else; final once a fresh (-NoSeed) Docker gcc leg reproduces it
+// (TD-12).
+constexpr uint64_t kPinnedPropulsionIdentity = 0xef1affa7839cb9d7ull;
 
 }  // namespace
 
