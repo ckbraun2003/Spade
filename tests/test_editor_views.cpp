@@ -7,10 +7,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/vec3.hpp>
 
 #include "core/flow_volume.hpp"
@@ -217,4 +219,76 @@ TEST(EditorViews, TheInputsComeFromTheSceneAsApplyViewReadsThem) {
 
     const spade::FlowVolume volume;
     EXPECT_TRUE(inputs_of(ground, &volume, true).has_volume);
+}
+
+// ===========================================================================
+// Rendering's sensor bases (ee79a68): depth and normals. The menu offers
+// them where supports() says they draw; a depth view is ranged from the
+// scene's size; a flow layer on a sensor base is refused in Rendering's
+// words; and the view carries its base's legend for the panel.
+// ===========================================================================
+
+TEST(EditorViews, TheMenuOffersTheSensorBasesWhereTheyDraw) {
+    for (const ViewBackend backend : {ViewBackend::cpu, ViewBackend::gl}) {
+        const std::vector<ModeEntry> menu = mode_menu(ViewState{}, backend, inputs(true));
+        for (const ViewBase base : {ViewBase::depth, ViewBase::normals}) {
+            ASSERT_LT(static_cast<uint32_t>(base), menu.size());
+            const ModeEntry& e = menu[static_cast<uint32_t>(base)];
+            EXPECT_EQ(e.name, spade::render::view_base_name(base));
+            EXPECT_TRUE(e.drawable) << e.name << " on backend " << static_cast<int>(backend) << ": " << e.why_not;
+        }
+    }
+}
+
+// near 0.1 m; far twice the diagonal of the box around what the scene draws,
+// never under 1 m.
+TEST(EditorViews, ADepthViewIsRangedFromTheSceneSize) {
+    spade::render::RenderScene scene;
+    spade::render::DrawItem a;
+    a.local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(-3.0f, 0.0f, 0.0f));
+    spade::render::DrawItem b;
+    b.local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 4.0f, 0.0f));
+    scene.statics.push_back(a);
+    scene.dynamics.push_back(b);
+    const spade::render::DepthRange r = depth_range_for(scene);
+    EXPECT_FLOAT_EQ(r.near_m, 0.1f);
+    EXPECT_NEAR(r.far_m, 2.0f * std::sqrt(36.0f + 16.0f), 1e-4f);
+
+    const spade::render::DepthRange tiny = depth_range_for(spade::render::RenderScene{});
+    EXPECT_FLOAT_EQ(tiny.far_m, 1.0f);
+}
+
+TEST(EditorViews, AFlowLayerOnASensorBaseIsRefusedInRenderingsWords) {
+    ViewState v;
+    v.spec.layers.push_back(spade::render::FlowViewSpec{});
+    ViewInputs in = inputs(true);
+    in.has_volume = true;
+    const spade::Result<void> r = choose_mode(v, ViewBase::depth, ViewBackend::cpu, in);
+    ASSERT_FALSE(r.has_value());
+    ViewSpec want = v.spec;
+    want.base = ViewBase::depth;
+    const std::string why = spade::render::supports(want, ViewBackend::cpu, in).why_not;
+    ASSERT_FALSE(why.empty());
+    EXPECT_NE(r.error().context.find(why), std::string::npos) << r.error().context;
+    EXPECT_EQ(v.spec.base, ViewBase::shaded);  // it keeps what it draws
+}
+
+TEST(EditorViews, AnAppliedViewCarriesItsBaseLegendAndItsDepthRange) {
+    ViewState v;
+    ASSERT_TRUE(choose_mode(v, ViewBase::depth, ViewBackend::cpu, inputs(false)).has_value());
+    spade::render::RenderScene scene;
+    spade::render::DrawItem far_item;
+    far_item.local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(10.0f, 0.0f, 0.0f));
+    scene.statics.push_back(far_item);
+    scene.statics.push_back(spade::render::DrawItem{});
+    spade::render::RenderOptions options;
+    spade::render::ViewCache cache;
+    const spade::Result<void> r = apply_to(v, nullptr, ViewBackend::cpu, inputs(false), scene, options, cache);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(v.spec.depth.far_m, depth_range_for(scene).far_m);
+    const spade::render::BaseLegend want = spade::render::base_legend(v.spec, scene);
+    EXPECT_EQ(v.base_legend.base, ViewBase::depth);
+    EXPECT_EQ(v.base_legend.quantity, want.quantity);
+    EXPECT_EQ(v.base_legend.unit, want.unit);
+    EXPECT_EQ(v.base_legend.range.max, want.range.max);
 }
