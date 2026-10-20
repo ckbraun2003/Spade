@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -14,8 +15,16 @@
 #include <string>
 #include <vector>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include "airflow_solid_shapes.hpp"
+#include "airflow_vehicle_sampler.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "state/layout.hpp"
+#include "vehicles/part_pose.hpp"
+#include "vehicles/quadrotor.hpp"
+#include "world/mesh.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -575,6 +584,137 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
                 build_line().c_str());
     EXPECT_LE(with_links, 1.0e-5);
     EXPECT_GT(closed_only, 1.0e-5) << "the negative control must fail the band";
+}
+
+// --- The posed body from A4 and B4 (P2 Task 9; design test 7) ---------------
+
+// The compiled reference quad's body box (reference_quad() in
+// tests/test_airframe_compile.cpp: 0.12 x 0.03 x 0.12 m), declared at its 30 mm
+// smallest side, as an analytic part (A4) or as a mesh of the same box (B4),
+// on test_part_pose.cpp's quadrotor frame.
+[[nodiscard]] spade::vehicles::ModelType body_box_quad(bool as_mesh) {
+    const glm::vec3 half(0.06f, 0.015f, 0.06f);
+    spade::vehicles::PartDesc part;
+    part.name = "body";
+    part.role = "test";
+    part.attach = spade::vehicles::PartAttach::body;
+    part.mount_pos = glm::vec3(0.01f, 0.0f, -0.02f);
+    part.surface = spade::vehicles::PartSurface{.kind = spade::vehicles::PartSurface::Kind::wall,
+                                                .inv_permeability = 0.0f,
+                                                .inertial_coeff = 0.0f};
+    part.min_feature = 0.03f;
+    if (as_mesh) {
+        constexpr uint32_t kBoxTriangles[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+                                                   {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+        std::vector<glm::dvec3> positions;
+        for (uint32_t v = 0; v < 8; ++v) {
+            positions.push_back(glm::dvec3((v & 1u) != 0 ? half.x : -half.x, ((v >> 1) & 1u) != 0 ? half.y : -half.y,
+                                           ((v >> 2) & 1u) != 0 ? half.z : -half.z));
+        }
+        std::vector<uint32_t> indices;
+        for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
+        part.mesh = spade::make_mesh(spade::MeshInput{.positions = std::move(positions),
+                                                      .indices = std::move(indices),
+                                                      .unit = spade::MeshUnit::metre},
+                                     "body")
+                        .value();
+    } else {
+        spade::SdfNode n{};
+        n.kind = static_cast<uint32_t>(spade::SdfPrim::box);
+        n.op = static_cast<uint32_t>(spade::SdfOp::none);
+        n.params = glm::vec4(half, 0.0f);
+        part.shape.transforms.push_back(spade::SdfTransform{});
+        part.shape.nodes.push_back(n);
+    }
+    spade::vehicles::QuadrotorParams q;
+    q.name = "box_quad";
+    q.mass = 1.0f;
+    q.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
+    q.arm_length = 0.18f;
+    q.rotor_height = 0.02f;
+    q.proxy_radius = 0.2f;
+    for (spade::vehicles::RotorParams& rotor : q.rotors) {
+        rotor.tau = 0.02f;
+        rotor.radius = 0.13f;
+        rotor.thrust_coeff = 1.2e-5f;
+        rotor.torque_coeff = 1.9e-7f;
+    }
+    q.drag.mode = spade::physics::drag_mode::quadratic;
+    q.drag.area = 0.05f;
+    q.drag.coeffs = glm::vec3(1.6f, 0.0f, 0.0f);
+    q.imu.rate_divider = 1;
+    spade::vehicles::ModelType m = spade::vehicles::make_quadrotor(q).value();
+    m.parts = {part};
+    return m;
+}
+
+// Design test 7: one body, tilted, moving and turning, at the D1 nest's dx =
+// 6 mm, sampled from A4's analytic box and from B4's mesh of it through the
+// same adapter (vehicles::sample_parts(), vehicles::part_bounds()): the same
+// apertures, wall velocities and distances within the distance's fp32
+// rounding. An implementation comparison (TD-2), measured 2026-10-20 on MSVC
+// 14.43 release: theta 2.98e-8 (half an ulp near 0.5), wall velocity 0 (one
+// formula, part_wall_velocity()), phi 2.2e-11 m, 4332 closed faces in each.
+// Pinned at theta two ulps of 1 (1.2e-7) and phi 1e-10 m, so another compiler's
+// last-bit rounding stays inside; the walls and the closed faces equal.
+TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
+    const float dx = 0.006f;
+    const GridShape shape{48, 48, 48, dx};
+    spade::BodyState body{};
+    body.pos = glm::vec3(1.0f, 2.0f, 3.0f);
+    body.orient = glm::angleAxis(0.4f, glm::normalize(glm::vec3(0.3f, 1.0f, -0.2f)));
+    body.vel = glm::vec3(0.5f, 0.0f, 0.0f);
+    body.omega_body = glm::vec3(0.0f, 2.0f, 0.0f);
+    const glm::vec3 origin = body.pos - glm::vec3(24.0f * dx);
+    const std::array<float, 4> omega{};
+    const std::array<float, 4> psi{};
+    const auto build = [&](const spade::vehicles::ModelType& m) {
+        SolidField f = *make_solid_field(shape);
+        const auto posed = spade::vehicles::posed_parts(m, body, omega, psi, spade::vehicles::PartFilter::rigid_only);
+        EXPECT_TRUE(posed.has_value()) << (posed ? "" : posed.error().context);
+        if (!posed) return f;
+        const airflow_test::VehicleSampler v(m, *posed, origin);
+        const auto parts = v.parts();
+        EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
+        if (!parts) return f;
+        const auto ok = build_solids(f, shape, {}, *parts, v.sampler());
+        EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
+        return f;
+    };
+    const spade::vehicles::ModelType a4 = body_box_quad(false);
+    const spade::vehicles::ModelType b4 = body_box_quad(true);
+    const SolidField fa = build(a4);
+    const SolidField fb = build(b4);
+    ASSERT_TRUE(fa.any && fb.any);
+    float d_theta = 0.0f;
+    float d_wall = 0.0f;
+    float d_phi = 0.0f;
+    uint32_t closed_a = 0;
+    uint32_t closed_b = 0;
+    for (uint32_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < fa.theta[c].size(); ++i) {
+            d_theta = std::max(d_theta, std::fabs(fa.theta[c][i] - fb.theta[c][i]));
+            d_wall = std::max(d_wall, std::fabs(fa.wall[c][i] - fb.wall[c][i]));
+            if (fa.phi[c][i] < 1.0e29f && fb.phi[c][i] < 1.0e29f) {
+                d_phi = std::max(d_phi, std::fabs(fa.phi[c][i] - fb.phi[c][i]));
+            }
+            closed_a += closed(fa.theta[c][i]) ? 1u : 0u;
+            closed_b += closed(fb.theta[c][i]) ? 1u : 0u;
+        }
+    }
+    std::printf("=== the posed body, A4 analytic against B4 mesh (design test 7) ===\n"
+                "config: the reference quad's 0.12 x 0.03 x 0.12 m body box, tilted 0.4 rad, moving 0.5 m/s, turning "
+                "2 rad/s; 48^3 at dx 6 mm\n"
+                "measure: max |theta_A - theta_B| = %.3e; max |wall_A - wall_B| = %.3e m/s; max |phi_A - phi_B| = "
+                "%.3e m; closed faces %u (A4) and %u (B4)\n"
+                "build: %s\n",
+                static_cast<double>(d_theta), static_cast<double>(d_wall), static_cast<double>(d_phi), closed_a,
+                closed_b, build_line().c_str());
+    EXPECT_GT(closed_a, 0u);
+    EXPECT_EQ(closed_a, closed_b);
+    EXPECT_LE(d_theta, 1.2e-7f);
+    EXPECT_EQ(d_wall, 0.0f);
+    EXPECT_LE(d_phi, 1.0e-10f);
 }
 
 }  // namespace
