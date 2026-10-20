@@ -134,6 +134,7 @@ struct ViewCase {
     cases.push_back({"exact_sdf with a layer", {ViewBase::exact_sdf, {layer(FlowView::slice)}}, all});
     cases.push_back({"depth with a layer", {ViewBase::depth, {layer(FlowView::volume)}}, all});
     cases.push_back({"normals with a layer", {ViewBase::normals, {layer(FlowView::streamlines)}}, all});
+    cases.push_back({"segmentation with a layer", {ViewBase::segmentation, {layer(FlowView::slice)}}, all});
     cases.push_back({"depth over an empty range", {ViewBase::depth, {}}, all});
     cases.back().spec.depth = render::DepthRange{.near_m = 4.0f, .far_m = 4.0f};
     cases.push_back({"two C_p", {ViewBase::shaded, {layer(FlowView::surface_cp), layer(FlowView::surface_cp)}}, all});

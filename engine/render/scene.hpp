@@ -521,6 +521,7 @@ struct GroundPlane {
     glm::vec3 normal{0.0f, 1.0f, 0.0f};
     float offset = 0.0f;
     uint32_t material = 0;
+    uint32_t label = kNoLabel;  // its plane node's, as its mesh item's: "ground" by default
 };
 
 struct DrawItem {
@@ -537,6 +538,12 @@ struct DrawItem {
     // colours this item, and no item without it. A rotor drawn under an
     // actuator model is no wall: the solver never saw its surface.
     bool flow_wall = false;
+
+    // Segmentation's identity (N13; render/segmentation.hpp): indices into
+    // RenderScene::labels, or kNoLabel. The object this item belongs to, and
+    // its part of it; segmentation by parts falls back to the object.
+    uint32_t object_label = kNoLabel;
+    uint32_t part_label = kNoLabel;
 };
 
 // A CSG subtree the raster ray-marches instead of drawing its mesh.
@@ -564,6 +571,10 @@ struct BodyPose {
     // no second migration of this struct; update_dynamics() reduces it to the
     // magnitude DrawItem stores.
     glm::vec3 velocity{0.0f};
+
+    // The body's object label (RenderScene::labels); kNoLabel names it
+    // "body <i>", i its index in update_dynamics()' span.
+    uint32_t object_label = kNoLabel;
 };
 
 struct RenderScene {
@@ -585,6 +596,9 @@ struct RenderScene {
     // best-effort +Y-identity-plane heuristic, scene.cpp's ground_plane_y());
     // this is the raster background pass's own general, transform-aware list.
     std::vector<GroundPlane> ground_planes;
+    // The names DrawItem::object_label/part_label and GroundPlane::label
+    // index, each once (intern_label()). Segmentation colours by name.
+    std::vector<std::string> labels;
     // The sun's own shadow map (S7a Task R7), built ONCE from `statics` alone
     // at scene-build time and reused every frame -- raster_cpu.cpp's render()
     // never rebuilds this; it only re-rasterises `dynamics` into a per-frame
@@ -647,8 +661,27 @@ struct RenderScene {
 [[nodiscard]] Result<RenderScene> scene_from_world(const WorldDesc& world,
                                                     std::span<const NamedMesh> resolved_meshes);
 
-// Rebuilds `scene.dynamics` from `bodies`, one DrawItem per pose, in order.
-// Never touches `scene.statics`, `scene.meshes`, or anything else in `scene`.
+// Object names for scene_from_world()'s items (N13; Interface's request):
+// `nodes` aligned with world.sdf.nodes, `props` with world.props. A
+// union-primitive leaf's item takes its node's name, a CSG root's item its
+// ROOT node's, a standalone plane's mesh item and analytic ground both its
+// node's. Empty spans give the defaults: "sdf node <i>", "ground" for a
+// plane, "prop <i>: <mesh_ref>". A span of the wrong length, or an empty
+// name, is refused by name.
+struct SceneLabels {
+    std::span<const std::string> nodes;
+    std::span<const std::string> props;
+};
+[[nodiscard]] Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes,
+                                                    const SceneLabels& labels);
+
+// `name`'s index in scene.labels, appended if it is not there yet.
+[[nodiscard]] uint32_t intern_label(RenderScene& scene, std::string_view name);
+
+// Rebuilds `scene.dynamics` from `bodies`, one DrawItem per pose, in order,
+// each labelled by its pose's object_label or "body <i>" (interned into
+// scene.labels). Never touches `scene.statics`, `scene.meshes`, or anything
+// else in `scene`.
 void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies);
 
 }  // namespace spade::render

@@ -14,7 +14,7 @@ namespace spade::render {
 namespace {
 
 constexpr std::array<std::string_view, kViewBaseCount> kBaseNames = {"shaded", "wireframe", "velocity", "exact_sdf",
-                                                                     "depth",  "normals"};
+                                                                     "depth",  "normals",   "segmentation"};
 constexpr std::array<std::string_view, kFlowViewCount> kLayerNames = {"volume", "vortex_iso", "streamlines", "slice",
                                                                       "surface_cp"};
 
@@ -267,6 +267,7 @@ namespace {
             options.depth = spec.depth;
             break;
         case ViewBase::normals: options.mode = DrawMode::normals; break;
+        case ViewBase::segmentation: break;  // RED: the green step maps it
     }
     return legends;
 }
@@ -299,6 +300,7 @@ BaseLegend base_legend(const ViewSpec& spec, const RenderScene&) {
             legend.key = "+X red, +Y green, +Z blue: the unit world-space normal n as (n + 1) / 2; world frame, Y up";
             legend.black_is_no_surface = true;
             break;
+        case ViewBase::segmentation:
         case ViewBase::shaded:
         case ViewBase::wireframe:
         case ViewBase::velocity:

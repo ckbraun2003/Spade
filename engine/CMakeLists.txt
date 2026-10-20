@@ -586,6 +586,7 @@ add_library(spade_render STATIC
     render/flow_look.cpp
     render/view_mode.cpp
     render/mesh_resolver.cpp
+    render/segmentation.cpp
     render/flow_field.cpp
 )
 add_library(spade::render ALIAS spade_render)

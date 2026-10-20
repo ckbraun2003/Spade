@@ -36,6 +36,7 @@ TEST(ViewMode, NamesAreStableAndReadBack) {
     EXPECT_EQ(spade::render::view_base_name(ViewBase::exact_sdf), "exact_sdf");
     EXPECT_EQ(spade::render::view_base_name(ViewBase::depth), "depth");
     EXPECT_EQ(spade::render::view_base_name(ViewBase::normals), "normals");
+    EXPECT_EQ(spade::render::view_base_name(ViewBase::segmentation), "segmentation");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::volume), "volume");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::vortex_iso), "vortex_iso");
     EXPECT_EQ(spade::render::flow_view_name(FlowView::streamlines), "streamlines");
@@ -75,7 +76,8 @@ TEST(ViewMode, TheBaseSetsTheDrawMode) {
                                                    {ViewBase::velocity, DrawMode::velocity},
                                                    {ViewBase::exact_sdf, DrawMode::raymarch},
                                                    {ViewBase::depth, DrawMode::depth},
-                                                   {ViewBase::normals, DrawMode::normals}};
+                                                   {ViewBase::normals, DrawMode::normals},
+                                                   {ViewBase::segmentation, DrawMode::segmentation}};
     for (const auto& [base, mode] : pairs) {
         RenderScene scene = spade::test::view_mode_scene(true, &sdf);
         RenderOptions options;
@@ -103,7 +105,7 @@ TEST(ViewMode, TheDepthBaseCarriesItsRange) {
 TEST(ViewMode, ASensorBaseRefusesFlowLayersByName) {
     const spade::FlowVolume volume = spade::test::view_mode_volume();
     const spade::render::ViewInputs all{.has_volume = true, .has_walls = true, .has_sdf = true};
-    for (const ViewBase base : {ViewBase::depth, ViewBase::normals}) {
+    for (const ViewBase base : {ViewBase::depth, ViewBase::normals, ViewBase::segmentation}) {
         SCOPED_TRACE(std::string(spade::render::view_base_name(base)));
         const ViewSpec spec{base, {layer(FlowView::slice)}};
         for (const ViewBackend backend : {ViewBackend::cpu, ViewBackend::gl}) {
@@ -147,6 +149,29 @@ TEST(ViewMode, ABadDepthRangeIsRefusedByName) {
     ViewSpec shaded{ViewBase::shaded, {}};
     shaded.depth = bad[0];
     EXPECT_TRUE(spade::render::supports(shaded, ViewBackend::cpu, {}).drawable);
+}
+
+// The segmentation base carries its grain to the draw.
+TEST(ViewMode, TheSegmentationBaseCarriesItsGrain) {
+    RenderScene scene = spade::test::view_mode_scene(false, nullptr);
+    RenderOptions options;
+    ViewSpec spec{ViewBase::segmentation, {}};
+    spec.segment_by = spade::render::SegmentBy::parts;
+    ASSERT_TRUE(spade::render::apply_view(spec, nullptr, scene, options).has_value());
+    EXPECT_EQ(options.mode, DrawMode::segmentation);
+    EXPECT_EQ(options.segment_by, spade::render::SegmentBy::parts);
+}
+
+// Segmentation's legend is the scene's: each name drawn, with its colour.
+TEST(ViewMode, TheSegmentationLegendNamesTheScenesLabels) {
+    RenderScene scene = spade::test::view_mode_scene(false, nullptr);
+    scene.statics[0].object_label = spade::render::intern_label(scene, "box");
+    const spade::render::BaseLegend legend = spade::render::base_legend(ViewSpec{ViewBase::segmentation, {}}, scene);
+    EXPECT_EQ(legend.quantity, "segmentation");
+    EXPECT_TRUE(legend.black_is_no_surface);
+    ASSERT_EQ(legend.segments.entries.size(), 1u);
+    EXPECT_EQ(legend.segments.entries[0].name, "box");
+    EXPECT_EQ(legend.segments.entries[0].colour, spade::render::segment_colour("box"));
 }
 
 // The base legend states what a sensor view's colours mean.

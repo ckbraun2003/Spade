@@ -488,6 +488,17 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     return scene;
 }
 
+// RED: stubs until the green step.
+Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes,
+                                     const SceneLabels&) {
+    return scene_from_world(world, resolved_meshes);
+}
+
+uint32_t intern_label(RenderScene& scene, std::string_view name) {
+    scene.labels.emplace_back(name);
+    return static_cast<uint32_t>(scene.labels.size() - 1u);
+}
+
 void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
     // Rebuilt from scratch every call -- the new content depends only on
     // `bodies`, never on whatever `dynamics` held before (purity, scene.hpp's

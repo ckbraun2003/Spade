@@ -34,6 +34,7 @@
 #include "render/flow_lines.hpp"
 #include "render/flow_render.hpp"
 #include "render/scene.hpp"
+#include "render/segmentation.hpp"
 #include "render/target.hpp"
 #include "render/transfer_function.hpp"
 
@@ -47,8 +48,9 @@ enum class ViewBase : uint32_t {
     exact_sdf = 3,  // the exact sphere-trace of the world's SDF: the CPU only, and no flow layers
     depth = 4,      // view-space depth in metres, coloured over ViewSpec::depth; no flow layers
     normals = 5,    // the unit world-space normal n as RGB (n + 1) / 2; no flow layers
+    segmentation = 6,  // each object or part flat in its label's colour; no flow layers
 };
-inline constexpr uint32_t kViewBaseCount = 6;
+inline constexpr uint32_t kViewBaseCount = 7;
 
 // A flow layer over the base, from a published FlowVolume.
 enum class FlowView : uint32_t {
@@ -90,6 +92,7 @@ struct ViewSpec {
     ViewBase base = ViewBase::shaded;
     std::vector<FlowViewSpec> layers;
     DepthRange depth{};  // ViewBase::depth: its range and colours (0.1-20 m, viridis)
+    SegmentBy segment_by = SegmentBy::objects;  // ViewBase::segmentation
 };
 
 enum class ViewBackend : uint32_t { cpu = 0, gl = 1 };
@@ -168,6 +171,7 @@ struct BaseLegend {
     ResolvedRange range;                         // depth: [near_m, far_m]
     std::string key;                             // normals: which colour is which axis
     bool black_is_no_surface = false;            // a sensor base: an uncovered pixel is black
+    SegmentLegend segments;                      // segmentation: name -> colour, unlabelled, clashes
 };
 
 // `spec`'s base legend. `scene` is for segmentation's labels (N13's second

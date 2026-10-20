@@ -31,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <set>
 #include <vector>
 
 #include <glad/glad.h>
@@ -2590,6 +2591,54 @@ TEST_F(GpuGlRenderer, SensorFramesMatchTheCpu) {
     }
 }
 
+// Segmentation on GL as on the CPU, byte for byte inside each surface: a
+// labelled CSG slab, a labelled wall, a labelled ground and an unlabelled
+// wall, by objects and by parts. Both draw the colour segment_colour() gives
+// a name, so only the rasterisers' edge rules may differ.
+TEST_F(GpuGlRenderer, SegmentationMatchesTheCpuInsideEachSurface) {
+    RenderScene scene = slab_scene();
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    scene.statics[scene.csg_subtrees[0].draw_item].object_label = spade::render::intern_label(scene, "slab");
+    scene.ground_planes.push_back(spade::render::GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = -1.0f});
+    scene.ground_planes.back().label = spade::render::intern_label(scene, "ground");
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-0.5f, -0.5f, 0.0f), glm::vec3(0.5f, -0.5f, 0.0f), glm::vec3(0.5f, 0.5f, 0.0f),
+                      glm::vec3(-0.5f, 0.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    const uint32_t quad_mesh = static_cast<uint32_t>(scene.meshes.size());
+    scene.meshes.push_back(quad);
+    for (const float x : {1.4f, -1.6f}) {
+        spade::render::DrawItem wall;
+        wall.mesh_index = quad_mesh;
+        wall.local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(x, -0.3f, 0.5f));
+        scene.statics.push_back(wall);
+    }
+    scene.statics[scene.statics.size() - 2].object_label = spade::render::intern_label(scene, "wall");
+    scene.statics[scene.statics.size() - 2].part_label = spade::render::intern_label(scene, "wall/face");
+    const Camera camera = camera_over_ground();
+
+    for (const spade::render::SegmentBy by : {spade::render::SegmentBy::objects, spade::render::SegmentBy::parts}) {
+        SCOPED_TRACE(by == spade::render::SegmentBy::objects ? "objects" : "parts");
+        RenderOptions options = comparable_options();
+        options.mode = DrawMode::segmentation;
+        options.segment_by = by;
+        const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, options);
+        const std::vector<uint8_t> gl = draw_and_read(scene, options, camera);
+        ASSERT_EQ(cpu.size(), gl.size());
+        std::set<std::array<uint8_t, 3>> colours;
+        size_t differ = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            colours.insert({cpu[p * 4], cpu[p * 4 + 1], cpu[p * 4 + 2]});
+            differ += (cpu[p * 4] != gl[p * 4] || cpu[p * 4 + 1] != gl[p * 4 + 1] || cpu[p * 4 + 2] != gl[p * 4 + 2])
+                          ? 1u
+                          : 0u;
+        }
+        EXPECT_GE(colours.size(), 5u) << "slab, wall, ground, unlabelled grey and no surface";
+        EXPECT_LE(differ, kPixels / 40u) << differ << " of " << kPixels << " pixels differ";
+    }
+}
+
 // A multisampled target would blend a sensor frame's values at every edge
 // into values no surface has, so GL refuses a sensor mode there, by name.
 // Shaded draws into the same target.
@@ -2610,7 +2659,7 @@ TEST_F(GpuGlRenderer, RefusesASensorModeOnAMultisampledTarget) {
     const RenderScene scene = slab_scene();
     ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals}) {
+    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals, DrawMode::segmentation}) {
         RenderOptions options = comparable_options();
         options.mode = mode;
         const spade::Result<void> drew = renderer_->draw(scene, camera_on_plus_z(), options, kWidth, kHeight);

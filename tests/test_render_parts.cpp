@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -223,6 +224,43 @@ void bind(const ModelType& model, const PosedParts& posed, const PartsLook& look
 // quad's parts overlap: an arm's end sits inside the hull, where the union of
 // all parts is below zero). A tessellated primitive's vertices sit on its
 // surface, so the band is float rounding at a metre.
+// Segmentation's identity (N13): every item bind_parts() appends is labelled
+// with the object's name, the caller's or else the model's, and its part
+// "<object>/<part name>", the model's part name or "parts[k]".
+TEST(RenderParts, BoundItemsAreLabelledByObjectAndPart) {
+    const ModelType model = reference_model();
+    ASSERT_FALSE(model.parts.empty());
+    const auto prepared = prepare_parts(model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
+    EXPECT_EQ(prepared->model_name, model.name);
+    for (std::size_t k = 0; k < model.parts.size(); ++k) {
+        EXPECT_EQ(prepared->parts[k].name,
+                  model.parts[k].name.empty() ? "parts[" + std::to_string(k) + "]" : model.parts[k].name);
+    }
+    const auto posed = spade::vehicles::posed_parts(model, tilted(), {}, {}, PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    for (const std::string& object : {std::string("quad_1"), std::string()}) {
+        SCOPED_TRACE(object.empty() ? "the model's name" : object);
+        const std::string want = object.empty() ? model.name : object;
+        RenderScene scene = empty_scene();
+        PartsLook look;
+        look.object_name = object;
+        ASSERT_TRUE(bind_parts(*prepared, *posed, look, scene).has_value());
+        ASSERT_FALSE(scene.statics.empty());
+        std::set<std::string> parts;
+        for (const DrawItem& item : scene.statics) {
+            ASSERT_LT(item.object_label, scene.labels.size());
+            ASSERT_LT(item.part_label, scene.labels.size());
+            EXPECT_EQ(scene.labels[item.object_label], want);
+            EXPECT_EQ(scene.labels[item.part_label].rfind(want + "/", 0), 0u) << scene.labels[item.part_label];
+            parts.insert(scene.labels[item.part_label]);
+        }
+        for (const spade::vehicles::PosedPart& p : posed->parts) {
+            EXPECT_EQ(parts.count(want + "/" + prepared->parts[p.part].name), 1u) << prepared->parts[p.part].name;
+        }
+    }
+}
+
 TEST(RenderParts, TheReferenceQuadsPartsLieOnThePosedField) {
     const ModelType model = reference_model();
     ASSERT_FALSE(model.parts.empty());
