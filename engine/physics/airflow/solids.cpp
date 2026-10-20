@@ -62,6 +62,7 @@ void open_everything(SolidField& f) {
         return std::unexpected(Error{Code::invalid_argument, "airflow solids: " + why});
     };
     const float inv_dx = 1.0f / s.dx;
+    f.links.clear();
     for (uint32_t c = 0; c < 3; ++c) {
         if (range[c].empty) continue;
         const std::array<uint32_t, 3> dims = sample_dims(s, c);
@@ -77,6 +78,7 @@ void open_everything(SolidField& f) {
                     f.theta[c][idx] = 1.0f;  // open, until a part says otherwise
                     f.wall[c][idx] = 0.0f;
                     f.phi[c][idx] = std::numeric_limits<float>::max();
+                    f.link[c][idx] = kNoWallLinks;
                     const SolidQuery q = sample.nearest(sample.ctx, x);
                     if (q.part == kNoSolidPart && q.distance == std::numeric_limits<float>::max()) continue;
                     if (!std::isfinite(q.distance) || !finite3(q.gradient)) {
@@ -104,6 +106,25 @@ void open_everything(SolidField& f) {
                         const bool crosses = sheet_offset(d_mid, q.gradient[static_cast<glm::length_t>(c)], off_c) &&
                                              off_c > -0.5f * s.dx && off_c <= 0.5f * s.dx;
                         f.theta[c][idx] = crosses ? 0.0f : 1.0f;
+                        // The sheet's links (Task 8): along each axis the
+                        // mid-surface lies against the gradient, d_mid / |g_a| away.
+                        for (uint32_t a = 0; a < 3; ++a) {
+                            const float g_a = q.gradient[static_cast<glm::length_t>(a)];
+                            if (g_a == 0.0f) continue;
+                            const float dist = d_mid / std::fabs(g_a);
+                            if (dist > s.dx) continue;
+                            const uint32_t dir = g_a > 0.0f ? 0u : 1u;  // the sheet's side: -a when the gradient points +a
+                            const uint32_t qa = a == 0 ? i : (a == 1 ? j : k);
+                            if (dir == 0u ? qa == 0u : qa + 1u == dims[a]) continue;  // no neighbour there
+                            const float frac = std::max(dist / s.dx, kMinCrossing);
+                            if (f.link[c][idx] == kNoWallLinks) {
+                                f.link[c][idx] = static_cast<uint32_t>(f.links.size());
+                                f.links.push_back(WallLinks{});
+                            }
+                            WallLinks& wl = f.links[f.link[c][idx]];
+                            wl.inv_f[2u * a + dir] = 1.0f / frac;
+                            wl.wall[2u * a + dir] = q.velocity[static_cast<glm::length_t>(c)];
+                        }
                     }
                     if (f.theta[c][idx] == 0.0f) closes[q.part] = 1u;
                 }
@@ -615,7 +636,44 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
         }
     }
 
-    // The wall links (Task 8) follow here.
+    // The wall links (Task 8): a solved sample (theta > 0, phi >= 0) next to
+    // a sample inside a wall (phi < 0) crosses the wall at f = phi_s / (phi_s
+    // - phi_n) of the link (Gibou, Fedkiw, Cheng and Kang 2002), floored at
+    // kMinCrossing; the wall's velocity there blends the two samples' rigid
+    // velocities, exact for one rigid owner. A sheet link already nearer wins.
+    for (uint32_t c = 0; c < 3; ++c) {
+        if (range[c].empty) continue;
+        const std::array<uint32_t, 3> dims = sample_dims(s, c);
+        const std::size_t stride[3] = {1u, dims[0], std::size_t{dims[0]} * dims[1]};
+        for (uint32_t k = range[c].lo[2]; k <= range[c].hi[2]; ++k) {
+            for (uint32_t j = range[c].lo[1]; j <= range[c].hi[1]; ++j) {
+                for (uint32_t i = range[c].lo[0]; i <= range[c].hi[0]; ++i) {
+                    const std::size_t idx = i + std::size_t{dims[0]} * (j + std::size_t{dims[1]} * k);
+                    const float phi_s = f.phi[c][idx];
+                    if (closed(f.theta[c][idx]) || phi_s < 0.0f) continue;  // fixed: not solved
+                    const uint32_t q[3] = {i, j, k};
+                    for (uint32_t a = 0; a < 3; ++a) {
+                        for (uint32_t dir = 0; dir < 2; ++dir) {
+                            if (dir == 0u ? q[a] == 0u : q[a] + 1u == dims[a]) continue;
+                            const std::size_t nb = dir == 0u ? idx - stride[a] : idx + stride[a];
+                            const float phi_n = f.phi[c][nb];
+                            if (!(phi_n < 0.0f)) continue;
+                            const float frac = std::max(phi_s / (phi_s - phi_n), kMinCrossing);
+                            const float inv = 1.0f / frac;
+                            if (f.link[c][idx] == kNoWallLinks) {
+                                f.link[c][idx] = static_cast<uint32_t>(f.links.size());
+                                f.links.push_back(WallLinks{});
+                            }
+                            WallLinks& wl = f.links[f.link[c][idx]];
+                            if (wl.inv_f[2u * a + dir] >= inv) continue;
+                            wl.inv_f[2u * a + dir] = inv;
+                            wl.wall[2u * a + dir] = f.wall[c][idx] + frac * (f.wall[c][nb] - f.wall[c][idx]);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 7. The run line.
     uint32_t walls = 0;

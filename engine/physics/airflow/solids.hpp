@@ -60,6 +60,11 @@ namespace spade::physics::airflow {
 inline constexpr uint32_t kNoSolidPart = std::numeric_limits<uint32_t>::max();
 inline constexpr uint32_t kNoWallLinks = std::numeric_limits<uint32_t>::max();
 
+// The viscous wall links' floor on the crossing fraction (design test 11): a
+// wall a hair from a sample would make 1 / f, and the stencil's diagonal,
+// unbounded.
+inline constexpr float kMinCrossing = 0.01f;
+
 // What the geometry reports at a point of the grid's frame (metres).
 struct SolidQuery {
     float distance = std::numeric_limits<float>::max();  // m, negative inside; max: no part

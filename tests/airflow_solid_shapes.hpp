@@ -36,6 +36,7 @@ struct Shape {
                                    // box_shell: wall thickness
     glm::mat3 to_local{1.0f};      // local = to_local * (x - centre)
     glm::vec3 omega{0.0f};         // rigid rotation about `centre`, rad/s
+    glm::vec3 velocity{0.0f};      // rigid translation, m/s
     float min_feature = 0.0f;      // declared, m
     bool porous = false;
 };
@@ -133,7 +134,7 @@ struct Field {
 }
 
 [[nodiscard]] inline glm::vec3 shape_velocity(const Shape& s, glm::vec3 x) {
-    return glm::cross(s.omega, x - s.centre);
+    return s.velocity + glm::cross(s.omega, x - s.centre);
 }
 
 // The shape's grid-frame bounding box and part-frame extent.

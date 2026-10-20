@@ -211,7 +211,7 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
     apply_velocity_boundaries(g, bc);
     if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     if (cfg.nu > 0.0f) {
-        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs);
+        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, solid ? &s.solids : nullptr);
         apply_velocity_boundaries(g, bc);
     }
     const ProjectionReport rep =

@@ -14,6 +14,7 @@
 
 #include "airflow_solid_shapes.hpp"
 #include "physics/airflow/solids.hpp"
+#include "physics/airflow/viscous.hpp"
 
 namespace {
 
@@ -441,6 +442,65 @@ TEST(AirflowSolids, TheFreeSlipFillCopiesTheOpenSideIntoTwoLayers) {
             EXPECT_EQ(g.v[v_index(shape, 10, j, k)], 0.0f);
         }
     }
+}
+
+// Design test 11 (the lead's condition): a wall a hair from a velocity sample.
+// The box's face lies about 1e-6 dx beyond the u sample at x = 4, so its link
+// to the inside neighbour would cross at f ~ 1e-6; the floor holds it at 0.01,
+// so the term is 100 alpha, not 1e6 alpha, and the solve stays finite and
+// within the values it blends. Mutation: no clamp.
+TEST(AirflowSolids, TheCrossingFractionsFloorHoldsTheStencil) {
+    const GridShape shape{8, 8, 8, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "slab", .kind = Kind::box, .centre = {12.000001f, 4.0f, 4.0f},
+                                 .half = {8.0f, 20.0f, 20.0f}, .omega = {0.0f, 0.0f, 1.0f}, .min_feature = 8.0f});
+    const SolidField f = built(shape, scene);
+    const std::size_t s = u_index(shape, 4, 3, 3);
+    ASSERT_GE(f.phi[0][s], 0.0f);
+    ASSERT_LT(f.phi[0][u_index(shape, 5, 3, 3)], 0.0f);
+    ASSERT_NE(f.link[0][s], kNoWallLinks);
+    const WallLinks& wl = f.links[f.link[0][s]];
+    EXPECT_EQ(wl.inv_f[1], 1.0f / 0.01f) << "+x: the floor";
+    EXPECT_EQ(wl.inv_f[0], 0.0f) << "-x: no wall";
+
+    MacGrid g = *make_grid(shape, DomainBc{});
+    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) { g.u[idx] = 0.5f + 0.05f * x.z; });
+    float lo = 0.0f;
+    float hi = 0.0f;
+    for (const float v : g.u) {
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+    }
+    for (const float v : f.wall[0]) {
+        lo = std::min(lo, v);
+        hi = std::max(hi, v);
+    }
+    std::vector<float> rhs(g.u.size());
+    diffuse(g, DomainBc{}, 1.0f, 1.0f, 8, rhs, &f);
+    EXPECT_TRUE(std::isfinite(g.u[s]));
+    EXPECT_GE(g.u[s], lo);
+    EXPECT_LE(g.u[s], hi);
+}
+
+// A sheet links the samples either side of it: the v samples at x = 15.5 and
+// 16.5 either side of a sheet on face plane 16 each cross it halfway along
+// their link.
+TEST(AirflowSolids, ASheetLinksTheSamplesEitherSide) {
+    const GridShape shape{32, 8, 8, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "plate", .kind = Kind::box, .centre = {16.0f, 4.0f, 4.0f},
+                                 .half = {0.125f, 20.0f, 20.0f}, .min_feature = 0.25f});
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(0.25f, 8.0f, 8.0f);
+    SolidField f = *make_solid_field(shape);
+    ASSERT_TRUE(build_solids(f, shape, {}, parts, scene.sampler()).has_value());
+    const uint32_t left = f.link[1][v_index(shape, 15, 3, 3)];
+    const uint32_t right = f.link[1][v_index(shape, 16, 3, 3)];
+    ASSERT_NE(left, kNoWallLinks);
+    ASSERT_NE(right, kNoWallLinks);
+    EXPECT_EQ(f.links[left].inv_f[1], 2.0f) << "+x, at f = 0.5";
+    EXPECT_EQ(f.links[right].inv_f[0], 2.0f) << "-x, at f = 0.5";
+    EXPECT_EQ(f.link[1][v_index(shape, 13, 3, 3)], kNoWallLinks) << "two cells off: no link";
 }
 
 }  // namespace

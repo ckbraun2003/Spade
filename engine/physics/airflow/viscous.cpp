@@ -10,7 +10,7 @@ namespace spade::physics::airflow {
 namespace {
 
 void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, const DomainBc& bc, float alpha,
-                       uint32_t sweeps, std::vector<float>& rhs) noexcept {
+                       uint32_t sweeps, std::vector<float>& rhs, const SolidField* solids) noexcept {
     const uint32_t n[3] = {s.nx, s.ny, s.nz};
     const uint32_t cnt[3] = {c == 0u ? s.nx + 1u : s.nx, c == 1u ? s.ny + 1u : s.ny, c == 2u ? s.nz + 1u : s.nz};
     const auto at = [&](uint32_t i, uint32_t j, uint32_t k) {
@@ -19,6 +19,17 @@ void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, co
     const bool periodic[3] = {bc.face[kXMinus] == FaceBc::periodic, bc.face[kYMinus] == FaceBc::periodic,
                               bc.face[kZMinus] == FaceBc::periodic};
     const auto cl = static_cast<glm::length_t>(c);
+    const bool walls = solids != nullptr && solids->any;
+    const std::vector<float>* theta = walls ? &solids->theta[c] : nullptr;
+    const std::vector<float>* phi = walls ? &solids->phi[c] : nullptr;
+    const std::vector<float>* wall_v = walls ? &solids->wall[c] : nullptr;
+    const std::vector<uint32_t>* link = walls ? &solids->link[c] : nullptr;
+    const auto fixed = [&](std::size_t idx) { return closed((*theta)[idx]) || (*phi)[idx] < 0.0f; };
+    if (walls) {
+        for (std::size_t idx = 0; idx < x.size(); ++idx) {
+            if (fixed(idx)) x[idx] = (*wall_v)[idx];
+        }
+    }
     std::copy(x.begin(), x.end(), rhs.begin());
     // THE INTERIOR FAST PATH (the airflow CPU-performance task, 2026-10-12): a
     // sample whose six neighbours are all plain samples -- along its own axis
@@ -47,7 +58,13 @@ void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, co
                 for (uint32_t j = 0; j < cnt[1]; ++j) {
                     const bool row_inside = in_range(1, j) && in_range(2, k);
                     for (uint32_t i = (j + k + colour) & 1u; i < cnt[0]; i += 2u) {
-                        if (row_inside && in_range(0, i)) {
+                        const std::size_t here = at(i, j, k);
+                        const WallLinks* wl = nullptr;
+                        if (walls) {
+                            if (fixed(here)) continue;
+                            if ((*link)[here] != kNoWallLinks) wl = &solids->links[(*link)[here]];
+                        }
+                        if (wl == nullptr && row_inside && in_range(0, i)) {
                             const std::size_t self = at(i, j, k);
                             float sum = 0.0f;
                             sum += alpha * xp[self - 1u];
@@ -68,6 +85,12 @@ void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, co
                         float extra = 0.0f;
                         for (uint32_t a = 0; a < 3; ++a) {
                             for (uint32_t dir = 0; dir < 2; ++dir) {
+                                if (wl != nullptr && wl->inv_f[2u * a + dir] > 0.0f) {
+                                    const float w = alpha * wl->inv_f[2u * a + dir];
+                                    diag += w;
+                                    extra += w * wl->wall[2u * a + dir];
+                                    continue;
+                                }
                                 uint32_t nb[3] = {i, j, k};
                                 if (a == c) {
                                     if (periodic[c] && n[c] == 1u) continue;  // its own neighbour
@@ -133,12 +156,13 @@ void diffuse_component(std::vector<float>& x, uint32_t c, const GridShape& s, co
 
 }  // namespace
 
-void diffuse(MacGrid& g, const DomainBc& bc, float nu, float h, uint32_t sweeps, std::vector<float>& rhs) noexcept {
+void diffuse(MacGrid& g, const DomainBc& bc, float nu, float h, uint32_t sweeps, std::vector<float>& rhs,
+             const SolidField* solids) noexcept {
     if (nu == 0.0f) return;
     const float alpha = nu * h / (g.shape.dx * g.shape.dx);
-    diffuse_component(g.u, 0, g.shape, bc, alpha, sweeps, rhs);
-    diffuse_component(g.v, 1, g.shape, bc, alpha, sweeps, rhs);
-    diffuse_component(g.w, 2, g.shape, bc, alpha, sweeps, rhs);
+    diffuse_component(g.u, 0, g.shape, bc, alpha, sweeps, rhs, solids);
+    diffuse_component(g.v, 1, g.shape, bc, alpha, sweeps, rhs, solids);
+    diffuse_component(g.w, 2, g.shape, bc, alpha, sweeps, rhs, solids);
 }
 
 }  // namespace spade::physics::airflow

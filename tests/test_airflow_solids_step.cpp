@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -348,6 +349,183 @@ TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
     EXPECT_TRUE(walls_hold);
     EXPECT_LE(health.pressure_residual, 1.0e-4f);
     EXPECT_LE(div_ratio, 2.0e-4f);
+}
+
+// V1's opt-in (test_airflow_validation.cpp): set SPADE_AIRFLOW_VALIDATION.
+[[nodiscard]] bool validation_enabled() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_AIRFLOW_VALIDATION") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+struct CouetteResult {
+    double error;        // max |u_theta - exact| / (Omega R1)
+    bool walls_hold;     // every closed face carries the rigid velocity, bit for bit
+    double circulation;  // the mean u_theta over the measured cells, m/s
+};
+
+// S2 (Test/Docs): circular Couette flow. The cylinder R1 turns at Omega about
+// y inside a fixed tube R2 = 2 R1, in a one-cell slab periodic in y, both
+// no-slip; Re = Omega R1 (R2 - R1) / nu = 10, Omega R1 h / dx = 0.5, run to
+// T = 2 (R2 - R1)^2 / nu. Exact: u_theta = A r + B / r, A = -Omega / 3,
+// B = 4 Omega R1^2 / 3 (Landau & Lifshitz, Fluid Mechanics, section 18).
+[[nodiscard]] CouetteResult couette(uint32_t r1_cells, uint32_t n_v) {
+    const float dx = 1.0e-3f;
+    const float r1 = static_cast<float>(r1_cells) * dx;
+    const float r2 = 2.0f * r1;
+    const uint32_t n = 2u * (2u * r1_cells) + 4u;
+    const GridShape shape{n, 1, n, dx};
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    bc.face[kYMinus] = FaceBc::periodic;
+    bc.face[kYPlus] = FaceBc::periodic;
+    const float omega = 0.1f / r1;  // Omega R1 = 0.1 m/s
+    const float nu = 0.1f * (r2 - r1) / 10.0f;
+    const float h = 0.5f * dx / 0.1f;
+    const FluidConfig cfg{.rho = 1.0f, .nu = nu, .h = h, .n_v = n_v, .visc_sweeps = 8};
+    MacGrid g = *make_grid(shape, bc);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    const glm::vec3 centre(0.5f * static_cast<float>(n) * dx, 0.5f * dx, 0.5f * static_cast<float>(n) * dx);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "cylinder", .kind = Kind::cylinder_y, .centre = centre, .radius = r1,
+                                 .omega = {0.0f, omega, 0.0f}, .min_feature = 2.0f * r1});
+    scene.shapes.push_back(Shape{.name = "tube", .kind = Kind::outside_cylinder_y, .centre = centre, .radius = r2,
+                                 .min_feature = 4.0f * dx});
+    EXPECT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value());
+    const auto steps = static_cast<uint32_t>(2.0f * (r2 - r1) * (r2 - r1) / nu / h + 0.5f);
+    for (uint32_t k = 0; k < steps; ++k) {
+        const FluidHealth health = fluid_step(g, bc, cfg, s);
+        EXPECT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+        if (health.fault != FluidFault::none) break;
+    }
+    CouetteResult out{0.0, true, 0.0};
+    const std::vector<float>* vel[3] = {&g.u, &g.v, &g.w};
+    for (uint32_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < vel[c]->size(); ++i) {
+            if (s.solids.theta[c][i] == 0.0f) out.walls_hold = out.walls_hold && (*vel[c])[i] == s.solids.wall[c][i];
+        }
+    }
+    const double A = -static_cast<double>(omega) / 3.0;
+    const double B = 4.0 * static_cast<double>(omega) * r1 * r1 / 3.0;
+    double sum = 0.0;
+    uint32_t count = 0;
+    for (uint32_t k = 0; k < n; ++k) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const double rx = (static_cast<double>(i) + 0.5) * dx - centre.x;
+            const double rz = (static_cast<double>(k) + 0.5) * dx - centre.z;
+            const double r = std::sqrt(rx * rx + rz * rz);
+            if (r < r1 + dx || r > r2 - dx) continue;
+            const double uc = 0.5 * (static_cast<double>(g.u[u_index(shape, i, 0, k)]) + g.u[u_index(shape, i + 1u, 0, k)]);
+            const double wc = 0.5 * (static_cast<double>(g.w[w_index(shape, i, 0, k)]) + g.w[w_index(shape, i, 0, k + 1u)]);
+            const double ut = (uc * rz - wc * rx) / r;
+            out.error = std::max(out.error, std::fabs(ut - (A * r + B / r)) / 0.1);
+            sum += ut;
+            ++count;
+        }
+    }
+    out.circulation = sum / count;
+    return out;
+}
+
+// Design test 2 / S2 at R1 = 16 dx (the gate case; R1 = 32 dx and the order
+// check are opt-in). Tolerance <= 0.11 (Test/Docs). The exact checks: closed
+// faces carry the rigid velocity bit for bit, and the air turns with the
+// cylinder. Mutation: the rigid velocity at closed faces only (the links'
+// terms ignored), which Test/Docs expects to miss by up to a factor of two.
+TEST(AirflowSolidsStep, S2CircularCouetteFlow) {
+    const CouetteResult r = couette(16, 4);
+    std::printf("=== validation record: S2 circular Couette flow, R1/dx 16 ===\n"
+                "config: a 68x1x68 slab (y periodic), dx 1 mm, R1 16 mm turning at Omega R1 = 0.1 m/s inside a "
+                "fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, "
+                "visc_sweeps 8\n"
+                "measure: max |u_theta - u_theta,exact| / (Omega R1) over R1 + dx <= r <= R2 - dx = %.4f\n"
+                "reference: A r + B / r (Landau & Lifshitz, Fluid Mechanics, section 18)\n"
+                "tolerance: <= 0.11 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
+                "verdict: %s\n"
+                "measure: closed faces carry the rigid velocity = %s; mean u_theta = %.5f m/s (the rotation's sense: "
+                "positive)\n",
+                r.error, r.error <= 0.11 ? "within" : "OUTSIDE", r.walls_hold ? "yes" : "NO", r.circulation);
+    EXPECT_LE(r.error, 0.11);
+    EXPECT_TRUE(r.walls_hold);
+    EXPECT_GT(r.circulation, 0.0);
+}
+
+TEST(AirflowSolidsStep, S2CircularCouetteFlowAt32CellsAndItsOrder) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run S2 at R1/dx 32 and its order";
+    const CouetteResult coarse = couette(16, 4);
+    const CouetteResult fine = couette(32, 4);
+    std::printf("=== validation record: S2 circular Couette flow, R1/dx 32, and the order check ===\n"
+                "measure: max |u_theta - u_theta,exact| / (Omega R1) at R1/dx 32 = %.4f\n"
+                "tolerance: <= 0.054 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
+                "verdict: %s\n"
+                "measure: e(32) / e(16) = %.3f\n"
+                "tolerance: <= 0.7 (an observed order of at least 0.5; reported only if e(16) < 0.011)\n"
+                "verdict: %s\n",
+                fine.error, fine.error <= 0.054 ? "within" : "OUTSIDE", fine.error / coarse.error,
+                coarse.error < 0.011 ? "report only" : (fine.error <= 0.7 * coarse.error ? "within" : "OUTSIDE"));
+    EXPECT_LE(fine.error, 0.054);
+    if (coarse.error >= 0.011) {
+        EXPECT_LE(fine.error, 0.7 * coarse.error);
+    }
+}
+
+// The viscous wall links' discriminating check (the lead's ruling, 2026-10-19:
+// S2 at R1/dx 16 cannot tell the links from closed faces alone -- 0.0052
+// against 0.0602, both inside its 0.11). Planar Couette flow between a still
+// plate below and a plate moving at U above, their surfaces a quarter cell
+// off the face planes (y = 3.25 dx and 12.75 dx), x and z periodic. The u
+// samples nearest the walls sit 0.25 dx from them, so each link crosses at
+// f = 0.25 and its term (alpha / f)(u_w - u) cancels the far neighbour's
+// exactly for the linear profile: the exact solution is the discrete
+// operator's fixed point, held to rounding. Closed faces alone put each wall
+// at the closed sample, 0.75 dx too far, and the profile drifts toward the
+// wrong line. Started on the exact profile, run half a diffusion time. Band
+// measured and pinned (TD-2). Mutation: closed faces only (the links unread).
+TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
+    const float dx = 1.0e-3f;
+    const GridShape shape{4, 16, 1, dx};
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    bc.face[kXMinus] = FaceBc::periodic;
+    bc.face[kXPlus] = FaceBc::periodic;
+    bc.face[kZMinus] = FaceBc::periodic;
+    bc.face[kZPlus] = FaceBc::periodic;
+    const float U = 0.1f;
+    const float y0 = 3.25f * dx;
+    const float y1 = 12.75f * dx;
+    const FluidConfig cfg{.rho = 1.0f, .nu = 1.0e-3f, .h = 1.0e-3f, .n_v = 4, .visc_sweeps = 8};
+    MacGrid g = *make_grid(shape, bc);
+    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        g.u[idx] = std::min(std::max(U * (x.y - y0) / (y1 - y0), 0.0f), U);
+    });
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "floor", .kind = Kind::box, .centre = {2.0f * dx, y0 - 2.625f * dx, 0.5f * dx},
+                                 .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .min_feature = 5.25f * dx});
+    scene.shapes.push_back(Shape{.name = "belt", .kind = Kind::box, .centre = {2.0f * dx, y1 + 2.625f * dx, 0.5f * dx},
+                                 .half = {20.0f * dx, 2.625f * dx, 20.0f * dx}, .velocity = {U, 0.0f, 0.0f},
+                                 .min_feature = 5.25f * dx});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+    // Half a diffusion time, (y1 - y0)^2 / nu / 2 = 45 steps.
+    for (int k = 0; k < 45; ++k) {
+        const FluidHealth health = fluid_step(g, bc, cfg, s);
+        ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+    }
+    double err = 0.0;
+    for_each_sample(shape, 0, [&](std::size_t idx, glm::vec3 x) {
+        if (x.y <= y0 || x.y >= y1) return;
+        const double exact = static_cast<double>(U) * (x.y - y0) / (y1 - y0);
+        err = std::max(err, std::fabs(static_cast<double>(g.u[idx]) - exact) / U);
+    });
+    std::printf("=== planar Couette, plates a quarter cell off the faces ===\n"
+                "measure: max |u - u_exact| / U over the fluid after 45 steps = %.3e\n",
+                err);
+    EXPECT_LE(err, 1.0e-4);
 }
 
 }  // namespace
