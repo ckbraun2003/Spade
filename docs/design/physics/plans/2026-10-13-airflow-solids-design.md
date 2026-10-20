@@ -1,6 +1,6 @@
 # Solids in the airflow grid: P2, P2b and P3 — design
 
-**Owner:** Physics. **Status:** **APPROVED by the lead, 2026-10-13**, with §10's two decisions. **Amended 2026-10-13** for Test/Docs' tolerances and the lead's five findings (§11, in the lead's review; the solver change in §3 reverses spec §1.5's rejection of CG and needs the lead's approval). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
+**Owner:** Physics. **Status:** **P2 BUILT 2026-10-20**, on `physics/airflow-solids` (head 9773a2b, in the lead's review); P3 and P2b next. **APPROVED by the lead, 2026-10-13**, with §10's two decisions. **Amended 2026-10-13** for Test/Docs' tolerances and the lead's five findings (§11, in the lead's review; the solver change in §3 reverses spec §1.5's rejection of CG and needs the lead's approval). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
 **Rests on:**
 - the airflow spec §2 (Boundaries) and §1.5 step 6 (the projection with apertures);
 - the demonstration plan (`PHY-10`, the drone-box premise of `cd298d6`);
