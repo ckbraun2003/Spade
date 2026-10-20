@@ -1133,6 +1133,54 @@ TEST_F(GpuGlRenderer, RefusesAnEmptyOrUnattachedCsgSubtree) {
     }
 }
 
+// L6: GL marches a subtree from the program and transforms upload_scene()
+// copied to the GPU, but takes its box from the scene at draw. A subtree moved
+// or edited since its upload -- as render_parts re-binds a moved part, posed
+// into its program -- would march at its old pose inside its new box: clipped,
+// or gone. draw() refuses it, naming it, and an upload of the scene clears it.
+// The move keeps the node count, the only thing draw() compared before.
+TEST_F(GpuGlRenderer, RefusesACsgSubtreeMovedOrEditedSinceItsUpload) {
+    const RenderScene good = slab_scene();
+    ASSERT_EQ(good.csg_subtrees.size(), 1u);
+    ASSERT_TRUE(renderer_->upload_scene(good).has_value());
+    const auto draw = [this](const RenderScene& scene) {
+        return renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    };
+    ASSERT_TRUE(draw(good).has_value()) << "the uploaded scene draws";
+
+    RenderScene moved = good;
+    for (spade::SdfTransform& t : moved.csg_subtrees[0].program.transforms) {
+        t.world_to_local = t.world_to_local * glm::translate(glm::mat4(1.0f), glm::vec3(-0.5f, 0.0f, 0.0f));
+    }
+    moved.csg_subtrees[0].bounds.min.x += 0.5f;
+    moved.csg_subtrees[0].bounds.max.x += 0.5f;
+    RenderScene edited = good;
+    edited.csg_subtrees[0].program.nodes.front().params.x *= 1.5f;
+    RenderScene boxed = good;
+    boxed.csg_subtrees[0].bounds.max.y += 0.25f;
+
+    for (const auto& [what, scene] : {std::pair<const char*, const RenderScene*>{"moved", &moved},
+                                      {"a parameter edited", &edited},
+                                      {"its box changed", &boxed}}) {
+        SCOPED_TRACE(what);
+        const spade::Result<void> drew = draw(*scene);
+        ASSERT_FALSE(drew.has_value()) << "a subtree " << what << " since its upload must be refused, never marched stale";
+        EXPECT_EQ(drew.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(drew.error().context.find("CSG subtree 0"), std::string::npos) << drew.error().context;
+        EXPECT_NE(drew.error().context.find("upload_scene"), std::string::npos) << drew.error().context;
+    }
+
+    // A transform the subtree does not march is not its concern.
+    RenderScene unrelated = good;
+    unrelated.csg_subtrees[0].program.transforms.push_back(spade::SdfTransform{});
+    const spade::Result<void> drew_unrelated = draw(unrelated);
+    EXPECT_TRUE(drew_unrelated.has_value()) << drew_unrelated.error().context;
+
+    ASSERT_TRUE(renderer_->upload_scene(moved).has_value());
+    const spade::Result<void> drew_moved = draw(moved);
+    EXPECT_TRUE(drew_moved.has_value()) << "uploaded again, the moved subtree draws: " << drew_moved.error().context;
+}
+
 // L6: GL marches one flow layer per frame. The demo's layer carries all its
 // transfers and iso-surfaces, so it needs only one. More is refused, never
 // drawn as fewer.
