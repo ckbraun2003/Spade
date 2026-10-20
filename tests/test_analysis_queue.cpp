@@ -34,8 +34,9 @@ namespace fs = std::filesystem;
 
 constexpr uint64_t kGiB = 1ull << 30;
 
-// A queued 0.1 s hover run named `name` under `runs`.
-[[nodiscard]] fs::path queued_run(const fs::path& runs, const std::string& name) {
+// A queued 0.1 s hover run named `name` under `runs`, a dry run unless said.
+[[nodiscard]] fs::path queued_run(const fs::path& runs, const std::string& name,
+                                  an::RunKind kind = an::RunKind::dry_run) {
     const auto s = spade::scene::load_scene_file(fs::path(SPADE_ASSETS_DIR) / "scenes" / "hover.scene.yaml");
     EXPECT_TRUE(s.has_value());
     const spade::vehicles::ModelType m = s ? s->models.at(0) : spade::vehicles::ModelType{};
@@ -48,7 +49,7 @@ constexpr uint64_t kGiB = 1ull << 30;
         ADD_FAILURE() << "the case did not resolve";
         return {};
     }
-    const spade::Result<fs::path> folder = an::create_run_folder(runs, name, *r, "2026-10-13", "abc");
+    const spade::Result<fs::path> folder = an::create_run_folder(runs, name, *r, "2026-10-13", "abc", kind);
     EXPECT_TRUE(folder.has_value()) << (folder ? "" : folder.error().context);
     return folder.value_or(fs::path());
 }
@@ -97,8 +98,8 @@ struct Queue {
         setup.runner = runner;
         setup.options.kind = an::RunKind::dry_run;
     }
-    [[nodiscard]] fs::path add(const std::string& name) {
-        const fs::path run = queued_run(setup.runs_dir, name);
+    [[nodiscard]] fs::path add(const std::string& name, an::RunKind kind = an::RunKind::dry_run) {
+        const fs::path run = queued_run(setup.runs_dir, name, kind);
         const spade::Result<void> r = an::enqueue_run(setup, run);
         EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().context);
         return run;
@@ -112,11 +113,12 @@ struct Queue {
 
 // ---- what a queued run needs ----------------------------------------------------
 
-// The queued progress carries the run's memory need: the resolved base grid.
+// A real run's queued progress carries its memory need, the resolved base
+// grid; a dry run holds no grid, so it needs none.
 TEST(AnalysisQueue, AQueuedRunCarriesItsMemoryNeed) {
     Queue q;
-    const fs::path run = q.add("hover");
-    EXPECT_GT(progress(run).memory_bytes, 0u);
+    EXPECT_GT(progress(q.add("real", an::RunKind::cfd)).memory_bytes, 0u);
+    EXPECT_EQ(progress(q.add("dry")).memory_bytes, 0u);
 }
 
 // ---- the order, kept on disk ----------------------------------------------------
@@ -183,10 +185,14 @@ TEST(AnalysisQueue, RunsOneAtATime) {
 
 // ---- memory -----------------------------------------------------------------------
 
+// A real run waits for its need plus the margin. With no solver yet (W1), a
+// real run let through the gate is then refused at its launch, so that is how
+// this test sees the gate open.
 TEST(AnalysisQueue, ARunWaitsForItsMemoryAndSaysWhy) {
     Queue q;
+    q.setup.options.kind = an::RunKind::cfd;
     FakeBox box;
-    const fs::path a = q.add("a");
+    const fs::path a = q.add("a", an::RunKind::cfd);
     const uint64_t need = progress(a).memory_bytes;
     box.free = need + q.setup.margin_bytes - 1;
     const spade::Result<an::QueueStep> s = an::step_queue(q.setup, box.probes());
@@ -198,12 +204,29 @@ TEST(AnalysisQueue, ARunWaitsForItsMemoryAndSaysWhy) {
     const an::RunProgress waiting = progress(a);
     EXPECT_EQ(waiting.state, an::RunState::queued);
     EXPECT_EQ(waiting.message, s->why);
-    // Enough frees up: it starts, and its waiting message is gone.
+    // Enough frees up: the gate opens, and the launch is the next refusal.
     box.free = need + q.setup.margin_bytes;
     const spade::Result<an::QueueStep> next = an::step_queue(q.setup, box.probes());
     ASSERT_TRUE(next.has_value());
-    EXPECT_EQ(box.launched.size(), 1u);
-    EXPECT_EQ(progress(a).message, "");
+    EXPECT_TRUE(box.launched.empty());
+    EXPECT_EQ(progress(a).state, an::RunState::refused);
+    EXPECT_NE(progress(a).message.find("no airflow solver yet (W1)"), std::string::npos) << progress(a).message;
+}
+
+// A dry run holds no grid, so no memory gate: it starts at once, however
+// little is free, and its progress and log say so (the lead's ruling).
+TEST(AnalysisQueue, ADryRunSkipsTheMemoryGate) {
+    Queue q;
+    FakeBox box;
+    box.free = 0;
+    const fs::path a = q.add("a");
+    const spade::Result<an::QueueStep> s = an::step_queue(q.setup, box.probes());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(box.launched.size(), 1u);
+    EXPECT_TRUE(fs::equivalent(s->started, a));
+    EXPECT_TRUE(s->why.empty()) << s->why;
+    EXPECT_EQ(progress(a).message, an::kDryRunNoMemoryGate);
+    EXPECT_NE(read_all(a / "log.txt").find(an::kDryRunNoMemoryGate), std::string::npos) << read_all(a / "log.txt");
 }
 
 // ---- runs that end without finishing ---------------------------------------------

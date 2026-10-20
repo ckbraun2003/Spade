@@ -175,14 +175,21 @@ Result<QueueStep> step_queue(const QueueSetup& setup, const QueueProbes& probes)
         for (; first_waiting < queued.size(); ++first_waiting) {
             auto& [entry, p] = queued[first_waiting];
             const fs::path folder = setup.runs_dir / entry_path(entry);
-            const uint64_t free = free_bytes();
-            if (p.memory_bytes + setup.margin_bytes > free) {
-                out.why = "waiting: needs " + gib(p.memory_bytes) + " plus the " + gib(setup.margin_bytes) +
-                          " margin, and " + gib(free) + " is free";
-                if (Result<void> r = say(folder, p, out.why); !r) return std::unexpected(r.error());
-                break;
+            // A real run waits for its need plus the margin; a dry run holds
+            // no grid, so it has no memory gate (the lead's ruling).
+            const bool gated = p.kind != RunKind::dry_run;
+            if (gated) {
+                const uint64_t free = free_bytes();
+                if (p.memory_bytes + setup.margin_bytes > free) {
+                    out.why = "waiting: needs " + gib(p.memory_bytes) + " plus the " + gib(setup.margin_bytes) +
+                              " margin, and " + gib(free) + " is free";
+                    if (Result<void> r = say(folder, p, out.why); !r) return std::unexpected(r.error());
+                    break;
+                }
             }
-            if (Result<void> r = say(folder, p, ""); !r) return std::unexpected(r.error());
+            if (Result<void> r = say(folder, p, gated ? std::string() : std::string(kDryRunNoMemoryGate)); !r) {
+                return std::unexpected(r.error());
+            }
             const Result<RunRecord> launched = launch_run(setup.runner, folder, setup.options, probes.launch);
             if (!launched) {
                 Result<RunProgress> now = read_progress(folder);
@@ -194,6 +201,7 @@ Result<QueueStep> step_queue(const QueueSetup& setup, const QueueProbes& probes)
                 keep.erase(std::find(keep.begin(), keep.end(), entry));
                 continue;
             }
+            if (!gated) log_line(folder, std::string(kDryRunNoMemoryGate));
             out.started = folder;
             out.active = folder;
             active_entry = entry;

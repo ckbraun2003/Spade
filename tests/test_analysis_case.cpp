@@ -6,9 +6,15 @@
 
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <exception>
+#include <iterator>
+#include <new>
+#include <stdexcept>
 #include <string>
 
 #include "analysis/case.hpp"
+#include "analysis/detail/caught.hpp"
 #include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "scene/scene_file.hpp"
@@ -131,6 +137,49 @@ TEST(AnalysisCaseFile, SavesAndLoads) {
     std::filesystem::remove(file);
     ASSERT_TRUE(back.has_value()) << back.error().context;
     EXPECT_EQ(an::case_to_yaml(*back).value_or(""), an::case_to_yaml(c).value_or("-"));
+}
+
+// A save replaces the file whole, through a temporary file beside it that
+// doesn't outlive the save (Kat's ask): a reader sees the old case or the new.
+// A reader that runs out of memory says so: the refusal is capacity_exceeded,
+// "out of memory", never the io_error or parse failure a broken file gives
+// (Spade Host's finding; the glTF importer's precedent). Every analysis
+// reader's catch maps through caught_error(), so the rule is driven here
+// directly: a real out-of-memory can't be induced reliably in a test.
+TEST(AnalysisCaseFile, RunningOutOfMemoryIsNotAnIoFailure) {
+    namespace detail = spade::analysis::detail;
+    const spade::Error oom =
+        detail::caught_error(std::make_exception_ptr(std::bad_alloc{}), spade::Code::io_error, "reading 'a.case.yaml'");
+    EXPECT_EQ(oom.code, spade::Code::capacity_exceeded);
+    EXPECT_NE(oom.context.find("out of memory"), std::string::npos) << oom.context;
+    EXPECT_NE(oom.context.find("reading 'a.case.yaml'"), std::string::npos) << oom.context;
+
+    const spade::Error io = detail::caught_error(std::make_exception_ptr(std::runtime_error("disk gone")),
+                                                 spade::Code::io_error, "reading 'a.case.yaml'");
+    EXPECT_EQ(io.code, spade::Code::io_error);
+    EXPECT_NE(io.context.find("disk gone"), std::string::npos) << io.context;
+    EXPECT_NE(io.context.find("reading 'a.case.yaml'"), std::string::npos) << io.context;
+
+    const spade::Error other = detail::caught_error(std::make_exception_ptr(42), spade::Code::internal, "parsing");
+    EXPECT_EQ(other.code, spade::Code::internal);
+    EXPECT_NE(other.context.find("parsing"), std::string::npos) << other.context;
+}
+
+TEST(AnalysisCaseFile, ASaveReplacesTheFileWhole) {
+    const spade::test::TempDir dir("case_save");
+    const std::filesystem::path file = dir.path() / "quad.case.yaml";
+    std::ofstream(file, std::ios::binary) << std::string(100000, '#');  // an older, longer file
+    const an::AnalysisCase c = full_case(quad());
+    ASSERT_TRUE(an::save_case(c, file).has_value());
+    std::ifstream in(file, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(text, an::case_to_yaml(c).value_or("-"));
+    std::size_t files = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir.path())) {
+        (void)e;
+        ++files;
+    }
+    EXPECT_EQ(files, 1u) << "the save left a file beside the case";
 }
 
 TEST(AnalysisCaseFile, AnUnknownKeyIsRefusedWithItsLine) {

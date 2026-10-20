@@ -37,7 +37,8 @@ namespace fs = std::filesystem;
         ADD_FAILURE() << "the case did not resolve";
         return {};
     }
-    const spade::Result<fs::path> folder = an::create_run_folder(runs, "hover", *r, "2026-10-13", "abc");
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs, "hover", *r, "2026-10-13", "abc", an::RunKind::dry_run);
     EXPECT_TRUE(folder.has_value()) << (folder ? "" : folder.error().context);
     return folder.value_or(fs::path());
 }

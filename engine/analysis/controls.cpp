@@ -10,6 +10,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "analysis/detail/caught.hpp"
 #include "core/path_text.hpp"
 #include "world/detail/yaml_text.hpp"
 
@@ -141,8 +142,9 @@ Result<ControlProgram> program_from_yaml(std::string_view text) {
         return parse_program(YAML::Load(std::string(text)));
     } catch (const YAML::Exception& e) {
         return std::unexpected(Error{Code::invalid_argument, std::string("control program: ") + e.what()});
-    } catch (const std::exception& e) {
-        return std::unexpected(Error{Code::internal, std::string("control program parse failed: ") + e.what()});
+    } catch (...) {
+        return std::unexpected(detail::caught_error(std::current_exception(), Code::internal,
+                                                    "parsing the control program"));
     }
 }
 

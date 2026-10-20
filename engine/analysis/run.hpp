@@ -36,6 +36,10 @@ enum class RunKind : uint32_t { cfd = 0, dry_run = 1 };
 // "cfd" or "dry-run", as the run's files spell it.
 [[nodiscard]] std::string_view run_kind_name(RunKind kind) noexcept;
 
+// A dry run holds no grid, so the queue starts it without waiting for memory
+// (the lead's ruling, 2026-10-19); its queued progress and its log say so.
+inline constexpr std::string_view kDryRunNoMemoryGate = "dry run: no memory gate";
+
 struct RunProgress {
     RunKind kind = RunKind::cfd;
     RunState state = RunState::queued;
@@ -72,32 +76,45 @@ struct RunRecord {
 [[nodiscard]] Result<void> write_run_record(const std::filesystem::path& folder, const RunRecord& r);
 [[nodiscard]] Result<RunRecord> read_run_record(const std::filesystem::path& folder);
 
-// runs_dir/<case_name>/<date>_<hash16>_<commit12>/: `date` as YYYY-MM-DD,
-// `commit` the engine's commit (its first 12 characters are used).
+// runs_dir/<case_name>/<date>_<hash16>_<commit12>[_dry]/: `case_name` UTF-8,
+// `date` the host's UTC day as YYYY-MM-DD, `commit` the engine's commit (its
+// first 12 characters are used). A dry run's name ends "_dry", so it never
+// shares a folder with a real run of the same case. The name a first run
+// gets; create_run_folder() says which folder a run really has.
 [[nodiscard]] std::filesystem::path run_folder(const std::filesystem::path& runs_dir, std::string_view case_name,
                                                const ResolvedCase& resolved, std::string_view date,
-                                               std::string_view commit);
+                                               std::string_view commit, RunKind kind);
 
-// Makes the run's folder with its case.yaml and a queued progress. Refused if
-// the folder exists: a run is never overwritten.
+// Makes the run's folder with its case.yaml and a queued progress (its kind;
+// its memory need, 0 for a dry run), and returns it: a host never builds the
+// name itself. NEVER OVERWRITES: when run_folder()'s name is taken (a re-run
+// the same day), the lowest free "_2", "_3"... is taken, each made with an
+// exclusive create, so two calls never share a folder. ALL OR NOTHING: on any
+// refusal, no folder is left behind. Refused by name (invalid_argument): a
+// case name that can't be one folder (empty, "." or "..", a path separator, a
+// character Windows forbids in a name, a trailing dot or space, a device name
+// such as CON or NUL, or not UTF-8), a date that isn't YYYY-MM-DD, and a
+// commit that isn't lowercase hex.
 [[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
                                                               std::string_view case_name, const ResolvedCase& resolved,
-                                                              std::string_view date, std::string_view commit);
+                                                              std::string_view date, std::string_view commit,
+                                                              RunKind kind);
 
 // The same, named by a build's identity (core/build_identity.hpp): the folder
-// above at built.commit, or <date>_<hash16>_<commit12>-dirty when built.dirty,
-// git describe's mark for a build with uncommitted changes. REFUSED
-// (unavailable) when built.commit is "unknown": such a run could not be traced
-// to the code that made it.
+// above at built.commit, or <date>_<hash16>_<commit12>-dirty[_dry] when
+// built.dirty, git describe's mark for a build with uncommitted changes, kept
+// on the commit. REFUSED (unavailable) when built.commit is "unknown": such a
+// run could not be traced to the code that made it.
 [[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
                                                               std::string_view case_name, const ResolvedCase& resolved,
-                                                              std::string_view date, const BuildIdentity& built);
+                                                              std::string_view date, const BuildIdentity& built,
+                                                              RunKind kind);
 
 // The same, at the build this engine is (spade::build_identity()): how a host
 // names its runs without git. The form with an explicit commit is for tests,
 // whose paths must not move with every commit.
 [[nodiscard]] Result<std::filesystem::path> create_run_folder(const std::filesystem::path& runs_dir,
                                                               std::string_view case_name, const ResolvedCase& resolved,
-                                                              std::string_view date);
+                                                              std::string_view date, RunKind kind);
 
 }  // namespace spade::analysis

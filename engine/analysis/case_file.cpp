@@ -14,6 +14,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "analysis/case.hpp"
+#include "analysis/detail/atomic_file.hpp"
+#include "analysis/detail/caught.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::analysis {
@@ -360,8 +362,9 @@ Result<AnalysisCase> case_from_yaml(std::string_view text) {
             return parse_case(YAML::Load(std::string(text)));
         } catch (const YAML::Exception& e) {
             return std::unexpected(Error{Code::invalid_argument, std::string(e.what())});
-        } catch (const std::exception& e) {
-            return std::unexpected(Error{Code::internal, std::string("case file parse failed: ") + e.what()});
+        } catch (...) {
+            return std::unexpected(detail::caught_error(std::current_exception(), Code::internal,
+                                                        "parsing the case file"));
         }
     }();
     if (!c) return c;
@@ -376,8 +379,9 @@ Result<AnalysisCase> load_case(const std::filesystem::path& file) {
         if (!in) return std::unexpected(Error{Code::io_error, "cannot open case file '" + path_text(file) + "'"});
         text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         if (in.bad()) return std::unexpected(Error{Code::io_error, "failed reading case file '" + path_text(file) + "'"});
-    } catch (const std::exception& e) {
-        return std::unexpected(Error{Code::io_error, "failed reading case file '" + path_text(file) + "': " + e.what()});
+    } catch (...) {
+        return std::unexpected(detail::caught_error(std::current_exception(), Code::io_error,
+                                                    "reading case file '" + path_text(file) + "'"));
     }
     Result<AnalysisCase> c = case_from_yaml(text);
     if (!c) return std::unexpected(Error{c.error().code, path_text(file) + ": " + c.error().context});
@@ -387,14 +391,10 @@ Result<AnalysisCase> load_case(const std::filesystem::path& file) {
 Result<void> save_case(const AnalysisCase& c, const std::filesystem::path& file) {
     const Result<std::string> text = case_to_yaml(c);
     if (!text) return std::unexpected(text.error());
-    try {
-        std::ofstream out(file, std::ios::binary | std::ios::trunc);
-        if (!out) return std::unexpected(Error{Code::io_error, "cannot write case file '" + path_text(file) + "'"});
-        out << *text;
-        out.flush();
-        if (!out) return std::unexpected(Error{Code::io_error, "failed writing case file '" + path_text(file) + "'"});
-    } catch (const std::exception& e) {
-        return std::unexpected(Error{Code::io_error, "failed writing case file '" + path_text(file) + "': " + e.what()});
+    // Replaced whole, through a temporary file beside it: a reader sees the
+    // old case or the new, never part of one.
+    if (Result<void> r = detail::replace_file(file, *text); !r) {
+        return std::unexpected(Error{r.error().code, "cannot save the case file: " + r.error().context});
     }
     return {};
 }

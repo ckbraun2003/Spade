@@ -62,6 +62,8 @@ inline constexpr uint32_t kMaxPaceMs = 10'000;
 
 // Asks the run in `folder` to stop: makes its cancel file, which the runner
 // sees between steps. The run ends "cancelled", what it wrote kept as partial.
+// Refused by name: a folder with no progress.yaml (io_error), and a run that
+// has finished. It has no runs_dir, so a host checks the folder is its own.
 [[nodiscard]] Result<void> cancel_run(const std::filesystem::path& folder);
 
 // Whether the process `pid` is still running (an exited child is reaped).

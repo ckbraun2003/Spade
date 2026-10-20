@@ -129,28 +129,124 @@ TEST(AnalysisRunProgress, AReaderNeverSeesATornFile) {
 TEST(AnalysisRunFolder, IsNamedByDateHashAndCommit) {
     const spade::test::TempDir runs("runs");
     const an::ResolvedCase r = resolved();
-    const fs::path folder =
-        an::run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca59f717c9545373d59c8cd2764b38a6b021");
+    const fs::path folder = an::run_folder(runs.path(), "hover", r, "2026-10-13",
+                                           "36f8ca59f717c9545373d59c8cd2764b38a6b021", an::RunKind::cfd);
     char hash[17];
     std::snprintf(hash, sizeof hash, "%016llx", static_cast<unsigned long long>(r.hash));
     EXPECT_EQ(folder, runs.path() / "hover" / ("2026-10-13_" + std::string(hash) + "_36f8ca59f717"));
+    // A dry run's folder says so, so it never shares a name with a real run.
+    EXPECT_EQ(an::run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca59f717", an::RunKind::dry_run),
+              runs.path() / "hover" / ("2026-10-13_" + std::string(hash) + "_36f8ca59f717_dry"));
 }
 
 TEST(AnalysisRunFolder, StartsQueuedWithTheCaseItRuns) {
     const spade::test::TempDir runs("runs");
     const an::ResolvedCase r = resolved();
-    const spade::Result<fs::path> folder = an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5");
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5", an::RunKind::cfd);
     ASSERT_TRUE(folder.has_value()) << folder.error().context;
     EXPECT_EQ(read_all(*folder / "case.yaml"), an::case_to_yaml(r.spec).value_or("-"));
     const spade::Result<an::RunProgress> p = an::read_progress(*folder);
     ASSERT_TRUE(p.has_value()) << p.error().context;
     EXPECT_EQ(p->state, an::RunState::queued);
+    EXPECT_EQ(p->kind, an::RunKind::cfd);
     EXPECT_EQ(p->target_s, static_cast<double>(r.spec.time.duration));
-    // A second run of the same case at the same commit and date is the same
-    // folder: refused, not overwritten.
-    const spade::Result<fs::path> again = an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5");
-    ASSERT_FALSE(again.has_value());
-    EXPECT_NE(again.error().context.find("exists"), std::string::npos) << again.error().context;
+    EXPECT_EQ(p->memory_bytes, r.base_bytes);  // a real run's need, which the queue waits for
+    EXPECT_EQ(p->message, "");
+}
+
+// A dry run holds no grid: its need is 0, and its progress says it skips the
+// memory gate (the lead's ruling, 2026-10-19).
+TEST(AnalysisRunFolder, ADryRunIsQueuedWithoutAMemoryNeed) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5", an::RunKind::dry_run);
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    EXPECT_TRUE(folder->filename().string().ends_with("_dry")) << folder->filename().string();
+    const spade::Result<an::RunProgress> p = an::read_progress(*folder);
+    ASSERT_TRUE(p.has_value()) << p.error().context;
+    EXPECT_EQ(p->kind, an::RunKind::dry_run);
+    EXPECT_EQ(p->memory_bytes, 0u);
+    EXPECT_EQ(p->message, an::kDryRunNoMemoryGate);
+}
+
+// A re-run the same day keeps the earlier run's folder and takes the lowest
+// free suffix; a folder already there, even an empty one, is never shared.
+TEST(AnalysisRunFolder, AReRunTakesTheLowestFreeSuffix) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const auto make = [&] {
+        return an::create_run_folder(runs.path(), "hover", r, "2026-10-13", "36f8ca5", an::RunKind::cfd);
+    };
+    const spade::Result<fs::path> first = make();
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    const spade::Result<fs::path> second = make();
+    ASSERT_TRUE(second.has_value()) << second.error().context;
+    EXPECT_EQ(second->filename().string(), first->filename().string() + "_2");
+    EXPECT_TRUE(fs::exists(*first / "case.yaml")) << "the earlier run was disturbed";
+    fs::create_directory(first->parent_path() / (first->filename().string() + "_3"));  // another host's, say
+    const spade::Result<fs::path> fourth = make();
+    ASSERT_TRUE(fourth.has_value()) << fourth.error().context;
+    EXPECT_EQ(fourth->filename().string(), first->filename().string() + "_4");
+    EXPECT_FALSE(fs::exists(first->parent_path() / (first->filename().string() + "_3") / "case.yaml"));
+}
+
+// All or nothing: a run that can't be made leaves no folder behind.
+TEST(AnalysisRunFolder, ARefusedRunLeavesNoFolder) {
+    const spade::test::TempDir runs("runs");
+    an::ResolvedCase bad = resolved();
+    bad.spec.time.duration = -1.0f;  // case_to_yaml refuses it, after the folder's name is chosen
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), "hover", bad, "2026-10-13", "36f8ca5", an::RunKind::cfd);
+    ASSERT_FALSE(folder.has_value());
+    EXPECT_FALSE(fs::exists(runs.path() / "hover")) << "a refused run left its folder";
+}
+
+// The case name is UTF-8, on every platform.
+TEST(AnalysisRunFolder, ACaseNameIsUtf8) {
+    const spade::test::TempDir runs("runs");
+    const std::string name = "h\xc3\xb6ver";  // "hover" with an o-umlaut
+    const spade::Result<fs::path> folder =
+        an::create_run_folder(runs.path(), name, resolved(), "2026-10-13", "36f8ca5", an::RunKind::cfd);
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const std::u8string got = folder->parent_path().filename().u8string();
+    EXPECT_EQ(std::string(got.begin(), got.end()), name);
+}
+
+// A name that can't be one folder is refused by name, and nothing is made.
+TEST(AnalysisRunFolder, RefusesANameDateOrCommitThatCantNameAFolder) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    for (const std::string& bad : {std::string(""), std::string("."), std::string(".."), std::string("a/b"),
+                                   std::string("a\\b"), std::string("a:b"), std::string("a?b"), std::string("a*b"),
+                                   std::string("a<b"), std::string("a|b"), std::string("tab\there"), std::string("con"),
+                                   std::string("NUL.txt"), std::string("Com1"), std::string("lpt9"),
+                                   std::string("trail."), std::string("trail "), std::string("\xff\xfe")}) {
+        const spade::Result<fs::path> f =
+            an::create_run_folder(runs.path(), bad, r, "2026-10-13", "36f8ca5", an::RunKind::cfd);
+        ASSERT_FALSE(f.has_value()) << "'" << bad << "' was made: " << f->string();
+        EXPECT_EQ(f.error().code, spade::Code::invalid_argument) << bad;
+        EXPECT_NE(f.error().context.find("case name"), std::string::npos) << f.error().context;
+    }
+    for (const std::string_view date : {"2026/10/13", "20261013", "2026-10-1", "../10-13", ""}) {
+        const spade::Result<fs::path> f =
+            an::create_run_folder(runs.path(), "hover", r, date, "36f8ca5", an::RunKind::cfd);
+        ASSERT_FALSE(f.has_value()) << date;
+        EXPECT_NE(f.error().context.find("date"), std::string::npos) << f.error().context;
+    }
+    for (const std::string_view commit : {"", "../x", "36F8CA5", "36f8ca5 ", "unknown"}) {
+        const spade::Result<fs::path> f =
+            an::create_run_folder(runs.path(), "hover", r, "2026-10-13", commit, an::RunKind::cfd);
+        ASSERT_FALSE(f.has_value()) << commit;
+        EXPECT_NE(f.error().context.find("commit"), std::string::npos) << f.error().context;
+    }
+    std::size_t made = 0;
+    for (const fs::directory_entry& e : fs::directory_iterator(runs.path())) {
+        (void)e;
+        ++made;
+    }
+    EXPECT_EQ(made, 0u) << "a refused name left something behind";
 }
 
 constexpr std::string_view kBuiltCommit = "0123456789abcdef0123456789abcdef01234567";
@@ -160,9 +256,9 @@ TEST(AnalysisRunFolder, ABuildsIdentityNamesTheRun) {
     const spade::test::TempDir runs("runs");
     const an::ResolvedCase r = resolved();
     const spade::Result<fs::path> folder =
-        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, false});
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, false}, an::RunKind::cfd);
     ASSERT_TRUE(folder.has_value()) << folder.error().context;
-    EXPECT_EQ(*folder, an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit));
+    EXPECT_EQ(*folder, an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit, an::RunKind::cfd));
     EXPECT_TRUE(folder->filename().string().ends_with("_0123456789ab")) << folder->filename().string();
     EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
 }
@@ -173,20 +269,34 @@ TEST(AnalysisRunFolder, ADirtyBuildsRunIsMarkedDirty) {
     const spade::test::TempDir runs("runs");
     const an::ResolvedCase r = resolved();
     const spade::Result<fs::path> folder =
-        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, true});
+        an::create_run_folder(runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, true}, an::RunKind::cfd);
     ASSERT_TRUE(folder.has_value()) << folder.error().context;
-    const fs::path clean = an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit);
+    const fs::path clean = an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit, an::RunKind::cfd);
     EXPECT_EQ(folder->parent_path(), clean.parent_path());
     EXPECT_EQ(folder->filename().string(), clean.filename().string() + "-dirty");
     EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
     EXPECT_FALSE(fs::exists(clean));
 }
 
+// A dirty build's dry run keeps both marks, the build's on the commit and the
+// kind at the end: <commit12>-dirty_dry. (Coverage of the merged naming; it
+// passes on the rebased green.)
+TEST(AnalysisRunFolder, ADirtyBuildsDryRunKeepsBothMarks) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::Result<fs::path> folder = an::create_run_folder(
+        runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, true}, an::RunKind::dry_run);
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const std::string clean =
+        an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit, an::RunKind::cfd).filename().string();
+    EXPECT_EQ(folder->filename().string(), clean + "-dirty_dry");
+}
+
 // A build that cannot name its commit is refused: its runs could not be traced.
 TEST(AnalysisRunFolder, AnUnknownCommitIsRefused) {
     const spade::test::TempDir runs("runs");
     const spade::Result<fs::path> folder =
-        an::create_run_folder(runs.path(), "hover", resolved(), "2026-10-13", spade::BuildIdentity{"unknown", false});
+        an::create_run_folder(runs.path(), "hover", resolved(), "2026-10-13", spade::BuildIdentity{"unknown", false}, an::RunKind::cfd);
     ASSERT_FALSE(folder.has_value());
     EXPECT_EQ(folder.error().code, spade::Code::unavailable);
     EXPECT_NE(folder.error().context.find("can't name its commit"), std::string::npos) << folder.error().context;
@@ -200,14 +310,15 @@ TEST(AnalysisRunFolder, WithoutACommitIsNamedByTheBuildsCommit) {
     const spade::test::TempDir runs("runs");
     const an::ResolvedCase r = resolved();
     const spade::BuildIdentity built = spade::build_identity();
-    const spade::Result<fs::path> folder = an::create_run_folder(runs.path(), "hover", r, "2026-10-13");
+    const spade::Result<fs::path> folder = an::create_run_folder(runs.path(), "hover", r, "2026-10-13", an::RunKind::cfd);
     if (built.commit == "unknown") {
         ASSERT_FALSE(folder.has_value());
         EXPECT_EQ(folder.error().code, spade::Code::unavailable);
         return;
     }
     ASSERT_TRUE(folder.has_value()) << folder.error().context;
-    const std::string clean = an::run_folder(runs.path(), "hover", r, "2026-10-13", built.commit).filename().string();
+    const std::string clean =
+        an::run_folder(runs.path(), "hover", r, "2026-10-13", built.commit, an::RunKind::cfd).filename().string();
     EXPECT_EQ(folder->filename().string(), built.dirty ? clean + "-dirty" : clean) << "commit " << built.commit;
     EXPECT_TRUE(fs::exists(*folder / "case.yaml"));
 }
