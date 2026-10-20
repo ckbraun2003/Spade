@@ -30,7 +30,7 @@ struct FluidConfig {
     float rho = 1.225f;        // kg/m^3
     float nu = 0.0f;           // m^2/s, molecular; 0 is the inviscid lean mode
     float h = 0.0f;            // the fluid step, s
-    uint32_t n_v = 2;          // V-cycles per projection
+    uint32_t n_v = 2;          // V-cycles per projection; with solids, CG iterations (kSolidsCgIterations)
     uint32_t visc_sweeps = 8;  // red-black sweeps per viscous solve
     SolidInterior interior = SolidInterior::rigid;  // what closed samples hold (solids.hpp)
 };
@@ -52,10 +52,17 @@ struct FluidHealth {
     bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
 };
 
+// The CG iteration count for a run with solids (P2 Task 9, the solids design
+// section 3): the smallest n whose cold solves reach 1e-3 and warm ones 1e-4
+// on S1, S3 (both parities) and the reference quad's parts. Measured: 8
+// leaves every case at fp32's floor, 1e-6 to 3e-5; 4 leaves the sheet's and
+// the quad's cold solves near 1e-3 to 2e-3. A run with solids sets n_v to it.
+inline constexpr uint32_t kSolidsCgIterations = 8;
+
 // A pressure solve leaving more than this relative residual is announced (the
-// lead's condition, spec 1.5 as amended): a first value, revised with the
-// iteration count chosen from S1, S3 and the dense-parts case.
-inline constexpr float kResidualAnnounce = 1.0e-3f;
+// lead's condition, spec 1.5 as amended): ten times the warm residual the
+// count above leaves (1.2e-6), held at the floor of 1e-4.
+inline constexpr float kResidualAnnounce = 1.0e-4f;
 
 // What a fault means, naming the quantity and its sample (i, j, k), or the
 // faces. Allocates: call it outside the step.

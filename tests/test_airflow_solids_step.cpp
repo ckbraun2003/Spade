@@ -19,8 +19,10 @@
 
 #include "airflow_solid_shapes.hpp"
 #include "airflow_vehicle_sampler.hpp"
+#include "reference_airframe.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "state/layout.hpp"
+#include "vehicles/airframe_compile.hpp"
 #include "vehicles/part_pose.hpp"
 #include "vehicles/quadrotor.hpp"
 #include "world/mesh.hpp"
@@ -588,63 +590,35 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
 
 // --- The posed body from A4 and B4 (P2 Task 9; design test 7) ---------------
 
-// The compiled reference quad's body box (reference_quad() in
-// tests/test_airframe_compile.cpp: 0.12 x 0.03 x 0.12 m), declared at its 30 mm
-// smallest side, as an analytic part (A4) or as a mesh of the same box (B4),
-// on test_part_pose.cpp's quadrotor frame.
+// The compiled reference quad (tests/reference_airframe.hpp) holding only its
+// body box, parts[0]: analytic (A4), or (B4) replaced by a mesh of the same
+// box at the same mount, its half extents the analytic box's own parameters
+// (part_bounds() is conservative: sdf_bounds() pads by about 1e-6 m).
 [[nodiscard]] spade::vehicles::ModelType body_box_quad(bool as_mesh) {
-    const glm::vec3 half(0.06f, 0.015f, 0.06f);
-    spade::vehicles::PartDesc part;
-    part.name = "body";
-    part.role = "test";
-    part.attach = spade::vehicles::PartAttach::body;
-    part.mount_pos = glm::vec3(0.01f, 0.0f, -0.02f);
-    part.surface = spade::vehicles::PartSurface{.kind = spade::vehicles::PartSurface::Kind::wall,
-                                                .inv_permeability = 0.0f,
-                                                .inertial_coeff = 0.0f};
-    part.min_feature = 0.03f;
-    if (as_mesh) {
-        constexpr uint32_t kBoxTriangles[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
-                                                   {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
-        std::vector<glm::dvec3> positions;
-        for (uint32_t v = 0; v < 8; ++v) {
-            positions.push_back(glm::dvec3((v & 1u) != 0 ? half.x : -half.x, ((v >> 1) & 1u) != 0 ? half.y : -half.y,
-                                           ((v >> 2) & 1u) != 0 ? half.z : -half.z));
-        }
-        std::vector<uint32_t> indices;
-        for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
-        part.mesh = spade::make_mesh(spade::MeshInput{.positions = std::move(positions),
-                                                      .indices = std::move(indices),
-                                                      .unit = spade::MeshUnit::metre},
-                                     "body")
-                        .value();
-    } else {
-        spade::SdfNode n{};
-        n.kind = static_cast<uint32_t>(spade::SdfPrim::box);
-        n.op = static_cast<uint32_t>(spade::SdfOp::none);
-        n.params = glm::vec4(half, 0.0f);
-        part.shape.transforms.push_back(spade::SdfTransform{});
-        part.shape.nodes.push_back(n);
+    spade::vehicles::ModelType m =
+        spade::vehicles::compile_airframe(spade::vehicles::fixtures::reference_quad()).value().model;
+    m.parts.resize(1);
+    if (!as_mesh) return m;
+    spade::vehicles::PartDesc& part = m.parts[0];
+    EXPECT_EQ(part.shape.nodes.size(), 1u);
+    EXPECT_EQ(part.shape.nodes[0].kind, static_cast<uint32_t>(spade::SdfPrim::box));
+    const glm::dvec3 hi(glm::vec3(part.shape.nodes[0].params));
+    const glm::dvec3 lo = -hi;
+    constexpr uint32_t kBoxTriangles[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+                                               {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+    std::vector<glm::dvec3> positions;
+    for (uint32_t v = 0; v < 8; ++v) {
+        positions.push_back(glm::dvec3((v & 1u) != 0 ? hi.x : lo.x, ((v >> 1) & 1u) != 0 ? hi.y : lo.y,
+                                       ((v >> 2) & 1u) != 0 ? hi.z : lo.z));
     }
-    spade::vehicles::QuadrotorParams q;
-    q.name = "box_quad";
-    q.mass = 1.0f;
-    q.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
-    q.arm_length = 0.18f;
-    q.rotor_height = 0.02f;
-    q.proxy_radius = 0.2f;
-    for (spade::vehicles::RotorParams& rotor : q.rotors) {
-        rotor.tau = 0.02f;
-        rotor.radius = 0.13f;
-        rotor.thrust_coeff = 1.2e-5f;
-        rotor.torque_coeff = 1.9e-7f;
-    }
-    q.drag.mode = spade::physics::drag_mode::quadratic;
-    q.drag.area = 0.05f;
-    q.drag.coeffs = glm::vec3(1.6f, 0.0f, 0.0f);
-    q.imu.rate_divider = 1;
-    spade::vehicles::ModelType m = spade::vehicles::make_quadrotor(q).value();
-    m.parts = {part};
+    std::vector<uint32_t> indices;
+    for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
+    part.mesh = spade::make_mesh(spade::MeshInput{.positions = std::move(positions),
+                                                  .indices = std::move(indices),
+                                                  .unit = spade::MeshUnit::metre},
+                                 part.name)
+                    .value();
+    part.shape = spade::SdfProgram{};
     return m;
 }
 
@@ -654,7 +628,7 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
 // apertures, wall velocities and distances within the distance's fp32
 // rounding. An implementation comparison (TD-2), measured 2026-10-20 on MSVC
 // 14.43 release: theta 2.98e-8 (half an ulp near 0.5), wall velocity 0 (one
-// formula, part_wall_velocity()), phi 2.2e-11 m, 4332 closed faces in each.
+// formula, part_wall_velocity()), phi 2.2e-11 m, 4336 closed faces in each.
 // Pinned at theta two ulps of 1 (1.2e-7) and phi 1e-10 m, so another compiler's
 // last-bit rounding stays inside; the walls and the closed faces equal.
 TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
@@ -715,6 +689,30 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
     EXPECT_LE(d_theta, 1.2e-7f);
     EXPECT_EQ(d_wall, 0.0f);
     EXPECT_LE(d_phi, 1.0e-10f);
+}
+
+// The chosen count holds (P2 Task 9): the worst case the study measured, the
+// sheet on the odd plane from a cold start, solves to below the announcement
+// threshold in kSolidsCgIterations. Mutation: 4 iterations, which leave it
+// at 1.8e-3, announced.
+TEST(AirflowSolidsStep, TheChosenIterationCountConvergesTheSheetFromCold) {
+    const float dx = 1.0f / 32.0f;
+    const GridShape shape{32, 8, 8, dx};
+    const DomainBc bc = all_periodic();
+    for (const uint32_t plane : {16u, 17u}) {
+        MacGrid g = *make_grid(shape, bc);
+        std::fill(g.u.begin(), g.u.end(), 1.0f);
+        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = kSolidsCgIterations};
+        FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+        Scene scene;
+        ASSERT_TRUE(set_solids(s, g, bc, s3_sheet(scene, plane, dx), scene.sampler()).has_value());
+        const FluidHealth health = fluid_step(g, bc, cfg, s);
+        ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+        std::printf("measure: plane %u, %u CG iterations from cold: relative residual %.3e (announced above %.0e)\n",
+                    plane, kSolidsCgIterations, static_cast<double>(health.pressure_residual),
+                    static_cast<double>(kResidualAnnounce));
+        EXPECT_FALSE(health.unconverged) << describe(health, shape);
+    }
 }
 
 }  // namespace
