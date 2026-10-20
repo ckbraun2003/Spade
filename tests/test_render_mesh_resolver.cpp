@@ -97,7 +97,7 @@ TEST(MeshResolver, ASidecarResolvesFromItsRootIntoFlatGeometry) {
     EXPECT_EQ(triangles(r.meshes[0]), 12u);
     EXPECT_EQ(r.meshes[0].mesh.positions.size(), 36u) << "flat: three vertices a triangle";
     EXPECT_EQ(r.meshes[0].mesh.normals.size(), 36u);
-    ASSERT_EQ(r.meshes[0].mesh.submesh_first_index.size(), 1u);
+    EXPECT_TRUE(r.meshes[0].mesh.submesh_first_index.empty()) << "one submesh, drawn in the prop's material";
     EXPECT_TRUE(r.unresolved.empty());
     EXPECT_TRUE(r.from_fallback.empty());
 }

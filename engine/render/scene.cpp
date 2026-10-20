@@ -406,23 +406,30 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
     // props themselves has no other consumer that cares.
     //
     // `mesh_ref` resolution mirrors NamedMesh's own doc comment (scene.hpp):
-    // resolving a world reference to a file is the CALLER's job, so this
-    // function only ever LOOKS UP a match already present in
-    // `resolved_meshes` (linear scan -- `resolved_meshes` is typically a
-    // handful of entries, one per distinct visual reference a world uses,
-    // not per prop instance) and falls back to kNoMesh -- draw_mesh_item's
-    // own existing "nothing to draw" skip -- when the caller never resolved
-    // that reference, rather than treating an unresolved prop as an error
-    // here (resolving every prop is the caller's responsibility, not this
-    // builder's, the same posture visual_refs' own "opaque to the engine"
-    // framing takes).
-    for (const PropDesc& prop : world.props) {
+    // resolving a world reference to a file is the CALLER's job
+    // (render/mesh_resolver.hpp's resolve_meshes()), so this function only
+    // LOOKS UP a match in `resolved_meshes` (a linear scan: one entry per
+    // distinct ref, a handful). A prop it finds no match for is REFUSED, by
+    // its ref (N11, the lead, 2026-10-20): it once fell back to kNoMesh and
+    // drew nothing, silently. A stand-in (NamedMesh::stand_in) draws in its
+    // own material, never the prop's, so it can't pass for the real mesh.
+    for (size_t p = 0; p < world.props.size(); ++p) {
+        const PropDesc& prop = world.props[p];
         uint32_t mesh_index = kNoMesh;
+        bool stand_in = false;
         for (size_t i = 0; i < resolved_meshes.size(); ++i) {
             if (resolved_meshes[i].ref == prop.mesh_ref) {
                 mesh_index = static_cast<uint32_t>(i);
+                stand_in = resolved_meshes[i].stand_in;
                 break;
             }
+        }
+        if (mesh_index == kNoMesh) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "scene_from_world: prop " + std::to_string(p) + "'s mesh_ref '" +
+                                             prop.mesh_ref +
+                                             "' is not resolved: resolve the world's meshes with resolve_meshes() "
+                                             "(render/mesh_resolver.hpp), which stands in for a missing one"});
         }
         // Rigid + uniform scale, same T*R*S(s) construction WorldBuilder::
         // add_transform() uses for the (pre-inverted) SDF-node direction:
@@ -439,8 +446,9 @@ Result<RenderScene> scene_from_world(const WorldDesc& world,
             // Always a concrete index, never kNoMaterial: validate_world_desc()
             // guarantees prop.material < world.materials.size(), and a prop
             // (unlike an SDF node) has no "use the mesh's own submesh
-            // material" fallback to defer to -- it always names one.
-            .material_override = prop.material,
+            // material" fallback to defer to -- it always names one. A
+            // stand-in keeps its own.
+            .material_override = stand_in ? kNoMaterial : prop.material,
         });
     }
 

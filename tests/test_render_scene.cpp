@@ -296,7 +296,14 @@ TEST(SceneFromWorld, RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToE
         spade::load_world_file(std::filesystem::path(SPADE_GOLDEN_DIR) / "worlds" / "maximal.world.yaml");
     ASSERT_TRUE(loaded.has_value()) << "failed to load maximal.world.yaml";
 
-    const RenderScene scene = scene_or_fail(*loaded);
+    // The two props' refs, resolved to one triangle each: an unresolved prop
+    // is refused (N11), so this file's props need meshes to draw.
+    MeshData triangle;
+    triangle.positions = {glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)};
+    triangle.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    triangle.indices = {0, 1, 2};
+    const NamedMesh resolved[] = {{"mesh:props/tower", triangle}, {"mesh:props/flag", triangle}};
+    const RenderScene scene = scene_or_fail(*loaded, resolved);
 
     // split_program()'s own dedicated test (test_render_csg.cpp) proves
     // this program decomposes into csg_roots={8}, union_primitive_nodes=
@@ -328,14 +335,11 @@ TEST(SceneFromWorld, RealWorldFileWithNonIdentityPosesWiresGeometryThroughEndToE
         << "the CSG root's mesh looks collapsed -- got only " << triangle_count
         << " triangles; a resolution-starved AABB (review IMPORTANT #1) would look exactly like this";
 
-    // Items 3/4 are the two props (tower, material 1; flag, material 2) --
-    // this call passes no resolved_meshes, so neither mesh_ref ("mesh:props/
-    // tower"/"mesh:props/flag") resolves to anything, and both items must
-    // carry kNoMesh (draw_mesh_item's own existing "nothing to draw" skip)
-    // rather than an out-of-range or aliased mesh_index.
-    EXPECT_EQ(scene.statics[3].mesh_index, spade::render::kNoMesh);
+    // Items 3/4 are the two props (tower, material 1; flag, material 2), on
+    // their resolved meshes' slots, 0 and 1, in the props' own materials.
+    EXPECT_EQ(scene.statics[3].mesh_index, 0u);
     EXPECT_EQ(scene.statics[3].material_override, 1u);
-    EXPECT_EQ(scene.statics[4].mesh_index, spade::render::kNoMesh);
+    EXPECT_EQ(scene.statics[4].mesh_index, 1u);
     EXPECT_EQ(scene.statics[4].material_override, 2u);
 }
 
@@ -541,16 +545,19 @@ TEST(SceneFromWorldProps, ResolvedPropGetsItsMeshIndexPoseAndMaterial) {
     EXPECT_TRUE(mat4_near(scene.statics[0].local_to_world, forward_transform(pose), kTol));
 }
 
-TEST(SceneFromWorldProps, UnresolvedPropMeshRefGetsNoMeshRatherThanAnErrorOrWrongSlot) {
+// N11: an unresolved prop once drew nothing (kNoMesh), silently. It is now
+// refused, naming its ref; render/mesh_resolver.hpp stands in for a missing
+// mesh (test_render_mesh_resolver.cpp).
+TEST(SceneFromWorldProps, AnUnresolvedPropIsRefusedNamingItsRef) {
     WorldBuilder b = base_builder();
     b.prop("mesh:props/never_resolved", SdfPose{}, 0);
     const WorldDesc world = build_or_fail(b);
 
     // Deliberately empty -- the caller never resolved this prop's reference.
-    const RenderScene scene = scene_or_fail(world);
-
-    ASSERT_EQ(scene.statics.size(), 1u);
-    EXPECT_EQ(scene.statics[0].mesh_index, spade::render::kNoMesh);
+    const spade::Result<RenderScene> scene = scene_from_world(world, {});
+    ASSERT_FALSE(scene.has_value());
+    EXPECT_EQ(scene.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(scene.error().context.find("mesh:props/never_resolved"), std::string::npos) << scene.error().context;
 }
 
 TEST(SceneFromWorldProps, MultiplePropsAppendAfterSdfStaticsInAuthoringOrder) {
@@ -562,7 +569,13 @@ TEST(SceneFromWorldProps, MultiplePropsAppendAfterSdfStaticsInAuthoringOrder) {
     b.prop("mesh:first", SdfPose{}, 1).prop("mesh:second", SdfPose{}, 2);
     const WorldDesc world = build_or_fail(b);
 
-    const RenderScene scene = scene_or_fail(world);
+    // Each prop's ref resolved to one triangle: an unresolved prop is refused (N11).
+    MeshData triangle;
+    triangle.positions = {glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)};
+    triangle.normals.assign(3, glm::vec3(0.0f, 0.0f, 1.0f));
+    triangle.indices = {0, 1, 2};
+    const NamedMesh resolved[] = {{"mesh:first", triangle}, {"mesh:second", triangle}};
+    const RenderScene scene = scene_or_fail(world, resolved);
 
     ASSERT_EQ(scene.statics.size(), 3u);
     // Item 0 is the sphere (the only SDF-derived static); items 1/2 are the

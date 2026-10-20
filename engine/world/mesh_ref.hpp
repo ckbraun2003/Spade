@@ -20,9 +20,25 @@ namespace spade {
 // Empty when `ref` is a valid mesh_ref; otherwise a fixed description of the
 // first rule it breaks, fit to show after the ref.
 [[nodiscard]] inline std::string_view mesh_ref_problem(std::string_view ref) noexcept {
-    // RED: a stub until the green step.
-    (void)ref;
-    return {};
+    if (ref.empty()) return "it is empty";
+    if (ref.front() == '/') return "it is absolute: it begins with '/'";
+    for (const char c : ref) {
+        if (c == '\\') return "it holds a '\\': segments are joined by '/'";
+        if (c == ':') return "it holds a ':', as a drive or a scheme would";
+        if (static_cast<unsigned char>(c) < 0x20u || c == 0x7f) return "it holds a control character";
+    }
+    std::string_view rest = ref;
+    while (true) {
+        const std::size_t slash = rest.find('/');
+        const std::string_view segment = rest.substr(0, slash);
+        if (segment.empty()) return "it has an empty segment: a '//', or a '/' at its end";
+        if (segment == "." || segment == "..") return "it has a '.' or '..' segment";
+        if (segment.find('.') != std::string_view::npos) {
+            return "it holds a '.': a mesh_ref names no extension (.spmesh is added)";
+        }
+        if (slash == std::string_view::npos) return {};
+        rest.remove_prefix(slash + 1u);
+    }
 }
 
 [[nodiscard]] inline bool valid_mesh_ref(std::string_view ref) noexcept { return mesh_ref_problem(ref).empty(); }

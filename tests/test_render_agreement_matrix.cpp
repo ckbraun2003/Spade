@@ -221,8 +221,12 @@ TEST_P(AgreementMatrix, RasterAgreesWithTheRayMarchWithinItsPinnedBand) {
 
     const std::filesystem::path world_path =
         std::filesystem::path(SPADE_GOLDEN_DIR) / "worlds" / (c.world + ".world.yaml");
-    const Result<WorldDesc> world = spade::load_world_file(world_path);
+    Result<WorldDesc> world = spade::load_world_file(world_path);
     ASSERT_TRUE(world) << world_path.string() << ": " << world.error().context;
+    // The SDF is what both draw: the ray-march never draws a prop, so the
+    // props (render-only meshes, which an unresolved ref no longer leaves
+    // blank: N11) are left out of both sides, as they always drew nothing.
+    world->props.clear();
     Result<RenderScene> scene = spade::render::scene_from_world(*world, {});
     ASSERT_TRUE(scene) << scene.error().context;
 
