@@ -1242,6 +1242,10 @@ inline constexpr double kStillFraction = kDiffersFraction / 4.0;
     if (modes.empty()) return {false, name + "absent: no modes were switched"};
     const PixelsView* last = nullptr;
     std::size_t drawn_count = 0;
+    // The margins, for the pass line: a pass near a threshold shows.
+    double least_change = std::numeric_limits<double>::infinity();
+    double least_lit = std::numeric_limits<double>::infinity();
+    double most_moved = 0.0;
     for (const ModeShown& m : modes) {
         const std::string at = "(" + m.kind + ") ";
         if (!m.supported) {
@@ -1261,15 +1265,18 @@ inline constexpr double kStillFraction = kDiffersFraction / 4.0;
         if (!(well_formed(m.again) && same_size(m.frame, m.again))) {
             return {false, name + at + "mis-staged: no second grab of the view's size"};
         }
-        if (const double moved = differ_fraction(m.frame, m.again); !(moved <= kStillFraction)) {
+        const double moved = differ_fraction(m.frame, m.again);
+        if (!(moved <= kStillFraction)) {
             return {false, name + at + "mis-staged: the view changes " + detail::percent(moved) +
                                " with no mode change, past " + detail::percent(kStillFraction) +
                                ", so a switch can't be judged against it"};
         }
+        most_moved = std::max(most_moved, moved);
         const double lit = differ_fraction(m.frame, m.background);
         if (!differs(lit)) {
             return {false, name + at + "blank: " + detail::percent(lit) + " of the view differs from its background"};
         }
+        least_lit = std::min(least_lit, lit);
         if (last != nullptr) {
             if (!same_size(m.frame, *last)) {
                 return {false, name + at + "mis-staged: its frame is not the last one's size"};
@@ -1279,6 +1286,7 @@ inline constexpr double kStillFraction = kDiffersFraction / 4.0;
                 return {false, name + at + "unchanged from the last mode drawn: " + detail::percent(changed) +
                                    " of the view differs"};
             }
+            least_change = std::min(least_change, changed);
         }
         last = &m.frame;
         ++drawn_count;
@@ -1286,8 +1294,11 @@ inline constexpr double kStillFraction = kDiffersFraction / 4.0;
     if (drawn_count < 2) {
         return {false, name + "absent: " + std::to_string(drawn_count) + " modes drawn, so no switch was judged"};
     }
-    return {true, name + std::to_string(drawn_count) + " drawn, each changed from the last; " +
-                      std::to_string(modes.size() - drawn_count) + " refused with their why_not"};
+    return {true, name + std::to_string(drawn_count) + " drawn, each changed from the last by at least " +
+                      detail::percent(least_change) + ", each off its background by at least " +
+                      detail::percent(least_lit) + ", still to " + detail::percent(most_moved) +
+                      " between two grabs; " + std::to_string(modes.size() - drawn_count) +
+                      " refused with their why_not"};
 }
 
 struct LegendCheck {
@@ -1363,7 +1374,8 @@ inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max whi
     const double apart = differ_fraction(left, right);
     if (!differs(apart)) return {false, name + "the two views match: " + detail::percent(apart) + " differs"};
     return {true, name + std::string(left_spec) + " | " + std::string(right_spec) + "; " + detail::percent(apart) +
-                      " of them differs"};
+                      " of them differs, and they're off their backgrounds by " + detail::percent(l) + " and " +
+                      detail::percent(r)};
 }
 
 // ---------------------------------------------------------------------------

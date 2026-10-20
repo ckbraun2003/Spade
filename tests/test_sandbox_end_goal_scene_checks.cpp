@@ -979,3 +979,20 @@ TEST(SandboxEndGoalViews, AHalfOfItsBackgroundAloneIsBlankAndNoBackgroundMisStag
     EXPECT_FALSE(none.ok) << none.detail;
     EXPECT_TRUE(has(none.detail, "mis-staged:")) << none.detail;
 }
+
+// A pass carries its margins, so one near a threshold shows in the record.
+// Each rectangle is 304 of 3,072 pixels, 9.896%; two apart, 19.79%.
+
+TEST(SandboxEndGoalViews, APassNamesItsMargins) {
+    const Image shaded = drawn({200, 180, 40});
+    const Image wire = drawn({240, 240, 240}, 30);
+    const eg::Verdict v = eg::modes_drawn(std::vector<eg::ModeShown>{mode("shaded", shaded), mode("wireframe", wire)});
+    ASSERT_TRUE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "changed from the last by at least 19.79%")) << v.detail;
+    EXPECT_TRUE(has(v.detail, "off its background by at least 9.896%")) << v.detail;
+    EXPECT_TRUE(has(v.detail, "still to 0% between two grabs")) << v.detail;
+    const eg::PixelsView bg = clear_background(64, 48).view();
+    const eg::Verdict two = eg::two_views("shaded", "wireframe", shaded.view(), wire.view(), bg, bg);
+    ASSERT_TRUE(two.ok) << two.detail;
+    EXPECT_TRUE(has(two.detail, "off their backgrounds by 9.896% and 9.896%")) << two.detail;
+}
