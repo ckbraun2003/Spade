@@ -11,11 +11,15 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <span>
 #include <string>
 
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_world_edits.hpp"
 #include "editor_test_support.hpp"
+#include "render/mesh_resolver.hpp"
 #include "scene/compose.hpp"
 
 namespace {
@@ -203,4 +207,64 @@ TEST(EditorFiles, TwoTempDirsInOneTestGetDifferentFoldersNamingTheProcess) {
     const std::string pid = "_" + std::to_string(spade::test::process_id()) + "_";
     EXPECT_NE(a.path().filename().string().find(pid), std::string::npos) << a.path();
     EXPECT_NE(a.path().filename().string().find("TwoTempDirsInOneTest"), std::string::npos) << a.path();
+}
+
+// N11 (Rendering's resolve_meshes()): the editor resolves a world's meshes
+// from the scene's own folder first, then the library's. Save copies what
+// came from the library beside the scene, so a saved scene resolves from its
+// own folder (EDT-012), and copies before the scene is written: a scene on
+// disk never names a mesh its folder can't give.
+namespace {
+
+void write_file(const fs::path& file, std::string_view bytes) {
+    fs::create_directories(file.parent_path());
+    std::ofstream(file, std::ios::binary) << bytes;
+}
+
+}  // namespace
+
+TEST(EditorFiles, SaveCopiesALibraryMeshBesideTheScene) {
+    const support::TempDir tmp;
+    Result<ed::OpenedScene> opened = ed::open_scene(hover_copy(tmp.path()));
+    ASSERT_TRUE(opened.has_value());
+    const fs::path source = tmp.path() / "library" / "meshes" / "props" / "ball.spmesh";
+    write_file(source, "the ball's sidecar");
+    const spade::render::FallbackMesh ball{"props/ball", source, 1};
+    const Result<void> saved = ed::save_scene(opened->scene, opened->world, std::span(&ball, 1));
+    ASSERT_TRUE(saved.has_value()) << saved.error().context;
+    const fs::path copy = opened->scene.path.parent_path() / "props" / "ball.spmesh";
+    ASSERT_TRUE(fs::exists(copy));
+    EXPECT_EQ(support::read_bytes(copy), support::read_bytes(source));
+}
+
+TEST(EditorFiles, AMissingLibraryMeshRefusesTheSaveByNameAndWritesNothing) {
+    const support::TempDir tmp;
+    Result<ed::OpenedScene> opened = ed::open_scene(hover_copy(tmp.path()));
+    ASSERT_TRUE(opened.has_value());
+    const fs::path out = tmp.path() / "elsewhere" / "copy.scene.yaml";
+    fs::create_directories(out.parent_path());
+    const spade::render::FallbackMesh gone{"props/gone", tmp.path() / "library" / "meshes" / "props" / "gone.spmesh", 1};
+    const Result<void> saved = ed::save_scene_as(opened->scene, opened->world, out, std::span(&gone, 1));
+    ASSERT_FALSE(saved.has_value());
+    EXPECT_NE(saved.error().context.find("props/gone"), std::string::npos) << saved.error().context;
+    EXPECT_FALSE(fs::exists(out));                        // the scene was not written
+    EXPECT_FALSE(fs::exists(out.parent_path() / "props"));  // nor any mesh
+    EXPECT_NE(opened->scene.path, out);
+}
+
+// The scene's own copy is what the resolver finds first: Save keeps it.
+TEST(EditorFiles, AMeshAlreadyBesideTheSceneIsKept) {
+    const support::TempDir tmp;
+    Result<ed::OpenedScene> opened = ed::open_scene(hover_copy(tmp.path()));
+    ASSERT_TRUE(opened.has_value());
+    const fs::path source = tmp.path() / "library" / "meshes" / "props" / "ball.spmesh";
+    write_file(source, "the library's ball");
+    const fs::path own = opened->scene.path.parent_path() / "props" / "ball.spmesh";
+    write_file(own, "the scene's own ball");
+    const spade::render::FallbackMesh ball{"props/ball", source, 1};
+    ASSERT_TRUE(ed::save_scene(opened->scene, opened->world, std::span(&ball, 1)).has_value());
+    EXPECT_EQ(support::read_bytes(own), support::read_bytes(own.parent_path() / "ball.spmesh"));
+    std::ifstream in(own, std::ios::binary);
+    const std::string kept((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(kept, "the scene's own ball");
 }
