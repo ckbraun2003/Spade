@@ -13,7 +13,8 @@ namespace spade::render {
 
 namespace {
 
-constexpr std::array<std::string_view, kViewBaseCount> kBaseNames = {"shaded", "wireframe", "velocity", "exact_sdf"};
+constexpr std::array<std::string_view, kViewBaseCount> kBaseNames = {"shaded", "wireframe", "velocity", "exact_sdf",
+                                                                     "depth",  "normals"};
 constexpr std::array<std::string_view, kFlowViewCount> kLayerNames = {"volume", "vortex_iso", "streamlines", "slice",
                                                                       "surface_cp"};
 
@@ -269,5 +270,8 @@ Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolum
                                            RenderOptions& options, ViewCache& cache) {
     return apply(spec, volume, scene, options, &cache);
 }
+
+// RED: a stub until the green step.
+BaseLegend base_legend(const ViewSpec& spec, const RenderScene&) { return BaseLegend{.base = spec.base}; }
 
 }  // namespace spade::render

@@ -23,6 +23,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/error.hpp"
+#include "render/transfer_function.hpp"  // ColourMapId, for DepthRange
 
 namespace spade::render {
 
@@ -45,7 +46,23 @@ struct Camera {
 // Velocity.frag row of the transfer register. APPENDED, never renumbered: the
 // three existing values are what every render golden and every saved
 // RenderOptions already means by 0/1/2.
-enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3 };
+//
+// `depth` and `normals` are SENSOR modes (N13; docs/design/rendering/plans/
+// 2026-10-20-sensor-views-design.md), appended the same way. They draw the
+// scene's geometry as DATA -- no lighting, shadow, atmosphere, sky, grid or
+// overlay -- and a pixel no surface covers is black. depth: each surface's
+// view-space depth in metres (the planar depth an RGB-D camera reports)
+// through RenderOptions::depth. normals: its unit world-space outward normal
+// n as RGB (n + 1) / 2.
+enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3, depth = 4, normals = 5 };
+
+// DrawMode::depth's colours: view-space depth over [near_m, far_m] through a
+// colour map, clamped to the range's ends. Not the camera's clip planes.
+struct DepthRange {
+    float near_m = 0.1f;
+    float far_m = 20.0f;
+    ColourMapId colours = ColourMapId::viridis;
+};
 
 // Parameters for the INFINITE ANALYTIC ground grid (Phase C). The functions
 // that consume these live in scene.hpp, beside sky_gradient_color, because
@@ -131,6 +148,8 @@ struct RenderOptions {
     // never registered state, and changing it cannot move a digest -- the
     // renderer reads simulation output, never the reverse.
     float velocity_scale_mps = 20.0f;
+
+    DepthRange depth{};  // DrawMode::depth only
 };
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp

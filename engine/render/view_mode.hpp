@@ -10,9 +10,12 @@
 // function both renderers draw with. A test draws every base and layer on
 // both backends and fails if supports() and the draw ever disagree.
 //
-// Not yet (no backend draws them, so a selector shows them as unavailable):
-// depth, normals, segmentation, and per-camera field channels (the backlog's
-// "field channels for cameras", with RND-4's Vulkan technique).
+// The sensor bases, depth and normals (N13; docs/design/rendering/plans/
+// 2026-10-20-sensor-views-design.md), draw the geometry as data, on both
+// backends, and take no flow layers.
+//
+// Not yet: segmentation (N13's second part), and per-camera field channels
+// (the backlog's "field channels for cameras", with RND-4's Vulkan technique).
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -42,8 +45,10 @@ enum class ViewBase : uint32_t {
     wireframe = 1,  // unlit edges
     velocity = 2,   // each item by its speed (SL9c)
     exact_sdf = 3,  // the exact sphere-trace of the world's SDF: the CPU only, and no flow layers
+    depth = 4,      // view-space depth in metres, coloured over ViewSpec::depth; no flow layers
+    normals = 5,    // the unit world-space normal n as RGB (n + 1) / 2; no flow layers
 };
-inline constexpr uint32_t kViewBaseCount = 4;
+inline constexpr uint32_t kViewBaseCount = 6;
 
 // A flow layer over the base, from a published FlowVolume.
 enum class FlowView : uint32_t {
@@ -84,6 +89,7 @@ struct FlowViewSpec {
 struct ViewSpec {
     ViewBase base = ViewBase::shaded;
     std::vector<FlowViewSpec> layers;
+    DepthRange depth{};  // ViewBase::depth: its range and colours (0.1-20 m, viridis)
 };
 
 enum class ViewBackend : uint32_t { cpu = 0, gl = 1 };
@@ -149,6 +155,24 @@ struct ViewLegend {
     ColourMapId colours = ColourMapId::viridis;
     ResolvedRange range;   // as both renderers resolve it (resolve_range())
 };
+
+// The base's own key, beside the layers' legends: depth's range and colours,
+// normals' axes, and, for a sensor base, the black of a pixel no surface
+// covers. A base with no key (shaded, wireframe, velocity, exact_sdf) gives
+// empty text.
+struct BaseLegend {
+    ViewBase base = ViewBase::shaded;
+    std::string quantity;  // "depth (view z)", "surface normal", or ""
+    std::string unit;      // "m", or ""
+    ColourMapId colours = ColourMapId::viridis;  // depth
+    ResolvedRange range;                         // depth: [near_m, far_m]
+    std::string key;                             // normals: which colour is which axis
+    bool black_is_no_surface = false;            // a sensor base: an uncovered pixel is black
+};
+
+// `spec`'s base legend. `scene` is for segmentation's labels (N13's second
+// part); depth and normals read only the spec.
+[[nodiscard]] BaseLegend base_legend(const ViewSpec& spec, const RenderScene& scene);
 
 // Builds `spec` into `scene` and `options`: the base's mode, and the layers
 // over `volume` (volume and vortex_iso merged into one FlowLayer; streamlines,
