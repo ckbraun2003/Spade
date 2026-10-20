@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "core/error.hpp"
@@ -21,6 +23,7 @@
 #include "orbit_camera.hpp"
 #include "render/scene.hpp"
 #include "render/view_mode.hpp"
+#include "render_parts/render_parts.hpp"
 #include "scene_sessions.hpp"
 #include "vehicle_draw.hpp"
 
@@ -67,6 +70,12 @@ class EditorSession {
     GlTargetSink* sink_ = nullptr;
     render::RenderScene scene_;
     render::RenderOptions options_;
+    // N12: the composed world and the meshes and materials vehicles draw with,
+    // built once per composition; scene_ is a copy of it each frame, with the
+    // vehicles bound in (bind_parts() writes statics).
+    render::RenderScene base_;
+    std::vector<std::pair<std::string, render_parts::PreparedParts>> prepared_;  // by model name
+    bool upload_each_frame_ = false;  // a CSG-root piece marches at its uploaded pose
     editor::ViewState view_;        // what the view shows (N19): editor state, not scene data
     render::ViewCache view_cache_;  // one across views and frames (streamlines traced once per generation)
     VehicleLook look_;
