@@ -56,11 +56,22 @@ struct ControlProgram {
 [[nodiscard]] Result<void> save_program(const ControlProgram& program, const std::filesystem::path& file);
 [[nodiscard]] Result<ControlProgram> load_program(const std::filesystem::path& file);
 
-// The built-in program: disarmed, armed at mid throttle (the spin-up sheds the
-// start-up ring), then a pitch, a roll, more throttle and a yaw, so a film of
-// it shows the drone in several attitudes and thrust states. Mid throttle is
-// not a hover trim: the drone is held, so it need not be.
-[[nodiscard]] const ControlProgram& showcase_program();
+// The showcase program's two throttles for one drone, so it flies around that
+// drone's hover whatever the drone (the lead, 2026-10-19: a fixed 0.5 drove
+// the reference quad at about 5x its hover thrust). analysis::showcase_trim()
+// (live_run.hpp) finds them from the drone's propulsion.
+struct ShowcaseTrim {
+    float hover = 0.0f;  // the throttle whose thrust holds the weight
+    float climb = 0.0f;  // the throttle for kShowcaseClimbThrust times the weight
+};
+
+// The showcase's "more thrust" point, as a multiple of the weight.
+inline constexpr double kShowcaseClimbThrust = 1.3;
+
+// The built-in program around `trim`: disarmed, armed at hover (the spin-up
+// sheds the start-up ring), then a pitch, a roll, a climb and a yaw, so a
+// film of it shows the drone in several attitudes and thrust states.
+[[nodiscard]] ControlProgram showcase_program(const ShowcaseTrim& trim);
 // How long to fly the showcase program: past its last point by its hold.
 [[nodiscard]] float showcase_seconds() noexcept;
 

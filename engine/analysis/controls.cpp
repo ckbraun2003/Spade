@@ -165,16 +165,16 @@ Result<ControlProgram> load_program(const fs::path& file) {
     return program_from_yaml(text);
 }
 
-const ControlProgram& showcase_program() {
-    static const ControlProgram program{{
-        {0.0f, Controls{false, 0.0f, 0.0f, 0.0f, 0.0f}},     // at rest, disarmed
-        {0.2f, Controls{true, 0.5f, 0.0f, 0.0f, 0.0f}},      // arm: the spin-up sheds the start-up ring
-        {1.2f, Controls{true, 0.5f, 15.0f, 0.0f, 0.0f}},     // pitch
-        {1.8f, Controls{true, 0.5f, 0.0f, 15.0f, 0.0f}},     // roll
-        {2.4f, Controls{true, 0.65f, 0.0f, 0.0f, 0.0f}},     // more thrust
-        {3.0f, Controls{true, 0.5f, 0.0f, 0.0f, 45.0f}},     // yaw
+ControlProgram showcase_program(const ShowcaseTrim& trim) {
+    const float h = trim.hover;
+    return ControlProgram{{
+        {0.0f, Controls{false, 0.0f, 0.0f, 0.0f, 0.0f}},        // at rest, disarmed
+        {0.2f, Controls{true, h, 0.0f, 0.0f, 0.0f}},            // arm at hover: the spin-up sheds the start-up ring
+        {1.2f, Controls{true, h, 15.0f, 0.0f, 0.0f}},           // pitch
+        {1.8f, Controls{true, h, 0.0f, 15.0f, 0.0f}},           // roll
+        {2.4f, Controls{true, trim.climb, 0.0f, 0.0f, 0.0f}},   // climb
+        {3.0f, Controls{true, h, 0.0f, 0.0f, 45.0f}},           // yaw
     }};
-    return program;
 }
 
 float showcase_seconds() noexcept { return 3.6f; }
