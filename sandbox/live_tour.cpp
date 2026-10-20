@@ -905,15 +905,17 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 const std::string lead = refused_prefix + menu[i].name + ": ";
                 m.shown_text = line.rfind(lead, 0) == 0 ? line.substr(lead.size()) : line;
             }
-            m.applied = session->last_view().applied && session->last_view().base == menu[i].base;
-            m.drawn = session->last_view().drawn;
-            m.unhonoured = session->last_view().unhonoured;
             // The view; the same view two frames later, with no request between
             // (the still premise); and its background, the items hidden.
             if (!grab_view(menu[i].name, m.frame)) {
                 framed = false;
                 break;
             }
+            // What the judged frame did with the mode (Test/Docs' nit: the
+            // facts of the frame grabbed, not of the one before it).
+            m.applied = session->last_view().applied && session->last_view().base == menu[i].base;
+            m.drawn = session->last_view().drawn;
+            m.unhonoured = session->last_view().unhonoured;
             then(2);
             if (!grab_view(menu[i].name + ", again", m.again)) {
                 framed = false;
