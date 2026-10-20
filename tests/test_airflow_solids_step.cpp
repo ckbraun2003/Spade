@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -677,10 +678,14 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
 // rounding. An implementation comparison (TD-2), measured 2026-10-20 on MSVC
 // 14.43 release: theta 2.98e-8 (half an ulp near 0.5), wall velocity 0 (one
 // formula, part_wall_velocity()), phi 2.2e-11 m, 4336 closed faces in each.
-// Pinned at theta two ulps of 1 (1.2e-7) and phi 1e-10 m, so another compiler's
-// last-bit rounding stays inside; the walls and the closed faces equal.
-// Mutations: B4's box 1 um wider, or built from part_bounds()' padded box
-// (0.9 um wider), fail it (phi 1.0e-6 and 1.6e-6 m).
+// Pinned so another compiler's last-bit rounding stays inside (Test/Docs'
+// TD-2 point, 2026-10-20): theta at two ulps of 1 (1.2e-7), which covers one
+// ulp of phi wherever theta is not clamped; phi per sample at 4 ulps of
+// max(|phi_A|, |phi_B|, dx), since one ulp of a distance is 4.7e-10 m at dx
+// and 1.5e-8 m at 0.2 m; the walls equal; no face closed in one form and
+// open beyond theta's band in the other (a face at the clamp's edge may round
+// either way). Mutations: B4's box 1 um wider, or built from part_bounds()'
+// padded box (0.9 um wider), fail it (about 2,100 ulps at dx).
 TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
     const float dx = 0.006f;
     const GridShape shape{48, 48, 48, dx};
@@ -710,26 +715,39 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
     const SolidField fa = build(a4);
     const SolidField fb = build(b4);
     ASSERT_TRUE(fa.any && fb.any);
+    constexpr float kThetaBand = 1.2e-7f;
     float d_theta = 0.0f;
     float d_wall = 0.0f;
-    float d_phi = 0.0f;
+    double phi_ulps = 0.0;  // the worst |phi_A - phi_B| in ulps of max(|phi_A|, |phi_B|, dx)
     uint32_t closed_a = 0;
     uint32_t closed_b = 0;
+    uint32_t flips = 0;  // closed in one form, open beyond theta's band in the other
     for (uint32_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < fa.theta[c].size(); ++i) {
-            d_theta = std::max(d_theta, std::fabs(fa.theta[c][i] - fb.theta[c][i]));
+            const float ta = fa.theta[c][i];
+            const float tb = fb.theta[c][i];
+            d_theta = std::max(d_theta, std::fabs(ta - tb));
             d_wall = std::max(d_wall, std::fabs(fa.wall[c][i] - fb.wall[c][i]));
-            if (fa.phi[c][i] < 1.0e29f && fb.phi[c][i] < 1.0e29f) {
-                d_phi = std::max(d_phi, std::fabs(fa.phi[c][i] - fb.phi[c][i]));
+            const float pa = fa.phi[c][i];
+            const float pb = fb.phi[c][i];
+            if (pa < 1.0e29f && pb < 1.0e29f) {
+                const float m = std::max({std::fabs(pa), std::fabs(pb), dx});
+                const float ulp = std::nextafter(m, std::numeric_limits<float>::infinity()) - m;
+                phi_ulps = std::max(phi_ulps, static_cast<double>(std::fabs(pa - pb)) / ulp);
             }
-            closed_a += closed(fa.theta[c][i]) ? 1u : 0u;
-            closed_b += closed(fb.theta[c][i]) ? 1u : 0u;
+            closed_a += closed(ta) ? 1u : 0u;
+            closed_b += closed(tb) ? 1u : 0u;
+            if (closed(ta) != closed(tb) && std::max(ta, tb) > kThetaBand) ++flips;
         }
     }
     std::printf("=== the posed body, A4 analytic against B4 mesh (design test 7) ===\n"
                 "path: CPU reference, %s\n"
                 "config: the compiled reference quad's 0.12 x 0.03 x 0.12 m body box, tilted 0.4 rad, moving 0.5 m/s, "
-                "turning 2 rad/s; 48^3 at dx 6 mm; closed faces %u (A4)\n"
+                "turning 2 rad/s; 48^3 at dx 6 mm\n"
+                "measure: closed faces, A4 and B4 = %u and %u\n"
+                "reference: the body's cut, in each form\n"
+                "tolerance: none (report only; the theta band below compares them face by face)\n"
+                "verdict: report only\n"
                 "measure: max |theta_A - theta_B| = %.3e\n"
                 "reference: 0 (one box, two forms)\n"
                 "tolerance: <= 1.2e-7 (TD-2: two ulps of 1; measured 3.0e-08 on MSVC 1943 release)\n"
@@ -738,22 +756,23 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
                 "reference: 0 (one formula, part_wall_velocity())\n"
                 "tolerance: 0, exact (one formula)\n"
                 "verdict: %s\n"
-                "measure: max |phi_A - phi_B| = %.3e m\n"
+                "measure: the worst |phi_A - phi_B|, in ulps of max(|phi_A|, |phi_B|, dx) = %.2f\n"
                 "reference: 0 (one box, two forms)\n"
-                "tolerance: <= 1e-10 (TD-2: measured 2.2e-11 on MSVC 1943 release)\n"
+                "tolerance: <= 4 (TD-2: the distance's fp32 rounding, per sample; Test/Docs, 2026-10-20)\n"
                 "verdict: %s\n"
-                "measure: closed faces, B4 = %u\n"
-                "reference: A4's count\n"
-                "tolerance: A4's count, exact (one box, two forms)\n"
+                "measure: faces closed in one form and open beyond theta's band in the other = %u\n"
+                "reference: 0 (one box, two forms)\n"
+                "tolerance: 0, exact (a face at the clamp's edge may round either way inside theta's band)\n"
                 "verdict: %s\n",
-                build_line().c_str(), closed_a, static_cast<double>(d_theta), d_theta <= 1.2e-7f ? "within" : "MISS",
-                static_cast<double>(d_wall), d_wall == 0.0f ? "within" : "MISS", static_cast<double>(d_phi),
-                d_phi <= 1.0e-10f ? "within" : "MISS", closed_b, closed_a == closed_b ? "within" : "MISS");
+                build_line().c_str(), closed_a, closed_b, static_cast<double>(d_theta),
+                d_theta <= kThetaBand ? "within" : "MISS",
+                static_cast<double>(d_wall), d_wall == 0.0f ? "within" : "MISS", phi_ulps,
+                phi_ulps <= 4.0 ? "within" : "MISS", flips, flips == 0u ? "within" : "MISS");
     EXPECT_GT(closed_a, 0u);
-    EXPECT_EQ(closed_a, closed_b);
-    EXPECT_LE(d_theta, 1.2e-7f);
+    EXPECT_EQ(flips, 0u);
+    EXPECT_LE(d_theta, kThetaBand);
     EXPECT_EQ(d_wall, 0.0f);
-    EXPECT_LE(d_phi, 1.0e-10f);
+    EXPECT_LE(phi_ulps, 4.0);
 }
 
 // The chosen count holds (P2 Task 9): the worst case the study measured, the
