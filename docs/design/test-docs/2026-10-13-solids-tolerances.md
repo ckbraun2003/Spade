@@ -35,7 +35,7 @@ Every reference here is exact: an analytic solution of the equations the solver 
 | The added mass `C_M = F_x h / (ρ (4/3)πR³ U)` from P3 (step 1) | 0.5 ± 0.24 | 0.5 ± 0.12 | Relative: the volume the wall encloses, `3 (dx/2)/R`; P3's pressure read up to `dx/2` off a field falling as `1/r²`, `dx/R`; second order and the box, 0.05 (6) and 0.025 (12). Times 0.5 |
 | Order check, `C_p` at samples fixed at `r = 7R/6` | | e(12) ≤ 0.7 e(6) | |
 
-d'Alembert's zero cannot fail on its own. On a closed body the cut cells' area vectors sum to zero exactly, so an integral that returned zero would pass. The added-mass impulse is a non-zero force for the same integral. The design's flux and divergence checks stay as written: closed faces carry the wall velocity exactly, and the divergence keeps plan A's band.
+d'Alembert's zero cannot fail on its own. On a closed body the cut cells' area vectors sum to zero exactly, so an integral that returned zero would pass. The added-mass impulse is a non-zero force for the same integral. The design's flux and divergence checks stay as written: closed faces carry the wall velocity exactly. The aperture divergence left after step 1 is at most 2 × 10⁻⁴ of the right side's, which is the P2 plan's band, fixed before the first run and stricter than plan A's fall to 10⁻³.
 
 ## S2. A rotating cylinder: circular Couette flow (design test 2)
 
@@ -43,7 +43,9 @@ The design's case, a cylinder spinning in still air, has no closed form before i
 
 **Reference.** Circular Couette flow (Landau & Lifshitz 1987, *Fluid Mechanics*, 2nd ed., §18). The inner cylinder `R₁` turns at `Ω` and the outer `R₂` is still: `u_θ = A r + B/r`, with `A = −Ω R₁²/(R₂² − R₁²)` and `B = Ω R₁² R₂²/(R₂² − R₁²)`. It solves the full Navier–Stokes equations at any `Re`.
 
-**Configuration.** Quasi-2D (one cell in z, periodic). `R₂ = 2R₁`. The tube is a static wall part and the cylinder a turning one, both no-slip. `Re = Ω R₁ (R₂ − R₁)/ν = 10`, far below Taylor's vortices (Taylor 1923, Phil. Trans. R. Soc. A 223), which a one-cell slab cannot carry anyway. `Ω R₁ h/dx = 0.5`. Run to `T = 2 (R₂ − R₁)²/ν`, by which the slowest viscous mode has decayed by `e^(−2π²)`. `R₁ = 32 dx` (a 136² slab), and `R₁ = 16 dx` for the order check.
+**Configuration.** Quasi-2D (one cell in z, periodic). `R₂ = 2R₁`. The tube is a static wall part and the cylinder a turning one, both no-slip. `Re = Ω R₁ (R₂ − R₁)/ν = 10`, far below Taylor's vortices (Taylor 1923, Phil. Trans. R. Soc. A 223), which a one-cell slab cannot carry anyway. `Ω R₁ h/dx = 0.5`. Run to `T = 2 (R₂ − R₁)²/ν`, by which the slowest viscous mode has decayed by `e^(−2π²)`. `R₁ = 32 dx` (a 136² slab), and `R₁ = 16 dx` for the order check. `n_v = 4` CG iterations a step, with 8 viscous sweeps.
+- **Where each runs, by Physics' timings (P2, 2026-10-20):** `R₁/dx` 16, with its 0.11 band, is the gate's S2, in release and every leg; debug skips it under `TD-5`. `R₁/dx` 32 and the order check are opt-in (`SPADE_AIRFLOW_VALIDATION`).
+- **The count needs no band of its own,** since the measure is steady (above). The rule holds only if the run reaches the step's fixed point, so the record prints the last step's relative residual, held to 10⁻⁴, the solids path's announcement threshold. Past it, S2 moves to `kSolidsCgIterations`.
 
 **Measure.** The largest `|u_θ − u_θ,exact| / (Ω R₁)` over the cell centres with `R₁ + dx ≤ r ≤ R₂ − dx`, from the centred velocity.
 
