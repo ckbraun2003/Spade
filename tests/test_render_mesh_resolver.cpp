@@ -72,7 +72,8 @@ void save(const fs::path& file, const MeshInput& input) {
 [[nodiscard]] std::size_t triangles(const NamedMesh& named) { return named.mesh.indices.size() / 3u; }
 
 TEST(MeshRef, ARelativePathOfPlainSegmentsIsValid) {
-    for (const char* ref : {"ball", "props/ball", "gates/race/arch_2", "a-b_c/D9"}) {
+    // "console" and "com10" are not device names, only like them.
+    for (const char* ref : {"ball", "props/ball", "gates/race/arch_2", "a-b_c/D9", "console", "props/com10"}) {
         EXPECT_TRUE(spade::valid_mesh_ref(ref)) << ref << ": " << spade::mesh_ref_problem(ref);
     }
 }
@@ -80,6 +81,17 @@ TEST(MeshRef, ARelativePathOfPlainSegmentsIsValid) {
 TEST(MeshRef, AnythingThatCouldLeaveItsRootIsRefusedByName) {
     for (const char* ref : {"", "../x", "a/../b", "./x", "a//b", "/x", "x/", "C:x", "mesh:props/tower", "a\\b",
                             "ball.spmesh", "a\tb"}) {
+        EXPECT_FALSE(spade::valid_mesh_ref(ref)) << "\"" << ref << "\" must be refused";
+        EXPECT_FALSE(spade::mesh_ref_problem(ref).empty()) << ref;
+    }
+}
+
+// Core's portability rule: a mesh_ref is a file name in a library used on
+// Windows and Linux alike, so each segment is ASCII [A-Za-z0-9_-] and never
+// a name Windows reserves for a device (the lead's), in any case.
+TEST(MeshRef, AnythingNotAPortableFileNameIsRefusedByName) {
+    for (const char* ref : {"a b", "a*b", "props/b\xC3\xA4llchen", "a|b", "a?b", "a<b", "nul", "props/con", "COM1",
+                            "lpt9/x", "Aux", "prn"}) {
         EXPECT_FALSE(spade::valid_mesh_ref(ref)) << "\"" << ref << "\" must be refused";
         EXPECT_FALSE(spade::mesh_ref_problem(ref).empty()) << ref;
     }
