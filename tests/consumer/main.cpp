@@ -46,6 +46,7 @@
 
 #include "analysis/case.hpp"
 #include "analysis/launch.hpp"
+#include "analysis/run.hpp"
 #include "core/build_identity.hpp"
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
@@ -281,6 +282,36 @@ int main() {
         return 1;
     }
     std::printf("spade::analysis OK: a case round-tripped through case_to_yaml and case_from_yaml\n");
+
+    // A dry run's folder, named by the installed build: how Kat's host names
+    // its runs without git (create_run_folder()'s form with no commit). The
+    // name ends <commit12>[-dirty]_dry at spade::build_identity(); a build
+    // that can't name its commit is refused as unavailable.
+    {
+        spade::analysis::ResolvedCase resolved;
+        resolved.spec = analysis_case;
+        const std::filesystem::path runs = spade::test::unique_temp_path("consumer_smoke_runs");
+        const spade::Result<std::filesystem::path> folder = spade::analysis::create_run_folder(
+            runs, "consumer", resolved, "2026-10-20", spade::analysis::RunKind::dry_run);
+        const spade::BuildIdentity built = spade::build_identity();
+        bool named = false;
+        if (built.commit == "unknown") {
+            named = !folder && folder.error().code == spade::Code::unavailable;
+        } else if (folder) {
+            const std::string want = std::string(built.commit.substr(0, 12)) + (built.dirty ? "-dirty" : "") + "_dry";
+            named = folder->filename().string().ends_with(want) &&
+                    std::filesystem::exists(*folder / "case.yaml") && std::filesystem::exists(*folder / "progress.yaml");
+        }
+        std::error_code cleanup_ec;
+        std::filesystem::remove_all(runs, cleanup_ec);  // best-effort; not load-bearing
+        if (!named) {
+            std::fprintf(stderr, "spade::analysis did not name a dry run by the installed build (commit %.*s): %s\n",
+                         static_cast<int>(built.commit.size()), built.commit.data(),
+                         folder ? folder->filename().string().c_str() : folder.error().context.c_str());
+            return 1;
+        }
+    }
+    std::printf("spade::analysis OK: a dry run's folder is named by the installed build\n");
 
     // spade::render_parts (RND-9): a model's part posed and bound into a render
     // scene, as Kat's host draws a drone. Calling prepare_parts() and

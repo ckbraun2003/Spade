@@ -12,6 +12,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "analysis/detail/atomic_file.hpp"
+#include "analysis/detail/caught.hpp"
 #include "core/build_identity.hpp"
 #include "core/path_text.hpp"
 #include "world/detail/yaml_text.hpp"
@@ -203,8 +204,9 @@ template <class T, class Parse>
         return parse(YAML::Load(std::string(text)));
     } catch (const YAML::Exception& e) {
         return std::unexpected(Error{Code::invalid_argument, std::string(e.what())});
-    } catch (const std::exception& e) {
-        return std::unexpected(Error{Code::internal, std::string(what) + " parse failed: " + e.what()});
+    } catch (...) {
+        return std::unexpected(
+            detail::caught_error(std::current_exception(), Code::internal, std::string("parsing the ") + what));
     }
 }
 
