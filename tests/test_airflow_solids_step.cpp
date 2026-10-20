@@ -56,6 +56,29 @@ struct Lcg {
 // S3's channel: L = 32 dx = 1 m, an 8 x 8 section, every axis periodic, and a
 // sheet 0.25 dx thick across the section with its mid-plane on face plane
 // `plane`.
+// The compiler and the build a record was measured on (V1's form).
+[[nodiscard]] std::string build_line() {
+#if defined(NDEBUG)
+    const char* preset = "release";
+#else
+    const char* preset = "debug";
+#endif
+#if defined(_MSC_VER)
+    return "MSVC " + std::to_string(_MSC_VER) + ", " + preset;
+#else
+    return std::string(__VERSION__) + ", " + preset;
+#endif
+}
+
+// Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
+[[nodiscard]] bool debug_build() {
+#if defined(NDEBUG)
+    return false;
+#else
+    return true;
+#endif
+}
+
 [[nodiscard]] std::vector<SolidPart> s3_sheet(Scene& scene, uint32_t plane, float dx) {
     const float x = static_cast<float>(plane) * dx;
     scene.shapes.push_back(Shape{.name = "sheet", .kind = Kind::box, .centre = {x, 4.0f * dx, 4.0f * dx},
@@ -93,19 +116,23 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
         for (const std::vector<float>* a : {&g.u, &g.v, &g.w}) {
             for (const float v : *a) u_max = std::max(u_max, std::fabs(v));
         }
-        bool closed_hold_the_wall = true;
+        uint32_t off_wall = 0;  // closed faces not at the wall velocity
         for (uint32_t k = 0; k < 8; ++k) {
             for (uint32_t j = 0; j < 8; ++j) {
-                closed_hold_the_wall = closed_hold_the_wall && g.u[u_index(shape, plane, j, k)] == 0.0f;
+                off_wall += g.u[u_index(shape, plane, j, k)] == 0.0f ? 0u : 1u;
             }
         }
         const double step = static_cast<double>(g.p[cell_index(shape, plane - 1u, 3, 3)]) -
                             static_cast<double>(g.p[cell_index(shape, plane, 3, 3)]);
         const double expected = static_cast<double>(rho) * U * (1.0 - dx) / h;
         std::printf("=== validation record: S3 sheet across a channel, plane %u (%s) ===\n"
+                    "path: CPU reference, %s\n"
                     "config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho %.3f, U %.1f, h %.4f, one "
-                    "projection, n_v 32 CG iterations from a cold start\n"
-                    "measure: every closed face carries the wall velocity = %s\n"
+                    "projection, n_v 32 CG iterations from a cold start; %s\n"
+                    "measure: closed faces off their wall velocity = %u\n"
+                    "reference: 0 (a closed face carries its wall's velocity)\n"
+                    "tolerance: 0, exact (the solids design, section 3)\n"
+                    "verdict: %s\n"
                     "measure: max |u| / U after the projection = %.3e\n"
                     "reference: 0 (exact in 1D)\n"
                     "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
@@ -114,14 +141,17 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
                     "reference: 1 (exact: the stencil is exact for a linear field)\n"
                     "tolerance: 1 +/- 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
                     "verdict: %s\n"
-                    "solve: relative residual %.3e\n"
-                    "%s\n",
-                    plane, plane % 2u == 0u ? "even" : "odd", static_cast<double>(rho), static_cast<double>(U),
-                    static_cast<double>(h), closed_hold_the_wall ? "yes" : "NO",
-                    static_cast<double>(u_max / U), u_max / U <= 1.0e-3f ? "within" : "OUTSIDE", step / expected,
-                    std::fabs(step / expected - 1.0) <= 1.0e-3 ? "within" : "OUTSIDE",
-                    static_cast<double>(rep.residual), s.solids.run_line.c_str());
-        EXPECT_TRUE(closed_hold_the_wall) << plane;
+                    "measure: the solve's final relative residual = %.3e\n"
+                    "reference: a converged solve\n"
+                    "tolerance: none (report only)\n"
+                    "verdict: report only\n",
+                    plane, plane % 2u == 0u ? "even" : "odd", build_line().c_str(), static_cast<double>(rho),
+                    static_cast<double>(U), static_cast<double>(h), s.solids.run_line.c_str(),
+                    off_wall, off_wall == 0u ? "within" : "MISS",
+                    static_cast<double>(u_max / U), u_max / U <= 1.0e-3f ? "within" : "MISS", step / expected,
+                    std::fabs(step / expected - 1.0) <= 1.0e-3 ? "within" : "MISS",
+                    static_cast<double>(rep.residual));
+        EXPECT_EQ(off_wall, 0u) << plane;
         EXPECT_LE(u_max / U, 1.0e-3f) << plane;
         EXPECT_NEAR(step / expected, 1.0, 1.0e-3) << plane;
         EXPECT_NE(s.solids.run_line.find("sheet: sheet (7.8 mm < 2 dx = 62.5 mm)"), std::string::npos)
@@ -313,11 +343,11 @@ TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
     const FluidHealth health = fluid_step(g, bc, cfg, s);
     ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
 
-    bool walls_hold = true;
+    uint32_t off_wall = 0;  // closed faces not at the wall velocity
     const std::vector<float>* vel[3] = {&g.u, &g.v, &g.w};
     for (uint32_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < vel[c]->size(); ++i) {
-            if (s.solids.theta[c][i] == 0.0f) walls_hold = walls_hold && (*vel[c])[i] == 0.0f;
+            if (s.solids.theta[c][i] == 0.0f) off_wall += (*vel[c])[i] == 0.0f ? 0u : 1u;
         }
     }
     const float b_coef = cfg.rho * dx * dx / cfg.h;
@@ -343,21 +373,27 @@ TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
     }
     const float div_ratio = div_max * b_coef / b_max;
     std::printf("=== validation record: S1 sphere in a uniform stream, R/dx 6, P2 checks ===\n"
+                "path: CPU reference, %s\n"
                 "config: 48^3 at dx 1 cm, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on "
-                "-x, other faces open, U h/dx 0.1, n_v 16 CG iterations, step 1 from a cold start\n"
-                "measure: every closed face carries the wall velocity = %s\n"
+                "-x, other faces open, U h/dx 0.1, n_v 16 CG iterations, step 1 from a cold start; %s\n"
+                "measure: closed faces off their wall velocity = %u\n"
+                "reference: 0 (a closed face carries its wall's velocity)\n"
+                "tolerance: 0, exact (the solids design, section 3)\n"
+                "verdict: %s\n"
                 "measure: the solve's final relative residual = %.3e\n"
                 "reference: a converged solve\n"
                 "tolerance: <= 1e-4 (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
                 "verdict: %s\n"
                 "measure: the aperture divergence left, over the right side's = %.3e\n"
-                "tolerance: <= 2e-4 (twice the residual's band: the update's rounding)\n"
-                "verdict: %s\n"
-                "%s\n",
-                walls_hold ? "yes" : "NO", static_cast<double>(health.pressure_residual),
-                health.pressure_residual <= 1.0e-4f ? "within" : "OUTSIDE", static_cast<double>(div_ratio),
-                div_ratio <= 2.0e-4f ? "within" : "OUTSIDE", s.solids.run_line.c_str());
-    EXPECT_TRUE(walls_hold);
+                "reference: 0 (a solved projection leaves rounding only)\n"
+                "tolerance: <= 2e-4 (twice the residual's band: the update's rounding; P2 plan, Task 7, fixed "
+                "before the first run)\n"
+                "verdict: %s\n",
+                build_line().c_str(), s.solids.run_line.c_str(), off_wall, off_wall == 0u ? "within" : "MISS",
+                static_cast<double>(health.pressure_residual),
+                health.pressure_residual <= 1.0e-4f ? "within" : "MISS", static_cast<double>(div_ratio),
+                div_ratio <= 2.0e-4f ? "within" : "MISS");
+    EXPECT_EQ(off_wall, 0u);
     EXPECT_LE(health.pressure_residual, 1.0e-4f);
     EXPECT_LE(div_ratio, 2.0e-4f);
 }
@@ -376,8 +412,9 @@ TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
 
 struct CouetteResult {
     double error;        // max |u_theta - exact| / (Omega R1)
-    bool walls_hold;     // every closed face carries the rigid velocity, bit for bit
+    uint32_t off_wall;   // closed faces not carrying the rigid velocity, bit for bit
     double circulation;  // the mean u_theta over the measured cells, m/s
+    float residual;      // the last step's relative pressure residual
 };
 
 // S2 (Test/Docs): circular Couette flow. The cylinder R1 turns at Omega about
@@ -409,16 +446,18 @@ struct CouetteResult {
                                  .min_feature = 4.0f * dx});
     EXPECT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value());
     const auto steps = static_cast<uint32_t>(2.0f * (r2 - r1) * (r2 - r1) / nu / h + 0.5f);
+    float residual = 0.0f;
     for (uint32_t k = 0; k < steps; ++k) {
         const FluidHealth health = fluid_step(g, bc, cfg, s);
         EXPECT_EQ(health.fault, FluidFault::none) << describe(health, shape);
         if (health.fault != FluidFault::none) break;
+        residual = health.pressure_residual;
     }
-    CouetteResult out{0.0, true, 0.0};
+    CouetteResult out{0.0, 0u, 0.0, residual};
     const std::vector<float>* vel[3] = {&g.u, &g.v, &g.w};
     for (uint32_t c = 0; c < 3; ++c) {
         for (std::size_t i = 0; i < vel[c]->size(); ++i) {
-            if (s.solids.theta[c][i] == 0.0f) out.walls_hold = out.walls_hold && (*vel[c])[i] == s.solids.wall[c][i];
+            if (s.solids.theta[c][i] == 0.0f) out.off_wall += (*vel[c])[i] == s.solids.wall[c][i] ? 0u : 1u;
         }
     }
     const double A = -static_cast<double>(omega) / 3.0;
@@ -443,34 +482,43 @@ struct CouetteResult {
     return out;
 }
 
+// S2's record (Test/Docs' format: every measure with its reference, tolerance
+// and verdict). The last step's residual shows the run reached its fixed
+// point, on which a steady measure carries no iteration error.
+void print_couette(const char* title, uint32_t r1_cells, uint32_t n_v, const CouetteResult& r, double band) {
+    const uint32_t n = 2u * (2u * r1_cells) + 4u;
+    std::printf("=== validation record: %s ===\n"
+                "path: CPU reference, %s\n"
+                "config: a %ux1x%u slab (y periodic), dx 1 mm, R1 %u mm turning at Omega R1 = 0.1 m/s inside a "
+                "fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v %u, "
+                "visc_sweeps 8\n"
+                "measure: max |u_theta - u_theta,exact| / (Omega R1) over R1 + dx <= r <= R2 - dx = %.4f\n"
+                "reference: A r + B / r (Landau & Lifshitz, Fluid Mechanics, section 18)\n"
+                "tolerance: <= %g (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
+                "verdict: %s\n"
+                "measure: closed faces off their rigid velocity = %u\n"
+                "reference: 0 (a closed face carries its wall's velocity)\n"
+                "tolerance: 0, exact (the solids design, section 3)\n"
+                "verdict: %s\n"
+                "measure: the mean u_theta over the measured cells = %.5f m/s\n"
+                "reference: positive, the rotation's sense\n"
+                "tolerance: > 0 (the cylinder turns the air its own way)\n"
+                "verdict: %s\n"
+                "measure: the last step's relative pressure residual = %.3e\n"
+                "reference: a converged solve (the step's fixed point)\n"
+                "tolerance: <= %.0e (kResidualAnnounce)\n"
+                "verdict: %s\n",
+                title, build_line().c_str(), n, n, r1_cells, n_v, r.error, band, r.error <= band ? "within" : "MISS",
+                r.off_wall, r.off_wall == 0u ? "within" : "MISS", r.circulation,
+                r.circulation > 0.0 ? "within" : "MISS", static_cast<double>(r.residual),
+                static_cast<double>(kResidualAnnounce), r.residual <= kResidualAnnounce ? "within" : "MISS");
+}
+
 // Design test 2 / S2 at R1 = 16 dx (the gate case; R1 = 32 dx and the order
 // check are opt-in). Tolerance <= 0.11 (Test/Docs). The exact checks: closed
 // faces carry the rigid velocity bit for bit, and the air turns with the
 // cylinder. Mutation: the rigid velocity at closed faces only (the links'
 // terms ignored), which Test/Docs expects to miss by up to a factor of two.
-// The compiler and the build a record was measured on (V1's form).
-[[nodiscard]] std::string build_line() {
-#if defined(NDEBUG)
-    const char* preset = "release";
-#else
-    const char* preset = "debug";
-#endif
-#if defined(_MSC_VER)
-    return "MSVC " + std::to_string(_MSC_VER) + ", " + preset;
-#else
-    return std::string(__VERSION__) + ", " + preset;
-#endif
-}
-
-// Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
-[[nodiscard]] bool debug_build() {
-#if defined(NDEBUG)
-    return false;
-#else
-    return true;
-#endif
-}
-
 TEST(AirflowSolidsStep, S2CircularCouetteFlow) {
     if (debug_build()) {
         GTEST_SKIP() << "debug build: S2 takes 100 s in debug (measured 2026-10-20; ctest's limit is 60 s); runs in "
@@ -478,36 +526,33 @@ TEST(AirflowSolidsStep, S2CircularCouetteFlow) {
                         "links in debug)";
     }
     const CouetteResult r = couette(16, 4);
-    std::printf("=== validation record: S2 circular Couette flow, R1/dx 16 ===\n"
-                "config: a 68x1x68 slab (y periodic), dx 1 mm, R1 16 mm turning at Omega R1 = 0.1 m/s inside a "
-                "fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, "
-                "visc_sweeps 8\n"
-                "measure: max |u_theta - u_theta,exact| / (Omega R1) over R1 + dx <= r <= R2 - dx = %.4f\n"
-                "reference: A r + B / r (Landau & Lifshitz, Fluid Mechanics, section 18)\n"
-                "tolerance: <= 0.11 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
-                "verdict: %s\n"
-                "measure: closed faces carry the rigid velocity = %s; mean u_theta = %.5f m/s (the rotation's sense: "
-                "positive)\n",
-                r.error, r.error <= 0.11 ? "within" : "OUTSIDE", r.walls_hold ? "yes" : "NO", r.circulation);
+    print_couette("S2 circular Couette flow, R1/dx 16", 16, 4, r, 0.11);
     EXPECT_LE(r.error, 0.11);
-    EXPECT_TRUE(r.walls_hold);
+    EXPECT_EQ(r.off_wall, 0u);
     EXPECT_GT(r.circulation, 0.0);
+    EXPECT_LE(r.residual, kResidualAnnounce);
 }
 
 TEST(AirflowSolidsStep, S2CircularCouetteFlowAt32CellsAndItsOrder) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run S2 at R1/dx 32 and its order";
     const CouetteResult coarse = couette(16, 4);
     const CouetteResult fine = couette(32, 4);
-    std::printf("=== validation record: S2 circular Couette flow, R1/dx 32, and the order check ===\n"
-                "measure: max |u_theta - u_theta,exact| / (Omega R1) at R1/dx 32 = %.4f\n"
-                "tolerance: <= 0.054 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
-                "verdict: %s\n"
-                "measure: e(32) / e(16) = %.3f\n"
-                "tolerance: <= 0.7 (an observed order of at least 0.5; reported only if e(16) < 0.011)\n"
+    print_couette("S2 circular Couette flow, R1/dx 32, and the order check", 32, 4, fine, 0.054);
+    // Below a tenth of 0.11 the order is reported only: the band carries no
+    // tolerance there (Test/Docs' S2 note).
+    const bool order_checked = coarse.error >= 0.011;
+    std::printf("measure: e(32) / e(16) = %.3f\n"
+                "reference: e(16) = %.4f, the R1/dx 16 record\n"
+                "tolerance: %s\n"
                 "verdict: %s\n",
-                fine.error, fine.error <= 0.054 ? "within" : "OUTSIDE", fine.error / coarse.error,
-                coarse.error < 0.011 ? "report only" : (fine.error <= 0.7 * coarse.error ? "within" : "OUTSIDE"));
+                fine.error / coarse.error, coarse.error,
+                order_checked ? "<= 0.7 (an observed order of at least 0.5; test-docs/2026-10-13-solids-tolerances.md)"
+                              : "none (report only: e(16) < 0.011; above it, <= 0.7)",
+                order_checked ? (fine.error <= 0.7 * coarse.error ? "within" : "MISS") : "report only");
     EXPECT_LE(fine.error, 0.054);
+    EXPECT_EQ(fine.off_wall, 0u);
+    EXPECT_GT(fine.circulation, 0.0);
+    EXPECT_LE(fine.residual, kResidualAnnounce);
     if (coarse.error >= 0.011) {
         EXPECT_LE(fine.error, 0.7 * coarse.error);
     }
@@ -574,16 +619,19 @@ TEST(AirflowSolidsStep, PlanarCouetteFlowHoldsItsLinearProfile) {
     const double with_links = run(true);
     const double closed_only = run(false);
     std::printf("=== validation record: planar Couette, plates a quarter cell off the faces ===\n"
+                "path: CPU reference, %s\n"
                 "config: 4x16x1 (x, z periodic), dx 1 mm, plates at y = 3.25 dx (still) and 12.75 dx (U 0.1 m/s), "
-                "nu 1e-3, h 1 ms, 45 steps (half a diffusion time) from the exact profile\n"
+                "nu 1e-3, h 1 ms, 45 steps (half a diffusion time) from the exact profile, n_v 4, visc_sweeps 8\n"
                 "measure: max |u - u_exact| / U, with the wall links = %.3e\n"
-                "negative control: the same, closed faces only (links cleared) = %.3e\n"
-                "tolerance: <= 1e-5 with the links (TD-2: measured %.1e, rounding); the control must exceed it\n"
-                "verdict: %s; control %s\n"
-                "build: %s\n",
-                with_links, closed_only, with_links, with_links <= 1.0e-5 ? "within" : "OUTSIDE",
-                closed_only > 1.0e-5 ? "fails, as it must" : "PASSES: the check does not discriminate",
-                build_line().c_str());
+                "reference: 0 (the linear profile is the discrete operator's fixed point)\n"
+                "tolerance: <= 1e-5 (TD-2: measured 5.6e-08 on MSVC 1943 release, rounding)\n"
+                "verdict: %s\n"
+                "measure: max |u - u_exact| / U, closed faces only (the negative control) = %.3e\n"
+                "reference: the linear profile, missed: each wall sits 0.75 dx too far\n"
+                "tolerance: > 1e-5 (must exceed the band)\n"
+                "verdict: %s\n",
+                build_line().c_str(), with_links, with_links <= 1.0e-5 ? "within" : "MISS", closed_only,
+                closed_only > 1.0e-5 ? "within" : "MISS");
     EXPECT_LE(with_links, 1.0e-5);
     EXPECT_GT(closed_only, 1.0e-5) << "the negative control must fail the band";
 }
@@ -679,13 +727,28 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
         }
     }
     std::printf("=== the posed body, A4 analytic against B4 mesh (design test 7) ===\n"
-                "config: the reference quad's 0.12 x 0.03 x 0.12 m body box, tilted 0.4 rad, moving 0.5 m/s, turning "
-                "2 rad/s; 48^3 at dx 6 mm\n"
-                "measure: max |theta_A - theta_B| = %.3e; max |wall_A - wall_B| = %.3e m/s; max |phi_A - phi_B| = "
-                "%.3e m; closed faces %u (A4) and %u (B4)\n"
-                "build: %s\n",
-                static_cast<double>(d_theta), static_cast<double>(d_wall), static_cast<double>(d_phi), closed_a,
-                closed_b, build_line().c_str());
+                "path: CPU reference, %s\n"
+                "config: the compiled reference quad's 0.12 x 0.03 x 0.12 m body box, tilted 0.4 rad, moving 0.5 m/s, "
+                "turning 2 rad/s; 48^3 at dx 6 mm; closed faces %u (A4)\n"
+                "measure: max |theta_A - theta_B| = %.3e\n"
+                "reference: 0 (one box, two forms)\n"
+                "tolerance: <= 1.2e-7 (TD-2: two ulps of 1; measured 3.0e-08 on MSVC 1943 release)\n"
+                "verdict: %s\n"
+                "measure: max |wall_A - wall_B| = %.3e m/s\n"
+                "reference: 0 (one formula, part_wall_velocity())\n"
+                "tolerance: 0, exact (one formula)\n"
+                "verdict: %s\n"
+                "measure: max |phi_A - phi_B| = %.3e m\n"
+                "reference: 0 (one box, two forms)\n"
+                "tolerance: <= 1e-10 (TD-2: measured 2.2e-11 on MSVC 1943 release)\n"
+                "verdict: %s\n"
+                "measure: closed faces, B4 = %u\n"
+                "reference: A4's count\n"
+                "tolerance: A4's count, exact (one box, two forms)\n"
+                "verdict: %s\n",
+                build_line().c_str(), closed_a, static_cast<double>(d_theta), d_theta <= 1.2e-7f ? "within" : "MISS",
+                static_cast<double>(d_wall), d_wall == 0.0f ? "within" : "MISS", static_cast<double>(d_phi),
+                d_phi <= 1.0e-10f ? "within" : "MISS", closed_b, closed_a == closed_b ? "within" : "MISS");
     EXPECT_GT(closed_a, 0u);
     EXPECT_EQ(closed_a, closed_b);
     EXPECT_LE(d_theta, 1.2e-7f);
@@ -695,24 +758,45 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
 
 // The chosen count holds (P2 Task 9): the worst case the study measured, the
 // sheet on the odd plane from a cold start, solves to below the announcement
-// threshold in kSolidsCgIterations. Mutation: 4 iterations, which leave it
-// at 1.8e-3, announced.
+// threshold in kSolidsCgIterations, and reaches 1e-3 within it (the design's
+// convergence check, design test 3: the port took 4, pinned at 8). Mutation:
+// 4 iterations, which leave it at 1.8e-3, announced.
 TEST(AirflowSolidsStep, TheChosenIterationCountConvergesTheSheetFromCold) {
     const float dx = 1.0f / 32.0f;
     const GridShape shape{32, 8, 8, dx};
     const DomainBc bc = all_periodic();
-    for (const uint32_t plane : {16u, 17u}) {
+    const auto solve = [&](uint32_t plane, uint32_t n_v) {
         MacGrid g = *make_grid(shape, bc);
         std::fill(g.u.begin(), g.u.end(), 1.0f);
-        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = kSolidsCgIterations};
+        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = n_v};
         FluidScratch s = *make_fluid_scratch(g, bc, cfg);
         Scene scene;
-        ASSERT_TRUE(set_solids(s, g, bc, s3_sheet(scene, plane, dx), scene.sampler()).has_value());
+        EXPECT_TRUE(set_solids(s, g, bc, s3_sheet(scene, plane, dx), scene.sampler()).has_value());
         const FluidHealth health = fluid_step(g, bc, cfg, s);
-        ASSERT_EQ(health.fault, FluidFault::none) << describe(health, shape);
-        std::printf("measure: plane %u, %u CG iterations from cold: relative residual %.3e (announced above %.0e)\n",
-                    plane, kSolidsCgIterations, static_cast<double>(health.pressure_residual),
-                    static_cast<double>(kResidualAnnounce));
+        EXPECT_EQ(health.fault, FluidFault::none) << describe(health, shape);
+        return health;
+    };
+    for (const uint32_t plane : {16u, 17u}) {
+        uint32_t to_1e3 = 0;
+        for (uint32_t n = 1; n <= kSolidsCgIterations && to_1e3 == 0; ++n) {
+            if (solve(plane, n).pressure_residual <= 1.0e-3f) to_1e3 = n;
+        }
+        const FluidHealth health = solve(plane, kSolidsCgIterations);
+        std::printf("=== the chosen iteration count, the sheet on plane %u from cold ===\n"
+                    "path: CPU reference, %s\n"
+                    "config: S3's channel (32x8x8 periodic, a sheet 0.25 dx thick), one step from a cold start\n"
+                    "measure: CG iterations to a relative residual of 1e-3 = %u\n"
+                    "reference: the port, 4\n"
+                    "tolerance: <= %u (kSolidsCgIterations; 0 means not within it)\n"
+                    "verdict: %s\n"
+                    "measure: the relative residual after %u iterations = %.3e\n"
+                    "reference: a converged solve\n"
+                    "tolerance: <= %.0e (kResidualAnnounce)\n"
+                    "verdict: %s\n",
+                    plane, build_line().c_str(), to_1e3, kSolidsCgIterations, to_1e3 != 0u ? "within" : "MISS",
+                    kSolidsCgIterations, static_cast<double>(health.pressure_residual),
+                    static_cast<double>(kResidualAnnounce), health.unconverged ? "MISS" : "within");
+        EXPECT_NE(to_1e3, 0u) << plane;
         EXPECT_FALSE(health.unconverged) << describe(health, shape);
     }
 }
