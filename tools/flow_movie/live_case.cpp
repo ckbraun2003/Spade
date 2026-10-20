@@ -1,7 +1,10 @@
 #include "live_case.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <numbers>
 #include <string>
 #include <utility>
 
@@ -11,6 +14,7 @@
 #include "scene/scene_file.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/model_part.hpp"
+#include "vehicles/propulsion_steady.hpp"
 #include "vehicles/model_identity.hpp"
 
 // The reference quad's airframe: the airframe compile's one fixture (TD-9),
@@ -134,13 +138,44 @@ namespace {
     lc.c.time.step = step;
     lc.c.flight.kind = an::FlightKind::hover_in_wind;
     lc.c.flight.speed = 3.0f;
-    auto trim = an::showcase_trim(lc.c, lc.run_model, std::nullopt);  // no rotors: a zero trim
+    // The showcase's moves around this quad's HOVER: Interface's trim, by
+    // Physics' rule (the steady state for m g / n per rotor, and the climb at
+    // 1.3 times the weight), flown on its own chain (TD-9: one hover rule).
+    auto trim = an::showcase_trim(lc.c, lc.run_model, lc.propulsion);
     if (!trim) return std::unexpected(trim.error());
     lc.program = an::showcase_program(*trim);
-    lc.program_name = "the showcase program";
+    lc.program_name = "the showcase around hover";
     lc.seconds = seconds;
     lc.name = std::move(name);
     lc.notes = std::move(notes);
+
+    // The rotors' speed at an armed throttle, as LiveRun commands it.
+    const spade::vehicles::RotorDesc& rotor = lc.run_model.rotors.front();
+    const auto omega_at = [&lc](double throttle) -> spade::Result<float> {
+        auto duty = spade::vehicles::armed_duty(true, throttle, lc.propulsion->idle);
+        if (!duty) return std::unexpected(duty.error());
+        auto cmd = spade::vehicles::rotor_omega_for_duty(lc.propulsion->chain, *duty, lc.c.fluid.density,
+                                                         lc.propulsion->soc);
+        if (!cmd) return std::unexpected(cmd.error());
+        return cmd->omega_cmd;
+    };
+    auto at_hover = omega_at(trim->hover);
+    if (!at_hover) return std::unexpected(at_hover.error());
+    auto at_top = omega_at(trim->climb);
+    if (!at_top) return std::unexpected(at_top.error());
+    // The speed colours reach the far wake at the program's hardest thrust,
+    // its climb: momentum theory's 2 v_h, v_h = sqrt(T / (2 rho pi R^2)),
+    // T = k_T w^2, plus the wind.
+    const float thrust = rotor.thrust_coeff * *at_top * *at_top;
+    const float v_h = std::sqrt(thrust / (2.0f * lc.c.fluid.density * std::numbers::pi_v<float> * rotor.radius *
+                                          rotor.radius));
+    lc.speed_max = 2.0f * v_h + lc.c.flight.speed;
+    lc.vortex_fraction = 1.0f / 6.0f;
+    char line[220];
+    std::snprintf(line, sizeof line,
+                  "; hover: throttle %.3f, %.0f rad/s; thrust step: %.3f, %.0f rad/s",
+                  static_cast<double>(trim->hover), *at_hover, static_cast<double>(trim->climb), *at_top);
+    lc.notes += line;
     auto id = identity_of(lc);
     if (!id) return std::unexpected(id.error());
     lc.identity = std::move(*id);
@@ -151,9 +186,8 @@ namespace {
 
 spade::Result<LiveCase> quad_live_case(double seconds) {
     return powered_quad(seconds, 0.8f, 0.0125f, 0.0005f, "the powered quad in a wind",
-                        "actuator discs (uniform thrust and swirl), not blades; the airframe is drawn, but the flow "
-                        "does not meet it until P2; idle 5 % and the battery's charge are the film's own until the "
-                        "chain pin");
+                        "actuator discs, not blades; the airframe is drawn but not yet in the flow (P2); idle 5 % "
+                        "and the charge are the film's own (chain pin)");
 }
 
 spade::Result<LiveCase> smoke_live_case(double seconds) {

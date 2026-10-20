@@ -873,28 +873,33 @@ constexpr float kVortexFloor = -5.0f;
             *parts, *posed, spade::render_parts::PartsLook{.body = base, .rotor = base + 1u, .porous = base + 2u},
             scene);
     };
+    const float speed_top = run->speed_max > 0.0f ? run->speed_max : std::max(1.0f, 2.0f * run->c.flight.speed);
+    const float vortex_fraction = run->vortex_fraction;
     const render::TransferFunction speed_colours =
-        colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f,
-                     std::max(1.0f, 2.0f * run->c.flight.speed));
+        colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, speed_top);
     film.views.push_back(View{
-        "flow", "lambda2 vortex surfaces at a third of the frame's deepest core, coloured by speed |u|",
-        [speed_colours](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
-                        render::Camera& camera) -> spade::Result<void> {
+        "flow",
+        "lambda2 vortex surfaces at 1/" + fixed(1.0 / vortex_fraction, 0) +
+            " of the frame's deepest core, coloured by speed |u|, 0 to " + fixed(speed_top, 0) + " m/s",
+        [speed_colours, vortex_fraction](const spade::FlowVolume& v, uint32_t k, uint32_t n,
+                                         render::RenderScene& scene, render::Camera& camera) -> spade::Result<void> {
             const float deepest = v.header.channel_min[spade::kFlowLambda2Hat];
             if (deepest < kVortexFloor) {
                 render::IsoSurface iso;
                 iso.quantity = render::FlowQuantity::lambda2_hat;
-                iso.value = deepest / 3.0f;
+                iso.value = deepest * vortex_fraction;
                 iso.colour_by = speed_colours;
                 scene.flow_layers.push_back(render::FlowLayer{&v, {}, {iso}});
             }
+            // The drone and the wake below it: aimed a little under the
+            // drone, near enough that it is the picture, not a speck in it.
             const glm::vec3 size = volume_size(v);
-            camera = orbit(volume_centre(v), 1.3f * std::max({size.x, size.y, size.z}),
-                           sweep_azimuth(30.0f, 60.0f, k, n), 20.0f);
+            camera = orbit(volume_centre(v) - glm::vec3(0.0f, 0.12f * size.y, 0.0f),
+                           0.95f * std::max({size.x, size.y, size.z}), sweep_azimuth(30.0f, 60.0f, k, n), 20.0f);
             return {};
         }});
     film.views.push_back(View{
-        "slice", "speed |u| on the vertical plane through the drone",
+        "slice", "speed |u| on the vertical plane through the drone, 0 to " + fixed(speed_top, 0) + " m/s",
         [speed_colours](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
                         render::Camera& camera) -> spade::Result<void> {
             const glm::vec3 size = volume_size(v), centre = volume_centre(v);
