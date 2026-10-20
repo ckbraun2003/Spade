@@ -16,9 +16,11 @@
 
 #include "core/error.hpp"
 #include "editor_files.hpp"
+#include "editor_views.hpp"
 #include "editor_workspace.hpp"
 #include "orbit_camera.hpp"
 #include "render/scene.hpp"
+#include "render/view_mode.hpp"
 #include "scene_sessions.hpp"
 #include "vehicle_draw.hpp"
 
@@ -51,6 +53,10 @@ class EditorSession {
     EditorSession() = default;
     [[nodiscard]] Result<void> rebuild_scene();
     void draw_items();
+    // The view's backend, and its inputs read from the scene as apply_view()
+    // reads them (editor_views.hpp).
+    [[nodiscard]] render::ViewBackend view_backend() const noexcept;
+    [[nodiscard]] render::ViewInputs view_inputs();
     // The gizmo's object: the selected asset's pose, or the selected
     // vehicle's start when no run moves it; none for anything else.
     [[nodiscard]] std::optional<editor::GizmoPose> gizmo_target() const;
@@ -61,6 +67,8 @@ class EditorSession {
     GlTargetSink* sink_ = nullptr;
     render::RenderScene scene_;
     render::RenderOptions options_;
+    editor::ViewState view_;        // what the view shows (N19): editor state, not scene data
+    render::ViewCache view_cache_;  // one across views and frames (streamlines traced once per generation)
     VehicleLook look_;
     uint32_t selected_material_ = 0;
     uint64_t drawn_composition_ = 0;

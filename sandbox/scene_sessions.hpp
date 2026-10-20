@@ -57,6 +57,7 @@ class GpuRenderer {
                                            const spade::render::RenderOptions&, uint32_t, uint32_t) {
         return std::unexpected(off());
     }
+    [[nodiscard]] bool flow_ready() noexcept { return false; }
     [[nodiscard]] uint32_t last_draw_calls() const noexcept { return 0u; }
     [[nodiscard]] uint32_t last_instances() const noexcept { return 0u; }
     [[nodiscard]] const std::string& renderer_name() const noexcept { return none_; }

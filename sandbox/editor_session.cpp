@@ -106,6 +106,14 @@ std::optional<editor::SceneEdit> EditorSession::pose_edit(const editor::GizmoPos
     return std::nullopt;
 }
 
+render::ViewBackend EditorSession::view_backend() const noexcept {
+    return gpu_ ? render::ViewBackend::gl : render::ViewBackend::cpu;
+}
+
+render::ViewInputs EditorSession::view_inputs() {
+    return editor::inputs_of(scene_, nullptr, gpu_ ? gpu_->flow_ready() : true);
+}
+
 // The composed world as a render scene, plus the meshes and materials the
 // vehicles and the selection draw with. Only when the composition changed.
 Result<void> EditorSession::rebuild_scene() {
@@ -227,6 +235,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     }
     // What the panels queued while the last frame drew them.
     w.apply_panels();
+    if (const std::optional<render::ViewBase> mode = w.panels().mode_request) {
+        w.panels().mode_request.reset();
+        // A refusal keeps what the view draws and is shown verbatim (INT-2).
+        if (Result<void> chosen = editor::choose_mode(view_, *mode, view_backend(), view_inputs()); !chosen) {
+            w.panels().status = chosen.error().context;
+        }
+    }
 
     const auto p0 = std::chrono::steady_clock::now();
     w.advance(dt);
@@ -236,6 +251,16 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         if (Result<void> rebuilt = rebuild_scene(); !rebuilt) return rebuilt;
     }
     draw_items();
+    // The view's mode into the scene and options, and the menu for its
+    // backend and inputs (N19). No flow volume until the editor's airflow (M2).
+    if (Result<void> shown = editor::apply_to(view_, nullptr, view_backend(), view_inputs(), scene_, options_,
+                                              view_cache_);
+        !shown) {
+        return shown;
+    }
+    w.panels().modes = editor::mode_menu(view_, view_backend(), view_inputs());
+    w.panels().legends = view_.legends;
+    w.panels().view_note = view_.refusal;
 
     if (view.empty()) return {};  // minimised: the run keeps stepping
     const render::Camera rc = camera_.to_render_camera();

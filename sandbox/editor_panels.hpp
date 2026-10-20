@@ -20,6 +20,7 @@
 #include "editor_gizmo.hpp"
 #include "editor_library.hpp"
 #include "editor_scene_edits.hpp"
+#include "editor_views.hpp"
 #include "editor_world_edits.hpp"
 #include "scene/scene_file.hpp"
 #include "world/builder.hpp"
@@ -59,6 +60,10 @@ struct EditorPanels {
     std::vector<HierarchyRow> hierarchy;      // the scene, the world, then its assets and vehicles in order
     std::vector<LibraryItem> library;
     std::vector<SceneSource> sources;         // the File menu's scene picker (SL13)
+    // The view (N19), filled by the session, which knows the backend.
+    std::vector<ModeEntry> modes;             // the View menu: every base, supports()' answer for each
+    std::vector<render::ViewLegend> legends;  // the view's last draw, one per layer
+    std::string view_note;                    // why the view isn't drawing its chosen mode; empty when it is
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;
@@ -69,6 +74,7 @@ struct EditorPanels {
     std::string path;                         // what Open and Save As use
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
     GizmoTool tool = GizmoTool::move;         // the gizmo's (W, E)
+    std::optional<render::ViewBase> mode_request;  // chosen from the View menu; the session applies it
     bool snap = false;                        // the gizmo snaps; Ctrl held flips it for a drag
 
     // ---- Both: the last refusal, verbatim (INT-2); empty when none.
