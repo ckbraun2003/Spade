@@ -7,5 +7,10 @@
 *.world.yaml text eol=lf
 *.scene.yaml text eol=lf
 
+# Model files (library/drones/) are written by spade::scene::model_to_yaml(),
+# which also writes LF. tests/test_library_quad.cpp compares the reference
+# quad's against a fresh emission, byte for byte.
+*.model.yaml text eol=lf
+
 # Fonts are binary: never convert their line endings.
 *.ttf binary
