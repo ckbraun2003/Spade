@@ -30,10 +30,16 @@
 // model that gains parts keeps its identity and every stored v3 blob
 // restores. parts_identity() below is the parts' own identity; stage 7 folds
 // parts into the snapshot's registry identity, not into this one.
+// propulsion is not folded; propulsion_identity is its identity. The chain
+// (ModelType::propulsion, N5a) is host-side and never reaches the step, and
+// neither model_identity() nor parts_identity() reads it, so the three pins
+// stay independent (the lead's condition, 2026-10-19): swapping a model's
+// chain moves propulsion_identity() alone.
 // design_to_principal is folded as stored. register_model() stores
 // canonical_design_rotation()'s value, so hash a model as it would be
 // registered. A field added to ModelType that reaches state or the design
-// frame must join this list, in the order it is declared (parts excepted).
+// frame must join this list, in the order it is declared (parts and
+// propulsion excepted).
 //
 // model_registry_identity(models) folds the model count (u32), then each
 // model_identity (u64), in REGISTRATION order.
