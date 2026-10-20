@@ -278,6 +278,20 @@ TEST(AnalysisRunFolder, ADirtyBuildsRunIsMarkedDirty) {
     EXPECT_FALSE(fs::exists(clean));
 }
 
+// A dirty build's dry run keeps both marks, the build's on the commit and the
+// kind at the end: <commit12>-dirty_dry. (Coverage of the merged naming; it
+// passes on the rebased green.)
+TEST(AnalysisRunFolder, ADirtyBuildsDryRunKeepsBothMarks) {
+    const spade::test::TempDir runs("runs");
+    const an::ResolvedCase r = resolved();
+    const spade::Result<fs::path> folder = an::create_run_folder(
+        runs.path(), "hover", r, "2026-10-13", spade::BuildIdentity{kBuiltCommit, true}, an::RunKind::dry_run);
+    ASSERT_TRUE(folder.has_value()) << folder.error().context;
+    const std::string clean =
+        an::run_folder(runs.path(), "hover", r, "2026-10-13", kBuiltCommit, an::RunKind::cfd).filename().string();
+    EXPECT_EQ(folder->filename().string(), clean + "-dirty_dry");
+}
+
 // A build that cannot name its commit is refused: its runs could not be traced.
 TEST(AnalysisRunFolder, AnUnknownCommitIsRefused) {
     const spade::test::TempDir runs("runs");
