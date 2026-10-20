@@ -693,9 +693,11 @@ TEST(SandboxEndGoalObjectAdded, FailsAnObjectThatTipsInRun) {
 // ===========================================================================
 
 TEST(SandboxEndGoalDownwash, JudgesOnlyTheWindowReversedBeforeAndAfterPasses) {
+    // -3x outside: one frame too many at either edge would average 0.5, well
+    // outside the band, rather than landing on its 0.75 edge.
     const auto rotors = quad();
     const spade::FlowVolume good = jets(kCell64, rotors, speeds(rotors, 1.0f), 0.73f);
-    const spade::FlowVolume reversed = jets(kCell64, rotors, speeds(rotors, -1.0f), 0.73f);
+    const spade::FlowVolume reversed = jets(kCell64, rotors, speeds(rotors, -3.0f), 0.73f);
     const auto frames = frames_switching(good, reversed, rotors, 0.30, 0.50);
     const eg::Verdict v = eg::downwash(frames, stub_case(), eg::kDownwash);
     EXPECT_TRUE(v.ok) << v.detail;
@@ -942,8 +944,51 @@ TEST(SandboxEndGoalObjectAdded, TheRestBandsEdgesHold) {
     }
 }
 
-TEST(SandboxEndGoalObjectAdded, FailsANonFinitePosition) {
-    eg::Placement p = good_box();
-    p.position.z = std::numeric_limits<float>::quiet_NaN();
-    EXPECT_FALSE(eg::placed_at(p).ok);
+TEST(SandboxEndGoalObjectAdded, IsAbsentWithANonFiniteMeasurement) {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    eg::Placement position = good_box();
+    position.position.z = nan;
+    eg::Placement gap = good_box();
+    gap.rest_gap = nan;
+    eg::Placement moved = good_box();
+    moved.moved_after_run = nan;
+    for (const eg::Placement* p : {&position, &gap, &moved}) {
+        const eg::Verdict v = eg::placed_at(*p);
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_TRUE(has(v.detail, "absent:")) << v.detail;
+    }
+    eg::Placement offset = good_box();
+    offset.drawable_offset = nan;
+    const eg::Verdict v = eg::drawn_as_declared(offset);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_TRUE(has(v.detail, "absent:")) << v.detail;
+}
+
+// Interface's re-review (2026-10-19): event times and a NaN probe point.
+
+TEST(SandboxEndGoalFlight, ANonFiniteEventTimeIsMisStaged) {
+    const float inf_f = std::numeric_limits<float>::infinity();  // b053a1c judged it; NaN was already mis-staged
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const float idle[4] = {400.0f, 400.0f, 400.0f, 400.0f};
+    const float f = 1.2f * kMass * kG;
+    const eg::Verdict armed = eg::armed(arming(0.5, 400.0f, 0.05f), nan, idle);
+    const eg::Verdict climbs =
+        eg::climbs(climb(f, [](float thrust, float) { return thrust / kMass - kG; }), nan, kMass, kG, kR);
+    const eg::Verdict follows = eg::follows_attitude(pitch_history(-15.0f * kDeg, 0.13f, 1.0f), nan, -15.0f * kDeg);
+    const eg::Verdict command = eg::follows_attitude(pitch_history(-15.0f * kDeg, 0.13f, 1.0f), 0.5, -inf_f);
+    for (const eg::Verdict* v : {&armed, &climbs, &follows, &command}) {
+        EXPECT_FALSE(v->ok) << v->detail;
+        EXPECT_TRUE(has(v->detail, "mis-staged:")) << v->detail;
+    }
+}
+
+TEST(SandboxEndGoalDownwash, ANonFiniteProbePointIsOutsideNotRead) {
+    const auto rotors = quad();
+    const spade::FlowVolume vol = jets(kCell64, rotors, speeds(rotors, 1.0f), 0.73f);
+    std::vector<eg::RotorProbe> broken = rotors;
+    broken[0].hub.x = std::numeric_limits<float>::quiet_NaN();
+    const eg::DownwashFrame f = eg::sample_downwash(vol, broken, 0.4, 0.0f, true);
+    EXPECT_EQ(f.probe[0], eg::ProbeStatus::outside);
+    EXPECT_TRUE(std::isnan(f.u_down[0]));
+    EXPECT_EQ(f.probe[1], eg::ProbeStatus::ok);
 }

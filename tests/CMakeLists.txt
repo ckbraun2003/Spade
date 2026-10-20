@@ -349,6 +349,9 @@ if(SPADE_BUILD_SANDBOX)
         # wind), headless: each composes, places its bodies and does what it
         # is for (the tour storyboard's §4).
         test_sandbox_scene_files.cpp
+        # Batch 2: the library, identities, imports, the region's bookkeeping, the
+        # views, save and reopen, and the measuring helpers for a placed object.
+        test_sandbox_end_goal_scene_checks.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
