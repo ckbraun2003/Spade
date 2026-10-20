@@ -54,6 +54,11 @@ The design's case, a cylinder spinning in still air, has no closed form before i
 
 **The assumption this rests on.** The design says how the projection treats a wall's normal flux, but not how the viscous stencil treats the tangential velocity. Spec §11.3 item 3 puts the tangential condition on the same apertures, which places the no-slip wall within half a cell, as above. If the viscous stencil instead takes the rigid velocity only at closed faces (θ = 0), the no-slip wall can sit up to a cell inside the solid. The case can then miss by up to a factor of two, while its order check still passes.
 
+**Measured: S2 does not tell the two treatments apart** (Physics, P2, 2026-10-20). At `R₁/dx` 16, S2 passes with the viscous wall links at 0.0052, and also with them switched off (the rigid velocity at closed faces only) at 0.0602. Both are inside 0.11, though the links are 12 times better. So S2 stays as it is, a check of the solution, and the treatment gets a check of its own:
+- **The discriminating check is P2's planar Couette**, with both plates a quarter cell off the face planes. With the links, the exact linear profile is the discrete fixed point, held to rounding. With closed faces alone, each wall sits 0.75 dx too far and the profile drifts.
+- **Its band** is measured and pinned (`TD-2`), and the record carries both treatments' numbers, so the band visibly fails the links-off run.
+- **Where S2 runs:** about 15 s in release, about 100 s under debug ctest (whose limit is 60 s). It runs in the release gate and every leg. A skip in debug, by name, with the planar check covering debug, waits on the lead's ruling under `TD-5`.
+
 ## S3. A sheet across a channel (design test 3)
 
 **Reference.** A channel of length `L`, periodic along x and holding a uniform `u = U`, is blocked across its whole section by a sheet. One projection must stop the flow, `u ≡ 0`. The pressure impulse `p h` then rises along x at `ρU` per metre and drops by `ρ U L` across the sheet, which is 1D and exact. The force on the sheet is `ρ U L A / h`, with `A` the section.
