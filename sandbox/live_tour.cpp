@@ -29,6 +29,7 @@
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
 #include "editor_session.hpp"
+#include "end_goal_checks.hpp"
 #include "gl_target_sink.hpp"
 #include "png_writer.hpp"
 #include "scene_sessions.hpp"
@@ -84,7 +85,7 @@ constexpr std::array kSteps = {
     StepName{"editor", "move"},          StepName{"editor", "inspect"},
     StepName{"editor", "undo"},          StepName{"editor", "run"},
     StepName{"editor", "world"},         StepName{"editor", "conflict"},
-    StepName{"editor", "save"},
+    StepName{"editor", "views"},         StepName{"editor", "save"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
@@ -169,10 +170,21 @@ class Recorder {
 
     void want_video_frame() noexcept { video_pending_ = true; }
     void want_poster(fs::path path) { poster_ = std::move(path); }
-    [[nodiscard]] bool wants_capture() const noexcept { return video_pending_ || !poster_.empty(); }
+    // The next captured frame, kept for a step to judge (rows bottom-up).
+    void want_grab() noexcept { grab_pending_ = true; }
+    [[nodiscard]] const std::vector<uint8_t>& grabbed() const noexcept { return grab_; }
+    [[nodiscard]] uint32_t grabbed_width() const noexcept { return grab_w_; }
+    [[nodiscard]] uint32_t grabbed_height() const noexcept { return grab_h_; }
+    [[nodiscard]] bool wants_capture() const noexcept { return video_pending_ || !poster_.empty() || grab_pending_; }
 
     // The window's frame tap: rows bottom-up, as GL reads them.
     void on_frame(const uint8_t* rgba, uint32_t w, uint32_t h) {
+        if (grab_pending_) {
+            grab_.assign(rgba, rgba + static_cast<std::size_t>(w) * h * 4u);
+            grab_w_ = w;
+            grab_h_ = h;
+            grab_pending_ = false;
+        }
         if (!poster_.empty()) {
             if (!png::write_file(poster_, png::encode_rgba(rgba, w, h, /*bottom_up=*/true))) {
                 smoke_.anomaly("recording/poster", "could not write " + poster_.string());
@@ -241,6 +253,10 @@ class Recorder {
     std::FILE* pipe_ = nullptr;
     bool video_pending_ = false;
     fs::path poster_;
+    bool grab_pending_ = false;
+    std::vector<uint8_t> grab_;
+    uint32_t grab_w_ = 0;
+    uint32_t grab_h_ = 0;
     uint64_t video_frames_ = 0;
     uint32_t stills_ = 0;
     bool stills_capped_ = false;
@@ -348,6 +364,7 @@ class Tour {
     [[nodiscard]] uint64_t frames() const noexcept { return frame_; }
     [[nodiscard]] Smoke& smoke() noexcept { return smoke_; }
     [[nodiscard]] GlTargetSink& sink() noexcept { return sink_; }
+    [[nodiscard]] Recorder& recorder() noexcept { return rec_; }
 
   private:
     const TourOptions& options_;
@@ -821,6 +838,50 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(20);
         command(editor::Command::undo);
         s.check(w().panels().status.empty(), "undo-resolves", "status after undo: '" + w().panels().status + "'");
+    });
+
+    // N19: every mode in the View menu, chosen as a click on it chooses, each
+    // frame judged by Test/Docs' modes_drawn() (end_goal_checks.hpp): drawn,
+    // honoured, not blank and changed from the last mode drawn; a kind this
+    // view can't draw shows supports()' why_not, which the menu draws beside it.
+    t.step("editor", "views", [&] {
+        if (!open()) return;
+        const std::vector<editor::ModeEntry> menu = w().panels().modes;
+        if (!s.check(!menu.empty(), "menu", std::to_string(menu.size()) + " modes in the View menu")) return;
+        const glm::vec3 sky = render::Lighting{}.sky_horizon;  // the view's background is a sky gradient
+        const end_goal::Rgb clear{static_cast<uint8_t>(sky.r * 255.0f + 0.5f), static_cast<uint8_t>(sky.g * 255.0f + 0.5f),
+                                  static_cast<uint8_t>(sky.b * 255.0f + 0.5f)};
+        std::vector<std::vector<uint8_t>> frames;  // each mode's whole frame; the views below point into them
+        frames.reserve(menu.size());
+        std::vector<end_goal::ModeShown> shown;
+        for (std::size_t i = 0; i < menu.size(); ++i) {
+            w().panels().mode_request = menu[i].base;
+            then(15);
+            t.recorder().want_grab();
+            then(1);
+            frames.push_back(t.recorder().grabbed());
+            const uint32_t fw = t.recorder().grabbed_width();
+            const uint32_t fh = t.recorder().grabbed_height();
+            const ViewportRect v = t.sink().viewport();
+            end_goal::ModeShown m;
+            m.kind = menu[i].name;
+            m.supported = menu[i].drawable;
+            m.why_not = menu[i].why_not;
+            // What the menu draws beside a kind it refuses (editor_panels_ui.cpp).
+            if (!w().panels().modes.at(i).drawable) m.shown_text = w().panels().modes.at(i).why_not;
+            m.applied = session->last_view().applied;
+            m.drawn = session->last_view().drawn;
+            m.unhonoured = session->last_view().unhonoured;
+            // The frame's rows run bottom-up; the viewport's y runs down from the top.
+            const uint32_t y0 = fh >= v.y + v.height ? fh - v.y - v.height : 0u;
+            m.frame = end_goal::region_of(end_goal::pixels(fw, fh, frames.back()), v.x, y0, v.width, v.height);
+            m.clear = clear;
+            shown.push_back(std::move(m));
+        }
+        const end_goal::Verdict verdict = end_goal::modes_drawn(shown);
+        s.check(verdict.ok, "each-mode-drawn", verdict.detail);
+        w().panels().mode_request = render::ViewBase::shaded;
+        then(20);
     });
 
     t.step("editor", "save", [&] {

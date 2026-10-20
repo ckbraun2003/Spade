@@ -293,11 +293,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     }
     // The view's mode into the scene and options, and the menu for its
     // backend and inputs (N19). No flow volume until the editor's airflow (M2).
+    last_view_ = ViewDrawn{};
     if (Result<void> shown = editor::apply_to(view_, nullptr, view_backend(), view_inputs(), scene_, options_,
                                               view_cache_);
         !shown) {
         return shown;
     }
+    last_view_.applied = true;
     w.panels().modes = editor::mode_menu(view_, view_backend(), view_inputs());
     w.panels().legends = view_.legends;
     w.panels().view_note = view_.refusal;
@@ -312,6 +314,12 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
                                  : std::vector<editor::GizmoLine>{});
     // SL10: the HUD names what the active path does not draw.
     sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
+    if (gpu_) {
+        for (const std::string_view name : GpuRenderer::unhonoured(options_)) {
+            if (!last_view_.unhonoured.empty()) last_view_.unhonoured += ", ";
+            last_view_.unhonoured += name;
+        }
+    }
     const auto r0 = std::chrono::steady_clock::now();
     if (gpu_) {
         sink_->begin_gpu_frame();
@@ -319,12 +327,14 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             return std::unexpected(Error{drew.error().code, "GPU draw failed: " + drew.error().context});
         }
         sink_->present_overlay(ms_since(r0), physics_ms);
+        last_view_.drawn = true;
     } else {
         sink_->note_physics_ms(physics_ms);
         if (!render_frame(scene_, rc, view.width, view.height, options_, pixels_, *sink_)) {
             return std::unexpected(Error{Code::internal, "the CPU render failed (see above)"});
         }
         sink_->note_render_ms(ms_since(r0));
+        last_view_.drawn = true;
     }
     return {};
 }

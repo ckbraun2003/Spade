@@ -52,6 +52,16 @@ class EditorSession {
     [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
     [[nodiscard]] bool gpu_active() const noexcept { return gpu_ != nullptr; }
 
+    // What the last frame did with the view's mode, for the tour's
+    // editor.views (Test/Docs' modes_drawn()): applied through apply_view(),
+    // drawn by the path that presents, and what that path left unhonoured.
+    struct ViewDrawn {
+        bool applied = false;
+        bool drawn = false;
+        std::string unhonoured;  // GpuRenderer::unhonoured()'s names, ", "-joined; empty when all is honoured
+    };
+    [[nodiscard]] const ViewDrawn& last_view() const noexcept { return last_view_; }
+
   private:
     EditorSession() = default;
     [[nodiscard]] Result<void> rebuild_scene();
@@ -81,6 +91,7 @@ class EditorSession {
     VehicleLook look_;
     uint32_t selected_material_ = 0;
     uint64_t drawn_composition_ = 0;
+    ViewDrawn last_view_;
     std::unique_ptr<GpuRenderer> gpu_;
     OrbitCamera camera_;
     std::optional<editor::GizmoDrag> drag_;  // the gizmo's drag, from press to release
