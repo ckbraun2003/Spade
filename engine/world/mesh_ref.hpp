@@ -4,8 +4,10 @@
 // resolver (render/mesh_resolver.hpp) and, as Core applies it (N3), the
 // world's validator (validate_world_desc: its visual references and props'
 // mesh_refs) and the scene's and the object file's (their shared asset rules,
-// a non-empty visual mesh_ref). It lives here, in the lowest library all of
-// them link.
+// a non-empty visual mesh_ref). The default library adds one rule across its
+// objects: no two refs that differ only in case (scene/library.hpp's
+// check_library_contents). It lives here, in the lowest library all of them
+// link.
 //
 // A mesh_ref names a mesh by a RELATIVE PATH under a root, without its
 // extension: "props/ball" is <root>/props/ball.spmesh. Segments are joined by
