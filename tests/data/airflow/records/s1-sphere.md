@@ -4,7 +4,7 @@ One block per run, appended, never edited (Test/Docs' format, `docs/design/test-
 
 ```text
 === validation record: S1 sphere in a uniform stream, R/dx 6, P2 checks ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: 48^3 at dx 1 cm, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on -x, other faces open, U h/dx 0.1, n_v 16 CG iterations, step 1 from a cold start; solids: 1 parts, 1 walls, 0 sheets

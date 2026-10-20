@@ -4,7 +4,7 @@ One block per run, appended, never edited (Test/Docs' format, `docs/design/test-
 
 ```text
 === validation record: S3 sheet across a channel, plane 16 (even) ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho 1.225, U 1.0, h 0.0010, one projection, n_v 32 CG iterations from a cold start; solids: 1 parts, 0 walls, 1 sheets; sheet: sheet (7.8 mm < 2 dx = 62.5 mm)
@@ -28,7 +28,7 @@ verdict: report only
 
 ```text
 === validation record: S3 sheet across a channel, plane 17 (odd) ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho 1.225, U 1.0, h 0.0010, one projection, n_v 32 CG iterations from a cold start; solids: 1 parts, 0 walls, 1 sheets; sheet: sheet (7.8 mm < 2 dx = 62.5 mm)

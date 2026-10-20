@@ -4,7 +4,7 @@ One block per run, appended, never edited (Test/Docs' format, `docs/design/test-
 
 ```text
 === validation record: S2 circular Couette flow, R1/dx 16 ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: a 68x1x68 slab (y periodic), dx 1 mm, R1 16 mm turning at Omega R1 = 0.1 m/s inside a fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, visc_sweeps 8
@@ -28,7 +28,7 @@ verdict: within
 
 ```text
 === validation record: S2 circular Couette flow, R1/dx 32, and the order check ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: a 132x1x132 slab (y periodic), dx 1 mm, R1 32 mm turning at Omega R1 = 0.1 m/s inside a fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, visc_sweeps 8
@@ -56,7 +56,7 @@ verdict: report only
 
 ```text
 === validation record: planar Couette, plates a quarter cell off the faces ===
-commit: 7448e8a (physics/airflow-solids)
+commit: a5a1b4c (physics/airflow-solids)
 date: 2026-10-20
 path: CPU reference, MSVC 1943, release
 config: 4x16x1 (x, z periodic), dx 1 mm, plates at y = 3.25 dx (still) and 12.75 dx (U 0.1 m/s), nu 1e-3, h 1 ms, 45 steps (half a diffusion time) from the exact profile, n_v 4, visc_sweeps 8
