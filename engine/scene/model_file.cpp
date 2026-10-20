@@ -19,17 +19,21 @@ namespace {
 using yaml_text::at;
 using yaml_text::dec;
 using yaml_text::field;
-using yaml_text::has;
 using yaml_text::mark_of;
 using yaml_text::parse_uint;
 using yaml_text::path_text;
 
 // THE ONE MAPPING from a model version to the scene key set its model block
-// is read with (model_file.hpp): model_version 1 reads it as scene version 3
-// does, the newest, which carries everything (parts, mesh parts). The key set
-// stays that version's: a later scene version that adds a model key is read
-// by a new model_version, mapped here.
-constexpr uint32_t kModelBlockSceneVersion = 3;
+// is read with (model_file.hpp): model_version 1 reads it as scene version 4
+// does, the newest, which carries everything (parts, mesh parts, the chain).
+// The key set stays that version's: a later scene version that adds a model
+// key is read by a new model_version, mapped here.
+//
+// MOVED FROM 3 TO 4 with N5a (the lead's ruling, 2026-10-19), the one change
+// to model_version 1's text: the chain moved from a top-level `propulsion:`
+// into the model block, as the model's own last key. No model file had been
+// committed in N1's layout; one is refused, its `propulsion` an unknown key.
+constexpr uint32_t kModelBlockSceneVersion = 4;
 static_assert(kModelFileVersion == 1, "one mapping per model version: map the new version's key set here");
 static_assert(kModelBlockSceneVersion <= kSceneFileVersion,
               "this build reads the scene key set model_version 1 borrows");
@@ -79,11 +83,14 @@ constexpr std::string_view kModelComment = R"YAML(
 # sidecar by a path relative to this file and FNV-1a 64 of the mesh's content.
 )YAML";
 
-constexpr std::string_view kPropulsionComment = R"YAML(
-# The propulsion chain: every field of vehicles::PropulsionChain, by its own
-# name. kv is in rad/(s V), not rpm/V; battery fields are per cell unless they
-# say pack; the propeller's tables are on a uniform grid of advance ratio from
-# j_min to j_max, and ocv_table on a uniform state-of-charge grid.
+// The model comment's second paragraph, written only when the model has a
+// chain, so a model without one is the text it always was.
+constexpr std::string_view kPropulsionComment = R"YAML(#
+# Its last key, `propulsion`, is the model's propulsion chain: every field of
+# vehicles::PropulsionChain, by its own name. kv is in rad/(s V), not rpm/V;
+# battery fields are per cell unless they say pack; the propeller's tables are
+# on a uniform grid of advance ratio from j_min to j_max, and ocv_table on a
+# uniform state-of-charge grid.
 )YAML";
 
 [[nodiscard]] std::string emit(const ModelFile& file) {
@@ -94,17 +101,12 @@ constexpr std::string_view kPropulsionComment = R"YAML(
     out += kFileHeader;
     out += "\nmodel_version: " + dec(kModelFileVersion) + "\n";
 
-    // The scene's per-model block, as a mapping.
+    // The scene's per-model block, as a mapping, its chain the last key
+    // (emit_model writes it when set).
     out += kModelComment;
+    if (file.model.propulsion) out += kPropulsionComment;
     out += "model:\n";
     detail::emit_model(out, file.model, "  ", "  ");
-
-    // Written only when set: a model without a chain is the text it is.
-    if (file.model.propulsion) {
-        out += kPropulsionComment;
-        out += "propulsion:\n";
-        detail::emit_propulsion(out, *file.model.propulsion, "  ");
-    }
     return out;
 }
 
@@ -130,7 +132,8 @@ constexpr std::string_view kPropulsionComment = R"YAML(
                                                                 mark_of(*version_node)});
     }
 
-    if (Result<void> r = yaml_text::check_map(root, kTop, {"model_version", "model", "propulsion"}, kSchema); !r) {
+    // The chain is the model block's (N5a): a top-level `propulsion` is unknown.
+    if (Result<void> r = yaml_text::check_map(root, kTop, {"model_version", "model"}, kSchema); !r) {
         return std::unexpected(r.error());
     }
 
@@ -140,13 +143,6 @@ constexpr std::string_view kPropulsionComment = R"YAML(
     Result<vehicles::ModelType> model = detail::parse_model(*model_node, "model", block_format(), base_dir);
     if (!model) return std::unexpected(model.error());
     out.model = std::move(*model);
-
-    // propulsion: optional, as the writer omits it for a model without one.
-    if (has(root, "propulsion")) {
-        Result<vehicles::PropulsionChain> chain = detail::parse_propulsion(root["propulsion"], "propulsion", kSchema);
-        if (!chain) return std::unexpected(chain.error());
-        out.model.propulsion = std::move(*chain);
-    }
     return out;
 }
 
@@ -226,9 +222,36 @@ Result<ModelFile> load_model_file(const std::filesystem::path& path) {
     return file;
 }
 
-// RED stub: refuses every call.
-Result<void> add_model(SceneDesc&, const ModelFile&, std::string_view) {
-    return std::unexpected(Error{Code::internal, "add_model: not implemented"});
+Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name) {
+    if (Result<void> r = validate_model_file(file); !r) {
+        return r;
+    }
+
+    // The name, by name: a model's name is unique within the scene's models
+    // (SCN-004), its own namespace. Never renamed: the editor makes names
+    // unique.
+    for (const vehicles::ModelType& m : scene.models) {
+        if (m.name == model_name) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "model name '" + std::string(model_name) +
+                                             "' is taken by a model in the scene; model names are unique within "
+                                             "models, and add_model never renames"});
+        }
+    }
+
+    // ALL OR NOTHING: the change is made on a copy. The model is copied whole,
+    // so its chain (model.propulsion) comes with it.
+    SceneDesc next = scene;
+    vehicles::ModelType placed = file.model;
+    placed.name = std::string(model_name);
+    next.models.push_back(std::move(placed));
+
+    // The scene's one validator, on the scene it would become.
+    if (Result<void> r = validate_scene(next); !r) {
+        return r;
+    }
+    scene = std::move(next);
+    return {};
 }
 
 }  // namespace spade::scene

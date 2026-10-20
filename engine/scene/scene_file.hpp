@@ -25,6 +25,15 @@
 //      byte for byte the text it always was, and an older build reading a
 //      scene with parts says "upgrade" rather than "unknown key". Version 3
 //      adds a mesh part (CORE-6), so only a scene with one is version 3.
+//      Version 4 adds a model's propulsion chain (N5a), so only a scene with
+//      one is version 4, whatever else it holds.
+//
+// A MODEL'S CHAIN (N5a). The chain is part of the model
+// (vehicles::ModelType::propulsion), so a model item carries it as its last
+// key, `propulsion:`, in the model file's encoding: one emitter and one
+// parser for both files (scene/model_file.hpp, TD-9). It rides with every
+// copy of the model, which is how a placed library drone keeps it
+// (add_model(), scene/model_file.hpp).
 //
 // MESH PARTS name their geometry; the text never holds it. A part whose
 // geometry is a triangle mesh is written as `shape: {mesh: {file, hash}}`:
@@ -63,8 +72,10 @@ namespace spade::scene {
 //   1  materials, models, assets, vehicles and spare (SCN-001..009);
 //   2  adds `parts` to a model (CORE-7), written only when a model has parts;
 //   3  adds a part's `shape: {mesh: {file, hash}}` (CORE-6), written only
-//      when a part holds a mesh.
-inline constexpr uint32_t kSceneFileVersion = 3;
+//      when a part holds a mesh;
+//   4  adds `propulsion` to a model (N5a), its propulsion chain, written only
+//      when a model has one.
+inline constexpr uint32_t kSceneFileVersion = 4;
 inline constexpr uint32_t kSceneFileOldestVersion = 1;
 
 // The world a scene is placed in (SCN-001).
@@ -139,10 +150,12 @@ struct SceneDesc {
 //     known shading), and unique names, as an object file's list
 //     (scene/object_file.hpp);
 //   - models: ModelType::validate(), its parts' rules included (CORE-7: the
-//     model's own message, which names the part and the field), and
-//     design_to_principal a unit quaternion (SCN-009); each part's shape
-//     expressible in the SDF text encoding (check_sdf_representable), with
-//     the model, the part and the node named; a part's mesh_file, when set,
+//     model's own message, which names the part and the field) and its
+//     chain's (N5a: validate_propulsion_chain()'s message after the model's
+//     name), and design_to_principal a unit quaternion (SCN-009); each
+//     part's shape expressible in the SDF text encoding
+//     (check_sdf_representable), with the model, the part and the node
+//     named; a part's mesh_file, when set,
 //     relative with forward slashes only, and naming a mesh the part holds
 //     (a mesh part may leave it empty in memory: only the writer needs it).
 //     These per-model rules are the model file's too, one function for both
@@ -162,8 +175,9 @@ struct SceneDesc {
 // schema_mismatch for a scene_version this build does not read;
 // invalid_argument for everything else, with the offending key's dotted path
 // and its line and column. A model's `parts` is read from version 2 (in a
-// version-1 file it is an unknown key, blamed on version 1), and a shape's
-// `mesh` from version 3.
+// version-1 file it is an unknown key, blamed on version 1), a shape's
+// `mesh` from version 3, and a model's `propulsion` from version 4 (in an
+// older file an unknown key, blamed on that file's version).
 //
 // A mesh part's sidecar is read from base_dir / file (the file's UTF-8 path),
 // by load_mesh_file() against the hash the text names: its refusals -- a
@@ -176,9 +190,10 @@ struct SceneDesc {
                                               const std::filesystem::path& base_dir = {});
 
 // SceneDesc -> canonical text (SCN-002). Runs validate_scene() first, so the
-// writer never emits a document the reader would refuse. Writes version 3
-// only when a part holds a mesh, version 2 only when a model has parts, and
-// version 1 otherwise (property 3). A mesh part is written as its
+// writer never emits a document the reader would refuse. Writes version 4
+// only when a model has a propulsion chain, version 3 only when a part holds
+// a mesh, version 2 only when a model has parts, and version 1 otherwise
+// (property 3). A mesh part is written as its
 // mesh_file and its mesh's content hash; one with no mesh_file is refused,
 // naming the model and the part. It never writes a sidecar.
 [[nodiscard]] Result<std::string> scene_to_yaml(const SceneDesc& scene);

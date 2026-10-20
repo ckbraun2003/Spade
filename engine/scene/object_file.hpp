@@ -14,8 +14,8 @@
 //                key in the scene's order with the scene's encodings, as a
 //                mapping: ONE emitter and ONE parser for both files (TD-9).
 //                object_version 1 reads it with the key set of scene version
-//                3, the newest (an asset's keys are the same in versions 1 to
-//                3).
+//                3, the newest when it was defined (an asset's keys are the
+//                same in versions 1 to 4).
 //   materials:   OPTIONAL, written only when the list is not empty: the scene
 //                file's material encoding, one flow mapping per item, in file
 //                order. Floats are written as the scene writes them.

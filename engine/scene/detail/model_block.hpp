@@ -5,7 +5,8 @@
 // the scene file (each item of a scene's `models:`) and the model file (its
 // `model:` mapping; scene/model_file.hpp): ONE encoding of a model, emitted,
 // parsed and validated in one place (TD-9). Beside it, a propulsion chain's
-// block, the model file's `propulsion:`.
+// block, the model block's own last key `propulsion:` (N5a: the chain is the
+// model's), in both files.
 //
 // Defined in scene_file.cpp, beside the scene's other blocks, whose helpers
 // (the SDF lists, the hashes, the enum names) it shares.
@@ -31,8 +32,9 @@ namespace spade::scene::detail {
 // The file a model block is read from, for its key set and its diagnostics.
 struct ModelBlockFormat {
     // The SCENE version whose model key set the block is read with: `parts`
-    // from 2, a part's shape `mesh` from 3. A scene passes its own version; the
-    // model file maps its model_version to one (model_file.cpp).
+    // from 2, a part's shape `mesh` from 3, `propulsion` from 4. A scene
+    // passes its own version; the model file maps its model_version to one
+    // (model_file.cpp).
     uint32_t key_version = 0;
     // The schema every diagnostic blames: the file's OWN, "scene schema v2" or
     // "model schema v1" (scene_file.cpp's schema() note).
@@ -50,8 +52,9 @@ struct ModelBlockFormat {
 // One model's keys, in ModelType's text order. The first line (`name`) starts
 // with `lead` and every other key with `indent`, both the same width, so a
 // scene writes a list item ("  - ", "    ") and the model file a mapping
-// ("  ", "  "). Nested lists sit two spaces deeper. The caller has validated
-// the model (validate_model, check_model_writable).
+// ("  ", "  "). Nested lists sit two spaces deeper, and so do the keys of the
+// chain (emit_propulsion), the last key, written only when the model has one.
+// The caller has validated the model (validate_model, check_model_writable).
 void emit_model(std::string& out, const vehicles::ModelType& m, std::string_view lead, std::string_view indent);
 
 // One model block. Only the text's shape is checked here: unknown, missing and
@@ -78,8 +81,8 @@ void emit_model(std::string& out, const vehicles::ModelType& m, std::string_view
 // naming the model and the part.
 [[nodiscard]] Result<void> check_model_writable(const vehicles::ModelType& m, std::string_view kind);
 
-// A propulsion chain's block (the model file's `propulsion:`; a later scene
-// version that carries a per-model chain uses the same encoding): EVERY field
+// A propulsion chain's block (a model block's `propulsion:`, in a scene from
+// version 4 and in the model file; emit_model writes it): EVERY field
 // of vehicles::PropulsionChain by its own name, in declaration order, one
 // key per line at `indent`; the propeller table's j_min, j_max, ct and cq
 // under `table:`, two spaces deeper. Doubles are format_double's, floats

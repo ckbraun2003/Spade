@@ -1,12 +1,18 @@
 // ---------------------------------------------------------------------------
-// scene/model_file.hpp -- the model file: one vehicle model and, optionally,
-// its propulsion chain (spade::scene).
+// scene/model_file.hpp -- the model file: one vehicle model, its propulsion
+// chain included when it has one (spade::scene).
 //
-// It is the unit the editor adds a drone from, Spade's default model library
-// holds, an analysis case's ModelRef.file names (analysis/case.hpp), and
-// Kat's builder writes. A live run maps a throttle through its chain
-// (vehicles::rotor_omega_for_duty) and pins the case by model_identity,
-// parts_identity and propulsion_identity (vehicles/model_identity.hpp).
+// It is the unit the editor adds a drone from (add_model(), below), Spade's
+// default model library holds, an analysis case's ModelRef.file names
+// (analysis/case.hpp), and Kat's builder writes. A live run maps a throttle
+// through its chain (vehicles::rotor_omega_for_duty) and pins the case by
+// model_identity, parts_identity and propulsion_identity
+// (vehicles/model_identity.hpp).
+//
+// THE CHAIN IS THE MODEL'S (N5a, the lead's ruling of 2026-10-19):
+// vehicles::ModelType::propulsion. So the file holds one model and nothing
+// beside it, and every copy, rename, duplicate or removal of the model -- in
+// a scene, in the editor -- carries its chain by construction.
 //
 // THE TEXT, top-level keys in this order:
 //   model_version: 1
@@ -14,26 +20,31 @@
 //                 every key in the scene's order with the scene's encodings,
 //                 as a mapping: ONE emitter and ONE parser for both files
 //                 (TD-9). model_version 1 reads it with the key set of scene
-//                 version 3, which carries everything (parts, mesh parts).
-//   propulsion:   OPTIONAL, written only when set: every field of
+//                 version 4, which carries everything (parts, mesh parts and
+//                 the chain). Its LAST key, `propulsion`, OPTIONAL and
+//                 written only when the model has a chain, is every field of
 //                 vehicles::PropulsionChain by its own name, in declaration
 //                 order; the propeller's {j_min, j_max, ct, cq} as the
 //                 mapping `table`. Floats are written as the scene writes
 //                 them, doubles as yaml_text's format_double (the fewest
 //                 digits that read back to the same double), counts as
 //                 decimal integers.
+// Until N5a the chain was a top-level `propulsion:` after `model:` (N1,
+// 13390f3). No file in that layout was committed; one is refused, its
+// `propulsion` an unknown key.
 //
 // Properties, the scene file's:
 //   1. CANONICAL TEXT. model_to_yaml() is a pure function of the ModelFile,
 //      with a fixed key order, a fixed number spelling and fixed comments;
 //      every float and double survives the trip to text and back bit for
-//      bit, -0 included.
+//      bit, -0 included. A model without a chain is written as it was before
+//      N5a, byte for byte.
 //   2. ONE VALIDATOR. validate_model_file() is the only definition of a
 //      valid model file: the scene's per-model rules (the same function
-//      validate_scene() runs) and, when a chain is set,
-//      vehicles::validate_propulsion_chain(). The reader calls it after
-//      parsing and the writer before emitting. Unknown, missing and duplicate
-//      keys are refused at every level of the text.
+//      validate_scene() runs), ModelType::validate() among them, which checks
+//      a set chain by vehicles::validate_propulsion_chain(). The reader calls
+//      it after parsing and the writer before emitting. Unknown, missing and
+//      duplicate keys are refused at every level of the text.
 //   3. A VERSION GATE. A model_version this build does not read is
 //      schema_mismatch, read before any other key, so a caller can tell
 //      "upgrade" from "fix your file". Every diagnostic blames the file's own
@@ -73,8 +84,9 @@ struct ModelFile {
 // The one validator (property 2). invalid_argument naming the first
 // violation: the model's, with the scene's messages, except that a mesh
 // part's sidecar is relative to the "model file" and a part's shape is
-// blamed on "model schema v1"; then the chain's, in
-// validate_propulsion_chain()'s words.
+// blamed on "model schema v1". A bad chain is the model's last rule:
+// validate_propulsion_chain()'s words after the model's name ("model type
+// 'quad': propulsion chain: kv must be finite and > 0").
 [[nodiscard]] Result<void> validate_model_file(const ModelFile& file);
 
 // ModelFile -> canonical text. Runs validate_model_file() first, so the
@@ -87,7 +99,8 @@ struct ModelFile {
 // Text -> ModelFile. Parses, then runs validate_model_file(). Codes:
 // schema_mismatch for a model_version this build does not read;
 // invalid_argument for everything else, with the offending key's dotted path
-// ("model.parts[0].shape", "propulsion.table.ct[3]") and its line and column.
+// ("model.parts[0].shape", "model.propulsion.table.ct[3]") and its line and
+// column.
 // A mesh part's sidecar is read from base_dir / file, its refusals with
 // their own codes (a missing sidecar is io_error); with an empty base_dir a
 // mesh part is refused: read a model with mesh parts with load_model_file(),
@@ -106,6 +119,14 @@ struct ModelFile {
 // Refused by name: a model_name the scene's models already use (it never
 // renames; the editor makes names unique), and anything validate_model_file()
 // or validate_scene() refuses.
+//
+// The model's own name is not its scene name: model_name replaces it, and
+// model_identity() folds the name, so the copy's model_identity is the
+// renamed model's (parts_identity and propulsion_identity fold no name, so
+// they are the file's). Another namespace's name -- an asset's, a vehicle's,
+// a material's -- is free for a model (SCN-004). A mesh part's mesh_file is
+// copied as written: it named the sidecar relative to the model file's
+// directory, and in the scene it is read relative to the scene file's.
 [[nodiscard]] Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name);
 
 }  // namespace spade::scene
