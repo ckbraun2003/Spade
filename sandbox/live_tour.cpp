@@ -852,18 +852,42 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!open()) return;
         const std::vector<editor::ModeEntry> menu = w().panels().modes;  // one snapshot: supported and why_not
         if (!s.check(!menu.empty(), "menu", std::to_string(menu.size()) + " modes in the View menu")) return;
-        const glm::vec3 sky = render::Lighting{}.sky_horizon;  // the view's background is a sky gradient
-        const end_goal::Rgb clear{static_cast<uint8_t>(sky.r * 255.0f + 0.5f), static_cast<uint8_t>(sky.g * 255.0f + 0.5f),
-                                  static_cast<uint8_t>(sky.b * 255.0f + 0.5f)};
         // The HUD's stats box sits inside the view and changes every frame:
         // hidden for the step, so the grabbed view holds only the scene.
         const bool hud = t.sink().help_drawn();
         if (hud) t.sink().toggle_help();
         then(5);
-        std::vector<std::vector<uint8_t>> frames;  // each mode's whole frame; the views below point into them
-        frames.reserve(menu.size());
+        // Each mode's whole frames, three per mode (the view, again, and its
+        // background); the ModeShown views point into them, so no reallocation.
+        std::vector<std::vector<uint8_t>> frames;
+        frames.reserve(3u * menu.size());
         std::vector<end_goal::ModeShown> shown;
         bool framed = true;
+        // Grabs the next frame and cuts the view out of it, or fails the step:
+        // a frame that was not captured, or a view not inside it.
+        const auto grab_view = [&](const std::string& what, end_goal::PixelsView& into) -> bool {
+            t.recorder().want_grab();
+            then(1);
+            frames.push_back(t.recorder().grabbed());
+            const uint32_t fw = t.recorder().grabbed_width();
+            const uint32_t fh = t.recorder().grabbed_height();
+            const ViewportRect v = t.sink().viewport();
+            if (frames.back().empty()) {
+                s.check(false, "grabbed", "absent: no frame captured for " + what);
+                return false;
+            }
+            if (v.x + v.width > fw || v.y + v.height > fh) {
+                s.check(false, "view-in-frame", "the view " + std::to_string(v.width) + "x" + std::to_string(v.height) +
+                                                    " at (" + std::to_string(v.x) + ", " + std::to_string(v.y) +
+                                                    ") is not inside the " + std::to_string(fw) + "x" +
+                                                    std::to_string(fh) + " frame (" + what + ")");
+                return false;
+            }
+            // The frame's rows run bottom-up; the viewport's y runs down from the top.
+            into = end_goal::region_of(end_goal::pixels(fw, fh, frames.back()), v.x, fh - v.y - v.height, v.width,
+                                       v.height);
+            return true;
+        };
         const std::string refused_prefix = "this view can't draw ";
         for (std::size_t i = 0; i < menu.size() && framed; ++i) {
             w().panels().status.clear();
@@ -884,29 +908,26 @@ void editor_tour(Tour& t, const fs::path& assets) {
             m.applied = session->last_view().applied && session->last_view().base == menu[i].base;
             m.drawn = session->last_view().drawn;
             m.unhonoured = session->last_view().unhonoured;
-            t.recorder().want_grab();
-            then(1);
-            frames.push_back(t.recorder().grabbed());
-            const uint32_t fw = t.recorder().grabbed_width();
-            const uint32_t fh = t.recorder().grabbed_height();
-            const ViewportRect v = t.sink().viewport();
-            if (frames.back().empty()) {
-                s.check(false, "grabbed", "absent: no frame captured for " + menu[i].name);
+            // The view; the same view two frames later, with no request between
+            // (the still premise); and its background, the items hidden.
+            if (!grab_view(menu[i].name, m.frame)) {
                 framed = false;
                 break;
             }
-            if (v.x + v.width > fw || v.y + v.height > fh) {
-                s.check(false, "view-in-frame", "the view " + std::to_string(v.width) + "x" + std::to_string(v.height) +
-                                                    " at (" + std::to_string(v.x) + ", " + std::to_string(v.y) +
-                                                    ") is not inside the " + std::to_string(fw) + "x" + std::to_string(fh) +
-                                                    " frame");
+            then(2);
+            if (!grab_view(menu[i].name + ", again", m.again)) {
                 framed = false;
                 break;
             }
-            // The frame's rows run bottom-up; the viewport's y runs down from the top.
-            m.frame = end_goal::region_of(end_goal::pixels(fw, fh, frames.back()), v.x, fh - v.y - v.height, v.width,
-                                          v.height);
-            m.clear = clear;
+            session->set_background_only(true);
+            then(2);
+            const bool background = grab_view(menu[i].name + "'s background", m.background);
+            session->set_background_only(false);
+            then(2);
+            if (!background) {
+                framed = false;
+                break;
+            }
             shown.push_back(std::move(m));
         }
         if (framed) {
