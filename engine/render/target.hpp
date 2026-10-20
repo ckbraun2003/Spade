@@ -16,6 +16,7 @@
 // digest and never feed anything downstream of a frame.
 // ---------------------------------------------------------------------------
 
+#include <cmath>
 #include <cstdint>
 #include <span>
 
@@ -63,6 +64,25 @@ struct DepthRange {
     float far_m = 20.0f;
     ColourMapId colours = ColourMapId::viridis;
 };
+
+// Whether `mode` draws the geometry as data (depth, normals).
+[[nodiscard]] constexpr bool is_sensor_mode(DrawMode mode) noexcept {
+    return mode == DrawMode::depth || mode == DrawMode::normals;
+}
+
+// Whether `range` can colour depth: finite, from 0 m, and not empty. The one
+// rule (TD-9): both backends and apply_view() refuse in its words.
+[[nodiscard]] inline Result<void> validate_depth_range(const DepthRange& range) {
+    if (!(std::isfinite(range.near_m) && std::isfinite(range.far_m) && range.near_m >= 0.0f &&
+          range.far_m > range.near_m)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "the depth range must be finite, start at 0 m or more, and end past its start"});
+    }
+    if (static_cast<uint32_t>(range.colours) >= kColourMapCount) {
+        return std::unexpected(Error{Code::invalid_argument, "the depth range's colours are not a ColourMapId"});
+    }
+    return {};
+}
 
 // Parameters for the INFINITE ANALYTIC ground grid (Phase C). The functions
 // that consume these live in scene.hpp, beside sky_gradient_color, because

@@ -881,6 +881,29 @@ vec3 shade_surface(uint shading, vec3 base, vec3 n, vec3 world) {
 }
 )GLSL";
 
+// The sensor modes (N13), raster_cpu's colour_sensor_frame(): a surface's
+// colour as data, in the mesh, CSG and background programs. uSensorMode is 0
+// outside them, else render::DrawMode's 4 (depth) or 5 (normals). Depth is the
+// world point's view z, exact to float rather than the depth buffer
+// linearised, through the colour table's row uDepthMap over [uDepthNear,
+// uDepthFar], clamped; a normal n is (n + 1) / 2.
+constexpr const char* kSensorSrc = R"GLSL(
+uniform uint uSensorMode;
+uniform vec3 uSensorEye;
+uniform vec3 uSensorForward;
+uniform float uDepthNear;
+uniform float uDepthFar;
+uniform uint uDepthMap;
+
+vec3 sensor_colour(vec3 world, vec3 n) {
+    if (uSensorMode == 4u) {
+        float z = dot(world - uSensorEye, uSensorForward);
+        return flow_colour_map(clamp((z - uDepthNear) / (uDepthFar - uDepthNear), 0.0, 1.0), uDepthMap);
+    }
+    return 0.5 * (normalize(n) + 1.0);
+}
+)GLSL";
+
 constexpr const char* kFragmentSrc = R"GLSL(
 in vec3 vNormal;
 in vec3 vWorld;
@@ -896,6 +919,10 @@ uniform uint uNoMaterial;
 out vec4 fragColor;
 
 void main() {
+    if (uSensorMode != 0u) {  // geometry as data: no material, light or flow colouring
+        fragColor = vec4(sensor_colour(vWorld, vNormal), 1.0);
+        return;
+    }
     // DrawItem::material_override wins when set, else the submesh's own
     // material -- the same precedence raster_cpu applies, stated once here.
     uint mi = uOverride[vInstance];
@@ -953,7 +980,8 @@ uniform vec3 uForward;
 uniform float uInvTanHalfFov;
 uniform float uAspect;
 uniform vec2 uViewport;
-uniform uint uPlaneCount;  // 0 outside shaded mode (SR-22)
+uniform uint uPlaneCount;  // 0 outside shaded mode (SR-22) and the sensor modes
+uniform mat4 uSensorViewProj;  // the sensor modes: the ground's depth
 uniform uint uGridEnabled;
 uniform vec3 uGridColor;
 uniform float uGridSpacing;
@@ -998,6 +1026,22 @@ void main() {
             best = i;
         }
     }
+
+    // The sensor modes: the ground as data, at its own depth, so a nearer
+    // surface wins over it as on the CPU; black, at the far plane, elsewhere.
+    if (uSensorMode != 0u) {
+        if (best_t > 0.0) {
+            vec3 hit = uCamPos + ray * best_t;
+            vec4 clip = uSensorViewProj * vec4(hit, 1.0);
+            gl_FragDepth = min((clip.z / clip.w) * 0.5 + 0.5, 1.0);
+            fragColor = vec4(sensor_colour(hit, uPlanes[best].normal), 1.0);
+        } else {
+            gl_FragDepth = 1.0;
+            fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+        return;
+    }
+    gl_FragDepth = 1.0;  // written on every path, as GLSL asks; the pass masks it off outside the sensor modes
 
     vec3 color = sky;
     if (best_t > 0.0) {
@@ -1411,6 +1455,10 @@ void main() {
     vec3 g = sdf_gradient(p);
     float g_len = length(g);
     vec3 n = g_len > 0.0 ? g / g_len : vec3(0.0, 1.0, 0.0);
+    if (uSensorMode != 0u) {  // the hit's depth and outward gradient, as data
+        fragColor = vec4(sensor_colour(p, n), 1.0);
+        return;
+    }
     vec3 n_eye = dot(n, uCamPos - p) < 0.0 ? -n : n;
     fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall != 0u, shade_surface(m.shading, base, n, p)), 1.0);
 }
@@ -1819,6 +1867,12 @@ struct GlRenderer::Impl {
         GLint enabled = -1, light_view_proj = -1, size = -1, no_occluder = -1, bias = -1;
     } mesh_shadow, bg_shadow, csg_shadow;
 
+    // kSensorSrc's, in the mesh, CSG and background programs (N13).
+    struct SensorUniforms {
+        GLint mode = -1, eye = -1, forward = -1, near_m = -1, far_m = -1, map = -1;
+    } mesh_sensor, bg_sensor, csg_sensor;
+    GLint bg_sensor_view_proj = -1;
+
     // kFlowSampleSrc's and kFlowSurfaceSrc's, in the mesh and CSG programs.
     struct FlowSurfaceUniforms {
         GLint on = -1, quantity = -1, box_min = -1, box_max = -1, origin = -1, inv_cell = -1, range_min = -1,
@@ -1976,11 +2030,13 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
 
     const Result<GLuint> mesh_program =
         link(gl, {kGlslVersion, kCommonSrc, kVertexSrc},
-             {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kFlowSurfaceSrc, kFragmentSrc}, "mesh");
+             {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc, kFragmentSrc},
+             "mesh");
     if (!mesh_program) return std::unexpected(mesh_program.error());
     impl->program = *mesh_program;
     const Result<GLuint> background_program = link(gl, {kGlslVersion, kBackgroundVertexSrc},
-                                                    {kGlslVersion, kCommonSrc, kBackgroundFragmentSrc}, "background");
+                                                    {kGlslVersion, kCommonSrc, kFlowSampleSrc, kSensorSrc, kBackgroundFragmentSrc},
+                                                    "background");
     if (!background_program) return std::unexpected(background_program.error());
     impl->background_program = *background_program;
     const Result<GLuint> field_program =
@@ -1997,7 +2053,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->caster_program = *caster_program;
     const Result<GLuint> csg_program = link(gl, {kGlslVersion, kCsgVertexSrc},
                                             {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc,
-                                             kFlowSurfaceSrc, kCsgFragmentSrc},
+                                             kSensorSrc, kFlowSurfaceSrc, kCsgFragmentSrc},
                                             "csg");
     if (!csg_program) return std::unexpected(csg_program.error());
     impl->csg_program = *csg_program;
@@ -2121,6 +2177,18 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     shadow_uniforms(impl->program, impl->mesh_shadow);
     shadow_uniforms(impl->background_program, impl->bg_shadow);
     shadow_uniforms(impl->csg_program, impl->csg_shadow);
+    const auto sensor_uniforms = [&gl](GLuint program, Impl::SensorUniforms& u) {
+        u.mode = gl.GetUniformLocation(program, "uSensorMode");
+        u.eye = gl.GetUniformLocation(program, "uSensorEye");
+        u.forward = gl.GetUniformLocation(program, "uSensorForward");
+        u.near_m = gl.GetUniformLocation(program, "uDepthNear");
+        u.far_m = gl.GetUniformLocation(program, "uDepthFar");
+        u.map = gl.GetUniformLocation(program, "uDepthMap");
+    };
+    sensor_uniforms(impl->program, impl->mesh_sensor);
+    sensor_uniforms(impl->background_program, impl->bg_sensor);
+    sensor_uniforms(impl->csg_program, impl->csg_sensor);
+    impl->bg_sensor_view_proj = gl.GetUniformLocation(impl->background_program, "uSensorViewProj");
     const auto flow_uniforms = [&gl](GLuint program, Impl::FlowSurfaceUniforms& u) {
         u.on = gl.GetUniformLocation(program, "uFlowColouring");
         u.quantity = gl.GetUniformLocation(program, "uFlowQuantity");
@@ -2443,6 +2511,24 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                      "GlRenderer::draw: raymarch is a CPU technique (render/raymarch.hpp); "
                                      "draw it with render::render()"});
     }
+    // L6: a sensor mode draws the geometry as data (N13), refused as the CPU
+    // refuses it (sensor_mode_refusal(), one rule). And a multisampled target
+    // would blend its values at every edge into values no surface has.
+    const bool sensor = render::is_sensor_mode(options.mode);
+    if (sensor) {
+        if (Result<void> valid = render::sensor_mode_refusal(scene, options); !valid) {
+            return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+        }
+        GLint samples = 0;
+        gl.GetIntegerv(GL_SAMPLES, &samples);
+        if (samples > 1) {
+            return std::unexpected(Error{
+                Code::invalid_argument,
+                "GlRenderer::draw: " + std::string(options.mode == render::DrawMode::depth ? "depth" : "normals") +
+                    " draws data, which a multisampled target (" + std::to_string(samples) +
+                    " samples) would blend at every edge; draw it into a single-sample target"});
+        }
+    }
     // L6: GL marches one flow layer per frame; a frame with fewer would be a
     // different picture under the same scene.
     // 7g: the flow programs compile in the background when asked; until
@@ -2570,7 +2656,8 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     const bool wireframe = options.mode == render::DrawMode::wireframe;
     // As raster_cpu decides: shaded and velocity frames march each CSG
     // subtree and leave its mesh out; wireframe draws the mesh (RS3).
-    const bool march_csg = (shaded || options.mode == render::DrawMode::velocity) && !scene.csg_subtrees.empty();
+    const bool march_csg =
+        (shaded || options.mode == render::DrawMode::velocity || sensor) && !scene.csg_subtrees.empty();
     s.static_marched.assign(scene.statics.size(), 0u);
     if (march_csg) {
         for (const render::CsgSubtree& sub : scene.csg_subtrees) {
@@ -2620,7 +2707,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // colour shaded once by shade_vertex_color(), and "is the camera above
     // it" decided in double.
     s.gpu_planes.clear();
-    if (shaded && !scene.materials.empty()) {
+    if ((shaded || sensor) && !scene.materials.empty()) {
         for (const render::GroundPlane& gp : scene.ground_planes) {
             GpuGroundPlane g;
             g.normal = gp.normal;
@@ -2731,6 +2818,11 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.ActiveTexture(GL_TEXTURE0);
         flow_colours = render::prepare_transfer(fc.colours, h);
     }
+    if (options.mode == render::DrawMode::depth) {  // depth's colours are the same table's
+        gl.ActiveTexture(GL_TEXTURE3);
+        gl.BindTexture(GL_TEXTURE_2D, s.flow_colour_tex);
+        gl.ActiveTexture(GL_TEXTURE0);
+    }
     const auto set_flow_uniforms = [&](const Impl::FlowSurfaceUniforms& u) {
         gl.Uniform1ui(u.on, scene.flow_surface_colouring ? 1u : 0u);
         if (!scene.flow_surface_colouring) return;
@@ -2754,6 +2846,15 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1f(u.offset, scene.flow_surface_colouring->offset_cells * h.cell);
         gl.Uniform1ui(u.extrapolate, scene.flow_surface_colouring->extrapolate ? 1u : 0u);
     };
+    const glm::vec3 sensor_forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    const auto set_sensor_uniforms = [&](const Impl::SensorUniforms& u) {
+        gl.Uniform1ui(u.mode, sensor ? static_cast<GLuint>(options.mode) : 0u);
+        gl.Uniform3fv(u.eye, 1, glm::value_ptr(camera.position));
+        gl.Uniform3fv(u.forward, 1, glm::value_ptr(sensor_forward));
+        gl.Uniform1f(u.near_m, options.depth.near_m);
+        gl.Uniform1f(u.far_m, options.depth.far_m);
+        gl.Uniform1ui(u.map, static_cast<GLuint>(options.depth.colours));
+    };
     const auto set_shadow_uniforms = [&](const Impl::ShadowUniforms& u) {
         gl.Uniform1ui(u.enabled, shadows ? 1u : 0u);
         gl.UniformMatrix4fv(u.light_view_proj, 1, GL_FALSE, glm::value_ptr(s.shadow_light_view_proj));
@@ -2774,7 +2875,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
 
     // --- background --------------------------------------------------------
     // Every pixel, before the meshes and with no depth: raster_cpu's
-    // background writes no depth either, so every mesh draws over it.
+    // background writes no depth either, so every mesh draws over it. In a
+    // sensor mode the ground takes its depth, as raster_cpu's sensor ground
+    // does, so only a nearer surface draws over it.
     {
         const Impl::BackgroundUniforms& bg = s.bg;
         // raster_cpu's per-frame ray basis and its fp32 tangent (tan32).
@@ -2785,10 +2888,18 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             static_cast<float>(1.0 / render::tan32(static_cast<double>(camera.fov_y_radians) * 0.5));
         const render::GroundGridParams& grid = options.ground_grid_params;
 
-        gl.Disable(GL_DEPTH_TEST);
-        gl.DepthMask(GL_FALSE);
+        if (sensor) {
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_ALWAYS);
+            gl.DepthMask(GL_TRUE);
+        } else {
+            gl.Disable(GL_DEPTH_TEST);
+            gl.DepthMask(GL_FALSE);
+        }
         gl.Disable(GL_CULL_FACE);
         gl.UseProgram(s.background_program);
+        set_sensor_uniforms(s.bg_sensor);
+        gl.UniformMatrix4fv(s.bg_sensor_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
         gl.Uniform3fv(bg.cam_pos, 1, glm::value_ptr(camera.position));
         gl.Uniform3fv(bg.right, 1, glm::value_ptr(right));
         gl.Uniform3fv(bg.up, 1, glm::value_ptr(up));
@@ -2845,6 +2956,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
         set_shadow_uniforms(s.mesh_shadow);
         set_flow_uniforms(s.mesh_flow);
+        set_sensor_uniforms(s.mesh_sensor);
         gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
         gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
         gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
@@ -2924,6 +3036,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.Uniform1f(cu.horizon_onset, options.horizon_blend_onset);
             set_shadow_uniforms(s.csg_shadow);
             set_flow_uniforms(s.csg_flow);
+            set_sensor_uniforms(s.csg_sensor);
             gl.BindVertexArray(s.empty_vao);
             for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
                 const render::CsgSubtree& sub = scene.csg_subtrees[i];
@@ -3304,7 +3417,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // The CPU's own lists, in its order: lines, then triangles. Depth-tested
     // and written, strictly nearer wins (setPixelIfCloser's rule), and nothing
     // is culled, as on the CPU. In every raster mode, filled.
-    if (options.overlays) {
+    if (options.overlays && !sensor) {  // a sensor frame is the geometry alone
         const render::OverlayGeometry overlays = render::overlay_geometry(scene, options);
         std::vector<float>& v = s.overlay_vertices;
         v.clear();

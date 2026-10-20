@@ -37,7 +37,7 @@ A **camera** is a **technique** plus one or more **channels**. The same camera s
 | Channel | Today |
 |---|---|
 | Colour, BGRX8 | Built on every backend |
-| Depth | Each backend has an internal depth buffer, but none exports it |
+| Depth | Drawn as a view on the CPU and GL: `DrawMode::depth` / `ViewBase::depth` colours each surface's view-space depth in metres over a stated range (N13). Not yet exported as values |
 | Object ID | None |
 | Field | A field layer (`render/field_layer.hpp`, `3605ddf`): a world-space slice with one sample per cell, drawn on the CPU and GL. The caller supplies the samples until Core's stage 3 can sample a registered field (`plans/2026-10-03-field-channel-plan.md`, Part B) |
 | Velocity | `DrawMode::velocity` is a debug colour encoding of body velocity, not a channel |

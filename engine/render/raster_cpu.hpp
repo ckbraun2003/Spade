@@ -116,6 +116,12 @@ namespace spade::render {
                                    RenderTarget& target, std::vector<float>* shadow_scratch = nullptr,
                                    FlowFrameReport* flow_report = nullptr);
 
+// Why a sensor mode (DrawMode::depth, normals; N13) cannot draw `scene` with
+// `options`, or nothing: it draws the geometry as data, so it takes no flow or
+// field content, and depth needs a range validate_depth_range() accepts. The
+// one rule both backends refuse by (TD-9); `options.mode` must be a sensor mode.
+[[nodiscard]] Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& options);
+
 // ---------------------------------------------------------------------------
 // The overlays' geometry (RenderOptions::overlays, PA-4): one source for the
 // CPU raster and GL, so the two paths cannot drift on what they draw.

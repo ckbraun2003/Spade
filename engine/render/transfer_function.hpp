@@ -39,6 +39,7 @@ enum class ColourMapId : uint32_t {
     inferno,    // sequential: vorticity, dye
     cool_warm,  // diverging, neutral at the centre: pressure
 };
+inline constexpr uint32_t kColourMapCount = 3;  // ColourMapId's values, for a check of one read from data
 inline constexpr std::size_t kColourMapEntries = 256;
 
 [[nodiscard]] const std::array<glm::vec3, kColourMapEntries>& colour_map_table(ColourMapId id);

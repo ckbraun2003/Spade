@@ -22,6 +22,7 @@ constexpr std::array<std::string_view, kFlowViewCount> kLayerNames = {"volume", 
 // refusal after "apply_view: ".
 constexpr std::string_view kLayersOnSdf = "exact_sdf draws no flow layers";
 constexpr std::string_view kNoSdf = "exact_sdf needs the world's SDF";
+constexpr std::string_view kLayersOnSensor = "a sensor base (depth, normals) draws no flow layers";
 constexpr std::string_view kNoVolume = "a flow layer needs a published flow volume";
 constexpr std::string_view kTwoCp = "a view colours its surfaces by one C_p layer";
 constexpr std::string_view kNoWalls = "C_p needs a flow wall to colour";
@@ -58,6 +59,12 @@ constexpr std::string_view kGlCompiling = "the flow shaders are still compiling"
     if (static_cast<uint32_t>(spec.base) >= kViewBaseCount) return "its base is not a ViewBase";
     if (spec.base == ViewBase::exact_sdf && !spec.layers.empty()) return std::string(kLayersOnSdf);
     if (spec.base == ViewBase::exact_sdf && !has_sdf) return std::string(kNoSdf);
+    if ((spec.base == ViewBase::depth || spec.base == ViewBase::normals) && !spec.layers.empty()) {
+        return std::string(kLayersOnSensor);
+    }
+    if (spec.base == ViewBase::depth) {
+        if (Result<void> valid = validate_depth_range(spec.depth); !valid) return valid.error().context;
+    }
     if (!spec.layers.empty() && !has_volume) return std::string(kNoVolume);
     const auto cps = std::count_if(spec.layers.begin(), spec.layers.end(),
                                    [](const FlowViewSpec& s) { return s.kind == FlowView::surface_cp; });
@@ -255,6 +262,11 @@ namespace {
         case ViewBase::wireframe: options.mode = DrawMode::wireframe; break;
         case ViewBase::velocity: options.mode = DrawMode::velocity; break;
         case ViewBase::exact_sdf: options.mode = DrawMode::raymarch; break;
+        case ViewBase::depth:
+            options.mode = DrawMode::depth;
+            options.depth = spec.depth;
+            break;
+        case ViewBase::normals: options.mode = DrawMode::normals; break;
     }
     return legends;
 }
@@ -271,7 +283,28 @@ Result<std::vector<ViewLegend>> apply_view(const ViewSpec& spec, const FlowVolum
     return apply(spec, volume, scene, options, &cache);
 }
 
-// RED: a stub until the green step.
-BaseLegend base_legend(const ViewSpec& spec, const RenderScene&) { return BaseLegend{.base = spec.base}; }
+BaseLegend base_legend(const ViewSpec& spec, const RenderScene&) {
+    BaseLegend legend;
+    legend.base = spec.base;
+    switch (spec.base) {
+        case ViewBase::depth:
+            legend.quantity = "depth (view z)";
+            legend.unit = "m";
+            legend.colours = spec.depth.colours;
+            legend.range = ResolvedRange{.min = spec.depth.near_m, .max = spec.depth.far_m};
+            legend.black_is_no_surface = true;
+            break;
+        case ViewBase::normals:
+            legend.quantity = "surface normal";
+            legend.key = "+X red, +Y green, +Z blue: the unit world-space normal n as (n + 1) / 2; world frame, Y up";
+            legend.black_is_no_surface = true;
+            break;
+        case ViewBase::shaded:
+        case ViewBase::wireframe:
+        case ViewBase::velocity:
+        case ViewBase::exact_sdf: break;
+    }
+    return legend;
+}
 
 }  // namespace spade::render
