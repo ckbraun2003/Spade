@@ -4,10 +4,12 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
+#include "analysis/live_run.hpp"
 #include "core/error.hpp"
 #include "vehicles/model_type.hpp"
 
@@ -17,12 +19,21 @@ struct LiveCase {
     spade::analysis::AnalysisCase c;
     spade::vehicles::ModelType run_model;   // what LiveRun steps
     spade::vehicles::ModelType draw_model;  // whose parts each frame draws
+    // The rotors' chain, idle and charge, beside the model until the chain
+    // pin (LiveRun::start()); none for a run without rotors.
+    std::optional<spade::analysis::LivePropulsion> propulsion;
     spade::analysis::ControlProgram program;
     std::string program_name;  // "the showcase program", or the controls file's name
     double seconds = 0.0;      // how long to fly, simulated
     std::string name;          // the film's title
     std::string notes;         // what the film can't show yet, for its card
     std::string identity;      // the case, the program and both models, for the cache's mark
+    float speed_max = 0.0f;    // the speed colours' top, m/s; 0: twice the wind (drawing only)
+    // The vortex view's lambda2 iso, as a fraction of the frame's deepest
+    // core (drawing only): a third shows a held body's wake; a powered
+    // rotor's deepest core is a grid-scale spike, so its tip vortices need a
+    // sixth.
+    float vortex_fraction = 1.0f / 3.0f;
 };
 
 // The case's model, through the one path a case has to its model today:
@@ -40,9 +51,18 @@ struct LiveCase {
                                                            const std::filesystem::path& controls_file,
                                                            double seconds);
 
-// The smoke case, Interface's own tiny one: the hover scene's quad without
-// its parts or rotors (until P2 and the rotors' coupling), an 8^3 box of
-// 0.8 m stepped every 4 ms, in a 3 m/s wind, under the showcase program.
+// The reference quad (tests/reference_airframe.hpp, the airframe compile's
+// one fixture, until Core's model file), compiled from its airframe and flown
+// POWERED by its own propulsion chain: idle 5 % and the airframe's state of
+// charge, LiveRun's tests' choice until the chain pin. It runs without its
+// parts (the fluid meets the solid drone with P2) and is drawn with them,
+// held at the box's centre in a 3 m/s wind, flying the showcase's moves
+// around its HOVER: the throttle that holds m g = n k_T w^2, found by
+// bisection on the throttle map, stands in for the showcase's 0.5.
+//   quad_live_case(): the film's grid, a 0.8 m box at 12.5 mm (64^3, R/dx 6),
+//     stepped every 0.5 ms;
+//   smoke_live_case(): the smoke's, an 8^3 box of 0.8 m stepped every 4 ms.
+[[nodiscard]] spade::Result<LiveCase> quad_live_case(double seconds);
 [[nodiscard]] spade::Result<LiveCase> smoke_live_case(double seconds);
 
 }  // namespace flow_movie

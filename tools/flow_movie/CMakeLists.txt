@@ -21,7 +21,7 @@ target_compile_features(flow_movie PRIVATE cxx_std_23)
 # Interface's one reader (TD-9).
 target_link_libraries(flow_movie PRIVATE
     spade::core spade::physics spade::render spade::render_gl spade::analysis spade::scene spade::render_parts
-    glfw glad)
+    spade::vehicles glfw glad)
 # GLFW_INCLUDE_NONE: glad declares GL, and glfw3.h must not pull in <GL/gl.h>.
 # SPADE_TESTS_DIR, the tests' name, which the gcc check defines too: the V1
 # records sit under tests/.
@@ -48,15 +48,27 @@ set_tests_properties(GpuFlowMovie.SmokeRendersTwoFrames PROPERTIES
 # its state is grid_io's blob. Skips as the smoke above does.
 add_test(NAME GpuFlowMovie.ResumedRunMatchesUnbroken
     COMMAND "${CMAKE_COMMAND}" "-DFLOW_MOVIE=$<TARGET_FILE:flow_movie>" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/resume"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/resume_check.cmake")
+            -DVIDEO=smoke -P "${CMAKE_CURRENT_SOURCE_DIR}/resume_check.cmake")
 set_tests_properties(GpuFlowMovie.ResumedRunMatchesUnbroken PROPERTIES
     LABELS "spade;gpu"
     SKIP_REGULAR_EXPRESSION "\\[ resume \\] skipped"
-    PASS_REGULAR_EXPRESSION "\\[ resume \\] 6 frames"
+    PASS_REGULAR_EXPRESSION "\\[ resume \\] smoke: 6 frames"
     TIMEOUT 120)
 
-# The --case smoke: two frames of Interface's tiny LiveRun case through the
-# recorder (D1's path), at 640x360. Skips as the smoke above does.
+# The same through LiveRun's save/restore: the powered case smoke, stopped
+# after it arms (its rotors spinning) and continued, caches the same frames
+# and run labels as one unbroken run.
+add_test(NAME GpuFlowMovie.CaseResumedRunMatchesUnbroken
+    COMMAND "${CMAKE_COMMAND}" "-DFLOW_MOVIE=$<TARGET_FILE:flow_movie>" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/case-resume"
+            -DVIDEO=case-smoke -P "${CMAKE_CURRENT_SOURCE_DIR}/resume_check.cmake")
+set_tests_properties(GpuFlowMovie.CaseResumedRunMatchesUnbroken PROPERTIES
+    LABELS "spade;gpu"
+    SKIP_REGULAR_EXPRESSION "\\[ resume \\] skipped"
+    PASS_REGULAR_EXPRESSION "\\[ resume \\] case-smoke: 12 frames"
+    TIMEOUT 120)
+
+# The --case smoke: two frames of the powered reference quad through LiveRun
+# and the recorder (D1's path), at 640x360. Skips as the smoke above does.
 add_test(NAME GpuFlowMovie.CaseSmokeRendersTwoFrames
     COMMAND flow_movie --video case-smoke --out "${CMAKE_CURRENT_BINARY_DIR}/case-smoke")
 set_tests_properties(GpuFlowMovie.CaseSmokeRendersTwoFrames PROPERTIES
