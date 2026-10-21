@@ -381,6 +381,12 @@ if(SPADE_BUILD_SANDBOX)
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp
+        # The editor's per-view state and its mode menu (N19): supports()' answer per
+        # base, refusals in its words, and a view never drawn blank.
+        test_editor_views.cpp
+        # A vehicle drawn from its parts (N12): posed with the vehicle, the same meshes
+        # frame to frame, and a CSG root flagged for a per-frame upload.
+        test_sandbox_vehicle_parts.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

@@ -46,6 +46,8 @@ target_link_libraries(spade_sandbox PRIVATE
     spade::sim
     # The editor composes and runs scene files (compose_file(), instantiate()).
     spade::scene
+    # The editor draws a model's parts (N12, vehicle_draw.hpp).
+    spade::render_parts
     # The live smoke's airflow chapter asks LiveRun for the drone-box run.
     spade::analysis
 )

@@ -15,6 +15,7 @@
 #include "drone_view.hpp"     // detail::lambert()
 #include "editor_pick.hpp"
 #include "gl_target_sink.hpp"
+#include "render/mesh_resolver.hpp"
 #include "render_gap.hpp"
 #include "viewport_rect.hpp"
 
@@ -106,31 +107,69 @@ std::optional<editor::SceneEdit> EditorSession::pose_edit(const editor::GizmoPos
     return std::nullopt;
 }
 
+render::ViewBackend EditorSession::view_backend() const noexcept {
+    return gpu_ ? render::ViewBackend::gl : render::ViewBackend::cpu;
+}
+
+render::ViewInputs EditorSession::view_inputs() {
+    return editor::inputs_of(scene_, nullptr, gpu_ ? gpu_->flow_ready() : true);
+}
+
 // The composed world as a render scene, plus the meshes and materials the
 // vehicles and the selection draw with. Only when the composition changed.
 Result<void> EditorSession::rebuild_scene() {
-    Result<render::RenderScene> built = render::scene_from_world(workspace_->composed().world, {});
+    // N11: the world's meshes, from the scene's folder first, then the
+    // library's. A ref that resolves nowhere draws as the resolver's magenta
+    // stand-in and is named in the status; Save copies the library's beside
+    // the scene.
+    std::vector<std::filesystem::path> roots{workspace_->documents().scene.path.parent_path()};
+    if (!workspace_->assets_dir().empty()) roots.push_back(workspace_->assets_dir() / "library" / "meshes");
+    const render::ResolvedMeshes meshes = render::resolve_meshes(workspace_->composed().world, roots);
+    workspace_->set_fallback_meshes(meshes.from_fallback);
+    if (!meshes.unresolved.empty()) {
+        std::string line = "meshes drawn as stand-ins:";
+        for (const render::UnresolvedMesh& u : meshes.unresolved) line += " '" + u.ref + "' (" + u.why + ");";
+        workspace_->panels().status = line;
+    }
+    Result<render::RenderScene> built = render::scene_from_world(workspace_->composed().world, meshes.meshes);
     if (!built) {
         return std::unexpected(Error{built.error().code, "the scene would not draw: " + built.error().context});
     }
-    scene_ = std::move(*built);
-    look_.box_mesh = static_cast<uint32_t>(scene_.meshes.size());
-    scene_.meshes.push_back(make_box_mesh());
-    look_.sphere_mesh = static_cast<uint32_t>(scene_.meshes.size());
-    scene_.meshes.push_back(make_sphere_mesh());
-    look_.disc_mesh = static_cast<uint32_t>(scene_.meshes.size());
-    scene_.meshes.push_back(make_cylinder_mesh());
-    look_.body_material = static_cast<uint32_t>(scene_.materials.size());
-    scene_.materials.push_back(detail::lambert(0.35f, 0.37f, 0.40f));
-    look_.nose_material = static_cast<uint32_t>(scene_.materials.size());
-    scene_.materials.push_back(detail::lambert(0.85f, 0.15f, 0.10f));
-    look_.rotor_material = static_cast<uint32_t>(scene_.materials.size());
-    scene_.materials.push_back(detail::lambert(0.12f, 0.12f, 0.14f));
-    selected_material_ = static_cast<uint32_t>(scene_.materials.size());
-    scene_.materials.push_back(detail::lambert(0.29f, 0.56f, 0.89f));  // the theme's accent
+    base_ = std::move(*built);
+    look_.box_mesh = static_cast<uint32_t>(base_.meshes.size());
+    base_.meshes.push_back(make_box_mesh());
+    look_.sphere_mesh = static_cast<uint32_t>(base_.meshes.size());
+    base_.meshes.push_back(make_sphere_mesh());
+    look_.disc_mesh = static_cast<uint32_t>(base_.meshes.size());
+    base_.meshes.push_back(make_cylinder_mesh());
+    look_.body_material = static_cast<uint32_t>(base_.materials.size());
+    base_.materials.push_back(detail::lambert(0.35f, 0.37f, 0.40f));
+    look_.nose_material = static_cast<uint32_t>(base_.materials.size());
+    base_.materials.push_back(detail::lambert(0.85f, 0.15f, 0.10f));
+    look_.rotor_material = static_cast<uint32_t>(base_.materials.size());
+    base_.materials.push_back(detail::lambert(0.12f, 0.12f, 0.14f));
+    selected_material_ = static_cast<uint32_t>(base_.materials.size());
+    base_.materials.push_back(detail::lambert(0.29f, 0.56f, 0.89f));  // the theme's accent
+    // N12: each model with parts, prepared once. One that won't prepare draws
+    // as its layout, and says why (announced, never silent).
+    prepared_.clear();
+    upload_each_frame_ = false;
+    for (const vehicles::ModelType& m : workspace_->documents().scene.desc().models) {
+        if (m.parts.empty()) continue;
+        Result<render_parts::PreparedParts> p = render_parts::prepare_parts(m);
+        if (!p) {
+            workspace_->panels().status = "the model '" + m.name + "' draws as its layout: " + p.error().context;
+            continue;
+        }
+        upload_each_frame_ = upload_each_frame_ || has_csg_pieces(*p);
+        prepared_.emplace_back(m.name, std::move(*p));
+    }
     options_.ground_grid = true;
     options_.overlays = true;  // the selection's box
     drawn_composition_ = workspace_->composition();
+    // Uploaded with the vehicles bound, so every later frame's scene holds the
+    // same meshes and only their transforms move (Rendering, 2026-10-19).
+    draw_items();
     if (gpu_) {
         if (Result<void> up = gpu_->upload_scene(scene_); !up) {
             return std::unexpected(Error{up.error().code, "re-upload failed: " + up.error().context});
@@ -145,7 +184,7 @@ void EditorSession::draw_items() {
     const editor::EditorWorkspace& w = *workspace_;
     const scene::SceneDesc& s = w.documents().scene.desc();
     const editor::Selection& selected = w.panels().selection;
-    scene_.dynamics.clear();
+    scene_ = base_;  // the vehicles' parts are bound into statics, so each frame starts from the base
     std::optional<render::Aabb> box;
     for (const scene::SceneVehicle& v : s.vehicles) {
         const vehicles::ModelType* model = nullptr;
@@ -164,8 +203,26 @@ void EditorSession::draw_items() {
         const bool is_selected = selected.kind == editor::Selection::Kind::object && selected.name == v.name;
         VehicleLook look = look_;
         if (is_selected) look.body_material = selected_material_;
-        append_vehicle_items(scene_.dynamics, look, *model, pos, orient, 2.0f * w.records().contacts.proxy_radius,
-                             is_selected ? selected_material_ : look_.body_material);
+        // N12: its parts, where it has them; its layout otherwise, or when the
+        // parts won't bind (the reason in the status).
+        bool drawn = false;
+        for (const auto& [name, prepared] : prepared_) {
+            if (name != model->name) continue;
+            render_parts::PartsLook parts;
+            parts.body = look.body_material;
+            parts.rotor = look_.rotor_material;
+            parts.porous = look.body_material;
+            parts.object_name = v.name;  // segmentation: each drone its own colour, not its model's
+            if (Result<void> bound = append_vehicle_parts(scene_, prepared, *model, pos, orient, parts); bound) {
+                drawn = true;
+            } else {
+                workspace_->panels().status = "'" + v.name + "' draws as its layout: " + bound.error().context;
+            }
+        }
+        if (!drawn) {
+            append_vehicle_items(scene_.dynamics, look, *model, pos, orient, 2.0f * w.records().contacts.proxy_radius,
+                                 is_selected ? selected_material_ : look_.body_material);
+        }
         if (is_selected) {
             const glm::vec3 reach(editor::detail::reach_of(*model));
             box = render::Aabb{pos - reach, pos + reach};
@@ -227,6 +284,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     }
     // What the panels queued while the last frame drew them.
     w.apply_panels();
+    if (const std::optional<render::ViewBase> mode = w.panels().mode_request) {
+        w.panels().mode_request.reset();
+        // A refusal keeps what the view draws and is shown verbatim (INT-2).
+        if (Result<void> chosen = editor::choose_mode(view_, *mode, view_backend(), view_inputs()); !chosen) {
+            w.panels().status = chosen.error().context;
+        }
+    }
 
     const auto p0 = std::chrono::steady_clock::now();
     w.advance(dt);
@@ -236,6 +300,32 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         if (Result<void> rebuilt = rebuild_scene(); !rebuilt) return rebuilt;
     }
     draw_items();
+    if (gpu_ && upload_each_frame_) {
+        // A CSG-root piece marches at the pose it was uploaded with.
+        if (Result<void> up = gpu_->upload_scene(scene_); !up) {
+            return std::unexpected(Error{up.error().code, "re-upload failed: " + up.error().context});
+        }
+    }
+    // The view's mode into the scene and options, and the menu for its
+    // backend and inputs (N19). No flow volume until the editor's airflow (M2).
+    last_view_ = ViewDrawn{};
+    if (Result<void> shown = editor::apply_to(view_, nullptr, view_backend(), view_inputs(), scene_, options_,
+                                              view_cache_);
+        !shown) {
+        return shown;
+    }
+    last_view_.applied = true;
+    last_view_.base = view_.refusal.empty() ? view_.spec.base : render::ViewBase::shaded;
+    if (background_only_) {
+        scene_.statics.clear();
+        scene_.dynamics.clear();
+        scene_.csg_subtrees.clear();
+        scene_.bounds = render::Aabb{};
+    }
+    w.panels().modes = editor::mode_menu(view_, view_backend(), view_inputs());
+    w.panels().legends = view_.legends;
+    w.panels().view_note = view_.refusal;
+    w.panels().base_legend = view_.base_legend;
 
     if (view.empty()) return {};  // minimised: the run keeps stepping
     const render::Camera rc = camera_.to_render_camera();
@@ -247,6 +337,12 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
                                  : std::vector<editor::GizmoLine>{});
     // SL10: the HUD names what the active path does not draw.
     sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
+    if (gpu_) {
+        for (const std::string_view name : GpuRenderer::unhonoured(options_)) {
+            if (!last_view_.unhonoured.empty()) last_view_.unhonoured += ", ";
+            last_view_.unhonoured += name;
+        }
+    }
     const auto r0 = std::chrono::steady_clock::now();
     if (gpu_) {
         sink_->begin_gpu_frame();
@@ -254,12 +350,14 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             return std::unexpected(Error{drew.error().code, "GPU draw failed: " + drew.error().context});
         }
         sink_->present_overlay(ms_since(r0), physics_ms);
+        last_view_.drawn = true;
     } else {
         sink_->note_physics_ms(physics_ms);
         if (!render_frame(scene_, rc, view.width, view.height, options_, pixels_, *sink_)) {
             return std::unexpected(Error{Code::internal, "the CPU render failed (see above)"});
         }
         sink_->note_render_ms(ms_since(r0));
+        last_view_.drawn = true;
     }
     return {};
 }

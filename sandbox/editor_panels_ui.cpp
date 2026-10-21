@@ -177,6 +177,67 @@ void toolbar(ed::EditorPanels& p) {
     ImGui::SameLine();
     ImGui::Checkbox("Snap", &p.snap);
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
+    // The view's mode (N19): every base, a kind this view can't draw shown
+    // disabled with supports()' reason beside it, never drawn blank.
+    {
+        const char* shown = "shaded";
+        for (const ed::ModeEntry& m : p.modes) {
+            if (m.current) shown = m.name.c_str();
+        }
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("View");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::CalcTextSize("wireframe").x + 2.0f * ImGui::GetFrameHeight());
+        if (ImGui::BeginCombo("##view", shown)) {
+            for (const ed::ModeEntry& m : p.modes) {
+                ImGui::BeginDisabled(!m.drawable);
+                if (ImGui::Selectable(m.name.c_str(), m.current)) p.mode_request = m.base;
+                ImGui::EndDisabled();
+                if (!m.drawable) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", m.why_not.c_str());
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (!p.view_note.empty()) {
+            ImGui::TextDisabled("%s", p.view_note.c_str());
+            ImGui::SameLine();
+        }
+        // The base's legend: a depth view's range, the normals' key, each
+        // segmentation label's colour (in a tooltip, so the toolbar stays one
+        // line; a clash is named on the line itself).
+        const render::BaseLegend& legend = p.base_legend;
+        if (legend.base == render::ViewBase::depth) {
+            ImGui::TextDisabled("%s %.1f to %.1f %s", legend.quantity.c_str(), static_cast<double>(legend.range.min),
+                                static_cast<double>(legend.range.max), legend.unit.c_str());
+            ImGui::SameLine();
+        } else if (legend.base == render::ViewBase::segmentation) {
+            const render::SegmentLegend& seg = legend.segments;
+            ImGui::TextDisabled("%s: %zu labels, %u unlabelled", legend.quantity.c_str(), seg.entries.size(),
+                                seg.unlabelled_items);
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::TextUnformatted(legend.key.c_str());
+                for (const render::SegmentEntry& e : seg.entries) {
+                    const ImVec4 c(e.colour[0] / 255.0f, e.colour[1] / 255.0f, e.colour[2] / 255.0f, 1.0f);
+                    ImGui::ColorButton(e.name.c_str(), c, ImGuiColorEditFlags_NoTooltip, ImVec2(ui::kBase, ui::kBase));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(e.name.c_str());
+                }
+                ImGui::EndTooltip();
+            }
+            ImGui::SameLine();
+            for (const render::SegmentClash& c : seg.clashes) {
+                ImGui::TextDisabled("'%s' and '%s' look alike", c.a.c_str(), c.b.c_str());
+                ImGui::SameLine();
+            }
+        } else if (!legend.key.empty()) {
+            ImGui::TextDisabled("%s: %s", legend.quantity.c_str(), legend.key.c_str());
+            ImGui::SameLine();
+        }
+    }
+    ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);
     // The live smoke opens and closes the menu by request, as a click would.
     const bool open_request = p.file_menu.has_value() && *p.file_menu;
