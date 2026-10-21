@@ -350,7 +350,10 @@ spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
         !bound) {
         return std::unexpected(spade::Error{bound.error().code, "the quad's parts would not bind: " + bound.error().context});
     }
+    // flow_movie's look: no shadows, and no overlay grid at the drone's level.
     spade::render::RenderOptions options;
+    options.shadows = false;
+    options.overlays = false;
     const std::vector<end_goal::RotorProbe> probes = airflow::probes_of(*run_);
     const spade::render::ViewSpec spec = slice_ ? airflow::wake_slice(volume_, probes, speed_top_)
                                                 : airflow::airflow_view(volume_, probes, speed_top_);

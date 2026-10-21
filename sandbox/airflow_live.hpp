@@ -182,7 +182,8 @@ namespace detail {
 
 // What the chapter shows over the drone while it flies, for this frame's
 // volume: the vortex cores (once there are any) and streamlines through each
-// disc, their speeds coloured over [0, top]. The slice has its own view
+// disc, coloured by speed: the lines over [0, top], the cores over
+// [0, top / 2]. The slice has its own view
 // (wake_slice()): over the drone it hides half the wake.
 [[nodiscard]] inline render::ViewSpec airflow_view(const FlowVolume& volume,
                                                    std::span<const end_goal::RotorProbe> rotors, float top) {
@@ -195,7 +196,7 @@ namespace detail {
         iso.kind = render::FlowView::vortex_iso;
         iso.quantity = render::FlowQuantity::lambda2_hat;
         iso.iso_value = deepest * kVortexFraction;
-        iso.range_max = top;
+        iso.range_max = 0.5f * top;  // the induced speed: the cores sit in the jet's slower shear layer
         spec.layers.push_back(std::move(iso));
     }
 
