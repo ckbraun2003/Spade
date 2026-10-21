@@ -19,10 +19,10 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "airflow_solid_shapes.hpp"
-#include "airflow_vehicle_sampler.hpp"
 #include "reference_airframe.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "state/layout.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/part_pose.hpp"
 #include "vehicles/quadrotor.hpp"
@@ -778,7 +778,7 @@ TEST(AirflowSolidsStep, ThePosedBodyGivesTheSameAperturesFromA4AndB4) {
         const auto posed = spade::vehicles::posed_parts(m, body, omega, psi, spade::vehicles::PartFilter::rigid_only);
         EXPECT_TRUE(posed.has_value()) << (posed ? "" : posed.error().context);
         if (!posed) return f;
-        const airflow_test::VehicleSampler v(m, *posed, origin);
+        const spade::vehicles::AirflowSolids v(m, *posed, origin);
         const auto parts = v.parts();
         EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
         if (!parts) return f;
