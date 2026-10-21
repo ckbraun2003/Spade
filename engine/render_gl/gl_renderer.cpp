@@ -2108,61 +2108,33 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
         if (probe.on_program) probe.on_program(what);
     };
 
-    const Result<GLuint> mesh_program =
-        link(gl, {kGlslVersion, kCommonSrc, kVertexSrc},
-             {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc, kFragmentSrc},
-             "mesh", salt);
-    if (!mesh_program) return std::unexpected(mesh_program.error());
-    impl->program = *mesh_program;
-    linked_one("mesh");
-    const Result<GLuint> background_program = link(gl, {kGlslVersion, kBackgroundVertexSrc},
-                                                    {kGlslVersion, kCommonSrc, kFlowSampleSrc, kSensorSrc, kBackgroundFragmentSrc},
-                                                    "background", salt);
-    if (!background_program) return std::unexpected(background_program.error());
-    impl->background_program = *background_program;
-    linked_one("background");
-    const Result<GLuint> field_program =
-        link(gl, {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field", salt);
-    if (!field_program) return std::unexpected(field_program.error());
-    impl->field_program = *field_program;
-    linked_one("field");
-    const Result<GLuint> overlay_program =
-        link(gl, {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, "overlay", salt);
-    if (!overlay_program) return std::unexpected(overlay_program.error());
-    impl->overlay_program = *overlay_program;
-    linked_one("overlay");
-    const Result<GLuint> caster_program =
-        link(gl, {kGlslVersion, kCasterVertexSrc}, {kGlslVersion, kCasterFragmentSrc}, "shadow caster", salt);
-    if (!caster_program) return std::unexpected(caster_program.error());
-    impl->caster_program = *caster_program;
-    linked_one("shadow caster");
-    const Result<GLuint> csg_program = link(gl, {kGlslVersion, kCsgVertexSrc},
-                                            {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc,
-                                             kSensorSrc, kFlowSurfaceSrc, kCsgFragmentSrc},
-                                            "csg", salt);
-    if (!csg_program) return std::unexpected(csg_program.error());
-    impl->csg_program = *csg_program;
-    linked_one("csg");
-    // The flow programs (7g): in the background when asked and the driver
-    // compiles in parallel, so flow_ready() reports them; otherwise finished
-    // here, as every other program is.
+    // Every program starts compiling before any is waited for, the long flow
+    // march first, and each is then finished in order; one that fails is
+    // built again on its own, so the refusal carries its shader's own log.
+    // Where the host asks for the flow programs in the background and the
+    // driver compiles in parallel (KHR_parallel_shader_compile), the nine
+    // build side by side and create() waits for six. Only then: on the RTX
+    // 3060 Ti (GpuGlCreateCost, 2026-10-21), parallel compile took a cold
+    // create() from 4.4 s to 0.8 s, the flow programs ready at 3.0 s, but
+    // a warm one (the driver's cache has them, every launch after the first)
+    // from 19 ms to about 240 ms. Building the six one after another first
+    // and only the flow programs in parallel kept the 240 ms and made the
+    // cold create() 1.6 s.
     impl->verify_cached_volumes = options.verify_cached_volumes;
-    bool parallel = false;
-    if (options.flow_programs_in_background) {
-        GLint extensions = 0;
-        gl.GetIntegerv(GL_NUM_EXTENSIONS, &extensions);
-        for (GLint e = 0; e < extensions && !parallel; ++e) {
-            const auto* name = reinterpret_cast<const char*>(gl.GetStringi(GL_EXTENSIONS, static_cast<GLuint>(e)));
-            const std::string_view ext = name != nullptr ? name : "";
-            const char* entry = ext == "GL_KHR_parallel_shader_compile"   ? "glMaxShaderCompilerThreadsKHR"
-                                : ext == "GL_ARB_parallel_shader_compile" ? "glMaxShaderCompilerThreadsARB"
-                                                                          : nullptr;
-            if (entry == nullptr) continue;
-            const auto threads = reinterpret_cast<SpadePfnGlMaxShaderCompilerThreads>(loader(entry));
-            if (threads != nullptr) {
-                threads(0xFFFFFFFFu);  // as many as the driver likes
-                parallel = true;
-            }
+    bool background = false;
+    GLint extensions = 0;
+    if (options.flow_programs_in_background) gl.GetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+    for (GLint e = 0; e < extensions && !background; ++e) {
+        const auto* name = reinterpret_cast<const char*>(gl.GetStringi(GL_EXTENSIONS, static_cast<GLuint>(e)));
+        const std::string_view ext = name != nullptr ? name : "";
+        const char* entry = ext == "GL_KHR_parallel_shader_compile"   ? "glMaxShaderCompilerThreadsKHR"
+                            : ext == "GL_ARB_parallel_shader_compile" ? "glMaxShaderCompilerThreadsARB"
+                                                                      : nullptr;
+        if (entry == nullptr) continue;
+        const auto threads = reinterpret_cast<SpadePfnGlMaxShaderCompilerThreads>(loader(entry));
+        if (threads != nullptr) {
+            threads(0xFFFFFFFFu);  // as many as the driver likes
+            background = true;
         }
     }
     impl->flow_program = start_link(gl, {kGlslVersion, kCsgVertexSrc},
@@ -2172,7 +2144,53 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->flow_composite_program =
         start_link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc}, salt);
     impl->flow_pending = true;
-    if (!parallel) {
+
+    struct Program {
+        const char* what;
+        std::initializer_list<const char*> vertex;
+        std::initializer_list<const char*> fragment;
+        GLuint* slot;
+        GLuint started = 0;
+    };
+    Program programs[] = {
+        {"mesh",
+         {kGlslVersion, kCommonSrc, kVertexSrc},
+         {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc, kFragmentSrc},
+         &impl->program},
+        {"background",
+         {kGlslVersion, kBackgroundVertexSrc},
+         {kGlslVersion, kCommonSrc, kFlowSampleSrc, kSensorSrc, kBackgroundFragmentSrc},
+         &impl->background_program},
+        {"field", {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, &impl->field_program},
+        {"overlay", {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, &impl->overlay_program},
+        {"shadow caster",
+         {kGlslVersion, kCasterVertexSrc},
+         {kGlslVersion, kCasterFragmentSrc},
+         &impl->caster_program},
+        {"csg",
+         {kGlslVersion, kCsgVertexSrc},
+         {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc,
+          kCsgFragmentSrc},
+         &impl->csg_program},
+    };
+    for (Program& program : programs) program.started = start_link(gl, program.vertex, program.fragment, salt);
+    for (Program& program : programs) {
+        if (Result<GLuint> done = linked(gl, program.started, program.what); done) {
+            *program.slot = *done;
+        } else if (Result<GLuint> again = link(gl, program.vertex, program.fragment, program.what, salt); again) {
+            *program.slot = *again;  // a driver that failed once and not twice: keep the working one
+        } else {
+            for (Program& rest : programs) {
+                if (&rest > &program && rest.started != 0) gl.DeleteProgram(rest.started);
+            }
+            return std::unexpected(again.error());
+        }
+        linked_one(program.what);
+    }
+    // The flow programs (7g): in the background when asked and the driver
+    // compiles in parallel, so flow_ready() reports them; otherwise finished
+    // here, as every other program is.
+    if (!background) {
         if (Result<void> done = impl->finish_flow_programs(); !done) return std::unexpected(done.error());
     }
 

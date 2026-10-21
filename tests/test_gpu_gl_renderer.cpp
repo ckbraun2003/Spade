@@ -2037,6 +2037,27 @@ TEST(GpuGlCreateCost, EachProgramColdAndWarm) {
                 usual.total_ms);
     RecordProperty("create_cold_ms", static_cast<int>(cold.total_ms));
     RecordProperty("create_warm_ms", static_cast<int>(warm.total_ms));
+
+    // As a host that asks for the flow programs in the background sees it,
+    // cold and then warm: create() returns, then flow_ready() turns true.
+    for (const char* run : {"cold", "warm"}) {
+        GlRenderer::CreateProbe probe;
+        probe.source_salt = salt + "_background";
+        const Clock::time_point start = Clock::now();
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{.flow_programs_in_background = true}, probe);
+        const double create_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        ASSERT_TRUE(made.has_value()) << made.error().context;
+        const Clock::time_point deadline = start + std::chrono::seconds(120);
+        while (!(*made)->flow_ready() && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const double ready_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::printf("[ create cost ]   in the background, %s: create() %.1f ms, flow ready at %.1f ms\n", run,
+                    create_ms, ready_ms);
+        RecordProperty(std::string("create_background_") + run + "_ms", static_cast<int>(create_ms));
+        RecordProperty(std::string("flow_ready_background_") + run + "_ms", static_cast<int>(ready_ms));
+    }
     glfwDestroyWindow(window);
     glfwTerminate();
 }

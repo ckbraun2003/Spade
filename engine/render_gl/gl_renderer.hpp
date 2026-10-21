@@ -86,9 +86,13 @@ class GlRenderer {
     // indistinguishable from the bug this module exists to fix.
     // flow_programs_in_background: the flow programs (the march, its brick
     // pass, the half-scale composite) compile in the background where the
-    // driver can (KHR_parallel_shader_compile), so create() returns at once
-    // and flow_ready() says when they are done. Where it cannot, create()
-    // waits for them as it does when not asked.
+    // driver can (KHR_parallel_shader_compile), so create() returns without
+    // them and flow_ready() says when they are done. Where it cannot, create()
+    // waits for them as it does when not asked. The cost, on the RTX 3060 Ti
+    // (GpuGlCreateCost, 2026-10-21): create() when the driver's shader cache
+    // misses (the first launch after a driver or shader change) 0.8 s, the
+    // flow ready at 3.0 s, against 4.4 s not asked; when it hits (every other
+    // launch) about 240 ms, against 19 ms.
     struct CreateOptions {
         bool flow_programs_in_background = false;
         // Check every reuse of the flow textures (see flow_volume_uploads())
