@@ -1101,7 +1101,7 @@ constexpr float kVortexFloor = -5.0f;
                render::Camera& camera) -> spade::Result<void> {
                 // Close on the drone, from above and upstream, so the arms'
                 // tops under the discs show.
-                camera = orbit(volume_centre(v), 0.55f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
+                camera = orbit(volume_centre(v), 0.35f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
                 return {};
             },
             [q](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
