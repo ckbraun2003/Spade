@@ -18,9 +18,11 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "airflow_record.hpp"
 #include "airflow_solid_shapes.hpp"
 #include "reference_airframe.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/wall_load.hpp"
 #include "state/layout.hpp"
 #include "vehicles/airflow_solids.hpp"
 #include "vehicles/airframe_compile.hpp"
@@ -58,18 +60,7 @@ struct Lcg {
 // sheet 0.25 dx thick across the section with its mid-plane on face plane
 // `plane`.
 // The compiler and the build a record was measured on (V1's form).
-[[nodiscard]] std::string build_line() {
-#if defined(NDEBUG)
-    const char* preset = "release";
-#else
-    const char* preset = "debug";
-#endif
-#if defined(_MSC_VER)
-    return "MSVC " + std::to_string(_MSC_VER) + ", " + preset;
-#else
-    return std::string(__VERSION__) + ", " + preset;
-#endif
-}
+using airflow_test::build_line;
 
 // Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
 [[nodiscard]] bool debug_build() {
@@ -126,6 +117,12 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
         const double step = static_cast<double>(g.p[cell_index(shape, plane - 1u, 3, 3)]) -
                             static_cast<double>(g.p[cell_index(shape, plane, 3, 3)]);
         const double expected = static_cast<double>(rho) * U * (1.0 - dx) / h;
+        // P3's force on the sheet over rho U L A / h (L = 1 m, A = (8 dx)^2):
+        // each side's pressure is read at the next cell centre, so the scheme
+        // gives 1 - dx/L.
+        const glm::vec3 on_sheet(static_cast<float>(plane) * dx, 0.125f, 0.125f);
+        const double force = static_cast<double>(wall_load(g, s.solids, s.regions, on_sheet).force.x) * h /
+                             (static_cast<double>(rho) * U * 1.0 * 0.0625);
         std::printf("=== validation record: S3 sheet across a channel, plane %u (%s) ===\n"
                     "path: CPU reference, %s\n"
                     "config: 32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick, rho %.3f, U %.1f, h %.4f, one "
@@ -142,6 +139,10 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
                     "reference: 1 (exact: the stencil is exact for a linear field)\n"
                     "tolerance: 1 +/- 1e-3 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)\n"
                     "verdict: %s\n"
+                    "measure: P3's force on the sheet F h / (rho U L A) from wall_load() = %.6f\n"
+                    "reference: 1 (exact in 1D; the scheme reads each side half a cell off: 1 - dx/L)\n"
+                    "tolerance: 1 +/- 0.033 (test-docs/2026-10-13-solids-tolerances.md, S3)\n"
+                    "verdict: %s\n"
                     "measure: the solve's final relative residual = %.3e\n"
                     "reference: a converged solve\n"
                     "tolerance: none (report only)\n"
@@ -150,11 +151,12 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
                     static_cast<double>(U), static_cast<double>(h), s.solids.run_line.c_str(),
                     off_wall, off_wall == 0u ? "within" : "MISS",
                     static_cast<double>(u_max / U), u_max / U <= 1.0e-3f ? "within" : "MISS", step / expected,
-                    std::fabs(step / expected - 1.0) <= 1.0e-3 ? "within" : "MISS",
-                    static_cast<double>(rep.residual));
+                    std::fabs(step / expected - 1.0) <= 1.0e-3 ? "within" : "MISS", force,
+                    std::fabs(force - 1.0) <= 0.033 ? "within" : "MISS", static_cast<double>(rep.residual));
         EXPECT_EQ(off_wall, 0u) << plane;
         EXPECT_LE(u_max / U, 1.0e-3f) << plane;
         EXPECT_NEAR(step / expected, 1.0, 1.0e-3) << plane;
+        EXPECT_NEAR(force, 1.0, 0.033) << plane;
         EXPECT_NE(s.solids.run_line.find("sheet: sheet (7.8 mm < 2 dx = 62.5 mm)"), std::string::npos)
             << s.solids.run_line;
     }
@@ -485,6 +487,207 @@ TEST(AirflowSolidsStep, S1TheSpheresStepOneConvergesAndHoldsItsWall) {
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+}
+
+// --- S1's P3 checks (design test 1; Test/Docs' tolerances, S1) ------------
+
+struct S1Result {
+    double c_m = 0.0;           // F_x h / (rho V U) from wall_load() at step 1
+    double cp_err = 0.0;        // max |C_p - C_p,pot| one cell out along the normal (step 3)
+    double cp_err_fixed = 0.0;  // the same at r = 7R/6, the order check's radius (step 3)
+    double drag = 0.0;          // |F_x| / (1/2 rho U^2 pi R^2) at step 3
+    double side = 0.0;          // max(|F_y|, |F_z|) over the same, at step 3
+    float residual = 0.0f;      // the worse of steps 1 and 3's final relative residuals
+    uint32_t samples = 0;
+    std::string run_line;
+};
+
+// The cell-centre pressure, trilinear at x (the grid's frame), each corner
+// read as the published volume holds it: a fluid cell its own pressure, a
+// solid one the mean of its fluid face-neighbours (Publish's rule in solid
+// cells, P6), the weights renormalised over the corners that have a value.
+// RND-8's sample, so the record reads what the view would.
+[[nodiscard]] double published_pressure_at(const MacGrid& g, const FluidRegions& r, glm::dvec3 x) {
+    const GridShape& s = g.shape;
+    const auto value = [&](int i, int j, int k, double& out) {
+        const std::size_t c = cell_index(s, static_cast<uint32_t>(i), static_cast<uint32_t>(j), static_cast<uint32_t>(k));
+        if (r.solid[c] == 0u) {
+            out = g.p[c];
+            return true;
+        }
+        double sum = 0.0;
+        int n = 0;
+        const int d[6][3] = {{-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
+        for (const auto& o : d) {
+            const std::size_t q = cell_index(s, static_cast<uint32_t>(i + o[0]), static_cast<uint32_t>(j + o[1]),
+                                             static_cast<uint32_t>(k + o[2]));
+            if (r.solid[q] == 0u) {
+                sum += g.p[q];
+                ++n;
+            }
+        }
+        if (n == 0) return false;
+        out = sum / n;
+        return true;
+    };
+    const glm::dvec3 q = x / static_cast<double>(s.dx) - 0.5;
+    const glm::ivec3 b(static_cast<int>(std::floor(q.x)), static_cast<int>(std::floor(q.y)),
+                       static_cast<int>(std::floor(q.z)));
+    const glm::dvec3 t = q - glm::dvec3(b);
+    double p = 0.0;
+    double weight = 0.0;
+    for (int n = 0; n < 8; ++n) {
+        const int ox = n & 1;
+        const int oy = (n >> 1) & 1;
+        const int oz = (n >> 2) & 1;
+        const double w = (ox != 0 ? t.x : 1.0 - t.x) * (oy != 0 ? t.y : 1.0 - t.y) * (oz != 0 ? t.z : 1.0 - t.z);
+        double v = 0.0;
+        if (value(b.x + ox, b.y + oy, b.z + oz, v)) {
+            p += w * v;
+            weight += w;
+        }
+    }
+    return p / weight;
+}
+
+// Potential flow's C_p at radius r and polar angle theta from +x (Batchelor
+// 1967, ch. 6), in double.
+[[nodiscard]] double cp_potential(double R, double r, double theta) {
+    const double a = (R / r) * (R / r) * (R / r);
+    const double ur = std::cos(theta) * (1.0 - a);
+    const double ut = -std::sin(theta) * (1.0 + 0.5 * a);
+    return 1.0 - (ur * ur + ut * ut);
+}
+
+// S1 at R/dx = n: R = 0.06 m, a box of side 8R, the sphere centred on its
+// middle cell corner, inflow U = 1 m/s on -x and the other faces open, free
+// slip, inviscid, U h / dx = 0.1, n_v 16. C_M from step 1; C_p, drag and side
+// forces from step 3; samples every 15 degrees in theta on four meridians.
+[[nodiscard]] S1Result run_s1(uint32_t n) {
+    const double R = 0.06;
+    const float dx = static_cast<float>(R / n);
+    const uint32_t cells = 8u * n;
+    const GridShape shape{cells, cells, cells, dx};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const float U = 1.0f;
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx / U, .n_v = 16,
+                          .interior = SolidInterior::extrapolate};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), U);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    const float mid = 4.0f * static_cast<float>(n) * dx;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = glm::vec3(mid),
+                                 .radius = static_cast<float>(R), .min_feature = static_cast<float>(2.0 * R)});
+    S1Result out;
+    EXPECT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value());
+    out.run_line = s.solids.run_line;
+    const double V = 4.0 / 3.0 * 3.141592653589793 * R * R * R;
+    const double q_area = 0.5 * cfg.rho * U * U * 3.141592653589793 * R * R;
+    const FluidHealth h1 = fluid_step(g, bc, cfg, s);
+    EXPECT_EQ(h1.fault, FluidFault::none) << describe(h1, shape);
+    out.c_m = static_cast<double>(wall_load(g, s.solids, s.regions, glm::vec3(mid)).force.x) * cfg.h /
+              (cfg.rho * V * U);
+    out.residual = h1.pressure_residual;
+    FluidHealth h3{};
+    for (int step = 2; step <= 3; ++step) h3 = fluid_step(g, bc, cfg, s);
+    EXPECT_EQ(h3.fault, FluidFault::none) << describe(h3, shape);
+    out.residual = std::max(out.residual, h3.pressure_residual);
+    const WallLoad load = wall_load(g, s.solids, s.regions, glm::vec3(mid));
+    out.drag = std::fabs(static_cast<double>(load.force.x)) / q_area;
+    out.side = std::max(std::fabs(static_cast<double>(load.force.y)), std::fabs(static_cast<double>(load.force.z))) /
+               q_area;
+    const double half_rho_u2 = 0.5 * cfg.rho * U * U;
+    const glm::dvec3 c(mid);
+    for (int m = 0; m < 4; ++m) {
+        const double phi = 0.5 * 3.141592653589793 * m;
+        for (int a = 0; a <= 12; ++a) {
+            const double theta = 3.141592653589793 * a / 12.0;
+            const glm::dvec3 nrm(std::cos(theta), std::sin(theta) * std::cos(phi), std::sin(theta) * std::sin(phi));
+            const double r_out = R + static_cast<double>(dx);
+            const double r_fix = 7.0 * R / 6.0;
+            const double cp_out = published_pressure_at(g, s.regions, c + r_out * nrm) / half_rho_u2;
+            const double cp_fix = published_pressure_at(g, s.regions, c + r_fix * nrm) / half_rho_u2;
+            out.cp_err = std::max(out.cp_err, std::fabs(cp_out - cp_potential(R, r_out, theta)));
+            out.cp_err_fixed = std::max(out.cp_err_fixed, std::fabs(cp_fix - cp_potential(R, r_fix, theta)));
+            ++out.samples;
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] const char* verdict(bool within) { return within ? "within" : "MISS"; }
+
+void print_s1_p3(uint32_t n, const S1Result& r, double cm_band, double cp_band, double drag_band) {
+    std::printf("=== validation record: S1 sphere in a uniform stream, R/dx %u, P3 checks ===\n"
+                "path: CPU reference, %s\n"
+                "config: %u^3 at dx %.4g m, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on "
+                "-x, other faces open, U h/dx 0.1, n_v 16 CG iterations from a cold start; %s\n"
+                "measure: the added mass C_M = F_x h / (rho V U) from wall_load(), step 1 = %.4f\n"
+                "reference: 0.5 (potential flow, an impulsively started sphere; Batchelor 1967, ch. 6)\n"
+                "tolerance: 0.5 +/- %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n"
+                "measure: max |C_p - C_p,pot| over %u samples one cell out along the normal, step 3 = %.4f\n"
+                "reference: potential flow's C_p at the same points, 1 - |u|^2/U^2 (Batchelor 1967, ch. 6)\n"
+                "tolerance: <= %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n"
+                "measure: the drag |F_x| / (1/2 rho U^2 pi R^2) from wall_load(), step 3 = %.4f\n"
+                "reference: 0 (d'Alembert)\n"
+                "tolerance: <= %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n"
+                "measure: the side forces max(|F_y|, |F_z|) / (1/2 rho U^2 pi R^2), step 3 = %.2e\n"
+                "reference: 0 (axisymmetric)\n"
+                "tolerance: <= 0.01 (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n"
+                "measure: the worse of steps 1 and 3's final relative residuals = %.3e\n"
+                "reference: a converged solve\n"
+                "tolerance: <= 1e-4 (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
+                "verdict: %s\n",
+                n, build_line().c_str(), 8u * n, 0.06 / n, r.run_line.c_str(), r.c_m, cm_band,
+                verdict(std::fabs(r.c_m - 0.5) <= cm_band), r.samples, r.cp_err, cp_band, verdict(r.cp_err <= cp_band),
+                r.drag, drag_band, verdict(r.drag <= drag_band), r.side, verdict(r.side <= 0.01),
+                static_cast<double>(r.residual), verdict(r.residual <= 1.0e-4f));
+}
+
+// S1's P3 checks at R/dx 6. Mutations: wall_load() returning 0 (C_M = 0) and
+// its sign flipped (C_M = -0.5) both fail.
+TEST(AirflowSolidsStep, S1TheSpheresAddedMassPressureAndForcesFromP3) {
+    const S1Result r = run_s1(6);
+    print_s1_p3(6, r, 0.24, 0.32, 0.06);
+    EXPECT_NEAR(r.c_m, 0.5, 0.24);
+    EXPECT_LE(r.cp_err, 0.32);
+    EXPECT_LE(r.drag, 0.06);
+    EXPECT_LE(r.side, 0.01);
+    EXPECT_LE(r.residual, 1.0e-4f);
+}
+
+// S1 at R/dx 12 and the order check: C_p at the fixed radius 7R/6 must fall
+// to at most 0.7 of R/dx 6's error (reported, not checked, when R/dx 6's is
+// under a tenth of its band). Opt-in: SPADE_AIRFLOW_VALIDATION.
+TEST(AirflowSolidsStep, S1At12CellsPerRadiusAndItsOrder) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run S1 at R/dx 12 and its order";
+    const S1Result coarse = run_s1(6);
+    const S1Result fine = run_s1(12);
+    print_s1_p3(12, fine, 0.12, 0.20, 0.04);
+    const bool checked = coarse.cp_err_fixed >= 0.1 * 0.32;
+    const double ratio = fine.cp_err_fixed / coarse.cp_err_fixed;
+    std::printf("measure: the order check, e(12) / e(6) for C_p at r = 7R/6 = %.3f (e(6) %.4f, e(12) %.4f)\n"
+                "reference: first order or better\n"
+                "tolerance: %s\n"
+                "verdict: %s\n",
+                ratio, coarse.cp_err_fixed, fine.cp_err_fixed,
+                checked ? "<= 0.7 (test-docs/2026-10-13-solids-tolerances.md, order checks)"
+                        : "none: e(6) is under a tenth of its band, so the order is reported, not checked",
+                checked ? verdict(ratio <= 0.7) : "report only");
+    EXPECT_NEAR(fine.c_m, 0.5, 0.12);
+    EXPECT_LE(fine.cp_err, 0.20);
+    EXPECT_LE(fine.drag, 0.04);
+    EXPECT_LE(fine.side, 0.01);
+    EXPECT_LE(fine.residual, 1.0e-4f);
+    if (checked) {
+        EXPECT_LE(ratio, 0.7);
+    }
 }
 
 struct CouetteResult {

@@ -26,7 +26,18 @@ struct Context {
     const MacGrid& g;
     float inv_dx;
     std::array<bool, 3> periodic;
+    std::array<std::span<const float>, 3> theta;  // empty: every face open
 };
+
+// Whether the face of component a at coordinate f along a, in the line
+// through cell (i, j, k), is closed.
+[[nodiscard]] SPADE_AIRFLOW_HOT bool closed_face(const Context& x, uint32_t a, uint32_t i, uint32_t j, uint32_t k,
+                                                 uint32_t f) noexcept {
+    if (x.theta[a].empty()) return false;
+    const GridShape& s = x.g.shape;
+    const std::size_t idx = a == 0 ? u_index(s, f, j, k) : a == 1 ? v_index(s, i, f, k) : w_index(s, i, j, f);
+    return x.theta[a][idx] == 0.0f;
+}
 
 // The velocity component c averaged to the centre of cell (i, j, k).
 [[nodiscard]] SPADE_AIRFLOW_HOT float centred(const Context& x, uint32_t c, uint32_t i, uint32_t j, uint32_t k) noexcept {
@@ -53,13 +64,15 @@ struct Context {
     for (uint32_t a = 0; a < 3; ++a) {
         const uint32_t at[3] = {i, j, k};
         if (n[a] == 1u) continue;  // an axis of one cell: no difference along it
-        // A periodic axis wraps at its edges (a central difference everywhere);
-        // any other goes one-sided there.
+        // A neighbour is used when it exists (a periodic axis wraps at its
+        // edges) and the face between is open: both, a central difference;
+        // one, one-sided from the cell; none, 0.
         const bool wrap = x.periodic[a];
-        const uint32_t lo_q = at[a] == 0u ? (wrap ? n[a] - 1u : 0u) : at[a] - 1u;
-        const uint32_t hi_q = at[a] + 1u == n[a] ? (wrap ? 0u : at[a]) : at[a] + 1u;
-        const bool central = wrap || (lo_q + 2u == hi_q);
-        const float scale = central ? 0.5f * x.inv_dx : x.inv_dx;
+        const bool lo_ok = (at[a] != 0u || wrap) && !closed_face(x, a, i, j, k, at[a]);
+        const bool hi_ok = (at[a] + 1u != n[a] || wrap) && !closed_face(x, a, i, j, k, at[a] + 1u);
+        const uint32_t lo_q = !lo_ok ? at[a] : at[a] == 0u ? n[a] - 1u : at[a] - 1u;
+        const uint32_t hi_q = !hi_ok ? at[a] : at[a] + 1u == n[a] ? 0u : at[a] + 1u;
+        const float scale = lo_ok && hi_ok ? 0.5f * x.inv_dx : lo_ok || hi_ok ? x.inv_dx : 0.0f;
         uint32_t lo[3] = {i, j, k};
         uint32_t hi[3] = {i, j, k};
         lo[a] = lo_q;
@@ -108,7 +121,17 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
                                                                  std::to_string(in.solid.size()) + " cells, not " +
                                                                  std::to_string(cells)});
     }
-    const Context x{g, 1.0f / s.dx, in.periodic};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const std::size_t faces = std::size_t{c == 0 ? s.nx + 1u : s.nx} * (c == 1 ? s.ny + 1u : s.ny) *
+                                  (c == 2 ? s.nz + 1u : s.nz);
+        if (!in.theta[c].empty() && in.theta[c].size() != faces) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         std::string("airflow publish: the ") + "uvw"[c] + " apertures hold " +
+                                             std::to_string(in.theta[c].size()) + " faces, not " +
+                                             std::to_string(faces)});
+        }
+    }
+    const Context x{g, 1.0f / s.dx, in.periodic, in.theta};
     const auto is_solid = [&](uint32_t i, uint32_t j, uint32_t k) {
         return !in.solid.empty() && in.solid[cell_index(s, i, j, k)] != 0u;
     };

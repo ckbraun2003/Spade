@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -16,6 +18,34 @@
 namespace spade::physics::airflow {
 
 inline constexpr uint32_t kReduceTile = 4;
+
+// The sum of cell(i, j, k, idx) over an nx x ny x nz grid (i innermost, idx
+// the cell's array index), in the order above, each tile and the total from
+// T(0). T is float, or a glm vector summed per component in the same order.
+// Every fixed-order sum is this one (TD-9).
+template <class T, class Cell>
+[[nodiscard]] T fixed_tile_sum_of(uint32_t nx, uint32_t ny, uint32_t nz, Cell cell) noexcept {
+    T total = T(0);
+    for (uint32_t tk = 0; tk < nz; tk += kReduceTile) {
+        const uint32_t k_end = std::min(tk + kReduceTile, nz);
+        for (uint32_t tj = 0; tj < ny; tj += kReduceTile) {
+            const uint32_t j_end = std::min(tj + kReduceTile, ny);
+            for (uint32_t ti = 0; ti < nx; ti += kReduceTile) {
+                const uint32_t i_end = std::min(ti + kReduceTile, nx);
+                T tile = T(0);
+                for (uint32_t k = tk; k < k_end; ++k) {
+                    for (uint32_t j = tj; j < j_end; ++j) {
+                        for (uint32_t i = ti; i < i_end; ++i) {
+                            tile += cell(i, j, k, i + std::size_t{nx} * (j + std::size_t{ny} * k));
+                        }
+                    }
+                }
+                total += tile;
+            }
+        }
+    }
+    return total;
+}
 
 // The sum of an nx x ny x nz cell array (i innermost), in the order above.
 [[nodiscard]] float fixed_tile_sum(std::span<const float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept;

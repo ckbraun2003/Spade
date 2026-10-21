@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <vector>
 
+#include <glm/glm.hpp>
+
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pressure.hpp"
@@ -315,6 +317,31 @@ TEST(AirflowReduce, TheFixedTileSumIsItsDefinitionBitForBit) {
         for (float& v : x) v = 1000.0f * rng.next();
         EXPECT_EQ(fixed_tile_sum(x, n[0], n[1], n[2]), tile_sum_by_definition(x, n[0], n[1], n[2]))
             << n[0] << "x" << n[1] << "x" << n[2];
+    }
+}
+
+// fixed_tile_sum_of() (P3, Task 1) with a glm::vec3 sums each component in
+// the definition's order, bit for bit, and hands the cell its own (i, j, k)
+// with its array index. Ragged tiles on every axis.
+TEST(AirflowReduce, AVectorTileSumIsThreeDefinitionSumsBitForBit) {
+    const uint32_t nx = 5;
+    const uint32_t ny = 7;
+    const uint32_t nz = 9;
+    std::array<std::vector<float>, 3> x;
+    Lcg rng;
+    for (std::vector<float>& c : x) {
+        c.resize(std::size_t{nx} * ny * nz);
+        for (float& v : c) v = 1000.0f * rng.next();
+    }
+    uint32_t misplaced = 0;
+    const glm::vec3 sum = spade::physics::airflow::fixed_tile_sum_of<glm::vec3>(
+        nx, ny, nz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t idx) {
+            misplaced += idx == i + std::size_t{nx} * (j + std::size_t{ny} * k) ? 0u : 1u;
+            return glm::vec3(x[0][idx], x[1][idx], x[2][idx]);
+        });
+    EXPECT_EQ(misplaced, 0u);
+    for (std::size_t c = 0; c < 3; ++c) {
+        EXPECT_EQ(sum[static_cast<glm::length_t>(c)], tile_sum_by_definition(x[c], nx, ny, nz)) << c;
     }
 }
 

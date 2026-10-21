@@ -5,14 +5,19 @@
 // fluid side so a surface reads its wall pressure (the demonstration plan, P6).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <numbers>
+#include <span>
+#include <string>
 #include <vector>
 
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "airflow_record.hpp"
 #include "physics/airflow/publish.hpp"
 
 namespace {
@@ -252,6 +257,93 @@ TEST(AirflowPublish, EachPublishNamesItsContentAnew) {
     const std::vector<uint8_t> solid(7, 0);
     ASSERT_FALSE(publish_render_volume(g, {.solid = solid}, vol).has_value());
     EXPECT_EQ(vol.generation, 0u);
+}
+
+// S5 (design test 8; Test/Docs' tolerances, S5): a sheet in the plane y = y_s,
+// x and z periodic, a velocity linear on each side with jumps U in u and w
+// across it and shear S dx = 0.01 U; v = 0. Everywhere |omega| = S and Q = 0.
+// Next to the sheet the published |omega| must be S within 1e-3 relative and
+// |q-hat| at most 1e-3 S. Mutation: the closed faces ignored (a central
+// difference across the sheet), which publishes |omega| near 70 S.
+TEST(AirflowPublish, S5BesideASheetTheGradientDoesNotCrossIt) {
+    const float dx = 0.01f;
+    const GridShape shape{8, 16, 8, dx};
+    DomainBc bc;
+    bc.face.fill(FaceBc::wall);
+    bc.face[kXMinus] = bc.face[kXPlus] = FaceBc::periodic;
+    bc.face[kZMinus] = bc.face[kZPlus] = FaceBc::periodic;
+    MacGrid g = *make_grid(shape, bc);
+    const uint32_t sheet = 8;  // the v-face plane j = 8, y_s = 8 dx
+    const float y_s = static_cast<float>(sheet) * dx;
+    const float U = 1.0f;
+    const float S = 0.01f * U / dx;
+    const float u_a = 1.0f;
+    const float u_b = 0.0f;
+    const float w_a = 0.5f;
+    const float w_b = -0.5f;
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 16; ++j) {
+            const bool above = j >= sheet;
+            const float y = (static_cast<float>(j) + 0.5f) * dx;
+            for (uint32_t i = 0; i <= 8; ++i) g.u[u_index(shape, i, j, k)] = (above ? u_a : u_b) + S * (y - y_s);
+        }
+        for (uint32_t j = 0; j < 16; ++j) {
+            for (uint32_t i = 0; i < 8; ++i) g.w[w_index(shape, i, j, k)] = j >= sheet ? w_a : w_b;
+        }
+    }
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 16; ++j) {
+            for (uint32_t i = 0; i < 8; ++i) g.w[w_index(shape, i, j, 8)] = j >= sheet ? w_a : w_b;
+        }
+    }
+    std::vector<float> theta_u(g.u.size(), 1.0f);
+    std::vector<float> theta_v(g.v.size(), 1.0f);
+    std::vector<float> theta_w(g.w.size(), 1.0f);
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t i = 0; i < 8; ++i) theta_v[v_index(shape, i, sheet, k)] = 0.0f;
+    }
+    FlowVolume vol;
+    const auto counts =
+        publish_render_volume(g, {.periodic = {true, false, true}, .theta = {theta_u, theta_v, theta_w}}, vol);
+    ASSERT_TRUE(counts.has_value()) << counts.error().context;
+    double omega_err = 0.0;
+    double q_max = 0.0;
+    for (const uint32_t j : {sheet - 1u, sheet}) {
+        for (uint32_t k = 0; k < 8; ++k) {
+            for (uint32_t i = 0; i < 8; ++i) {
+                const double omega = channel(vol, i, j, k, spade::kFlowVorticity);
+                omega_err = std::max(omega_err, std::fabs(omega - S) / S);
+                q_max = std::max(q_max, std::fabs(static_cast<double>(channel(vol, i, j, k, spade::kFlowQHat))) / S);
+            }
+        }
+    }
+    std::printf("=== validation record: S5 Publish beside a sheet ===\n"
+                "path: CPU reference, %s\n"
+                "config: 8x16x8 at dx 1 cm, x and z periodic, a sheet's closed v-faces at y = 8 dx; u and w linear on "
+                "each side with jumps U = 1 m/s across it, S dx = 0.01 U, v = 0; published with the apertures, no "
+                "step taken\n"
+                "measure: max | |omega| - S | / S over the 128 cells next to the sheet = %.3e\n"
+                "reference: 0 (|omega| = S exactly; a one-sided difference is exact for a linear field)\n"
+                "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
+                "verdict: %s\n"
+                "measure: max |q-hat| / S over the same cells = %.3e\n"
+                "reference: 0 (Q = 0 exactly)\n"
+                "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
+                "verdict: %s\n",
+                airflow_test::build_line().c_str(), omega_err, omega_err <= 1.0e-3 ? "within" : "MISS", q_max,
+                q_max <= 1.0e-3 ? "within" : "MISS");
+    EXPECT_LE(omega_err, 1.0e-3);
+    EXPECT_LE(q_max, 1.0e-3);
+}
+
+// A non-empty aperture array of the wrong size is refused by component.
+TEST(AirflowPublish, ApertureArraysOfTheWrongSizeAreRefused) {
+    const MacGrid g = *make_grid({4, 4, 4, 0.25f}, DomainBc{});
+    const std::vector<float> wrong(7, 1.0f);
+    FlowVolume vol;
+    const auto r = publish_render_volume(g, {.theta = {std::span<const float>{}, wrong, std::span<const float>{}}}, vol);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("v apertures"), std::string::npos) << r.error().context;
 }
 
 }  // namespace
