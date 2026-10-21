@@ -247,3 +247,48 @@ TEST(EditorSceneEdits, AColliderMaterialNeedsACollider) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().context.find("no collider"), std::string::npos) << r.error().context;
 }
+
+// N5b's follow regions (Core, b3657c6): a region names the vehicle it follows,
+// so a vehicle's rename carries into its region, in the same undoable edit,
+// and a vehicle a region follows is not removed from under it (the lead,
+// 2026-10-21).
+namespace {
+
+// The sample scene with a drone box following its quad, as Core's
+// test_scene_airflow.cpp builds one.
+[[nodiscard]] spade::scene::SceneDesc with_drone_box(spade::scene::SceneDesc s) {
+    spade::scene::SceneAirflowRegion r;
+    r.name = "drone box";
+    r.kind = spade::scene::AirflowKind::follow;
+    r.follows = "hover_quad_0";
+    r.cells = spade::physics::airflow::GridShape{32, 24, 32, 0.02f};
+    r.density = 1.225f;
+    r.kinematic_viscosity = 1.5e-5f;
+    r.floor = 0.0f;
+    s.airflow.push_back(r);
+    return s;
+}
+
+}  // namespace
+
+TEST(EditorSceneEdits, ARenamedVehicleIsStillFollowedByItsRegion) {
+    auto d = doc_of(with_drone_box(support::sample_scene()));
+    const Result<void> r = ed::apply(d, ed::RenameObject{"hover_quad_0", "lead"});
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    ASSERT_EQ(d.desc().airflow.size(), 1u);
+    EXPECT_EQ(d.desc().airflow[0].follows, "lead");
+    EXPECT_NE(vehicle(d.desc(), "lead"), nullptr);
+    ASSERT_TRUE(d.undo());  // one edit: the vehicle and its region together
+    EXPECT_EQ(d.desc().airflow[0].follows, "hover_quad_0");
+    EXPECT_NE(vehicle(d.desc(), "hover_quad_0"), nullptr);
+}
+
+TEST(EditorSceneEdits, AFollowedVehicleIsNotRemovedFromUnderItsRegion) {
+    auto d = doc_of(with_drone_box(support::sample_scene()));
+    const std::string before = support::text_of(d.desc());
+    const Result<void> r = ed::apply(d, ed::RemoveObject{"hover_quad_0"});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("'hover_quad_0'"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("region 'drone box' follows it"), std::string::npos) << r.error().context;
+    EXPECT_EQ(support::text_of(d.desc()), before);
+}
