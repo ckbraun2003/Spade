@@ -58,6 +58,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "arm_pressure.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
 #include "live_case.hpp"
@@ -572,6 +573,85 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
     return {};
 }
 
+// The inflow's pressure: the mean gauge pressure over the inlet face's cell
+// layer (x = 0, the wind's upstream face), no-data cells left out. What D1's
+// C_p is taken against (Physics: "against the inflow's pressure").
+[[nodiscard]] double inflow_pressure(const spade::FlowVolume& v) {
+    const spade::FlowVolumeHeader& h = v.header;
+    double sum = 0.0;
+    uint64_t n = 0;
+    for (uint32_t k = 0; k < h.nz; ++k) {
+        for (uint32_t j = 0; j < h.ny; ++j) {
+            const float p = spade::fp16::to_f32(v.s[spade::flow_cell_index(h, 0u, j, k) * spade::kFlowHalvesPerCell]);
+            if (std::isfinite(p)) {
+                sum += p;
+                ++n;
+            }
+        }
+    }
+    return n > 0u ? sum / static_cast<double>(n) : 0.0;
+}
+
+// --arm-pressure: D1's arm-top samples (arm_pressure.hpp) over every cached
+// frame, for Physics' record: a row per frame and rotor, and every sample, as
+// CSV beside the cache (arm-pressure.csv, arm-samples.csv), the rows printed
+// too. The inflow's pressure is inflow_pressure()'s, and C_p is over the C_p
+// view's q, the discs' loading T/A.
+[[nodiscard]] spade::Result<void> arm_pressure_report(const Film& film, const fs::path& cache) {
+    if (!film.run) {
+        return std::unexpected(
+            spade::Error{spade::Code::invalid_argument, "--arm-pressure reads a LiveRun film's frames"});
+    }
+    const LiveCase& lc = *film.run;
+    const float two_v_h = std::max(1.0f, lc.speed_max - lc.c.flight.speed);
+    const double q = 0.5 * static_cast<double>(lc.c.fluid.density) * two_v_h * two_v_h;
+    const fs::path rows_path = cache / "arm-pressure.csv", samples_path = cache / "arm-samples.csv";
+    std::ofstream rows(rows_path, std::ios::binary | std::ios::trunc);
+    std::ofstream each(samples_path, std::ios::binary | std::ios::trunc);
+    rows << "frame,t_s,step,rotor,span_from_m,span_to_m,samples,mean_p_pa,p_inflow_pa,mean_dp_pa,cp\n";
+    each << "frame,t_s,rotor,from_centre_m,x_m,y_m,z_m,p_pa\n";
+    spade::FlowVolume volume;
+    FrameLog log;
+    const uint32_t frames = cached_frames(cache);
+    for (uint32_t k = 0; k < frames; ++k) {
+        if (auto read = read_frame(cache, k, volume, log); !read) return read;
+        if (log.live.size() < 7u) {
+            return std::unexpected(spade::Error{spade::Code::internal, "a LiveRun frame's log holds no held body"});
+        }
+        spade::BodyState b{};
+        b.pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]),
+                          static_cast<float>(log.live[2]));
+        b.orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                             static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+        std::vector<ArmSample> samples;
+        auto arms = arm_pressures(lc.run_model, b, volume, samples);
+        if (!arms) return std::unexpected(arms.error());
+        const double p_in = inflow_pressure(volume);
+        char line[320];
+        for (const ArmPressure& a : *arms) {
+            const double dp = a.mean - p_in;
+            std::snprintf(line, sizeof line, "%u,%.6f,%llu,%u,%.4f,%.4f,%u,%.4f,%.4f,%.4f,%.5f\n", k, log.time,
+                          static_cast<unsigned long long>(log.step), a.rotor, static_cast<double>(a.span_from),
+                          static_cast<double>(a.span_to), a.samples, a.mean, p_in, dp, dp / q);
+            rows << line;
+            std::printf("[ arm pressure ] %s", line);
+        }
+        for (const ArmSample& s : samples) {
+            std::snprintf(line, sizeof line, "%u,%.6f,%u,%.4f,%.5f,%.5f,%.5f,%.4f\n", k, log.time, s.rotor,
+                          static_cast<double>(s.from_centre), static_cast<double>(s.at.x),
+                          static_cast<double>(s.at.y), static_cast<double>(s.at.z), s.pressure);
+            each << line;
+        }
+    }
+    if (!rows || !each) {
+        return std::unexpected(spade::Error{spade::Code::io_error, "writing " + rows_path.string() + " or " +
+                                                                       samples_path.string()});
+    }
+    std::printf("[ arm pressure ] %u frames, q %.2f Pa: %s, %s\n", frames, q, rows_path.string().c_str(),
+                samples_path.string().c_str());
+    return {};
+}
+
 // Physics' swirl check: the vertical vorticity w_y = du/dz - dw/dx, central
 // differences on the published cell-centred velocity, averaged over the 3x3
 // cells round each disc's axis, 0.5 R and 2 R below its centre.
@@ -900,25 +980,6 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 // it, as in a box of uniform wind, the deepest value is the grid's noise.
 constexpr float kVortexFloor = -5.0f;
 
-// The inflow's pressure: the mean gauge pressure over the inlet face's cell
-// layer (x = 0, the wind's upstream face), no-data cells left out. What D1's
-// C_p is taken against (Physics: "against the inflow's pressure").
-[[nodiscard]] double inflow_pressure(const spade::FlowVolume& v) {
-    const spade::FlowVolumeHeader& h = v.header;
-    double sum = 0.0;
-    uint64_t n = 0;
-    for (uint32_t k = 0; k < h.nz; ++k) {
-        for (uint32_t j = 0; j < h.ny; ++j) {
-            const float p = spade::fp16::to_f32(v.s[spade::flow_cell_index(h, 0u, j, k) * spade::kFlowHalvesPerCell]);
-            if (std::isfinite(p)) {
-                sum += p;
-                ++n;
-            }
-        }
-    }
-    return n > 0u ? sum / static_cast<double>(n) : 0.0;
-}
-
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions.
@@ -1080,6 +1141,7 @@ struct Options {
     fs::path case_file;           // --case: a .case.yaml flown through LiveRun
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
+    bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
 };
 
@@ -1123,6 +1185,10 @@ constexpr double kD1Seconds = 0.6;
                                                 "\". --resimulate starts it again"});
     };
     if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
+    if (opt.arm_pressure) {
+        if (auto measured = arm_pressure_report(film, cache); !measured) return std::unexpected(measured.error());
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
     if (opt.probe_swirl >= 0) {
         if (auto probed = probe_swirl(film, cache, static_cast<uint32_t>(opt.probe_swirl)); !probed) {
             return std::unexpected(probed.error());
@@ -1286,6 +1352,8 @@ int main(int argc, char** argv) {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--arm-pressure") {
+            opt.arm_pressure = true;
         } else if (arg == "--step-time") {
             opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--grid") {
