@@ -22,6 +22,11 @@ target_link_libraries(spade_airflow_runner
     PRIVATE spade_warnings spade_fp_strict
 )
 
+# SpadeSlang.cmake's paths, profile and workgroup sizes are variables of the
+# directory that includes it (engine/ does), so this directory includes it too;
+# including it defines functions and sets variables, and creates no target.
+include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
+
 # The runner's test kernels (engine/shaders/kernels/airflow_*.slang), compiled
 # at every workgroup size in SPADE_SLANG_WORKGROUP_SIZES. Registered on THIS
 # target, after engine/'s kernel manifest is written, so spade_compute's
