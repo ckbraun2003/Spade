@@ -42,6 +42,9 @@ struct PartsLook {
     uint32_t rotor = 0;   // a rotor part's
     uint32_t porous = 0;  // a porous part's, on the body or a rotor
     bool rotor_parts_are_walls = false;
+    // Segmentation's object name for the parts (N13): each item is labelled
+    // this, and its part "<object>/<part name>". Empty: the model's name.
+    std::string object_name{};
 };
 
 // One piece of a part's geometry, in the part's frame.
@@ -57,6 +60,7 @@ struct PartPiece {
 
 // One part, prepared: its pieces and what decides its look.
 struct PreparedPart {
+    std::string name;  // the model part's name, or "parts[k]"
     std::vector<PartPiece> pieces;
     bool on_rotor = false;
     bool porous = false;
@@ -64,6 +68,7 @@ struct PreparedPart {
 
 // A model's parts, prepared: parts[i] is the model's parts[i].
 struct PreparedParts {
+    std::string model_name;  // ModelType::name: the parts' default object name
     std::vector<PreparedPart> parts;
 };
 

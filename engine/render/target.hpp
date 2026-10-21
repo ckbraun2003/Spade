@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cmath>
+#include <string_view>
 #include <cstdint>
 #include <span>
 
@@ -54,8 +55,21 @@ struct Camera {
 // overlay -- and a pixel no surface covers is black. depth: each surface's
 // view-space depth in metres (the planar depth an RGB-D camera reports)
 // through RenderOptions::depth. normals: its unit world-space outward normal
-// n as RGB (n + 1) / 2.
-enum class DrawMode : uint32_t { shaded = 0, wireframe = 1, raymarch = 2, velocity = 3, depth = 4, normals = 5 };
+// n as RGB (n + 1) / 2. segmentation: each item flat in its label's colour
+// (render/segmentation.hpp), by RenderOptions::segment_by.
+enum class DrawMode : uint32_t {
+    shaded = 0,
+    wireframe = 1,
+    raymarch = 2,
+    velocity = 3,
+    depth = 4,
+    normals = 5,
+    segmentation = 6,
+};
+
+// DrawMode::segmentation's grain: each object one colour, or each part its
+// own (an item with no part label takes its object's).
+enum class SegmentBy : uint32_t { objects = 0, parts = 1 };
 
 // DrawMode::depth's colours: view-space depth over [near_m, far_m] through a
 // colour map, clamped to the range's ends. Not the camera's clip planes.
@@ -65,9 +79,19 @@ struct DepthRange {
     ColourMapId colours = ColourMapId::viridis;
 };
 
-// Whether `mode` draws the geometry as data (depth, normals).
+// Whether `mode` draws the geometry as data (depth, normals, segmentation).
 [[nodiscard]] constexpr bool is_sensor_mode(DrawMode mode) noexcept {
-    return mode == DrawMode::depth || mode == DrawMode::normals;
+    return mode == DrawMode::depth || mode == DrawMode::normals || mode == DrawMode::segmentation;
+}
+
+// A sensor mode's name, as both backends' refusals give it; "" for any other.
+[[nodiscard]] constexpr std::string_view sensor_mode_name(DrawMode mode) noexcept {
+    switch (mode) {
+        case DrawMode::depth: return "depth";
+        case DrawMode::normals: return "normals";
+        case DrawMode::segmentation: return "segmentation";
+        default: return "";
+    }
 }
 
 // Whether `range` can colour depth: finite, from 0 m, and not empty. The one
@@ -170,6 +194,7 @@ struct RenderOptions {
     float velocity_scale_mps = 20.0f;
 
     DepthRange depth{};  // DrawMode::depth only
+    SegmentBy segment_by = SegmentBy::objects;  // DrawMode::segmentation only
 };
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp
@@ -178,6 +203,7 @@ struct RenderOptions {
 struct Aabb { glm::vec3 min{0.0f}, max{0.0f}; };
 inline constexpr uint32_t kNoMaterial = 0xFFFFFFFFu;
 inline constexpr uint32_t kNoMesh     = 0xFFFFFFFFu;
+inline constexpr uint32_t kNoLabel    = 0xFFFFFFFFu;  // a DrawItem's, GroundPlane's or BodyPose's label: none
 
 // Codes:
 //   invalid_argument -- stride != width * 4, pixels.size() != stride * height,

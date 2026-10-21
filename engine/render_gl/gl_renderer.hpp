@@ -140,10 +140,14 @@ class GlRenderer {
     // also draws the analytic ground, the grid and the atmospheric term
     // (SR-17, SR-17a, SR-22), and the sun's shadows on meshes and ground,
     // from the scene's static map (uploaded by upload_scene()) plus this
-    // frame's dynamic casters. Meshes draw shaded, wireframe or velocity.
-    // CSG subtrees are ray-marched within their boxes in shaded and velocity
-    // modes, as raster_cpu does, and drawn from their meshes in wireframe
-    // (RS3). Field layers draw filled in every mode, as raster_cpu draws them,
+    // frame's dynamic casters. Meshes draw shaded, wireframe or velocity, or
+    // as data in a sensor mode (depth, normals, segmentation; N13): the
+    // geometry and the analytic ground with no light, shadow, sky, grid or
+    // overlay, black where no surface is, refused with flow or field content
+    // and on a multisampled target (render::sensor_mode_refusal(), and
+    // GL_SAMPLES). CSG subtrees are ray-marched within their boxes in shaded,
+    // velocity and the sensor modes, as raster_cpu does, and drawn from their
+    // meshes in wireframe (RS3). Field layers draw filled in every mode, as raster_cpu draws them,
     // and so do the overlays, from raster_cpu's own lists
     // (render::overlay_geometry()). The airflow views draw as raster_cpu
     // draws them, each within a band measured against it: surface colouring

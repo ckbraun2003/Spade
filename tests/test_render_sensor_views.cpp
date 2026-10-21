@@ -19,6 +19,7 @@
 
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
+#include "render/segmentation.hpp"
 #include "render/transfer_function.hpp"
 #include "world/sdf.hpp"
 
@@ -171,8 +172,10 @@ TEST(SensorViews, ASensorFrameTakesNoMaterialLightShadowOrOverlay) {
     dressed.lighting.sun_direction = glm::vec3(0.3f, -1.0f, -0.6f);
     dressed.lighting.ambient_color = glm::vec3(0.05f);
     dressed.lighting.sky_zenith = glm::vec3(0.9f, 0.1f, 0.1f);
-    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals}) {
-        SCOPED_TRACE(mode == DrawMode::depth ? "depth" : "normals");
+    plain.statics[1].object_label = spade::render::intern_label(plain, "near");
+    dressed.statics[1].object_label = spade::render::intern_label(dressed, "near");
+    for (const DrawMode mode : {DrawMode::depth, DrawMode::normals, DrawMode::segmentation}) {
+        SCOPED_TRACE(static_cast<int>(mode));
         RenderOptions bare = sensor(mode);
         bare.shadows = false;
         RenderOptions busy = sensor(mode);
@@ -270,6 +273,9 @@ TEST(SensorViews, ACsgSubtreeIsMarchedInSensorFrames) {
     EXPECT_LE(distance(draw(scene, sensor(DrawMode::normals)).at(kSide / 2, kSide / 2),
                        normal_colour(glm::vec3(0.0f, 0.0f, 1.0f))),
               2);
+    scene.statics[0].object_label = spade::render::intern_label(scene, "gate");
+    const spade::render::Rgb8 gate = spade::render::segment_colour("gate");
+    EXPECT_EQ(draw(scene, sensor(DrawMode::segmentation)).at(kSide / 2, kSide / 2), (Rgb{gate[0], gate[1], gate[2]}));
 }
 
 }  // namespace
