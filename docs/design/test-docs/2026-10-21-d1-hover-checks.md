@@ -67,7 +67,7 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
 
 ### D1-5. `publishes`, with solids
 
-- **Predicate:** `publishes` passes only with `no_data == 0` today. With solids, `publish()` writes the first solid layer from its fluid side (`extrapolated_cells`) and marks the deeper solid cells no-data (`engine/physics/airflow/publish.hpp`). So with solids, `no_data` = the grid's solid cells − `extrapolated_cells`, exactly. Without solids it stays 0.
+- **Predicate:** `publishes` passes only with `no_data == 0` today. With solids, `publish()` writes the first solid layer from its fluid side (`extrapolated_cells`) and marks the deeper solid cells no-data (`engine/physics/airflow/publish.hpp`). `no_data` counts samples, one per channel (`publish.cpp` writes `kNoDataBits` to each of a deeper cell's `kFlowChannelCount` = 8 channels; Interface). So with solids, `no_data` = 8 × (the grid's solid cells − `extrapolated_cells`), exactly. Without solids it stays 0. An fp16 overflow would add to it, and a sane run has none.
 - **Band:** exact.
 - **Catches:** no-data leaking into the fluid, and a solid mask that never reached `publish()`.
 - **Input:** `LiveSolids::solid_cells` (Interface, on `interface/liverun-solids`). It is counted from the same mask the run publishes with (`scratch.regions.solid`, the CG mask), so it and `no_data` agree by construction. The interior is `solid_cells − extrapolated_cells`, constant over the run because the solids are posed once.
@@ -106,7 +106,7 @@ The work goes on branch `test-docs/d1-checks`. Each test fails on a stub of its 
   - a fail when the shown note differs or is empty;
   - D1's `mis-staged:` on `the walls are not in this flow`.
 - `publishes` with solids:
-  - a pass at `no_data` = solid − extrapolated;
+  - a pass at `no_data` = 8 × (solid − extrapolated);
   - a fail at one more;
   - a fail on any no-data with no solids.
 
