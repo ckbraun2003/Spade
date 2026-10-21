@@ -17,12 +17,28 @@
 // Vulkan name and value, and the device.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <string>
 #include <string_view>
 
 #include "core/error.hpp"
 
 namespace spade::compute {
+
+namespace detail {
+
+[[nodiscard]] inline std::unexpected<Error> over_limit(const std::string& what, std::string_view limit,
+                                                     uint64_t value, std::string_view unit, std::string_view device) {
+    return std::unexpected(Error{Code::capacity_exceeded, what + ", over " + std::string(limit) + " (" +
+                                                              std::to_string(value) + std::string(unit) +
+                                                              ") on device '" + std::string(device) + "'"});
+}
+
+inline constexpr const char* kAxisNames[3] = {"x", "y", "z"};
+
+}  // namespace detail
 
 struct DeviceLimits {
     uint64_t max_storage_buffer_range = 0;       // bytes: maxStorageBufferRange
@@ -49,7 +65,14 @@ inline constexpr DeviceLimits kGuaranteedLimits{
 // allocation).
 [[nodiscard]] inline Result<void> check_buffer(std::string_view name, uint64_t bytes, const DeviceLimits& limits,
                                                std::string_view device) {
-    (void)name, (void)bytes, (void)limits, (void)device;
+    const std::string what = "buffer '" + std::string(name) + "' is " + std::to_string(bytes) + " bytes";
+    if (bytes > limits.max_storage_buffer_range) {
+        return detail::over_limit(what, "maxStorageBufferRange", limits.max_storage_buffer_range, " bytes", device);
+    }
+    if (bytes > limits.max_memory_allocation_size) {
+        return detail::over_limit(what, "maxMemoryAllocationSize", limits.max_memory_allocation_size, " bytes",
+                                  device);
+    }
     return {};
 }
 
@@ -57,20 +80,37 @@ inline constexpr DeviceLimits kGuaranteedLimits{
 // (every binding is a compute binding), then maxDescriptorSetStorageBuffers.
 [[nodiscard]] inline Result<void> check_storage_buffers(uint32_t count, const DeviceLimits& limits,
                                                         std::string_view device) {
-    (void)count, (void)limits, (void)device;
+    const std::string what = "a layout of " + std::to_string(count) + " storage buffers";
+    if (count > limits.max_per_stage_storage_buffers) {
+        return detail::over_limit(what, "maxPerStageDescriptorStorageBuffers", limits.max_per_stage_storage_buffers,
+                                  "", device);
+    }
+    if (count > limits.max_set_storage_buffers) {
+        return detail::over_limit(what, "maxDescriptorSetStorageBuffers", limits.max_set_storage_buffers, "", device);
+    }
     return {};
 }
 
 // A push-constant block's bytes against maxPushConstantsSize.
 [[nodiscard]] inline Result<void> check_push(uint32_t bytes, const DeviceLimits& limits, std::string_view device) {
-    (void)bytes, (void)limits, (void)device;
+    if (bytes > limits.max_push_constants_size) {
+        return detail::over_limit("a push-constant block of " + std::to_string(bytes) + " bytes",
+                                  "maxPushConstantsSize", limits.max_push_constants_size, " bytes", device);
+    }
     return {};
 }
 
 // A dispatch's group counts, axis by axis, against maxComputeWorkGroupCount.
 [[nodiscard]] inline Result<void> check_groups(std::string_view pass, const std::array<uint32_t, 3>& groups,
                                                const DeviceLimits& limits, std::string_view device) {
-    (void)pass, (void)groups, (void)limits, (void)device;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (groups[axis] > limits.max_group_count[axis]) {
+            return detail::over_limit("pass '" + std::string(pass) + "' dispatches " + std::to_string(groups[axis]) +
+                                          " groups on axis " + detail::kAxisNames[axis],
+                                      "maxComputeWorkGroupCount[" + std::to_string(axis) + "]",
+                                      limits.max_group_count[axis], "", device);
+        }
+    }
     return {};
 }
 
@@ -78,7 +118,20 @@ inline constexpr DeviceLimits kGuaranteedLimits{
 // its product against maxComputeWorkGroupInvocations.
 [[nodiscard]] inline Result<void> check_workgroup(std::string_view kernel, const std::array<uint32_t, 3>& size,
                                                   const DeviceLimits& limits, std::string_view device) {
-    (void)kernel, (void)size, (void)limits, (void)device;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        if (size[axis] > limits.max_group_size[axis]) {
+            return detail::over_limit("kernel '" + std::string(kernel) + "' has a local size of " +
+                                          std::to_string(size[axis]) + " on axis " + detail::kAxisNames[axis],
+                                      "maxComputeWorkGroupSize[" + std::to_string(axis) + "]",
+                                      limits.max_group_size[axis], "", device);
+        }
+    }
+    const uint64_t invocations = uint64_t{size[0]} * size[1] * size[2];
+    if (invocations > limits.max_group_invocations) {
+        return detail::over_limit("kernel '" + std::string(kernel) + "' has " + std::to_string(invocations) +
+                                      " invocations per workgroup",
+                                  "maxComputeWorkGroupInvocations", limits.max_group_invocations, "", device);
+    }
     return {};
 }
 
@@ -105,16 +158,30 @@ inline constexpr uint64_t kAirflowVramCap = uint64_t{4} << 30;
 // says it has allocated itself (it cannot see anyone else's); with ext the
 // heap's usage already counts it.
 [[nodiscard]] inline uint64_t vram_cap(const MemoryBudget& budget, uint64_t reserve, uint64_t own_allocated) {
-    (void)budget, (void)reserve, (void)own_allocated;
-    return 0;
+    const uint64_t used = budget.source == MemoryBudget::Source::ext ? budget.usage : own_allocated;
+    if (budget.budget <= used || budget.budget - used <= reserve) return 0;
+    const uint64_t free = budget.budget - used - reserve;
+    return free < kAirflowVramCap ? free : kAirflowVramCap;
 }
 
 // `requested` bytes against vram_cap(), refused by name before any allocation:
 // what asked, its bytes, the cap and how it was reached, and the device.
 [[nodiscard]] inline Result<void> check_vram(std::string_view what, uint64_t requested, const MemoryBudget& budget,
                                              uint64_t reserve, uint64_t own_allocated, std::string_view device) {
-    (void)what, (void)requested, (void)budget, (void)reserve, (void)own_allocated, (void)device;
-    return {};
+    const uint64_t cap = vram_cap(budget, reserve, own_allocated);
+    if (requested <= cap) return {};
+    const bool ext = budget.source == MemoryBudget::Source::ext;
+    const uint64_t used = ext ? budget.usage : own_allocated;
+    return std::unexpected(Error{
+        Code::capacity_exceeded,
+        std::string(what) + " asks for " + std::to_string(requested) +
+            " bytes of VRAM, over what the device can give it: the cap is " + std::to_string(cap) +
+            " bytes = min(" + std::to_string(kAirflowVramCap) + ", budget " + std::to_string(budget.budget) +
+            " - usage " + std::to_string(used) + " - reserve " + std::to_string(reserve) + "), from " +
+            (ext ? std::string("VK_EXT_memory_budget")
+                 : "half the device-local heap (no VK_EXT_memory_budget; the usage is what the caller allocated " +
+                       std::to_string(own_allocated) + " itself)") +
+            ", on device '" + std::string(device) + "'"});
 }
 
 }  // namespace spade::compute
