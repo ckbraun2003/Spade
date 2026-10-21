@@ -99,6 +99,7 @@ namespace {
     X(PFNGLBINDVERTEXARRAYPROC, BindVertexArray) \
     X(PFNGLBLENDEQUATIONPROC, BlendEquation) \
     X(PFNGLBLENDFUNCPROC, BlendFunc) \
+    X(PFNGLBLENDFUNCSEPARATEPROC, BlendFuncSeparate) \
     X(PFNGLBUFFERDATAPROC, BufferData) \
     X(PFNGLBUFFERSUBDATAPROC, BufferSubData) \
     X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, CheckFramebufferStatus) \
@@ -3411,7 +3412,11 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.DepthMask(GL_TRUE);
             gl.Enable(GL_BLEND);
             gl.BlendEquation(GL_FUNC_ADD);
-            gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
+            // C + T * behind in colour, and the target's alpha as it was: the
+            // fragment's alpha is T, not coverage, and blended into the
+            // target's it made an opaque iso a hole in a host's composited
+            // view (the editor's near-black cores, FlowLayerLeavesTheFramesAlpha).
+            gl.BlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);
         }
         gl.Enable(GL_CULL_FACE);
         gl.CullFace(GL_FRONT);
@@ -3461,7 +3466,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.DepthMask(GL_TRUE);
             gl.Enable(GL_BLEND);
             gl.BlendEquation(GL_FUNC_ADD);
-            gl.BlendFunc(GL_ONE, GL_SRC_ALPHA);
+            gl.BlendFuncSeparate(GL_ONE, GL_SRC_ALPHA, GL_ZERO, GL_ONE);  // as the full-scale march
             gl.ActiveTexture(GL_TEXTURE6);
             gl.BindTexture(GL_TEXTURE_2D, s.flow_half_colour_tex);
             gl.ActiveTexture(GL_TEXTURE7);
