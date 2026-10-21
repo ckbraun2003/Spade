@@ -210,6 +210,39 @@ TEST(AirflowSolids, NoPartsLeavesEveryFaceOpen) {
     return build_solids(f, shape, {}, parts, scene.sampler());
 }
 
+// A sheet's seal (P2 Task 11, the final review's finding 1): the faces whose
+// centre-to-centre segment the mid-surface m crosses (m changes sign between
+// the two cell centres) at a point `on` accepts, left open. A watertight sheet
+// leaves none. The grid's origin is 0.
+template <class Mid, class On>
+[[nodiscard]] uint32_t open_crossings(const SolidField& f, const GridShape& shape, Mid m, On on) {
+    uint32_t open = 0;
+    const float dx = shape.dx;
+    for (uint32_t c = 0; c < 3; ++c) {
+        const uint32_t n[3] = {shape.nx + (c == 0 ? 1u : 0u), shape.ny + (c == 1 ? 1u : 0u),
+                               shape.nz + (c == 2 ? 1u : 0u)};
+        for (uint32_t k = 0; k < n[2]; ++k) {
+            for (uint32_t j = 0; j < n[1]; ++j) {
+                for (uint32_t i = 0; i < n[0]; ++i) {
+                    const glm::vec3 x((static_cast<float>(i) + (c == 0 ? 0.0f : 0.5f)) * dx,
+                                      (static_cast<float>(j) + (c == 1 ? 0.0f : 0.5f)) * dx,
+                                      (static_cast<float>(k) + (c == 2 ? 0.0f : 0.5f)) * dx);
+                    glm::vec3 e(0.0f);
+                    e[static_cast<glm::length_t>(c)] = 0.5f * dx;
+                    const float ma = m(x - e);
+                    const float mb = m(x + e);
+                    if (!(ma * mb < 0.0f)) continue;
+                    const glm::vec3 cross = x - e + (ma / (ma - mb)) * (2.0f * e);
+                    if (!on(cross)) continue;
+                    const std::size_t idx = i + std::size_t{n[0]} * (j + std::size_t{n[1]} * k);
+                    if (!closed(f.theta[c][idx])) ++open;
+                }
+            }
+        }
+    }
+    return open;
+}
+
 // A 12-cell hub with a fin 0.3 dx thick on its +z face, centred on the face
 // plane x = 16, 2 cells tall: every x line through the fin passes centres
 // 0.35 dx outside on both sides (the screen's 0.7 dx), and the face between
@@ -346,6 +379,77 @@ TEST(AirflowSolidsSafeguard, ATiltedThinPlateDeclaredThickIsSheeted) {
         for (const float t : f.theta[comp]) closed_faces += t == 0.0f ? 1u : 0u;
     }
     EXPECT_GT(closed_faces, 0u) << "as a sheet it closes the faces it crosses";
+    // Watertight (the final review's F6): every line through the plate's
+    // middle crosses a closed face. Its measured thickness is its own, so the
+    // class-thickness mutation passes here; the canopy and the cambered plate
+    // below are the red tests for that.
+    const glm::mat3 to_local = scene.shapes[0].to_local;
+    const glm::vec3 centre = scene.shapes[0].centre;
+    const auto mid = [&](glm::vec3 x) { return (to_local * (x - centre)).y; };
+    const auto on = [&](glm::vec3 x) {
+        const glm::vec3 l = to_local * (x - centre);
+        return std::fabs(l.x) <= 5.0f && std::fabs(l.z) <= 5.0f;
+    };
+    EXPECT_EQ(open_crossings(f, shape, mid, on), 0u) << "a line through the plate's middle crosses no closed face";
+}
+
+// A plate 0.5 dx thick with no declared feature, its part-frame box 1.5 dx
+// thick (a cambered mesh plate): the classifier calls it a sheet of 1.5 dx,
+// its bounds' smallest extent. Its faces must still close where its true
+// mid-surface crosses (P2 Task 11, the final review's finding 1). Mutation:
+// the mid-surface from the class thickness, which leaves every line open.
+TEST(AirflowSolidsSafeguard, ASheetThinnerThanItsClassStillSeals) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "cambered", .kind = Kind::box, .centre = {16.0f, 16.3f, 16.0f},
+                                 .half = {6.0f, 0.25f, 6.0f}, .min_feature = 0.0f});
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(12.0f, 1.5f, 12.0f);
+    SolidField f = *make_solid_field(shape);
+    const Result<void> built_ok = build_scene(f, shape, parts, scene);
+    ASSERT_TRUE(built_ok.has_value()) << built_ok.error().context;
+    ASSERT_EQ(f.classes[0].role, SolidRole::sheet);
+    EXPECT_FLOAT_EQ(f.classes[0].thickness, 1.5f);
+    const auto mid = [](glm::vec3 x) { return x.y - 16.3f; };
+    const auto on = [](glm::vec3 x) { return std::fabs(x.x - 16.0f) <= 5.0f && std::fabs(x.z - 16.0f) <= 5.0f; };
+    EXPECT_EQ(open_crossings(f, shape, mid, on), 0u);
+}
+
+// A sheet running out of a wall (a thin arm leaving a body): the body's face
+// at x = 20.3 is 0.2 dx from the y faces at x = 20.5, nearer than the sheet's
+// surface, so the wall won them and its ramp left them 0.7 open along the
+// join, though the sheet's mid-surface (y = 16.45) crosses them (P2 Task 11,
+// the final review's finding 2). Mutation: theta from the nearest part only.
+TEST(AirflowSolidsSafeguard, ASheetLeavingAWallLeavesNoSlotAtTheJoin) {
+    const GridShape shape{40, 32, 32, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "body", .kind = Kind::box, .centre = {16.0f, 16.0f, 16.0f},
+                                 .half = {4.3f, 4.3f, 4.3f}, .min_feature = 8.6f});
+    scene.shapes.push_back(Shape{.name = "arm", .kind = Kind::box, .centre = {23.0f, 16.45f, 16.0f},
+                                 .half = {7.0f, 0.125f, 3.0f}, .min_feature = 0.25f});
+    SolidField f = *make_solid_field(shape);
+    const Result<void> built_ok = build_scene(f, shape, scene.parts(), scene);
+    ASSERT_TRUE(built_ok.has_value()) << built_ok.error().context;
+    ASSERT_EQ(f.classes[1].role, SolidRole::sheet);
+    const auto mid = [](glm::vec3 x) { return x.y - 16.45f; };
+    const auto on = [](glm::vec3 x) { return x.x >= 20.3f && x.x <= 29.0f && std::fabs(x.z - 16.0f) <= 2.0f; };
+    EXPECT_EQ(open_crossings(f, shape, mid, on), 0u) << "the arm seals right up to the body";
+}
+
+// The grid does not wrap a part across a periodic seam, so a part within 2 dx
+// of one periodic face but not the other is refused by name; one spanning the
+// whole axis is allowed (P2 Task 11, the final review's finding 5).
+TEST(AirflowSolidsSafeguard, APartAcrossAPeriodicSeamIsRefused) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "seam_ball", .kind = Kind::sphere, .centre = {1.0f, 16.0f, 16.0f},
+                                 .radius = 4.0f, .min_feature = 8.0f});
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_solids(f, shape, {true, false, false}, scene.parts(), scene.sampler());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("seam_ball"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("periodic x face"), std::string::npos) << r.error().context;
+    EXPECT_TRUE(build_solids(f, shape, {false, false, false}, scene.parts(), scene.sampler()).has_value());
 }
 
 // A square rod 0.8 dx across and 12 dx long, its axis along (1, 1, 1) inside
@@ -393,6 +497,12 @@ TEST(AirflowSolidsSafeguard, ACurvedThinShellDeclaredThickIsSheeted) {
     EXPECT_EQ(f.classes[0].role, SolidRole::sheet);
     EXPECT_LT(f.classes[0].thickness, 2.0f);
     EXPECT_NE(f.run_line.find("canopy: sheet (measured"), std::string::npos) << f.run_line;
+    // Watertight over the cap (the final review's finding 1): grazing
+    // crossings near the crown measure up to about 1 dx, twice its thickness.
+    const glm::vec3 centre(16.0f, 10.0f, 16.0f);
+    const auto mid = [&](glm::vec3 x) { return glm::length(x - centre) - 10.0f; };
+    const auto on = [&](glm::vec3 x) { return x.y >= centre.y + 1.0f; };
+    EXPECT_EQ(open_crossings(f, shape, mid, on), 0u) << "a line through the cap crosses no closed face";
 }
 
 // A bead 1.8 dx across centred on a cell centre: its face centres lie 0.4 dx

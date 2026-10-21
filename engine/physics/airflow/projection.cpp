@@ -1,6 +1,7 @@
 #include "physics/airflow/projection.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "physics/airflow/reduce.hpp"
 
@@ -151,7 +152,11 @@ ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc
 
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
                          const SolidField* solids, FluidRegions* regions) noexcept {
-    if (solids != nullptr && solids->any && regions != nullptr) {
+    if (solids != nullptr && solids->any) {
+        // Solids without their regions cannot be projected: the grid is left
+        // as it is and the residual is infinite, which a step announces (L6),
+        // never plan A over the solids (P2 Task 11, the final review's finding 4).
+        if (regions == nullptr) return ProjectionReport{std::numeric_limits<float>::infinity()};
         return project_solids(g, bc, rho, h, n_v, s, *solids, *regions);
     }
     const GridShape& sh = g.shape;

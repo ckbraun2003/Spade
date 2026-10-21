@@ -44,6 +44,7 @@ struct ProjectionReport {
 // gradient as plan A does, and every face with theta = 0 takes the wall's
 // velocity. The multigrid's weights are set by set_solids() (fluid_step.hpp),
 // the regions' status by check_regions(). Without solids: plan A, bit for bit.
+// Solids without their regions: the grid untouched and the residual infinite.
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
                          const SolidField* solids = nullptr, FluidRegions* regions = nullptr) noexcept;
 

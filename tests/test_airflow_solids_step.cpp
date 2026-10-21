@@ -218,12 +218,72 @@ TEST(AirflowSolidsStep, NoPartsIsPlanABitForBit) {
             EXPECT_TRUE(s.solids.any);
             EXPECT_TRUE(set_solids(s, g, bc, {}, scene.sampler()).has_value());
         }
+        if (how == 3) {  // stepped WITH the ball first, so every solids path ran (the final review)
+            scene.shapes.push_back(Shape{.name = "ball", .kind = Kind::sphere, .centre = {0.6f, 0.5f, 0.4f},
+                                         .radius = 0.2f, .min_feature = 0.4f});
+            const std::vector<SolidPart> parts = scene.parts();
+            EXPECT_TRUE(set_solids(s, g, bc, parts, scene.sampler()).has_value());
+            MacGrid other = g;
+            for (int step = 0; step < 2; ++step) EXPECT_EQ(fluid_step(other, bc, cfg, s).fault, FluidFault::none);
+            EXPECT_TRUE(set_solids(s, g, bc, {}, scene.sampler()).has_value());
+        }
         for (int step = 0; step < 4; ++step) EXPECT_EQ(fluid_step(g, bc, cfg, s).fault, FluidFault::none);
         return digest(g);
     };
     const uint64_t plain = run(0);
     EXPECT_EQ(run(1), plain);
     EXPECT_EQ(run(2), plain);
+    EXPECT_EQ(run(3), plain);
+}
+
+// With viscosity, a domain face a solid covers ends the step at the solid's
+// velocity, not the boundary's: an open inflow face under a still box (P2
+// Task 11, the final review's finding 3). Mutation: no re-application after
+// the boundaries, which leaves the inflow's 1 m/s there.
+TEST(AirflowSolidsStep, ADomainFaceUnderASolidKeepsTheSolidsVelocity) {
+    const GridShape shape{16, 8, 8, 0.1f};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 1.0e-3f, .h = 0.005f, .n_v = kSolidsCgIterations};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "block", .kind = Kind::box, .centre = {0.0f, 0.4f, 0.4f},
+                                 .half = {0.25f, 0.2f, 0.2f}, .min_feature = 0.4f});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+    ASSERT_EQ(fluid_step(g, bc, cfg, s).fault, FluidFault::none);
+    uint32_t covered = 0;
+    float worst = 0.0f;
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 8; ++j) {
+            const std::size_t idx = u_index(shape, 0, j, k);
+            if (!closed(s.solids.theta[0][idx])) continue;
+            ++covered;
+            worst = std::max(worst, std::fabs(g.u[idx]));
+        }
+    }
+    EXPECT_GT(covered, 0u);
+    EXPECT_EQ(worst, 0.0f) << "a closed inflow face holds the still block's 0, not the inflow";
+}
+
+// Solids without their regions are not projected as plan A (P2 Task 11, the
+// final review's finding 4): the grid is left untouched and the residual is
+// infinite, which a step announces.
+TEST(AirflowSolidsStep, ProjectingSolidsWithoutRegionsIsRefused) {
+    const float dx = 1.0f / 32.0f;
+    const GridShape shape{32, 8, 8, dx};
+    const DomainBc bc = all_periodic();
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = kSolidsCgIterations};
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    ASSERT_TRUE(set_solids(s, g, bc, s3_sheet(scene, 17, dx), scene.sampler()).has_value());
+    const uint64_t before = digest(g);
+    const ProjectionReport rep = project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, &s.solids, nullptr);
+    EXPECT_TRUE(std::isinf(rep.residual));
+    EXPECT_EQ(digest(g), before);
 }
 
 // Review focus 1: a rebuild at a new pose leaves nothing of the last one and
@@ -255,8 +315,24 @@ TEST(AirflowSolidsStep, ARebuildLeavesNothingOfTheLastPose) {
         EXPECT_TRUE(same_bits(moved.solids.wall[c], fresh.solids.wall[c])) << c;
         EXPECT_TRUE(same_bits(moved.solids.phi[c], fresh.solids.phi[c])) << c;
         EXPECT_EQ(moved.solids.link[c], fresh.solids.link[c]) << c;
+        // The rest of the field and the regions (the final review's F6).
+        EXPECT_EQ(moved.solids.fill1[c], fresh.solids.fill1[c]) << c;
+        EXPECT_EQ(moved.solids.fill2[c], fresh.solids.fill2[c]) << c;
+        EXPECT_EQ(moved.solids.layer[c], fresh.solids.layer[c]) << c;
+        EXPECT_EQ(moved.solids.range[c].lo, fresh.solids.range[c].lo) << c;
+        EXPECT_EQ(moved.solids.range[c].hi, fresh.solids.range[c].hi) << c;
+        EXPECT_EQ(moved.solids.range[c].empty, fresh.solids.range[c].empty) << c;
     }
+    ASSERT_EQ(moved.solids.links.size(), fresh.solids.links.size());
+    EXPECT_TRUE(moved.solids.links.empty() ||
+                std::memcmp(moved.solids.links.data(), fresh.solids.links.data(),
+                            moved.solids.links.size() * sizeof(WallLinks)) == 0);
+    EXPECT_EQ(moved.solids.run_line, fresh.solids.run_line);
     EXPECT_EQ(moved.regions.label, fresh.regions.label);
+    EXPECT_EQ(moved.regions.solid, fresh.regions.solid);
+    EXPECT_EQ(moved.regions.count, fresh.regions.count);
+    EXPECT_EQ(moved.regions.cells, fresh.regions.cells);
+    EXPECT_EQ(moved.regions.first, fresh.regions.first);
     for (std::size_t l = 0; l < fresh.projection.mg.levels.size(); ++l) {
         for (uint32_t c = 0; c < 3; ++c) {
             EXPECT_TRUE(same_bits(moved.projection.mg.levels[l].w[c], fresh.projection.mg.levels[l].w[c])) << l;

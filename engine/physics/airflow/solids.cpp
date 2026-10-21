@@ -51,6 +51,23 @@ void open_everything(SolidField& f) {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
+// A sheet sample's distance to the sheet's TRUE mid-surface (P2 Task 11, the
+// final review's finding 1). The class thickness can exceed the thickness
+// here (a cambered plate's box, a curved shell's grazing crossing); a
+// mid-surface placed from it sat too far, and faces it crossed stayed open.
+// So the thickness is measured along the normal: from the near surface point
+// x - q.distance g, a probe 2 dx deep reads the far surface, t = 2 dx -
+// d(probe), clamped to [0, 2 dx]. Exact for a slab or a radial shell; where the
+// probe leaves the sheet (a rim) t only shrinks, which closes more, never less.
+[[nodiscard]] float sheet_mid_distance(const SolidSampler& sample, uint32_t part, const SolidQuery& q, glm::vec3 x,
+                                       float dx) noexcept {
+    const float reach = 2.0f * dx;
+    const glm::vec3 probe = x - (q.distance + reach) * q.gradient;
+    const SolidQuery far = sample.part(sample.ctx, part, probe);
+    const float t = std::isfinite(far.distance) ? std::min(std::max(reach - far.distance, 0.0f), reach) : 0.0f;
+    return std::max(q.distance + 0.5f * t, 0.0f);
+}
+
 // Pass 1 (theta, the wall velocity and phi in range) and the periodic copy.
 // closes[p] is set when a sample part p wins has theta = 0. Every sample in
 // range is reset to open first, so a second pass leaves nothing of the first.
@@ -100,7 +117,7 @@ void open_everything(SolidField& f) {
                         f.phi[c][idx] = q.distance;
                         f.theta[c][idx] = std::min(std::max(0.5f + q.distance * inv_dx, 0.0f), 1.0f);
                     } else {
-                        const float d_mid = std::max(q.distance + 0.5f * cl.thickness, 0.0f);
+                        const float d_mid = sheet_mid_distance(sample, q.part, q, x, s.dx);
                         f.phi[c][idx] = d_mid;
                         float off_c = 0.0f;
                         const bool crosses = sheet_offset(d_mid, q.gradient[static_cast<glm::length_t>(c)], off_c) &&
@@ -124,6 +141,30 @@ void open_everything(SolidField& f) {
                             WallLinks& wl = f.links[f.link[c][idx]];
                             wl.inv_f[2u * a + dir] = 1.0f / frac;
                             wl.wall[2u * a + dir] = q.velocity[static_cast<glm::length_t>(c)];
+                        }
+                    }
+                    // A sheet meeting a wall (the final review's finding 2): theta
+                    // comes from the nearest part, so near the join the wall wins
+                    // faces the sheet crosses, and its ramp left a slot open along
+                    // it. Each sheet whose box (2 dx out) holds x is asked as well,
+                    // and its mid-surface crossing closes the face.
+                    if (cl.role == SolidRole::wall && f.theta[c][idx] > 0.0f) {
+                        for (uint32_t p = 0; p < parts.size(); ++p) {
+                            if (p == q.part || classes[p].role != SolidRole::sheet) continue;
+                            const glm::vec3 lo = parts[p].box_min - glm::vec3(2.0f * s.dx);
+                            const glm::vec3 hi = parts[p].box_max + glm::vec3(2.0f * s.dx);
+                            if (glm::any(glm::lessThan(x, lo)) || glm::any(glm::greaterThan(x, hi))) continue;
+                            const SolidQuery qp = sample.part(sample.ctx, p, x);
+                            if (!std::isfinite(qp.distance) || !finite3(qp.gradient) || !finite3(qp.velocity)) continue;
+                            float off_p = 0.0f;
+                            const float d_p = sheet_mid_distance(sample, p, qp, x, s.dx);
+                            if (sheet_offset(d_p, qp.gradient[static_cast<glm::length_t>(c)], off_p) &&
+                                off_p > -0.5f * s.dx && off_p <= 0.5f * s.dx) {
+                                f.theta[c][idx] = 0.0f;
+                                f.wall[c][idx] = qp.velocity[static_cast<glm::length_t>(c)];
+                                closes[p] = 1u;
+                                break;
+                            }
                         }
                     }
                     if (f.theta[c][idx] == 0.0f) closes[q.part] = 1u;
@@ -506,6 +547,21 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
             if (a1 < 0.0f || a0 > n_metres[a]) meets = false;
         }
         if (!meets) return refuse("part '" + p.name + "' lies wholly outside the grid");
+        // The sampler does not wrap a periodic seam, so a part within reach of
+        // one periodic face but not the other would be cut there, its walls'
+        // links and faces stopping at the seam (P2 Task 11, the final review's
+        // finding 5). A part spanning the whole axis (S3's sheet, S2's
+        // cylinder) is the same on both sides, and is allowed.
+        for (uint32_t a = 0; a < 3; ++a) {
+            if (!periodic[a]) continue;
+            const bool past_lo = p.box_min[static_cast<glm::length_t>(a)] - grow < 0.0f;
+            const bool past_hi = p.box_max[static_cast<glm::length_t>(a)] + grow > n_metres[a];
+            if (past_lo != past_hi) {
+                return refuse("part '" + p.name + "' reaches across the periodic " + std::string(1, "xyz"[a]) +
+                              " face: the grid does not wrap a part across a seam, so it must stay 2 dx clear of "
+                              "both periodic faces or span the whole axis");
+            }
+        }
         lo = glm::min(lo, p.box_min - glm::vec3(grow));
         hi = glm::max(hi, p.box_max + glm::vec3(grow));
     }

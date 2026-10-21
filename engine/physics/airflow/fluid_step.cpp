@@ -213,6 +213,9 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
     if (cfg.nu > 0.0f) {
         diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, solid ? &s.solids : nullptr);
         apply_velocity_boundaries(g, bc);
+        // A domain face a solid covers keeps the solid's velocity, not the
+        // boundary's (P2 Task 11, the final review's finding 3).
+        if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     }
     const ProjectionReport rep =
         project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr);
