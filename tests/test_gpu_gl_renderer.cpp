@@ -3453,7 +3453,7 @@ TEST_F(GpuGlRenderer, AirflowPosterCoresMatchTheCpu) {
     const auto quad =
         af::live_quad(std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml");
     ASSERT_TRUE(quad.has_value()) << quad.error().context;
-    auto run = an::LiveRun::start(quad->resolved, quad->run_model, quad->propulsion);
+    auto run = an::LiveRun::start(quad->resolved, quad->run_model);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     const double poster = af::armed_at(quad->program).value_or(0.0) + 0.9;
     spade::FlowVolume volume;

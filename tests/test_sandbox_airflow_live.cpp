@@ -126,7 +126,7 @@ TEST(SandboxAirflowLive, TheRunPushesTheAirDownThroughTheProbes) {
     ASSERT_TRUE(q.has_value()) << q.error().context;
     const an::Controls hover = an::controls_at(q->program, *af::armed_at(q->program));
     const an::ControlProgram program{{{0.0f, hover}, {1.0f, an::Controls{}}}};
-    spade::Result<an::LiveRun> run = an::LiveRun::start(q->resolved, q->run_model, q->propulsion);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(q->resolved, q->run_model);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     spade::FlowVolume volume;
     std::vector<eg::DownwashFrame> frames;
@@ -231,7 +231,7 @@ TEST(SandboxAirflowLive, ThePosterFrameMeasured) {
     }
     const spade::Result<af::LiveQuad> quad = af::live_quad(library_quad());
     ASSERT_TRUE(quad.has_value()) << quad.error().context;
-    spade::Result<an::LiveRun> run = an::LiveRun::start(quad->resolved, quad->run_model, quad->propulsion);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(quad->resolved, quad->run_model);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     const double poster = af::armed_at(quad->program).value_or(0.0) + 0.9;
     spade::FlowVolume volume;

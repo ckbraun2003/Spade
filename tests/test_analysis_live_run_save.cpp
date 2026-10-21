@@ -72,9 +72,8 @@ namespace fs = std::filesystem;
                                {0.12f, an::Controls{true, 0.4f, 20.0f, -15.0f, 10.0f}}}};
 }
 
-[[nodiscard]] an::LiveRun started(const an::ResolvedCase& r, const spade::vehicles::ModelType& m,
-                                  const std::optional<an::LivePropulsion>& propulsion = std::nullopt) {
-    spade::Result<an::LiveRun> run = an::LiveRun::start(r, m, propulsion);
+[[nodiscard]] an::LiveRun started(const an::ResolvedCase& r, const spade::vehicles::ModelType& m) {
+    spade::Result<an::LiveRun> run = an::LiveRun::start(r, m);
     EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
     return std::move(*run);
 }
@@ -220,16 +219,16 @@ TEST(AnalysisLiveRunSave, RefusesACorruptedFileByName) {
 TEST(AnalysisLiveRunSave, ARestoredPoweredRunMatchesAnUnbrokenOne) {
     const an::test::PoweredQuad p = an::test::powered_quad();
     const an::ResolvedCase r = windy(p.model);
-    an::LiveRun unbroken = started(r, p.model, p.propulsion);
+    an::LiveRun unbroken = started(r, p.model);
     std::vector<spade::FlowVolume> all = fly(unbroken, 6, powered_turn());
     const std::vector<spade::FlowVolume> last(all.begin() + 3, all.end());
 
     const spade::test::TempDir dir("live_save");
     const fs::path file = dir.path() / "powered.livesave";
-    an::LiveRun first = started(r, p.model, p.propulsion);
+    an::LiveRun first = started(r, p.model);
     (void)fly(first, 3, powered_turn());
     ASSERT_TRUE(first.save(file).has_value());
-    spade::Result<an::LiveRun> resumed = an::LiveRun::restore(file, r, p.model, p.propulsion);
+    spade::Result<an::LiveRun> resumed = an::LiveRun::restore(file, r, p.model);
     ASSERT_TRUE(resumed.has_value()) << resumed.error().context;
     EXPECT_EQ(resumed->state().rotor_omega, first.state().rotor_omega);
     expect_same_frames(fly(*resumed, 3, powered_turn()), last);
@@ -237,28 +236,38 @@ TEST(AnalysisLiveRunSave, ARestoredPoweredRunMatchesAnUnbrokenOne) {
     EXPECT_EQ(resumed->state().propulsion_flags, unbroken.state().propulsion_flags);
 }
 
-// A save pins the propulsion it flew: another chain, idle or state of charge
-// is refused by name, and so is none.
+// A save pins the propulsion it flew. The case pins the chain and holds the
+// idle and the state of charge (INT-11), so another of any of them is another
+// case, refused by name; a model without its chain is refused too.
 TEST(AnalysisLiveRunSave, RefusesAnotherPropulsion) {
     const an::test::PoweredQuad p = an::test::powered_quad();
     const an::ResolvedCase r = windy(p.model);
     const spade::test::TempDir dir("live_save");
     const fs::path file = dir.path() / "powered.livesave";
-    an::LiveRun run = started(r, p.model, p.propulsion);
+    an::LiveRun run = started(r, p.model);
     (void)fly(run, 1, powered_turn());
     ASSERT_TRUE(run.save(file).has_value());
 
-    an::LivePropulsion chain = p.propulsion;
-    chain.chain.current_max *= 0.5;
-    an::LivePropulsion idle = p.propulsion;
-    idle.idle = 0.08;
-    an::LivePropulsion soc = p.propulsion;
-    soc.soc = 0.5;
-    for (const auto& [other, word] : {std::pair{chain, "propulsion chain"}, std::pair{idle, "idle"},
-                                      std::pair{soc, "state of charge"}}) {
-        const spade::Result<an::LiveRun> refused = an::LiveRun::restore(file, r, p.model, other);
+    spade::vehicles::ModelType other_chain = p.model;
+    other_chain.propulsion->current_max *= 0.5;
+    an::AnalysisCase idle = r.spec;
+    idle.power.idle = 0.08f;
+    an::AnalysisCase soc = r.spec;
+    soc.power.state_of_charge = 0.5f;
+    const auto chain_case = an::resolve(windy(other_chain).spec, other_chain);  // re-pinned to it
+    const auto idle_case = an::resolve(idle, p.model);
+    const auto soc_case = an::resolve(soc, p.model);
+    ASSERT_TRUE(chain_case.has_value() && idle_case.has_value() && soc_case.has_value());
+    for (const auto& [other, model, word] :
+         {std::tuple{*chain_case, other_chain, "chain"}, std::tuple{*idle_case, p.model, "idle"},
+          std::tuple{*soc_case, p.model, "state of charge"}}) {
+        const spade::Result<an::LiveRun> refused = an::LiveRun::restore(file, other, model);
         ASSERT_FALSE(refused.has_value()) << word;
-        EXPECT_NE(refused.error().context.find(word), std::string::npos) << refused.error().context;
+        EXPECT_NE(refused.error().context.find("another case"), std::string::npos) << refused.error().context;
     }
-    EXPECT_FALSE(an::LiveRun::restore(file, r, p.model).has_value()) << "restored without its propulsion";
+    spade::vehicles::ModelType bare = p.model;
+    bare.propulsion.reset();
+    const spade::Result<an::LiveRun> none = an::LiveRun::restore(file, r, bare);
+    ASSERT_FALSE(none.has_value()) << "restored without its propulsion";
+    EXPECT_NE(none.error().context.find("propulsion chain"), std::string::npos) << none.error().context;
 }
