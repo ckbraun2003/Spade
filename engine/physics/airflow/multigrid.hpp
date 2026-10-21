@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "physics/airflow/pressure.hpp"
@@ -38,6 +39,17 @@ struct Multigrid {
                                        std::array<bool, 3> periodic = {}) noexcept;
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 
+// The face weights of every level (the solids design, section 3; a host call:
+// it allocates). Level 0 copies `fine`, the MAC grid's u, v and w apertures.
+// Each coarser face is the mean of the faces of the level above on its own
+// plane that it covers (2 x 2, or 2 or 1 across an axis that is not
+// coarsened), summed with the second transverse axis outer. A coarse face
+// covers only every second fine plane: a sheet on another plane is invisible
+// to it (finding 2), which is why the solids path solves by CG (pcg.hpp).
+void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine);
+// Every level back to plan A's stencil.
+void clear_weights(Multigrid& mg) noexcept;
+
 // coarse.b = (sum of the children's residuals) * (4 / children).
 void restrict_residual(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;
 // fine.p += the trilinear interpolation of coarse.p.
@@ -45,5 +57,22 @@ void prolong_add(const PoissonLevel& coarse, PoissonLevel& fine) noexcept;
 
 // One V(2,2) cycle on levels[0]: its p is the initial guess, its b is set.
 void v_cycle(Multigrid& mg) noexcept;
+
+// The coarsest level's sweeps each way in the symmetric cycle.
+inline constexpr uint32_t kCoarsestSymSweeps = 16;
+
+// coarse.b = (4 / children) * P^T fine.r, with P prolong_add()'s trilinear
+// interpolation: the restriction is the interpolation's transpose (full
+// weighting), so the cycle below is symmetric. Gathered per coarse cell from
+// the fine cells within one of its children, in (k, j, i) order.
+void restrict_full_weighting(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;
+
+// The symmetric V(2,2) cycle, CG's preconditioner (spec 1.5 as amended
+// 2026-10-13): from p = 0 on every level, red then black twice, restrict by
+// full weighting, recurse, prolong, black then red twice; the coarsest level
+// kCoarsestSymSweeps sweeps red-first and as many black-first. levels[0].b is
+// the input, levels[0].p the output, and every level's p, b and r are
+// scratch. A symmetric operator (design test 10).
+void precondition(Multigrid& mg) noexcept;
 
 }  // namespace spade::physics::airflow

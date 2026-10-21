@@ -77,10 +77,21 @@ void add_and_clear(std::vector<float>& vel, std::vector<float>& d) noexcept {
 std::string describe(const FluidHealth& health, const GridShape& s) {
     switch (health.fault) {
         case FluidFault::none:
+            if (health.unconverged) {
+                return "airflow fluid step: healthy, but the pressure solve left a relative residual of " +
+                       std::to_string(health.pressure_residual) + ", above " + std::to_string(kResidualAnnounce) +
+                       " (announced, L6)";
+            }
             return "airflow fluid step: healthy";
         case FluidFault::ill_posed_domain:
             return "airflow fluid step: a closed domain's prescribed face fluxes do not balance (faces " +
                    face_list(health.faces) + ")";
+        case FluidFault::ill_posed_region: {
+            const uint64_t c = health.index;
+            return "airflow fluid step: a closed fluid region (its first cell (" + std::to_string(c % s.nx) + ", " +
+                   std::to_string((c / s.nx) % s.ny) + ", " + std::to_string(c / (uint64_t{s.nx} * s.ny)) +
+                   ")) has no outlet and takes a net prescribed flux through faces " + face_list(health.faces);
+        }
         case FluidFault::non_finite: {
             const uint32_t q = health.quantity;
             const uint64_t cx = q == 0u ? s.nx + 1u : s.nx;
@@ -134,6 +145,9 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (!(cfg.nu >= 0.0f) || !std::isfinite(cfg.nu)) return refuse("nu must be non-negative and finite");
     if (cfg.n_v == 0u) return refuse("n_v must be at least 1");
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) return refuse("visc_sweeps must be at least 1 when nu > 0");
+    if (cfg.interior == SolidInterior::extrapolate && cfg.nu > 0.0f) {
+        return refuse("the free-slip interior (SolidInterior::extrapolate) is the inviscid lean mode: nu must be 0");
+    }
     if (Result<void> ok = check_domain(bc, g.shape); !ok) return std::unexpected(ok.error());
     if (const uint64_t bytes = fluid_bytes(g.shape, bc); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) +
@@ -151,13 +165,42 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     return s;
 }
 
+Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, std::span<const SolidPart> parts,
+                        const SolidSampler& sample) {
+    if (s.solids.theta[0].empty()) {
+        Result<SolidField> made = make_solid_field(g.shape);
+        if (!made) return std::unexpected(made.error());
+        s.solids = std::move(*made);
+    }
+    const std::array<bool, 3> periodic = periodic_axes(bc);
+    if (Result<void> ok = build_solids(s.solids, g.shape, periodic, parts, sample); !ok) {
+        clear_weights(s.projection.mg);
+        return ok;
+    }
+    if (!s.solids.any) {
+        clear_weights(s.projection.mg);
+        return {};
+    }
+    label_regions(s.regions, g.shape, periodic, s.solids);
+    set_weights(s.projection.mg, {s.solids.theta[0], s.solids.theta[1], s.solids.theta[2]});
+    if (s.projection.pcg.x.size() != g.p.size()) s.projection.pcg = make_pcg_scratch(g.p.size());
+    return {};
+}
+
 FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, FluidScratch& s) noexcept {
     if (s.health.fault != FluidFault::none) return s.health;
-    if (const uint8_t faces = unbalanced_faces(bc, g.shape); faces != 0u) {
+    const bool solid = s.solids.any;
+    if (solid) {
+        if (const RegionFault rf = check_regions(s.regions, g.shape, bc, s.solids); rf.region != kNoRegion) {
+            s.health = FluidHealth{.fault = FluidFault::ill_posed_region, .faces = rf.faces, .index = rf.cell};
+            return s.health;
+        }
+    } else if (const uint8_t faces = unbalanced_faces(bc, g.shape); faces != 0u) {
         s.health = FluidHealth{.fault = FluidFault::ill_posed_domain, .faces = faces};
         return s.health;
     }
     apply_velocity_boundaries(g, bc);
+    if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     advect_velocity(g, s.next, bc, cfg.h, s.advect);
     g.u.swap(s.next.u);
     g.v.swap(s.next.v);
@@ -166,12 +209,21 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
     add_and_clear(g.v, s.dv);
     add_and_clear(g.w, s.dw);
     apply_velocity_boundaries(g, bc);
+    if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     if (cfg.nu > 0.0f) {
-        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs);
+        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, solid ? &s.solids : nullptr);
         apply_velocity_boundaries(g, bc);
+        // A domain face a solid covers keeps the solid's velocity, not the
+        // boundary's (P2 Task 11, the final review's finding 3).
+        if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     }
-    project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection);
+    const ProjectionReport rep =
+        project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr);
     s.health = scan(g);
+    if (solid && s.health.fault == FluidFault::none) {
+        s.health.pressure_residual = rep.residual;
+        s.health.unconverged = rep.residual > kResidualAnnounce;
+    }
     return s.health;
 }
 

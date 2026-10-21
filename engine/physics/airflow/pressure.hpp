@@ -26,6 +26,12 @@ struct PoissonLevel {
     std::vector<float> p;  // the unknown
     std::vector<float> b;  // the right side
     std::vector<float> r;  // the residual b - (sum - diag p), after residual()
+    // Face weights (the solids design, section 3): w[a] holds the faces normal
+    // to axis a, indexed as a MAC grid of this level's shape indexes u, v and
+    // w. Each multiplies its neighbour term and its part of the diagonal. On a
+    // periodic axis the last face plane mirrors the first. Empty: every weight
+    // 1, and plan A's stencil and fast paths run, bit for bit.
+    std::array<std::vector<float>, 3> w;
 };
 
 [[nodiscard]] PoissonLevel make_level(uint32_t nx, uint32_t ny, uint32_t nz, const std::array<FaceKind, 6>& kind);
@@ -37,8 +43,14 @@ void divergence(const MacGrid& g, std::span<float> out) noexcept;
 // One Gauss-Seidel update of cell (i, j, k): p = (sum - b) / diag.
 void smooth_one_cell(PoissonLevel& level, uint32_t i, uint32_t j, uint32_t k) noexcept;
 
-// `sweeps` red-black sweeps: every cell with (i + j + k) even, then every odd one.
-void smooth_red_black(PoissonLevel& level, uint32_t sweeps) noexcept;
+
+// `sweeps` red-black sweeps: every cell with (i + j + k) even, then every odd
+// one; black_first runs the odd colour first (the symmetric cycle's
+// post-smoothing, Task 4).
+void smooth_red_black(PoissonLevel& level, uint32_t sweeps, bool black_first = false) noexcept;
+
+// out = sum - diag x, the level's operator applied to `x` (both sized like p).
+void apply_operator(const PoissonLevel& level, std::span<const float> x, std::span<float> out) noexcept;
 
 // level.r = b - (sum - diag p) for every cell.
 void residual(PoissonLevel& level) noexcept;
