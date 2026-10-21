@@ -290,12 +290,8 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                                                 double budget_s, uint32_t frame_budget) {
     namespace an = spade::analysis;
     const LiveCase& lc = *film.run;
-    auto resolved = an::resolve(lc.c, lc.run_model);
-    if (!resolved) {
-        std::string issues;
-        for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
-        return std::unexpected(spade::Error{spade::Code::invalid_argument, film.stem + ": the case does not resolve: " + issues});
-    }
+    auto resolved = resolve_live(lc);
+    if (!resolved) return std::unexpected(spade::Error{resolved.error().code, film.stem + ": " + resolved.error().context});
     std::error_code ec;
     fs::create_directories(cache, ec);
     const fs::path save = cache / "live.save";
@@ -359,6 +355,58 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
     fs::remove(save, ec);
     return true;
+}
+
+// --step-time: starts the run (or fails naming why), prints its grid, its
+// solids' line and run label, then times `steps` single steps, each with its
+// pressure residual. The D1 run's go or no-go before its long run (the lead:
+// over 30 s a step is reported first); nothing is cached.
+[[nodiscard]] int step_time_report(const LiveCase& lc, uint32_t steps) {
+    namespace an = spade::analysis;
+    using Clock = std::chrono::steady_clock;
+    auto resolved = resolve_live(lc);
+    if (!resolved) {
+        std::fprintf(stderr, "flow_movie: %s\n", resolved.error().context.c_str());
+        return 1;
+    }
+    const spade::physics::airflow::GridShape& g = resolved->base;
+    std::printf("[ step time ] %s: %u x %u x %u cells at %.4f m (%.2f M cells, %.0f MiB), h %.3f ms\n",
+                lc.name.c_str(), g.nx, g.ny, g.nz, static_cast<double>(g.dx),
+                static_cast<double>(g.nx) * g.ny * g.nz / 1e6, static_cast<double>(resolved->base_bytes) / 1048576.0,
+                static_cast<double>(*lc.c.time.step) * 1e3);
+    std::fflush(stdout);
+    const Clock::time_point t0 = Clock::now();
+    auto run = an::LiveRun::start(*resolved, lc.run_model);
+    if (!run) {
+        std::fprintf(stderr, "flow_movie: start: %s\n", run.error().context.c_str());
+        return 1;
+    }
+    const double start_s = std::chrono::duration<double>(Clock::now() - t0).count();
+    const an::LiveSolids& solids = run->solids();
+    std::printf("[ step time ] start %.1f s; solids in the flow: %s, %u solid cells\n", start_s,
+                solids.any ? "yes" : "no", solids.solid_cells);
+    std::printf("[ step time ] run line: %s\n", solids.run_line.c_str());
+    std::printf("[ step time ] run label: %s\n", run->run_label().c_str());
+    std::fflush(stdout);
+    double total = 0.0;
+    for (uint32_t i = 0; i < steps; ++i) {
+        const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
+        const Clock::time_point s0 = Clock::now();
+        if (auto stepped = run->step(controls); !stepped) {
+            std::fprintf(stderr, "flow_movie: step %u: %s\n", i + 1u, stepped.error().context.c_str());
+            return 1;
+        }
+        const double dt = std::chrono::duration<double>(Clock::now() - s0).count();
+        total += dt;
+        std::printf("[ step time ] step %u: %.2f s; residual %.2e, unconverged so far %llu\n", i + 1u, dt,
+                    static_cast<double>(run->solids().pressure_residual),
+                    static_cast<unsigned long long>(run->solids().unconverged_steps));
+        std::fflush(stdout);
+    }
+    if (steps > 0u) {
+        std::printf("[ step time ] mean %.2f s a step over %u\n", total / steps, steps);
+    }
+    return 0;
 }
 
 // --- render many times -----------------------------------------------------------------
@@ -954,9 +1002,15 @@ struct Options {
     uint32_t frame_budget = 0;    // 0: none
     fs::path case_file;           // --case: a .case.yaml flown through LiveRun
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
+    uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
+    std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
 };
 
 constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continue
+
+// d1-hover's length: D1-3's window ends 0.50 s after arming (armed at 0), and
+// the lead's floor is 0.55 s; 18 frames.
+constexpr double kD1Seconds = 0.6;
 
 [[nodiscard]] fs::path default_out() {
     const char* profile = std::getenv("USERPROFILE");
@@ -1155,6 +1209,15 @@ int main(int argc, char** argv) {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--step-time") {
+            opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--grid") {
+            spade::physics::airflow::GridShape g = kD1Grid;
+            if (std::sscanf(value().c_str(), "%ux%ux%u", &g.nx, &g.ny, &g.nz) != 3) {
+                std::fprintf(stderr, "flow_movie: --grid takes NXxNYxNZ, as 224x160x168\n");
+                return 2;
+            }
+            opt.grid = g;
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;
@@ -1189,20 +1252,26 @@ int main(int argc, char** argv) {
         if (!film) return fail(film.error());
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
-    } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad") {
-        const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad";
-        if (!smoke && !quad && opt.case_file.empty()) {
+    } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
+               opt.video == "d1-hover") {
+        const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad", d1 = opt.video == "d1-hover";
+        if (!smoke && !quad && !d1 && opt.case_file.empty()) {
             std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
             return 2;
         }
         auto lc = smoke  ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
                   : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
+                  : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid))
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
+        if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
         auto film = case_film(std::move(*lc), frames,
-                              smoke ? "case-smoke" : quad ? "case-quad" : "case-" + opt.case_file.stem().string());
+                              smoke ? "case-smoke"
+                              : quad ? "case-quad"
+                              : d1   ? "d1-hover"
+                                     : "case-" + opt.case_file.stem().string());
         if (!film) return fail(film.error());
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {
