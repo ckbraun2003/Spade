@@ -18,6 +18,7 @@
 # library.yaml, is hand-written; LF keeps it the same bytes on every checkout.
 *.object.yaml text eol=lf
 library.yaml text eol=lf
+sources.yaml text eol=lf
 
 # Fonts are binary: never convert their line endings.
 *.ttf binary

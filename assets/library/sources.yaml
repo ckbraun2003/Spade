@@ -1,0 +1,89 @@
+# The default library's sources (scene/library_sources.hpp, THE TEXT).
+# Hand-written. Every number in a library entry cites one of these by id, with
+# a grade. SOURCES.md beside this file is the same list for people, one
+# "### `<id>`" heading per source; tests/test_library_sources.cpp keeps the
+# two in step. A not_usable source stays listed so a citation of it is
+# refused by name (ruling 4 of the library plan).
+sources_version: 1
+sources:
+  - id: nasa_ames_2016
+    citation: "C. Russell, J. Jung, G. Willink and B. Glasner, \"Wind Tunnel and Hover Performance Test Results for Multicopter UAS Vehicles\", AHS 72nd Annual Forum, West Palm Beach, FL, May 2016 (NTRS 20160007399)"
+    url: "https://ntrs.nasa.gov/citations/20160007399"
+    retrieved: 2026-10-21
+    license: public_domain
+    license_evidence: "p.1: \"This is a work of the U.S. Government and is not subject to copyright protection.\" NTRS copyright determination: PUBLIC_USE_PERMITTED."
+  - id: dji_phantom3
+    citation: "DJI, Phantom 3 Advanced, Professional and Standard specifications"
+    url: "https://www.dji.com/phantom-3-adv"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "The manufacturer's specification pages; the numbers are facts, used and cited. DJI's site terms were not read."
+  - id: retail_phantom3_parts
+    citation: "Phantom 3 spare-part listings: the 2312A 960 KV motor (RC Corner, Drone Nerds) and the 9450 propeller (GetFPV, Pictureline)"
+    url: "https://www.dronenerds.com/products/phantom-3-2312-motor-part-8-cw-cp-pt-000194-dji"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "Retailer listings with no reuse licence; the numbers are facts, used and cited."
+  - id: retail_iris_plus
+    citation: "3DR Iris+ listings: Adafruit product 2199 and iFixit's 3DR Iris Plus device page"
+    url: "https://www.adafruit.com/product/2199"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "Third-party listings with no reuse licence; the numbers are facts, used and cited. No 3DR primary source was read."
+  - id: uiuc_propdb
+    citation: "J.B. Brandt, R.W. Deters, G.K. Ananda, O.D. Dantsker, and M.S. Selig (2026-10-21), UIUC Propeller Database, Vols 1-4, University of Illinois at Urbana-Champaign, Department of Aerospace Engineering, retrieved from https://m-selig.ae.illinois.edu/props/propDB.html"
+    url: "https://m-selig.ae.illinois.edu/props/propDB.html"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "No terms or licence on the site; its footer reads \"(c) 1994 - 2026 UIUC Applied Aerodynamics Group\" and it asks to be cited as above. Cameron, 2026-10-21 (ruling 3): our own resampled tables, cited, never the files."
+  - id: apc_data_files
+    citation: "APC Propellers (Landing Products Inc.), PE0 geometry and PER performance files"
+    url: "https://www.apcprop.com/technical-information/file-downloads/"
+    retrieved: 2026-10-21
+    license: not_usable
+    license_evidence: "APC's terms (https://www.apcprop.com/terms-conditions/): \"reproduction, distribution, display or transmission of the content of this site is strictly prohibited\". Cameron, 2026-10-21 (ruling 4): no APC data at all."
+  - id: kat_catalog_apc_shaped
+    citation: "Kat, design-specs/integration/drone-builder-catalog.md (2026-10-03): its propeller J-tables, whose shapes come from APC's PER3 files"
+    retrieved: 2026-10-21
+    license: not_usable
+    license_evidence: "Cameron, 2026-10-21 (ruling 4): no APC data at all, including the shapes Kat's catalog derived from APC's PER3."
+  - id: bitcraze_cf21_datasheet
+    citation: "Bitcraze, \"Datasheet Crazyflie 2.1\", Rev 3"
+    url: "https://www.bitcraze.io/documentation/hardware/crazyflie_2_1/crazyflie_2_1-datasheet.pdf"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "The manufacturer's datasheet; the numbers are facts, used and cited. Bitcraze's licence page returned 404."
+  - id: bitcraze_pwm_thrust
+    citation: "Bitcraze, \"PWM to thrust\", crazyflie-firmware documentation (measurements of 2015)"
+    url: "https://www.bitcraze.io/documentation/repository/crazyflie-firmware/master/functional-areas/pwm-to-thrust/"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "No licence stated (Bitcraze's licence page returned 404); the measured numbers are facts, used and cited."
+  - id: retail_cf_motor
+    citation: "Pakronics listing, Bitcraze 7x16 mm coreless DC motor (SKU 316030060)"
+    url: "https://www.pakronics.com.au/products/crazyflie-2-0-spare-7x16-mm-coreless-dc-motor-with-connector-ss316030060"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "A retailer listing with no reuse licence; the numbers are facts, used and cited."
+  - id: luis_leny_2016
+    citation: "C. Luis and J. Le Ny, \"Design of a Trajectory Tracking Controller for a Nanoquadcopter\", Polytechnique Montreal technical report, arXiv:1608.05786, 2016, Table 2.3.1"
+    url: "https://arxiv.org/abs/1608.05786"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "arXiv's non-exclusive distribution licence: the authors keep copyright; the numbers are facts, used and cited."
+  - id: retail_fpv_parts
+    citation: "FPV part listings: Ready Made RC (iFlight XING2 2207 1855KV; EMAX E3 2306 1700KV), Flying Tech (EMAX ECO II 2306) and GetFPV (HQProp DP 6x3.5x3)"
+    url: "https://www.readymaderc.com/products/details/86757-xing2-2207-fpv-motor-unibell-motor-1855kv"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "Retailer listings with no reuse licence; the numbers are facts, used and cited."
+  - id: kat_competition_700
+    citation: "Kat, content/airframes/competition-700.airframe.json: the competition drone, fitted to the AI Grand Prix VQ1 simulator (not hardware), with each value's provenance"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "Cameron, 2026-10-21 (ruling 5): \"The Grand Prix published nothing, these were derived sim values and require no concern. Have them in the library.\""
+  - id: kat_datapack
+    citation: "Kat, design-specs/integration/drone-builder-datapack.md section 7.2: the best candidate parts set for the competition drone"
+    retrieved: 2026-10-21
+    license: facts_cite
+    license_evidence: "Kat's own design notes, read in place; Cameron, 2026-10-21 (ruling 5) puts the competition fit in the library. Nothing in it that took its shape from APC is used (ruling 4)."
