@@ -186,6 +186,9 @@ class AirflowSession {
 
     // The showcase program has run out; frame() keeps drawing its last frame.
     [[nodiscard]] bool finished() const noexcept;
+    // From now on the view is the wake's slice (airflow::wake_slice()), with
+    // the camera turned square to it and the turning stopped.
+    void show_slice();
     [[nodiscard]] const spade::analysis::LiveRun& run() const noexcept { return *run_; }
     [[nodiscard]] const airflow::LiveQuad& quad() const noexcept { return quad_; }
     // One per frame from arming (airflow::downwash_frame()), in time order.
@@ -208,6 +211,7 @@ class AirflowSession {
     spade::render::RenderScene scene_;  // this frame's
     spade::render::ViewCache cache_;
     float speed_top_ = 1.0f;
+    bool slice_ = false;  // show_slice() was called
     double sim_owed_s_ = 1.0 / static_cast<double>(spade::analysis::kFramesPerSecond);  // simulated time due
     std::vector<end_goal::DownwashFrame> frames_;
     std::vector<spade::render::ViewLegend> legends_;

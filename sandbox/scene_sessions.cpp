@@ -295,7 +295,7 @@ spade::Result<std::unique_ptr<AirflowSession>> AirflowSession::create(const std:
     s->camera_.target = glm::vec3(0.0f, -0.12f * airflow::kBoxM, 0.0f);
     s->camera_.yaw = 0.52f;
     s->camera_.pitch = 0.35f;
-    s->camera_.distance = 0.95f * airflow::kBoxM;
+    s->camera_.distance = 1.5f * airflow::kBoxM;
     return s;
 }
 
@@ -308,13 +308,19 @@ AirflowSession::~AirflowSession() {
     if (sink_ != nullptr) sink_->set_gap_line({});
 }
 
+void AirflowSession::show_slice() {
+    slice_ = true;
+    const spade::render::ViewSpec spec = airflow::wake_slice(volume_, airflow::probes_of(*run_), speed_top_);
+    camera_.yaw = airflow::facing_yaw(spec.layers.front().plane);
+}
+
 bool AirflowSession::finished() const noexcept {
     return static_cast<float>(run_->state().t_s) >= quad_.resolved.spec.time.duration;  // in float, as the case holds it
 }
 
 spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
     apply_drone_orbit(camera_, in, dt);
-    camera_.yaw += kAirflowTurnRadPerS * dt;
+    if (!slice_) camera_.yaw += kAirflowTurnRadPerS * dt;
 
     // The run is paced to the window at airflow::kPlayback: a run frame is due
     // once that much simulated time is owed (the first frame is owed at once,
@@ -346,7 +352,8 @@ spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
     }
     spade::render::RenderOptions options;
     const std::vector<end_goal::RotorProbe> probes = airflow::probes_of(*run_);
-    const spade::render::ViewSpec spec = airflow::airflow_view(volume_, probes, speed_top_);
+    const spade::render::ViewSpec spec = slice_ ? airflow::wake_slice(volume_, probes, speed_top_)
+                                                : airflow::airflow_view(volume_, probes, speed_top_);
     spade::render::ViewInputs inputs;
     inputs.has_volume = true;
     inputs.gl_flow_ready = gpu_ ? gpu_->flow_ready() : true;

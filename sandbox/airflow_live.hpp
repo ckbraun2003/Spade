@@ -17,6 +17,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -51,8 +52,9 @@ inline constexpr double kIdleDuty = 0.05;
 inline constexpr double kStateOfCharge = 1.0;
 // The vortex cores: an iso of lambda2-hat at this fraction of the frame's
 // deepest value, drawn only once the deepest is below the floor (flow_movie's
-// live case: a shallower minimum is noise, not a core).
-inline constexpr float kVortexFraction = 1.0f / 6.0f;
+// floor: a shallower minimum is noise, not a core). A third, not flow_movie's
+// sixth at 64^3: at 32^3 a sixth draws the noise in the slow air too.
+inline constexpr float kVortexFraction = 1.0f / 3.0f;
 inline constexpr float kVortexFloor = -5.0f;
 // The window plays the run at a quarter of real speed, said so on screen
 // (a stated speed, Videos/CATEGORIES.md's Feature rule): the 1.2 s flown
@@ -178,10 +180,10 @@ namespace detail {
     return std::max(1.0f, 2.0f * vehicles::rotor_hover_induced_velocity(thrust, density, model.rotors.front().radius));
 }
 
-// What the chapter shows over the drone, for this frame's volume: the vortex
-// cores (once there are any), streamlines through each disc, and a speed
-// slice through the two farthest-apart hubs. Speeds are coloured over
-// [0, top].
+// What the chapter shows over the drone while it flies, for this frame's
+// volume: the vortex cores (once there are any) and streamlines through each
+// disc, their speeds coloured over [0, top]. The slice has its own view
+// (wake_slice()): over the drone it hides half the wake.
 [[nodiscard]] inline render::ViewSpec airflow_view(const FlowVolume& volume,
                                                    std::span<const end_goal::RotorProbe> rotors, float top) {
     render::ViewSpec spec;
@@ -207,7 +209,16 @@ namespace detail {
         }
     }
     if (!lines.seeds.empty()) spec.layers.push_back(std::move(lines));
+    return spec;
+}
 
+// The wake's slice, shown on its own after the run: speed over [0, top] on a
+// plane standing through the two farthest-apart hubs, as tall and wide as the
+// box.
+[[nodiscard]] inline render::ViewSpec wake_slice(const FlowVolume& volume,
+                                                 std::span<const end_goal::RotorProbe> rotors, float top) {
+    render::ViewSpec spec;
+    spec.base = render::ViewBase::shaded;
     render::FlowViewSpec slice;
     slice.kind = render::FlowView::slice;
     slice.quantity = render::FlowQuantity::speed;
@@ -233,6 +244,12 @@ namespace detail {
     }
     spec.layers.push_back(std::move(slice));
     return spec;
+}
+
+// The orbit camera's yaw that puts its eye square to `plane` (the eye sits
+// along (sin yaw, cos yaw) from its target; orbit_camera.hpp).
+[[nodiscard]] inline float facing_yaw(const render::FieldLayer& plane) {
+    return std::atan2(-plane.right.z, plane.right.x);
 }
 
 }  // namespace spade::sandbox::airflow

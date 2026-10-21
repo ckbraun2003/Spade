@@ -569,6 +569,14 @@ void airflow_chapter(Tour& t, const fs::path& assets, const DrawFn& blank) {
         const end_goal::Verdict verdict = end_goal::downwash(a.downwash_frames(), c, end_goal::kDownwashPresent);
         s.check(verdict.ok, "downwash-present", verdict.detail);
         t.pump(30, {}, draw);  // the last frame held, under the verdict
+
+        // Then the wake's slice on its own, faced.
+        a.show_slice();
+        const uint32_t before = refused;
+        t.pump(60, {}, draw);
+        s.check(refused == before, "slice-drawn",
+                refused == before ? "speed through the farthest hubs, " + std::to_string(a.legends().size()) + " legend"
+                                  : "drawn shaded: " + a.view_refusal());
     });
 }
 
