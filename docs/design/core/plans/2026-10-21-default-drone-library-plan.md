@@ -235,9 +235,16 @@ Cameron asked for a realistic-looking drone, and boxes and tubes alone don't mee
 - **Props are mesh parts on their rotor's hub** (`attach: rotor`, mounted in the hub frame; `vehicles/model_part.hpp`). They are drawn and posed by the blade azimuth, and are never solids: the solids take only `PartFilter::rigid_only`. The rotor model carries the props in the air.
 - **The body, arms and motor bells are closed solid meshes**, and they are the parts themselves: drawn, and the airflow solids. Every feature is at least 2 dx at D1's 4 mm, that is 8 mm. A rounded body volume and 12 mm arm tubes meet that. A detail below 8 mm (an antenna, a GPS mast) stays out of L7.
 - **Authoring a prop mesh on a rotor is a compile addition.** The model file already carries rotor parts. `AirframeSpec` cannot author one yet: its records (`PartInertia` + `PartGeometrySpec`) have no attach or rotor, and the compile gathers no part from a propeller. L7 adds that to `vehicles/`, with the prop's mass staying in `PropBlock.mass`, so no mass is counted twice.
-- **Checks asked (2026-10-21):** Rendering, that `render_parts` draws rotor-mounted mesh parts spinning; Physics, that a closed mesh body gives "10 walls, 0 sheets" at 4 mm.
-
-Rendering already draws mesh parts (`render_parts`).
+**The checks, answered (2026-10-21).**
+- **Rendering:** `render_parts` draws posed rotor parts, mesh parts included, on GL and on the CPU.
+  - Spinning needs Physics' blade azimuth ψ (P11), and two callers that pose with ψ = 0 today: `sandbox/vehicle_draw.hpp:110-112` and `tools/flow_movie/main.cpp:880`.
+  - The opposite-hand prop needs its own mirrored mesh, re-wound so it faces outward. A flipped mount can't make one.
+- **Physics** (`docs/design/physics/plans/2026-10-13-airflow-solids-design.md` §3-4): one wall per rigid part, with no sheet. Body, 4 arms and 4 bells give "9 parts, 9 walls, 0 sheets". The reference quad's 12 mm arms are already clean walls at 4 mm. L7's meshes keep these rules:
+  - **The classifier.** A part is thin when min(declared `min_feature`, its smallest part-frame bounds extent) < 2 dx. Declare `min_feature` ≥ 8 mm, and keep every part's bounds ≥ 8 mm on all three axes.
+  - **The measured safeguard.** Aim for ≥ 12 mm (3 dx) through every section. The 12 mm arms are clean at 4 mm, leak at 6 mm and are refused at 7 mm. No thin lips, flanges or shells on the body.
+  - **Closed and outward-wound.** The sign of φ comes from the winding.
+  - **Overlap is fine.** The solid is the parts' union, so sink arm-end caps and bell bases into the body or arm rather than placing them flush. Leave no gap between parts narrower than 8 mm; an air slot the grid can't resolve is the failure to avoid.
+  - Physics checks each L7 model at 4 mm with `build_quad()`'s pattern (`tests/test_vehicles_airflow_solids.cpp`) once a generator emits it.
 
 **Its outline.** The full tasks are drafted after L3 and go to the lead.
 - **L7a, the mesh generators.** These are functions that build a `TriangleMesh` through `make_mesh()`:
