@@ -138,9 +138,10 @@ TEST(RenderSolidDrone, TheRigMakesTheAirframeSolid) {
     EXPECT_FALSE(d.scene.statics.empty());
 }
 
-// At the wall, a C_p read reaches into the deeper solid cells, which are
-// no-data (P6), and the airframe goes partly uncoloured; one cell off, on the
-// seen side (R2.4's choice), it reads the fluid's first layer everywhere.
+// Every pixel of the airframe takes a C_p colour: no read reaches a deeper
+// solid cell, which is no-data (P6). Measured at the wall as well (2026-10-21,
+// 1528 px, 0 no-data): the quad's parts are thin enough that the first solid
+// layer, holding its fluid side's values, covers every read.
 TEST(RenderSolidDrone, TheCpViewColoursEveryPixelOfTheAirframe) {
     const SolidDrone& d = rig();
     ASSERT_TRUE(d.error.empty()) << d.error;
