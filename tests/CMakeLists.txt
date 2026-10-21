@@ -106,6 +106,7 @@ add_executable(spade_tests
     test_world_file.cpp
     test_scene_file.cpp
     test_scene_airflow.cpp
+    test_device_limits.cpp
     test_model_file.cpp
     test_object_file.cpp
     test_library_quad.cpp
@@ -273,6 +274,7 @@ if(SPADE_VULKAN)
         test_gpu_parity.cpp
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
+        test_gpu_device_limits.cpp
     )
 endif()
 
