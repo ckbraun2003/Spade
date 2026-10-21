@@ -238,6 +238,44 @@ void write_text(const fs::path& path, std::string_view text) {
     out << text;
 }
 
+// One double of a block, listed here from the struct, not from the part
+// file's key walk.
+template <class Block>
+struct DoubleField {
+    const char* name;
+    double Block::*slot;
+};
+
+// Sets each listed double to a value of its own, apart from every other
+// field's and from its default (0), so a field read into another's slot
+// reads back wrong.
+template <class Block>
+void set_apart(Block& block, const std::vector<DoubleField<Block>>& fields) {
+    double next = 0.0;
+    for (const DoubleField<Block>& f : fields) {
+        next += 1.0;
+        block.*(f.slot) = next + kThird;
+    }
+}
+
+template <class Block>
+void expect_each(const Block& back, const Block& want, const std::vector<DoubleField<Block>>& fields) {
+    for (const DoubleField<Block>& f : fields) EXPECT_EQ(bits(back.*(f.slot)), bits(want.*(f.slot))) << f.name;
+}
+
+// `part` written and read back, through the kind-generic API.
+template <class Part>
+[[nodiscard]] std::optional<Part> written_and_read(const Part& part, std::string* text_out = nullptr) {
+    const spade::Result<std::string> text = spade::scene::part_to_yaml(PartFile{part});
+    EXPECT_TRUE(text.has_value()) << text.error().context;
+    if (!text) return std::nullopt;
+    if (text_out != nullptr) *text_out = *text;
+    const spade::Result<PartFile> back = spade::scene::part_from_yaml(*text, spade::scene::part_kind(PartFile{part}));
+    EXPECT_TRUE(back.has_value()) << back.error().context;
+    if (!back) return std::nullopt;
+    return std::get<Part>(*back);
+}
+
 }  // namespace
 
 TEST(PartFile, KindsHaveOneSpellingAndOneSuffix) {
@@ -326,6 +364,122 @@ TEST(PartFile, PartFilesRoundTripBitForBit) {
         const spade::Result<std::string> again = spade::scene::battery_to_yaml(*back);
         ASSERT_TRUE(again.has_value()) << again.error().context;
         EXPECT_EQ(*again, *text);
+    }
+}
+
+// The round trip above re-writes what it read, and a field read into another's
+// slot passes that: the writer and the reader share one key walk, so the
+// mistake is made the same way twice. So here every double is set apart from
+// every other, and every count, flag, table, list and the tensor's order is
+// checked where it lands.
+TEST(PartFile, EveryFieldReadsBackIntoItsOwnSlot) {
+    using spade::vehicles::BatteryBlock;
+    using spade::vehicles::EscBlock;
+    using spade::vehicles::MotorBlock;
+    using spade::vehicles::PropBlock;
+    {
+        const std::vector<DoubleField<MotorBlock>> doubles = {
+            {"kv", &MotorBlock::kv},
+            {"resistance", &MotorBlock::resistance},
+            {"no_load_current", &MotorBlock::no_load_current},
+            {"no_load_voltage", &MotorBlock::no_load_voltage},
+            {"current_max", &MotorBlock::current_max},
+            {"pole_pairs", &MotorBlock::pole_pairs},
+            {"inductance", &MotorBlock::inductance},
+            {"rotor_inertia", &MotorBlock::rotor_inertia},
+            {"mass", &MotorBlock::mass},
+        };
+        MotorPart want = a_motor();
+        set_apart(want.block, doubles);
+        const std::optional<MotorPart> back = written_and_read(want);
+        ASSERT_TRUE(back.has_value());
+        expect_each(back->block, want.block, doubles);
+        EXPECT_EQ(back->block.stator, want.block.stator);
+    }
+    {
+        const std::vector<DoubleField<PropBlock>> doubles = {
+            {"diameter", &PropBlock::diameter},   {"pitch", &PropBlock::pitch},
+            {"inertia", &PropBlock::inertia},     {"ct_static", &PropBlock::ct_static},
+            {"cq_static", &PropBlock::cq_static}, {"mass", &PropBlock::mass},
+        };
+        PropPart want = a_prop();
+        set_apart(want.block, doubles);
+        want.block.blades = 3;
+        want.block.ct_table = {{0.0, 0.125}, {0.25, 0.0625}, {0.5, kThird * 0.1}};
+        want.block.cq_table = {{0.0, 0.0078125}, {0.375, kTiny}};
+        want.blade = BladeGeometry{{0.2, 0.6, 1.0}, {0.11, 0.17, 0.07}, {33.5, 21.25, 9.125}, 0.125, "a flat plate"};
+        const std::optional<PropPart> back = written_and_read(want);
+        ASSERT_TRUE(back.has_value());
+        expect_each(back->block, want.block, doubles);
+        EXPECT_EQ(back->block.blades, 3u);
+        expect_same_table(back->block.ct_table, want.block.ct_table, "ct_table");
+        expect_same_table(back->block.cq_table, want.block.cq_table, "cq_table");
+        ASSERT_TRUE(back->blade.has_value());
+        for (const auto& [name, list] :
+             {std::pair{"r_over_r", &BladeGeometry::r_over_r}, std::pair{"c_over_r", &BladeGeometry::c_over_r},
+              std::pair{"beta_deg", &BladeGeometry::beta_deg}}) {
+            const std::vector<double>& got = (*back->blade).*list;
+            const std::vector<double>& expected = (*want.blade).*list;
+            ASSERT_EQ(got.size(), expected.size()) << name;
+            for (std::size_t i = 0; i < got.size(); ++i) EXPECT_EQ(bits(got[i]), bits(expected[i])) << name << i;
+        }
+        EXPECT_EQ(bits(back->blade->hub_cutout), bits(0.125));
+        EXPECT_EQ(back->blade->airfoil, "a flat plate");
+    }
+    {
+        const std::vector<DoubleField<EscBlock>> doubles = {
+            {"current_continuous", &EscBlock::current_continuous},
+            {"current_burst", &EscBlock::current_burst},
+            {"current_total", &EscBlock::current_total},
+            {"on_resistance", &EscBlock::on_resistance},
+            {"mass", &EscBlock::mass},
+        };
+        EscPart want = an_esc();
+        set_apart(want.block, doubles);
+        want.block.channels = 6;    // the default is 1
+        want.block.braking = true;  // the default is false
+        want.block.protocol = "DShot300";
+        const std::optional<EscPart> back = written_and_read(want);
+        ASSERT_TRUE(back.has_value());
+        expect_each(back->block, want.block, doubles);
+        EXPECT_EQ(back->block.channels, 6u);
+        EXPECT_TRUE(back->block.braking);
+        EXPECT_EQ(back->block.protocol, "DShot300");
+    }
+    {
+        const std::vector<DoubleField<BatteryBlock>> doubles = {
+            {"cell_capacity", &BatteryBlock::cell_capacity},
+            {"cell_resistance", &BatteryBlock::cell_resistance},
+            {"cell_voltage_nominal", &BatteryBlock::cell_voltage_nominal},
+            {"cell_voltage_full", &BatteryBlock::cell_voltage_full},
+            {"cell_voltage_cutoff", &BatteryBlock::cell_voltage_cutoff},
+            {"c_rating", &BatteryBlock::c_rating},
+            {"polarization_resistance", &BatteryBlock::polarization_resistance},
+            {"polarization_capacitance", &BatteryBlock::polarization_capacitance},
+            {"mass", &BatteryBlock::mass},
+        };
+        BatteryPart want = a_battery();
+        set_apart(want.block, doubles);
+        want.block.cells_series = 6;
+        want.block.cells_parallel = 2;
+        want.block.ocv_table = {{0.0, 3.25}, {0.25, 3.625}, {0.75, 3.875}, {1.0, 4.125}};
+        // Element (row r, column c) is 1.5 + 3r + c; glm indexes [column][row].
+        BlockShape tensor{PartShape::tensor, {}, {}};
+        for (int col = 0; col < 3; ++col) {
+            for (int row = 0; row < 3; ++row) tensor.tensor[col][row] = 1.5 + 3.0 * row + col;
+        }
+        want.block.shape = tensor;
+        std::string text;
+        const std::optional<BatteryPart> back = written_and_read(want, &text);
+        ASSERT_TRUE(back.has_value());
+        expect_each(back->block, want.block, doubles);
+        EXPECT_EQ(back->block.cells_series, 6u);
+        EXPECT_EQ(back->block.cells_parallel, 2u);
+        expect_same_table(back->block.ocv_table, want.block.ocv_table, "ocv_table");
+        // Row-major in the text, so the rows read in order.
+        EXPECT_TRUE(contains(text, "  shape: {kind: tensor, tensor: [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}\n"))
+            << text;
+        expect_same_shape(back->block.shape, want.block.shape);
     }
 }
 
