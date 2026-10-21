@@ -17,6 +17,7 @@
 #include "analysis/detail/caught.hpp"
 #include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_identity.hpp"
@@ -31,6 +32,18 @@ using spade::Code;
     const auto s = spade::scene::load_scene_file(std::filesystem::path(SPADE_ASSETS_DIR) / "scenes" / "hover.scene.yaml");
     EXPECT_TRUE(s.has_value()) << (s ? "" : s.error().context);
     return s ? s->models.at(0) : spade::vehicles::ModelType{};
+}
+
+// The library's reference quad, as its model file has it: parts and a
+// propulsion chain.
+[[nodiscard]] std::filesystem::path library_quad_file() {
+    return std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
+}
+
+[[nodiscard]] spade::vehicles::ModelType library_quad() {
+    const auto f = spade::scene::load_model_file(library_quad_file());
+    EXPECT_TRUE(f.has_value()) << (f ? "" : f.error().context);
+    return f ? f->model : spade::vehicles::ModelType{};
 }
 
 // A wall part: a 1 cm sphere declaring `feature` as its smallest feature.
@@ -50,8 +63,9 @@ using spade::Code;
 // A case with every section filled, pinned to `m`.
 [[nodiscard]] an::AnalysisCase full_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
+    c.model = an::pin_model("quad.model.yaml", m);
     c.controls = an::Controls{.armed = true, .throttle = 0.55f, .pitch_deg = -5.0f, .roll_deg = 2.5f, .yaw_deg = 0.0f};
+    c.power = an::Power{.idle = 0.1f, .state_of_charge = 0.9f};
     c.flight = an::Flight{.kind = an::FlightKind::forward, .speed = 4.0f, .heading_deg = 10.0f, .floor_height = 0.5f};
     c.grid = an::GridSetup{.box = 3.2f, .spacing = 0.025f, .nests = 2};
     for (std::size_t i = 0; i < m.rotors.size(); ++i) c.rotors.push_back(an::RotorSetup{an::RotorModel::line, "5x4"});
@@ -91,7 +105,8 @@ using spade::Code;
 // ---- the file ----
 
 TEST(AnalysisCaseFile, RoundTripsByteForByte) {
-    const an::AnalysisCase c = full_case(quad());
+    const an::AnalysisCase c = full_case(library_quad());
+    ASSERT_NE(c.model.propulsion, 0u) << "the library quad has a chain to pin";
     const spade::Result<std::string> text = an::case_to_yaml(c);
     ASSERT_TRUE(text.has_value()) << text.error().context;
     const spade::Result<an::AnalysisCase> back = an::case_from_yaml(*text);
@@ -101,6 +116,10 @@ TEST(AnalysisCaseFile, RoundTripsByteForByte) {
     EXPECT_EQ(*again, *text);
     EXPECT_EQ(back->model.identity, c.model.identity);
     EXPECT_EQ(back->model.parts, c.model.parts);
+    EXPECT_EQ(back->model.propulsion, c.model.propulsion);
+    EXPECT_EQ(back->power.idle, 0.1f);
+    EXPECT_EQ(back->power.state_of_charge, 0.9f);
+    EXPECT_NE(text->find("version: 2\n"), std::string::npos) << *text;
     EXPECT_EQ(back->blades.at(0).stations.at(1).twist_deg, 12.5f);
     EXPECT_EQ(back->airfoils.at(0).polars.at(0).alpha_deg.at(2), 10.0f);
     EXPECT_EQ(back->flight.kind, an::FlightKind::forward);
@@ -115,8 +134,10 @@ TEST(AnalysisCaseFile, AnAbsentValueStaysAbsent) {
     c.grid = an::GridSetup{};
     c.flight = an::Flight{};
     c.outputs = an::Outputs{};
+    c.power = an::Power{};
     const std::string text = an::case_to_yaml(c).value_or("");
-    for (const char* key : {"box:", "spacing:", "floor_height:", "step:", "history_every:", "snapshot_every:"}) {
+    for (const char* key : {"box:", "spacing:", "floor_height:", "step:", "history_every:", "snapshot_every:",
+                            "idle:", "state_of_charge:"}) {
         EXPECT_EQ(text.find(key), std::string::npos) << key << " written though absent";
     }
     const spade::Result<an::AnalysisCase> back = an::case_from_yaml(text);
@@ -127,6 +148,8 @@ TEST(AnalysisCaseFile, AnAbsentValueStaysAbsent) {
     EXPECT_FALSE(back->time.step.has_value());
     EXPECT_FALSE(back->outputs.history_every.has_value());
     EXPECT_FALSE(back->outputs.snapshot_every.has_value());
+    EXPECT_FALSE(back->power.idle.has_value());
+    EXPECT_FALSE(back->power.state_of_charge.has_value());
 }
 
 TEST(AnalysisCaseFile, SavesAndLoads) {
@@ -195,9 +218,9 @@ TEST(AnalysisCaseFile, AnUnknownKeyIsRefusedWithItsLine) {
 
 TEST(AnalysisCaseFile, ANewerVersionIsASchemaMismatch) {
     std::string text = an::case_to_yaml(full_case(quad())).value_or("");
-    const std::size_t at = text.find("version: 1");
+    const std::size_t at = text.find("version: 2");
     ASSERT_NE(at, std::string::npos);
-    text.replace(at, 10, "version: 2");
+    text.replace(at, 10, "version: 3");
     const spade::Result<an::AnalysisCase> c = an::case_from_yaml(text);
     ASSERT_FALSE(c.has_value());
     EXPECT_EQ(c.error().code, Code::schema_mismatch);
@@ -435,4 +458,148 @@ TEST(AnalysisCaseResolve, TheDomainIsTheDroneBox) {
                                                     .heading_deg = 0.0f, .floor_height = std::nullopt});
     EXPECT_EQ(still.ambient, glm::vec3(0.0f));
     EXPECT_EQ(still.face[af::kYMinus], af::FaceBc::open);
+}
+
+// ---- the chain pin (INT-11, amended 2026-10-19) ----
+
+// Version 2 pins the model's propulsion chain and carries the drone's power;
+// a version-1 case is refused, never migrated: a silent migration would hide
+// a missing chain.
+TEST(AnalysisCaseFile, AVersionOneCaseIsRefusedNotMigrated) {
+    std::string text = an::case_to_yaml(full_case(quad())).value_or("");
+    const std::size_t at = text.find("version: 2");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 10, "version: 1");
+    const spade::Result<an::AnalysisCase> c = an::case_from_yaml(text);
+    ASSERT_FALSE(c.has_value());
+    EXPECT_EQ(c.error().code, Code::schema_mismatch);
+    EXPECT_NE(c.error().context.find("re-save with version 2"), std::string::npos) << c.error().context;
+}
+
+TEST(AnalysisCase, ThePowerIsCheckedByName) {
+    an::AnalysisCase c = full_case(quad());
+    for (const float idle : {-0.1f, 1.0f, std::nanf("")}) {
+        c.power.idle = idle;
+        EXPECT_TRUE(names(an::case_issues(c), "power.idle", "[0, 1)")) << idle << "\n" << listed(an::case_issues(c));
+    }
+    c.power.idle = 0.05f;
+    for (const float soc : {0.0f, 1.5f, std::nanf("")}) {
+        c.power.state_of_charge = soc;
+        EXPECT_TRUE(names(an::case_issues(c), "power.state_of_charge", "(0, 1]"))
+            << soc << "\n" << listed(an::case_issues(c));
+    }
+    c.power = an::Power{.idle = 0.0f, .state_of_charge = 1.0f};  // both ends that are in
+    EXPECT_TRUE(an::case_issues(c).empty()) << listed(an::case_issues(c));
+}
+
+// Absent, the idle and the state of charge are Physics' announced defaults
+// (0.05, 1.0), and the resolved case says so.
+TEST(AnalysisCaseResolve, ThePowerDefaultsAndSaysSo) {
+    const spade::vehicles::ModelType m = quad();
+    an::AnalysisCase c = full_case(m);
+    for (an::RotorSetup& r : c.rotors) r.model = an::RotorModel::disc;
+    c.power = an::Power{};
+    const auto defaulted = an::resolve(c, m);
+    ASSERT_TRUE(defaulted.has_value()) << listed(defaulted.error());
+    EXPECT_EQ(defaulted->spec.power.idle, an::kDefaultIdleDuty);
+    EXPECT_EQ(defaulted->spec.power.state_of_charge, an::kDefaultStateOfCharge);
+    EXPECT_EQ(an::kDefaultIdleDuty, 0.05f);
+    EXPECT_EQ(an::kDefaultStateOfCharge, 1.0f);
+    EXPECT_EQ(defaulted->idle_source, an::Source::default_value);
+    EXPECT_EQ(defaulted->soc_source, an::Source::default_value);
+    c.power = an::Power{.idle = 0.1f, .state_of_charge = 0.9f};
+    const auto given = an::resolve(c, m);
+    ASSERT_TRUE(given.has_value()) << listed(given.error());
+    EXPECT_EQ(given->spec.power.idle, 0.1f);
+    EXPECT_EQ(given->idle_source, an::Source::given);
+    EXPECT_EQ(given->soc_source, an::Source::given);
+}
+
+namespace {
+
+// The library quad without its parts, flown on discs on the default grid:
+// a case the chain decides.
+[[nodiscard]] an::AnalysisCase chain_case(const spade::vehicles::ModelType& m) {
+    an::AnalysisCase c = full_case(m);
+    c.grid = an::GridSetup{};
+    for (an::RotorSetup& r : c.rotors) r.model = an::RotorModel::disc;
+    return c;
+}
+
+[[nodiscard]] spade::vehicles::ModelType chained_quad() {
+    spade::vehicles::ModelType m = library_quad();
+    m.parts.clear();
+    return m;
+}
+
+}  // namespace
+
+TEST(AnalysisCaseResolve, AChangedChainMustBeRepinned) {
+    spade::vehicles::ModelType m = chained_quad();
+    ASSERT_TRUE(m.propulsion.has_value());
+    const an::AnalysisCase c = chain_case(m);
+    ASSERT_TRUE(an::resolve(c, m).has_value()) << listed(an::resolve(c, m).error());
+    m.propulsion->kv *= 1.1;  // model_identity and parts_identity exclude the chain
+    const auto changed = an::resolve(c, m);
+    ASSERT_FALSE(changed.has_value());
+    EXPECT_TRUE(names(changed.error(), "model.propulsion", "re-pin")) << listed(changed.error());
+    m.propulsion.reset();
+    const auto removed = an::resolve(c, m);
+    ASSERT_FALSE(removed.has_value());
+    EXPECT_TRUE(names(removed.error(), "model.propulsion", "re-pin")) << listed(removed.error());
+}
+
+// Physics (2026-10-19): once the model is known, an idle at or above its hover
+// duty is refused, since armed at zero throttle the drone would climb.
+TEST(AnalysisCaseResolve, AnIdleAtOrAboveTheHoverIsRefused) {
+    const spade::vehicles::ModelType m = chained_quad();
+    an::AnalysisCase c = chain_case(m);
+    c.power.idle = 0.9f;
+    const auto refused = an::resolve(c, m);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(names(refused.error(), "power.idle", "is at or above the hover duty")) << listed(refused.error());
+    EXPECT_TRUE(names(refused.error(), "power.idle", "armed at zero throttle the drone would climb"))
+        << listed(refused.error());
+}
+
+// ---- the case's model, read beside the case ----
+
+TEST(AnalysisCaseModel, IsReadBesideTheCaseAndMatchesItsPins) {
+    const std::filesystem::path case_file = spade::test::unique_temp_path("quad.case.yaml");
+    const spade::vehicles::ModelType m = library_quad();
+    an::AnalysisCase c = full_case(m);
+    c.model = an::pin_model(std::filesystem::relative(library_quad_file(), case_file.parent_path()).generic_string(), m);
+    const spade::Result<spade::vehicles::ModelType> read = an::load_case_model(c, case_file);
+    ASSERT_TRUE(read.has_value()) << read.error().context;
+    EXPECT_EQ(read->name, m.name);
+    EXPECT_TRUE(read->propulsion.has_value());
+    EXPECT_EQ(spade::vehicles::model_identity(*read), c.model.identity);
+}
+
+TEST(AnalysisCaseModel, AMissingModelFileIsRefusedNamingIt) {
+    const std::filesystem::path case_file = spade::test::unique_temp_path("quad.case.yaml");
+    an::AnalysisCase c = full_case(library_quad());
+    c.model.file = "nowhere.model.yaml";
+    const spade::Result<spade::vehicles::ModelType> read = an::load_case_model(c, case_file);
+    ASSERT_FALSE(read.has_value());
+    EXPECT_NE(read.error().context.find("nowhere.model.yaml"), std::string::npos) << read.error().context;
+}
+
+// All three pins are checked in one place: a model changed in any of them is
+// refused, naming the pin, until the case is re-pinned.
+TEST(AnalysisCaseModel, EachOfTheThreePinsIsChecked) {
+    const std::filesystem::path case_file = spade::test::unique_temp_path("quad.case.yaml");
+    const spade::vehicles::ModelType m = library_quad();
+    an::AnalysisCase pinned = full_case(m);
+    pinned.model = an::pin_model(std::filesystem::relative(library_quad_file(), case_file.parent_path()).generic_string(), m);
+    for (const char* pin : {"model.identity", "model.parts", "model.propulsion"}) {
+        an::AnalysisCase c = pinned;
+        if (std::string_view(pin) == "model.identity") ++c.model.identity;
+        if (std::string_view(pin) == "model.parts") ++c.model.parts;
+        if (std::string_view(pin) == "model.propulsion") ++c.model.propulsion;
+        const spade::Result<spade::vehicles::ModelType> read = an::load_case_model(c, case_file);
+        ASSERT_FALSE(read.has_value()) << pin;
+        EXPECT_NE(read.error().context.find(pin), std::string::npos) << read.error().context;
+        EXPECT_NE(read.error().context.find("re-pin"), std::string::npos) << read.error().context;
+    }
 }
