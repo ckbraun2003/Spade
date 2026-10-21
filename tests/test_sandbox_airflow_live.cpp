@@ -5,8 +5,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -14,10 +19,17 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
+#include "core/fp16.hpp"
+#include "render/raster_cpu.hpp"
+#include "render/target.hpp"
+#include "render_parts/render_parts.hpp"
 #include "render/view_mode.hpp"
 #include "vehicles/rotor.hpp"
 
 #include "../sandbox/airflow_live.hpp"
+#include "../sandbox/orbit_camera.hpp"
+#include "../sandbox/png_writer.hpp"
+#include "../sandbox/vehicle_draw.hpp"
 
 namespace an = spade::analysis;
 namespace af = spade::sandbox::airflow;
@@ -29,6 +41,17 @@ namespace {
 
 fs::path library_quad() {
     return fs::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
+}
+
+[[nodiscard]] bool env_gate_is_set(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name) != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 }
 
 // Four discs in an X, 0.12 m out, 0.06 m in radius, pushing down.
@@ -190,4 +213,108 @@ TEST(SandboxAirflowLive, TheSpeedScaleIsTheFarWakesAtHover) {
     const float v_h = spade::vehicles::rotor_hover_induced_velocity(thrust, 1.225f, m.rotors.front().radius);
     EXPECT_GT(v_h, 1.0f);
     EXPECT_FLOAT_EQ(af::speed_top(m, 1.225f, 9.80665f), 2.0f * v_h);
+}
+
+// ===========================================================================
+// THE POSTER FRAME, MEASURED (Rendering's near-black cores, 2026-10-21). A
+// measurement, not a check: with SPADE_AIRFLOW_POSTER=1 it flies the tour's
+// quad to its poster frame (armed + 0.9 s), prints what the cores' colour is
+// made from (the deepest lambda2-hat, the iso value, the colour range, the
+// speed of the cells inside the cores), and draws the frame on the CPU, as the
+// tour's AirflowSession does on GL, to <test output>/airflow_poster_cpu.png:
+// one frame both renderers can be compared on. About a minute in release.
+// ===========================================================================
+
+TEST(SandboxAirflowLive, ThePosterFrameMeasured) {
+    if (!env_gate_is_set("SPADE_AIRFLOW_POSTER")) {
+        GTEST_SKIP() << "a measurement: set SPADE_AIRFLOW_POSTER=1 to run it";
+    }
+    const spade::Result<af::LiveQuad> quad = af::live_quad(library_quad());
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    spade::Result<an::LiveRun> run = an::LiveRun::start(quad->resolved, quad->run_model, quad->propulsion);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const double poster = af::armed_at(quad->program).value_or(0.0) + 0.9;
+    spade::FlowVolume volume;
+    while (run->state().t_s < poster) {
+        const an::Controls c = an::controls_at(quad->program, static_cast<float>(run->state().t_s));
+        const spade::Result<an::LiveFrame> f = run->advance_frame(c, volume);
+        ASSERT_TRUE(f.has_value()) << f.error().context;
+    }
+
+    const float top = af::speed_top(quad->run_model, quad->resolved.spec.fluid.density, 9.80665f);
+    const spade::render::ViewSpec spec = af::airflow_view(volume, af::probes_of(*run), top);
+    const auto iso = std::find_if(spec.layers.begin(), spec.layers.end(),
+                                  [](const spade::render::FlowViewSpec& l) { return l.kind == FlowView::vortex_iso; });
+    ASSERT_NE(iso, spec.layers.end()) << "no cores at the poster frame";
+
+    // The speed of every cell inside a core (lambda2-hat at or below the iso
+    // value): the iso surface is coloured by the speed there.
+    const spade::FlowVolumeHeader& h = volume.header;
+    const std::size_t cells = static_cast<std::size_t>(h.nx) * h.ny * h.nz;
+    std::vector<float> core_speeds;
+    for (std::size_t i = 0; i < cells; ++i) {
+        const uint16_t l2 = volume.s[i * spade::kFlowHalvesPerCell + (spade::kFlowLambda2Hat % spade::kFlowHalvesPerCell)];
+        if (l2 == spade::fp16::kNoDataBits || !(spade::fp16::to_f32(l2) <= iso->iso_value)) continue;
+        float sq = 0.0f;
+        for (uint32_t c = spade::kFlowU; c <= spade::kFlowW; ++c) {
+            const float u = spade::fp16::to_f32(volume.v[i * spade::kFlowHalvesPerCell + c]);
+            sq += u * u;
+        }
+        core_speeds.push_back(std::sqrt(sq));
+    }
+    ASSERT_FALSE(core_speeds.empty());
+    std::sort(core_speeds.begin(), core_speeds.end());
+    std::printf("poster frame: t = %.3f s, %ux%ux%u, dx %.4f m\n", run->state().t_s, h.nx, h.ny, h.nz,
+                static_cast<double>(h.cell));
+    std::printf("  lambda2-hat: channel_min %.4g, channel_max %.4g; iso %.4g (1/3 of the deepest)\n",
+                static_cast<double>(h.channel_min[spade::kFlowLambda2Hat]),
+                static_cast<double>(h.channel_max[spade::kFlowLambda2Hat]), static_cast<double>(iso->iso_value));
+    std::printf("  speed: top %.4g m/s (2 v_h); the cores' colour range [%.4g, %.4g] m/s\n", static_cast<double>(top),
+                static_cast<double>(iso->range_min), static_cast<double>(iso->range_max));
+    std::printf("  inside the cores: %zu cells, speed min %.4g, median %.4g, max %.4g m/s\n", core_speeds.size(),
+                static_cast<double>(core_speeds.front()), static_cast<double>(core_speeds[core_speeds.size() / 2]),
+                static_cast<double>(core_speeds.back()));
+
+    // The frame on the CPU, as AirflowSession draws it on GL: the drone's
+    // parts, no shadows or overlays, the view applied, the default lighting.
+    spade::render::RenderScene scene;
+    spade::render_parts::PartsLook look;
+    look.body = static_cast<uint32_t>(scene.materials.size());
+    scene.materials.push_back(spade::sandbox::detail::lambert(0.35f, 0.37f, 0.40f));
+    look.rotor = static_cast<uint32_t>(scene.materials.size());
+    scene.materials.push_back(spade::sandbox::detail::lambert(0.12f, 0.12f, 0.13f));
+    look.porous = look.body;
+    look.object_name = quad->draw_model.name;
+    const spade::Result<spade::render_parts::PreparedParts> prepared =
+        spade::render_parts::prepare_parts(quad->draw_model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
+    const spade::Result<void> bound =
+        spade::sandbox::append_vehicle_parts(scene, *prepared, quad->draw_model, run->body(), look);
+    ASSERT_TRUE(bound.has_value()) << bound.error().context;
+    spade::render::RenderOptions options;
+    options.shadows = false;
+    options.overlays = false;
+    spade::render::ViewCache cache;
+    const spade::Result<std::vector<spade::render::ViewLegend>> legends =
+        spade::render::apply_view(spec, &volume, scene, options, cache);
+    ASSERT_TRUE(legends.has_value()) << legends.error().context;
+    spade::sandbox::OrbitCamera camera;
+    camera.target = glm::vec3(0.0f, -0.12f * af::kBoxM, 0.0f);
+    camera.yaw = 0.52f;
+    camera.pitch = 0.35f;
+    camera.distance = 1.5f * af::kBoxM;
+    constexpr uint32_t kW = 1280;
+    constexpr uint32_t kH = 720;
+    std::vector<uint8_t> pixels(static_cast<std::size_t>(kW) * kH * 4u);
+    spade::render::RenderTarget target{pixels, kW, kH, kW * 4u};
+    const spade::Result<void> drawn = spade::render::render(scene, camera.to_render_camera(), options, target);
+    ASSERT_TRUE(drawn.has_value()) << drawn.error().context;
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {  // the target is BGRX; the PNG is RGBA
+        std::swap(pixels[i], pixels[i + 2]);
+        pixels[i + 3] = 255u;
+    }
+    const fs::path out = fs::path(SPADE_TEST_OUTPUT_DIR) / "airflow_poster_cpu.png";
+    fs::create_directories(out.parent_path());
+    ASSERT_TRUE(spade::sandbox::png::write_file(out, spade::sandbox::png::encode_rgba(pixels.data(), kW, kH, false)));
+    std::printf("  the CPU's frame: %s\n", out.string().c_str());
 }
