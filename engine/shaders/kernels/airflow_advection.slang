@@ -25,8 +25,8 @@
 // PACKING. airflow_advect holds hat for u, v and w, then lo for the three,
 // then hi, each block the three components' faces in order; the blocks start
 // at airflow_params' offsets_advect. airflow_next holds the new u, v and w in
-// the same order (ASSUMED, to confirm with Physics: their note said "writes
-// airflow_next for that component").
+// the same order: u at 0, v at faces_u, w at faces_u + faces_v (Physics,
+// 2026-10-21).
 //
 // PARITY. -fp-mode precise on every kernel compile keeps the arithmetic
 // uncontracted (cmake/SpadeSlang.cmake); 1/dx comes from the host. The two
@@ -50,9 +50,10 @@ struct AdvectionPush {
 
 [[vk::push_constant]] ConstantBuffer<AdvectionPush> advection_push;
 
-// --- airflow_params, as Physics' draft lays it out (uint words; a float by
-// asfloat). Physics freezes it as a shared struct when B1 resumes; these
-// accessors are the one place that changes then.
+// --- airflow_params, as Physics lays it out (uint words; a float by asfloat).
+// Physics freezes it as a shared struct when B1 resumes, keeping these 16
+// words in place and only appending; these accessors are the one place that
+// changes then.
 //   uint4  dims           {nx, ny, nz, 0}
 //   float4 grid           {dx, inv_dx, h, 0}
 //   uint4  periodic       {px, py, pz, 0}
