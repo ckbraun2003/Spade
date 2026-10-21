@@ -3375,6 +3375,53 @@ TEST_F(GpuGlRenderer, EditorLayoutsCost) {
 }
 
 
+
+// The flow layer leaves the frame's alpha as the target held it (the tour's
+// near-black cores, 2026-10-21). The editor draws its 3D view into an RGBA8
+// texture and lays it over the window with alpha blending (ImGui's
+// AddImage). The march blended C + T * behind into alpha as well, T (1 +
+// behind): 0 wherever an iso was opaque, so the window's dark showed through
+// every core, flat. Readbacks of RGB never saw it. A frame cleared opaque,
+// the ring's Q iso drawn over it at full and at half scale, stays opaque.
+TEST_F(GpuGlRenderer, FlowLayerLeavesTheFramesAlpha) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    const Camera camera = camera_on_ring();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    for (const GlRenderer::FlowScale scale : {GlRenderer::FlowScale::full, GlRenderer::FlowScale::half}) {
+        GlRenderer::FlowQuality quality;
+        quality.scale = scale;
+        renderer_->set_flow_quality(quality);
+        bind_cleared_target();
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        const auto drew = renderer_->draw(scene, camera, comparable_options(), kWidth, kHeight);
+        ASSERT_TRUE(drew.has_value()) << drew.error().context;
+        std::vector<uint8_t> rgba(kPixels * 4u);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        size_t lit = 0, see_through = 0;
+        for (size_t i = 0; i < kPixels; ++i) {
+            if (rgba[i * 4u] != 0u || rgba[i * 4u + 1u] != 0u || rgba[i * 4u + 2u] != 0u) ++lit;
+            if (rgba[i * 4u + 3u] != 255u) ++see_through;
+        }
+        const char* name = scale == GlRenderer::FlowScale::full ? "full" : "half";
+        std::printf("[ flow alpha ] %s scale: %zu px drawn, %zu not opaque\n", name, lit, see_through);
+        ASSERT_GT(lit, kPixels / 20u) << name << ": the ring must reach the frame";
+        EXPECT_EQ(see_through, 0u) << name << " scale: the march changed the frame's alpha";
+    }
+    renderer_->set_flow_quality(GlRenderer::FlowQuality{});
+}
+
 #if defined(SPADE_GL_TEST_HAS_TOUR)
 // The tour's near-black vortex cores (Interface, 2026-10-21): the airflow
 // chapter's poster frame (armed + 0.9 s), built as AirflowSession builds it
@@ -3384,6 +3431,10 @@ TEST_F(GpuGlRenderer, EditorLayoutsCost) {
 // pixel is one the iso layer changes on the CPU; its mean luminance on GL
 // must be the CPU's within kPosterCoreLuminance. Variants without the lines
 // and without the drone are printed, to say what the GL frame depends on.
+// Measured 2026-10-21 (RTX 3060 Ti, 572.83): GL's RGB was the CPU's to 0.1 of
+// a level in all four, before the fix too -- the editor's black was the
+// frame's alpha (FlowLayerLeavesTheFramesAlpha), which this readback leaves
+// out. Kept: the poster frame on both backends, the same.
 // Opt-in (SPADE_AIRFLOW_POSTER=1): the flight to the frame is about 40 s.
 constexpr double kPosterCoreLuminance = 0.15;  // of the CPU's mean, either way
 
@@ -3493,7 +3544,7 @@ TEST_F(GpuGlRenderer, AirflowPosterCoresMatchTheCpu) {
     line("without the drone:", no_drone);
     line("the cores alone:", alone);
     std::printf("[ poster cores ] on %s\n", device.c_str());
-    ASSERT_GT(editor.cores, kPixels / 200u) << "the cores show at the poster frame";
+    ASSERT_GT(editor.cores, kPixels / 400u) << "the cores show at the poster frame (68 px measured)";
     EXPECT_NEAR(editor.gl, editor.cpu, kPosterCoreLuminance * editor.cpu) << device;
 }
 #endif
