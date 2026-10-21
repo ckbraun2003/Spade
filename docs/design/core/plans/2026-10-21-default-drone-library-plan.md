@@ -190,6 +190,37 @@ The generator `tests/test_library_parts.cpp` writes the files with `SPADE_LIBRAR
 - [ ] GREEN.
 - [ ] Gate.
 
+## Task L7: Realistic-looking drones (added by the lead, 2026-10-21)
+
+Cameron asked for a realistic-looking drone, and boxes and tubes alone don't meet that. Each drone gets meshes generated in our own code from published dimensions, never from downloaded CAD:
+- **props**, lofted from P-b's blade definitions: r/R, c/R and β, with an assumed airfoil section;
+- **motor bells**;
+- **a body shell** with rounded edges;
+- **arms**, as tubes with end caps.
+
+Two rules on solids:
+- **Props are drawn only.** Rotor parts stay out of the solids; the rotor model carries the props in the air.
+- **The body shell is a solid** when it is closed and every feature is at least 2 dx. Otherwise the SDF parts stay the solid, and the shell is visual only.
+
+Rendering already draws mesh parts (`render_parts`). The tasks are drafted after L1-L3.
+
+## Rulings (the lead, 2026-10-21)
+
+The plan is approved in shape: the grades, the license lines, refuse-never-skip and no golden moves.
+
+| Question | Ruling |
+|---|---|
+| 1 | (a) A `sources.yaml` sidecar |
+| 2 | (a) The reference quad is labelled a fixture |
+| 6 | (a) The measured curve gets its own later plan |
+| 7 | (a) NASA's stated numbers as check points. TM-2018-219758 was not found by the lead either |
+| 8 | (a) An assumed OCV table until Physics finds an open one |
+| 3, 4, 5 | Cameron's to decide; the lead is asking him. **L4 and L5 hold** for those answers; L1-L3 don't depend on them |
+
+**P-a and P-b move to Core.** Physics now carries the GPU solver, so Core drafts the prop tables and the blade definitions from the UIUC files. Physics reviews the resampling rule and the result. Physics keeps P-c (the chain fits and tolerances) and the kappa view.
+
+**Order:** B7b's GREEN, then B0 from Physics' GPU plan (`c7a1be2`), then this library.
+
 ## Open questions for the lead (each one Cameron's, by AskUserQuestion)
 
 1. **Where a model's citations live.** (a, recommended) A generated sidecar `<name>.sources.yaml` beside each model file, so the model format does not change. (b) A `sources` key inside the model block: a scene version 6 and model_version 2. (c) Only in the generator's source code.
