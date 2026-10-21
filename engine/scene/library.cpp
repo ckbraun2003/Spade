@@ -295,6 +295,17 @@ Result<ObjectFile> load_library_object(const Library& library, const LibraryEntr
     return object;
 }
 
+Result<SourceRegistry> load_library_sources(const Library& library) {
+    (void)library;
+    return SourceRegistry{};
+}
+
+Result<PartFile> load_library_part(const Library& library, const LibraryEntry& entry,
+                                   const SourceRegistry& registry) {
+    (void)library, (void)entry, (void)registry;
+    return PartFile{};
+}
+
 Result<void> check_library_contents(const Library& library) {
     // Each object's visual mesh_ref, folded, with the entry that holds it.
     struct Ref {

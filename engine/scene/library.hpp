@@ -12,7 +12,7 @@
 // the categories and what the editor shows (the Library panel, N14).
 //
 // THE TEXT, top-level keys in this order:
-//   library_version: 1
+//   library_version: 1 or 2
 //   entries:   a sequence, one mapping per entry, in display order:
 //     name:      non-empty; unique across the library ignoring (ASCII) case
 //     category:  non-empty free text; the editor groups by it, in index order
@@ -21,14 +21,23 @@
 //                no ':'; scene/detail/relative_path.hpp, TD-9), no '..'
 //                segment, and unique ignoring case. Its extension decides its
 //                kind: *.model.yaml is a model file (scene/model_file.hpp),
-//                *.object.yaml an object file (scene/object_file.hpp), and
-//                anything else is refused.
+//                *.object.yaml an object file (scene/object_file.hpp), and,
+//                from version 2, *.motor.yaml, *.prop.yaml, *.esc.yaml and
+//                *.battery.yaml a part file (scene/part_file.hpp). Anything
+//                else is refused, and so is a part file in a version 1 index.
 //     thumbnail: OPTIONAL, an image beside the entry, by file's path rules.
 //                Leave the key out for none.
 // Unknown, missing and duplicate keys are refused at every level, blamed on
-// "library schema v1", with the dotted path ("entries[2].file") and the line
-// and column, as the scene's are. A library_version this build does not read
-// is schema_mismatch, read before any other key.
+// "library schema v<the index's version>", with the dotted path
+// ("entries[2].file") and the line and column, as the scene's are. A
+// library_version this build does not read is schema_mismatch, read before
+// any other key. Version 2 adds only the part kinds, so a version 1 index
+// reads as it always did.
+//
+// THE SOURCES. A library with part entries cites its sources from the
+// registry beside its index, sources.yaml (scene/library_sources.hpp):
+// load_library_sources() reads it, and load_library_part() checks a part's
+// citations against it.
 //
 // PLACING COPIES the entry in (EDT-012): the editor loads the entry's file
 // (load_library_model / load_library_object) and places it with add_model() or
@@ -50,18 +59,25 @@
 #include <vector>
 
 #include "core/error.hpp"
-#include "scene/model_file.hpp"   // ModelFile
-#include "scene/object_file.hpp"  // ObjectFile
+#include "scene/library_sources.hpp"  // SourceRegistry
+#include "scene/model_file.hpp"       // ModelFile
+#include "scene/object_file.hpp"      // ObjectFile
+#include "scene/part_file.hpp"        // PartFile
 
 namespace spade::scene {
 
-// The library-index schema this build reads (the only one so far).
+// The newest library-index schema this build reads; it reads every version
+// from 1 to this one.
 inline constexpr uint32_t kLibraryVersion = 1;
 
 // What an entry's file holds, by its extension.
 enum class LibraryKind : uint32_t {
-    model = 0,   // *.model.yaml: a drone, placed with add_model()
-    object = 1,  // *.object.yaml: anything else, placed with add_object()
+    model = 0,    // *.model.yaml: a drone, placed with add_model()
+    object = 1,   // *.object.yaml: anything else, placed with add_object()
+    motor = 2,    // *.motor.yaml: a part (version 2), built into a drone
+    prop = 3,     // *.prop.yaml
+    esc = 4,      // *.esc.yaml
+    battery = 5,  // *.battery.yaml
 };
 
 // One entry, as the index spells it.
@@ -110,13 +126,25 @@ struct Library {
 // loader's own refusal keeps its code, after "library entry '<name>': ".
 [[nodiscard]] Result<ObjectFile> load_library_object(const Library& library, const LibraryEntry& entry);
 
-// Loads EVERY entry (the two loaders above), in index order, and checks the
-// one rule across entries: no two visual mesh_refs of the library's objects
-// may differ only in case ("props/Ball" and "props/ball"), because they are
-// one file on Windows. The same ref twice is one mesh, and fine. The first
-// refusal comes back with its code: a loader's, or invalid_argument naming
-// both entries and both refs. The index test calls it, and so will the
-// install step (N21).
+// The library's sources registry, library.dir / "sources.yaml", read with
+// load_sources().
+[[nodiscard]] Result<SourceRegistry> load_library_sources(const Library& library);
+
+// The entry's part file, read with load_part_file() from library.dir /
+// entry.file and checked against `registry`. Refused by name
+// (invalid_argument) for a model or an object entry; the loader's own refusal
+// keeps its code, after "library entry '<name>': ".
+[[nodiscard]] Result<PartFile> load_library_part(const Library& library, const LibraryEntry& entry,
+                                                 const SourceRegistry& registry);
+
+// Loads EVERY entry (the loaders above), in index order, and checks the one
+// rule across entries: no two visual mesh_refs of the library's objects may
+// differ only in case ("props/Ball" and "props/ball"), because they are one
+// file on Windows. The same ref twice is one mesh, and fine. A library with
+// part entries reads its sources registry once, first. The first refusal
+// comes back with its code: a loader's, or invalid_argument naming both
+// entries and both refs. The index test calls it, and so will the install
+// step (N21).
 [[nodiscard]] Result<void> check_library_contents(const Library& library);
 
 }  // namespace spade::scene

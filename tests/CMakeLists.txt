@@ -112,6 +112,7 @@ add_executable(spade_tests
     test_library_quad.cpp
     test_library.cpp
     test_library_sources.cpp
+    test_part_file.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
