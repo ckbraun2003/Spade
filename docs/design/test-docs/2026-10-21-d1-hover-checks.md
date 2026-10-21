@@ -1,7 +1,11 @@
 # The D1 hover preview's checks and 04 rows
 
-**Owner:** Test/Docs. **Status:** DRAFT, 2026-10-21. The claims (§2) are for Physics to agree. Interface agreed the predicates (§1) on 2026-10-21. The lead assigned it on 2026-10-21.
-**The case:** the library's reference quad held level at hover, solid, in Physics' 0.896 × 0.672 × 0.64 m box at `dx` 4 mm (224 × 168 × 160 cells, 6.02 M), run through `LiveRun` once Interface's `interface/liverun-solids` lands.
+**Owner:** Test/Docs. **Status:** DRAFT for the lead's review, 2026-10-21. Physics agreed the claims (§2) and Interface the predicates (§1), both on 2026-10-21. The lead assigned it on 2026-10-21.
+**The case:** the library's reference quad held level at hover, solid, in a 3 m/s wind, run through `LiveRun` once Interface's `interface/liverun-solids` lands. The box is Physics' proposal to Rendering, not yet built in the repo:
+- 224 × 160 × 168 cells at `dx` 4 mm (6.02 M), so 0.896 m along x, 0.64 m along y and 0.672 m along z. Up is +y, the rotor axes are along +y, and the wind blows along +x.
+- The centre of mass is 0.416 m from the inlet face, 0.354 m above the bottom, and centred in z. The hubs sit ±0.110 m from it along x and z, and 0.0264 m above it: the rotor plane is at y ≈ 0.380 m, and the tips reach ±0.186 m.
+- `ν` = 1.5e-5 m²/s (air), so the viscous path runs, with the wall links and the rigid interior. The cell Reynolds number is about 2700.
+- The boundaries are whatever `LiveRun` maps the case to (Interface), until P2b builds the drone box's own. Physics assumed inflow on −x, outflow on +x and at the bottom, and the sides and top open. A floor, if the case sets one, makes the bottom a wall, and the box is then redone.
 **Fixed a priori:** each band is fixed when Physics and Interface agree, before the first D1 run. After that, a band changes only by a recorded lead decision (`TD-2`, `01-verification.md`).
 
 The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0):
@@ -38,12 +42,17 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
 
 ### D1-3. `downwash-present`, with the body in the flow
 
-- **Predicate:** the existing `kDownwashPresent`: a floor of 0.25 of momentum theory's `1.894 v_h` at 2R below each hub, at `R/dx` ≥ 2 (`2026-10-19-end-goal-checks.md` §5).
+- **Predicate:** the existing downwash check (`2026-10-19-end-goal-checks.md` §5): the mean axial velocity on a probe disc 2R below each hub, over momentum theory's `1.894 v_h`, judged against a floor at `R/dx` ≥ 2. D1's floor is below.
   - The premises are unchanged: level within 1°; ΣT at least 0.5 m g; the window `[max(0.30 s, 4L/v_min), +0.20 s]` after arming; at least 6 frames.
   - One premise is added: D1-1 passes in the same run. Otherwise the verdict is `mis-staged: the body is not in the flow`, so a run with its parts cleared can't pass for D1.
-- **Geometry:** each probe disc is 0.5R = 38 mm across, 2R = 152 mm below a hub at ±110 mm. That is about 126 mm below the body's centre. No part reaches it, the battery included. A probe point that falls in a solid reads no-data, which is `absent:` and means the probe is misplaced.
-- **The body in the wake:** each motor (28 mm across, 0.18R) sits under its hub inside the probe disc. An arm and its motor shade about 7.5% of each disc's area (the arm's 12 mm width from 34 to 96 mm out, 4.1%; the motor, 3.4%), well inside a 0.25 floor.
-- **Band:** the floor, unchanged. A magnitude claim is the 04 row's (§2).
+- **Geometry:** each probe disc has radius 0.5R = 38 mm, and sits 2R = 152 mm below a hub at ±110 mm. That is about 126 mm below the body's centre and 228 mm above the box's bottom. No part reaches it, the battery included. A probe point that falls in a solid reads no-data, which is `absent:` and means the probe is misplaced.
+- **The run's length (Physics):** the window is `[max(0.30 s, 4L/v_min), +0.20 s]`. With `L` = 0.38 m from the rotor plane to the bottom and `v_min` = 5.0 m/s, 4L/v_min is 0.30 s, so the run needs 0.50 s simulated. At a peak speed of about 10.5 m/s, `h` is about 0.38 ms at CFL 1, so about 1300 steps. The step time on 6 M cells with solids isn't measured. Physics estimates 10 to 20 s a step on the CPU, so 4 to 7 hours. Rendering's rig gives the real figure. **If the preview stops short of 0.50 s, D1-3 is `absent:` by its premise, and the preview claims no downwash.**
+- **The floor for D1: 0.10, not the tour's 0.25.** It is fixed here, before any D1 run, because this case has a wind and the tour has none:
+  - The probe sits on the rotor axis. The 3 m/s wind leans the wake: across a mean descent of about 7.8 m/s (from `v_h` ≈ 5.4 at the disc to 1.894 `v_h` ≈ 10.2 at 2R), the lean is 3/7.8 = 0.385, so at 2R the wake's centre is 0.77R downwind of the probe's.
+  - A contracted wake of radius about 0.75R then covers about 40% of the probe disc. Physics puts the ratio near 0.85 inside the wake: the body shades about 7.5% of each disc, and the wind lowers the induced velocity by about 7.5% (Glauert). So the estimate is 0.40 × 0.85 ≈ 0.34, a top-hat wake's lower bound.
+  - The tour's 0.25 would leave only 1.4 times that estimate. A floor of 0.10 leaves 3.4 times, and is still about 1 m/s downward, well clear of the zero an uncoupled or idle rotor gives. A reversed or absent downwash still fails.
+- **The body in the wake:** each motor (28 mm across, 0.18R) sits under its hub, inside the probe disc. An arm and its motor shade about 7.5% of each disc's area: the arm's 12 mm width from 34 to 96 mm out is 4.1%, and the motor 3.4%.
+- **Band:** a floor of 0.10 of `1.894 v_h` at `R/dx` ≥ 2 (`kDownwashPresentInWind`). The magnitude is report-only in the 04 rows (§2).
 
 ### D1-4. `cp-note-shown`: the C_p legend note
 
@@ -69,17 +78,19 @@ These come from `Videos\CATEGORIES.md`, not new checks:
 - The card and the caption name the stand-ins in plain words: the drone held at hover, not flying, and the rotors as actuator discs.
 - No body force is stated below P3's floor (`physics/04-verification.md`'s grades; `d2d03ed`).
 
-## 2. 04 rows, proposed for Physics
+## 2. 04 rows (Physics agreed, 2026-10-21)
 
 **D1** (hover preview, CPU reference, MSVC release, `LiveRun`, 4 mm; `R/dx` = 76.2/4 = 19):
 
 | Measure | Tolerance | Built from |
 |---|---|---|
 | The solids line | `10 parts, 10 walls, 0 sheets`, no advisory | exact (D1-1, D1-2) |
-| Steps whose pressure solve was announced unconverged (`> kResidualAnnounce`, 1e-4) | 0, or report only (Physics) | P2's S2 reached 1.7e-6 at `n_v` 4; D1 is 6 M cells at `kSolidsCgIterations` |
-| Downwash at 2R below each hub over `1.894 v_h` | `kDownwash`'s 0.75 to 1.25 at `R/dx` ≥ 4, or report only (Physics) | The headless band (`2026-10-19-end-goal-checks.md` §5). The body shades about 7.5% of each disc |
-| Surface C_p | report only | first order in `dx`; where stagnation and suction are, not validated magnitudes (the note) |
-| Body force | not stated below P3's floor | the lead's ruling under `TD-2`, 2026-10-21 |
+| Steps whose pressure solve was announced unconverged (`> kResidualAnnounce`, 1e-4) | report only: the count | `kSolidsCgIterations` (8) was measured from a cold start on S3 and P2's cases, not on 6 M cells around the quad. The steps run warm, but Physics won't claim zero. The run announces each such step (L6) |
+| Downwash at 2R below each hub over `1.894 v_h` | report only | No headless run has solids. Three effects stack: the body's shade (about 7.5%), the wind's lower induced velocity (about 7.5%, Glauert), and the arms' own wakes (unmeasured). D1-3's floor is the check |
+| The sign of C_p on each arm's top, under its disc: the mean over samples one cell above the top, from the disc's inner edge to the motor, against the inflow's pressure | > 0 on every arm; the magnitude report only | The disc raises the static pressure below it above the free stream, and the downwash stagnating on the arm adds to it (Physics: the sign is robust). Physics' record measures it |
+| Surface C_p elsewhere | report only | The readings sit 0.5 to 1 `dx` off the wall and are first order in `dx`: where stagnation and suction are, not validated magnitudes (the note) |
+| An arm's wake | shape only | It is 1 to 2 cells wide |
+| Body force | none stated below P3's floor (`c₀` ≈ 0.02 to 0.03) | the lead's ruling under `TD-2`, 2026-10-21 |
 
 ## 3. Red first
 
@@ -103,12 +114,7 @@ The predicates take plain inputs (`any`, the run line, counts), so they don't wa
 
 ## 4. Asked of others
 
-**Physics:**
-1. The box isn't in the repo yet; the nearest 4 mm rig is `tests/solid_drone_rig.hpp`'s 96 × 32 × 96. For the 0.896 × 0.672 × 0.64 m box: which axis is up, where the hubs sit, the boundaries (open, walls, a floor), and `ν`.
-2. The run's length. The downwash premise needs at least `max(0.30 s, 4L/v_min) + 0.20 s` simulated, with at least 6 frames. Does the preview reach that at 4 mm on the CPU? If not, D1-3 is `absent:` by its premise, and the preview claims no downwash. Please say which.
-3. The downwash row: `kDownwash`'s band with the body, or report only?
-4. The pressure row: 0 unconverged steps, or report the count?
-5. Any other claim D1 makes, such as C_p's sign on the arms' tops under the discs.
+**Physics** (answered, 2026-10-21): the box, the run's length, the downwash and pressure rows as report-only, and the arms' C_p sign as a check (the case at the top, D1-3, §2). Still open: the step time on 6 M cells with solids, from Rendering's rig. It decides whether D1-3 can be reached at all.
 
 **Interface** (all agreed, 2026-10-21):
 1. `LiveSolids` gains `uint32_t solid_cells` for D1-5.
