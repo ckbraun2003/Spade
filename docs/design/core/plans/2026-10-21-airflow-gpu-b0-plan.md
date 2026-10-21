@@ -26,6 +26,45 @@
    - `source` names which, and device creation stays byte for byte.
    - The A2 arithmetic is a pure function: refuse when `requested > min(4 GiB, budget − usage − reserve)`. With `half_heap`, usage is what the caller says it has allocated itself.
 
+## Rulings and the confirmed list (2026-10-21)
+
+- **The lead approved decision 1:** set 1, "airflow". The amendment is recorded in stage 7's design (`9248cc3`).
+- **Physics confirmed the contents**, amended against what the CPU reference's step reads and writes. Kinds: R = resident (state, or static solids uploaded once), D = device-only scratch, S = staged (read back). Each is `[[vk::binding(i, 1)]]`, append-only, never renumbered.
+
+| # | Binding | Kind | Holds |
+|---|---|---|---|
+| 0 | `airflow_params` | R | dims, dx, h, the host reciprocals, the face kinds and face velocities, and every packed array's offsets (spec §4.1's derived per-world buffer, not push constants) |
+| 1 | `airflow_u` | R | |
+| 2 | `airflow_v` | R | |
+| 3 | `airflow_w` | R | |
+| 4 | `airflow_pressure` | R | the warm start, also the finest multigrid level's p |
+| 5 | `airflow_next` | D | advection's output u, v, w, packed; the CPU swaps it in |
+| 6 | `airflow_advect` | D | MacCormack's hat, lo and hi over all faces, packed |
+| 7 | `airflow_increments` | D | du, dv, dw, packed: the sources' increments, the actuator's force included |
+| 8 | `airflow_viscous_rhs` | D | the viscous solve's right side |
+| 9 | `airflow_rhs` | D | the projection's divergence, the finest level's b |
+| 10 | `airflow_residual` | D | the finest level's r |
+| 11 | `airflow_multigrid` | D | levels 1..L's p, b and r, packed |
+| 12 | `airflow_mg_weights` | R | the coarse levels' face weights for the solids' symmetric V-cycle |
+| 13 | `airflow_apertures` | R | θ for u, v, w, packed |
+| 14 | `airflow_wall_velocity` | R | per face, packed |
+| 15 | `airflow_phi` | R | per face, packed |
+| 16 | `airflow_face_tags` | R | per face, the wall-link index (uint32) and the free-slip layer (u8, packed in uint32 words by the spec's rule) |
+| 17 | `airflow_wall_links` | R | the viscous wall links, sized by the scene's surface |
+| 18 | `airflow_region_labels` | R | per cell, with kNoRegion marking solid (no separate mask) |
+| 19 | `airflow_region_table` | D | per region: the cell count, the closed flag, the host-computed prescribed flux, and the masked sums and means |
+| 20 | `airflow_pcg` | D | CG's vectors, packed |
+| 21 | `airflow_scalars` | D | CG's α, β and r·z, and each reduction's result, so CG never reads back mid-step |
+| 22 | `airflow_discs` | R | the disc points and their inputs |
+| 23 | `airflow_partials` | D | the 4³ tile partials: one buffer, shared by the reductions in turn, sized for the widest (wall load's 6 floats per tile) |
+| 24 | `airflow_health` | S | 64 B |
+| 25 | `airflow_publish_v` | S | |
+| 26 | `airflow_publish_s` | S | |
+| 27 | `airflow_wall_load` | S | force and moment, 6 floats |
+
+- **Packing:** by role, with offsets in params. The state arrays (u, v, w, p) stay split, one per array, as the mirror treats state. The largest packed array, advect at about 36 B per cell, is about 720 MB at 20M cells: under `maxStorageBufferRange` up to the 4 GiB cap on the devices of record. The runner refuses by name on a device whose range is smaller.
+- **Dropped:** dye (not in D1, not in plan A's reference) and vorticity (no confinement; Publish computes |ω| itself). Either is appended if a later plan needs it.
+
 ## Task B0.1: Device limits, captured and checked
 
 **Files:**
