@@ -4,7 +4,8 @@
 // solid_drone_rig -- the reference quad's airframe as solids in the airflow,
 // for the flow views (D1's drawing side; the lead, 2026-10-21). The library's
 // model file, held at hover at the box centre in a 3 m/s wind along +x, its
-// parts made solids by P2's one call (set_solids) and stepped a few times, as
+// parts made solids by P2's one call (set_solids, through Physics'
+// vehicles::AirflowSolids) and stepped a few times, as
 // LiveRun will do once Interface wires it; the volume published with the
 // solid mask (P6), so the first solid layer holds its fluid side's values and
 // deeper solid cells are no-data. Physics' numbers: dx 4 mm classifies all
@@ -22,7 +23,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "airflow_vehicle_sampler.hpp"  // Physics' adapter; the engine's once it moves (TD-9)
 #include "core/flow_volume.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -31,6 +31,7 @@
 #include "render_parts/render_parts.hpp"
 #include "scene/model_file.hpp"
 #include "state/layout.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/part_pose.hpp"
 
 namespace spade::test {
@@ -93,13 +94,13 @@ struct SolidDrone {
         return out;
     }
     af::FluidScratch& s = *scratch;
-    const airflow_test::VehicleSampler sampler(out.model, *posed, origin);
-    auto parts = sampler.parts();
+    const vehicles::AirflowSolids solids(out.model, *posed, origin);  // outlives set_solids()
+    auto parts = solids.parts();
     if (!parts) {
-        out.error = "the sampler's parts: " + parts.error().context;
+        out.error = "the airframe's solid parts: " + parts.error().context;
         return out;
     }
-    if (auto set = af::set_solids(s, g, bc, *parts, sampler.sampler()); !set) {
+    if (auto set = af::set_solids(s, g, bc, *parts, solids.sampler()); !set) {
         out.error = "set_solids: " + set.error().context;
         return out;
     }

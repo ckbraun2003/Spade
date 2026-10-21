@@ -58,6 +58,10 @@ struct FlowSurfaceColouring {
     bool extrapolate = false;
 };
 inline constexpr float kMaxSurfaceOffsetCells = 4.0f;
+// Where the C_p view reads (R2.4, measured 2026-10-13): one cell off the
+// wall, the nearest offset that colours every pixel. At the wall a read
+// reaches the deeper solid cells, which are no-data (P6).
+inline constexpr float kCpReadOffsetCells = 1.0f;
 
 // invalid_argument, by name: no volume, a volume that fails
 // validate_flow_volume(), colours that fail validate_transfer_function(), an
