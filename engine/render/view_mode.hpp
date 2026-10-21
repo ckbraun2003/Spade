@@ -157,6 +157,9 @@ struct ViewLegend {
     std::string unit;      // "m/s", "1/s", "Pa", or "" for none
     ColourMapId colours = ColourMapId::viridis;
     ResolvedRange range;   // as both renderers resolve it (resolve_range())
+    // What the reading is, in a sentence a legend shows beside the scale, or
+    // "" when the quantity and unit say it all.
+    std::string note;
 };
 
 // The base's own key, beside the layers' legends: depth's range and colours,

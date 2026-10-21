@@ -143,6 +143,7 @@ add_executable(spade_tests
     test_render_flow_draw.cpp
     test_render_flow_feed.cpp
     test_render_flow_field.cpp
+    test_render_solid_drone.cpp
     test_render_shadow.cpp
     test_render_raymarch.cpp
     test_render_agreement.cpp

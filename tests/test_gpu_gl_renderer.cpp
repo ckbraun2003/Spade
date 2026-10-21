@@ -60,6 +60,7 @@
 
 #include "cp_sphere.hpp"
 #include "flow_synthetic.hpp"
+#include "solid_drone_rig.hpp"
 #include "view_mode_cases.hpp"
 
 namespace {
@@ -1737,6 +1738,49 @@ TEST_F(GpuGlRenderer, FlowSurfaceOnCsgWallsMatchesTheCpu) {
     EXPECT_LE(w.band.worst, kCsgWallsWorst) << device;
     EXPECT_LE(w.band.over_two, kCsgWallsOverTwo);
     EXPECT_LE(w.band.differing, kCsgWallsDiffering);
+}
+
+// SolidDroneCpMatchesTheCpu's band (D1's drawing side), measured as the one
+// above. Its parts are CSG, so the offset follows the distance gradient on
+// both paths.
+constexpr int kSolidDroneWorst = 2;
+constexpr size_t kSolidDroneOverTwo = 0;
+constexpr size_t kSolidDroneDifferingPercent = 20;
+
+// The C_p view over the reference quad's airframe as solids in the flow
+// (tests/solid_drone_rig.hpp): one apply_view, drawn on GL and the CPU.
+TEST_F(GpuGlRenderer, SolidDroneCpMatchesTheCpu) {
+    const spade::test::SolidDrone d = spade::test::solid_drone();
+    ASSERT_TRUE(d.error.empty()) << d.error;
+    spade::render::FlowViewSpec cp;
+    cp.kind = spade::render::FlowView::surface_cp;
+    cp.colours = spade::render::ColourMapId::cool_warm;
+    cp.range_min = -1.5f;
+    cp.range_max = 1.0f;
+    cp.q_ref = d.q_ref;
+    RenderScene scene = d.scene;
+    RenderOptions options = comparable_options();
+    const auto legends =
+        spade::render::apply_view(spade::render::ViewSpec{spade::render::ViewBase::shaded, {cp}}, &d.volume, scene,
+                                  options);
+    ASSERT_TRUE(legends.has_value()) << legends.error().context;
+    Camera camera;
+    camera.position = glm::vec3(-0.25f, 0.2f, 0.3f);
+    camera.orientation = glm::quatLookAt(glm::normalize(-camera.position), glm::vec3(0.0f, 1.0f, 0.0f));
+    camera.near_plane = 0.01f;
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, options);
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(d.scene, camera, comparable_options());
+    const std::vector<uint8_t> gl = draw_and_read(scene, options, camera);
+    ASSERT_EQ(gl.size(), cpu.size());
+    const size_t coloured = count_differing(cpu, cpu_bare);
+    const ChannelDiff band = channel_diff(cpu, gl);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ solid drone ] %zu px coloured; worst %d levels, %zu over two; %zu differ; on %s\n", coloured,
+                band.worst, band.over_two, band.differing, device.c_str());
+    ASSERT_GT(coloured, kPixels / 50u) << "the airframe takes the colour";
+    EXPECT_LE(band.worst, kSolidDroneWorst) << device;
+    EXPECT_LE(band.over_two, kSolidDroneOverTwo);
+    EXPECT_LE(band.differing * 100u, coloured * kSolidDroneDifferingPercent);
 }
 
 // CpOffASphereMatchesTheCpu's bands. Measured 2026-10-13, 160x120, on an
