@@ -9,8 +9,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1 [-Preset debug|releas
 powershell -ExecutionPolicy Bypass -File scripts\test.ps1  [-Preset debug|release]
 ```
 
-- **The gate is `scripts\test.ps1`, green on both presets** (`TD-7`). There is no hosted CI.
-- **Run builds and tests in the foreground.** A backgrounded job gets killed on the reference machine.
+- **The gate is `scripts\test.ps1`, green on both presets** (`TD-7`), at the lead's batch gate. A branch runs the tiers in `docs/design/test-docs/02-build-and-gate.md` ("Verification is tiered"). There is no hosted CI.
+- **Run heavy builds and tests through the box's job queue** (`02-build-and-gate.md`, "This machine"). A job backgrounded outside it gets killed on the reference machine.
 - **Never run `spade_tests.exe` directly.** ctest is what turns each `TEST()` into one counted, filterable, timed case.
 - **Report a count with its build tree and commit, and name every skip** (`TD-8`). "Compiled" and "green" are different claims.
 - **A GPU test lives in a `Gpu*` suite and starts with the device check** (`TD-6`). If you add or change one, run it on a device and say so in the commit; nothing downstream will.

@@ -32,6 +32,31 @@ Run them in the foreground. The `.ps1` scripts keep to ASCII (non-ASCII breaks `
 
 `--no-tests=error` fires only when **zero** tests are registered. A battery that always skips stays invisible to it, which is why skips are reported by name.
 
+### Verification is tiered
+
+Cameron decided this on 2026-10-21, by AskUserQuestion to the lead (backlog, `3473490`), to spend fewer tokens per merge. `TD-7`'s "both presets" is now met at the lead's batch gate, not on every branch. Heavy runs go through the job queue ("This machine", below).
+
+**Per branch, before "ready":**
+- **A full build** of all targets.
+- **The release CPU suite** (`-LE gpu`), in jobrun chunks.
+- **The GPU tests** (`-L gpu`, the queue's `gpu` class), only when the branch changes GPU code: `engine/render`, `engine/render_gl`, `engine/shaders`, `engine/compute`, the flow volume's GPU path, or anything else that runs on the device.
+- **The live smoke,** only when the branch changes `sandbox/` or editor code.
+- **The gcc check** ("The gcc check before review", below): `--compile` on every changed `.cpp`, the plain check on changed headers. A new `.cpp` that gcc-check can't place uses a sibling's command line or a `TEMPLATES` entry. Failing both, the branch needs a leg.
+- **Its own `-NoSeed` leg,** as well, when the branch touches the solver (`engine/sim`, the airflow code) or moves a pinned format or golden (`TD-1`, `TD-12`).
+
+Per-branch debug chunks are dropped.
+
+**At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke with its MP4.
+
+A ready message names the tiers it ran, and which of the conditional ones it skipped and why ("no GPU code changed").
+
+### Messages and subagents
+
+These are Cameron's token decisions of 2026-10-21, relayed by Kat's lead (backlog `64ff6c4`, `f17c503`).
+
+- **Send only actionable messages:** a decision needed, a ready SHA with its gate lines, or a blocker. Leave out acknowledgements and FYI copies. Batch them; the lead answers once per batch.
+- **Subagents:** use Sonnet at high effort for mechanical work (running tests, reading logs, pin searches, merges, surveys). Opus does design, code and review.
+
 ## The Docker leg
 
 `scripts\docker-leg.ps1` builds and tests **one commit** on Linux, the way a Linux checkout sees it, and runs the consumer smoke against an installed prefix. It is the second toolchain (`TD-12`) and the only place `tests/consumer` runs (`TD-11`). It complements the gate and does not replace it.
