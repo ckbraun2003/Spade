@@ -346,8 +346,8 @@ install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp
 
 # ------------------------------------------------------------------------------
 # spade_mesh_import: the CAD mesh readers (CORE-6; the parts and meshes plan,
-# Task B6) -- glTF today. Import only: each reader ends in make_mesh(). A
-# target of its own so the library the step links gains no parser: spade_sim
+# Tasks B6 and B7) -- glTF, binary STL and OBJ. Import only: each reader ends
+# in make_mesh(). A target of its own so the library the step links gains no parser: spade_sim
 # and everything under it never link it (MeshImport.TheStepNeverLinksTheReaders
 # pins that). Installed and exported, because Kat hosts the builder and links
 # only installed targets (SL2b). Its header is world/mesh_import.hpp, installed
@@ -360,6 +360,8 @@ install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp
 # ------------------------------------------------------------------------------
 add_library(spade_mesh_import STATIC
     world/mesh_import/gltf.cpp
+    world/mesh_import/obj.cpp
+    world/mesh_import/stl.cpp
     world/mesh_import/weld.cpp
 )
 add_library(spade::mesh_import ALIAS spade_mesh_import)

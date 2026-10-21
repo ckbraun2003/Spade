@@ -2,7 +2,7 @@
 
 // ---------------------------------------------------------------------------
 // world/mesh_import.hpp -- reading CAD exports into validated meshes (CORE-6;
-// the parts and meshes plan, Part B, Task B6). Import only: these readers
+// the parts and meshes plan, Part B, Tasks B6 and B7). Import only: these readers
 // are how geometry gets in. Every object ends in make_mesh(), so a returned
 // mesh meets world/mesh.hpp's precondition, and nothing here repairs one.
 //
@@ -90,6 +90,68 @@
 // decoded byte by byte (little-endian), the transform is + - * / in double
 // in a fixed order, and the weld sorts under a total order. The same bytes
 // give the same meshes on every platform.
+//
+// BINARY STL (read_stl). The file has no unit, so the caller declares one:
+// MeshUnit::unspecified, or any value that is not a MeshUnit, is refused
+// (invalid_argument) before the file is opened.
+//   THE FORMAT: an 80-byte header, a little-endian uint32 facet count n, then
+//     n facets of 50 bytes: a normal and three vertices, each three
+//     little-endian float32, and a 2-byte attribute. The normal and the
+//     attribute are not read: the winding says which way a facet faces, and
+//     make_mesh() checks it. One object, named by the file's stem.
+//   ASCII STL: a file that is not 84 + 50n bytes and starts "solid" is ASCII
+//     STL: unavailable ("export binary STL"). The size decides, so a binary
+//     file whose header starts "solid", as some exporters write it, is read.
+//   WELDING: each facet carries its own three vertices (a soup); the exact
+//     weld above joins them into the shared topology make_mesh() checks.
+//   THE ORDER: the unit; the file (io_error); a file short of the 84-byte
+//     header (unavailable if it starts "solid", else invalid_argument); ASCII;
+//     the count against kMaxMeshTriangles and against 2^32 - 1 vertices before
+//     welding (capacity_exceeded, before any facet is read); the size (84 + 50n
+//     bytes exactly, else invalid_argument); facet by facet, a vertex that is
+//     not finite (invalid_argument, naming the facet); then the weld and
+//     make_mesh(), its refusals prefixed "<file>: object '<stem>'".
+//
+// OBJ (read_obj). The unit is declared and refused as for STL. Text, read
+// line by line (a line ends at '\n', with an optional '\r' before it);
+// fields are separated by spaces and tabs; a line whose first field starts
+// with '#' is a comment; a UTF-8 byte order mark before line 1 is skipped.
+//   READ: `v x y z`, with up to four more numbers after the three (a weight,
+//     or a colour) read and ignored; `f` with exactly three corners, each v,
+//     v/vt, v/vt/vn or v//vn. Every index is 1-based, a negative one counts
+//     back from the latest element of its kind (-1 is the latest), and a
+//     corner may name only elements defined above it. vt and vn lines are
+//     counted for those range checks and otherwise ignored; s, usemtl and
+//     mtllib are ignored.
+//   OBJECTS: `o` names objects; in a file with no `o`, `g` does (so a body
+//     that `g` splits into material groups stays one object). A name is the
+//     rest of its line, trimmed, and must be UTF-8. A bare `o` or `g`, and
+//     every face before the first name, belongs to the file's stem. The faces
+//     under one name are one object wherever they are in the file; objects
+//     come in the order of their first face, and a name with no face is no
+//     object. Each object takes the vertices its faces name, welded exactly
+//     as above, and its make_mesh() refusals are prefixed
+//     "<file>: object '<name>'".
+//   NUMBERS: std::from_chars, so no locale applies (a decimal comma is
+//     refused); one leading '+' is allowed.
+//   REFUSALS, each naming its line ("<file>: line N: ..."); the first in the
+//     file is returned.
+//     unavailable -- a face of more than three vertices ("triangulate on
+//       export"); every other element, named: p, l, free-form geometry (vp,
+//       cstype, curv, curv2, surf and the rest) and display attributes (lod
+//       and the rest); a line continued by a trailing '\'.
+//     invalid_argument -- a v with fewer than three numbers or more than
+//       seven, a field that is not a number or is out of double's range, a
+//       coordinate that is not finite; a face of fewer than three corners, a
+//       corner of another form, an index that is not a nonzero integer or
+//       names an element not yet defined; a name that is not UTF-8. And, with
+//       no line, a file with no face.
+//     capacity_exceeded -- more than 2^32 - 1 vertices in the file, or an
+//       object of more than kMaxMeshTriangles triangles.
+//     io_error -- a file that cannot be opened or read.
+//
+// For both, running out of memory is capacity_exceeded, and any other
+// exception is internal: none crosses this API.
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
@@ -104,7 +166,7 @@
 
 namespace spade {
 
-// One imported object: its name and its validated mesh, in metres.
+// One imported object: its name (UTF-8) and its validated mesh, in metres.
 struct MeshObject {
     std::string name;
     std::shared_ptr<const TriangleMesh> mesh;
@@ -117,5 +179,11 @@ struct MeshObject {
 // against `base_dir`; with an empty `base_dir`, one is refused.
 [[nodiscard]] Result<std::vector<MeshObject>> read_gltf_bytes(std::span<const std::byte> bytes,
                                                               const std::filesystem::path& base_dir);
+
+// Reads a binary STL file whose lengths are in `unit`: one object.
+[[nodiscard]] Result<std::vector<MeshObject>> read_stl(const std::filesystem::path& path, MeshUnit unit);
+
+// Reads an OBJ file whose lengths are in `unit`.
+[[nodiscard]] Result<std::vector<MeshObject>> read_obj(const std::filesystem::path& path, MeshUnit unit);
 
 }  // namespace spade
