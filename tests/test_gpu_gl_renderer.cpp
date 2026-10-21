@@ -2666,6 +2666,10 @@ TEST_F(GpuGlRenderer, RefusesASensorModeOnAMultisampledTarget) {
         ASSERT_FALSE(drew.has_value()) << "a sensor mode on a multisampled target must be refused";
         EXPECT_EQ(drew.error().code, spade::Code::invalid_argument);
         EXPECT_NE(drew.error().context.find("multisampled"), std::string::npos) << drew.error().context;
+        EXPECT_NE(drew.error().context.find("GlRenderer::draw: " +
+                                            std::string(spade::render::sensor_mode_name(mode)) + " draws data"),
+                  std::string::npos)
+            << "the refusal names its own mode: " << drew.error().context;
     }
     const spade::Result<void> shaded = renderer_->draw(scene, camera_on_plus_z(), comparable_options(), kWidth, kHeight);
     EXPECT_TRUE(shaded.has_value()) << shaded.error().context;

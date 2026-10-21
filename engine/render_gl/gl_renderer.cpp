@@ -2542,7 +2542,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         if (samples > 1) {
             return std::unexpected(Error{
                 Code::invalid_argument,
-                "GlRenderer::draw: " + std::string(options.mode == render::DrawMode::depth ? "depth" : "normals") +
+                "GlRenderer::draw: " + std::string(render::sensor_mode_name(options.mode)) +
                     " draws data, which a multisampled target (" + std::to_string(samples) +
                     " samples) would blend at every edge; draw it into a single-sample target"});
         }

@@ -17,6 +17,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cmath>
+#include <string_view>
 #include <cstdint>
 #include <span>
 
@@ -81,6 +82,16 @@ struct DepthRange {
 // Whether `mode` draws the geometry as data (depth, normals, segmentation).
 [[nodiscard]] constexpr bool is_sensor_mode(DrawMode mode) noexcept {
     return mode == DrawMode::depth || mode == DrawMode::normals || mode == DrawMode::segmentation;
+}
+
+// A sensor mode's name, as both backends' refusals give it; "" for any other.
+[[nodiscard]] constexpr std::string_view sensor_mode_name(DrawMode mode) noexcept {
+    switch (mode) {
+        case DrawMode::depth: return "depth";
+        case DrawMode::normals: return "normals";
+        case DrawMode::segmentation: return "segmentation";
+        default: return "";
+    }
 }
 
 // Whether `range` can colour depth: finite, from 0 m, and not empty. The one

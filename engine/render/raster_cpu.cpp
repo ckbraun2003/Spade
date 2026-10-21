@@ -2026,9 +2026,7 @@ namespace {
 }  // namespace
 
 Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& options) {
-    const std::string mode = options.mode == DrawMode::depth     ? "depth"
-                             : options.mode == DrawMode::normals ? "normals"
-                                                                 : "segmentation";
+    const std::string mode(sensor_mode_name(options.mode));
     if (!scene.flow_layers.empty() || !scene.field_layers.empty() || !scene.flow_polylines.empty() ||
         !scene.flow_points.positions.empty() || scene.flow_surface_colouring.has_value()) {
         return std::unexpected(Error{Code::invalid_argument, mode + " draws the geometry as data, so it takes no flow "
