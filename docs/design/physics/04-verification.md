@@ -59,6 +59,22 @@ Against published data, beside the goldens. Each case's tolerance was fixed in p
 | C0 Taylor–Green vortex, 64³, inviscid (opt-in) | kinetic energy per unit mass, t = 0 to 10 | 0.125 to 0.0701 | none | report only (DNS data enter at V3) | `c0-taylor-green.md` |
 | C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within | `c8-actuator-disc.md` |
 
+**P2** (solids, 2026-10-20, CPU reference, MSVC 14.43 release; tolerances in `docs/design/test-docs/2026-10-13-solids-tolerances.md`, fixed before the first run, except where marked `TD-2`):
+
+| Case | Measure | Result | Tolerance | Verdict | Record |
+|---|---|---|---|---|---|
+| S1 sphere in a uniform stream, R/dx 6, step 1 from cold (in the gate) | closed faces off their wall velocity; the solve's relative residual; the aperture divergence left over the right side's | 0; 3.509e-6; 3.274e-6 | exact; ≤ 1e-4; ≤ 2e-4 (P2 plan, Task 7) | within | `s1-sphere.md` |
+| S2 circular Couette, R1/dx 16 (release gate and every leg; debug skips it under `TD-5`) | max \|u_θ − u_θ,exact\| / (Ω R1); the last step's residual | 0.0052; 1.715e-6 | ≤ 0.11; ≤ 1e-4 | within | `s2-couette.md` |
+| S2, R1/dx 32 (opt-in) | the same; e(32) / e(16) | 0.0022; 0.429 | ≤ 0.054; report only, as e(16) is under a tenth of its band | within; report only | `s2-couette.md` |
+| Planar Couette, plates a quarter cell off the faces (in the gate) | max \|u − u_exact\| / U with the wall links; closed faces only, the negative control | 5.624e-8; 6.459e-2 | ≤ 1e-5 (`TD-2`); the control must exceed it | within; the control fails, as it must | `s2-couette.md` |
+| S3 sheet across a channel, an even plane and an odd one (in the gate) | max \|u\| / U; the pressure step Δp h / (ρ U (L − dx)) | 7.987e-6 and 4.783e-6; 1.000002 and 1.000001 | ≤ 1e-3; 1 ± 1e-3 | within | `s3-sheet.md` |
+| Design test 7: the posed drone's body from A4 and from B4 (in the gate) | max \|θ_A − θ_B\|; the worst sample's \|φ_A − φ_B\| in ulps of max(\|φ_A\|, \|φ_B\|, dx); wall velocities; faces closed in one form and open past θ's band in the other; closed faces, A4 and B4 | 2.980e-8; 0.05 ulps; 0; 0; 4336 and 4336 | ≤ 1.2e-7 (`TD-2`); ≤ 4 ulps per sample (`TD-2`); exact; exact; report only | within; report only | the test's print (a5a1b4c; a box 1 µm wider misses at θ 1.664e-4 and φ 2144 ulps) |
+| The chosen count, the sheet from cold on both planes (in the gate) | CG iterations to 1e-3; the residual after `kSolidsCgIterations` (8) | 5 and 5; 2.551e-5 and 2.113e-5 | ≤ 8; ≤ 1e-4 | within | the test's print |
+
+gcc-13.3 reproduced the planar Couette (5.624e-8, and the control's 6.459e-2) and design test 7's θ (2.980e-8) and closed faces (4336 and 4336) digit for digit, in P2's leg at `4e53383` (2097 passed, 0 failed). Design test 7's φ passed its 4-ulp band there, though the leg's JUnit file cut its record short of the ulp count.
+
+S2 checks the solution, not the wall treatment. It passes at 16 with the viscous wall links (0.0052) and without them (0.0602). The planar Couette check is the one that tells the treatments apart.
+
 ## Writing a physics test
 
 - Derive the expected value from the model's equations, in double. A transcription of the implementation into the test agrees with the implementation's bugs.

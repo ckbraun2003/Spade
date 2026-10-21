@@ -127,7 +127,7 @@ A record is never edited. A re-run adds a new dated record beside the old one, a
 
     | Test | Debug time measured | Release time | Covered in debug by | Since |
     |---|---|---|---|---|
-    | Solids S2, circular Couette at `R₁/dx` 16 (Physics, P2) | 99.7 s (2026-10-20) | 14.7 s | `AirflowSolidsStep.PlanarCouetteFlowHoldsItsLinearProfile` (0.16 s in debug) | P2's branch |
+    | Solids S2, circular Couette at `R₁/dx` 16 (Physics, P2) | 99.7 s (2026-10-20) | 14.7 s | `AirflowSolidsStep.PlanarCouetteFlowHoldsItsLinearProfile` (0.16 s in debug) | `9732a07` |
 
     S2's skip text: "debug build: S2 takes 100 s in debug (measured 2026-10-20; ctest's limit is 60 s); runs in the release gate (15 s) and every leg (TD-5; the planar Couette check covers the wall links in debug)".
 - **Two transcriptions of one authority** need a test that compares them, or they fork silently. Prefer deriving one from the other.
