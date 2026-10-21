@@ -1,5 +1,6 @@
 // The editor's library: the built-in items and placement by copy (editor plan
-// Task 9; EDT-012).
+// Task 9; EDT-012), and the default
+// library's files (N14a, INT-14).
 //
 // The built-in items ship with the editor: the quadrotor template, and the
 // primitive assets (box, sphere, cylinder, capsule). Placing an item copies it
@@ -9,7 +10,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -18,6 +22,13 @@
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_library.hpp"
 #include "editor_test_support.hpp"
+#include "scene/library.hpp"
+#include "scene/model_file.hpp"
+#include "vehicles/model_identity.hpp"
+#include "vehicles/model_part.hpp"
+#include "vehicles/part_pose.hpp"
+#include "world/aabb.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -208,4 +219,222 @@ TEST(EditorSceneSources, AMissingSavedFolderListsNoSavedScenes) {
     const std::vector<ed::SceneSource> sources =
         ed::scene_sources(std::filesystem::path(SPADE_ASSETS_DIR), std::filesystem::path("no_such_folder_here"));
     for (const ed::SceneSource& s : sources) EXPECT_NE(s.kind, ed::SceneSource::Kind::saved) << s.file;
+}
+
+// ===========================================================================
+// THE DEFAULT LIBRARY (N14a, INT-14). The panel lists Core's library.yaml
+// (scene::load_library()) in its order, and placing goes through Core:
+// a model entry through scene::add_model(), which keeps its chain, and an
+// object entry through scene::add_object(), which adds its materials. Load
+// from file reads a model or object file by its extension, as the index does.
+// A drone rests on its own lowest part, an object on its collider's box.
+// ===========================================================================
+
+namespace {
+
+namespace sc = spade::scene;
+namespace vh = spade::vehicles;
+
+[[nodiscard]] std::filesystem::path library_index() {
+    return std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "library.yaml";
+}
+
+[[nodiscard]] std::filesystem::path library_file(std::string_view relative) {
+    return std::filesystem::path(SPADE_ASSETS_DIR) / "library" / relative;
+}
+
+[[nodiscard]] ed::LibraryItem library_item(std::string_view name) {
+    const ed::LibraryLoad load = ed::load_library_items(library_index());
+    EXPECT_TRUE(load.problems.empty()) << load.problems.front();
+    return item_named(load.items, name);
+}
+
+// The lowest point of `m`'s posed parts, its body at the origin and level and
+// its rotors still: each part's box (part_bounds()) through its posed frame,
+// as Test/Docs' placed-at measures it.
+[[nodiscard]] float lowest_part_point(const vh::ModelType& m) {
+    spade::BodyState body{};
+    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::vector<float> still(m.rotors.size(), 0.0f);
+    const Result<vh::PosedParts> posed = vh::posed_parts(m, body, still, still, vh::PartFilter::all);
+    EXPECT_TRUE(posed.has_value()) << (posed ? "" : posed.error().context);
+    float low = std::numeric_limits<float>::infinity();
+    if (!posed) return low;
+    for (const vh::PosedPart& p : posed->parts) {
+        const Result<spade::Aabb> box = vh::part_bounds(m.parts[p.part]);
+        EXPECT_TRUE(box.has_value()) << (box ? "" : box.error().context);
+        if (!box) continue;
+        for (uint32_t c = 0; c < 8; ++c) {
+            const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
+                                   (c & 4u) != 0 ? box->max.z : box->min.z);
+            low = std::min(low, (p.origin + p.orient * corner).y);
+        }
+    }
+    return low;
+}
+
+}  // namespace
+
+TEST(EditorLibraryFiles, TheDefaultLibraryIsListedInItsIndexsOrder) {
+    const Result<sc::Library> index = sc::load_library(library_index());
+    ASSERT_TRUE(index.has_value()) << index.error().context;
+    const ed::LibraryLoad load = ed::load_library_items(library_index());
+    EXPECT_TRUE(load.problems.empty()) << load.problems.front();
+    ASSERT_EQ(load.items.size(), index->entries.size());
+    ASSERT_GE(load.items.size(), 9u);
+    for (std::size_t i = 0; i < load.items.size(); ++i) {
+        const ed::LibraryItem& item = load.items[i];
+        const sc::LibraryEntry& entry = index->entries[i];
+        EXPECT_EQ(item.name, entry.name);
+        EXPECT_EQ(item.category, entry.category) << entry.name;
+        EXPECT_EQ(item.file, entry.file) << entry.name;
+        EXPECT_EQ(item.kind == ed::LibraryItem::Kind::model, entry.kind == sc::LibraryKind::model) << entry.name;
+        EXPECT_EQ(item.model.has_value(), entry.kind == sc::LibraryKind::model) << entry.name;
+        EXPECT_EQ(item.asset.has_value(), entry.kind == sc::LibraryKind::object) << entry.name;
+    }
+}
+
+TEST(EditorLibraryFiles, AnEntryThatWontLoadIsNamedAndTheRestStillLoad) {
+    support::TempDir tmp;
+    std::filesystem::copy_file(library_file("primitives/box.object.yaml"), tmp.path() / "box.object.yaml");
+    support::write_bytes(tmp.path() / "bad.object.yaml", "object_version: 1\nnonsense: 1\n");
+    support::write_bytes(tmp.path() / "library.yaml",
+                         "library_version: 1\n"
+                         "entries:\n"
+                         "  - {name: \"Bad\", category: \"primitives\", file: \"bad.object.yaml\"}\n"
+                         "  - {name: \"Box\", category: \"primitives\", file: \"box.object.yaml\"}\n");
+    const ed::LibraryLoad load = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(load.items.size(), 1u);
+    EXPECT_EQ(load.items[0].name, "Box");
+    ASSERT_EQ(load.problems.size(), 1u);
+    EXPECT_NE(load.problems[0].find("'Bad'"), std::string::npos) << load.problems[0];
+}
+
+TEST(EditorLibraryFiles, AnIndexThatWontLoadIsNamed) {
+    support::TempDir tmp;
+    const std::filesystem::path missing = tmp.path() / "library.yaml";
+    const ed::LibraryLoad load = ed::load_library_items(missing);
+    EXPECT_TRUE(load.items.empty());
+    ASSERT_EQ(load.problems.size(), 1u);
+    EXPECT_NE(load.problems[0].find("library.yaml"), std::string::npos) << load.problems[0];
+}
+
+// propulsion-kept: the placed model's three identities are the file's. The
+// second copy is renamed, so its model identity (which folds the name) is
+// the renamed file's; its parts and its chain fold no name.
+TEST(EditorLibraryFiles, ThePlacedLibraryDroneKeepsItsThreeIdentities) {
+    const Result<sc::ModelFile> file = sc::load_model_file(library_file("drones/reference_quad.model.yaml"));
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    ASSERT_TRUE(file->model.propulsion.has_value());
+    const ed::LibraryItem quad = library_item("Reference quad");
+    ed::SceneDocument doc = hover_document();
+    const std::size_t before = doc.desc().vehicles.size();
+    ASSERT_TRUE(ed::place(doc, quad, pose_at(glm::vec3(2.0f, 0.0f, 0.0f))).has_value());
+    const Result<std::string> second = ed::place(doc, quad, pose_at(glm::vec3(4.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(second.has_value()) << second.error().context;
+    ASSERT_EQ(doc.desc().vehicles.size(), before + 2);
+    const vh::ModelType& one = support::model_named(doc.desc(), doc.desc().vehicles[before].model);
+    const vh::ModelType& two = support::model_named(doc.desc(), doc.desc().vehicles[before + 1].model);
+    EXPECT_EQ(vh::model_identity(one), vh::model_identity(file->model));
+    vh::ModelType renamed = file->model;
+    renamed.name = two.name;
+    EXPECT_EQ(vh::model_identity(two), vh::model_identity(renamed));
+    for (const vh::ModelType* m : {&one, &two}) {
+        EXPECT_EQ(vh::parts_identity(*m), vh::parts_identity(file->model)) << m->name;
+        ASSERT_TRUE(m->propulsion.has_value()) << m->name << ": the copy dropped the chain";
+        EXPECT_EQ(vh::propulsion_identity(*m->propulsion), vh::propulsion_identity(*file->model.propulsion)) << m->name;
+    }
+    EXPECT_EQ(support::text_of(doc.desc()).find("library"), std::string::npos) << "the scene names the library";
+}
+
+// An object goes in through add_object(): its materials come with it.
+TEST(EditorLibraryFiles, APlacedObjectBringsItsMaterials) {
+    const ed::LibraryItem gate = library_item("Gate");
+    ed::SceneDocument doc = hover_document();
+    const Result<std::string> placed = ed::place(doc, gate, pose_at(glm::vec3(1.0f, 0.0f, 0.0f)));
+    ASSERT_TRUE(placed.has_value()) << placed.error().context;
+    EXPECT_EQ(*placed, "gate");
+    const auto& materials = doc.desc().materials;
+    EXPECT_TRUE(std::any_of(materials.begin(), materials.end(),
+                            [](const spade::MaterialDesc& m) { return m.name == "library_gate"; }));
+    ASSERT_TRUE(doc.undo());
+    EXPECT_EQ(support::text_of(doc.desc()), support::text_of(hover_document().desc())) << "one undo takes it back";
+}
+
+// A scene material of the same name and another colour is add_object()'s
+// refusal, shown verbatim; nothing changes.
+TEST(EditorLibraryFiles, AnObjectWhoseMaterialConflictsIsRefusedInCoresWordsAndNothingChanges) {
+    const ed::LibraryItem gate = library_item("Gate");
+    ed::SceneDocument doc = hover_document();
+    spade::MaterialDesc other;
+    other.name = "library_gate";
+    other.base_color = glm::vec4(0.1f, 0.2f, 0.9f, 1.0f);
+    ASSERT_TRUE(ed::apply(doc, ed::AddMaterial{other}).has_value());
+    const std::string before = support::text_of(doc.desc());
+    const Result<std::string> placed = ed::place(doc, gate, pose_at(glm::vec3(1.0f, 0.0f, 0.0f)));
+    ASSERT_FALSE(placed.has_value());
+    EXPECT_NE(placed.error().context.find("material 'library_gate': base_color differs"), std::string::npos)
+        << placed.error().context;
+    EXPECT_EQ(support::text_of(doc.desc()), before);
+}
+
+TEST(EditorLibraryFiles, LoadFromFileReadsAModelOrAnObjectByItsExtension) {
+    const std::filesystem::path drone = library_file("drones/reference_quad.model.yaml");
+    const Result<ed::LibraryItem> model = ed::item_from_file(drone);
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    EXPECT_EQ(model->kind, ed::LibraryItem::Kind::model);
+    ASSERT_TRUE(model->model.has_value());
+    EXPECT_TRUE(model->model->propulsion.has_value());
+    EXPECT_EQ(model->file, drone.generic_string());
+
+    const Result<ed::LibraryItem> object = ed::item_from_file(library_file("obstacles/gate.object.yaml"));
+    ASSERT_TRUE(object.has_value()) << object.error().context;
+    EXPECT_EQ(object->kind, ed::LibraryItem::Kind::asset);
+    ASSERT_TRUE(object->asset.has_value());
+    EXPECT_FALSE(object->materials.empty());
+
+    support::TempDir tmp;
+    support::write_bytes(tmp.path() / "notes.txt", "a drone\n");
+    const Result<ed::LibraryItem> other = ed::item_from_file(tmp.path() / "notes.txt");
+    ASSERT_FALSE(other.has_value());
+    EXPECT_NE(other.error().context.find(".model.yaml"), std::string::npos) << other.error().context;
+    EXPECT_NE(other.error().context.find(".object.yaml"), std::string::npos) << other.error().context;
+}
+
+// placed-at's rest (Test/Docs' expected red): the reference quad's battery
+// hangs below the built-in drone's 25 mm, so a drone rests on its own lowest
+// posed part, not on kDroneBodyHalf.
+TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
+    const ed::LibraryItem quad = library_item("Reference quad");
+    ASSERT_TRUE(quad.model.has_value());
+    ASSERT_FALSE(quad.model->parts.empty());
+    const float low = lowest_part_point(*quad.model);
+    ASSERT_TRUE(std::isfinite(low));
+    EXPECT_NEAR(ed::rest_height(quad), -low, 1e-6f);
+}
+
+// An object rests on its collider's box, whatever its primitives.
+TEST(EditorLibraryFiles, ALibraryObjectRestsOnItsCollidersBox) {
+    for (const ed::LibraryItem& item : ed::load_library_items(library_index()).items) {
+        if (item.kind != ed::LibraryItem::Kind::asset) continue;
+        ASSERT_TRUE(item.asset.has_value()) << item.name;
+        const Result<spade::Aabb> box = spade::sdf_bounds(item.asset->collider);
+        ASSERT_TRUE(box.has_value()) << item.name << ": " << box.error().context;
+        EXPECT_NEAR(ed::rest_height(item), -box->min.y, 1e-6f) << item.name;
+    }
+}
+
+// The edits read their file when applied: one that won't read is refused
+// naming it, and nothing changes.
+TEST(EditorLibraryFiles, AFileThatWontReadIsRefusedNamingItAndNothingChanges) {
+    ed::SceneDocument doc = hover_document();
+    const std::string before = support::text_of(doc.desc());
+    const Result<void> object = ed::apply(doc, ed::AddObjectFile{"no/such.object.yaml", "", SdfPose{}});
+    ASSERT_FALSE(object.has_value());
+    EXPECT_NE(object.error().context.find("no/such.object.yaml"), std::string::npos) << object.error().context;
+    const Result<void> model =
+        ed::apply(doc, ed::AddModelFile{"no/such.model.yaml", spade::scene::SceneVehicle{"quad", "", {}}});
+    ASSERT_FALSE(model.has_value());
+    EXPECT_NE(model.error().context.find("no/such.model.yaml"), std::string::npos) << model.error().context;
+    EXPECT_EQ(support::text_of(doc.desc()), before);
 }
