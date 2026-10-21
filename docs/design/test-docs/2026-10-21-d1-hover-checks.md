@@ -1,6 +1,6 @@
 # The D1 hover preview's checks and 04 rows
 
-**Owner:** Test/Docs. **Status:** DRAFT, 2026-10-21. The claims (§2) are for Physics to agree, and the predicates (§1) for Interface. The lead assigned it on 2026-10-21.
+**Owner:** Test/Docs. **Status:** DRAFT, 2026-10-21. The claims (§2) are for Physics to agree. Interface agreed the predicates (§1) on 2026-10-21. The lead assigned it on 2026-10-21.
 **The case:** the library's reference quad held level at hover, solid, in Physics' 0.896 × 0.672 × 0.64 m box at `dx` 4 mm (224 × 168 × 160 cells, 6.02 M), run through `LiveRun` once Interface's `interface/liverun-solids` lands.
 **Fixed a priori:** each band is fixed when Physics and Interface agree, before the first D1 run. After that, a band changes only by a recorded lead decision (`TD-2`, `01-verification.md`).
 
@@ -20,7 +20,9 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
   - The smallest `min_feature` is the arms' 12 mm, which is at least 2 `dx` = 8 mm, so every part is a wall (`tests/test_vehicles_airflow_solids.cpp`, `TheReferenceQuadAtHoverIsTenCleanWallsAt4Millimetres`).
 - **Band:** exact; these are counts.
 - **Catches:**
-  - The parts cleared before the run. `sandbox/airflow_live.hpp` and `tools/flow_movie/live_case.cpp` do this today with `run_model.parts.clear()`. The verdict is `absent: no solids in the run`.
+  - The parts cleared before the run. The verdict is `absent: no solids in the run`.
+    - D1 runs through `tools/flow_movie/live_case.cpp` (Rendering's), which clears them today with `run_model.parts.clear()`. It must keep them. `LiveRun` takes the model's rigid parts whenever the model has any (Interface).
+    - The tour's airflow chapter (`sandbox/airflow_live.hpp`, 32³ at 25 mm) clears them on purpose: the quad's parts can't be held at 25 mm. Its card says the parts are drawn, not in the air. So it is honestly `absent:`, and not a D1 path.
   - Rotor parts let through the filter (`P` ≠ the rigid count): `mis-staged:`.
   - A part classed as a sheet at 4 mm (`S > 0`): a fail that names the part.
 
@@ -30,7 +32,7 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
 - **Predicate:** none of the safeguard's advisories follow the counts:
   - no `leaks at an edge`;
   - no sheet note `no closed face` (`engine/physics/airflow/solids.cpp`, the measured safeguard).
-- A part that leaks outright fails `start()` by name. The run then never starts, and every check is `absent:`.
+- A part that leaks, or that the grid can't hold, fails `start()` and names the part. For example: `the model's parts as solids: airflow solids: part 'body' is below 2 dx = 40.0 mm in two extents (…) (refused, never dropped)` (Interface, measured). The run then never starts, and every check is `absent:`.
 - **Band:** exact.
 - **Catches:** a leaking classification. At 6 mm the same quad announces `parts[3]: leaks at an edge (...)`, pinned in the same test file. That line is this check's red.
 
@@ -47,7 +49,8 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
 
 - **Predicate, every view:** `legend_shown` also compares `ViewLegend::note`. Today it compares the layer, quantity, unit, colours and range, but not the note.
 - **Predicate, D1:** the `surface_cp` legend's note is the solids variant, which begins `the fluid's pressure one cell off the wall` (`engine/render/view_mode.cpp`, when `extrapolated_cells > 0`). The other variant, `the walls are not in this flow`, is `mis-staged:` for D1.
-- **The film:** its caption carries the note verbatim (`consumers.md`: "Show it (Interface: the per-view legend; the film's caption)").
+- **The editor:** its per-view legend draws the note (Interface, on `interface/liverun-solids`).
+- **The film:** its caption carries the note verbatim (`consumers.md`: "Show it (Interface: the per-view legend; the film's caption)"). The caption is Rendering's.
 - **Band:** exact strings.
 - **Catches:**
   - The note dropped. The editor's legend UI doesn't draw it today (`sandbox/editor_panels_ui.cpp`).
@@ -58,7 +61,7 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
 - **Predicate:** `publishes` passes only with `no_data == 0` today. With solids, `publish()` writes the first solid layer from its fluid side (`extrapolated_cells`) and marks the deeper solid cells no-data (`engine/physics/airflow/publish.hpp`). So with solids, `no_data` = the grid's solid cells − `extrapolated_cells`, exactly. Without solids it stays 0.
 - **Band:** exact.
 - **Catches:** no-data leaking into the fluid, and a solid mask that never reached `publish()`.
-- **Needs:** the grid's solid cell count from `LiveRun` (§4).
+- **Input:** `LiveSolids::solid_cells` (Interface, on `interface/liverun-solids`). It is counted from the same mask the run publishes with (`scratch.regions.solid`, the CG mask), so it and `no_data` agree by construction. The interior is `solid_cells − extrapolated_cells`, constant over the run because the solids are posed once.
 
 ### On the film's card and caption
 
@@ -107,11 +110,15 @@ The predicates take plain inputs (`any`, the run line, counts), so they don't wa
 4. The pressure row: 0 unconverged steps, or report the count?
 5. Any other claim D1 makes, such as C_p's sign on the arms' tops under the discs.
 
-**Interface:**
-1. `LiveSolids` gains the grid's solid cell count for D1-5. Or say how `publishes` should get it.
-2. The tour and the film keep the model's parts. `sandbox/airflow_live.hpp:131` clears them, and so does `tools/flow_movie/live_case.cpp` (Rendering's).
-3. The editor's legend draws `note`, and the film's caption carries it.
-4. The predicates' inputs: plain values, so they don't depend on the unmerged branch:
+**Interface** (all agreed, 2026-10-21):
+1. `LiveSolids` gains `uint32_t solid_cells` for D1-5.
+2. `LiveRun` takes the model's rigid parts whenever the model has any. The tour's 32³ chapter stays cleared, and is not a D1 path.
+3. The editor's per-view legend draws `note`.
+4. The predicates take plain values, so they don't depend on the unmerged branch:
    - `SolidsLine{bool any; std::string run_line; std::size_t expected_parts;}`
-   - `Published` gains `expected_no_data`.
-   - `LegendCheck` gains nothing; the note is compared.
+   - `publishes(frames, interior_solid_cells)`
+   - `legend_shown` compares the note.
+
+**Rendering** (through the lead):
+1. `tools/flow_movie/live_case.cpp` keeps the model's parts for D1.
+2. The film's caption carries the C_p note verbatim.
