@@ -1110,4 +1110,34 @@ TEST(AirflowSolidsStep, TheChosenIterationCountConvergesTheSheetFromCold) {
     }
 }
 
+// The solids' pressure solve converges on a grid with an odd axis (the D1
+// hover box, 240 x 177 x 168, reported max|r|/max|b| 0.21 and 0.13 at
+// kSolidsCgIterations; Rendering, 2026-10-21). make_multigrid() coarsens only
+// while every axis is even, so an odd axis leaves one level, and the CG's
+// V-cycle preconditioner is the coarsest level's sweeps on the whole grid:
+// weak, and four times the cost. Measured 2026-10-21 (MSVC release), the S1
+// sphere at R/dx 6 from rest, step 1: 48^3 (5 levels) 3.5e-6 in 0.29 s;
+// 48 x 47 x 48 (1 level) 1.3e-3 in 1.17 s; 96 x 95 x 96 (1 level) 3.7e-3 in
+// 8.8 s against 2.4 s at 96^3. The step's mark is kResidualAnnounce.
+TEST(AirflowSolidsStep, TheSolidsPressureConvergesOnAGridWithAnOddAxis) {
+    const float dx = 0.01f;
+    const GridShape shape{48, 47, 48, dx};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = kSolidsCgIterations,
+                          .interior = SolidInterior::extrapolate};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = {0.24f, 0.235f, 0.24f},
+                                 .radius = 6.0f * dx, .min_feature = 12.0f * dx});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+    const FluidHealth h = fluid_step(g, bc, cfg, s);
+    std::printf("48 x 47 x 48, step 1: max|r|/max|b| = %.3e\n", static_cast<double>(h.pressure_residual));
+    EXPECT_EQ(h.fault, FluidFault::none) << describe(h, shape);
+    EXPECT_LE(h.pressure_residual, kResidualAnnounce);
+    EXPECT_FALSE(h.unconverged);
+}
+
 }  // namespace
