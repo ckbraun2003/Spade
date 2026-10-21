@@ -1,6 +1,9 @@
 # The D1 hover preview's checks and 04 rows
 
-**Owner:** Test/Docs. **Status:** DRAFT for the lead's review, 2026-10-21. Physics agreed the claims (§2) and Interface the predicates (§1), both on 2026-10-21. The lead assigned it on 2026-10-21.
+**Owner:** Test/Docs. **Status:** approved by the lead as written (`0076fd1`), 2026-10-21. That covers the bands fixed a priori, D1-1 as a premise of D1-3, and the 0.10 floor with its reason, the wind. Physics agreed the claims (§2) and Interface the predicates (§1), both on 2026-10-21. The checks are on branch `test-docs/d1-checks`.
+**The lead's rulings, 2026-10-21:**
+- **Physics writes D1's record**, since the claims and bands are Physics' and the records live with Physics. Rendering's run supplies the `published_pressure_at` samples, and the record carries the film's run label. Test/Docs checks the record against §2.
+- **The run's length:** Rendering first measures the step time on the full 224 × 160 × 168 box. Then it simulates at least 0.55 s (0.50 s plus a margin) in resumable chunks. If a step costs more than 30 s, the lead hears about it before the run starts.
 **The case:** the library's reference quad held level at hover, solid, in a 3 m/s wind, run through `LiveRun` once Interface's `interface/liverun-solids` lands. The box is Physics' proposal to Rendering, not yet built in the repo:
 - 224 × 160 × 168 cells at `dx` 4 mm (6.02 M), so 0.896 m along x, 0.64 m along y and 0.672 m along z. Up is +y, the rotor axes are along +y, and the wind blows along +x.
 - The centre of mass is 0.416 m from the inlet face, 0.354 m above the bottom, and centred in z. The hubs sit ±0.110 m from it along x and z, and 0.0264 m above it: the rotor plane is at y ≈ 0.380 m, and the tips reach ±0.186 m.
