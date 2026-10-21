@@ -269,6 +269,7 @@ if(SPADE_VULKAN)
         test_compute_context.cpp
         test_gpu_denorm_probe.cpp
         test_slang_layouts.cpp
+        test_bindings_airflow.cpp
         test_gpu_fp32_math.cpp
         test_gpu_state_mirror.cpp
         test_gpu_parity.cpp
