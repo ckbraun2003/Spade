@@ -89,7 +89,7 @@ C. Luis and J. Le Ny, "Design of a Trajectory Tracking Controller for a Nanoquad
 FPV part listings: Ready Made RC (iFlight XING2 2207 1855KV; EMAX E3 2306 1700KV), Flying Tech (EMAX ECO II 2306) and GetFPV (HQProp DP 6x3.5x3).
 
 - **License:** `facts_cite`.
-- **Used for:** the FPV and basic quads' motors, packs and prop sizes. Retailer.
+- **Used for:** the FPV and basic quads' motors and prop sizes. Retailer. No pack listing is cited yet: a pack's numbers stay `assumed` until one is added here.
 
 ### `kat_competition_700`
 

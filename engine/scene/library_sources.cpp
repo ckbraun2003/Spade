@@ -21,7 +21,6 @@ namespace {
 using yaml_text::at;
 using yaml_text::dec;
 using yaml_text::field;
-using yaml_text::has;
 using yaml_text::mark_of;
 using yaml_text::parse_uint;
 using yaml_text::path_text;
@@ -66,13 +65,17 @@ template <std::size_t N>
     return true;
 }
 
+// YYYY-MM-DD with a month of 01-12 and a day of 01-31 (not checked against
+// the month's length).
 [[nodiscard]] bool is_date(std::string_view s) {
     if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
     for (std::size_t i = 0; i < s.size(); ++i) {
         if (i == 4 || i == 7) continue;
         if (s[i] < '0' || s[i] > '9') return false;
     }
-    return true;
+    const int month = (s[5] - '0') * 10 + (s[6] - '0');
+    const int day = (s[8] - '0') * 10 + (s[9] - '0');
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
 }
 
 [[nodiscard]] Result<SourceRegistry> parse_registry(const YAML::Node& root) {
@@ -129,10 +132,16 @@ template <std::size_t N>
         if (!citation) return std::unexpected(citation.error());
         source.citation = std::move(*citation);
 
-        // url: optional; absent is none.
-        if (has(node, "url")) {
-            Result<std::string> url = non_empty_field(node, "url", what);
+        // url: optional; absent is none. A key that is there must give one: a
+        // null or an empty url is refused, so "none" has one spelling.
+        if (node["url"].IsDefined()) {
+            const YAML::Node url_node = node["url"];
+            const std::string where = what + ".url";
+            const char* const hint = ": leave the key out for a source with none";
+            if (url_node.IsNull()) return std::unexpected(at(url_node, where + " is null" + hint));
+            Result<std::string> url = scalar(url_node, where);
             if (!url) return std::unexpected(url.error());
+            if (url->empty()) return std::unexpected(at(url_node, where + " must not be empty" + hint));
             source.url = std::move(*url);
         }
 

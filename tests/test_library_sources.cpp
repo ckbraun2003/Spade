@@ -157,6 +157,19 @@ TEST(LibrarySources, IdsAreUniqueAndLowercase) {
     expect_refused(sources_from_yaml(edited("retrieved: 2026-10-21\n    license: not_usable",
                                             "retrieved: last week\n    license: not_usable")),
                    Code::invalid_argument, {"sources[1].retrieved 'last week'", "YYYY-MM-DD"});
+    for (const std::string_view bad : {"2026-13-01", "2026-00-10", "2026-10-32", "2026-10-00"}) {
+        const std::string to = "retrieved: " + std::string(bad) + "\n    license: not_usable";
+        expect_refused(sources_from_yaml(edited("retrieved: 2026-10-21\n    license: not_usable", to)),
+                       Code::invalid_argument, {"sources[1].retrieved", bad, "YYYY-MM-DD"});
+    }
+}
+
+TEST(LibrarySources, AUrlIsGivenOrItsKeyLeftOut) {
+    for (const std::string_view empty : {"url:", "url: ~", "url: \"\""}) {
+        const std::string to = "    " + std::string(empty) + "\n    retrieved: 2026-10-21\n    license: not_usable";
+        expect_refused(sources_from_yaml(edited("    retrieved: 2026-10-21\n    license: not_usable", to)),
+                       Code::invalid_argument, {"sources[1].url", "leave the key out"});
+    }
 }
 
 TEST(LibrarySources, UnknownKeysAreRefusedBlamedOnTheSchema) {
@@ -165,6 +178,10 @@ TEST(LibrarySources, UnknownKeysAreRefusedBlamedOnTheSchema) {
                    Code::invalid_argument, {"unknown key 'grade'", "sources[1]", "sources schema v1"});
     expect_refused(sources_from_yaml(edited("sources_version: 1", "sources_version: 2")), Code::schema_mismatch,
                    {"schema version 2", "reads version 1"});
+    // The version is read first: a later version's own keys are not reported
+    // as unknown.
+    expect_refused(sources_from_yaml(edited("sources_version: 1", "sources_version: 2\nauthors: []")),
+                   Code::schema_mismatch, {"schema version 2"});
 }
 
 TEST(LibrarySources, UnknownGradeIsRefused) {
@@ -174,8 +191,17 @@ TEST(LibrarySources, UnknownGradeIsRefused) {
         ASSERT_TRUE(back.has_value()) << grade_name(g);
         EXPECT_EQ(*back, g) << grade_name(g);
     }
+    // The spellings are the text the part files and sidecars write: each one
+    // pinned, so two swapped names fail.
+    EXPECT_EQ(grade_name(Grade::measured), "measured");
+    EXPECT_EQ(grade_name(Grade::published), "published");
     EXPECT_EQ(grade_name(Grade::retailer), "retailer");
+    EXPECT_EQ(grade_name(Grade::derived), "derived");
+    EXPECT_EQ(grade_name(Grade::fitted), "fitted");
+    EXPECT_EQ(grade_name(Grade::assumed), "assumed");
+    EXPECT_EQ(license_name(License::public_domain), "public_domain");
     EXPECT_EQ(license_name(License::facts_cite), "facts_cite");
+    EXPECT_EQ(license_name(License::not_usable), "not_usable");
     expect_refused(parse_grade("guessed", "prop.ct_static's grade"), Code::invalid_argument,
                    {"prop.ct_static's grade", "'guessed'", "measured", "published", "retailer", "derived", "fitted",
                     "assumed"});
