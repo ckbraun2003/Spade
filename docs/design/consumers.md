@@ -14,6 +14,20 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Scene v5: airflow regions** (N5b, merged `b3657c6`). `scene/scene_file.hpp`: `SceneDesc::airflow`, a list of `SceneAirflowRegion`.
+  - A region has a name, a kind and a coupling.
+    - A follow region follows a vehicle and may have a `floor`; its faces are open, set by its flight.
+    - A fixed region has a `min_corner` and six faces: open, periodic or a wall with a velocity.
+    - Every region has `cells` as a `physics::airflow::GridShape`, the wind as `faces.ambient`, and `density` and `kinematic_viscosity`.
+    - `coupling` is `one_way` only until Physics' D4; `two_way` is refused.
+  - `validate_scene()` checks each region by name and its grid with `physics::airflow::check_grid(cells, faces, true)`. It keeps that function's message and code (`capacity_exceeded` comes through), and refuses two fixed regions that overlap.
+  - `region_identity(region)` is FNV-1a 64 over the region's item text: the end-goal round trip's "region" identity.
+  - **What a v4 reader sees:**
+    - A scene with no region is written exactly as before (v1 to v4, byte for byte), so older builds and Kat read it unchanged.
+    - A scene with a region is written as version 5. An older build refuses it as `schema_mismatch`, "scene file is schema version 5, this build reads versions 1 to 4 only".
+    - In a file of v4 or older, `airflow` is an unknown key: "unknown key 'airflow' in scene -- scene schema v4 does not define it".
+  - Region names are unique among regions only; they share no namespace with assets or vehicles.
+  - **For Interface:** renaming or removing a vehicle that a region follows is refused by the validator ("follows 'X', which is no vehicle of the scene"). The edits in `sandbox/editor_scene_edits.hpp` do not yet carry `follows` along.
 - **LiveRun's rotor rows** (Interface, merged `ca48317`). `analysis/live_run.hpp`: `LiveRun::rotor_rows()` gives each rotor's row after the last step, in the model's rotor order (speed, k_T, radius, and hub and axis in the body), for a host's probes. It is empty for a model without rotors. Additive.
 - **A mesh_ref never holds a scheme** (a clarification of N3's line, since `63b2f46`; in batch 11, `3a43967d`; found by Kat's PB11). `world/mesh_ref.hpp`'s rule refuses any ref holding a `:`, so a scheme-prefixed ref such as `mesh:track/gate-ring` is refused by every validator (`validate_asset`, and `validate_world_desc`'s visual_refs and props), and with it the world that holds it: "it holds a ':', as a drive or a scheme would". A mesh_ref is a relative path under the roots the caller passes to `resolve_meshes()`; a caller with its own naming maps it to that path before calling Spade (for example, `mesh:family/name` to `family/name` under the caller's mesh root). Worlds can be passed from memory: `world_from_yaml(std::string_view)` and `WorldBuilder`.
 - **visual_refs are meshes only** (since N3, `63b2f46`; asked by Kat's PB11). `WorldDesc::visual_refs` (world/builder.hpp) holds render-only MESH references, each a mesh_ref, and Rendering's resolver looks every one up as a mesh. It has no non-mesh form: a `material:...` or any other entry is refused like a bad mesh_ref. A world's materials are `WorldDesc::materials`, by index.
