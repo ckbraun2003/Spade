@@ -81,7 +81,10 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
         case FluidFault::none:
             if (health.unconverged) {
                 return "airflow fluid step: healthy, but the pressure solve left a relative residual of " +
-                       std::to_string(health.pressure_residual) + ", above " + std::to_string(kResidualAnnounce) +
+                       std::to_string(health.pressure_residual) + ", above " +
+                       std::to_string(health.capped ? kResidualAnnounce : kPlanAResidualAnnounce) +
+                       (health.capped ? " at its cap of " + std::to_string(health.pressure_iterations) + " iterations"
+                                      : std::string()) +
                        " (announced, L6)";
             }
             return "airflow fluid step: healthy";
@@ -251,11 +254,16 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
         if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     }
     const ProjectionReport rep =
-        project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr);
+        project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr,
+                cfg.cg_cap);
     s.health = scan(g);
     if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;
-        s.health.unconverged = rep.residual > kResidualAnnounce;
+        s.health.pressure_iterations = rep.iterations;
+        // With solids the CG ran on to the mark, so a miss is its cap reached.
+        // Plan A's fixed cycles are announced above their own mark (2a).
+        s.health.unconverged = rep.residual > (solid ? kResidualAnnounce : kPlanAResidualAnnounce);
+        s.health.capped = solid && s.health.unconverged;
     }
     return s.health;
 }

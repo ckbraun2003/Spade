@@ -30,7 +30,8 @@ struct FluidConfig {
     float rho = 1.225f;        // kg/m^3
     float nu = 0.0f;           // m^2/s, molecular; 0 is the inviscid lean mode
     float h = 0.0f;            // the fluid step, s
-    uint32_t n_v = 2;          // V-cycles per projection; with solids, CG iterations (kSolidsCgIterations)
+    uint32_t n_v = 2;          // V-cycles per projection; with solids, the CG's floor (kSolidsCgIterations)
+    uint32_t cg_cap = kSolidsCgCap;  // with solids, the CG's cap: past n_v it runs on to kResidualAnnounce
     uint32_t visc_sweeps = 8;  // red-black sweeps per viscous solve
     SolidInterior interior = SolidInterior::rigid;  // what closed samples hold (solids.hpp)
 };
@@ -49,6 +50,8 @@ struct FluidHealth {
     std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order);
                             // ill_posed_region: the region's first cell (faces: its faces)
     float pressure_residual = 0.0f;  // this step's max|r| / max|b| (pcg.hpp with solids; plan A's after its cycles)
+    uint32_t pressure_iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: n_v
+    bool capped = false;               // with solids: the CG reached cfg.cg_cap above kResidualAnnounce
     bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
 };
 
@@ -59,10 +62,13 @@ struct FluidHealth {
 // the quad's cold solves near 1e-3 to 2e-3. A run with solids sets n_v to it.
 inline constexpr uint32_t kSolidsCgIterations = 8;
 
-// A pressure solve leaving more than this relative residual is announced (the
-// lead's condition, spec 1.5 as amended): ten times the warm residual the
-// count above leaves (1.2e-6), held at the floor of 1e-4.
-inline constexpr float kResidualAnnounce = 1.0e-4f;
+// Plan A's announcement mark (the lead's decision 2a, 2026-10-21). Its fixed
+// n_v V-cycles stop wherever they reach, so its residual is reported every step
+// and announced only above 4 times the largest V1 measured: 1.754e-2, C0's
+// 64^3 Taylor-Green at n_v 2 (C1's cavities reach 4.4e-4, C8's wake less than
+// C0), so 7.02e-2, rounded up. C0's record prints it (TD-2).
+inline constexpr float kPlanAResidualAnnounce = 7.1e-2f;
+
 
 // What a fault means, naming the quantity and its sample (i, j, k), or the
 // faces. Allocates: call it outside the step.

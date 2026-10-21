@@ -33,7 +33,8 @@ struct ProjectionScratch {
 [[nodiscard]] ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc);
 
 struct ProjectionReport {
-    float residual = 0.0f;  // max|r| / max|b| after the solve (pcg.hpp with solids; plan A's after its cycles)
+    float residual = 0.0f;    // max|r| / max|b| after the solve (pcg.hpp with solids; plan A's after its cycles)
+    uint32_t iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: its n_v cycles
 };
 
 // WITH SOLIDS (solids->any, the solids design, section 3): the right side is
@@ -45,7 +46,10 @@ struct ProjectionReport {
 // velocity. The multigrid's weights are set by set_solids() (fluid_step.hpp),
 // the regions' status by check_regions(). Without solids: plan A, bit for bit.
 // Solids without their regions: the grid untouched and the residual infinite.
+// With solids, n_v is the CG's floor and cg_cap its cap (solve_pcg_to(), to
+// kResidualAnnounce).
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
-                         const SolidField* solids = nullptr, FluidRegions* regions = nullptr) noexcept;
+                         const SolidField* solids = nullptr, FluidRegions* regions = nullptr,
+                         uint32_t cg_cap = kSolidsCgCap) noexcept;
 
 }  // namespace spade::physics::airflow

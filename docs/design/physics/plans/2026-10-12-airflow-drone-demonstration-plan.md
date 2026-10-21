@@ -130,6 +130,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 6. P7 (the coupler).
 7. P4 (the actuator line). D1 needs P1, P2, P2b, P3, P4 and P7.
 8. Plan B with P8. D2 needs it.
+9. **P2c, the solids' coarse face weights** (the lead's ruling 1c, 2026-10-21). Series/harmonic coarse face weights, so a coarse face sees every fine plane it spans instead of every second one. This also fixes P2's finding 2, the sheet blindness. Since 2026-10-21 the solids' CG runs by residual: a floor of `kSolidsCgIterations` (8), then on to 1e-4, with a cap of 32. A cell-centred sphere needs 24 iterations because the coarse levels see a different body; P2c brings the count back toward the floor. It follows plan B's GPU work unless the cap starts firing. Even-grid solids bits shift at about 1e-6, inside the bands, so the solids goldens are re-cut under TD-1 with the lead's word.
 9. P5 and P9. D3 needs them.
 
 ## Spec changes (Cameron's, 2026-10-12)
