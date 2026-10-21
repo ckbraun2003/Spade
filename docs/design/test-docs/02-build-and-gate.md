@@ -56,6 +56,7 @@ These are Cameron's token decisions of 2026-10-21, relayed by Kat's lead (backlo
 
 - **Send only actionable messages:** a decision needed, a ready SHA with its gate lines, or a blocker. Leave out acknowledgements and FYI copies. Batch them; the lead answers once per batch.
 - **Subagents:** use Sonnet at high effort for mechanical work (running tests, reading logs, pin searches, merges, surveys). Opus does design, code and review.
+- **End subagents; never leave one stuck** (Cameron, 2026-10-21 07:28 UTC; backlog `47e8767`): end each subagent when its task is done (its last step is `SubagentHandback`), and stop one the token monitor marks stuck (45 minutes mid-turn, nothing written) by its task id, then restart its work from the resume note. Check that nothing is left running before ending a turn, and give every build, gate and wait a timeout.
 - **Where to commit** (Cameron's token monitor, 2026-10-21, with the lead's correction): commit code in your own worktree (`spade-wt/<realm>`). Docs-only commits stay on master in the main checkout, under your realm's scope (`docs(test-docs): ...`). Don't split or pad commits to move the numbers.
 - **Read less.** Everything read is paid for again on every turn, and 55–70% of sampled reads were of files already read three or more times.
   - Find a symbol with `grep -n`, then read only that range (an offset and a limit).
