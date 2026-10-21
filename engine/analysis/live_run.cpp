@@ -26,7 +26,9 @@
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "state/snapshot.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_flags.hpp"
 #include "vehicles/rotor_discs.hpp"
 #include "world/builder.hpp"
@@ -219,6 +221,7 @@ struct LiveRun::Impl {
     LiveState state;
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
+    LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -328,6 +331,22 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->fluid.rho = c.fluid.density;
     impl->fluid.nu = c.fluid.kinematic_viscosity;
     impl->fluid.h = static_cast<float>(seconds(impl->h_ns));
+    // The model's rigid parts, posed at the hover (the held body at rest),
+    // are the grid's solids (P2); a rotor's own parts are the disc's. With
+    // any, the pressure takes the CG count P2 measured.
+    const FrameState hover_frame =
+        to_body_state(FrameState{}, glm::normalize(model.design_to_principal), model.com_offset);
+    BodyState hover{};
+    hover.pos = hover_frame.pos;
+    hover.orient = hover_frame.orient;
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    Result<vehicles::PosedParts> posed =
+        vehicles::posed_parts(model, hover, still, still, vehicles::PartFilter::rigid_only);
+    if (!posed) {
+        return std::unexpected(Error{posed.error().code, "the model's parts at the hover: " + posed.error().context});
+    }
+    const bool with_solids = !posed->parts.empty();
+    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
     Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
     if (!scratch) return std::unexpected(scratch.error());
     impl->scratch = std::move(*scratch);
@@ -336,6 +355,29 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
+    if (with_solids) {
+        // A local: its sampler borrows it and impl->model, and set_solids()
+        // is done with both on return (vehicles/airflow_solids.hpp).
+        const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
+        Result<std::vector<af::SolidPart>> parts = solids.parts();
+        if (!parts) {
+            return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+        }
+        if (Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
+            !set) {
+            return std::unexpected(Error{set.error().code, "the model's parts as solids: " + set.error().context});
+        }
+        impl->solids.any = impl->scratch.solids.any;
+        impl->solids.run_line = impl->scratch.solids.run_line;
+        const std::vector<uint8_t>& mask = impl->scratch.regions.solid;
+        impl->solids.solid_cells =
+            static_cast<uint32_t>(std::count_if(mask.begin(), mask.end(), [](uint8_t s) { return s != 0u; }));
+        // P6: the cells inside the parts, masked in every published volume;
+        // P3: the face apertures, so no gradient differences across a wall
+        // or a sheet. Both point into the scratch, built once, here.
+        impl->publish.solid = impl->scratch.regions.solid;
+        for (std::size_t a = 0; a < 3; ++a) impl->publish.theta[a] = impl->scratch.solids.theta[a];
+    }
 
     // The drone: one body of the model in a world of its own, without
     // geometry. Gravity is the world's, though the hold sets the body each step.
@@ -457,6 +499,11 @@ Result<void> LiveRun::step(const Controls& controls) {
                   af::describe(health, r.resolved.base);
         return std::unexpected(Error{Code::internal, r.fault});
     }
+    if (r.solids.any) {
+        // L6: an unconverged pressure is announced (run_line()), never refused.
+        r.solids.pressure_residual = health.pressure_residual;
+        if (health.unconverged) ++r.solids.unconverged_steps;
+    }
 
     ++r.state.steps;
     r.state.t_s = seconds(r.state.steps * r.h_ns);
@@ -502,6 +549,7 @@ std::string LiveRun::run_label() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
+    if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
     }
@@ -509,8 +557,15 @@ std::string LiveRun::run_label() const {
 }
 
 std::string LiveRun::run_line() const {
-    return run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+    std::string out = run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+    if (const LiveSolids& s = impl_->solids; s.unconverged_steps > 0) {
+        out += std::format(" \xc2\xb7 pressure unconverged on {} steps (last max|r|/max|b| {:.1e})",
+                           s.unconverged_steps, s.pressure_residual);
+    }
+    return out;
 }
+
+const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 

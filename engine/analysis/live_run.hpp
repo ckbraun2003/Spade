@@ -26,7 +26,15 @@
 // announced in the state and on the run's label, never refused. A model with
 // rotors needs its propulsion; it comes beside the model until Core's model
 // file carries the chain and the case its idle and state of charge (the
-// chain pin). The solids join with P2.
+// chain pin).
+//
+// SOLIDS (P2; D1). The model's rigid parts (PartFilter::rigid_only: a
+// rotor's own parts are the disc's to model) are posed once, at the hover,
+// and handed to set_solids() through vehicles::AirflowSolids. With any, the
+// pressure takes kSolidsCgIterations, the published volume masks the cells
+// inside them (P6), and each step's pressure residual is kept, an
+// unconverged one counted and announced (L6), never refused. A part the
+// grid can't hold is refused by start(), by name, before a step.
 //
 // Long calls: start() and advance_frame(). A host runs them off its GUI
 // thread. A LiveRun is used from one thread at a time.
@@ -82,6 +90,15 @@ struct LiveState {
     bool armed = false;
     std::vector<float> rotor_omega;  // rad/s, in the model's rotor order
     uint32_t propulsion_flags = 0;   // the last command's propulsion_flags: limits, announced
+};
+
+// What a run's solids are (LiveRun::solids()).
+struct LiveSolids {
+    bool any = false;                 // the model's rigid parts are in the grid
+    std::string run_line;             // set_solids()' own line: parts, walls, sheets, leaks
+    uint32_t solid_cells = 0;         // the grid's solid cells: the mask the volume publishes with
+    float pressure_residual = 0.0f;   // the last step's max|r| / max|b|; 0 without solids
+    uint64_t unconverged_steps = 0;   // steps whose residual was past 1e-4, since start
 };
 
 struct LiveFrame {
@@ -142,12 +159,18 @@ class LiveRun {
     // model without rotors.
     [[nodiscard]] std::span<const vehicles::RotorRow> rotor_rows() const noexcept;
 
+    // The run's solids: whether the model's parts are in the grid, what
+    // set_solids() made of them, and the pressure's residual.
+    [[nodiscard]] const LiveSolids& solids() const noexcept;
+
     // The caption without the time: the rotor model, the grid, dx and R/dx,
-    // then any limit the propulsion is at, for example "actuator disc ·
+    // then set_solids()' line when the parts are in the grid, then any
+    // limit the propulsion is at, for example "actuator disc ·
     // 128³, dx 12.5 mm, R/dx 6 · motors at their current limit" (UTF-8).
     [[nodiscard]] std::string run_label() const;
 
-    // run_label(), then " · t = 0.250 s".
+    // run_label(), then " · t = 0.250 s", then how many steps the pressure
+    // was unconverged on, when any were.
     [[nodiscard]] std::string run_line() const;
 
     // The controls flown so far, a point wherever they changed: the live
