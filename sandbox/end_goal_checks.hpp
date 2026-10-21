@@ -1576,8 +1576,9 @@ struct SolidsCounts {
 }
 
 // D1's floor, in a 3 m/s wind: the wake leans 0.77R off the probe by 2R and
-// covers about 40% of it, so about 0.34 is expected; 0.10 leaves 3.4 times
-// that, and is still about 1 m/s downward (2026-10-21-d1-hover-checks.md, D1-3).
+// covers about 40% of it; with the body's shade, about 0.31 is expected. 0.10
+// leaves 3.1 times that, and is still about 1 m/s downward
+// (2026-10-21-d1-hover-checks.md, D1-3).
 inline constexpr DownwashRule kDownwashPresentInWind{"downwash-present", 0.10f,
                                                      std::numeric_limits<float>::infinity(), 2.0f};
 
