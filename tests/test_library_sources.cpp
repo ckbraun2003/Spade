@@ -200,8 +200,8 @@ TEST(LibrarySources, AnUnlistedSourceIsRefusedByName) {
 
 TEST(LibrarySources, OnlyAnAssumedValueMayCiteNoSource) {
     const SourceRegistry registry = two_sources();
-    EXPECT_TRUE(check_source_ref(registry, SourceRef{"", Grade::assumed, "a typical 6S pack"}, "battery.cell_resistance")
-                    .has_value());
+    const SourceRef typical{"", Grade::assumed, "a typical 6S pack"};
+    EXPECT_TRUE(check_source_ref(registry, typical, "battery.cell_resistance").has_value());
     for (const Grade g : {Grade::measured, Grade::published, Grade::retailer, Grade::derived, Grade::fitted}) {
         expect_refused(check_source_ref(registry, SourceRef{"", g, "a note"}, "motor.kv"), Code::invalid_argument,
                        {"motor.kv", "cites no source", grade_name(g)});
