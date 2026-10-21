@@ -263,6 +263,9 @@ add_executable(spade_tests
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
+# test_gpu_airflow_runner.cpp (plan B, B1): the airflow chain runner
+# (spike/airflow, spade_airflow_runner, linked below) and its test kernels;
+# GpuAirflowRunner* on the device, AirflowRunnerSpirv on the host.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -273,6 +276,7 @@ if(SPADE_VULKAN)
         test_gpu_parity.cpp
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
+        test_gpu_airflow_runner.cpp
     )
 endif()
 
@@ -487,6 +491,8 @@ if(SPADE_VULKAN)
         spade::compute
         volk
         Vulkan::Headers
+        # Plan B's chain runner and its kernels' generated headers (B1).
+        spade_airflow_runner
     )
     # Build-ORDER edge onto the D9 generators (S6 Task 3). The generated
     # headers' include DIRECTORY already arrives with spade::compute's PUBLIC
