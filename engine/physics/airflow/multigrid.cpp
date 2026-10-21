@@ -89,6 +89,25 @@ uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool,
     return cells;
 }
 
+uint64_t multigrid_faces(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool, 3> periodic) noexcept {
+    const auto faces = [](const uint32_t (&d)[3]) {
+        const uint64_t x = d[0];
+        const uint64_t y = d[1];
+        const uint64_t z = d[2];
+        return (x + 1u) * y * z + x * (y + 1u) * z + x * y * (z + 1u);
+    };
+    uint32_t n[3] = {nx, ny, nz};
+    uint64_t total = faces(n);
+    uint32_t c[3] = {};
+    while (coarser(n, periodic, c)) {
+        n[0] = c[0];
+        n[1] = c[1];
+        n[2] = c[2];
+        total += faces(n);
+    }
+    return total;
+}
+
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept {
     for (PoissonLevel& L : mg.levels) L.kind = kind;
 }

@@ -37,6 +37,10 @@ struct Multigrid {
 // allocation (each level holds p, b and r: 3 floats per cell).
 [[nodiscard]] uint64_t multigrid_cells(uint32_t nx, uint32_t ny, uint32_t nz,
                                        std::array<bool, 3> periodic = {}) noexcept;
+// The faces of every level make_multigrid() would build, in 64 bits, with no
+// allocation (set_weights() holds a weight per face on each level).
+[[nodiscard]] uint64_t multigrid_faces(uint32_t nx, uint32_t ny, uint32_t nz,
+                                       std::array<bool, 3> periodic = {}) noexcept;
 void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 
 // The face weights of every level (the solids design, section 3; a host call:

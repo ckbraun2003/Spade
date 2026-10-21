@@ -140,9 +140,15 @@ struct SolidField {
 
 [[nodiscard]] inline bool closed(float theta) noexcept { return theta == 0.0f; }
 
+// The bytes make_solid_field() allocates: per face, theta, the wall
+// velocity and phi (floats), the link index and the free-slip layer, 17 in
+// all. Not counted: what build_solids() lists along the solid surface (the
+// wall links, the fill layers).
+[[nodiscard]] uint64_t solid_field_bytes(const GridShape& shape) noexcept;
+
 // Every array sized for `shape`, every face open. capacity_exceeded past
-// kGridByteCap (16 bytes per face), invalid_argument for a shape make_grid()
-// refuses.
+// kGridByteCap (solid_field_bytes()), invalid_argument for a shape
+// make_grid() refuses.
 [[nodiscard]] Result<SolidField> make_solid_field(const GridShape& shape);
 
 // Rebuilds `field` from `parts` through `sample` (a host call; it allocates

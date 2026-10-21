@@ -104,12 +104,17 @@ inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
     return floats * sizeof(float);
 }
 
-// A grid at rest: every face and cell 0. Refused (invalid_argument, naming
-// what): a zero dimension; dx not positive and finite; a periodic face whose
-// opposite face is not periodic; a periodic axis of odd size other than 1,
-// since red-black colouring needs an even ring. capacity_exceeded past 2^31
-// cells, or past kGridByteCap bytes (naming both), before anything is
-// allocated.
+// Whether make_grid() takes this shape and these faces, with no allocation
+// (but a refusal's message). Refused (invalid_argument, naming what): a zero
+// dimension; dx not positive and finite; a periodic face whose opposite face
+// is not periodic; a periodic axis of odd size other than 1, since red-black
+// colouring needs an even ring. capacity_exceeded past 2^31 cells, or past
+// kGridByteCap bytes (naming both). check_grid() (fluid_step.hpp) adds the
+// domain and the step's scratch.
+[[nodiscard]] Result<void> check_shape(const GridShape& shape, const DomainBc& bc);
+
+// A grid at rest: every face and cell 0. check_shape()'s refusals, before
+// anything is allocated.
 [[nodiscard]] Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc);
 
 }  // namespace spade::physics::airflow
