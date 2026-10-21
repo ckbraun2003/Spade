@@ -54,6 +54,10 @@ inline constexpr double kStateOfCharge = 1.0;
 // live case: a shallower minimum is noise, not a core).
 inline constexpr float kVortexFraction = 1.0f / 6.0f;
 inline constexpr float kVortexFloor = -5.0f;
+// The window plays the run at a quarter of real speed, said so on screen
+// (a stated speed, Videos/CATEGORIES.md's Feature rule): the 1.2 s flown
+// would be over in 1.2 s of video otherwise.
+inline constexpr float kPlayback = 0.25f;
 
 // The library quad, as the chapter flies and draws it.
 struct LiveQuad {
