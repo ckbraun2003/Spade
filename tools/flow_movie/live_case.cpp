@@ -11,16 +11,12 @@
 #include <glm/glm.hpp>
 
 #include "analysis/live_run.hpp"  // showcase_trim()
+#include "core/path_text.hpp"
+#include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
-#include "vehicles/airframe_compile.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/propulsion_steady.hpp"
 #include "vehicles/model_identity.hpp"
-
-// The reference quad's airframe: the airframe compile's one fixture (TD-9),
-// header-only and test-framework free, until Core's model file holds it.
-// By path from here, as the tests reach it from their own directory.
-#include "../../tests/reference_airframe.hpp"
 
 namespace flow_movie {
 namespace an = spade::analysis;
@@ -116,19 +112,29 @@ spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs
 
 namespace {
 
+// The reference quad as the editor places it: the library's model file
+// (N4), its propulsion chain included (N5a).
+constexpr const char* kLibraryQuad = "library/drones/reference_quad.model.yaml";
+
 [[nodiscard]] spade::Result<LiveCase> powered_quad(double seconds, float box, float spacing, float step,
                                                    std::string name, std::string notes) {
-    const spade::vehicles::AirframeSpec spec = spade::vehicles::fixtures::reference_quad();
-    auto compiled = spade::vehicles::compile_airframe(spec);
-    if (!compiled) return std::unexpected(invalid("the reference quad does not compile: " + compiled.error().context));
-    auto chain = spade::vehicles::airframe_propulsion_chain(spec);
-    if (!chain) return std::unexpected(invalid("the reference quad has no propulsion chain: " + chain.error().context));
+    const fs::path file = fs::path(SPADE_ASSETS_DIR) / kLibraryQuad;
+    auto loaded = spade::scene::load_model_file(file);
+    if (!loaded) {
+        return std::unexpected(spade::Error{loaded.error().code, "the reference quad: " + loaded.error().context});
+    }
+    if (!loaded->model.propulsion) {
+        return std::unexpected(invalid("the reference quad: " + spade::path_text(file) +
+                                       " has no propulsion chain, which a powered case flies on"));
+    }
     LiveCase lc;
-    lc.draw_model = compiled->model;
+    lc.draw_model = std::move(loaded->model);
     lc.run_model = lc.draw_model;
     lc.run_model.parts.clear();
-    lc.propulsion = an::LivePropulsion{std::move(*chain), 0.05, spec.state_of_charge};
-    lc.c.model = an::ModelRef{"the reference quad (tests/reference_airframe.hpp)",
+    // Idle 5 % and a full charge are the film's own until the case pins its
+    // chain's state (the chain pin).
+    lc.propulsion = an::LivePropulsion{*lc.run_model.propulsion, 0.05, 1.0};
+    lc.c.model = an::ModelRef{std::string("assets/") + kLibraryQuad,
                               spade::vehicles::model_identity(lc.run_model),
                               spade::vehicles::parts_identity(lc.run_model)};
     lc.c.rotors.assign(lc.run_model.rotors.size(), an::RotorSetup{});
