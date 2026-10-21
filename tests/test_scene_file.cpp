@@ -39,6 +39,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "core/path_text.hpp"
 #include "core/rng.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
@@ -48,6 +49,7 @@
 #include "world/builder.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
+#include "world/mesh_ref.hpp"
 #include "world/sdf.hpp"
 #include "world/world_file.hpp"
 
@@ -650,6 +652,11 @@ TEST(SceneFile, TheValidatorRefusesWhatTheSceneAloneDecides) {
          "visual"},
         {"a mesh without a visual material", [](SceneDesc& s) { s.assets[0].visual.material.clear(); },
          "visual"},
+        // The mesh_ref rule (N3; world/mesh_ref.hpp), the per-asset rules'.
+        {"a visual mesh_ref with a scheme", [](SceneDesc& s) { s.assets[0].visual.mesh_ref = "mesh:r"; },
+         "asset 'a': visual mesh_ref 'mesh:r' is not a valid mesh_ref: it holds a ':'"},
+        {"a visual mesh_ref with an extension", [](SceneDesc& s) { s.assets[0].visual.mesh_ref = "r.glb"; },
+         "visual mesh_ref 'r.glb' is not a valid mesh_ref: it holds a '.'"},
         {"an asset with neither half",
          [](SceneDesc& s) {
              s.assets[0].collider = {};
@@ -1639,6 +1646,60 @@ TEST(SceneWorldHash, TwoDifferentWorldsHashDifferently) {
     const spade::Result<uint64_t> n = spade::scene::world_hash(nudged);
     ASSERT_OK(n);
     EXPECT_NE(*g, *n);
+}
+
+// ===========================================================================
+// N3: the committed worlds and scenes follow the mesh_ref rule
+// ===========================================================================
+
+// THE MESH_REF RULE OVER WHAT IS COMMITTED (N3; the lead's ruling, TD-9: one
+// rule, world/mesh_ref.hpp). Every *.world.yaml and *.scene.yaml under assets/
+// and tests/golden/ -- the repository's only homes for them -- loads, and
+// every visual ref it holds (a world's visuals and props, a scene's asset
+// visuals) is a mesh_ref. The counts are floors, so a walk that finds nothing
+// cannot pass.
+TEST(SceneFile, EveryCommittedWorldAndSceneFollowsTheMeshRefRule) {
+    std::size_t worlds = 0;
+    std::size_t scenes = 0;
+    std::size_t refs = 0;
+    for (const char* root : {SPADE_ASSETS_DIR, SPADE_GOLDEN_DIR}) {
+        std::vector<std::filesystem::path> files;
+        for (const std::filesystem::directory_entry& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.is_regular_file()) files.push_back(entry.path());
+        }
+        std::sort(files.begin(), files.end());
+        for (const std::filesystem::path& path : files) {
+            const std::string file = spade::path_text(path);
+            const auto expect_ref = [&](const std::string& ref, const std::string& where) {
+                ++refs;
+                EXPECT_TRUE(spade::valid_mesh_ref(ref))
+                    << file << ": " << where << " '" << ref << "': " << spade::mesh_ref_problem(ref);
+            };
+            if (file.ends_with(".world.yaml")) {
+                ++worlds;
+                const spade::Result<WorldDesc> world = spade::load_world_file(path);
+                EXPECT_OK(world);
+                if (!world) continue;
+                for (std::size_t i = 0; i < world->visual_refs.size(); ++i) {
+                    expect_ref(world->visual_refs[i], "visual reference " + std::to_string(i));
+                }
+                for (std::size_t i = 0; i < world->props.size(); ++i) {
+                    expect_ref(world->props[i].mesh_ref, "prop " + std::to_string(i) + " mesh_ref");
+                }
+            } else if (file.ends_with(".scene.yaml")) {
+                ++scenes;
+                const spade::Result<SceneDesc> scene = spade::scene::load_scene_file(path);
+                EXPECT_OK(scene);
+                if (!scene) continue;
+                for (const SceneAsset& a : scene->assets) {
+                    if (!a.visual.mesh_ref.empty()) expect_ref(a.visual.mesh_ref, "asset '" + a.name + "' visual");
+                }
+            }
+        }
+    }
+    EXPECT_GE(worlds, 21u) << "assets/worlds and tests/golden/worlds";
+    EXPECT_GE(scenes, 16u) << "assets/scenes and tests/golden/scenes";
+    EXPECT_GE(refs, 8u) << "maximal.world.yaml's five and gate_run.scene.yaml's three";
 }
 
 }  // namespace

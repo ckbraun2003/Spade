@@ -220,12 +220,15 @@ struct WorldDesc {
     Environment environment{};
     Capacities capacities{};
 
-    // RENDER-ONLY references (mesh/material ids the presentation layer
-    // resolves). Physics never reads these -- no pass, no digest, no snapshot
-    // touches them -- and the only thing validation asks is that each one is
-    // non-empty. They live here rather than in a parallel side table because
-    // the world file is one document: a world's visuals travel with the world
-    // that owns them, and a loader that dropped them would not round-trip.
+    // RENDER-ONLY references (meshes the presentation layer resolves).
+    // Physics never reads these -- no pass, no digest, no snapshot touches
+    // them -- and validation asks only that each one is a mesh_ref
+    // (world/mesh_ref.hpp, N3), as a prop's mesh_ref and a scene visual's are:
+    // Rendering's resolver looks every one up as a mesh. Before N3 any
+    // non-empty string passed. They live here rather than in a parallel side
+    // table because the world file is one document: a world's visuals travel
+    // with the world that owns them, and a loader that dropped them would not
+    // round-trip.
     std::vector<std::string> visual_refs;
 
     // Material palette, world lighting and mesh props (schema v2). See the
@@ -264,14 +267,16 @@ struct WorldDesc {
 // Codes:
 //   invalid_argument  -- capacity == 0, unnamed/duplicate spawn point,
 //                        non-finite or non-unit spawn pose, non-finite
-//                        environment, empty visual reference, malformed SDF
+//                        environment, an empty visual reference or one that
+//                        is not a mesh_ref (world/mesh_ref.hpp), malformed SDF
 //                        postfix, bad node parameters, an empty materials
 //                        palette, a material with an empty name or an
 //                        unknown shading value, a non-finite material/
 //                        lighting value, a zero lighting.sun_direction, a
-//                        prop with an empty mesh_ref or a non-finite/non-
-//                        unit/non-positive pose, or a materials/
-//                        node_materials/prop material index out of range
+//                        prop with an empty mesh_ref, one that is not a
+//                        mesh_ref, or a non-finite/non-unit/non-positive
+//                        pose, or a materials/node_materials/prop material
+//                        index out of range
 //   capacity_exceeded -- SDF program deeper than kMaxSdfDepth
 //
 // It does NOT normalize anything. A loader that re-normalized a spawn
@@ -301,8 +306,9 @@ public:
     WorldBuilder& spawn(std::string spawn_name, glm::vec3 position,
                         glm::quat orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
 
-    // A render-only reference carried with the world (WorldDesc::visual_refs).
-    // Rejected empty; otherwise opaque to the engine.
+    // A render-only reference carried with the world (WorldDesc::visual_refs):
+    // a mesh_ref (world/mesh_ref.hpp). Rejected empty here; build() refuses one
+    // the rule does not accept, as it does a prop's.
     WorldBuilder& visual(std::string ref);
 
     // --- SDF primitives (each pushes one node) -----------------------------

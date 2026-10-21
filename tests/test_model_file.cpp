@@ -1107,6 +1107,36 @@ TEST(AddModel, ABadModelOrNameIsRefusedAndTheSceneIsUnchanged) {
     }
 }
 
+// A MODEL WITH MESH PARTS IS REFUSED (N3, the lead's ruling): its parts' mesh_file
+// paths are relative to the MODEL file, and a scene reads them relative to the
+// SCENE file, so placing one would need its sidecars copied beside the scene --
+// not yet supported. Refused by name, the scene unchanged; a model whose parts
+// are all SDF parts is placed as before.
+TEST(AddModel, AModelWithMeshPartsIsRefusedAndTheSceneIsUnchanged) {
+    SceneDesc scene = stage();
+    const std::optional<ModelFile> reference = reference_model_file();
+    ASSERT_TRUE(reference.has_value());
+    ModelFile meshed = *reference;
+    PartDesc hull = mesh_part(tetra_mesh(0.25), kSidecar);
+    hull.name = "imported_hull";
+    meshed.model.parts.push_back(hull);
+    ASSERT_OK(spade::scene::validate_model_file(meshed)) << "a valid model file: the refusal is add_model's own";
+    const std::string before = text_of(scene);
+
+    const spade::Result<void> r = spade::scene::add_model(scene, meshed, "quad_ref_1");
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+    EXPECT_EQ(r.error().context, "add_model: model '" + meshed.model.name +
+                                     "' has mesh parts; their sidecars would need copying beside the scene, which "
+                                     "is not yet supported");
+    EXPECT_EQ(text_of(scene), before);
+    EXPECT_EQ(scene.models.size(), 1u);
+
+    // Its SDF parts alone are placed.
+    ASSERT_OK(spade::scene::add_model(scene, *reference, "quad_ref_1"));
+    EXPECT_EQ(scene.models.size(), 2u);
+}
+
 TEST(AddModel, ThePlacedChainSurvivesTheScenesText) {
     // The editor's "propulsion-kept" check, end to end: a library model file's
     // text, read, added to a scene, written as the scene's text and read back.

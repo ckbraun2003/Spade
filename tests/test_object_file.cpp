@@ -48,6 +48,7 @@
 #include "unique_temp.hpp"
 #include "vehicles/model_type.hpp"
 #include "world/builder.hpp"
+#include "world/mesh_ref.hpp"
 #include "world/sdf.hpp"
 
 namespace {
@@ -747,6 +748,46 @@ TEST(ObjectFile, ABadAssetIsRefusedWithTheScenesMessage) {
     const spade::Result<ObjectFile> read =
         spade::scene::object_from_yaml(with(std::string(kPinnedText), "  name: \"ball\"\n", "  name: \"\"\n"));
     EXPECT_EQ(why(read), "object has no name");
+}
+
+// THE MESH_REF RULE (N3; the lead's ruling, TD-9: one rule, world/mesh_ref.hpp).
+// A non-empty visual mesh_ref is one mesh_ref_problem() accepts: a per-asset
+// rule, so the scene's and the object file's alike, word for word, naming the
+// asset, the ref and the problem. An empty mesh_ref (with an empty material)
+// is no visual.
+TEST(ObjectFile, AVisualMeshRefFollowsTheMeshRefRule) {
+    for (const std::string ref : {"mesh:props/ball", "props/ball.glb", "../props/ball", "props\\ball", "/props/ball",
+                                  "props//ball", "props/big ball", "props/CON"}) {
+        SCOPED_TRACE(ref);
+        ASSERT_FALSE(spade::mesh_ref_problem(ref).empty()) << "the rule refuses it";
+        ObjectFile file = ball_object();
+        file.object.visual.mesh_ref = ref;
+        const std::string expected = "asset 'ball': visual mesh_ref '" + ref +
+                                     "' is not a valid mesh_ref: " + std::string(spade::mesh_ref_problem(ref));
+        EXPECT_EQ(why(spade::scene::validate_object_file(file)), expected);
+        EXPECT_EQ(why(spade::scene::validate_scene(scene_of(file.object))), expected) << "the scene's rule";
+        EXPECT_EQ(why(spade::scene::object_to_yaml(file)), expected) << "the writer validates first";
+    }
+
+    // The reader runs it too.
+    const spade::Result<ObjectFile> read = spade::scene::object_from_yaml(
+        with(std::string(kPinnedText), "mesh_ref: \"props/ball\"", "mesh_ref: \"mesh:props/ball\""));
+    ASSERT_FALSE(read);
+    EXPECT_EQ(read.error().code, spade::Code::invalid_argument);
+    EXPECT_EQ(why(read),
+              "asset 'ball': visual mesh_ref 'mesh:props/ball' is not a valid mesh_ref: it holds a ':', as a drive "
+              "or a scheme would");
+
+    // What the rule accepts passes, and an empty visual is none.
+    for (const std::string ref : {"props/ball", "ball", "gates/frame_2000", "a-b/c_d/E9"}) {
+        SCOPED_TRACE(ref);
+        ObjectFile file = ball_object();
+        file.object.visual.mesh_ref = ref;
+        EXPECT_OK(spade::scene::validate_object_file(file));
+    }
+    ObjectFile bare = ball_object();
+    bare.object.visual = {};
+    EXPECT_OK(spade::scene::validate_object_file(bare));
 }
 
 // ===========================================================================

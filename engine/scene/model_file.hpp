@@ -116,17 +116,23 @@ struct ModelFile {
 // Registers file.model in `scene` as `model_name` (the editor's per-vehicle
 // copy, EDT-019), its chain with it: the chain is part of the model. ALL OR
 // NOTHING: a copy, validate_scene() on it, assigned only on success.
-// Refused by name: a model_name the scene's models already use (it never
-// renames; the editor makes names unique), and anything validate_model_file()
-// or validate_scene() refuses.
+// Refused by name: a model with mesh parts (below), a model_name the scene's
+// models already use (it never renames; the editor makes names unique), and
+// anything validate_model_file() or validate_scene() refuses.
 //
 // The model's own name is not its scene name: model_name replaces it, and
 // model_identity() folds the name, so the copy's model_identity is the
 // renamed model's (parts_identity and propulsion_identity fold no name, so
 // they are the file's). Another namespace's name -- an asset's, a vehicle's,
-// a material's -- is free for a model (SCN-004). A mesh part's mesh_file is
-// copied as written: it named the sidecar relative to the model file's
-// directory, and in the scene it is read relative to the scene file's.
+// a material's -- is free for a model (SCN-004).
+//
+// A MODEL WITH MESH PARTS IS REFUSED (N3, the lead's ruling), the scene
+// unchanged: "add_model: model '<name>' has mesh parts; their sidecars would
+// need copying beside the scene, which is not yet supported", <name> the
+// file's model's own name. A mesh part's mesh_file names its sidecar
+// relative to the model file's directory, and a scene reads it relative to
+// the scene file's, so placing one needs its sidecars copied beside the
+// scene first.
 [[nodiscard]] Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name);
 
 }  // namespace spade::scene

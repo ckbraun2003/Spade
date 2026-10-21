@@ -24,6 +24,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "core/error.hpp"
+#include "scene/detail/relative_path.hpp"  // relative_path_problem
 #include "vehicles/model_type.hpp"
 #include "vehicles/propulsion_steady.hpp"
 
@@ -44,10 +45,8 @@ struct ModelBlockFormat {
     std::string_view kind{};
 };
 
-// What is wrong with `file` as a path relative to the <kind> file's directory
-// with forward slashes (a world's file, a mesh part's sidecar), or empty.
-// `file` is not empty.
-[[nodiscard]] std::string relative_path_problem(std::string_view file, std::string_view kind);
+// relative_path_problem(), the rule for a mesh part's sidecar path, is
+// detail/relative_path.hpp's (shared with the library index, N3).
 
 // One model's keys, in ModelType's text order. The first line (`name`) starts
 // with `lead` and every other key with `indent`, both the same width, so a

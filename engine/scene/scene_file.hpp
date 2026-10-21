@@ -163,9 +163,10 @@ struct SceneDesc {
 //   - assets: a finite pose with scale > 0 and a unit orientation; a collider
 //     that SdfProgram::validate() accepts, with no indices in node_materials
 //     and collider_materials empty or one non-empty name per node, and no
-//     transforms without nodes; a visual with both names or neither; and at
-//     least one of the two halves. These per-asset rules are the object
-//     file's too, one function for both (scene/object_file.hpp, TD-9);
+//     transforms without nodes; a visual with both names or neither, its
+//     mesh_ref one world/mesh_ref.hpp's rule accepts (N3); and at least one
+//     of the two halves. These per-asset rules are the object file's too,
+//     one function for both (scene/object_file.hpp, TD-9);
 //   - vehicles: a model the scene declares, and a start with a finite state,
 //     a unit orientation and rotor_omega >= 0.
 // capacity_exceeded passes through from a collider deeper than kMaxSdfDepth.

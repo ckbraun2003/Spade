@@ -26,6 +26,7 @@
 #include "world/detail/yaml_text.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
+#include "world/mesh_ref.hpp"
 #include "world/world_file.hpp"
 
 namespace spade::scene {
@@ -1328,6 +1329,15 @@ Result<void> detail::validate_asset(const SceneAsset& a, std::string_view unname
     const bool has_mesh = !a.visual.mesh_ref.empty();
     if (has_mesh != !a.visual.material.empty()) {
         return std::unexpected(invalid(where + "a visual needs both a mesh_ref and a material name, or neither"));
+    }
+    // The mesh_ref rule (N3): world/mesh_ref.hpp's, the one rule every reader
+    // of a ref applies (TD-9), so a ref names one file under the renderer's
+    // roots on every platform.
+    if (has_mesh) {
+        if (const std::string_view problem = mesh_ref_problem(a.visual.mesh_ref); !problem.empty()) {
+            return std::unexpected(invalid(where + "visual mesh_ref '" + a.visual.mesh_ref +
+                                           "' is not a valid mesh_ref: " + std::string(problem)));
+        }
     }
     if (collider.nodes.empty() && !has_mesh) {
         return std::unexpected(invalid(where + "has neither a collider nor a visual"));

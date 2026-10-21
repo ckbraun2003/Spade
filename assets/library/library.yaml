@@ -1,0 +1,65 @@
+# =============================================================================
+# Spade's default library -- the index, schema version 1.
+#
+# WHAT THIS IS: the list of what the editor's Library panel offers and Kat's
+# builder shows: drones (model files) and everything else (object files). It
+# is HAND-WRITTEN, never a folder walk, so the order below is the order the
+# editor shows, and a test loads every entry (tests/test_library.cpp).
+# spade::scene::load_library() reads it (engine/scene/library.hpp).
+# Placing an entry COPIES it into the scene, which never refers back here.
+#
+# THE FORMAT. Two top-level keys: `library_version: 1`, then `entries:`, one
+# mapping per entry, in display order:
+#   name:      shown in the panel; non-empty, unique ignoring case.
+#   category:  free text; the editor groups by it, in the order categories
+#              first appear here. Interface owns the categories.
+#   file:      relative to this file, forward slashes, never absolute and no
+#              '..'; unique ignoring case. Its extension decides its kind:
+#              *.model.yaml is a model file (a drone, scene/model_file.hpp),
+#              *.object.yaml an object file (scene/object_file.hpp).
+#   thumbnail: OPTIONAL, an image relative to this file. Leave the key out for
+#              none; one that is named must exist.
+# Unknown, missing and duplicate keys are errors at every level, as in a
+# scene file. The object files are GENERATED (tests/test_library.cpp, with
+# SPADE_LIBRARY_WRITE set), and so is the drone (tests/test_library_quad.cpp):
+# never edit those by hand. This index is edited by hand.
+# =============================================================================
+
+library_version: 1
+
+entries:
+  - name: "Reference quad"
+    category: "drones"
+    file: "drones/reference_quad.model.yaml"
+
+  - name: "Box"
+    category: "primitives"
+    file: "primitives/box.object.yaml"
+
+  - name: "Sphere"
+    category: "primitives"
+    file: "primitives/sphere.object.yaml"
+
+  - name: "Cylinder"
+    category: "primitives"
+    file: "primitives/cylinder.object.yaml"
+
+  - name: "Capsule"
+    category: "primitives"
+    file: "primitives/capsule.object.yaml"
+
+  - name: "Gate"
+    category: "obstacles"
+    file: "obstacles/gate.object.yaml"
+
+  - name: "Floor tile"
+    category: "floors"
+    file: "floors/floor_tile.object.yaml"
+
+  - name: "Pole"
+    category: "obstacles"
+    file: "obstacles/pole.object.yaml"
+
+  - name: "Wall"
+    category: "obstacles"
+    file: "obstacles/wall.object.yaml"

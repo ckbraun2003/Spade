@@ -228,9 +228,12 @@ template <class T>
                    glm::normalize(glm::quat(0.5f, 0.5f, -0.5f, 0.5f)))
             .spawn("finish", glm::vec3(4.0f, 0.75f, 7.25f),
                    glm::normalize(glm::quat(0.600000024f, 0.0f, 0.800000012f, 0.0f)))
-            .visual("mesh:track/gate_ring")
-            .visual("material:track/asphalt")
-            .visual("mesh:props/banner")
+            // Mesh refs (world/mesh_ref.hpp). Until N3 they read
+            // "mesh:track/gate_ring", "material:track/asphalt" and
+            // "mesh:props/banner": a prefix holds a ':', which the rule refuses.
+            .visual("track/gate_ring")
+            .visual("track/asphalt")
+            .visual("props/banner")
             .plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f)
             .sphere(2.5f, pose(glm::vec3(1.25f, -0.5f, 2.0f),
                                glm::normalize(glm::quat(0.600000024f, 0.800000012f, 0.0f, 0.0f)),
@@ -255,12 +258,12 @@ template <class T>
                          pose(glm::vec3(0.0f, -4.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
                               3.0f))
             .union_()
-            .prop("mesh:props/tower",
+            .prop("props/tower",
                   pose(glm::vec3(-5.0f, 0.0f, -5.0f),
                        glm::normalize(glm::quat(0.899999976f, 0.0f, 0.400000006f, 0.0f)), 1.20000005f),
                   1)
-            .prop("mesh:props/flag", pose(glm::vec3(5.0f, 0.5f, -5.0f),
-                                          glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.800000012f),
+            .prop("props/flag", pose(glm::vec3(5.0f, 0.5f, -5.0f),
+                                     glm::quat(1.0f, 0.0f, 0.0f, 0.0f), 0.800000012f),
                   2)
             .union_()
             .build();
@@ -1353,7 +1356,7 @@ TEST(WorldFileRejects, ZeroSunDirectionViaYamlIsInvalid) {
 TEST(WorldFileRejects, UnknownKeyInsideAPropsEntry) {
     const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
         kMinimalWorldV2, "props: []",
-        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "props:\n  - {mesh_ref: \"props/a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
         "scale: 1, material: 0, cast_shadow: true}"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "unknown key 'cast_shadow'")) << why(world);
@@ -1372,10 +1375,61 @@ TEST(WorldFileRejects, PropWithEmptyMeshRefIsInvalid) {
 TEST(WorldFileRejects, PropMaterialIndexOutOfRangeViaYamlIsInvalid) {
     const spade::Result<WorldDesc> world = spade::world_from_yaml(replace_first(
         kMinimalWorldV2, "props: []",
-        "props:\n  - {mesh_ref: \"mesh:a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+        "props:\n  - {mesh_ref: \"props/a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
         "scale: 1, material: 9}"));
     EXPECT_EQ(code_of(world), code(spade::Code::invalid_argument));
     EXPECT_TRUE(contains(why(world), "material index out of range")) << why(world);
+}
+
+// THE MESH_REF RULE (N3; the lead's ruling, TD-9: one rule, world/mesh_ref.hpp).
+// A world's visual references and its props' mesh_refs are mesh_refs, as
+// Rendering's resolver reads every one of them (render/mesh_resolver.hpp) and
+// as a scene's visuals are. validate_world_desc() refuses another, so build()
+// and the loader both do, naming the entry, the ref and mesh_ref_problem()'s
+// words. An empty one keeps its own message.
+TEST(WorldFileRejects, AVisualReferenceOrAPropMeshRefFollowsTheMeshRefRule) {
+    const auto builder = [] {
+        return WorldBuilder().name("v").environment(Environment{}).capacities(Capacities{1, 1, 1, 1});
+    };
+    const spade::Result<WorldDesc> visual = builder().visual("props/a").visual("mesh:props/b").build();
+    EXPECT_EQ(code_of(visual), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(visual),
+              "visual reference 1 'mesh:props/b' is not a valid mesh_ref: it holds a ':', as a drive or a scheme "
+              "would");
+
+    const spade::Result<WorldDesc> prop =
+        builder().prop("props/a", SdfPose{}, 0).prop("props/b.glb", SdfPose{}, 0).build();
+    EXPECT_EQ(code_of(prop), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(prop),
+              "prop 1 mesh_ref 'props/b.glb' is not a valid mesh_ref: it holds a '.': a mesh_ref names no extension "
+              "(.spmesh is added)");
+
+    // The loader runs the same validation.
+    const spade::Result<WorldDesc> prop_text = spade::world_from_yaml(replace_first(
+        kMinimalWorldV2, "props: []",
+        "props:\n  - {mesh_ref: \"../a\", position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1, "
+        "material: 0}"));
+    EXPECT_EQ(code_of(prop_text), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(prop_text), "prop 0 mesh_ref '../a' is not a valid mesh_ref: it has a '.' or '..' segment");
+    const spade::Result<WorldDesc> visual_text =
+        spade::world_from_yaml(replace_first(kMinimalWorldV2, "visuals: []", "visuals:\n  - \"track/CON\""));
+    EXPECT_EQ(code_of(visual_text), code(spade::Code::invalid_argument));
+    EXPECT_EQ(why(visual_text),
+              "visual reference 0 'track/CON' is not a valid mesh_ref: it has a segment Windows reserves for a "
+              "device (CON, PRN, AUX, NUL, COM1-9, LPT1-9)");
+
+    // What the rule accepts loads, and an empty one keeps its own message.
+    ASSERT_OK(builder().visual("track/gate_ring").prop("props/tower", SdfPose{}, 0).build());
+    ASSERT_OK(spade::world_from_yaml(replace_first(
+        replace_first(kMinimalWorldV2, "visuals: []", "visuals:\n  - \"track/gate_ring\""), "props: []",
+        "props:\n  - {mesh_ref: \"props/tower\", position: [0, 0, 0], orientation: [1, 0, 0, 0], scale: 1, "
+        "material: 0}")));
+    EXPECT_EQ(why(builder().visual("").build()), "visual reference must not be empty");
+    EXPECT_TRUE(contains(why(spade::world_from_yaml(replace_first(
+                             kMinimalWorldV2, "props: []",
+                             "props:\n  - {mesh_ref: \"\", position: [0, 0, 0], orientation: [1, 0, 0, 0], "
+                             "scale: 1, material: 0}"))),
+                         "prop 0 has an empty mesh_ref"));
 }
 
 TEST(WorldFileRejects, ErrorsFromLoadCarryTheFilePath) {
@@ -1501,13 +1555,13 @@ TEST(WorldFile, VisualRefsAreRenderOnlyAndValidatedNonEmpty) {
                                             .name("v")
                                             .environment(Environment{})
                                             .capacities(Capacities{1, 1, 1, 1})
-                                            .visual("mesh:a")
-                                            .visual("mesh:b")
+                                            .visual("props/a")
+                                            .visual("props/b")
                                             .build();
     ASSERT_OK(ok);
     ASSERT_EQ(ok->visual_refs.size(), 2u);
-    EXPECT_EQ(ok->visual_refs[0], "mesh:a");
-    EXPECT_EQ(ok->visual_refs[1], "mesh:b");
+    EXPECT_EQ(ok->visual_refs[0], "props/a");
+    EXPECT_EQ(ok->visual_refs[1], "props/b");
 }
 
 // ===========================================================================

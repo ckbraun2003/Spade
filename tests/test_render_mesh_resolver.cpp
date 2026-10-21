@@ -164,12 +164,15 @@ TEST(MeshResolver, ACorruptSidecarIsNamedWithTheReadersRefusal) {
 }
 
 // A ref that could leave its root is never looked up: a sidecar where
-// "../escape" would lead is not read.
+// "../escape" would lead is not read. Since N3 validate_world_desc() refuses
+// such a ref, so build() and the loader never hand one over; the world here
+// is edited after build(), as a WorldDesc that skipped validation would be.
 TEST(MeshResolver, APathLikeRefIsNeverLookedUp) {
     const TempDir outer("mesh_resolver_outer");
     save(outer.path() / "escape.spmesh", cube(1.0));
     fs::create_directories(outer.path() / "root");
-    const spade::WorldDesc world = world_with_props({"../escape"});
+    spade::WorldDesc world = world_with_props({"escape"});
+    world.props[0].mesh_ref = "../escape";
     const fs::path roots[] = {outer.path() / "root"};
     const ResolvedMeshes r = spade::render::resolve_meshes(world, roots);
     ASSERT_EQ(r.unresolved.size(), 1u);

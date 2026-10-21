@@ -977,9 +977,14 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 # materials it brings) and add_object(), the one way to place one: the scene's
 # per-asset block, shared through scene/detail/asset_block.hpp, beside the
 # model file for the same reasons. tests/consumer round-trips and places one.
+#
+# scene/library.cpp is the default library's index reader (N3: library.yaml,
+# its entries' model and object files), installed with the rest of scene/ for
+# Kat's builder; it parses YAML, so it has the same links.
 # ------------------------------------------------------------------------------
 add_library(spade_scene STATIC
     scene/compose.cpp
+    scene/library.cpp
     scene/model_file.cpp
     scene/object_file.cpp
     scene/scene_file.cpp

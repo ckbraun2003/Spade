@@ -55,7 +55,9 @@ void emit_asset(std::string& out, const SceneAsset& a, std::string_view lead, st
 // accepts and the SDF text encoding can carry (check_sdf_representable, blamed
 // on `schema`), with no indices in node_materials, collider_materials empty or
 // one non-empty name per node, and no transforms without nodes; a visual with
-// both names or neither; and at least one of the two halves. invalid_argument
+// both names or neither, its mesh_ref one world/mesh_ref.hpp's rule accepts
+// (N3: "visual mesh_ref '<ref>' is not a valid mesh_ref: <problem>"); and at
+// least one of the two halves. invalid_argument
 // naming the asset ("asset '<name>': ..."); capacity_exceeded passes through
 // from a collider deeper than kMaxSdfDepth. Whether the name is unique is the
 // scene's to decide, not the asset's.
