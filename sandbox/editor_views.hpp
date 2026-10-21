@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <utility>
 #include <vector>
@@ -157,6 +158,23 @@ namespace detail {
     view.base_legend = render::base_legend(view.spec, scene);
     view.refusal.clear();
     return {};
+}
+
+// A flow layer's legend as the toolbar shows it: the quantity and the range
+// its colours span ("C_p -1.25 to 0.8", "speed |u| 0 to 9.96 m/s"), and
+// what the colour may claim (ViewLegend::note), verbatim; empty when the
+// quantity says it all.
+struct LegendLine {
+    std::string scale;
+    std::string note;
+};
+
+[[nodiscard]] inline LegendLine legend_line(const render::ViewLegend& legend) {
+    LegendLine line;
+    line.scale = std::format("{} {:.3g} to {:.3g}", legend.quantity, legend.range.min, legend.range.max);
+    if (!legend.unit.empty()) line.scale += " " + legend.unit;
+    line.note = legend.note;
+    return line;
 }
 
 }  // namespace spade::sandbox::editor

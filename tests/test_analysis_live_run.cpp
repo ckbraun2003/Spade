@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -24,7 +25,10 @@
 #include "sim/design_frame.hpp"
 #include "state/layout.hpp"
 #include "analysis_powered_quad.hpp"
+#include "unique_temp.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/model_part.hpp"
+#include "world/sdf.hpp"
 #include "vehicles/propulsion_flags.hpp"
 
 namespace {
@@ -380,4 +384,119 @@ TEST(AnalysisLiveRun, RecordsTheControlsItFlew) {
     EXPECT_FLOAT_EQ(flown.points[1].t_s, 0.02f);  // the controls in force from the 6th step
     EXPECT_TRUE(flown.points[1].controls.armed);
     EXPECT_TRUE(an::program_issues(flown).empty());
+}
+
+// ===========================================================================
+// SOLIDS (P2, D1's critical path): the model's rigid parts in the air, posed
+// once at the hover; set_solids() and the pressure's CG count are the run's,
+// and the published volume masks the cells inside them (P6).
+// ===========================================================================
+
+namespace {
+
+// The powered quad with one body part: a ball of radius `radius` declaring
+// `feature` as its smallest feature.
+[[nodiscard]] Powered with_ball_body(float radius, float feature) {
+    Powered p = powered();
+    spade::vehicles::PartDesc ball;
+    ball.name = "body";
+    ball.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(radius, 0.0f, 0.0f, 0.0f);
+    ball.shape.nodes = {n};
+    ball.min_feature = feature;
+    p.model.parts = {ball};
+    return p;
+}
+
+// One armed frame at half throttle, its refusal named.
+void armed_frame(an::LiveRun& run, spade::FlowVolume& v) {
+    const spade::Result<an::LiveFrame> f = run.advance_frame(an::Controls{true, 0.5f, 0, 0, 0}, v);
+    ASSERT_TRUE(f.has_value()) << f.error().context;
+}
+
+// tiny_case()'s 0.8 m box (the discs' kernels inside it) at 40 mm cells
+// (20^3), stepped every 2 ms.
+[[nodiscard]] an::AnalysisCase solid_case(const spade::vehicles::ModelType& m) {
+    an::AnalysisCase c = tiny_case(m);
+    c.grid.spacing = 0.04f;
+    c.time.step = 0.002f;
+    return c;
+}
+
+}  // namespace
+
+// A 20 cm ball body (5 cells across) is in the air: the run says what
+// set_solids() made of it, the volume is published with its solid mask,
+// and the pressure's residual is measured. The same quad without it masks
+// nothing.
+TEST(AnalysisLiveRun, ItsPartsAreSolidsInTheAir) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    an::LiveRun run = started(solid_case(p.model), p);
+    EXPECT_TRUE(run.solids().any);
+    ASSERT_FALSE(run.solids().run_line.empty());
+    EXPECT_NE(run.run_label().find(run.solids().run_line), std::string::npos) << run.run_label();
+    spade::FlowVolume v;
+    armed_frame(run, v);
+    if (::testing::Test::HasFatalFailure()) return;
+    // Published with the mask (P6): the first solid layer is extrapolated
+    // from its fluid side, and every channel of a solid cell under it is
+    // no-data. (Measured: here all 12 of the ball's solid cells are first
+    // layer, so the no-data count is 0.)
+    EXPECT_GT(run.solids().solid_cells, 0u);
+    EXPECT_GT(v.header.extrapolated_cells, 0u) << "the volume was published without the solid mask";
+    ASSERT_GE(run.solids().solid_cells, v.header.extrapolated_cells);
+    EXPECT_EQ(v.header.no_data, spade::kFlowChannelCount * (run.solids().solid_cells - v.header.extrapolated_cells));
+    EXPECT_GT(run.solids().pressure_residual, 0.0f);
+    EXPECT_TRUE(std::isfinite(run.solids().pressure_residual));
+
+    const Powered bare = powered();
+    an::LiveRun plain = started(solid_case(bare.model), bare);
+    EXPECT_FALSE(plain.solids().any);
+    EXPECT_EQ(plain.solids().solid_cells, 0u);
+    EXPECT_EQ(plain.run_label().find("solids"), std::string::npos) << plain.run_label();
+    spade::FlowVolume w;
+    armed_frame(plain, w);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(w.header.no_data, 0u);
+    EXPECT_EQ(plain.solids().pressure_residual, 0.0f);
+}
+
+// A part thinner than it declares passes the case (resolve() reads the
+// declaration) and is refused by set_solids(), naming the part, before a
+// step.
+TEST(AnalysisLiveRun, APartThinnerThanItDeclaresIsRefusedByName) {
+    const Powered p = with_ball_body(0.005f, 0.1f);
+    const spade::Result<an::LiveRun> run =
+        an::LiveRun::start(resolved(solid_case(p.model), p.model), p.model, p.propulsion);
+    ASSERT_FALSE(run.has_value());
+    EXPECT_NE(run.error().context.find("'body'"), std::string::npos) << run.error().context;
+    EXPECT_NE(run.error().context.find("the model's parts as solids"), std::string::npos) << run.error().context;
+}
+
+// A restored run rebuilds its solids at the hover and gives the frame an
+// unbroken one does.
+TEST(AnalysisLiveRun, ARestoredRunKeepsItsSolids) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const an::AnalysisCase c = solid_case(p.model);
+    an::LiveRun run = started(c, p);
+    spade::FlowVolume v;
+    armed_frame(run, v);
+    if (::testing::Test::HasFatalFailure()) return;
+    const spade::test::TempDir dir("live_solids");
+    const fs::path file = dir.path() / "run.livesave";
+    ASSERT_TRUE(run.save(file).has_value());
+    spade::Result<an::LiveRun> back = an::LiveRun::restore(file, resolved(c, p.model), p.model, p.propulsion);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    EXPECT_EQ(back->run_label(), run.run_label());
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    armed_frame(run, a);
+    armed_frame(*back, b);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(a.header.no_data, b.header.no_data);
+    EXPECT_EQ(a.v, b.v);
+    EXPECT_EQ(a.s, b.s);
 }

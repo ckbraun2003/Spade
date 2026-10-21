@@ -236,6 +236,23 @@ void toolbar(ed::EditorPanels& p) {
             ImGui::TextDisabled("%s: %s", legend.quantity.c_str(), legend.key.c_str());
             ImGui::SameLine();
         }
+        // Each flow layer's legend: its scale, then what its colour may claim
+        // (ViewLegend::note) under a marker whose tooltip reads it verbatim,
+        // so the toolbar stays one line.
+        for (const render::ViewLegend& layer : p.legends) {
+            const ed::LegendLine line = ed::legend_line(layer);
+            ImGui::TextDisabled("%s", line.scale.c_str());
+            ImGui::SameLine();
+            if (line.note.empty()) continue;
+            ImGui::TextDisabled("(what it may claim)");
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(line.note.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+            ImGui::SameLine();
+        }
     }
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);

@@ -314,3 +314,27 @@ TEST(EditorViews, ASegmentationViewCarriesTheScenesLabels) {
     EXPECT_EQ(v.base_legend.segments.entries[0].colour, spade::render::segment_colour("crate"));
     EXPECT_EQ(v.base_legend.segments.unlabelled_items, 1u);
 }
+
+// A flow layer's legend as the toolbar shows it (the lead, 2026-10-21): the
+// quantity and the range its colours span, and what the colour may claim
+// (ViewLegend::note, Rendering's 28c0075) carried verbatim.
+TEST(EditorViews, AFlowLegendShowsItsScaleAndWhatItMayClaim) {
+    spade::render::ViewLegend cp;
+    cp.layer = spade::render::FlowView::surface_cp;
+    cp.quantity = "C_p";
+    cp.range.min = -1.25f;
+    cp.range.max = 0.8f;
+    cp.note = "the walls are not in this flow: the colour is the pressure of the flow passing through them, not a wall's";
+    const LegendLine c = legend_line(cp);
+    EXPECT_EQ(c.scale, "C_p -1.25 to 0.8");
+    EXPECT_EQ(c.note, cp.note);
+
+    spade::render::ViewLegend speed;
+    speed.quantity = "speed |u|";
+    speed.unit = "m/s";
+    speed.range.min = 0.0f;
+    speed.range.max = 9.961f;
+    const LegendLine s = legend_line(speed);
+    EXPECT_EQ(s.scale, "speed |u| 0 to 9.96 m/s");
+    EXPECT_TRUE(s.note.empty());
+}
