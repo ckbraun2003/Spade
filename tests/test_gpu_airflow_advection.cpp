@@ -65,7 +65,12 @@ constexpr float kStepS = 0.01f;
 
 // The band, relative to the field's largest speed (plan B: 4x the largest
 // measurement, at least 4 ulps; the target 1e-4, past 1e-3 a grade change).
-// Measured 2026-10-21: see the [ advection ] lines.
+// Measured 2026-10-21 on an NVIDIA GeForce RTX 3060 Ti, on B1's runner: every
+// pass bit-equal to advect.cpp on both boxes (0 of 12272 faces differ), so
+// the band is the floor. The periodic wrap's division rounds differently on
+// some devices; the floor leaves it room. Red check: the correction's 1/2 as
+// 1/4 fails the backward and both-pass tests by 0.055 (clamped) and 0.30
+// (periodic) of the top speed.
 constexpr float kBandRelative = 4.0f * 0x1p-23f;
 
 // Set 1's first seven bindings: the runner binds buffers[i] at binding i.
