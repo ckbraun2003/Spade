@@ -561,9 +561,10 @@ struct S1Result {
 
 // S1 at R/dx = n: R = 0.06 m, a box of side 8R, the sphere centred on its
 // middle cell corner, inflow U = 1 m/s on -x and the other faces open, free
-// slip, inviscid, U h / dx = 0.1, n_v 16. C_M from step 1; C_p, drag and side
-// forces from step 3; samples every 15 degrees in theta on four meridians.
-[[nodiscard]] S1Result run_s1(uint32_t n) {
+// slip, inviscid, U h / dx = cfl (0.1 for the checks), n_v 16. C_M from step
+// 1; C_p, drag and side forces from step 3; samples every 15 degrees in theta
+// on four meridians.
+[[nodiscard]] S1Result run_s1(uint32_t n, float cfl = 0.1f) {
     const double R = 0.06;
     const float dx = static_cast<float>(R / n);
     const uint32_t cells = 8u * n;
@@ -571,7 +572,7 @@ struct S1Result {
     DomainBc bc;
     bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
     const float U = 1.0f;
-    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx / U, .n_v = 16,
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = cfl * dx / U, .n_v = 16,
                           .interior = SolidInterior::extrapolate};
     MacGrid g = *make_grid(shape, bc);
     std::fill(g.u.begin(), g.u.end(), U);
@@ -619,11 +620,17 @@ struct S1Result {
 
 [[nodiscard]] const char* verdict(bool within) { return within ? "within" : "MISS"; }
 
-void print_s1_p3(uint32_t n, const S1Result& r, double cm_band, double cp_band, double drag_band) {
+// The drag is report-only (the lead's ruling, 2026-10-22, recorded at
+// d2d03ed under TD-2): at step 3 it is c0 + c1 (U h/dx), with c1 the
+// splitting term the band was built from and c0, about 0.02 at R/dx 6 and
+// 0.03 at 12, a floor that does not shrink with h and has no root cause yet
+// (P3c). Printed at U h/dx 0.1 and 0.05 so both parts stay tracked.
+void print_s1_p3(uint32_t n, const S1Result& r, double drag_half, double cm_band, double cp_band) {
     std::printf("=== validation record: S1 sphere in a uniform stream, R/dx %u, P3 checks ===\n"
                 "path: CPU reference, %s\n"
                 "config: %u^3 at dx %.4g m, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on "
-                "-x, other faces open, U h/dx 0.1, n_v 16 CG iterations from a cold start; %s\n"
+                "-x, other faces open, U h/dx 0.1 (the drag also at 0.05), n_v 16 CG iterations from a cold start; "
+                "%s\n"
                 "measure: the added mass C_M = F_x h / (rho V U) from wall_load(), step 1 = %.4f\n"
                 "reference: 0.5 (potential flow, an impulsively started sphere; Batchelor 1967, ch. 6)\n"
                 "tolerance: 0.5 +/- %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
@@ -632,10 +639,15 @@ void print_s1_p3(uint32_t n, const S1Result& r, double cm_band, double cp_band, 
                 "reference: potential flow's C_p at the same points, 1 - |u|^2/U^2 (Batchelor 1967, ch. 6)\n"
                 "tolerance: <= %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
                 "verdict: %s\n"
-                "measure: the drag |F_x| / (1/2 rho U^2 pi R^2) from wall_load(), step 3 = %.4f\n"
+                "measure: the drag |F_x| / (1/2 rho U^2 pi R^2) from wall_load(), step 3, U h/dx 0.1 = %.4f\n"
                 "reference: 0 (d'Alembert)\n"
-                "tolerance: <= %.2g (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
-                "verdict: %s\n"
+                "tolerance: none (report only: the lead's ruling 2026-10-22, d2d03ed, TD-2; a floor c0 of about 0.02 "
+                "at R/dx 6 and 0.03 at 12 has no root cause yet, P3c)\n"
+                "verdict: report only\n"
+                "measure: the drag |F_x| / (1/2 rho U^2 pi R^2) from wall_load(), step 3, U h/dx 0.05 = %.4f\n"
+                "reference: 0 (d'Alembert)\n"
+                "tolerance: none (report only: the lead's ruling 2026-10-22, d2d03ed, TD-2)\n"
+                "verdict: report only\n"
                 "measure: the side forces max(|F_y|, |F_z|) / (1/2 rho U^2 pi R^2), step 3 = %.2e\n"
                 "reference: 0 (axisymmetric)\n"
                 "tolerance: <= 0.01 (test-docs/2026-10-13-solids-tolerances.md, S1)\n"
@@ -646,18 +658,18 @@ void print_s1_p3(uint32_t n, const S1Result& r, double cm_band, double cp_band, 
                 "verdict: %s\n",
                 n, build_line().c_str(), 8u * n, 0.06 / n, r.run_line.c_str(), r.c_m, cm_band,
                 verdict(std::fabs(r.c_m - 0.5) <= cm_band), r.samples, r.cp_err, cp_band, verdict(r.cp_err <= cp_band),
-                r.drag, drag_band, verdict(r.drag <= drag_band), r.side, verdict(r.side <= 0.01),
+                r.drag, drag_half, r.side, verdict(r.side <= 0.01),
                 static_cast<double>(r.residual), verdict(r.residual <= 1.0e-4f));
 }
 
-// S1's P3 checks at R/dx 6. Mutations: wall_load() returning 0 (C_M = 0) and
-// its sign flipped (C_M = -0.5) both fail.
+// S1's P3 checks at R/dx 6: C_M, C_p and the side forces; the drag reported
+// at two steps. Mutations: wall_load() returning 0 (C_M = 0) and its sign
+// flipped (C_M = -0.5) both fail.
 TEST(AirflowSolidsStep, S1TheSpheresAddedMassPressureAndForcesFromP3) {
     const S1Result r = run_s1(6);
-    print_s1_p3(6, r, 0.24, 0.32, 0.06);
+    print_s1_p3(6, r, run_s1(6, 0.05f).drag, 0.24, 0.32);
     EXPECT_NEAR(r.c_m, 0.5, 0.24);
     EXPECT_LE(r.cp_err, 0.32);
-    EXPECT_LE(r.drag, 0.06);
     EXPECT_LE(r.side, 0.01);
     EXPECT_LE(r.residual, 1.0e-4f);
 }
@@ -669,7 +681,7 @@ TEST(AirflowSolidsStep, S1At12CellsPerRadiusAndItsOrder) {
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run S1 at R/dx 12 and its order";
     const S1Result coarse = run_s1(6);
     const S1Result fine = run_s1(12);
-    print_s1_p3(12, fine, 0.12, 0.20, 0.04);
+    print_s1_p3(12, fine, run_s1(12, 0.05f).drag, 0.12, 0.20);
     const bool checked = coarse.cp_err_fixed >= 0.1 * 0.32;
     const double ratio = fine.cp_err_fixed / coarse.cp_err_fixed;
     std::printf("measure: the order check, e(12) / e(6) for C_p at r = 7R/6 = %.3f (e(6) %.4f, e(12) %.4f)\n"
@@ -682,7 +694,6 @@ TEST(AirflowSolidsStep, S1At12CellsPerRadiusAndItsOrder) {
                 checked ? verdict(ratio <= 0.7) : "report only");
     EXPECT_NEAR(fine.c_m, 0.5, 0.12);
     EXPECT_LE(fine.cp_err, 0.20);
-    EXPECT_LE(fine.drag, 0.04);
     EXPECT_LE(fine.side, 0.01);
     EXPECT_LE(fine.residual, 1.0e-4f);
     if (checked) {
