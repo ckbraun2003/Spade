@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <span>
@@ -847,6 +848,27 @@ void expect_cube(const MeshObject& o, std::string_view name, float dx) {
     EXPECT_NEAR(signed_volume(m), 1.0, 1e-12) << o.name;
 }
 
+// The cube's six faces as quads, counter-clockwise seen from outside: each
+// pair of kCubeTriangles joined along its shared diagonal.
+constexpr uint32_t kCubeQuads[6][4] = {
+    {0, 2, 3, 1},  // z = 0
+    {4, 5, 7, 6},  // z = 1
+    {0, 1, 5, 4},  // y = 0
+    {2, 6, 7, 3},  // y = 1
+    {0, 4, 6, 2},  // x = 0
+    {1, 3, 7, 5},  // x = 1
+};
+
+// The cube's quads as OBJ `f` lines (vertices 1 ... 8).
+std::string obj_quads() {
+    std::string s;
+    for (const auto& q : kCubeQuads) {
+        s += "f " + std::to_string(q[0] + 1) + " " + std::to_string(q[1] + 1) + " " + std::to_string(q[2] + 1) + " " +
+             std::to_string(q[3] + 1) + "\n";
+    }
+    return s;
+}
+
 }  // namespace
 
 TEST(MeshImport, BinaryStlWeldsItsSoup) {
@@ -1026,15 +1048,14 @@ TEST(MeshImport, ObjGroupsNameObjectsOnlyInAFileWithoutO) {
     expect_cube((*body)[0], "body", 0.0f);
 }
 
-TEST(MeshImport, ObjPolygonsAreUnavailableNamingTheLine) {
-    const spade::test::TempDir dir("mesh-import-obj-polygons");
+TEST(MeshImport, ObjUnreadElementsAreUnavailableNamingTheLine) {
+    const spade::test::TempDir dir("mesh-import-obj-elements");
     const std::string square = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
     struct Case {
         std::string text;
         std::string needle;
     };
     const std::vector<Case> cases = {
-        {square + "f 1 2 3 4\n", "line 5: a face of 4 vertices; this build reads triangles (triangulate on export)"},
         {square + "l 1 2\n", "line 5: 'l'"},
         {"# a curve\ncstype bspline\ncurv 0 1 1 2\n", "line 2: 'cstype'"},
         {square + "lod 1\n", "line 5: 'lod'"},
@@ -1090,4 +1111,106 @@ TEST(MeshImport, MalformedObjNamesTheLine) {
     const auto missing = spade::read_obj(dir.path() / "missing.obj", MeshUnit::metre);
     ASSERT_FALSE(missing.has_value());
     EXPECT_EQ(missing.error().code, Code::io_error) << missing.error().context;
+}
+
+TEST(MeshImport, ObjConvexPlanarPolygonsAreFanTriangulated) {
+    const spade::test::TempDir dir("mesh-import-obj-quads");
+    // The cube as six quads: each is two triangles, fanned from its first
+    // corner, so quad (a, b, c, d) is (a, b, c) then (a, c, d).
+    const auto cube = read_obj_text(dir, "quads.obj", obj_corners() + obj_quads());
+    ASSERT_TRUE(cube.has_value()) << cube.error().context;
+    ASSERT_EQ(cube->size(), 1u);
+    expect_cube((*cube)[0], "quads", 0.0f);
+    const TriangleMesh& m = *(*cube)[0].mesh;
+    for (std::size_t q = 0; q < 6; ++q) {
+        const uint32_t* const c = kCubeQuads[q];
+        const uint32_t fan[2][3] = {{c[0], c[1], c[2]}, {c[0], c[2], c[3]}};
+        for (std::size_t t = 0; t < 2; ++t) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                EXPECT_EQ(m.positions()[m.indices()[6 * q + 3 * t + k]], corner(fan[t][k]))
+                    << "quad " << q << " triangle " << t << " corner " << k;
+            }
+        }
+    }
+    // A hexagonal prism: two convex hexagons and six quads, 20 triangles
+    // enclosing 12 (the hexagon's area by the shoelace formula, times 1).
+    std::string prism;
+    const int hexagon[6][2] = {{2, 0}, {1, 2}, {-1, 2}, {-2, 0}, {-1, -2}, {1, -2}};
+    for (const int z : {0, 1}) {
+        for (const auto& h : hexagon) {
+            prism += "v " + std::to_string(h[0]) + " " + std::to_string(h[1]) + " " + std::to_string(z) + "\n";
+        }
+    }
+    prism += "f 6 5 4 3 2 1\nf 7 8 9 10 11 12\n";  // z = 0 seen from below, z = 1 from above
+    for (int i = 0; i < 6; ++i) {
+        const int a = i + 1;
+        const int b = (i + 1) % 6 + 1;
+        prism += "f " + std::to_string(a) + " " + std::to_string(b) + " " + std::to_string(b + 6) + " " +
+                 std::to_string(a + 6) + "\n";
+    }
+    const auto hex = read_obj_text(dir, "prism.obj", prism);
+    ASSERT_TRUE(hex.has_value()) << hex.error().context;
+    ASSERT_EQ(hex->size(), 1u);
+    EXPECT_EQ((*hex)[0].mesh->positions().size(), 12u);
+    EXPECT_EQ((*hex)[0].mesh->triangle_count(), 20u);
+    EXPECT_NEAR(signed_volume(*(*hex)[0].mesh), 12.0, 1e-12);
+}
+
+TEST(MeshImport, ObjPolygonsArePlanarWithinTheirTolerance) {
+    // The cube of quads with corner 7 raised: by 0.0004, its three quads are
+    // off their planes by about 1e-4 of their size, within kObjPlanarTolerance,
+    // and read; by 0.05, by about 9e-3, and the first of them (line 10, the
+    // z = 1 quad) is refused.
+    static_assert(spade::kObjPlanarTolerance == 1e-3);
+    const spade::test::TempDir dir("mesh-import-obj-planar");
+    const auto raised = [](std::string_view z) {
+        std::string text = obj_corners() + obj_quads();
+        text.replace(text.find("v 1 1 1\n"), 8, "v 1 1 " + std::string(z) + "\n");
+        return text;
+    };
+    const auto within = read_obj_text(dir, "near.obj", raised("1.0004"));
+    ASSERT_TRUE(within.has_value()) << within.error().context;
+    ASSERT_EQ(within->size(), 1u);
+    EXPECT_EQ((*within)[0].mesh->triangle_count(), 12u);
+    const auto beyond = read_obj_text(dir, "far.obj", raised("1.05"));
+    ASSERT_FALSE(beyond.has_value());
+    EXPECT_EQ(beyond.error().code, Code::unavailable) << beyond.error().context;
+    EXPECT_TRUE(contains(beyond.error().context, "far.obj: line 10: a face of 4 vertices that is not planar"))
+        << beyond.error().context;
+    EXPECT_TRUE(contains(beyond.error().context, "(triangulate on export)")) << beyond.error().context;
+}
+
+TEST(MeshImport, ObjPolygonsThatAreNotStrictlyConvexAreUnavailable) {
+    const spade::test::TempDir dir("mesh-import-obj-concave");
+    const auto plane = [](std::initializer_list<std::pair<int, int>> xy) {
+        std::string s;
+        for (const auto& [x, y] : xy) s += "v " + std::to_string(x) + " " + std::to_string(y) + " 0\n";
+        return s;
+    };
+    struct Case {
+        std::string text;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        // An arrow: corner 4 points in.
+        {plane({{0, 0}, {4, 0}, {4, 4}, {2, 1}, {0, 4}}) + "f 1 2 3 4 5\n",
+         "line 6: a face of 5 vertices that is not strictly convex (at corner 4)"},
+        // A bow tie: its edges cross.
+        {plane({{0, 0}, {2, 2}, {2, 0}, {0, 1}}) + "f 1 2 3 4\n", "line 5: a face of 4 vertices that is not strictly"},
+        // A straight corner: corner 2 sits on the edge from 1 to 3.
+        {plane({{0, 0}, {1, 0}, {2, 0}, {2, 2}, {0, 2}}) + "f 1 2 3 4 5\n",
+         "line 6: a face of 5 vertices that is not strictly convex (at corner 2)"},
+        // A star: every corner turns the same way, and it winds round twice.
+        {plane({{0, 10}, {6, -8}, {-10, 3}, {10, 3}, {-6, -8}}) + "f 1 2 3 4 5\n",
+         "line 6: a face of 5 vertices that is not strictly convex (it winds round more than once)"},
+        // On a line: no area.
+        {plane({{0, 0}, {1, 0}, {2, 0}, {3, 0}}) + "f 1 2 3 4\n", "line 5: a face of 4 vertices with no area"},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto objects = read_obj_text(dir, "case" + std::to_string(i) + ".obj", cases[i].text);
+        ASSERT_FALSE(objects.has_value()) << cases[i].text;
+        EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, cases[i].needle)) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, "(triangulate on export)")) << objects.error().context;
+    }
 }
