@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -938,15 +939,19 @@ TEST(MeshImport, MalformedStlIsRefusedByName) {
 TEST(MeshImport, StlAndObjNeedAUnit) {
     // Refused before the file is opened: the missing files are never reached.
     const spade::test::TempDir dir("mesh-import-unit");
-    for (const MeshUnit unit : {MeshUnit::unspecified, static_cast<MeshUnit>(99)}) {
+    const std::pair<MeshUnit, std::string_view> refused[] = {
+        {MeshUnit::unspecified, "the unit is unspecified"},
+        {static_cast<MeshUnit>(99), "unit 99 is not a MeshUnit"},
+    };
+    for (const auto& [unit, needle] : refused) {
         const auto stl = spade::read_stl(dir.path() / "missing.stl", unit);
         const auto obj = spade::read_obj(dir.path() / "missing.obj", unit);
         ASSERT_FALSE(stl.has_value());
         ASSERT_FALSE(obj.has_value());
         EXPECT_EQ(stl.error().code, Code::invalid_argument) << stl.error().context;
         EXPECT_EQ(obj.error().code, Code::invalid_argument) << obj.error().context;
-        EXPECT_TRUE(contains(stl.error().context, "unit")) << stl.error().context;
-        EXPECT_TRUE(contains(obj.error().context, "unit")) << obj.error().context;
+        EXPECT_TRUE(contains(stl.error().context, needle)) << stl.error().context;
+        EXPECT_TRUE(contains(obj.error().context, needle)) << obj.error().context;
     }
     // A 10 mm cube is 0.01 m, scaled as make_mesh() scales: in double, then
     // rounded to fp32 once.
@@ -967,13 +972,18 @@ TEST(MeshImport, StlAndObjNeedAUnit) {
 TEST(MeshImport, ObjObjectsAndNegativeIndices) {
     // Two cubes. "first" has its faces in two runs, the second after
     // "second", and is still one object; "second" names its corners from the
-    // end. Every corner form reads alike; vt, vn, s, usemtl and mtllib are
-    // ignored. CRLF line ends, a tab and a leading '+' are read.
+    // end, and its texture coordinates and normals too. Every corner form
+    // reads alike; vt, vn, s, usemtl and mtllib are ignored, and so are a
+    // weight and a colour after a v's three coordinates. CRLF line ends, a
+    // tab and a leading '+' are read.
     std::string text = "# two cubes\nmtllib cubes.mtl\no first\n" + obj_corners() +
-                       "vt 0 0\nvn 0 0 1\nusemtl steel\ns 1\n" + obj_faces(0, 3, 0, "/1") +
+                       "vt 0 0\nvn 0 0 1\nusemtl steel\ns 1\n" + obj_faces(0, 3, 0, "/+1") +
                        obj_faces(3, 6, 0, "/1/1") + "o\tsecond \n" + obj_corners(1, 2) +
-                       obj_faces(0, 12, 0, "//1", true) + "s off\no first\n" + obj_faces(6, 12, 0);
+                       obj_faces(0, 6, 0, "//-1", true) + obj_faces(6, 12, 0, "/-1/-1", true) + "s off\no first\n" +
+                       obj_faces(6, 12, 0);
     text.replace(text.find("v 3 0 0\n"), 8, "v +3 0 0\n");
+    text.replace(text.find("v 0 0 0\n"), 8, "v 0 0 0 1\n");
+    text.replace(text.find("v 1 1 1\n"), 8, "v 1 1 1 0.2 0.4 0.6\n");
     std::string crlf;
     for (const char c : text) {
         if (c == '\n') crlf += '\r';
@@ -985,6 +995,14 @@ TEST(MeshImport, ObjObjectsAndNegativeIndices) {
     ASSERT_EQ(objects->size(), 2u);
     expect_cube((*objects)[0], "first", 0.0f);
     expect_cube((*objects)[1], "second", 2.0f);
+    // Objects come in the order of their first face, not of their names.
+    const auto order = read_obj_text(dir, "order.obj",
+                                     "o a\no b\n" + obj_corners() + obj_faces(0, 12, 0) + "o a\n" + obj_corners(1, 2) +
+                                         obj_faces(0, 12, 8));
+    ASSERT_TRUE(order.has_value()) << order.error().context;
+    ASSERT_EQ(order->size(), 2u);
+    expect_cube((*order)[0], "b", 0.0f);
+    expect_cube((*order)[1], "a", 2.0f);
 }
 
 TEST(MeshImport, ObjGroupsNameObjectsOnlyInAFileWithoutO) {

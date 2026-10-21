@@ -141,14 +141,16 @@
 //       cstype, curv, curv2, surf and the rest) and display attributes (lod
 //       and the rest); a line continued by a trailing '\'.
 //     invalid_argument -- a v with fewer than three numbers or more than
-//       seven, a field that is not a number or is out of double's range, a
-//       coordinate that is not finite; a face of fewer than three corners, a
-//       corner of another form, an index that is not a nonzero integer or
-//       names an element not yet defined; a name that is not UTF-8. And, with
-//       no line, a file with no face.
-//     capacity_exceeded -- more than 2^32 - 1 vertices in the file, or an
-//       object of more than kMaxMeshTriangles triangles.
-//     io_error -- a file that cannot be opened or read.
+//       seven, a field that is not a number, a coordinate out of double's
+//       range or not finite (the numbers after the three need only be
+//       numbers); a face of fewer than three corners, a corner of another
+//       form, an index that is not a nonzero integer or names an element not
+//       yet defined; a name that is not UTF-8. And, with no line, a file with
+//       no face.
+//     capacity_exceeded -- more than 2^32 - 1 vertices in the file; and, with
+//       no line, an object of more than kMaxMeshTriangles triangles.
+//     io_error -- a file that cannot be opened or read (no line; a failed
+//       read names the last line read).
 //
 // For both, running out of memory is capacity_exceeded, and any other
 // exception is internal: none crosses this API.

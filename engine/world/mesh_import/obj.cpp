@@ -371,10 +371,10 @@ Result<std::vector<MeshObject>> Reader::objects() const {
 
 Result<std::vector<MeshObject>> read_obj(const std::filesystem::path& path, MeshUnit unit) {
     const std::string file = path_text(path);
-    if (const std::string problem = detail::unit_problem(unit); !problem.empty()) {
-        return std::unexpected(Error{Code::invalid_argument, file + ": " + problem});
-    }
     try {
+        if (const std::string problem = detail::unit_problem(unit); !problem.empty()) {
+            return std::unexpected(Error{Code::invalid_argument, file + ": " + problem});
+        }
         return read(path, file, unit);
     } catch (const std::bad_alloc&) {
         return std::unexpected(Error{Code::capacity_exceeded, file + ": out of memory reading it"});
