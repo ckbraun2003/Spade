@@ -89,7 +89,7 @@ So no action needs porting, and the mode is removed with its code. The builder's
 - **Kat's journal mechanisms:** the declared-step ledger, anomalies, known-open entries (two, expiring, in chapter 2) and the END line.
 - **Every harness and recording anomaly stays** (they fire only on failure, so they aren't in §4): recording/{ffmpeg-missing, ffmpeg-start, poster, size-changed, ffmpeg-write, still, ffmpeg-exit}, harness/{window-closed, frame-failed, poster-undeclared, snapshot-undeclared, drone-session, no-window}, and inj.target. Only harness/builder-session goes, with the builder mode.
 - **One added check:** `editor.open/gpu-path` (Test/Docs' suggestion), so the editor's own session checks its renderer, now that the builder's and the scenes' gpu-path checks drop as duplicates.
-- **The run-level checks:** frames-recorded, ui-font, mp4-written, mp4-sendable (under 30 MB; about 85 s at today's CRF should come to about 7 MB), and the posters, now `01_drone_box`, `02_airflow` and `03_editor`.
+- **The run-level checks:** frames-recorded, ui-font, mp4-written, mp4-sendable (under 30 MB; about 85 s at today's CRF should come to about 7 MB) -- the working copy's size check; since 2026-10-21 a video is posted only under `Desktop/Projects/Videos` by `Videos/CATEGORIES.md`, through the lead (`interface/07-status.md`), and the posters, now `01_drone_box`, `02_airflow` and `03_editor`.
 - **The editor's 8 stills.** Snapshots of removed mains don't exist today.
 - **Stale descriptions,** fixed in the same branch: `07-status.md:25`, `live_tour.hpp:9`, `main.cpp:86`, and `live-smoke.ps1`'s synopsis.
 
