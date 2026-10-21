@@ -21,6 +21,22 @@
 //
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
+//
+// Everything under --out (Desktop/spade-videos/<date> by default) is working
+// output, and none of it is posted. A film is POSTED only under
+// C:/Users/Cameron/Desktop/Projects/Videos, by Videos/CATEGORIES.md (Cameron,
+// 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
+// recorded), at most 120 s and 30 MB, with a title card. A renderer
+// before-and-after is a Feature. To post one, encode it through the queue
+// (a short test-class job), with the card prepended:
+//   python C:/Users/Cameron/Desktop/Projects/Videos/check_video.py --encode SRC
+//       Videos/Research/Spade/YYYY-MM-DD_HHMM_<name>.mp4 --card CARD.txt
+// The card names the title, the tree, the commit, the date (UTC), the case,
+// the grid, the simulated-on and drawn-on builds, and the limits that matter
+// ("actuator discs, not blades"). Then write the caption .md beside it, with
+// CATEGORIES.md's fields: Subject "airflow - <case, grid, builds>", and
+// Reference "none (field film)" when nothing is measured. Send the lead its
+// path; the lead posts the notification.
 
 #include <algorithm>
 #include <charconv>
