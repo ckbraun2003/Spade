@@ -159,6 +159,11 @@ class GlRenderer {
     // whose meshes or CSG subtrees are not the ones uploaded with
     // Code::invalid_argument.
     //
+    // Sets, on entry (as upload_scene() does), the state it relies on: scissor,
+    // stencil and rasterizer discard off, GL_FRAMEBUFFER_SRGB off, the colour
+    // mask on, glDepthRange(0, 1), and no GL_PIXEL_UNPACK_BUFFER. It assumes
+    // glClipControl's default (docs/design/rendering/render-gl-hosting.md).
+    //
     // Renders into the CURRENTLY BOUND framebuffer at the given size and
     // covers every pixel. It does not present: that belongs to whoever owns
     // the window. It changes depth, cull, polygon-mode, blend, point-size and

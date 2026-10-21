@@ -32,6 +32,8 @@
 #include <string_view>
 #include <utility>
 #include <set>
+#include <functional>
+#include <cstring>
 #include <vector>
 
 #include <glad/glad.h>
@@ -1180,6 +1182,90 @@ TEST_F(GpuGlRenderer, RefusesACsgSubtreeMovedOrEditedSinceItsUpload) {
     ASSERT_TRUE(renderer_->upload_scene(moved).has_value());
     const spade::Result<void> drew_moved = draw(moved);
     EXPECT_TRUE(drew_moved.has_value()) << "uploaded again, the moved subtree draws: " << drew_moved.error().context;
+}
+
+// The hosting contract (docs/design/rendering/render-gl-hosting.md): draw()
+// SETS the state it relies on. A host that left scissor, stencil, rasterizer
+// discard, sRGB encoding, a colour mask, a depth range or an unpack buffer
+// behind -- an immediate-mode UI does, routinely -- gets the very bytes a
+// clean draw gives. The target is sRGB, so encoding left on would show, and
+// has stencil, so a failing stencil test would; the flow volume's generation
+// is 0, so it uploads on every draw and an unpack buffer left bound would
+// feed it.
+TEST_F(GpuGlRenderer, DrawSetsTheStateItReliesOn) {
+    ASSERT_TRUE(renderer_->flow_ready());
+    GLuint fbo = 0, colour = 0, depth = 0, pbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_SRGB8_ALPHA8, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glGenBuffers(1, &pbo);
+
+    RenderScene scene = slab_scene();
+    spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 0.25f, 8, 8, 8,
+                                                             spade::test::uniform_flow(glm::vec3(1.0f, 0.0f, 0.0f)));
+    volume.generation = 0;
+    spade::render::TransferFunction speed;
+    speed.extinction = {{0.0f, 0.5f}, {2.0f, 0.5f}};
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+
+    const auto frame = [&]() -> std::vector<uint8_t> {
+        if (auto drew = renderer_->draw(scene, camera_on_plus_z(), comparable_options(), kWidth, kHeight); !drew) {
+            ADD_FAILURE() << drew.error().context;
+            return {};
+        }
+        std::vector<uint8_t> rgba(kPixels * 4u);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        return rgba;
+    };
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    const std::vector<uint8_t> clean = frame();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 8, 8);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_NEVER, 0, 0xFF);
+    glEnable(GL_FRAMEBUFFER_SRGB);
+    glColorMask(GL_TRUE, GL_FALSE, GL_TRUE, GL_TRUE);
+    glDepthRange(0.5, 1.0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 64, nullptr, GL_STREAM_DRAW);
+    glEnable(GL_RASTERIZER_DISCARD);
+    const std::vector<uint8_t> dirty = frame();
+
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthRange(0.0, 1.0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &pbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+
+    ASSERT_EQ(clean.size(), dirty.size());
+    ASSERT_FALSE(clean.empty());
+    size_t differ = 0;
+    for (size_t i = 0; i < clean.size(); ++i) differ += clean[i] != dirty[i] ? 1u : 0u;
+    EXPECT_EQ(differ, 0u) << "a host's leftover state changed " << differ << " bytes of the frame";
 }
 
 // L6: GL marches one flow layer per frame. The demo's layer carries all its
@@ -2852,6 +2938,116 @@ TEST_F(GpuGlRenderer, FlowViewsCostCachedAndUncached) {
         }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
+// What reading a frame back costs a host (Spade Host's question for Kat's
+// viewport, 2026-10-20; docs/design/rendering/render-gl-hosting.md): the
+// render thread's wall time per frame at 1280x720 for draw() alone, draw()
+// plus a synchronous glReadPixels into a BGRX buffer flipped to top row
+// first (the CPU target's layout), and draw() plus a ring of two pixel-pack
+// buffers, each frame reading into one and copying out the other, a frame
+// late. Medians of 40 frames after 5 warm-up frames, on a CSG slab over the
+// analytic ground. A measurement, not a test: set SPADE_GL_READBACK_COST=1.
+TEST_F(GpuGlRenderer, ReadbackCostSyncAndPboRing) {
+    if (!env_gate_is_set("SPADE_GL_READBACK_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_READBACK_COST=1 to run it";
+    }
+    constexpr int kW = 1280, kH = 720;
+    constexpr size_t kBytes = static_cast<size_t>(kW) * kH * 4u;
+    constexpr size_t kRow = static_cast<size_t>(kW) * 4u;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    GLuint pbo[2] = {0, 0};
+    glGenBuffers(2, pbo);
+    for (const GLuint b : pbo) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, b);
+        glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(kBytes), nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    RenderScene scene = slab_scene();
+    scene.ground_planes.push_back(spade::render::GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = -1.0f});
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    RenderOptions options = comparable_options();
+    options.shadows = true;
+    const Camera camera = camera_over_ground();
+    std::vector<uint8_t> bgrx(kBytes);
+
+    // Flips GL's bottom-up rows into the BGRX buffer, top row first.
+    const auto flip_into = [&](const uint8_t* src) {
+        for (int y = 0; y < kH; ++y) {
+            std::memcpy(bgrx.data() + static_cast<size_t>(y) * kRow, src + static_cast<size_t>(kH - 1 - y) * kRow, kRow);
+        }
+    };
+    const auto draw = [&]() {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        EXPECT_TRUE(renderer_->draw(scene, camera, options, kW, kH).has_value());
+    };
+    // Median ms of 40 frames of `one` after 5 warm-up frames.
+    const auto median_ms = [&](const std::function<void(int)>& one) {
+        std::vector<double> ms;
+        for (int i = 0; i < 45; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            one(i);
+            const auto t1 = std::chrono::steady_clock::now();
+            if (i >= 5) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[19] + ms[20]);
+    };
+
+    std::vector<uint8_t> staging(kBytes);
+    const double draw_only = median_ms([&](int) {
+        draw();
+        glFinish();
+    });
+    const double sync = median_ms([&](int) {
+        draw();
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glReadPixels(0, 0, kW, kH, GL_BGRA, GL_UNSIGNED_BYTE, staging.data());
+        flip_into(staging.data());
+    });
+    const double ring = median_ms([&](int i) {
+        draw();
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo[i % 2]);
+        glReadPixels(0, 0, kW, kH, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+        if (i > 0) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo[(i + 1) % 2]);
+            const auto* mapped = static_cast<const uint8_t*>(
+                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, static_cast<GLsizeiptr>(kBytes), GL_MAP_READ_BIT));
+            if (mapped != nullptr) {
+                flip_into(mapped);
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            }
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    });
+    EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+
+    RecordProperty("draw_only_ms_x100", static_cast<int>(draw_only * 100.0));
+    RecordProperty("draw_sync_readback_ms_x100", static_cast<int>(sync * 100.0));
+    RecordProperty("draw_pbo_ring_ms_x100", static_cast<int>(ring * 100.0));
+    std::printf("[ readback cost ] 1280x720, render thread per frame (median of 40): draw alone %.2f ms; draw + sync "
+                "glReadPixels to BGRX, flipped %.2f ms; draw + 2-PBO ring, a frame late %.2f ms\n",
+                draw_only, sync, ring);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(2, pbo);
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &colour);
     glDeleteRenderbuffers(1, &depth);

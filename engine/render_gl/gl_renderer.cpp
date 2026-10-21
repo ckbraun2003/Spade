@@ -118,6 +118,8 @@ namespace {
     X(PFNGLDELETEVERTEXARRAYSPROC, DeleteVertexArrays) \
     X(PFNGLDEPTHFUNCPROC, DepthFunc) \
     X(PFNGLDEPTHMASKPROC, DepthMask) \
+    X(PFNGLDEPTHRANGEPROC, DepthRange) \
+    X(PFNGLCOLORMASKPROC, ColorMask) \
     X(PFNGLDISABLEPROC, Disable) \
     X(SpadePfnGlDispatchCompute, DispatchCompute) \
     X(PFNGLDRAWARRAYSPROC, DrawArrays) \
@@ -169,6 +171,22 @@ struct GlApi {
     SPADE_GL_FUNCTIONS(SPADE_GL_MEMBER)
 #undef SPADE_GL_MEMBER
 };
+
+// The state draw() and upload_scene() rely on, SET on entry rather than
+// assumed (the hosting contract, docs/design/rendering/render-gl-hosting.md;
+// the lead, 2026-10-20). A host with an immediate-mode UI (ImGui, Qt)
+// routinely leaves scissor on and sRGB in any state, and either would clip or
+// re-encode the frame with no refusal. Set even when the call then refuses.
+// glClipControl (GL 4.5) stays assumed at its default.
+void set_assumed_state(const GlApi& gl) {
+    gl.Disable(GL_SCISSOR_TEST);
+    gl.Disable(GL_STENCIL_TEST);
+    gl.Disable(GL_RASTERIZER_DISCARD);
+    gl.Disable(GL_FRAMEBUFFER_SRGB);
+    gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    gl.DepthRange(0.0, 1.0);
+    gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+}
 
 // A loader hands back void*; GL wants function pointers. memcpy rather than
 // a cast between object and function pointers, which pedantic gcc flags.
@@ -2321,6 +2339,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
 
 Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     Impl& s = *impl_;
+    set_assumed_state(s.gl);
     const GlApi& gl = s.gl;
 
     // --- validate everything first: a refusal changes nothing (L6) ------------
@@ -2521,6 +2540,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                               uint32_t height) {
     Impl& s = *impl_;
     const GlApi& gl = s.gl;
+    set_assumed_state(gl);
 
     // L6: GL has no ray-marcher, and drawing a raster frame instead would be
     // a different technique under the same name.
