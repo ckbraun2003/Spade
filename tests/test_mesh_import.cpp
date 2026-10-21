@@ -1157,27 +1157,62 @@ TEST(MeshImport, ObjConvexPlanarPolygonsAreFanTriangulated) {
 }
 
 TEST(MeshImport, ObjPolygonsArePlanarWithinTheirTolerance) {
-    // The cube of quads with corner 7 raised: by 0.0004, its three quads are
-    // off their planes by about 1e-4 of their size, within kObjPlanarTolerance,
-    // and read; by 0.05, by about 9e-3, and the first of them (line 10, the
-    // z = 1 quad) is refused.
+    // The cube of quads with corner 7 raised by h: each of its three quads has
+    // every corner h/4 off its plane, and the bound is kObjPlanarTolerance of
+    // the quad's width (2 area / diagonal = sqrt(2) for the unit square, for
+    // every h), so h = 4 sqrt(2) 1e-3 = 0.005657 is the edge. Just inside and
+    // just outside it, at two scales: the rule is relative. The first quad
+    // refused is line 10, the z = 1 quad, at its first corner.
     static_assert(spade::kObjPlanarTolerance == 1e-3);
     const spade::test::TempDir dir("mesh-import-obj-planar");
-    const auto raised = [](std::string_view z) {
-        std::string text = obj_corners() + obj_quads();
-        text.replace(text.find("v 1 1 1\n"), 8, "v 1 1 " + std::string(z) + "\n");
+    const auto raised = [](int scale, std::string_view z) {
+        const std::string s = std::to_string(scale);
+        const std::string corner = "v " + s + " " + s + " " + s + "\n";
+        std::string text = obj_corners(scale) + obj_quads();
+        text.replace(text.find(corner), corner.size(), "v " + s + " " + s + " " + std::string(z) + "\n");
         return text;
     };
-    const auto within = read_obj_text(dir, "near.obj", raised("1.0004"));
-    ASSERT_TRUE(within.has_value()) << within.error().context;
-    ASSERT_EQ(within->size(), 1u);
-    EXPECT_EQ((*within)[0].mesh->triangle_count(), 12u);
-    const auto beyond = read_obj_text(dir, "far.obj", raised("1.05"));
-    ASSERT_FALSE(beyond.has_value());
-    EXPECT_EQ(beyond.error().code, Code::unavailable) << beyond.error().context;
-    EXPECT_TRUE(contains(beyond.error().context, "far.obj: line 10: a face of 4 vertices that is not planar"))
-        << beyond.error().context;
-    EXPECT_TRUE(contains(beyond.error().context, "(triangulate on export)")) << beyond.error().context;
+    struct Case {
+        int scale;
+        std::string z;
+        bool read;
+    };
+    const std::vector<Case> cases = {
+        {1, "1.0004", true}, {1, "1.0056", true}, {1, "1.0057", false}, {1, "1.05", false},
+        {1000, "1005.6", true}, {1000, "1005.7", false},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        SCOPED_TRACE(c.z);
+        const std::string name = "raised" + std::to_string(i) + ".obj";
+        const auto objects = read_obj_text(dir, name, raised(c.scale, c.z));
+        if (c.read) {
+            ASSERT_TRUE(objects.has_value()) << objects.error().context;
+            ASSERT_EQ(objects->size(), 1u);
+            EXPECT_EQ((*objects)[0].mesh->triangle_count(), 12u);
+            continue;
+        }
+        ASSERT_FALSE(objects.has_value());
+        EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context,
+                             name + ": line 10: a face of 4 vertices that is not planar (at corner 1)"))
+            << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, "(triangulate on export)")) << objects.error().context;
+    }
+}
+
+TEST(MeshImport, AThinPolygonIsPlanarOnlyWithinItsWidth) {
+    // A 1 x 0.001 quad twisted by +-0.0009 is within 1e-3 of its diagonal but
+    // not of its width: its fan would fold 122 degrees. Refused.
+    const spade::test::TempDir dir("mesh-import-obj-thin");
+    const auto objects = read_obj_text(dir, "thin.obj",
+                                       "v 0 0 0.0009\nv 1 0 -0.0009\nv 1 0.001 0.0009\nv 0 0.001 -0.0009\n"
+                                       "f 1 2 3 4\n");
+    ASSERT_FALSE(objects.has_value());
+    EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+    EXPECT_TRUE(
+        contains(objects.error().context, "thin.obj: line 5: a face of 4 vertices that is not planar (at corner 1)"))
+        << objects.error().context;
 }
 
 TEST(MeshImport, ObjPolygonsThatAreNotStrictlyConvexAreUnavailable) {
@@ -1205,6 +1240,12 @@ TEST(MeshImport, ObjPolygonsThatAreNotStrictlyConvexAreUnavailable) {
          "line 6: a face of 5 vertices that is not strictly convex (it winds round more than once)"},
         // On a line: no area.
         {plane({{0, 0}, {1, 0}, {2, 0}, {3, 0}}) + "f 1 2 3 4\n", "line 5: a face of 4 vertices with no area"},
+        // The arrow in the x = 0 plane (projected along x), and in the plane
+        // x = y, whose normal ties x and y (the lowest axis, x, is taken).
+        {"v 0 0 0\nv 0 4 0\nv 0 4 4\nv 0 2 1\nv 0 0 4\nf 1 2 3 4 5\n",
+         "line 6: a face of 5 vertices that is not strictly convex (at corner 4)"},
+        {"v 0 0 0\nv 4 4 0\nv 4 4 4\nv 2 2 1\nv 0 0 4\nf 1 2 3 4 5\n",
+         "line 6: a face of 5 vertices that is not strictly convex (at corner 4)"},
     };
     for (std::size_t i = 0; i < cases.size(); ++i) {
         const auto objects = read_obj_text(dir, "case" + std::to_string(i) + ".obj", cases[i].text);

@@ -2,9 +2,9 @@
 // the contract and the refusals.
 //
 // One pass, line by line: the vertices into one list, and each face as its
-// three vertex indices with the o and g names in force. At the end the faces
-// are grouped by o, or by g in a file with no o, into objects in the order of
-// their first face. Each object gathers the vertices its faces name in
+// vertex indices with the o and g names in force (a polygon fanned into
+// triangles). At the end the faces are grouped by o, or by g in a file with
+// no o, into objects in the order of their first face. Each object gathers the vertices its faces name in
 // first-use order, then goes to the shared exact weld and make_mesh().
 #include "world/mesh_import.hpp"
 
@@ -134,13 +134,18 @@ struct PolygonCheck {
     const double nn = glm::dot(normal, normal);
     if (!(nn > 0.0)) return {Polygon::no_area};
 
-    // Planar: (d / |normal|)^2 <= (tolerance * size)^2 for every corner, d its
-    // offset along the normal, compared squared so no root is taken.
+    // Planar: every corner within tolerance x width of the plane, the width
+    // being 2 area / diagonal = |normal| / diagonal, so a thin face is held to
+    // its own width (a fan's fold stays below about the tolerance in radians).
+    // With d the corner's offset along the normal: (d / |normal|)^2 <=
+    // (tolerance |normal| / diagonal)^2, i.e. d^2 diagonal^2 <= tolerance^2
+    // |normal|^4, compared squared so no root is taken.
     const glm::dvec3 extent = hi - lo;
-    const double limit = kObjPlanarTolerance * kObjPlanarTolerance * glm::dot(extent, extent) * nn;
+    const double diagonal2 = glm::dot(extent, extent);
+    const double limit = kObjPlanarTolerance * kObjPlanarTolerance * nn * nn;
     for (std::size_t i = 0; i < n; ++i) {
         const double d = glm::dot(p[i] - centre, normal);
-        if (d * d > limit) return {Polygon::not_planar, i};
+        if (d * d * diagonal2 > limit) return {Polygon::not_planar, i};
     }
 
     // Strictly convex, in the projection along the normal's largest component
@@ -265,7 +270,7 @@ Result<void> Reader::line(std::string_view text) {
     }
     if (keyword == "s" || keyword == "usemtl" || keyword == "mtllib") return {};
     return fail(Code::unavailable, "'" + std::string(keyword) +
-                                       "' elements are not read: this build reads v and triangular f (points, lines, "
+                                       "' elements are not read: this build reads v and f (points, lines, "
                                        "free-form geometry and display attributes are not converted)");
 }
 
@@ -322,7 +327,7 @@ Result<uint32_t> Reader::resolve(std::string_view index, uint64_t defined, const
 
 Result<void> Reader::face() {
     const std::size_t n = fields_.size() - 1;
-    if (n < 3) return fail(Code::invalid_argument, "a face of " + num(n) + " corners; a face takes three");
+    if (n < 3) return fail(Code::invalid_argument, "a face of " + num(n) + " corners; a face takes three or more");
     std::vector<uint32_t> corners(n);
     for (std::size_t k = 0; k < n; ++k) {
         const std::string_view corner = fields_[k + 1];

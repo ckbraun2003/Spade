@@ -127,14 +127,15 @@
 //     fanned from its first corner into (a, b, c), (a, c, d), ..., keeping its
 //     winding, when it is planar and strictly convex:
 //     - planar: every corner lies within kObjPlanarTolerance of the face's
-//       size (its corners' bounding-box diagonal) of the plane through the
-//       corners' mean with Newell's normal;
+//       width of the plane through the corners' mean with Newell's normal,
+//       the width being twice its area over its corners' bounding-box
+//       diagonal (so a thin face is held to its own width);
 //     - strictly convex: in the projection along that normal's largest
 //       component (the lowest axis on a tie), every corner turns the face's
 //       way, and the edges' components along the projection's first axis
 //       change sign exactly twice around (so the face winds round once: a
 //       star, whose corners all turn one way, does not).
-//     Compared in double, + - * only, squared where a length would need a
+//     Compared in double, + - * / only, squared where a length would need a
 //     root, so the same text gives the same triangles on every platform.
 //   OBJECTS: `o` names objects; in a file with no `o`, `g` does (so a body
 //     that `g` splits into material groups stays one object). A name is the
@@ -185,9 +186,10 @@
 namespace spade {
 
 // How far an OBJ polygon's corner may lie off its plane, as a fraction of the
-// face's size (POLYGONS above): 1e-3, so the rounding of a 6-decimal export
-// (Blender's) passes on faces down to about a millimetre in a file in metres,
-// and the fold a fan makes in a face that passes is a fraction of a degree.
+// face's width (POLYGONS above): 1e-3, so the rounding of a 6-decimal export
+// (Blender's) passes on faces down to about a millimetre wide in a file in
+// metres, and the fold a fan makes in a face that passes, whatever its
+// shape, is a fraction of a degree.
 inline constexpr double kObjPlanarTolerance = 1e-3;
 
 // One imported object: its name (UTF-8) and its validated mesh, in metres.
