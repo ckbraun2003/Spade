@@ -5,8 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <string_view>
+#include <vector>
 
 #include "compute/backend.hpp"
 #include "compute/device_limits.hpp"
@@ -21,6 +24,17 @@ using spade::compute::DeviceLimits;
 using spade::compute::kGuaranteedLimits;
 using spade::compute::MemoryBudget;
 using spade::compute::VulkanContext;
+
+[[nodiscard]] bool advertises(VkPhysicalDevice device, std::string_view name) {
+    uint32_t count = 0;
+    EXPECT_EQ(vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr), VK_SUCCESS);
+    std::vector<VkExtensionProperties> extensions(count);
+    EXPECT_EQ(vkEnumerateDeviceExtensionProperties(device, nullptr, &count, extensions.data()), VK_SUCCESS);
+    for (const VkExtensionProperties& extension : extensions) {
+        if (std::string_view(extension.extensionName) == name) return true;
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -51,6 +65,27 @@ TEST(GpuDeviceLimits, TheReportCarriesTheDevicesLimits) {
     // Every device of record runs Vulkan 1.1 or later, so it reports the
     // allocation size (Maintenance3 is 1.1 core).
     EXPECT_TRUE(l.allocation_size_reported);
+
+    // Each field is the device's own value, read here straight from the
+    // driver: a guaranteed minimum standing in for it, or two fields
+    // swapped, fails.
+    VkPhysicalDeviceMaintenance3Properties maintenance3{};
+    maintenance3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
+    VkPhysicalDeviceProperties2 properties{};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &maintenance3;
+    vkGetPhysicalDeviceProperties2((*context)->physical_device(), &properties);
+    const VkPhysicalDeviceLimits& d = properties.properties.limits;
+    EXPECT_EQ(l.max_storage_buffer_range, d.maxStorageBufferRange);
+    EXPECT_EQ(l.max_memory_allocation_size, maintenance3.maxMemoryAllocationSize);
+    EXPECT_EQ(l.max_per_stage_storage_buffers, d.maxPerStageDescriptorStorageBuffers);
+    EXPECT_EQ(l.max_set_storage_buffers, d.maxDescriptorSetStorageBuffers);
+    EXPECT_EQ(l.max_push_constants_size, d.maxPushConstantsSize);
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        EXPECT_EQ(l.max_group_count[axis], d.maxComputeWorkGroupCount[axis]) << "axis " << axis;
+        EXPECT_EQ(l.max_group_size[axis], d.maxComputeWorkGroupSize[axis]) << "axis " << axis;
+    }
+    EXPECT_EQ(l.max_group_invocations, d.maxComputeWorkGroupInvocations);
 }
 
 TEST(GpuMemoryBudget, ReportsItsSourceAndABudgetWithinTheHeap) {
@@ -74,6 +109,11 @@ TEST(GpuMemoryBudget, ReportsItsSourceAndABudgetWithinTheHeap) {
     }
     EXPECT_GT(b.budget, 0u);
     EXPECT_LE(b.budget, heap.size);
+    // The source follows the device: a device that advertises the extension
+    // is read through it (so other programs' VRAM counts), and only one that
+    // does not falls back to half the heap.
+    const bool ext = advertises((*context)->physical_device(), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    EXPECT_EQ(b.source, ext ? MemoryBudget::Source::ext : MemoryBudget::Source::half_heap);
     if (b.source == MemoryBudget::Source::half_heap) {
         EXPECT_EQ(b.budget, heap.size / 2);
         EXPECT_EQ(b.usage, 0u);

@@ -32,12 +32,14 @@
 // ---------------------------------------------------------------------------
 // SET LAYOUT
 //
-// ONE descriptor set, set 0 ("state"), holding every storage buffer, plus one
-// push-constant block. One set rather than several because every kernel in
-// S6 reads from the same pool of world-partitioned arrays: splitting them
-// across sets would buy per-frequency update granularity that nothing in this
-// engine has (the whole state pool is bound once and stepped in place) at the
-// cost of a second layout to keep in sync.
+// ONE descriptor set for the step, set 0 ("state"), holding every storage
+// buffer the step's kernels read, plus one push-constant block. (Set 1,
+// "airflow", section F, belongs to the airflow solver's kernels alone; no
+// set-0 pipeline layout includes it.) One set rather than several because
+// every kernel in S6 reads from the same pool of world-partitioned arrays:
+// splitting them across sets would buy per-frequency update granularity that
+// nothing in this engine has (the whole state pool is bound once and stepped
+// in place) at the cost of a second layout to keep in sync.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS BOUND, AND WHY EACH ONE
@@ -400,6 +402,11 @@ import layouts;
 // and every identity stay byte for byte, and no run without airflow pays for
 // it. Plan B's chain runner builds a pipeline layout of an empty set 0 and this
 // set; stage 7's airflow module binds the same set, unchanged.
+//
+// NO STEP KERNEL READS SET 1. Every kernel imports this file, so one that
+// named an airflow_* buffer would compile, and its set-0-only pipeline layout
+// would be invalid API use that only a debug build's validation layer would
+// report. Only the airflow kernels, on a layout that carries set 1, use them.
 //
 // THE LIST IS APPEND-ONLY. A binding index is an ABI (see A above): an array a
 // later plan needs (dye, vorticity) is added at the end, and nothing here is
