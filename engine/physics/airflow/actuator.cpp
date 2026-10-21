@@ -88,17 +88,29 @@ Result<void> check_disc(const ActuatorDisc& d, const GridShape& s) {
     return {};
 }
 
+DiscSpread disc_spread(const ActuatorDisc& d, const GridShape& s, float rho, float h) noexcept {
+    DiscSpread out;
+    out.points = disc_points(d);
+    out.scale = h * d.thrust / (static_cast<float>(kDiscPoints) * rho * s.dx * s.dx * s.dx);
+    out.reach = d.radius + 2.0f * s.dx;
+    // Without a torque this is the thrust-only spread, bit for bit (both goldens' discs).
+    out.swirl = d.torque != 0.0f;
+    if (out.swirl) out.tangent = swirl_over_radius(d);
+    out.swirl_scale = h * d.torque / (static_cast<float>(kDiscPoints) * rho * s.dx * s.dx * s.dx);
+    return out;
+}
+
 void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float h, std::span<float> du,
                      std::span<float> dv, std::span<float> dw) noexcept {
-    const std::array<glm::vec3, kDiscPoints> pts = disc_points(d);
+    const DiscSpread spread = disc_spread(d, s, rho, h);
+    const std::array<glm::vec3, kDiscPoints>& pts = spread.points;
+    const std::array<glm::vec3, kDiscPoints>& tangent = spread.tangent;
     const float inv_dx = 1.0f / s.dx;
-    const float scale = h * d.thrust / (static_cast<float>(kDiscPoints) * rho * s.dx * s.dx * s.dx);
-    const float reach = d.radius + 2.0f * s.dx;
+    const float scale = spread.scale;
+    const float reach = spread.reach;
+    const bool swirl = spread.swirl;
+    const float swirl_scale = spread.swirl_scale;
     const std::span<float> out[3] = {du, dv, dw};
-    // Without a torque this is the thrust-only spread, bit for bit (both goldens' discs).
-    const bool swirl = d.torque != 0.0f;
-    const std::array<glm::vec3, kDiscPoints> tangent = swirl ? swirl_over_radius(d) : std::array<glm::vec3, kDiscPoints>{};
-    const float swirl_scale = h * d.torque / (static_cast<float>(kDiscPoints) * rho * s.dx * s.dx * s.dx);
     for (uint32_t c = 0; c < 3; ++c) {
         const auto cl = static_cast<glm::length_t>(c);
         const float axis_c = d.axis[cl];
