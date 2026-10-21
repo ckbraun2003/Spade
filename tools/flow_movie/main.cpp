@@ -67,6 +67,7 @@
 #include "physics/airflow/publish.hpp"
 #include "core/fp16.hpp"
 #include "render/raster_cpu.hpp"
+#include "render/view_mode.hpp"
 #include "render_parts/render_parts.hpp"
 #include "vehicles/part_pose.hpp"
 
@@ -139,11 +140,19 @@ constexpr std::size_t kSidebarWidth = 62;
 
 // One view of a film: a clip of its own, from the same cached frames.
 struct View {
+    using Shot = std::function<spade::Result<void>(const spade::FlowVolume&, uint32_t frame, uint32_t frames,
+                                                   render::RenderScene&, render::Camera&)>;
+    using OnParts = std::function<spade::Result<std::string>(const spade::FlowVolume&, render::RenderScene&)>;
+    View(std::string name_, std::string label_, Shot shot_, OnParts on_parts_ = {})
+        : name(std::move(name_)), label(std::move(label_)), shot(std::move(shot_)), on_parts(std::move(on_parts_)) {}
+
     std::string name;   // the clip's file name
     std::string label;  // the caption naming what it shows
-    std::function<spade::Result<void>(const spade::FlowVolume&, uint32_t frame, uint32_t frames,
-                                      render::RenderScene&, render::Camera&)>
-        shot;
+    Shot shot;
+    // What the view draws on the film's parts, after decorate() put them in
+    // the scene (C_p on the walls), returning a caption line to show under
+    // the label (the legend's note, verbatim), or "". Empty: nothing.
+    OnParts on_parts;
 };
 
 struct Film {
@@ -411,7 +420,8 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 
 // --- render many times -----------------------------------------------------------------
 
-[[nodiscard]] std::vector<Caption> standard_captions(const Film& film, const View& view, const FrameLog& log) {
+[[nodiscard]] std::vector<Caption> standard_captions(const Film& film, const View& view, const FrameLog& log,
+                                                     const std::string& note = {}) {
     const AirflowCase& c = film.airflow;
     const CaptionText extra = film.captions ? film.captions(log) : CaptionText{};
     std::vector<std::string> top{c.settings};
@@ -428,6 +438,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     }
     bottom.insert(bottom.end(), extra.bottom.begin(), extra.bottom.end());
     bottom.push_back(view.label);
+    if (!note.empty()) bottom.push_back(note);
     bottom.push_back("t = " + fixed(log.time, film.time_decimals) + film.time_unit + "   (step " +
                      std::to_string(log.step) + " of " + std::to_string(total_steps(c)) + ")");
     return layout(c.name, top, bottom, film.picture_x != 0.0f ? kSidebarWidth : kFullWidth);
@@ -468,9 +479,15 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return std::unexpected(drawn.error());
             }
+            std::string note;
+            if (film.views[v].on_parts) {
+                auto on = film.views[v].on_parts(volume, scene);
+                if (!on) return std::unexpected(on.error());
+                note = std::move(*on);
+            }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (auto drew = stage.draw(scene, camera, rgba); !drew) return std::unexpected(drew.error());
-            if (auto added = clips[v]->add_frame(rgba, standard_captions(film, film.views[v], log)); !added) {
+            if (auto added = clips[v]->add_frame(rgba, standard_captions(film, film.views[v], log, note)); !added) {
                 return std::unexpected(added.error());
             }
         }
@@ -533,6 +550,12 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
             }
+            std::string note;
+            if (view.on_parts) {
+                auto on = view.on_parts(volume, scene);
+                if (!on) return std::unexpected(on.error());
+                note = std::move(*on);
+            }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (cpu) {
                 if (auto drew = draw_cpu(scene, camera, encoder, rgba); !drew) return drew;
@@ -542,7 +565,8 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             const fs::path png =
                 dir / (film.stem + "-" + view.name + "-" + std::to_string(k) + (cpu ? "-cpu" : "") + ".png");
             if (auto saved = save_png(encoder, rgba, png); !saved) return saved;
-            std::printf("still: %s (t %s)\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str());
+            std::printf("still: %s (t %s)%s%s\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str(),
+                        note.empty() ? "" : "; ", note.c_str());
         }
     }
     return {};
@@ -876,6 +900,25 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 // it, as in a box of uniform wind, the deepest value is the grid's noise.
 constexpr float kVortexFloor = -5.0f;
 
+// The inflow's pressure: the mean gauge pressure over the inlet face's cell
+// layer (x = 0, the wind's upstream face), no-data cells left out. What D1's
+// C_p is taken against (Physics: "against the inflow's pressure").
+[[nodiscard]] double inflow_pressure(const spade::FlowVolume& v) {
+    const spade::FlowVolumeHeader& h = v.header;
+    double sum = 0.0;
+    uint64_t n = 0;
+    for (uint32_t k = 0; k < h.nz; ++k) {
+        for (uint32_t j = 0; j < h.ny; ++j) {
+            const float p = spade::fp16::to_f32(v.s[spade::flow_cell_index(h, 0u, j, k) * spade::kFlowHalvesPerCell]);
+            if (std::isfinite(p)) {
+                sum += p;
+                ++n;
+            }
+        }
+    }
+    return n > 0u ? sum / static_cast<double>(n) : 0.0;
+}
+
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions.
@@ -981,6 +1024,40 @@ constexpr float kVortexFloor = -5.0f;
             camera = orbit(centre, 1.7f * std::max(size.x, size.y), 0.0f, 0.0f);
             return {};
         }});
+    if (!run->run_model.parts.empty()) {
+        // The parts are in the flow (D1): C_p on them, as the editor's C_p
+        // view reads it (RND-8, R2.4: one cell off each wall, on the seen
+        // side), against the inflow's pressure, over the discs' loading T/A
+        // = 1/2 rho (2 v_h)^2. The legend's note goes under the label as
+        // apply_view() gives it (D1-4: the caption quotes it verbatim).
+        const float two_v_h = std::max(1.0f, run->speed_max - run->c.flight.speed);
+        const float q = 0.5f * run->c.fluid.density * two_v_h * two_v_h;
+        film.views.push_back(View{
+            "cp",
+            "C_p = (p - p_inflow) / q on the airframe, q = 1/2 rho (2 v_h)^2 = T/A = " + fixed(q, 1) +
+                " Pa; blue -1 to red +1",
+            [](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+               render::Camera& camera) -> spade::Result<void> {
+                // Close on the drone, from above and upstream, so the arms'
+                // tops under the discs show.
+                camera = orbit(volume_centre(v), 0.55f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
+                return {};
+            },
+            [q](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                render::FlowViewSpec cp;
+                cp.kind = render::FlowView::surface_cp;
+                cp.colours = render::ColourMapId::cool_warm;
+                cp.range_min = -1.0f;
+                cp.range_max = 1.0f;
+                cp.q_ref = q;
+                cp.p_ref = static_cast<float>(inflow_pressure(v));
+                render::RenderOptions options;
+                auto legends = render::apply_view(render::ViewSpec{render::ViewBase::shaded, {cp}}, &v, scene,
+                                                  options);
+                if (!legends) return std::unexpected(legends.error());
+                return legends->empty() ? std::string() : legends->front().note;
+            }});
+    }
     return film;
 }
 
