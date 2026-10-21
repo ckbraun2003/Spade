@@ -107,7 +107,7 @@ TEST(SandboxAirflowLive, TheRunPushesTheAirDownThroughTheProbes) {
     ASSERT_TRUE(run.has_value()) << run.error().context;
     spade::FlowVolume volume;
     std::vector<eg::DownwashFrame> frames;
-    while (run->state().t_s < 0.27) {
+    while (run->state().t_s < 0.15) {  // five frames: about 23 s in debug, under ctest's 60
         const an::Controls c = an::controls_at(program, static_cast<float>(run->state().t_s));
         const spade::Result<an::LiveFrame> f = run->advance_frame(c, volume);
         ASSERT_TRUE(f.has_value()) << f.error().context;
@@ -121,7 +121,7 @@ TEST(SandboxAirflowLive, TheRunPushesTheAirDownThroughTheProbes) {
     ASSERT_EQ(last.rotors.size(), q->run_model.rotors.size());
     for (std::size_t i = 0; i < last.rotors.size(); ++i) {
         EXPECT_EQ(last.probe[i], eg::ProbeStatus::ok) << "rotor " << i;
-        EXPECT_GT(last.u_down[i], 0.0f) << "rotor " << i << ": no downwash at its probe 0.25 s after arming";
+        EXPECT_GT(last.u_down[i], 0.0f) << "rotor " << i << ": no downwash at its probe 0.17 s after arming";
     }
 }
 
