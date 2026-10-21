@@ -134,9 +134,7 @@ constexpr const char* kLibraryQuad = "library/drones/reference_quad.model.yaml";
     // Idle 5 % and a full charge are the film's own until the case pins its
     // chain's state (the chain pin).
     lc.propulsion = an::LivePropulsion{*lc.run_model.propulsion, 0.05, 1.0};
-    lc.c.model = an::ModelRef{std::string("assets/") + kLibraryQuad,
-                              spade::vehicles::model_identity(lc.run_model),
-                              spade::vehicles::parts_identity(lc.run_model)};
+    lc.c.model = an::pin_model(std::string("assets/") + kLibraryQuad, lc.run_model);
     lc.c.rotors.assign(lc.run_model.rotors.size(), an::RotorSetup{});
     lc.c.grid.box = box;
     lc.c.grid.spacing = spacing;

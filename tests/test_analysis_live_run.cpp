@@ -64,7 +64,7 @@ using Powered = an::test::PoweredQuad;
 // debug ctest's budget.
 [[nodiscard]] an::AnalysisCase tiny_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
+    c.model = an::pin_model("quad.model.yaml", m);
     c.rotors.assign(m.rotors.size(), an::RotorSetup{});
     c.grid.box = 0.8f;
     c.grid.spacing = 0.1f;

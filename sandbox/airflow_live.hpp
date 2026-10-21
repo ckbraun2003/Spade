@@ -133,8 +133,7 @@ namespace detail {
     q.propulsion = analysis::LivePropulsion{*q.draw_model.propulsion, kIdleDuty, kStateOfCharge};
 
     analysis::AnalysisCase c;
-    c.model = analysis::ModelRef{model_file.generic_string(), vehicles::model_identity(q.run_model),
-                                 vehicles::parts_identity(q.run_model)};
+    c.model = analysis::pin_model(model_file.generic_string(), q.run_model);
     c.rotors.assign(q.run_model.rotors.size(), analysis::RotorSetup{});
     c.grid.box = kBoxM;
     c.grid.spacing = spacing;

@@ -41,7 +41,7 @@ constexpr uint64_t kGiB = 1ull << 30;
     EXPECT_TRUE(s.has_value());
     const spade::vehicles::ModelType m = s ? s->models.at(0) : spade::vehicles::ModelType{};
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
+    c.model = an::pin_model("quad.model.yaml", m);
     c.rotors.assign(m.rotors.size(), an::RotorSetup{});
     c.time.duration = 0.1f;
     const auto r = an::resolve(c, m);

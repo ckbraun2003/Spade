@@ -43,7 +43,7 @@ namespace fs = std::filesystem;
 // Wind through an 8^3 box, so the fluid has state worth saving.
 [[nodiscard]] an::ResolvedCase windy(const spade::vehicles::ModelType& m, float speed = 3.0f) {
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
+    c.model = an::pin_model("quad.model.yaml", m);
     c.grid.box = 0.8f;
     c.grid.spacing = 0.1f;
     c.time.duration = 1.0f;

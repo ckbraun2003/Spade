@@ -1082,6 +1082,7 @@ target_link_libraries(spade_analysis
     PUBLIC spade::vehicles spade::physics
     PRIVATE
         spade::sim  # LiveRun's held drone (I1; the lead's ruling Q4), behind its Impl
+        spade::scene  # load_case_model() reads the case's model file (INT-11; Core reviews)
         $<BUILD_INTERFACE:yaml-cpp::yaml-cpp>
         $<BUILD_LOCAL_INTERFACE:spade_warnings>
         $<BUILD_LOCAL_INTERFACE:spade_fp_strict>
