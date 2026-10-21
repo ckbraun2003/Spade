@@ -217,20 +217,22 @@ TEST(SandboxD1CpNote, IsAbsentWithNoCpLegendShown) {
 }
 
 // ---------------------------------------------------------------------------
-// D1-5. publishes, with solids
+// D1-5. publishes, with solids. no_data counts samples, one per channel, so
+// 500 interior cells are 4000 samples.
 // ---------------------------------------------------------------------------
 
 TEST(SandboxD1Publishes, PassesNoDataOnlyInTheSolidsInterior) {
-    const std::vector<eg::Published> frames = {{11, true, 500}, {12, true, 500}};
+    const std::vector<eg::Published> frames = {{11, true, 4000}, {12, true, 4000}};
     const eg::Verdict v = eg::publishes(frames, 500);
     EXPECT_TRUE(v.ok) << v.detail;
     EXPECT_TRUE(has(v.detail, "500")) << v.detail;
 }
 
 TEST(SandboxD1Publishes, FailsNoDataPastTheInteriorOrAMaskThatNeverReachedPublish) {
-    const std::vector<eg::Published> past = {{11, true, 500}, {12, true, 501}};
+    const std::vector<eg::Published> past = {{11, true, 4000}, {12, true, 4001}};
+    const std::vector<eg::Published> per_cell = {{11, true, 500}};
     const std::vector<eg::Published> unmasked = {{11, true, 0}, {12, true, 0}};
-    for (const std::vector<eg::Published>* frames : {&past, &unmasked}) {
+    for (const std::vector<eg::Published>* frames : {&past, &per_cell, &unmasked}) {
         const eg::Verdict v = eg::publishes(*frames, 500);
         EXPECT_TRUE(judged_fail(v)) << v.detail;
     }
