@@ -35,7 +35,7 @@ For a host that draws through `spade::render_gl::GlRenderer` (`engine/render_gl/
 - **Target:** `draw()` renders into the **currently bound** draw framebuffer (the window's or an FBO) at `(0, 0, width, height)`. It writes every pixel, so the host need not clear colour. It clears depth itself. It never presents.
 - **Depth attachment:** required, 24 bits or more. Stencil is unused.
 - **Colour:** 8-bit UNORM, alpha written as 1.
-- **No sRGB:** the renderer writes display-ready values, the same bytes `render::render()` writes. Keep `GL_FRAMEBUFFER_SRGB` **disabled**, or the colours are encoded twice.
+- **No sRGB:** the renderer writes display-ready values, the same bytes `render::render()` writes. `draw()` disables `GL_FRAMEBUFFER_SRGB` on entry, so they are never encoded twice. An sRGB attachment stores them as written.
 - **MSAA:** fine for shaded, wireframe and velocity, whose edges blend. **Refused for the sensor modes** (depth, normals, segmentation): "GlRenderer::draw: *mode* draws data, which a multisampled target (*n* samples) would blend at every edge; draw it into a single-sample target". For a sensor view on an MSAA window, draw into a single-sample FBO and blit.
 - **Its own framebuffers:** a frame with dynamic shadow casters or a flow layer draws into those first, then rebinds yours.
 
@@ -71,13 +71,7 @@ Each is a `Result` error with the text below, and the frame or upload is not dra
 ## What the host must not do
 
 - **Don't assume GL state survives `draw()`.** It changes the program, VAO, viewport, depth test, depth function, depth mask, depth clamp, cull, front face, polygon mode, blend, point size, texture units 0–4 and SSBO bindings 0–8. Set what you need before drawing your own geometry.
-- **Leave the state `draw()` assumes at GL defaults.** It never sets these:
-  - scissor and stencil tests off;
-  - colour mask all on;
-  - `glDepthRange(0, 1)`;
-  - `glClipControl` at its default;
-  - rasterizer discard off;
-  - no buffer bound to `GL_PIXEL_UNPACK_BUFFER` while calling `upload_scene` or `draw`;
-  - `GL_FRAMEBUFFER_SRGB` off.
+- **State `draw()` and `upload_scene()` set on entry,** even when they then refuse. Whatever the host left (an immediate-mode UI often leaves a scissor), they turn off the scissor test, stencil test, rasterizer discard and `GL_FRAMEBUFFER_SRGB`, turn the colour mask fully on, set `glDepthRange(0, 1)` and unbind `GL_PIXEL_UNPACK_BUFFER`. A host that relies on any of these must set it again after the call.
+- **Leave `glClipControl` at its default.** It is the one piece of state `draw()` still assumes.
 - **Don't touch the renderer's GL objects,** and don't call it from a context that doesn't share them.
 - **Don't draw one scene object with two renderers** expecting a shared upload: each renderer uploads its own copy.
