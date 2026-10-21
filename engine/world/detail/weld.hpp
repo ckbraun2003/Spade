@@ -1,7 +1,8 @@
 #pragma once
 
 // world/detail/weld.hpp -- the exact weld and the compaction every reader
-// shares (TD-9). Internal to spade::mesh_import, whose sources are in
+// shares, and the declared-unit check the readers of unitless formats share
+// (TD-9). Internal to spade::mesh_import, whose sources are in
 // world/mesh_import/; world/detail/ is never installed.
 //
 // Two vertices merge when their positions are equal by value, component by
@@ -17,6 +18,7 @@
 
 #include <cstdint>
 #include <span>
+#include <string>
 
 #include <glm/vec3.hpp>
 
@@ -26,5 +28,9 @@ namespace spade::detail {
 
 [[nodiscard]] MeshInput weld_exact(std::span<const glm::dvec3> positions, std::span<const uint32_t> indices,
                                    MeshUnit unit);
+
+// Why `unit` can't be the unit a caller declares for a file that carries none
+// (STL, OBJ): it is unspecified, or not a MeshUnit. Empty when it can.
+[[nodiscard]] std::string unit_problem(MeshUnit unit);
 
 }  // namespace spade::detail

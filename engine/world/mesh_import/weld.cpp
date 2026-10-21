@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <limits>
 #include <numeric>
+#include <string>
 #include <vector>
 
 namespace spade::detail {
@@ -70,6 +71,16 @@ MeshInput weld_exact(std::span<const glm::dvec3> positions, std::span<const uint
         out.indices.push_back(number[r]);
     }
     return out;
+}
+
+std::string unit_problem(MeshUnit unit) {
+    if (unit == MeshUnit::unspecified) {
+        return "the unit is unspecified (the file carries none: declare the one it was exported in)";
+    }
+    if (mesh_unit_scale(unit) == 0.0) {
+        return "unit " + std::to_string(static_cast<uint32_t>(unit)) + " is not a MeshUnit";
+    }
+    return {};
 }
 
 }  // namespace spade::detail
