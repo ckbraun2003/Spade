@@ -365,6 +365,9 @@ if(SPADE_BUILD_SANDBOX)
         # Batch 2: the library, identities, imports, the region's bookkeeping, the
         # views, save and reopen, and the measuring helpers for a placed object.
         test_sandbox_end_goal_scene_checks.cpp
+        # The D1 hover preview: the body in the flow, no leak, the downwash
+        # with the body, the C_p legend's note, and publishing with solids.
+        test_sandbox_d1_checks.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp

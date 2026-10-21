@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1174,7 +1175,8 @@ struct Published {
 // Every frame a new, valid volume with no no-data sample. New means a later
 // generation than the frame before: next_flow_generation() only increases,
 // so a repeat or a return to an older volume fails.
-[[nodiscard]] inline Verdict publishes(std::span<const Published> frames) {
+[[nodiscard]] inline Verdict publishes(std::span<const Published> frames, uint32_t interior_solid_cells = 0) {
+    (void)interior_solid_cells;  // RED: the old check, blind to the solids' interior
     const std::string name = "publishes: ";
     if (frames.empty()) return {false, name + "absent: no frames were published"};
     for (std::size_t i = 0; i < frames.size(); ++i) {
@@ -1463,6 +1465,93 @@ template <class V>
     return {true, name + std::to_string(t.saved.size()) + " bytes re-emitted exactly; identities kept; " +
                       std::to_string(t.bodies_before.size()) + " bodies bit-identical after " +
                       std::to_string(kRoundTripSteps) + " steps"};
+}
+
+// ---------------------------------------------------------------------------
+// D1, the hover preview with the body in the flow
+// (docs/design/test-docs/2026-10-21-d1-hover-checks.md §1)
+// ---------------------------------------------------------------------------
+
+// The solids a live run put in its grid, as LiveRun::solids() reports them.
+struct SolidsLine {
+    bool any = false;                // LiveRun::solids().any
+    std::string run_line;            // LiveRun::solids().run_line, verbatim
+    std::size_t expected_parts = 0;  // the model's rigid parts (PartFilter::rigid_only)
+};
+
+namespace detail {
+
+struct SolidsCounts {
+    bool ok = false;
+    std::size_t parts = 0;
+    std::size_t walls = 0;
+    std::size_t sheets = 0;
+    std::string_view rest;  // the sheets' and the safeguard's notes that follow the counts
+};
+
+// Reads the run line's "solids: P parts, W walls, S sheets" and what follows
+// it (physics/airflow/solids.cpp, the run line).
+[[nodiscard]] inline SolidsCounts solids_counts(std::string_view line) {
+    const auto number = [&line](std::size_t& out) {
+        std::size_t n = 0;
+        while (n < line.size() && n < 9 && line[n] >= '0' && line[n] <= '9') ++n;
+        if (n == 0) return false;
+        out = 0;
+        for (std::size_t i = 0; i < n; ++i) out = out * 10 + static_cast<std::size_t>(line[i] - '0');
+        line.remove_prefix(n);
+        return true;
+    };
+    const auto word = [&line](std::string_view w) {
+        if (!line.starts_with(w)) return false;
+        line.remove_prefix(w.size());
+        return true;
+    };
+    SolidsCounts c;
+    c.ok = word("solids: ") && number(c.parts) && word(" parts, ") && number(c.walls) && word(" walls, ") &&
+           number(c.sheets) && word(" sheets");
+    c.rest = line;
+    return c;
+}
+
+}  // namespace detail
+
+// D1-1: the run line names the body: every rigid part of the model is in the
+// grid, and each is a wall. A run whose parts were cleared has no solids.
+[[nodiscard]] inline Verdict solids_in_flow(const SolidsLine& s) {
+    (void)s;  // RED: no check
+    return {true, "solids-in-flow: "};
+}
+
+// D1-2: no leak announced. The safeguard (physics/airflow/solids.cpp) adds
+// "; <part>: leaks at an edge (...)", or a sheet measured with "no closed
+// face", to the run line. A part that leaks outright fails start(), so no run
+// is absent.
+[[nodiscard]] inline Verdict no_leak(const SolidsLine& s) {
+    (void)s;  // RED: no check
+    return {true, "no-leak: "};
+}
+
+// D1-3: the downwash with the body in the flow: `rule`'s own verdict, judged
+// only when the same run's solids-in-flow passed.
+[[nodiscard]] inline Verdict downwash_with_body(const Verdict& in_flow, std::span<const DownwashFrame> frames,
+                                                const DownwashCase& c, const DownwashRule& rule) {
+    (void)in_flow;  // RED: the body's absence goes unseen
+    return downwash(frames, c, rule);
+}
+
+// The C_p legend's two notes (render/view_mode.cpp): with the solids in the
+// flow, and without them.
+inline constexpr std::string_view kCpNoteInFlow = "the fluid's pressure one cell off the wall";
+inline constexpr std::string_view kCpNoteNoWalls = "the walls are not in this flow";
+
+// D1-4: the C_p legend shown says what its colour may claim, and that it is the
+// fluid beside the walls. A film passes its caption too, which carries the
+// note verbatim.
+[[nodiscard]] inline Verdict cp_note(std::span<const render::ViewLegend> shown,
+                                     std::optional<std::string_view> caption = std::nullopt) {
+    (void)shown;  // RED: no check
+    (void)caption;
+    return {true, "cp-note: "};
 }
 
 }  // namespace spade::sandbox::end_goal
