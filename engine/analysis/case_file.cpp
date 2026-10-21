@@ -35,7 +35,7 @@ using yaml_text::scalar;
 using yaml_text::string_field;
 using yaml_text::uint_field;
 
-constexpr std::string_view kSchema = "case schema v1";
+constexpr std::string_view kSchema = "case schema v2";
 
 constexpr std::string_view kFileHeader =
     "# A Spade analysis case (.case.yaml): one drone held at the centre of a box\n"
@@ -65,12 +65,17 @@ constexpr std::array<std::string_view, 3> kRotorModelNames = {"disc", "line", "b
     out += "  file: " + quote_yaml(c.model.file) + "\n";
     out += "  identity: " + quote_yaml(hex64(c.model.identity)) + "\n";
     out += "  parts: " + quote_yaml(hex64(c.model.parts)) + "\n";
+    out += "  propulsion: " + quote_yaml(hex64(c.model.propulsion)) + "\n";
     out += "controls:\n";
     out += "  armed: " + flag(c.controls.armed) + "\n";
     out += "  throttle: " + format_float(c.controls.throttle) + "\n";
     out += "  pitch_deg: " + format_float(c.controls.pitch_deg) + "\n";
     out += "  roll_deg: " + format_float(c.controls.roll_deg) + "\n";
     out += "  yaw_deg: " + format_float(c.controls.yaw_deg) + "\n";
+    const Power& pw = c.power;
+    out += pw.idle || pw.state_of_charge ? "power:\n" : "power: {}\n";
+    if (pw.idle) out += "  idle: " + format_float(*pw.idle) + "\n";
+    if (pw.state_of_charge) out += "  state_of_charge: " + format_float(*pw.state_of_charge) + "\n";
     out += "flight:\n";
     out += "  kind: " + quote_yaml(kFlightNames[static_cast<std::size_t>(c.flight.kind)]) + "\n";
     out += "  speed: " + format_float(c.flight.speed) + "\n";
@@ -217,24 +222,32 @@ template <std::size_t N>
     if (!root.IsMap()) return std::unexpected(at(root, "a case file must be a mapping"));
     // The version first: a newer file's keys are a schema mismatch, not unknown keys.
     SPADE_CASE_TRY(version, uint_field<uint32_t>(root, "version", "case"));
+    if (version == 1) {  // INT-11: never migrated, which would hide a missing chain
+        return std::unexpected(Error{Code::schema_mismatch,
+                                     "case: version 1 pins no propulsion chain and carries no power; re-save "
+                                     "with version 2 (this reader knows " +
+                                         std::string(kSchema) + " only)" + yaml_text::mark_of(root)});
+    }
     if (version != kCaseFileVersion) {
         return std::unexpected(Error{Code::schema_mismatch, "case: version " + dec(version) + "; this reader knows " +
                                                                 std::string(kSchema) + " only" + yaml_text::mark_of(root)});
     }
-    if (Result<void> r = check_map(root, "case", {"version", "model", "controls", "flight", "fluid", "grid", "rotors",
+    if (Result<void> r = check_map(root, "case", {"version", "model", "controls", "power", "flight", "fluid", "grid", "rotors",
                                                   "blades", "airfoils", "time", "outputs"});
         !r) {
         return std::unexpected(r.error());
     }
     AnalysisCase c;
 
-    SPADE_CASE_TRY(model, map_field(root, "model", "case", {"file", "identity", "parts"}));
+    SPADE_CASE_TRY(model, map_field(root, "model", "case", {"file", "identity", "parts", "propulsion"}));
     SPADE_CASE_TRY(model_file, string_field(model, "file", "case.model"));
     SPADE_CASE_TRY(identity_node, field(model, "identity", "case.model"));
     SPADE_CASE_TRY(identity, parse_hash(identity_node, "case.model.identity"));
     SPADE_CASE_TRY(parts_node, field(model, "parts", "case.model"));
     SPADE_CASE_TRY(parts, parse_hash(parts_node, "case.model.parts"));
-    c.model = ModelRef{model_file, identity, parts};
+    SPADE_CASE_TRY(propulsion_node, field(model, "propulsion", "case.model"));
+    SPADE_CASE_TRY(propulsion, parse_hash(propulsion_node, "case.model.propulsion"));
+    c.model = ModelRef{model_file, identity, parts, propulsion};
 
     SPADE_CASE_TRY(controls, map_field(root, "controls", "case", {"armed", "throttle", "pitch_deg", "roll_deg", "yaw_deg"}));
     SPADE_CASE_TRY(armed, bool_field(controls, "armed", "case.controls"));
@@ -243,6 +256,11 @@ template <std::size_t N>
     SPADE_CASE_TRY(roll, float_field(controls, "roll_deg", "case.controls"));
     SPADE_CASE_TRY(yaw, float_field(controls, "yaw_deg", "case.controls"));
     c.controls = Controls{armed, throttle, pitch, roll, yaw};
+
+    SPADE_CASE_TRY(power, map_field(root, "power", "case", {"idle", "state_of_charge"}));
+    SPADE_CASE_TRY(idle, optional_float(power, "idle", "case.power"));
+    SPADE_CASE_TRY(soc, optional_float(power, "state_of_charge", "case.power"));
+    c.power = Power{idle, soc};
 
     SPADE_CASE_TRY(flight, map_field(root, "flight", "case", {"kind", "speed", "heading_deg", "floor_height"}));
     SPADE_CASE_TRY(kind, name_field(flight, "kind", "case.flight", kFlightNames));

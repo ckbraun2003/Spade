@@ -64,7 +64,7 @@ using Powered = an::test::PoweredQuad;
 // debug ctest's budget.
 [[nodiscard]] an::AnalysisCase tiny_case(const spade::vehicles::ModelType& m) {
     an::AnalysisCase c;
-    c.model = an::ModelRef{"quad.model.yaml", spade::vehicles::model_identity(m), spade::vehicles::parts_identity(m)};
+    c.model = an::pin_model("quad.model.yaml", m);
     c.rotors.assign(m.rotors.size(), an::RotorSetup{});
     c.grid.box = 0.8f;
     c.grid.spacing = 0.1f;
@@ -86,7 +86,7 @@ using Powered = an::test::PoweredQuad;
 }
 
 [[nodiscard]] an::LiveRun started(const an::AnalysisCase& c, const Powered& p) {
-    spade::Result<an::LiveRun> run = an::LiveRun::start(resolved(c, p.model), p.model, p.propulsion);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(resolved(an::test::with_power(c, p), p.model), p.model);
     EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
     return std::move(*run);
 }
@@ -155,17 +155,22 @@ TEST(AnalysisLiveRun, ARotorModelNeedsItsPropulsion) {
     EXPECT_NE(run.error().context.find("propulsion"), std::string::npos) << run.error().context;
 }
 
-// The chain's inputs are checked when the run starts, not on its first step.
-TEST(AnalysisLiveRun, RefusesABadIdleOrStateOfCharge) {
-    for (const auto& [idle, soc, field] : {std::tuple{1.0, 0.8, "idle"}, std::tuple{-0.1, 0.8, "idle"},
-                                           std::tuple{0.05, 1.5, "soc"}}) {
+// The chain is the model's, the idle and the state of charge the case's
+// (INT-11; a bad one is the case's to refuse, ThePowerIsCheckedByName):
+// armed at zero throttle, every rotor settles at the speed the case's idle
+// commands, and another idle is another speed.
+TEST(AnalysisLiveRun, ItsPowerIsTheCases) {
+    float last = 0.0f;
+    for (const float idle : {0.05f, 0.12f}) {
         Powered p = powered();
-        p.propulsion.idle = idle;
-        p.propulsion.soc = soc;
-        const spade::Result<an::LiveRun> run =
-            an::LiveRun::start(resolved(tiny_case(p.model), p.model), p.model, p.propulsion);
-        ASSERT_FALSE(run.has_value()) << field;
-        EXPECT_NE(run.error().context.find(field), std::string::npos) << run.error().context;
+        p.power.idle = idle;
+        const an::AnalysisCase c = tiny_case(p.model);
+        an::LiveRun run = started(c, p);
+        const float want = commanded(p, 0.0f, c.fluid.density);
+        ASSERT_GT(want, last);
+        for (int i = 0; i < 250; ++i) ASSERT_TRUE(run.step(an::Controls{true, 0.0f, 0, 0, 0}).has_value());  // 1 s
+        for (const float w : run.state().rotor_omega) EXPECT_NEAR(w, want, 0.005f * want) << "idle " << idle;
+        last = want;
     }
 }
 
@@ -237,7 +242,7 @@ TEST(AnalysisLiveRun, ArmedRotorsPushTheAirDown) {
 // on, and the limit is announced in the state and on the run's label.
 TEST(AnalysisLiveRun, ALimitIsAnnouncedNotRefused) {
     Powered p = powered();
-    p.propulsion.chain.current_max = 4.0;  // a motor that can't take full throttle
+    p.model.propulsion->current_max = 4.0;  // a motor that can't take full throttle
     an::LiveRun run = started(tiny_case(p.model), p);
     EXPECT_EQ(run.run_label().find("current limit"), std::string::npos) << run.run_label();
     for (int i = 0; i < 25; ++i) ASSERT_TRUE(run.step(an::Controls{true, 1.0f, 0, 0, 0}).has_value());
@@ -470,7 +475,7 @@ TEST(AnalysisLiveRun, ItsPartsAreSolidsInTheAir) {
 TEST(AnalysisLiveRun, APartThinnerThanItDeclaresIsRefusedByName) {
     const Powered p = with_ball_body(0.005f, 0.1f);
     const spade::Result<an::LiveRun> run =
-        an::LiveRun::start(resolved(solid_case(p.model), p.model), p.model, p.propulsion);
+        an::LiveRun::start(resolved(an::test::with_power(solid_case(p.model), p), p.model), p.model);
     ASSERT_FALSE(run.has_value());
     EXPECT_NE(run.error().context.find("'body'"), std::string::npos) << run.error().context;
     EXPECT_NE(run.error().context.find("the model's parts as solids"), std::string::npos) << run.error().context;
@@ -488,7 +493,8 @@ TEST(AnalysisLiveRun, ARestoredRunKeepsItsSolids) {
     const spade::test::TempDir dir("live_solids");
     const fs::path file = dir.path() / "run.livesave";
     ASSERT_TRUE(run.save(file).has_value());
-    spade::Result<an::LiveRun> back = an::LiveRun::restore(file, resolved(c, p.model), p.model, p.propulsion);
+    spade::Result<an::LiveRun> back =
+        an::LiveRun::restore(file, resolved(an::test::with_power(c, p), p.model), p.model);
     ASSERT_TRUE(back.has_value()) << back.error().context;
     EXPECT_EQ(back->run_label(), run.run_label());
     spade::FlowVolume a;

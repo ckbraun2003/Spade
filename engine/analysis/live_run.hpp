@@ -24,9 +24,9 @@
 // (Physics' P7a, vehicles::rotor_discs()) spread into the fluid's step. A
 // limit the chain settles at (a motor or the pack at its current rating) is
 // announced in the state and on the run's label, never refused. A model with
-// rotors needs its propulsion; it comes beside the model until Core's model
-// file carries the chain and the case its idle and state of charge (the
-// chain pin).
+// rotors needs its propulsion chain (ModelType::propulsion, the model file's
+// `propulsion:`); its idle and state of charge are the case's Power, as
+// resolve() fills them (INT-11).
 //
 // SOLIDS (P2; D1). The model's rigid parts (PartFilter::rigid_only: a
 // rotor's own parts are the disc's to model) are posed once, at the hover,
@@ -72,15 +72,6 @@ inline constexpr uint32_t kLiveRunSaveVersion = 2;
 inline constexpr float kHoldRateDegPerS = 180.0f;
 inline constexpr uint64_t kFramesPerSecond = 30;
 
-// The drone's propulsion, beside its model until the chain pin. One chain
-// turns every rotor (one per airframe); `idle` and `soc` are the caller's to
-// set, as the case will hold them.
-struct LivePropulsion {
-    vehicles::PropulsionChain chain;
-    double idle = 0.0;  // the duty an armed drone spins at with zero throttle, in [0, 1)
-    double soc = 1.0;   // the battery's state of charge, in [0, 1]
-};
-
 struct LiveState {
     double t_s = 0.0;  // simulated, whole steps of h
     uint64_t steps = 0;
@@ -109,28 +100,27 @@ struct LiveFrame {
 
 // The showcase program's trim (controls.hpp) for `model` in the case's air:
 // - a model without rotors has no hover, and both throttles are 0;
-// - rotors without propulsion are refused, as LiveRun::start() refuses them;
+// - rotors without a propulsion chain are refused, as LiveRun::start()
+//   refuses them;
 // - else each throttle is the one whose duty, through armed_duty()'s idle,
 //   gives the target thrust per rotor: the weight over the rotor count
 //   (Physics' rule, steady_state_for_thrust() in still air at the case's
-//   density and the propulsion's state of charge; the airframe fit's
+//   density and the case's state of charge; the airframe fit's
 //   hover_duty when those match the compile's), then kShowcaseClimbThrust
 //   times it. The weight is in LiveRun's world, Environment{}'s gravity.
 // Refused by name: the throttle map's own refusals; a chain that cannot hover
 // the model; a climb out of reach; an idle at or above the hover duty (armed
 // at zero throttle the drone would climb).
-[[nodiscard]] Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model,
-                                                 const std::optional<LivePropulsion>& propulsion);
+[[nodiscard]] Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model);
 
 class LiveRun {
   public:
     // Builds the grid (the resolved base and drone-box faces), the fluid and
     // the held drone. Refused by name: a case without time.step (until
-    // Physics' step rule exists), a model with rotors and no propulsion, an
-    // idle, state of charge or chain the throttle map refuses, a grid
+    // Physics' step rule exists), a model with rotors and no propulsion
+    // chain, an idle, state of charge or chain the throttle map refuses, a grid
     // make_grid() refuses, and a model or world the Simulation refuses.
-    [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                                               const std::optional<LivePropulsion>& propulsion = std::nullopt);
+    [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model);
 
     LiveRun(LiveRun&&) noexcept;
     LiveRun& operator=(LiveRun&&) noexcept;
@@ -187,14 +177,13 @@ class LiveRun {
     // saved: its last good save is the one before the fault.
     [[nodiscard]] Result<void> save(const std::filesystem::path& file) const;
 
-    // Rebuilds the run from the case, model and propulsion, then its saved
-    // state. Refused by name: a missing file (io_error), a foreign or short
-    // one, a version this build doesn't read (schema_mismatch), a checksum
-    // that doesn't match, and another case, model, parts, propulsion chain,
-    // idle or state of charge.
+    // Rebuilds the run from the case and model, then its saved state.
+    // Refused by name: a missing file (io_error), a foreign or short one, a
+    // version this build doesn't read (schema_mismatch), a checksum that
+    // doesn't match, another case (it pins the chain and holds the idle and
+    // state of charge), model or parts, and a model without its chain.
     [[nodiscard]] static Result<LiveRun> restore(const std::filesystem::path& file, const ResolvedCase& resolved,
-                                                 const vehicles::ModelType& model,
-                                                 const std::optional<LivePropulsion>& propulsion = std::nullopt);
+                                                 const vehicles::ModelType& model);
 
   private:
     struct Impl;

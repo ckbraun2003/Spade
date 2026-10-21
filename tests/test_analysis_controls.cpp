@@ -177,10 +177,11 @@ double weight_of(const vh::ModelType& m) {
 
 // The rotors' summed steady thrust at an armed throttle, in still air.
 double thrust_at(const PoweredQuad& q, float throttle, double density) {
-    const auto duty = vh::armed_duty(true, throttle, q.propulsion.idle);
+    const auto duty = vh::armed_duty(true, throttle, static_cast<double>(*q.power.idle));
     EXPECT_TRUE(duty.has_value());
     const vh::SteadyPoint p =
-        vh::steady_state_at_duty(q.propulsion.chain, duty.value_or(0.0), density, 0.0, q.propulsion.soc);
+        vh::steady_state_at_duty(*q.model.propulsion, duty.value_or(0.0), density, 0.0,
+                                 static_cast<double>(*q.power.state_of_charge));
     return p.thrust * static_cast<double>(q.model.rotors.size());
 }
 
@@ -188,8 +189,8 @@ double thrust_at(const PoweredQuad& q, float throttle, double density) {
 
 TEST(AnalysisShowcaseTrim, TheTrimHoldsTheWeightAndClimbsAtOnePointThreeTimesIt) {
     const PoweredQuad q = powered_quad();
-    const an::AnalysisCase c;
-    const spade::Result<an::ShowcaseTrim> trim = an::showcase_trim(c, q.model, q.propulsion);
+    const an::AnalysisCase c = spade::analysis::test::with_power(an::AnalysisCase{}, q);
+    const spade::Result<an::ShowcaseTrim> trim = an::showcase_trim(c, q.model);
     ASSERT_TRUE(trim.has_value()) << trim.error().context;
     const double w = weight_of(q.model);
     EXPECT_NEAR(thrust_at(q, trim->hover, c.fluid.density) / w, 1.0, 1e-4);
@@ -206,11 +207,11 @@ TEST(AnalysisShowcaseTrim, TheReferenceQuadHoversAtItsAirframeFitsDuty) {
     const auto compiled = vh::compile_airframe(spec);
     ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
     const PoweredQuad q = powered_quad();
-    an::AnalysisCase c;
+    an::AnalysisCase c = spade::analysis::test::with_power(an::AnalysisCase{}, q);
     c.fluid.density = static_cast<float>(spec.air_density);
-    const spade::Result<an::ShowcaseTrim> trim = an::showcase_trim(c, q.model, q.propulsion);
+    const spade::Result<an::ShowcaseTrim> trim = an::showcase_trim(c, q.model);
     ASSERT_TRUE(trim.has_value()) << trim.error().context;
-    const auto duty = vh::armed_duty(true, trim->hover, q.propulsion.idle);
+    const auto duty = vh::armed_duty(true, trim->hover, static_cast<double>(*q.power.idle));
     ASSERT_TRUE(duty.has_value());
     EXPECT_NEAR(*duty, compiled->fit.hover_duty, 1e-6);
 }
@@ -219,11 +220,11 @@ TEST(AnalysisShowcaseTrim, TheReferenceQuadHoversAtItsAirframeFitsDuty) {
 // the compile's.
 TEST(AnalysisShowcaseTrim, TheTrimIsTheCasesAirNotTheCompiles) {
     const PoweredQuad q = powered_quad();
-    an::AnalysisCase sea;
-    an::AnalysisCase high;
+    const an::AnalysisCase sea = spade::analysis::test::with_power(an::AnalysisCase{}, q);
+    an::AnalysisCase high = sea;
     high.fluid.density = 1.0f;
-    const auto low_trim = an::showcase_trim(sea, q.model, q.propulsion);
-    const auto high_trim = an::showcase_trim(high, q.model, q.propulsion);
+    const auto low_trim = an::showcase_trim(sea, q.model);
+    const auto high_trim = an::showcase_trim(high, q.model);
     ASSERT_TRUE(low_trim.has_value() && high_trim.has_value());
     EXPECT_GT(high_trim->hover, low_trim->hover);
 }
@@ -232,8 +233,8 @@ TEST(AnalysisShowcaseTrim, TheTrimIsTheCasesAirNotTheCompiles) {
 // commands more than the climb's thrust.
 TEST(AnalysisShowcaseTrim, TheReferenceQuadsProgramStaysWithinTheClimbThrust) {
     const PoweredQuad q = powered_quad();
-    const an::AnalysisCase c;
-    const auto trim = an::showcase_trim(c, q.model, q.propulsion);
+    const an::AnalysisCase c = spade::analysis::test::with_power(an::AnalysisCase{}, q);
+    const auto trim = an::showcase_trim(c, q.model);
     ASSERT_TRUE(trim.has_value()) << trim.error().context;
     const double w = weight_of(q.model);
     for (const an::ControlPoint& p : an::showcase_program(*trim).points) {
@@ -246,24 +247,26 @@ TEST(AnalysisShowcaseTrim, TheReferenceQuadsProgramStaysWithinTheClimbThrust) {
 TEST(AnalysisShowcaseTrim, AModelWithoutRotorsHasNoHoverAndAZeroTrim) {
     PoweredQuad q = powered_quad();
     q.model.rotors.clear();
-    const auto trim = an::showcase_trim(an::AnalysisCase{}, q.model, std::nullopt);
+    q.model.propulsion.reset();
+    const auto trim = an::showcase_trim(an::AnalysisCase{}, q.model);
     ASSERT_TRUE(trim.has_value()) << trim.error().context;
     EXPECT_EQ(trim->hover, 0.0f);
     EXPECT_EQ(trim->climb, 0.0f);
 }
 
 TEST(AnalysisShowcaseTrim, RotorsWithoutPropulsionAreRefusedAsLiveRunRefusesThem) {
-    const PoweredQuad q = powered_quad();
-    const auto trim = an::showcase_trim(an::AnalysisCase{}, q.model, std::nullopt);
+    PoweredQuad q = powered_quad();
+    q.model.propulsion.reset();
+    const auto trim = an::showcase_trim(an::AnalysisCase{}, q.model);
     ASSERT_FALSE(trim.has_value());
     EXPECT_EQ(trim.error().code, spade::Code::invalid_argument);
-    EXPECT_NE(trim.error().context.find("needs their propulsion"), std::string::npos) << trim.error().context;
+    EXPECT_NE(trim.error().context.find("needs their propulsion chain"), std::string::npos) << trim.error().context;
 }
 
 TEST(AnalysisShowcaseTrim, AChainThatCannotHoverTheModelIsRefusedByName) {
     PoweredQuad q = powered_quad();
     q.model.body.mass *= 100.0f;
-    const auto trim = an::showcase_trim(an::AnalysisCase{}, q.model, q.propulsion);
+    const auto trim = an::showcase_trim(spade::analysis::test::with_power(an::AnalysisCase{}, q), q.model);
     ASSERT_FALSE(trim.has_value());
     EXPECT_NE(trim.error().context.find("cannot hover"), std::string::npos) << trim.error().context;
 }
@@ -271,12 +274,14 @@ TEST(AnalysisShowcaseTrim, AChainThatCannotHoverTheModelIsRefusedByName) {
 // Hover in reach, 1.3 times it not: full thrust is 1.15 times the weight.
 TEST(AnalysisShowcaseTrim, AClimbOutOfReachIsRefusedByName) {
     PoweredQuad q = powered_quad();
-    const an::AnalysisCase c;
+    const an::AnalysisCase c = spade::analysis::test::with_power(an::AnalysisCase{}, q);
     const double full =
-        vh::steady_state_at_duty(q.propulsion.chain, 1.0, c.fluid.density, 0.0, q.propulsion.soc).thrust *
+        vh::steady_state_at_duty(*q.model.propulsion, 1.0, c.fluid.density, 0.0,
+                                 static_cast<double>(*q.power.state_of_charge))
+            .thrust *
         static_cast<double>(q.model.rotors.size());
     q.model.body.mass = static_cast<float>(full / 1.15 / static_cast<double>(-spade::Environment{}.gravity.y));
-    const auto trim = an::showcase_trim(c, q.model, q.propulsion);
+    const auto trim = an::showcase_trim(c, q.model);
     ASSERT_FALSE(trim.has_value());
     EXPECT_NE(trim.error().context.find("climb"), std::string::npos) << trim.error().context;
 }
@@ -285,13 +290,14 @@ TEST(AnalysisShowcaseTrim, AClimbOutOfReachIsRefusedByName) {
 // would climb.
 TEST(AnalysisShowcaseTrim, AnIdleAtOrAboveTheHoverDutyIsRefusedInPhysicsWords) {
     PoweredQuad q = powered_quad();
-    const an::AnalysisCase c;
-    const double hover = vh::steady_state_for_thrust(q.propulsion.chain,
+    an::AnalysisCase c = spade::analysis::test::with_power(an::AnalysisCase{}, q);
+    const double hover = vh::steady_state_for_thrust(*q.model.propulsion,
                                                      weight_of(q.model) / static_cast<double>(q.model.rotors.size()),
-                                                     c.fluid.density, 0.0, q.propulsion.soc)
+                                                     c.fluid.density, 0.0,
+                                                     static_cast<double>(*q.power.state_of_charge))
                              .duty;
-    q.propulsion.idle = hover + 0.01;
-    const auto trim = an::showcase_trim(c, q.model, q.propulsion);
+    c.power.idle = static_cast<float>(hover + 0.01);
+    const auto trim = an::showcase_trim(c, q.model);
     ASSERT_FALSE(trim.has_value());
     EXPECT_NE(trim.error().context.find("at or above the hover duty"), std::string::npos) << trim.error().context;
 }

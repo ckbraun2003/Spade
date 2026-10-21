@@ -49,10 +49,13 @@ namespace {
     if (!case_text) return std::unexpected(case_text.error());
     const auto program_text = an::program_to_yaml(lc.program);
     if (!program_text) return std::unexpected(program_text.error());
+    // The chain is the model's, the idle and charge the case's (INT-11).
     const std::string propulsion =
-        lc.propulsion ? "propulsion " + hex(spade::vehicles::propulsion_identity(lc.propulsion->chain)) + " idle " +
-                            std::to_string(lc.propulsion->idle) + " soc " + std::to_string(lc.propulsion->soc)
-                      : std::string("unpowered");
+        lc.run_model.propulsion
+            ? "propulsion " + hex(spade::vehicles::propulsion_identity(*lc.run_model.propulsion)) + " idle " +
+                  std::to_string(lc.c.power.idle.value_or(an::kDefaultIdleDuty)) + " soc " +
+                  std::to_string(lc.c.power.state_of_charge.value_or(an::kDefaultStateOfCharge))
+            : std::string("unpowered");
     return "case " + hex(fnv(*case_text)) + ", controls " + hex(fnv(*program_text)) + ", model " +
            hex(spade::vehicles::model_identity(lc.run_model)) + ", parts " +
            hex(spade::vehicles::parts_identity(lc.draw_model)) + ", " + propulsion + ", " +
@@ -69,12 +72,14 @@ spade::Result<ModelType> case_model(const an::AnalysisCase& c, const fs::path& c
                                                                      ": " + loaded.error().context});
     }
     for (const ModelType& m : loaded->models) {
-        if (spade::vehicles::model_identity(m) == c.model.identity && spade::vehicles::parts_identity(m) == c.model.parts) {
+        const an::ModelRef pins = an::pin_model(c.model.file, m);
+        if (pins.identity == c.model.identity && pins.parts == c.model.parts && pins.propulsion == c.model.propulsion) {
             return m;
         }
     }
     return std::unexpected(invalid("case_model: no model in " + scene.string() + " has the case's pinned identity " +
-                                   hex(c.model.identity) + " and parts " + hex(c.model.parts) +
+                                   hex(c.model.identity) + ", parts " + hex(c.model.parts) + " and propulsion " +
+                                   hex(c.model.propulsion) +
                                    "; re-pin the case to the model it is for"));
 }
 
@@ -88,10 +93,9 @@ spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs
     lc.run_model = *model;
     lc.draw_model = std::move(*model);
     if (controls_file.empty()) {
-        // Flown around the drone's own hover. Until the case pins its chain
-        // (INT-11) there is no propulsion here, so a model with rotors is
-        // refused as LiveRun::start() would refuse it.
-        auto trim = an::showcase_trim(lc.c, lc.run_model, std::nullopt);
+        // Flown around the drone's own hover: its chain and the case's power
+        // (INT-11).
+        auto trim = an::showcase_trim(lc.c, lc.run_model);
         if (!trim) return std::unexpected(trim.error());
         lc.program = an::showcase_program(*trim);
         lc.program_name = "the showcase program";
@@ -131,12 +135,9 @@ constexpr const char* kLibraryQuad = "library/drones/reference_quad.model.yaml";
     lc.draw_model = std::move(loaded->model);
     lc.run_model = lc.draw_model;
     lc.run_model.parts.clear();
-    // Idle 5 % and a full charge are the film's own until the case pins its
-    // chain's state (the chain pin).
-    lc.propulsion = an::LivePropulsion{*lc.run_model.propulsion, 0.05, 1.0};
-    lc.c.model = an::ModelRef{std::string("assets/") + kLibraryQuad,
-                              spade::vehicles::model_identity(lc.run_model),
-                              spade::vehicles::parts_identity(lc.run_model)};
+    // Idle 5 % and a full charge: the film's case carries them (INT-11).
+    lc.c.power = an::Power{.idle = 0.05f, .state_of_charge = 1.0f};
+    lc.c.model = an::pin_model(std::string("assets/") + kLibraryQuad, lc.run_model);
     lc.c.rotors.assign(lc.run_model.rotors.size(), an::RotorSetup{});
     lc.c.grid.box = box;
     lc.c.grid.spacing = spacing;
@@ -147,7 +148,7 @@ constexpr const char* kLibraryQuad = "library/drones/reference_quad.model.yaml";
     // The showcase's moves around this quad's HOVER: Interface's trim, by
     // Physics' rule (the steady state for m g / n per rotor, and the climb at
     // 1.3 times the weight), flown on its own chain (TD-9: one hover rule).
-    auto trim = an::showcase_trim(lc.c, lc.run_model, lc.propulsion);
+    auto trim = an::showcase_trim(lc.c, lc.run_model);
     if (!trim) return std::unexpected(trim.error());
     lc.program = an::showcase_program(*trim);
     lc.program_name = "the showcase around hover";
@@ -158,10 +159,10 @@ constexpr const char* kLibraryQuad = "library/drones/reference_quad.model.yaml";
     // The rotors' speed at an armed throttle, as LiveRun commands it.
     const spade::vehicles::RotorDesc& rotor = lc.run_model.rotors.front();
     const auto omega_at = [&lc](double throttle) -> spade::Result<float> {
-        auto duty = spade::vehicles::armed_duty(true, throttle, lc.propulsion->idle);
+        auto duty = spade::vehicles::armed_duty(true, throttle, static_cast<double>(*lc.c.power.idle));
         if (!duty) return std::unexpected(duty.error());
-        auto cmd = spade::vehicles::rotor_omega_for_duty(lc.propulsion->chain, *duty, lc.c.fluid.density,
-                                                         lc.propulsion->soc);
+        auto cmd = spade::vehicles::rotor_omega_for_duty(*lc.run_model.propulsion, *duty, lc.c.fluid.density,
+                                                         static_cast<double>(*lc.c.power.state_of_charge));
         if (!cmd) return std::unexpected(cmd.error());
         return cmd->omega_cmd;
     };

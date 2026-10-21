@@ -11,10 +11,14 @@
 
 #include <glm/glm.hpp>
 
+#include "analysis/detail/hover.hpp"
 #include "core/fp32_math.hpp"
 #include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "scene/model_file.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/propulsion_flags.hpp"
+#include "world/builder.hpp"
 
 namespace spade::analysis {
 
@@ -70,6 +74,26 @@ class Issues {
   private:
     std::vector<CaseIssue> list_;
 };
+
+// A model changed since the case pinned it, in any of its three pins.
+void add_pin_issues(Issues& out, const ModelRef& pin, const vehicles::ModelType& model) {
+    const uint64_t identity = vehicles::model_identity(model);
+    if (identity != pin.identity) {
+        out.add("model.identity", "the model changed since the case pinned it (case " + hex64(pin.identity) +
+                                      ", model " + hex64(identity) + "); re-pin the case to the model");
+    }
+    const uint64_t parts = vehicles::parts_identity(model);
+    if (parts != pin.parts) {
+        out.add("model.parts", "the model's parts changed since the case pinned them (case " + hex64(pin.parts) +
+                                   ", model " + hex64(parts) + "); re-pin the case to the model");
+    }
+    const uint64_t chain = model.propulsion ? vehicles::propulsion_identity(*model.propulsion) : 0u;
+    if (chain != pin.propulsion) {
+        out.add("model.propulsion", "the model's propulsion chain changed since the case pinned it (case " +
+                                        hex64(pin.propulsion) + ", model " + hex64(chain) +
+                                        "); re-pin the case to the model");
+    }
+}
 
 void check_blade(const BladeDefinition& b, const std::string& at, Issues& out) {
     if (b.blade_count == 0) out.add(at + ".blade_count", "a rotor needs at least one blade");
@@ -147,6 +171,15 @@ std::vector<CaseIssue> case_issues(const AnalysisCase& c) {
         out.add("flight.floor_height", num(*f.floor_height) + " m must be above 0; leave it out for no floor");
     }
 
+    const Power& pw = c.power;
+    if (pw.idle && !(std::isfinite(*pw.idle) && *pw.idle >= 0.0f && *pw.idle < 1.0f)) {
+        out.add("power.idle", num(*pw.idle) + " must be in [0, 1): the armed duty at zero throttle");
+    }
+    if (pw.state_of_charge &&
+        !(std::isfinite(*pw.state_of_charge) && *pw.state_of_charge > 0.0f && *pw.state_of_charge <= 1.0f)) {
+        out.add("power.state_of_charge", num(*pw.state_of_charge) + " must be in (0, 1]: an empty pack lifts nothing");
+    }
+
     if (!positive(c.fluid.density)) out.add("fluid.density", num(c.fluid.density) + " kg/m3 must be above 0");
     if (!positive(c.fluid.kinematic_viscosity)) {
         out.add("fluid.kinematic_viscosity", num(c.fluid.kinematic_viscosity) + " m2/s must be above 0");
@@ -219,16 +252,7 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
     if (Result<void> ok = model.validate(); !ok) out.add("model", ok.error().context);
     if (std::vector<CaseIssue> early = out.take(); !early.empty()) return std::unexpected(std::move(early));
 
-    const uint64_t identity = vehicles::model_identity(model);
-    if (identity != c.model.identity) {
-        out.add("model.identity", "the model changed since the case pinned it (case " + hex64(c.model.identity) +
-                                      ", model " + hex64(identity) + "); re-pin the case to the model");
-    }
-    const uint64_t parts = vehicles::parts_identity(model);
-    if (parts != c.model.parts) {
-        out.add("model.parts", "the model's parts changed since the case pinned them (case " + hex64(c.model.parts) +
-                                   ", model " + hex64(parts) + "); re-pin the case to the model");
-    }
+    add_pin_issues(out, c.model, model);
     if (c.rotors.size() != model.rotors.size()) {
         out.add("rotors", "the case sets " + std::to_string(c.rotors.size()) + " rotors; the model has " +
                               std::to_string(model.rotors.size()));
@@ -236,6 +260,27 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
 
     ResolvedCase r;
     r.spec = c;
+
+    // The drone's power: Physics' defaults where the case leaves it out,
+    // then the idle against the model's hover (Physics, 2026-10-19).
+    Power& pw = r.spec.power;
+    r.idle_source = pw.idle ? Source::given : Source::default_value;
+    r.soc_source = pw.state_of_charge ? Source::given : Source::default_value;
+    if (!pw.idle) pw.idle = kDefaultIdleDuty;
+    if (!pw.state_of_charge) pw.state_of_charge = kDefaultStateOfCharge;
+    if (model.propulsion && !model.rotors.empty()) {
+        const double idle = static_cast<double>(*pw.idle);
+        // A chain that can't hover the model leaves nothing to compare: a
+        // live run announces it, as an analysis at full throttle may want it.
+        if (const Result<vehicles::SteadyPoint> hover = detail::hover_point(
+                model, *model.propulsion, static_cast<double>(c.fluid.density), static_cast<double>(*pw.state_of_charge));
+            hover && !(idle < hover->duty)) {
+            out.add("power.idle", std::format("idle duty {:.3g} is at or above the hover duty {:.3g}: armed at zero "
+                                              "throttle the drone would climb",
+                                              idle, hover->duty));
+        }
+    }
+
     GridSetup& g = r.spec.grid;
     if (!g.box) {
         g.box = kDefaultBoxReaches * vehicles::model_reach(model);
@@ -330,5 +375,46 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
     r.hash = rng::fnv1a64(*text);
     return r;
 }
+
+ModelRef pin_model(std::string file, const vehicles::ModelType& model) {
+    return ModelRef{std::move(file), vehicles::model_identity(model), vehicles::parts_identity(model),
+                    model.propulsion ? vehicles::propulsion_identity(*model.propulsion) : 0u};
+}
+
+Result<vehicles::ModelType> load_case_model(const AnalysisCase& c, const std::filesystem::path& case_file) {
+    const std::string name = "the case's model '" + c.model.file + "'";
+    Result<scene::ModelFile> read = scene::load_model_file(case_file.parent_path() / c.model.file);
+    if (!read) return std::unexpected(Error{read.error().code, name + ": " + read.error().context});
+    Issues out;
+    add_pin_issues(out, c.model, read->model);
+    if (std::vector<CaseIssue> issues = out.take(); !issues.empty()) {
+        return std::unexpected(
+            Error{Code::invalid_argument, name + ": " + issues.front().field + ": " + issues.front().message});
+    }
+    return std::move(read->model);
+}
+
+namespace detail {
+
+double world_weight(const vehicles::ModelType& model) {
+    return static_cast<double>(model.body.mass) * static_cast<double>(-Environment{}.gravity.y);
+}
+
+std::string air_text(double density, double soc) {
+    return std::format("density {:.4g} kg/m3, state of charge {:.3g}", density, soc);
+}
+
+Result<vehicles::SteadyPoint> hover_point(const vehicles::ModelType& model, const vehicles::PropulsionChain& chain,
+                                          double density, double soc) {
+    const double per_rotor = world_weight(model) / static_cast<double>(model.rotors.size());
+    const vehicles::SteadyPoint hover = vehicles::steady_state_for_thrust(chain, per_rotor, density, 0.0, soc);
+    if ((hover.flags & (vehicles::propulsion_flags::unreachable | vehicles::propulsion_flags::no_bracket)) != 0u) {
+        return std::unexpected(Error{Code::invalid_argument, "the chain cannot hover the model '" + model.name +
+                                                                 "' at " + air_text(density, soc)});
+    }
+    return hover;
+}
+
+}  // namespace detail
 
 }  // namespace spade::analysis

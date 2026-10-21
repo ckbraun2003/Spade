@@ -300,8 +300,8 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     fs::create_directories(cache, ec);
     const fs::path save = cache / "live.save";
     const bool resuming = fs::exists(save, ec);
-    auto run = resuming ? an::LiveRun::restore(save, *resolved, lc.run_model, lc.propulsion)
-                        : an::LiveRun::start(*resolved, lc.run_model, lc.propulsion);
+    auto run = resuming ? an::LiveRun::restore(save, *resolved, lc.run_model)
+                        : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
     const auto first = static_cast<uint32_t>(run->state().frames);
     // run.txt: the saved frames' lines as they were (a kill after the save

@@ -4,7 +4,9 @@
 // §4, §7). Display-free. A host (Kat's builder, the sandbox's airflow scene)
 // reads and writes a case only through this header (DBC-004).
 //
-// THE FILE, `.case.yaml`, version 1. Written in one fixed order, every float
+// THE FILE, `.case.yaml`, version 2 (INT-11: it pins the model's propulsion
+// chain and carries the drone's power; a version-1 file is refused, never
+// migrated). Written in one fixed order, every float
 // with format_float's 9 significant digits, so a case saved twice is the same
 // bytes. An absent value (std::nullopt) is absent from the file, never a 0
 // standing for "default" or "none". Angles are DEGREES here as in the file
@@ -32,7 +34,7 @@
 
 namespace spade::analysis {
 
-inline constexpr uint32_t kCaseFileVersion = 1;
+inline constexpr uint32_t kCaseFileVersion = 2;
 
 // The flight condition (Physics' plan A domain conditions); they differ at the
 // floor. Forward flight at v moves the air AND the ground past the drone at
@@ -41,14 +43,18 @@ enum class FlightKind : uint32_t { hover = 0, forward = 1, hover_in_wind = 2 };
 
 enum class RotorModel : uint32_t { disc = 0, line = 1, blade_resolved = 2 };
 
-// The model a case is for, as a scene pins its world: by file, and by its two
-// identities when the case was saved. A changed model, or changed parts, is
-// refused until the case is re-pinned.
+// The model a case is for, as a scene pins its world: by file, and by its
+// three identities when the case was saved. A changed model, changed parts
+// or a changed propulsion chain is refused until the case is re-pinned.
 struct ModelRef {
-    std::string file;       // relative to the case file's folder, so a project can move
-    uint64_t identity = 0;  // vehicles::model_identity(): the body, rotors, drag bodies and mounts
-    uint64_t parts = 0;     // vehicles::parts_identity(): the parts' geometry, mounts and surfaces
+    std::string file;         // relative to the case file's folder, so a project can move
+    uint64_t identity = 0;    // vehicles::model_identity(): the body, rotors, drag bodies and mounts
+    uint64_t parts = 0;       // vehicles::parts_identity(): the parts' geometry, mounts and surfaces
+    uint64_t propulsion = 0;  // vehicles::propulsion_identity() of the model's chain; 0 for none
 };
+
+// The model's three pins under `file`, as a host pins a case to it.
+[[nodiscard]] ModelRef pin_model(std::string file, const vehicles::ModelType& model);
 
 // The drone-box inputs (Q4), held for the whole run (A4's constant program).
 // The attitude is the drone sim box's: yaw about +Y, then pitch about +Z,
@@ -61,6 +67,17 @@ struct Controls {
     float roll_deg = 0.0f;
     float yaw_deg = 0.0f;
 };
+
+// The drone's power (INT-11): the arm rule's idle and the pack's state of
+// charge. The chain itself is the model's (ModelType::propulsion). Absent,
+// each is Physics' announced default, which resolve() fills and reports.
+struct Power {
+    std::optional<float> idle;             // the armed duty at zero throttle, [0, 1)
+    std::optional<float> state_of_charge;  // the pack's, (0, 1]
+};
+
+inline constexpr float kDefaultIdleDuty = 0.05f;      // Physics, 2026-10-19
+inline constexpr float kDefaultStateOfCharge = 1.0f;  // a full pack
 
 struct Flight {
     FlightKind kind = FlightKind::hover;
@@ -135,6 +152,7 @@ struct Outputs {
 struct AnalysisCase {
     ModelRef model;
     Controls controls;
+    Power power;
     Flight flight;
     Fluid fluid;
     GridSetup grid;
@@ -194,6 +212,8 @@ struct ResolvedCase {
     uint64_t hash = 0;  // rng::fnv1a64 of case_to_yaml(spec)
     Source box_source = Source::given;
     Source spacing_source = Source::given;
+    Source idle_source = Source::given;  // spec.power.idle's
+    Source soc_source = Source::given;   // spec.power.state_of_charge's
     float finest_spacing = 0.0f;         // spacing / 2^nests, around the drone
     physics::airflow::GridShape base{};  // the base grid
     physics::airflow::DomainBc domain{};  // the drone box's faces: open, the wind as ambient, the floor a wall
@@ -203,11 +223,20 @@ struct ResolvedCase {
 
 // The case against `model`: every problem, not the first. Refused, besides
 // case_issues(): an invalid model; a model changed since the case pinned it
-// (either identity); a rotor without its setup; a missing blade, or one whose
+// (any of its three pins); a rotor without its setup; an idle at or above the
+// model's hover duty (armed at zero throttle it would climb); a missing
+// blade, or one whose
 // hub reaches its rotor's radius; and whatever the finest cell cannot resolve
 // (a wall feature, the line's R, blade-resolved's chord) or the solver cannot
 // hold, each with the spacing it needs (DBC-013..017).
 [[nodiscard]] std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c,
                                                                           const vehicles::ModelType& model);
+
+// The case's model, read from its file beside the case (`case_file`'s
+// folder) and checked against all three pins in one place. Refused naming
+// the file: one that does not load, or a model changed since the case
+// pinned it, naming the pin ("model.propulsion: ... re-pin").
+[[nodiscard]] Result<vehicles::ModelType> load_case_model(const AnalysisCase& c,
+                                                          const std::filesystem::path& case_file);
 
 }  // namespace spade::analysis
