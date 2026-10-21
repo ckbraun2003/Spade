@@ -2,9 +2,9 @@
 // the contract and the refusals.
 //
 // One pass, line by line: the vertices into one list, and each face as its
-// three vertex indices with the o and g names in force. At the end the faces
-// are grouped by o, or by g in a file with no o, into objects in the order of
-// their first face. Each object gathers the vertices its faces name in
+// vertex indices with the o and g names in force (a polygon fanned into
+// triangles). At the end the faces are grouped by o, or by g in a file with
+// no o, into objects in the order of their first face. Each object gathers the vertices its faces name in
 // first-use order, then goes to the shared exact weld and make_mesh().
 #include "world/mesh_import.hpp"
 
@@ -20,12 +20,15 @@
 #include <limits>
 #include <map>
 #include <new>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include <glm/common.hpp>
+#include <glm/geometric.hpp>
 #include <glm/vec3.hpp>
 
 #include "core/path_text.hpp"
@@ -102,6 +105,87 @@ struct Kind {
 constexpr Kind kVertex{"vertex", "vertices"};
 constexpr Kind kTexture{"texture coordinate", "texture coordinates"};
 constexpr Kind kNormal{"normal", "normals"};
+
+// Whether a face of more than three corners can be fanned, or why not (the
+// header's POLYGONS). `p` are its corners in face order.
+enum class Polygon : uint32_t { ok, no_area, not_planar, not_convex, winds_again };
+
+struct PolygonCheck {
+    Polygon verdict = Polygon::ok;
+    std::size_t corner = 0;  // the first offending corner, 0-based (not_planar, not_convex)
+};
+
+[[nodiscard]] PolygonCheck check_polygon(std::span<const glm::dvec3> p) {
+    const std::size_t n = p.size();
+    glm::dvec3 centre(0.0);
+    for (const glm::dvec3& q : p) centre += q;
+    centre /= static_cast<double>(n);
+
+    // Newell's normal (twice the area vector) of the centred corners, and the
+    // corners' bounding box.
+    glm::dvec3 normal(0.0);
+    glm::dvec3 lo = p[0];
+    glm::dvec3 hi = p[0];
+    for (std::size_t i = 0; i < n; ++i) {
+        normal += glm::cross(p[i] - centre, p[(i + 1) % n] - centre);
+        lo = glm::min(lo, p[i]);
+        hi = glm::max(hi, p[i]);
+    }
+    const double nn = glm::dot(normal, normal);
+    if (!(nn > 0.0)) return {Polygon::no_area};
+
+    // Planar: every corner within tolerance x width of the plane, the width
+    // being 2 area / diagonal = |normal| / diagonal, so a thin face is held to
+    // its own width (a fan's fold stays below about the tolerance in radians).
+    // With d the corner's offset along the normal: (d / |normal|)^2 <=
+    // (tolerance |normal| / diagonal)^2, i.e. d^2 diagonal^2 <= tolerance^2
+    // |normal|^4, compared squared so no root is taken.
+    const glm::dvec3 extent = hi - lo;
+    const double diagonal2 = glm::dot(extent, extent);
+    const double limit = kObjPlanarTolerance * kObjPlanarTolerance * nn * nn;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = glm::dot(p[i] - centre, normal);
+        if (d * d * diagonal2 > limit) return {Polygon::not_planar, i};
+    }
+
+    // Strictly convex, in the projection along the normal's largest component
+    // (the lowest axis on a tie), oriented so the face's own winding is
+    // positive: every corner turns left, and the edges' u components change
+    // sign exactly twice around (a face that winds round twice, a star,
+    // changes them four times).
+    std::size_t axis = 0;
+    for (std::size_t k = 1; k < 3; ++k) {
+        const double a = normal[static_cast<glm::length_t>(k)];
+        const double b = normal[static_cast<glm::length_t>(axis)];
+        if ((a < 0.0 ? -a : a) > (b < 0.0 ? -b : b)) axis = k;
+    }
+    const auto u = static_cast<glm::length_t>((axis + 1) % 3);
+    const auto w = static_cast<glm::length_t>((axis + 2) % 3);
+    const double sign = normal[static_cast<glm::length_t>(axis)] > 0.0 ? 1.0 : -1.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const glm::dvec3& prev = p[(i + n - 1) % n];
+        const glm::dvec3& next = p[(i + 1) % n];
+        const double au = p[i][u] - prev[u];
+        const double aw = p[i][w] - prev[w];
+        const double bu = next[u] - p[i][u];
+        const double bw = next[w] - p[i][w];
+        if (!((au * bw - aw * bu) * sign > 0.0)) return {Polygon::not_convex, i};
+    }
+    int first = 0;  // the sign of the first edge's u component that is not 0
+    int last = 0;
+    std::size_t changes = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double du = p[(i + 1) % n][u] - p[i][u];
+        const int s = du > 0.0 ? 1 : du < 0.0 ? -1 : 0;
+        if (s == 0) continue;
+        if (first == 0) first = s;
+        if (last != 0 && s != last) ++changes;
+        last = s;
+    }
+    if (last != first) ++changes;
+    if (changes > 2) return {Polygon::winds_again};
+    return {};
+}
 
 class Reader {
   public:
@@ -186,7 +270,7 @@ Result<void> Reader::line(std::string_view text) {
     }
     if (keyword == "s" || keyword == "usemtl" || keyword == "mtllib") return {};
     return fail(Code::unavailable, "'" + std::string(keyword) +
-                                       "' elements are not read: this build reads v and triangular f (points, lines, "
+                                       "' elements are not read: this build reads v and f (points, lines, "
                                        "free-form geometry and display attributes are not converted)");
 }
 
@@ -243,15 +327,9 @@ Result<uint32_t> Reader::resolve(std::string_view index, uint64_t defined, const
 
 Result<void> Reader::face() {
     const std::size_t n = fields_.size() - 1;
-    if (n < 3) return fail(Code::invalid_argument, "a face of " + num(n) + " corners; a face takes three");
-    if (n > 3) {
-        return fail(Code::unavailable,
-                    "a face of " + num(n) + " vertices; this build reads triangles (triangulate on export)");
-    }
-    Face f;
-    f.o = o_;
-    f.g = g_;
-    for (std::size_t k = 0; k < 3; ++k) {
+    if (n < 3) return fail(Code::invalid_argument, "a face of " + num(n) + " corners; a face takes three or more");
+    std::vector<uint32_t> corners(n);
+    for (std::size_t k = 0; k < n; ++k) {
         const std::string_view corner = fields_[k + 1];
         // v, v/vt, v/vt/vn or v//vn: v never empty, vt empty only between
         // two slashes, vn never empty.
@@ -282,9 +360,36 @@ Result<void> Reader::face() {
                 return std::unexpected(vn.error());
             }
         }
-        f.v[k] = *v;
+        corners[k] = *v;
     }
-    faces_.push_back(f);
+    if (n > 3) {
+        std::vector<glm::dvec3> p(n);
+        for (std::size_t k = 0; k < n; ++k) p[k] = positions_[corners[k]];
+        const PolygonCheck check = check_polygon(p);
+        const std::string face = "a face of " + num(n) + " vertices ";
+        const std::string rest = "; this build fans only planar, strictly convex polygons (triangulate on export)";
+        switch (check.verdict) {
+            case Polygon::ok: break;
+            case Polygon::no_area: return fail(Code::unavailable, face + "with no area" + rest);
+            case Polygon::not_planar:
+                return fail(Code::unavailable,
+                            face + "that is not planar (at corner " + num(check.corner + 1) + ")" + rest);
+            case Polygon::not_convex:
+                return fail(Code::unavailable,
+                            face + "that is not strictly convex (at corner " + num(check.corner + 1) + ")" + rest);
+            case Polygon::winds_again:
+                return fail(Code::unavailable,
+                            face + "that is not strictly convex (it winds round more than once)" + rest);
+        }
+    }
+    // Fanned from the first corner, keeping the face's winding.
+    for (std::size_t k = 1; k + 1 < n; ++k) {
+        Face f;
+        f.o = o_;
+        f.g = g_;
+        f.v = {corners[0], corners[k], corners[k + 1]};
+        faces_.push_back(f);
+    }
     return {};
 }
 

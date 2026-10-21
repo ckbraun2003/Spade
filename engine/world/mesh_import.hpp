@@ -117,12 +117,26 @@
 // fields are separated by spaces and tabs; a line whose first field starts
 // with '#' is a comment; a UTF-8 byte order mark before line 1 is skipped.
 //   READ: `v x y z`, with up to four more numbers after the three (a weight,
-//     or a colour) read and ignored; `f` with exactly three corners, each v,
+//     or a colour) read and ignored; `f` with three or more corners, each v,
 //     v/vt, v/vt/vn or v//vn. Every index is 1-based, a negative one counts
 //     back from the latest element of its kind (-1 is the latest), and a
 //     corner may name only elements defined above it. vt and vn lines are
 //     counted for those range checks and otherwise ignored; s, usemtl and
 //     mtllib are ignored.
+//   POLYGONS (B7b): a face of more than three corners a, b, c, d, ... is
+//     fanned from its first corner into (a, b, c), (a, c, d), ..., keeping its
+//     winding, when it is planar and strictly convex:
+//     - planar: every corner lies within kObjPlanarTolerance of the face's
+//       width of the plane through the corners' mean with Newell's normal,
+//       the width being twice its area over its corners' bounding-box
+//       diagonal (so a thin face is held to its own width);
+//     - strictly convex: in the projection along that normal's largest
+//       component (the lowest axis on a tie), every corner turns the face's
+//       way, and the edges' components along the projection's first axis
+//       change sign exactly twice around (so the face winds round once: a
+//       star, whose corners all turn one way, does not).
+//     Compared in double, + - * / only, squared where a length would need a
+//     root, so the same text gives the same triangles on every platform.
 //   OBJECTS: `o` names objects; in a file with no `o`, `g` does (so a body
 //     that `g` splits into material groups stays one object). A name is the
 //     rest of its line, trimmed, and must be UTF-8. A bare `o` or `g`, and
@@ -136,8 +150,11 @@
 //     refused); one leading '+' is allowed.
 //   REFUSALS, each naming its line ("<file>: line N: ..."); the first in the
 //     file is returned.
-//     unavailable -- a face of more than three vertices ("triangulate on
-//       export"); every other element, named: p, l, free-form geometry (vp,
+//     unavailable -- a face of more than three vertices that is not planar
+//       (naming its first corner off the plane), is not strictly convex
+//       (naming its first corner that does not turn, or saying it winds round
+//       more than once), or has no area, each "(triangulate on export)";
+//       every other element, named: p, l, free-form geometry (vp,
 //       cstype, curv, curv2, surf and the rest) and display attributes (lod
 //       and the rest); a line continued by a trailing '\'.
 //     invalid_argument -- a v with fewer than three numbers or more than
@@ -167,6 +184,13 @@
 #include "world/mesh.hpp"
 
 namespace spade {
+
+// How far an OBJ polygon's corner may lie off its plane, as a fraction of the
+// face's width (POLYGONS above): 1e-3, so the rounding of a 6-decimal export
+// (Blender's) passes on faces down to about a millimetre wide in a file in
+// metres, and the fold a fan makes in a face that passes, whatever its
+// shape, is a fraction of a degree.
+inline constexpr double kObjPlanarTolerance = 1e-3;
 
 // One imported object: its name (UTF-8) and its validated mesh, in metres.
 struct MeshObject {
