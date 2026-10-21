@@ -36,6 +36,10 @@ import sys
 TEMPLATES = [
     ("tools/flow_movie/", "tests/test_gpu_gl_renderer.cpp",
      "the leg never builds tools/flow_movie, which needs a window backend"),
+    # Read only for a file the volume's build lacks: every spade_render source
+    # is compiled with the target's one command line (no per-file flags).
+    ("engine/render/", "engine/render/flow_lines.cpp",
+     "a new spade_render source the leg has not built yet"),
 ]
 
 # file -> (flags replaced, flags added): the leg's own line, with the window
