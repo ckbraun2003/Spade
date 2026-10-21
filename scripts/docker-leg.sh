@@ -178,8 +178,12 @@ do_test() {
     gpu_excluded=$(ctest --test-dir "$build" -N -L gpu | sed -n 's/^Total Tests: //p')
     # The viewer-trajectory guard checks a short prefix in the gate; here it
     # checks every tick of every golden, on gcc (INT-4, TD-12).
+    # A passing test's output is kept whole in the JUnit file: ctest cuts it
+    # at 1024 bytes by default, which cut validation records short (P2's
+    # design test 7, 2026-10-21).
     SPADE_FULL_VIEWER_TRAJECTORIES=1 \
     ctest --test-dir "$build" -L spade -LE gpu --output-on-failure --no-tests=error \
+        --test-output-size-passed 65536 \
         --output-junit "$out/ctest-junit.xml" 2>&1 | tee "$out/ctest.log"
     return "${PIPESTATUS[0]}"
 }
