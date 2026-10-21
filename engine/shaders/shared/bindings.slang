@@ -32,12 +32,14 @@
 // ---------------------------------------------------------------------------
 // SET LAYOUT
 //
-// ONE descriptor set, set 0 ("state"), holding every storage buffer, plus one
-// push-constant block. One set rather than several because every kernel in
-// S6 reads from the same pool of world-partitioned arrays: splitting them
-// across sets would buy per-frequency update granularity that nothing in this
-// engine has (the whole state pool is bound once and stepped in place) at the
-// cost of a second layout to keep in sync.
+// ONE descriptor set for the step, set 0 ("state"), holding every storage
+// buffer the step's kernels read, plus one push-constant block. (Set 1,
+// "airflow", section F, belongs to the airflow solver's kernels alone; no
+// set-0 pipeline layout includes it.) One set rather than several because
+// every kernel in S6 reads from the same pool of world-partitioned arrays:
+// splitting them across sets would buy per-frequency update granularity that
+// nothing in this engine has (the whole state pool is bound once and stepped
+// in place) at the cost of a second layout to keep in sync.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS BOUND, AND WHY EACH ONE
@@ -214,6 +216,7 @@
 // errors on a reflected parameter whose set has no directive.
 //
 // @set 0 state
+// @set 1 airflow
 
 import layouts;
 
@@ -387,3 +390,57 @@ import layouts;
 // -- D. the per-dispatch push constant --------------------------------------
 
 [[vk::push_constant]] ConstantBuffer<PassParams> pass_params;
+
+// -- F. THE AIRFLOW SET (set 1) ----------------------------------------------
+//
+// The GPU airflow solver's arrays (Physics' GPU plan B; Core's B0 plan,
+// docs/design/core/plans/2026-10-21-airflow-gpu-b0-plan.md, whose table gives
+// each array's kind and contents; the lead approved a set of its own on
+// 2026-10-21, recorded in stage 7's design). A SET OF ITS OWN, not more
+// bindings in set 0: the mirror binds every set-0 binding (the census
+// DescriptorSetBindsEveryRegistryBinding pins), so set 0, the mirror, StepShape
+// and every identity stay byte for byte, and no run without airflow pays for
+// it. Plan B's chain runner builds a pipeline layout of an empty set 0 and this
+// set; stage 7's airflow module binds the same set, unchanged.
+//
+// NO STEP KERNEL READS SET 1. Every kernel imports this file, so one that
+// named an airflow_* buffer would compile, and its set-0-only pipeline layout
+// would be invalid API use that only a debug build's validation layer would
+// report. Only the airflow kernels, on a layout that carries set 1, use them.
+//
+// THE LIST IS APPEND-ONLY. A binding index is an ABI (see A above): an array a
+// later plan needs (dye, vorticity) is added at the end, and nothing here is
+// ever renumbered. Physics confirmed the list (2026-10-21). The element types
+// are the storage words the kernels read; a kernel may view a packed array
+// through its own struct, and the offsets of every packed array are in
+// airflow_params. Read-only to the kernels: what the host uploads (the params,
+// the static solids, the discs). Read-write: state, scratch and what is read
+// back.
+[[vk::binding(0, 1)]]  StructuredBuffer<uint>    airflow_params;
+[[vk::binding(1, 1)]]  RWStructuredBuffer<float> airflow_u;
+[[vk::binding(2, 1)]]  RWStructuredBuffer<float> airflow_v;
+[[vk::binding(3, 1)]]  RWStructuredBuffer<float> airflow_w;
+[[vk::binding(4, 1)]]  RWStructuredBuffer<float> airflow_pressure;
+[[vk::binding(5, 1)]]  RWStructuredBuffer<float> airflow_next;
+[[vk::binding(6, 1)]]  RWStructuredBuffer<float> airflow_advect;
+[[vk::binding(7, 1)]]  RWStructuredBuffer<float> airflow_increments;
+[[vk::binding(8, 1)]]  RWStructuredBuffer<float> airflow_viscous_rhs;
+[[vk::binding(9, 1)]]  RWStructuredBuffer<float> airflow_rhs;
+[[vk::binding(10, 1)]] RWStructuredBuffer<float> airflow_residual;
+[[vk::binding(11, 1)]] RWStructuredBuffer<float> airflow_multigrid;
+[[vk::binding(12, 1)]] StructuredBuffer<float>   airflow_mg_weights;
+[[vk::binding(13, 1)]] StructuredBuffer<float>   airflow_apertures;
+[[vk::binding(14, 1)]] StructuredBuffer<float>   airflow_wall_velocity;
+[[vk::binding(15, 1)]] StructuredBuffer<float>   airflow_phi;
+[[vk::binding(16, 1)]] StructuredBuffer<uint>    airflow_face_tags;
+[[vk::binding(17, 1)]] StructuredBuffer<uint>    airflow_wall_links;
+[[vk::binding(18, 1)]] StructuredBuffer<uint>    airflow_region_labels;
+[[vk::binding(19, 1)]] RWStructuredBuffer<uint>  airflow_region_table;
+[[vk::binding(20, 1)]] RWStructuredBuffer<float> airflow_pcg;
+[[vk::binding(21, 1)]] RWStructuredBuffer<float> airflow_scalars;
+[[vk::binding(22, 1)]] StructuredBuffer<float>   airflow_discs;
+[[vk::binding(23, 1)]] RWStructuredBuffer<float> airflow_partials;
+[[vk::binding(24, 1)]] RWStructuredBuffer<uint>  airflow_health;
+[[vk::binding(25, 1)]] RWStructuredBuffer<uint>  airflow_publish_v;
+[[vk::binding(26, 1)]] RWStructuredBuffer<uint>  airflow_publish_s;
+[[vk::binding(27, 1)]] RWStructuredBuffer<float> airflow_wall_load;

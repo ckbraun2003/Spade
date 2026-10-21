@@ -115,6 +115,18 @@ public:
     // L6). Recorded at create(); describe() gives it one line.
     [[nodiscard]] const DeviceReport& device_report() const noexcept { return report_; }
 
+    // THE VRAM BUDGET (chain-runner design A1, A2; stage 7 §7.4): a query, not
+    // an enable. On a device that advertises VK_EXT_memory_budget it reads
+    // VkPhysicalDeviceMemoryBudgetPropertiesEXT through
+    // vkGetPhysicalDeviceMemoryProperties2 -- the extension is a
+    // physical-device query, so it is never enabled, and device creation is
+    // byte for byte as before -- for the largest device-local heap (the lowest
+    // index on a tie). Without it, half that heap, and no usage. `source` says
+    // which. Read fresh at each call: the budget moves as other programs
+    // allocate. compute/device_limits.hpp's vram_cap() and check_vram() do the
+    // arithmetic.
+    [[nodiscard]] MemoryBudget memory_budget() const;
+
     // True iff this context created a VK_EXT_debug_utils messenger (S6 Task
     // 5): a debug build where VK_LAYER_KHRONOS_validation AND the
     // VK_EXT_debug_utils instance extension were both present at create()
@@ -157,6 +169,9 @@ private:
     // S6 Task 8: VkPhysicalDeviceFeatures::shaderInt64 as this device
     // advertised it (see supports_int64() above). Recorded, never required.
     bool int64_supported_ = false;
+    // Whether the device advertises VK_EXT_memory_budget (memory_budget()),
+    // read once from its extension list at create().
+    bool memory_budget_ext_ = false;
     DeviceReport report_;
     std::string device_name_;
 };
