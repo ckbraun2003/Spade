@@ -32,6 +32,8 @@ struct PcgScratch {
 };
 
 [[nodiscard]] PcgScratch make_pcg_scratch(std::size_t cells);
+// The bytes make_pcg_scratch() allocates: six floats per cell.
+[[nodiscard]] inline uint64_t pcg_bytes(uint64_t cells) noexcept { return 6u * cells * sizeof(float); }
 
 // `iterations` CG iterations on mg.levels[0]'s operator from s.x. Returns the
 // final relative residual max|b - A x| / max|b| over the cells not marked

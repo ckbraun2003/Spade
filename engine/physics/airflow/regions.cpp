@@ -28,6 +28,12 @@ struct FaceRef {
 
 }  // namespace
 
+uint64_t regions_bytes(const GridShape& s) noexcept {
+    const uint64_t cells = uint64_t{s.nx} * s.ny * s.nz;
+    const uint64_t tile = uint64_t{kReduceTile} * kReduceTile * kReduceTile;
+    return cells * (sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t)) + tile * sizeof(uint32_t);
+}
+
 void label_regions(FluidRegions& r, const GridShape& s, std::array<bool, 3> periodic, const SolidField& f) {
     const std::size_t cells = std::size_t{s.nx} * s.ny * s.nz;
     r.label.assign(cells, kNoRegion);

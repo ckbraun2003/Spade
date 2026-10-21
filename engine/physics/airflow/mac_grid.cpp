@@ -9,7 +9,7 @@ namespace {
 constexpr const char* kSideNames[6] = {"x-", "x+", "y-", "y+", "z-", "z+"};
 }  // namespace
 
-Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc) {
+Result<void> check_shape(const GridShape& shape, const DomainBc& bc) {
     if (shape.nx == 0 || shape.ny == 0 || shape.nz == 0) {
         return std::unexpected(Error{Code::invalid_argument, "airflow grid: every dimension must be at least 1"});
     }
@@ -39,6 +39,11 @@ Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc) {
                                              " must have an even size or size 1 (red-black colouring)"});
         }
     }
+    return {};
+}
+
+Result<MacGrid> make_grid(const GridShape& shape, const DomainBc& bc) {
+    if (Result<void> ok = check_shape(shape, bc); !ok) return std::unexpected(ok.error());
     MacGrid g;
     g.shape = shape;
     g.u.assign(std::size_t{shape.nx + 1u} * shape.ny * shape.nz, 0.0f);

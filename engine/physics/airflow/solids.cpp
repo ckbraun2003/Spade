@@ -484,13 +484,17 @@ Result<SolidClass> classify_part(const SolidPart& p, float dx) {
     return SolidClass{SolidRole::sheet, feature};
 }
 
+uint64_t solid_field_bytes(const GridShape& s) noexcept {
+    uint64_t faces = 0;
+    for (uint32_t c = 0; c < 3; ++c) faces += sample_count(s, c);
+    return faces * (3u * sizeof(float) + sizeof(uint32_t) + sizeof(uint8_t));
+}
+
 Result<SolidField> make_solid_field(const GridShape& s) {
     if (s.nx == 0 || s.ny == 0 || s.nz == 0 || !(s.dx > 0.0f) || !std::isfinite(s.dx)) {
         return std::unexpected(Error{Code::invalid_argument, "airflow solids: a grid shape make_grid() refuses"});
     }
-    uint64_t faces = 0;
-    for (uint32_t c = 0; c < 3; ++c) faces += sample_count(s, c);
-    if (const uint64_t bytes = faces * 16u; bytes > kGridByteCap) {
+    if (const uint64_t bytes = solid_field_bytes(s); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow solids: " + std::to_string(bytes) +
                                                                    " bytes of solid field, past the cap of " +
                                                                    std::to_string(kGridByteCap)});

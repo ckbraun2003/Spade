@@ -1,10 +1,12 @@
 #include "physics/airflow/fluid_step.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string>
 
 #include "physics/airflow/multigrid.hpp"
+#include "physics/airflow/pcg.hpp"
 
 namespace spade::physics::airflow {
 
@@ -136,6 +138,25 @@ Result<void> check_domain(const DomainBc& bc, const GridShape& shape) {
     return {};
 }
 
+uint64_t solid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
+    const std::array<bool, 3> periodic = periodic_axes(bc);
+    const uint64_t cells = uint64_t{s.nx} * s.ny * s.nz;
+    return solid_field_bytes(s) + regions_bytes(s) + pcg_bytes(cells) +
+           multigrid_faces(s.nx, s.ny, s.nz, periodic) * sizeof(float);
+}
+
+Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids) {
+    if (Result<void> ok = check_shape(shape, bc); !ok) return ok;
+    if (Result<void> ok = check_domain(bc, shape); !ok) return ok;
+    const uint64_t bytes = fluid_bytes(shape, bc) + (with_solids ? solid_bytes(shape, bc) : 0u);
+    if (bytes > kGridByteCap) {
+        const char* what = with_solids ? " bytes of grid, scratch and solids" : " bytes of grid and scratch";
+        return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) + what +
+                                                                  ", past the cap of " + std::to_string(kGridByteCap)});
+    }
+    return {};
+}
+
 Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg) {
     const auto refuse = [](const char* what) {
         return std::unexpected(Error{Code::invalid_argument, std::string("airflow fluid step: ") + what});
@@ -148,12 +169,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (cfg.interior == SolidInterior::extrapolate && cfg.nu > 0.0f) {
         return refuse("the free-slip interior (SolidInterior::extrapolate) is the inviscid lean mode: nu must be 0");
     }
-    if (Result<void> ok = check_domain(bc, g.shape); !ok) return std::unexpected(ok.error());
-    if (const uint64_t bytes = fluid_bytes(g.shape, bc); bytes > kGridByteCap) {
-        return std::unexpected(Error{Code::capacity_exceeded, "airflow fluid step: " + std::to_string(bytes) +
-                                                                  " bytes of grid and scratch, past the cap of " +
-                                                                  std::to_string(kGridByteCap)});
-    }
+    if (Result<void> ok = check_grid(g.shape, bc, false); !ok) return std::unexpected(ok.error());
     FluidScratch s;
     s.next = g;
     s.advect = make_advect_scratch(g.shape);
@@ -168,6 +184,8 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
 Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, std::span<const SolidPart> parts,
                         const SolidSampler& sample) {
     if (s.solids.theta[0].empty()) {
+        // The grid's first solids: the cap with them, before any is allocated.
+        if (Result<void> ok = check_grid(g.shape, bc, true); !ok) return ok;
         Result<SolidField> made = make_solid_field(g.shape);
         if (!made) return std::unexpected(made.error());
         s.solids = std::move(*made);

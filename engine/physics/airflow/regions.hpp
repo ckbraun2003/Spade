@@ -50,6 +50,12 @@ struct FluidRegions {
     std::vector<uint32_t> touched; // the regions the current tile met, in first-met order
 };
 
+// The bytes label_regions() allocates for the shape: the label and solid
+// mask per cell, the flood fill's queue (a cell index per cell, held while it
+// labels) and the tile list. Not counted: the per-region arrays, which grow
+// with the region count.
+[[nodiscard]] uint64_t regions_bytes(const GridShape& s) noexcept;
+
 // Labels the fluid cells (a host call: it allocates).
 void label_regions(FluidRegions& r, const GridShape& s, std::array<bool, 3> periodic, const SolidField& f);
 

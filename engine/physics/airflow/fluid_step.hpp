@@ -89,12 +89,25 @@ struct FluidScratch {
 // Refused (invalid_argument) naming every wall face with a normal velocity.
 [[nodiscard]] Result<void> check_domain(const DomainBc& bc, const GridShape& shape);
 
+// The bytes set_solids() adds for the shape, in 64 bits: the solid field, the
+// regions' per-cell arrays, the PCG's vectors and every multigrid level's
+// face weights. Not counted: what grows with the solid surface (the wall
+// links, the fill layers) or with the region count.
+[[nodiscard]] uint64_t solid_bytes(const GridShape& shape, const DomainBc& bc) noexcept;
+
+// Whether a grid of this shape and these faces can be made and stepped, with
+// solids or without: check_shape() (make_grid()'s refusals), check_domain(),
+// then fluid_bytes() (plus solid_bytes() with solids) within kGridByteCap,
+// refused capacity_exceeded naming the bytes and the cap. One rule for
+// make_grid(), make_fluid_scratch(), set_solids() and a scene's validator
+// (TD-9; the N5b agreement with Core); no allocation but a refusal's message.
+[[nodiscard]] Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids);
+
 // Refused, before anything is allocated:
 //   invalid_argument, naming the field: rho or h not positive and finite; nu
 //     negative or not finite; n_v = 0; visc_sweeps = 0 with nu > 0;
-//   invalid_argument, naming the faces: check_domain();
-//   capacity_exceeded, naming the bytes and the cap: fluid_bytes() past
-//     kGridByteCap.
+//   check_grid(shape, bc, false): check_domain() by face, and fluid_bytes()
+//     past kGridByteCap naming the bytes and the cap.
 [[nodiscard]] Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg);
 
 // One step. Returns the scratch's health: FluidFault::none, or the fault
