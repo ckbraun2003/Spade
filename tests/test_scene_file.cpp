@@ -497,17 +497,17 @@ TEST(SceneFile, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
 }
 
 TEST(SceneFile, AnotherSceneVersionIsASchemaMismatch) {
-    // This build reads versions 1 to 4 (2 carries parts, CORE-7; 3 a mesh
-    // part, CORE-6; 4 a model's propulsion chain, N5a). Above and below that
-    // range is "upgrade", never "fix your file".
-    for (const std::string version : {"5", "0"}) {
+    // This build reads versions 1 to 5 (2 carries parts, CORE-7; 3 a mesh
+    // part, CORE-6; 4 a model's propulsion chain, N5a; 5 airflow regions,
+    // N5b). Above and below that range is "upgrade", never "fix your file".
+    for (const std::string version : {"6", "0"}) {
         SCOPED_TRACE(version);
         const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
             with(kMinimalScene, "scene_version: 1\n", "scene_version: " + version + "\n"));
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
         EXPECT_TRUE(contains(r.error().context, "scene file is schema version " + version)) << r.error().context;
-        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 4")) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 5")) << r.error().context;
     }
 }
 
@@ -1199,12 +1199,12 @@ TEST(SceneFile, ASceneWithAMeshPartIsVersion3) {
         << why(relabelled);
 
     // A reader of versions 1 and 2 refuses a version-3 file as schema_mismatch,
-    // "upgrade", as this build refuses version 5.
+    // "upgrade", as this build refuses version 6.
     const spade::Result<SceneDesc> newer = spade::scene::scene_from_yaml(
-        with(*text, "\nscene_version: 3\n", "\nscene_version: 5\n"), std::filesystem::path("."));
+        with(*text, "\nscene_version: 3\n", "\nscene_version: 6\n"), std::filesystem::path("."));
     ASSERT_FALSE(newer);
     EXPECT_EQ(newer.error().code, spade::Code::schema_mismatch);
-    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 4")) << why(newer);
+    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 5")) << why(newer);
 }
 
 TEST(SceneFile, AMeshPartLoadsFromItsSidecar) {
