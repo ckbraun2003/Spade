@@ -131,8 +131,14 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - **The call:** run python directly, not inside PowerShell:
 
     ```text
-    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--wait-max-s <S>] --log <FILE> -- <command>
+    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--expect-s <E>] [--wait-max-s <S>] --ticket spade-<realm>-<what>-<sha> --log <FILE> -- <command>
     ```
+
+  - **What v2 adds** (live 2026-10-21; Cameron ran the install):
+    - **`--expect-s`:** the run time you expect, which defaults to `--limit-s`. A job expected to take over 900 s is LONG, and only one long job runs at a time.
+    - **The quick lane:** a job with `--expect-s` of 90 or less and `--limit-s` of 180 or less.
+    - **`--ticket spade-<realm>-<what>-<sha>`:** a key for the job, for example `spade-testdocs-release-suite-d8c92ee`. A retry with the same ticket keeps its place in the queue.
+    - **`--queue-status`** shows each job's size and its working directory, as well as who holds the queue and who waits.
 
   - **The classes:**
 
@@ -143,10 +149,9 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
     | `ctest -L gpu` | `--heavy-class gpu` (one at a time) | `ctest -L gpu ...` |
     | A Docker leg | `--heavy-class test --floor-gb 8` | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\docker-leg.ps1 -Commit <sha> ...` |
 
-  - **Two path pitfalls,** until Kat's fix lands (Physics found them, 2026-10-20):
-    - Give the command after `--` an absolute path to its executable, for example `C:/Users/Cameron/Desktop/Projects/<tree>/build-ninja/release/bin/spade_tests.exe`, and give ctest an absolute `--test-dir`. Windows resolves a relative executable against jobrun's own working directory, not `--cwd`, so it fails with WinError 2 only after the whole queue wait.
-    - From Git Bash, write `C:/Users/...`, never `/c/Users/...`. Python takes an MSYS path literally.
-  - **Its limits:** `--limit-s` counts from the job's start. Exit 125 means the job gave up waiting for its turn (`--wait-max-s`, by default 3600 s). `--queue-status` shows who holds the queue and who waits.
+  - **A path pitfall:** from Git Bash, write `C:/Users/...`, never `/c/Users/...`. Python takes an MSYS path literally.
+    - History: before v2, a relative executable after `--` resolved against jobrun's own working directory, not `--cwd`, and failed with WinError 2 only after the whole queue wait (Physics, 2026-10-20). v2 resolves `argv[0]` against `--cwd`, or refuses at once.
+  - **Its limits:** `--limit-s` counts from the job's start. Exit 125 means the job gave up waiting for its turn (`--wait-max-s`, by default 3600 s).
   - **From a session's tool call:** run a short job in the foreground with `--wait-max-s 300`. Run a leg or a long suite in the background, with a `--log`. If the reaper kills a background call, run it again; never detach it.
   - **Exempt:** `scripts/gcc-check.sh --compile`, reads, `git merge` and `git commit`, and `git add` with explicit paths.
   - **A wrong block** goes to the lead, with the exact command.
