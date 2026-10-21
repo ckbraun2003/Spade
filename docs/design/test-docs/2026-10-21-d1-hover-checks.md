@@ -32,6 +32,7 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
     - The tour's airflow chapter (`sandbox/airflow_live.hpp`, 32³ at 25 mm) clears them on purpose: the quad's parts can't be held at 25 mm. Its card says the parts are drawn, not in the air. So it is honestly `absent:`, and not a D1 path.
   - Rotor parts let through the filter (`P` ≠ the rigid count): `mis-staged:`.
   - A part classed as a sheet at 4 mm (`S > 0`): a fail that names the part.
+  - Interface's review: `AirflowSolids` also passes porous rigid parts to `set_solids()`, so they count in `P`. A model with one would fail as "not every part is a wall". That is right for D1, since the library quad has none. If a porous part ever appears, the verdict should name it as porous (a follow-up).
 
 ### D1-2. `no-leak`: no leak announced at 4 mm
 
