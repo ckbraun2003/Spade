@@ -589,7 +589,14 @@ void main() {
 // half-scale image into this renderer's own target: (C, T) and an opaque
 // iso's depth, which kFlowCompositeSrc then lays over the frame. Needs
 // kFlowSampleSrc and kFlowParamsSrc before it.
+//
+// Its loops are not unrolled (an NVIDIA pragma; other drivers ignore it).
+// Unrolled, this one program was 9.0 s of a cold create()'s 10.4 s on the
+// RTX 3060 Ti (572.83, GpuGlCreateCost, 2026-10-21); not, 3.3 s, and the
+// march costs the same (FlowLayerCostAt128CubedAnd1080p: volume 62.9 ms
+// against 64.9, iso 20.1 against 18.1, within run-to-run noise).
 constexpr const char* kFlowVolumeFragmentSrc = R"GLSL(
+#pragma optionNV(unroll none)
 uniform mat4 uViewProj;
 uniform vec3 uBoxMin;
 uniform vec3 uBoxMax;
@@ -1580,9 +1587,19 @@ struct GpuMesh {
 };
 
 // `parts` are concatenated in order, so one GLSL helper serves two programs.
-[[nodiscard]] Result<GLuint> compile(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts, const char* what) {
+// `parts` as GL takes them, with `salt` (a line, or null) after the first
+// part, which is the #version line and must stay first.
+[[nodiscard]] std::vector<const char*> salted(std::initializer_list<const char*> parts, const char* salt) {
+    std::vector<const char*> out(parts.begin(), parts.end());
+    if (salt != nullptr && !out.empty()) out.insert(out.begin() + 1, salt);
+    return out;
+}
+
+[[nodiscard]] Result<GLuint> compile(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts,
+                                     const char* what, const char* salt = nullptr) {
     const GLuint sh = gl.CreateShader(stage);
-    gl.ShaderSource(sh, static_cast<GLsizei>(parts.size()), parts.begin(), nullptr);
+    const std::vector<const char*> sources = salted(parts, salt);
+    gl.ShaderSource(sh, static_cast<GLsizei>(sources.size()), sources.data(), nullptr);
     gl.CompileShader(sh);
     GLint ok = GL_FALSE;
     gl.GetShaderiv(sh, GL_COMPILE_STATUS, &ok);
@@ -1606,9 +1623,11 @@ struct GpuMesh {
 
 // A shader compiled without asking how it went, so a driver that compiles
 // in parallel is not made to wait; linked() asks later.
-[[nodiscard]] GLuint start_shader(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts) {
+[[nodiscard]] GLuint start_shader(const GlApi& gl, GLenum stage, std::initializer_list<const char*> parts,
+                                  const char* salt) {
     const GLuint sh = gl.CreateShader(stage);
-    gl.ShaderSource(sh, static_cast<GLsizei>(parts.size()), parts.begin(), nullptr);
+    const std::vector<const char*> sources = salted(parts, salt);
+    gl.ShaderSource(sh, static_cast<GLsizei>(sources.size()), sources.data(), nullptr);
     gl.CompileShader(sh);
     return sh;
 }
@@ -1616,9 +1635,9 @@ struct GpuMesh {
 // A program linked without asking how it went (see start_shader()). Its
 // shaders are released now; GL keeps them until the program is done.
 [[nodiscard]] GLuint start_link(const GlApi& gl, std::initializer_list<const char*> vertex,
-                                std::initializer_list<const char*> fragment) {
-    const GLuint vs = start_shader(gl, GL_VERTEX_SHADER, vertex);
-    const GLuint fs = start_shader(gl, GL_FRAGMENT_SHADER, fragment);
+                                std::initializer_list<const char*> fragment, const char* salt) {
+    const GLuint vs = start_shader(gl, GL_VERTEX_SHADER, vertex, salt);
+    const GLuint fs = start_shader(gl, GL_FRAGMENT_SHADER, fragment, salt);
     const GLuint program = gl.CreateProgram();
     gl.AttachShader(program, vs);
     gl.AttachShader(program, fs);
@@ -1628,8 +1647,9 @@ struct GpuMesh {
     return program;
 }
 
-[[nodiscard]] GLuint start_link_compute(const GlApi& gl, std::initializer_list<const char*> compute) {
-    const GLuint cs = start_shader(gl, GL_COMPUTE_SHADER, compute);
+[[nodiscard]] GLuint start_link_compute(const GlApi& gl, std::initializer_list<const char*> compute,
+                                        const char* salt) {
+    const GLuint cs = start_shader(gl, GL_COMPUTE_SHADER, compute, salt);
     const GLuint program = gl.CreateProgram();
     gl.AttachShader(program, cs);
     gl.LinkProgram(program);
@@ -1653,10 +1673,11 @@ struct GpuMesh {
 }
 
 [[nodiscard]] Result<GLuint> link(const GlApi& gl, std::initializer_list<const char*> vertex,
-                                  std::initializer_list<const char*> fragment, const char* what) {
-    const Result<GLuint> vs = compile(gl, GL_VERTEX_SHADER, vertex, what);
+                                  std::initializer_list<const char*> fragment, const char* what,
+                                  const char* salt = nullptr) {
+    const Result<GLuint> vs = compile(gl, GL_VERTEX_SHADER, vertex, what, salt);
     if (!vs) return std::unexpected(vs.error());
-    const Result<GLuint> fs = compile(gl, GL_FRAGMENT_SHADER, fragment, what);
+    const Result<GLuint> fs = compile(gl, GL_FRAGMENT_SHADER, fragment, what, salt);
     if (!fs) {
         gl.DeleteShader(*vs);
         return std::unexpected(fs.error());
@@ -1815,6 +1836,7 @@ struct GlRenderer::Impl {
     bool flow_pending = false;
     bool flow_failed = false;
     Error flow_error;
+    std::function<void(std::string_view)> on_program;  // CreateProbe::on_program
     GLuint flow_depth_tex = 0;
     GLuint flow_depth_fbo = 0;
     uint32_t flow_depth_width = 0;
@@ -1937,6 +1959,7 @@ struct GlRenderer::Impl {
                 flow_error = ok.error();
                 return std::unexpected(flow_error);
             }
+            if (on_program) on_program(what);
         }
         FlowLayerUniforms& u = flow_layer;
         const GLuint fp = flow_program;
@@ -2025,10 +2048,15 @@ GlRenderer::GlRenderer(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GlRenderer::~GlRenderer() = default;
 
 Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader) {
-    return create(loader, CreateOptions{});
+    return create(loader, CreateOptions{}, CreateProbe{});
 }
 
 Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, const CreateOptions& options) {
+    return create(loader, options, CreateProbe{});
+}
+
+Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, const CreateOptions& options,
+                                                       const CreateProbe& probe) {
     if (loader == nullptr) {
         return std::unexpected(Error{Code::invalid_argument, "GlRenderer::create: null proc loader"});
     }
@@ -2062,65 +2090,107 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
                                    impl->version_string + " on " + impl->renderer_name});
     }
 
-    const Result<GLuint> mesh_program =
-        link(gl, {kGlslVersion, kCommonSrc, kVertexSrc},
-             {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc, kFragmentSrc},
-             "mesh");
-    if (!mesh_program) return std::unexpected(mesh_program.error());
-    impl->program = *mesh_program;
-    const Result<GLuint> background_program = link(gl, {kGlslVersion, kBackgroundVertexSrc},
-                                                    {kGlslVersion, kCommonSrc, kFlowSampleSrc, kSensorSrc, kBackgroundFragmentSrc},
-                                                    "background");
-    if (!background_program) return std::unexpected(background_program.error());
-    impl->background_program = *background_program;
-    const Result<GLuint> field_program =
-        link(gl, {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, "field");
-    if (!field_program) return std::unexpected(field_program.error());
-    impl->field_program = *field_program;
-    const Result<GLuint> overlay_program =
-        link(gl, {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, "overlay");
-    if (!overlay_program) return std::unexpected(overlay_program.error());
-    impl->overlay_program = *overlay_program;
-    const Result<GLuint> caster_program =
-        link(gl, {kGlslVersion, kCasterVertexSrc}, {kGlslVersion, kCasterFragmentSrc}, "shadow caster");
-    if (!caster_program) return std::unexpected(caster_program.error());
-    impl->caster_program = *caster_program;
-    const Result<GLuint> csg_program = link(gl, {kGlslVersion, kCsgVertexSrc},
-                                            {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc,
-                                             kSensorSrc, kFlowSurfaceSrc, kCsgFragmentSrc},
-                                            "csg");
-    if (!csg_program) return std::unexpected(csg_program.error());
-    impl->csg_program = *csg_program;
-    // The flow programs (7g): in the background when asked and the driver
-    // compiles in parallel, so flow_ready() reports them; otherwise finished
-    // here, as every other program is.
+    // The measurement hooks (CreateProbe): a salt defines a macro, so its
+    // name must be one.
+    const bool salt_ok = std::all_of(probe.source_salt.begin(), probe.source_salt.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+    if (!salt_ok) {
+        return std::unexpected(Error{Code::invalid_argument, "GlRenderer::create: source_salt '" +
+                                                                 probe.source_salt +
+                                                                 "' must be letters, digits or '_' only"});
+    }
+    const std::string salt_line =
+        probe.source_salt.empty() ? std::string() : "#define SPADE_SHADER_SALT_" + probe.source_salt + "\n";
+    const char* salt = salt_line.empty() ? nullptr : salt_line.c_str();
+    impl->on_program = probe.on_program;
+    const auto linked_one = [&probe](std::string_view what) {
+        if (probe.on_program) probe.on_program(what);
+    };
+
+    // Every program starts compiling before any is waited for, the long flow
+    // march first, and each is then finished in order; one that fails is
+    // built again on its own, so the refusal carries its shader's own log.
+    // Where the host asks for the flow programs in the background and the
+    // driver compiles in parallel (KHR_parallel_shader_compile), the nine
+    // build side by side and create() waits for six. Only then: on the RTX
+    // 3060 Ti (GpuGlCreateCost, 2026-10-21), parallel compile took a cold
+    // create() from 4.4 s to 0.8 s, the flow programs ready at 3.0 s, but
+    // a warm one (the driver's cache has them, every launch after the first)
+    // from 19 ms to about 240 ms. Building the six one after another first
+    // and only the flow programs in parallel kept the 240 ms and made the
+    // cold create() 1.6 s.
     impl->verify_cached_volumes = options.verify_cached_volumes;
-    bool parallel = false;
-    if (options.flow_programs_in_background) {
-        GLint extensions = 0;
-        gl.GetIntegerv(GL_NUM_EXTENSIONS, &extensions);
-        for (GLint e = 0; e < extensions && !parallel; ++e) {
-            const auto* name = reinterpret_cast<const char*>(gl.GetStringi(GL_EXTENSIONS, static_cast<GLuint>(e)));
-            const std::string_view ext = name != nullptr ? name : "";
-            const char* entry = ext == "GL_KHR_parallel_shader_compile"   ? "glMaxShaderCompilerThreadsKHR"
-                                : ext == "GL_ARB_parallel_shader_compile" ? "glMaxShaderCompilerThreadsARB"
-                                                                          : nullptr;
-            if (entry == nullptr) continue;
-            const auto threads = reinterpret_cast<SpadePfnGlMaxShaderCompilerThreads>(loader(entry));
-            if (threads != nullptr) {
-                threads(0xFFFFFFFFu);  // as many as the driver likes
-                parallel = true;
-            }
+    bool background = false;
+    GLint extensions = 0;
+    if (options.flow_programs_in_background) gl.GetIntegerv(GL_NUM_EXTENSIONS, &extensions);
+    for (GLint e = 0; e < extensions && !background; ++e) {
+        const auto* name = reinterpret_cast<const char*>(gl.GetStringi(GL_EXTENSIONS, static_cast<GLuint>(e)));
+        const std::string_view ext = name != nullptr ? name : "";
+        const char* entry = ext == "GL_KHR_parallel_shader_compile"   ? "glMaxShaderCompilerThreadsKHR"
+                            : ext == "GL_ARB_parallel_shader_compile" ? "glMaxShaderCompilerThreadsARB"
+                                                                      : nullptr;
+        if (entry == nullptr) continue;
+        const auto threads = reinterpret_cast<SpadePfnGlMaxShaderCompilerThreads>(loader(entry));
+        if (threads != nullptr) {
+            threads(0xFFFFFFFFu);  // as many as the driver likes
+            background = true;
         }
     }
     impl->flow_program = start_link(gl, {kGlslVersion, kCsgVertexSrc},
-                                    {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowVolumeFragmentSrc});
+                                    {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowVolumeFragmentSrc}, salt);
     impl->flow_brick_program =
-        start_link_compute(gl, {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowBrickSrc});
+        start_link_compute(gl, {kGlslVersion, kFlowSampleSrc, kFlowParamsSrc, kFlowBrickSrc}, salt);
     impl->flow_composite_program =
-        start_link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc});
+        start_link(gl, {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kFlowCompositeSrc}, salt);
     impl->flow_pending = true;
-    if (!parallel) {
+
+    struct Program {
+        const char* what;
+        std::initializer_list<const char*> vertex;
+        std::initializer_list<const char*> fragment;
+        GLuint* slot;
+        GLuint started = 0;
+    };
+    Program programs[] = {
+        {"mesh",
+         {kGlslVersion, kCommonSrc, kVertexSrc},
+         {kGlslVersion, kCommonSrc, kSurfaceSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc, kFragmentSrc},
+         &impl->program},
+        {"background",
+         {kGlslVersion, kBackgroundVertexSrc},
+         {kGlslVersion, kCommonSrc, kFlowSampleSrc, kSensorSrc, kBackgroundFragmentSrc},
+         &impl->background_program},
+        {"field", {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, &impl->field_program},
+        {"overlay", {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, &impl->overlay_program},
+        {"shadow caster",
+         {kGlslVersion, kCasterVertexSrc},
+         {kGlslVersion, kCasterFragmentSrc},
+         &impl->caster_program},
+        {"csg",
+         {kGlslVersion, kCsgVertexSrc},
+         {kGlslVersion, kCommonSrc, kSurfaceSrc, kSdfSrc, kFlowSampleSrc, kSensorSrc, kFlowSurfaceSrc,
+          kCsgFragmentSrc},
+         &impl->csg_program},
+    };
+    for (Program& program : programs) program.started = start_link(gl, program.vertex, program.fragment, salt);
+    for (Program& program : programs) {
+        if (Result<GLuint> done = linked(gl, program.started, program.what); done) {
+            *program.slot = *done;
+        } else if (Result<GLuint> again = link(gl, program.vertex, program.fragment, program.what, salt); again) {
+            *program.slot = *again;  // a driver that failed once and not twice: keep the working one
+        } else {
+            for (Program& rest : programs) {
+                if (&rest > &program && rest.started != 0) gl.DeleteProgram(rest.started);
+            }
+            return std::unexpected(again.error());
+        }
+        linked_one(program.what);
+    }
+    // The flow programs (7g): in the background when asked and the driver
+    // compiles in parallel, so flow_ready() reports them; otherwise finished
+    // here, as every other program is.
+    if (!background) {
         if (Result<void> done = impl->finish_flow_programs(); !done) return std::unexpected(done.error());
     }
 

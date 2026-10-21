@@ -1972,6 +1972,96 @@ TEST(GpuGlFlowCold, CreateReturnsBeforeTheFlowProgramsCompile) {
     glfwTerminate();
 }
 
+// What create() spends, program by program (Spade Host, 2026-10-21: an 11 s
+// first view where the driver's shader cache missed; the lead: measure
+// first). Cold is a fresh source_salt, which no cache has seen; warm is the
+// same salt again in the same process. Every program is waited for here
+// (no background compile), so each one's time is its own. A measurement,
+// not a test: set SPADE_GL_CREATE_COST=1, and run it alone.
+TEST(GpuGlCreateCost, EachProgramColdAndWarm) {
+    if (!env_gate_is_set("SPADE_GL_CREATE_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_CREATE_COST=1 and run it alone";
+    }
+    glfwSetErrorCallback(record_glfw_error);
+    if (glfwInit() != GLFW_TRUE) GTEST_SKIP() << "GLFW could not initialise. " << g_last_glfw_error;
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* window = glfwCreateWindow(kWidth, kHeight, "spade GpuGlCreateCost", nullptr, nullptr);
+    if (window == nullptr) {
+        glfwTerminate();
+        GTEST_SKIP() << "no OpenGL 4.3 core context on this machine. " << g_last_glfw_error;
+    }
+    glfwMakeContextCurrent(window);
+    using Clock = std::chrono::steady_clock;
+    struct Timed {
+        std::vector<std::pair<std::string, double>> programs;  // name, ms since the one before
+        double total_ms = 0.0;
+    };
+    const auto timed_create = [](const std::string& salt) {
+        Timed t;
+        Clock::time_point last = Clock::now();
+        const Clock::time_point start = last;
+        GlRenderer::CreateProbe probe;
+        probe.source_salt = salt;
+        probe.on_program = [&](std::string_view name) {
+            const Clock::time_point now = Clock::now();
+            t.programs.emplace_back(std::string(name), std::chrono::duration<double, std::milli>(now - last).count());
+            last = now;
+        };
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{}, probe);
+        t.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        EXPECT_TRUE(made.has_value()) << (made ? "" : made.error().context);
+        return t;
+    };
+    const std::string salt =
+        "cold_" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count());
+    const Timed cold = timed_create(salt);
+    const Timed warm = timed_create(salt);
+    const Timed usual = timed_create("");  // the shipped sources, as the disk cache has them from earlier runs
+    ASSERT_EQ(cold.programs.size(), warm.programs.size());
+    ASSERT_EQ(cold.programs.size(), usual.programs.size());
+    ASSERT_EQ(cold.programs.size(), 9u) << "six programs, then the three flow programs";
+    std::printf("[ create cost ] per program, ms, cold (salt %s) / warm (the same salt again) / usual (no salt):\n",
+                salt.c_str());
+    for (size_t i = 0; i < cold.programs.size(); ++i) {
+        std::printf("[ create cost ]   %-16s %9.1f / %7.1f / %7.1f\n", cold.programs[i].first.c_str(),
+                    cold.programs[i].second, warm.programs[i].second, usual.programs[i].second);
+        RecordProperty(cold.programs[i].first + "_cold_ms", static_cast<int>(cold.programs[i].second));
+    }
+    std::printf("[ create cost ]   create() total   %9.1f / %7.1f / %7.1f\n", cold.total_ms, warm.total_ms,
+                usual.total_ms);
+    RecordProperty("create_cold_ms", static_cast<int>(cold.total_ms));
+    RecordProperty("create_warm_ms", static_cast<int>(warm.total_ms));
+
+    // As a host that asks for the flow programs in the background sees it,
+    // cold and then warm: create() returns, then flow_ready() turns true.
+    for (const char* run : {"cold", "warm"}) {
+        GlRenderer::CreateProbe probe;
+        probe.source_salt = salt + "_background";
+        const Clock::time_point start = Clock::now();
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{.flow_programs_in_background = true}, probe);
+        const double create_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        ASSERT_TRUE(made.has_value()) << made.error().context;
+        const Clock::time_point deadline = start + std::chrono::seconds(120);
+        while (!(*made)->flow_ready() && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const double ready_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::printf("[ create cost ]   in the background, %s: create() %.1f ms, flow ready at %.1f ms\n", run,
+                    create_ms, ready_ms);
+        RecordProperty(std::string("create_background_") + run + "_ms", static_cast<int>(create_ms));
+        RecordProperty(std::string("flow_ready_background_") + run + "_ms", static_cast<int>(ready_ms));
+    }
+    glfwDestroyWindow(window);
+    glfwTerminate();
+}
+
 // Plan step 7f: the live-only reduced march. Half marches a quarter of the
 // rays and says so through last_flow_scale(); a frame with no flow layer
 // says 0. The half frame is held to the full one by a measured band: a live
@@ -2629,6 +2719,29 @@ TEST_F(GpuGlRenderer, TheCallersBlendAndDepthClampStateDoNotReachTheFrame) {
     glDisable(GL_DEPTH_CLAMP);
     ASSERT_EQ(dirty.size(), clean.size());
     EXPECT_EQ(count_differing(clean, dirty), 0u) << "the caller's blend or depth-clamp state reached the frame";
+}
+
+// create()'s measurement hooks (GpuGlCreateCost): each program reports as it
+// links, in create()'s order, the flow programs last; a salt that is not a
+// macro name is refused by name. The sources are the fixture's, unsalted, so
+// the driver hands them back at once.
+TEST_F(GpuGlRenderer, CreateReportsEachProgramAndRefusesABadSalt) {
+    const auto loader = reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress);
+    std::vector<std::string> names;
+    GlRenderer::CreateProbe probe;
+    probe.on_program = [&names](std::string_view name) { names.emplace_back(name); };
+    const auto made = GlRenderer::create(loader, GlRenderer::CreateOptions{}, probe);
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    const std::vector<std::string> want = {"mesh", "background",  "field",       "overlay",       "shadow caster",
+                                           "csg",  "flow volume", "flow bricks", "flow composite"};
+    EXPECT_EQ(names, want);
+
+    GlRenderer::CreateProbe bad;
+    bad.source_salt = "not a name";
+    const auto refused = GlRenderer::create(loader, GlRenderer::CreateOptions{}, bad);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("source_salt"), std::string::npos) << refused.error().context;
 }
 
 // L6: what GL does not draw is announced by name, so a caller can show it or
