@@ -1,6 +1,6 @@
 # The Default Drone Library — Plan (DRAFT for the lead)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Nothing here is built until the lead has reviewed this plan and the open questions at the end have answers.**
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Reviewed and approved by the lead, 2026-10-21; every open question is answered (Rulings).**
 
 **Goal:** The library gets five drones and the parts they are made of.
 - Four drones are real drone classes, each with a body, rotors, motors and a battery: a Phantom 3-class quad, an Iris+-class quad, a 5-inch FPV quad and a Crazyflie-class micro.
@@ -100,7 +100,7 @@ The detailed notes, with URLs, pages and quotes, are in the research notes named
 - A 6x3.5x3 prop. Its curve is our own scaling from the nearest UIUC 5-inch tri-blade, so **derived and assumed**, because UIUC has no 6-inch prop.
 - 2306 1700 KV motor, 6S 1300 mAh pack (retailer).
 - Mass is the sum of the parts.
-- Kat's best candidate set (datapack §7.2: a 6-inch tri-blade, 2207-2450 on 4S, R_eff about 3× the datasheet, a cap of about 18,300 rpm) is a second parameter set. It goes into the library only if open question 5 allows it.
+- Kat's best candidate set (datapack §7.2: a 6-inch tri-blade, 2207-2450 on 4S, R_eff about 3× the datasheet, a cap of about 18,300 rpm) informs the competition variant's assumed parts, `basic_quad_competition` (Rulings, answer 5).
 
 ## Inputs from Physics, Interface, Kat and Test/Docs
 
@@ -215,7 +215,16 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 | 6 | (a) The measured curve gets its own later plan |
 | 7 | (a) NASA's stated numbers as check points. TM-2018-219758 was not found by the lead either |
 | 8 | (a) An assumed OCV table until Physics finds an open one |
-| 3, 4, 5 | Cameron's to decide; the lead is asking him. **L4 and L5 hold** for those answers; L1-L3 don't depend on them |
+| 3 | (Cameron, 2026-10-21) Our own resampled UIUC tables, cited as UIUC asks; never their files |
+| 4 | (Cameron) **No APC data at all.** That includes the shapes Kat's catalog derived from APC's PER3, so Kat's parts that took their shape from APC feed nothing. Blades come from UIUC's measured geometry |
+| 5 | (Cameron) The competition fit **goes in the library**: "The Grand Prix published nothing, these were derived sim values and require no concern. Have them in the library." |
+
+**The competition variant (from answer 5).** `drones/basic_quad_competition.model.yaml` is `basic_quad_airframe()` with Kat's competition-700 values:
+- Every value is graded `fitted` or `assumed`, and carries Kat's own provenance: source, confidence and date, from `competition-700.airframe.json`.
+- Its sidecar states the caveat: fitted to the AI Grand Prix VQ1 simulator, not hardware.
+- It joins Task L5, with a check that the compiled hover thrust matches the curve's hover point (norm 0.264 at 9.712 m/s²) within Physics' P-c tolerance.
+
+All eight questions are answered. The build order is B7b, B0, then L1 onward.
 
 **P-a and P-b move to Core.** Physics now carries the GPU solver, so Core drafts the prop tables and the blade definitions from the UIUC files. Physics reviews the resampling rule and the result. Physics keeps P-c (the chain fits and tolerances) and the kappa view.
 
