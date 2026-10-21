@@ -138,7 +138,11 @@ TEST(SandboxAirflowLive, TheViewShowsTheCoresAndTheLines) {
     EXPECT_EQ(spec.layers[1].kind, FlowView::streamlines);
     EXPECT_EQ(spec.layers[1].seeds.size(), 8u * rotors.size());
     for (const glm::vec3& s : spec.layers[1].seeds) EXPECT_LT(s.y, 0.02f) << "a seed above the discs";
-    for (const spade::render::FlowViewSpec& layer : spec.layers) EXPECT_FLOAT_EQ(layer.range_max, 8.0f);
+    // The lines over [0, top], the far wake's speed; the cores, which sit in
+    // the jet's slower shear layer, over [0, top / 2] (the induced speed at
+    // hover), so they don't all draw in the colour map's near-black end.
+    EXPECT_FLOAT_EQ(spec.layers[1].range_max, 8.0f);
+    EXPECT_FLOAT_EQ(spec.layers[0].range_max, 4.0f);
 
     spade::render::ViewInputs in;
     in.has_volume = true;
