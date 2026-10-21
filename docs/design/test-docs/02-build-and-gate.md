@@ -56,6 +56,11 @@ These are Cameron's token decisions of 2026-10-21, relayed by Kat's lead (backlo
 
 - **Send only actionable messages:** a decision needed, a ready SHA with its gate lines, or a blocker. Leave out acknowledgements and FYI copies. Batch them; the lead answers once per batch.
 - **Subagents:** use Sonnet at high effort for mechanical work (running tests, reading logs, pin searches, merges, surveys). Opus does design, code and review.
+- **Where to commit** (Cameron's token monitor, 2026-10-21, with the lead's correction): commit code in your own worktree (`spade-wt/<realm>`). Docs-only commits stay on master in the main checkout, under your realm's scope (`docs(test-docs): ...`). Don't split or pad commits to move the numbers.
+- **Read less.** Everything read is paid for again on every turn, and 55–70% of sampled reads were of files already read three or more times.
+  - Find a symbol with `grep -n`, then read only that range (an offset and a limit).
+  - For gate scripts and jobrun logs, read the pass/fail summary lines, never the whole log.
+  - Read an image only to judge that frame, and downscale it first.
 
 ## The Docker leg
 
