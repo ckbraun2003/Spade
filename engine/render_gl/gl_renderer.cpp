@@ -589,7 +589,14 @@ void main() {
 // half-scale image into this renderer's own target: (C, T) and an opaque
 // iso's depth, which kFlowCompositeSrc then lays over the frame. Needs
 // kFlowSampleSrc and kFlowParamsSrc before it.
+//
+// Its loops are not unrolled (an NVIDIA pragma; other drivers ignore it).
+// Unrolled, this one program was 9.0 s of a cold create()'s 10.4 s on the
+// RTX 3060 Ti (572.83, GpuGlCreateCost, 2026-10-21); not, 3.3 s, and the
+// march costs the same (FlowLayerCostAt128CubedAnd1080p: volume 62.9 ms
+// against 64.9, iso 20.1 against 18.1, within run-to-run noise).
 constexpr const char* kFlowVolumeFragmentSrc = R"GLSL(
+#pragma optionNV(unroll none)
 uniform mat4 uViewProj;
 uniform vec3 uBoxMin;
 uniform vec3 uBoxMax;
