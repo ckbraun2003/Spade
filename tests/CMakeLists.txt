@@ -394,6 +394,9 @@ if(SPADE_BUILD_SANDBOX)
         # A vehicle drawn from its parts (N12): posed with the vehicle, the same meshes
         # frame to frame, and a CSG root flagged for a per-frame upload.
         test_sandbox_vehicle_parts.cpp
+        # The tour's airflow chapter, display-free (N4's library quad live at 32^3): the
+        # case, the views over the drone, and the frames the downwash check reads.
+        test_sandbox_airflow_live.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()

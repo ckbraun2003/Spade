@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,7 @@
 #include "state/layout.hpp"  // BodyState
 #include "vehicles/model_type.hpp"
 #include "vehicles/propulsion_steady.hpp"
+#include "vehicles/rotor.hpp"  // RotorRow
 
 namespace spade::analysis {
 
@@ -133,6 +135,12 @@ class LiveRun {
     // posed_parts() takes it: what a host draws the solid drone from. The
     // blade azimuth psi is Physics' rule (P11); until it lands, pass zeros.
     [[nodiscard]] const BodyState& body() const noexcept;
+    // The rotors' rows after the last step, in the model's rotor order: each
+    // one's speed, k_T, radius, and hub and axis in the body. With body(), what
+    // a host's probes read (the tour's on-screen downwash check). The body is
+    // held at the box's centre, the published volume's frame. Empty for a
+    // model without rotors.
+    [[nodiscard]] std::span<const vehicles::RotorRow> rotor_rows() const noexcept;
 
     // The caption without the time: the rotor model, the grid, dx and R/dx,
     // then any limit the propulsion is at, for example "actuator disc ·

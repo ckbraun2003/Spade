@@ -10,8 +10,10 @@
 
 #include <glm/glm.hpp>
 
+#include "analysis/controls.hpp"
 #include "render/raster_cpu.hpp"
-#include "render_gap.hpp"  // the HUD line naming what the GPU path does not draw
+#include "render_gap.hpp"     // the HUD line naming what the GPU path does not draw
+#include "vehicle_draw.hpp"   // the drone drawn from its parts (N12)
 
 namespace spade::sandbox {
 
@@ -250,6 +252,147 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
         if (!ok) {
             return std::unexpected(spade::Error{spade::Code::internal, "the CPU render failed (see above)"});
         }
+    }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// THE AIRFLOW CHAPTER -- the library quad, live. Every decision is in
+// airflow_live.hpp and is asserted with no display; this is the wiring.
+// ---------------------------------------------------------------------------
+namespace {
+constexpr float kAirflowTurnRadPerS = 0.15f;  // the idle camera's slow turn about the drone
+}  // namespace
+
+spade::Result<std::unique_ptr<AirflowSession>> AirflowSession::create(const std::filesystem::path& model_file) {
+    std::unique_ptr<AirflowSession> s(new AirflowSession());
+    spade::Result<airflow::LiveQuad> quad = airflow::live_quad(model_file);
+    if (!quad) return std::unexpected(quad.error());
+    s->quad_ = std::move(*quad);
+    spade::Result<spade::analysis::LiveRun> run =
+        spade::analysis::LiveRun::start(s->quad_.resolved, s->quad_.run_model, s->quad_.propulsion);
+    if (!run) {
+        return std::unexpected(spade::Error{run.error().code, "the live run would not start: " + run.error().context});
+    }
+    s->run_.emplace(std::move(*run));
+    spade::Result<spade::render_parts::PreparedParts> prepared =
+        spade::render_parts::prepare_parts(s->quad_.draw_model);
+    if (!prepared) {
+        return std::unexpected(
+            spade::Error{prepared.error().code, "the quad's parts would not prepare: " + prepared.error().context});
+    }
+    s->prepared_ = std::move(*prepared);
+    s->look_.body = static_cast<uint32_t>(s->base_.materials.size());
+    s->base_.materials.push_back(detail::lambert(0.35f, 0.37f, 0.40f));
+    s->look_.rotor = static_cast<uint32_t>(s->base_.materials.size());
+    s->base_.materials.push_back(detail::lambert(0.12f, 0.12f, 0.13f));
+    s->look_.porous = s->look_.body;
+    s->look_.object_name = s->quad_.draw_model.name;
+    const spade::analysis::Fluid& fluid = s->quad_.resolved.spec.fluid;
+    s->speed_top_ = airflow::speed_top(s->quad_.run_model, fluid.density, 9.80665f);
+
+    // flow_movie's look: a little below the drone, so the wake is in frame.
+    s->camera_.target = glm::vec3(0.0f, -0.12f * airflow::kBoxM, 0.0f);
+    s->camera_.yaw = 0.52f;
+    s->camera_.pitch = 0.35f;
+    s->camera_.distance = 1.5f * airflow::kBoxM;
+    return s;
+}
+
+void AirflowSession::attach(GlTargetSink& sink) {
+    sink_ = &sink;
+    gpu_ = start_gpu(base_);
+}
+
+AirflowSession::~AirflowSession() {
+    if (sink_ != nullptr) sink_->set_gap_line({});
+}
+
+void AirflowSession::show_slice() {
+    slice_ = true;
+    const spade::render::ViewSpec spec = airflow::wake_slice(volume_, airflow::probes_of(*run_), speed_top_);
+    camera_.yaw = airflow::facing_yaw(spec.layers.front().plane);
+}
+
+bool AirflowSession::finished() const noexcept {
+    return static_cast<float>(run_->state().t_s) >= quad_.resolved.spec.time.duration;  // in float, as the case holds it
+}
+
+spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
+    apply_drone_orbit(camera_, in, dt);
+    if (!slice_) camera_.yaw += kAirflowTurnRadPerS * dt;
+
+    // The run is paced to the window at airflow::kPlayback: a run frame is due
+    // once that much simulated time is owed (the first frame is owed at once,
+    // so the volume is published before the first draw).
+    sim_owed_s_ += static_cast<double>(dt) * static_cast<double>(airflow::kPlayback);
+    const double frame_s = 1.0 / static_cast<double>(spade::analysis::kFramesPerSecond);
+    const auto p0 = std::chrono::steady_clock::now();
+    if (!finished() && sim_owed_s_ >= frame_s) {
+        sim_owed_s_ -= frame_s;
+        const spade::analysis::Controls controls =
+            spade::analysis::controls_at(quad_.program, static_cast<float>(run_->state().t_s));
+        if (const spade::Result<spade::analysis::LiveFrame> f = run_->advance_frame(controls, volume_); !f) {
+            return std::unexpected(spade::Error{f.error().code, "the live run failed: " + f.error().context});
+        }
+        if (std::optional<end_goal::DownwashFrame> d = airflow::downwash_frame(volume_, *run_, quad_.program)) {
+            frames_.push_back(std::move(*d));
+        }
+    }
+    const float physics_ms = ms_since(p0);
+
+    const uint32_t fw = sink_->viewport().width;
+    const uint32_t fh = sink_->viewport().height;
+    if (fw == 0u || fh == 0u) return {};
+
+    scene_ = base_;
+    if (const spade::Result<void> bound = append_vehicle_parts(scene_, prepared_, quad_.draw_model, run_->body(), look_);
+        !bound) {
+        return std::unexpected(spade::Error{bound.error().code, "the quad's parts would not bind: " + bound.error().context});
+    }
+    // flow_movie's look: no shadows, and no overlay grid at the drone's level.
+    spade::render::RenderOptions options;
+    options.shadows = false;
+    options.overlays = false;
+    const std::vector<end_goal::RotorProbe> probes = airflow::probes_of(*run_);
+    const spade::render::ViewSpec spec = slice_ ? airflow::wake_slice(volume_, probes, speed_top_)
+                                                : airflow::airflow_view(volume_, probes, speed_top_);
+    spade::render::ViewInputs inputs;
+    inputs.has_volume = true;
+    inputs.gl_flow_ready = gpu_ ? gpu_->flow_ready() : true;
+    const spade::render::ViewBackend backend = gpu_ ? spade::render::ViewBackend::gl : spade::render::ViewBackend::cpu;
+    if (const spade::render::ViewSupport s = spade::render::supports(spec, backend, inputs); !s.drawable) {
+        refusal_ = s.why_not;
+        legends_.clear();
+    } else if (spade::Result<std::vector<spade::render::ViewLegend>> legends =
+                   spade::render::apply_view(spec, &volume_, scene_, options, cache_);
+               !legends) {
+        refusal_ = legends.error().context;
+        legends_.clear();
+    } else {
+        refusal_.clear();
+        legends_ = std::move(*legends);
+    }
+
+    const spade::render::Camera rc = camera_.to_render_camera();
+    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
+    const auto r0 = std::chrono::steady_clock::now();
+    if (gpu_) {
+        // Uploaded every frame: the flow layers and the bound parts change
+        // each frame, and flow views carry no meshes of their own.
+        if (const spade::Result<void> up = gpu_->upload_scene(scene_); !up) {
+            return std::unexpected(spade::Error{up.error().code, "GPU upload failed: " + up.error().context});
+        }
+        sink_->begin_gpu_frame();
+        if (const spade::Result<void> drew = gpu_->draw(scene_, rc, options, fw, fh); !drew) {
+            return std::unexpected(spade::Error{drew.error().code, "GPU draw failed: " + drew.error().context});
+        }
+        sink_->present_overlay(ms_since(r0), physics_ms);
+    } else {
+        sink_->note_physics_ms(physics_ms);
+        const bool ok = render_frame(scene_, rc, fw, fh, options, pixels_, *sink_);
+        sink_->note_render_ms(ms_since(r0));
+        if (!ok) return std::unexpected(spade::Error{spade::Code::internal, "the CPU render failed (see above)"});
     }
     return {};
 }
