@@ -1172,24 +1172,35 @@ struct Published {
     return {v.generation, validate_flow_volume(v).has_value(), v.header.no_data};
 }
 
-// Every frame a new, valid volume with no no-data sample. New means a later
-// generation than the frame before: next_flow_generation() only increases,
-// so a repeat or a return to an older volume fails.
+// Every frame a new, valid volume whose no-data samples are exactly the
+// solids' interior's: none without solids. With them, publish() writes the
+// first solid layer from its fluid side and every channel of a deeper solid
+// cell no-data (physics/airflow/publish.hpp), so `interior_solid_cells` (the
+// grid's solid cells less the volume's extrapolated_cells) is
+// kFlowChannelCount samples each. New means a later generation than the frame
+// before: next_flow_generation() only increases, so a repeat or a return to an
+// older volume fails.
 [[nodiscard]] inline Verdict publishes(std::span<const Published> frames, uint32_t interior_solid_cells = 0) {
-    (void)interior_solid_cells;  // RED: the old check, blind to the solids' interior
     const std::string name = "publishes: ";
+    const uint64_t expected = uint64_t{kFlowChannelCount} * interior_solid_cells;
+    const std::string interior = std::to_string(interior_solid_cells) + " interior solid cells' " +
+                                 std::to_string(expected) + " samples";
     if (frames.empty()) return {false, name + "absent: no frames were published"};
     for (std::size_t i = 0; i < frames.size(); ++i) {
         const Published& f = frames[i];
         const std::string at = "frame " + std::to_string(i);
         if (!f.valid) return {false, name + at + "'s volume fails validate_flow_volume()"};
-        if (f.no_data != 0) return {false, name + at + " holds " + std::to_string(f.no_data) + " no-data samples"};
+        if (f.no_data != expected) {
+            return {false, name + at + " holds " + std::to_string(f.no_data) + " no-data samples" +
+                               (interior_solid_cells == 0 ? std::string{} : ", not the " + interior)};
+        }
         if (f.generation == 0) return {false, name + at + "'s generation is 0 (unknown)"};
         if (i > 0 && !(f.generation > frames[i - 1].generation)) {
             return {false, name + at + "'s generation does not follow the previous frame's: not a new publish"};
         }
     }
-    return {true, name + std::to_string(frames.size()) + " frames, each a new, valid volume"};
+    return {true, name + std::to_string(frames.size()) + " frames, each a new, valid volume" +
+                      (interior_solid_cells == 0 ? std::string{} : ", no-data only in the " + interior)};
 }
 
 [[nodiscard]] inline Verdict run_line_shown(std::string_view shown, std::string_view expected) {
@@ -1332,7 +1343,8 @@ inline constexpr float kSpeedLegendMin = 1.0f;  // m/s: a speed legend's max whi
         const render::ViewLegend& r = c.returned[i];
         const std::string at = "legend " + std::to_string(i) + " (" + r.quantity + ")";
         if (s.layer != r.layer || s.quantity != r.quantity || s.unit != r.unit || s.colours != r.colours ||
-            s.range.min != r.range.min || s.range.max != r.range.max || s.range.from_header != r.range.from_header) {
+            s.range.min != r.range.min || s.range.max != r.range.max || s.range.from_header != r.range.from_header ||
+            s.note != r.note) {
             return {false, name + at + " is not the one apply_view() returned"};
         }
         if (c.region_running) {
@@ -1518,8 +1530,21 @@ struct SolidsCounts {
 // D1-1: the run line names the body: every rigid part of the model is in the
 // grid, and each is a wall. A run whose parts were cleared has no solids.
 [[nodiscard]] inline Verdict solids_in_flow(const SolidsLine& s) {
-    (void)s;  // RED: no check
-    return {true, "solids-in-flow: "};
+    const std::string name = "solids-in-flow: ";
+    if (s.expected_parts == 0) return {false, name + "mis-staged: the model has no rigid parts to expect"};
+    if (!s.any) return {false, name + "absent: no solids in the run (\"" + s.run_line + "\")"};
+    const detail::SolidsCounts c = detail::solids_counts(s.run_line);
+    if (!c.ok) return {false, name + "the run line \"" + s.run_line + "\" does not name its parts, walls and sheets"};
+    const std::string counts = std::to_string(c.parts) + " parts, " + std::to_string(c.walls) + " walls, " +
+                               std::to_string(c.sheets) + " sheets";
+    if (c.parts != s.expected_parts) {
+        return {false, name + counts + " in the grid for the model's " + std::to_string(s.expected_parts) +
+                           " rigid parts"};
+    }
+    if (c.walls != c.parts || c.sheets != 0) {
+        return {false, name + counts + ": not every part is a wall (\"" + s.run_line + "\")"};
+    }
+    return {true, name + counts};
 }
 
 // D1-2: no leak announced. The safeguard (physics/airflow/solids.cpp) adds
@@ -1527,17 +1552,34 @@ struct SolidsCounts {
 // face", to the run line. A part that leaks outright fails start(), so no run
 // is absent.
 [[nodiscard]] inline Verdict no_leak(const SolidsLine& s) {
-    (void)s;  // RED: no check
-    return {true, "no-leak: "};
+    const std::string name = "no-leak: ";
+    if (!s.any) return {false, name + "absent: no solids in the run (\"" + s.run_line + "\")"};
+    const detail::SolidsCounts c = detail::solids_counts(s.run_line);
+    if (!c.ok) return {false, name + "the run line \"" + s.run_line + "\" does not name its parts, walls and sheets"};
+    // A sheet note may hold "; " inside its brackets, so the notes are searched
+    // whole rather than split.
+    if (c.rest.find(": leaks") != std::string_view::npos || c.rest.find("no closed face") != std::string_view::npos) {
+        return {false, name + "the safeguard announced \"" + std::string(c.rest.substr(c.rest.find_first_not_of("; "))) +
+                           "\""};
+    }
+    return {true, name + "no advisory on \"" + s.run_line + "\""};
 }
 
 // D1-3: the downwash with the body in the flow: `rule`'s own verdict, judged
 // only when the same run's solids-in-flow passed.
 [[nodiscard]] inline Verdict downwash_with_body(const Verdict& in_flow, std::span<const DownwashFrame> frames,
                                                 const DownwashCase& c, const DownwashRule& rule) {
-    (void)in_flow;  // RED: the body's absence goes unseen
+    if (!in_flow.ok) {
+        return {false, std::string(rule.name) + ": mis-staged: the body is not in the flow (" + in_flow.detail + ")"};
+    }
     return downwash(frames, c, rule);
 }
+
+// D1's floor, in a 3 m/s wind: the wake leans 0.77R off the probe by 2R and
+// covers about 40% of it, so about 0.34 is expected; 0.10 leaves 3.4 times
+// that, and is still about 1 m/s downward (2026-10-21-d1-hover-checks.md, D1-3).
+inline constexpr DownwashRule kDownwashPresentInWind{"downwash-present", 0.10f,
+                                                     std::numeric_limits<float>::infinity(), 2.0f};
 
 // The C_p legend's two notes (render/view_mode.cpp): with the solids in the
 // flow, and without them.
@@ -1549,9 +1591,22 @@ inline constexpr std::string_view kCpNoteNoWalls = "the walls are not in this fl
 // note verbatim.
 [[nodiscard]] inline Verdict cp_note(std::span<const render::ViewLegend> shown,
                                      std::optional<std::string_view> caption = std::nullopt) {
-    (void)shown;  // RED: no check
-    (void)caption;
-    return {true, "cp-note: "};
+    const std::string name = "cp-note: ";
+    const auto cp = std::find_if(shown.begin(), shown.end(), [](const render::ViewLegend& l) {
+        return l.layer == render::FlowView::surface_cp;
+    });
+    if (cp == shown.end()) return {false, name + "absent: no surface C_p legend shown"};
+    const std::string& note = cp->note;
+    if (note.starts_with(kCpNoteNoWalls)) {
+        return {false, name + "mis-staged: \"" + note + "\": the body is not in this flow"};
+    }
+    if (!note.starts_with(kCpNoteInFlow)) {
+        return {false, name + "the C_p legend's note is \"" + note + "\", not the fluid beside the walls"};
+    }
+    if (caption && caption->find(note) == std::string_view::npos) {
+        return {false, name + "the caption does not carry the note \"" + note + "\""};
+    }
+    return {true, name + "\"" + note + "\"" + (caption ? ", in the caption too" : "")};
 }
 
 }  // namespace spade::sandbox::end_goal
