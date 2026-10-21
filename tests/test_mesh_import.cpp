@@ -8,10 +8,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -765,4 +767,327 @@ TEST(MeshImport, TheStepNeverLinksTheReaders) {
         }
     }
     EXPECT_GT(calls, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Binary STL and OBJ (Task B7). The fixtures are the same unit cube, written
+// here as a binary STL soup or as OBJ text.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using spade::MeshUnit;
+
+// The cube's triangles [first, last) as a binary STL: an 80-byte header
+// (`header`, zero-padded), the count, then each facet with a wrong normal and
+// a nonzero attribute, neither of which the reader may read.
+std::vector<std::byte> stl_bytes(float scale = 1.0f, std::string_view header = {}, std::size_t first = 0,
+                                 std::size_t last = 12) {
+    std::vector<std::byte> b(80, std::byte{0});
+    if (!header.empty()) std::memcpy(b.data(), header.data(), std::min<std::size_t>(header.size(), 80));
+    put_u32(b, static_cast<uint32_t>(last - first));
+    for (std::size_t t = first; t < last; ++t) {
+        for (int k = 0; k < 3; ++k) put_f32(b, 9.0f);
+        for (const uint32_t c : kCubeTriangles[t]) {
+            const glm::vec3 p = corner(c) * scale;
+            put_f32(b, p.x);
+            put_f32(b, p.y);
+            put_f32(b, p.z);
+        }
+        put_u16(b, 0xABCDu);
+    }
+    return b;
+}
+
+// The cube's eight corners as OBJ `v` lines, `scale` long and moved `dx`
+// along x.
+std::string obj_corners(int scale = 1, int dx = 0) {
+    std::string s;
+    for (uint32_t v = 0; v < 8; ++v) {
+        s += "v " + std::to_string(static_cast<int>(v & 1u) * scale + dx) + " " +
+             std::to_string(static_cast<int>((v >> 1) & 1u) * scale) + " " +
+             std::to_string(static_cast<int>((v >> 2) & 1u) * scale) + "\n";
+    }
+    return s;
+}
+
+// The cube's triangles [first, last) as OBJ `f` lines, each corner its index
+// then `tail` ("/1/1", "//1", ...). A positive index counts from `base` (the
+// cube's corners are vertices base + 1 ... base + 8); a negative one counts
+// back from the latest vertex, which must be this cube's corner 7.
+std::string obj_faces(std::size_t first, std::size_t last, int base, std::string_view tail = {},
+                      bool negative = false) {
+    std::string s;
+    for (std::size_t t = first; t < last; ++t) {
+        s += "f";
+        for (const uint32_t c : kCubeTriangles[t]) {
+            const int index = negative ? static_cast<int>(c) - 8 : base + static_cast<int>(c) + 1;
+            s += " " + std::to_string(index) + std::string(tail);
+        }
+        s += "\n";
+    }
+    return s;
+}
+
+spade::Result<std::vector<MeshObject>> read_obj_text(const spade::test::TempDir& dir, const std::string& name,
+                                                     std::string_view text) {
+    write_file(dir.path() / name, bytes_of(text));
+    return spade::read_obj(dir.path() / name, MeshUnit::metre);
+}
+
+// `o` is the unit cube moved `dx` along x, named `name`.
+void expect_cube(const MeshObject& o, std::string_view name, float dx) {
+    EXPECT_EQ(o.name, name);
+    const TriangleMesh& m = *o.mesh;
+    EXPECT_EQ(m.positions().size(), 8u) << o.name;
+    EXPECT_EQ(m.triangle_count(), 12u) << o.name;
+    for (uint32_t v = 0; v < 8; ++v) {
+        EXPECT_TRUE(has_vertex(m, corner(v) + glm::vec3(dx, 0.0f, 0.0f), 0.0f)) << o.name << " corner " << v;
+    }
+    EXPECT_NEAR(signed_volume(m), 1.0, 1e-12) << o.name;
+}
+
+}  // namespace
+
+TEST(MeshImport, BinaryStlWeldsItsSoup) {
+    // 12 facets carry 36 vertices; the weld leaves the cube's 8, in first-use
+    // order. The second file's header starts "solid", as some exporters
+    // write it: it is still binary, because the size decides.
+    const spade::test::TempDir dir("mesh-import-stl");
+    write_file(dir.path() / "cube.stl", stl_bytes());
+    write_file(dir.path() / "solid.stl", stl_bytes(1.0f, "solid cube, exported as binary"));
+    for (const std::string stem : {"cube", "solid"}) {
+        const auto objects = spade::read_stl(dir.path() / (stem + ".stl"), MeshUnit::metre);
+        ASSERT_TRUE(objects.has_value()) << objects.error().context;
+        ASSERT_EQ(objects->size(), 1u);
+        EXPECT_EQ((*objects)[0].name, stem);
+        const TriangleMesh& m = *(*objects)[0].mesh;
+        ASSERT_EQ(m.positions().size(), 8u);
+        EXPECT_EQ(m.triangle_count(), 12u);
+        const std::vector<uint32_t> order = first_use_corners();
+        for (std::size_t k = 0; k < 8; ++k) {
+            EXPECT_EQ(m.positions()[k], corner(order[k])) << stem << " vertex " << k;
+        }
+        EXPECT_NEAR(signed_volume(m), 1.0, 1e-12) << stem;
+    }
+}
+
+TEST(MeshImport, AsciiStlIsUnavailable) {
+    // A whole ASCII STL, and one shorter than a binary header: both start
+    // "solid" and are not binary-sized.
+    const spade::test::TempDir dir("mesh-import-ascii-stl");
+    write_file(dir.path() / "cube.stl", bytes_of("solid cube\n"
+                                                 "  facet normal 0 0 -1\n"
+                                                 "    outer loop\n"
+                                                 "      vertex 0 0 0\n"
+                                                 "      vertex 0 1 0\n"
+                                                 "      vertex 1 0 0\n"
+                                                 "    endloop\n"
+                                                 "  endfacet\n"
+                                                 "endsolid cube\n"));
+    write_file(dir.path() / "tiny.stl", bytes_of("solid tiny\n"));
+    for (const std::string name : {"cube.stl", "tiny.stl"}) {
+        const auto objects = spade::read_stl(dir.path() / name, MeshUnit::metre);
+        ASSERT_FALSE(objects.has_value()) << name;
+        EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, name)) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, "export binary STL")) << objects.error().context;
+    }
+}
+
+TEST(MeshImport, MalformedStlIsRefusedByName) {
+    // Each refusal names what is wrong: the size, the facet, the count read
+    // before any facet is, and make_mesh()'s own refusal under the stem.
+    const spade::test::TempDir dir("mesh-import-bad-stl");
+    std::vector<std::byte> cut = stl_bytes();
+    cut.resize(cut.size() - 10);
+    std::vector<std::byte> nan = stl_bytes();
+    const std::size_t at = 84 + 3 * 50 + 12 + 12 + 4;  // facet 3, vertex 1, y
+    const uint32_t q = std::bit_cast<uint32_t>(std::numeric_limits<float>::quiet_NaN());
+    for (std::size_t k = 0; k < 4; ++k) nan[at + k] = static_cast<std::byte>((q >> (8 * k)) & 0xFFu);
+    std::vector<std::byte> huge(80, std::byte{0});
+    put_u32(huge, (1u << 31) + 1u);
+    std::vector<std::byte> many(80, std::byte{0});
+    put_u32(many, 1431655766u);  // 3n = 2^32 + 2 vertices before welding
+    struct Case {
+        std::string name;
+        std::vector<std::byte> bytes;
+        Code code;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {"short.stl", std::vector<std::byte>(40, std::byte{0}), Code::invalid_argument,
+         "short.stl: 40 bytes, short of the 84-byte header"},
+        {"cut.stl", cut, Code::invalid_argument, "cut.stl: 674 bytes; a binary STL of 12 facets is 684 bytes"},
+        {"nan.stl", nan, Code::invalid_argument, "nan.stl: facet 3: vertex 1 is not finite"},
+        {"huge.stl", huge, Code::capacity_exceeded, "huge.stl: 2147483649 triangles"},
+        {"many.stl", many, Code::capacity_exceeded, "many.stl: 4294967298 vertices"},
+        {"open.stl", stl_bytes(1.0f, {}, 0, 11), Code::invalid_argument, "open.stl: object 'open': "},
+    };
+    for (const Case& c : cases) {
+        write_file(dir.path() / c.name, c.bytes);
+        const auto objects = spade::read_stl(dir.path() / c.name, MeshUnit::metre);
+        ASSERT_FALSE(objects.has_value()) << c.name;
+        EXPECT_EQ(objects.error().code, c.code) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, c.needle)) << objects.error().context;
+    }
+    const auto missing = spade::read_stl(dir.path() / "missing.stl", MeshUnit::metre);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error().code, Code::io_error) << missing.error().context;
+}
+
+TEST(MeshImport, StlAndObjNeedAUnit) {
+    // Refused before the file is opened: the missing files are never reached.
+    const spade::test::TempDir dir("mesh-import-unit");
+    const std::pair<MeshUnit, std::string_view> refused[] = {
+        {MeshUnit::unspecified, "the unit is unspecified"},
+        {static_cast<MeshUnit>(99), "unit 99 is not a MeshUnit"},
+    };
+    for (const auto& [unit, needle] : refused) {
+        const auto stl = spade::read_stl(dir.path() / "missing.stl", unit);
+        const auto obj = spade::read_obj(dir.path() / "missing.obj", unit);
+        ASSERT_FALSE(stl.has_value());
+        ASSERT_FALSE(obj.has_value());
+        EXPECT_EQ(stl.error().code, Code::invalid_argument) << stl.error().context;
+        EXPECT_EQ(obj.error().code, Code::invalid_argument) << obj.error().context;
+        EXPECT_TRUE(contains(stl.error().context, needle)) << stl.error().context;
+        EXPECT_TRUE(contains(obj.error().context, needle)) << obj.error().context;
+    }
+    // A 10 mm cube is 0.01 m, scaled as make_mesh() scales: in double, then
+    // rounded to fp32 once.
+    write_file(dir.path() / "mm.stl", stl_bytes(10.0f));
+    write_file(dir.path() / "mm.obj", bytes_of(obj_corners(10) + obj_faces(0, 12, 0)));
+    const auto stl = spade::read_stl(dir.path() / "mm.stl", MeshUnit::millimetre);
+    const auto obj = spade::read_obj(dir.path() / "mm.obj", MeshUnit::millimetre);
+    const float side = static_cast<float>(10.0 * spade::mesh_unit_scale(MeshUnit::millimetre));
+    for (const auto* objects : {&stl, &obj}) {
+        ASSERT_TRUE(objects->has_value()) << objects->error().context;
+        ASSERT_EQ((*objects)->size(), 1u);
+        const TriangleMesh& m = *(**objects)[0].mesh;
+        ASSERT_EQ(m.positions().size(), 8u);
+        for (uint32_t v = 0; v < 8; ++v) EXPECT_TRUE(has_vertex(m, corner(v) * side, 0.0f)) << "corner " << v;
+    }
+}
+
+TEST(MeshImport, ObjObjectsAndNegativeIndices) {
+    // Two cubes. "first" has its faces in two runs, the second after
+    // "second", and is still one object; "second" names its corners from the
+    // end, and its texture coordinates and normals too. Every corner form
+    // reads alike; vt, vn, s, usemtl and mtllib are ignored, and so are a
+    // weight and a colour after a v's three coordinates. CRLF line ends, a
+    // tab and a leading '+' are read.
+    std::string text = "# two cubes\nmtllib cubes.mtl\no first\n" + obj_corners() +
+                       "vt 0 0\nvn 0 0 1\nusemtl steel\ns 1\n" + obj_faces(0, 3, 0, "/+1") +
+                       obj_faces(3, 6, 0, "/1/1") + "o\tsecond \n" + obj_corners(1, 2) +
+                       obj_faces(0, 6, 0, "//-1", true) + obj_faces(6, 12, 0, "/-1/-1", true) + "s off\no first\n" +
+                       obj_faces(6, 12, 0);
+    text.replace(text.find("v 3 0 0\n"), 8, "v +3 0 0\n");
+    text.replace(text.find("v 0 0 0\n"), 8, "v 0 0 0 1\n");
+    text.replace(text.find("v 1 1 1\n"), 8, "v 1 1 1 0.2 0.4 0.6\n");
+    std::string crlf;
+    for (const char c : text) {
+        if (c == '\n') crlf += '\r';
+        crlf += c;
+    }
+    const spade::test::TempDir dir("mesh-import-obj");
+    const auto objects = read_obj_text(dir, "cubes.obj", crlf);
+    ASSERT_TRUE(objects.has_value()) << objects.error().context;
+    ASSERT_EQ(objects->size(), 2u);
+    expect_cube((*objects)[0], "first", 0.0f);
+    expect_cube((*objects)[1], "second", 2.0f);
+    // Objects come in the order of their first face, not of their names.
+    const auto order = read_obj_text(dir, "order.obj",
+                                     "o a\no b\n" + obj_corners() + obj_faces(0, 12, 0) + "o a\n" + obj_corners(1, 2) +
+                                         obj_faces(0, 12, 8));
+    ASSERT_TRUE(order.has_value()) << order.error().context;
+    ASSERT_EQ(order->size(), 2u);
+    expect_cube((*order)[0], "b", 0.0f);
+    expect_cube((*order)[1], "a", 2.0f);
+}
+
+TEST(MeshImport, ObjGroupsNameObjectsOnlyInAFileWithoutO) {
+    const spade::test::TempDir dir("mesh-import-obj-groups");
+    // No o: g names objects, and the faces before the first g are the stem's.
+    // A UTF-8 byte order mark before line 1 is skipped.
+    const auto parts = read_obj_text(dir, "parts.obj",
+                                     "\xEF\xBB\xBF" + obj_corners() + obj_faces(0, 12, 0) + obj_corners(1, 2) +
+                                         "g  right side \n" + obj_faces(0, 12, 8));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    ASSERT_EQ(parts->size(), 2u);
+    expect_cube((*parts)[0], "parts", 0.0f);
+    expect_cube((*parts)[1], "right side", 2.0f);
+    // With an o, g only groups materials: the body they split stays one
+    // object, and a name with no face is no object.
+    const auto body = read_obj_text(dir, "body.obj",
+                                    "o body\n" + obj_corners() + "g body_steel\n" + obj_faces(0, 6, 0) +
+                                        "g body_glass\n" + obj_faces(6, 12, 0) + "g\no empty\n");
+    ASSERT_TRUE(body.has_value()) << body.error().context;
+    ASSERT_EQ(body->size(), 1u);
+    expect_cube((*body)[0], "body", 0.0f);
+}
+
+TEST(MeshImport, ObjPolygonsAreUnavailableNamingTheLine) {
+    const spade::test::TempDir dir("mesh-import-obj-polygons");
+    const std::string square = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+    struct Case {
+        std::string text;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {square + "f 1 2 3 4\n", "line 5: a face of 4 vertices; this build reads triangles (triangulate on export)"},
+        {square + "l 1 2\n", "line 5: 'l'"},
+        {"# a curve\ncstype bspline\ncurv 0 1 1 2\n", "line 2: 'cstype'"},
+        {square + "lod 1\n", "line 5: 'lod'"},
+        {"v 0 0 \\\n  0\n", "line 1: a line continued"},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto objects = read_obj_text(dir, "case" + std::to_string(i) + ".obj", cases[i].text);
+        ASSERT_FALSE(objects.has_value()) << cases[i].text;
+        EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, cases[i].needle)) << objects.error().context;
+    }
+}
+
+TEST(MeshImport, MalformedObjNamesTheLine) {
+    const spade::test::TempDir dir("mesh-import-bad-obj");
+    const std::string tri = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+    struct Case {
+        std::string text;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {"v 0 0\n", "line 1: v has 2 numbers"},
+        {"v 0 0 0 1 2 3 4 5\n", "line 1: v has 8 numbers"},
+        {"v 0 0,5 0\n", "line 1: '0,5' is not a number"},
+        {"v 0 nan 0\n", "line 1: 'nan' is not a finite number"},
+        {"v 0 1e999 0\n", "line 1: '1e999' is out of double's range"},
+        {tri + "f 1 2\n", "line 4: a face of 2 corners"},
+        {tri + "f 1/1/1/1 2 3\n", "line 4: corner '1/1/1/1' is not"},
+        {tri + "f 1// 2 3\n", "line 4: corner '1//' is not"},
+        {tri + "f 0 2 3\n", "line 4: index '0' is not a nonzero integer"},
+        {tri + "f 1 2 3x\n", "line 4: index '3x' is not a nonzero integer"},
+        {tri + "f 1 2 9\n", "line 4: vertex index 9 names none of the 3 vertices defined above it"},
+        {tri + "f 1 2 -4\n", "line 4: vertex index -4 names none of the 3 vertices defined above it"},
+        {tri + "f 1/1 2/1 3/1\n", "line 4: texture coordinate index 1 names none of the 0"},
+        {"o \xC3\x28\n", "line 1: the name is not UTF-8"},
+    };
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const auto objects = read_obj_text(dir, "case" + std::to_string(i) + ".obj", cases[i].text);
+        ASSERT_FALSE(objects.has_value()) << cases[i].text;
+        EXPECT_EQ(objects.error().code, Code::invalid_argument) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, cases[i].needle)) << objects.error().context;
+    }
+    // An open object: make_mesh()'s refusal, under the object's name.
+    const auto lid = read_obj_text(dir, "lid.obj", "o lid\n" + obj_corners() + obj_faces(0, 11, 0));
+    ASSERT_FALSE(lid.has_value());
+    EXPECT_EQ(lid.error().code, Code::invalid_argument) << lid.error().context;
+    EXPECT_TRUE(contains(lid.error().context, "lid.obj: object 'lid': ")) << lid.error().context;
+    // Nothing to import.
+    const auto empty = read_obj_text(dir, "empty.obj", "# vertices only\nv 0 0 0\n");
+    ASSERT_FALSE(empty.has_value());
+    EXPECT_EQ(empty.error().code, Code::invalid_argument) << empty.error().context;
+    EXPECT_TRUE(contains(empty.error().context, "empty.obj: no faces")) << empty.error().context;
+    const auto missing = spade::read_obj(dir.path() / "missing.obj", MeshUnit::metre);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error().code, Code::io_error) << missing.error().context;
 }
