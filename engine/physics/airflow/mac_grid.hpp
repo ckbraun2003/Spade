@@ -95,7 +95,8 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
 // The largest grid make_grid() allocates: the spec's 4 GiB airflow cap (§4.3).
 inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
 
-// The bytes of a grid's u, v, w and p, in 64 bits.
+// The bytes of a grid's u, v, w and p, in 64 bits, for a shape check_shape()
+// takes (past its cell cap the products can wrap).
 [[nodiscard]] inline uint64_t grid_bytes(const GridShape& s) noexcept {
     const uint64_t nx = s.nx;
     const uint64_t ny = s.ny;
@@ -108,7 +109,8 @@ inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
 // (but a refusal's message). Refused (invalid_argument, naming what): a zero
 // dimension; dx not positive and finite; a periodic face whose opposite face
 // is not periodic; a periodic axis of odd size other than 1, since red-black
-// colouring needs an even ring. capacity_exceeded past 2^31 cells, or past
+// colouring needs an even ring. capacity_exceeded past 2^31 cells (naming
+// the sizes; the count is checked, so no uint32 triple wraps it), or past
 // kGridByteCap bytes (naming both). check_grid() (fluid_step.hpp) adds the
 // domain and the step's scratch.
 [[nodiscard]] Result<void> check_shape(const GridShape& shape, const DomainBc& bc);

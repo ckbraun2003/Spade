@@ -70,6 +70,38 @@ TEST(AirflowCheckGrid, TheShapeRulesAreMakeGridsWordForWord) {
     EXPECT_TRUE(check_grid({4, 4, 1, 0.1f}, slab, true).has_value());
 }
 
+// A shape whose cell count wraps 64 bits (Core's N5b, 2026-10-21: a scene file
+// can feed in any uint32 triple) is refused by its cell count, naming its
+// sizes, before any total is taken. 2^31 per axis is 2^93 cells, 0 when
+// wrapped; 2^22 x 2^21 x 2^21 is 2^64, also 0. Mutation: the unchecked
+// product, which takes the first two (and make_grid() then sizes its arrays
+// from the wrapped counts).
+TEST(AirflowCheckGrid, ACellCountThatWouldWrapIsRefusedByItsSizes) {
+    constexpr uint32_t kMax = std::numeric_limits<uint32_t>::max();
+    const GridShape shapes[] = {
+        {1u << 31, 1u << 31, 1u << 31, 0.01f},
+        {1u << 22, 1u << 21, 1u << 21, 0.01f},
+        {kMax, kMax, kMax, 0.01f},
+        {1u << 31, 2, 1, 0.01f},
+    };
+    for (const GridShape& s : shapes) {
+        const std::string sizes = std::to_string(s.nx) + " x " + std::to_string(s.ny) + " x " + std::to_string(s.nz);
+        const spade::Result<void> shape_ok = check_shape(s, DomainBc{});
+        ASSERT_FALSE(shape_ok.has_value()) << sizes;
+        EXPECT_EQ(shape_ok.error().code, Code::capacity_exceeded) << sizes;
+        EXPECT_NE(shape_ok.error().context.find(sizes), std::string::npos) << shape_ok.error().context;
+        EXPECT_NE(shape_ok.error().context.find("2^31"), std::string::npos) << shape_ok.error().context;
+        for (const bool with_solids : {false, true}) {
+            const spade::Result<void> grid_ok = check_grid(s, DomainBc{}, with_solids);
+            ASSERT_FALSE(grid_ok.has_value()) << sizes;
+            EXPECT_EQ(grid_ok.error().context, shape_ok.error().context) << sizes;
+        }
+        const auto made = make_grid(s, DomainBc{});
+        ASSERT_FALSE(made.has_value()) << sizes;
+        EXPECT_EQ(made.error().context, shape_ok.error().context) << sizes;
+    }
+}
+
 // A closed box whose -x wall moves in takes a net flux: check_domain()'s
 // refusal, by face, from check_grid() and make_fluid_scratch() alike.
 TEST(AirflowCheckGrid, AClosedDomainWithANetFluxIsRefusedByName) {
