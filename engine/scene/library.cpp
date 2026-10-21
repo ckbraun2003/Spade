@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -29,8 +30,6 @@ using yaml_text::parse_uint;
 using yaml_text::path_text;
 using yaml_text::scalar;
 
-// Every diagnostic blames the index's own schema.
-constexpr std::string_view kSchema = "library schema v1";
 // The top level's name in a diagnostic, and what an entry's paths are
 // relative to (relative_path_problem's "must be relative to the <kind> file").
 constexpr std::string_view kTop = "library index";
@@ -41,6 +40,32 @@ constexpr std::string_view kObjectSuffix = ".object.yaml";
 
 [[nodiscard]] Error invalid(std::string context) {
     return Error{Code::invalid_argument, std::move(context)};
+}
+
+// The part kind a file's suffix names (scene/part_file.hpp), if any.
+[[nodiscard]] std::optional<PartKind> part_kind_of(std::string_view file) {
+    for (const PartKind kind : {PartKind::motor, PartKind::prop, PartKind::esc, PartKind::battery}) {
+        if (file.ends_with(part_suffix(kind))) return kind;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool is_part(LibraryKind kind) { return kind != LibraryKind::model && kind != LibraryKind::object; }
+
+// What an entry is, for a loader's refusal: "a model", "an object", "a motor
+// part".
+[[nodiscard]] std::string kind_phrase(LibraryKind kind) {
+    if (kind == LibraryKind::model) return "a model";
+    if (kind == LibraryKind::object) return "an object";
+    const auto part = static_cast<PartKind>(static_cast<uint32_t>(kind) - static_cast<uint32_t>(LibraryKind::motor));
+    return "a " + std::string(part_kind_name(part)) + " part";
+}
+
+// The loader for an entry of `kind`.
+[[nodiscard]] std::string_view loader_of(LibraryKind kind) {
+    if (kind == LibraryKind::model) return "load_library_model";
+    if (kind == LibraryKind::object) return "load_library_object";
+    return "load_library_part";
 }
 
 // `text` with ASCII A-Z lowered: what "ignoring case" compares. A path
@@ -109,12 +134,14 @@ constexpr std::string_view kObjectSuffix = ".object.yaml";
     if (!version_node) return std::unexpected(version_node.error());
     const Result<uint32_t> version = parse_uint<uint32_t>(*version_node, "library_version");
     if (!version) return std::unexpected(version.error());
-    if (*version != kLibraryVersion) {
+    if (*version < 1 || *version > kLibraryVersion) {
         return std::unexpected(Error{Code::schema_mismatch, "library index is schema version " + dec(*version) +
-                                                                ", this build reads version " + dec(kLibraryVersion) +
-                                                                " only" + mark_of(*version_node)});
+                                                                ", this build reads versions 1 to " +
+                                                                dec(kLibraryVersion) + mark_of(*version_node)});
     }
-    if (Result<void> r = yaml_text::check_map(root, kTop, {"library_version", "entries"}, kSchema); !r) {
+    // Every diagnostic blames the index's own version's schema.
+    const std::string schema = "library schema v" + dec(*version);
+    if (Result<void> r = yaml_text::check_map(root, kTop, {"library_version", "entries"}, schema); !r) {
         return std::unexpected(r.error());
     }
 
@@ -129,7 +156,7 @@ constexpr std::string_view kObjectSuffix = ".object.yaml";
     for (std::size_t i = 0; i < entries->size(); ++i) {
         const YAML::Node node = (*entries)[i];
         const std::string what = "entries[" + dec(i) + "]";
-        if (Result<void> r = yaml_text::check_map(node, what, {"name", "category", "file", "thumbnail"}, kSchema);
+        if (Result<void> r = yaml_text::check_map(node, what, {"name", "category", "file", "thumbnail"}, schema);
             !r) {
             return std::unexpected(r.error());
         }
@@ -152,10 +179,23 @@ constexpr std::string_view kObjectSuffix = ".object.yaml";
 
         Result<std::string> file = path_field(node, "file", what);
         if (!file) return std::unexpected(file.error());
+        const std::optional<PartKind> part = part_kind_of(*file);
         if (file->ends_with(kModelSuffix)) {
             entry.kind = LibraryKind::model;
         } else if (file->ends_with(kObjectSuffix)) {
             entry.kind = LibraryKind::object;
+        } else if (part && *version >= 2) {
+            entry.kind = static_cast<LibraryKind>(static_cast<uint32_t>(LibraryKind::motor) +
+                                                  static_cast<uint32_t>(*part));
+        } else if (part) {
+            return std::unexpected(at(node["file"], what + ".file '" + *file +
+                                                        "' is a part file, which needs library_version 2"));
+        } else if (*version >= 2) {
+            return std::unexpected(at(node["file"], what + ".file '" + *file + "' must end in " +
+                                                        std::string(kModelSuffix) + " (a model file), " +
+                                                        std::string(kObjectSuffix) +
+                                                        " (an object file), or .motor.yaml, .prop.yaml, "
+                                                        ".esc.yaml or .battery.yaml (a part file)"));
         } else {
             return std::unexpected(at(node["file"], what + ".file '" + *file + "' must end in " +
                                                         std::string(kModelSuffix) + " (a model file) or " +
@@ -273,8 +313,8 @@ Result<Library> load_library(const std::filesystem::path& path) {
 
 Result<ModelFile> load_library_model(const Library& library, const LibraryEntry& entry) {
     if (entry.kind != LibraryKind::model) {
-        return std::unexpected(invalid("library entry '" + entry.name +
-                                       "' is an object, not a model: load it with load_library_object"));
+        return std::unexpected(invalid("library entry '" + entry.name + "' is " + kind_phrase(entry.kind) +
+                                       ", not a model: load it with " + std::string(loader_of(entry.kind))));
     }
     const Result<std::filesystem::path> file = entry_file(library, entry, entry.file);
     if (!file) return std::unexpected(file.error());
@@ -285,8 +325,8 @@ Result<ModelFile> load_library_model(const Library& library, const LibraryEntry&
 
 Result<ObjectFile> load_library_object(const Library& library, const LibraryEntry& entry) {
     if (entry.kind != LibraryKind::object) {
-        return std::unexpected(invalid("library entry '" + entry.name +
-                                       "' is a model, not an object: load it with load_library_model"));
+        return std::unexpected(invalid("library entry '" + entry.name + "' is " + kind_phrase(entry.kind) +
+                                       ", not an object: load it with " + std::string(loader_of(entry.kind))));
     }
     const Result<std::filesystem::path> file = entry_file(library, entry, entry.file);
     if (!file) return std::unexpected(file.error());
@@ -296,17 +336,32 @@ Result<ObjectFile> load_library_object(const Library& library, const LibraryEntr
 }
 
 Result<SourceRegistry> load_library_sources(const Library& library) {
-    (void)library;
-    return SourceRegistry{};
+    return load_sources(library.dir / "sources.yaml");
 }
 
 Result<PartFile> load_library_part(const Library& library, const LibraryEntry& entry,
                                    const SourceRegistry& registry) {
-    (void)library, (void)entry, (void)registry;
-    return PartFile{};
+    if (!is_part(entry.kind)) {
+        return std::unexpected(invalid("library entry '" + entry.name + "' is " + kind_phrase(entry.kind) +
+                                       ", not a part: load it with " + std::string(loader_of(entry.kind))));
+    }
+    const Result<std::filesystem::path> file = entry_file(library, entry, entry.file);
+    if (!file) return std::unexpected(file.error());
+    Result<PartFile> part = load_part_file(*file, registry);
+    if (!part) return std::unexpected(for_entry(entry, part.error()));
+    return part;
 }
 
 Result<void> check_library_contents(const Library& library) {
+    // The registry, read once, when any entry is a part.
+    std::optional<SourceRegistry> registry;
+    for (const LibraryEntry& entry : library.entries) {
+        if (!is_part(entry.kind)) continue;
+        Result<SourceRegistry> r = load_library_sources(library);
+        if (!r) return std::unexpected(r.error());
+        registry = std::move(*r);
+        break;
+    }
     // Each object's visual mesh_ref, folded, with the entry that holds it.
     struct Ref {
         std::string ref;
@@ -317,6 +372,12 @@ Result<void> check_library_contents(const Library& library) {
     for (const LibraryEntry& entry : library.entries) {
         if (entry.kind == LibraryKind::model) {
             if (Result<ModelFile> m = load_library_model(library, entry); !m) return std::unexpected(m.error());
+            continue;
+        }
+        if (is_part(entry.kind)) {
+            if (Result<PartFile> p = load_library_part(library, entry, *registry); !p) {
+                return std::unexpected(p.error());
+            }
             continue;
         }
         const Result<ObjectFile> object = load_library_object(library, entry);

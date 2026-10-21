@@ -625,10 +625,10 @@ TEST(LibraryLoad, TheDirectoryIsTheIndexsAndEveryFileItNamesMustExist) {
     EXPECT_EQ(code_of(no_index), code(spade::Code::io_error));
     EXPECT_EQ(why(no_index), "cannot open library index '" + spade::path_text(absent) + "'");
     const fs::path newer = dir.path() / "newer.yaml";
-    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 2\n"));
+    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 3\n"));
     const spade::Result<Library> version = spade::scene::load_library(newer);
     EXPECT_EQ(code_of(version), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 2"))
+    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 3"))
         << why(version);
 }
 
@@ -762,7 +762,7 @@ TEST(LibraryLoad, APartEntryLoadsAgainstTheLibrarysSources) {
     const spade::Result<void> apc = spade::scene::check_library_contents(*library);
     EXPECT_EQ(code_of(apc), code(spade::Code::invalid_argument));
     EXPECT_TRUE(why(apc).starts_with("library entry 'M2312': " +
-                                     spade::path_text(dir.path() / "parts" / "m2312.motor.yaml") + ": motor.kv"))
+                                     spade::path_text(dir.path() / fs::path(motor.file)) + ": motor.kv"))
         << why(apc);
     EXPECT_NE(why(apc).find("'apc_data_files'"), std::string::npos) << why(apc);
 

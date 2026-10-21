@@ -68,7 +68,7 @@ namespace spade::scene {
 
 // The newest library-index schema this build reads; it reads every version
 // from 1 to this one.
-inline constexpr uint32_t kLibraryVersion = 1;
+inline constexpr uint32_t kLibraryVersion = 2;
 
 // What an entry's file holds, by its extension.
 enum class LibraryKind : uint32_t {

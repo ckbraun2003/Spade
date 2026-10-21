@@ -348,8 +348,9 @@ TEST(PartFile, CitedFieldsAreTheBlocksKeysLessItsIdentityStrings) {
 
 TEST(PartFile, AFieldWithoutASourceIsRefusedByPath) {
     const std::string text(kMotorText);
-    expect_refused(spade::scene::motor_from_yaml(with(text, "  kv: {source: \"retail_phantom3_parts\", grade: retailer}\n", "")),
-                   Code::invalid_argument, {"motor.kv", "no citation", "sources"});
+    const std::string kv_line = "  kv: {source: \"retail_phantom3_parts\", grade: retailer}\n";
+    expect_refused(spade::scene::motor_from_yaml(with(text, kv_line, "")), Code::invalid_argument,
+                   {"motor.kv", "no citation", "sources"});
     // A citation of a field the part does not have.
     expect_refused(spade::scene::motor_from_yaml(
                        with(text, "  shape: {kind: cylinder, size: [0.014, 0.025, 0]}\n", "")),
@@ -360,10 +361,12 @@ TEST(PartFile, AFieldWithoutASourceIsRefusedByPath) {
     // The writer refuses the same, so what it writes reads back.
     MotorPart missing = a_motor();
     missing.sources.erase(missing.sources.begin() + 3);
-    expect_refused(spade::scene::motor_to_yaml(missing), Code::invalid_argument, {"motor.no_load_voltage", "no citation"});
+    expect_refused(spade::scene::motor_to_yaml(missing), Code::invalid_argument,
+                   {"motor.no_load_voltage", "no citation"});
     PropPart no_airfoil = a_prop();
     no_airfoil.sources.pop_back();
-    expect_refused(spade::scene::prop_to_yaml(no_airfoil), Code::invalid_argument, {"prop.blade.airfoil", "no citation"});
+    expect_refused(spade::scene::prop_to_yaml(no_airfoil), Code::invalid_argument,
+                   {"prop.blade.airfoil", "no citation"});
 }
 
 TEST(PartFile, ACitationIsGivenOrItsKeyLeftOut) {
