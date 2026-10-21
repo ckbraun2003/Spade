@@ -104,6 +104,7 @@ add_executable(spade_tests
     test_gnss.cpp
     test_world_file.cpp
     test_scene_file.cpp
+    test_scene_airflow.cpp
     test_model_file.cpp
     test_object_file.cpp
     test_library_quad.cpp

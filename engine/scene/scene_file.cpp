@@ -1522,4 +1522,9 @@ Result<uint64_t> world_hash(const WorldDesc& world) {
     return rng::fnv1a64(*text);
 }
 
+Result<uint64_t> region_identity(const SceneAirflowRegion& region) {
+    (void)region;
+    return std::unexpected(Error{Code::unavailable, "region_identity: not built yet"});
+}
+
 }  // namespace spade::scene
