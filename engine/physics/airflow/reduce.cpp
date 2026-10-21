@@ -6,51 +6,13 @@
 namespace spade::physics::airflow {
 
 float fixed_tile_sum(std::span<const float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept {
-    float total = 0.0f;
-    for (uint32_t tk = 0; tk < nz; tk += kReduceTile) {
-        const uint32_t k_end = std::min(tk + kReduceTile, nz);
-        for (uint32_t tj = 0; tj < ny; tj += kReduceTile) {
-            const uint32_t j_end = std::min(tj + kReduceTile, ny);
-            for (uint32_t ti = 0; ti < nx; ti += kReduceTile) {
-                const uint32_t i_end = std::min(ti + kReduceTile, nx);
-                float tile = 0.0f;
-                for (uint32_t k = tk; k < k_end; ++k) {
-                    for (uint32_t j = tj; j < j_end; ++j) {
-                        for (uint32_t i = ti; i < i_end; ++i) {
-                            tile += x[i + std::size_t{nx} * (j + std::size_t{ny} * k)];
-                        }
-                    }
-                }
-                total += tile;
-            }
-        }
-    }
-    return total;
+    return fixed_tile_sum_of<float>(nx, ny, nz, [x](uint32_t, uint32_t, uint32_t, std::size_t c) { return x[c]; });
 }
 
 float fixed_tile_dot(std::span<const float> a, std::span<const float> b, uint32_t nx, uint32_t ny,
                      uint32_t nz) noexcept {
-    float total = 0.0f;
-    for (uint32_t tk = 0; tk < nz; tk += kReduceTile) {
-        const uint32_t k_end = std::min(tk + kReduceTile, nz);
-        for (uint32_t tj = 0; tj < ny; tj += kReduceTile) {
-            const uint32_t j_end = std::min(tj + kReduceTile, ny);
-            for (uint32_t ti = 0; ti < nx; ti += kReduceTile) {
-                const uint32_t i_end = std::min(ti + kReduceTile, nx);
-                float tile = 0.0f;
-                for (uint32_t k = tk; k < k_end; ++k) {
-                    for (uint32_t j = tj; j < j_end; ++j) {
-                        for (uint32_t i = ti; i < i_end; ++i) {
-                            const std::size_t c = i + std::size_t{nx} * (j + std::size_t{ny} * k);
-                            tile += a[c] * b[c];
-                        }
-                    }
-                }
-                total += tile;
-            }
-        }
-    }
-    return total;
+    return fixed_tile_sum_of<float>(nx, ny, nz,
+                                    [a, b](uint32_t, uint32_t, uint32_t, std::size_t c) { return a[c] * b[c]; });
 }
 
 void remove_mean(std::span<float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept {

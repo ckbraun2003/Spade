@@ -33,6 +33,13 @@
 // across the wrap on a periodic axis),
 // so a surface sampled for C_p reads the wall's pressure; deeper solid cells
 // are no-data in every channel.
+//
+// CLOSED FACES (the solids design, section 6; P3, S5). With the apertures
+// given, a velocity gradient along an axis never differences across a closed
+// face, a wall's or a sheet's: it goes one-sided from the cell, as at a
+// non-periodic domain edge, and is 0 with both faces closed. A central
+// difference across a sheet would mix its two sides' velocities and draw
+// vorticity, Q and lambda2 along a sheet that has none.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 
@@ -40,14 +47,17 @@ struct PublishInput {
     glm::vec3 origin{0.0f};            // the grid's minimum corner in the world, metres
     std::span<const uint8_t> solid{};  // one per cell, nonzero = solid; empty = all fluid
     std::array<bool, 3> periodic{};    // per axis: the grid wraps there, so its edge differences wrap too
+    // The face apertures (SolidField::theta), per component; empty: every face
+    // open. A difference never crosses a closed face (theta = 0).
+    std::array<std::span<const float>, 3> theta{};
 };
 
 struct PublishCounts {
     uint32_t extrapolated = 0;  // solid cells written from their fluid side (also header.extrapolated_cells)
 };
 
-// Refused (invalid_argument): a solid mask, or a grid array, whose size does
-// not match the grid's shape. `out`'s storage is reused when its size fits.
+// Refused (invalid_argument): a solid mask, a grid array or a non-empty
+// aperture array whose size does not match the grid's shape. `out`'s storage is reused when its size fits.
 [[nodiscard]] Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out);
 
 }  // namespace spade::physics::airflow

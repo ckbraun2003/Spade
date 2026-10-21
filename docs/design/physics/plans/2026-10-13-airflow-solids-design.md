@@ -1,6 +1,6 @@
 # Solids in the airflow grid: P2, P2b and P3 — design
 
-**Owner:** Physics. **Status:** **P2 BUILT 2026-10-20**, on `physics/airflow-solids` (head 9773a2b, in the lead's review); P3 and P2b next. **APPROVED by the lead, 2026-10-13**, with §10's two decisions. **Amended 2026-10-13** for Test/Docs' tolerances and the lead's five findings (§11, in the lead's review; the solver change in §3 reverses spec §1.5's rejection of CG and needs the lead's approval). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
+**Owner:** Physics. **Status:** **P2 MERGED** (9732a07), with `check_grid()` (8879bbe) and `vehicles::AirflowSolids` (b85e00e). **P3 BUILT 2026-10-22** on `physics/airflow-p3` (§6: `wall_load()`, Publish's one-sided rule; S1's drag report-only by the lead's ruling, 2026-10-22). P2b follows the GPU solver (plan B), by Cameron's order of 2026-10-22. **APPROVED by the lead, 2026-10-13**, with §10's two decisions. **Amended 2026-10-13** for Test/Docs' tolerances and the lead's five findings (§11, in the lead's review; the solver change in §3 reverses spec §1.5's rejection of CG and needs the lead's approval). It implements the demonstration plan's P2 (immersed solids), P2b (the drone box's boundaries) and P3 (wall pressure) on plan A's CPU reference. The GPU twin follows in plan B's kernels.
 **Rests on:**
 - the airflow spec §2 (Boundaries) and §1.5 step 6 (the projection with apertures);
 - the demonstration plan (`PHY-10`, the drone-box premise of `cd298d6`);
@@ -130,6 +130,8 @@ The drone's frame plates and boards (1.5–4 mm) are thinner than 2 cells at D1'
 - **The thresholds.** A porous part takes D5's 2-cell rule like a wall, but an under-resolved porous part becomes no sheet: it is refused. A thin mesh screen is better as a porous sheet with a pressure-jump law, which is a later case.
 
 ## 6. Wall pressure and force (P3)
+
+**Built 2026-10-22:** `physics/airflow/wall_load.hpp` (`wall_load(grid, solids, regions, about)`, the force and moment on all the solids together) and Publish's `PublishInput::theta`. Measured: d'Alembert's zero to 6e-8, Archimedes within (dx/R)², a sheet's jump to rounding, S3's sheet force 1 − dx/L, S5 exact. S1's steady drag has a floor `c₀` (about 0.02 at R/dx 6, 0.03 at 12) that does not shrink with `h`: report-only, a known limit (`04-verification.md`), its cause P3c.
 
 - **On a cut cell.** The divergence theorem gives the solid surface's area vector inside cell `c` as `A_c = Σ_f θ_f dx² n_f`, summed over the cell's faces with `n_f` pointing out of the cell.
 - **The force and moment** on the body: `F = −Σ_c p_c A_c` and `M = Σ_c (x_c − com) × (−p_c A_c)`. They are summed in the reduction's fixed tile order (`reduce.hpp`), so they are deterministic and match the GPU.
