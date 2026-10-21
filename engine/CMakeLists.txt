@@ -993,6 +993,7 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 add_library(spade_scene STATIC
     scene/compose.cpp
     scene/library.cpp
+    scene/library_sources.cpp
     scene/model_file.cpp
     scene/object_file.cpp
     scene/scene_file.cpp
