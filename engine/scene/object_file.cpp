@@ -37,8 +37,8 @@ using yaml_text::path_text;
 // THE ONE MAPPING from an object version to the scene key set its object
 // block is read with (object_file.hpp): object_version 1 reads it as scene
 // version 3 does, the newest when it was defined. An asset's keys are the same
-// in scene versions 1 to 4 (version 4 changed a model's, N5a); a later scene
-// version that changes them raises
+// in scene versions 1 to 5 (version 4 changed a model's, N5a; version 5 added
+// the scene's airflow, N5b); a later scene version that changes them raises
 // detail::kAssetKeySetVersion, and this assert then asks for the new keys to
 // be gated by version and for a new object_version, mapped here.
 constexpr uint32_t kObjectBlockSceneVersion = 3;

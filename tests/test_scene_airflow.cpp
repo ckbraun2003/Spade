@@ -224,8 +224,8 @@ TEST(SceneAirflow, TheGridIsPhysicsCheckGrid) {
 }
 
 TEST(SceneAirflow, RegionRulesAreRefusedByName) {
-    constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
-    constexpr float kInf = std::numeric_limits<float>::infinity();
+    static constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
+    static constexpr float kInf = std::numeric_limits<float>::infinity();
     struct Case {
         std::function<void(SceneDesc&)> edit;
         std::string needle;

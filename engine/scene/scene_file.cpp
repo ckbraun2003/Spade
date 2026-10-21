@@ -20,7 +20,8 @@
 
 #include "core/rng.hpp"
 #include "core/validate.hpp"
-#include "physics/forces.hpp"  // drag_mode
+#include "physics/airflow/fluid_step.hpp"  // check_grid
+#include "physics/forces.hpp"              // drag_mode
 #include "scene/detail/asset_block.hpp"
 #include "scene/detail/model_block.hpp"
 #include "world/detail/yaml_text.hpp"
@@ -63,14 +64,17 @@ using yaml_text::vec3_field;
 }
 
 // The first scene version that carries a model's parts (CORE-7), the first
-// that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6), and the
-// first that carries a model's `propulsion` chain (N5a).
+// that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6), the
+// first that carries a model's `propulsion` chain (N5a), and the first that
+// carries the scene's `airflow` regions (N5b).
 constexpr uint32_t kPartsVersion = 2;
 constexpr uint32_t kMeshPartsVersion = 3;
 constexpr uint32_t kPropulsionVersion = 4;
+constexpr uint32_t kAirflowVersion = 5;
 static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion < kMeshPartsVersion &&
-                  kMeshPartsVersion < kPropulsionVersion && kPropulsionVersion <= kSceneFileVersion,
-              "this build reads the versions that carry parts, mesh parts and chains");
+                  kMeshPartsVersion < kPropulsionVersion && kPropulsionVersion < kAirflowVersion &&
+                  kAirflowVersion <= kSceneFileVersion,
+              "this build reads the versions that carry parts, mesh parts, chains and airflow regions");
 
 // The schema a diagnostic blames: the file's OWN declared version wherever
 // the reader has one, because a key set is version-gated (a model's `parts`),
@@ -110,10 +114,26 @@ static_assert(static_cast<uint32_t>(vehicles::PartSurface::Kind::wall) == 0 &&
                   static_cast<uint32_t>(vehicles::PartSurface::Kind::porous) == 1,
               "kPartSurfaceNames is indexed by PartSurface::Kind");
 
+// An airflow region's kind, its coupling and its faces by NAME; index into
+// each table IS the enumerator's value (the faces': physics::airflow::Side).
+constexpr std::string_view kAirflowKindNames[] = {"follow", "fixed"};
+static_assert(static_cast<uint32_t>(AirflowKind::follow) == 0 && static_cast<uint32_t>(AirflowKind::fixed) == 1,
+              "kAirflowKindNames is indexed by AirflowKind");
+constexpr std::string_view kAirflowCouplingNames[] = {"one_way", "two_way"};
+static_assert(static_cast<uint32_t>(AirflowCoupling::one_way) == 0 &&
+                  static_cast<uint32_t>(AirflowCoupling::two_way) == 1,
+              "kAirflowCouplingNames is indexed by AirflowCoupling");
+constexpr std::string_view kAirflowFaceKeys[] = {"x_minus", "x_plus", "y_minus", "y_plus", "z_minus", "z_plus"};
+static_assert(physics::airflow::kXMinus == 0 && physics::airflow::kXPlus == 1 && physics::airflow::kYMinus == 2 &&
+                  physics::airflow::kYPlus == 3 && physics::airflow::kZMinus == 4 && physics::airflow::kZPlus == 5,
+              "kAirflowFaceKeys is indexed by physics::airflow::Side");
+
 // The version a scene is written as: the oldest that carries everything in it
 // (scene_file.hpp, property 3). Every model is looked at: a chain on the last
-// model makes the scene version 4 however early a mesh part appears.
+// model makes the scene version 4 however early a mesh part appears, and a
+// region makes it version 5 whatever its models hold.
 [[nodiscard]] uint32_t written_version(const SceneDesc& scene) {
+    if (!scene.airflow.empty()) return kAirflowVersion;
     uint32_t version = kSceneFileOldestVersion;
     for (const vehicles::ModelType& m : scene.models) {
         if (m.propulsion) return kPropulsionVersion;
@@ -372,6 +392,51 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
            ", rotor_omega: " + format_float(v.start.rotor_omega) + "}\n";
 }
 
+// A table's name for an enumerator, or its number when it is none of them
+// (region_identity() names regions the validator has not seen).
+template <std::size_t N, class E>
+[[nodiscard]] std::string name_of(const std::string_view (&names)[N], E value) {
+    const auto i = static_cast<uint32_t>(value);
+    return i < N ? std::string(names[i]) : dec(i);
+}
+
+[[nodiscard]] std::string face_text(const physics::airflow::DomainBc& bc, std::size_t side) {
+    switch (bc.face[side]) {
+        case physics::airflow::FaceBc::open: return "open";
+        case physics::airflow::FaceBc::periodic: return "periodic";
+        case physics::airflow::FaceBc::wall: return "{wall: " + vec3_list(bc.wall_velocity[side]) + "}";
+    }
+    return dec(static_cast<uint32_t>(bc.face[side]));
+}
+
+// One region item (scene_file.hpp, AN AIRFLOW REGION'S TEXT). A follow
+// region's faces are not written: they are open, from its flight.
+void emit_region(std::string& out, const SceneAirflowRegion& r) {
+    const bool fixed = r.kind == AirflowKind::fixed;
+    out += "  - name: " + quote_yaml(r.name) + "\n";
+    out += "    kind: " + name_of(kAirflowKindNames, r.kind) + "\n";
+    if (fixed) {
+        out += "    min_corner: " + vec3_list(r.min_corner) + "\n";
+    } else {
+        out += "    follows: " + quote_yaml(r.follows) + "\n";
+    }
+    out += "    cells: [" + dec(r.cells.nx) + ", " + dec(r.cells.ny) + ", " + dec(r.cells.nz) + "]\n";
+    out += "    dx: " + format_float(r.cells.dx) + "\n";
+    if (fixed) {
+        out += "    faces: {";
+        for (std::size_t s = 0; s < 6; ++s) {
+            if (s > 0) out += ", ";
+            out += std::string(kAirflowFaceKeys[s]) + ": " + face_text(r.faces, s);
+        }
+        out += "}\n";
+    }
+    out += "    wind: " + vec3_list(r.faces.ambient) + "\n";
+    out += "    fluid: {density: " + format_float(r.density) +
+           ", kinematic_viscosity: " + format_float(r.kinematic_viscosity) + "}\n";
+    out += "    coupling: " + name_of(kAirflowCouplingNames, r.coupling) + "\n";
+    if (!fixed && r.floor) out += "    floor: {height: " + format_float(*r.floor) + "}\n";
+}
+
 [[nodiscard]] std::string emit(const SceneDesc& scene) {
     const uint32_t version = written_version(scene);
     std::string out;
@@ -461,6 +526,19 @@ void emit_vehicle(std::string& out, const SceneVehicle& v) {
         out += "vehicles:\n";
         for (const SceneVehicle& v : scene.vehicles) {
             emit_vehicle(out, v);
+        }
+    }
+
+    if (!scene.airflow.empty()) {
+        out +=
+            "\n"
+            "# Airflow regions (scene version 5): world-aligned boxes of cubic cells\n"
+            "# in which the airflow runs one way. A follow region holds the vehicle it\n"
+            "# follows and takes its faces from its flight; a fixed region states its\n"
+            "# minimum corner and its six faces. Wind and wall velocities in m/s.\n"
+            "airflow:\n";
+        for (const SceneAirflowRegion& r : scene.airflow) {
+            emit_region(out, r);
         }
     }
 
@@ -1119,6 +1197,146 @@ namespace {
     return out;
 }
 
+// An enumerator by its name in `names` (a scalar), or a refusal at the node.
+template <std::size_t N, class E>
+[[nodiscard]] Result<E> enum_field(const YAML::Node& map, const char* key, const std::string& what,
+                                   const std::string_view (&names)[N], std::string_view expected) {
+    const Result<YAML::Node> node = field(map, key, what);
+    if (!node) return std::unexpected(node.error());
+    if (node->IsScalar()) {
+        for (std::size_t i = 0; i < N; ++i) {
+            if (node->Scalar() == names[i]) return static_cast<E>(i);
+        }
+    }
+    return std::unexpected(at(*node, what + "." + key + " must be " + std::string(expected)));
+}
+
+// One face of a fixed region: `open`, `periodic` or `{wall: [vx, vy, vz]}`.
+[[nodiscard]] Result<void> parse_face(const YAML::Node& faces, std::size_t side, const std::string& what,
+                                      physics::airflow::DomainBc& bc, std::string_view schema) {
+    const char* const key = kAirflowFaceKeys[side].data();
+    const Result<YAML::Node> node = field(faces, key, what);
+    if (!node) return std::unexpected(node.error());
+    const std::string face_what = what + "." + key;
+    if (node->IsScalar() && node->Scalar() == "open") {
+        bc.face[side] = physics::airflow::FaceBc::open;
+        return {};
+    }
+    if (node->IsScalar() && node->Scalar() == "periodic") {
+        bc.face[side] = physics::airflow::FaceBc::periodic;
+        return {};
+    }
+    if (node->IsMap()) {
+        if (Result<void> r = check_map(*node, face_what, {"wall"}, schema); !r) return r;
+        const Result<glm::vec3> velocity = vec3_field(*node, "wall", face_what);
+        if (!velocity) return std::unexpected(velocity.error());
+        bc.face[side] = physics::airflow::FaceBc::wall;
+        bc.wall_velocity[side] = *velocity;
+        return {};
+    }
+    return std::unexpected(at(*node, face_what + " must be open, periodic or {wall: [vx, vy, vz]}"));
+}
+
+// One airflow region (scene version 5). A key only the other kind takes is
+// refused by name, before the rest is read.
+[[nodiscard]] Result<SceneAirflowRegion> parse_region(const YAML::Node& node, const std::string& what,
+                                                      std::string_view schema) {
+    if (Result<void> r = check_map(node, what,
+                                   {"name", "kind", "follows", "min_corner", "cells", "dx", "faces", "wind", "fluid",
+                                    "coupling", "floor"},
+                                   schema);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    SceneAirflowRegion out{};
+    const Result<std::string> name = string_field(node, "name", what);
+    if (!name) return std::unexpected(name.error());
+    out.name = *name;
+    const Result<AirflowKind> kind = enum_field<2, AirflowKind>(node, "kind", what, kAirflowKindNames, "follow or fixed");
+    if (!kind) return std::unexpected(kind.error());
+    out.kind = *kind;
+
+    if (out.kind == AirflowKind::follow) {
+        if (has(node, "min_corner")) {
+            return std::unexpected(at(node["min_corner"], what + ".min_corner: a follow region's box goes with its "
+                                                                 "vehicle; only a fixed region states its corner"));
+        }
+        if (has(node, "faces")) {
+            return std::unexpected(at(node["faces"], what + ".faces: a follow region's faces come from its flight "
+                                                            "(Physics' resolve()); only a fixed region states them"));
+        }
+        const Result<std::string> follows = string_field(node, "follows", what);
+        if (!follows) return std::unexpected(follows.error());
+        out.follows = *follows;
+    } else {
+        if (has(node, "follows")) {
+            return std::unexpected(at(node["follows"], what + ".follows: a fixed region follows no vehicle"));
+        }
+        if (has(node, "floor")) {
+            return std::unexpected(
+                at(node["floor"], what + ".floor: a fixed region has no floor; its y_minus face is one, as a wall"));
+        }
+        const Result<glm::vec3> corner = vec3_field(node, "min_corner", what);
+        if (!corner) return std::unexpected(corner.error());
+        out.min_corner = *corner;
+    }
+
+    const Result<YAML::Node> cells = field(node, "cells", what);
+    if (!cells) return std::unexpected(cells.error());
+    if (!cells->IsSequence() || cells->size() != 3) {
+        return std::unexpected(at(*cells, what + ".cells must be [nx, ny, nz]"));
+    }
+    uint32_t* const counts[] = {&out.cells.nx, &out.cells.ny, &out.cells.nz};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const Result<uint32_t> n = parse_uint<uint32_t>((*cells)[i], what + ".cells[" + dec(i) + "]");
+        if (!n) return std::unexpected(n.error());
+        *counts[i] = *n;
+    }
+    const Result<float> dx = float_field(node, "dx", what);
+    if (!dx) return std::unexpected(dx.error());
+    out.cells.dx = *dx;
+
+    if (out.kind == AirflowKind::fixed) {
+        const Result<YAML::Node> faces = map_field(node, "faces", what,
+                                                   {"x_minus", "x_plus", "y_minus", "y_plus", "z_minus", "z_plus"},
+                                                   schema);
+        if (!faces) return std::unexpected(faces.error());
+        for (std::size_t side = 0; side < 6; ++side) {
+            if (Result<void> r = parse_face(*faces, side, what + ".faces", out.faces, schema); !r) {
+                return std::unexpected(r.error());
+            }
+        }
+    }
+    const Result<glm::vec3> wind = vec3_field(node, "wind", what);
+    if (!wind) return std::unexpected(wind.error());
+    out.faces.ambient = *wind;
+
+    const std::string fluid_what = what + ".fluid";
+    const Result<YAML::Node> fluid = map_field(node, "fluid", what, {"density", "kinematic_viscosity"}, schema);
+    if (!fluid) return std::unexpected(fluid.error());
+    const Result<float> density = float_field(*fluid, "density", fluid_what);
+    if (!density) return std::unexpected(density.error());
+    const Result<float> viscosity = float_field(*fluid, "kinematic_viscosity", fluid_what);
+    if (!viscosity) return std::unexpected(viscosity.error());
+    out.density = *density;
+    out.kinematic_viscosity = *viscosity;
+
+    const Result<AirflowCoupling> coupling =
+        enum_field<2, AirflowCoupling>(node, "coupling", what, kAirflowCouplingNames, "one_way or two_way");
+    if (!coupling) return std::unexpected(coupling.error());
+    out.coupling = *coupling;
+
+    // floor: optional, a follow region's only.
+    if (has(node, "floor")) {
+        const Result<YAML::Node> floor = map_field(node, "floor", what, {"height"}, schema);
+        if (!floor) return std::unexpected(floor.error());
+        const Result<float> height = float_field(*floor, "height", what + ".floor");
+        if (!height) return std::unexpected(height.error());
+        out.floor = *height;
+    }
+    return out;
+}
+
 [[nodiscard]] Result<SceneDesc> parse_scene(const YAML::Node& root, const std::filesystem::path& base_dir) {
     if (!root.IsMap()) {
         return std::unexpected(at(root, "a scene file's top level must be a mapping with a 'scene_version' key"));
@@ -1140,15 +1358,20 @@ namespace {
     // Every diagnostic below blames the file's own version.
     const std::string file_schema = schema(*version);
 
-    // The top level is the same in every version this build reads; a model's
-    // key set is not (parse_model).
-    if (Result<void> r = check_map(root, "scene",
-                                   {"scene_version", "name", "world", "materials", "models", "assets",
-                                    "vehicles", "spare"},
-                                   file_schema);
-        !r) {
-        return std::unexpected(r.error());
-    }
+    // The top level gains `airflow` in version 5 (in an older file it is an
+    // unknown key, blamed on that file's version); a model's key set changes
+    // too (parse_model).
+    const bool reads_airflow = *version >= kAirflowVersion;
+    const Result<void> top =
+        reads_airflow ? check_map(root, "scene",
+                                  {"scene_version", "name", "world", "materials", "models", "assets", "vehicles",
+                                   "airflow", "spare"},
+                                  file_schema)
+                      : check_map(root, "scene",
+                                  {"scene_version", "name", "world", "materials", "models", "assets", "vehicles",
+                                   "spare"},
+                                  file_schema);
+    if (!top) return std::unexpected(top.error());
 
     SceneDesc out{};
     const Result<std::string> name = string_field(root, "name", "scene");
@@ -1200,6 +1423,17 @@ namespace {
             parse_vehicle((*vehicle_list)[i], "scene.vehicles[" + dec(i) + "]", file_schema);
         if (!v) return std::unexpected(v.error());
         out.vehicles.push_back(*v);
+    }
+
+    // airflow: optional, as the writer omits it for a scene without regions.
+    if (reads_airflow && has(root, "airflow")) {
+        const Result<YAML::Node> regions = sequence_field(root, "airflow", "scene");
+        if (!regions) return std::unexpected(regions.error());
+        for (std::size_t i = 0; i < regions->size(); ++i) {
+            Result<SceneAirflowRegion> r = parse_region((*regions)[i], "scene.airflow[" + dec(i) + "]", file_schema);
+            if (!r) return std::unexpected(r.error());
+            out.airflow.push_back(std::move(*r));
+        }
     }
 
     if (has(root, "spare")) {
@@ -1364,6 +1598,100 @@ Result<void> detail::validate_materials(std::span<const MaterialDesc> materials,
 // Public API
 // ===========================================================================
 
+namespace {
+
+// Region `index`'s own rules, after its name (validate_scene's list): the
+// earlier regions are checked, so a second follow region of one vehicle is the
+// one refused.
+[[nodiscard]] Result<void> validate_region(const SceneDesc& scene, std::size_t index) {
+    namespace af = physics::airflow;
+    const SceneAirflowRegion& r = scene.airflow[index];
+    const std::string where = "airflow region '" + r.name + "': ";
+    const auto refuse = [&where](const std::string& what) { return std::unexpected(invalid(where + what)); };
+
+    if (static_cast<uint32_t>(r.kind) >= std::size(kAirflowKindNames)) {
+        return refuse("kind " + dec(static_cast<uint32_t>(r.kind)) + " is not follow or fixed");
+    }
+    if (static_cast<uint32_t>(r.coupling) >= std::size(kAirflowCouplingNames)) {
+        return refuse("coupling " + dec(static_cast<uint32_t>(r.coupling)) + " is not one_way or two_way");
+    }
+    if (r.coupling == AirflowCoupling::two_way) {
+        return refuse("two_way coupling waits for Physics' D4; a region couples one_way");
+    }
+
+    // The faces the grid is checked with: a follow region's are open, its
+    // flight's to set (resolve()), around its wind.
+    af::DomainBc bc = r.faces;
+    if (r.kind == AirflowKind::follow) {
+        bool vehicle = false;
+        for (const SceneVehicle& v : scene.vehicles) vehicle = vehicle || v.name == r.follows;
+        if (!vehicle) return refuse("follows '" + r.follows + "', which is no vehicle of the scene");
+        for (std::size_t j = 0; j < index; ++j) {
+            const SceneAirflowRegion& other = scene.airflow[j];
+            if (other.kind == AirflowKind::follow && other.follows == r.follows) {
+                return refuse("vehicle '" + r.follows + "' is followed by '" + other.name +
+                              "' already; a vehicle has one follow region");
+            }
+        }
+        if (r.min_corner != glm::vec3(0.0f)) {
+            return refuse("a follow region's box goes with its vehicle; its min_corner must be 0 0 0");
+        }
+        for (std::size_t s = 0; s < 6; ++s) {
+            if (r.faces.face[s] != af::FaceBc::open || r.faces.wall_velocity[s] != glm::vec3(0.0f)) {
+                return refuse(
+                    "a follow region's faces come from its flight (Physics' resolve()); they must all be open, with "
+                    "no wall velocity");
+            }
+        }
+        if (r.floor && !finite(*r.floor)) return refuse("floor height must be finite");
+        bc = af::DomainBc{};
+        bc.ambient = r.faces.ambient;
+    } else {
+        if (!r.follows.empty()) return refuse("a fixed region follows no vehicle");
+        if (r.floor) return refuse("a fixed region has no floor; its y_minus face is one, as a wall");
+        if (!finite(r.min_corner)) return refuse("min_corner must be finite");
+        for (std::size_t s = 0; s < 6; ++s) {
+            const std::string face(kAirflowFaceKeys[s]);
+            const auto kind = static_cast<uint32_t>(r.faces.face[s]);
+            if (kind > static_cast<uint32_t>(af::FaceBc::periodic)) {
+                return refuse("face " + face + " is " + dec(kind) + ", not open, wall or periodic");
+            }
+            if (!finite(r.faces.wall_velocity[s])) return refuse("wall velocities must be finite");
+            if (r.faces.face[s] != af::FaceBc::wall && r.faces.wall_velocity[s] != glm::vec3(0.0f)) {
+                return refuse("face " + face + " is not a wall, so it takes no wall velocity");
+            }
+        }
+    }
+    if (!finite(r.faces.ambient)) return refuse("wind must be finite");
+    if (!(r.density > 0.0f) || !finite(r.density)) return refuse("fluid density must be positive and finite");
+    if (!(r.kinematic_viscosity >= 0.0f) || !finite(r.kinematic_viscosity)) {
+        return refuse("fluid kinematic_viscosity must be finite and >= 0");
+    }
+    // The grid: Physics' one rule (TD-9), with the solids' bytes, as a region
+    // always holds a vehicle or an object.
+    if (Result<void> grid = af::check_grid(r.cells, bc, true); !grid) {
+        return std::unexpected(Error{grid.error().code, where + grid.error().context});
+    }
+    return {};
+}
+
+// Whether two fixed regions share any volume (touching faces do not), in
+// double: each box is [min_corner, min_corner + n dx] per axis.
+[[nodiscard]] bool overlap(const SceneAirflowRegion& a, const SceneAirflowRegion& b) {
+    const uint32_t na[3] = {a.cells.nx, a.cells.ny, a.cells.nz};
+    const uint32_t nb[3] = {b.cells.nx, b.cells.ny, b.cells.nz};
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double lo_a = a.min_corner[static_cast<glm::length_t>(k)];
+        const double lo_b = b.min_corner[static_cast<glm::length_t>(k)];
+        const double hi_a = lo_a + static_cast<double>(na[k]) * static_cast<double>(a.cells.dx);
+        const double hi_b = lo_b + static_cast<double>(nb[k]) * static_cast<double>(b.cells.dx);
+        if (!(lo_a < hi_b && lo_b < hi_a)) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 Result<void> validate_scene(const SceneDesc& scene) {
     if (scene.name.empty()) {
         return std::unexpected(invalid("scene name must not be empty"));
@@ -1460,6 +1788,34 @@ Result<void> validate_scene(const SceneDesc& scene) {
             return std::unexpected(invalid(where + "start rotor_omega must be finite and >= 0"));
         }
     }
+
+    // --- airflow regions (N5b): each one's rules, then no two fixed regions
+    // sharing volume ("nothing couples two grids"). Follow regions move with
+    // their vehicles: their meeting is resolve()'s. --------------------------
+    for (std::size_t i = 0; i < scene.airflow.size(); ++i) {
+        const SceneAirflowRegion& r = scene.airflow[i];
+        if (r.name.empty()) {
+            return std::unexpected(invalid("airflow region " + dec(i) + " has no name"));
+        }
+        for (std::size_t j = 0; j < i; ++j) {
+            if (scene.airflow[j].name == r.name) {
+                return std::unexpected(invalid("duplicate airflow region name '" + r.name + "'"));
+            }
+        }
+        if (Result<void> ok = validate_region(scene, i); !ok) {
+            return ok;
+        }
+    }
+    for (std::size_t i = 0; i < scene.airflow.size(); ++i) {
+        for (std::size_t j = 0; j < i; ++j) {
+            const SceneAirflowRegion& a = scene.airflow[j];
+            const SceneAirflowRegion& b = scene.airflow[i];
+            if (a.kind == AirflowKind::fixed && b.kind == AirflowKind::fixed && overlap(a, b)) {
+                return std::unexpected(invalid("airflow regions '" + a.name + "' and '" + b.name +
+                                               "' overlap; nothing couples two grids"));
+            }
+        }
+    }
     return {};
 }
 
@@ -1523,8 +1879,13 @@ Result<uint64_t> world_hash(const WorldDesc& world) {
 }
 
 Result<uint64_t> region_identity(const SceneAirflowRegion& region) {
-    (void)region;
-    return std::unexpected(Error{Code::unavailable, "region_identity: not built yet"});
+    try {
+        std::string text = "region_identity\n";
+        emit_region(text, region);
+        return rng::fnv1a64(text);
+    } catch (const std::exception& e) {
+        return std::unexpected(Error{Code::internal, std::string("region_identity failed: ") + e.what()});
+    }
 }
 
 }  // namespace spade::scene
