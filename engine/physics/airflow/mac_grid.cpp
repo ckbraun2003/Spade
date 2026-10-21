@@ -16,8 +16,14 @@ Result<void> check_shape(const GridShape& shape, const DomainBc& bc) {
     if (!(shape.dx > 0.0f) || !std::isfinite(shape.dx)) {
         return std::unexpected(Error{Code::invalid_argument, "airflow grid: dx must be positive and finite"});
     }
-    if (uint64_t{shape.nx} * shape.ny * shape.nz > (uint64_t{1} << 31)) {
-        return std::unexpected(Error{Code::capacity_exceeded, "airflow grid: more than 2^31 cells"});
+    // The cell count, multiplied with a check: three uint32 sizes can wrap 64
+    // bits (2^31 per axis is 2^93), so the first product is bounded before
+    // the second; past this every total of the shape fits 64 bits.
+    constexpr uint64_t kMaxCells = uint64_t{1} << 31;
+    if (const uint64_t xy = uint64_t{shape.nx} * shape.ny; xy > kMaxCells || xy * shape.nz > kMaxCells) {
+        return std::unexpected(Error{Code::capacity_exceeded, "airflow grid: " + std::to_string(shape.nx) + " x " +
+                                                                  std::to_string(shape.ny) + " x " +
+                                                                  std::to_string(shape.nz) + " is more than 2^31 cells"});
     }
     if (const uint64_t bytes = grid_bytes(shape); bytes > kGridByteCap) {
         return std::unexpected(Error{Code::capacity_exceeded, "airflow grid: " + std::to_string(bytes) +

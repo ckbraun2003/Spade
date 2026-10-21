@@ -80,7 +80,9 @@ struct FluidScratch {
 };
 
 // The bytes of a grid and of the scratch its step needs, in 64 bits (the
-// multigrid's depth follows the domain's periodic axes).
+// multigrid's depth follows the domain's periodic axes), for a shape
+// check_shape() takes: past its cell cap the products can wrap.
+// check_grid() asks check_shape() first.
 [[nodiscard]] uint64_t fluid_bytes(const GridShape& shape, const DomainBc& bc) noexcept;
 
 // A closed domain (no pressure outlet) must not take a net prescribed flux
@@ -92,7 +94,8 @@ struct FluidScratch {
 // The bytes set_solids() adds for the shape, in 64 bits: the solid field, the
 // regions' per-cell arrays, the PCG's vectors and every multigrid level's
 // face weights. Not counted: what grows with the solid surface (the wall
-// links, the fill layers) or with the region count.
+// links, the fill layers) or with the region count. For a shape
+// check_shape() takes, as fluid_bytes().
 [[nodiscard]] uint64_t solid_bytes(const GridShape& shape, const DomainBc& bc) noexcept;
 
 // Whether a grid of this shape and these faces can be made and stepped, with
