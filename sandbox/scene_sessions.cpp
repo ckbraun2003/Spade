@@ -270,7 +270,7 @@ spade::Result<std::unique_ptr<AirflowSession>> AirflowSession::create(const std:
     if (!quad) return std::unexpected(quad.error());
     s->quad_ = std::move(*quad);
     spade::Result<spade::analysis::LiveRun> run =
-        spade::analysis::LiveRun::start(s->quad_.resolved, s->quad_.run_model, s->quad_.propulsion);
+        spade::analysis::LiveRun::start(s->quad_.resolved, s->quad_.run_model);
     if (!run) {
         return std::unexpected(spade::Error{run.error().code, "the live run would not start: " + run.error().context});
     }

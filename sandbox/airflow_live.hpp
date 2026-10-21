@@ -65,7 +65,6 @@ inline constexpr float kPlayback = 0.25f;
 struct LiveQuad {
     vehicles::ModelType draw_model;  // with its parts: what the window draws
     vehicles::ModelType run_model;   // its parts cleared: what the run flies
-    analysis::LivePropulsion propulsion;
     analysis::ResolvedCase resolved;
     analysis::ControlProgram program;  // showcase_program(showcase_trim())
 };
@@ -130,15 +129,16 @@ namespace detail {
     }
     q.run_model = q.draw_model;
     q.run_model.parts.clear();
-    q.propulsion = analysis::LivePropulsion{*q.draw_model.propulsion, kIdleDuty, kStateOfCharge};
 
     analysis::AnalysisCase c;
     c.model = analysis::pin_model(model_file.generic_string(), q.run_model);
+    c.power = analysis::Power{.idle = static_cast<float>(kIdleDuty),
+                              .state_of_charge = static_cast<float>(kStateOfCharge)};
     c.rotors.assign(q.run_model.rotors.size(), analysis::RotorSetup{});
     c.grid.box = kBoxM;
     c.grid.spacing = spacing;
     c.time.step = kStepS;
-    const Result<analysis::ShowcaseTrim> trim = analysis::showcase_trim(c, q.run_model, q.propulsion);
+    const Result<analysis::ShowcaseTrim> trim = analysis::showcase_trim(c, q.run_model);
     if (!trim) return std::unexpected(trim.error());
     q.program = analysis::showcase_program(*trim);
     c.time.duration = hover_ends_at(q.program).value_or(analysis::showcase_seconds());
