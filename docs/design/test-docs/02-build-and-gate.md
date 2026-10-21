@@ -46,7 +46,7 @@ Cameron decided this on 2026-10-21, by AskUserQuestion to the lead (backlog, `34
 
 Per-branch debug chunks are dropped.
 
-**At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke with its MP4.
+**At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke. The lead posts the smoke as `C:\Users\Cameron\Desktop\Projects\Videos\Smoke\Spade\<UTC time>_batch-<n>-live-smoke.mp4` with its caption, gets `check_video.py` PASS, then sends a push notification. `Videos\CATEGORIES.md` holds the rules for every posted video (Cameron, 2026-10-21; both leads agreed); `Videos\check_video.py` checks and encodes them. A branch's smoke is not posted; its MP4 stays in `spade-smoke\`.
 
 A ready message names the tiers it ran, and which of the conditional ones it skipped and why ("no GPU code changed").
 
