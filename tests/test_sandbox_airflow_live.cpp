@@ -125,26 +125,19 @@ TEST(SandboxAirflowLive, TheRunPushesTheAirDownThroughTheProbes) {
     }
 }
 
-// Over the drone: the vortex cores once there are any, streamlines seeded
-// under each disc, and a speed slice standing through the two farthest-apart
-// hubs; GL draws all three.
-TEST(SandboxAirflowLive, TheViewShowsTheCoresTheLinesAndASliceThroughTheHubs) {
+// Over the drone while it flies: the vortex cores once there are any, and
+// streamlines seeded under each disc; GL draws both.
+TEST(SandboxAirflowLive, TheViewShowsTheCoresAndTheLines) {
     const std::vector<eg::RotorProbe> rotors = x_quad();
     const spade::FlowVolume v = header_only(-30.0f);
     const spade::render::ViewSpec spec = af::airflow_view(v, rotors, 8.0f);
     EXPECT_EQ(spec.base, spade::render::ViewBase::shaded);
-    ASSERT_EQ(spec.layers.size(), 3u);
+    ASSERT_EQ(spec.layers.size(), 2u);
     EXPECT_EQ(spec.layers[0].kind, FlowView::vortex_iso);
     EXPECT_FLOAT_EQ(spec.layers[0].iso_value, -30.0f * af::kVortexFraction);
     EXPECT_EQ(spec.layers[1].kind, FlowView::streamlines);
     EXPECT_EQ(spec.layers[1].seeds.size(), 8u * rotors.size());
     for (const glm::vec3& s : spec.layers[1].seeds) EXPECT_LT(s.y, 0.02f) << "a seed above the discs";
-    const spade::render::FlowViewSpec& slice = spec.layers[2];
-    EXPECT_EQ(slice.kind, FlowView::slice);
-    EXPECT_NEAR(std::abs(slice.plane.right.x), std::sqrt(0.5f), 1e-5f) << "not along the X's diagonal";
-    EXPECT_NEAR(slice.plane.right.y, 0.0f, 1e-6f);
-    EXPECT_NEAR(slice.plane.center.x, 0.0f, 1e-6f);
-    EXPECT_NEAR(slice.plane.center.y, 0.0f, 1e-6f);
     for (const spade::render::FlowViewSpec& layer : spec.layers) EXPECT_FLOAT_EQ(layer.range_max, 8.0f);
 
     spade::render::ViewInputs in;
@@ -155,9 +148,33 @@ TEST(SandboxAirflowLive, TheViewShowsTheCoresTheLinesAndASliceThroughTheHubs) {
 
 TEST(SandboxAirflowLive, NoCoresAreDrawnBeforeThereAreAny) {
     const spade::render::ViewSpec spec = af::airflow_view(header_only(-1.0f), x_quad(), 8.0f);
-    ASSERT_EQ(spec.layers.size(), 2u);
+    ASSERT_EQ(spec.layers.size(), 1u);
     EXPECT_EQ(spec.layers[0].kind, FlowView::streamlines);
-    EXPECT_EQ(spec.layers[1].kind, FlowView::slice);
+}
+
+// The wake's slice, shown on its own after the run (over the drone it hides
+// half the wake): speed on a plane standing through the two farthest-apart
+// hubs, faced by a camera at facing_yaw().
+TEST(SandboxAirflowLive, TheSliceStandsThroughTheFarthestHubsAndIsFaced) {
+    const spade::render::ViewSpec spec = af::wake_slice(header_only(-30.0f), x_quad(), 8.0f);
+    ASSERT_EQ(spec.layers.size(), 1u);
+    const spade::render::FlowViewSpec& slice = spec.layers[0];
+    EXPECT_EQ(slice.kind, FlowView::slice);
+    EXPECT_EQ(slice.quantity, spade::render::FlowQuantity::speed);
+    EXPECT_FLOAT_EQ(slice.range_max, 8.0f);
+    EXPECT_NEAR(std::abs(slice.plane.right.x), std::sqrt(0.5f), 1e-5f) << "not along the X's diagonal";
+    EXPECT_NEAR(slice.plane.right.y, 0.0f, 1e-6f);
+    EXPECT_NEAR(slice.plane.center.x, 0.0f, 1e-6f);
+    EXPECT_NEAR(slice.plane.center.y, 0.0f, 1e-6f);
+
+    // The orbit camera's eye sits along (sin yaw, cos yaw): the plane's normal.
+    const float yaw = af::facing_yaw(slice.plane);
+    const glm::vec3 eye(std::sin(yaw), 0.0f, std::cos(yaw));
+    EXPECT_NEAR(glm::dot(eye, slice.plane.right), 0.0f, 1e-5f) << "the camera is not square to the slice";
+
+    spade::render::ViewInputs in;
+    in.has_volume = true;
+    EXPECT_TRUE(spade::render::supports(spec, spade::render::ViewBackend::gl, in).drawable);
 }
 
 // The colours' top: twice the momentum-theory induced speed at hover.
