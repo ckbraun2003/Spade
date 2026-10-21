@@ -231,11 +231,13 @@ Cameron asked for a realistic-looking drone, and boxes and tubes alone don't mee
 - **a body shell** with rounded edges;
 - **arms**, as tubes with end caps.
 
-Two rules on solids:
-- **Props are drawn only.** Rotor parts stay out of the solids; the rotor model carries the props in the air.
-- **The body shell is a solid** when it is closed and every feature is at least 2 dx. Otherwise the SDF parts stay the solid, and the shell is visual only.
+**The lead's ruling (2026-10-21): no format change.**
+- **Props are mesh parts on their rotor's hub** (`attach: rotor`, mounted in the hub frame; `vehicles/model_part.hpp`). They are drawn and posed by the blade azimuth, and are never solids: the solids take only `PartFilter::rigid_only`. The rotor model carries the props in the air.
+- **The body, arms and motor bells are closed solid meshes**, and they are the parts themselves: drawn, and the airflow solids. Every feature is at least 2 dx at D1's 4 mm, that is 8 mm. A rounded body volume and 12 mm arm tubes meet that. A detail below 8 mm (an antenna, a GPS mast) stays out of L7.
+- **Authoring a prop mesh on a rotor is a compile addition.** The model file already carries rotor parts. `AirframeSpec` cannot author one yet: its records (`PartInertia` + `PartGeometrySpec`) have no attach or rotor, and the compile gathers no part from a propeller. L7 adds that to `vehicles/`, with the prop's mass staying in `PropBlock.mass`, so no mass is counted twice.
+- **Checks asked (2026-10-21):** Rendering, that `render_parts` draws rotor-mounted mesh parts spinning; Physics, that a closed mesh body gives "10 walls, 0 sheets" at 4 mm.
 
-Rendering already draws mesh parts (`render_parts`), and a part can turn with its rotor (`PartAttach::rotor`).
+Rendering already draws mesh parts (`render_parts`).
 
 **Its outline.** The full tasks are drafted after L3 and go to the lead.
 - **L7a, the mesh generators.** These are functions that build a `TriangleMesh` through `make_mesh()`:
@@ -246,12 +248,7 @@ Rendering already draws mesh parts (`render_parts`), and a part can turn with it
 
   Circles need sin and cos. TD-3 allows no libm under `engine/`, so they use `core/fp32_math`'s portable functions, or the meshes are generated outside `engine/` and committed as `.spmesh` assets. The draft picks one.
 - **L7b, the drones wear them.** Each L5 model file gains its mesh parts, with `.spmesh` sidecars beside it (B5's format). Those goldens are new in this plan, so regenerating them moves no existing golden. Each one still needs its `-NoSeed` leg.
-- **The open design point: "drawn only" has no carrier today.**
-  - Every mesh record becomes a WALL part (`vehicles/airframe_compile.hpp`, PARTS).
-  - A part's surface is wall or porous (`vehicles/model_part.hpp`).
-  - A propeller gathers no part.
-
-  So a drawn-only prop, or a shell that is visual only, needs a new carrier. It could be a third surface kind, or a part flag that the solids skip. Either is a model-part format change (CORE-7), and both Physics' solids and Rendering's draw read it. L7's draft brings it to the lead, with Physics and Rendering.
+- **L7c, a prop mesh on each hub**: the compile addition above.
 
 ## Rulings (the lead, 2026-10-21)
 
@@ -279,4 +276,6 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 ## Notes for later
 
 - Until L7 lands, each drone is drawn from its SDF parts.
+- **A visual-only carrier** (the lead, 2026-10-21) would be a render mesh beside the physics shape, the way game engines split render and collision. It is a later CORE-7 design, made only if a real detail needs it. L7 needs none.
+- **L2's branch:** L1 merged first (`61724be`), so L2 is cut fresh from master as `core/part-files`.
 - Kat's catalog has more parts (3-inch, 7-inch, cameras, VTX, GNSS). They join as part files once the four kinds land, each with its sources.
