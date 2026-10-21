@@ -137,14 +137,20 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - **The call:** run python directly, not inside PowerShell:
 
     ```text
-    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--expect-s <E>] [--wait-max-s <S>] --ticket spade-<realm>-<what>-<sha> --log <FILE> -- <command>
+    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--expect-s <E>] [--wait-max-s <S>] --ticket <tree>-<realm>-<what>-<sha> --log <FILE> -- <command>
     ```
 
   - **What v2 adds** (live 2026-10-21; Cameron ran the install):
     - **`--expect-s`:** the run time you expect, which defaults to `--limit-s`. A job expected to take over 900 s is LONG, and only one long job runs at a time.
     - **The quick lane:** a job with `--expect-s` of 90 or less and `--limit-s` of 180 or less.
-    - **`--ticket spade-<realm>-<what>-<sha>`:** a key for the job, for example `spade-testdocs-release-suite-d8c92ee`. A retry with the same ticket keeps its place in the queue.
+    - **`--ticket <tree>-<realm>-<what>-<sha>`:** says whose job it is and what it does, for example `spade-testdocs-leg-1a2b3c4`. Never start a ticket with the class (`gpu-`, `cc-`) or with only the realm (`testdocs-`). A retry uses the same ticket, so it keeps its place instead of adding a second entry.
     - **`--queue-status`** shows each job's size and its working directory, as well as who holds the queue and who waits.
+
+  - **No duplicate jobs** (Cameron, 2026-10-21, via the lead). The monitor marks a job as DUP when its command and folder match another job's.
+    - Before you queue a job, run `python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --queue-status`.
+    - Don't queue a command that is already running or waiting from the same folder. Wait for that run instead.
+    - If another realm has the same test queued at the same commit, use that run's result. Ask the lead if you can't get it.
+    - If a job you no longer need is still waiting, stop it before you queue a new version.
 
   - **The classes:**
 

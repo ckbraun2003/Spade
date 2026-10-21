@@ -33,8 +33,6 @@
 #include "gl_target_sink.hpp"
 #include "png_writer.hpp"
 #include "scene_sessions.hpp"
-#include "vehicles/model_identity.hpp"
-#include "vehicles/quadrotor.hpp"
 
 #ifdef _WIN32
 #define SPADE_POPEN _popen
@@ -79,7 +77,7 @@ constexpr std::array kSteps = {
     StepName{"drone_box", "open"},       StepName{"drone_box", "orbit"},
     StepName{"drone_box", "attitude"},   StepName{"drone_box", "level"},
     StepName{"drone_box", "throttle"},   StepName{"drone_box", "hud"},
-    StepName{"airflow", "capability"},
+    StepName{"airflow", "live"},
     StepName{"editor", "open"},          StepName{"editor", "picker"},
     StepName{"editor", "select"},        StepName{"editor", "place"},
     StepName{"editor", "move"},          StepName{"editor", "inspect"},
@@ -99,16 +97,10 @@ constexpr std::array<std::string_view, 8> kSnapshots = {"editor_picker",   "edit
 constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "editor"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
-// one that stops firing fails the run (it has expired, so delete it).
-const std::vector<KnownOpen> kKnownOpen = {
-    // The airflow chapter's capability card (Test/Docs' expiring entry). It
-    // fires while LiveRun refuses the sandbox's drone; the day the sandbox has
-    // a drone with its propulsion chain, it stops firing, the run fails as
-    // expired, and the chapter must be made live.
-    KnownOpen{"airflow/not-available",
-              "the sandbox has no drone with its propulsion chain until the library's reference quad (N4), so "
-              "LiveRun refuses to turn its rotors"},
-};
+// one that stops firing fails the run (it has expired, so delete it). None
+// today: airflow/not-available went when the chapter went live on the
+// library's reference quad (N4).
+const std::vector<KnownOpen> kKnownOpen = {};
 
 [[nodiscard]] std::string fmt(float v) {
     char text[32];
@@ -521,45 +513,70 @@ void drone_box(Tour& t, DroneSession& d) {
 }
 
 // ---------------------------------------------------------------------------
-// MAIN FUNCTION 2: THE AIRFLOW (the storyboard's chapter 2). The drone-box
-// case's LiveRun, live, once the sandbox has a drone with its propulsion
-// chain (the library's reference quad, N4). Until then the chapter is a card
-// that shows LiveRun's refusal verbatim and raises airflow/not-available,
-// which kKnownOpen tolerates until the day it stops firing.
+// MAIN FUNCTION 2: THE AIRFLOW (the storyboard's chapter 2). The library's
+// reference quad (N4) flown live at 32^3 through LiveRun under the showcase
+// program, its vortex cores, streamlines and a speed slice drawn over it each
+// frame (AirflowSession; airflow_live.hpp decides). Test/Docs' live floor,
+// downwash-present, judges the hover segment on screen.
 // ---------------------------------------------------------------------------
-void airflow(Tour& t, const DrawFn& blank) {
+void airflow_chapter(Tour& t, const fs::path& assets, const DrawFn& blank) {
     Smoke& s = t.smoke();
-    t.step("airflow", "capability", [&] {
-        // The drone the sandbox flies, in the drone-box case LiveRun runs.
-        vehicles::QuadrotorParams params = drone_stand_params();
-        const Result<vehicles::ModelType> model = vehicles::make_quadrotor(params);
-        if (!s.check(model.has_value(), "model", model ? model->name : model.error().context)) return;
-        analysis::AnalysisCase c;
-        c.model = analysis::ModelRef{"sandbox.model.yaml", vehicles::model_identity(*model),
-                                     vehicles::parts_identity(*model)};
-        c.rotors.assign(model->rotors.size(), analysis::RotorSetup{});
-        c.grid.box = 1.0f;
-        c.grid.spacing = 1.0f / 32.0f;  // the chapter's 32^3, live
-        c.time.duration = 2.0f;
-        c.time.step = 0.001f;
-        const auto resolved = analysis::resolve(c, *model);
-        if (!s.check(resolved.has_value(), "resolves",
-                     resolved ? "32^3" : resolved.error().front().field + ": " + resolved.error().front().message)) {
-            return;
-        }
-        const Result<analysis::LiveRun> run = analysis::LiveRun::start(*resolved, *model);
-        if (run) {
-            // The chapter could run live: its known-open entry stops firing
-            // and fails the run as expired, which is the signal to build it.
-            s.note("airflow: LiveRun starts the sandbox's drone; the chapter can go live");
-            return;
-        }
-        s.anomaly("airflow/not-available", run.error().context);
-        t.sink().set_card("Airflow\nnot yet available in the sandbox:\n" + wrap_card_line(run.error().context, 70));
-        t.pump(60, {}, blank);
-        t.poster("airflow");
-        t.pump(60, {}, blank);
+    t.step("airflow", "live", [&] {
+        const fs::path model_file = assets / "library" / "drones" / "reference_quad.model.yaml";
+        Result<std::unique_ptr<AirflowSession>> made = AirflowSession::create(model_file);
+        if (!s.check(made.has_value(), "starts", made ? (*made)->run().run_label() : made.error().context)) return;
+        AirflowSession& a = **made;
+        a.attach(t.sink());
+
+        // What stands in for what, before the run: the rotors are actuator
+        // discs, the parts are drawn but not in the air.
+        t.sink().set_card("Airflow, live\n" + wrap_card_line(a.run().run_label(), 70) +
+                          "\nthe rotors act on the air as discs; the drone's parts are drawn, not simulated"
+                          "\nshown at 1/" +
+                          std::to_string(static_cast<int>(1.0f / airflow::kPlayback + 0.5f)) + " speed");
+        t.pump(45, {}, blank);
         t.sink().set_card({});
+
+        uint32_t refused = 0;
+        std::string first_refusal;
+        bool poster_asked = false;
+        const DrawFn draw = [&](const FrameInput& in) -> Result<void> {
+            if (Result<void> f = a.frame(in, kDt); !f) return f;
+            if (!a.view_refusal().empty()) {
+                if (refused++ == 0) first_refusal = a.view_refusal();
+            }
+            return {};
+        };
+        // The poster near the hover's end, the wake developed.
+        const double armed = airflow::armed_at(a.quad().program).value_or(0.0);
+        while (!a.finished() && !t.stopped()) {
+            if (!poster_asked && a.run().state().t_s >= armed + 0.9) {
+                t.poster("airflow");
+                poster_asked = true;
+            }
+            t.pump(1, {}, draw);
+        }
+        if (t.stopped()) return;
+        s.check(a.finished(), "ran", a.run().run_line());
+        s.check(refused == 0, "views-drawn",
+                refused == 0 ? std::to_string(a.legends().size()) + " legends on the last frame"
+                             : std::to_string(refused) + " frames drawn shaded: " + first_refusal);
+
+        // Test/Docs' live floor over the frames whose controls are the hover's.
+        end_goal::DownwashCase c;
+        c.density = a.quad().resolved.spec.fluid.density;
+        c.mass = a.quad().run_model.body.mass;
+        const end_goal::Verdict verdict = end_goal::downwash(a.downwash_frames(), c, end_goal::kDownwashPresent);
+        s.check(verdict.ok, "downwash-present", verdict.detail);
+        t.pump(30, {}, draw);  // the last frame held, under the verdict
+
+        // Then the wake's slice on its own, faced.
+        a.show_slice();
+        const uint32_t before = refused;
+        t.pump(60, {}, draw);
+        s.check(refused == before, "slice-drawn",
+                refused == before ? "speed through the farthest hubs, " + std::to_string(a.legends().size()) + " legend"
+                                  : "drawn shaded: " + a.view_refusal());
     });
 }
 
@@ -1092,8 +1109,8 @@ int run_live_smoke(const TourOptions& options) {
         drone->reset();  // detaches its panel before the editor attaches
     }
     if (!tour.stopped()) {
-        chapter("2  Airflow\nthe air around the drone: vortex cores, streamlines,\na pressure slice, C_p on the drone");
-        airflow(tour, blank);
+        chapter("2  Airflow\nthe air around the library's quad, live at 32^3:\nvortex cores, streamlines, a speed slice");
+        airflow_chapter(tour, options.assets_dir, blank);
     }
     if (!tour.stopped()) {
         chapter("3  The editor\nopen a scene, place, select, move, edit, undo, run, save");

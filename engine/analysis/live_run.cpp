@@ -485,6 +485,8 @@ const LiveState& LiveRun::state() const noexcept { return impl_->state; }
 
 double LiveRun::step_s() const noexcept { return seconds(impl_->h_ns); }
 
+std::span<const vehicles::RotorRow> LiveRun::rotor_rows() const noexcept { return impl_->rows; }
+
 const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
 std::string LiveRun::run_label() const {

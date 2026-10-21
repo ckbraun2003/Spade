@@ -20,7 +20,9 @@
 #include "reference_airframe.hpp"
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
+#include "sim/design_frame.hpp"
 #include "vehicles/airframe_compile.hpp"
+#include "vehicles/part_pose.hpp"
 #include "world/sdf.hpp"
 
 #include "../sandbox/vehicle_draw.hpp"
@@ -99,6 +101,43 @@ TEST(SandboxVehicleParts, ThePartsSitAtTheVehiclesPose) {
                 EXPECT_NEAR(moved.statics[i].local_to_world[c][r], want[c][r], 1e-5f) << "item " << i;
             }
         }
+    }
+}
+
+// The pose given is the vehicle's DESIGN frame (a scene's start pose, a run's
+// state_of()), and the parts are posed by the body it makes: the centre of
+// mass sits com_offset from the design origin (the reference quad's 6.4 mm
+// below it). So drawing at a design pose draws what the engine's own path
+// draws for to_body_state() of it, the rule the sim spawns a vehicle by.
+TEST(SandboxVehicleParts, TheDesignPoseIsPosedAsTheBodyItMakes) {
+    vh::ModelType model;
+    ASSERT_NO_FATAL_FAILURE(reference_quad(model));
+    ASSERT_GT(glm::length(model.com_offset), 1e-3f) << "the premise: a centre of mass off the design origin";
+    const auto prepared = rp::prepare_parts(model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
+    const glm::vec3 pos(1.5f, 0.75f, -2.0f);
+    const glm::quat orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f)));
+
+    spade::render::RenderScene drawn = palette_scene();
+    ASSERT_TRUE(append_vehicle_parts(drawn, *prepared, model, pos, orient, look()).has_value());
+
+    const spade::FrameState design{pos, orient, glm::vec3(0.0f), glm::vec3(0.0f)};
+    const spade::FrameState b = spade::to_body_state(design, glm::normalize(model.design_to_principal), model.com_offset);
+    spade::BodyState body{};
+    body.pos = b.pos;
+    body.orient = b.orient;
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    const auto posed = vh::posed_parts(model, body, still, still, vh::PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    spade::render::RenderScene want = palette_scene();
+    ASSERT_TRUE(rp::bind_parts(*prepared, *posed, look(), want).has_value());
+
+    ASSERT_EQ(drawn.statics.size(), want.statics.size());
+    for (std::size_t i = 0; i < want.statics.size(); ++i) {
+        const glm::vec3 at(drawn.statics[i].local_to_world[3]);
+        const glm::vec3 should(want.statics[i].local_to_world[3]);
+        EXPECT_LT(glm::length(at - should), 1e-5f)
+            << "item " << i << " is " << glm::length(at - should) * 1000.0f << " mm from where the body puts it";
     }
 }
 

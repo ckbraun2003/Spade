@@ -13,21 +13,28 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "analysis/live_run.hpp"
 #include "core/error.hpp"
+#include "core/flow_volume.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "render/view_mode.hpp"
+#include "render_parts/render_parts.hpp"
 #include "world/builder.hpp"
 
 #if SPADE_SANDBOX_HAS_GPU
 #include "render_gl/gl_renderer.hpp"  // v2's GPU render backend -- the PRIMARY path
 #endif
 
+#include "airflow_live.hpp"    // the airflow chapter: the live quad, its views, the downwash frames
 #include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
@@ -144,6 +151,74 @@ class DroneSession {
     OrbitCamera camera_;
     std::vector<uint8_t> pixels_;
     uint32_t rebuilds_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// The airflow chapter in a window: the library quad flown live at 32^3, one
+// run frame per window frame, its flow views drawn over the drone drawn from
+// its parts. Every decision is in airflow_live.hpp and is asserted with no
+// display; this is the wiring.
+// ---------------------------------------------------------------------------
+class AirflowSession {
+  public:
+    // Loads the quad from `model_file`, resolves the chapter's case and starts
+    // the run. Needs no window, so a quad that can't fly refuses before one
+    // opens, in the refusal's words.
+    [[nodiscard]] static spade::Result<std::unique_ptr<AirflowSession>> create(
+        const std::filesystem::path& model_file);
+
+    // Starts the GPU renderer in `sink`'s context, or announces the CPU
+    // fallback. `sink` must outlive this. Call once, before the first frame.
+    void attach(GlTargetSink& sink);
+
+    ~AirflowSession();
+    AirflowSession(const AirflowSession&) = delete;
+    AirflowSession& operator=(const AirflowSession&) = delete;
+
+    // One frame: the orbit keys and a slow turn, then, until the case's
+    // duration is flown, the run advanced one frame (1/30 s simulated) each
+    // time `dt` x airflow::kPlayback has owed that much, and the frame read
+    // for the downwash check; then the drone and its views drawn and
+    // presented. The run's failure returns its cause; a view this backend
+    // can't draw leaves the drone drawn shaded, with the reason in
+    // view_refusal().
+    [[nodiscard]] spade::Result<void> frame(const FrameInput& in, float dt);
+
+    // The showcase program has run out; frame() keeps drawing its last frame.
+    [[nodiscard]] bool finished() const noexcept;
+    // From now on the view is the wake's slice (airflow::wake_slice()), with
+    // the camera turned square to it and the turning stopped.
+    void show_slice();
+    [[nodiscard]] const spade::analysis::LiveRun& run() const noexcept { return *run_; }
+    [[nodiscard]] const airflow::LiveQuad& quad() const noexcept { return quad_; }
+    // One per frame from arming (airflow::downwash_frame()), in time order.
+    [[nodiscard]] std::span<const end_goal::DownwashFrame> downwash_frames() const noexcept { return frames_; }
+    [[nodiscard]] const std::string& view_refusal() const noexcept { return refusal_; }
+    [[nodiscard]] std::span<const spade::render::ViewLegend> legends() const noexcept { return legends_; }
+    [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
+    [[nodiscard]] bool gpu_active() const noexcept { return gpu_ != nullptr; }
+
+  private:
+    AirflowSession() = default;
+
+    GlTargetSink* sink_ = nullptr;
+    airflow::LiveQuad quad_;
+    std::optional<spade::analysis::LiveRun> run_;
+    spade::FlowVolume volume_;
+    spade::render_parts::PreparedParts prepared_;
+    spade::render_parts::PartsLook look_{};
+    spade::render::RenderScene base_;   // the palette; the parts are bound into a copy each frame
+    spade::render::RenderScene scene_;  // this frame's
+    spade::render::ViewCache cache_;
+    float speed_top_ = 1.0f;
+    bool slice_ = false;  // show_slice() was called
+    double sim_owed_s_ = 1.0 / static_cast<double>(spade::analysis::kFramesPerSecond);  // simulated time due
+    std::vector<end_goal::DownwashFrame> frames_;
+    std::vector<spade::render::ViewLegend> legends_;
+    std::string refusal_;
+    std::unique_ptr<GpuRenderer> gpu_;
+    OrbitCamera camera_;
+    std::vector<uint8_t> pixels_;
 };
 
 }  // namespace spade::sandbox
