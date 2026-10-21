@@ -24,6 +24,7 @@
 #include "core/error.hpp"
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
+#include "sim/design_frame.hpp"
 #include "state/layout.hpp"
 #include "vehicles/model_type.hpp"
 #include "vehicles/part_pose.hpp"
@@ -84,23 +85,42 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
     }
 }
 
+// The body row (principal axes, at the centre of mass) of a vehicle whose
+// DESIGN frame is at (pos, orient): to_body_state(), the rule the sim spawns
+// a vehicle by. The centre of mass sits com_offset from the design origin.
+[[nodiscard]] inline BodyState body_at(const vehicles::ModelType& model, glm::vec3 pos, glm::quat orient) {
+    const FrameState b = to_body_state(FrameState{pos, orient, glm::vec3(0.0f), glm::vec3(0.0f)},
+                                       glm::normalize(model.design_to_principal), model.com_offset);
+    BodyState body{};
+    body.pos = b.pos;
+    body.orient = b.orient;
+    return body;
+}
+
 // Appends `model`'s parts, prepared once by render_parts::prepare_parts(),
-// posed at (pos, orient) and still: the rotor spans are zero, so a rotor part
-// shows no spin. bind_parts() writes statics (a CsgSubtree indexes them), so
-// a caller binds each frame into a copy of its base scene. All or nothing:
-// whatever posed_parts() or bind_parts() refuse, nothing is appended.
+// posed by `body` (a body row: a LiveRun's body(), or body_at()) and still:
+// the rotor spans are zero, so a rotor part shows no spin. bind_parts()
+// writes statics (a CsgSubtree indexes them), so a caller binds each frame
+// into a copy of its base scene. All or nothing: whatever posed_parts() or
+// bind_parts() refuse, nothing is appended.
 [[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
                                                        const render_parts::PreparedParts& prepared,
-                                                       const vehicles::ModelType& model, glm::vec3 pos,
-                                                       glm::quat orient, const render_parts::PartsLook& look) {
-    BodyState body{};
-    body.pos = pos;
-    body.orient = orient;
+                                                       const vehicles::ModelType& model, const BodyState& body,
+                                                       const render_parts::PartsLook& look) {
     const std::vector<float> still(model.rotors.size(), 0.0f);
     const Result<vehicles::PosedParts> posed =
         vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
     if (!posed) return std::unexpected(posed.error());
     return render_parts::bind_parts(prepared, *posed, look, scene);
+}
+
+// The same, posed at the vehicle's DESIGN frame (pos, orient): a scene's
+// start pose, a run's state_of().
+[[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
+                                                       const render_parts::PreparedParts& prepared,
+                                                       const vehicles::ModelType& model, glm::vec3 pos,
+                                                       glm::quat orient, const render_parts::PartsLook& look) {
+    return append_vehicle_parts(scene, prepared, model, body_at(model, pos, orient), look);
 }
 
 // Whether any piece is a CSG root. Such a piece marches at the pose it was
