@@ -33,7 +33,7 @@ struct ProjectionScratch {
 [[nodiscard]] ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc);
 
 struct ProjectionReport {
-    float residual = 0.0f;  // with solids: max|r| / max|b| after the solve (pcg.hpp); 0 on plan A's path
+    float residual = 0.0f;  // max|r| / max|b| after the solve (pcg.hpp with solids; plan A's after its cycles)
 };
 
 // WITH SOLIDS (solids->any, the solids design, section 3): the right side is

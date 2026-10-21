@@ -48,7 +48,7 @@ struct FluidHealth {
     uint8_t faces = 0;      // ill_posed_domain: bit s for each wall face with a normal velocity
     std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order);
                             // ill_posed_region: the region's first cell (faces: its faces)
-    float pressure_residual = 0.0f;  // with solids: this step's max|r| / max|b| (pcg.hpp)
+    float pressure_residual = 0.0f;  // this step's max|r| / max|b| (pcg.hpp with solids; plan A's after its cycles)
     bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
 };
 
@@ -97,6 +97,14 @@ struct FluidScratch {
 // links, the fill layers) or with the region count. For a shape
 // check_shape() takes, as fluid_bytes().
 [[nodiscard]] uint64_t solid_bytes(const GridShape& shape, const DomainBc& bc) noexcept;
+
+// check_grid()'s announcement (L6; the lead, 2026-10-21), for a grid it takes:
+// empty, or a line naming a pressure multigrid whose coarsest level still
+// holds more than kCoarsestCells cells (every axis held: under 4 cells, or a
+// periodic ring that cannot halve to an even one), whose solve may then miss
+// kResidualAnnounce. The run shows it with its run line; each step's residual
+// is announced on its own (describe()).
+[[nodiscard]] std::string check_grid_note(const GridShape& shape, const DomainBc& bc);
 
 // Whether a grid of this shape and these faces can be made and stepped, with
 // solids or without: check_shape() (make_grid()'s refusals), check_domain(),

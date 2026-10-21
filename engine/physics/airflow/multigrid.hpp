@@ -19,6 +19,11 @@ inline constexpr uint32_t kPreSweeps = 2;
 inline constexpr uint32_t kPostSweeps = 2;
 inline constexpr uint32_t kCoarsestSweeps = 32;
 
+// The largest coarsest level the halving rule may leave (the lead's decision
+// A, 2026-10-21): past it make_multigrid() coarsens axis by axis. Above every
+// golden's and record's coarsest level (at most 960 cells), so none moves.
+inline constexpr uint64_t kCoarsestCells = 1024;
+
 struct Multigrid {
     std::vector<PoissonLevel> levels;  // [0] the finest
 };
@@ -27,7 +32,12 @@ struct Multigrid {
 // Coarsening halves every axis of more than one cell while each is even and at
 // least 4; a periodic axis must also halve to an even size (n a multiple of
 // 4), so no level holds an odd periodic ring, whose red-black colouring would
-// make a sweep depend on its order (the final review's I2, 2026-10-12).
+// make a sweep depend on its order (the final review's I2, 2026-10-12). A
+// level that rule stops at with more than kCoarsestCells cells is coarsened
+// axis by axis (multigrid.cpp, coarser()): an odd axis to ceil(n / 2), its
+// last cell's missing partner closed; a periodic axis that cannot halve to an
+// even ring, or an axis under 4, held. Plan A's levels past the halving rule
+// carry face weights (clear_weights()).
 // KNOWN LIMIT (the final review's M4): an axis of one cell takes no part, and
 // its outlet faces' Dirichlet ghost term keeps the finest level's weight on
 // the coarser levels, so a one-cell slab open on that axis gets a weaker
@@ -51,8 +61,17 @@ void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 // covers only every second fine plane: a sheet on another plane is invisible
 // to it (finding 2), which is why the solids path solves by CG (pcg.hpp).
 void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine);
-// Every level back to plan A's stencil.
-void clear_weights(Multigrid& mg) noexcept;
+// Every level back to plan A's stencil: no weights, except on the levels past
+// the halving rule, which take the weights of unit fine faces (a host call:
+// it allocates). make_multigrid() calls it.
+void clear_weights(Multigrid& mg);
+// The coarsest level make_multigrid() would build, with no allocation.
+[[nodiscard]] std::array<uint32_t, 3> multigrid_coarsest(uint32_t nx, uint32_t ny, uint32_t nz,
+                                                         std::array<bool, 3> periodic = {}) noexcept;
+// The faces whose weights plan A's levels past the halving rule hold, in 64
+// bits, with no allocation: 0 for a hierarchy the halving rule builds whole.
+[[nodiscard]] uint64_t multigrid_plan_a_weight_faces(uint32_t nx, uint32_t ny, uint32_t nz,
+                                                     std::array<bool, 3> periodic = {}) noexcept;
 
 // coarse.b = (sum of the children's residuals) * (4 / children).
 void restrict_residual(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;

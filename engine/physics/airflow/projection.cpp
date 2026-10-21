@@ -1,6 +1,7 @@
 #include "physics/airflow/projection.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "physics/airflow/reduce.hpp"
@@ -175,6 +176,17 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
         if (closed) remove_mean(f.p, sh.nx, sh.ny, sh.nz);
     }
     std::copy(f.p.begin(), f.p.end(), g.p.begin());
+    // The solve's own measure, as the solids path reports it (the lead,
+    // 2026-10-21): max|r| / max|b| after the cycles. Reported, never iterated
+    // on; the pressure is already final.
+    residual(f);
+    float r_max = 0.0f;
+    float b_max = 0.0f;
+    for (std::size_t c = 0; c < f.r.size(); ++c) {
+        r_max = std::max(r_max, std::fabs(f.r[c]));
+        b_max = std::max(b_max, std::fabs(f.b[c]));
+    }
+    const float solve_residual = b_max > 0.0f ? r_max / b_max : 0.0f;
 
     const float g_coef = h / (rho * sh.dx);
     subtract_gradient(
@@ -189,7 +201,7 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
         sh.nz, sh.nx, sh.ny, kinds[kZMinus], kinds[kZPlus], g_coef, g.p,
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); });
-    return {};
+    return {solve_residual};
 }
 
 }  // namespace spade::physics::airflow

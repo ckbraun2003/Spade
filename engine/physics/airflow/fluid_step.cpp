@@ -124,7 +124,9 @@ uint64_t fluid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
                             + 3u * multigrid_cells(s.nx, s.ny, s.nz, periodic_axes(bc))  // every level's p, b, r
                             + cells                               // the divergence
                             + std::max({uf, vf, wf})              // the viscous right side
-                            + faces;                              // du, dv and dw
+                            + faces                               // du, dv and dw
+                            // plan A's weights on the levels past the halving rule
+                            + multigrid_plan_a_weight_faces(s.nx, s.ny, s.nz, periodic_axes(bc));
     return floats * sizeof(float);
 }
 
@@ -141,8 +143,21 @@ Result<void> check_domain(const DomainBc& bc, const GridShape& shape) {
 uint64_t solid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
     const std::array<bool, 3> periodic = periodic_axes(bc);
     const uint64_t cells = uint64_t{s.nx} * s.ny * s.nz;
+    // Every level's face weights, less those plan A's levels already hold.
     return solid_field_bytes(s) + regions_bytes(s) + pcg_bytes(cells) +
-           multigrid_faces(s.nx, s.ny, s.nz, periodic) * sizeof(float);
+           (multigrid_faces(s.nx, s.ny, s.nz, periodic) - multigrid_plan_a_weight_faces(s.nx, s.ny, s.nz, periodic)) *
+               sizeof(float);
+}
+
+std::string check_grid_note(const GridShape& shape, const DomainBc& bc) {
+    const std::array<uint32_t, 3> c = multigrid_coarsest(shape.nx, shape.ny, shape.nz, periodic_axes(bc));
+    const uint64_t cells = uint64_t{c[0]} * c[1] * c[2];
+    if (cells <= kCoarsestCells) return {};
+    return "airflow grid: the pressure multigrid stops at " + std::to_string(c[0]) + " x " + std::to_string(c[1]) +
+           " x " + std::to_string(c[2]) + " (" + std::to_string(cells) + " cells, above " +
+           std::to_string(kCoarsestCells) +
+           "): every axis there is under 4 cells or a periodic ring that cannot halve to an even one, so the solve "
+           "may miss its mark (each step's residual is announced)";
 }
 
 Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids) {
@@ -238,7 +253,7 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
     const ProjectionReport rep =
         project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr);
     s.health = scan(g);
-    if (solid && s.health.fault == FluidFault::none) {
+    if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;
         s.health.unconverged = rep.residual > kResidualAnnounce;
     }

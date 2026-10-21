@@ -22,6 +22,7 @@
 #include "airflow_solid_shapes.hpp"
 #include "reference_airframe.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/wall_load.hpp"
 #include "state/layout.hpp"
 #include "vehicles/airflow_solids.hpp"
