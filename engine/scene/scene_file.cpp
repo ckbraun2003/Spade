@@ -1,6 +1,7 @@
 #include "scene/scene_file.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cstddef>
 #include <exception>
@@ -1600,6 +1601,13 @@ Result<void> detail::validate_materials(std::span<const MaterialDesc> materials,
 
 namespace {
 
+// Whether every component is +0 by its bits. A zero the text does not carry
+// must be: a -0 would read back +0 (scene_file.hpp, property 1).
+[[nodiscard]] bool is_plus_zero(const glm::vec3& v) noexcept {
+    return std::bit_cast<uint32_t>(v.x) == 0u && std::bit_cast<uint32_t>(v.y) == 0u &&
+           std::bit_cast<uint32_t>(v.z) == 0u;
+}
+
 // Region `index`'s own rules, after its name (validate_scene's list): the
 // earlier regions are checked, so a second follow region of one vehicle is the
 // one refused.
@@ -1633,11 +1641,11 @@ namespace {
                               "' already; a vehicle has one follow region");
             }
         }
-        if (r.min_corner != glm::vec3(0.0f)) {
+        if (!is_plus_zero(r.min_corner)) {
             return refuse("a follow region's box goes with its vehicle; its min_corner must be 0 0 0");
         }
         for (std::size_t s = 0; s < 6; ++s) {
-            if (r.faces.face[s] != af::FaceBc::open || r.faces.wall_velocity[s] != glm::vec3(0.0f)) {
+            if (r.faces.face[s] != af::FaceBc::open || !is_plus_zero(r.faces.wall_velocity[s])) {
                 return refuse(
                     "a follow region's faces come from its flight (Physics' resolve()); they must all be open, with "
                     "no wall velocity");
@@ -1657,7 +1665,7 @@ namespace {
                 return refuse("face " + face + " is " + dec(kind) + ", not open, wall or periodic");
             }
             if (!finite(r.faces.wall_velocity[s])) return refuse("wall velocities must be finite");
-            if (r.faces.face[s] != af::FaceBc::wall && r.faces.wall_velocity[s] != glm::vec3(0.0f)) {
+            if (r.faces.face[s] != af::FaceBc::wall && !is_plus_zero(r.faces.wall_velocity[s])) {
                 return refuse("face " + face + " is not a wall, so it takes no wall velocity");
             }
         }

@@ -225,7 +225,10 @@ struct SceneDesc {
 //     the scene that no other follow region follows, with a zero min_corner,
 //     every face open with zero wall velocity, and a finite floor if any; a
 //     fixed region following nothing, with no floor (its y_minus face is
-//     one, as a wall) and a finite min_corner and wall velocities; a finite
+//     one, as a wall), a finite min_corner, known face kinds, finite wall
+//     velocities and a zero one on each face that is not a wall (the text
+//     carries a wall's only). A zero the text does not carry must be +0, by
+//     its bits: a -0 would read back +0 (property 1). A finite
 //     wind; a positive, finite density and a kinematic viscosity finite and
 //     >= 0; Physics' check_grid(cells, faces, true), its message after the
 //     region's name and its code kept (the byte cap counts the solids'
@@ -286,8 +289,10 @@ struct SceneDesc {
 
 // An airflow region's identity (the end-goal checks' "region", §7): FNV-1a 64
 // over "region_identity\n" and the region's item as scene_to_yaml() writes it,
-// so every field moves it, bit for bit (the text is canonical), and nothing
-// else does. Not validated: it names whatever region it is given.
+// so every field the text carries moves it, bit for bit (the text is
+// canonical), and nothing else does; for a region validate_scene() accepts,
+// that is every field. Not validated: it names whatever region it is given,
+// and a field its kind does not write (a fixed region's floor) moves nothing.
 [[nodiscard]] Result<uint64_t> region_identity(const SceneAirflowRegion& region);
 
 }  // namespace spade::scene

@@ -223,6 +223,27 @@ TEST(SceneAirflow, TheGridIsPhysicsCheckGrid) {
     }
 }
 
+TEST(SceneAirflow, TheByteCapCountsTheSolids) {
+    // A cube that fits without solids and not with them: a region is checked
+    // with them, as it always holds a vehicle or an object.
+    af::DomainBc open{};
+    open.ambient = glm::vec3(3.0f, 0.0f, 0.0f);
+    uint32_t n = 0;
+    for (uint32_t k = 64; k <= 1280 && n == 0; k += 2) {
+        const GridShape s{k, k, k, 0.01f};
+        if (af::check_grid(s, open, false).has_value() && !af::check_grid(s, open, true).has_value()) n = k;
+    }
+    ASSERT_NE(n, 0u) << "no cube fits without the solids' bytes and not with them";
+    SceneDesc scene = with_regions();
+    SceneAirflowRegion& r = scene.airflow[1];
+    r.cells = GridShape{n, n, n, 0.01f};
+    r.faces = open;
+    const spade::Result<void> refused = spade::scene::validate_scene(scene);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, Code::capacity_exceeded) << why(refused);
+    EXPECT_EQ(why(refused), "airflow region 'tunnel': " + af::check_grid(r.cells, open, true).error().context);
+}
+
 TEST(SceneAirflow, RegionRulesAreRefusedByName) {
     static constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
     static constexpr float kInf = std::numeric_limits<float>::infinity();
@@ -250,6 +271,17 @@ TEST(SceneAirflow, RegionRulesAreRefusedByName) {
          "follow region"},
         {[](SceneDesc& s) { s.airflow[0].min_corner = glm::vec3(0.0f, 1.0f, 0.0f); },
          "airflow region 'drone box': a follow region's box goes with its vehicle; its min_corner must be 0 0 0"},
+        // -0 is not +0: an unwritten field would come back +0 (property 1).
+        {[](SceneDesc& s) { s.airflow[0].min_corner = glm::vec3(-0.0f, 0.0f, 0.0f); },
+         "a follow region's box goes with its vehicle; its min_corner must be 0 0 0"},
+        {[](SceneDesc& s) { s.airflow[0].faces.wall_velocity[af::kZMinus] = glm::vec3(0.0f, -0.0f, 0.0f); },
+         "a follow region's faces come from its flight"},
+        {[](SceneDesc& s) { s.airflow[1].faces.wall_velocity[af::kXPlus] = glm::vec3(1.0f, 0.0f, 0.0f); },
+         "airflow region 'tunnel': face x_plus is not a wall, so it takes no wall velocity"},
+        {[](SceneDesc& s) { s.airflow[1].faces.wall_velocity[af::kXPlus] = glm::vec3(0.0f, 0.0f, -0.0f); },
+         "airflow region 'tunnel': face x_plus is not a wall, so it takes no wall velocity"},
+        {[](SceneDesc& s) { s.airflow[1].faces.face[af::kXMinus] = static_cast<FaceBc>(9); },
+         "airflow region 'tunnel': face x_minus is 9, not open, wall or periodic"},
         {[](SceneDesc& s) { s.airflow[0].faces.face[af::kYMinus] = FaceBc::wall; },
          "airflow region 'drone box': a follow region's faces come from its flight (Physics' resolve()); they "
          "must all be open, with no wall velocity"},
@@ -281,7 +313,10 @@ TEST(SceneAirflow, RegionRulesAreRefusedByName) {
         SceneDesc scene = with_regions();
         cases[i].edit(scene);
         const spade::Result<void> refused = spade::scene::validate_scene(scene);
-        ASSERT_FALSE(refused.has_value()) << "case " << i;
+        if (refused.has_value()) {
+            ADD_FAILURE() << "case " << i << " was accepted";
+            continue;
+        }
         EXPECT_EQ(refused.error().code, Code::invalid_argument) << why(refused);
         EXPECT_TRUE(contains(why(refused), cases[i].needle)) << why(refused);
         // The writer refuses what the validator does.
