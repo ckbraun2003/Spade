@@ -205,12 +205,33 @@ void toolbar(ed::EditorPanels& p) {
             ImGui::TextDisabled("%s", p.view_note.c_str());
             ImGui::SameLine();
         }
-        // The base's legend: a depth view's range, the normals' key.
+        // The base's legend: a depth view's range, the normals' key, each
+        // segmentation label's colour (in a tooltip, so the toolbar stays one
+        // line; a clash is named on the line itself).
         const render::BaseLegend& legend = p.base_legend;
         if (legend.base == render::ViewBase::depth) {
             ImGui::TextDisabled("%s %.1f to %.1f %s", legend.quantity.c_str(), static_cast<double>(legend.range.min),
                                 static_cast<double>(legend.range.max), legend.unit.c_str());
             ImGui::SameLine();
+        } else if (legend.base == render::ViewBase::segmentation) {
+            const render::SegmentLegend& seg = legend.segments;
+            ImGui::TextDisabled("%s: %zu labels, %u unlabelled", legend.quantity.c_str(), seg.entries.size(),
+                                seg.unlabelled_items);
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::TextUnformatted(legend.key.c_str());
+                for (const render::SegmentEntry& e : seg.entries) {
+                    const ImVec4 c(e.colour[0] / 255.0f, e.colour[1] / 255.0f, e.colour[2] / 255.0f, 1.0f);
+                    ImGui::ColorButton(e.name.c_str(), c, ImGuiColorEditFlags_NoTooltip, ImVec2(ui::kBase, ui::kBase));
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(e.name.c_str());
+                }
+                ImGui::EndTooltip();
+            }
+            ImGui::SameLine();
+            for (const render::SegmentClash& c : seg.clashes) {
+                ImGui::TextDisabled("'%s' and '%s' look alike", c.a.c_str(), c.b.c_str());
+                ImGui::SameLine();
+            }
         } else if (!legend.key.empty()) {
             ImGui::TextDisabled("%s: %s", legend.quantity.c_str(), legend.key.c_str());
             ImGui::SameLine();

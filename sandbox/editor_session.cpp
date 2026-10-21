@@ -212,6 +212,7 @@ void EditorSession::draw_items() {
             parts.body = look.body_material;
             parts.rotor = look_.rotor_material;
             parts.porous = look.body_material;
+            parts.object_name = v.name;  // segmentation: each drone its own colour, not its model's
             if (Result<void> bound = append_vehicle_parts(scene_, prepared, *model, pos, orient, parts); bound) {
                 drawn = true;
             } else {

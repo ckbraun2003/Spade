@@ -17,6 +17,7 @@
 
 #include "core/flow_volume.hpp"
 #include "render/scene.hpp"
+#include "render/segmentation.hpp"
 #include "render/target.hpp"
 #include "render/view_mode.hpp"
 #include "world/builder.hpp"
@@ -231,7 +232,7 @@ TEST(EditorViews, TheInputsComeFromTheSceneAsApplyViewReadsThem) {
 TEST(EditorViews, TheMenuOffersTheSensorBasesWhereTheyDraw) {
     for (const ViewBackend backend : {ViewBackend::cpu, ViewBackend::gl}) {
         const std::vector<ModeEntry> menu = mode_menu(ViewState{}, backend, inputs(true));
-        for (const ViewBase base : {ViewBase::depth, ViewBase::normals}) {
+        for (const ViewBase base : {ViewBase::depth, ViewBase::normals, ViewBase::segmentation}) {
             ASSERT_LT(static_cast<uint32_t>(base), menu.size());
             const ModeEntry& e = menu[static_cast<uint32_t>(base)];
             EXPECT_EQ(e.name, spade::render::view_base_name(base));
@@ -291,4 +292,25 @@ TEST(EditorViews, AnAppliedViewCarriesItsBaseLegendAndItsDepthRange) {
     EXPECT_EQ(v.base_legend.quantity, want.quantity);
     EXPECT_EQ(v.base_legend.unit, want.unit);
     EXPECT_EQ(v.base_legend.range.max, want.range.max);
+}
+
+// Segmentation (N13 part 2, 0bd2eef): the view's legend names each label the
+// scene draws, with its colour, for the panel to show.
+TEST(EditorViews, ASegmentationViewCarriesTheScenesLabels) {
+    ViewState v;
+    ASSERT_TRUE(choose_mode(v, ViewBase::segmentation, ViewBackend::cpu, inputs(false)).has_value());
+    spade::render::RenderScene scene;
+    spade::render::DrawItem crate;
+    crate.object_label = spade::render::intern_label(scene, "crate");
+    scene.statics.push_back(crate);
+    scene.statics.push_back(spade::render::DrawItem{});  // unlabelled
+    spade::render::RenderOptions options;
+    spade::render::ViewCache cache;
+    const spade::Result<void> r = apply_to(v, nullptr, ViewBackend::cpu, inputs(false), scene, options, cache);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(v.base_legend.base, ViewBase::segmentation);
+    ASSERT_EQ(v.base_legend.segments.entries.size(), 1u);
+    EXPECT_EQ(v.base_legend.segments.entries[0].name, "crate");
+    EXPECT_EQ(v.base_legend.segments.entries[0].colour, spade::render::segment_colour("crate"));
+    EXPECT_EQ(v.base_legend.segments.unlabelled_items, 1u);
 }
