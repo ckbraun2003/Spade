@@ -241,8 +241,18 @@ namespace {
                 legend.unit = "";
                 legend.range.min = (legend.range.min - s.p_ref) / s.q_ref;
                 legend.range.max = (legend.range.max - s.p_ref) / s.q_ref;
+                // What the colour may claim (Physics, 2026-10-21). A volume
+                // whose solids are in the flow says so by the first solid
+                // layer it extrapolated (P6); one without them was never
+                // stopped by the walls drawn over it.
+                legend.note = volume->header.extrapolated_cells > 0
+                                  ? "the fluid's pressure one cell off the wall, on the seen side: first order in "
+                                    "the cell size; where stagnation and suction are, not validated C_p magnitudes"
+                                  : "the walls are not in this flow: the colour is the pressure of the flow passing "
+                                    "through them, not a wall's";
                 built.flow_surface_colouring = FlowSurfaceColouring{.volume = volume, .colours = std::move(tf),
-                                                                    .walls_only = true};
+                                                                    .walls_only = true,
+                                                                    .offset_cells = kCpReadOffsetCells};
                 break;
         }
         if (!added) {

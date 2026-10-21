@@ -21,6 +21,7 @@
 #include "render/raster_cpu.hpp"
 #include "render/raymarch.hpp"
 #include "render/scene.hpp"
+#include "render/view_mode.hpp"
 #include "world/builder.hpp"
 
 namespace {
@@ -354,6 +355,26 @@ TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
     expect_map_colour(centre_colour(1.0f, 0.0f), 0.5f, "at the wall: the two sides' mean, 0");
     expect_map_colour(centre_colour(1.0f, 1.0f), 1.0f, "one cell off: the seen side's +1");
     expect_map_colour(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
+}
+
+// The C_p view (apply_view) reads where R2.4 chose: one cell off the wall, so
+// a thin wall or a sheet shows its seen side's pressure, never the mean across
+// it (Physics: sample each side separately).
+TEST(RenderFlowField, TheCpViewReadsTheSeenSideOfASheet) {
+    const spade::FlowVolume volume = sheet_volume(1.0f);
+    RenderScene scene = quad_scene();  // at z = 0, seen from z = 5
+    scene.statics[0].flow_wall = true;
+    spade::render::FlowViewSpec cp;
+    cp.kind = spade::render::FlowView::surface_cp;
+    cp.colours = ColourMapId::cool_warm;
+    cp.range_min = -1.0f;
+    cp.range_max = 1.0f;
+    cp.q_ref = 1.0f;
+    RenderOptions options;
+    const auto legends = spade::render::apply_view(spade::render::ViewSpec{spade::render::ViewBase::shaded, {cp}},
+                                                   &volume, scene, options);
+    ASSERT_TRUE(legends.has_value()) << legends.error().context;
+    expect_map_colour(rgb(draw(scene), 16, 16), 1.0f, "the C_p view, one cell off: the seen side's +1");
 }
 
 // The CSG path (RND-8): a 2 cm slab with a hole, ray-marched rather than
