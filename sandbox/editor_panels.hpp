@@ -38,7 +38,7 @@ struct Selection {
 };
 
 // The toolbar and the menus. Open and Save As use EditorPanels::path.
-enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open };
+enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item };
 
 struct HierarchyRow {
     Selection target;
@@ -58,7 +58,8 @@ struct EditorPanels {
     bool can_undo = false;
     bool can_redo = false;
     std::vector<HierarchyRow> hierarchy;      // the scene, the world, then its assets and vehicles in order
-    std::vector<LibraryItem> library;
+    std::vector<LibraryItem> library;         // the default library (INT-14), then what Load from file added
+    std::vector<std::string> library_problems;  // what of the library would not load, verbatim
     std::vector<SceneSource> sources;         // the File menu's scene picker (SL13)
     // The view (N19), filled by the session, which knows the backend.
     std::vector<ModeEntry> modes;             // the View menu: every base, supports()' answer for each
@@ -73,6 +74,7 @@ struct EditorPanels {
     std::vector<WorldEdit> pending_world;
     std::vector<Command> commands;
     std::string path;                         // what Open and Save As use
+    std::string item_path;                    // what Load from file (Command::load_item) reads
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
     GizmoTool tool = GizmoTool::move;         // the gizmo's (W, E)
     std::optional<render::ViewBase> mode_request;  // chosen from the View menu; the session applies it
