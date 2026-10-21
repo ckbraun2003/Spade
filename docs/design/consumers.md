@@ -14,6 +14,7 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Wall load and closed-face gradients** (P3, merged `cf83678`). `physics/airflow/wall_load.hpp`: `wall_load(grid, solids, regions, about)` gives the pressure force (N) and moment (N m) the air puts on all the solids together, summed in the fixed tile order; per-part loads wait for D4. `physics/airflow/publish.hpp`: `PublishInput::theta` carries the face apertures, so a velocity gradient never differences across a wall or a sheet. **For LiveRun (Interface):** when publishing with solids, pass `publish.solid` (`s.regions.solid`) and `publish.theta` (`s.solids.theta`); without them the published vorticity, Q and lambda2 mix the two sides of a sheet.
 - **Scene v5: airflow regions** (N5b, merged `b3657c6`). `scene/scene_file.hpp`: `SceneDesc::airflow`, a list of `SceneAirflowRegion`.
   - A region has a name, a kind and a coupling.
     - A follow region follows a vehicle and may have a `floor`; its faces are open, set by its flight.
