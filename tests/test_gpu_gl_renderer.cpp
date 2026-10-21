@@ -1182,6 +1182,90 @@ TEST_F(GpuGlRenderer, RefusesACsgSubtreeMovedOrEditedSinceItsUpload) {
     EXPECT_TRUE(drew_moved.has_value()) << "uploaded again, the moved subtree draws: " << drew_moved.error().context;
 }
 
+// The hosting contract (docs/design/rendering/render-gl-hosting.md): draw()
+// SETS the state it relies on. A host that left scissor, stencil, rasterizer
+// discard, sRGB encoding, a colour mask, a depth range or an unpack buffer
+// behind -- an immediate-mode UI does, routinely -- gets the very bytes a
+// clean draw gives. The target is sRGB, so encoding left on would show, and
+// has stencil, so a failing stencil test would; the flow volume's generation
+// is 0, so it uploads on every draw and an unpack buffer left bound would
+// feed it.
+TEST_F(GpuGlRenderer, DrawSetsTheStateItReliesOn) {
+    ASSERT_TRUE(renderer_->flow_ready());
+    GLuint fbo = 0, colour = 0, depth = 0, pbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_SRGB8_ALPHA8, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, kWidth, kHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    glGenBuffers(1, &pbo);
+
+    RenderScene scene = slab_scene();
+    spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 0.25f, 8, 8, 8,
+                                                             spade::test::uniform_flow(glm::vec3(1.0f, 0.0f, 0.0f)));
+    volume.generation = 0;
+    spade::render::TransferFunction speed;
+    speed.extinction = {{0.0f, 0.5f}, {2.0f, 0.5f}};
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {speed}, {}});
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+
+    const auto frame = [&]() -> std::vector<uint8_t> {
+        if (auto drew = renderer_->draw(scene, camera_on_plus_z(), comparable_options(), kWidth, kHeight); !drew) {
+            ADD_FAILURE() << drew.error().context;
+            return {};
+        }
+        std::vector<uint8_t> rgba(kPixels * 4u);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        EXPECT_EQ(glGetError(), static_cast<GLenum>(GL_NO_ERROR));
+        return rgba;
+    };
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    const std::vector<uint8_t> clean = frame();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 8, 8);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_NEVER, 0, 0xFF);
+    glEnable(GL_FRAMEBUFFER_SRGB);
+    glColorMask(GL_TRUE, GL_FALSE, GL_TRUE, GL_TRUE);
+    glDepthRange(0.5, 1.0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, 64, nullptr, GL_STREAM_DRAW);
+    glEnable(GL_RASTERIZER_DISCARD);
+    const std::vector<uint8_t> dirty = frame();
+
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthRange(0.0, 1.0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &pbo);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+
+    ASSERT_EQ(clean.size(), dirty.size());
+    ASSERT_FALSE(clean.empty());
+    size_t differ = 0;
+    for (size_t i = 0; i < clean.size(); ++i) differ += clean[i] != dirty[i] ? 1u : 0u;
+    EXPECT_EQ(differ, 0u) << "a host's leftover state changed " << differ << " bytes of the frame";
+}
+
 // L6: GL marches one flow layer per frame. The demo's layer carries all its
 // transfers and iso-surfaces, so it needs only one. More is refused, never
 // drawn as fewer.
