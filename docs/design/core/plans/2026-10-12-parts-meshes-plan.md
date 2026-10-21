@@ -974,17 +974,19 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
 // Both carry no units: MeshUnit::unspecified is refused before the file is read.
 ```
 
-- [ ] **Step 1: Write the failing tests.** Six:
+- [x] **Step 1: Write the failing tests.** Six:
   - `MeshImport.BinaryStlWeldsItsSoup`: 12 facets (36 vertices) give 8 vertices.
   - `MeshImport.AsciiStlIsUnavailable`.
   - `MeshImport.StlAndObjNeedAUnit`: and `millimetre` scales exactly.
   - `MeshImport.ObjObjectsAndNegativeIndices`.
   - `MeshImport.ObjPolygonsAreUnavailableNamingTheLine`.
   - `MeshImport.MalformedObjNamesTheLine`.
-- [ ] **Step 2:** Build. The readers return `unavailable` ("not built yet"). Expected: all six fail on behaviour. Commit: `test(core): binary STL and OBJ must read with a declared unit and refuse ASCII STL and polygons by name (CORE-6)`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): binary STL and OBJ readers, units declared by the caller (CORE-6)`.
-- [ ] **Step 5: The task gate.** Expected: Task B6's total + 6.
+- [x] **Step 2:** Build. The readers return `unavailable` ("not built yet"). Expected: all six fail on behaviour. Commit: `test(core): binary STL and OBJ must read with a declared unit and refuse ASCII STL and polygons by name (CORE-6)`.
+- [x] **Step 3: Implement.**
+- [x] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): binary STL and OBJ readers, units declared by the caller (CORE-6)`.
+- [x] **Step 5: The task gate.** Expected: Task B6's total + 6.
+
+**Done:** merged `2aafac1` (branch head `75bbaa3`). Eight tests, not six, and `CoreUtf8.WellFormedTextOnly` for the new `core/utf8.hpp`; the rulings (o over g, polygons and other elements refused by line) are in `mesh_import.hpp`. A face of more than three vertices is refused here; B7b fans the convex planar ones.
 
 **Done when:** STL and OBJ exports become validated meshes in the units their author names.
 
