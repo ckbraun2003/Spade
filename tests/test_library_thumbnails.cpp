@@ -95,6 +95,13 @@ namespace sc = spade::scene;
     return item;
 }
 
+// The thumbnail an entry without one should name: its file's name less the
+// trailing ".<kind>.yaml", so a name with a dot of its own keeps it.
+[[nodiscard]] std::string suggested_thumbnail(const std::string& file) {
+    const std::string stem = fs::path(file).filename().string();
+    return "thumbnails/" + stem.substr(0, stem.find('.')) + ".png";
+}
+
 [[nodiscard]] eg::PixelsView view_of(const png::Image& image) {
     return eg::PixelsView{image.width, image.height, std::size_t{image.width} * 4u, image.rgba};
 }
@@ -109,10 +116,9 @@ TEST(LibraryThumbnails, EveryEntryOfTheDefaultLibraryHasItsOwnThumbnail) {
     const bool write = library_write_asked();
     for (const sc::LibraryEntry& e : library->entries) {
         SCOPED_TRACE(e.name);
-        const std::string stem = fs::path(e.file).filename().string();
         if (e.thumbnail.empty()) {
-            ADD_FAILURE() << "no thumbnail: add thumbnail: \"thumbnails/"
-                          << stem.substr(0, stem.find('.')) << ".png\" to its entry, then regenerate";
+            ADD_FAILURE() << "no thumbnail: add thumbnail: \"" << suggested_thumbnail(e.file)
+                          << "\" to its entry, then regenerate";
             continue;
         }
         const fs::path file = library->dir / e.thumbnail;
@@ -252,4 +258,12 @@ TEST(LibraryThumbnails, ADefaultLibraryPartIsDrawnFromItsFile) {
         EXPECT_TRUE(eg::differs(eg::differ_fraction(view, eg::dominant_colour(view))))
             << file.generic_string() << " is one colour: a blank, not the part";
     }
+}
+
+// The hint for a missing thumbnail names the entry's file less its trailing
+// ".<kind>.yaml" only (it used to cut at the first dot).
+TEST(LibraryThumbnails, TheHintNamesTheFileLessItsKindAndYaml) {
+    EXPECT_EQ(suggested_thumbnail("drones/reference_quad.model.yaml"), "thumbnails/reference_quad.png");
+    EXPECT_EQ(suggested_thumbnail("props/apc_10x4.5.prop.yaml"), "thumbnails/apc_10x4.5.png");
+    EXPECT_EQ(suggested_thumbnail("objects/crate.v2.object.yaml"), "thumbnails/crate.v2.png");
 }
