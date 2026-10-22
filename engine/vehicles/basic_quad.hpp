@@ -91,8 +91,10 @@ namespace spade::vehicles {
 struct BasicQuadParams {
     std::string name = "basic_quad";
 
-    // The layout (THE FRAME). Kat's competition-700 layout, +-0.075 x +-0.10 m.
-    double half_span_x = 0.075;  // m, along the nose
+    // The layout (THE FRAME): a generic 6-inch quad, its same-side hubs
+    // 160 mm apart, 7.6 mm clear of the 152.4 mm discs. Kat's competition-700
+    // layout, +-0.075 x +-0.10 m, overlaps them by 2.4 mm; its fit sets it.
+    double half_span_x = 0.080;  // m, along the nose
     double half_span_z = 0.10;   // m, lateral
     double hub_height = 0.022;   // m: each propeller's plane, above the arms
 
@@ -125,9 +127,10 @@ struct BasicQuadParams {
 // The spec. invalid_argument, naming the field: a half span not finite and
 // above 0; a non-finite fit target; a kappa not above 0, beside a cq_table
 // with no ct_table, or with a diameter not above 0; an inertia target
-// without a mass target; and the refusals of THE FIT. With a mass target, the parts are
-// compiled once to measure them, so the compile's own refusal comes back
-// unchanged. Otherwise the compile's rules are left to compile_airframe().
+// without a mass target; and the refusals of THE FIT. With a mass target,
+// the parts are compiled once to measure them, so the compile's own refusal
+// comes back unchanged. Otherwise the compile's rules are left to
+// compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
 
 // One default the basic quad assumes: the field's path in BasicQuadParams
