@@ -92,7 +92,8 @@
 namespace spade::vehicles {
 
 // Every default is the 6-inch basic quad's, and every one is assumed
-// (basic_quad_assumptions()) until Task L5 cites a part for it.
+// (basic_quad_assumptions()). The blocks' defaults ARE the library's part
+// files (L5, the lead's ruling, 2026-10-22), as below.
 struct BasicQuadParams {
     std::string name = "basic_quad";
 
@@ -111,8 +112,13 @@ struct BasicQuadParams {
     double arm_radius = 0.006;          // m: a 12 mm tube, 3 cells at 4 mm
     double arm_mass_per_metre = 0.15;   // kg/m
 
-    // The blocks. Their defaults stand for a 2306 1700 KV motor, a 6x3.5x3
-    // propeller, a 45 A 4-in-1 ESC and a 6S 1300 mAh pack.
+    // The blocks: a 2306 1700 KV motor, a 6x3.5x3 propeller, a 45 A 4-in-1
+    // ESC and a 6S 1300 mAh pack. Each is its library part file, field for
+    // field (fpv_2306_1700kv, triblade_6inch_scaled, basic_4in1_45a,
+    // fpv_6s_1300; tests/test_library_parts.cpp pins them), but for what a
+    // block or a file does not carry: the pack's mount, which is the drone's,
+    // and the propeller's blade stations. The propeller is the tri-blade
+    // stand-in, its tables the L4a header's bit for bit.
     MotorBlock motor = default_motor();
     PropBlock prop = default_prop();
     EscBlock esc = default_esc();

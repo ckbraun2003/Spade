@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,11 @@ namespace {
 }
 
 constexpr std::array<const char*, 3> kAxes = {"x", "y", "z"};
+
+// The tri-blade stand-in's line (L4a's grade note; the lead, 2026-10-22), for
+// each of default_prop()'s coefficients.
+constexpr std::string_view kTriBlade =
+    "tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule";
 
 // A fit target that is not finite, by name (THE FIT): the same refusal from
 // basic_quad_airframe() and fit_remainder().
@@ -107,18 +113,37 @@ MotorBlock BasicQuadParams::default_motor() {
 }
 
 PropBlock BasicQuadParams::default_prop() {
+    // The library's triblade_6inch_scaled (L4a). The static point and tables
+    // are copied from tests/library_props.gen.hpp as its shortest round-trip
+    // literals, so they are its numbers bit for bit (tests/test_basic_quad.cpp
+    // pins them); the static point is each table's J = 0 row.
     PropBlock p;
     p.diameter = 0.1524;
     p.pitch = 0.0889;
     p.blades = 3;
     p.inertia = 0.0;
-    p.ct_static = 0.12;
-    p.cq_static = 0.008;
+    p.ct_static = 0.18147428896905915;
+    p.cq_static = 0.018923916207378596;
+    p.ct_table = {{0.0, 0.18147428896905915}, {0.05, 0.18201184989635935}, {0.1, 0.18182731382170575},
+                  {0.15, 0.17596891268979323}, {0.2, 0.16972798370663342}, {0.25, 0.1640415085147342},
+                  {0.3, 0.1535107600936337}, {0.35, 0.14236731200453}, {0.4, 0.12904313886769417},
+                  {0.45, 0.11588920053226577}, {0.5, 0.10039877116740561}, {0.55, 0.08448299501009322},
+                  {0.6, 0.068280012546626}, {0.65, 0.052129378582626514}, {0.7, 0.03411875906336438},
+                  {0.75, 0.0140625953772972}, {0.8, -0.005762060217429924}, {0.85, -0.025496199246994394},
+                  {0.9, -0.04710815759519209}};
+    p.cq_table = {{0.0, 0.018923916207378596}, {0.05, 0.01895885170425953}, {0.1, 0.018930795123769308},
+                  {0.15, 0.018403663821918506}, {0.2, 0.017847137026031582}, {0.25, 0.017446704115154192},
+                  {0.3, 0.016640316889998744}, {0.35, 0.015808383667437115}, {0.4, 0.014774322066910418},
+                  {0.45, 0.013791407670878986}, {0.5, 0.012623069679092559}, {0.55, 0.011468158165227036},
+                  {0.6, 0.010305967325430116}, {0.65, 0.009179534056486645}, {0.7, 0.007910990775304116},
+                  {0.75, 0.006412361581935726}, {0.8, 0.004945488492696708}, {0.85, 0.003424586492792064},
+                  {0.9, 0.0020542645321587113}};
     p.mass = 0.0064;
     return p;
 }
 
 EscBlock BasicQuadParams::default_esc() {
+    // The library's basic_4in1_45a.
     EscBlock e;
     e.current_continuous = 45.0;
     e.current_burst = 55.0;
@@ -128,6 +153,9 @@ EscBlock BasicQuadParams::default_esc() {
     e.braking = true;
     e.protocol = "DShot600";
     e.mass = 0.012;
+    // In the body, at its centre, inside its 90 x 35 x 60 mm box: a 30.5 mm-
+    // mount board, at least 8 mm thick (the solids rule).
+    e.shape = BlockShape{PartShape::box, glm::dvec3(0.036, 0.008, 0.036), glm::dmat3(0.0)};
     return e;
 }
 
@@ -292,8 +320,10 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"prop.pitch", "3.5 inches"},
         {"prop.blades", "a tri-blade"},
         {"prop.inertia", "estimated from the mass (0)"},
-        {"prop.ct_static", "typical of a 6-inch tri-blade, until L4a's UIUC-derived table"},
-        {"prop.cq_static", "typical of a 6-inch tri-blade, until L4a's UIUC-derived table"},
+        {"prop.ct_static", kTriBlade},
+        {"prop.cq_static", kTriBlade},
+        {"prop.ct_table", kTriBlade},
+        {"prop.cq_table", kTriBlade},
         {"prop.mass", "a typical 6x3.5x3 propeller"},
         {"esc.current_continuous", "a 45 A 4-in-1 ESC"},
         {"esc.current_burst", "a 45 A 4-in-1 ESC"},
@@ -303,6 +333,7 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"esc.braking", "active braking, as most FPV firmware runs"},
         {"esc.mass", "a typical 4-in-1 ESC"},
         {"esc.mount", "in the body, at its centre"},
+        {"esc.shape", "a 36 x 8 x 36 mm board on a 30.5 mm mount, at least 8 mm thick (solids rule)"},
         {"battery.cells_series", "a 6S pack"},
         {"battery.cells_parallel", "one cell per series step"},
         {"battery.cell_capacity", "a 1300 mAh pack"},
