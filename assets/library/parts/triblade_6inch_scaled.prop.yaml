@@ -1,0 +1,70 @@
+part_version: 1
+prop:
+  diameter: 0.1524
+  pitch: 0.0889
+  blades: 3
+  inertia: 0
+  ct_static: 0.18147428896905915
+  cq_static: 0.018923916207378596
+  ct_table:
+    - [0, 0.18147428896905915]
+    - [0.05, 0.18201184989635935]
+    - [0.1, 0.18182731382170575]
+    - [0.15, 0.17596891268979323]
+    - [0.2, 0.16972798370663342]
+    - [0.25, 0.1640415085147342]
+    - [0.3, 0.1535107600936337]
+    - [0.35, 0.14236731200453]
+    - [0.4, 0.12904313886769417]
+    - [0.45, 0.11588920053226577]
+    - [0.5, 0.10039877116740561]
+    - [0.55, 0.08448299501009322]
+    - [0.6, 0.068280012546626]
+    - [0.65, 0.052129378582626514]
+    - [0.7, 0.03411875906336438]
+    - [0.75, 0.0140625953772972]
+    - [0.8, -0.005762060217429924]
+    - [0.85, -0.025496199246994394]
+    - [0.9, -0.04710815759519209]
+  cq_table:
+    - [0, 0.018923916207378596]
+    - [0.05, 0.01895885170425953]
+    - [0.1, 0.018930795123769308]
+    - [0.15, 0.018403663821918506]
+    - [0.2, 0.017847137026031582]
+    - [0.25, 0.017446704115154192]
+    - [0.3, 0.016640316889998744]
+    - [0.35, 0.015808383667437115]
+    - [0.4, 0.014774322066910418]
+    - [0.45, 0.013791407670878986]
+    - [0.5, 0.012623069679092559]
+    - [0.55, 0.011468158165227036]
+    - [0.6, 0.010305967325430116]
+    - [0.65, 0.009179534056486645]
+    - [0.7, 0.007910990775304116]
+    - [0.75, 0.006412361581935726]
+    - [0.8, 0.004945488492696708]
+    - [0.85, 0.003424586492792064]
+    - [0.9, 0.0020542645321587113]
+  mass: 0.0064
+  blade:
+    r_over_r: [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1]
+    c_over_r: [0.1121, 0.1297, 0.1477, 0.1639, 0.1764, 0.1855, 0.192, 0.1947, 0.1932, 0.1884, 0.1826, 0.176, 0.1673, 0.1559, 0.1402, 0.1175, 0.085, 0.0112]
+    beta_deg: [23.418, 28.485, 31.062, 31.635, 30.435, 28.445, 26.557, 24.911, 23.346, 21.695, 20.204, 18.79, 17.386, 16.05, 15.075, 14.595, 14.073, 13.817]
+    hub_cutout: 0.15
+    airfoil: "unknown"
+sources:
+  diameter: {source: "retail_fpv_parts", grade: retailer, note: "HQProp DP 6x3.5x3"}
+  pitch: {source: "retail_fpv_parts", grade: retailer, note: "3.5 in"}
+  blades: {source: "retail_fpv_parts", grade: retailer}
+  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  ct_static: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
+  cq_static: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
+  ct_table: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
+  cq_table: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
+  mass: {source: "retail_fpv_parts", grade: retailer, note: "~6.4 g"}
+  blade.r_over_r: {source: "uiuc_propdb", grade: assumed, note: "stand-in: mit_5x4's stations at 6 in"}
+  blade.c_over_r: {source: "uiuc_propdb", grade: assumed, note: "stand-in: mit_5x4's stations at 6 in"}
+  blade.beta_deg: {source: "uiuc_propdb", grade: assumed, note: "stand-in: mit_5x4's stations at 6 in"}
+  blade.hub_cutout: {source: "uiuc_propdb", grade: assumed, note: "stand-in: mit_5x4's stations at 6 in"}
+  blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}

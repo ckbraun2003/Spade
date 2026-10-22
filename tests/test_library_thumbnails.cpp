@@ -20,6 +20,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -30,6 +31,7 @@
 #include "../sandbox/png_reader.hpp"
 #include "../sandbox/png_writer.hpp"
 #include "scene/library.hpp"
+#include "scene/library_sources.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
 #include "scene/part_file.hpp"
@@ -82,7 +84,12 @@ namespace sc = spade::scene;
         if (!f) return std::unexpected(f.error());
         item = ed::detail::object_item(*f);
     } else {
+        const spade::Result<sc::SourceRegistry> registry = sc::load_library_sources(library);
+        if (!registry) return std::unexpected(registry.error());
+        spade::Result<sc::PartFile> f = sc::load_library_part(library, e, *registry);
+        if (!f) return std::unexpected(f.error());
         item.kind = ed::LibraryItem::Kind::part;
+        item.part = std::move(*f);
     }
     item.name = e.name;
     return item;
@@ -195,5 +202,54 @@ TEST(LibraryThumbnails, APartIsDrawnFromItsOwnGeometryAndOneWithoutAnyIsRefused)
         ASSERT_FALSE(none.has_value());
         EXPECT_NE(none.error().context.find("'" + item.name + "'"), std::string::npos) << none.error().context;
         EXPECT_NE(none.error().context.find("no geometry to draw"), std::string::npos) << none.error().context;
+    }
+}
+
+// Core's L4 part entries are drawn from their own files. The default library
+// has a part entry of each kind; one of each, loaded as the generator loads it
+// (item_of()), draws through render_thumbnail() to an image that is not a
+// blank, and its committed PNG is there, the size, and not one colour.
+TEST(LibraryThumbnails, ADefaultLibraryPartIsDrawnFromItsFile) {
+    const spade::Result<sc::Library> library = the_index();
+    ASSERT_TRUE(library.has_value()) << library.error().context;
+    const std::vector<fs::path> mesh_roots{library_dir() / "meshes"};
+    struct Kind {
+        sc::LibraryKind kind;
+        const char* name;
+    };
+    for (const Kind k : {Kind{sc::LibraryKind::prop, "prop"}, Kind{sc::LibraryKind::motor, "motor"},
+                         Kind{sc::LibraryKind::esc, "ESC"}, Kind{sc::LibraryKind::battery, "battery"}}) {
+        SCOPED_TRACE(k.name);
+        const sc::LibraryEntry* entry = nullptr;
+        for (const sc::LibraryEntry& e : library->entries) {
+            if (e.kind == k.kind) {
+                entry = &e;
+                break;
+            }
+        }
+        if (entry == nullptr) {
+            ADD_FAILURE() << "the default library has no " << k.name << " entry (Core's L4 part entries)";
+            continue;
+        }
+        SCOPED_TRACE(entry->name);
+        const spade::Result<ed::LibraryItem> item = item_of(*library, *entry);
+        ASSERT_TRUE(item.has_value()) << item.error().context;
+        ASSERT_TRUE(item->part.has_value()) << "a part entry's item carries its file";
+        const spade::Result<png::Image> drawn = ed::render_thumbnail(*item, mesh_roots);
+        ASSERT_TRUE(drawn.has_value()) << drawn.error().context;
+        EXPECT_EQ(drawn->width, ed::kThumbnailSize);
+        EXPECT_EQ(drawn->height, ed::kThumbnailSize);
+        const eg::PixelsView drawn_view = view_of(*drawn);
+        EXPECT_TRUE(eg::differs(eg::differ_fraction(drawn_view, eg::dominant_colour(drawn_view)))) << "a blank";
+
+        ASSERT_FALSE(entry->thumbnail.empty()) << "N14b: every entry has its thumbnail";
+        const fs::path file = library->dir / entry->thumbnail;
+        const spade::Result<png::Image> image = png::read_file(file);
+        ASSERT_TRUE(image.has_value()) << image.error().context;
+        EXPECT_EQ(image->width, ed::kThumbnailSize);
+        EXPECT_EQ(image->height, ed::kThumbnailSize);
+        const eg::PixelsView view = view_of(*image);
+        EXPECT_TRUE(eg::differs(eg::differ_fraction(view, eg::dominant_colour(view))))
+            << file.generic_string() << " is one colour: a blank, not the part";
     }
 }

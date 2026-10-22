@@ -1,0 +1,34 @@
+part_version: 1
+battery:
+  cells_series: 3
+  cells_parallel: 1
+  cell_capacity: 5.1
+  cell_resistance: 0.008
+  cell_voltage_nominal: 3.7
+  cell_voltage_full: 4.2
+  cell_voltage_cutoff: 3.3
+  ocv_table:
+    - [0, 3.3]
+    - [0.2, 3.6]
+    - [0.5, 3.75]
+    - [0.8, 3.95]
+    - [1, 4.2]
+  c_rating: 8
+  polarization_resistance: 0
+  polarization_capacitance: 0
+  mass: 0.38
+  shape: {kind: box, size: [0.145, 0.03, 0.045]}
+sources:
+  cells_series: {source: "retail_iris_plus", grade: retailer}
+  cells_parallel: {grade: assumed, note: "one cell per series step"}
+  cell_capacity: {source: "retail_iris_plus", grade: retailer}
+  cell_resistance: {grade: assumed, note: "typical 5 Ah low-rate cell"}
+  cell_voltage_nominal: {grade: assumed, note: "LiPo nominal"}
+  cell_voltage_full: {grade: assumed, note: "LiPo full"}
+  cell_voltage_cutoff: {grade: assumed, note: "a usual LiPo cutoff"}
+  ocv_table: {grade: assumed, note: "the chain's current LiPo shape (ruling 8)"}
+  c_rating: {source: "retail_iris_plus", grade: retailer, note: "8C: 40.8 A, so it binds at full throttle below the motors' 4 x 15 A"}
+  polarization_resistance: {grade: assumed, note: "not modelled (0)"}
+  polarization_capacitance: {grade: assumed, note: "not modelled (0)"}
+  mass: {grade: assumed, note: "typical 3S 5 Ah, 360-410 g"}
+  shape: {grade: assumed, note: "145 x 30 x 45 mm"}

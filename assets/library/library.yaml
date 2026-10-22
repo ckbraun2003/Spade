@@ -1,14 +1,15 @@
 # =============================================================================
-# Spade's default library -- the index, schema version 1.
+# Spade's default library -- the index, schema version 2.
 #
 # WHAT THIS IS: the list of what the editor's Library panel offers and Kat's
-# builder shows: drones (model files) and everything else (object files). It
+# builder shows: drones (model files), objects (object files) and parts
+# (part files: props, motors, ESCs and batteries). It
 # is HAND-WRITTEN, never a folder walk, so the order below is the order the
 # editor shows, and a test loads every entry (tests/test_library.cpp).
 # spade::scene::load_library() reads it (engine/scene/library.hpp).
 # Placing an entry COPIES it into the scene, which never refers back here.
 #
-# THE FORMAT. Two top-level keys: `library_version: 1`, then `entries:`, one
+# THE FORMAT. Two top-level keys: `library_version: 2`, then `entries:`, one
 # mapping per entry, in display order:
 #   name:      shown in the panel; non-empty, unique ignoring case.
 #   category:  free text; the editor groups by it, in the order categories
@@ -16,11 +17,15 @@
 #   file:      relative to this file, forward slashes, never absolute and no
 #              '..'; unique ignoring case. Its extension decides its kind:
 #              *.model.yaml is a model file (a drone, scene/model_file.hpp),
-#              *.object.yaml an object file (scene/object_file.hpp).
+#              *.object.yaml an object file (scene/object_file.hpp), and
+#              *.prop.yaml, *.motor.yaml, *.esc.yaml or *.battery.yaml a part
+#              file (scene/part_file.hpp; version 2 only), checked against
+#              sources.yaml's registry when it loads.
 #   thumbnail: OPTIONAL, an image relative to this file. Leave the key out for
 #              none; one that is named must exist.
 # Unknown, missing and duplicate keys are errors at every level, as in a
-# scene file. The object files are GENERATED (tests/test_library.cpp, with
+# scene file. The part files are GENERATED (tests/test_library_parts.cpp, with
+# SPADE_LIBRARY_WRITE set), as are the object files (tests/test_library.cpp, with
 # SPADE_LIBRARY_WRITE set), and so is the drone (tests/test_library_quad.cpp):
 # never edit those by hand. So are the thumbnails (thumbnails/*.png, 96 x 96,
 # tests/test_library_thumbnails.cpp): an entry's owner adds its key and
@@ -28,7 +33,7 @@
 # same commit. This index is edited by hand.
 # =============================================================================
 
-library_version: 1
+library_version: 2
 
 entries:
   - name: "Reference quad"
@@ -75,3 +80,113 @@ entries:
     category: "obstacles"
     file: "obstacles/wall.object.yaml"
     thumbnail: "thumbnails/wall.png"
+
+  - name: "APC Thin Electric 10x5 (Phantom 3 class)"
+    category: "props"
+    file: "parts/uiuc_apce_10x5.prop.yaml"
+    thumbnail: "thumbnails/uiuc_apce_10x5.png"
+
+  - name: "APC Thin Electric 9x4.5 (Iris+ class)"
+    category: "props"
+    file: "parts/uiuc_apce_9x4.5.prop.yaml"
+    thumbnail: "thumbnails/uiuc_apce_9x4.5.png"
+
+  - name: "Micro Invent 5x4 three-blade (5-inch FPV)"
+    category: "props"
+    file: "parts/uiuc_mit_5x4.prop.yaml"
+    thumbnail: "thumbnails/uiuc_mit_5x4.png"
+
+  - name: "Crazyflie 47 mm two-blade"
+    category: "props"
+    file: "parts/uiuc_cfnq_45t1.prop.yaml"
+    thumbnail: "thumbnails/uiuc_cfnq_45t1.png"
+
+  - name: "6-inch three-blade (scaled stand-in)"
+    category: "props"
+    file: "parts/triblade_6inch_scaled.prop.yaml"
+    thumbnail: "thumbnails/triblade_6inch_scaled.png"
+
+  - name: "2312 960 KV (Phantom 3 class)"
+    category: "motors"
+    file: "parts/phantom3_2312_960kv.motor.yaml"
+    thumbnail: "thumbnails/phantom3_2312_960kv.png"
+
+  - name: "920 KV (Iris+ class)"
+    category: "motors"
+    file: "parts/iris_920kv.motor.yaml"
+    thumbnail: "thumbnails/iris_920kv.png"
+
+  - name: "2207 1855 KV (5-inch FPV)"
+    category: "motors"
+    file: "parts/fpv_2207_1855kv.motor.yaml"
+    thumbnail: "thumbnails/fpv_2207_1855kv.png"
+
+  - name: "7x16 coreless (Crazyflie)"
+    category: "motors"
+    file: "parts/cf_7x16_coreless.motor.yaml"
+    thumbnail: "thumbnails/cf_7x16_coreless.png"
+
+  - name: "2306 1700 KV (basic quad)"
+    category: "motors"
+    file: "parts/fpv_2306_1700kv.motor.yaml"
+    thumbnail: "thumbnails/fpv_2306_1700kv.png"
+
+  - name: "2207 2450 KV (competition)"
+    category: "motors"
+    file: "parts/comp_2207_2450kv.motor.yaml"
+    thumbnail: "thumbnails/comp_2207_2450kv.png"
+
+  - name: "Four 20 A ESCs (Phantom 3 class)"
+    category: "ESCs"
+    file: "parts/phantom3_4x20a.esc.yaml"
+    thumbnail: "thumbnails/phantom3_4x20a.png"
+
+  - name: "Four 20 A ESCs (Iris+ class)"
+    category: "ESCs"
+    file: "parts/iris_4x20a.esc.yaml"
+    thumbnail: "thumbnails/iris_4x20a.png"
+
+  - name: "45 A 4-in-1 (5-inch FPV)"
+    category: "ESCs"
+    file: "parts/fpv_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/fpv_4in1_45a.png"
+
+  - name: "Brushed 4-channel drive (Crazyflie)"
+    category: "ESCs"
+    file: "parts/cf_brushed_4ch.esc.yaml"
+    thumbnail: "thumbnails/cf_brushed_4ch.png"
+
+  - name: "45 A 4-in-1 (basic quad)"
+    category: "ESCs"
+    file: "parts/basic_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/basic_4in1_45a.png"
+
+  - name: "45 A 4-in-1 (competition)"
+    category: "ESCs"
+    file: "parts/comp_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/comp_4in1_45a.png"
+
+  - name: "4S 4480 mAh LiHV (Phantom 3)"
+    category: "batteries"
+    file: "parts/phantom3_4s_4480.battery.yaml"
+    thumbnail: "thumbnails/phantom3_4s_4480.png"
+
+  - name: "3S 5100 mAh (Iris+)"
+    category: "batteries"
+    file: "parts/iris_3s_5100.battery.yaml"
+    thumbnail: "thumbnails/iris_3s_5100.png"
+
+  - name: "6S 1300 mAh (5-inch FPV, basic quad)"
+    category: "batteries"
+    file: "parts/fpv_6s_1300.battery.yaml"
+    thumbnail: "thumbnails/fpv_6s_1300.png"
+
+  - name: "1S 250 mAh (Crazyflie)"
+    category: "batteries"
+    file: "parts/cf_1s_250.battery.yaml"
+    thumbnail: "thumbnails/cf_1s_250.png"
+
+  - name: "4S 1500 mAh (competition)"
+    category: "batteries"
+    file: "parts/comp_4s.battery.yaml"
+    thumbnail: "thumbnails/comp_4s.png"

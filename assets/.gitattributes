@@ -20,6 +20,14 @@
 library.yaml text eol=lf
 sources.yaml text eol=lf
 
+# Part files (library/parts/) are written by spade::scene::part_to_yaml(),
+# which writes LF; tests/test_library_parts.cpp compares each against a fresh
+# emission, byte for byte.
+*.motor.yaml text eol=lf
+*.prop.yaml text eol=lf
+*.esc.yaml text eol=lf
+*.battery.yaml text eol=lf
+
 # Fonts are binary: never convert their line endings.
 *.ttf binary
 

@@ -1,0 +1,32 @@
+part_version: 1
+prop:
+  diameter: 0.04699
+  pitch: 0
+  blades: 2
+  inertia: 0
+  ct_static: 0.1558611372986196
+  cq_static: 0.01676376520266022
+  ct_table: []
+  cq_table: []
+  mass: 0.0002
+  blade:
+    r_over_r: [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1]
+    c_over_r: [0.2476, 0.2652, 0.2841, 0.3034, 0.3193, 0.3353, 0.3515, 0.3649, 0.3734, 0.3806, 0.3837, 0.3843, 0.3821, 0.3741, 0.3541, 0.3158, 0.2341, 0.0532]
+    beta_deg: [29.21, 26.737, 24.255, 22.505, 21.187, 19.917, 18.828, 17.896, 17.284, 16.874, 16.482, 16.034, 15.644, 15.206, 14.891, 15.176, 15.23, 13.154]
+    hub_cutout: 0.15
+    airfoil: "unknown"
+sources:
+  diameter: {source: "uiuc_propdb", grade: measured, note: "1.85 in, UIUC's, as its coefficients were reduced; Luis & Le Ny give 0.04626"}
+  pitch: {grade: assumed, note: "not known; identity only"}
+  blades: {source: "uiuc_propdb", grade: measured}
+  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  ct_static: {source: "uiuc_propdb", grade: measured, note: "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop has lost about a quarter of its static C_T (Physics, 2026-10-22); isolated-prop C_T; Bitcraze's whole-craft table reads about 8% lower at hover rpm (Physics, 2026-10-22)"}
+  cq_static: {source: "uiuc_propdb", grade: measured, note: "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop has lost about a quarter of its static C_T (Physics, 2026-10-22); isolated-prop C_T; Bitcraze's whole-craft table reads about 8% lower at hover rpm (Physics, 2026-10-22)"}
+  ct_table: {source: "uiuc_propdb", grade: assumed, note: "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop has lost about a quarter of its static C_T (Physics, 2026-10-22); isolated-prop C_T; Bitcraze's whole-craft table reads about 8% lower at hover rpm (Physics, 2026-10-22)"}
+  cq_table: {source: "uiuc_propdb", grade: assumed, note: "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop has lost about a quarter of its static C_T (Physics, 2026-10-22); isolated-prop C_T; Bitcraze's whole-craft table reads about 8% lower at hover rpm (Physics, 2026-10-22)"}
+  mass: {grade: assumed, note: "47 mm moulded two-blade"}
+  blade.r_over_r: {source: "uiuc_propdb", grade: measured, note: "UIUC geometry"}
+  blade.c_over_r: {source: "uiuc_propdb", grade: measured, note: "UIUC geometry"}
+  blade.beta_deg: {source: "uiuc_propdb", grade: measured, note: "UIUC geometry"}
+  blade.hub_cutout: {source: "uiuc_propdb", grade: measured, note: "the first station"}
+  blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}

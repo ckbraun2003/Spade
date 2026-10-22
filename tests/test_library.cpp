@@ -293,6 +293,51 @@ struct IndexRow {
     for (const ObjectRow& row : content_table()) {
         out.push_back({row.name, row.category, row.file, LibraryKind::object});
     }
+    // L4's part entries, after the objects: props, motors, ESCs, batteries.
+    out.push_back({"APC Thin Electric 10x5 (Phantom 3 class)", "props", "parts/uiuc_apce_10x5.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"APC Thin Electric 9x4.5 (Iris+ class)", "props", "parts/uiuc_apce_9x4.5.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"Micro Invent 5x4 three-blade (5-inch FPV)", "props", "parts/uiuc_mit_5x4.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"Crazyflie 47 mm two-blade", "props", "parts/uiuc_cfnq_45t1.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"6-inch three-blade (scaled stand-in)", "props", "parts/triblade_6inch_scaled.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"2312 960 KV (Phantom 3 class)", "motors", "parts/phantom3_2312_960kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"920 KV (Iris+ class)", "motors", "parts/iris_920kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2207 1855 KV (5-inch FPV)", "motors", "parts/fpv_2207_1855kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"7x16 coreless (Crazyflie)", "motors", "parts/cf_7x16_coreless.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2306 1700 KV (basic quad)", "motors", "parts/fpv_2306_1700kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2207 2450 KV (competition)", "motors", "parts/comp_2207_2450kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"Four 20 A ESCs (Phantom 3 class)", "ESCs", "parts/phantom3_4x20a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"Four 20 A ESCs (Iris+ class)", "ESCs", "parts/iris_4x20a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (5-inch FPV)", "ESCs", "parts/fpv_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"Brushed 4-channel drive (Crazyflie)", "ESCs", "parts/cf_brushed_4ch.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (basic quad)", "ESCs", "parts/basic_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (competition)", "ESCs", "parts/comp_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"4S 4480 mAh LiHV (Phantom 3)", "batteries", "parts/phantom3_4s_4480.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"3S 5100 mAh (Iris+)", "batteries", "parts/iris_3s_5100.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"6S 1300 mAh (5-inch FPV, basic quad)", "batteries", "parts/fpv_6s_1300.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"1S 250 mAh (Crazyflie)", "batteries", "parts/cf_1s_250.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"4S 1500 mAh (competition)", "batteries", "parts/comp_4s.battery.yaml",
+                   LibraryKind::battery});
     return out;
 }
 
