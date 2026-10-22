@@ -16,7 +16,9 @@
 # Generated headers (the kernels' .spv.gen.hpp, bindings.gen.hpp) are read
 # from the worktree's own build first, then the volume's: the volume's are its
 # leg commit's, so a branch's new or changed kernel would otherwise be checked
-# against old headers or none. The build is build-ninja/release when it exists;
+# against old headers or none. A directory only the build has (a volume older
+# than the kernel's target) is read from the build alone, so a volume's age
+# does not fail a file falsely. The build is build-ninja/release when it exists;
 # GCC_CHECK_BUILD=<dir under the worktree> names another, and an empty value
 # uses the volume's alone. A .slang newer than the build's last generator
 # output is named in a gcc note: build first.
@@ -99,13 +101,15 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
   mkdir -p /tmp/s && for d in engine sandbox tests tools include src examples spike; do
     if [ -d /src/$d ]; then cp -r /src/$d /tmp/s; fi
   done; cd /tmp/s
-  # Every generated-header directory the volume holds, with the worktree
-  # build copy of it ahead.
+  # Every generated-header directory the volume or the worktree build holds,
+  # the build copy ahead. One only the build has (a volume older than the
+  # kernel target) comes from the branch, and is read alone.
+  gendirs() { cd "$1" && find . -maxdepth 4 -path ./_deps -prune -o -type d -path "*/generated/spade_slang" -print; }
   gen=(); mine=()
-  for g in $(cd /leg/build && find . -maxdepth 4 -path ./_deps -prune -o -type d -path "*/generated/spade_slang" -print | sort); do
+  for g in $({ gendirs /leg/build; [ -z "$build" ] || gendirs "/src/$build"; } | sort -u); do
     g=${g#./}
     if [ -n "$build" ] && [ -d "/src/$build/$g" ]; then gen+=("-I/src/$build/$g"); mine+=("/src/$build/$g"); fi
-    gen+=("-I/leg/build/$g")
+    if [ -d "/leg/build/$g" ]; then gen+=("-I/leg/build/$g"); fi
   done
   if [ ${#mine[@]} -gt 0 ]; then
     echo "gcc-check: generated headers from $build first, then the volume"
@@ -136,6 +140,6 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
       "$tu" && echo "gcc ok:   $f" || { echo "gcc FAIL: $f"; rc=1; }
   done
   if [ ${#compile[@]} -gt 0 ]; then
-    GCC_CHECK_BUILD=$build python3 /gcc-check/gcc_check_compile.py "$volume" "${compile[@]}" || rc=1
+    GCC_CHECK_BUILD=$build GCC_CHECK_GEN="${mine[*]}" python3 /gcc-check/gcc_check_compile.py "$volume" "${compile[@]}" || rc=1
   fi
   exit $rc' _ "$volume" "$mode" "$build" "$@"

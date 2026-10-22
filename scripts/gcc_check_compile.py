@@ -10,7 +10,9 @@ sources copied to /tmp/s. For each file it takes the command ninja records for
 that translation unit (`ninja -t compdb`), points its sources at /tmp/s (the
 repository root's -I/leg/src too, which spike/ includes are spelled from),
 puts the worktree build's generated-header directories ahead of the volume's
-(GCC_CHECK_BUILD, from gcc-check.sh), drops the depfile flags (the volume is
+and adds those the line lacks, and the repository root, after the line's own
+(GCC_CHECK_BUILD and GCC_CHECK_GEN, from gcc-check.sh), drops the depfile
+flags (the volume is
 read-only), writes the object to /tmp, and adds -Wall -Wextra -Wpedantic
 -Werror. A file the volume's build never
 compiled fails with the reason: run a leg first -- except a new spade_tests
@@ -101,6 +103,11 @@ LEG_SRC = re.compile(r"/leg/src(?=/|$)")
 # headers are the branch's; the volume's are its leg commit's.
 BUILD = os.environ.get("GCC_CHECK_BUILD", "")
 
+# Every generated-header directory that build holds. A line from a volume older
+# than a kernel's target, or a borrowed one, names no directory for it; the
+# build's is then the only one, and the branch's own.
+MINE = ["-I" + d for d in os.environ.get("GCC_CHECK_GEN", "").split()]
+
 
 def generated_first(a):
     """[a], or, for a volume generated-header directory the worktree's build
@@ -138,6 +145,10 @@ def compile_with(entry, source=None, replace=None, add=()):
             a = (replace or {}).get(a, a)
             cmd += generated_first(LEG_SRC.sub("/tmp/s", a))
             i += 1
+    # Last, so they fill only what the line misses: the build's generated
+    # headers, and the repository root (spike/ includes are spelled from it; a
+    # line from before the airflow runner's target has neither).
+    cmd += [d for d in MINE + ["-I/tmp/s"] if d not in cmd]
     cmd += list(add) + ["-o", "/tmp/gcc-check.o", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
     return subprocess.run(cmd, cwd=entry["directory"]).returncode == 0
 
@@ -164,7 +175,8 @@ for f in files:
         prefix, model, why = template
         model_entry = by_file.get("/leg/src/" + model)
         if model_entry is None:
-            print(f"gcc FAIL: {f}: {why}, and volume {volume}'s build lacks its template {model}; run a leg, then check again")
+            print(f"gcc FAIL: {f}: {why}, and volume {volume}'s build lacks its template {model} (a volume older "
+                  "than the target?); GCC_CHECK_VOLUME=<a volume that builds it>, or run a leg, then check again")
             rc = 1
             continue
         rc |= verdict(compile_with(model_entry, source=f), f, f"compiled with {model}'s command line: {why}")
@@ -179,7 +191,8 @@ for f in files:
         rc |= verdict(compile_with(model_entry, source=f), f,
                       f"compiled with {model}'s command line: a new spade_tests file the leg has not built")
         continue
-    print(f"gcc FAIL: {f}: volume {volume}'s build does not compile it (a new file?); "
-          "run a leg (scripts\\docker-leg.ps1), then check again")
+    print(f"gcc FAIL: {f}: volume {volume}'s build does not compile it (a new file, or a volume older than "
+          "its target?); GCC_CHECK_VOLUME=<a volume that builds it>, or run a leg (scripts\\docker-leg.ps1), "
+          "then check again")
     rc = 1
 sys.exit(rc)
