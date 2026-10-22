@@ -28,6 +28,7 @@
 #include "scene/model_file.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
+#include "sim/design_frame.hpp"
 #include "vehicles/part_pose.hpp"
 #include "world/aabb.hpp"
 #include "world/sdf.hpp"
@@ -251,12 +252,19 @@ namespace vh = spade::vehicles;
     return item_named(load.items, name);
 }
 
-// The lowest point of `m`'s posed parts, its body at the origin and level and
-// its rotors still: each part's box (part_bounds()) through its posed frame,
-// as Test/Docs' placed-at measures it.
+// The lowest point of `m`'s posed parts, its DESIGN frame at the origin and
+// level (a scene's start pose places the design frame; the body is
+// to_body_state() of it, as the sim spawns it) and its rotors still: each
+// part's box (part_bounds()) through its posed frame, as Test/Docs' placed-at
+// measures it.
 [[nodiscard]] float lowest_part_point(const vh::ModelType& m) {
+    const spade::FrameState b =
+        spade::to_body_state(spade::FrameState{glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(0.0f),
+                                               glm::vec3(0.0f)},
+                             glm::normalize(m.design_to_principal), m.com_offset);
     spade::BodyState body{};
-    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    body.pos = b.pos;
+    body.orient = b.orient;
     const std::vector<float> still(m.rotors.size(), 0.0f);
     const Result<vh::PosedParts> posed = vh::posed_parts(m, body, still, still, vh::PartFilter::all);
     EXPECT_TRUE(posed.has_value()) << (posed ? "" : posed.error().context);
@@ -413,6 +421,17 @@ TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
     const float low = lowest_part_point(*quad.model);
     ASSERT_TRUE(std::isfinite(low));
     EXPECT_NEAR(ed::rest_height(quad), -low, 1e-6f);
+}
+
+// The rest is the design frame's: a centre of mass 50 mm higher in the design
+// frame carries the parts 50 mm higher, so the design origin rests 50 mm
+// lower.
+TEST(EditorLibraryFiles, ADronesRestIsItsDesignFramesNotItsBodys) {
+    const ed::LibraryItem quad = library_item("Reference quad");
+    ASSERT_TRUE(quad.model.has_value());
+    ed::LibraryItem raised = quad;
+    raised.model->com_offset += glm::vec3(0.0f, 0.05f, 0.0f);
+    EXPECT_NEAR(ed::rest_height(raised), ed::rest_height(quad) - 0.05f, 1e-5f);
 }
 
 // An object rests on its collider's box, whatever its primitives.
