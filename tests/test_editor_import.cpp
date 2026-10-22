@@ -26,21 +26,26 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "../sandbox/editor_import.hpp"
 #include "../sandbox/editor_workspace.hpp"
 #include "../sandbox/end_goal_checks.hpp"
+#include "analysis/live_run.hpp"
 #include "core/path_text.hpp"
 #include "editor_test_support.hpp"
 #include "render/mesh_resolver.hpp"
 #include "render/scene.hpp"
+#include "render_parts/render_parts.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/model_part.hpp"
 #include "world/builder.hpp"
 #include "world/mesh_file.hpp"
 #include "world/mesh_import.hpp"
 #include "world/mesh_ref.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -49,14 +54,15 @@ namespace ed = spade::sandbox::editor;
 namespace eg = spade::sandbox::end_goal;
 using spade::test::TempDir;
 
-// One cube of the fixture: its mesh's name (empty: none), where its corner 0
-// sits, its side, and how many of its 12 triangles are left off the end (an
-// open solid).
+// One box of the fixture: its mesh's name (empty: none), where its corner 0
+// sits, its side, how many of its 12 triangles are left off the end (an open
+// solid), and its sides when they differ (all three set).
 struct Cube {
     std::string name;
     glm::vec3 at{0.0f};
     float size = 1.0f;
     int drop = 0;
+    glm::vec3 sides{0.0f};
 };
 
 constexpr uint32_t kCubeTriangles[12][3] = {
@@ -98,11 +104,12 @@ void write_gltf(const fs::path& path, const std::vector<Cube>& cubes) {
     std::string roots;
     for (std::size_t k = 0; k < cubes.size(); ++k) {
         const Cube& c = cubes[k];
+        const glm::vec3 side = c.sides.x > 0.0f ? c.sides : glm::vec3(c.size);
         const std::size_t positions_at = bin.size();
         for (uint32_t v = 0; v < 8; ++v) {
-            const float p[3] = {c.at.x + c.size * static_cast<float>(v & 1u),
-                                c.at.y + c.size * static_cast<float>((v >> 1) & 1u),
-                                c.at.z + c.size * static_cast<float>((v >> 2) & 1u)};
+            const float p[3] = {c.at.x + side.x * static_cast<float>(v & 1u),
+                                c.at.y + side.y * static_cast<float>((v >> 1) & 1u),
+                                c.at.z + side.z * static_cast<float>((v >> 2) & 1u)};
             put(bin, p, sizeof p);
         }
         const std::size_t indices_at = bin.size();
@@ -114,8 +121,8 @@ void write_gltf(const fs::path& path, const std::vector<Cube>& cubes) {
                  ",\"byteLength\":" + std::to_string(triangles * 12) + "}";
         accessors += sep + "{\"bufferView\":" + std::to_string(2 * k) +
                      ",\"componentType\":5126,\"count\":8,\"type\":\"VEC3\",\"min\":[" + num(c.at.x) + "," +
-                     num(c.at.y) + "," + num(c.at.z) + "],\"max\":[" + num(c.at.x + c.size) + "," +
-                     num(c.at.y + c.size) + "," + num(c.at.z + c.size) + "]}," + "{\"bufferView\":" +
+                     num(c.at.y) + "," + num(c.at.z) + "],\"max\":[" + num(c.at.x + side.x) + "," +
+                     num(c.at.y + side.y) + "," + num(c.at.z + side.z) + "]}," + "{\"bufferView\":" +
                      std::to_string(2 * k + 1) + ",\"componentType\":5125,\"count\":" +
                      std::to_string(triangles * 3) + ",\"type\":\"SCALAR\"}";
         meshes += sep + "{" + (c.name.empty() ? std::string() : "\"name\":\"" + c.name + "\",") +
@@ -427,4 +434,195 @@ TEST(EditorImport, TheStagingFolderGoesWithTheWorkspace) {
     EXPECT_NE(other->import_staging(), staging) << "each workspace stages in its own folder";
     w.reset();
     EXPECT_FALSE(fs::exists(staging));
+}
+
+// ===========================================================================
+// I3: A DRONE'S PARTS. import_gltf_parts() takes every mesh of a file, each
+// under imported/<stem>/<mesh>; imported_part() makes each a PartDesc by
+// Physics' D4 (2026-10-22): on the body at glTF's convention (its +Z front to
+// the design frame's +X nose: +90 degrees about +Y), min_feature declared as
+// its box's smallest extent (CORE-8 D5 wants one declared), and the role
+// analysis::kImportedPartRole, or vehicles::kDrawnOnlyRole when it is under
+// 8 mm in two extents (wire-like, L7). AddMeshParts adds them to one
+// vehicle's model, copying a shared one; SetImportedPart edits what the rows
+// show. Each is one undoable edit.
+// ===========================================================================
+
+namespace {
+
+constexpr float kHalfRoot2 = 0.7071067811865476f;
+
+[[nodiscard]] std::vector<ed::ImportedMesh> parts_of(const Bench& b, const fs::path& file) {
+    spade::Result<std::vector<ed::ImportedMesh>> got =
+        ed::import_gltf_parts(file, b.staging, b.scene, b.world, b.scene_dir);
+    EXPECT_TRUE(got.has_value()) << (got ? "" : got.error().context);
+    return got ? *got : std::vector<ed::ImportedMesh>{};
+}
+
+[[nodiscard]] const spade::vehicles::PartDesc* part_named(const spade::vehicles::ModelType& m, std::string_view n) {
+    for (const spade::vehicles::PartDesc& p : m.parts) {
+        if (p.name == n) return &p;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(EditorImport, EveryMeshOfAFileIsAPartUnderTheFilesStem) {
+    Bench b;
+    const std::vector<ed::ImportedMesh> got =
+        parts_of(b, b.gltf("pair.gltf", {{"left"}, {"right", glm::vec3(2.0f, 0.0f, 0.0f)}}));
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[0].name, "left");
+    EXPECT_EQ(got[0].ref, "imported/pair/left");
+    EXPECT_EQ(got[1].ref, "imported/pair/right");
+    for (const ed::ImportedMesh& m : got) EXPECT_TRUE(fs::exists(m.sidecar)) << m.sidecar.string();
+    EXPECT_TRUE(files_under(b.scene_dir).empty());
+}
+
+TEST(EditorImport, TwoMeshesOfOneNameAreRefusedAsPartsNamingIt) {
+    Bench b;
+    const spade::Result<std::vector<ed::ImportedMesh>> got = ed::import_gltf_parts(
+        b.gltf("twins.gltf", {{"wing"}, {"wing", glm::vec3(2.0f, 0.0f, 0.0f)}}), b.staging, b.scene, b.world,
+        b.scene_dir);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_NE(got.error().context.find("'wing'"), std::string::npos) << got.error().context;
+    EXPECT_TRUE(files_under(b.staging).empty());
+}
+
+TEST(EditorImport, AnImportedPartFollowsGltfsFrameAndDeclaresItsBoxsSmallestExtent) {
+    Bench b;
+    const std::vector<ed::ImportedMesh> got = parts_of(
+        b, b.gltf("kit.gltf", {{"shell", glm::vec3(0.0f), 0.2f},
+                               {"plate", glm::vec3(1.0f, 0.0f, 0.0f), 1.0f, 0, glm::vec3(0.1f, 0.005f, 0.1f)},
+                               {"antenna", glm::vec3(2.0f, 0.0f, 0.0f), 1.0f, 0, glm::vec3(0.004f, 0.1f, 0.004f)}}));
+    ASSERT_EQ(got.size(), 3u);
+    const spade::vehicles::PartDesc shell = ed::imported_part(got[0]);
+    const spade::vehicles::PartDesc plate = ed::imported_part(got[1]);
+    const spade::vehicles::PartDesc antenna = ed::imported_part(got[2]);
+    EXPECT_EQ(shell.name, "shell");
+    EXPECT_EQ(shell.attach, spade::vehicles::PartAttach::body);
+    EXPECT_EQ(shell.mount_pos, glm::vec3(0.0f));
+    EXPECT_EQ(shell.mount_orient, glm::quat(kHalfRoot2, 0.0f, kHalfRoot2, 0.0f));
+    const glm::vec3 front = shell.mount_orient * glm::vec3(0.0f, 0.0f, 1.0f);
+    const glm::vec3 right = shell.mount_orient * glm::vec3(-1.0f, 0.0f, 0.0f);
+    EXPECT_NEAR(front.x, 1.0f, 1e-6f) << "glTF's front, +Z, is the nose, +X";
+    EXPECT_NEAR(right.z, 1.0f, 1e-6f) << "glTF's right, -X, is +Z";
+    EXPECT_EQ(shell.mesh, got[0].mesh);
+    EXPECT_TRUE(shell.shape.nodes.empty());
+    EXPECT_EQ(shell.mesh_file, "imported/kit/shell.spmesh");
+    EXPECT_NEAR(shell.min_feature, 0.2f, 1e-6f);
+    EXPECT_EQ(shell.role, spade::analysis::kImportedPartRole);
+    EXPECT_NEAR(plate.min_feature, 0.005f, 1e-6f);
+    EXPECT_EQ(plate.role, spade::analysis::kImportedPartRole) << "thin in one extent: a sheet, still a solid";
+    EXPECT_NEAR(antenna.min_feature, 0.004f, 1e-6f);
+    EXPECT_EQ(antenna.role, spade::vehicles::kDrawnOnlyRole) << "under 8 mm in two extents: drawn only";
+}
+
+TEST(EditorImport, AddMeshPartsGivesOneVehicleThePartsCopyingASharedModel) {
+    Bench b;
+    std::vector<spade::vehicles::PartDesc> parts;
+    for (const ed::ImportedMesh& m : parts_of(b, b.gltf("pair.gltf", {{"left"}, {"right", glm::vec3(2.0f, 0.0f, 0.0f)}}))) {
+        parts.push_back(ed::imported_part(m));
+    }
+    ASSERT_EQ(parts.size(), 2u);
+    ed::SceneDocument doc = ed::make_scene_document(support::two_vehicles_sharing("quad"), {});
+    const std::size_t had = support::model_named(doc.desc(), "quad").parts.size();
+    const std::string shared_text = support::text_of(doc.desc());
+    ASSERT_TRUE(ed::apply(doc, ed::AddMeshParts{"quad_0", parts}).has_value());
+    const spade::scene::SceneDesc& s = doc.desc();
+    const std::string own = s.vehicles.at(0).model;
+    EXPECT_NE(own, "quad") << "copied on edit";
+    EXPECT_EQ(s.vehicles.at(1).model, "quad");
+    EXPECT_EQ(support::model_named(s, "quad").parts.size(), had);
+    ASSERT_EQ(support::model_named(s, own).parts.size(), had + 2);
+    EXPECT_NE(part_named(support::model_named(s, own), "left"), nullptr);
+    EXPECT_NE(part_named(support::model_named(s, own), "right"), nullptr);
+
+    const spade::Result<void> again = ed::apply(doc, ed::AddMeshParts{"quad_0", parts});
+    ASSERT_FALSE(again.has_value()) << "a part of that name is there";
+    EXPECT_NE(again.error().context.find("'left'"), std::string::npos) << again.error().context;
+    EXPECT_NE(support::text_of(doc.desc()), shared_text);
+}
+
+TEST(EditorImport, TheWorkspaceImportsPartsOntoTheSelectedDroneAsOneUndoableEdit) {
+    TempDir t{"editor-import-parts"};
+    const fs::path file = t.path() / "guard.gltf";
+    write_gltf(file, {{"ring", glm::vec3(-0.1f, 0.05f, -0.1f), 0.2f}});
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::import_parts);
+    EXPECT_NE(w->panels().status.find("select a drone"), std::string::npos) << w->panels().status;
+
+    const std::string drone = w->documents().scene.desc().vehicles.at(0).name;
+    w->panels().selection = ed::Selection{ed::Selection::Kind::object, drone};
+    const std::string before = support::text_of(w->documents().scene.desc());
+    run(*w, ed::Command::import_parts);
+    ASSERT_TRUE(w->panels().status.empty()) << w->panels().status;
+    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    const spade::vehicles::ModelType& m = support::model_named(s, s.vehicles.at(0).model);
+    const spade::vehicles::PartDesc* ring = part_named(m, "ring");
+    ASSERT_NE(ring, nullptr);
+    EXPECT_EQ(ring->mesh_file, "imported/guard/ring.spmesh");
+    const spade::Result<spade::render_parts::PreparedParts> drawn = spade::render_parts::prepare_parts(m);
+    ASSERT_TRUE(drawn.has_value()) << drawn.error().context;
+    EXPECT_EQ(drawn->parts.size(), m.parts.size()) << "render_parts draws the mesh part";
+    run(*w, ed::Command::undo);
+    EXPECT_EQ(support::text_of(w->documents().scene.desc()), before);
+}
+
+TEST(EditorImport, AnImportedPartsRoleFeatureAndMountAreEditableAndAnAuthoredPartsAreNot) {
+    Bench b;
+    std::vector<spade::vehicles::PartDesc> parts;
+    for (const ed::ImportedMesh& m : parts_of(b, b.gltf("guard.gltf", {{"ring", glm::vec3(0.0f), 0.2f}}))) {
+        parts.push_back(ed::imported_part(m));
+    }
+    // An authored part beside it: a 5 cm ball, declared.
+    spade::vehicles::ModelType quad = support::quad_model();
+    spade::vehicles::PartDesc ball;
+    ball.name = "dome";
+    ball.role = "canopy";
+    ball.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(0.05f, 0.0f, 0.0f, 0.0f);
+    ball.shape.nodes = {n};
+    ball.min_feature = 0.1f;
+    quad.parts.push_back(ball);
+    ed::SceneDocument doc = ed::make_scene_document(support::scene_with(quad), {});
+    ASSERT_TRUE(ed::apply(doc, ed::AddMeshParts{"quad_0", parts}).has_value());
+    const glm::quat level(1.0f, 0.0f, 0.0f, 0.0f);
+    ASSERT_TRUE(ed::apply(doc, ed::SetImportedPart{"quad_0", "ring", true, 0.05f, level}).has_value());
+    const spade::vehicles::ModelType& m = support::model_named(doc.desc(), doc.desc().vehicles.at(0).model);
+    const spade::vehicles::PartDesc* ring = part_named(m, "ring");
+    ASSERT_NE(ring, nullptr);
+    EXPECT_EQ(ring->role, spade::vehicles::kDrawnOnlyRole);
+    EXPECT_EQ(ring->min_feature, 0.05f);
+    EXPECT_EQ(ring->mount_orient, level);
+    ASSERT_TRUE(ed::apply(doc, ed::SetImportedPart{"quad_0", "ring", false, 0.05f, level}).has_value());
+    EXPECT_EQ(part_named(support::model_named(doc.desc(), doc.desc().vehicles.at(0).model), "ring")->role,
+              spade::analysis::kImportedPartRole);
+
+    const spade::Result<void> refused = ed::apply(doc, ed::SetImportedPart{"quad_0", "dome", true, 0.05f, level});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("'dome' is not imported"), std::string::npos) << refused.error().context;
+    const spade::Result<void> missing = ed::apply(doc, ed::SetImportedPart{"quad_0", "nope", true, 0.05f, level});
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_NE(missing.error().context.find("no part 'nope'"), std::string::npos) << missing.error().context;
+}
+
+// What the rows say, so nobody takes the flight as including the part
+// (Physics' D4).
+TEST(EditorImport, ThePartRowsSayWhatAnImportedPartIsAndIsNot) {
+    spade::vehicles::PartDesc p;
+    p.role = std::string(spade::analysis::kImportedPartRole);
+    p.min_feature = 0.004f;
+    EXPECT_EQ(ed::imported_part_note(p), "drawn and a solid in the airflow; not weighed, and no drag in flight");
+    EXPECT_EQ(ed::min_feature_note(p), "min_feature: 4 mm, the bounding box's (not measured from the mesh)");
+    p.role = std::string(spade::vehicles::kDrawnOnlyRole);
+    EXPECT_EQ(ed::imported_part_note(p), "drawn only: not in the airflow, not weighed, and no drag in flight");
+    p.role = "arm";
+    EXPECT_TRUE(ed::imported_part_note(p).empty()) << "an authored part has no note";
 }
