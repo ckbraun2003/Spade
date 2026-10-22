@@ -158,6 +158,7 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
     > 3. Ask before you cross a realm. Before you change something another realm's tests or data rely on (a sign or unit convention, a shared schema, pinned outputs), list the files and tests it reaches and get your lead's grant for them first, so the commit isn't held up after the gate fails.
     > 4. Keep wip parking commits rare. At most one per change, with the reason in the resume note.
     > Why: last week KAT Components spent about 317 responses per code commit (Editor spent 74). Most of it was subagents waiting in the queue with 500k to 700k contexts, plus a fix that broke Runtime's tests and then waited for a grant."
+    - **Standing grant under rule 3** (the lead, 2026-10-22; backlog `9449f79`). A realm may add its own new test files to the shared `tests/CMakeLists.txt` lists without asking first, as long as nothing else there changes (no other target, option or link). It names those files in its READY message. Every other edit to a shared CMake file (the root `CMakeLists.txt`, `engine/CMakeLists.txt`, another realm's target, links, options) is still listed for the lead's grant before it is made.
 
   - **The classes:**
 
