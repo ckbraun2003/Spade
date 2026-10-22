@@ -529,3 +529,22 @@ TEST(EditorPilot, TheArmAndLevelCommandsActOnThePilot) {
     command(*w, Command::arm);
     EXPECT_FALSE(w->panels().pilot.controls.armed);
 }
+
+// INT-14's grades: an inspected library part stays in the inspector until
+// anything in the scene is selected (the lead's Q1, 2026-10-22).
+TEST(EditorWorkspace, ASelectionEndsAPartsInspection) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    std::optional<std::size_t> part;
+    for (std::size_t i = 0; i < w->panels().library.size() && !part; ++i) {
+        if (w->panels().library[i].kind == ed::LibraryItem::Kind::part) part = i;
+    }
+    ASSERT_TRUE(part.has_value()) << "the default library has parts (L4)";
+    ASSERT_TRUE(ed::inspect_item(w->panels(), *part));
+    w->apply_panels();
+    EXPECT_EQ(w->panels().inspected, part);
+    w->panels().selection = ed::Selection{ed::Selection::Kind::scene};
+    w->apply_panels();
+    EXPECT_FALSE(w->panels().inspected.has_value());
+    EXPECT_EQ(w->panels().selection.kind, ed::Selection::Kind::scene);
+}
