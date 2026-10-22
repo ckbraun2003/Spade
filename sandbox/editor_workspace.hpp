@@ -133,6 +133,13 @@ class EditorWorkspace {
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
         keep_staging_alive();
         refresh_panels();
+        // A selection ends a part's inspection (the lead's Q1), and so does
+        // the library moving under it.
+        if (panels_.inspected && (panels_.selection.kind != Selection::Kind::none ||
+                                  *panels_.inspected >= panels_.library.size() ||
+                                  panels_.library[*panels_.inspected].kind != LibraryItem::Kind::part)) {
+            panels_.inspected.reset();
+        }
     }
 
     // A click in the view along the ray from `origin` in `direction`.

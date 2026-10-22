@@ -33,12 +33,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -147,6 +149,133 @@ struct LibraryItem {
 [[nodiscard]] inline bool placeable(const LibraryItem& item) {
     return (item.kind == LibraryItem::Kind::model && item.model) ||
            (item.kind == LibraryItem::Kind::asset && item.asset);
+}
+
+// INT-14's grades: a part's inspector row, one per cited field in
+// cited_fields()' order, with the value as the part's canonical text writes
+// it (a table "table, N points", a list "list, N values", a string unquoted)
+// and its citation (scene/library_sources.hpp's grades, strongest first). An
+// assumed value is never shown as measured; a drone's per-field grades come
+// with L5's sidecar (the lead, 2026-10-22).
+struct PartRow {
+    std::string field;  // its path: "kv", "blade.airfoil"
+    std::string value;
+    scene::Grade grade = scene::Grade::assumed;
+    std::string source;  // the registry id; empty for an assumed value citing none
+    std::string note;
+};
+
+namespace detail {
+
+[[nodiscard]] inline const scene::PartSources& sources_of(const scene::PartFile& part) {
+    return std::visit([](const auto& p) -> const scene::PartSources& { return p.sources; }, part);
+}
+
+// A value as its row shows it.
+[[nodiscard]] inline std::string shown_value(std::string_view v) {
+    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') return std::string(v.substr(1, v.size() - 2));
+    if (!v.empty() && v.front() == '[') {
+        const bool none = v.find_first_not_of("[] ") == std::string_view::npos;
+        const std::size_t n = none ? 0u : static_cast<std::size_t>(std::count(v.begin(), v.end(), ',')) + 1u;
+        return "list, " + std::to_string(n) + (n == 1u ? " value" : " values");
+    }
+    return std::string(v);
+}
+
+// The values in a part's canonical text (part_to_yaml()), by field path:
+// the kind's block, two spaces in. A key with no value of its own opens a
+// table (its "- " rows counted) or a map (its keys, deeper, as "key.sub").
+[[nodiscard]] inline std::map<std::string, std::string> part_values(std::string_view text, std::string_view kind) {
+    std::map<std::string, std::string> out;
+    bool in_block = false;
+    std::string open;
+    std::size_t rows = 0;
+    const auto close = [&] {
+        if (!open.empty() && rows > 0u) {
+            out[open] = "table, " + std::to_string(rows) + (rows == 1u ? " point" : " points");
+        }
+        open.clear();
+        rows = 0;
+    };
+    const auto value_after = [](std::string_view content, std::size_t colon) {
+        std::string_view v = content.substr(colon + 1);
+        if (!v.empty() && v.front() == ' ') v.remove_prefix(1);
+        return v;
+    };
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string_view::npos) end = text.size();
+        std::string_view line = text.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        const std::size_t indent = line.find_first_not_of(' ');
+        if (indent == std::string_view::npos || line[indent] == '#') continue;
+        const std::string_view content = line.substr(indent);
+        if (indent == 0) {
+            close();
+            in_block = content.size() == kind.size() + 1 && content.substr(0, kind.size()) == kind &&
+                       content.back() == ':';
+            continue;
+        }
+        if (!in_block) continue;
+        if (indent == 2) {
+            close();
+            const std::size_t colon = content.find(':');
+            if (colon == std::string_view::npos) continue;
+            const std::string key(content.substr(0, colon));
+            const std::string_view v = value_after(content, colon);
+            if (v.empty()) {
+                open = key;
+            } else {
+                out[key] = shown_value(v);
+            }
+        } else if (!open.empty()) {
+            if (content == "-" || content.substr(0, 2) == "- ") {
+                ++rows;
+                continue;
+            }
+            const std::size_t colon = content.find(':');
+            if (colon == std::string_view::npos) continue;
+            out[open + "." + std::string(content.substr(0, colon))] = shown_value(value_after(content, colon));
+        }
+    }
+    close();
+    return out;
+}
+
+}  // namespace detail
+
+// `part`'s rows; part_to_yaml()'s refusal, verbatim.
+[[nodiscard]] inline Result<std::vector<PartRow>> part_rows(const scene::PartFile& part) {
+    const Result<std::string> text = scene::part_to_yaml(part);
+    if (!text) return std::unexpected(text.error());
+    const std::map<std::string, std::string> values =
+        detail::part_values(*text, scene::part_kind_name(scene::part_kind(part)));
+    const scene::PartSources& sources = detail::sources_of(part);
+    std::vector<PartRow> rows;
+    for (const std::string& field : scene::cited_fields(part)) {
+        PartRow row;
+        row.field = field;
+        if (const auto v = values.find(field); v != values.end()) row.value = v->second;
+        const auto cited = std::find_if(sources.begin(), sources.end(),
+                                        [&](const scene::FieldSource& f) { return f.field == field; });
+        if (cited != sources.end()) {
+            row.grade = cited->ref.grade;
+            row.source = cited->ref.source;
+            row.note = cited->ref.note;
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// Whether `item` is a part with any field graded assumed: its tile says so.
+[[nodiscard]] inline bool any_assumed(const LibraryItem& item) {
+    if (item.kind != LibraryItem::Kind::part || !item.part) return false;
+    const scene::PartSources& sources = detail::sources_of(*item.part);
+    return std::any_of(sources.begin(), sources.end(),
+                       [](const scene::FieldSource& f) { return f.ref.grade == scene::Grade::assumed; });
 }
 
 // A library's items in its index's order, and what would not load, verbatim:

@@ -664,6 +664,42 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
+// A library part (INT-14), inspect-only: each cited field's grade, an
+// assumed one in the warning colour, then its value; the whole value, the
+// source and the note on hover.
+void inspect_part(const ed::LibraryItem& item) {
+    const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
+    ui::title(item.name.c_str());
+    ImGui::TextDisabled("%.*s, built into a drone; inspect-only", static_cast<int>(kind.size()), kind.data());
+    if (!item.part) return;
+    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*item.part);
+    if (!rows) {
+        ui::status_text(rows.error().context);
+        return;
+    }
+    if (ui::begin_graded_properties("##part")) {
+        for (const ed::PartRow& r : *rows) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", r.field.c_str());
+            bool hovered = ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(1);
+            ui::grade_text(scene::grade_name(r.grade), r.grade == scene::Grade::assumed);
+            hovered = hovered || ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(r.value.c_str());
+            hovered = hovered || ImGui::IsItemHovered();
+            if (hovered) {
+                std::string tip = r.field + ": " + r.value + "\n" + std::string(scene::grade_name(r.grade));
+                tip += r.source.empty() ? ", citing no source" : ": " + r.source;
+                if (!r.note.empty()) tip += "\n" + r.note;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+        }
+        ui::end_properties();
+    }
+}
+
 void inspector(ed::EditorPanels& p) {
     if (!ImGui::Begin(ui::kInspector, nullptr, ui::kPanelFlags)) {
         ImGui::End();
@@ -681,7 +717,13 @@ void inspector(ed::EditorPanels& p) {
     }
     pilot_section(p);
     switch (p.selection.kind) {
-        case ed::Selection::Kind::none: ImGui::TextDisabled("Select an object, the scene or the world."); break;
+        case ed::Selection::Kind::none:
+            if (p.inspected && *p.inspected < p.library.size()) {
+                inspect_part(p.library[*p.inspected]);
+            } else {
+                ImGui::TextDisabled("Select an object, the scene or the world.");
+            }
+            break;
         case ed::Selection::Kind::scene: inspect_scene(p); break;
         case ed::Selection::Kind::world: inspect_world(p); break;
         case ed::Selection::Kind::object: {
@@ -741,6 +783,7 @@ void library(ed::EditorPanels& p) {
     // name below. A tile wholly in view records where its image was drawn,
     // for the tour's thumbnails check.
     p.library_tiles.assign(p.library.size(), std::nullopt);
+    p.library_badges.assign(p.library.size(), false);
     const float image = static_cast<float>(ed::kThumbnailSize);
     const float frame = 2.0f;
     const float tile = image + 2.0f * frame;
@@ -767,7 +810,8 @@ void library(ed::EditorPanels& p) {
         }
         const bool placeable = ed::placeable(item);
         const bool armed = p.armed && *p.armed == i;
-        const ImU32 edge = armed ? ImGui::GetColorU32(ui::kAccent)
+        const bool marked = armed || (p.inspected && *p.inspected == i);
+        const ImU32 edge = marked ? ImGui::GetColorU32(ui::kAccent)
                                  : ImGui::GetColorU32(hovered && placeable ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
         draw->AddRectFilled(at, ImVec2(at.x + tile, at.y + tile), edge);
         const ImVec2 lo(at.x + frame, at.y + frame);
@@ -784,6 +828,7 @@ void library(ed::EditorPanels& p) {
         } else {
             draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_WindowBg));
         }
+        if (clicked && !placeable) ed::inspect_item(p, i);  // a part: inspected, never armed (the lead's Q1)
         if (clicked && placeable) {
             if (armed) {
                 p.armed.reset();
@@ -792,7 +837,8 @@ void library(ed::EditorPanels& p) {
             }
         }
         if (hovered && !placeable) {  // a part: inspect-only (INT-14)
-            ImGui::SetTooltip("%s: built into a drone, not placed on its own", item.name.c_str());
+            ImGui::SetTooltip("%s: built into a drone, not placed on its own; click to inspect it",
+                              item.name.c_str());
         }
         // The name, cut at the tile's width so the grid keeps its rhythm.
         const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
@@ -800,7 +846,14 @@ void library(ed::EditorPanels& p) {
         draw->AddText(name_at, ImGui::GetColorU32(placeable ? ImGuiCol_Text : ImGuiCol_TextDisabled),
                       item.name.c_str());
         draw->PopClipRect();
-        ImGui::Dummy(ImVec2(tile, line));
+        // A part with any field assumed says so under its name, never over
+        // its image: the tour's thumbnails check reads every pixel of it.
+        const bool assumed = ed::any_assumed(item);
+        if (assumed) {
+            draw->AddText(ImVec2(name_at.x, name_at.y + line), ImGui::GetColorU32(ui::kWarning), "assumed");
+            p.library_badges[i] = true;
+        }
+        ImGui::Dummy(ImVec2(tile, assumed ? 2.0f * line : line));
         ImGui::EndGroup();
         ImGui::PopID();
     };

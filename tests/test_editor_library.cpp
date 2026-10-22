@@ -22,6 +22,7 @@
 
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_library.hpp"
+#include "../sandbox/editor_panels.hpp"
 #include "editor_test_support.hpp"
 #include "scene/library.hpp"
 #include "scene/part_file.hpp"
@@ -580,4 +581,128 @@ TEST(EditorLibraryFiles, APartCitingAnUnlistedSourceIsNamedAndTheRestStillLoad) 
     EXPECT_EQ(load.items[0].name, "Box");
     ASSERT_EQ(load.problems.size(), 1u);
     EXPECT_NE(load.problems[0].find("'2312 motor'"), std::string::npos) << load.problems[0];
+}
+// ===========================================================================
+// GRADES (INT-14's assumed marks; the lead's plan, 2026-10-22). A part's
+// inspector rows are its cited fields in its own order, each with its value as
+// the part's file writes it and its citation's grade, source and note. A part
+// with any field graded assumed carries the mark; an object never does.
+// Clicking a part's tile inspects it: the scene's selection clears and
+// nothing is armed.
+// ===========================================================================
+
+namespace {
+
+// motor_text() with every assumed citation cited to `source` as a retailer's.
+[[nodiscard]] std::string motor_text_all_cited(std::string_view source) {
+    std::string text = motor_text(source);
+    for (std::size_t i = text.find("{grade: assumed"); i != std::string::npos; i = text.find("{grade: assumed")) {
+        const std::size_t end = text.find('}', i);
+        text.replace(i, end - i + 1, "{source: \"" + std::string(source) + "\", grade: retailer}");
+    }
+    return text;
+}
+
+[[nodiscard]] const ed::PartRow* row_of(const std::vector<ed::PartRow>& rows, std::string_view field) {
+    for (const ed::PartRow& r : rows) {
+        if (r.field == field) return &r;
+    }
+    ADD_FAILURE() << "no row for '" << field << "'";
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(EditorLibraryGrades, APartsRowsAreItsCitedFieldsWithTheirValuesAndGrades) {
+    support::TempDir tmp;
+    write_parts_library(tmp.path(), "retail_phantom3_parts");
+    const ed::LibraryLoad load = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(load.items.size(), 2u);
+    ASSERT_TRUE(load.items[1].part.has_value());
+    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*load.items[1].part);
+    ASSERT_TRUE(rows.has_value()) << rows.error().context;
+    std::vector<std::string> fields;
+    for (const ed::PartRow& r : *rows) fields.push_back(r.field);
+    EXPECT_EQ(fields, sc::cited_fields(*load.items[1].part));
+    ASSERT_EQ(rows->size(), 10u);
+    const ed::PartRow& kv = (*rows)[0];
+    EXPECT_EQ(kv.field, "kv");
+    EXPECT_EQ(kv.value, "960");
+    EXPECT_EQ(kv.grade, sc::Grade::retailer);
+    EXPECT_EQ(kv.source, "retail_phantom3_parts");
+    const ed::PartRow& resistance = (*rows)[1];
+    EXPECT_EQ(resistance.field, "resistance");
+    EXPECT_EQ(resistance.value, "0.1");
+    EXPECT_EQ(resistance.grade, sc::Grade::assumed);
+    EXPECT_EQ(resistance.source, "");
+    EXPECT_EQ(resistance.note, "typical of a 2312 motor");
+    const ed::PartRow& mass = (*rows)[8];
+    EXPECT_EQ(mass.field, "mass");
+    EXPECT_EQ(mass.value, "0.055");
+    EXPECT_EQ(mass.note, "55 g");
+    const ed::PartRow& shape = rows->back();
+    EXPECT_EQ(shape.field, "shape");
+    EXPECT_EQ(shape.value.rfind("{kind: cylinder", 0), 0u) << shape.value;
+}
+
+// The library's own prop: its tables and its blade's lists show as counts,
+// its airfoil without quotes, and an assumed value may still cite a source.
+TEST(EditorLibraryGrades, APropsTablesAndBladeShowAsCountsAndAnAssumedValueMayCiteASource) {
+    const ed::LibraryItem prop = library_item("6-inch three-blade (scaled stand-in)");
+    ASSERT_TRUE(prop.part.has_value());
+    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*prop.part);
+    ASSERT_TRUE(rows.has_value()) << rows.error().context;
+    if (const ed::PartRow* r = row_of(*rows, "diameter")) {
+        EXPECT_EQ(r->value, "0.1524");
+        EXPECT_EQ(r->grade, sc::Grade::retailer);
+        EXPECT_EQ(r->source, "retail_fpv_parts");
+        EXPECT_EQ(r->note, "HQProp DP 6x3.5x3");
+    }
+    if (const ed::PartRow* r = row_of(*rows, "ct_table")) {
+        EXPECT_EQ(r->value, "table, 19 points");
+        EXPECT_EQ(r->grade, sc::Grade::assumed);
+        EXPECT_EQ(r->source, "uiuc_propdb");
+    }
+    if (const ed::PartRow* r = row_of(*rows, "blade.r_over_r")) {
+        EXPECT_EQ(r->value, "list, 18 values");
+    }
+    if (const ed::PartRow* r = row_of(*rows, "blade.airfoil")) {
+        EXPECT_EQ(r->value, "unknown");
+        EXPECT_EQ(r->grade, sc::Grade::assumed);
+    }
+    EXPECT_TRUE(ed::any_assumed(prop));
+}
+
+TEST(EditorLibraryGrades, APartWithNoAssumedFieldCarriesNoMarkAndNeitherDoesAnObject) {
+    support::TempDir tmp;
+    write_parts_library(tmp.path(), "retail_phantom3_parts");
+    const ed::LibraryLoad graded = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(graded.items.size(), 2u);
+    EXPECT_TRUE(ed::any_assumed(graded.items[1]));
+    EXPECT_FALSE(ed::any_assumed(graded.items[0]));  // the Box
+
+    support::write_bytes(tmp.path() / "m2312.motor.yaml", motor_text_all_cited("retail_phantom3_parts"));
+    const ed::LibraryLoad cited = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(cited.items.size(), 2u) << (cited.problems.empty() ? "" : cited.problems.front());
+    EXPECT_FALSE(ed::any_assumed(cited.items[1]));
+}
+
+TEST(EditorLibraryGrades, InspectingAPartClearsTheSelectionAndArmsNothing) {
+    support::TempDir tmp;
+    write_parts_library(tmp.path(), "retail_phantom3_parts");
+    ed::EditorPanels p;
+    p.library = ed::load_library_items(tmp.path() / "library.yaml").items;
+    ASSERT_EQ(p.library.size(), 2u);
+    p.selection = ed::Selection{ed::Selection::Kind::object, "box"};
+    EXPECT_TRUE(ed::inspect_item(p, 1));
+    EXPECT_EQ(p.inspected, std::optional<std::size_t>(1));
+    EXPECT_EQ(p.selection.kind, ed::Selection::Kind::none);
+    EXPECT_FALSE(p.armed.has_value());
+
+    // An object's tile arms, as it always has; it is never inspected.
+    p.selection = ed::Selection{ed::Selection::Kind::object, "box"};
+    EXPECT_FALSE(ed::inspect_item(p, 0));
+    EXPECT_FALSE(ed::inspect_item(p, 2));
+    EXPECT_EQ(p.inspected, std::optional<std::size_t>(1));
+    EXPECT_EQ(p.selection.kind, ed::Selection::Kind::object);
 }
