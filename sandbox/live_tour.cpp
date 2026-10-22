@@ -30,6 +30,7 @@
 
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
+#include "core/path_text.hpp"
 #include "render_parts/render_parts.hpp"
 #include "editor_session.hpp"
 #include "pilot_keys.hpp"
@@ -46,6 +47,8 @@
 #include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_steady.hpp"
 #include "world/aabb.hpp"
+#include "world/mesh_file.hpp"
+#include "world/mesh_import.hpp"
 
 #ifdef _WIN32
 #define SPADE_POPEN _popen
@@ -98,14 +101,14 @@ constexpr std::array kSteps = {
     StepName{"editor", "world"},         StepName{"editor", "conflict"},
     StepName{"editor", "views"},         StepName{"editor", "save"},
     StepName{"editor", "library"},       StepName{"editor", "add_drone"},
-    StepName{"editor", "fly"},
+    StepName{"editor", "add_objects"},   StepName{"editor", "fly"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 8> kSnapshots = {"editor_picker",   "editor_vehicle", "editor_place",
+constexpr std::array<std::string_view, 9> kSnapshots = {"editor_picker",   "editor_vehicle", "editor_place",
                                                         "editor_gizmo",    "editor_inspect", "editor_running",
-                                                        "editor_world",    "editor_conflict"};
+                                                        "editor_world",    "editor_conflict", "editor_objects"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -128,6 +131,44 @@ const std::vector<KnownOpen> kKnownOpen = {
     char text[32];
     std::snprintf(text, sizeof text, "%.3f", static_cast<double>(v));
     return text;
+}
+
+// N15's tour crate (editor.add_objects): a closed box mesh named `name`,
+// `side` m, standing on y = 0 about its origin, as a .gltf whose buffer is a
+// .bin beside it (read_gltf() reads a relative buffer file). Built here, so
+// assets/ gains nothing. True when both are written.
+[[nodiscard]] bool write_box_gltf(const fs::path& gltf, std::string_view name, float side) {
+    static constexpr uint32_t kTriangles[12][3] = {
+        {0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+        {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5},
+    };
+    std::string bin;
+    for (uint32_t v = 0; v < 8; ++v) {
+        const float p[3] = {side * (static_cast<float>(v & 1u) - 0.5f), side * static_cast<float>((v >> 1) & 1u),
+                            side * (static_cast<float>((v >> 2) & 1u) - 0.5f)};
+        bin.append(reinterpret_cast<const char*>(p), sizeof p);
+    }
+    for (const auto& t : kTriangles) bin.append(reinterpret_cast<const char*>(t), sizeof t);
+    const auto g = [](float v) {
+        char text[32];
+        std::snprintf(text, sizeof text, "%.9g", static_cast<double>(v));
+        return std::string(text);
+    };
+    const fs::path bin_file = fs::path(gltf).replace_extension(".bin");
+    const std::string doc =
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"name\":\"" + std::string(name) + "\",\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+        "\"indices\":1}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":8,\"type\":\"VEC3\","
+        "\"min\":[" + g(-0.5f * side) + ",0," + g(-0.5f * side) + "],\"max\":[" + g(0.5f * side) + "," + g(side) +
+        "," + g(0.5f * side) + "]},{\"bufferView\":1,\"componentType\":5125,\"count\":36,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":96},{\"buffer\":0,\"byteOffset\":96,"
+        "\"byteLength\":144}],\"buffers\":[{\"byteLength\":" + std::to_string(bin.size()) + ",\"uri\":\"" +
+        path_text(bin_file.filename()) + "\"}]}";
+    std::ofstream b(bin_file, std::ios::binary);
+    b.write(bin.data(), static_cast<std::streamsize>(bin.size()));
+    std::ofstream j(gltf, std::ios::binary);
+    j.write(doc.data(), static_cast<std::streamsize>(doc.size()));
+    return b.good() && j.good();
 }
 
 [[nodiscard]] float mean_rotor_omega(const DroneReadouts& r) {
@@ -1223,6 +1264,242 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const end_goal::Verdict rests = end_goal::placed_at(p);
         s.check(rests.ok, "placed-at", rests.detail);
         command(editor::Command::undo);
+        then(10);
+    });
+
+    // N15 (I5): a gate and a wall from the library, and a glTF crate written
+    // here into the work folder and imported by Load from file, each placed
+    // by a click on clear ground: object-added for each (Test/Docs' §3),
+    // import-named for the crate. Measured from raw inputs, never through the
+    // editor's own placing:
+    // - the world's SDF from before the click is the world without it;
+    // - an SDF object's lowest points come from marching up through its own
+    //   collider, posed here, under its drawables' lowest vertices (a CSG
+    //   object's mesh, the library gate's, sits up to half a cell inside its
+    //   surface, so its vertices can't judge a rest, end_goal_checks.hpp);
+    //   the crate's are its posed vertices, which lie on its surface;
+    // - the editor passes scene_from_world() no labels, so the object's
+    //   drawables are those labelled with the nodes and the prop it added
+    //   (render/scene.hpp's defaults); a primitive's pose is the object's
+    //   times its collider transform, a CSG root's mesh is in world space
+    //   (the identity), the crate's the object's;
+    // - each drawable's material is the object's: its collider node's, or
+    //   the palette default for a collider naming none, or its visual's.
+    // The objects are placed upright at scale 1. Undone after.
+    t.step("editor", "add_objects", [&] {
+        if (!open()) return;
+        const fs::path crate = work / "crate.gltf";
+        if (!s.check(write_box_gltf(crate, "crate", 0.4f), "crate-file", path_text(crate))) return;
+        w().panels().item_path = path_text(crate);
+        command(editor::Command::load_item);
+        const bool armed = w().panels().armed.has_value();
+        if (!s.check(armed, "imported",
+                     armed ? "Load from file armed '" + w().panels().library.at(*w().panels().armed).name + "'"
+                           : w().panels().status)) {
+            return;
+        }
+        const std::string crate_item = w().panels().library.at(*w().panels().armed).name;
+        w().panels().armed.reset();
+
+        const auto pose_matrix = [](const SdfPose& pose) {
+            return glm::translate(glm::mat4(1.0f), pose.position) * glm::mat4_cast(pose.rotation) *
+                   glm::scale(glm::mat4(1.0f), glm::vec3(pose.scale));
+        };
+        // The largest gap and turn between two frames: their origins, and
+        // their axes' directions.
+        const auto widen = [](const glm::mat4& got, const glm::mat4& want, float& offset, float& turn) {
+            offset = std::max(offset, glm::length(glm::vec3(got[3]) - glm::vec3(want[3])));
+            for (int c = 0; c < 3; ++c) {
+                const glm::vec3 a = glm::normalize(glm::vec3(got[c]));
+                const glm::vec3 b = glm::normalize(glm::vec3(want[c]));
+                turn = std::max(turn, std::asin(std::min(1.0f, glm::length(glm::cross(a, b)))));
+            }
+        };
+        // The object's drawables in the current frame, each with its node's
+        // index in the collider, or -1 for the prop.
+        struct Mine {
+            render::DrawItem item;
+            int node = -1;
+        };
+        const auto mine = [&](const WorldDesc& before, const WorldDesc& now) {
+            std::vector<Mine> out;
+            const render::RenderScene& frame = session->render_scene();
+            for (const render::DrawItem& item : frame.statics) {
+                if (item.object_label >= frame.labels.size()) continue;
+                const std::string& label = frame.labels[item.object_label];
+                for (std::size_t i = before.sdf.nodes.size(); i < now.sdf.nodes.size(); ++i) {
+                    if (label == "sdf node " + std::to_string(i)) {
+                        out.push_back(Mine{item, static_cast<int>(i - before.sdf.nodes.size())});
+                    }
+                }
+                for (std::size_t p = before.props.size(); p < now.props.size(); ++p) {
+                    if (label == "prop " + std::to_string(p) + ": " + now.props[p].mesh_ref) out.push_back(Mine{item, -1});
+                }
+            }
+            return out;
+        };
+        const auto items_of = [](const std::vector<Mine>& m) {
+            std::vector<render::DrawItem> out;
+            for (const Mine& x : m) out.push_back(x.item);
+            return out;
+        };
+
+        // Places `item` by a click towards `target` and judges it; its name,
+        // or none when nothing was placed.
+        const auto place_and_judge = [&](const std::string& what, const std::string& item,
+                                         glm::vec3 target) -> std::optional<std::string> {
+            const WorldDesc before = w().composed().world;
+            end_goal::Placement p;
+            p.assets_before = scene_now().assets.size();
+            const glm::vec3 eye = session->camera().to_render_camera().position;
+            const glm::vec3 dir = glm::normalize(target - eye);
+            const std::optional<float> hit = editor::detail::march(before.sdf, eye, dir);
+            arm(item);
+            click_towards(target);
+            then(2);  // a frame binds it
+            p.assets_after = scene_now().assets.size();
+            const bool placed = hit.has_value() && p.assets_after > p.assets_before;
+            if (!s.check(placed, "placed",
+                         what + (placed   ? " placed as '" + scene_now().assets.back().name + "'"
+                                 : !hit ? ": the click met no surface"
+                                        : ": nothing placed: " + w().panels().status))) {
+                return std::nullopt;
+            }
+            const scene::SceneAsset a = scene_now().assets.back();
+            p.name_unique = std::count_if(scene_now().assets.begin(), scene_now().assets.end(),
+                                          [&](const scene::SceneAsset& x) { return x.name == a.name; }) == 1;
+            p.pick = eye + dir * *hit;
+            p.position = a.pose.position;
+            const WorldDesc& now = w().composed().world;
+            const std::vector<Mine> drawn = mine(before, now);
+            p.drawables_added = drawn.size();
+            p.drawables_declared = !a.collider.nodes.empty() ? end_goal::declared_drawables(a.collider)
+                                   : a.visual.mesh_ref.empty() ? 0u
+                                                               : 1u;
+            const auto material = [&](const std::string& name) -> std::optional<uint32_t> {
+                for (uint32_t i = 0; i < now.materials.size(); ++i) {
+                    if (now.materials[i].name == name) return i;
+                }
+                return std::nullopt;
+            };
+            const glm::mat4 pose = pose_matrix(a.pose);
+            p.materials_match = !drawn.empty();
+            for (const Mine& m : drawn) {
+                glm::mat4 want = pose;
+                uint32_t got = m.item.material_override;
+                bool ok = false;
+                if (m.node >= 0 && static_cast<std::size_t>(m.node) < a.collider.nodes.size()) {
+                    const SdfNode& n = a.collider.nodes[static_cast<std::size_t>(m.node)];
+                    want = static_cast<SdfOp>(n.op) != SdfOp::none
+                               ? glm::mat4(1.0f)
+                               : pose * glm::inverse(a.collider.transforms.at(n.transform).world_to_local);
+                    ok = a.collider_materials.empty()
+                             ? (got == render::kNoMaterial || got == 0u)
+                             : material(a.collider_materials.at(static_cast<std::size_t>(m.node))) == got;
+                } else if (m.node < 0) {
+                    ok = material(a.visual.material) == got;
+                }
+                p.materials_match = p.materials_match && ok;
+                widen(m.item.local_to_world, want, p.drawable_offset, p.drawable_turn);
+            }
+
+            // The rest, over the world without it.
+            const render::RenderScene& frame = session->render_scene();
+            const std::vector<render::DrawItem> items = items_of(drawn);
+            const std::vector<glm::vec3> vertices = end_goal::posed_vertices(frame, items);
+            std::vector<glm::vec3> lowest;
+            if (a.collider.nodes.empty()) {
+                lowest = vertices;
+            } else if (!vertices.empty()) {
+                SdfProgram own = a.collider;  // the object alone, posed here
+                own.node_materials.clear();
+                const glm::mat4 local_from_world = glm::inverse(pose);
+                for (SdfTransform& x : own.transforms) x.world_to_local = x.world_to_local * local_from_world;
+                float low = std::numeric_limits<float>::infinity();
+                for (const glm::vec3& v : vertices) low = std::min(low, v.y);
+                const float from = low - 0.25f;
+                for (const glm::vec3& v : vertices) {
+                    if (v.y > low + 0.05f) continue;
+                    const glm::vec3 start(v.x, from, v.z);
+                    if (const std::optional<float> up = editor::detail::march(own, start, glm::vec3(0.0f, 1.0f, 0.0f))) {
+                        lowest.push_back(start + glm::vec3(0.0f, *up, 0.0f));
+                    }
+                }
+            }
+            p.rest_gap = end_goal::rest_gap(before.sdf, lowest);
+
+            // Still: 1.0 s of Run (240 ticks), its drawables judged in the
+            // run's own frame against where they were drawn.
+            w().panels().selection = editor::Selection{};
+            command(editor::Command::run);
+            const editor::EditorRun* run = w().run();
+            const uint64_t start_tick = run != nullptr ? run->tick() : 0u;
+            for (int i = 0; i < 200 && run != nullptr && run->tick() < start_tick + 240u; ++i) {
+                then(1);
+                run = w().run();
+            }
+            const std::vector<Mine> after = mine(before, w().composed().world);
+            if (run == nullptr || run->tick() < start_tick + 240u || after.size() != drawn.size()) {
+                p.moved_after_run = std::numeric_limits<float>::quiet_NaN();
+            } else {
+                for (std::size_t k = 0; k < after.size(); ++k) {
+                    widen(after[k].item.local_to_world, drawn[k].item.local_to_world, p.moved_after_run,
+                          p.tilted_after_run);
+                }
+            }
+            command(editor::Command::stop);
+            const end_goal::Verdict v = end_goal::object_added(p);
+            s.check(v.ok, "object-added", what + ": " + v.detail);
+            return a.name;
+        };
+
+        // The crate's name and source as shown, and its sidecar loading back
+        // with what read_gltf() read.
+        const auto judge_import = [&](const std::string& name) {
+            end_goal::ImportShown m;
+            m.shown_name = name;
+            m.mesh_name = "crate";
+            m.file = path_text(crate);
+            w().panels().selection = editor::Selection{editor::Selection::Kind::object, name};
+            w().refresh_panels();
+            m.shown_source = w().panels().selected_source;
+            if (const Result<std::vector<MeshObject>> read = read_gltf(crate); read && read->size() == 1) {
+                m.gltf_vertices = read->front().mesh->positions().size();
+                m.gltf_triangles = read->front().mesh->triangle_count();
+            }
+            std::string ref;
+            for (const scene::SceneAsset& a : scene_now().assets) {
+                if (a.name == name) ref = a.visual.mesh_ref;
+            }
+            const Result<LoadedMesh> sidecar = load_mesh_file(w().import_staging() / fs::path(ref + ".spmesh"));
+            m.sidecar_loaded = sidecar.has_value() && sidecar->mesh != nullptr;
+            if (m.sidecar_loaded) {
+                m.sidecar_vertices = sidecar->mesh->positions().size();
+                m.sidecar_triangles = sidecar->mesh->triangle_count();
+            }
+            const end_goal::Verdict v = end_goal::import_named(m);
+            s.check(v.ok, "import-named", v.detail);
+            w().panels().selection = editor::Selection{};
+        };
+
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        struct Placing {
+            std::string what;
+            std::string item;
+            glm::vec3 target;
+        };
+        const std::vector<Placing> placings{{"gate", "Gate", glm::vec3(at.x - 3.0f, 0.0f, at.z - 3.0f)},
+                                            {"wall", "Wall", glm::vec3(at.x + 3.0f, 0.0f, at.z - 3.0f)},
+                                            {"crate", crate_item, glm::vec3(at.x, 0.0f, at.z - 2.5f)}};
+        std::size_t placed = 0;
+        for (const Placing& pl : placings) {
+            const std::optional<std::string> name = place_and_judge(pl.what, pl.item, pl.target);
+            if (!name) break;
+            ++placed;
+            if (pl.what == "crate") judge_import(*name);
+        }
+        if (placed == placings.size()) t.snapshot("editor_objects");
+        for (std::size_t i = 0; i < placed; ++i) command(editor::Command::undo);
         then(10);
     });
 
