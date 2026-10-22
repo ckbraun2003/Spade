@@ -115,6 +115,13 @@ class EditorRun {
         return i ? why_not_[*i] : std::string();
     }
 
+    // The controller flying `name`; null when Run doesn't fly it. Made again by
+    // every rebuild, so it holds the scene's chain as it is now.
+    [[nodiscard]] const flight::FlightController* controller_of(std::string_view name) const {
+        const std::optional<std::size_t> i = index_of(name);
+        return i && flight_[*i] ? &*flight_[*i] : nullptr;
+    }
+
     // The first vehicle Run flies, in scene order.
     [[nodiscard]] std::optional<std::string> first_flown() const {
         for (std::size_t i = 0; i < names_.size(); ++i) {

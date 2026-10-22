@@ -239,6 +239,61 @@ TEST(FlightController, RollAndYawCommandsTurnTheDroneTheRightWay) {
     EXPECT_NEAR(glm::degrees(std::atan2(-nose.z, nose.x)), 30.0f, 5.0f);
 }
 
+// Each rotor's thrust to its duty, as the chain's inverse
+// (steady_state_for_thrust) gives it, from no thrust to past full duty's: on
+// the reference chain, and on one whose current limit stops the thrust rising
+// below full duty (the lead's condition, 2026-10-22). Below full thrust the
+// duty is within 1e-5 of full duty of the inverse's, the idle floor and the
+// saturation's knee included; the commanded duty (clamped to [idle, 1], as
+// command() clamps it) gives the inverse's steady thrust within 1e-5 of full;
+// past full thrust it is full duty, as the inverse's unreachable point is.
+// The controller reads a table it builds once: per rotor per step the
+// inverse is 60 chain solves, and N17's tests timed out in debug.
+TEST(FlightController, ItsDutyForAThrustIsTheChainsInverseRisingAndSaturating) {
+    std::optional<ft::FlightRig> rig = ft::reference_quad_rig(glm::vec3(0.0f, 10.0f, 0.0f));
+    ASSERT_TRUE(rig.has_value());
+    const double soc = spade::analysis::kDefaultStateOfCharge;
+    const double idle = spade::analysis::kDefaultIdleDuty;
+    vh::ModelType saturating = rig->model;
+    saturating.propulsion->current_max =
+        0.6 * vh::steady_state_at_duty(*saturating.propulsion, 1.0, kDensity, 0.0, soc).current;
+    for (const vh::ModelType* m : {&rig->model, &saturating}) {
+        const char* which = m == &saturating ? "saturating" : "reference";
+        const spade::Result<fl::FlightController> fc = fl::FlightController::make(*m, kDensity);
+        ASSERT_TRUE(fc.has_value()) << fc.error().context;
+        const vh::PropulsionChain& chain = *m->propulsion;
+        const auto thrust_at = [&](double d) {
+            return vh::steady_state_at_duty(chain, std::clamp(d, idle, 1.0), kDensity, 0.0, soc).thrust;
+        };
+        const double t_full = vh::steady_state_at_duty(chain, 1.0, kDensity, 0.0, soc).thrust;
+        const double knee = vh::steady_state_for_thrust(chain, t_full, kDensity, 0.0, soc).duty;
+        double worst_duty = 0.0;
+        double worst_thrust = 0.0;
+        for (int k = 0; k <= 200; ++k) {
+            const double thrust = 1.25 * t_full * k / 200.0;
+            const double got = fc->duty_for_thrust(thrust);
+            if (thrust > t_full) {
+                EXPECT_EQ(got, 1.0) << which << ", past full thrust: " << thrust << " N";
+                continue;
+            }
+            const double want = vh::steady_state_for_thrust(chain, thrust, kDensity, 0.0, soc).duty;
+            const double off_thrust = std::abs(thrust_at(got) - thrust_at(want)) / t_full;
+            worst_thrust = std::max(worst_thrust, off_thrust);
+            EXPECT_LE(off_thrust, 1e-5) << which << ", at " << thrust << " N";
+            if (thrust < t_full) {
+                worst_duty = std::max(worst_duty, std::abs(got - want));
+                EXPECT_NEAR(got, want, 1e-5) << which << ", at " << thrust << " N";
+            }
+        }
+        std::printf("[ reference quad ] %s chain: full thrust from duty %.4f; worst %.3g of full duty off the "
+                    "inverse, %.3g of full thrust\n",
+                    which, knee, worst_duty, worst_thrust);
+        if (m == &saturating) {
+            EXPECT_LT(knee, 0.9) << "the current limit saturates it below full duty";
+        }
+    }
+}
+
 // A model with rotors and no chain is refused by name, as LiveRun refuses it.
 TEST(FlightController, AModelWithoutAChainIsRefusedByName) {
     std::optional<ft::FlightRig> rig = ft::reference_quad_rig(glm::vec3(0.0f, 10.0f, 0.0f));
