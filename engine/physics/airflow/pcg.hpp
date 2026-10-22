@@ -44,7 +44,9 @@ inline constexpr float kResidualAnnounce = 1.0e-4f;
 // The most CG iterations a solids step takes (the lead's decision 1b,
 // 2026-10-21): past its floor (kSolidsCgIterations) the solve runs on to
 // kResidualAnnounce and stops here, announced. A sphere centred on a cell
-// centre needs 24 at 48^3 (measured 2026-10-21); corner-centred, 8.
+// centre needed 24 at 48^3 before P2c's coarse faces (measured 2026-10-21);
+// since, it takes the floor of 8, as a corner-centred one does, and the worst
+// measured case needs 9.
 inline constexpr uint32_t kSolidsCgCap = 32;
 
 struct PcgResult {

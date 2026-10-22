@@ -1147,17 +1147,14 @@ TEST(AirflowSolidsStep, TheSolidsPressureConvergesOnAGridWithAnOddAxis) {
     EXPECT_LE(h.pressure_iterations, kSolidsCgCap);
 }
 
-// A sphere centred on a cell centre (48^3, R/dx 6) needs more CG iterations
-// than the floor (the lead's decision 1b, 2026-10-21): measured, 8 left 0.28
-// to 0.56 and 24 reached 1e-4 on all three steps. The solve runs on past the
-// floor to the mark, inside the cap, and the step reports its count.
-// Mutation: the cap at the floor (the fixed count), which misses.
-TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkInsideTheCap) {
+// Three steps of a sphere centred on a cell centre (48^3, R/dx 6) from a
+// uniform stream, its CG floor `n_v`: each step's health, printed.
+[[nodiscard]] std::array<FluidHealth, 3> cell_centred_sphere_steps(uint32_t n_v) {
     const float dx = 0.01f;
     const GridShape shape{48, 48, 48, dx};
     DomainBc bc;
     bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
-    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = kSolidsCgIterations,
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = n_v,
                           .interior = SolidInterior::extrapolate};
     MacGrid g = *make_grid(shape, bc);
     std::fill(g.u.begin(), g.u.end(), 1.0f);
@@ -1165,18 +1162,52 @@ TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkInsideTheCap) {
     Scene scene;
     scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = glm::vec3(24.5f * dx),
                                  .radius = 6.0f * dx, .min_feature = 12.0f * dx});
-    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
-    uint32_t most = 0;
-    for (int step = 1; step <= 3; ++step) {
-        const FluidHealth h = fluid_step(g, bc, cfg, s);
-        std::printf("cell-centred sphere, step %d: %.3e in %u iterations\n", step,
-                    static_cast<double>(h.pressure_residual), h.pressure_iterations);
-        EXPECT_LE(h.pressure_residual, kResidualAnnounce) << step;
-        EXPECT_FALSE(h.capped) << step;
-        EXPECT_GE(h.pressure_iterations, kSolidsCgIterations) << step;
-        most = std::max(most, h.pressure_iterations);
+    std::array<FluidHealth, 3> out{};
+    if (!set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) {
+        ADD_FAILURE() << s.solids.run_line;
+        return out;
     }
-    EXPECT_GT(most, kSolidsCgIterations) << "the case must take the solve past its floor";
+    for (std::size_t step = 0; step < out.size(); ++step) {
+        out[step] = fluid_step(g, bc, cfg, s);
+        std::printf("cell-centred sphere, floor %u, step %zu: %.3e in %u iterations\n", n_v, step + 1,
+                    static_cast<double>(out[step].pressure_residual), out[step].pressure_iterations);
+    }
+    return out;
+}
+
+// P2c's gain, pinned (the lead's word, 2026-10-22). Before P2c's coarse faces
+// this sphere took 20, 24 and 12 CG iterations to the mark, where one centred
+// on a cell corner took the floor of 8: a coarse face read its own fine plane
+// only. With the plane means in series it reaches the mark at the floor on
+// every step. Mutation: the own plane's mean (the rule before P2c), 20/24/12.
+TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkAtTheFloor) {
+    const std::array<FluidHealth, 3> steps = cell_centred_sphere_steps(kSolidsCgIterations);
+    for (std::size_t step = 0; step < steps.size(); ++step) {
+        EXPECT_LE(steps[step].pressure_residual, kResidualAnnounce) << step + 1;
+        EXPECT_FALSE(steps[step].capped) << step + 1;
+        EXPECT_EQ(steps[step].pressure_iterations, kSolidsCgIterations) << step + 1;
+    }
+}
+
+// The solve runs on past its floor to the mark, inside the cap, and the step
+// reports its count (the lead's decision 1b, 2026-10-21). The same sphere at a
+// floor of 2: it needs 5, 7 and 3 iterations (measured 2026-10-22), so the
+// solve must pass the floor. This replaces the floor-8 version of this check,
+// whose sphere needed 24 before P2c and now needs only the floor: its premise
+// went, no result regressed (the lead's word, 2026-10-22). Mutation: the cap at
+// the floor (the fixed count), which misses.
+TEST(AirflowSolidsStep, TheSolidsSolveRunsPastItsFloorToTheMark) {
+    constexpr uint32_t kFloor = 2;
+    const std::array<FluidHealth, 3> steps = cell_centred_sphere_steps(kFloor);
+    uint32_t most = 0;
+    for (std::size_t step = 0; step < steps.size(); ++step) {
+        EXPECT_LE(steps[step].pressure_residual, kResidualAnnounce) << step + 1;
+        EXPECT_FALSE(steps[step].capped) << step + 1;
+        EXPECT_GE(steps[step].pressure_iterations, kFloor) << step + 1;
+        EXPECT_LE(steps[step].pressure_iterations, kSolidsCgCap) << step + 1;
+        most = std::max(most, steps[step].pressure_iterations);
+    }
+    EXPECT_GT(most, kFloor) << "the case must take the solve past its floor";
 }
 
 // The solids' solve on odd grids and on a periodic ring that cannot halve to

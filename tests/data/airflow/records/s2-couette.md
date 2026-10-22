@@ -69,3 +69,59 @@ reference: the linear profile, missed: each wall sits 0.75 dx too far
 tolerance: > 1e-5 (must exceed the band)
 verdict: within
 ```
+
+P2c, 2026-10-22 (the coarse faces' plane means in series, 9edcc53; the lead's TD-1 word, 2026-10-22). "S2 circular Couette flow, R1/dx 16", master c7b3c06 -> P2c, every verdict unchanged: the last step's relative pressure residual: 1.715e-06 -> 1.450e-06.
+
+```text
+=== validation record: S2 circular Couette flow, R1/dx 16 ===
+commit: 9edcc53
+date: 2026-10-22
+path: CPU reference, MSVC 1943, release
+config: a 68x1x68 slab (y periodic), dx 1 mm, R1 16 mm turning at Omega R1 = 0.1 m/s inside a fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, visc_sweeps 8
+measure: max |u_theta - u_theta,exact| / (Omega R1) over R1 + dx <= r <= R2 - dx = 0.0052
+reference: A r + B / r (Landau & Lifshitz, Fluid Mechanics, section 18)
+tolerance: <= 0.11 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+measure: closed faces off their rigid velocity = 0
+reference: 0 (a closed face carries its wall's velocity)
+tolerance: 0, exact (the solids design, section 3)
+verdict: within
+measure: the mean u_theta over the measured cells = 0.03719 m/s
+reference: positive, the rotation's sense
+tolerance: > 0 (the cylinder turns the air its own way)
+verdict: within
+measure: the last step's relative pressure residual = 1.450e-06
+reference: a converged solve (the step's fixed point)
+tolerance: <= 1e-04 (kResidualAnnounce)
+verdict: within
+```
+
+P2c, 2026-10-22 (the coarse faces' plane means in series, 9edcc53; the lead's TD-1 word, 2026-10-22). "S2 circular Couette flow, R1/dx 32, and the order check", master c7b3c06 -> P2c, every verdict unchanged: the last step's relative pressure residual: 4.167e-06 -> 4.843e-06.
+
+```text
+=== validation record: S2 circular Couette flow, R1/dx 32, and the order check ===
+commit: 9edcc53
+date: 2026-10-22
+path: CPU reference, MSVC 1943, release
+config: a 132x1x132 slab (y periodic), dx 1 mm, R1 32 mm turning at Omega R1 = 0.1 m/s inside a fixed tube R2 = 2 R1, both no-slip, Re 10, Omega R1 h/dx 0.5, T = 2 (R2 - R1)^2 / nu, n_v 4, visc_sweeps 8
+measure: max |u_theta - u_theta,exact| / (Omega R1) over R1 + dx <= r <= R2 - dx = 0.0022
+reference: A r + B / r (Landau & Lifshitz, Fluid Mechanics, section 18)
+tolerance: <= 0.054 (test-docs/2026-10-13-solids-tolerances.md, fixed before the first run)
+verdict: within
+measure: closed faces off their rigid velocity = 0
+reference: 0 (a closed face carries its wall's velocity)
+tolerance: 0, exact (the solids design, section 3)
+verdict: within
+measure: the mean u_theta over the measured cells = 0.03702 m/s
+reference: positive, the rotation's sense
+tolerance: > 0 (the cylinder turns the air its own way)
+verdict: within
+measure: the last step's relative pressure residual = 4.843e-06
+reference: a converged solve (the step's fixed point)
+tolerance: <= 1e-04 (kResidualAnnounce)
+verdict: within
+measure: e(32) / e(16) = 0.429
+reference: e(16) = 0.0052, the R1/dx 16 record
+tolerance: none (report only: e(16) < 0.011; above it, <= 0.7)
+verdict: report only
+```
